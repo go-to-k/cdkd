@@ -2,16 +2,16 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 134,
-    "enriched": 20,
-    "noComputedAttr": 17,
+    "enriched": 50,
+    "noComputedAttr": 15,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 97,
-    "allowListedTypes": 33
+    "sdkFallbackGap": 69,
+    "allowListedTypes": 87
   },
   "types": [
     {
       "resourceType": "AWS::ApiGateway::Account",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -20,16 +20,15 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::ApiGateway::Authorizer",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "AuthorizerId"
@@ -38,16 +37,15 @@
       "attributes": [
         {
           "name": "AuthorizerId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "AuthorizerId"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::ApiGateway::Deployment",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "DeploymentId"
@@ -56,12 +54,11 @@
       "attributes": [
         {
           "name": "DeploymentId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "DeploymentId"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::ApiGateway::Method",
@@ -74,7 +71,7 @@
     },
     {
       "resourceType": "AWS::ApiGateway::Resource",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "ResourceId"
@@ -83,12 +80,11 @@
       "attributes": [
         {
           "name": "ResourceId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "ResourceId"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::ApiGateway::Stage",
@@ -466,7 +462,8 @@
         },
         {
           "name": "AgentRuntimeId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "AgentRuntimeVersion",
@@ -495,7 +492,6 @@
       ],
       "gaps": [
         "AgentRuntimeArn",
-        "AgentRuntimeId",
         "AgentRuntimeVersion",
         "CreatedAt",
         "FailureReason",
@@ -523,21 +519,20 @@
     },
     {
       "resourceType": "AWS::CertificateManager::Certificate",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
-        "Id"
+        "CertificateArn"
       ],
       "enrichedKeys": [],
       "attributes": [
         {
-          "name": "Id",
-          "status": "gap"
+          "name": "CertificateArn",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::CloudFormation::Stack",
@@ -581,7 +576,8 @@
         },
         {
           "name": "StackId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "StackStatus",
@@ -595,7 +591,6 @@
         "Outputs",
         "ParentId",
         "RootId",
-        "StackId",
         "StackStatus"
       ]
     },
@@ -618,7 +613,7 @@
     },
     {
       "resourceType": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id",
@@ -630,16 +625,15 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "S3CanonicalUserId",
           "status": "enriched"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::CloudFront::Distribution",
@@ -834,14 +828,14 @@
         },
         {
           "name": "UserPoolId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [
         "Arn",
         "ProviderName",
-        "ProviderURL",
-        "UserPoolId"
+        "ProviderURL"
       ]
     },
     {
@@ -890,7 +884,8 @@
         },
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "ReadEndpoint",
@@ -900,7 +895,6 @@
       "gaps": [
         "ClusterResourceId",
         "Endpoint",
-        "Id",
         "ReadEndpoint"
       ]
     },
@@ -921,7 +915,8 @@
         },
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "Port",
@@ -930,13 +925,12 @@
       ],
       "gaps": [
         "Endpoint",
-        "Id",
         "Port"
       ]
     },
     {
       "resourceType": "AWS::DocDB::DBSubnetGroup",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -945,12 +939,11 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::DynamoDB::GlobalTable",
@@ -1048,7 +1041,8 @@
       "attributes": [
         {
           "name": "InstanceId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "PrivateDnsName",
@@ -1076,7 +1070,6 @@
         }
       ],
       "gaps": [
-        "InstanceId",
         "PrivateDnsName",
         "PrivateIp",
         "PublicDnsName",
@@ -1087,7 +1080,7 @@
     },
     {
       "resourceType": "AWS::EC2::InternetGateway",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "InternetGatewayId"
@@ -1096,12 +1089,11 @@
       "attributes": [
         {
           "name": "InternetGatewayId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "InternetGatewayId"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::EC2::NatGateway",
@@ -1130,7 +1122,8 @@
         },
         {
           "name": "NatGatewayId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "RouteTableId",
@@ -1141,13 +1134,12 @@
         "AutoProvisionZones",
         "AutoScalingIps",
         "EniId",
-        "NatGatewayId",
         "RouteTableId"
       ]
     },
     {
       "resourceType": "AWS::EC2::NetworkAcl",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -1156,16 +1148,15 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::EC2::NetworkAclEntry",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -1174,16 +1165,15 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::EC2::Route",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "CidrBlock"
@@ -1192,16 +1182,15 @@
       "attributes": [
         {
           "name": "CidrBlock",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "CidrBlock"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::EC2::RouteTable",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "RouteTableId"
@@ -1210,12 +1199,11 @@
       "attributes": [
         {
           "name": "RouteTableId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "RouteTableId"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::EC2::SecurityGroup",
@@ -1233,17 +1221,17 @@
         },
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [
-        "GroupId",
-        "Id"
+        "GroupId"
       ]
     },
     {
       "resourceType": "AWS::EC2::SecurityGroupIngress",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -1252,12 +1240,11 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::EC2::Subnet",
@@ -1285,19 +1272,19 @@
         },
         {
           "name": "SubnetId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [
         "BlockPublicAccessStates",
         "Ipv6CidrBlocks",
-        "NetworkAclAssociationId",
-        "SubnetId"
+        "NetworkAclAssociationId"
       ]
     },
     {
       "resourceType": "AWS::EC2::SubnetNetworkAclAssociation",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "AssociationId"
@@ -1306,16 +1293,15 @@
       "attributes": [
         {
           "name": "AssociationId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "AssociationId"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::EC2::SubnetRouteTableAssociation",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -1324,12 +1310,11 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::EC2::VPC",
@@ -1362,20 +1347,20 @@
         },
         {
           "name": "VpcId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [
         "CidrBlockAssociations",
         "DefaultNetworkAcl",
         "DefaultSecurityGroup",
-        "Ipv6CidrBlocks",
-        "VpcId"
+        "Ipv6CidrBlocks"
       ]
     },
     {
       "resourceType": "AWS::EC2::VPCGatewayAttachment",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "AttachmentType"
@@ -1384,12 +1369,11 @@
       "attributes": [
         {
           "name": "AttachmentType",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "AttachmentType"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::ECR::Repository",
@@ -1486,7 +1470,8 @@
       "attributes": [
         {
           "name": "AccessPointId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "Arn",
@@ -1494,7 +1479,6 @@
         }
       ],
       "gaps": [
-        "AccessPointId",
         "Arn"
       ]
     },
@@ -1514,17 +1498,17 @@
         },
         {
           "name": "FileSystemId",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [
-        "Arn",
-        "FileSystemId"
+        "Arn"
       ]
     },
     {
       "resourceType": "AWS::EFS::MountTarget",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -1533,12 +1517,11 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::ElastiCache::CacheCluster",
@@ -1575,7 +1558,7 @@
     },
     {
       "resourceType": "AWS::ElasticLoadBalancingV2::Listener",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "ListenerArn"
@@ -1584,12 +1567,11 @@
       "attributes": [
         {
           "name": "ListenerArn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "ListenerArn"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::ElasticLoadBalancingV2::LoadBalancer",
@@ -1614,7 +1596,8 @@
         },
         {
           "name": "LoadBalancerArn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "LoadBalancerFullName",
@@ -1628,7 +1611,6 @@
       "gaps": [
         "CanonicalHostedZoneID",
         "DNSName",
-        "LoadBalancerArn",
         "LoadBalancerFullName",
         "LoadBalancerName"
       ]
@@ -1651,7 +1633,8 @@
         },
         {
           "name": "TargetGroupArn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "TargetGroupFullName",
@@ -1664,7 +1647,6 @@
       ],
       "gaps": [
         "LoadBalancerArns",
-        "TargetGroupArn",
         "TargetGroupFullName",
         "TargetGroupName"
       ]
@@ -1990,7 +1972,8 @@
         },
         {
           "name": "PolicyArn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "PolicyId",
@@ -2007,14 +1990,13 @@
         "DefaultVersionId",
         "IsAttachable",
         "PermissionsBoundaryUsageCount",
-        "PolicyArn",
         "PolicyId",
         "UpdateDate"
       ]
     },
     {
       "resourceType": "AWS::IAM::Policy",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -2023,12 +2005,11 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::IAM::Role",
@@ -2074,7 +2055,7 @@
     },
     {
       "resourceType": "AWS::IAM::UserToGroupAddition",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -2083,12 +2064,11 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::Kinesis::Stream",
@@ -2128,7 +2108,8 @@
       "attributes": [
         {
           "name": "ConsumerARN",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "ConsumerCreationTimestamp",
@@ -2140,7 +2121,6 @@
         }
       ],
       "gaps": [
-        "ConsumerARN",
         "ConsumerCreationTimestamp",
         "ConsumerStatus"
       ]
@@ -2255,7 +2235,7 @@
     },
     {
       "resourceType": "AWS::Lambda::LayerVersion",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "LayerVersionArn"
@@ -2264,12 +2244,11 @@
       "attributes": [
         {
           "name": "LayerVersionArn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "LayerVersionArn"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::Lambda::MicrovmImage",
@@ -2321,7 +2300,7 @@
     },
     {
       "resourceType": "AWS::Lambda::Permission",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -2330,12 +2309,11 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::Lambda::Url",
@@ -2679,7 +2657,7 @@
     },
     {
       "resourceType": "AWS::RDS::DBProxyTargetGroup",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "TargetGroupArn"
@@ -2688,21 +2666,29 @@
       "attributes": [
         {
           "name": "TargetGroupArn",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBSubnetGroup",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "DBSubnetGroupArn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "DBSubnetGroupArn",
           "status": "gap"
         }
       ],
       "gaps": [
-        "TargetGroupArn"
+        "DBSubnetGroupArn"
       ]
-    },
-    {
-      "resourceType": "AWS::RDS::DBSubnetGroup",
-      "bucket": "no-computed-attr",
-      "sdkBacked": true,
-      "readOnlyProperties": [],
-      "enrichedKeys": [],
-      "attributes": [],
-      "gaps": []
     },
     {
       "resourceType": "AWS::Route53::HostedZone",
@@ -2716,7 +2702,8 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "NameServers",
@@ -2724,13 +2711,12 @@
         }
       ],
       "gaps": [
-        "Id",
         "NameServers"
       ]
     },
     {
       "resourceType": "AWS::Route53::RecordSet",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -2739,12 +2725,11 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::S3::Bucket",
@@ -2844,7 +2829,8 @@
       "attributes": [
         {
           "name": "TableARN",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "VersionToken",
@@ -2856,14 +2842,13 @@
         }
       ],
       "gaps": [
-        "TableARN",
         "VersionToken",
         "WarehouseLocation"
       ]
     },
     {
       "resourceType": "AWS::S3Tables::TableBucket",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "TableBucketARN"
@@ -2872,12 +2857,11 @@
       "attributes": [
         {
           "name": "TableBucketARN",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "TableBucketARN"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::S3Vectors::VectorBucket",
@@ -2895,12 +2879,12 @@
         },
         {
           "name": "VectorBucketArn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [
-        "CreationTime",
-        "VectorBucketArn"
+        "CreationTime"
       ]
     },
     {
@@ -2923,7 +2907,7 @@
     },
     {
       "resourceType": "AWS::SecretsManager::Secret",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -2932,12 +2916,11 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::ServiceDiscovery::HttpNamespace",
@@ -2984,13 +2967,13 @@
         },
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [
         "Arn",
-        "HostedZoneId",
-        "Id"
+        "HostedZoneId"
       ]
     },
     {
@@ -3039,17 +3022,17 @@
         },
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [
-        "Arn",
-        "Id"
+        "Arn"
       ]
     },
     {
       "resourceType": "AWS::SNS::Subscription",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Arn"
@@ -3058,16 +3041,15 @@
       "attributes": [
         {
           "name": "Arn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Arn"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::SNS::Topic",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "TopicArn"
@@ -3076,16 +3058,15 @@
       "attributes": [
         {
           "name": "TopicArn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "TopicArn"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::SNS::TopicPolicy",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -3094,12 +3075,11 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::SQS::Queue",
@@ -3117,17 +3097,17 @@
         },
         {
           "name": "QueueUrl",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
       "gaps": [
-        "Arn",
-        "QueueUrl"
+        "Arn"
       ]
     },
     {
       "resourceType": "AWS::SQS::QueuePolicy",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -3136,21 +3116,29 @@
       "attributes": [
         {
           "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::SSM::Parameter",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
           "status": "gap"
         }
       ],
       "gaps": [
-        "Id"
+        "Arn"
       ]
-    },
-    {
-      "resourceType": "AWS::SSM::Parameter",
-      "bucket": "no-computed-attr",
-      "sdkBacked": true,
-      "readOnlyProperties": [],
-      "enrichedKeys": [],
-      "attributes": [],
-      "gaps": []
     },
     {
       "resourceType": "AWS::StepFunctions::StateMachine",
@@ -3165,7 +3153,8 @@
       "attributes": [
         {
           "name": "Arn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "Name",
@@ -3177,7 +3166,6 @@
         }
       ],
       "gaps": [
-        "Arn",
         "Name",
         "StateMachineRevisionId"
       ]
@@ -3204,7 +3192,8 @@
         },
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         },
         {
           "name": "LabelNamespace",
@@ -3214,7 +3203,6 @@
       "gaps": [
         "Arn",
         "Capacity",
-        "Id",
         "LabelNamespace"
       ]
     }

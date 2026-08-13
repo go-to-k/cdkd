@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::DLM::LifecyclePolicy",
-  "generatedAt": "2026-07-17",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "CopyTags",
@@ -24,5 +24,399 @@
   "createOnlyProperties": [],
   "primaryIdentifier": [
     "Id"
-  ]
+  ],
+  "nestedProperties": {
+    "Exclusions": [
+      "ExcludeBootVolumes",
+      "ExcludeTags",
+      "ExcludeVolumeTypes",
+      "Key",
+      "Value"
+    ],
+    "CrossRegionCopyTargets": [
+      "TargetRegion"
+    ],
+    "PolicyDetails": [
+      "Actions",
+      "ArchiveRule",
+      "AvailabilityZoneIds",
+      "AvailabilityZones",
+      "CmkArn",
+      "CopyTags",
+      "Count",
+      "CreateInterval",
+      "CreateRule",
+      "CronExpression",
+      "CrossRegionCopy",
+      "CrossRegionCopyRules",
+      "CrossRegionCopyTargets",
+      "DeprecateRule",
+      "DescriptionRegex",
+      "Encrypted",
+      "EncryptionConfiguration",
+      "EventSource",
+      "EventType",
+      "ExcludeBootVolume",
+      "ExcludeBootVolumes",
+      "ExcludeDataVolumeTags",
+      "ExcludeTags",
+      "ExcludeVolumeTypes",
+      "Exclusions",
+      "ExecuteOperationOnScriptFailure",
+      "ExecutionHandler",
+      "ExecutionHandlerService",
+      "ExecutionTimeout",
+      "ExtendDeletion",
+      "FastRestoreRule",
+      "Interval",
+      "IntervalUnit",
+      "Key",
+      "Location",
+      "MaximumRetryCount",
+      "Name",
+      "NoReboot",
+      "Parameters",
+      "PolicyLanguage",
+      "PolicyType",
+      "ResourceLocations",
+      "ResourceType",
+      "ResourceTypes",
+      "RetainInterval",
+      "RetainRule",
+      "RetentionArchiveTier",
+      "Schedules",
+      "Scripts",
+      "ShareRules",
+      "SnapshotOwner",
+      "Stages",
+      "TagsToAdd",
+      "Target",
+      "TargetAccounts",
+      "TargetRegion",
+      "TargetTags",
+      "Times",
+      "Type",
+      "UnshareInterval",
+      "UnshareIntervalUnit",
+      "Value",
+      "VariableTags"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Exclusions": [
+      "ExcludeBootVolumes",
+      "ExcludeTags",
+      "ExcludeTags.Key",
+      "ExcludeTags.Value",
+      "ExcludeVolumeTypes"
+    ],
+    "CrossRegionCopyTargets": [
+      "TargetRegion"
+    ],
+    "PolicyDetails": [
+      "Actions",
+      "Actions.CrossRegionCopy",
+      "Actions.CrossRegionCopy.EncryptionConfiguration",
+      "Actions.CrossRegionCopy.EncryptionConfiguration.CmkArn",
+      "Actions.CrossRegionCopy.EncryptionConfiguration.Encrypted",
+      "Actions.CrossRegionCopy.RetainRule",
+      "Actions.CrossRegionCopy.RetainRule.Interval",
+      "Actions.CrossRegionCopy.RetainRule.IntervalUnit",
+      "Actions.CrossRegionCopy.Target",
+      "Actions.Name",
+      "CopyTags",
+      "CreateInterval",
+      "CrossRegionCopyTargets",
+      "CrossRegionCopyTargets.TargetRegion",
+      "EventSource",
+      "EventSource.Parameters",
+      "EventSource.Parameters.DescriptionRegex",
+      "EventSource.Parameters.EventType",
+      "EventSource.Parameters.SnapshotOwner",
+      "EventSource.Type",
+      "Exclusions",
+      "Exclusions.ExcludeBootVolumes",
+      "Exclusions.ExcludeTags",
+      "Exclusions.ExcludeTags.Key",
+      "Exclusions.ExcludeTags.Value",
+      "Exclusions.ExcludeVolumeTypes",
+      "ExtendDeletion",
+      "Parameters",
+      "Parameters.ExcludeBootVolume",
+      "Parameters.ExcludeDataVolumeTags",
+      "Parameters.ExcludeDataVolumeTags.Key",
+      "Parameters.ExcludeDataVolumeTags.Value",
+      "Parameters.NoReboot",
+      "PolicyLanguage",
+      "PolicyType",
+      "ResourceLocations",
+      "ResourceType",
+      "ResourceTypes",
+      "RetainInterval",
+      "Schedules",
+      "Schedules.ArchiveRule",
+      "Schedules.ArchiveRule.RetainRule",
+      "Schedules.ArchiveRule.RetainRule.RetentionArchiveTier",
+      "Schedules.ArchiveRule.RetainRule.RetentionArchiveTier.Count",
+      "Schedules.ArchiveRule.RetainRule.RetentionArchiveTier.Interval",
+      "Schedules.ArchiveRule.RetainRule.RetentionArchiveTier.IntervalUnit",
+      "Schedules.CopyTags",
+      "Schedules.CreateRule",
+      "Schedules.CreateRule.CronExpression",
+      "Schedules.CreateRule.Interval",
+      "Schedules.CreateRule.IntervalUnit",
+      "Schedules.CreateRule.Location",
+      "Schedules.CreateRule.Scripts",
+      "Schedules.CreateRule.Scripts.ExecuteOperationOnScriptFailure",
+      "Schedules.CreateRule.Scripts.ExecutionHandler",
+      "Schedules.CreateRule.Scripts.ExecutionHandlerService",
+      "Schedules.CreateRule.Scripts.ExecutionTimeout",
+      "Schedules.CreateRule.Scripts.MaximumRetryCount",
+      "Schedules.CreateRule.Scripts.Stages",
+      "Schedules.CreateRule.Times",
+      "Schedules.CrossRegionCopyRules",
+      "Schedules.CrossRegionCopyRules.CmkArn",
+      "Schedules.CrossRegionCopyRules.CopyTags",
+      "Schedules.CrossRegionCopyRules.DeprecateRule",
+      "Schedules.CrossRegionCopyRules.DeprecateRule.Interval",
+      "Schedules.CrossRegionCopyRules.DeprecateRule.IntervalUnit",
+      "Schedules.CrossRegionCopyRules.Encrypted",
+      "Schedules.CrossRegionCopyRules.RetainRule",
+      "Schedules.CrossRegionCopyRules.RetainRule.Interval",
+      "Schedules.CrossRegionCopyRules.RetainRule.IntervalUnit",
+      "Schedules.CrossRegionCopyRules.Target",
+      "Schedules.CrossRegionCopyRules.TargetRegion",
+      "Schedules.DeprecateRule",
+      "Schedules.DeprecateRule.Count",
+      "Schedules.DeprecateRule.Interval",
+      "Schedules.DeprecateRule.IntervalUnit",
+      "Schedules.FastRestoreRule",
+      "Schedules.FastRestoreRule.AvailabilityZoneIds",
+      "Schedules.FastRestoreRule.AvailabilityZones",
+      "Schedules.FastRestoreRule.Count",
+      "Schedules.FastRestoreRule.Interval",
+      "Schedules.FastRestoreRule.IntervalUnit",
+      "Schedules.Name",
+      "Schedules.RetainRule",
+      "Schedules.RetainRule.Count",
+      "Schedules.RetainRule.Interval",
+      "Schedules.RetainRule.IntervalUnit",
+      "Schedules.ShareRules",
+      "Schedules.ShareRules.TargetAccounts",
+      "Schedules.ShareRules.UnshareInterval",
+      "Schedules.ShareRules.UnshareIntervalUnit",
+      "Schedules.TagsToAdd",
+      "Schedules.TagsToAdd.Key",
+      "Schedules.TagsToAdd.Value",
+      "Schedules.VariableTags",
+      "Schedules.VariableTags.Key",
+      "Schedules.VariableTags.Value",
+      "TargetTags",
+      "TargetTags.Key",
+      "TargetTags.Value"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "CreateInterval": "scalar",
+      "Description": "scalar",
+      "ExtendDeletion": "scalar",
+      "Exclusions": "object",
+      "RetainInterval": "scalar",
+      "ExecutionRoleArn": "scalar",
+      "DefaultPolicy": "scalar",
+      "State": "scalar",
+      "CrossRegionCopyTargets": "array",
+      "PolicyDetails": "object",
+      "Id": "scalar",
+      "Arn": "scalar",
+      "Tags": "array",
+      "CopyTags": "scalar"
+    },
+    "Script": {
+      "ExecutionHandlerService": "scalar",
+      "ExecutionTimeout": "scalar",
+      "Stages": "array",
+      "ExecutionHandler": "scalar",
+      "MaximumRetryCount": "scalar",
+      "ExecuteOperationOnScriptFailure": "scalar"
+    },
+    "Action": {
+      "CrossRegionCopy": "array",
+      "Name": "scalar"
+    },
+    "Parameters": {
+      "ExcludeBootVolume": "scalar",
+      "NoReboot": "scalar",
+      "ExcludeDataVolumeTags": "array"
+    },
+    "CrossRegionCopyTarget": {
+      "TargetRegion": "scalar"
+    },
+    "Exclusions": {
+      "ExcludeTags": "array",
+      "ExcludeVolumeTypes": "array",
+      "ExcludeBootVolumes": "scalar"
+    },
+    "CrossRegionCopyRule": {
+      "TargetRegion": "scalar",
+      "Target": "scalar",
+      "DeprecateRule": "object",
+      "Encrypted": "scalar",
+      "CmkArn": "scalar",
+      "RetainRule": "object",
+      "CopyTags": "scalar"
+    },
+    "EncryptionConfiguration": {
+      "Encrypted": "scalar",
+      "CmkArn": "scalar"
+    },
+    "CrossRegionCopyRetainRule": {
+      "IntervalUnit": "scalar",
+      "Interval": "scalar"
+    },
+    "ArchiveRule": {
+      "RetainRule": "object"
+    },
+    "EventParameters": {
+      "DescriptionRegex": "scalar",
+      "EventType": "scalar",
+      "SnapshotOwner": "array"
+    },
+    "RetainRule": {
+      "IntervalUnit": "scalar",
+      "Count": "scalar",
+      "Interval": "scalar"
+    },
+    "CrossRegionCopyAction": {
+      "Target": "scalar",
+      "EncryptionConfiguration": "object",
+      "RetainRule": "object"
+    },
+    "EventSource": {
+      "Type": "scalar",
+      "Parameters": "object"
+    },
+    "DeprecateRule": {
+      "IntervalUnit": "scalar",
+      "Count": "scalar",
+      "Interval": "scalar"
+    },
+    "CrossRegionCopyDeprecateRule": {
+      "IntervalUnit": "scalar",
+      "Interval": "scalar"
+    },
+    "ArchiveRetainRule": {
+      "RetentionArchiveTier": "object"
+    },
+    "CreateRule": {
+      "IntervalUnit": "scalar",
+      "Scripts": "array",
+      "Times": "array",
+      "CronExpression": "scalar",
+      "Interval": "scalar",
+      "Location": "scalar"
+    },
+    "Schedule": {
+      "ShareRules": "array",
+      "DeprecateRule": "object",
+      "TagsToAdd": "array",
+      "CreateRule": "object",
+      "VariableTags": "array",
+      "FastRestoreRule": "object",
+      "ArchiveRule": "object",
+      "RetainRule": "object",
+      "CrossRegionCopyRules": "array",
+      "Name": "scalar",
+      "CopyTags": "scalar"
+    },
+    "FastRestoreRule": {
+      "IntervalUnit": "scalar",
+      "Count": "scalar",
+      "AvailabilityZoneIds": "array",
+      "AvailabilityZones": "array",
+      "Interval": "scalar"
+    },
+    "PolicyDetails": {
+      "PolicyLanguage": "scalar",
+      "ResourceTypes": "array",
+      "Schedules": "array",
+      "PolicyType": "scalar",
+      "CreateInterval": "scalar",
+      "Parameters": "object",
+      "ExtendDeletion": "scalar",
+      "Exclusions": "object",
+      "Actions": "array",
+      "ResourceType": "scalar",
+      "RetainInterval": "scalar",
+      "EventSource": "object",
+      "CrossRegionCopyTargets": "array",
+      "TargetTags": "array",
+      "ResourceLocations": "array",
+      "CopyTags": "scalar"
+    },
+    "RetentionArchiveTier": {
+      "IntervalUnit": "scalar",
+      "Count": "scalar",
+      "Interval": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "ShareRule": {
+      "TargetAccounts": "array",
+      "UnshareIntervalUnit": "scalar",
+      "UnshareInterval": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "Action": [
+      "CrossRegionCopy",
+      "Name"
+    ],
+    "CrossRegionCopyRule": [
+      "Encrypted"
+    ],
+    "EncryptionConfiguration": [
+      "Encrypted"
+    ],
+    "CrossRegionCopyRetainRule": [
+      "Interval",
+      "IntervalUnit"
+    ],
+    "ArchiveRule": [
+      "RetainRule"
+    ],
+    "EventParameters": [
+      "EventType",
+      "SnapshotOwner"
+    ],
+    "CrossRegionCopyAction": [
+      "EncryptionConfiguration",
+      "Target"
+    ],
+    "EventSource": [
+      "Type"
+    ],
+    "CrossRegionCopyDeprecateRule": [
+      "Interval",
+      "IntervalUnit"
+    ],
+    "ArchiveRetainRule": [
+      "RetentionArchiveTier"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

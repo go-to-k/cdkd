@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::Permission",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Action",
     "EventSourceToken",
@@ -26,5 +26,30 @@
     "PrincipalOrgID",
     "SourceAccount",
     "SourceArn"
-  ]
+  ],
+  "primaryIdentifier": [
+    "FunctionName",
+    "Id"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Id": "scalar",
+      "Action": "scalar",
+      "EventSourceToken": "scalar",
+      "FunctionName": "scalar",
+      "FunctionUrlAuthType": "scalar",
+      "InvokedViaFunctionUrl": "scalar",
+      "Principal": "scalar",
+      "PrincipalOrgID": "scalar",
+      "SourceAccount": "scalar",
+      "SourceArn": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Action",
+      "FunctionName",
+      "Principal"
+    ]
+  }
 }

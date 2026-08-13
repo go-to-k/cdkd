@@ -8,9 +8,10 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 ## Summary
 
 - SDK-backed types classified: **134**
-- Covered (every Arn/Url readOnly resolvable): **50**
-- No Arn/Url readOnly attribute: **84**
+- Covered (every Arn/Url readOnly resolvable): **42**
+- No Arn/Url readOnly attribute: **92**
 - **Latent gaps (blocks CI): 0**
+- Allow-listed KNOWN GAPs (real debt, tracked, does not block CI): **2**
 
 ## Latent gaps
 
@@ -35,13 +36,9 @@ None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cache
 | `AWS::ECS::Cluster` | covered | `Arn` (cached) |
 | `AWS::EFS::AccessPoint` | covered | `Arn` (cached) |
 | `AWS::EFS::FileSystem` | covered | `Arn` (cached) |
-| `AWS::ElasticLoadBalancingV2::Listener` | covered | `ListenerArn` (cached) |
-| `AWS::ElasticLoadBalancingV2::LoadBalancer` | covered | `LoadBalancerArn` (cached) |
-| `AWS::ElasticLoadBalancingV2::TargetGroup` | covered | `TargetGroupArn` (cached) |
 | `AWS::Events::EventBus` | covered | `Arn` (cached) |
 | `AWS::IAM::Group` | covered | `Arn` (cached) |
 | `AWS::IAM::InstanceProfile` | covered | `Arn` (cached) |
-| `AWS::IAM::ManagedPolicy` | covered | `PolicyArn` (cached) |
 | `AWS::IAM::Role` | covered | `Arn` (cached) |
 | `AWS::IAM::User` | covered | `Arn` (cached) |
 | `AWS::Kinesis::Stream` | covered | `Arn` (cached) |
@@ -49,25 +46,21 @@ None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cache
 | `AWS::KMS::Key` | covered | `Arn` (cached) |
 | `AWS::Lambda::EventSourceMapping` | covered | `EventSourceMappingArn` (cached) |
 | `AWS::Lambda::Function` | covered | `Arn` (cached) |
-| `AWS::Lambda::LayerVersion` | covered | `LayerVersionArn` (cached) |
-| `AWS::Lambda::Url` | covered | `FunctionArn` (cached), `FunctionUrl` (cached) |
+| `AWS::Lambda::Url` | covered | `FunctionUrl` (cached) |
 | `AWS::Logs::LogGroup` | covered | `Arn` (cached) |
 | `AWS::RDS::DBCluster` | covered | `DBClusterArn` (ctor) |
 | `AWS::RDS::DBInstance` | covered | `DBInstanceArn` (ctor) |
 | `AWS::RDS::DBProxy` | covered | `DBProxyArn` (cached) |
 | `AWS::RDS::DBProxyEndpoint` | covered | `DBProxyEndpointArn` (cached) |
-| `AWS::RDS::DBProxyTargetGroup` | covered | `TargetGroupArn` (cached) |
+| `AWS::RDS::DBSubnetGroup` | covered | `DBSubnetGroupArn` (allow) |
 | `AWS::S3::Bucket` | covered | `Arn` (cached) |
 | `AWS::S3Express::DirectoryBucket` | covered | `Arn` (cached) |
-| `AWS::S3Vectors::VectorBucket` | covered | `VectorBucketArn` (cached) |
 | `AWS::Scheduler::Schedule` | covered | `Arn` (cached) |
 | `AWS::ServiceDiscovery::HttpNamespace` | covered | `Arn` (cached) |
 | `AWS::ServiceDiscovery::PrivateDnsNamespace` | covered | `Arn` (cached) |
 | `AWS::ServiceDiscovery::PublicDnsNamespace` | covered | `Arn` (cached) |
 | `AWS::ServiceDiscovery::Service` | covered | `Arn` (cached) |
-| `AWS::SNS::Subscription` | covered | `Arn` (allow) |
-| `AWS::SNS::Topic` | covered | `TopicArn` (cached) |
-| `AWS::SQS::Queue` | covered | `Arn` (cached), `QueueUrl` (cached) |
-| `AWS::StepFunctions::StateMachine` | covered | `Arn` (cached) |
+| `AWS::SQS::Queue` | covered | `Arn` (cached) |
+| `AWS::SSM::Parameter` | covered | `Arn` (allow) |
 | `AWS::WAFv2::WebACL` | covered | `Arn` (cached) |
 

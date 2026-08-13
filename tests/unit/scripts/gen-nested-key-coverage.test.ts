@@ -47,6 +47,7 @@ import {
   type SdkMemberType,
 } from '../../../scripts/gen-nested-key-coverage.ts';
 import {
+  extractDefinitionRequired,
   extractDefinitionShapes,
   extractNestedPropertyNames,
   extractNestedPropertyPaths,
@@ -3199,40 +3200,46 @@ describe('loadReport loud-failure fences', () => {
   });
 
   it('throws on a fixture without a definitionShapes capture (#1378)', () => {
-    // Pick the stand-in DYNAMICALLY: most committed fixtures predate the shape
-    // capture, but re-capturing any single one must not silently defuse this
-    // fence. (It did — #1430 re-captured AWS::S3::Bucket, which this test had
-    // hardcoded.) A minNestedKeys: 0 target passes the nestedProperties gate
-    // and must still fail loudly on the missing definitionShapes.
-    const fixtureDir = resolve(repoRoot, 'tests/fixtures/cfn-schemas');
-    const preShapeCapture = readdirSync(fixtureDir)
-      // `readdirSync` order is filesystem-dependent (it differs between macOS
-      // and the Linux CI runner), so sort for a deterministic pick. And
-      // require a string `resourceType`: the directory holds at least one
-      // bookkeeping file without one, which would make `loadReport` throw a
-      // TypeError instead of the /definitionShapes/ error this asserts.
-      .filter((f) => f.endsWith('.json'))
-      .sort()
-      .map((f) => JSON.parse(readFileSync(join(fixtureDir, f), 'utf8')) as Record<string, unknown>)
-      .find(
-        (s) => s['definitionShapes'] === undefined && typeof s['resourceType'] === 'string'
-      );
-    // Never let the probe pass vacuously: if every fixture has been
-    // re-captured this fence needs a synthetic fixture instead of a stand-in.
-    // That day WILL come — `loadReport` hardcodes the fixture dir, so there is
-    // no seam to point it at a synthetic file, and the fix at that point is to
-    // add one (mirroring the existing `resolveModelsDir` seam). Failing here
-    // with this message is the intended way to find out.
-    expect(preShapeCapture, 'no pre-shape-capture fixture left to probe with').toBeDefined();
-    expect(() =>
-      loadReport([
-        {
-          ...realTarget,
-          resourceType: preShapeCapture!['resourceType'] as string,
-          minNestedKeys: 0,
-        },
-      ])
-    ).toThrow(/definitionShapes/);
+    // This probe used to pick a STAND-IN dynamically from the committed tree,
+    // because most fixtures predated the shape capture. That day the old
+    // comment predicted has arrived: issue #1800's full re-capture gave every
+    // fixture a `definitionShapes` section (`#top` is always present, so the
+    // field only stays out for a schema with no properties at all), leaving
+    // the probe with nothing to select and failing with its own
+    // "no pre-shape-capture fixture left" message.
+    //
+    // The prescribed fix was to add a fixture-dir seam. One already exists —
+    // `loadReport`'s fourth parameter, added by #1464 for the sibling
+    // `nestedPropertyPaths` fence — so the probe now builds its own partially
+    // captured tree instead of depending on the committed tree's history. That
+    // also makes it immune to the next re-capture, which is the property the
+    // dynamic pick was reaching for and could not actually hold.
+    //
+    // A `minNestedKeys: 0` target passes the nestedProperties gate and must
+    // still fail loudly on the missing definitionShapes.
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'cdkd-nkc-shapes-'));
+    try {
+      cpSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas'), fixtureDir, { recursive: true });
+      const path = join(fixtureDir, 'AWS-CodeBuild-Project.json');
+      const fixture = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+      // Non-vacuity: the deletion only proves anything if the section WAS
+      // there. A committed fixture that had already lost it would make this
+      // probe pass for the wrong reason.
+      expect(fixture['definitionShapes'], 'fixture had no definitionShapes to remove').toBeDefined();
+      delete fixture['definitionShapes'];
+      writeFileSync(path, JSON.stringify(fixture, null, 2));
+
+      expect(() =>
+        loadReport(
+          [{ ...realTarget, resourceType: 'AWS::CodeBuild::Project', minNestedKeys: 0 }],
+          undefined,
+          undefined,
+          fixtureDir
+        )
+      ).toThrow(/definitionShapes/);
+    } finally {
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
   });
 
   it('fires the SDK MEMBER-parse floor on a collapsed model dir (red direction)', () => {
@@ -3527,6 +3534,99 @@ describe('extractDefinitionShapes (fixture capture)', () => {
     expect(shapes['Inner']).toEqual({ Leaf: 'scalar' });
     // Definitions with no properties block get no entry.
     expect(shapes['NoProps']).toBeUndefined();
+  });
+});
+
+describe('extractDefinitionRequired (fixture capture, issue #1800)', () => {
+  it('captures each definition required list, sorted, with the top-level under #top', () => {
+    const schema = JSON.stringify({
+      required: ['Name', 'Cluster'],
+      properties: { Name: { type: 'string' }, Config: { $ref: '#/definitions/Config' } },
+      definitions: {
+        Config: {
+          required: ['Rollback', 'Enable'],
+          properties: { Enable: { type: 'boolean' }, Rollback: { type: 'boolean' } },
+        },
+        // No `required` at all — the reachable-partial case #1806 is about.
+        Optional: { properties: { StepPercent: { type: 'integer' } } },
+        // Present but empty: identical meaning to absent, so identical output.
+        EmptyRequired: { required: [], properties: { A: { type: 'string' } } },
+        NotAnObject: 'string',
+      },
+    });
+
+    const required = extractDefinitionRequired(schema);
+
+    expect(required['#top']).toEqual(['Cluster', 'Name']);
+    expect(required['Config']).toEqual(['Enable', 'Rollback']);
+    // A definition that requires nothing gets NO entry — a consumer must read
+    // an absent key as "nothing required here", which is why these are
+    // `toBeUndefined()` rather than `toEqual([])`.
+    expect(required['Optional']).toBeUndefined();
+    expect(required['EmptyRequired']).toBeUndefined();
+    expect(required['NotAnObject']).toBeUndefined();
+    // And nothing else leaked in — the key set is exactly the two above.
+    expect(Object.keys(required).sort()).toEqual(['#top', 'Config']);
+  });
+
+  it('returns an empty map for a schema that requires nothing anywhere', () => {
+    // Drives the omit-when-empty branch in `processType`: such a type must get
+    // no `definitionRequired` section at all rather than an empty object.
+    const schema = JSON.stringify({
+      properties: { Name: { type: 'string' } },
+      definitions: { Inner: { properties: { Leaf: { type: 'string' } } } },
+    });
+
+    expect(extractDefinitionRequired(schema)).toEqual({});
+  });
+
+  it('does NOT see required-ness expressed by a combinator or an inline nested object', () => {
+    // The capture's KNOWN BOUND, pinned so a consumer cannot read a missing
+    // entry as proof that CloudFormation requires nothing. Both shapes are
+    // real (measured live, us-east-1, 2026-08-13): `AWS::S3::Bucket`'s
+    // `TargetObjectKeyFormat` puts its required-ness in `oneOf` arms, and
+    // `AWS::WAFv2::WebACL`'s `FieldToMatch.SingleHeader` is an inline object
+    // with no definition key to hang an entry on.
+    //
+    // This test asserts the CURRENT, deliberately-limited behavior. If a
+    // future change starts capturing either shape, this test SHOULD fail —
+    // that is the signal to update the contract note in
+    // `extractDefinitionRequired`'s JSDoc, not to delete the assertion.
+    const schema = JSON.stringify({
+      properties: { Logging: { $ref: '#/definitions/Logging' } },
+      definitions: {
+        TargetObjectKeyFormat: {
+          oneOf: [{ required: ['SimplePrefix'] }, { required: ['PartitionedPrefix'] }],
+          properties: { SimplePrefix: { type: 'object' }, PartitionedPrefix: { type: 'object' } },
+        },
+        Logging: {
+          properties: {
+            SingleHeader: { type: 'object', required: ['Name'], properties: { Name: {} } },
+          },
+        },
+      },
+    });
+
+    const required = extractDefinitionRequired(schema);
+
+    // Neither shape is captured — the absence here means "no PLAIN required
+    // list", NOT "nothing is required".
+    expect(required['TargetObjectKeyFormat']).toBeUndefined();
+    expect(required['SingleHeader']).toBeUndefined();
+    expect(required['Logging']).toBeUndefined();
+    expect(required).toEqual({});
+  });
+
+  it('ignores non-string members and a non-array required', () => {
+    const schema = JSON.stringify({
+      required: 'Name',
+      definitions: { Mixed: { required: ['Real', 42, null] } },
+    });
+
+    const required = extractDefinitionRequired(schema);
+
+    expect(required['#top']).toBeUndefined();
+    expect(required['Mixed']).toEqual(['Real']);
   });
 });
 
@@ -3888,8 +3988,18 @@ describe('real-repo audit (regression floors)', () => {
     // file.
     const control = JSON.parse(
       readFileSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas/AWS-Glue-Crawler.json'), 'utf8')
-    ) as { nestedPropertyPaths?: Record<string, string[]> };
+    ) as { nestedPropertyPaths?: Record<string, string[]>; definitionRequired?: unknown };
     expect(control.nestedPropertyPaths).toBeDefined();
+
+    // The same discrimination for `definitionRequired` (issue #1800). Its
+    // omit-when-empty rule is the load-bearing half of its contract — a
+    // consumer must read a MISSING key as "nothing required here" — and
+    // nothing else pins it at the FIXTURE level, so a spread regression that
+    // emitted `{}` unconditionally would leave every unit test green. This
+    // type requires nothing anywhere, so it must carry NO section at all,
+    // while the control above does.
+    expect((fixture as { definitionRequired?: unknown }).definitionRequired).toBeUndefined();
+    expect(control.definitionRequired).toBeDefined();
   });
 
   it('pins a per-BLOB path floor for every mixed-case-island target (#1393 item 3)', () => {

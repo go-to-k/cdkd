@@ -220,5 +220,39 @@
       "SageMakerPipelineParameters": "object",
       "SqsParameters": "object"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "FlexibleTimeWindow",
+      "ScheduleExpression",
+      "Target"
+    ],
+    "AwsVpcConfiguration": [
+      "Subnets"
+    ],
+    "CapacityProviderStrategyItem": [
+      "CapacityProvider"
+    ],
+    "EcsParameters": [
+      "TaskDefinitionArn"
+    ],
+    "EventBridgeParameters": [
+      "DetailType",
+      "Source"
+    ],
+    "FlexibleTimeWindow": [
+      "Mode"
+    ],
+    "KinesisParameters": [
+      "PartitionKey"
+    ],
+    "SageMakerPipelineParameter": [
+      "Name",
+      "Value"
+    ],
+    "Target": [
+      "Arn",
+      "RoleArn"
+    ]
   }
 }

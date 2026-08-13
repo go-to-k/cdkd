@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::S3Tables::Table",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Compaction",
     "IcebergMetadata",
@@ -27,5 +27,230 @@
     "StorageClassConfiguration",
     "TableBucketARN",
     "WithoutMetadata"
-  ]
+  ],
+  "primaryIdentifier": [
+    "TableARN"
+  ],
+  "nestedProperties": {
+    "StorageClassConfiguration": [
+      "StorageClass"
+    ],
+    "Compaction": [
+      "Status",
+      "TargetFileSizeMB"
+    ],
+    "IcebergMetadata": [
+      "Direction",
+      "Doc",
+      "FieldId",
+      "Fields",
+      "IcebergPartitionSpec",
+      "IcebergSchema",
+      "IcebergSchemaV2",
+      "IcebergSortOrder",
+      "Id",
+      "IdentifierFieldIds",
+      "Name",
+      "NullOrder",
+      "OrderId",
+      "Required",
+      "SchemaFieldList",
+      "SchemaId",
+      "SchemaV2FieldList",
+      "SchemaV2FieldType",
+      "SourceId",
+      "SpecId",
+      "TableProperties",
+      "Transform",
+      "Type"
+    ],
+    "SnapshotManagement": [
+      "MaxSnapshotAgeHours",
+      "MinSnapshotsToKeep",
+      "Status"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "StorageClassConfiguration": [
+      "StorageClass"
+    ],
+    "Compaction": [
+      "Status",
+      "TargetFileSizeMB"
+    ],
+    "IcebergMetadata": [
+      "IcebergPartitionSpec",
+      "IcebergPartitionSpec.Fields",
+      "IcebergPartitionSpec.Fields.FieldId",
+      "IcebergPartitionSpec.Fields.Name",
+      "IcebergPartitionSpec.Fields.SourceId",
+      "IcebergPartitionSpec.Fields.Transform",
+      "IcebergPartitionSpec.SpecId",
+      "IcebergSchema",
+      "IcebergSchema.SchemaFieldList",
+      "IcebergSchema.SchemaFieldList.Id",
+      "IcebergSchema.SchemaFieldList.Name",
+      "IcebergSchema.SchemaFieldList.Required",
+      "IcebergSchema.SchemaFieldList.Type",
+      "IcebergSchemaV2",
+      "IcebergSchemaV2.IdentifierFieldIds",
+      "IcebergSchemaV2.SchemaId",
+      "IcebergSchemaV2.SchemaV2FieldList",
+      "IcebergSchemaV2.SchemaV2FieldList.Doc",
+      "IcebergSchemaV2.SchemaV2FieldList.Id",
+      "IcebergSchemaV2.SchemaV2FieldList.Name",
+      "IcebergSchemaV2.SchemaV2FieldList.Required",
+      "IcebergSchemaV2.SchemaV2FieldList.Type",
+      "IcebergSchemaV2.SchemaV2FieldType",
+      "IcebergSortOrder",
+      "IcebergSortOrder.Fields",
+      "IcebergSortOrder.Fields.Direction",
+      "IcebergSortOrder.Fields.NullOrder",
+      "IcebergSortOrder.Fields.SourceId",
+      "IcebergSortOrder.Fields.Transform",
+      "IcebergSortOrder.OrderId",
+      "TableProperties"
+    ],
+    "SnapshotManagement": [
+      "MaxSnapshotAgeHours",
+      "MinSnapshotsToKeep",
+      "Status"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "WithoutMetadata": "scalar",
+      "StorageClassConfiguration": "object",
+      "Compaction": "object",
+      "Namespace": "scalar",
+      "TableName": "scalar",
+      "TableBucketARN": "scalar",
+      "VersionToken": "scalar",
+      "TableARN": "scalar",
+      "OpenTableFormat": "scalar",
+      "IcebergMetadata": "object",
+      "WarehouseLocation": "scalar",
+      "SnapshotManagement": "object",
+      "Tags": "array"
+    },
+    "StorageClassConfiguration": {
+      "StorageClass": "scalar"
+    },
+    "IcebergSortOrder": {
+      "Fields": "array",
+      "OrderId": "scalar"
+    },
+    "IcebergSchemaV2": {
+      "SchemaV2FieldList": "array",
+      "SchemaV2FieldType": "scalar",
+      "SchemaId": "scalar",
+      "IdentifierFieldIds": "array"
+    },
+    "IcebergPartitionSpec": {
+      "Fields": "array",
+      "SpecId": "scalar"
+    },
+    "Compaction": {
+      "Status": "scalar",
+      "TargetFileSizeMB": "scalar"
+    },
+    "SnapshotManagement": {
+      "Status": "scalar",
+      "MinSnapshotsToKeep": "scalar",
+      "MaxSnapshotAgeHours": "scalar"
+    },
+    "SchemaV2Field": {
+      "Type": "mixed",
+      "Required": "scalar",
+      "Doc": "scalar",
+      "Id": "scalar",
+      "Name": "scalar"
+    },
+    "SchemaField": {
+      "Type": "scalar",
+      "Required": "scalar",
+      "Id": "scalar",
+      "Name": "scalar"
+    },
+    "IcebergSchema": {
+      "SchemaFieldList": "array"
+    },
+    "IcebergSortField": {
+      "SourceId": "scalar",
+      "NullOrder": "scalar",
+      "Transform": "scalar",
+      "Direction": "scalar"
+    },
+    "IcebergMetadata": {
+      "IcebergSchema": "object",
+      "IcebergSortOrder": "object",
+      "IcebergSchemaV2": "object",
+      "IcebergPartitionSpec": "object",
+      "TableProperties": "object"
+    },
+    "IcebergPartitionField": {
+      "SourceId": "scalar",
+      "FieldId": "scalar",
+      "Transform": "scalar",
+      "Name": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Namespace",
+      "OpenTableFormat",
+      "TableBucketARN",
+      "TableName"
+    ],
+    "IcebergSortOrder": [
+      "Fields"
+    ],
+    "IcebergSchemaV2": [
+      "SchemaV2FieldList",
+      "SchemaV2FieldType"
+    ],
+    "IcebergPartitionSpec": [
+      "Fields"
+    ],
+    "SchemaV2Field": [
+      "Id",
+      "Name",
+      "Required",
+      "Type"
+    ],
+    "SchemaField": [
+      "Name",
+      "Type"
+    ],
+    "IcebergSchema": [
+      "SchemaFieldList"
+    ],
+    "IcebergSortField": [
+      "Direction",
+      "NullOrder",
+      "SourceId",
+      "Transform"
+    ],
+    "IcebergPartitionField": [
+      "Name",
+      "SourceId",
+      "Transform"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

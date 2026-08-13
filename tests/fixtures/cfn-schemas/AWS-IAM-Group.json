@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::IAM::Group",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "GroupName",
@@ -13,5 +13,39 @@
   ],
   "createOnlyProperties": [
     "GroupName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "GroupName"
+  ],
+  "nestedProperties": {
+    "Policies": [
+      "PolicyDocument",
+      "PolicyName"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Policies": [
+      "PolicyDocument",
+      "PolicyName"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Arn": "scalar",
+      "GroupName": "scalar",
+      "ManagedPolicyArns": "array",
+      "Path": "scalar",
+      "Policies": "array"
+    },
+    "Policy": {
+      "PolicyDocument": "mixed",
+      "PolicyName": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "Policy": [
+      "PolicyDocument",
+      "PolicyName"
+    ]
+  }
 }

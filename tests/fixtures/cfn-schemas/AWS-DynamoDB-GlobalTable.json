@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::DynamoDB::GlobalTable",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "AttributeDefinitions",
@@ -31,5 +31,479 @@
   ],
   "createOnlyProperties": [
     "TableName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "TableName"
+  ],
+  "nestedProperties": {
+    "SSESpecification": [
+      "SSEEnabled",
+      "SSEType"
+    ],
+    "StreamSpecification": [
+      "StreamViewType"
+    ],
+    "WarmThroughput": [
+      "ReadUnitsPerSecond",
+      "WriteUnitsPerSecond"
+    ],
+    "Replicas": [
+      "ApproximateCreationDateTimePrecision",
+      "ContributorInsightsSpecification",
+      "DeletionProtectionEnabled",
+      "DisableScaleIn",
+      "Enabled",
+      "GlobalSecondaryIndexes",
+      "GlobalTableSettingsReplicationMode",
+      "IndexName",
+      "KMSMasterKeyId",
+      "Key",
+      "KinesisStreamSpecification",
+      "MaxCapacity",
+      "MaxReadRequestUnits",
+      "MinCapacity",
+      "Mode",
+      "PointInTimeRecoveryEnabled",
+      "PointInTimeRecoverySpecification",
+      "PolicyDocument",
+      "ReadCapacityAutoScalingSettings",
+      "ReadCapacityUnits",
+      "ReadOnDemandThroughputSettings",
+      "ReadProvisionedThroughputSettings",
+      "RecoveryPeriodInDays",
+      "Region",
+      "ReplicaStreamSpecification",
+      "ResourcePolicy",
+      "SSESpecification",
+      "ScaleInCooldown",
+      "ScaleOutCooldown",
+      "SeedCapacity",
+      "StreamArn",
+      "TableClass",
+      "Tags",
+      "TargetTrackingScalingPolicyConfiguration",
+      "TargetValue",
+      "Value"
+    ],
+    "WriteProvisionedThroughputSettings": [
+      "DisableScaleIn",
+      "MaxCapacity",
+      "MinCapacity",
+      "ScaleInCooldown",
+      "ScaleOutCooldown",
+      "SeedCapacity",
+      "TargetTrackingScalingPolicyConfiguration",
+      "TargetValue",
+      "WriteCapacityAutoScalingSettings"
+    ],
+    "WriteOnDemandThroughputSettings": [
+      "MaxWriteRequestUnits"
+    ],
+    "GlobalTableWitnesses": [
+      "Region"
+    ],
+    "AttributeDefinitions": [
+      "AttributeName",
+      "AttributeType"
+    ],
+    "GlobalSecondaryIndexes": [
+      "AttributeName",
+      "DisableScaleIn",
+      "IndexName",
+      "KeySchema",
+      "KeyType",
+      "MaxCapacity",
+      "MaxReadRequestUnits",
+      "MaxWriteRequestUnits",
+      "MinCapacity",
+      "NonKeyAttributes",
+      "Projection",
+      "ProjectionType",
+      "ReadCapacityUnits",
+      "ReadOnDemandThroughputSettings",
+      "ReadProvisionedThroughputSettings",
+      "ReadUnitsPerSecond",
+      "ScaleInCooldown",
+      "ScaleOutCooldown",
+      "SeedCapacity",
+      "TargetTrackingScalingPolicyConfiguration",
+      "TargetValue",
+      "WarmThroughput",
+      "WriteCapacityAutoScalingSettings",
+      "WriteOnDemandThroughputSettings",
+      "WriteProvisionedThroughputSettings",
+      "WriteUnitsPerSecond"
+    ],
+    "KeySchema": [
+      "AttributeName",
+      "KeyType"
+    ],
+    "LocalSecondaryIndexes": [
+      "AttributeName",
+      "IndexName",
+      "KeySchema",
+      "KeyType",
+      "NonKeyAttributes",
+      "Projection",
+      "ProjectionType"
+    ],
+    "ReadProvisionedThroughputSettings": [
+      "ReadCapacityUnits"
+    ],
+    "ReadOnDemandThroughputSettings": [
+      "MaxReadRequestUnits"
+    ],
+    "TimeToLiveSpecification": [
+      "AttributeName",
+      "Enabled"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "SSESpecification": [
+      "SSEEnabled",
+      "SSEType"
+    ],
+    "StreamSpecification": [
+      "StreamViewType"
+    ],
+    "WarmThroughput": [
+      "ReadUnitsPerSecond",
+      "WriteUnitsPerSecond"
+    ],
+    "Replicas": [
+      "ContributorInsightsSpecification",
+      "ContributorInsightsSpecification.Enabled",
+      "ContributorInsightsSpecification.Mode",
+      "DeletionProtectionEnabled",
+      "GlobalSecondaryIndexes",
+      "GlobalSecondaryIndexes.ContributorInsightsSpecification",
+      "GlobalSecondaryIndexes.ContributorInsightsSpecification.Enabled",
+      "GlobalSecondaryIndexes.ContributorInsightsSpecification.Mode",
+      "GlobalSecondaryIndexes.IndexName",
+      "GlobalSecondaryIndexes.ReadOnDemandThroughputSettings",
+      "GlobalSecondaryIndexes.ReadOnDemandThroughputSettings.MaxReadRequestUnits",
+      "GlobalSecondaryIndexes.ReadProvisionedThroughputSettings",
+      "GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings",
+      "GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MaxCapacity",
+      "GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MinCapacity",
+      "GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.SeedCapacity",
+      "GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration",
+      "GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn",
+      "GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown",
+      "GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown",
+      "GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue",
+      "GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityUnits",
+      "GlobalTableSettingsReplicationMode",
+      "KinesisStreamSpecification",
+      "KinesisStreamSpecification.ApproximateCreationDateTimePrecision",
+      "KinesisStreamSpecification.StreamArn",
+      "PointInTimeRecoverySpecification",
+      "PointInTimeRecoverySpecification.PointInTimeRecoveryEnabled",
+      "PointInTimeRecoverySpecification.RecoveryPeriodInDays",
+      "ReadOnDemandThroughputSettings",
+      "ReadOnDemandThroughputSettings.MaxReadRequestUnits",
+      "ReadProvisionedThroughputSettings",
+      "ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings",
+      "ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MaxCapacity",
+      "ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.MinCapacity",
+      "ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.SeedCapacity",
+      "ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration",
+      "ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn",
+      "ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown",
+      "ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown",
+      "ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue",
+      "ReadProvisionedThroughputSettings.ReadCapacityUnits",
+      "Region",
+      "ReplicaStreamSpecification",
+      "ReplicaStreamSpecification.ResourcePolicy",
+      "ReplicaStreamSpecification.ResourcePolicy.PolicyDocument",
+      "ResourcePolicy",
+      "ResourcePolicy.PolicyDocument",
+      "SSESpecification",
+      "SSESpecification.KMSMasterKeyId",
+      "TableClass",
+      "Tags",
+      "Tags.Key",
+      "Tags.Value"
+    ],
+    "WriteProvisionedThroughputSettings": [
+      "WriteCapacityAutoScalingSettings",
+      "WriteCapacityAutoScalingSettings.MaxCapacity",
+      "WriteCapacityAutoScalingSettings.MinCapacity",
+      "WriteCapacityAutoScalingSettings.SeedCapacity",
+      "WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration",
+      "WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn",
+      "WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown",
+      "WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown",
+      "WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue"
+    ],
+    "WriteOnDemandThroughputSettings": [
+      "MaxWriteRequestUnits"
+    ],
+    "GlobalTableWitnesses": [
+      "Region"
+    ],
+    "AttributeDefinitions": [
+      "AttributeName",
+      "AttributeType"
+    ],
+    "GlobalSecondaryIndexes": [
+      "IndexName",
+      "KeySchema",
+      "KeySchema.AttributeName",
+      "KeySchema.KeyType",
+      "Projection",
+      "Projection.NonKeyAttributes",
+      "Projection.ProjectionType",
+      "ReadOnDemandThroughputSettings",
+      "ReadOnDemandThroughputSettings.MaxReadRequestUnits",
+      "ReadProvisionedThroughputSettings",
+      "ReadProvisionedThroughputSettings.ReadCapacityUnits",
+      "WarmThroughput",
+      "WarmThroughput.ReadUnitsPerSecond",
+      "WarmThroughput.WriteUnitsPerSecond",
+      "WriteOnDemandThroughputSettings",
+      "WriteOnDemandThroughputSettings.MaxWriteRequestUnits",
+      "WriteProvisionedThroughputSettings",
+      "WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings",
+      "WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.MaxCapacity",
+      "WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.MinCapacity",
+      "WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.SeedCapacity",
+      "WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration",
+      "WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.DisableScaleIn",
+      "WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleInCooldown",
+      "WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown",
+      "WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings.TargetTrackingScalingPolicyConfiguration.TargetValue"
+    ],
+    "KeySchema": [
+      "AttributeName",
+      "KeyType"
+    ],
+    "LocalSecondaryIndexes": [
+      "IndexName",
+      "KeySchema",
+      "KeySchema.AttributeName",
+      "KeySchema.KeyType",
+      "Projection",
+      "Projection.NonKeyAttributes",
+      "Projection.ProjectionType"
+    ],
+    "ReadProvisionedThroughputSettings": [
+      "ReadCapacityUnits"
+    ],
+    "ReadOnDemandThroughputSettings": [
+      "MaxReadRequestUnits"
+    ],
+    "TimeToLiveSpecification": [
+      "AttributeName",
+      "Enabled"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "MultiRegionConsistency": "scalar",
+      "TableId": "scalar",
+      "SSESpecification": "object",
+      "StreamSpecification": "object",
+      "WarmThroughput": "object",
+      "Replicas": "array",
+      "WriteProvisionedThroughputSettings": "object",
+      "GlobalTableSourceArn": "scalar",
+      "WriteOnDemandThroughputSettings": "object",
+      "GlobalTableWitnesses": "array",
+      "TableName": "scalar",
+      "AttributeDefinitions": "array",
+      "BillingMode": "scalar",
+      "GlobalSecondaryIndexes": "array",
+      "KeySchema": "array",
+      "LocalSecondaryIndexes": "array",
+      "Arn": "scalar",
+      "StreamArn": "scalar",
+      "ReadProvisionedThroughputSettings": "object",
+      "ReadOnDemandThroughputSettings": "object",
+      "TimeToLiveSpecification": "object"
+    },
+    "LocalSecondaryIndex": {
+      "IndexName": "scalar",
+      "Projection": "object",
+      "KeySchema": "array"
+    },
+    "ReplicaSpecification": {
+      "SSESpecification": "object",
+      "KinesisStreamSpecification": "object",
+      "ContributorInsightsSpecification": "object",
+      "GlobalTableSettingsReplicationMode": "scalar",
+      "PointInTimeRecoverySpecification": "object",
+      "ReplicaStreamSpecification": "object",
+      "GlobalSecondaryIndexes": "array",
+      "Region": "scalar",
+      "ResourcePolicy": "object",
+      "ReadProvisionedThroughputSettings": "object",
+      "TableClass": "scalar",
+      "DeletionProtectionEnabled": "scalar",
+      "Tags": "array",
+      "ReadOnDemandThroughputSettings": "object"
+    },
+    "AttributeDefinition": {
+      "AttributeType": "scalar",
+      "AttributeName": "scalar"
+    },
+    "Projection": {
+      "NonKeyAttributes": "array",
+      "ProjectionType": "scalar"
+    },
+    "PointInTimeRecoverySpecification": {
+      "PointInTimeRecoveryEnabled": "scalar",
+      "RecoveryPeriodInDays": "scalar"
+    },
+    "ReplicaGlobalSecondaryIndexSpecification": {
+      "IndexName": "scalar",
+      "ContributorInsightsSpecification": "object",
+      "ReadProvisionedThroughputSettings": "object",
+      "ReadOnDemandThroughputSettings": "object"
+    },
+    "GlobalSecondaryIndex": {
+      "IndexName": "scalar",
+      "Projection": "object",
+      "KeySchema": "array",
+      "WarmThroughput": "object",
+      "ReadProvisionedThroughputSettings": "object",
+      "WriteProvisionedThroughputSettings": "object",
+      "ReadOnDemandThroughputSettings": "object",
+      "WriteOnDemandThroughputSettings": "object"
+    },
+    "WriteProvisionedThroughputSettings": {
+      "WriteCapacityAutoScalingSettings": "object"
+    },
+    "WriteOnDemandThroughputSettings": {
+      "MaxWriteRequestUnits": "scalar"
+    },
+    "ReplicaStreamSpecification": {
+      "ResourcePolicy": "object"
+    },
+    "GlobalTableWitness": {
+      "Region": "scalar"
+    },
+    "ReadOnDemandThroughputSettings": {
+      "MaxReadRequestUnits": "scalar"
+    },
+    "SSESpecification": {
+      "SSEEnabled": "scalar",
+      "SSEType": "scalar"
+    },
+    "KinesisStreamSpecification": {
+      "ApproximateCreationDateTimePrecision": "scalar",
+      "StreamArn": "scalar"
+    },
+    "StreamSpecification": {
+      "StreamViewType": "scalar"
+    },
+    "ContributorInsightsSpecification": {
+      "Mode": "scalar",
+      "Enabled": "scalar"
+    },
+    "CapacityAutoScalingSettings": {
+      "MinCapacity": "scalar",
+      "SeedCapacity": "scalar",
+      "TargetTrackingScalingPolicyConfiguration": "object",
+      "MaxCapacity": "scalar"
+    },
+    "WarmThroughput": {
+      "ReadUnitsPerSecond": "scalar",
+      "WriteUnitsPerSecond": "scalar"
+    },
+    "TargetTrackingScalingPolicyConfiguration": {
+      "ScaleOutCooldown": "scalar",
+      "TargetValue": "scalar",
+      "DisableScaleIn": "scalar",
+      "ScaleInCooldown": "scalar"
+    },
+    "ReplicaSSESpecification": {
+      "KMSMasterKeyId": "scalar"
+    },
+    "ResourcePolicy": {
+      "PolicyDocument": "object"
+    },
+    "KeySchema": {
+      "KeyType": "scalar",
+      "AttributeName": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "ReadProvisionedThroughputSettings": {
+      "ReadCapacityUnits": "scalar",
+      "ReadCapacityAutoScalingSettings": "object"
+    },
+    "TimeToLiveSpecification": {
+      "Enabled": "scalar",
+      "AttributeName": "scalar"
+    },
+    "GlobalReadProvisionedThroughputSettings": {
+      "ReadCapacityUnits": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Replicas"
+    ],
+    "LocalSecondaryIndex": [
+      "IndexName",
+      "KeySchema",
+      "Projection"
+    ],
+    "ReplicaSpecification": [
+      "Region"
+    ],
+    "AttributeDefinition": [
+      "AttributeName",
+      "AttributeType"
+    ],
+    "ReplicaGlobalSecondaryIndexSpecification": [
+      "IndexName"
+    ],
+    "GlobalSecondaryIndex": [
+      "IndexName",
+      "KeySchema",
+      "Projection"
+    ],
+    "SSESpecification": [
+      "SSEEnabled"
+    ],
+    "KinesisStreamSpecification": [
+      "StreamArn"
+    ],
+    "StreamSpecification": [
+      "StreamViewType"
+    ],
+    "ContributorInsightsSpecification": [
+      "Enabled"
+    ],
+    "CapacityAutoScalingSettings": [
+      "MaxCapacity",
+      "MinCapacity",
+      "TargetTrackingScalingPolicyConfiguration"
+    ],
+    "TargetTrackingScalingPolicyConfiguration": [
+      "TargetValue"
+    ],
+    "ReplicaSSESpecification": [
+      "KMSMasterKeyId"
+    ],
+    "ResourcePolicy": [
+      "PolicyDocument"
+    ],
+    "KeySchema": [
+      "AttributeName",
+      "KeyType"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "TimeToLiveSpecification": [
+      "Enabled"
+    ]
+  }
 }

@@ -326,5 +326,49 @@
       "Required": "scalar",
       "Name": "scalar"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "CatalogId",
+      "DatabaseName"
+    ],
+    "Order": [
+      "Column",
+      "SortOrder"
+    ],
+    "IcebergSortOrder": [
+      "Fields",
+      "OrderId"
+    ],
+    "IcebergPartitionSpec": [
+      "Fields"
+    ],
+    "IcebergTableInput": [
+      "Location",
+      "Schema"
+    ],
+    "IcebergSchema": [
+      "Fields"
+    ],
+    "Column": [
+      "Name"
+    ],
+    "IcebergSortField": [
+      "Direction",
+      "NullOrder",
+      "SourceId",
+      "Transform"
+    ],
+    "IcebergPartitionField": [
+      "Name",
+      "SourceId",
+      "Transform"
+    ],
+    "IcebergStructField": [
+      "Id",
+      "Name",
+      "Required",
+      "Type"
+    ]
   }
 }

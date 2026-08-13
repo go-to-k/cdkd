@@ -58,5 +58,11 @@
       "KmsKeyArn": "scalar",
       "JobBookmarksEncryptionMode": "scalar"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "EncryptionConfiguration",
+      "Name"
+    ]
   }
 }

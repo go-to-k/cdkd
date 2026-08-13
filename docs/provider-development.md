@@ -1757,6 +1757,25 @@ Checklist when writing or reviewing an `update()`:
   The generalizable check is therefore two questions, not one — does the API
   merge or replace the nested struct, and does anything on cdkd's side refuse
   the shape the way CFn does?
+  Answering the second question no longer needs a live `describe-type`: since
+  issue #1800 each `tests/fixtures/cfn-schemas/*.json` carries a
+  `definitionRequired` section (per definition, its `required` list; the
+  top-level list under the reserved `#top` key), so a test can assert the
+  actual lists a parity verdict rests on. Read a MISSING key as "nothing is
+  required here" — a definition with no `required` list, or an empty one, gets
+  no entry. Note the section's ABSENCE does not mean "not captured": seven
+  types legitimately require nothing anywhere and carry no section at all, so
+  use `generatedAt` (>= 2026-08-13) to tell a captured fixture from a stale
+  one. Note also that only a definition's OWN top-level `required` array is
+  captured — required-ness expressed through a `oneOf` combinator
+  (`AWS::S3::Bucket`'s `TargetObjectKeyFormat`) or on an inline nested object
+  (`AWS::WAFv2::WebACL`'s `FieldToMatch.SingleHeader`) is absent, so for those
+  shapes a missing entry means UNKNOWN rather than "CFn requires nothing";
+  measure against the live schema before concluding a parity verdict.
+  That absence is itself load-bearing: `LinearConfiguration` and
+  `CanaryConfiguration` carry no required list, so a kept-but-partial block
+  there IS reachable from a template CFn accepts, which is issue #1806 and is
+  strictly worse than #1802 because there is no CFn-side refusal to point at.
 - Unit-test **three** shapes: removed → exact reset value; never-present →
   stays absent; mixed kept/removed → kept fields pass through unchanged.
 - A per-key removal test (one key dropped from a still-present map) does NOT

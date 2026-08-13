@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::IAM::UserToGroupAddition",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "GroupName",
     "Id",
@@ -9,5 +9,21 @@
   "readOnlyProperties": [
     "Id"
   ],
-  "createOnlyProperties": []
+  "createOnlyProperties": [],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Id": "scalar",
+      "GroupName": "scalar",
+      "Users": "array"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "GroupName",
+      "Users"
+    ]
+  }
 }

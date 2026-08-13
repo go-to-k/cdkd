@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::VPC",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CidrBlock",
     "CidrBlockAssociations",
@@ -13,6 +13,7 @@
     "Ipv4NetmaskLength",
     "Ipv6CidrBlocks",
     "Tags",
+    "VpcEncryptionControl",
     "VpcId"
   ],
   "readOnlyProperties": [
@@ -25,6 +26,143 @@
   "createOnlyProperties": [
     "CidrBlock",
     "Ipv4IpamPoolId",
-    "Ipv4NetmaskLength"
-  ]
+    "Ipv4NetmaskLength",
+    "VpcEncryptionControl"
+  ],
+  "primaryIdentifier": [
+    "VpcId"
+  ],
+  "nestedProperties": {
+    "VpcEncryptionControl": [
+      "EgressOnlyInternetGateway",
+      "EgressOnlyInternetGatewayExclusion",
+      "ElasticFileSystem",
+      "ElasticFileSystemExclusion",
+      "InternetGateway",
+      "InternetGatewayExclusion",
+      "Lambda",
+      "LambdaExclusion",
+      "Mode",
+      "NatGateway",
+      "NatGatewayExclusion",
+      "ResourceExclusions",
+      "State",
+      "StateMessage",
+      "VirtualPrivateGateway",
+      "VirtualPrivateGatewayExclusion",
+      "VpcEncryptionControlId",
+      "VpcId",
+      "VpcLattice",
+      "VpcLatticeExclusion",
+      "VpcPeering",
+      "VpcPeeringExclusion"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "VpcEncryptionControl": [
+      "EgressOnlyInternetGatewayExclusion",
+      "ElasticFileSystemExclusion",
+      "InternetGatewayExclusion",
+      "LambdaExclusion",
+      "Mode",
+      "NatGatewayExclusion",
+      "ResourceExclusions",
+      "ResourceExclusions.EgressOnlyInternetGateway",
+      "ResourceExclusions.EgressOnlyInternetGateway.State",
+      "ResourceExclusions.EgressOnlyInternetGateway.StateMessage",
+      "ResourceExclusions.ElasticFileSystem",
+      "ResourceExclusions.ElasticFileSystem.State",
+      "ResourceExclusions.ElasticFileSystem.StateMessage",
+      "ResourceExclusions.InternetGateway",
+      "ResourceExclusions.InternetGateway.State",
+      "ResourceExclusions.InternetGateway.StateMessage",
+      "ResourceExclusions.Lambda",
+      "ResourceExclusions.Lambda.State",
+      "ResourceExclusions.Lambda.StateMessage",
+      "ResourceExclusions.NatGateway",
+      "ResourceExclusions.NatGateway.State",
+      "ResourceExclusions.NatGateway.StateMessage",
+      "ResourceExclusions.VirtualPrivateGateway",
+      "ResourceExclusions.VirtualPrivateGateway.State",
+      "ResourceExclusions.VirtualPrivateGateway.StateMessage",
+      "ResourceExclusions.VpcLattice",
+      "ResourceExclusions.VpcLattice.State",
+      "ResourceExclusions.VpcLattice.StateMessage",
+      "ResourceExclusions.VpcPeering",
+      "ResourceExclusions.VpcPeering.State",
+      "ResourceExclusions.VpcPeering.StateMessage",
+      "State",
+      "StateMessage",
+      "VirtualPrivateGatewayExclusion",
+      "VpcEncryptionControlId",
+      "VpcId",
+      "VpcLatticeExclusion",
+      "VpcPeeringExclusion"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "CidrBlockAssociations": "array",
+      "CidrBlock": "scalar",
+      "VpcId": "scalar",
+      "InstanceTenancy": "scalar",
+      "Ipv4NetmaskLength": "scalar",
+      "Ipv4IpamPoolId": "scalar",
+      "VpcEncryptionControl": "object",
+      "DefaultNetworkAcl": "scalar",
+      "EnableDnsSupport": "scalar",
+      "Ipv6CidrBlocks": "array",
+      "DefaultSecurityGroup": "scalar",
+      "EnableDnsHostnames": "scalar",
+      "Tags": "array"
+    },
+    "VpcEncryptionControlExclusions": {
+      "ElasticFileSystem": "object",
+      "VpcLattice": "object",
+      "VpcPeering": "object",
+      "InternetGateway": "object",
+      "EgressOnlyInternetGateway": "object",
+      "VirtualPrivateGateway": "object",
+      "NatGateway": "object",
+      "Lambda": "object"
+    },
+    "VpcEncryptionControlExclusion": {
+      "State": "scalar",
+      "StateMessage": "scalar"
+    },
+    "VpcEncryptionControl": {
+      "ElasticFileSystemExclusion": "scalar",
+      "VirtualPrivateGatewayExclusion": "scalar",
+      "Mode": "scalar",
+      "VpcEncryptionControlId": "scalar",
+      "VpcLatticeExclusion": "scalar",
+      "VpcId": "scalar",
+      "State": "scalar",
+      "NatGatewayExclusion": "scalar",
+      "EgressOnlyInternetGatewayExclusion": "scalar",
+      "StateMessage": "scalar",
+      "LambdaExclusion": "scalar",
+      "ResourceExclusions": "object",
+      "InternetGatewayExclusion": "scalar",
+      "VpcPeeringExclusion": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

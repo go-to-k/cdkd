@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::DocDB::DBCluster",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AvailabilityZones",
     "BackupRetentionPeriod",
@@ -52,5 +52,84 @@
     "SnapshotIdentifier",
     "SourceDBClusterIdentifier",
     "StorageEncrypted"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "ServerlessV2ScalingConfiguration": [
+      "MaxCapacity",
+      "MinCapacity"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "ServerlessV2ScalingConfiguration": [
+      "MaxCapacity",
+      "MinCapacity"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "StorageEncrypted": "scalar",
+      "RestoreToTime": "scalar",
+      "SnapshotIdentifier": "scalar",
+      "Port": "scalar",
+      "DBClusterIdentifier": "scalar",
+      "PreferredBackupWindow": "scalar",
+      "ClusterResourceId": "scalar",
+      "Endpoint": "scalar",
+      "RotateMasterUserPassword": "scalar",
+      "VpcSecurityGroupIds": "array",
+      "NetworkType": "scalar",
+      "CopyTagsToSnapshot": "scalar",
+      "GlobalClusterIdentifier": "scalar",
+      "RestoreType": "scalar",
+      "Tags": "array",
+      "EngineVersion": "scalar",
+      "StorageType": "scalar",
+      "KmsKeyId": "scalar",
+      "AvailabilityZones": "array",
+      "ServerlessV2ScalingConfiguration": "object",
+      "PreferredMaintenanceWindow": "scalar",
+      "MasterUserSecretKmsKeyId": "scalar",
+      "DBSubnetGroupName": "scalar",
+      "DeletionProtection": "scalar",
+      "UseLatestRestorableTime": "scalar",
+      "ManageMasterUserPassword": "scalar",
+      "MasterUserPassword": "scalar",
+      "SourceDBClusterIdentifier": "scalar",
+      "MasterUsername": "scalar",
+      "ReadEndpoint": "scalar",
+      "DBClusterParameterGroupName": "scalar",
+      "BackupRetentionPeriod": "scalar",
+      "Id": "scalar",
+      "EnableCloudwatchLogsExports": "array"
+    },
+    "ServerlessV2ScalingConfiguration": {
+      "MinCapacity": "scalar",
+      "MaxCapacity": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "ServerlessV2ScalingConfiguration": [
+      "MaxCapacity",
+      "MinCapacity"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Events::EventBus",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "DeadLetterConfig",
@@ -17,5 +17,60 @@
   ],
   "createOnlyProperties": [
     "Name"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Name"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "DeadLetterConfig": [
+      "Arn"
+    ],
+    "LogConfig": [
+      "IncludeDetail",
+      "Level"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "DeadLetterConfig": [
+      "Arn"
+    ],
+    "LogConfig": [
+      "IncludeDetail",
+      "Level"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "EventSourceName": "scalar",
+      "Name": "scalar",
+      "Tags": "array",
+      "Description": "scalar",
+      "KmsKeyIdentifier": "scalar",
+      "Policy": "mixed",
+      "Arn": "scalar",
+      "DeadLetterConfig": "object",
+      "LogConfig": "object"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Name"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

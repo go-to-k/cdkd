@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::Instance",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AdditionalInfo",
     "Affinity",
@@ -79,5 +79,386 @@
     "PrivateIpAddress",
     "SecurityGroups",
     "SubnetId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "InstanceId"
+  ],
+  "nestedProperties": {
+    "Volumes": [
+      "Device",
+      "VolumeId"
+    ],
+    "EnclaveOptions": [
+      "Enabled"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "HibernationOptions": [
+      "Configured"
+    ],
+    "LicenseSpecifications": [
+      "LicenseConfigurationArn"
+    ],
+    "MetadataOptions": [
+      "HttpEndpoint",
+      "HttpProtocolIpv6",
+      "HttpPutResponseHopLimit",
+      "HttpTokens",
+      "InstanceMetadataTags"
+    ],
+    "CpuOptions": [
+      "CoreCount",
+      "ThreadsPerCore"
+    ],
+    "PrivateDnsNameOptions": [
+      "EnableResourceNameDnsAAAARecord",
+      "EnableResourceNameDnsARecord",
+      "HostnameType"
+    ],
+    "SsmAssociations": [
+      "AssociationParameters",
+      "DocumentName",
+      "Key",
+      "Value"
+    ],
+    "State": [
+      "Code",
+      "Name"
+    ],
+    "BlockDeviceMappings": [
+      "DeleteOnTermination",
+      "DeviceName",
+      "Ebs",
+      "Encrypted",
+      "Iops",
+      "KmsKeyId",
+      "NoDevice",
+      "SnapshotId",
+      "VirtualName",
+      "VolumeSize",
+      "VolumeType"
+    ],
+    "Ipv6Addresses": [
+      "Ipv6Address"
+    ],
+    "ElasticGpuSpecifications": [
+      "Type"
+    ],
+    "ElasticInferenceAccelerators": [
+      "Count",
+      "Type"
+    ],
+    "LaunchTemplate": [
+      "LaunchTemplateId",
+      "LaunchTemplateName",
+      "Version"
+    ],
+    "NetworkInterfaces": [
+      "AssociateCarrierIpAddress",
+      "AssociatePublicIpAddress",
+      "DeleteOnTermination",
+      "Description",
+      "DeviceIndex",
+      "EnaSrdEnabled",
+      "EnaSrdSpecification",
+      "EnaSrdUdpEnabled",
+      "EnaSrdUdpSpecification",
+      "GroupSet",
+      "Ipv6Address",
+      "Ipv6AddressCount",
+      "Ipv6Addresses",
+      "NetworkInterfaceId",
+      "Primary",
+      "PrivateIpAddress",
+      "PrivateIpAddresses",
+      "SecondaryPrivateIpAddressCount",
+      "SubnetId"
+    ],
+    "CreditSpecification": [
+      "CPUCredits"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Volumes": [
+      "Device",
+      "VolumeId"
+    ],
+    "EnclaveOptions": [
+      "Enabled"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "HibernationOptions": [
+      "Configured"
+    ],
+    "LicenseSpecifications": [
+      "LicenseConfigurationArn"
+    ],
+    "MetadataOptions": [
+      "HttpEndpoint",
+      "HttpProtocolIpv6",
+      "HttpPutResponseHopLimit",
+      "HttpTokens",
+      "InstanceMetadataTags"
+    ],
+    "CpuOptions": [
+      "CoreCount",
+      "ThreadsPerCore"
+    ],
+    "PrivateDnsNameOptions": [
+      "EnableResourceNameDnsAAAARecord",
+      "EnableResourceNameDnsARecord",
+      "HostnameType"
+    ],
+    "SsmAssociations": [
+      "AssociationParameters",
+      "AssociationParameters.Key",
+      "AssociationParameters.Value",
+      "DocumentName"
+    ],
+    "State": [
+      "Code",
+      "Name"
+    ],
+    "BlockDeviceMappings": [
+      "DeviceName",
+      "Ebs",
+      "Ebs.DeleteOnTermination",
+      "Ebs.Encrypted",
+      "Ebs.Iops",
+      "Ebs.KmsKeyId",
+      "Ebs.SnapshotId",
+      "Ebs.VolumeSize",
+      "Ebs.VolumeType",
+      "NoDevice",
+      "VirtualName"
+    ],
+    "Ipv6Addresses": [
+      "Ipv6Address"
+    ],
+    "ElasticGpuSpecifications": [
+      "Type"
+    ],
+    "ElasticInferenceAccelerators": [
+      "Count",
+      "Type"
+    ],
+    "LaunchTemplate": [
+      "LaunchTemplateId",
+      "LaunchTemplateName",
+      "Version"
+    ],
+    "NetworkInterfaces": [
+      "AssociateCarrierIpAddress",
+      "AssociatePublicIpAddress",
+      "DeleteOnTermination",
+      "Description",
+      "DeviceIndex",
+      "EnaSrdSpecification",
+      "EnaSrdSpecification.EnaSrdEnabled",
+      "EnaSrdSpecification.EnaSrdUdpSpecification",
+      "EnaSrdSpecification.EnaSrdUdpSpecification.EnaSrdUdpEnabled",
+      "GroupSet",
+      "Ipv6AddressCount",
+      "Ipv6Addresses",
+      "Ipv6Addresses.Ipv6Address",
+      "NetworkInterfaceId",
+      "PrivateIpAddress",
+      "PrivateIpAddresses",
+      "PrivateIpAddresses.Primary",
+      "PrivateIpAddresses.PrivateIpAddress",
+      "SecondaryPrivateIpAddressCount",
+      "SubnetId"
+    ],
+    "CreditSpecification": [
+      "CPUCredits"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "PrivateDnsName": "scalar",
+      "Volumes": "array",
+      "PrivateIp": "scalar",
+      "EnclaveOptions": "object",
+      "ImageId": "scalar",
+      "Tags": "array",
+      "AdditionalInfo": "scalar",
+      "HibernationOptions": "object",
+      "LicenseSpecifications": "array",
+      "MetadataOptions": "object",
+      "InstanceId": "scalar",
+      "CpuOptions": "object",
+      "AvailabilityZone": "scalar",
+      "PrivateDnsNameOptions": "object",
+      "HostId": "scalar",
+      "PublicDnsName": "scalar",
+      "SecurityGroupIds": "array",
+      "PlacementGroupName": "scalar",
+      "SsmAssociations": "array",
+      "VpcId": "scalar",
+      "State": "object",
+      "Affinity": "scalar",
+      "Tenancy": "scalar",
+      "SecurityGroups": "array",
+      "PrivateIpAddress": "scalar",
+      "UserData": "scalar",
+      "BlockDeviceMappings": "array",
+      "IamInstanceProfile": "scalar",
+      "Ipv6Addresses": "array",
+      "KernelId": "scalar",
+      "SubnetId": "scalar",
+      "EbsOptimized": "scalar",
+      "PropagateTagsToVolumeOnCreation": "scalar",
+      "ElasticGpuSpecifications": "array",
+      "ElasticInferenceAccelerators": "array",
+      "Ipv6AddressCount": "scalar",
+      "LaunchTemplate": "object",
+      "NetworkInterfaces": "array",
+      "InstanceType": "scalar",
+      "Monitoring": "scalar",
+      "PublicIp": "scalar",
+      "InstanceInitiatedShutdownBehavior": "scalar",
+      "HostResourceGroupArn": "scalar",
+      "DisableApiTermination": "scalar",
+      "KeyName": "scalar",
+      "RamdiskId": "scalar",
+      "SourceDestCheck": "scalar",
+      "CreditSpecification": "object"
+    },
+    "LaunchTemplateSpecification": {
+      "LaunchTemplateName": "scalar",
+      "Version": "scalar",
+      "LaunchTemplateId": "scalar"
+    },
+    "MetadataOptions": {
+      "HttpPutResponseHopLimit": "scalar",
+      "HttpProtocolIpv6": "scalar",
+      "HttpTokens": "scalar",
+      "InstanceMetadataTags": "scalar",
+      "HttpEndpoint": "scalar"
+    },
+    "LicenseSpecification": {
+      "LicenseConfigurationArn": "scalar"
+    },
+    "ElasticGpuSpecification": {
+      "Type": "scalar"
+    },
+    "InstanceIpv6Address": {
+      "Ipv6Address": "scalar"
+    },
+    "NetworkInterface": {
+      "Description": "scalar",
+      "PrivateIpAddress": "scalar",
+      "PrivateIpAddresses": "array",
+      "SecondaryPrivateIpAddressCount": "scalar",
+      "DeviceIndex": "scalar",
+      "GroupSet": "array",
+      "Ipv6Addresses": "array",
+      "SubnetId": "scalar",
+      "AssociatePublicIpAddress": "scalar",
+      "NetworkInterfaceId": "scalar",
+      "AssociateCarrierIpAddress": "scalar",
+      "EnaSrdSpecification": "object",
+      "Ipv6AddressCount": "scalar",
+      "DeleteOnTermination": "scalar"
+    },
+    "PrivateDnsNameOptions": {
+      "EnableResourceNameDnsARecord": "scalar",
+      "HostnameType": "scalar",
+      "EnableResourceNameDnsAAAARecord": "scalar"
+    },
+    "ElasticInferenceAccelerator": {
+      "Type": "scalar",
+      "Count": "scalar"
+    },
+    "AssociationParameter": {
+      "Value": "array",
+      "Key": "scalar"
+    },
+    "SsmAssociation": {
+      "AssociationParameters": "array",
+      "DocumentName": "scalar"
+    },
+    "PrivateIpAddressSpecification": {
+      "PrivateIpAddress": "scalar",
+      "Primary": "scalar"
+    },
+    "EnaSrdSpecification": {
+      "EnaSrdEnabled": "scalar",
+      "EnaSrdUdpSpecification": "object"
+    },
+    "EnaSrdUdpSpecification": {
+      "EnaSrdUdpEnabled": "scalar"
+    },
+    "Volume": {
+      "VolumeId": "scalar",
+      "Device": "scalar"
+    },
+    "State": {
+      "Code": "scalar",
+      "Name": "scalar"
+    },
+    "Ebs": {
+      "SnapshotId": "scalar",
+      "VolumeType": "scalar",
+      "KmsKeyId": "scalar",
+      "Encrypted": "scalar",
+      "Iops": "scalar",
+      "VolumeSize": "scalar",
+      "DeleteOnTermination": "scalar"
+    },
+    "BlockDeviceMapping": {
+      "Ebs": "object",
+      "NoDevice": "object",
+      "VirtualName": "scalar",
+      "DeviceName": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "LicenseSpecification": [
+      "LicenseConfigurationArn"
+    ],
+    "ElasticGpuSpecification": [
+      "Type"
+    ],
+    "InstanceIpv6Address": [
+      "Ipv6Address"
+    ],
+    "NetworkInterface": [
+      "DeviceIndex"
+    ],
+    "ElasticInferenceAccelerator": [
+      "Type"
+    ],
+    "AssociationParameter": [
+      "Key",
+      "Value"
+    ],
+    "SsmAssociation": [
+      "DocumentName"
+    ],
+    "PrivateIpAddressSpecification": [
+      "Primary",
+      "PrivateIpAddress"
+    ],
+    "Volume": [
+      "Device",
+      "VolumeId"
+    ],
+    "BlockDeviceMapping": [
+      "DeviceName"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

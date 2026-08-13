@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::DynamoDB::Table",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "AttributeDefinitions",
@@ -32,5 +32,386 @@
   "createOnlyProperties": [
     "ImportSourceSpecification",
     "TableName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "TableName"
+  ],
+  "nestedProperties": {
+    "OnDemandThroughput": [
+      "MaxReadRequestUnits",
+      "MaxWriteRequestUnits"
+    ],
+    "SSESpecification": [
+      "KMSMasterKeyId",
+      "SSEEnabled",
+      "SSEType"
+    ],
+    "KinesisStreamSpecification": [
+      "ApproximateCreationDateTimePrecision",
+      "StreamArn"
+    ],
+    "StreamSpecification": [
+      "PolicyDocument",
+      "ResourcePolicy",
+      "StreamViewType"
+    ],
+    "ContributorInsightsSpecification": [
+      "Enabled",
+      "Mode"
+    ],
+    "ImportSourceSpecification": [
+      "Csv",
+      "Delimiter",
+      "HeaderList",
+      "InputCompressionType",
+      "InputFormat",
+      "InputFormatOptions",
+      "S3Bucket",
+      "S3BucketOwner",
+      "S3BucketSource",
+      "S3KeyPrefix"
+    ],
+    "PointInTimeRecoverySpecification": [
+      "PointInTimeRecoveryEnabled",
+      "RecoveryPeriodInDays"
+    ],
+    "ProvisionedThroughput": [
+      "ReadCapacityUnits",
+      "WriteCapacityUnits"
+    ],
+    "WarmThroughput": [
+      "ReadUnitsPerSecond",
+      "WriteUnitsPerSecond"
+    ],
+    "AttributeDefinitions": [
+      "AttributeName",
+      "AttributeType"
+    ],
+    "GlobalSecondaryIndexes": [
+      "AttributeName",
+      "ContributorInsightsSpecification",
+      "Enabled",
+      "IndexName",
+      "KeySchema",
+      "KeyType",
+      "MaxReadRequestUnits",
+      "MaxWriteRequestUnits",
+      "Mode",
+      "NonKeyAttributes",
+      "OnDemandThroughput",
+      "Projection",
+      "ProjectionType",
+      "ProvisionedThroughput",
+      "ReadCapacityUnits",
+      "ReadUnitsPerSecond",
+      "WarmThroughput",
+      "WriteCapacityUnits",
+      "WriteUnitsPerSecond"
+    ],
+    "ResourcePolicy": [
+      "PolicyDocument"
+    ],
+    "LocalSecondaryIndexes": [
+      "AttributeName",
+      "IndexName",
+      "KeySchema",
+      "KeyType",
+      "NonKeyAttributes",
+      "Projection",
+      "ProjectionType"
+    ],
+    "KeySchema": [
+      "AttributeName",
+      "KeyType"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "TimeToLiveSpecification": [
+      "AttributeName",
+      "Enabled"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "OnDemandThroughput": [
+      "MaxReadRequestUnits",
+      "MaxWriteRequestUnits"
+    ],
+    "SSESpecification": [
+      "KMSMasterKeyId",
+      "SSEEnabled",
+      "SSEType"
+    ],
+    "KinesisStreamSpecification": [
+      "ApproximateCreationDateTimePrecision",
+      "StreamArn"
+    ],
+    "StreamSpecification": [
+      "ResourcePolicy",
+      "ResourcePolicy.PolicyDocument",
+      "StreamViewType"
+    ],
+    "ContributorInsightsSpecification": [
+      "Enabled",
+      "Mode"
+    ],
+    "ImportSourceSpecification": [
+      "InputCompressionType",
+      "InputFormat",
+      "InputFormatOptions",
+      "InputFormatOptions.Csv",
+      "InputFormatOptions.Csv.Delimiter",
+      "InputFormatOptions.Csv.HeaderList",
+      "S3BucketSource",
+      "S3BucketSource.S3Bucket",
+      "S3BucketSource.S3BucketOwner",
+      "S3BucketSource.S3KeyPrefix"
+    ],
+    "PointInTimeRecoverySpecification": [
+      "PointInTimeRecoveryEnabled",
+      "RecoveryPeriodInDays"
+    ],
+    "ProvisionedThroughput": [
+      "ReadCapacityUnits",
+      "WriteCapacityUnits"
+    ],
+    "WarmThroughput": [
+      "ReadUnitsPerSecond",
+      "WriteUnitsPerSecond"
+    ],
+    "AttributeDefinitions": [
+      "AttributeName",
+      "AttributeType"
+    ],
+    "GlobalSecondaryIndexes": [
+      "ContributorInsightsSpecification",
+      "ContributorInsightsSpecification.Enabled",
+      "ContributorInsightsSpecification.Mode",
+      "IndexName",
+      "KeySchema",
+      "KeySchema.AttributeName",
+      "KeySchema.KeyType",
+      "OnDemandThroughput",
+      "OnDemandThroughput.MaxReadRequestUnits",
+      "OnDemandThroughput.MaxWriteRequestUnits",
+      "Projection",
+      "Projection.NonKeyAttributes",
+      "Projection.ProjectionType",
+      "ProvisionedThroughput",
+      "ProvisionedThroughput.ReadCapacityUnits",
+      "ProvisionedThroughput.WriteCapacityUnits",
+      "WarmThroughput",
+      "WarmThroughput.ReadUnitsPerSecond",
+      "WarmThroughput.WriteUnitsPerSecond"
+    ],
+    "ResourcePolicy": [
+      "PolicyDocument"
+    ],
+    "LocalSecondaryIndexes": [
+      "IndexName",
+      "KeySchema",
+      "KeySchema.AttributeName",
+      "KeySchema.KeyType",
+      "Projection",
+      "Projection.NonKeyAttributes",
+      "Projection.ProjectionType"
+    ],
+    "KeySchema": [
+      "AttributeName",
+      "KeyType"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "TimeToLiveSpecification": [
+      "AttributeName",
+      "Enabled"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "OnDemandThroughput": "object",
+      "SSESpecification": "object",
+      "KinesisStreamSpecification": "object",
+      "StreamSpecification": "object",
+      "ContributorInsightsSpecification": "object",
+      "ImportSourceSpecification": "object",
+      "PointInTimeRecoverySpecification": "object",
+      "ProvisionedThroughput": "object",
+      "WarmThroughput": "object",
+      "TableName": "scalar",
+      "AttributeDefinitions": "array",
+      "GlobalSecondaryIndexes": "array",
+      "BillingMode": "scalar",
+      "ResourcePolicy": "object",
+      "LocalSecondaryIndexes": "array",
+      "KeySchema": "mixed",
+      "Arn": "scalar",
+      "StreamArn": "scalar",
+      "DeletionProtectionEnabled": "scalar",
+      "TableClass": "scalar",
+      "Tags": "array",
+      "TimeToLiveSpecification": "object"
+    },
+    "OnDemandThroughput": {
+      "MaxReadRequestUnits": "scalar",
+      "MaxWriteRequestUnits": "scalar"
+    },
+    "LocalSecondaryIndex": {
+      "IndexName": "scalar",
+      "Projection": "object",
+      "KeySchema": "array"
+    },
+    "SSESpecification": {
+      "SSEEnabled": "scalar",
+      "SSEType": "scalar",
+      "KMSMasterKeyId": "scalar"
+    },
+    "KinesisStreamSpecification": {
+      "ApproximateCreationDateTimePrecision": "scalar",
+      "StreamArn": "scalar"
+    },
+    "InputFormatOptions": {
+      "Csv": "object"
+    },
+    "StreamSpecification": {
+      "StreamViewType": "scalar",
+      "ResourcePolicy": "object"
+    },
+    "ContributorInsightsSpecification": {
+      "Mode": "scalar",
+      "Enabled": "scalar"
+    },
+    "Csv": {
+      "Delimiter": "scalar",
+      "HeaderList": "array"
+    },
+    "ImportSourceSpecification": {
+      "S3BucketSource": "object",
+      "InputFormat": "scalar",
+      "InputFormatOptions": "object",
+      "InputCompressionType": "scalar"
+    },
+    "AttributeDefinition": {
+      "AttributeType": "scalar",
+      "AttributeName": "scalar"
+    },
+    "Projection": {
+      "NonKeyAttributes": "array",
+      "ProjectionType": "scalar"
+    },
+    "PointInTimeRecoverySpecification": {
+      "PointInTimeRecoveryEnabled": "scalar",
+      "RecoveryPeriodInDays": "scalar"
+    },
+    "ProvisionedThroughput": {
+      "WriteCapacityUnits": "scalar",
+      "ReadCapacityUnits": "scalar"
+    },
+    "WarmThroughput": {
+      "ReadUnitsPerSecond": "scalar",
+      "WriteUnitsPerSecond": "scalar"
+    },
+    "GlobalSecondaryIndex": {
+      "IndexName": "scalar",
+      "OnDemandThroughput": "object",
+      "ContributorInsightsSpecification": "object",
+      "Projection": "object",
+      "ProvisionedThroughput": "object",
+      "KeySchema": "array",
+      "WarmThroughput": "object"
+    },
+    "S3BucketSource": {
+      "S3Bucket": "scalar",
+      "S3KeyPrefix": "scalar",
+      "S3BucketOwner": "scalar"
+    },
+    "ResourcePolicy": {
+      "PolicyDocument": "object"
+    },
+    "DeprecatedKeySchema": {
+      "HashKeyElement": "object"
+    },
+    "KeySchema": {
+      "KeyType": "scalar",
+      "AttributeName": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "DeprecatedHashKeyElement": {
+      "AttributeType": "scalar",
+      "AttributeName": "scalar"
+    },
+    "TimeToLiveSpecification": {
+      "Enabled": "scalar",
+      "AttributeName": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "KeySchema"
+    ],
+    "LocalSecondaryIndex": [
+      "IndexName",
+      "KeySchema",
+      "Projection"
+    ],
+    "SSESpecification": [
+      "SSEEnabled"
+    ],
+    "KinesisStreamSpecification": [
+      "StreamArn"
+    ],
+    "StreamSpecification": [
+      "StreamViewType"
+    ],
+    "ContributorInsightsSpecification": [
+      "Enabled"
+    ],
+    "ImportSourceSpecification": [
+      "InputFormat",
+      "S3BucketSource"
+    ],
+    "AttributeDefinition": [
+      "AttributeName",
+      "AttributeType"
+    ],
+    "ProvisionedThroughput": [
+      "ReadCapacityUnits",
+      "WriteCapacityUnits"
+    ],
+    "GlobalSecondaryIndex": [
+      "IndexName",
+      "KeySchema",
+      "Projection"
+    ],
+    "S3BucketSource": [
+      "S3Bucket"
+    ],
+    "ResourcePolicy": [
+      "PolicyDocument"
+    ],
+    "DeprecatedKeySchema": [
+      "HashKeyElement"
+    ],
+    "KeySchema": [
+      "AttributeName",
+      "KeyType"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "DeprecatedHashKeyElement": [
+      "AttributeName",
+      "AttributeType"
+    ],
+    "TimeToLiveSpecification": [
+      "Enabled"
+    ]
+  }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::S3Vectors::VectorBucket",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CreationTime",
     "EncryptionConfiguration",
@@ -15,5 +15,51 @@
   "createOnlyProperties": [
     "EncryptionConfiguration",
     "VectorBucketName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "VectorBucketArn"
+  ],
+  "nestedProperties": {
+    "EncryptionConfiguration": [
+      "KmsKeyArn",
+      "SseType"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "EncryptionConfiguration": [
+      "KmsKeyArn",
+      "SseType"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "VectorBucketName": "scalar",
+      "VectorBucketArn": "scalar",
+      "CreationTime": "scalar",
+      "EncryptionConfiguration": "object",
+      "Tags": "array"
+    },
+    "EncryptionConfiguration": {
+      "SseType": "scalar",
+      "KmsKeyArn": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

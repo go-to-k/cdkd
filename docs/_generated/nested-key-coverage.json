@@ -8873,129 +8873,6 @@
       "shapeEntries": [
         {
           "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "BucketArn",
-          "definition": "Destination",
-          "pass": "definition",
-          "bucket": "provider-handled",
-          "sdkDetail": "SDK interface `Destination` has no `BucketArn` member"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "BucketAccountId",
-          "definition": "Destination",
-          "pass": "definition",
-          "bucket": "provider-handled",
-          "sdkDetail": "SDK interface `Destination` has no `BucketAccountId` member"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "Format",
-          "definition": "Destination",
-          "pass": "definition",
-          "bucket": "provider-handled",
-          "sdkDetail": "SDK interface `Destination` has no `Format` member"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "Prefix",
-          "definition": "Destination",
-          "pass": "definition",
-          "bucket": "provider-handled",
-          "sdkDetail": "SDK interface `Destination` has no `Prefix` member"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "Prefix",
-          "definition": "AnalyticsConfiguration",
-          "pass": "definition",
-          "bucket": "provider-handled",
-          "sdkDetail": "SDK interface `AnalyticsConfiguration` has no `Prefix` member"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "ServerSideEncryptionConfiguration",
-          "definition": "BucketEncryption",
-          "pass": "wrapper",
-          "bucket": "provider-handled"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "Prefix",
-          "definition": "IntelligentTieringConfiguration",
-          "pass": "definition",
-          "bucket": "provider-handled",
-          "sdkDetail": "SDK interface `IntelligentTieringConfiguration` has no `Prefix` member"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "Enabled",
-          "definition": "InventoryConfiguration",
-          "pass": "definition",
-          "bucket": "provider-handled",
-          "sdkDetail": "SDK interface `InventoryConfiguration` has no `Enabled` member"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "Prefix",
-          "definition": "InventoryConfiguration",
-          "pass": "definition",
-          "bucket": "provider-handled",
-          "sdkDetail": "SDK interface `InventoryConfiguration` has no `Prefix` member"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "AccessPointArn",
-          "definition": "MetricsConfiguration",
-          "pass": "definition",
-          "bucket": "provider-handled",
-          "sdkDetail": "SDK interface `MetricsConfiguration` has no `AccessPointArn` member"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "Prefix",
-          "definition": "MetricsConfiguration",
-          "pass": "definition",
-          "bucket": "provider-handled",
-          "sdkDetail": "SDK interface `MetricsConfiguration` has no `Prefix` member"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "Rules",
-          "definition": "S3KeyFilter",
-          "pass": "definition",
-          "bucket": "provider-handled",
-          "sdkDetail": "SDK interface `S3KeyFilter` has no `Rules` member"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "Id",
-          "definition": "ReplicationRule",
-          "pass": "definition",
-          "bucket": "provider-handled",
-          "sdkDetail": "SDK interface `ReplicationRule` has no `Id` member"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "TableNamespace",
-          "definition": "S3TablesDestination",
-          "pass": "definition",
-          "bucket": "allow-listed",
-          "sdkDetail": "SDK interface `S3TablesDestination` has no `TableNamespace` member",
-          "rationale": "Member of the S3TablesDestination definition, reachable only from the MetadataTableConfiguration top-level the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
-          "allowMatchKey": "AWS::S3::Bucket#TableNamespace"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
-          "nestedKey": "TableArn",
-          "definition": "S3TablesDestination",
-          "pass": "definition",
-          "bucket": "allow-listed",
-          "sdkDetail": "SDK interface `S3TablesDestination` has no `TableArn` member",
-          "rationale": "Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
-          "allowMatchKey": "AWS::S3::Bucket#TableArn"
-        },
-        {
-          "resourceType": "AWS::S3::Bucket",
           "nestedKey": "TableName",
           "definition": "JournalTableConfiguration",
           "pass": "definition",
@@ -9013,6 +8890,34 @@
           "sdkDetail": "SDK interface `JournalTableConfiguration` has no `TableArn` member",
           "rationale": "Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
           "allowMatchKey": "AWS::S3::Bucket#TableArn"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TableArn",
+          "definition": "S3TablesDestination",
+          "pass": "definition",
+          "bucket": "allow-listed",
+          "sdkDetail": "SDK interface `S3TablesDestination` has no `TableArn` member",
+          "rationale": "Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
+          "allowMatchKey": "AWS::S3::Bucket#TableArn"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "TableNamespace",
+          "definition": "S3TablesDestination",
+          "pass": "definition",
+          "bucket": "allow-listed",
+          "sdkDetail": "SDK interface `S3TablesDestination` has no `TableNamespace` member",
+          "rationale": "Member of the S3TablesDestination definition, reachable only from the MetadataTableConfiguration top-level the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
+          "allowMatchKey": "AWS::S3::Bucket#TableNamespace"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Id",
+          "definition": "ReplicationRule",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `ReplicationRule` has no `Id` member"
         },
         {
           "resourceType": "AWS::S3::Bucket",
@@ -9036,11 +8941,106 @@
         },
         {
           "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Rules",
+          "definition": "S3KeyFilter",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `S3KeyFilter` has no `Rules` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Prefix",
+          "definition": "AnalyticsConfiguration",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `AnalyticsConfiguration` has no `Prefix` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "BucketArn",
+          "definition": "Destination",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `Destination` has no `BucketArn` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Format",
+          "definition": "Destination",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `Destination` has no `Format` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "BucketAccountId",
+          "definition": "Destination",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `Destination` has no `BucketAccountId` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Prefix",
+          "definition": "Destination",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `Destination` has no `Prefix` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Prefix",
+          "definition": "IntelligentTieringConfiguration",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `IntelligentTieringConfiguration` has no `Prefix` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "AccessPointArn",
+          "definition": "MetricsConfiguration",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `MetricsConfiguration` has no `AccessPointArn` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Prefix",
+          "definition": "MetricsConfiguration",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `MetricsConfiguration` has no `Prefix` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
           "nestedKey": "Destination",
           "definition": "MetadataConfiguration",
           "pass": "definition",
           "bucket": "provider-handled",
           "sdkDetail": "SDK interface `MetadataConfiguration` has no `Destination` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "ServerSideEncryptionConfiguration",
+          "definition": "BucketEncryption",
+          "pass": "wrapper",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Enabled",
+          "definition": "InventoryConfiguration",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `InventoryConfiguration` has no `Enabled` member"
+        },
+        {
+          "resourceType": "AWS::S3::Bucket",
+          "nestedKey": "Prefix",
+          "definition": "InventoryConfiguration",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `InventoryConfiguration` has no `Prefix` member"
         }
       ],
       "shapeCleanCount": 13,

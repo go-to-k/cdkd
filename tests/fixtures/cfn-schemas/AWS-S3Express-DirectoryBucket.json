@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::S3Express::DirectoryBucket",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "AvailabilityZoneName",
@@ -21,5 +21,194 @@
     "BucketName",
     "DataRedundancy",
     "LocationName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "BucketName"
+  ],
+  "nestedProperties": {
+    "BucketEncryption": [
+      "BucketKeyEnabled",
+      "KMSMasterKeyID",
+      "SSEAlgorithm",
+      "ServerSideEncryptionByDefault",
+      "ServerSideEncryptionConfiguration"
+    ],
+    "LifecycleConfiguration": [
+      "AbortIncompleteMultipartUpload",
+      "DaysAfterInitiation",
+      "ExpirationInDays",
+      "Id",
+      "ObjectSizeGreaterThan",
+      "ObjectSizeLessThan",
+      "Prefix",
+      "Rules",
+      "Status"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "MetricsConfigurations": [
+      "AccessPointArn",
+      "Id",
+      "Prefix"
+    ],
+    "InventoryConfigurations": [
+      "BucketAccountId",
+      "BucketArn",
+      "Destination",
+      "Enabled",
+      "Format",
+      "Id",
+      "IncludedObjectVersions",
+      "OptionalFields",
+      "Prefix",
+      "ScheduleFrequency"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "BucketEncryption": [
+      "ServerSideEncryptionConfiguration",
+      "ServerSideEncryptionConfiguration.BucketKeyEnabled",
+      "ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault",
+      "ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault.KMSMasterKeyID",
+      "ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault.SSEAlgorithm"
+    ],
+    "LifecycleConfiguration": [
+      "Rules",
+      "Rules.AbortIncompleteMultipartUpload",
+      "Rules.AbortIncompleteMultipartUpload.DaysAfterInitiation",
+      "Rules.ExpirationInDays",
+      "Rules.Id",
+      "Rules.ObjectSizeGreaterThan",
+      "Rules.ObjectSizeLessThan",
+      "Rules.Prefix",
+      "Rules.Status"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "MetricsConfigurations": [
+      "AccessPointArn",
+      "Id",
+      "Prefix"
+    ],
+    "InventoryConfigurations": [
+      "Destination",
+      "Destination.BucketAccountId",
+      "Destination.BucketArn",
+      "Destination.Format",
+      "Destination.Prefix",
+      "Enabled",
+      "Id",
+      "IncludedObjectVersions",
+      "OptionalFields",
+      "Prefix",
+      "ScheduleFrequency"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "BucketName": "scalar",
+      "LocationName": "scalar",
+      "AvailabilityZoneName": "scalar",
+      "DataRedundancy": "scalar",
+      "Arn": "scalar",
+      "BucketEncryption": "object",
+      "LifecycleConfiguration": "object",
+      "Tags": "array",
+      "MetricsConfigurations": "array",
+      "InventoryConfigurations": "array"
+    },
+    "BucketEncryption": {
+      "ServerSideEncryptionConfiguration": "array"
+    },
+    "ServerSideEncryptionRule": {
+      "BucketKeyEnabled": "scalar",
+      "ServerSideEncryptionByDefault": "object"
+    },
+    "ServerSideEncryptionByDefault": {
+      "KMSMasterKeyID": "scalar",
+      "SSEAlgorithm": "scalar"
+    },
+    "LifecycleConfiguration": {
+      "Rules": "array"
+    },
+    "Rule": {
+      "AbortIncompleteMultipartUpload": "object",
+      "ExpirationInDays": "scalar",
+      "Id": "scalar",
+      "Prefix": "scalar",
+      "Status": "scalar",
+      "ObjectSizeGreaterThan": "scalar",
+      "ObjectSizeLessThan": "scalar"
+    },
+    "AbortIncompleteMultipartUpload": {
+      "DaysAfterInitiation": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "MetricsConfiguration": {
+      "Id": "scalar",
+      "Prefix": "scalar",
+      "AccessPointArn": "scalar"
+    },
+    "InventoryConfiguration": {
+      "Destination": "object",
+      "Enabled": "scalar",
+      "Id": "scalar",
+      "IncludedObjectVersions": "scalar",
+      "OptionalFields": "array",
+      "Prefix": "scalar",
+      "ScheduleFrequency": "scalar"
+    },
+    "Destination": {
+      "BucketArn": "scalar",
+      "BucketAccountId": "scalar",
+      "Format": "scalar",
+      "Prefix": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "DataRedundancy",
+      "LocationName"
+    ],
+    "BucketEncryption": [
+      "ServerSideEncryptionConfiguration"
+    ],
+    "ServerSideEncryptionByDefault": [
+      "SSEAlgorithm"
+    ],
+    "LifecycleConfiguration": [
+      "Rules"
+    ],
+    "Rule": [
+      "Status"
+    ],
+    "AbortIncompleteMultipartUpload": [
+      "DaysAfterInitiation"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "MetricsConfiguration": [
+      "Id"
+    ],
+    "InventoryConfiguration": [
+      "Destination",
+      "Enabled",
+      "Id",
+      "IncludedObjectVersions",
+      "ScheduleFrequency"
+    ],
+    "Destination": [
+      "BucketArn",
+      "Format"
+    ]
+  }
 }

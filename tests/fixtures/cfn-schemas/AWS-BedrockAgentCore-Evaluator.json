@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::BedrockAgentCore::Evaluator",
-  "generatedAt": "2026-07-17",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CreatedAt",
     "Description",
@@ -26,5 +26,183 @@
   ],
   "primaryIdentifier": [
     "EvaluatorArn"
-  ]
+  ],
+  "nestedProperties": {
+    "EvaluatorConfig": [
+      "AdditionalModelRequestFields",
+      "BedrockEvaluatorModelConfig",
+      "Categorical",
+      "CodeBased",
+      "Definition",
+      "Effort",
+      "InferenceConfig",
+      "Instructions",
+      "Label",
+      "LambdaArn",
+      "LambdaConfig",
+      "LambdaTimeoutInSeconds",
+      "LlmAsAJudge",
+      "MaxOutputTokens",
+      "MaxTokens",
+      "ModelConfig",
+      "ModelId",
+      "Numerical",
+      "RatingScale",
+      "Reasoning",
+      "ResponsesEvaluatorModelConfig",
+      "Temperature",
+      "TopP",
+      "Value"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "EvaluatorConfig": [
+      "CodeBased",
+      "CodeBased.LambdaConfig",
+      "CodeBased.LambdaConfig.LambdaArn",
+      "CodeBased.LambdaConfig.LambdaTimeoutInSeconds",
+      "LlmAsAJudge",
+      "LlmAsAJudge.Instructions",
+      "LlmAsAJudge.ModelConfig",
+      "LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig",
+      "LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.AdditionalModelRequestFields",
+      "LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig",
+      "LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.MaxTokens",
+      "LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.Temperature",
+      "LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.InferenceConfig.TopP",
+      "LlmAsAJudge.ModelConfig.BedrockEvaluatorModelConfig.ModelId",
+      "LlmAsAJudge.ModelConfig.ResponsesEvaluatorModelConfig",
+      "LlmAsAJudge.ModelConfig.ResponsesEvaluatorModelConfig.MaxOutputTokens",
+      "LlmAsAJudge.ModelConfig.ResponsesEvaluatorModelConfig.ModelId",
+      "LlmAsAJudge.ModelConfig.ResponsesEvaluatorModelConfig.Reasoning",
+      "LlmAsAJudge.ModelConfig.ResponsesEvaluatorModelConfig.Reasoning.Effort",
+      "LlmAsAJudge.ModelConfig.ResponsesEvaluatorModelConfig.Temperature",
+      "LlmAsAJudge.ModelConfig.ResponsesEvaluatorModelConfig.TopP",
+      "LlmAsAJudge.RatingScale",
+      "LlmAsAJudge.RatingScale.Categorical",
+      "LlmAsAJudge.RatingScale.Categorical.Definition",
+      "LlmAsAJudge.RatingScale.Categorical.Label",
+      "LlmAsAJudge.RatingScale.Numerical",
+      "LlmAsAJudge.RatingScale.Numerical.Definition",
+      "LlmAsAJudge.RatingScale.Numerical.Label",
+      "LlmAsAJudge.RatingScale.Numerical.Value"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "EvaluatorId": "scalar",
+      "EvaluatorArn": "scalar",
+      "EvaluatorName": "scalar",
+      "Description": "scalar",
+      "EvaluatorConfig": "object",
+      "Level": "scalar",
+      "Status": "scalar",
+      "CreatedAt": "scalar",
+      "UpdatedAt": "scalar",
+      "KmsKeyArn": "scalar",
+      "Tags": "array"
+    },
+    "EvaluatorConfig": {
+      "LlmAsAJudge": "object",
+      "CodeBased": "object"
+    },
+    "CodeBasedEvaluatorConfig": {
+      "LambdaConfig": "object"
+    },
+    "LambdaEvaluatorConfig": {
+      "LambdaArn": "scalar",
+      "LambdaTimeoutInSeconds": "scalar"
+    },
+    "LlmAsAJudgeEvaluatorConfig": {
+      "Instructions": "scalar",
+      "RatingScale": "object",
+      "ModelConfig": "object"
+    },
+    "RatingScale": {
+      "Numerical": "array",
+      "Categorical": "array"
+    },
+    "NumericalScaleDefinition": {
+      "Value": "scalar",
+      "Label": "scalar",
+      "Definition": "scalar"
+    },
+    "CategoricalScaleDefinition": {
+      "Label": "scalar",
+      "Definition": "scalar"
+    },
+    "EvaluatorModelConfig": {
+      "BedrockEvaluatorModelConfig": "object",
+      "ResponsesEvaluatorModelConfig": "object"
+    },
+    "OpenResponsesEvaluatorModelConfig": {
+      "ModelId": "scalar",
+      "MaxOutputTokens": "scalar",
+      "Temperature": "scalar",
+      "TopP": "scalar",
+      "Reasoning": "object"
+    },
+    "ReasoningConfiguration": {
+      "Effort": "scalar"
+    },
+    "BedrockEvaluatorModelConfig": {
+      "ModelId": "scalar",
+      "InferenceConfig": "object",
+      "AdditionalModelRequestFields": "object"
+    },
+    "InferenceConfiguration": {
+      "MaxTokens": "scalar",
+      "Temperature": "scalar",
+      "TopP": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "EvaluatorConfig",
+      "EvaluatorName",
+      "Level"
+    ],
+    "CodeBasedEvaluatorConfig": [
+      "LambdaConfig"
+    ],
+    "LambdaEvaluatorConfig": [
+      "LambdaArn"
+    ],
+    "LlmAsAJudgeEvaluatorConfig": [
+      "Instructions",
+      "ModelConfig",
+      "RatingScale"
+    ],
+    "NumericalScaleDefinition": [
+      "Definition",
+      "Label",
+      "Value"
+    ],
+    "CategoricalScaleDefinition": [
+      "Definition",
+      "Label"
+    ],
+    "OpenResponsesEvaluatorModelConfig": [
+      "ModelId"
+    ],
+    "BedrockEvaluatorModelConfig": [
+      "ModelId"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

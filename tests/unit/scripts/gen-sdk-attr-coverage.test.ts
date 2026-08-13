@@ -200,10 +200,52 @@ describe('real repo coverage (regression floor)', () => {
     // With the shipped allow-list, there must be zero un-allow-listed gaps
     // (the critic's green state).
     expect(findGaps(report)).toEqual([]);
+
+    // STALE-ALLOW-LIST FENCE. `classifyType` tests `cachedKeys` BEFORE the
+    // allow-list, so the moment a provider starts caching an allow-listed
+    // attribute the entry silently classifies `cached` and becomes inert —
+    // there is no `findStaleAllowListEntries` here the way there is in
+    // `gen-nested-key-coverage.ts`. Asserting that every allow-listed
+    // attribute still classifies `allow-listed` IS that detection: fixing
+    // issue 1824 reds this test and forces the entry's removal, which is what
+    // makes the "DELETE this entry when it is fixed" note in the allow-list
+    // enforceable rather than aspirational.
+    for (const [resourceType, entry] of SDK_ATTR_ALLOW_LIST) {
+      const classified = report.types.find((t) => t.resourceType === resourceType);
+      expect(classified, `allow-list entry for ${resourceType} classifies nothing`).toBeDefined();
+      for (const attr of entry.attributes) {
+        const found = classified!.arnAttributes.find((a) => a.name === attr);
+        expect(
+          found?.status,
+          `${resourceType}.${attr} no longer needs its allow-list entry — delete it`
+        ).toBe('allow-listed');
+      }
+    }
   });
 
-  it('carries the SNS::Subscription not-a-bug allow-list entry', () => {
-    expect(SDK_ATTR_ALLOW_LIST.get('AWS::SNS::Subscription')?.attributes).toContain('Arn');
+  it('counts allow-listed KNOWN GAPs separately, so `gap: 0` does not hide real debt', () => {
+    // Both kinds of entry have to share one list (the classifier needs the same
+    // "not a gap" answer for both), but a NOT-A-BUG and a tracked, real
+    // `Fn::GetAtt` hard-fail mean opposite things. The summary reports the
+    // second kind on its own line rather than folding it into `covered`.
+    const knownGapTypes = [...SDK_ATTR_ALLOW_LIST]
+      .filter(([, e]) => e.knownGap === true)
+      .map(([t]) => t);
+
+    expect(knownGapTypes).toEqual(['AWS::RDS::DBSubnetGroup', 'AWS::SSM::Parameter']);
+    // Non-vacuity: with the SNS entry retired every remaining entry IS a known
+    // gap, so pin the count against the list size rather than against a
+    // not-a-bug sibling that no longer exists.
+    expect(knownGapTypes.length).toBe(SDK_ATTR_ALLOW_LIST.size);
+  });
+
+  it('no longer allow-lists AWS::SNS::Subscription — primaryIdentifier filtering covers it', () => {
+    // Retired by the issue-1800 re-capture: the fixture predated the #1694
+    // `primaryIdentifier` capture, so `Arn` reached the allow-list; now it is
+    // filtered as the primaryIdentifier first, which is the auto-classification
+    // that mechanism exists for. Asserting the ABSENCE keeps a future
+    // re-introduction honest.
+    expect(SDK_ATTR_ALLOW_LIST.has('AWS::SNS::Subscription')).toBe(false);
   });
 
   it('does NOT allow-list AWS::Lambda::EventSourceMapping (the #1190 gap was fixed by caching the ARN)', () => {

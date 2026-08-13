@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CodeBuild::Project",
-  "generatedAt": "2026-08-10",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "Artifacts",
@@ -467,5 +467,69 @@
     "ProjectFleet": {
       "FleetArn": "scalar"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Artifacts",
+      "Environment",
+      "ServiceRole",
+      "Source"
+    ],
+    "ProjectSourceVersion": [
+      "SourceIdentifier"
+    ],
+    "SourceAuth": [
+      "Type"
+    ],
+    "ScopeConfiguration": [
+      "Name"
+    ],
+    "RegistryCredential": [
+      "Credential",
+      "CredentialProvider"
+    ],
+    "Source": [
+      "Type"
+    ],
+    "PullRequestBuildPolicy": [
+      "RequiresCommentApproval"
+    ],
+    "ProjectCache": [
+      "Type"
+    ],
+    "Artifacts": [
+      "Type"
+    ],
+    "CloudWatchLogsConfig": [
+      "Status"
+    ],
+    "Environment": [
+      "ComputeType",
+      "Image",
+      "Type"
+    ],
+    "EnvironmentVariable": [
+      "Name",
+      "Value"
+    ],
+    "ProjectFileSystemLocation": [
+      "Identifier",
+      "Location",
+      "MountPoint",
+      "Type"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "GitSubmodulesConfig": [
+      "FetchSubmodules"
+    ],
+    "DockerServer": [
+      "ComputeType"
+    ],
+    "S3LogsConfig": [
+      "Status"
+    ]
   }
 }

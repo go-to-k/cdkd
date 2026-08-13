@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudFront::Distribution",
-  "generatedAt": "2026-08-10",
+  "generatedAt": "2026-08-13",
   "properties": [
     "DistributionConfig",
     "DomainName",
@@ -552,5 +552,105 @@
       "OwnerAccountId": "scalar",
       "VpcOriginId": "scalar"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "DistributionConfig"
+    ],
+    "CacheBehavior": [
+      "PathPattern",
+      "TargetOriginId",
+      "ViewerProtocolPolicy"
+    ],
+    "Cookies": [
+      "Forward"
+    ],
+    "CustomErrorResponse": [
+      "ErrorCode"
+    ],
+    "CustomOriginConfig": [
+      "OriginProtocolPolicy"
+    ],
+    "DefaultCacheBehavior": [
+      "TargetOriginId",
+      "ViewerProtocolPolicy"
+    ],
+    "DistributionConfig": [
+      "DefaultCacheBehavior",
+      "Enabled"
+    ],
+    "ForwardedValues": [
+      "QueryString"
+    ],
+    "GeoRestriction": [
+      "RestrictionType"
+    ],
+    "GrpcConfig": [
+      "Enabled"
+    ],
+    "LegacyCustomOrigin": [
+      "DNSName",
+      "OriginProtocolPolicy",
+      "OriginSSLProtocols"
+    ],
+    "LegacyS3Origin": [
+      "DNSName"
+    ],
+    "Origin": [
+      "DomainName",
+      "Id"
+    ],
+    "OriginCustomHeader": [
+      "HeaderName",
+      "HeaderValue"
+    ],
+    "OriginGroup": [
+      "FailoverCriteria",
+      "Id",
+      "Members"
+    ],
+    "OriginGroupFailoverCriteria": [
+      "StatusCodes"
+    ],
+    "OriginGroupMember": [
+      "OriginId"
+    ],
+    "OriginGroupMembers": [
+      "Items",
+      "Quantity"
+    ],
+    "OriginGroups": [
+      "Quantity"
+    ],
+    "OriginMtlsConfig": [
+      "ClientCertificateArn"
+    ],
+    "ParameterDefinition": [
+      "Definition",
+      "Name"
+    ],
+    "Restrictions": [
+      "GeoRestriction"
+    ],
+    "StatusCodes": [
+      "Items",
+      "Quantity"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "ConnectionFunctionAssociation": [
+      "Id"
+    ],
+    "TrustStoreConfig": [
+      "TrustStoreId"
+    ],
+    "CacheTagConfig": [
+      "HeaderName"
+    ],
+    "VpcOriginConfig": [
+      "VpcOriginId"
+    ]
   }
 }

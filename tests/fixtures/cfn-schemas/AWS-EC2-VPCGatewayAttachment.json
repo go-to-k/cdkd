@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::VPCGatewayAttachment",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AttachmentType",
     "InternetGatewayId",
@@ -12,5 +12,22 @@
   ],
   "createOnlyProperties": [
     "VpcId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "AttachmentType",
+    "VpcId"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "AttachmentType": "scalar",
+      "InternetGatewayId": "scalar",
+      "VpcId": "scalar",
+      "VpnGatewayId": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "VpcId"
+    ]
+  }
 }

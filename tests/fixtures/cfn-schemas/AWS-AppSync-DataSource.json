@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::AppSync::DataSource",
-  "generatedAt": "2026-08-11",
+  "generatedAt": "2026-08-13",
   "properties": [
     "ApiId",
     "DataSourceArn",
@@ -179,5 +179,49 @@
       "AwsRegion": "scalar",
       "Versioned": "scalar"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "ApiId",
+      "Name",
+      "Type"
+    ],
+    "RdsHttpEndpointConfig": [
+      "AwsRegion",
+      "AwsSecretStoreArn",
+      "DbClusterIdentifier"
+    ],
+    "OpenSearchServiceConfig": [
+      "AwsRegion",
+      "Endpoint"
+    ],
+    "EventBridgeConfig": [
+      "EventBusArn"
+    ],
+    "AuthorizationConfig": [
+      "AuthorizationType"
+    ],
+    "DeltaSyncConfig": [
+      "BaseTableTTL",
+      "DeltaSyncTableName",
+      "DeltaSyncTableTTL"
+    ],
+    "RelationalDatabaseConfig": [
+      "RelationalDatabaseSourceType"
+    ],
+    "HttpConfig": [
+      "Endpoint"
+    ],
+    "LambdaConfig": [
+      "LambdaFunctionArn"
+    ],
+    "ElasticsearchConfig": [
+      "AwsRegion",
+      "Endpoint"
+    ],
+    "DynamoDBConfig": [
+      "AwsRegion",
+      "TableName"
+    ]
   }
 }

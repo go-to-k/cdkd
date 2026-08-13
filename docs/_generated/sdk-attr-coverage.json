@@ -2,9 +2,10 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 134,
-    "covered": 50,
-    "noArnAttr": 84,
-    "gap": 0
+    "covered": 42,
+    "noArnAttr": 92,
+    "gap": 0,
+    "knownGap": 2
   },
   "types": [
     {
@@ -492,35 +493,20 @@
     },
     {
       "resourceType": "AWS::ElasticLoadBalancingV2::Listener",
-      "bucket": "covered",
-      "arnAttributes": [
-        {
-          "name": "ListenerArn",
-          "status": "cached"
-        }
-      ],
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {
       "resourceType": "AWS::ElasticLoadBalancingV2::LoadBalancer",
-      "bucket": "covered",
-      "arnAttributes": [
-        {
-          "name": "LoadBalancerArn",
-          "status": "cached"
-        }
-      ],
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {
       "resourceType": "AWS::ElasticLoadBalancingV2::TargetGroup",
-      "bucket": "covered",
-      "arnAttributes": [
-        {
-          "name": "TargetGroupArn",
-          "status": "cached"
-        }
-      ],
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {
@@ -642,13 +628,8 @@
     },
     {
       "resourceType": "AWS::IAM::ManagedPolicy",
-      "bucket": "covered",
-      "arnAttributes": [
-        {
-          "name": "PolicyArn",
-          "status": "cached"
-        }
-      ],
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {
@@ -760,13 +741,8 @@
     },
     {
       "resourceType": "AWS::Lambda::LayerVersion",
-      "bucket": "covered",
-      "arnAttributes": [
-        {
-          "name": "LayerVersionArn",
-          "status": "cached"
-        }
-      ],
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {
@@ -785,10 +761,6 @@
       "resourceType": "AWS::Lambda::Url",
       "bucket": "covered",
       "arnAttributes": [
-        {
-          "name": "FunctionArn",
-          "status": "cached"
-        },
         {
           "name": "FunctionUrl",
           "status": "cached"
@@ -871,19 +843,20 @@
     },
     {
       "resourceType": "AWS::RDS::DBProxyTargetGroup",
-      "bucket": "covered",
-      "arnAttributes": [
-        {
-          "name": "TargetGroupArn",
-          "status": "cached"
-        }
-      ],
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {
       "resourceType": "AWS::RDS::DBSubnetGroup",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "DBSubnetGroupArn",
+          "status": "allow-listed",
+          "rationale": "KNOWN GAP (issue 1824): new schema attribute; CreateDBSubnetGroup returns it but the provider does not cache it"
+        }
+      ],
       "gaps": []
     },
     {
@@ -946,13 +919,8 @@
     },
     {
       "resourceType": "AWS::S3Vectors::VectorBucket",
-      "bucket": "covered",
-      "arnAttributes": [
-        {
-          "name": "VectorBucketArn",
-          "status": "cached"
-        }
-      ],
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {
@@ -1018,25 +986,14 @@
     },
     {
       "resourceType": "AWS::SNS::Subscription",
-      "bucket": "covered",
-      "arnAttributes": [
-        {
-          "name": "Arn",
-          "status": "allow-listed",
-          "rationale": "Arn == physicalId (create returns the subscription ARN as the physical id); guard fallback resolves it"
-        }
-      ],
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {
       "resourceType": "AWS::SNS::Topic",
-      "bucket": "covered",
-      "arnAttributes": [
-        {
-          "name": "TopicArn",
-          "status": "cached"
-        }
-      ],
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {
@@ -1052,10 +1009,6 @@
         {
           "name": "Arn",
           "status": "cached"
-        },
-        {
-          "name": "QueueUrl",
-          "status": "cached"
         }
       ],
       "gaps": []
@@ -1068,19 +1021,20 @@
     },
     {
       "resourceType": "AWS::SSM::Parameter",
-      "bucket": "no-arn-attr",
-      "arnAttributes": [],
-      "gaps": []
-    },
-    {
-      "resourceType": "AWS::StepFunctions::StateMachine",
       "bucket": "covered",
       "arnAttributes": [
         {
           "name": "Arn",
-          "status": "cached"
+          "status": "allow-listed",
+          "rationale": "KNOWN GAP (issue 1824): new schema attribute with no create-response source; needs a GetParameter read or a guarded constructed ARN"
         }
       ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::StepFunctions::StateMachine",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {

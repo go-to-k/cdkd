@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::DocDB::DBInstance",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AutoMinorVersionUpgrade",
     "AvailabilityZone",
@@ -25,5 +25,51 @@
     "AvailabilityZone",
     "DBClusterIdentifier",
     "DBInstanceIdentifier"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "DBInstanceClass": "scalar",
+      "Port": "scalar",
+      "DBClusterIdentifier": "scalar",
+      "AvailabilityZone": "scalar",
+      "PreferredMaintenanceWindow": "scalar",
+      "EnablePerformanceInsights": "scalar",
+      "AutoMinorVersionUpgrade": "scalar",
+      "DBInstanceIdentifier": "scalar",
+      "CACertificateIdentifier": "scalar",
+      "CertificateRotationRestart": "scalar",
+      "Endpoint": "scalar",
+      "Id": "scalar",
+      "Tags": "array"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "DBClusterIdentifier",
+      "DBInstanceClass"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

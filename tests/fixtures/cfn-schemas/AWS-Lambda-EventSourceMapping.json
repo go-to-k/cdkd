@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::EventSourceMapping",
-  "generatedAt": "2026-08-12",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AmazonManagedKafkaEventSourceConfig",
     "BatchSize",
@@ -271,5 +271,13 @@
     "OnFailure": {
       "Destination": "scalar"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "FunctionName"
+    ],
+    "Tag": [
+      "Key"
+    ]
   }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGateway::Account",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CloudWatchRoleArn",
     "Id"
@@ -8,5 +8,14 @@
   "readOnlyProperties": [
     "Id"
   ],
-  "createOnlyProperties": []
+  "createOnlyProperties": [],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Id": "scalar",
+      "CloudWatchRoleArn": "scalar"
+    }
+  }
 }

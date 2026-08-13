@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::IAM::ManagedPolicy",
-  "generatedAt": "2026-05-26",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AttachmentCount",
     "CreateDate",
@@ -32,5 +32,32 @@
     "Description",
     "ManagedPolicyName",
     "Path"
-  ]
+  ],
+  "primaryIdentifier": [
+    "PolicyArn"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Description": "scalar",
+      "Groups": "array",
+      "ManagedPolicyName": "scalar",
+      "Path": "scalar",
+      "PolicyDocument": "mixed",
+      "Roles": "array",
+      "Users": "array",
+      "PolicyArn": "scalar",
+      "AttachmentCount": "scalar",
+      "CreateDate": "scalar",
+      "UpdateDate": "scalar",
+      "DefaultVersionId": "scalar",
+      "IsAttachable": "scalar",
+      "PermissionsBoundaryUsageCount": "scalar",
+      "PolicyId": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "PolicyDocument"
+    ]
+  }
 }

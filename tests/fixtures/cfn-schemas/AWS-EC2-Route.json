@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::Route",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CarrierGatewayId",
     "CidrBlock",
@@ -14,6 +14,7 @@
     "LocalGatewayId",
     "NatGatewayId",
     "NetworkInterfaceId",
+    "OdbNetworkArn",
     "RouteTableId",
     "TransitGatewayId",
     "VpcEndpointId",
@@ -27,5 +28,35 @@
     "DestinationIpv6CidrBlock",
     "DestinationPrefixListId",
     "RouteTableId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "CidrBlock",
+    "RouteTableId"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "CarrierGatewayId": "scalar",
+      "CidrBlock": "scalar",
+      "CoreNetworkArn": "scalar",
+      "DestinationCidrBlock": "scalar",
+      "DestinationIpv6CidrBlock": "scalar",
+      "DestinationPrefixListId": "scalar",
+      "EgressOnlyInternetGatewayId": "scalar",
+      "GatewayId": "scalar",
+      "InstanceId": "scalar",
+      "LocalGatewayId": "scalar",
+      "NatGatewayId": "scalar",
+      "NetworkInterfaceId": "scalar",
+      "RouteTableId": "scalar",
+      "TransitGatewayId": "scalar",
+      "VpcEndpointId": "scalar",
+      "VpcPeeringConnectionId": "scalar",
+      "OdbNetworkArn": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "RouteTableId"
+    ]
+  }
 }

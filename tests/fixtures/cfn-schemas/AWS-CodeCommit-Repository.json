@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CodeCommit::Repository",
-  "generatedAt": "2026-07-17",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "CloneUrlHttp",
@@ -24,5 +24,101 @@
   "createOnlyProperties": [],
   "primaryIdentifier": [
     "Id"
-  ]
+  ],
+  "nestedProperties": {
+    "Triggers": [
+      "Branches",
+      "CustomData",
+      "DestinationArn",
+      "Events",
+      "Name"
+    ],
+    "Code": [
+      "BranchName",
+      "Bucket",
+      "Key",
+      "ObjectVersion",
+      "S3"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Triggers": [
+      "Branches",
+      "CustomData",
+      "DestinationArn",
+      "Events",
+      "Name"
+    ],
+    "Code": [
+      "BranchName",
+      "S3",
+      "S3.Bucket",
+      "S3.Key",
+      "S3.ObjectVersion"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "CloneUrlHttp": "scalar",
+      "KmsKeyId": "scalar",
+      "CloneUrlSsh": "scalar",
+      "RepositoryName": "scalar",
+      "Triggers": "array",
+      "Id": "scalar",
+      "Arn": "scalar",
+      "Code": "object",
+      "RepositoryDescription": "scalar",
+      "Tags": "array",
+      "Name": "scalar"
+    },
+    "S3": {
+      "ObjectVersion": "scalar",
+      "Bucket": "scalar",
+      "Key": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "RepositoryTrigger": {
+      "CustomData": "scalar",
+      "Events": "array",
+      "Branches": "array",
+      "DestinationArn": "scalar",
+      "Name": "scalar"
+    },
+    "Code": {
+      "S3": "object",
+      "BranchName": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "RepositoryName"
+    ],
+    "S3": [
+      "Bucket",
+      "Key"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "RepositoryTrigger": [
+      "DestinationArn",
+      "Events",
+      "Name"
+    ],
+    "Code": [
+      "S3"
+    ]
+  }
 }

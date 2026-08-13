@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::AutoScaling::AutoScalingGroup",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AutoScalingGroupARN",
     "AutoScalingGroupName",
@@ -48,5 +48,481 @@
   "createOnlyProperties": [
     "AutoScalingGroupName",
     "InstanceId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "AutoScalingGroupName"
+  ],
+  "nestedProperties": {
+    "LifecycleHookSpecificationList": [
+      "DefaultResult",
+      "HeartbeatTimeout",
+      "LifecycleHookName",
+      "LifecycleTransition",
+      "NotificationMetadata",
+      "NotificationTargetARN",
+      "RoleARN"
+    ],
+    "AvailabilityZoneImpairmentPolicy": [
+      "ImpairedZoneHealthCheckBehavior",
+      "ZonalShiftEnabled"
+    ],
+    "NotificationConfigurations": [
+      "NotificationTypes",
+      "TopicARN"
+    ],
+    "InstanceLifecyclePolicy": [
+      "RetentionTriggers",
+      "TerminateHookAbandon"
+    ],
+    "LaunchTemplate": [
+      "LaunchTemplateId",
+      "LaunchTemplateName",
+      "Version"
+    ],
+    "MixedInstancesPolicy": [
+      "AcceleratorCount",
+      "AcceleratorManufacturers",
+      "AcceleratorNames",
+      "AcceleratorTotalMemoryMiB",
+      "AcceleratorTypes",
+      "AllowedInstanceTypes",
+      "BareMetal",
+      "BaselineEbsBandwidthMbps",
+      "BaselinePerformanceFactors",
+      "BurstablePerformance",
+      "Cpu",
+      "CpuManufacturers",
+      "ExcludedInstanceTypes",
+      "ImageId",
+      "InstanceFamily",
+      "InstanceGenerations",
+      "InstanceRequirements",
+      "InstanceType",
+      "InstancesDistribution",
+      "LaunchTemplate",
+      "LaunchTemplateId",
+      "LaunchTemplateName",
+      "LaunchTemplateSpecification",
+      "LocalStorage",
+      "LocalStorageTypes",
+      "Max",
+      "MaxSpotPriceAsPercentageOfOptimalOnDemandPrice",
+      "MemoryGiBPerVCpu",
+      "MemoryMiB",
+      "Min",
+      "NetworkBandwidthGbps",
+      "NetworkInterfaceCount",
+      "OnDemandAllocationStrategy",
+      "OnDemandBaseCapacity",
+      "OnDemandMaxPricePercentageOverLowestPrice",
+      "OnDemandPercentageAboveBaseCapacity",
+      "Overrides",
+      "References",
+      "RequireHibernateSupport",
+      "SpotAllocationStrategy",
+      "SpotInstancePools",
+      "SpotMaxPrice",
+      "SpotMaxPricePercentageOverLowestPrice",
+      "TotalLocalStorageGB",
+      "VCpuCount",
+      "Version",
+      "WeightedCapacity"
+    ],
+    "Tags": [
+      "Key",
+      "PropagateAtLaunch",
+      "Value"
+    ],
+    "NotificationConfiguration": [
+      "NotificationTypes",
+      "TopicARN"
+    ],
+    "AvailabilityZoneDistribution": [
+      "CapacityDistributionStrategy"
+    ],
+    "MetricsCollection": [
+      "Granularity",
+      "Metrics"
+    ],
+    "InstanceMaintenancePolicy": [
+      "MaxHealthyPercentage",
+      "MinHealthyPercentage"
+    ],
+    "TrafficSources": [
+      "Identifier",
+      "Type"
+    ],
+    "CapacityReservationSpecification": [
+      "CapacityReservationIds",
+      "CapacityReservationPreference",
+      "CapacityReservationResourceGroupArns",
+      "CapacityReservationTarget"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "LifecycleHookSpecificationList": [
+      "DefaultResult",
+      "HeartbeatTimeout",
+      "LifecycleHookName",
+      "LifecycleTransition",
+      "NotificationMetadata",
+      "NotificationTargetARN",
+      "RoleARN"
+    ],
+    "AvailabilityZoneImpairmentPolicy": [
+      "ImpairedZoneHealthCheckBehavior",
+      "ZonalShiftEnabled"
+    ],
+    "NotificationConfigurations": [
+      "NotificationTypes",
+      "TopicARN"
+    ],
+    "InstanceLifecyclePolicy": [
+      "RetentionTriggers",
+      "RetentionTriggers.TerminateHookAbandon"
+    ],
+    "LaunchTemplate": [
+      "LaunchTemplateId",
+      "LaunchTemplateName",
+      "Version"
+    ],
+    "MixedInstancesPolicy": [
+      "InstancesDistribution",
+      "InstancesDistribution.OnDemandAllocationStrategy",
+      "InstancesDistribution.OnDemandBaseCapacity",
+      "InstancesDistribution.OnDemandPercentageAboveBaseCapacity",
+      "InstancesDistribution.SpotAllocationStrategy",
+      "InstancesDistribution.SpotInstancePools",
+      "InstancesDistribution.SpotMaxPrice",
+      "LaunchTemplate",
+      "LaunchTemplate.LaunchTemplateSpecification",
+      "LaunchTemplate.LaunchTemplateSpecification.LaunchTemplateId",
+      "LaunchTemplate.LaunchTemplateSpecification.LaunchTemplateName",
+      "LaunchTemplate.LaunchTemplateSpecification.Version",
+      "LaunchTemplate.Overrides",
+      "LaunchTemplate.Overrides.ImageId",
+      "LaunchTemplate.Overrides.InstanceRequirements",
+      "LaunchTemplate.Overrides.InstanceRequirements.AcceleratorCount",
+      "LaunchTemplate.Overrides.InstanceRequirements.AcceleratorCount.Max",
+      "LaunchTemplate.Overrides.InstanceRequirements.AcceleratorCount.Min",
+      "LaunchTemplate.Overrides.InstanceRequirements.AcceleratorManufacturers",
+      "LaunchTemplate.Overrides.InstanceRequirements.AcceleratorNames",
+      "LaunchTemplate.Overrides.InstanceRequirements.AcceleratorTotalMemoryMiB",
+      "LaunchTemplate.Overrides.InstanceRequirements.AcceleratorTotalMemoryMiB.Max",
+      "LaunchTemplate.Overrides.InstanceRequirements.AcceleratorTotalMemoryMiB.Min",
+      "LaunchTemplate.Overrides.InstanceRequirements.AcceleratorTypes",
+      "LaunchTemplate.Overrides.InstanceRequirements.AllowedInstanceTypes",
+      "LaunchTemplate.Overrides.InstanceRequirements.BareMetal",
+      "LaunchTemplate.Overrides.InstanceRequirements.BaselineEbsBandwidthMbps",
+      "LaunchTemplate.Overrides.InstanceRequirements.BaselineEbsBandwidthMbps.Max",
+      "LaunchTemplate.Overrides.InstanceRequirements.BaselineEbsBandwidthMbps.Min",
+      "LaunchTemplate.Overrides.InstanceRequirements.BaselinePerformanceFactors",
+      "LaunchTemplate.Overrides.InstanceRequirements.BaselinePerformanceFactors.Cpu",
+      "LaunchTemplate.Overrides.InstanceRequirements.BaselinePerformanceFactors.Cpu.References",
+      "LaunchTemplate.Overrides.InstanceRequirements.BaselinePerformanceFactors.Cpu.References.InstanceFamily",
+      "LaunchTemplate.Overrides.InstanceRequirements.BurstablePerformance",
+      "LaunchTemplate.Overrides.InstanceRequirements.CpuManufacturers",
+      "LaunchTemplate.Overrides.InstanceRequirements.ExcludedInstanceTypes",
+      "LaunchTemplate.Overrides.InstanceRequirements.InstanceGenerations",
+      "LaunchTemplate.Overrides.InstanceRequirements.LocalStorage",
+      "LaunchTemplate.Overrides.InstanceRequirements.LocalStorageTypes",
+      "LaunchTemplate.Overrides.InstanceRequirements.MaxSpotPriceAsPercentageOfOptimalOnDemandPrice",
+      "LaunchTemplate.Overrides.InstanceRequirements.MemoryGiBPerVCpu",
+      "LaunchTemplate.Overrides.InstanceRequirements.MemoryGiBPerVCpu.Max",
+      "LaunchTemplate.Overrides.InstanceRequirements.MemoryGiBPerVCpu.Min",
+      "LaunchTemplate.Overrides.InstanceRequirements.MemoryMiB",
+      "LaunchTemplate.Overrides.InstanceRequirements.MemoryMiB.Max",
+      "LaunchTemplate.Overrides.InstanceRequirements.MemoryMiB.Min",
+      "LaunchTemplate.Overrides.InstanceRequirements.NetworkBandwidthGbps",
+      "LaunchTemplate.Overrides.InstanceRequirements.NetworkBandwidthGbps.Max",
+      "LaunchTemplate.Overrides.InstanceRequirements.NetworkBandwidthGbps.Min",
+      "LaunchTemplate.Overrides.InstanceRequirements.NetworkInterfaceCount",
+      "LaunchTemplate.Overrides.InstanceRequirements.NetworkInterfaceCount.Max",
+      "LaunchTemplate.Overrides.InstanceRequirements.NetworkInterfaceCount.Min",
+      "LaunchTemplate.Overrides.InstanceRequirements.OnDemandMaxPricePercentageOverLowestPrice",
+      "LaunchTemplate.Overrides.InstanceRequirements.RequireHibernateSupport",
+      "LaunchTemplate.Overrides.InstanceRequirements.SpotMaxPricePercentageOverLowestPrice",
+      "LaunchTemplate.Overrides.InstanceRequirements.TotalLocalStorageGB",
+      "LaunchTemplate.Overrides.InstanceRequirements.TotalLocalStorageGB.Max",
+      "LaunchTemplate.Overrides.InstanceRequirements.TotalLocalStorageGB.Min",
+      "LaunchTemplate.Overrides.InstanceRequirements.VCpuCount",
+      "LaunchTemplate.Overrides.InstanceRequirements.VCpuCount.Max",
+      "LaunchTemplate.Overrides.InstanceRequirements.VCpuCount.Min",
+      "LaunchTemplate.Overrides.InstanceType",
+      "LaunchTemplate.Overrides.LaunchTemplateSpecification",
+      "LaunchTemplate.Overrides.LaunchTemplateSpecification.LaunchTemplateId",
+      "LaunchTemplate.Overrides.LaunchTemplateSpecification.LaunchTemplateName",
+      "LaunchTemplate.Overrides.LaunchTemplateSpecification.Version",
+      "LaunchTemplate.Overrides.WeightedCapacity"
+    ],
+    "Tags": [
+      "Key",
+      "PropagateAtLaunch",
+      "Value"
+    ],
+    "NotificationConfiguration": [
+      "NotificationTypes",
+      "TopicARN"
+    ],
+    "AvailabilityZoneDistribution": [
+      "CapacityDistributionStrategy"
+    ],
+    "MetricsCollection": [
+      "Granularity",
+      "Metrics"
+    ],
+    "InstanceMaintenancePolicy": [
+      "MaxHealthyPercentage",
+      "MinHealthyPercentage"
+    ],
+    "TrafficSources": [
+      "Identifier",
+      "Type"
+    ],
+    "CapacityReservationSpecification": [
+      "CapacityReservationPreference",
+      "CapacityReservationTarget",
+      "CapacityReservationTarget.CapacityReservationIds",
+      "CapacityReservationTarget.CapacityReservationResourceGroupArns"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "LifecycleHookSpecificationList": "array",
+      "LoadBalancerNames": "array",
+      "LaunchConfigurationName": "scalar",
+      "ServiceLinkedRoleARN": "scalar",
+      "AvailabilityZoneImpairmentPolicy": "object",
+      "TargetGroupARNs": "array",
+      "AvailabilityZoneIds": "array",
+      "Cooldown": "scalar",
+      "NotificationConfigurations": "array",
+      "DesiredCapacity": "scalar",
+      "HealthCheckGracePeriod": "scalar",
+      "InstanceLifecyclePolicy": "object",
+      "DefaultInstanceWarmup": "scalar",
+      "SkipZonalShiftValidation": "scalar",
+      "NewInstancesProtectedFromScaleIn": "scalar",
+      "LaunchTemplate": "object",
+      "MixedInstancesPolicy": "object",
+      "VPCZoneIdentifier": "array",
+      "Tags": "array",
+      "Context": "scalar",
+      "CapacityRebalance": "scalar",
+      "InstanceId": "scalar",
+      "AutoScalingGroupARN": "scalar",
+      "AvailabilityZones": "array",
+      "NotificationConfiguration": "object",
+      "AvailabilityZoneDistribution": "object",
+      "MetricsCollection": "array",
+      "DeletionProtection": "scalar",
+      "InstanceMaintenancePolicy": "object",
+      "MaxSize": "scalar",
+      "MinSize": "scalar",
+      "TerminationPolicies": "array",
+      "AutoScalingGroupName": "scalar",
+      "TrafficSources": "array",
+      "DesiredCapacityType": "scalar",
+      "PlacementGroup": "scalar",
+      "CapacityReservationSpecification": "object",
+      "HealthCheckType": "scalar",
+      "MaxInstanceLifetime": "scalar"
+    },
+    "AvailabilityZoneImpairmentPolicy": {
+      "ZonalShiftEnabled": "scalar",
+      "ImpairedZoneHealthCheckBehavior": "scalar"
+    },
+    "LifecycleHookSpecification": {
+      "LifecycleHookName": "scalar",
+      "LifecycleTransition": "scalar",
+      "HeartbeatTimeout": "scalar",
+      "NotificationMetadata": "scalar",
+      "DefaultResult": "scalar",
+      "NotificationTargetARN": "scalar",
+      "RoleARN": "scalar"
+    },
+    "MemoryGiBPerVCpuRequest": {
+      "Min": "scalar",
+      "Max": "scalar"
+    },
+    "InstanceLifecyclePolicy": {
+      "RetentionTriggers": "object"
+    },
+    "TotalLocalStorageGBRequest": {
+      "Min": "scalar",
+      "Max": "scalar"
+    },
+    "NetworkBandwidthGbpsRequest": {
+      "Min": "scalar",
+      "Max": "scalar"
+    },
+    "BaselineEbsBandwidthMbpsRequest": {
+      "Min": "scalar",
+      "Max": "scalar"
+    },
+    "NetworkInterfaceCountRequest": {
+      "Min": "scalar",
+      "Max": "scalar"
+    },
+    "VCpuCountRequest": {
+      "Min": "scalar",
+      "Max": "scalar"
+    },
+    "PerformanceFactorReferenceRequest": {
+      "InstanceFamily": "scalar"
+    },
+    "LaunchTemplate": {
+      "LaunchTemplateSpecification": "object",
+      "Overrides": "array"
+    },
+    "LaunchTemplateOverrides": {
+      "LaunchTemplateSpecification": "object",
+      "WeightedCapacity": "scalar",
+      "ImageId": "scalar",
+      "InstanceRequirements": "object",
+      "InstanceType": "scalar"
+    },
+    "CpuPerformanceFactorRequest": {
+      "References": "array"
+    },
+    "MixedInstancesPolicy": {
+      "InstancesDistribution": "object",
+      "LaunchTemplate": "object"
+    },
+    "TagProperty": {
+      "Value": "scalar",
+      "Key": "scalar",
+      "PropagateAtLaunch": "scalar"
+    },
+    "LaunchTemplateSpecification": {
+      "LaunchTemplateName": "scalar",
+      "Version": "scalar",
+      "LaunchTemplateId": "scalar"
+    },
+    "InstancesDistribution": {
+      "OnDemandAllocationStrategy": "scalar",
+      "OnDemandBaseCapacity": "scalar",
+      "OnDemandPercentageAboveBaseCapacity": "scalar",
+      "SpotInstancePools": "scalar",
+      "SpotAllocationStrategy": "scalar",
+      "SpotMaxPrice": "scalar"
+    },
+    "AcceleratorCountRequest": {
+      "Min": "scalar",
+      "Max": "scalar"
+    },
+    "AvailabilityZoneDistribution": {
+      "CapacityDistributionStrategy": "scalar"
+    },
+    "NotificationConfiguration": {
+      "TopicARN": "mixed",
+      "NotificationTypes": "array"
+    },
+    "MetricsCollection": {
+      "Metrics": "array",
+      "Granularity": "scalar"
+    },
+    "MemoryMiBRequest": {
+      "Min": "scalar",
+      "Max": "scalar"
+    },
+    "InstanceMaintenancePolicy": {
+      "MaxHealthyPercentage": "scalar",
+      "MinHealthyPercentage": "scalar"
+    },
+    "BaselinePerformanceFactorsRequest": {
+      "Cpu": "object"
+    },
+    "RetentionTriggers": {
+      "TerminateHookAbandon": "scalar"
+    },
+    "AcceleratorTotalMemoryMiBRequest": {
+      "Min": "scalar",
+      "Max": "scalar"
+    },
+    "TrafficSourceIdentifier": {
+      "Type": "scalar",
+      "Identifier": "scalar"
+    },
+    "InstanceRequirements": {
+      "InstanceGenerations": "array",
+      "AcceleratorTypes": "array",
+      "MemoryGiBPerVCpu": "object",
+      "AcceleratorManufacturers": "array",
+      "VCpuCount": "object",
+      "LocalStorage": "scalar",
+      "CpuManufacturers": "array",
+      "BareMetal": "scalar",
+      "RequireHibernateSupport": "scalar",
+      "MaxSpotPriceAsPercentageOfOptimalOnDemandPrice": "scalar",
+      "OnDemandMaxPricePercentageOverLowestPrice": "scalar",
+      "MemoryMiB": "object",
+      "LocalStorageTypes": "array",
+      "NetworkInterfaceCount": "object",
+      "ExcludedInstanceTypes": "array",
+      "AllowedInstanceTypes": "array",
+      "AcceleratorCount": "object",
+      "NetworkBandwidthGbps": "object",
+      "BaselinePerformanceFactors": "object",
+      "BaselineEbsBandwidthMbps": "object",
+      "SpotMaxPricePercentageOverLowestPrice": "scalar",
+      "AcceleratorNames": "array",
+      "AcceleratorTotalMemoryMiB": "object",
+      "BurstablePerformance": "scalar",
+      "TotalLocalStorageGB": "object"
+    },
+    "CapacityReservationTarget": {
+      "CapacityReservationIds": "array",
+      "CapacityReservationResourceGroupArns": "array"
+    },
+    "CapacityReservationSpecification": {
+      "CapacityReservationPreference": "scalar",
+      "CapacityReservationTarget": "object"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "MaxSize",
+      "MinSize"
+    ],
+    "AvailabilityZoneImpairmentPolicy": [
+      "ImpairedZoneHealthCheckBehavior",
+      "ZonalShiftEnabled"
+    ],
+    "LifecycleHookSpecification": [
+      "LifecycleHookName",
+      "LifecycleTransition"
+    ],
+    "LaunchTemplate": [
+      "LaunchTemplateSpecification"
+    ],
+    "MixedInstancesPolicy": [
+      "LaunchTemplate"
+    ],
+    "TagProperty": [
+      "Key",
+      "PropagateAtLaunch",
+      "Value"
+    ],
+    "LaunchTemplateSpecification": [
+      "Version"
+    ],
+    "NotificationConfiguration": [
+      "TopicARN"
+    ],
+    "MetricsCollection": [
+      "Granularity"
+    ],
+    "TrafficSourceIdentifier": [
+      "Identifier",
+      "Type"
+    ],
+    "InstanceRequirements": [
+      "MemoryMiB",
+      "VCpuCount"
+    ],
+    "CapacityReservationSpecification": [
+      "CapacityReservationPreference"
+    ]
+  }
 }

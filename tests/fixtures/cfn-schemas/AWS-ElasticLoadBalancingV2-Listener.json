@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ElasticLoadBalancingV2::Listener",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AlpnPolicy",
     "Certificates",
@@ -11,12 +11,292 @@
     "MutualAuthentication",
     "Port",
     "Protocol",
-    "SslPolicy"
+    "SslPolicy",
+    "Tags"
   ],
   "readOnlyProperties": [
     "ListenerArn"
   ],
   "createOnlyProperties": [
     "LoadBalancerArn"
-  ]
+  ],
+  "primaryIdentifier": [
+    "ListenerArn"
+  ],
+  "nestedProperties": {
+    "MutualAuthentication": [
+      "AdvertiseTrustStoreCaNames",
+      "IgnoreClientCertificateExpiry",
+      "Mode",
+      "TrustStoreArn"
+    ],
+    "ListenerAttributes": [
+      "Key",
+      "Value"
+    ],
+    "DefaultActions": [
+      "AdditionalClaims",
+      "AuthenticateCognitoConfig",
+      "AuthenticateOidcConfig",
+      "AuthenticationRequestExtraParams",
+      "AuthorizationEndpoint",
+      "ClientId",
+      "ClientSecret",
+      "ContentType",
+      "DurationSeconds",
+      "Enabled",
+      "FixedResponseConfig",
+      "Format",
+      "ForwardConfig",
+      "Host",
+      "Issuer",
+      "JwksEndpoint",
+      "JwtValidationConfig",
+      "MessageBody",
+      "Name",
+      "OnUnauthenticatedRequest",
+      "Order",
+      "Path",
+      "Port",
+      "Protocol",
+      "Query",
+      "RedirectConfig",
+      "Scope",
+      "SessionCookieName",
+      "SessionTimeout",
+      "StatusCode",
+      "TargetGroupArn",
+      "TargetGroupStickinessConfig",
+      "TargetGroups",
+      "TokenEndpoint",
+      "Type",
+      "UseExistingClientSecret",
+      "UserInfoEndpoint",
+      "UserPoolArn",
+      "UserPoolClientId",
+      "UserPoolDomain",
+      "Values",
+      "Weight"
+    ],
+    "Certificates": [
+      "CertificateArn"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "MutualAuthentication": [
+      "AdvertiseTrustStoreCaNames",
+      "IgnoreClientCertificateExpiry",
+      "Mode",
+      "TrustStoreArn"
+    ],
+    "ListenerAttributes": [
+      "Key",
+      "Value"
+    ],
+    "DefaultActions": [
+      "AuthenticateCognitoConfig",
+      "AuthenticateCognitoConfig.AuthenticationRequestExtraParams",
+      "AuthenticateCognitoConfig.OnUnauthenticatedRequest",
+      "AuthenticateCognitoConfig.Scope",
+      "AuthenticateCognitoConfig.SessionCookieName",
+      "AuthenticateCognitoConfig.SessionTimeout",
+      "AuthenticateCognitoConfig.UserPoolArn",
+      "AuthenticateCognitoConfig.UserPoolClientId",
+      "AuthenticateCognitoConfig.UserPoolDomain",
+      "AuthenticateOidcConfig",
+      "AuthenticateOidcConfig.AuthenticationRequestExtraParams",
+      "AuthenticateOidcConfig.AuthorizationEndpoint",
+      "AuthenticateOidcConfig.ClientId",
+      "AuthenticateOidcConfig.ClientSecret",
+      "AuthenticateOidcConfig.Issuer",
+      "AuthenticateOidcConfig.OnUnauthenticatedRequest",
+      "AuthenticateOidcConfig.Scope",
+      "AuthenticateOidcConfig.SessionCookieName",
+      "AuthenticateOidcConfig.SessionTimeout",
+      "AuthenticateOidcConfig.TokenEndpoint",
+      "AuthenticateOidcConfig.UseExistingClientSecret",
+      "AuthenticateOidcConfig.UserInfoEndpoint",
+      "FixedResponseConfig",
+      "FixedResponseConfig.ContentType",
+      "FixedResponseConfig.MessageBody",
+      "FixedResponseConfig.StatusCode",
+      "ForwardConfig",
+      "ForwardConfig.TargetGroupStickinessConfig",
+      "ForwardConfig.TargetGroupStickinessConfig.DurationSeconds",
+      "ForwardConfig.TargetGroupStickinessConfig.Enabled",
+      "ForwardConfig.TargetGroups",
+      "ForwardConfig.TargetGroups.TargetGroupArn",
+      "ForwardConfig.TargetGroups.Weight",
+      "JwtValidationConfig",
+      "JwtValidationConfig.AdditionalClaims",
+      "JwtValidationConfig.AdditionalClaims.Format",
+      "JwtValidationConfig.AdditionalClaims.Name",
+      "JwtValidationConfig.AdditionalClaims.Values",
+      "JwtValidationConfig.Issuer",
+      "JwtValidationConfig.JwksEndpoint",
+      "Order",
+      "RedirectConfig",
+      "RedirectConfig.Host",
+      "RedirectConfig.Path",
+      "RedirectConfig.Port",
+      "RedirectConfig.Protocol",
+      "RedirectConfig.Query",
+      "RedirectConfig.StatusCode",
+      "TargetGroupArn",
+      "Type"
+    ],
+    "Certificates": [
+      "CertificateArn"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "ListenerArn": "scalar",
+      "MutualAuthentication": "object",
+      "ListenerAttributes": "array",
+      "AlpnPolicy": "array",
+      "SslPolicy": "scalar",
+      "LoadBalancerArn": "scalar",
+      "DefaultActions": "array",
+      "Port": "scalar",
+      "Certificates": "array",
+      "Protocol": "scalar",
+      "Tags": "array"
+    },
+    "MutualAuthentication": {
+      "IgnoreClientCertificateExpiry": "scalar",
+      "Mode": "scalar",
+      "TrustStoreArn": "scalar",
+      "AdvertiseTrustStoreCaNames": "scalar"
+    },
+    "TargetGroupTuple": {
+      "TargetGroupArn": "scalar",
+      "Weight": "scalar"
+    },
+    "Action": {
+      "Order": "scalar",
+      "TargetGroupArn": "scalar",
+      "FixedResponseConfig": "object",
+      "AuthenticateCognitoConfig": "object",
+      "Type": "scalar",
+      "RedirectConfig": "object",
+      "JwtValidationConfig": "object",
+      "ForwardConfig": "object",
+      "AuthenticateOidcConfig": "object"
+    },
+    "TargetGroupStickinessConfig": {
+      "Enabled": "scalar",
+      "DurationSeconds": "scalar"
+    },
+    "ListenerAttribute": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "FixedResponseConfig": {
+      "ContentType": "scalar",
+      "StatusCode": "scalar",
+      "MessageBody": "scalar"
+    },
+    "AuthenticateCognitoConfig": {
+      "OnUnauthenticatedRequest": "scalar",
+      "UserPoolClientId": "scalar",
+      "UserPoolDomain": "scalar",
+      "SessionTimeout": "scalar",
+      "Scope": "scalar",
+      "SessionCookieName": "scalar",
+      "UserPoolArn": "scalar",
+      "AuthenticationRequestExtraParams": "object"
+    },
+    "JwtValidationActionAdditionalClaim": {
+      "Format": "scalar",
+      "Values": "array",
+      "Name": "scalar"
+    },
+    "RedirectConfig": {
+      "Path": "scalar",
+      "Query": "scalar",
+      "Port": "scalar",
+      "Host": "scalar",
+      "Protocol": "scalar",
+      "StatusCode": "scalar"
+    },
+    "JwtValidationConfig": {
+      "JwksEndpoint": "scalar",
+      "Issuer": "scalar",
+      "AdditionalClaims": "array"
+    },
+    "ForwardConfig": {
+      "TargetGroupStickinessConfig": "object",
+      "TargetGroups": "array"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "AuthenticateOidcConfig": {
+      "OnUnauthenticatedRequest": "scalar",
+      "TokenEndpoint": "scalar",
+      "UseExistingClientSecret": "scalar",
+      "SessionTimeout": "scalar",
+      "Scope": "scalar",
+      "Issuer": "scalar",
+      "ClientSecret": "scalar",
+      "UserInfoEndpoint": "scalar",
+      "ClientId": "scalar",
+      "AuthorizationEndpoint": "scalar",
+      "SessionCookieName": "scalar",
+      "AuthenticationRequestExtraParams": "object"
+    },
+    "Certificate": {
+      "CertificateArn": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "DefaultActions",
+      "LoadBalancerArn"
+    ],
+    "Action": [
+      "Type"
+    ],
+    "FixedResponseConfig": [
+      "StatusCode"
+    ],
+    "AuthenticateCognitoConfig": [
+      "UserPoolArn",
+      "UserPoolClientId",
+      "UserPoolDomain"
+    ],
+    "JwtValidationActionAdditionalClaim": [
+      "Format",
+      "Name",
+      "Values"
+    ],
+    "RedirectConfig": [
+      "StatusCode"
+    ],
+    "JwtValidationConfig": [
+      "Issuer",
+      "JwksEndpoint"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "AuthenticateOidcConfig": [
+      "AuthorizationEndpoint",
+      "ClientId",
+      "Issuer",
+      "TokenEndpoint",
+      "UserInfoEndpoint"
+    ]
+  }
 }

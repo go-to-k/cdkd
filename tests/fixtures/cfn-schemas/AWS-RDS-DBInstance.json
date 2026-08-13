@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::RDS::DBInstance",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AdditionalStorageVolumes",
     "AllocatedStorage",
@@ -135,5 +135,251 @@
     "SourceRegion",
     "StorageEncrypted",
     "Timezone"
-  ]
+  ],
+  "primaryIdentifier": [
+    "DBInstanceIdentifier"
+  ],
+  "nestedProperties": {
+    "AssociatedRoles": [
+      "FeatureName",
+      "RoleArn"
+    ],
+    "CertificateDetails": [
+      "CAIdentifier",
+      "ValidTill"
+    ],
+    "Endpoint": [
+      "Address",
+      "HostedZoneId",
+      "Port"
+    ],
+    "ListenerEndpoint": [
+      "Address",
+      "HostedZoneId",
+      "Port"
+    ],
+    "MasterUserSecret": [
+      "KmsKeyId",
+      "SecretArn"
+    ],
+    "ProcessorFeatures": [
+      "Name",
+      "Value"
+    ],
+    "StatusInfos": [
+      "Message",
+      "Normal",
+      "Status",
+      "StatusType"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "AdditionalStorageVolumes": [
+      "AllocatedStorage",
+      "Iops",
+      "MaxAllocatedStorage",
+      "StorageThroughput",
+      "StorageType",
+      "VolumeName"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "AssociatedRoles": [
+      "FeatureName",
+      "RoleArn"
+    ],
+    "CertificateDetails": [
+      "CAIdentifier",
+      "ValidTill"
+    ],
+    "Endpoint": [
+      "Address",
+      "HostedZoneId",
+      "Port"
+    ],
+    "ListenerEndpoint": [
+      "Address",
+      "HostedZoneId",
+      "Port"
+    ],
+    "MasterUserSecret": [
+      "KmsKeyId",
+      "SecretArn"
+    ],
+    "ProcessorFeatures": [
+      "Name",
+      "Value"
+    ],
+    "StatusInfos": [
+      "Message",
+      "Normal",
+      "Status",
+      "StatusType"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "AdditionalStorageVolumes": [
+      "AllocatedStorage",
+      "Iops",
+      "MaxAllocatedStorage",
+      "StorageThroughput",
+      "StorageType",
+      "VolumeName"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "AllocatedStorage": "scalar",
+      "AllowMajorVersionUpgrade": "scalar",
+      "AssociatedRoles": "array",
+      "AutoMinorVersionUpgrade": "scalar",
+      "AutomaticBackupReplicationRegion": "scalar",
+      "AutomaticBackupReplicationKmsKeyId": "scalar",
+      "AutomaticBackupReplicationRetentionPeriod": "scalar",
+      "AutomaticRestartTime": "scalar",
+      "AvailabilityZone": "scalar",
+      "BackupRetentionPeriod": "scalar",
+      "BackupTarget": "scalar",
+      "CACertificateIdentifier": "scalar",
+      "CertificateDetails": "object",
+      "CertificateRotationRestart": "scalar",
+      "CharacterSetName": "scalar",
+      "CopyTagsToSnapshot": "scalar",
+      "CustomIAMInstanceProfile": "scalar",
+      "DatabaseInsightsMode": "scalar",
+      "DBClusterIdentifier": "scalar",
+      "DBClusterSnapshotIdentifier": "scalar",
+      "DBInstanceArn": "scalar",
+      "DBInstanceClass": "scalar",
+      "DBInstanceIdentifier": "scalar",
+      "DBInstanceStatus": "scalar",
+      "DbiResourceId": "scalar",
+      "DBName": "scalar",
+      "DBParameterGroupName": "scalar",
+      "DBSecurityGroups": "array",
+      "DBSnapshotIdentifier": "scalar",
+      "DBSubnetGroupName": "scalar",
+      "DBSystemId": "scalar",
+      "DedicatedLogVolume": "scalar",
+      "DeleteAutomatedBackups": "scalar",
+      "DeletionProtection": "scalar",
+      "Domain": "scalar",
+      "DomainAuthSecretArn": "scalar",
+      "DomainDnsIps": "array",
+      "DomainFqdn": "scalar",
+      "DomainIAMRoleName": "scalar",
+      "DomainOu": "scalar",
+      "EnableCloudwatchLogsExports": "array",
+      "EnableIAMDatabaseAuthentication": "scalar",
+      "EnablePerformanceInsights": "scalar",
+      "Endpoint": "object",
+      "Engine": "scalar",
+      "EngineLifecycleSupport": "scalar",
+      "EngineVersion": "scalar",
+      "ManageMasterUserPassword": "scalar",
+      "InstanceCreateTime": "scalar",
+      "Iops": "scalar",
+      "IsStorageConfigUpgradeAvailable": "scalar",
+      "KmsKeyId": "scalar",
+      "LatestRestorableTime": "scalar",
+      "LicenseModel": "scalar",
+      "ListenerEndpoint": "object",
+      "MasterUserAuthenticationType": "scalar",
+      "MasterUsername": "scalar",
+      "MasterUserPassword": "scalar",
+      "MasterUserSecret": "object",
+      "MaxAllocatedStorage": "scalar",
+      "MonitoringInterval": "scalar",
+      "MonitoringRoleArn": "scalar",
+      "MultiAZ": "scalar",
+      "NcharCharacterSetName": "scalar",
+      "NetworkType": "scalar",
+      "OptionGroupName": "scalar",
+      "PercentProgress": "scalar",
+      "PerformanceInsightsKMSKeyId": "scalar",
+      "PerformanceInsightsRetentionPeriod": "scalar",
+      "Port": "scalar",
+      "PreferredBackupWindow": "scalar",
+      "PreferredMaintenanceWindow": "scalar",
+      "ProcessorFeatures": "array",
+      "PromotionTier": "scalar",
+      "PubliclyAccessible": "scalar",
+      "ReadReplicaDBClusterIdentifiers": "array",
+      "ReadReplicaDBInstanceIdentifiers": "array",
+      "ReplicaMode": "scalar",
+      "RestoreTime": "scalar",
+      "ResumeFullAutomationModeTime": "scalar",
+      "SecondaryAvailabilityZone": "scalar",
+      "SourceDBClusterIdentifier": "scalar",
+      "SourceDbiResourceId": "scalar",
+      "SourceDBInstanceAutomatedBackupsArn": "scalar",
+      "SourceDBInstanceIdentifier": "scalar",
+      "SourceRegion": "scalar",
+      "StatusInfos": "array",
+      "StorageEncrypted": "scalar",
+      "StorageType": "scalar",
+      "StorageThroughput": "scalar",
+      "Tags": "array",
+      "TdeCredentialArn": "scalar",
+      "TdeCredentialPassword": "scalar",
+      "Timezone": "scalar",
+      "UseDefaultProcessorFeatures": "scalar",
+      "UseLatestRestorableTime": "scalar",
+      "VPCSecurityGroups": "array",
+      "ApplyImmediately": "scalar",
+      "AdditionalStorageVolumes": "array"
+    },
+    "CertificateDetails": {
+      "CAIdentifier": "scalar",
+      "ValidTill": "scalar"
+    },
+    "Endpoint": {
+      "Address": "scalar",
+      "Port": "scalar",
+      "HostedZoneId": "scalar"
+    },
+    "DBInstanceRole": {
+      "FeatureName": "scalar",
+      "RoleArn": "scalar"
+    },
+    "DBInstanceStatusInfo": {
+      "Message": "scalar",
+      "Normal": "scalar",
+      "Status": "scalar",
+      "StatusType": "scalar"
+    },
+    "ProcessorFeature": {
+      "Name": "scalar",
+      "Value": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "MasterUserSecret": {
+      "SecretArn": "scalar",
+      "KmsKeyId": "scalar"
+    },
+    "AdditionalStorageVolume": {
+      "VolumeName": "scalar",
+      "StorageType": "scalar",
+      "AllocatedStorage": "scalar",
+      "Iops": "scalar",
+      "MaxAllocatedStorage": "scalar",
+      "StorageThroughput": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "DBInstanceRole": [
+      "FeatureName",
+      "RoleArn"
+    ],
+    "Tag": [
+      "Key"
+    ]
+  }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ServiceDiscovery::PrivateDnsNamespace",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "Description",
@@ -19,5 +19,65 @@
   "createOnlyProperties": [
     "Name",
     "Vpc"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "nestedProperties": {
+    "Properties": [
+      "DnsProperties",
+      "SOA",
+      "TTL"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Properties": [
+      "DnsProperties",
+      "DnsProperties.SOA",
+      "DnsProperties.SOA.TTL"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Description": "scalar",
+      "HostedZoneId": "scalar",
+      "Vpc": "scalar",
+      "Id": "scalar",
+      "Arn": "scalar",
+      "Properties": "object",
+      "Tags": "array",
+      "Name": "scalar"
+    },
+    "PrivateDnsPropertiesMutable": {
+      "SOA": "object"
+    },
+    "SOA": {
+      "TTL": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "Properties": {
+      "DnsProperties": "object"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Name",
+      "Vpc"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

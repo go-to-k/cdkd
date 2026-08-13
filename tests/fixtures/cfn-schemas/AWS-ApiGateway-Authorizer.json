@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGateway::Authorizer",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AuthType",
     "AuthorizerCredentials",
@@ -19,5 +19,31 @@
   ],
   "createOnlyProperties": [
     "RestApiId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "AuthorizerId",
+    "RestApiId"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "RestApiId": "scalar",
+      "AuthorizerId": "scalar",
+      "AuthType": "scalar",
+      "AuthorizerCredentials": "scalar",
+      "AuthorizerResultTtlInSeconds": "scalar",
+      "AuthorizerUri": "scalar",
+      "IdentitySource": "scalar",
+      "IdentityValidationExpression": "scalar",
+      "Name": "scalar",
+      "ProviderARNs": "array",
+      "Type": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Name",
+      "RestApiId",
+      "Type"
+    ]
+  }
 }

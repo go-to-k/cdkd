@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::SQS::Queue",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "ContentBasedDeduplication",
@@ -28,5 +28,52 @@
   "createOnlyProperties": [
     "FifoQueue",
     "QueueName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "QueueUrl"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "QueueUrl": "scalar",
+      "Arn": "scalar",
+      "ContentBasedDeduplication": "scalar",
+      "DeduplicationScope": "scalar",
+      "DelaySeconds": "scalar",
+      "FifoQueue": "scalar",
+      "FifoThroughputLimit": "scalar",
+      "KmsDataKeyReusePeriodSeconds": "scalar",
+      "KmsMasterKeyId": "scalar",
+      "SqsManagedSseEnabled": "scalar",
+      "MaximumMessageSize": "scalar",
+      "MessageRetentionPeriod": "scalar",
+      "QueueName": "scalar",
+      "ReceiveMessageWaitTimeSeconds": "scalar",
+      "RedriveAllowPolicy": "mixed",
+      "RedrivePolicy": "mixed",
+      "Tags": "array",
+      "VisibilityTimeout": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

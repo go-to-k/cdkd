@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::AppSync::GraphQLApi",
-  "generatedAt": "2026-08-11",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AdditionalAuthenticationProviders",
     "ApiId",
@@ -209,5 +209,27 @@
       "FieldLogLevel": "scalar",
       "CloudWatchLogsRoleArn": "scalar"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "AuthenticationType",
+      "Name"
+    ],
+    "EnhancedMetricsConfig": [
+      "DataSourceLevelMetricsBehavior",
+      "OperationLevelMetricsConfig",
+      "ResolverLevelMetricsBehavior"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "AdditionalAuthenticationProvider": [
+      "AuthenticationType"
+    ],
+    "LogConfig": [
+      "CloudWatchLogsRoleArn",
+      "FieldLogLevel"
+    ]
   }
 }

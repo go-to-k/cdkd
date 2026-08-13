@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EMR::InstanceGroupConfig",
-  "generatedAt": "2026-07-19",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AutoScalingPolicy",
     "BidPrice",
@@ -31,5 +31,216 @@
   ],
   "primaryIdentifier": [
     "Id"
-  ]
+  ],
+  "nestedProperties": {
+    "AutoScalingPolicy": [
+      "Action",
+      "AdjustmentType",
+      "CloudWatchAlarmDefinition",
+      "ComparisonOperator",
+      "Constraints",
+      "CoolDown",
+      "Description",
+      "Dimensions",
+      "EvaluationPeriods",
+      "Key",
+      "Market",
+      "MaxCapacity",
+      "MetricName",
+      "MinCapacity",
+      "Name",
+      "Namespace",
+      "Period",
+      "Rules",
+      "ScalingAdjustment",
+      "SimpleScalingPolicyConfiguration",
+      "Statistic",
+      "Threshold",
+      "Trigger",
+      "Unit",
+      "Value"
+    ],
+    "EbsConfiguration": [
+      "EbsBlockDeviceConfigs",
+      "EbsOptimized",
+      "Iops",
+      "SizeInGB",
+      "Throughput",
+      "VolumeSpecification",
+      "VolumeType",
+      "VolumesPerInstance"
+    ],
+    "Configurations": [
+      "Classification",
+      "ConfigurationProperties",
+      "Configurations"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "AutoScalingPolicy": [
+      "Constraints",
+      "Constraints.MaxCapacity",
+      "Constraints.MinCapacity",
+      "Rules",
+      "Rules.Action",
+      "Rules.Action.Market",
+      "Rules.Action.SimpleScalingPolicyConfiguration",
+      "Rules.Action.SimpleScalingPolicyConfiguration.AdjustmentType",
+      "Rules.Action.SimpleScalingPolicyConfiguration.CoolDown",
+      "Rules.Action.SimpleScalingPolicyConfiguration.ScalingAdjustment",
+      "Rules.Description",
+      "Rules.Name",
+      "Rules.Trigger",
+      "Rules.Trigger.CloudWatchAlarmDefinition",
+      "Rules.Trigger.CloudWatchAlarmDefinition.ComparisonOperator",
+      "Rules.Trigger.CloudWatchAlarmDefinition.Dimensions",
+      "Rules.Trigger.CloudWatchAlarmDefinition.Dimensions.Key",
+      "Rules.Trigger.CloudWatchAlarmDefinition.Dimensions.Value",
+      "Rules.Trigger.CloudWatchAlarmDefinition.EvaluationPeriods",
+      "Rules.Trigger.CloudWatchAlarmDefinition.MetricName",
+      "Rules.Trigger.CloudWatchAlarmDefinition.Namespace",
+      "Rules.Trigger.CloudWatchAlarmDefinition.Period",
+      "Rules.Trigger.CloudWatchAlarmDefinition.Statistic",
+      "Rules.Trigger.CloudWatchAlarmDefinition.Threshold",
+      "Rules.Trigger.CloudWatchAlarmDefinition.Unit"
+    ],
+    "EbsConfiguration": [
+      "EbsBlockDeviceConfigs",
+      "EbsBlockDeviceConfigs.VolumeSpecification",
+      "EbsBlockDeviceConfigs.VolumeSpecification.Iops",
+      "EbsBlockDeviceConfigs.VolumeSpecification.SizeInGB",
+      "EbsBlockDeviceConfigs.VolumeSpecification.Throughput",
+      "EbsBlockDeviceConfigs.VolumeSpecification.VolumeType",
+      "EbsBlockDeviceConfigs.VolumesPerInstance",
+      "EbsOptimized"
+    ],
+    "Configurations": [
+      "Classification",
+      "ConfigurationProperties",
+      "Configurations"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "JobFlowId": "scalar",
+      "AutoScalingPolicy": "object",
+      "BidPrice": "scalar",
+      "InstanceCount": "scalar",
+      "EbsConfiguration": "object",
+      "InstanceRole": "scalar",
+      "CustomAmiId": "scalar",
+      "Id": "scalar",
+      "Configurations": "array",
+      "InstanceType": "scalar",
+      "Market": "scalar",
+      "Name": "scalar"
+    },
+    "AutoScalingPolicy": {
+      "Rules": "array",
+      "Constraints": "object"
+    },
+    "VolumeSpecification": {
+      "SizeInGB": "scalar",
+      "Throughput": "scalar",
+      "VolumeType": "scalar",
+      "Iops": "scalar"
+    },
+    "CloudWatchAlarmDefinition": {
+      "MetricName": "scalar",
+      "ComparisonOperator": "scalar",
+      "Statistic": "scalar",
+      "Dimensions": "array",
+      "Period": "scalar",
+      "EvaluationPeriods": "scalar",
+      "Unit": "scalar",
+      "Namespace": "scalar",
+      "Threshold": "scalar"
+    },
+    "EbsConfiguration": {
+      "EbsBlockDeviceConfigs": "array",
+      "EbsOptimized": "scalar"
+    },
+    "Configuration": {
+      "ConfigurationProperties": "object",
+      "Configurations": "array",
+      "Classification": "scalar"
+    },
+    "ScalingAction": {
+      "Market": "scalar",
+      "SimpleScalingPolicyConfiguration": "object"
+    },
+    "SimpleScalingPolicyConfiguration": {
+      "ScalingAdjustment": "scalar",
+      "CoolDown": "scalar",
+      "AdjustmentType": "scalar"
+    },
+    "ScalingConstraints": {
+      "MinCapacity": "scalar",
+      "MaxCapacity": "scalar"
+    },
+    "EbsBlockDeviceConfig": {
+      "VolumeSpecification": "object",
+      "VolumesPerInstance": "scalar"
+    },
+    "ScalingTrigger": {
+      "CloudWatchAlarmDefinition": "object"
+    },
+    "ScalingRule": {
+      "Action": "object",
+      "Description": "scalar",
+      "Trigger": "object",
+      "Name": "scalar"
+    },
+    "MetricDimension": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "InstanceCount",
+      "InstanceRole",
+      "InstanceType",
+      "JobFlowId"
+    ],
+    "AutoScalingPolicy": [
+      "Constraints",
+      "Rules"
+    ],
+    "VolumeSpecification": [
+      "SizeInGB",
+      "VolumeType"
+    ],
+    "CloudWatchAlarmDefinition": [
+      "ComparisonOperator",
+      "MetricName",
+      "Period",
+      "Threshold"
+    ],
+    "ScalingAction": [
+      "SimpleScalingPolicyConfiguration"
+    ],
+    "SimpleScalingPolicyConfiguration": [
+      "ScalingAdjustment"
+    ],
+    "ScalingConstraints": [
+      "MaxCapacity",
+      "MinCapacity"
+    ],
+    "EbsBlockDeviceConfig": [
+      "VolumeSpecification"
+    ],
+    "ScalingTrigger": [
+      "CloudWatchAlarmDefinition"
+    ],
+    "ScalingRule": [
+      "Action",
+      "Name",
+      "Trigger"
+    ],
+    "MetricDimension": [
+      "Key",
+      "Value"
+    ]
+  }
 }

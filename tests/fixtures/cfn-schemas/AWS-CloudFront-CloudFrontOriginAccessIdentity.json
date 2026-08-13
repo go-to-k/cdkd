@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CloudFrontOriginAccessIdentityConfig",
     "Id",
@@ -10,5 +10,36 @@
     "Id",
     "S3CanonicalUserId"
   ],
-  "createOnlyProperties": []
+  "createOnlyProperties": [],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "nestedProperties": {
+    "CloudFrontOriginAccessIdentityConfig": [
+      "Comment"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "CloudFrontOriginAccessIdentityConfig": [
+      "Comment"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "CloudFrontOriginAccessIdentityConfig": "object",
+      "Id": "scalar",
+      "S3CanonicalUserId": "scalar"
+    },
+    "CloudFrontOriginAccessIdentityConfig": {
+      "Comment": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "CloudFrontOriginAccessIdentityConfig"
+    ],
+    "CloudFrontOriginAccessIdentityConfig": [
+      "Comment"
+    ]
+  }
 }

@@ -18,3 +18,6 @@ export declare function extractNestedPropertyPaths(
 export declare function extractDefinitionShapes(
   schemaJson: string
 ): Record<string, Record<string, string>>;
+export declare function extractDefinitionRequired(
+  schemaJson: string
+): Record<string, string[]>;

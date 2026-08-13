@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ECS::Service",
-  "generatedAt": "2026-08-10",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AvailabilityZoneRebalancing",
     "CapacityProviderStrategy",
@@ -549,5 +549,84 @@
       "DiscoveryName": "scalar",
       "PortName": "scalar"
     }
+  },
+  "definitionRequired": {
+    "VpcLatticeConfiguration": [
+      "PortName",
+      "RoleArn",
+      "TargetGroupArn"
+    ],
+    "PlacementStrategy": [
+      "Type"
+    ],
+    "ServiceConnectTestTrafficRules": [
+      "Header"
+    ],
+    "ServiceConnectTestTrafficRulesHeader": [
+      "Name"
+    ],
+    "ServiceConnectClientAlias": [
+      "Port"
+    ],
+    "MetricConfiguration": [
+      "MetricNames",
+      "ResolutionSeconds"
+    ],
+    "ServiceVolumeConfiguration": [
+      "Name"
+    ],
+    "ServiceConnectTestTrafficRulesHeaderValue": [
+      "Exact"
+    ],
+    "DeploymentCircuitBreaker": [
+      "Enable",
+      "Rollback"
+    ],
+    "EBSTagSpecification": [
+      "ResourceType"
+    ],
+    "AdvancedConfiguration": [
+      "AlternateTargetGroupArn"
+    ],
+    "ForceNewDeployment": [
+      "EnableForceNewDeployment"
+    ],
+    "DeploymentAlarms": [
+      "AlarmNames",
+      "Enable",
+      "Rollback"
+    ],
+    "ServiceConnectAccessLogConfiguration": [
+      "Format"
+    ],
+    "MonitoringConfiguration": [
+      "MetricConfigurations"
+    ],
+    "ServiceConnectConfiguration": [
+      "Enabled"
+    ],
+    "ServiceConnectTlsConfiguration": [
+      "IssuerCertificateAuthority"
+    ],
+    "DeploymentLifecycleHook": [
+      "LifecycleStages"
+    ],
+    "Secret": [
+      "Name",
+      "ValueFrom"
+    ],
+    "PlacementConstraint": [
+      "Type"
+    ],
+    "ServiceManagedEBSVolumeConfiguration": [
+      "RoleArn"
+    ],
+    "ThresholdConfiguration": [
+      "Type",
+      "Value"
+    ],
+    "ServiceConnectService": [
+      "PortName"
+    ]
   }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGatewayV2::Authorizer",
-  "generatedAt": "2026-08-10",
+  "generatedAt": "2026-08-13",
   "properties": [
     "ApiId",
     "AuthorizerCredentialsArn",
@@ -56,5 +56,12 @@
       "Issuer": "scalar",
       "Audience": "array"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "ApiId",
+      "AuthorizerType",
+      "Name"
+    ]
   }
 }

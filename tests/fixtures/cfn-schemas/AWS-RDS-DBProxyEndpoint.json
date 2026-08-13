@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::RDS::DBProxyEndpoint",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "DBProxyEndpointArn",
     "DBProxyEndpointName",
@@ -25,5 +25,46 @@
     "DBProxyName",
     "EndpointNetworkType",
     "VpcSubnetIds"
-  ]
+  ],
+  "primaryIdentifier": [
+    "DBProxyEndpointName"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "DBProxyEndpointName": "scalar",
+      "DBProxyEndpointArn": "scalar",
+      "DBProxyName": "scalar",
+      "VpcId": "scalar",
+      "VpcSecurityGroupIds": "array",
+      "VpcSubnetIds": "array",
+      "Endpoint": "scalar",
+      "EndpointNetworkType": "scalar",
+      "TargetRole": "scalar",
+      "IsDefault": "scalar",
+      "Tags": "array"
+    },
+    "TagFormat": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "DBProxyEndpointName",
+      "DBProxyName",
+      "VpcSubnetIds"
+    ]
+  }
 }

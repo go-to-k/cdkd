@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::SecurityGroupIngress",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CidrIp",
     "CidrIpv6",
@@ -31,5 +31,30 @@
     "SourceSecurityGroupName",
     "SourceSecurityGroupOwnerId",
     "ToPort"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Id": "scalar",
+      "CidrIp": "scalar",
+      "CidrIpv6": "scalar",
+      "Description": "scalar",
+      "FromPort": "scalar",
+      "GroupId": "scalar",
+      "GroupName": "scalar",
+      "IpProtocol": "scalar",
+      "SourcePrefixListId": "scalar",
+      "SourceSecurityGroupId": "scalar",
+      "SourceSecurityGroupName": "scalar",
+      "SourceSecurityGroupOwnerId": "scalar",
+      "ToPort": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "IpProtocol"
+    ]
+  }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EFS::AccessPoint",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AccessPointId",
     "AccessPointTags",
@@ -20,5 +20,87 @@
     "FileSystemId",
     "PosixUser",
     "RootDirectory"
-  ]
+  ],
+  "primaryIdentifier": [
+    "AccessPointId"
+  ],
+  "nestedProperties": {
+    "AccessPointTags": [
+      "Key",
+      "Value"
+    ],
+    "PosixUser": [
+      "Gid",
+      "SecondaryGids",
+      "Uid"
+    ],
+    "RootDirectory": [
+      "CreationInfo",
+      "OwnerGid",
+      "OwnerUid",
+      "Path",
+      "Permissions"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "AccessPointTags": [
+      "Key",
+      "Value"
+    ],
+    "PosixUser": [
+      "Gid",
+      "SecondaryGids",
+      "Uid"
+    ],
+    "RootDirectory": [
+      "CreationInfo",
+      "CreationInfo.OwnerGid",
+      "CreationInfo.OwnerUid",
+      "CreationInfo.Permissions",
+      "Path"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "AccessPointId": "scalar",
+      "Arn": "scalar",
+      "ClientToken": "scalar",
+      "AccessPointTags": "array",
+      "FileSystemId": "scalar",
+      "PosixUser": "object",
+      "RootDirectory": "object"
+    },
+    "AccessPointTag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "CreationInfo": {
+      "OwnerUid": "scalar",
+      "OwnerGid": "scalar",
+      "Permissions": "scalar"
+    },
+    "RootDirectory": {
+      "Path": "scalar",
+      "CreationInfo": "object"
+    },
+    "PosixUser": {
+      "Uid": "scalar",
+      "Gid": "scalar",
+      "SecondaryGids": "array"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "FileSystemId"
+    ],
+    "CreationInfo": [
+      "OwnerGid",
+      "OwnerUid",
+      "Permissions"
+    ],
+    "PosixUser": [
+      "Gid",
+      "Uid"
+    ]
+  }
 }

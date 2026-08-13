@@ -1,8 +1,9 @@
 {
   "resourceType": "AWS::SSM::Parameter",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AllowedPattern",
+    "Arn",
     "DataType",
     "Description",
     "Name",
@@ -12,8 +13,33 @@
     "Type",
     "Value"
   ],
-  "readOnlyProperties": [],
+  "readOnlyProperties": [
+    "Arn"
+  ],
   "createOnlyProperties": [
     "Name"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Name"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Type": "scalar",
+      "Value": "scalar",
+      "Description": "scalar",
+      "Policies": "scalar",
+      "AllowedPattern": "scalar",
+      "Tier": "scalar",
+      "Tags": "object",
+      "DataType": "scalar",
+      "Name": "scalar",
+      "Arn": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Type",
+      "Value"
+    ]
+  }
 }

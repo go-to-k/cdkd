@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EFS::MountTarget",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "FileSystemId",
     "Id",
@@ -19,5 +19,26 @@
     "IpAddressType",
     "Ipv6Address",
     "SubnetId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Id": "scalar",
+      "IpAddress": "scalar",
+      "Ipv6Address": "scalar",
+      "IpAddressType": "scalar",
+      "FileSystemId": "scalar",
+      "SecurityGroups": "array",
+      "SubnetId": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "FileSystemId",
+      "SecurityGroups",
+      "SubnetId"
+    ]
+  }
 }

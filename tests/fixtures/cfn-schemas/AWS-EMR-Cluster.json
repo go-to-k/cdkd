@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EMR::Cluster",
-  "generatedAt": "2026-07-18",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AdditionalInfo",
     "Applications",
@@ -61,5 +61,831 @@
   ],
   "primaryIdentifier": [
     "Id"
-  ]
+  ],
+  "nestedProperties": {
+    "Steps": [
+      "ActionOnFailure",
+      "Args",
+      "HadoopJarStep",
+      "Jar",
+      "Key",
+      "MainClass",
+      "Name",
+      "StepProperties",
+      "Value"
+    ],
+    "PlacementGroupConfigs": [
+      "InstanceRole",
+      "PlacementStrategy"
+    ],
+    "BootstrapActions": [
+      "Args",
+      "Name",
+      "Path",
+      "ScriptBootstrapAction"
+    ],
+    "Configurations": [
+      "Classification",
+      "ConfigurationProperties",
+      "Configurations"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "ManagedScalingPolicy": [
+      "ComputeLimits",
+      "MaximumCapacityUnits",
+      "MaximumCoreCapacityUnits",
+      "MaximumOnDemandCapacityUnits",
+      "MinimumCapacityUnits",
+      "ScalingStrategy",
+      "UnitType",
+      "UtilizationPerformanceIndex"
+    ],
+    "AutoTerminationPolicy": [
+      "IdleTimeout"
+    ],
+    "KerberosAttributes": [
+      "ADDomainJoinPassword",
+      "ADDomainJoinUser",
+      "CrossRealmTrustPrincipalPassword",
+      "KdcAdminPassword",
+      "Realm"
+    ],
+    "Applications": [
+      "AdditionalInfo",
+      "Args",
+      "Name",
+      "Version"
+    ],
+    "Instances": [
+      "Action",
+      "AdditionalMasterSecurityGroups",
+      "AdditionalSlaveSecurityGroups",
+      "AdjustmentType",
+      "AllocationStrategy",
+      "AutoScalingPolicy",
+      "AvailabilityZone",
+      "BidPrice",
+      "BidPriceAsPercentageOfOnDemandPrice",
+      "BlockDurationMinutes",
+      "CapacityReservationOptions",
+      "CapacityReservationPreference",
+      "CapacityReservationResourceGroupArn",
+      "Classification",
+      "CloudWatchAlarmDefinition",
+      "ComparisonOperator",
+      "ConfigurationProperties",
+      "Configurations",
+      "Constraints",
+      "CoolDown",
+      "CoreInstanceFleet",
+      "CoreInstanceGroup",
+      "CustomAmiId",
+      "Description",
+      "Dimensions",
+      "EbsBlockDeviceConfigs",
+      "EbsConfiguration",
+      "EbsOptimized",
+      "Ec2KeyName",
+      "Ec2SubnetId",
+      "Ec2SubnetIds",
+      "EmrManagedMasterSecurityGroup",
+      "EmrManagedSlaveSecurityGroup",
+      "EvaluationPeriods",
+      "HadoopVersion",
+      "InstanceCount",
+      "InstanceType",
+      "InstanceTypeConfigs",
+      "Iops",
+      "KeepJobFlowAliveWhenNoSteps",
+      "Key",
+      "LaunchSpecifications",
+      "Market",
+      "MasterInstanceFleet",
+      "MasterInstanceGroup",
+      "MaxCapacity",
+      "MetricName",
+      "MinCapacity",
+      "Name",
+      "Namespace",
+      "OnDemandResizeSpecification",
+      "OnDemandSpecification",
+      "Period",
+      "Placement",
+      "Priority",
+      "ResizeSpecifications",
+      "Rules",
+      "ScalingAdjustment",
+      "ServiceAccessSecurityGroup",
+      "SimpleScalingPolicyConfiguration",
+      "SizeInGB",
+      "SpotResizeSpecification",
+      "SpotSpecification",
+      "Statistic",
+      "TargetOnDemandCapacity",
+      "TargetSpotCapacity",
+      "TaskInstanceFleets",
+      "TaskInstanceGroups",
+      "TerminationProtected",
+      "Threshold",
+      "Throughput",
+      "TimeoutAction",
+      "TimeoutDurationMinutes",
+      "Trigger",
+      "UnhealthyNodeReplacement",
+      "Unit",
+      "UsageStrategy",
+      "Value",
+      "VolumeSpecification",
+      "VolumeType",
+      "VolumesPerInstance",
+      "WeightedCapacity"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Steps": [
+      "ActionOnFailure",
+      "HadoopJarStep",
+      "HadoopJarStep.Args",
+      "HadoopJarStep.Jar",
+      "HadoopJarStep.MainClass",
+      "HadoopJarStep.StepProperties",
+      "HadoopJarStep.StepProperties.Key",
+      "HadoopJarStep.StepProperties.Value",
+      "Name"
+    ],
+    "PlacementGroupConfigs": [
+      "InstanceRole",
+      "PlacementStrategy"
+    ],
+    "BootstrapActions": [
+      "Name",
+      "ScriptBootstrapAction",
+      "ScriptBootstrapAction.Args",
+      "ScriptBootstrapAction.Path"
+    ],
+    "Configurations": [
+      "Classification",
+      "ConfigurationProperties",
+      "Configurations"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "ManagedScalingPolicy": [
+      "ComputeLimits",
+      "ComputeLimits.MaximumCapacityUnits",
+      "ComputeLimits.MaximumCoreCapacityUnits",
+      "ComputeLimits.MaximumOnDemandCapacityUnits",
+      "ComputeLimits.MinimumCapacityUnits",
+      "ComputeLimits.UnitType",
+      "ScalingStrategy",
+      "UtilizationPerformanceIndex"
+    ],
+    "AutoTerminationPolicy": [
+      "IdleTimeout"
+    ],
+    "KerberosAttributes": [
+      "ADDomainJoinPassword",
+      "ADDomainJoinUser",
+      "CrossRealmTrustPrincipalPassword",
+      "KdcAdminPassword",
+      "Realm"
+    ],
+    "Applications": [
+      "AdditionalInfo",
+      "Args",
+      "Name",
+      "Version"
+    ],
+    "Instances": [
+      "AdditionalMasterSecurityGroups",
+      "AdditionalSlaveSecurityGroups",
+      "CoreInstanceFleet",
+      "CoreInstanceFleet.InstanceTypeConfigs",
+      "CoreInstanceFleet.InstanceTypeConfigs.BidPrice",
+      "CoreInstanceFleet.InstanceTypeConfigs.BidPriceAsPercentageOfOnDemandPrice",
+      "CoreInstanceFleet.InstanceTypeConfigs.Configurations",
+      "CoreInstanceFleet.InstanceTypeConfigs.Configurations.Classification",
+      "CoreInstanceFleet.InstanceTypeConfigs.Configurations.ConfigurationProperties",
+      "CoreInstanceFleet.InstanceTypeConfigs.Configurations.Configurations",
+      "CoreInstanceFleet.InstanceTypeConfigs.CustomAmiId",
+      "CoreInstanceFleet.InstanceTypeConfigs.EbsConfiguration",
+      "CoreInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs",
+      "CoreInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification",
+      "CoreInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.Iops",
+      "CoreInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.SizeInGB",
+      "CoreInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.Throughput",
+      "CoreInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.VolumeType",
+      "CoreInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumesPerInstance",
+      "CoreInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsOptimized",
+      "CoreInstanceFleet.InstanceTypeConfigs.InstanceType",
+      "CoreInstanceFleet.InstanceTypeConfigs.Priority",
+      "CoreInstanceFleet.InstanceTypeConfigs.WeightedCapacity",
+      "CoreInstanceFleet.LaunchSpecifications",
+      "CoreInstanceFleet.LaunchSpecifications.OnDemandSpecification",
+      "CoreInstanceFleet.LaunchSpecifications.OnDemandSpecification.AllocationStrategy",
+      "CoreInstanceFleet.LaunchSpecifications.OnDemandSpecification.CapacityReservationOptions",
+      "CoreInstanceFleet.LaunchSpecifications.OnDemandSpecification.CapacityReservationOptions.CapacityReservationPreference",
+      "CoreInstanceFleet.LaunchSpecifications.OnDemandSpecification.CapacityReservationOptions.CapacityReservationResourceGroupArn",
+      "CoreInstanceFleet.LaunchSpecifications.OnDemandSpecification.CapacityReservationOptions.UsageStrategy",
+      "CoreInstanceFleet.LaunchSpecifications.SpotSpecification",
+      "CoreInstanceFleet.LaunchSpecifications.SpotSpecification.AllocationStrategy",
+      "CoreInstanceFleet.LaunchSpecifications.SpotSpecification.BlockDurationMinutes",
+      "CoreInstanceFleet.LaunchSpecifications.SpotSpecification.TimeoutAction",
+      "CoreInstanceFleet.LaunchSpecifications.SpotSpecification.TimeoutDurationMinutes",
+      "CoreInstanceFleet.Name",
+      "CoreInstanceFleet.ResizeSpecifications",
+      "CoreInstanceFleet.ResizeSpecifications.OnDemandResizeSpecification",
+      "CoreInstanceFleet.ResizeSpecifications.OnDemandResizeSpecification.AllocationStrategy",
+      "CoreInstanceFleet.ResizeSpecifications.OnDemandResizeSpecification.CapacityReservationOptions",
+      "CoreInstanceFleet.ResizeSpecifications.OnDemandResizeSpecification.CapacityReservationOptions.CapacityReservationPreference",
+      "CoreInstanceFleet.ResizeSpecifications.OnDemandResizeSpecification.CapacityReservationOptions.CapacityReservationResourceGroupArn",
+      "CoreInstanceFleet.ResizeSpecifications.OnDemandResizeSpecification.CapacityReservationOptions.UsageStrategy",
+      "CoreInstanceFleet.ResizeSpecifications.OnDemandResizeSpecification.TimeoutDurationMinutes",
+      "CoreInstanceFleet.ResizeSpecifications.SpotResizeSpecification",
+      "CoreInstanceFleet.ResizeSpecifications.SpotResizeSpecification.AllocationStrategy",
+      "CoreInstanceFleet.ResizeSpecifications.SpotResizeSpecification.TimeoutDurationMinutes",
+      "CoreInstanceFleet.TargetOnDemandCapacity",
+      "CoreInstanceFleet.TargetSpotCapacity",
+      "CoreInstanceGroup",
+      "CoreInstanceGroup.AutoScalingPolicy",
+      "CoreInstanceGroup.AutoScalingPolicy.Constraints",
+      "CoreInstanceGroup.AutoScalingPolicy.Constraints.MaxCapacity",
+      "CoreInstanceGroup.AutoScalingPolicy.Constraints.MinCapacity",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Action",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Action.Market",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration.AdjustmentType",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration.CoolDown",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration.ScalingAdjustment",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Description",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Name",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.ComparisonOperator",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Dimensions",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Dimensions.Key",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Dimensions.Value",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.EvaluationPeriods",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.MetricName",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Namespace",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Period",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Statistic",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Threshold",
+      "CoreInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Unit",
+      "CoreInstanceGroup.BidPrice",
+      "CoreInstanceGroup.Configurations",
+      "CoreInstanceGroup.Configurations.Classification",
+      "CoreInstanceGroup.Configurations.ConfigurationProperties",
+      "CoreInstanceGroup.Configurations.Configurations",
+      "CoreInstanceGroup.CustomAmiId",
+      "CoreInstanceGroup.EbsConfiguration",
+      "CoreInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs",
+      "CoreInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification",
+      "CoreInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.Iops",
+      "CoreInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.SizeInGB",
+      "CoreInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.Throughput",
+      "CoreInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.VolumeType",
+      "CoreInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs.VolumesPerInstance",
+      "CoreInstanceGroup.EbsConfiguration.EbsOptimized",
+      "CoreInstanceGroup.InstanceCount",
+      "CoreInstanceGroup.InstanceType",
+      "CoreInstanceGroup.Market",
+      "CoreInstanceGroup.Name",
+      "Ec2KeyName",
+      "Ec2SubnetId",
+      "Ec2SubnetIds",
+      "EmrManagedMasterSecurityGroup",
+      "EmrManagedSlaveSecurityGroup",
+      "HadoopVersion",
+      "KeepJobFlowAliveWhenNoSteps",
+      "MasterInstanceFleet",
+      "MasterInstanceFleet.InstanceTypeConfigs",
+      "MasterInstanceFleet.InstanceTypeConfigs.BidPrice",
+      "MasterInstanceFleet.InstanceTypeConfigs.BidPriceAsPercentageOfOnDemandPrice",
+      "MasterInstanceFleet.InstanceTypeConfigs.Configurations",
+      "MasterInstanceFleet.InstanceTypeConfigs.Configurations.Classification",
+      "MasterInstanceFleet.InstanceTypeConfigs.Configurations.ConfigurationProperties",
+      "MasterInstanceFleet.InstanceTypeConfigs.Configurations.Configurations",
+      "MasterInstanceFleet.InstanceTypeConfigs.CustomAmiId",
+      "MasterInstanceFleet.InstanceTypeConfigs.EbsConfiguration",
+      "MasterInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs",
+      "MasterInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification",
+      "MasterInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.Iops",
+      "MasterInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.SizeInGB",
+      "MasterInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.Throughput",
+      "MasterInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.VolumeType",
+      "MasterInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumesPerInstance",
+      "MasterInstanceFleet.InstanceTypeConfigs.EbsConfiguration.EbsOptimized",
+      "MasterInstanceFleet.InstanceTypeConfigs.InstanceType",
+      "MasterInstanceFleet.InstanceTypeConfigs.Priority",
+      "MasterInstanceFleet.InstanceTypeConfigs.WeightedCapacity",
+      "MasterInstanceFleet.LaunchSpecifications",
+      "MasterInstanceFleet.LaunchSpecifications.OnDemandSpecification",
+      "MasterInstanceFleet.LaunchSpecifications.OnDemandSpecification.AllocationStrategy",
+      "MasterInstanceFleet.LaunchSpecifications.OnDemandSpecification.CapacityReservationOptions",
+      "MasterInstanceFleet.LaunchSpecifications.OnDemandSpecification.CapacityReservationOptions.CapacityReservationPreference",
+      "MasterInstanceFleet.LaunchSpecifications.OnDemandSpecification.CapacityReservationOptions.CapacityReservationResourceGroupArn",
+      "MasterInstanceFleet.LaunchSpecifications.OnDemandSpecification.CapacityReservationOptions.UsageStrategy",
+      "MasterInstanceFleet.LaunchSpecifications.SpotSpecification",
+      "MasterInstanceFleet.LaunchSpecifications.SpotSpecification.AllocationStrategy",
+      "MasterInstanceFleet.LaunchSpecifications.SpotSpecification.BlockDurationMinutes",
+      "MasterInstanceFleet.LaunchSpecifications.SpotSpecification.TimeoutAction",
+      "MasterInstanceFleet.LaunchSpecifications.SpotSpecification.TimeoutDurationMinutes",
+      "MasterInstanceFleet.Name",
+      "MasterInstanceFleet.ResizeSpecifications",
+      "MasterInstanceFleet.ResizeSpecifications.OnDemandResizeSpecification",
+      "MasterInstanceFleet.ResizeSpecifications.OnDemandResizeSpecification.AllocationStrategy",
+      "MasterInstanceFleet.ResizeSpecifications.OnDemandResizeSpecification.CapacityReservationOptions",
+      "MasterInstanceFleet.ResizeSpecifications.OnDemandResizeSpecification.CapacityReservationOptions.CapacityReservationPreference",
+      "MasterInstanceFleet.ResizeSpecifications.OnDemandResizeSpecification.CapacityReservationOptions.CapacityReservationResourceGroupArn",
+      "MasterInstanceFleet.ResizeSpecifications.OnDemandResizeSpecification.CapacityReservationOptions.UsageStrategy",
+      "MasterInstanceFleet.ResizeSpecifications.OnDemandResizeSpecification.TimeoutDurationMinutes",
+      "MasterInstanceFleet.ResizeSpecifications.SpotResizeSpecification",
+      "MasterInstanceFleet.ResizeSpecifications.SpotResizeSpecification.AllocationStrategy",
+      "MasterInstanceFleet.ResizeSpecifications.SpotResizeSpecification.TimeoutDurationMinutes",
+      "MasterInstanceFleet.TargetOnDemandCapacity",
+      "MasterInstanceFleet.TargetSpotCapacity",
+      "MasterInstanceGroup",
+      "MasterInstanceGroup.AutoScalingPolicy",
+      "MasterInstanceGroup.AutoScalingPolicy.Constraints",
+      "MasterInstanceGroup.AutoScalingPolicy.Constraints.MaxCapacity",
+      "MasterInstanceGroup.AutoScalingPolicy.Constraints.MinCapacity",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Action",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Action.Market",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration.AdjustmentType",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration.CoolDown",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration.ScalingAdjustment",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Description",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Name",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.ComparisonOperator",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Dimensions",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Dimensions.Key",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Dimensions.Value",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.EvaluationPeriods",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.MetricName",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Namespace",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Period",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Statistic",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Threshold",
+      "MasterInstanceGroup.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Unit",
+      "MasterInstanceGroup.BidPrice",
+      "MasterInstanceGroup.Configurations",
+      "MasterInstanceGroup.Configurations.Classification",
+      "MasterInstanceGroup.Configurations.ConfigurationProperties",
+      "MasterInstanceGroup.Configurations.Configurations",
+      "MasterInstanceGroup.CustomAmiId",
+      "MasterInstanceGroup.EbsConfiguration",
+      "MasterInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs",
+      "MasterInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification",
+      "MasterInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.Iops",
+      "MasterInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.SizeInGB",
+      "MasterInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.Throughput",
+      "MasterInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.VolumeType",
+      "MasterInstanceGroup.EbsConfiguration.EbsBlockDeviceConfigs.VolumesPerInstance",
+      "MasterInstanceGroup.EbsConfiguration.EbsOptimized",
+      "MasterInstanceGroup.InstanceCount",
+      "MasterInstanceGroup.InstanceType",
+      "MasterInstanceGroup.Market",
+      "MasterInstanceGroup.Name",
+      "Placement",
+      "Placement.AvailabilityZone",
+      "ServiceAccessSecurityGroup",
+      "TaskInstanceFleets",
+      "TaskInstanceFleets.InstanceTypeConfigs",
+      "TaskInstanceFleets.InstanceTypeConfigs.BidPrice",
+      "TaskInstanceFleets.InstanceTypeConfigs.BidPriceAsPercentageOfOnDemandPrice",
+      "TaskInstanceFleets.InstanceTypeConfigs.Configurations",
+      "TaskInstanceFleets.InstanceTypeConfigs.Configurations.Classification",
+      "TaskInstanceFleets.InstanceTypeConfigs.Configurations.ConfigurationProperties",
+      "TaskInstanceFleets.InstanceTypeConfigs.Configurations.Configurations",
+      "TaskInstanceFleets.InstanceTypeConfigs.CustomAmiId",
+      "TaskInstanceFleets.InstanceTypeConfigs.EbsConfiguration",
+      "TaskInstanceFleets.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs",
+      "TaskInstanceFleets.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification",
+      "TaskInstanceFleets.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.Iops",
+      "TaskInstanceFleets.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.SizeInGB",
+      "TaskInstanceFleets.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.Throughput",
+      "TaskInstanceFleets.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.VolumeType",
+      "TaskInstanceFleets.InstanceTypeConfigs.EbsConfiguration.EbsBlockDeviceConfigs.VolumesPerInstance",
+      "TaskInstanceFleets.InstanceTypeConfigs.EbsConfiguration.EbsOptimized",
+      "TaskInstanceFleets.InstanceTypeConfigs.InstanceType",
+      "TaskInstanceFleets.InstanceTypeConfigs.Priority",
+      "TaskInstanceFleets.InstanceTypeConfigs.WeightedCapacity",
+      "TaskInstanceFleets.LaunchSpecifications",
+      "TaskInstanceFleets.LaunchSpecifications.OnDemandSpecification",
+      "TaskInstanceFleets.LaunchSpecifications.OnDemandSpecification.AllocationStrategy",
+      "TaskInstanceFleets.LaunchSpecifications.OnDemandSpecification.CapacityReservationOptions",
+      "TaskInstanceFleets.LaunchSpecifications.OnDemandSpecification.CapacityReservationOptions.CapacityReservationPreference",
+      "TaskInstanceFleets.LaunchSpecifications.OnDemandSpecification.CapacityReservationOptions.CapacityReservationResourceGroupArn",
+      "TaskInstanceFleets.LaunchSpecifications.OnDemandSpecification.CapacityReservationOptions.UsageStrategy",
+      "TaskInstanceFleets.LaunchSpecifications.SpotSpecification",
+      "TaskInstanceFleets.LaunchSpecifications.SpotSpecification.AllocationStrategy",
+      "TaskInstanceFleets.LaunchSpecifications.SpotSpecification.BlockDurationMinutes",
+      "TaskInstanceFleets.LaunchSpecifications.SpotSpecification.TimeoutAction",
+      "TaskInstanceFleets.LaunchSpecifications.SpotSpecification.TimeoutDurationMinutes",
+      "TaskInstanceFleets.Name",
+      "TaskInstanceFleets.ResizeSpecifications",
+      "TaskInstanceFleets.ResizeSpecifications.OnDemandResizeSpecification",
+      "TaskInstanceFleets.ResizeSpecifications.OnDemandResizeSpecification.AllocationStrategy",
+      "TaskInstanceFleets.ResizeSpecifications.OnDemandResizeSpecification.CapacityReservationOptions",
+      "TaskInstanceFleets.ResizeSpecifications.OnDemandResizeSpecification.CapacityReservationOptions.CapacityReservationPreference",
+      "TaskInstanceFleets.ResizeSpecifications.OnDemandResizeSpecification.CapacityReservationOptions.CapacityReservationResourceGroupArn",
+      "TaskInstanceFleets.ResizeSpecifications.OnDemandResizeSpecification.CapacityReservationOptions.UsageStrategy",
+      "TaskInstanceFleets.ResizeSpecifications.OnDemandResizeSpecification.TimeoutDurationMinutes",
+      "TaskInstanceFleets.ResizeSpecifications.SpotResizeSpecification",
+      "TaskInstanceFleets.ResizeSpecifications.SpotResizeSpecification.AllocationStrategy",
+      "TaskInstanceFleets.ResizeSpecifications.SpotResizeSpecification.TimeoutDurationMinutes",
+      "TaskInstanceFleets.TargetOnDemandCapacity",
+      "TaskInstanceFleets.TargetSpotCapacity",
+      "TaskInstanceGroups",
+      "TaskInstanceGroups.AutoScalingPolicy",
+      "TaskInstanceGroups.AutoScalingPolicy.Constraints",
+      "TaskInstanceGroups.AutoScalingPolicy.Constraints.MaxCapacity",
+      "TaskInstanceGroups.AutoScalingPolicy.Constraints.MinCapacity",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Action",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Action.Market",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration.AdjustmentType",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration.CoolDown",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Action.SimpleScalingPolicyConfiguration.ScalingAdjustment",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Description",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Name",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.ComparisonOperator",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Dimensions",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Dimensions.Key",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Dimensions.Value",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.EvaluationPeriods",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.MetricName",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Namespace",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Period",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Statistic",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Threshold",
+      "TaskInstanceGroups.AutoScalingPolicy.Rules.Trigger.CloudWatchAlarmDefinition.Unit",
+      "TaskInstanceGroups.BidPrice",
+      "TaskInstanceGroups.Configurations",
+      "TaskInstanceGroups.Configurations.Classification",
+      "TaskInstanceGroups.Configurations.ConfigurationProperties",
+      "TaskInstanceGroups.Configurations.Configurations",
+      "TaskInstanceGroups.CustomAmiId",
+      "TaskInstanceGroups.EbsConfiguration",
+      "TaskInstanceGroups.EbsConfiguration.EbsBlockDeviceConfigs",
+      "TaskInstanceGroups.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification",
+      "TaskInstanceGroups.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.Iops",
+      "TaskInstanceGroups.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.SizeInGB",
+      "TaskInstanceGroups.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.Throughput",
+      "TaskInstanceGroups.EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.VolumeType",
+      "TaskInstanceGroups.EbsConfiguration.EbsBlockDeviceConfigs.VolumesPerInstance",
+      "TaskInstanceGroups.EbsConfiguration.EbsOptimized",
+      "TaskInstanceGroups.InstanceCount",
+      "TaskInstanceGroups.InstanceType",
+      "TaskInstanceGroups.Market",
+      "TaskInstanceGroups.Name",
+      "TerminationProtected",
+      "UnhealthyNodeReplacement"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Steps": "array",
+      "PlacementGroupConfigs": "array",
+      "StepConcurrencyLevel": "scalar",
+      "EbsRootVolumeSize": "scalar",
+      "OSReleaseLabel": "scalar",
+      "Name": "scalar",
+      "ServiceRole": "scalar",
+      "LogUri": "scalar",
+      "BootstrapActions": "array",
+      "MasterPublicDNS": "scalar",
+      "Configurations": "array",
+      "ReleaseLabel": "scalar",
+      "Tags": "array",
+      "ManagedScalingPolicy": "object",
+      "LogEncryptionKmsKeyId": "scalar",
+      "AdditionalInfo": "object",
+      "AutoTerminationPolicy": "object",
+      "KerberosAttributes": "object",
+      "Applications": "array",
+      "AutoScalingRole": "scalar",
+      "CustomAmiId": "scalar",
+      "EbsRootVolumeIops": "scalar",
+      "Instances": "object",
+      "ScaleDownBehavior": "scalar",
+      "EbsRootVolumeThroughput": "scalar",
+      "JobFlowRole": "scalar",
+      "VisibleToAllUsers": "scalar",
+      "SecurityConfiguration": "scalar",
+      "Id": "scalar"
+    },
+    "EbsConfiguration": {
+      "EbsBlockDeviceConfigs": "array",
+      "EbsOptimized": "scalar"
+    },
+    "KeyValue": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "Configuration": {
+      "ConfigurationProperties": "object",
+      "Configurations": "array",
+      "Classification": "scalar"
+    },
+    "OnDemandResizingSpecification": {
+      "CapacityReservationOptions": "object",
+      "AllocationStrategy": "scalar",
+      "TimeoutDurationMinutes": "scalar"
+    },
+    "StepConfig": {
+      "HadoopJarStep": "object",
+      "ActionOnFailure": "scalar",
+      "Name": "scalar"
+    },
+    "InstanceFleetConfig": {
+      "TargetOnDemandCapacity": "scalar",
+      "TargetSpotCapacity": "scalar",
+      "LaunchSpecifications": "object",
+      "ResizeSpecifications": "object",
+      "InstanceTypeConfigs": "array",
+      "Name": "scalar"
+    },
+    "InstanceTypeConfig": {
+      "BidPrice": "scalar",
+      "WeightedCapacity": "scalar",
+      "EbsConfiguration": "object",
+      "Priority": "scalar",
+      "BidPriceAsPercentageOfOnDemandPrice": "scalar",
+      "CustomAmiId": "scalar",
+      "Configurations": "array",
+      "InstanceType": "scalar"
+    },
+    "SpotProvisioningSpecification": {
+      "AllocationStrategy": "scalar",
+      "TimeoutDurationMinutes": "scalar",
+      "TimeoutAction": "scalar",
+      "BlockDurationMinutes": "scalar"
+    },
+    "ScriptBootstrapActionConfig": {
+      "Path": "scalar",
+      "Args": "array"
+    },
+    "InstanceFleetResizingSpecifications": {
+      "OnDemandResizeSpecification": "object",
+      "SpotResizeSpecification": "object"
+    },
+    "InstanceFleetProvisioningSpecifications": {
+      "SpotSpecification": "object",
+      "OnDemandSpecification": "object"
+    },
+    "SimpleScalingPolicyConfiguration": {
+      "ScalingAdjustment": "scalar",
+      "CoolDown": "scalar",
+      "AdjustmentType": "scalar"
+    },
+    "PlacementGroupConfig": {
+      "InstanceRole": "scalar",
+      "PlacementStrategy": "scalar"
+    },
+    "OnDemandProvisioningSpecification": {
+      "CapacityReservationOptions": "object",
+      "AllocationStrategy": "scalar"
+    },
+    "ScalingTrigger": {
+      "CloudWatchAlarmDefinition": "object"
+    },
+    "ManagedScalingPolicy": {
+      "UtilizationPerformanceIndex": "scalar",
+      "ScalingStrategy": "scalar",
+      "ComputeLimits": "object"
+    },
+    "InstanceGroupConfig": {
+      "AutoScalingPolicy": "object",
+      "BidPrice": "scalar",
+      "InstanceCount": "scalar",
+      "EbsConfiguration": "object",
+      "CustomAmiId": "scalar",
+      "Configurations": "array",
+      "InstanceType": "scalar",
+      "Market": "scalar",
+      "Name": "scalar"
+    },
+    "HadoopJarStepConfig": {
+      "Args": "array",
+      "MainClass": "scalar",
+      "Jar": "scalar",
+      "StepProperties": "array"
+    },
+    "VolumeSpecification": {
+      "SizeInGB": "scalar",
+      "Throughput": "scalar",
+      "VolumeType": "scalar",
+      "Iops": "scalar"
+    },
+    "CloudWatchAlarmDefinition": {
+      "MetricName": "scalar",
+      "ComparisonOperator": "scalar",
+      "Statistic": "scalar",
+      "Dimensions": "array",
+      "Period": "scalar",
+      "EvaluationPeriods": "scalar",
+      "Unit": "scalar",
+      "Namespace": "scalar",
+      "Threshold": "scalar"
+    },
+    "AutoTerminationPolicy": {
+      "IdleTimeout": "scalar"
+    },
+    "KerberosAttributes": {
+      "KdcAdminPassword": "scalar",
+      "Realm": "scalar",
+      "ADDomainJoinPassword": "scalar",
+      "ADDomainJoinUser": "scalar",
+      "CrossRealmTrustPrincipalPassword": "scalar"
+    },
+    "JobFlowInstancesConfig": {
+      "MasterInstanceFleet": "object",
+      "AdditionalSlaveSecurityGroups": "array",
+      "CoreInstanceFleet": "object",
+      "CoreInstanceGroup": "object",
+      "Ec2SubnetIds": "array",
+      "HadoopVersion": "scalar",
+      "TerminationProtected": "scalar",
+      "UnhealthyNodeReplacement": "scalar",
+      "KeepJobFlowAliveWhenNoSteps": "scalar",
+      "Ec2KeyName": "scalar",
+      "MasterInstanceGroup": "object",
+      "Placement": "object",
+      "TaskInstanceFleets": "array",
+      "Ec2SubnetId": "scalar",
+      "TaskInstanceGroups": "array",
+      "ServiceAccessSecurityGroup": "scalar",
+      "EmrManagedSlaveSecurityGroup": "scalar",
+      "AdditionalMasterSecurityGroups": "array",
+      "EmrManagedMasterSecurityGroup": "scalar"
+    },
+    "ScalingAction": {
+      "Market": "scalar",
+      "SimpleScalingPolicyConfiguration": "object"
+    },
+    "EbsBlockDeviceConfig": {
+      "VolumeSpecification": "object",
+      "VolumesPerInstance": "scalar"
+    },
+    "ScalingRule": {
+      "Action": "object",
+      "Description": "scalar",
+      "Trigger": "object",
+      "Name": "scalar"
+    },
+    "ComputeLimits": {
+      "MaximumOnDemandCapacityUnits": "scalar",
+      "MaximumCapacityUnits": "scalar",
+      "MaximumCoreCapacityUnits": "scalar",
+      "MinimumCapacityUnits": "scalar",
+      "UnitType": "scalar"
+    },
+    "MetricDimension": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "BootstrapActionConfig": {
+      "ScriptBootstrapAction": "object",
+      "Name": "scalar"
+    },
+    "SpotResizingSpecification": {
+      "AllocationStrategy": "scalar",
+      "TimeoutDurationMinutes": "scalar"
+    },
+    "AutoScalingPolicy": {
+      "Rules": "array",
+      "Constraints": "object"
+    },
+    "OnDemandCapacityReservationOptions": {
+      "UsageStrategy": "scalar",
+      "CapacityReservationResourceGroupArn": "scalar",
+      "CapacityReservationPreference": "scalar"
+    },
+    "PlacementType": {
+      "AvailabilityZone": "scalar"
+    },
+    "ScalingConstraints": {
+      "MinCapacity": "scalar",
+      "MaxCapacity": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "Application": {
+      "AdditionalInfo": "object",
+      "Args": "array",
+      "Version": "scalar",
+      "Name": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Instances",
+      "JobFlowRole",
+      "Name",
+      "ServiceRole"
+    ],
+    "StepConfig": [
+      "HadoopJarStep",
+      "Name"
+    ],
+    "InstanceTypeConfig": [
+      "InstanceType"
+    ],
+    "SpotProvisioningSpecification": [
+      "TimeoutAction",
+      "TimeoutDurationMinutes"
+    ],
+    "ScriptBootstrapActionConfig": [
+      "Path"
+    ],
+    "SimpleScalingPolicyConfiguration": [
+      "ScalingAdjustment"
+    ],
+    "PlacementGroupConfig": [
+      "InstanceRole"
+    ],
+    "OnDemandProvisioningSpecification": [
+      "AllocationStrategy"
+    ],
+    "ScalingTrigger": [
+      "CloudWatchAlarmDefinition"
+    ],
+    "InstanceGroupConfig": [
+      "InstanceCount",
+      "InstanceType"
+    ],
+    "HadoopJarStepConfig": [
+      "Jar"
+    ],
+    "VolumeSpecification": [
+      "SizeInGB",
+      "VolumeType"
+    ],
+    "CloudWatchAlarmDefinition": [
+      "ComparisonOperator",
+      "MetricName",
+      "Period",
+      "Threshold"
+    ],
+    "KerberosAttributes": [
+      "KdcAdminPassword",
+      "Realm"
+    ],
+    "ScalingAction": [
+      "SimpleScalingPolicyConfiguration"
+    ],
+    "EbsBlockDeviceConfig": [
+      "VolumeSpecification"
+    ],
+    "ScalingRule": [
+      "Action",
+      "Name",
+      "Trigger"
+    ],
+    "ComputeLimits": [
+      "MaximumCapacityUnits",
+      "MinimumCapacityUnits",
+      "UnitType"
+    ],
+    "MetricDimension": [
+      "Key",
+      "Value"
+    ],
+    "BootstrapActionConfig": [
+      "Name",
+      "ScriptBootstrapAction"
+    ],
+    "AutoScalingPolicy": [
+      "Constraints",
+      "Rules"
+    ],
+    "PlacementType": [
+      "AvailabilityZone"
+    ],
+    "ScalingConstraints": [
+      "MaxCapacity",
+      "MinCapacity"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

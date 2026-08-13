@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Kinesis::StreamConsumer",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "ConsumerARN",
     "ConsumerCreationTimestamp",
@@ -18,5 +18,44 @@
     "ConsumerName",
     "StreamARN",
     "Tags"
-  ]
+  ],
+  "primaryIdentifier": [
+    "ConsumerARN"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "ConsumerCreationTimestamp": "scalar",
+      "ConsumerName": "scalar",
+      "ConsumerARN": "scalar",
+      "ConsumerStatus": "scalar",
+      "StreamARN": "scalar",
+      "Tags": "array"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "ConsumerName",
+      "StreamARN"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

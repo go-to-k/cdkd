@@ -611,6 +611,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
           'EvaluationInterval',
           'Absent from both the SDK PutMetricAlarm input and the aws-cdk-lib CfnAlarm L1 (a newer CFn-schema-only property ahead of SDK/CDK support); no wire path to forward it and no CDK app can emit it.',
         ],
+        ['EvaluationWindow', 'not yet implemented by cdkd'],
       ]),
     },
   ],
@@ -713,6 +714,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'WebAuthnUserVerification',
       ]),
       silentDrop: new Map<string, string>([
+        ['IssuerConfiguration', 'not yet implemented by cdkd'],
+        ['KeyConfiguration', 'not yet implemented by cdkd'],
         [
           'WebAuthnFactorConfiguration',
           'No SDK wire path: @aws-sdk/client-cognito-identity-provider has no field accepting SINGLE_FACTOR | MULTI_FACTOR_WITH_USER_VERIFICATION (not on CreateUserPool/UpdateUserPool, nor SetUserPoolMfaConfig.WebAuthnConfiguration which only carries RelyingPartyId/UserVerification); CC-API-registry-only property',
@@ -1028,7 +1031,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VpcEndpointId',
         'VpcPeeringConnectionId',
       ]),
-      silentDrop: new Map<string, string>(),
+      silentDrop: new Map<string, string>([['OdbNetworkArn', 'not yet implemented by cdkd']]),
     },
   ],
   [
@@ -1132,6 +1135,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>([
         ['Ipv4IpamPoolId', 'not yet implemented by cdkd'],
         ['Ipv4NetmaskLength', 'not yet implemented by cdkd'],
+        ['VpcEncryptionControl', 'not yet implemented by cdkd'],
       ]),
     },
   ],
@@ -1351,7 +1355,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Protocol',
         'SslPolicy',
       ]),
-      silentDrop: new Map<string, string>(),
+      silentDrop: new Map<string, string>([['Tags', 'not yet implemented by cdkd']]),
     },
   ],
   [
@@ -2016,6 +2020,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['CopyTagsToSnapshot', 'not yet implemented by cdkd'],
         ['DBInstanceParameterGroupName', 'not yet implemented by cdkd'],
         ['EnableCloudwatchLogsExports', 'not yet implemented by cdkd'],
+        ['GlobalClusterIdentifier', 'not yet implemented by cdkd'],
+        ['NetworkType', 'not yet implemented by cdkd'],
         ['RestoreToTime', 'not yet implemented by cdkd'],
         ['RestoreType', 'not yet implemented by cdkd'],
         ['ServerlessScalingConfiguration', 'not yet implemented by cdkd'],
@@ -2648,6 +2654,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>([
         ['ApplicationConfig', 'not yet implemented by cdkd'],
         ['DataProtectionConfig', 'not yet implemented by cdkd'],
+        ['MonetizationConfig', 'not yet implemented by cdkd'],
         ['OnSourceDDoSProtectionConfig', 'not yet implemented by cdkd'],
       ]),
     },

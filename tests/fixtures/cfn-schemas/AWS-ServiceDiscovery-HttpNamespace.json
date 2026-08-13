@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ServiceDiscovery::HttpNamespace",
-  "generatedAt": "2026-07-17",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "Description",
@@ -17,5 +17,39 @@
   ],
   "primaryIdentifier": [
     "Id"
-  ]
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Id": "scalar",
+      "Description": "scalar",
+      "Arn": "scalar",
+      "Tags": "array",
+      "Name": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Name"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

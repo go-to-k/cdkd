@@ -54,10 +54,10 @@ None. Every audited nested CFn key either matches an SDK member spelling or is e
 | `AWS::S3::Bucket` | `LifecycleConfiguration.TransitionDefaultMinimumObjectSize` | Written by applyLifecycleConfiguration DIRECTLY on the PutBucketLifecycleConfigurationRequest (the SDK hoists it out of `LifecycleConfiguration`, where CFn nests it), so the audited chain can never resolve: a terminal rename redirects WITHIN the config object and cannot express a request-level hoist. Delivery is proven by the s3-replication-and-filter integ read-back (issue #1495) and the write is pinned by name in the #1495 write-evidence unit test (issues #1520 / #1540). |
 | `AWS::S3::Bucket` | `NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled` | Presence-encoded: the SDK EventBridgeConfiguration is an EMPTY struct, so the CFn boolean has no member to map onto — applyNotificationConfiguration writes `EventBridgeConfiguration: {}` when the COERCED boolean is true and omits the block when it is false, REFUSING any value coerceCfnBoolean cannot read (issue #1759). There is no write the terminal-rename mechanism could redirect to (issue #1393). |
 | `AWS::CloudFront::Distribution` | `S3Origin` | Legacy pre-2012 single-origin form (LegacyS3Origin definition), sibling of CustomOrigin; superseded by Origins[]. Invisible to the KEY pass because the StreamingDistribution API still has a same-spelled S3Origin member — the definition pass (issue #1378) is what catches it. |
-| `AWS::S3::Bucket` | `TableNamespace` | Member of the S3TablesDestination definition, reachable only from the MetadataTableConfiguration top-level the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
-| `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 | `AWS::S3::Bucket` | `TableName` | Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 | `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
+| `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
+| `AWS::S3::Bucket` | `TableNamespace` | Member of the S3TablesDestination definition, reachable only from the MetadataTableConfiguration top-level the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 | `AWS::S3::Bucket` | `TableName` | Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 | `AWS::S3::Bucket` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
 
@@ -170,20 +170,20 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Events::Rule` | `PlacementConstraint` | `Type` | definition | SDK interface `PlacementConstraint` has no `Type` member |
 | `AWS::Glue::Crawler` | `DynamoDBTarget` | `ScanAll` | definition | SDK interface `DynamoDBTarget` has no `ScanAll` member |
 | `AWS::Lambda::EventSourceMapping` | `#top` | `Tags` | wrapper | — |
-| `AWS::S3::Bucket` | `Destination` | `BucketArn` | definition | SDK interface `Destination` has no `BucketArn` member |
-| `AWS::S3::Bucket` | `Destination` | `BucketAccountId` | definition | SDK interface `Destination` has no `BucketAccountId` member |
-| `AWS::S3::Bucket` | `Destination` | `Format` | definition | SDK interface `Destination` has no `Format` member |
-| `AWS::S3::Bucket` | `Destination` | `Prefix` | definition | SDK interface `Destination` has no `Prefix` member |
+| `AWS::S3::Bucket` | `ReplicationRule` | `Id` | definition | SDK interface `ReplicationRule` has no `Id` member |
+| `AWS::S3::Bucket` | `S3KeyFilter` | `Rules` | definition | SDK interface `S3KeyFilter` has no `Rules` member |
 | `AWS::S3::Bucket` | `AnalyticsConfiguration` | `Prefix` | definition | SDK interface `AnalyticsConfiguration` has no `Prefix` member |
-| `AWS::S3::Bucket` | `BucketEncryption` | `ServerSideEncryptionConfiguration` | wrapper | — |
+| `AWS::S3::Bucket` | `Destination` | `BucketArn` | definition | SDK interface `Destination` has no `BucketArn` member |
+| `AWS::S3::Bucket` | `Destination` | `Format` | definition | SDK interface `Destination` has no `Format` member |
+| `AWS::S3::Bucket` | `Destination` | `BucketAccountId` | definition | SDK interface `Destination` has no `BucketAccountId` member |
+| `AWS::S3::Bucket` | `Destination` | `Prefix` | definition | SDK interface `Destination` has no `Prefix` member |
 | `AWS::S3::Bucket` | `IntelligentTieringConfiguration` | `Prefix` | definition | SDK interface `IntelligentTieringConfiguration` has no `Prefix` member |
-| `AWS::S3::Bucket` | `InventoryConfiguration` | `Enabled` | definition | SDK interface `InventoryConfiguration` has no `Enabled` member |
-| `AWS::S3::Bucket` | `InventoryConfiguration` | `Prefix` | definition | SDK interface `InventoryConfiguration` has no `Prefix` member |
 | `AWS::S3::Bucket` | `MetricsConfiguration` | `AccessPointArn` | definition | SDK interface `MetricsConfiguration` has no `AccessPointArn` member |
 | `AWS::S3::Bucket` | `MetricsConfiguration` | `Prefix` | definition | SDK interface `MetricsConfiguration` has no `Prefix` member |
-| `AWS::S3::Bucket` | `S3KeyFilter` | `Rules` | definition | SDK interface `S3KeyFilter` has no `Rules` member |
-| `AWS::S3::Bucket` | `ReplicationRule` | `Id` | definition | SDK interface `ReplicationRule` has no `Id` member |
 | `AWS::S3::Bucket` | `MetadataConfiguration` | `Destination` | definition | SDK interface `MetadataConfiguration` has no `Destination` member |
+| `AWS::S3::Bucket` | `BucketEncryption` | `ServerSideEncryptionConfiguration` | wrapper | — |
+| `AWS::S3::Bucket` | `InventoryConfiguration` | `Enabled` | definition | SDK interface `InventoryConfiguration` has no `Enabled` member |
+| `AWS::S3::Bucket` | `InventoryConfiguration` | `Prefix` | definition | SDK interface `InventoryConfiguration` has no `Prefix` member |
 
 ## Audited targets
 
