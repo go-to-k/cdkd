@@ -104,6 +104,67 @@ describe('parseEcrUri', () => {
     const parsed = parseEcrUri('123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn/repo:tag');
     expect(parsed?.region).toBe('cn-north-1');
   });
+
+  // ---------- partition URL suffixes (issue #1758) ----------
+  // The host suffix is derived from the region via
+  // `derivePartitionAndUrlSuffix`, so every partition the shared helper knows
+  // classifies as ECR. Each non-commercial case is paired with a commercial
+  // counter-case asserting the unchanged parse.
+
+  it('parses a us-iso region (.c2s.ic.gov) — commercial parse unchanged', () => {
+    expect(parseEcrUri('123456789012.dkr.ecr.us-iso-east-1.c2s.ic.gov/my-repo:abcdef1234')).toEqual({
+      accountId: '123456789012',
+      region: 'us-iso-east-1',
+      repository: 'my-repo',
+      tag: 'abcdef1234',
+    });
+    expect(parseEcrUri('123456789012.dkr.ecr.us-east-1.amazonaws.com/my-repo:abcdef1234')).toEqual({
+      accountId: '123456789012',
+      region: 'us-east-1',
+      repository: 'my-repo',
+      tag: 'abcdef1234',
+    });
+  });
+
+  it('parses a us-isob region (.sc2s.sgov.gov) and a us-gov region (.amazonaws.com)', () => {
+    expect(parseEcrUri('123456789012.dkr.ecr.us-isob-east-1.sc2s.sgov.gov/repo:tag')).toEqual({
+      accountId: '123456789012',
+      region: 'us-isob-east-1',
+      repository: 'repo',
+      tag: 'tag',
+    });
+    // GovCloud shares the commercial suffix — the mapping is not "anything
+    // non-commercial gets a different host".
+    expect(parseEcrUri('123456789012.dkr.ecr.us-gov-west-1.amazonaws.com/repo:tag')).toEqual({
+      accountId: '123456789012',
+      region: 'us-gov-west-1',
+      repository: 'repo',
+      tag: 'tag',
+    });
+  });
+
+  it('rejects a host whose suffix is not the one that region uses', () => {
+    // Widening the suffix must not turn the pattern into "any host": a
+    // look-alike registry cdkd does not own would otherwise get a docker login.
+    expect(parseEcrUri('123456789012.dkr.ecr.us-east-1.example.com/repo:tag')).toBeUndefined();
+    // ...nor may a commercial region borrow the aws-cn suffix.
+    expect(parseEcrUri('123456789012.dkr.ecr.us-east-1.amazonaws.com.cn/repo:tag')).toBeUndefined();
+  });
+
+  it('keeps parsing a nested repository path under a non-commercial suffix', () => {
+    expect(parseEcrUri('123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn/team/app:v1')).toEqual({
+      accountId: '123456789012',
+      region: 'cn-north-1',
+      repository: 'team/app',
+      tag: 'v1',
+    });
+    expect(parseEcrUri('123456789012.dkr.ecr.us-east-1.amazonaws.com/team/app:v1')).toEqual({
+      accountId: '123456789012',
+      region: 'us-east-1',
+      repository: 'team/app',
+      tag: 'v1',
+    });
+  });
 });
 
 describe('pullEcrImage', () => {
@@ -632,5 +693,68 @@ describe('pullEcrImage', () => {
 
     const assumeRoleCalls = stsSendMock.mock.calls.filter((c) => c[0]._kind === 'AssumeRole');
     expect(assumeRoleCalls).toHaveLength(2);
+  });
+
+  // ---------- docker login endpoint fallback (issue #1758) ----------
+  // `ecrLogin` is private and only reachable through `pullEcrImage` — the
+  // entry point every production caller uses (`ecs-task-runner`,
+  // `local invoke`, `local start-api`, `local invoke-agentcore`). The fallback
+  // fires only when AWS reports no `proxyEndpoint`, so each case omits it.
+
+  const loginEndpointOf = (): string => {
+    const loginCall = runDockerMock.mock.calls.find(
+      ([args]) => Array.isArray(args) && args[0] === 'login'
+    );
+    expect(loginCall).toBeDefined();
+    return (loginCall![0] as string[])[4]!;
+  };
+
+  it('login endpoint fallback derives the URL suffix from the image region (aws-cn)', async () => {
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [{ authorizationToken: Buffer.from('AWS:dummypw').toString('base64') }],
+    });
+    process.env['AWS_REGION'] = 'cn-north-1';
+    await pullEcrImage('111111111111.dkr.ecr.cn-north-1.amazonaws.com.cn/r:t', {
+      skipPull: false,
+    });
+    expect(loginEndpointOf()).toBe('https://111111111111.dkr.ecr.cn-north-1.amazonaws.com.cn');
+  });
+
+  it('login endpoint fallback stays byte-identical in the commercial partition', async () => {
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [{ authorizationToken: Buffer.from('AWS:dummypw').toString('base64') }],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+    await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', { skipPull: false });
+    expect(loginEndpointOf()).toBe('https://111111111111.dkr.ecr.us-east-1.amazonaws.com');
+  });
+
+  it('login endpoint fallback derives the URL suffix in us-iso too', async () => {
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [{ authorizationToken: Buffer.from('AWS:dummypw').toString('base64') }],
+    });
+    process.env['AWS_REGION'] = 'us-iso-east-1';
+    await pullEcrImage('111111111111.dkr.ecr.us-iso-east-1.c2s.ic.gov/r:t', { skipPull: false });
+    expect(loginEndpointOf()).toBe('https://111111111111.dkr.ecr.us-iso-east-1.c2s.ic.gov');
+  });
+
+  it('an AWS-reported proxyEndpoint still wins over the derived fallback', async () => {
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://111111111111.dkr.ecr.cn-north-1.amazonaws.com.cn',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'cn-north-1';
+    await pullEcrImage('111111111111.dkr.ecr.cn-north-1.amazonaws.com.cn/r:t', {
+      skipPull: false,
+    });
+    expect(loginEndpointOf()).toBe('https://111111111111.dkr.ecr.cn-north-1.amazonaws.com.cn');
   });
 });

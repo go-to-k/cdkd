@@ -192,6 +192,55 @@ describe('uploadCfnTemplate', () => {
       /^https:\/\/us-east-bucket\.s3\.us-east-1\.amazonaws\.com\/cdkd-migrate-tmp\/S\/\d+\.json$/
     );
   });
+
+  // ---------- partition URL suffixes (issue #1758) ----------
+  // The TemplateURL host suffix is derived from the bucket's region, so a
+  // non-commercial bucket gets a hostname CloudFormation can actually fetch.
+  // Each case is paired with a commercial counter-case asserting the
+  // unchanged (byte-identical) URL.
+
+  it('derives the TemplateURL host suffix from the bucket region (aws-cn)', async () => {
+    resolveBucketRegionMock.mockResolvedValueOnce('cn-north-1');
+    const { url } = await uploadCfnTemplate({
+      bucket: 'cn-bucket',
+      body: 'body',
+      stackName: 'S',
+    });
+    expect(url).toMatch(
+      /^https:\/\/cn-bucket\.s3\.cn-north-1\.amazonaws\.com\.cn\/cdkd-migrate-tmp\/S\/\d+\.json$/
+    );
+
+    resolveBucketRegionMock.mockResolvedValueOnce('eu-west-1');
+    const commercial = await uploadCfnTemplate({
+      bucket: 'cn-bucket',
+      body: 'body',
+      stackName: 'S',
+    });
+    expect(commercial.url).toMatch(
+      /^https:\/\/cn-bucket\.s3\.eu-west-1\.amazonaws\.com\/cdkd-migrate-tmp\/S\/\d+\.json$/
+    );
+  });
+
+  it('derives the TemplateURL host suffix in us-iso / us-isob, and keeps us-gov commercial', async () => {
+    resolveBucketRegionMock.mockResolvedValueOnce('us-iso-east-1');
+    const iso = await uploadCfnTemplate({ bucket: 'b', body: 'body', stackName: 'S' });
+    expect(iso.url).toMatch(
+      /^https:\/\/b\.s3\.us-iso-east-1\.c2s\.ic\.gov\/cdkd-migrate-tmp\/S\/\d+\.json$/
+    );
+
+    resolveBucketRegionMock.mockResolvedValueOnce('us-isob-east-1');
+    const isob = await uploadCfnTemplate({ bucket: 'b', body: 'body', stackName: 'S' });
+    expect(isob.url).toMatch(
+      /^https:\/\/b\.s3\.us-isob-east-1\.sc2s\.sgov\.gov\/cdkd-migrate-tmp\/S\/\d+\.json$/
+    );
+
+    // GovCloud shares the commercial suffix.
+    resolveBucketRegionMock.mockResolvedValueOnce('us-gov-west-1');
+    const gov = await uploadCfnTemplate({ bucket: 'b', body: 'body', stackName: 'S' });
+    expect(gov.url).toMatch(
+      /^https:\/\/b\.s3\.us-gov-west-1\.amazonaws\.com\/cdkd-migrate-tmp\/S\/\d+\.json$/
+    );
+  });
 });
 
 describe('findLargeInlineResources', () => {

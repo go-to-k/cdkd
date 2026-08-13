@@ -5,6 +5,7 @@ import {
   runDockerForeground,
   runDockerStreaming,
 } from '../utils/docker-cmd.js';
+import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 
@@ -38,8 +39,19 @@ import { getLogger } from '../utils/logger.js';
  *     `--no-pull` or pre-pull manually.
  */
 
-/** Regex matching the `<acct>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` shape. */
-const ECR_URI_REGEX = /^(\d{12})\.dkr\.ecr\.([^.]+)\.amazonaws\.com(?:\.cn)?\/([^:]+):(.+)$/;
+/**
+ * Regex matching the `<acct>.dkr.ecr.<region>.<urlSuffix>/<repo>:<tag>` shape.
+ *
+ * The host suffix is CAPTURED rather than spelled out (issue #1758): the
+ * previous pattern hardcoded `amazonaws.com` with an optional `.cn` tail, so a
+ * `us-iso*` registry (`c2s.ic.gov` / `sc2s.sgov.gov`) never matched and the
+ * caller silently classified a real ECR image as a user-managed one — skipping
+ * the `docker login` it needs. {@link parseEcrUri} checks the captured suffix
+ * against `derivePartitionAndUrlSuffix(region).urlSuffix`, so every partition
+ * the shared helper knows is matched with no second literal to keep in sync
+ * here.
+ */
+const ECR_URI_REGEX = /^(\d{12})\.dkr\.ecr\.([^.]+)\.([^/]+)\/([^:]+):(.+)$/;
 
 export interface ParsedEcrUri {
   accountId: string;
@@ -56,11 +68,16 @@ export interface ParsedEcrUri {
 export function parseEcrUri(imageUri: string): ParsedEcrUri | undefined {
   const m = ECR_URI_REGEX.exec(imageUri);
   if (!m) return undefined;
+  const region = m[2]!;
+  // The captured suffix must be the one the region's partition actually uses.
+  // Accepting ANY suffix would classify `<acct>.dkr.ecr.<region>.example.com`
+  // as ECR and point a `docker login` at a registry cdkd does not own.
+  if (m[3] !== derivePartitionAndUrlSuffix(region).urlSuffix) return undefined;
   return {
     accountId: m[1]!,
-    region: m[2]!,
-    repository: m[3]!,
-    tag: m[4]!,
+    region,
+    repository: m[4]!,
+    tag: m[5]!,
   };
 }
 
@@ -340,7 +357,13 @@ async function ecrLogin(client: ECRClient, accountId: string, region: string): P
       'ECR authorization token has unexpected shape (missing username/password)'
     );
   }
-  const endpoint = authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.amazonaws.com`;
+  // The suffix is DERIVED from the region (issue #1758). Hardcoding
+  // `amazonaws.com` here handed `docker login` a hostname that does not
+  // resolve outside the commercial partition whenever AWS reported no
+  // `proxyEndpoint`. Commercial output is byte-identical.
+  const endpoint =
+    authData.proxyEndpoint ||
+    `https://${accountId}.dkr.ecr.${region}.${derivePartitionAndUrlSuffix(region).urlSuffix}`;
 
   try {
     await runDockerStreaming(['login', '--username', username, '--password-stdin', endpoint], {
