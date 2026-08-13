@@ -12,6 +12,12 @@ import {
   type NestedStackProviderContext,
 } from '../../../src/provisioning/nested-stack-context.js';
 import type { StackState } from '../../../src/types/state.js';
+import {
+  isMarkedNonRetryable,
+  isRetryableTransientError,
+  markNonRetryable,
+  RETRYABLE_ERROR_MESSAGE_PATTERNS,
+} from '../../../src/deployment/retryable-errors.js';
 
 // Mock DeployEngine so create / update don't require a real S3 backend.
 // The mock records every constructor call AND the AsyncLocalStorage
@@ -910,6 +916,148 @@ describe('NestedStackProvider', () => {
       );
 
       expect(result).toBeUndefined();
+    });
+
+    // Issue #1849: `nestedStackChildFailureMessage` interpolates
+    // `<parent>~<childLogicalId>` — fully user-controlled — into a
+    // cdkd-authored message, and `retryable-errors.ts` classifies by
+    // SUBSTRING. Every assertion below discriminates the MARKER rather than
+    // the wording: each pairs the real thrown error against a CONTROL built
+    // from the SAME message text, so a future reword of the builder cannot
+    // satisfy the test while the fix is gone.
+    describe('non-retryable marking (issue #1849)', () => {
+      // The child stack name is `${parentStackName}~${logicalId}`, so a
+      // logical id carrying the pattern is enough — this is an ordinary
+      // composite CDK id, not a contrived one.
+      const POISON_ID = 'MyDependencyViolationSub';
+
+      /** Drive `delete()` and return whatever it threw. */
+      async function deleteAndCatch(
+        logicalId: string,
+        ctx = makeContext()
+      ): Promise<unknown> {
+        const provider = new NestedStackProvider();
+        return withNestedStackContext(ctx, () =>
+          provider
+            .delete(
+              logicalId,
+              'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+              'AWS::CloudFormation::Stack'
+            )
+            .then(
+              () => {
+                throw new Error('expected delete() to throw');
+              },
+              (e: unknown) => e
+            )
+        );
+      }
+
+      // PREMISE. Without this the whole block could pass vacuously against a
+      // message that never carried a retryable pattern at all — the marker
+      // would be doing nothing and every assertion below would still be green.
+      it('PREMISE: the pattern is in the table AND reaches the message', async () => {
+        expect(RETRYABLE_ERROR_MESSAGE_PATTERNS).toContain('DependencyViolation');
+        childCounts.value = { deletedCount: 0, errorCount: 1, interrupted: true };
+        const err = (await deleteAndCatch(POISON_ID)) as Error;
+        expect(err.message).toContain('DependencyViolation');
+        expect(err.message).toContain(`Parent~${POISON_ID}`);
+      });
+
+      // MARKED ARM — the child destroy was INTERRUPTED. A retry would not heal
+      // the failure; it would re-enter a destroy the user just aborted
+      // (`draining` in destroy-runner.ts is a per-invocation local, so the
+      // second attempt starts with the interrupt forgotten).
+      it('an INTERRUPTED child failure is NOT retryable, despite the substring', async () => {
+        childCounts.value = { deletedCount: 0, errorCount: 2, interrupted: true };
+        const err = (await deleteAndCatch(POISON_ID)) as Error;
+
+        expect(isMarkedNonRetryable(err)).toBe(true);
+        expect(isRetryableTransientError(err, err.message)).toBe(false);
+      });
+
+      // CONTROL for the arm above. Pins the MARKER, not the wording: an
+      // UNMARKED error carrying the byte-identical message is still
+      // classified retryable, so scrubbing the logical id out of the message
+      // would not satisfy the assertion above.
+      it('CONTROL: the SAME message unmarked is still classified retryable', async () => {
+        childCounts.value = { deletedCount: 0, errorCount: 2, interrupted: true };
+        const err = (await deleteAndCatch(POISON_ID)) as Error;
+
+        const control = new Error(err.message);
+        expect(control.message).toBe(err.message);
+        expect(isMarkedNonRetryable(control)).toBe(false);
+        expect(isRetryableTransientError(control, control.message)).toBe(true);
+      });
+
+      // UNMARKED ARM — a plain child failure with no interrupt. A whole-child
+      // re-destroy CAN legitimately succeed (a resource still draining on
+      // attempt 1 may be gone on attempt 2), so this arm must stay retryable.
+      // The row exists so a later blanket-mark of the class breaks LOUDLY
+      // instead of silently converting a recoverable failure into a terminal
+      // one.
+      it('a NON-interrupted child failure stays retryable — the arm can heal', async () => {
+        childCounts.value = { deletedCount: 0, errorCount: 2, interrupted: false };
+        const err = (await deleteAndCatch(POISON_ID)) as Error;
+
+        expect(isMarkedNonRetryable(err)).toBe(false);
+        expect(isRetryableTransientError(err, err.message)).toBe(true);
+      });
+
+      // The two arms must be distinguished by the MARKER alone, not by the
+      // failure count or by anything else that happens to differ — otherwise
+      // the pair above could pass for the wrong reason.
+      it('the two arms differ ONLY by the marker, not by the message', async () => {
+        childCounts.value = { deletedCount: 0, errorCount: 2, interrupted: true };
+        const marked = (await deleteAndCatch(POISON_ID)) as Error;
+        childCounts.value = { deletedCount: 0, errorCount: 2, interrupted: false };
+        const unmarked = (await deleteAndCatch(POISON_ID)) as Error;
+
+        // Same failure count, same child, different interrupt clause only.
+        expect(marked.message).toContain('2 resource(s) failed to delete');
+        expect(unmarked.message).toContain('2 resource(s) failed to delete');
+        expect(isMarkedNonRetryable(marked)).toBe(true);
+        expect(isMarkedNonRetryable(unmarked)).toBe(false);
+      });
+
+      // MARKED ARM — the context-wiring refusal, the one arm of this provider
+      // that can never heal: the store is read from AsyncLocalStorage and a
+      // retry runs in the SAME async context as the first attempt.
+      it('the outside-withNestedStackContext refusal is NOT retryable', async () => {
+        const provider = new NestedStackProvider();
+        const err = await provider
+          .delete(
+            'Child',
+            'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+            'AWS::CloudFormation::Stack'
+          )
+          .then(
+            () => undefined,
+            (e: unknown) => e as Error
+          );
+
+        expect(err).toBeInstanceOf(Error);
+        expect(err!.message).toMatch(/invoked outside withNestedStackContext/);
+        expect(isMarkedNonRetryable(err)).toBe(true);
+        // CONTROL: the wording alone carries no retryable substring today, so
+        // an unmarked twin is already classified terminal. That is exactly why
+        // the marker is the DECLARATION here rather than a fix for a live
+        // mis-classification — and why this control is a `false`, not a `true`.
+        expect(isRetryableTransientError(new Error(err!.message), err!.message)).toBe(false);
+      });
+
+      // The destroy runner's own `Too Many Requests` arm is a RAW message test
+      // that bypasses the shared classifier, so it is gated on the marker
+      // separately (destroy-runner.ts). Pin that a marked refusal beats a
+      // co-occurring throttle phrase, which is the shape that gate exists for.
+      it('the marker beats a co-occurring throttle signal', async () => {
+        childCounts.value = { deletedCount: 0, errorCount: 1, interrupted: true };
+        const err = (await deleteAndCatch('ThrottlingSub')) as Error;
+        const throttled = markNonRetryable(
+          new Error(`${err.message} (Too Many Requests)`)
+        );
+        expect(isRetryableTransientError(throttled, throttled.message)).toBe(false);
+      });
     });
 
     it('returns void (= deleted) when the child skipped nothing', async () => {
