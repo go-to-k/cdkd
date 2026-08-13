@@ -9,7 +9,9 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
     sts: {
       send: vi.fn().mockResolvedValue({
         Account: '123456789012',
-        Arn: 'arn:aws:iam::123456789012:user/test',
+        // Only `Account` is read; the ARN is partition-correct anyway so a
+        // future consumer deriving the partition from it is not misled.
+        Arn: `arn:${mockS3Region.value.startsWith('cn-') ? 'aws-cn' : 'aws'}:iam::123456789012:user/test`,
       }),
     },
     ec2: { send: vi.fn() },
@@ -56,6 +58,7 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
  */
 describe('AWS::S3::Bucket host attributes: resolver and provider agree (issue #1745)', () => {
   const ATTRIBUTES = [
+    'Arn',
     'DomainName',
     'RegionalDomainName',
     'DualStackDomainName',
@@ -99,6 +102,11 @@ describe('AWS::S3::Bucket host attributes: resolver and provider agree (issue #1
         const recorded = await provider.getAttribute('my-bucket', 'AWS::S3::Bucket', attribute);
         expect(resolved, `${region} ${attribute}`).toBe(recorded);
       }
+
+      // Every one of these is templated from the bucket name + region, so
+      // neither side may reach S3 to answer (the property the pre-existing
+      // `getAttribute` suite pins for the provider half).
+      expect(mockSend).not.toHaveBeenCalled();
     });
   }
 

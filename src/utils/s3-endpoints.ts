@@ -66,7 +66,30 @@ export const S3_WEBSITE_ENDPOINT_LEGACY_DASH_REGIONS: ReadonlySet<string> = new 
   'us-west-2',
 ]);
 
-/** `<bucket>.s3.<urlSuffix>` — the partition-global (non-regional) domain name. */
+/** `arn:<partition>:s3:::<bucket>` — the bucket ARN (no region / account field). */
+export function s3BucketArn(bucketName: string, region: string): string {
+  return `arn:${derivePartitionAndUrlSuffix(region).partition}:s3:::${bucketName}`;
+}
+
+/**
+ * `<bucket>.s3.<urlSuffix>` — the partition-global (non-regional) domain name.
+ *
+ * **This host does not RESOLVE outside the commercial partition, and that is
+ * not something this module can fix.** S3's partition-global endpoint exists
+ * only in `aws`: `s3.amazonaws.com.cn` is NXDOMAIN (probed 2026-08-13), and in
+ * GovCloud the commercial `<bucket>.s3.amazonaws.com` resolves to COMMERCIAL S3,
+ * which answers `NoSuchBucket`. Only the regional / dual-stack / website forms
+ * have a real non-commercial spelling.
+ *
+ * The suffix is still derived rather than hardcoded, because the alternative —
+ * inventing the REGIONAL form here — would make cdkd's `Fn::GetAtt DomainName`
+ * disagree with what CloudFormation returns, which is the compatibility cdkd
+ * exists to keep. This spelling matches `aws-cdk-lib`'s own
+ * `Bucket.fromBucketAttributes` (`bucketDomainName: <bucket>.s3.<urlSuffix>`),
+ * the only AWS-authored answer available without a non-commercial account.
+ * Settling it against real CloudFormation is issue
+ * [#1809](https://github.com/go-to-k/cdkd/issues/1809).
+ */
 export function s3BucketDomainName(bucketName: string, region: string): string {
   return `${bucketName}.s3.${derivePartitionAndUrlSuffix(region).urlSuffix}`;
 }

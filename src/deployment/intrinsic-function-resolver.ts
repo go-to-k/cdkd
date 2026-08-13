@@ -20,6 +20,7 @@ import { assumeRoleForCrossAccountStateRead, parseIamRoleArn } from '../utils/ro
 import { resolveCrossAccountStateBucket } from '../utils/aws-region-resolver.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import {
+  s3BucketArn,
   s3BucketDomainName,
   s3BucketDualStackDomainName,
   s3BucketRegionalDomainName,
@@ -1898,7 +1899,7 @@ export class IntrinsicFunctionResolver {
     if (resourceType === 'AWS::S3::Bucket') {
       switch (attributeName) {
         case 'Arn':
-          return `arn:${partition}:s3:::${physicalId}`;
+          return s3BucketArn(physicalId, region);
         case 'DomainName':
           return s3BucketDomainName(physicalId, region);
         case 'RegionalDomainName':

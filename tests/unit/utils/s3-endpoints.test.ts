@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import { RegionInfo } from 'aws-cdk-lib/region-info';
 import {
   S3_WEBSITE_ENDPOINT_LEGACY_DASH_REGIONS,
+  s3BucketArn,
   s3BucketDomainName,
   s3BucketDualStackDomainName,
   s3BucketRegionalDomainName,
@@ -56,11 +57,31 @@ describe('S3 bucket endpoint construction (issue #1745)', () => {
 
     it('keeps the commercial suffix for GovCloud, which has none of its own', () => {
       // The one non-commercial partition whose URL suffix IS `amazonaws.com` —
-      // so this pair is what distinguishes "derives the suffix" from "swaps in
-      // a non-commercial suffix whenever the region is not commercial".
+      // so this is what distinguishes "derives the suffix" from "swaps in a
+      // non-commercial suffix whenever the region is not commercial".
       expect(s3BucketRegionalDomainName('my-bucket', 'us-gov-west-1')).toBe(
         'my-bucket.s3.us-gov-west-1.amazonaws.com'
       );
+      expect(s3BucketArn('my-bucket', 'us-gov-west-1')).toBe('arn:aws-us-gov:s3:::my-bucket');
+    });
+
+    it('derives the ARN partition, which is not decidable from the suffix', () => {
+      expect(s3BucketArn('b', 'us-east-1')).toBe('arn:aws:s3:::b');
+      expect(s3BucketArn('b', 'cn-north-1')).toBe('arn:aws-cn:s3:::b');
+      expect(s3BucketArn('b', 'us-iso-east-1')).toBe('arn:aws-iso:s3:::b');
+    });
+
+    // NOT a fence on a value that works: `DomainName` is S3's partition-GLOBAL
+    // host, and that endpoint exists only in the commercial partition —
+    // `s3.amazonaws.com.cn` is NXDOMAIN, and GovCloud's `…s3.amazonaws.com`
+    // resolves to COMMERCIAL S3. cdkd emits the same spelling `aws-cdk-lib`'s
+    // own `Bucket.fromBucketAttributes` does, because inventing the regional
+    // form would diverge from whatever CloudFormation returns there. Pinned so
+    // the behavior is deliberate and visible; settling it against real CFn is
+    // issue #1809, and a future fix should CHANGE these lines, not work around
+    // them.
+    it('pins the known-unresolvable global DomainName outside commercial (issue #1809)', () => {
+      expect(s3BucketDomainName('my-bucket', 'cn-north-1')).toBe('my-bucket.s3.amazonaws.com.cn');
       expect(s3BucketDomainName('my-bucket', 'us-gov-west-1')).toBe('my-bucket.s3.amazonaws.com');
     });
   });
@@ -129,9 +150,14 @@ describe('S3 bucket endpoint construction (issue #1745)', () => {
     });
 
     it('derives every known region the URL suffix AWS publishes for it', () => {
-      for (const region of regionsWithEndpoint) {
+      // Counted, not `continue`d past: a `domainSuffix` that stopped resolving
+      // would otherwise leave this test asserting NOTHING while the endpoint
+      // floor above stayed green (it counts a different fact).
+      const withSuffix = regionsWithEndpoint.filter((r) => r.domainSuffix);
+      expect(withSuffix.length).toBeGreaterThanOrEqual(40);
+
+      for (const region of withSuffix) {
         const suffix = region.domainSuffix;
-        if (!suffix) continue;
         expect(s3BucketDomainName('b', region.name), region.name).toBe(`b.s3.${suffix}`);
         expect(s3BucketRegionalDomainName('b', region.name), region.name).toBe(
           `b.s3.${region.name}.${suffix}`

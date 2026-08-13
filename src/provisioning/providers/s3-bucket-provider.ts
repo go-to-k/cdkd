@@ -59,8 +59,8 @@ import {
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import {
+  s3BucketArn,
   s3BucketDomainName,
   s3BucketDualStackDomainName,
   s3BucketRegionalDomainName,
@@ -1625,7 +1625,7 @@ export class S3BucketProvider implements ResourceProvider {
   private async buildAttributes(bucketName: string): Promise<Record<string, unknown>> {
     const region = await this.getRegion();
     return {
-      Arn: `arn:${derivePartitionAndUrlSuffix(region).partition}:s3:::${bucketName}`,
+      Arn: s3BucketArn(bucketName, region),
       DomainName: s3BucketDomainName(bucketName, region),
       DualStackDomainName: s3BucketDualStackDomainName(bucketName, region),
       RegionalDomainName: s3BucketRegionalDomainName(bucketName, region),
