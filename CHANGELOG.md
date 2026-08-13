@@ -1,3 +1,10 @@
+## [0.283.13](https://github.com/go-to-k/cdkd/compare/v0.283.12...v0.283.13) (2026-08-13)
+
+
+### Bug Fixes
+
+* **provisioning:** cache DBSubnetGroupArn and SSM Parameter Arn, and refuse an unwritable parameter id at import ([#1871](https://github.com/go-to-k/cdkd/issues/1871)) ([f202bf5](https://github.com/go-to-k/cdkd/commit/f202bf5103a71ec89a11261d2be9c848e3c7e9e4))
+
 ## [0.283.12](https://github.com/go-to-k/cdkd/compare/v0.283.11...v0.283.12) (2026-08-13)
 
 
