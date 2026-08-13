@@ -38,6 +38,7 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { withRetry } from '../../deployment/retry.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
@@ -1533,13 +1534,20 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
   /**
    * Build a namespace ARN from namespace ID.
-   * Format: arn:aws:servicediscovery:{region}:{account}:namespace/{namespaceId}
+   * Format: `arn:{partition}:servicediscovery:{region}:{account}:namespace/{namespaceId}`
+   *
+   * The partition is derived from the region through the same closed mapping
+   * `${AWS::Partition}` uses (issue #1815) rather than hardcoded to `aws` —
+   * this ARN is recorded into state and served as the namespace's `Arn`
+   * attribute, so a commercial-partition literal is silently wrong (but
+   * structurally valid, hence unrejected) in `aws-cn` / `aws-us-gov`.
    */
   private async buildNamespaceArn(namespaceId: string): Promise<string> {
     const stsClient = this.getStsClient();
     const identity = await stsClient.send(new GetCallerIdentityCommand({}));
     const accountId = identity.Account || '';
     const region = await this.getClient().config.region();
-    return `arn:aws:servicediscovery:${region}:${accountId}:namespace/${namespaceId}`;
+    const { partition } = derivePartitionAndUrlSuffix(region);
+    return `arn:${partition}:servicediscovery:${region}:${accountId}:namespace/${namespaceId}`;
   }
 }

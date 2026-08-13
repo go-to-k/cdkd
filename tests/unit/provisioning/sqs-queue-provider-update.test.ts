@@ -6,11 +6,16 @@ import {
 } from '@aws-sdk/client-sqs';
 
 const mockSend = vi.fn();
+const mockStsSend = vi.fn();
+
+// Mutable so a test can drive the client's region (issue #1815 partition
+// derivation). Reset to `us-east-1` in `beforeEach`.
+const clientRegion = vi.hoisted(() => ({ value: 'us-east-1' as string | undefined }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    sqs: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
-    sts: { send: vi.fn() },
+    sqs: { send: mockSend, config: { region: () => Promise.resolve(clientRegion.value) } },
+    sts: { send: mockStsSend },
   }),
 }));
 
@@ -42,6 +47,8 @@ describe('SQSQueueProvider.update', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    clientRegion.value = 'us-east-1';
+    delete process.env['AWS_REGION'];
     provider = new SQSQueueProvider();
   });
 
@@ -574,5 +581,55 @@ describe('SQSQueueProvider.update', () => {
     if (attrs['RedrivePolicy'] !== undefined) {
       expect(attrs['RedrivePolicy']).not.toBe('{}');
     }
+  });
+  // Issue #1815: `constructArn` hardcoded `arn:aws:`, so outside the
+  // commercial partition create() recorded a structurally-valid but WRONG
+  // ARN into state and served it as the queue's `Arn` attribute — nothing
+  // downstream rejects it.
+  describe('partition derivation (issue #1815)', () => {
+    async function createAndGetArn(): Promise<unknown> {
+      mockSend.mockResolvedValueOnce({ QueueUrl: QUEUE_URL }); // CreateQueue
+      const result = await provider.create('L', 'AWS::SQS::Queue', { QueueName: 'my-queue' });
+      return result.attributes?.['Arn'];
+    }
+
+    it('uses the aws-cn partition for a cn- region', async () => {
+      clientRegion.value = 'cn-north-1';
+      mockStsSend.mockResolvedValueOnce({ Account: '123456789012' });
+
+      expect(await createAndGetArn()).toBe('arn:aws-cn:sqs:cn-north-1:123456789012:my-queue');
+    });
+
+    it('uses the aws-us-gov partition for a us-gov- region', async () => {
+      clientRegion.value = 'us-gov-west-1';
+      mockStsSend.mockResolvedValueOnce({ Account: '123456789012' });
+
+      expect(await createAndGetArn()).toBe(
+        'arn:aws-us-gov:sqs:us-gov-west-1:123456789012:my-queue'
+      );
+    });
+
+    // The safety half of the pair: without a non-commercial account to test
+    // against, "commercial output is unchanged byte for byte" is what makes
+    // the change provably non-breaking.
+    it('leaves a commercial region byte-identical to the pre-fix output', async () => {
+      clientRegion.value = 'ap-northeast-1';
+      mockStsSend.mockResolvedValueOnce({ Account: '123456789012' });
+
+      expect(await createAndGetArn()).toBe('arn:aws:sqs:ap-northeast-1:123456789012:my-queue');
+    });
+
+    it('derives the placeholder ARN partition from AWS_REGION when STS fails', async () => {
+      process.env['AWS_REGION'] = 'cn-northwest-1';
+      mockStsSend.mockRejectedValueOnce(new Error('STS unreachable'));
+
+      expect(await createAndGetArn()).toBe('arn:aws-cn:sqs:unknown:unknown:my-queue');
+    });
+
+    it('keeps the commercial placeholder ARN when STS fails with no AWS_REGION', async () => {
+      mockStsSend.mockRejectedValueOnce(new Error('STS unreachable'));
+
+      expect(await createAndGetArn()).toBe('arn:aws:sqs:unknown:unknown:my-queue');
+    });
   });
 });

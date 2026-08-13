@@ -15,6 +15,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -482,7 +483,13 @@ export class SQSQueueProvider implements ResourceProvider {
   }
 
   /**
-   * Construct SQS queue ARN from account/region/queue name
+   * Construct SQS queue ARN from account/region/queue name.
+   *
+   * The partition is derived from the region through the same closed mapping
+   * `${AWS::Partition}` uses (issue #1815) rather than hardcoded to `aws` —
+   * this ARN is recorded into state and served as the queue's `Arn`
+   * attribute, so a commercial literal is structurally valid but wrong in
+   * `aws-cn` / `aws-us-gov` and nothing downstream rejects it.
    */
   private async constructArn(queueName: string): Promise<string> {
     try {
@@ -490,10 +497,18 @@ export class SQSQueueProvider implements ResourceProvider {
       const accountId = identity.Account;
       // Get region from SQS client config
       const region = await this.sqsClient.config.region();
-      return `arn:aws:sqs:${region}:${accountId}:${queueName}`;
+      const { partition } = derivePartitionAndUrlSuffix(region);
+      return `arn:${partition}:sqs:${region}:${accountId}:${queueName}`;
     } catch {
       this.logger.warn('Failed to construct SQS ARN from STS, using placeholder');
-      return `arn:aws:sqs:unknown:unknown:${queueName}`;
+      // The region / account segments stay the pre-existing `unknown`
+      // sentinels — nothing resolved them. The partition still takes the best
+      // answer available instead of a commercial guess: `AWS_REGION` is what
+      // the client itself was configured from, and an unset or unrecognized
+      // value derives to `aws`, so the placeholder is byte-identical to the
+      // old one everywhere the old one was right.
+      const { partition } = derivePartitionAndUrlSuffix(process.env['AWS_REGION'] ?? '');
+      return `arn:${partition}:sqs:unknown:unknown:${queueName}`;
     }
   }
 

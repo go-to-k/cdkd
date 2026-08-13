@@ -24,6 +24,7 @@ import {
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import {
   CdkdError,
   ProvisioningError,
@@ -624,7 +625,13 @@ export class LogsLogGroupProvider implements ResourceProvider {
   }
 
   /**
-   * Build log group ARN from name
+   * Build log group ARN from name.
+   *
+   * The partition is derived from the region through the same closed mapping
+   * `${AWS::Partition}` uses (issue #1815) rather than hardcoded to `aws` —
+   * this ARN is recorded into state and served as the log group's `Arn`
+   * attribute, so a commercial literal is structurally valid but wrong in
+   * `aws-cn` / `aws-us-gov` and nothing downstream rejects it.
    */
   private async buildArn(logGroupName: string): Promise<string> {
     try {
@@ -633,10 +640,17 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // Region comes from the client config
       const region =
         (await this.logsClient.config.region()) || process.env['AWS_REGION'] || 'us-east-1';
-      return `arn:aws:logs:${region}:${accountId}:log-group:${logGroupName}:*`;
+      const { partition } = derivePartitionAndUrlSuffix(region);
+      return `arn:${partition}:logs:${region}:${accountId}:log-group:${logGroupName}:*`;
     } catch {
-      // Fallback: return a placeholder ARN
-      return `arn:aws:logs:unknown:unknown:log-group:${logGroupName}:*`;
+      // Fallback: return a placeholder ARN. The region / account segments stay
+      // the pre-existing `unknown` sentinels — nothing resolved them — but the
+      // partition takes the best answer available rather than a commercial
+      // guess: `AWS_REGION` is the same source the try arm's own fallback
+      // chain trusts, and an unset or unrecognized value derives to `aws`, so
+      // this is byte-identical to the old placeholder wherever it was right.
+      const { partition } = derivePartitionAndUrlSuffix(process.env['AWS_REGION'] ?? '');
+      return `arn:${partition}:logs:unknown:unknown:log-group:${logGroupName}:*`;
     }
   }
 

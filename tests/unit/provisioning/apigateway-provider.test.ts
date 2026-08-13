@@ -4,9 +4,16 @@ import { NotFoundException } from '@aws-sdk/client-api-gateway';
 // Mock AWS clients before importing the provider
 const mockSend = vi.fn();
 
+// Mutable so a test can drive the client's region (issue #1815 partition
+// derivation). Reset to `us-east-1` in `beforeEach`.
+const clientRegion = vi.hoisted(() => ({ value: 'us-east-1' as string | undefined }));
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    apiGateway: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+    apiGateway: {
+      send: mockSend,
+      config: { region: () => Promise.resolve(clientRegion.value) },
+    },
   }),
 }));
 
@@ -38,6 +45,7 @@ describe('ApiGatewayProvider', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mockSend.mockReset();
+    clientRegion.value = 'us-east-1';
     provider = new ApiGatewayProvider();
   });
 
@@ -665,6 +673,59 @@ describe('ApiGatewayProvider', () => {
             DeploymentId: 'deploy-123',
           })
         ).rejects.toThrow('Failed to create API Gateway Stage');
+      });
+    });
+
+    // Issue #1815: `buildStageArn` hardcoded `arn:aws:`. Unlike the pure
+    // attribute builders this ARN goes straight to `TagResource` /
+    // `UntagResource` as `resourceArn`, so outside the commercial partition
+    // the tag mutation aimed at an ARN naming no stage.
+    describe('stage tag ARN partition (issue #1815)', () => {
+      async function updateTagsAndGetArn(region: string): Promise<unknown> {
+        clientRegion.value = region;
+        mockSend.mockResolvedValueOnce({}); // UpdateStage
+        mockSend.mockResolvedValueOnce({}); // TagResource
+
+        await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-456',
+            Tags: [{ Key: 'env', Value: 'prod' }],
+          },
+          { RestApiId: 'api-id', StageName: 'prod', DeploymentId: 'deploy-123' }
+        );
+
+        const tagCall = mockSend.mock.calls.find(
+          (c: unknown[]) => (c[0] as { constructor: { name: string } }).constructor.name ===
+            'TagResourceCommand'
+        );
+        expect(tagCall).toBeDefined();
+        return (tagCall![0] as { input: { resourceArn?: string } }).input.resourceArn;
+      }
+
+      it('uses the aws-cn partition for a cn- region', async () => {
+        expect(await updateTagsAndGetArn('cn-north-1')).toBe(
+          'arn:aws-cn:apigateway:cn-north-1::/restapis/api-id/stages/prod'
+        );
+      });
+
+      it('uses the aws-us-gov partition for a us-gov- region', async () => {
+        expect(await updateTagsAndGetArn('us-gov-west-1')).toBe(
+          'arn:aws-us-gov:apigateway:us-gov-west-1::/restapis/api-id/stages/prod'
+        );
+      });
+
+      // The safety half of the pair: without a non-commercial account to test
+      // against, "commercial output is unchanged byte for byte" is what makes
+      // the change provably non-breaking.
+      it('leaves a commercial region byte-identical to the pre-fix output', async () => {
+        expect(await updateTagsAndGetArn('ap-northeast-1')).toBe(
+          'arn:aws:apigateway:ap-northeast-1::/restapis/api-id/stages/prod'
+        );
       });
     });
 

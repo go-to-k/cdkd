@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
 const mockStsSend = vi.hoisted(() => vi.fn());
@@ -93,9 +93,19 @@ const callsOf = (ctor: unknown): unknown[] =>
 
 describe('BudgetsBudgetProvider', () => {
   let provider: BudgetsBudgetProvider;
+  const originalAwsRegion = process.env['AWS_REGION'];
+
+  afterAll(() => {
+    if (originalAwsRegion === undefined) delete process.env['AWS_REGION'];
+    else process.env['AWS_REGION'] = originalAwsRegion;
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // `providerRegion` is read from AWS_REGION at CONSTRUCTION, so every test
+    // that needs a specific region sets it before `new BudgetsBudgetProvider()`
+    // (issue #1815 partition derivation).
+    delete process.env['AWS_REGION'];
     mockStsSend.mockResolvedValue({ Account: ACCOUNT });
     mockSend.mockResolvedValue({});
     provider = new BudgetsBudgetProvider();
@@ -668,5 +678,47 @@ describe('AWS::Budgets::Budget replacement rule', () => {
     expect(budgetNameChanged({}, { BudgetName: 'now-named' })).toBe(true);
     expect(budgetNameChanged({ BudgetName: 'was-named' }, {})).toBe(true);
     expect(budgetNameChanged({}, {})).toBe(false);
+  });
+  // Issue #1815: `budgetArn` hardcoded `arn:aws:` on the stated assumption
+  // that non-`aws` partitions were unsupported. Budgets ARNs carry no region
+  // segment but DO carry a partition, so outside commercial the value was
+  // recorded into state and handed to `TagResource` naming no budget.
+  describe('ARN partition derivation (issue #1815)', () => {
+    async function createInRegion(region: string | undefined): Promise<unknown> {
+      if (region === undefined) delete process.env['AWS_REGION'];
+      else process.env['AWS_REGION'] = region;
+      const scoped = new BudgetsBudgetProvider();
+      const result = await scoped.create('MyBudget', TYPE, budgetProps('team-budget'));
+      return (result.attributes as Record<string, unknown>)['Arn'];
+    }
+
+    it('uses the aws-cn partition for a cn- region', async () => {
+      expect(await createInRegion('cn-north-1')).toBe(
+        `arn:aws-cn:budgets::${ACCOUNT}:budget/team-budget`
+      );
+    });
+
+    it('uses the aws-us-gov partition for a us-gov- region', async () => {
+      expect(await createInRegion('us-gov-west-1')).toBe(
+        `arn:aws-us-gov:budgets::${ACCOUNT}:budget/team-budget`
+      );
+    });
+
+    // The safety half of the pair: without a non-commercial account to test
+    // against, "commercial output is unchanged byte for byte" is what makes
+    // the change provably non-breaking.
+    it('leaves a commercial region byte-identical to the pre-fix output', async () => {
+      expect(await createInRegion('ap-northeast-1')).toBe(
+        `arn:aws:budgets::${ACCOUNT}:budget/team-budget`
+      );
+    });
+
+    // An unset AWS_REGION derives to commercial, which is exactly what the
+    // hardcoded literal used to produce — so the no-region case is unchanged.
+    it('falls back to the commercial partition when AWS_REGION is unset', async () => {
+      expect(await createInRegion(undefined)).toBe(
+        `arn:aws:budgets::${ACCOUNT}:budget/team-budget`
+      );
+    });
   });
 });

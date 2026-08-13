@@ -13,6 +13,7 @@ import {
 } from '@aws-sdk/client-cloudwatch';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -271,13 +272,26 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         `Failed to describe alarm ${alarmName}, constructing ARN from config: ${error instanceof Error ? error.message : String(error)}`
       );
     }
-    // Fallback: construct ARN from client config
+    // Fallback: construct ARN from client config. The PARTITION is derived
+    // from the region through the same closed mapping `${AWS::Partition}`
+    // uses (issue #1815) — a hardcoded `arn:aws:` is structurally valid but
+    // simply WRONG in `aws-cn` / `aws-us-gov`, and nothing downstream rejects
+    // it because it is recorded into state and served as the `Arn` attribute.
     try {
       const region =
         (await this.cloudWatchClient.config.region()) || process.env['AWS_REGION'] || 'us-east-1';
-      return `arn:aws:cloudwatch:${region}:*:alarm:${alarmName}`;
+      const { partition } = derivePartitionAndUrlSuffix(region);
+      return `arn:${partition}:cloudwatch:${region}:*:alarm:${alarmName}`;
     } catch {
-      return `arn:aws:cloudwatch:*:*:alarm:${alarmName}`;
+      // `config.region()` THREW, so there is no region in hand for the region
+      // segment — hence the `*` wildcard, which predates this change. The
+      // partition still gets the best answer available rather than a guess:
+      // `AWS_REGION` is the very source the try arm's own fallback chain
+      // trusts one step down, and an unset/unrecognized value derives to the
+      // commercial `aws`, so this stays byte-identical to the old output
+      // everywhere the old output was right.
+      const { partition } = derivePartitionAndUrlSuffix(process.env['AWS_REGION'] ?? '');
+      return `arn:${partition}:cloudwatch:*:*:alarm:${alarmName}`;
     }
   }
 

@@ -32,6 +32,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import {
@@ -1499,7 +1500,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       }
 
       // Apply tag diff. API Gateway Stage tags require a constructed ARN:
-      // arn:aws:apigateway:{region}::/restapis/{restApiId}/stages/{stageName}
+      // arn:{partition}:apigateway:{region}::/restapis/{restApiId}/stages/{stageName}
       const stageArn = await this.buildStageArn(restApiId, physicalId);
       if (stageArn) {
         await this.applyTagDiff(
@@ -2104,14 +2105,23 @@ export class ApiGatewayProvider implements ResourceProvider {
   /**
    * Build the ARN for an API Gateway Stage, used for tag mutations.
    *
-   * Format: `arn:aws:apigateway:{region}::/restapis/{restApiId}/stages/{stageName}`.
+   * Format:
+   * `arn:{partition}:apigateway:{region}::/restapis/{restApiId}/stages/{stageName}`.
    * The double colon (`::`) is intentional: API Gateway tagging uses an
    * account-id-less ARN.
+   *
+   * The partition is derived from the region through the same closed mapping
+   * `${AWS::Partition}` uses (issue #1815) rather than hardcoded to `aws`.
+   * Unlike the pure attribute builders this one is passed straight to
+   * `TagResource` / `UntagResource` as `resourceArn`, so in `aws-cn` /
+   * `aws-us-gov` a commercial literal does not just record a wrong string —
+   * it aims the tag mutation at an ARN that names no stage.
    */
   private async buildStageArn(restApiId: string, stageName: string): Promise<string | undefined> {
     try {
       const region = await this.apiGatewayClient.config.region();
-      return `arn:aws:apigateway:${region}::/restapis/${restApiId}/stages/${stageName}`;
+      const { partition } = derivePartitionAndUrlSuffix(region);
+      return `arn:${partition}:apigateway:${region}::/restapis/${restApiId}/stages/${stageName}`;
     } catch {
       return undefined;
     }

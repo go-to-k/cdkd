@@ -23,6 +23,7 @@ import {
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -117,12 +118,25 @@ export class BudgetsBudgetProvider implements ResourceProvider {
 
   /**
    * Budget ARN for the tagging APIs (`ListTagsForResource` / `TagResource` /
-   * `UntagResource`). Budgets ARNs carry no region component. The `aws`
-   * partition is assumed — consistent with other providers that construct
-   * ARNs; non-`aws` partitions are not supported by cdkd today.
+   * `UntagResource`), and the `Arn` attribute recorded into state.
+   *
+   * Budgets ARNs carry no region component, but they DO carry a partition, so
+   * the region is still needed to name it. It comes from `providerRegion` —
+   * the very value `getClient()` builds the `BudgetsClient` from, so the ARN
+   * and the client that receives it can never disagree — routed through the
+   * same closed mapping `${AWS::Partition}` uses (issue #1815).
+   *
+   * The `aws` partition USED to be hardcoded here on the stated assumption
+   * that non-`aws` partitions were unsupported. That was wrong in the quiet
+   * direction: the literal is structurally valid everywhere, so in `aws-cn` /
+   * `aws-us-gov` nothing rejected it — the ARN was simply recorded into state
+   * and handed to `TagResource` naming no budget. An unset or unrecognized
+   * `providerRegion` still derives to `aws`, so commercial output is
+   * unchanged byte for byte.
    */
   private budgetArn(accountId: string, budgetName: string): string {
-    return `arn:aws:budgets::${accountId}:budget/${budgetName}`;
+    const { partition } = derivePartitionAndUrlSuffix(this.providerRegion ?? '');
+    return `arn:${partition}:budgets::${accountId}:budget/${budgetName}`;
   }
 
   /**
@@ -682,7 +696,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
   /**
    * `Fn::GetAtt` support. CloudFormation documents no attributes for
    * `AWS::Budgets::Budget`; `Arn` is served as a cdkd convenience (computed
-   * — Budgets ARNs are `arn:aws:budgets::{account}:budget/{name}`, verified
+   * — Budgets ARNs are `arn:{partition}:budgets::{account}:budget/{name}`, verified
    * to exist via `DescribeBudget` first).
    */
   async getAttribute(

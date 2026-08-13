@@ -12,13 +12,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.hoisted(() => vi.fn());
+
+// Mutable so a test can drive the client's region (issue #1815 partition
+// derivation). Reset to `us-east-1` in `beforeEach`.
+const clientRegion = vi.hoisted(() => ({ value: 'us-east-1' as string | undefined }));
+
 vi.mock('@aws-sdk/client-servicediscovery', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-servicediscovery')>();
   return {
     ...actual,
     ServiceDiscoveryClient: vi.fn().mockImplementation(() => ({
       send: mockSend,
-      config: { region: () => Promise.resolve('us-east-1') },
+      config: { region: () => Promise.resolve(clientRegion.value) },
     })),
   };
 });
@@ -64,6 +69,7 @@ describe('ServiceDiscoveryProvider — HttpNamespace / PublicDnsNamespace', () =
 
   beforeEach(() => {
     vi.clearAllMocks();
+    clientRegion.value = 'us-east-1';
     provider = new ServiceDiscoveryProvider();
   });
 
@@ -143,9 +149,53 @@ describe('ServiceDiscoveryProvider — HttpNamespace / PublicDnsNamespace', () =
 
       const result = await provider.create('MyHttpNs', HTTP_NS, { Name: 'my-ns' });
       expect(result.physicalId).toBe('ns-http-2');
+      // Also the commercial byte-identical half of the issue #1815 pair below:
+      // deriving the partition must not change this output at all.
       expect(result.attributes!['Arn']).toBe(
         'arn:aws:servicediscovery:us-east-1:123456789012:namespace/ns-http-2'
       );
+    });
+
+    // Issue #1815: `buildNamespaceArn` hardcoded `arn:aws:`, so this
+    // fallback recorded a structurally-valid but WRONG namespace ARN into
+    // state outside the commercial partition — and nothing rejects it.
+    describe('STS-built ARN partition (issue #1815)', () => {
+      async function createWithFailedGetNamespace(): Promise<unknown> {
+        const stsMockSend = vi.fn().mockResolvedValue({ Account: '123456789012' });
+        const { STSClient } = await import('@aws-sdk/client-sts');
+        vi.spyOn(STSClient.prototype, 'send').mockImplementation(stsMockSend);
+
+        mockSend
+          .mockResolvedValueOnce({ OperationId: 'op-1' })
+          .mockResolvedValueOnce({
+            Operation: { Status: 'SUCCESS', Targets: { NAMESPACE: 'ns-http-2' } },
+          })
+          .mockRejectedValueOnce(new Error('transient')); // GetNamespace
+
+        const result = await provider.create('MyHttpNs', HTTP_NS, { Name: 'my-ns' });
+        return result.attributes!['Arn'];
+      }
+
+      it('uses the aws-cn partition for a cn- region', async () => {
+        clientRegion.value = 'cn-north-1';
+        expect(await createWithFailedGetNamespace()).toBe(
+          'arn:aws-cn:servicediscovery:cn-north-1:123456789012:namespace/ns-http-2'
+        );
+      });
+
+      it('uses the aws-us-gov partition for a us-gov- region', async () => {
+        clientRegion.value = 'us-gov-west-1';
+        expect(await createWithFailedGetNamespace()).toBe(
+          'arn:aws-us-gov:servicediscovery:us-gov-west-1:123456789012:namespace/ns-http-2'
+        );
+      });
+
+      it('leaves a commercial region byte-identical to the pre-fix output', async () => {
+        clientRegion.value = 'ap-northeast-1';
+        expect(await createWithFailedGetNamespace()).toBe(
+          'arn:aws:servicediscovery:ap-northeast-1:123456789012:namespace/ns-http-2'
+        );
+      });
     });
   });
 
