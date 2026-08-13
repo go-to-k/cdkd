@@ -194,10 +194,14 @@ in each type's own default (PROVISIONED for `Table`, PAY_PER_REQUEST for
 default** (#1733 review). DynamoDB omits the summary for a table created without
 an explicit mode, and such a table IS provisioned — so the inference is reading
 AWS correctly rather than inventing a value, and it is the reading both
-providers' `readCurrentState` already takes. Getting this wrong is what made the
-first cut of the GlobalTable fix INERT on its own headline population: `create()`
-always sends an explicit mode, so the only tables lacking a summary are the
-non-cdkd ones the issue is about (an imported provisioned table), and falling
+providers' `readCurrentState` already takes. **The no-summary population is far
+wider than "tables cdkd did not create", and that was MEASURED rather than
+reasoned about** (us-east-1, 2026-08-13, `dynamodb-globaltable` integ): a table
+created with an EXPLICIT `BillingMode: PROVISIONED` reports no
+`BillingModeSummary` either, so the inference is what every provisioned table
+depends on — not a rare imported-table corner. Getting this wrong is what made
+the first cut of the GlobalTable fix INERT on its own headline population, and
+falling
 back to the type default there both lost the flip AND re-opened the same-mode
 `UpdateTable` in the other direction — a record with no mode against a
 `PROVISIONED` template compared PAY_PER_REQUEST vs PROVISIONED and flipped a

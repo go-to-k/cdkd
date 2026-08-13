@@ -1415,11 +1415,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       //    the SAME reading `liveBillingMode` below and the sibling
       //    `AWS::DynamoDB::Table` provider already take, rather than to this
       //    provider's create-path default. That is not an invention: DynamoDB
-      //    omits the summary for a table created without an explicit mode, and
-      //    such a table IS provisioned. Falling back to PAY_PER_REQUEST here
-      //    instead — the first cut of this change — left #1733 INERT on its own
-      //    headline population (`create()` always sends an explicit mode, so
-      //    only a non-cdkd table such as an imported one lacks a summary) AND
+      //    omits the summary for a provisioned table, and such a table IS
+      //    provisioned. MEASURED, not reasoned about (us-east-1, 2026-08-13,
+      //    the `dynamodb-globaltable` integ's [measure] line for #1733 (a)): a
+      //    table created with an EXPLICIT `BillingMode: PROVISIONED` reports NO
+      //    `BillingModeSummary` either — so this inference carries every
+      //    provisioned table, not just an imported one, which is why the
+      //    fallback below can never be the create-path default. Falling back to
+      //    PAY_PER_REQUEST here instead — the first cut of this change — left
+      //    #1733 INERT on its own headline population AND
       //    re-opened the #1552 rejection in the other direction: a record with
       //    no mode against a `PROVISIONED` template would have compared
       //    PAY_PER_REQUEST vs PROVISIONED and flipped a table that was already
