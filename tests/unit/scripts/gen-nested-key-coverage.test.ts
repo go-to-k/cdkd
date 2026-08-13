@@ -4945,6 +4945,31 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     //     -> `InventoryConfigurations.Destination.BucketArn [no-write-evidence]`
     // (`ScheduleFrequency` is `provider-handled` via the key pass, so the write
     // pass never audits it.)
+    //
+    // Re-measured again for #1754 / #1755 / #1759, which took the list 27 -> 26:
+    // `TagFilters` left it because `foldLifecycleScope` writes that CFn spelling
+    // OUTSIDE any reverse-map function, the same mechanism that retired the
+    // three names above. `EventBridgeEnabled` did NOT leave, and the reason is
+    // worth recording because the first cut of that fold DID retire it: writing
+    // the block under a COMPUTED key (`{ ...config, [EVENTBRIDGE_CONFIG_KEY]:
+    // { EventBridgeEnabled } }`) — done for the #1475 hand-off reason the
+    // provider states in-code — also keeps the nested member out of the
+    // unscoped name set. Measured both ways.
+    //
+    // MEASURED, not reasoned: `--check` reports byte-identical totals before and
+    // after the change (874 paths / 801 same-spelling / 51 provider-handled /
+    // 22 allow-listed / 0 divergences in all three passes, run against a scratch
+    // copy of the pre-change provider through the `--providers-dir=` seam), so no
+    // verdict moved and the committed matrix does not drift. The hazard that
+    // WOULD matter — a fold's write vouching for a forward mapper that stopped
+    // writing the SDK member — was probed on the real tree rather than argued:
+    // deleting `Prefix: useFilterForm ? undefined : …` from a scratch copy of the
+    // provider still fails with
+    // `LifecycleConfiguration.Rules.Prefix [no-write-evidence]`, although
+    // `foldLifecycleScope` writes `out['Prefix']`, because the fold's writes land
+    // at a path no audited chain resolves to. The EventBridge fold additionally
+    // writes its block under a COMPUTED key for the #1475 reason the provider
+    // states in-code.
     expect(withdrawn).toEqual([
       'AnalyticsConfigurations',
       'BucketEncryption',
@@ -4969,7 +4994,6 @@ describe('real-code regression probes (per the repo checker rules)', () => {
       'S3Key',
       'ServerSideEncryptionByDefault',
       'TagFilter',
-      'TagFilters',
       'Topic',
       'TransitionDate',
       'TransitionInDays',

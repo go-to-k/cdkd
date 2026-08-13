@@ -169,6 +169,36 @@ export class S3LifecycleStack extends cdk.Stack {
       notificationConfiguration: { eventBridgeConfiguration: { eventBridgeEnabled: !update } },
     });
 
+    // Issue #1759: a MALFORMED `EventBridgeEnabled`. `coerceCfnBoolean` answers
+    // `undefined` for it, and the pre-fix gate was
+    // `!isPlainObject(eb) || coerce(...) !== false` — so `undefined !== false`
+    // took the ENABLE arm and every value cdkd cannot read turned EventBridge
+    // delivery ON, on a LIVE bucket, with no warning anywhere.
+    //
+    // The arm has to live on the UPDATE path, and that is a property of the fix
+    // rather than a convenience: a template-path create REFUSES the value and
+    // would fail the deploy, while the replay-reachable update path warns and
+    // SKIPS the whole notification configuration (the Put is a full replace).
+    // So phase 1 deploys a usable `false` and phase 2 replaces it with a
+    // malformed value; AWS must still hold NO EventBridge block afterwards.
+    // Pre-fix, phase 2 CREATED one.
+    //
+    // `addPropertyOverride` on purpose (the memory rule that an L1 validator
+    // refuses the shape): `CfnBucket`'s typed props declare
+    // `eventBridgeEnabled` as `boolean | IResolvable`, so a bare string is
+    // unreachable through the construct API — and a hand-written / imported /
+    // `cdkd import --migrate-from-cloudformation` template carries exactly it.
+    const ebMalformed = new s3.CfnBucket(this, 'EbMalformedBucket', {
+      bucketName: `cdkd-lifecycle-ebmalformed-${cdk.Stack.of(this).account}`,
+      notificationConfiguration: { eventBridgeConfiguration: { eventBridgeEnabled: false } },
+    });
+    if (update) {
+      ebMalformed.addPropertyOverride(
+        'NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled',
+        'yes'
+      );
+    }
+
     // Issue #1748: the TOLERATED key spellings, which no L2 and no typed L1
     // prop can emit — cdkd accepts them on the desired side while
     // `readCurrentState` emits only the CFn one, so a record written in the

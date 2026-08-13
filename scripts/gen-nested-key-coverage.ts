@@ -485,7 +485,7 @@
  *     `passes: ['write']` allow-list entries: the request-level
  *     `TransitionDefaultMinimumObjectSize` hoist and the two lifecycle
  *     `TagFilters` members forwarded through a destructured member of the
- *     in-method `gatherScope` helper's returned literal (member-level taint
+ *     `lifecycleRuleScope` helper's returned literal (member-level taint
  *     through a returned literal is a materially bigger analysis — the same
  *     wrapper-level class as CloudFront's `Tags.Key` / `Tags.Value`).
  *     The `Destination.BucketArn` / `BucketAccountId` terminals needed NO
@@ -2029,8 +2029,10 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
         'Forwarded verbatim into `Filter{,.And}.Tags` by ' +
         'applyLifecycleConfiguration, but through a chain the hand-off taint ' +
         'walk deliberately does not cross: the array reaches the write as a ' +
-        "DESTRUCTURED member of the in-method `gatherScope` helper's returned " +
-        'literal, and member-level taint through a returned literal is a ' +
+        'DESTRUCTURED member of the `lifecycleRuleScope` helper\'s returned ' +
+        'literal (module-level since issue #1755, in-method `gatherScope` ' +
+        'before it — the shape is unchanged), and member-level taint through a ' +
+        'returned literal is a ' +
         'materially bigger analysis (issue #1540; same wrapper-level class as ' +
         'the CloudFront `Tags.Key` / `Tags.Value` entries). The equivalent ' +
         'per-item-config forwards (Analytics / Metrics / IntelligentTiering) ' +

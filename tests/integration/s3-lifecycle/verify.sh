@@ -15,13 +15,18 @@
 #      (all normalized to V2 Filter form), and the archive rule's expiration=730.
 #      Also assert the legacy singular lifecycle keys (issue #1388 / #1424) and
 #      the issue #1430 EventBridgeEnabled pair (true -> block present, false ->
-#      block absent, matching CloudFormation), then `cdkd drift` clean.
+#      block absent, matching CloudFormation), plus the issue #1759 baseline
+#      that a usable `false` leaves the malformed-arm bucket with no block,
+#      then `cdkd drift` clean.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (expiration 730 -> 365, GLACIER
 #      transition 90 -> 60, + a new big-objects Filter rule). Assert the new
 #      values reached AWS, there are 4 rules, and the bucket was NOT replaced.
 #      The two EventBridge booleans SWAP here, so re-asserting the pair with
-#      the expectation inverted really exercises the UPDATE path.
-#   3. Destroy; assert all three buckets are gone and the state file is removed.
+#      the expectation inverted really exercises the UPDATE path. A third
+#      bucket's EventBridgeEnabled becomes the MALFORMED string 'yes' here
+#      (issue #1759): cdkd must warn and SKIP, leaving delivery OFF, where the
+#      pre-fix gate turned it ON.
+#   3. Destroy; assert every bucket is gone and the state file is removed.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -94,6 +99,8 @@ EB_TRUE_BUCKET="cdkd-lifecycle-ebtrue-${ACCOUNT_ID}"
 # Issue #1748: the bucket carrying the TOLERATED key spellings (notification
 # `TopicArn` + the scalar `Event`, lifecycle `Days` / `NoncurrentDays`).
 ALIAS_BUCKET="cdkd-lifecycle-alias-${ACCOUNT_ID}"
+# Issue #1759: the bucket whose EventBridgeEnabled becomes MALFORMED in phase 2.
+EB_MALFORMED_BUCKET="cdkd-lifecycle-ebmalformed-${ACCOUNT_ID}"
 NOTIFY_TOPIC_ARN="arn:aws:sns:${REGION}:${ACCOUNT_ID}:cdkd-lifecycle-notify-${ACCOUNT_ID}"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
@@ -111,6 +118,7 @@ cleanup() {
   aws s3api delete-bucket --bucket "${LEGACY_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${EB_TRUE_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${ALIAS_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws s3api delete-bucket --bucket "${EB_MALFORMED_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   aws sns delete-topic --topic-arn "${NOTIFY_TOPIC_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -273,6 +281,38 @@ assert_eventbridge_pair() { # $1 = phase label, $2 = expected-true bucket, $3 = 
   echo "    [${phase}] EventBridgeEnabled true -> block present, false -> block absent (matches CloudFormation)"
 }
 
+# --- issue #1759: a MALFORMED EventBridgeEnabled must not ENABLE delivery ---
+# `coerceCfnBoolean` answers `undefined` for a value cdkd cannot read, and the
+# pre-fix gate's `coerce(...) !== false` made `undefined` take the ENABLE arm --
+# the destructive-default class #1595 refuses. The fix REFUSES instead: throw on
+# a template-path create, warn-and-SKIP the whole notification configuration on
+# the replay-reachable update path (the Put is a full replace, so skipping one
+# family would delete every other one).
+#
+# Phase 1 deploys a usable `false`; phase 2 replaces it with the string 'yes'.
+# The block must be absent in BOTH -- pre-fix, phase 2 created one. Phase 1 is
+# the vacuity guard: it proves the bucket really is reached and really starts
+# without a block, so a phase-2 pass cannot come from cdkd never touching it.
+#
+# NOTE `jq -r`, never `jq -e`: `-e` exits NON-ZERO on a `false` RESULT, so the
+# `|| return 1` below would fire on the CORRECT answer and the read-failure
+# fallback would accuse the fix.
+assert_eventbridge_absent() { # $1 = phase label
+  local phase="$1" body has
+  body="$(aws s3api get-bucket-notification-configuration \
+    --bucket "${EB_MALFORMED_BUCKET}" --region "${REGION}" --output json)" || return 1
+  # An unconfigured bucket answers with an EMPTY body, not `{}`.
+  [ -n "${body//[[:space:]]/}" ] || body='{}'
+  has="$(printf '%s' "${body}" | jq -r 'has("EventBridgeConfiguration")')" || return 1
+  if [ "${has}" != "false" ]; then
+    echo "FAIL [${phase}]: ${EB_MALFORMED_BUCKET} HAS an EventBridgeConfiguration" >&2
+    echo "      issue #1759: a value cdkd cannot read must never ENABLE delivery" >&2
+    echo "      response: ${body}" >&2
+    exit 1
+  fi
+  echo "    [${phase}] a malformed EventBridgeEnabled leaves delivery OFF (#1759)"
+}
+
 # Read side: `readCurrentState` must return the CFn shape
 # (`{EventBridgeEnabled: <bool>}`), not the SDK's `{}` -- the state baseline
 # holds the CFn spelling, so the SDK shape reported permanent phantom drift on
@@ -406,6 +446,7 @@ assert_alias_spellings() { # $1 = phase label, $2 = expected transition Days
 }
 
 assert_eventbridge_pair "phase 1" "${EB_TRUE_BUCKET}" "${LEGACY_BUCKET}"
+assert_eventbridge_absent "phase 1"
 assert_alias_spellings "phase 1" "90"
 assert_no_drift "phase 1"
 
@@ -462,6 +503,9 @@ echo "    bucket identity preserved (CreationDate unchanged) — no replacement"
 # applyNotificationConfiguration, in BOTH directions at once. A same-value
 # re-deploy would short-circuit on JSON equality and prove nothing.
 assert_eventbridge_pair "phase 2" "${LEGACY_BUCKET}" "${EB_TRUE_BUCKET}"
+# The row this fixture arm exists for: the same bucket's EventBridgeEnabled is
+# now the string 'yes'. cdkd must WARN and skip rather than enable.
+assert_eventbridge_absent "phase 2"
 # The alias transition day count CHANGES in UPDATE mode (90 -> 60), so this
 # really drives the update-path fold rather than re-reading the phase-1 record.
 assert_alias_spellings "phase 2" "60"
@@ -477,6 +521,7 @@ echo "    bucket deleted"
 assert_gone_eventually "legacy bucket ${LEGACY_BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${LEGACY_BUCKET}" --region "${REGION}"
 assert_gone_eventually "EventBridge bucket ${EB_TRUE_BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${EB_TRUE_BUCKET}" --region "${REGION}"
 assert_gone_eventually "alias-spelling bucket ${ALIAS_BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${ALIAS_BUCKET}" --region "${REGION}"
+assert_gone_eventually "malformed-EventBridge bucket ${EB_MALFORMED_BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${EB_MALFORMED_BUCKET}" --region "${REGION}"
 assert_gone "notification topic ${NOTIFY_TOPIC_ARN} still exists after destroy" aws sns get-topic-attributes --topic-arn "${NOTIFY_TOPIC_ARN}" --region "${REGION}"
 echo "    legacy + EventBridge + alias buckets and the notification topic deleted"
 
