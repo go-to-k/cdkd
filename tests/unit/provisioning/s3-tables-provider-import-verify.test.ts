@@ -186,7 +186,7 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
     it('treats an ALREADY-GONE bare-ARN row as deleted rather than unparseable', async () => {
       // "already deleted" and "cannot parse" must not collapse: a re-run after
       // an interrupted destroy, or an out-of-band console delete, otherwise
-      // fails with "Invalid physical ID format" for a perfectly valid id and
+      // fails with "Invalid physicalId format" for a perfectly valid id and
       // leaves the stack un-destroyable.
       mockSend.mockRejectedValueOnce(notFound());
 
@@ -201,7 +201,11 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
     it('still refuses a genuinely unparseable id', async () => {
       await expect(
         provider.delete('MyTable', 'not-an-id', 'AWS::S3Tables::Table', {})
-      ).rejects.toThrow(/Invalid physical ID format/);
+      // The bare prefix matches EVERY constant, so it could not tell one site's
+      // format from another's — pin the shape (issue #1657 PR review).
+      ).rejects.toThrow(
+        'expected "<tableBucketARN>|<namespace>|<name>" or a table ARN'
+      );
     });
 
     it('still deletes a table recorded as the composite (no extra lookup)', async () => {

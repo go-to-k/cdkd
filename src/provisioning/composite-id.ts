@@ -212,3 +212,93 @@ export function packCompositeId(
 
   return segments.map((segment) => String(segment.value)).join(COMPOSITE_ID_SEPARATOR);
 }
+
+/**
+ * The expected shape of a type's composite physicalId, for the DECODE sites.
+ *
+ * The sibling of {@link CompositeIdSegment}, which describes a pack. This one
+ * carries no values — a decode site has only the malformed string.
+ */
+export interface CompositeIdFormat {
+  /**
+   * Human name of the resource, as it already reads in the four messages that
+   * got this right before #1657 (`API Gateway Method`, `VPCGatewayAttachment`).
+   * Deliberately NOT the CFn type: the type is already carried structurally on
+   * `ProvisioningError`, and the prose reads better without it.
+   */
+  readonly label: string;
+  /**
+   * Segment names in order, each rendered `<name>`.
+   *
+   * Keep these in step with the type's `packCompositeId` segment names — the
+   * pack side is what actually produces the id, so a message naming anything
+   * else instructs the user to write a value no code path emits. An earlier
+   * cut of this change rendered `AWS::EC2::VPCGatewayAttachment` as
+   * `IGW|<vpcId>` on the belief that `IGW` was a fixed token cdkd packs; it is
+   * not (the packer emits the real `internetGatewayId`), and a user repairing
+   * state.json as instructed would have produced
+   * `DetachInternetGateway(InternetGatewayId: "IGW")`.
+   */
+  readonly segments: readonly string[];
+  /**
+   * A second accepted form, appended as `or <text>`. Only `AWS::S3Tables::Table`
+   * has one today (a bare table ARN alongside the composite).
+   */
+  readonly alsoAccepts?: string;
+}
+
+/** Render the expected id shape, e.g. `<databaseName>|<tableName>`. */
+function formatShape(segments: readonly string[]): string {
+  return segments.map((segment) => `<${segment}>`).join(COMPOSITE_ID_SEPARATOR);
+}
+
+/**
+ * The message EVERY malformed-composite-id decode site emits (issue
+ * [#1657](https://github.com/go-to-k/cdkd/issues/1657)).
+ *
+ * ## Why one builder
+ *
+ * Roughly half the decode sites stated the expected shape and half only echoed
+ * the value back, and the format is documented nowhere else — so on the silent
+ * half the message was the user's only possible route to the answer and it did
+ * not carry it. Routing the sites that already got it right through the same
+ * builder is what stops them drifting back.
+ *
+ * ## This is a WORDING fix, not an acceptance change
+ *
+ * Each caller keeps its own split-and-guard exactly as it was. The arities
+ * genuinely differ (some sites accept AT LEAST N segments, some destructure the
+ * first N and tolerate extras — the #1672 ambiguity, tracked separately), and
+ * folding them into one predicate here would silently change which ids deploy.
+ *
+ * ## The `skipping` variant
+ *
+ * On the DELETE path the established policy is warn-and-continue, so a
+ * malformed record leaves the AWS resource ALIVE while `cdkd destroy` reports
+ * success. That policy is not changed here — but the warning now says what the
+ * skip costs, because an orphan the user is never told about is one they cannot
+ * go and delete.
+ */
+export function compositeIdFormatMessage(
+  format: CompositeIdFormat,
+  logicalId: string,
+  physicalId: string,
+  options?: { readonly skipping?: boolean }
+): string {
+  const accepted = format.alsoAccepts
+    ? `"${formatShape(format.segments)}" or ${format.alsoAccepts}`
+    : `"${formatShape(format.segments)}"`;
+
+  const head =
+    `Invalid physicalId format for ${format.label} ${logicalId}: ` +
+    `expected ${accepted}, got "${physicalId}"`;
+
+  if (!options?.skipping) return head;
+
+  return (
+    `${head}. Skipping the delete — the AWS resource is LEFT IN PLACE and cdkd will ` +
+    `report this delete as successful, so delete it by hand (or repair the id in ` +
+    `state.json and re-run) if it still exists. NOTE this arm is reached from ` +
+    `cdkd destroy AND from the deploy engine's replacement / rollback deletes.`
+  );
+}

@@ -20,7 +20,12 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { compositeIdSeparatorRefusal, packCompositeId } from '../composite-id.js';
+import {
+  compositeIdFormatMessage,
+  compositeIdSeparatorRefusal,
+  packCompositeId,
+  type CompositeIdFormat,
+} from '../composite-id.js';
 import { findSilentDropProperties } from '../property-coverage.js';
 import type {
   ResourceProvider,
@@ -30,6 +35,18 @@ import type {
   ResourceImportResult,
   CreateContext,
 } from '../../types/resource.js';
+
+/** Shapes of the two `AWS::S3Tables::*` composite physicalIds (issue #1657). */
+const S3_TABLES_NAMESPACE_ID_FORMAT: CompositeIdFormat = {
+  label: 'S3 Tables Namespace',
+  segments: ['tableBucketARN', 'namespace'],
+};
+
+const S3_TABLES_TABLE_ID_FORMAT: CompositeIdFormat = {
+  label: 'S3 Tables Table',
+  segments: ['tableBucketARN', 'namespace', 'name'],
+  alsoAccepts: 'a table ARN',
+};
 
 /**
  * Parse cdkd's composite namespace physicalId `<tableBucketARN>|<namespace>`.
@@ -543,7 +560,7 @@ export class S3TablesProvider implements ResourceProvider {
     const [tableBucketARN, namespaceName] = physicalId.split('|');
     if (!tableBucketARN || !namespaceName) {
       throw new ProvisioningError(
-        `Invalid physical ID format for S3 Tables Namespace ${logicalId}: ${physicalId}`,
+        compositeIdFormatMessage(S3_TABLES_NAMESPACE_ID_FORMAT, logicalId, physicalId),
         resourceType,
         logicalId,
         physicalId
@@ -1273,8 +1290,7 @@ export class S3TablesProvider implements ResourceProvider {
     }
     if (resolved === 'unparseable') {
       throw new ProvisioningError(
-        `Invalid physical ID format for S3 Tables Table ${logicalId}: ${physicalId} ` +
-          `(expected '<tableBucketARN>|<namespace>|<name>' or a table ARN)`,
+        compositeIdFormatMessage(S3_TABLES_TABLE_ID_FORMAT, logicalId, physicalId),
         resourceType,
         logicalId,
         physicalId
@@ -1463,9 +1479,9 @@ export class S3TablesProvider implements ResourceProvider {
     }
     if (resolvedParts === 'unparseable') {
       throw new ProvisioningError(
-        `applyTableTagsDiff: cannot derive table ARN from physicalId '${physicalId}' ` +
-          `(expected '<bucketArn>|<namespace>|<name>' or a table ARN) — refusing to silently ` +
-          `drop the tag update`,
+        `applyTableTagsDiff: ` +
+          `${compositeIdFormatMessage(S3_TABLES_TABLE_ID_FORMAT, logicalId, physicalId)}. ` +
+          `Cannot derive the table ARN for the tag update, and refusing to silently drop it.`,
         resourceType,
         logicalId,
         physicalId

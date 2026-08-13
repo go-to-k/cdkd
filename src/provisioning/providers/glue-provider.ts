@@ -76,7 +76,11 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { packCompositeId } from '../composite-id.js';
+import {
+  compositeIdFormatMessage,
+  packCompositeId,
+  type CompositeIdFormat,
+} from '../composite-id.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   CreateContext,
@@ -86,6 +90,12 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/** Shape of an `AWS::Glue::Table` physicalId, for every decode site (issue #1657). */
+const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
+  label: 'Glue Table',
+  segments: ['databaseName', 'tableName'],
+};
 
 /**
  * Read a template-borne value that is about to be forwarded to a Glue read
@@ -808,7 +818,7 @@ export class GlueProvider implements ResourceProvider {
     const [databaseName, tableName] = physicalId.split('|');
     if (!databaseName || !tableName) {
       throw new ProvisioningError(
-        `Invalid Glue Table physical ID format: ${physicalId}`,
+        compositeIdFormatMessage(GLUE_TABLE_ID_FORMAT, logicalId, physicalId),
         resourceType,
         logicalId,
         physicalId
@@ -954,7 +964,9 @@ export class GlueProvider implements ResourceProvider {
     // this arm is only reachable from a hand-edited state record today.
     const [databaseName, tableName] = physicalId.split('|');
     if (!databaseName || !tableName) {
-      this.logger.warn(`Invalid Glue Table physical ID format: ${physicalId}, skipping`);
+      this.logger.warn(
+        compositeIdFormatMessage(GLUE_TABLE_ID_FORMAT, logicalId, physicalId, { skipping: true })
+      );
       return;
     }
 

@@ -34,7 +34,11 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
-import { packCompositeId } from '../composite-id.js';
+import {
+  compositeIdFormatMessage,
+  packCompositeId,
+  type CompositeIdFormat,
+} from '../composite-id.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -43,6 +47,12 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/** Shape of an `AWS::ApiGateway::Method` physicalId (issue #1657). */
+const APIGW_METHOD_ID_FORMAT: CompositeIdFormat = {
+  label: 'API Gateway Method',
+  segments: ['restApiId', 'resourceId', 'httpMethod'],
+};
 
 /**
  * AWS API Gateway Provider
@@ -1921,7 +1931,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     const parts = physicalId.split('|');
     if (parts.length !== 3) {
       throw new ProvisioningError(
-        `Invalid physicalId format for API Gateway Method ${logicalId}: expected "restApiId|resourceId|httpMethod", got "${physicalId}"`,
+        compositeIdFormatMessage(APIGW_METHOD_ID_FORMAT, logicalId, physicalId),
         resourceType,
         logicalId,
         physicalId
@@ -2033,7 +2043,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     const parts = physicalId.split('|');
     if (parts.length !== 3) {
       throw new ProvisioningError(
-        `Invalid physicalId format for API Gateway Method ${logicalId}: expected "restApiId|resourceId|httpMethod", got "${physicalId}"`,
+        compositeIdFormatMessage(APIGW_METHOD_ID_FORMAT, logicalId, physicalId),
         resourceType,
         logicalId,
         physicalId

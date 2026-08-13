@@ -841,7 +841,12 @@ describe('deleteTable malformed-physicalId skip arm (issue #1675)', () => {
 
     expect(mockGlueSend).not.toHaveBeenCalled();
     expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
-    expect(mockLoggerWarn.mock.calls[0][0]).toContain('Invalid Glue Table physical ID format');
+    // Issue #1657: the warning now names the EXPECTED shape (it is the user's
+    // only route to the format) and says the AWS resource is left behind.
+    const warned = mockLoggerWarn.mock.calls[0][0] as string;
+    expect(warned).toContain('Invalid physicalId format for Glue Table');
+    expect(warned).toContain('expected "<databaseName>|<tableName>"');
+    expect(warned).toContain('LEFT IN PLACE');
   });
 });
 
