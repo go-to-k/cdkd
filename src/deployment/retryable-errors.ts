@@ -490,16 +490,19 @@ export function markNonRetryable<E extends Error>(error: E): E {
  * genuinely retryable": wrapping a marked refusal as the cause of a
  * transient error would stop retrying something that should retry. Thread the
  * cause when the wrapper is as terminal as its cause (the case above); strip
- * or re-raise it when the wrapper is retryable in its own right. This applies
- * to every `markNonRetryable` call site: five in
- * `intrinsic-function-resolver.ts`, one in `sns-subscription-provider.ts`, and
- * `ResourceUpdateNotSupportedError`'s constructor in
- * `src/utils/error-handler.ts`. Do not restate that as a bare TOTAL — the
- * first version of this sentence said "six", which was the count of
- * `IntrinsicResolutionRefusalError` THROW sites (five of them marked)
- * transplanted from the other file's enumeration, and a stale count reads as
- * complete exactly the way {@link file://../utils/error-handler.ts}'s own
- * enumeration warning describes.
+ * or re-raise it when the wrapper is retryable in its own right. That applies
+ * to every `markNonRetryable` call site — `grep -rn 'markNonRetryable(' src/`
+ * is the authority, deliberately in place of a list here.
+ *
+ * **Do not restate the sites as a count or an enumeration.** Both have already
+ * gone stale in this one comment: it first said "six", which was the count of
+ * `IntrinsicResolutionRefusalError` THROW sites transplanted from the other
+ * file, and the per-file list that replaced it was stale within a day, when a
+ * parallel lane added two sites in `nested-stack-provider.ts`. Marking is a
+ * per-site judgement any lane can make, so any tally written here is a
+ * snapshot of one moment that then reads as complete — which is the defect
+ * {@link file://../utils/error-handler.ts}'s own enumeration warning
+ * describes. What is stable, and all a reader needs, is the RULE above.
  */
 export function isMarkedNonRetryable(error: unknown): boolean {
   let current: unknown = error;
