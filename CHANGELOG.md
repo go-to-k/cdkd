@@ -1,3 +1,11 @@
+## [0.283.9](https://github.com/go-to-k/cdkd/compare/v0.283.8...v0.283.9) (2026-08-13)
+
+
+### Bug Fixes
+
+* **deployment:** mark ResourceUpdateNotSupportedError non-retryable so a resource named *DependencyViolation* stops burning ~47s of backoff ([#1851](https://github.com/go-to-k/cdkd/issues/1851)) ([ed41469](https://github.com/go-to-k/cdkd/commit/ed41469a84808c43e4ea6e9d54ad609543eaff66))
+* **dynamodb:** stop the AWS-computed per-index WarmThroughput drifting a GlobalTable forever ([#1859](https://github.com/go-to-k/cdkd/issues/1859)) ([be0f856](https://github.com/go-to-k/cdkd/commit/be0f85634601ba166263178e85519aa5672213a0))
+
 ## [0.283.8](https://github.com/go-to-k/cdkd/compare/v0.283.7...v0.283.8) (2026-08-13)
 
 
