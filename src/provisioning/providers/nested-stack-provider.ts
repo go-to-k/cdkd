@@ -24,6 +24,15 @@ import { getLogger } from '../../utils/logger.js';
 // this builder from anywhere on the provider/destroy-runner ring re-creates the
 // cycle it was extracted to break.
 import { nestedStackChildFailureMessage } from '../nested-stack-messages.js';
+// `retryable-errors.ts` has ZERO imports of its own, so importing it here
+// cannot close a cycle — which is also why the marker cannot live in
+// `nested-stack-messages.ts` instead: that module is required to stay
+// import-free (its own header says so), so the mark belongs at the THROW
+// SITE. Throw-site rather than constructor shape is right for a second
+// reason too: the errors below are plain `Error`s, and — unlike
+// `ResourceUpdateNotSupportedError` — the class raised here is NOT a refusal
+// in every instance (see the per-arm note at the `errorCount` throw).
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 
 /**
  * Returns `true` when `p` is absolute on the current platform OR begins
@@ -393,8 +402,49 @@ export class NestedStackProvider implements ResourceProvider {
     // The deploy-side reach is the wider half of the blast radius; it is the
     // same correctness argument, but it turns a silent success into a failed
     // deploy rather than a failed destroy.
+    // Issue #1849: this message interpolates `childStackName`
+    // (`<parent>~<childLogicalId>`), which is fully user-controlled, and
+    // `retryable-errors.ts` classifies by SUBSTRING —
+    // `DependencyViolation` being the only whitespace-free entry in
+    // `RETRYABLE_ERROR_MESSAGE_PATTERNS`, a nested stack whose logical id
+    // merely CONTAINS it makes a cdkd-authored message look transient. The
+    // remedy is `markNonRetryable`, which is consulted BEFORE any message
+    // heuristic — but it is applied per ARM, not to the throw as a whole,
+    // because the two arms answer the healability question differently:
+    //
+    //  - NOT interrupted: a retry re-enters `runDestroyForStack` against the
+    //    child's PRESERVED state, and a child resource that was still
+    //    draining (an ENI detaching, a dependency releasing) on attempt 1 may
+    //    genuinely be gone on attempt 2. Some causes underneath the count are
+    //    terminal, but `DestroyRunnerResult` reports only counts, so this arm
+    //    cannot separate them; per the "if ANY arm can heal, do not mark"
+    //    rule it is left UNMARKED.
+    //
+    //    Be precise about what that leaves, because it is NOT "the arm stays
+    //    retryable": left unmarked, its classification stays MESSAGE-driven,
+    //    so it is retryable exactly when the child stack name happens to
+    //    contain a retryable pattern — i.e. this arm still carries the
+    //    name-dependence this issue is about. There is no `markRetryable` to
+    //    assert the healable reading with, and marking it would be strictly
+    //    worse (it would make the healable case terminal for everyone). So
+    //    the residual is ACCEPTED, not fixed, and saying otherwise would
+    //    overstate what the mark below achieves.
+    //  - Interrupted: the child stopped early because the user pressed
+    //    Ctrl-C. `draining` in `destroy-runner.ts` is a per-INVOCATION local
+    //    with a per-invocation SIGINT listener, so a retry starts a FRESH
+    //    child destroy with the interrupt forgotten — it does not heal the
+    //    failure, it RESUMES work the user just aborted, while the backoff
+    //    sleeps hold up the shutdown the interrupt asked for. Terminal by
+    //    declaration.
+    //
+    // LATENT today, and deliberately fixed anyway (the #1778 precedent): this
+    // provider sets `disableOuterRetry`, so every caller invokes `delete()`
+    // exactly once — `destroy-runner.ts` computes `maxAttempts = 0`,
+    // `DeployEngine.withRetry` short-circuits, and `rollback-executor.ts`
+    // does not wrap deletes at all. The marker is the DECLARATION that
+    // survives any of those opting back in.
     if (childResult.errorCount > 0) {
-      throw new Error(
+      const failure = new Error(
         nestedStackChildFailureMessage(
           childStackName,
           childResult.errorCount,
@@ -402,6 +452,7 @@ export class NestedStackProvider implements ResourceProvider {
           childResult.interrupted
         )
       );
+      throw childResult.interrupted ? markNonRetryable(failure) : failure;
     }
 
     if (childResult.skippedCount > 0 || childResult.interrupted) {
@@ -498,10 +549,28 @@ export class NestedStackProvider implements ResourceProvider {
   private requireContext(): NestedStackProviderContext {
     const ctx = getCurrentNestedStackContext();
     if (!ctx) {
-      throw new Error(
-        'NestedStackProvider invoked outside withNestedStackContext() scope. ' +
-          'The deploy / destroy CLI entry point must wrap its DeployEngine.deploy / ' +
-          'runDestroyForStack call in withNestedStackContext(ctx, () => ...).'
+      // Issue #1849: the OTHER deterministic refusal `delete()` can raise, and
+      // the one whose terminality is a matter of IMPOSSIBILITY rather than of
+      // policy — which is what distinguishes it from the interrupted arm marked
+      // above. There the retry COULD run; it is marked because re-entering a
+      // destroy the user just aborted is the wrong thing to do. Here it could
+      // not succeed at all — the store is read
+      // from AsyncLocalStorage, and a retry runs inside the SAME async
+      // context as the first attempt, so a caller that did not wrap will not
+      // have wrapped on attempt 2 either. The mark reaches `create()` /
+      // `update()` too (both call this helper), which is correct rather than
+      // incidental: the invariant is identical on every attempt from any of
+      // the three. Marked even though this message
+      // interpolates nothing user-controlled and therefore cannot pick up a
+      // retryable substring today: the marker is a DECLARATION by the raiser,
+      // which is what the mechanism exists for — message discipline is what
+      // failed at the `errorCount` throw above.
+      throw markNonRetryable(
+        new Error(
+          'NestedStackProvider invoked outside withNestedStackContext() scope. ' +
+            'The deploy / destroy CLI entry point must wrap its DeployEngine.deploy / ' +
+            'runDestroyForStack call in withNestedStackContext(ctx, () => ...).'
+        )
       );
     }
     return ctx;
