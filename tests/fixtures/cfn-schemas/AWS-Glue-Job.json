@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Glue::Job",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AllocatedCapacity",
     "Command",
@@ -29,5 +29,92 @@
   "readOnlyProperties": [],
   "createOnlyProperties": [
     "Name"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Name"
+  ],
+  "nestedProperties": {
+    "Connections": [
+      "Connections"
+    ],
+    "NotificationProperty": [
+      "NotifyDelayAfter"
+    ],
+    "Command": [
+      "Name",
+      "PythonVersion",
+      "Runtime",
+      "ScriptLocation"
+    ],
+    "ExecutionProperty": [
+      "MaxConcurrentRuns"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Connections": [
+      "Connections"
+    ],
+    "NotificationProperty": [
+      "NotifyDelayAfter"
+    ],
+    "Command": [
+      "Name",
+      "PythonVersion",
+      "Runtime",
+      "ScriptLocation"
+    ],
+    "ExecutionProperty": [
+      "MaxConcurrentRuns"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Connections": "object",
+      "MaxRetries": "scalar",
+      "Description": "scalar",
+      "Timeout": "scalar",
+      "AllocatedCapacity": "scalar",
+      "Name": "scalar",
+      "Role": "scalar",
+      "DefaultArguments": "object",
+      "NotificationProperty": "object",
+      "WorkerType": "scalar",
+      "ExecutionClass": "scalar",
+      "LogUri": "scalar",
+      "Command": "object",
+      "GlueVersion": "scalar",
+      "ExecutionProperty": "object",
+      "SecurityConfiguration": "scalar",
+      "NumberOfWorkers": "scalar",
+      "Tags": "object",
+      "MaxCapacity": "scalar",
+      "NonOverridableArguments": "object",
+      "MaintenanceWindow": "scalar",
+      "JobMode": "scalar",
+      "JobRunQueuingEnabled": "scalar"
+    },
+    "DefaultArguments": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "NonOverridableArguments": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "JobCommand": {
+      "Name": "scalar",
+      "PythonVersion": "scalar",
+      "Runtime": "scalar",
+      "ScriptLocation": "scalar"
+    },
+    "ConnectionsList": {
+      "Connections": "array"
+    },
+    "ExecutionProperty": {
+      "MaxConcurrentRuns": "scalar"
+    },
+    "NotificationProperty": {
+      "NotifyDelayAfter": "scalar"
+    }
+  }
 }

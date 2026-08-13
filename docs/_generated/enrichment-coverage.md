@@ -12,11 +12,11 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 ## Summary
 
 - Classified types (cached schema): **134**
-- Fully enriched: **17**
-- No computed attribute (Ref == physicalId is correct): **15**
+- Fully enriched: **20**
+- No computed attribute (Ref == physicalId is correct): **17**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **102**
-- Types with allow-listed (not-a-gap) attributes: **30**
+- SDK-fallback gaps (informational, #614 path only): **97**
+- Types with allow-listed (not-a-gap) attributes: **33**
 
 ## Pure-CC latent gaps
 
@@ -80,12 +80,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | `LoadBalancerArns`, `TargetGroupArn`, `TargetGroupFullName`, `TargetGroupName` |
 | `AWS::EMR::Cluster` | `MasterPublicDNS` |
 | `AWS::Events::EventBus` | `Arn` |
-| `AWS::Events::Rule` | `Arn` |
 | `AWS::FSx::FileSystem` | `DNSName`, `LustreMountName`, `ResourceARN`, `RootVolumeId` |
-| `AWS::Glue::Connection` | `Id` |
-| `AWS::Glue::SecurityConfiguration` | `Id` |
-| `AWS::Glue::Table` | `Id` |
-| `AWS::Glue::Workflow` | `Id` |
 | `AWS::IAM::AccessKey` | `SecretAccessKey` |
 | `AWS::IAM::Group` | `Arn` |
 | `AWS::IAM::InstanceProfile` | `Arn` |
@@ -206,16 +201,16 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::EMR::InstanceFleetConfig` | yes | enriched | `Id` (allow) |
 | `AWS::EMR::InstanceGroupConfig` | yes | enriched | `Id` (allow) |
 | `AWS::Events::EventBus` | yes | sdk-fallback-gap | `Arn` (GAP) |
-| `AWS::Events::Rule` | yes | sdk-fallback-gap | `Arn` (GAP) |
+| `AWS::Events::Rule` | yes | enriched | `Arn` (allow) |
 | `AWS::FSx::FileSystem` | yes | sdk-fallback-gap | `DNSName` (GAP), `Id` (allow), `LustreMountName` (GAP), `ResourceARN` (GAP), `RootVolumeId` (GAP) |
-| `AWS::Glue::Connection` | yes | sdk-fallback-gap | `Id` (GAP) |
+| `AWS::Glue::Connection` | yes | enriched | `Id` (allow) |
 | `AWS::Glue::Crawler` | yes | no-computed-attr | _(none)_ |
 | `AWS::Glue::Database` | yes | no-computed-attr | _(none)_ |
 | `AWS::Glue::Job` | yes | no-computed-attr | _(none)_ |
-| `AWS::Glue::SecurityConfiguration` | yes | sdk-fallback-gap | `Id` (GAP) |
-| `AWS::Glue::Table` | yes | sdk-fallback-gap | `Id` (GAP) |
+| `AWS::Glue::SecurityConfiguration` | yes | no-computed-attr | _(none)_ |
+| `AWS::Glue::Table` | yes | enriched | `Id` (allow) |
 | `AWS::Glue::Trigger` | yes | no-computed-attr | _(none)_ |
-| `AWS::Glue::Workflow` | yes | sdk-fallback-gap | `Id` (GAP) |
+| `AWS::Glue::Workflow` | yes | no-computed-attr | _(none)_ |
 | `AWS::IAM::AccessKey` | yes | sdk-fallback-gap | `Id` (allow), `SecretAccessKey` (GAP) |
 | `AWS::IAM::Group` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::IAM::InstanceProfile` | yes | sdk-fallback-gap | `Arn` (GAP) |

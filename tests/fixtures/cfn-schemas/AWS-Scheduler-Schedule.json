@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Scheduler::Schedule",
-  "generatedAt": "2026-07-02",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "Description",
@@ -23,5 +23,202 @@
   ],
   "primaryIdentifier": [
     "Name"
-  ]
+  ],
+  "nestedProperties": {
+    "FlexibleTimeWindow": [
+      "MaximumWindowInMinutes",
+      "Mode"
+    ],
+    "Target": [
+      "Arn",
+      "AssignPublicIp",
+      "AwsvpcConfiguration",
+      "Base",
+      "CapacityProvider",
+      "CapacityProviderStrategy",
+      "DeadLetterConfig",
+      "DetailType",
+      "EcsParameters",
+      "EnableECSManagedTags",
+      "EnableExecuteCommand",
+      "EventBridgeParameters",
+      "Expression",
+      "Field",
+      "Group",
+      "Input",
+      "KinesisParameters",
+      "LaunchType",
+      "MaximumEventAgeInSeconds",
+      "MaximumRetryAttempts",
+      "MessageGroupId",
+      "Name",
+      "NetworkConfiguration",
+      "PartitionKey",
+      "PipelineParameterList",
+      "PlacementConstraints",
+      "PlacementStrategy",
+      "PlatformVersion",
+      "PropagateTags",
+      "ReferenceId",
+      "RetryPolicy",
+      "RoleArn",
+      "SageMakerPipelineParameters",
+      "SecurityGroups",
+      "Source",
+      "SqsParameters",
+      "Subnets",
+      "Tags",
+      "TaskCount",
+      "TaskDefinitionArn",
+      "Type",
+      "Value",
+      "Weight"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "FlexibleTimeWindow": [
+      "MaximumWindowInMinutes",
+      "Mode"
+    ],
+    "Target": [
+      "Arn",
+      "DeadLetterConfig",
+      "DeadLetterConfig.Arn",
+      "EcsParameters",
+      "EcsParameters.CapacityProviderStrategy",
+      "EcsParameters.CapacityProviderStrategy.Base",
+      "EcsParameters.CapacityProviderStrategy.CapacityProvider",
+      "EcsParameters.CapacityProviderStrategy.Weight",
+      "EcsParameters.EnableECSManagedTags",
+      "EcsParameters.EnableExecuteCommand",
+      "EcsParameters.Group",
+      "EcsParameters.LaunchType",
+      "EcsParameters.NetworkConfiguration",
+      "EcsParameters.NetworkConfiguration.AwsvpcConfiguration",
+      "EcsParameters.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIp",
+      "EcsParameters.NetworkConfiguration.AwsvpcConfiguration.SecurityGroups",
+      "EcsParameters.NetworkConfiguration.AwsvpcConfiguration.Subnets",
+      "EcsParameters.PlacementConstraints",
+      "EcsParameters.PlacementConstraints.Expression",
+      "EcsParameters.PlacementConstraints.Type",
+      "EcsParameters.PlacementStrategy",
+      "EcsParameters.PlacementStrategy.Field",
+      "EcsParameters.PlacementStrategy.Type",
+      "EcsParameters.PlatformVersion",
+      "EcsParameters.PropagateTags",
+      "EcsParameters.ReferenceId",
+      "EcsParameters.Tags",
+      "EcsParameters.TaskCount",
+      "EcsParameters.TaskDefinitionArn",
+      "EventBridgeParameters",
+      "EventBridgeParameters.DetailType",
+      "EventBridgeParameters.Source",
+      "Input",
+      "KinesisParameters",
+      "KinesisParameters.PartitionKey",
+      "RetryPolicy",
+      "RetryPolicy.MaximumEventAgeInSeconds",
+      "RetryPolicy.MaximumRetryAttempts",
+      "RoleArn",
+      "SageMakerPipelineParameters",
+      "SageMakerPipelineParameters.PipelineParameterList",
+      "SageMakerPipelineParameters.PipelineParameterList.Name",
+      "SageMakerPipelineParameters.PipelineParameterList.Value",
+      "SqsParameters",
+      "SqsParameters.MessageGroupId"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Arn": "scalar",
+      "Description": "scalar",
+      "EndDate": "scalar",
+      "FlexibleTimeWindow": "object",
+      "GroupName": "scalar",
+      "KmsKeyArn": "scalar",
+      "Name": "scalar",
+      "ScheduleExpression": "scalar",
+      "ScheduleExpressionTimezone": "scalar",
+      "StartDate": "scalar",
+      "State": "scalar",
+      "Target": "object"
+    },
+    "AwsVpcConfiguration": {
+      "Subnets": "array",
+      "SecurityGroups": "array",
+      "AssignPublicIp": "scalar"
+    },
+    "CapacityProviderStrategyItem": {
+      "CapacityProvider": "scalar",
+      "Weight": "scalar",
+      "Base": "scalar"
+    },
+    "DeadLetterConfig": {
+      "Arn": "scalar"
+    },
+    "EcsParameters": {
+      "TaskDefinitionArn": "scalar",
+      "TaskCount": "scalar",
+      "LaunchType": "scalar",
+      "NetworkConfiguration": "object",
+      "PlatformVersion": "scalar",
+      "Group": "scalar",
+      "CapacityProviderStrategy": "array",
+      "EnableECSManagedTags": "scalar",
+      "EnableExecuteCommand": "scalar",
+      "PlacementConstraints": "array",
+      "PlacementStrategy": "array",
+      "PropagateTags": "scalar",
+      "ReferenceId": "scalar",
+      "Tags": "array"
+    },
+    "EventBridgeParameters": {
+      "DetailType": "scalar",
+      "Source": "scalar"
+    },
+    "FlexibleTimeWindow": {
+      "Mode": "scalar",
+      "MaximumWindowInMinutes": "scalar"
+    },
+    "KinesisParameters": {
+      "PartitionKey": "scalar"
+    },
+    "NetworkConfiguration": {
+      "AwsvpcConfiguration": "object"
+    },
+    "PlacementConstraint": {
+      "Type": "scalar",
+      "Expression": "scalar"
+    },
+    "PlacementStrategy": {
+      "Type": "scalar",
+      "Field": "scalar"
+    },
+    "RetryPolicy": {
+      "MaximumEventAgeInSeconds": "scalar",
+      "MaximumRetryAttempts": "scalar"
+    },
+    "SageMakerPipelineParameter": {
+      "Name": "scalar",
+      "Value": "scalar"
+    },
+    "SageMakerPipelineParameters": {
+      "PipelineParameterList": "array"
+    },
+    "SqsParameters": {
+      "MessageGroupId": "scalar"
+    },
+    "Target": {
+      "Arn": "scalar",
+      "RoleArn": "scalar",
+      "DeadLetterConfig": "object",
+      "RetryPolicy": "object",
+      "Input": "scalar",
+      "EcsParameters": "object",
+      "EventBridgeParameters": "object",
+      "KinesisParameters": "object",
+      "SageMakerPipelineParameters": "object",
+      "SqsParameters": "object"
+    }
+  }
 }

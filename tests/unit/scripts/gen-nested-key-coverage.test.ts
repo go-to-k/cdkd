@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import {
+  GLUE_DATABASE_DROPPED_PATHS,
   MIN_WRITTEN_MEMBERS_PER_PROVIDER,
   NESTED_KEY_ALLOW_LIST,
   NESTED_KEY_TARGETS,
@@ -3686,6 +3687,452 @@ describe('real-repo audit (regression floors)', () => {
     );
   });
 
+  it('audits the mixed-case-island targets with healthy nested-key counts (#1393 item 3)', () => {
+    // The nine types issue #1393 item 1 named as the motivating evidence:
+    // `client-eventbridge` / `client-scheduler` / `client-glue` are PascalCase
+    // models with camelCase ISLANDS, and none of them was audited at all before
+    // this slice. Floors are read off the target table rather than restated,
+    // and asserted with HEADROOM (`>`), because `loadReport` already throws
+    // below the floor — a `>=` here would be satisfied by construction, while
+    // `>` fails if the yield ever collapses TO the floor, which is the shape a
+    // partial capture or a `handledProperties` parse regression produces.
+    const declared = new Map(NESTED_KEY_TARGETS.map((t) => [t.resourceType, t]));
+    for (const type of [
+      'AWS::Events::Rule',
+      'AWS::Scheduler::Schedule',
+      'AWS::Glue::Crawler',
+      'AWS::Glue::Table',
+      'AWS::Glue::Connection',
+      'AWS::Glue::Trigger',
+      'AWS::Glue::Database',
+      'AWS::Glue::SecurityConfiguration',
+      'AWS::Glue::Job',
+    ]) {
+      const audited = report.targets.find((t) => t.resourceType === type);
+      expect(audited, type).toBeDefined();
+      expect(audited!.nestedKeyCount, type).toBeGreaterThan(declared.get(type)!.minNestedKeys);
+      // Zero blocking findings at opt-in — every audited path is either
+      // same-spelling or demonstrably provider-handled, none allow-listed.
+      // Stated per type so a regression names the type rather than the summary.
+      for (const bucket of ['case-divergence', 'no-sdk-member', 'no-write-evidence']) {
+        expect(audited!.entries.filter((e) => e.bucket === bucket).map((e) => e.nestedKey), type)
+          .toEqual([]);
+      }
+      expect(audited!.entries.filter((e) => e.bucket === 'allow-listed'), type).toEqual([]);
+    }
+    // The blobs the opt-in exists to fence are actually REACHED. Without this a
+    // `handledProperties` parse that lost them would leave the targets
+    // vacuously clean rather than failing.
+    const topsOf = (type: string): Set<string> =>
+      new Set(report.targets.find((t) => t.resourceType === type)!.entries.map(
+        (e) => e.topLevelProperty
+      ));
+    expect(topsOf('AWS::Events::Rule').has('Targets')).toBe(true);
+    expect(topsOf('AWS::Scheduler::Schedule').has('Target')).toBe(true);
+    expect(topsOf('AWS::Glue::Crawler').has('Targets')).toBe(true);
+    expect(topsOf('AWS::Glue::Table').has('TableInput')).toBe(true);
+    expect(topsOf('AWS::Glue::Table').has('OpenTableFormatInput')).toBe(true);
+    expect(topsOf('AWS::Glue::SecurityConfiguration').has('EncryptionConfiguration')).toBe(true);
+  });
+
+  it('keeps the mixed-case-island targets OUT of the write-evidence pass (blob forwards)', () => {
+    // The decision each target comment records: these providers forward whole
+    // CFn blobs and patch only the divergent keys, so "does the provider write
+    // this SDK member" has no answer for the members it never names. If one of
+    // them is ever rewritten to hand-build its SDK object, this expectation is
+    // the prompt to re-measure and opt in rather than leave the pass unused.
+    for (const type of [
+      'AWS::Events::Rule',
+      'AWS::Scheduler::Schedule',
+      'AWS::Glue::Crawler',
+      'AWS::Glue::Table',
+      'AWS::Glue::Connection',
+      'AWS::Glue::Trigger',
+      'AWS::Glue::Database',
+      'AWS::Glue::SecurityConfiguration',
+      'AWS::Glue::Job',
+    ]) {
+      const target = NESTED_KEY_TARGETS.find((t) => t.resourceType === type)!;
+      expect(target.freshObjectMapper, type).toBeUndefined();
+      expect(target.minWrittenMembers, type).toBeUndefined();
+      // `exact` is the load-bearing half of the item-1 fix: declaring
+      // `lower-first` because a handful of members are camelCase would
+      // lowercase every PascalCase member past the test and re-hide the very
+      // islands this slice exists to surface.
+      expect(target.keyStyle, type).toBe('exact');
+    }
+  });
+
+  it('credits each mixed-case island to the provider conversion that handles it (#1393 item 1)', () => {
+    // The exact islands the #1393 sweep named, asserted as `provider-handled`
+    // per path. Each was verified against the provider's own conversion when
+    // the target was registered (`toSdkEcsParameters` / `toSdkTarget` /
+    // `CFN_TO_SDK_DYNAMODB_TARGET_KEYS` / `buildEncryptionConfiguration`), so a
+    // provider that DROPS one of those conversions re-surfaces the key as
+    // `case-divergence` or `no-sdk-member` and fails here by name — which is
+    // the whole point of registering the types.
+    const bucketsOf = (type: string): Map<string, string> =>
+      new Map(
+        report.targets
+          .find((t) => t.resourceType === type)!
+          .entries.map((e) => [e.nestedKey, e.bucket])
+      );
+    const rule = bucketsOf('AWS::Events::Rule');
+    for (const path of [
+      'Targets.EcsParameters.NetworkConfiguration.AwsVpcConfiguration',
+      'Targets.EcsParameters.CapacityProviderStrategy.CapacityProvider',
+      'Targets.EcsParameters.CapacityProviderStrategy.Weight',
+      'Targets.EcsParameters.CapacityProviderStrategy.Base',
+      'Targets.EcsParameters.PlacementConstraints.Expression',
+      'Targets.EcsParameters.PlacementStrategies',
+      'Targets.EcsParameters.PlacementStrategies.Field',
+      'Targets.EcsParameters.TagList',
+    ]) {
+      expect(rule.get(path), path).toBe('provider-handled');
+    }
+    const schedule = bucketsOf('AWS::Scheduler::Schedule');
+    for (const path of [
+      // Scheduler's CFn spelling is `Awsvpc…`, EventBridge's is `AwsVpc…` — the
+      // reason both types are registered rather than one standing in for the
+      // other.
+      'Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration',
+      'Target.EcsParameters.CapacityProviderStrategy.CapacityProvider',
+      'Target.EcsParameters.PlacementConstraints.Type',
+      'Target.EcsParameters.PlacementStrategy.Field',
+    ]) {
+      expect(schedule.get(path), path).toBe('provider-handled');
+    }
+    expect(bucketsOf('AWS::Glue::Crawler').get('Targets.DynamoDBTargets.ScanRate')).toBe(
+      'provider-handled'
+    );
+    expect(
+      bucketsOf('AWS::Glue::SecurityConfiguration').get('EncryptionConfiguration.S3Encryptions')
+    ).toBe('provider-handled');
+    // `ScanAll` is the recorded SPLIT between the two passes, not an omission:
+    // the flat member index matches the PascalCase `ScanAll` of the sibling
+    // `MongoDBTarget` — the ONE crawler-target shape that spells it that way
+    // (`@aws-sdk/client-glue` `models_0.d.ts`, and the provider's own note on
+    // `CFN_TO_SDK_DYNAMODB_TARGET_KEYS` says the same) — so the key pass says
+    // `same-spelling` and only the shape pass sees that `DynamoDBTarget` has no
+    // such member. Pinned so a reader checking "is ScanAll fenced?" against one
+    // pass alone cannot be misled, and so a shape-pass regression shows up here.
+    expect(bucketsOf('AWS::Glue::Crawler').get('Targets.DynamoDBTargets.ScanAll')).toBe(
+      'same-spelling'
+    );
+    const crawlerShapes = report.targets.find((t) => t.resourceType === 'AWS::Glue::Crawler')!
+      .shapeEntries.filter((e) => e.nestedKey === 'ScanAll');
+    expect(crawlerShapes.map((e) => e.bucket)).toEqual(['provider-handled']);
+  });
+
+  it('leaves AWS::Glue::Workflow unregistered — it has nothing to audit', () => {
+    // The recorded exclusion at the end of NESTED_KEY_TARGETS, asserted from
+    // the fixture rather than from the comment.
+    //
+    // THE CAPTURE FRESHNESS ASSERTION IS LOAD-BEARING, and its absence is what
+    // made the first cut of this test unfalsifiable. `nestedPropertyPaths` did
+    // not exist as a fixture field until 2026-08-10, so EVERY stale capture
+    // lacks it — including `AWS-AutoScaling-AutoScalingGroup.json`, which is
+    // full of nested structures. Asserting only "the key is absent" against the
+    // then-stale Workflow capture was therefore guaranteed by the fixture's AGE
+    // rather than by the type's shape, and could never have "failed the day AWS
+    // gives the type a structured property". The fixture has since been
+    // re-captured (`node scripts/refresh-cfn-schemas.mjs 'AWS::Glue::Workflow'`).
+    //
+    // WHICH assertion carries the freshness claim matters, and the obvious
+    // answer is wrong: `definitionShapes` is NOT it. That field landed
+    // 2026-08-09 (b99fe610) and `nestedPropertyPaths` 2026-08-10 (6d26bca2), so
+    // a capture taken in that one-day window has the first and lacks the second
+    // — `AWS-ECS-Cluster.json` is exactly that shape today (9 `definitionShapes`,
+    // no `nestedPropertyPaths`), which is a live counterexample to
+    // "`definitionShapes` present proves post-extension".
+    //
+    // The two assertions that DO carry it:
+    //   - `generatedAt >= '2026-08-10'` dates the capture past BOTH extensions,
+    //     which is the direct claim and the cheap one;
+    //   - `Object.keys(definitionShapes) === ['#top']` is the SHAPE claim and
+    //     the one that survives any future field churn: `#top` being the only
+    //     definition means the type has no modeled sub-structure at all, which
+    //     is what makes the absence of `nestedPropertyPaths` a fact about the
+    //     TYPE rather than about the capture. It is the discriminator, and the
+    //     freshness check is what stops it being read out of a stale file.
+    expect(
+      NESTED_KEY_TARGETS.some((t) => t.resourceType === 'AWS::Glue::Workflow')
+    ).toBe(false);
+    const fixture = JSON.parse(
+      readFileSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas/AWS-Glue-Workflow.json'), 'utf8')
+    ) as {
+      generatedAt?: string;
+      nestedPropertyPaths?: Record<string, string[]>;
+      definitionShapes?: Record<string, Record<string, string>>;
+      primaryIdentifier?: string[];
+    };
+    // Freshness: dated past BOTH capture extensions (2026-08-09 / 2026-08-10).
+    // ISO `YYYY-MM-DD` compares correctly as a string.
+    expect(
+      fixture.generatedAt ?? '',
+      'capture predates the nestedPropertyPaths extension — re-run the refresher'
+    ).not.toBe('');
+    expect(fixture.generatedAt! >= '2026-08-10', `stale capture: ${fixture.generatedAt}`).toBe(
+      true
+    );
+    // Shape: `#top` alone means the type has no modeled sub-structure.
+    expect(Object.keys(fixture.definitionShapes ?? {})).toEqual(['#top']);
+    expect(fixture.primaryIdentifier).toBeDefined();
+    expect(fixture.nestedPropertyPaths).toBeUndefined();
+    // Control. NOTE what this does and does not cover: it is a COMMITTED
+    // fixture, so it discriminates against a broken re-capture SWEEP (someone
+    // regenerates the tree and every file loses the key, leaving the Workflow
+    // assertion vacuously green). It does NOT prove the live refresher still
+    // emits the field — nothing here runs it. The refresher's own extraction is
+    // covered by the `extractNestedPropertyPaths` unit tests earlier in this
+    // file.
+    const control = JSON.parse(
+      readFileSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas/AWS-Glue-Crawler.json'), 'utf8')
+    ) as { nestedPropertyPaths?: Record<string, string[]> };
+    expect(control.nestedPropertyPaths).toBeDefined();
+  });
+
+  it('pins a per-BLOB path floor for every mixed-case-island target (#1393 item 3)', () => {
+    // `minNestedKeys` is an AGGREGATE, and the repo's checker rule is explicit
+    // that aggregate floors alone are insufficient because one dead shape hides
+    // under them. Measured here, the headroom is wide enough for that to be
+    // real rather than theoretical: `AWS::Glue::Crawler` could lose ALL FOUR of
+    // its non-`Targets` blobs (46 -> 40) and still clear its floor of 36;
+    // `AWS::Scheduler::Schedule` could lose `FlexibleTimeWindow` whole,
+    // `AWS::Events::Rule` its `Tags`, and `AWS::Glue::Job` three of its four
+    // blobs. So every registered blob gets its OWN floor, and a blob that
+    // disappears fails BY NAME. The table declares all 21 blobs of the nine new
+    // targets — complete for them, and NOT the 115 blobs of all 24 registered
+    // targets, which this test does not claim to cover.
+    //
+    // WHICH LEVEL THIS FENCE REACHES: TOP-LEVEL blobs only. The floors below
+    // still carry 8-14 paths of slack on the three big blobs, and a whole
+    // SECOND-LEVEL family fits inside that slack — `Rule.Targets` 74/60 hides
+    // `RedshiftDataParameters` (8), `Crawler.Targets` 40/32 hides `S3Targets`
+    // (7), `Table.TableInput` 58/46 hides `ViewDefinition` (10). The test
+    // immediately below is what closes that level; neither is sufficient alone.
+    //
+    // Floors are the measurement rounded down (or the measurement itself where
+    // the blob is 1-2 paths and there is no room to round), matching how
+    // `minNestedKeys` is set.
+    const PER_BLOB_FLOORS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
+      'AWS::Events::Rule': { Targets: 60, Tags: 2 },
+      'AWS::Scheduler::Schedule': { Target: 36, FlexibleTimeWindow: 2 },
+      'AWS::Glue::Crawler': {
+        Targets: 32,
+        SchemaChangePolicy: 2,
+        LakeFormationConfiguration: 2,
+        RecrawlPolicy: 1,
+        Schedule: 1,
+      },
+      'AWS::Glue::Table': { TableInput: 46, OpenTableFormatInput: 24 },
+      'AWS::Glue::Connection': { ConnectionInput: 29 },
+      'AWS::Glue::Trigger': { Actions: 5, Predicate: 5, EventBatchingCondition: 2 },
+      'AWS::Glue::Database': { DatabaseInput: 12 },
+      'AWS::Glue::SecurityConfiguration': { EncryptionConfiguration: 7 },
+      'AWS::Glue::Job': {
+        Command: 3,
+        Connections: 1,
+        ExecutionProperty: 1,
+        NotificationProperty: 1,
+      },
+    };
+    // Every declared blob must still be REACHED, with at least its floor. A
+    // blob that vanishes counts 0 and fails BY NAME, so no separate presence
+    // loop is needed — every floor here is >= 1, which is why the `counts.has`
+    // loop this test used to carry was dead code and has been removed.
+    for (const [type, floors] of Object.entries(PER_BLOB_FLOORS)) {
+      const target = report.targets.find((t) => t.resourceType === type)!;
+      const counts = new Map<string, number>();
+      for (const e of target.entries) {
+        counts.set(e.topLevelProperty, (counts.get(e.topLevelProperty) ?? 0) + 1);
+      }
+      for (const [blob, floor] of Object.entries(floors)) {
+        expect(floor, `${type} ${blob} floor must be >= 1 to imply presence`)
+          .toBeGreaterThanOrEqual(1);
+        expect(counts.get(blob) ?? 0, `${type} ${blob}`).toBeGreaterThanOrEqual(floor);
+      }
+    }
+  });
+
+  it('pins a SECOND-LEVEL family floor so no sub-shape hides in the blob slack (#1393 item 3)', () => {
+    // The per-blob floors above stop a whole BLOB vanishing; they do not stop a
+    // whole second-level FAMILY vanishing inside a big blob's slack, and the
+    // measured slack is wide enough for that to be real: `Events::Rule.Targets`
+    // is 74 against a floor of 60, `Scheduler.Target` 45/36, `Crawler.Targets`
+    // 40/32. Within 8-14 paths of slack an entire family disappears silently —
+    // including ALL EIGHT crawler-target families, of which
+    // `Targets.DynamoDBTargets` is 4 paths and is the `scanRate` island's own
+    // home, i.e. the exact shape this whole registration exists to fence.
+    //
+    // Scope: every second-level family that is a COMPOSITE shape (>= 2 paths).
+    // A 1-path second level is a scalar leaf of the blob (`Targets.Arn`) and is
+    // already covered by the blob floor. `AWS::Glue::Job` has no composite
+    // family at all — all four of its blobs are flat — so it is absent here by
+    // measurement, not by omission.
+    //
+    // Floors: measured * 0.8 floored for families above 4 paths, the
+    // measurement itself at or below 4 (no room to round without the floor
+    // ceasing to fence). Same convention as PER_BLOB_FLOORS.
+    const SECOND_LEVEL_FAMILY_FLOORS: Readonly<
+      Record<string, Readonly<Record<string, number>>>
+    > = {
+      'AWS::Events::Rule': {
+        'Targets.AppSyncParameters': 2,
+        'Targets.BatchParameters': 5,
+        'Targets.DeadLetterConfig': 2,
+        'Targets.EcsParameters': 22,
+        'Targets.HttpParameters': 4,
+        'Targets.InputTransformer': 3,
+        'Targets.KinesisParameters': 2,
+        'Targets.RedshiftDataParameters': 6,
+        'Targets.RetryPolicy': 3,
+        'Targets.RunCommandParameters': 4,
+        'Targets.SageMakerPipelineParameters': 4,
+        'Targets.SqsParameters': 2,
+      },
+      'AWS::Scheduler::Schedule': {
+        'Target.DeadLetterConfig': 2,
+        'Target.EcsParameters': 20,
+        'Target.EventBridgeParameters': 3,
+        'Target.KinesisParameters': 2,
+        'Target.RetryPolicy': 3,
+        'Target.SageMakerPipelineParameters': 4,
+        'Target.SqsParameters': 2,
+      },
+      // All eight crawler-target families, the reviewer's named case.
+      'AWS::Glue::Crawler': {
+        'Targets.CatalogTargets': 4,
+        'Targets.DeltaTargets': 4,
+        'Targets.DynamoDBTargets': 4,
+        'Targets.HudiTargets': 4,
+        'Targets.IcebergTargets': 4,
+        'Targets.JdbcTargets': 4,
+        'Targets.MongoDBTargets': 3,
+        'Targets.S3Targets': 5,
+      },
+      'AWS::Glue::Table': {
+        'OpenTableFormatInput.IcebergInput': 24,
+        'TableInput.PartitionKeys': 4,
+        'TableInput.StorageDescriptor': 24,
+        'TableInput.TargetTable': 4,
+        'TableInput.ViewDefinition': 8,
+      },
+      'AWS::Glue::Connection': {
+        'ConnectionInput.AuthenticationConfiguration': 18,
+        'ConnectionInput.PhysicalConnectionRequirements': 4,
+      },
+      'AWS::Glue::Trigger': {
+        'Actions.NotificationProperty': 2,
+        'Predicate.Conditions': 4,
+      },
+      'AWS::Glue::Database': {
+        'DatabaseInput.CreateTableDefaultPermissions': 4,
+        'DatabaseInput.FederatedDatabase': 3,
+        'DatabaseInput.TargetDatabase': 4,
+      },
+      'AWS::Glue::SecurityConfiguration': {
+        'EncryptionConfiguration.CloudWatchEncryption': 3,
+        'EncryptionConfiguration.JobBookmarksEncryption': 3,
+        'EncryptionConfiguration.S3Encryptions': 3,
+      },
+    };
+    for (const [type, floors] of Object.entries(SECOND_LEVEL_FAMILY_FLOORS)) {
+      const target = report.targets.find((t) => t.resourceType === type)!;
+      const counts = new Map<string, number>();
+      for (const e of target.entries) {
+        const segments = e.nestedKey.split('.');
+        if (segments.length < 2) continue;
+        const family = `${segments[0]}.${segments[1]}`;
+        counts.set(family, (counts.get(family) ?? 0) + 1);
+      }
+      for (const [family, floor] of Object.entries(floors)) {
+        expect(counts.get(family) ?? 0, `${type} ${family}`).toBeGreaterThanOrEqual(floor);
+      }
+    }
+    // The island the registration exists for, stated on its own so a failure
+    // reads as what it is rather than as one row of a table.
+    const crawler = report.targets.find((t) => t.resourceType === 'AWS::Glue::Crawler')!;
+    expect(
+      crawler.entries
+        .filter((e) => e.nestedKey.startsWith('Targets.DynamoDBTargets.'))
+        .map((e) => e.nestedKey)
+        .sort()
+    ).toEqual([
+      'Targets.DynamoDBTargets.Path',
+      'Targets.DynamoDBTargets.ScanAll',
+      'Targets.DynamoDBTargets.ScanRate',
+    ]);
+  });
+
+  it('pins the ELEVEN Glue Database paths that reach no AWS call today (#1393 item 3)', () => {
+    // A REAL silent drop, recorded rather than allow-listed.
+    // `GlueProvider.buildDatabaseInput` is a fresh-object builder naming only
+    // `Name` / `Description` / `LocationUri` / `Parameters`; CFn and the SDK's
+    // `DatabaseInput` both also declare `TargetDatabase`, `FederatedDatabase`
+    // and `CreateTableDefaultPermissions`, and none of those three spellings
+    // exists anywhere under `src/`.
+    //
+    // The key pass CANNOT see this (same spelling on both sides, so every path
+    // is `same-spelling`), which is why the type audits clean above. Only the
+    // write-evidence pass sees it — so this asserts the FORCED measurement,
+    // exactly, and the target deliberately does not carry
+    // `freshObjectMapper: true` yet: turning it on today exits 1 on a live drop
+    // this lane cannot fix, and the only way to keep CI green would be 11
+    // allow-list entries silencing a real divergence.
+    //
+    // WHEN THE PROVIDER IS FIXED this test fails, and the correct response is
+    // NOT to edit the list — it is to add `freshObjectMapper: true` to the
+    // target and delete this test, which is the fix's acceptance criterion.
+    const target = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::Glue::Database')!;
+    expect(target.freshObjectMapper, 'opt in and delete this test once fixed').toBeUndefined();
+    const forced = loadReport([{ ...target, freshObjectMapper: true }]);
+    expect(
+      forced.targets[0]!.entries
+        .filter((e) => e.bucket === 'no-write-evidence')
+        .map((e) => e.nestedKey)
+        .sort()
+    ).toEqual([...GLUE_DATABASE_DROPPED_PATHS].sort());
+    // The three unwired top-level members, stated separately so the failure
+    // names the SDK members rather than only the paths.
+    expect(
+      [...new Set(GLUE_DATABASE_DROPPED_PATHS.map((p) => p.split('.')[1]!))].sort()
+    ).toEqual(['CreateTableDefaultPermissions', 'FederatedDatabase', 'TargetDatabase']);
+  });
+
+  it('pins the shape pass BLIND SPOT on these targets — unmatchedDefinitions (#1393 item 5)', () => {
+    // Bound (iii) in the script header. The shape pass is the backstop for the
+    // key pass's flat member index, but it only reaches a CFn definition that
+    // has a SAME-NAMED SDK interface. One that does not lands in
+    // `unmatchedDefinitions` and is audited by NEITHER a sound key check nor
+    // the shape pass — non-blocking by design, counted in the generated matrix,
+    // and until now pinned by nothing.
+    //
+    // Pinned EXACTLY (not as a count) so the set cannot grow silently: a new
+    // unmatched definition is a new hole and must be a deliberate edit here.
+    // Closing the class needs the shape-aware v2 of #1378 (issue #1393 item 5).
+    const unmatched = Object.fromEntries(
+      report.targets
+        .filter((t) =>
+          ['AWS::Events::Rule', 'AWS::Scheduler::Schedule'].includes(t.resourceType) ||
+          t.resourceType.startsWith('AWS::Glue::')
+        )
+        .map((t) => [t.resourceType, t.unmatchedDefinitions])
+    );
+    expect(unmatched).toEqual({
+      'AWS::Events::Rule': [],
+      'AWS::Scheduler::Schedule': [],
+      'AWS::Glue::Connection': [],
+      'AWS::Glue::SecurityConfiguration': [],
+      'AWS::Glue::Trigger': [],
+      // The six holes, all Glue, all free-form or CFn-only shapes:
+      'AWS::Glue::Crawler': ['Targets'],
+      'AWS::Glue::Database': ['PrincipalPrivileges'],
+      'AWS::Glue::Job': ['DefaultArguments', 'NonOverridableArguments'],
+      'AWS::Glue::Table': ['IcebergTableInput', 'SerdeInfo'],
+    });
+  });
+
   it('fences the #1304-fixed AnomalyDetector MetricTimeZone as provider-handled', () => {
     const ad = report.targets.find((t) => t.resourceType === 'AWS::CloudWatch::AnomalyDetector')!;
     expect(bucketOf(ad.entries, 'MetricTimeZone')).toBe('provider-handled');
@@ -3912,6 +4359,33 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       // write vouches for every path beneath it and the write pass has
       // nothing left to find.
       'AWS::Lambda::EventSourceMapping': 0,
+      // The mixed-case-island slice of issue #1393 item 3, measured under the
+      // FORCED pass at opt-in. FOUR of the nine are non-zero, and they do NOT
+      // all mean the same thing — the reviewer of the opt-in PR checked them
+      // one by one, and lumping them together as "members the provider
+      // legitimately never names" was wrong for one of the four:
+      //   - `Table` 36, `Trigger` 9, `SecurityConfiguration` 2 are FALSE
+      //     positives. Those builders name their full member set; the
+      //     residuals are shapes the write-SCOPE index cannot resolve, so
+      //     opting in would flag values that do reach AWS.
+      //   - `Database` 11 is a REAL SILENT DROP (`buildDatabaseInput` never
+      //     names `TargetDatabase` / `FederatedDatabase` /
+      //     `CreateTableDefaultPermissions`). It is not a reason the pass stays
+      //     off — it is the reason the type must eventually opt IN, and the
+      //     test right below pins the dropped paths BY NAME.
+      // The five zeros are the types whose blobs the recognizers already credit
+      // in full (the ECS-target and crawler-target families) or that carry no
+      // divergent key at all — for those the pass is merely redundant rather
+      // than wrong, which is why the decision is stated per type here.
+      'AWS::Events::Rule': 0,
+      'AWS::Scheduler::Schedule': 0,
+      'AWS::Glue::Crawler': 0,
+      'AWS::Glue::Connection': 0,
+      'AWS::Glue::Job': 0,
+      'AWS::Glue::Table': 36,
+      'AWS::Glue::Database': 11,
+      'AWS::Glue::Trigger': 9,
+      'AWS::Glue::SecurityConfiguration': 2,
       // 81 before issue #1520 (segment renames + widened reverse-map
       // exclusion, -> 50), 0 since issue #1540 (builder-behind-binding hop,
       // for-of taint hop, scoped + terminal renames) opted the target in —
@@ -4295,6 +4769,185 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       expect(
         withInjectedPath('casediverge', 'ProvisionedPollerConfig', 'Maximumpollers')
       ).toEqual(['case-divergence:ProvisionedPollerConfig.Maximumpollers']);
+    });
+  });
+
+  describe('the mixed-case-island opt-ins fire on a real divergence (#1393 item 3)', () => {
+    // All nine new targets measure 0 findings today, which is exactly the state
+    // in which a fence can be vacuous — so prove the RED direction, for each of
+    // the three clients and in BOTH blocking buckets. The realistic regression
+    // for a blob forwarder is CFn-side: AWS publishes a nested member under a
+    // forwarded blob whose SDK spelling differs (or does not exist), and the
+    // forward carries it to AWS as an unknown key with no code change to notice.
+    // Injected into a scratch COPY of the fixture tree through `loadReport`'s
+    // `fixtureDir` seam, with the committed fixtures untouched.
+    const scratch = mkdtempSync(join(tmpdir(), 'cdkd-nkc-island-'));
+    afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+    const withInjectedPath = (
+      name: string,
+      type: string,
+      blob: string,
+      path: string
+    ): string[] => {
+      const dir = join(scratch, name);
+      cpSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas'), dir, { recursive: true });
+      const file = join(dir, `${type.replace(/::/g, '-')}.json`);
+      const fixture = JSON.parse(readFileSync(file, 'utf8')) as {
+        nestedPropertyPaths: Record<string, string[]>;
+      };
+      const before = fixture.nestedPropertyPaths[blob];
+      expect(before, `${blob} missing from the capture — anchor drifted?`).toBeDefined();
+      fixture.nestedPropertyPaths[blob] = [...before!, path];
+      writeFileSync(file, JSON.stringify(fixture, null, 2));
+      const target = NESTED_KEY_TARGETS.find((t) => t.resourceType === type)!;
+      return loadReport([target], undefined, undefined, dir)
+        .targets[0]!.entries.filter(
+          (e) => e.bucket === 'case-divergence' || e.bucket === 'no-sdk-member'
+        )
+        .map((e) => `${e.bucket}:${e.nestedKey}`)
+        .sort();
+    };
+
+    it('flags a camelCase-island near-miss under the EventBridge ECS target', () => {
+      // The island class item 1 named, in its most literal form: the SDK's
+      // `AwsVpcConfiguration.AssignPublicIp` against a CFn-side
+      // `AssignPublicIP`. Under `keyStyle: 'exact'` it reaches the near-miss
+      // bucket and is reported; under `lower-first` it would have been
+      // lowercased past the test, which is why the target declares `exact`.
+      expect(
+        withInjectedPath(
+          'rule-case',
+          'AWS::Events::Rule',
+          'Targets',
+          'EcsParameters.NetworkConfiguration.AwsVpcConfiguration.AssignPublicIP'
+        )
+      ).toEqual([
+        'case-divergence:Targets.EcsParameters.NetworkConfiguration.AwsVpcConfiguration.AssignPublicIP',
+      ]);
+    });
+
+    it('flags a nested member with NO SDK counterpart under the EventBridge ECS target', () => {
+      expect(
+        withInjectedPath(
+          'rule-missing',
+          'AWS::Events::Rule',
+          'Targets',
+          'EcsParameters.CapacityProviderStrategy.WeightPercent'
+        )
+      ).toEqual(['no-sdk-member:Targets.EcsParameters.CapacityProviderStrategy.WeightPercent']);
+    });
+
+    it('flags a nested member with NO SDK counterpart under the Scheduler ECS target', () => {
+      expect(
+        withInjectedPath(
+          'schedule-missing',
+          'AWS::Scheduler::Schedule',
+          'Target',
+          'EcsParameters.PlacementStrategy.Ordering'
+        )
+      ).toEqual(['no-sdk-member:Target.EcsParameters.PlacementStrategy.Ordering']);
+    });
+
+    it('flags a camelCase-island near-miss under the Scheduler ECS target', () => {
+      // The bucket this client was MISSING, and the one it can least afford to
+      // be missing: `AWS::Scheduler::Schedule` is registered precisely because
+      // its CFn spelling is `AwsvpcConfiguration` where EventBridge's is
+      // `AwsVpcConfiguration`, so the `keyStyle: 'exact'` behavior that routes
+      // an island to the near-miss bucket has to be proven RED for
+      // `@aws-sdk/client-scheduler` specifically — the EventBridge probe above
+      // proves it for a DIFFERENT client and a different spelling, and cannot
+      // stand in for it.
+      expect(
+        withInjectedPath(
+          'schedule-case',
+          'AWS::Scheduler::Schedule',
+          'Target',
+          'EcsParameters.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIP'
+        )
+      ).toEqual([
+        'case-divergence:Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIP',
+      ]);
+    });
+
+    it('MEASURES the cross-type literal bleed across the seven shared-file Glue targets', () => {
+      // Not a fence — a pinned BOUND (header bound (i)). The seven Glue targets
+      // share ONE provider file, so the file-global literal pool the loose
+      // rescue draws on spans SEVEN resource types across eight classes, where
+      // the EventBridge and Scheduler files serve one class each.
+      //
+      // The pool sizes are ASSERTED rather than written in prose, because a
+      // prose count drifts silently the first time the file grows. These are
+      // order-of-magnitude floors/ceilings, not exact pins: what has to stay
+      // true is that the Glue pool is far larger than the single-class ones.
+      const poolSize = (file: string): number =>
+        collectStringLiterals(
+          readFileSync(join(PROVIDERS_DIR, file), 'utf8'),
+          file
+        ).size;
+      const gluePool = poolSize('glue-provider.ts');
+      expect(gluePool).toBeGreaterThan(200);
+      for (const single of ['eventbridge-rule-provider.ts', 'scheduler-schedule-provider.ts']) {
+        expect(poolSize(single), single).toBeLessThan(gluePool / 3);
+      }
+      //
+      // The consequence is demonstrated rather than argued: a key belonging to
+      // one Glue type is cleared by ANOTHER Glue type class's literal.
+      //
+      // `ScanRate` is the CRAWLER class's rename-map key; injected under
+      // `AWS::Glue::Job`'s `Command` blob it is still cleared.
+      expect(
+        withInjectedPath('bleed-job', 'AWS::Glue::Job', 'Command', 'ScanRate')
+      ).toEqual([]);
+      // `IcebergTableInput` is the TABLE class's refusal key; injected under
+      // the CRAWLER's `Targets` blob it is still cleared.
+      expect(
+        withInjectedPath('bleed-crawler', 'AWS::Glue::Crawler', 'Targets', 'IcebergTableInput')
+      ).toEqual([]);
+      // The CONTROL that makes the two above mean something: a name no class in
+      // the file mentions is correctly reported. Without it, both assertions
+      // would also pass if the target had simply stopped auditing.
+      expect(
+        withInjectedPath('bleed-control', 'AWS::Glue::Job', 'Command', 'ScanBudgetCeiling')
+      ).toEqual(['no-sdk-member:Command.ScanBudgetCeiling']);
+    });
+
+    it("flags a near-miss of Glue's scanRate island under the crawler DynamoDB target", () => {
+      // `Scanrate` vs the SDK's `scanRate`: the exact camelCase island whose
+      // sibling `ScanRate` the provider already renames. The rename map covers
+      // the spelling it knows; this proves the fence still catches the next one.
+      expect(
+        withInjectedPath(
+          'crawler-case',
+          'AWS::Glue::Crawler',
+          'Targets',
+          'DynamoDBTargets.Scanrate'
+        )
+      ).toEqual(['case-divergence:Targets.DynamoDBTargets.Scanrate']);
+    });
+
+    it('flags a near-miss under the Glue security-configuration encryption blob', () => {
+      // A different Glue provider class in the same file, so the fence is shown
+      // to reach past the one type whose islands motivated it.
+      expect(
+        withInjectedPath(
+          'seccfg-case',
+          'AWS::Glue::SecurityConfiguration',
+          'EncryptionConfiguration',
+          'S3Encryptions.KmsKeyARN'
+        )
+      ).toEqual(['case-divergence:EncryptionConfiguration.S3Encryptions.KmsKeyARN']);
+    });
+
+    it('flags a nested member with NO SDK counterpart under the Glue TableInput blob', () => {
+      expect(
+        withInjectedPath(
+          'table-missing',
+          'AWS::Glue::Table',
+          'TableInput',
+          'StorageDescriptor.CompressionCodec'
+        )
+      ).toEqual(['no-sdk-member:TableInput.StorageDescriptor.CompressionCodec']);
     });
   });
 });
@@ -5580,6 +6233,78 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
         `AWS::ECS::TaskDefinition: ProxyConfiguration.ProxyConfigurationProperties.${key}`
       );
     }
+  });
+
+  // The #1393 item-3 mixed-case-island targets, probed the way
+  // `.claude/rules/testing.md` requires: a REAL regression in REAL provider
+  // code, driven through the SHIPPED command, not through the `fixtureDir`
+  // library seam (which is deliberately not exposed on the CLI). The fixture
+  // probes elsewhere in this file inject a CFn-side key; these delete the
+  // PROVIDER-side conversion, which is the other half and the one the per-path
+  // `provider-handled` assertions above assert without proving.
+  it('exits 1 when the EventBridge ECS capacity-provider lowercasing is deleted (#1393)', () => {
+    const dir = regressedTree('providers-eb-ecs', 'eventbridge-rule-provider.ts', (source) =>
+      source.replace(
+        ".map((item) => this.lowerCaseItemKeys(item, ['CapacityProvider', 'Weight', 'Base']));",
+        '.map((item) => item);'
+      )
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('nested-key-coverage: FAIL');
+    for (const key of ['CapacityProvider', 'Weight', 'Base']) {
+      expect(stderr, key).toContain(
+        `AWS::Events::Rule: Targets.EcsParameters.CapacityProviderStrategy.${key}`
+      );
+      expect(stderr, key).toContain('case-divergence');
+    }
+  });
+
+  it('exits 1 when the Scheduler ECS capacity-provider lowercasing is deleted (#1393)', () => {
+    // The SAME conversion in a DIFFERENT provider file and a different SDK
+    // client — the pair is what proves each target fences its own provider
+    // rather than one standing in for the other.
+    const dir = regressedTree('providers-sch-ecs', 'scheduler-schedule-provider.ts', (source) =>
+      source.replace(
+        ".map((item) => this.renameItemKeys(item, ['CapacityProvider', 'Weight', 'Base'], 'lower'));",
+        '.map((item) => item);'
+      )
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('nested-key-coverage: FAIL');
+    for (const key of ['CapacityProvider', 'Weight', 'Base']) {
+      expect(stderr, key).toContain(
+        `AWS::Scheduler::Schedule: Target.EcsParameters.CapacityProviderStrategy.${key}`
+      );
+      expect(stderr, key).toContain('case-divergence');
+    }
+  });
+
+  it('exits 1 when the Glue crawler scanRate rename bridge is deleted (#1393)', () => {
+    // BOTH directions of the rename map have to go, and that is a measured
+    // property of this target rather than thoroughness: deleting only the
+    // forward entry leaves the CFn spelling `'ScanRate'` as a literal in the
+    // REVERSE map (`SDK_TO_CFN_DYNAMODB_TARGET_KEYS`), and the rescue then still
+    // clears the key — exit 0.
+    //
+    // The cause is the REVERSE-MAP ASYMMETRY, header bound (iv) / #1448
+    // known-bound item 2: the write-evidence pass excludes the `read*` /
+    // `*ToCfn` reverse families, but the literal collector does not, so a
+    // spelling that survives only on the read side still vouches for the write
+    // side. It is NOT the shared-file pool of bound (i) — both maps are
+    // module-level consts in the SAME file, so class-scoping the literal pool
+    // would leave this behaviour exactly as it is. Do not "simplify" this probe
+    // to one deletion on the belief that scoping will fix it.
+    const dir = regressedTree('providers-glue-scanrate', 'glue-provider.ts', (source) =>
+      source
+        .replace("  ScanAll: 'scanAll',\n  ScanRate: 'scanRate',\n", "  ScanAll: 'scanAll',\n")
+        .replace("  scanAll: 'ScanAll',\n  scanRate: 'ScanRate',\n", "  scanAll: 'ScanAll',\n")
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('AWS::Glue::Crawler: Targets.DynamoDBTargets.ScanRate');
+    expect(stderr).toContain('case-divergence');
   });
 
   it('exits 1 when a target fixture has no nestedPropertyPaths capture (#1464)', () => {

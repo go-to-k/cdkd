@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Events::Rule",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "Description",
@@ -18,5 +18,302 @@
   ],
   "createOnlyProperties": [
     "Name"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Arn"
+  ],
+  "nestedProperties": {
+    "Targets": [
+      "AppSyncParameters",
+      "Arn",
+      "ArrayProperties",
+      "AssignPublicIp",
+      "Attempts",
+      "AwsVpcConfiguration",
+      "Base",
+      "BatchParameters",
+      "CapacityProvider",
+      "CapacityProviderStrategy",
+      "Database",
+      "DbUser",
+      "DeadLetterConfig",
+      "EcsParameters",
+      "EnableECSManagedTags",
+      "EnableExecuteCommand",
+      "Expression",
+      "Field",
+      "GraphQLOperation",
+      "Group",
+      "HeaderParameters",
+      "HttpParameters",
+      "Id",
+      "Input",
+      "InputPath",
+      "InputPathsMap",
+      "InputTemplate",
+      "InputTransformer",
+      "JobDefinition",
+      "JobName",
+      "Key",
+      "KinesisParameters",
+      "LaunchType",
+      "MaximumEventAgeInSeconds",
+      "MaximumRetryAttempts",
+      "MessageGroupId",
+      "Name",
+      "NetworkConfiguration",
+      "PartitionKeyPath",
+      "PathParameterValues",
+      "PipelineParameterList",
+      "PlacementConstraints",
+      "PlacementStrategies",
+      "PlatformVersion",
+      "PropagateTags",
+      "QueryStringParameters",
+      "RedshiftDataParameters",
+      "ReferenceId",
+      "RetryPolicy",
+      "RetryStrategy",
+      "RoleArn",
+      "RunCommandParameters",
+      "RunCommandTargets",
+      "SageMakerPipelineParameters",
+      "SecretManagerArn",
+      "SecurityGroups",
+      "Size",
+      "Sql",
+      "Sqls",
+      "SqsParameters",
+      "StatementName",
+      "Subnets",
+      "TagList",
+      "TaskCount",
+      "TaskDefinitionArn",
+      "Type",
+      "Value",
+      "Values",
+      "Weight",
+      "WithEvent"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Targets": [
+      "AppSyncParameters",
+      "AppSyncParameters.GraphQLOperation",
+      "Arn",
+      "BatchParameters",
+      "BatchParameters.ArrayProperties",
+      "BatchParameters.ArrayProperties.Size",
+      "BatchParameters.JobDefinition",
+      "BatchParameters.JobName",
+      "BatchParameters.RetryStrategy",
+      "BatchParameters.RetryStrategy.Attempts",
+      "DeadLetterConfig",
+      "DeadLetterConfig.Arn",
+      "EcsParameters",
+      "EcsParameters.CapacityProviderStrategy",
+      "EcsParameters.CapacityProviderStrategy.Base",
+      "EcsParameters.CapacityProviderStrategy.CapacityProvider",
+      "EcsParameters.CapacityProviderStrategy.Weight",
+      "EcsParameters.EnableECSManagedTags",
+      "EcsParameters.EnableExecuteCommand",
+      "EcsParameters.Group",
+      "EcsParameters.LaunchType",
+      "EcsParameters.NetworkConfiguration",
+      "EcsParameters.NetworkConfiguration.AwsVpcConfiguration",
+      "EcsParameters.NetworkConfiguration.AwsVpcConfiguration.AssignPublicIp",
+      "EcsParameters.NetworkConfiguration.AwsVpcConfiguration.SecurityGroups",
+      "EcsParameters.NetworkConfiguration.AwsVpcConfiguration.Subnets",
+      "EcsParameters.PlacementConstraints",
+      "EcsParameters.PlacementConstraints.Expression",
+      "EcsParameters.PlacementConstraints.Type",
+      "EcsParameters.PlacementStrategies",
+      "EcsParameters.PlacementStrategies.Field",
+      "EcsParameters.PlacementStrategies.Type",
+      "EcsParameters.PlatformVersion",
+      "EcsParameters.PropagateTags",
+      "EcsParameters.ReferenceId",
+      "EcsParameters.TagList",
+      "EcsParameters.TagList.Key",
+      "EcsParameters.TagList.Value",
+      "EcsParameters.TaskCount",
+      "EcsParameters.TaskDefinitionArn",
+      "HttpParameters",
+      "HttpParameters.HeaderParameters",
+      "HttpParameters.PathParameterValues",
+      "HttpParameters.QueryStringParameters",
+      "Id",
+      "Input",
+      "InputPath",
+      "InputTransformer",
+      "InputTransformer.InputPathsMap",
+      "InputTransformer.InputTemplate",
+      "KinesisParameters",
+      "KinesisParameters.PartitionKeyPath",
+      "RedshiftDataParameters",
+      "RedshiftDataParameters.Database",
+      "RedshiftDataParameters.DbUser",
+      "RedshiftDataParameters.SecretManagerArn",
+      "RedshiftDataParameters.Sql",
+      "RedshiftDataParameters.Sqls",
+      "RedshiftDataParameters.StatementName",
+      "RedshiftDataParameters.WithEvent",
+      "RetryPolicy",
+      "RetryPolicy.MaximumEventAgeInSeconds",
+      "RetryPolicy.MaximumRetryAttempts",
+      "RoleArn",
+      "RunCommandParameters",
+      "RunCommandParameters.RunCommandTargets",
+      "RunCommandParameters.RunCommandTargets.Key",
+      "RunCommandParameters.RunCommandTargets.Values",
+      "SageMakerPipelineParameters",
+      "SageMakerPipelineParameters.PipelineParameterList",
+      "SageMakerPipelineParameters.PipelineParameterList.Name",
+      "SageMakerPipelineParameters.PipelineParameterList.Value",
+      "SqsParameters",
+      "SqsParameters.MessageGroupId"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "EventBusName": "scalar",
+      "EventPattern": "mixed",
+      "ScheduleExpression": "scalar",
+      "Description": "scalar",
+      "State": "scalar",
+      "Targets": "array",
+      "Arn": "scalar",
+      "RoleArn": "scalar",
+      "Tags": "array",
+      "Name": "scalar"
+    },
+    "CapacityProviderStrategyItem": {
+      "CapacityProvider": "scalar",
+      "Base": "scalar",
+      "Weight": "scalar"
+    },
+    "HttpParameters": {
+      "PathParameterValues": "array",
+      "HeaderParameters": "object",
+      "QueryStringParameters": "object"
+    },
+    "DeadLetterConfig": {
+      "Arn": "scalar"
+    },
+    "RunCommandParameters": {
+      "RunCommandTargets": "array"
+    },
+    "PlacementStrategy": {
+      "Field": "scalar",
+      "Type": "scalar"
+    },
+    "InputTransformer": {
+      "InputPathsMap": "object",
+      "InputTemplate": "scalar"
+    },
+    "KinesisParameters": {
+      "PartitionKeyPath": "scalar"
+    },
+    "BatchRetryStrategy": {
+      "Attempts": "scalar"
+    },
+    "RedshiftDataParameters": {
+      "StatementName": "scalar",
+      "Sqls": "array",
+      "Database": "scalar",
+      "SecretManagerArn": "scalar",
+      "DbUser": "scalar",
+      "Sql": "scalar",
+      "WithEvent": "scalar"
+    },
+    "AppSyncParameters": {
+      "GraphQLOperation": "scalar"
+    },
+    "Target": {
+      "InputPath": "scalar",
+      "HttpParameters": "object",
+      "DeadLetterConfig": "object",
+      "RunCommandParameters": "object",
+      "InputTransformer": "object",
+      "KinesisParameters": "object",
+      "RoleArn": "scalar",
+      "RedshiftDataParameters": "object",
+      "AppSyncParameters": "object",
+      "Input": "scalar",
+      "SqsParameters": "object",
+      "EcsParameters": "object",
+      "BatchParameters": "object",
+      "Id": "scalar",
+      "Arn": "scalar",
+      "SageMakerPipelineParameters": "object",
+      "RetryPolicy": "object"
+    },
+    "PlacementConstraint": {
+      "Type": "scalar",
+      "Expression": "scalar"
+    },
+    "AwsVpcConfiguration": {
+      "SecurityGroups": "array",
+      "Subnets": "array",
+      "AssignPublicIp": "scalar"
+    },
+    "SqsParameters": {
+      "MessageGroupId": "scalar"
+    },
+    "RunCommandTarget": {
+      "Values": "array",
+      "Key": "scalar"
+    },
+    "EcsParameters": {
+      "PlatformVersion": "scalar",
+      "Group": "scalar",
+      "EnableECSManagedTags": "scalar",
+      "EnableExecuteCommand": "scalar",
+      "PlacementConstraints": "array",
+      "PropagateTags": "scalar",
+      "TaskCount": "scalar",
+      "PlacementStrategies": "array",
+      "CapacityProviderStrategy": "array",
+      "LaunchType": "scalar",
+      "ReferenceId": "scalar",
+      "TagList": "array",
+      "NetworkConfiguration": "object",
+      "TaskDefinitionArn": "scalar"
+    },
+    "BatchParameters": {
+      "ArrayProperties": "object",
+      "JobName": "scalar",
+      "RetryStrategy": "object",
+      "JobDefinition": "scalar"
+    },
+    "NetworkConfiguration": {
+      "AwsVpcConfiguration": "object"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "SageMakerPipelineParameters": {
+      "PipelineParameterList": "array"
+    },
+    "RetryPolicy": {
+      "MaximumRetryAttempts": "scalar",
+      "MaximumEventAgeInSeconds": "scalar"
+    },
+    "BatchArrayProperties": {
+      "Size": "scalar"
+    },
+    "SageMakerPipelineParameter": {
+      "Value": "scalar",
+      "Name": "scalar"
+    }
+  }
 }

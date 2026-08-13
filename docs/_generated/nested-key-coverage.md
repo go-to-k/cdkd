@@ -7,17 +7,17 @@ For every SDK provider that forwards a nested CFn config blob, diffs the blob's 
 
 ## Summary
 
-- Audited targets: **15**
-- Nested CFn key paths audited: **874**
-- Same spelling in SDK model: **801**
-- Explicitly handled in provider: **51**
+- Audited targets: **24**
+- Nested CFn key paths audited: **1215**
+- Same spelling in SDK model: **1123**
+- Explicitly handled in provider: **70**
 - Allow-listed pass-throughs (does NOT block CI): **22**
 - **Case divergences (blocks CI): 0**
 - **No SDK member (blocks CI): 0**
 - Write-evidence pass — fresh-object targets audited: **14**
 - **No write evidence (blocks CI): 0**
-- Shape pass — bare-array pairs clean: **98**
-- Shape pass — explicitly handled in provider: **36**
+- Shape pass — bare-array pairs clean: **148**
+- Shape pass — explicitly handled in provider: **40**
 - Shape pass — allow-listed (does NOT block CI): **7**
 - **Array-vs-wrapper divergences (blocks CI): 0**
 - **Definition-member-missing divergences (blocks CI): 0**
@@ -82,6 +82,17 @@ Keys with no same-spelling SDK member that the provider explicitly names (conver
 | `AWS::ECS::TaskDefinition` | `Volumes.EFSVolumeConfiguration.FilesystemId` |
 | `AWS::ECS::TaskDefinition` | `Volumes.FSxWindowsFileServerVolumeConfiguration` |
 | `AWS::ECS::TaskDefinition` | `Volumes.S3FilesVolumeConfiguration` |
+| `AWS::Events::Rule` | `Targets.EcsParameters.CapacityProviderStrategy.Base` |
+| `AWS::Events::Rule` | `Targets.EcsParameters.CapacityProviderStrategy.CapacityProvider` |
+| `AWS::Events::Rule` | `Targets.EcsParameters.CapacityProviderStrategy.Weight` |
+| `AWS::Events::Rule` | `Targets.EcsParameters.NetworkConfiguration.AwsVpcConfiguration` |
+| `AWS::Events::Rule` | `Targets.EcsParameters.PlacementConstraints.Expression` |
+| `AWS::Events::Rule` | `Targets.EcsParameters.PlacementStrategies` |
+| `AWS::Events::Rule` | `Targets.EcsParameters.PlacementStrategies.Field` |
+| `AWS::Events::Rule` | `Targets.EcsParameters.TagList` |
+| `AWS::Glue::Crawler` | `Targets.DynamoDBTargets.ScanRate` |
+| `AWS::Glue::SecurityConfiguration` | `EncryptionConfiguration.S3Encryptions` |
+| `AWS::Glue::Table` | `OpenTableFormatInput.IcebergInput.IcebergTableInput` |
 | `AWS::Lambda::EventSourceMapping` | `SelfManagedEventSource.Endpoints.KafkaBootstrapServers` |
 | `AWS::S3::Bucket` | `AccelerateConfiguration.AccelerationStatus` |
 | `AWS::S3::Bucket` | `AnalyticsConfigurations.TagFilters` |
@@ -118,6 +129,14 @@ Keys with no same-spelling SDK member that the provider explicitly names (conver
 | `AWS::S3::Bucket` | `ReplicationConfiguration.Rules.Filter.TagFilter` |
 | `AWS::S3::Bucket` | `WebsiteConfiguration.RoutingRules.RedirectRule` |
 | `AWS::S3::Bucket` | `WebsiteConfiguration.RoutingRules.RoutingRuleCondition` |
+| `AWS::Scheduler::Schedule` | `Target.EcsParameters.CapacityProviderStrategy.Base` |
+| `AWS::Scheduler::Schedule` | `Target.EcsParameters.CapacityProviderStrategy.CapacityProvider` |
+| `AWS::Scheduler::Schedule` | `Target.EcsParameters.CapacityProviderStrategy.Weight` |
+| `AWS::Scheduler::Schedule` | `Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration` |
+| `AWS::Scheduler::Schedule` | `Target.EcsParameters.PlacementConstraints.Expression` |
+| `AWS::Scheduler::Schedule` | `Target.EcsParameters.PlacementConstraints.Type` |
+| `AWS::Scheduler::Schedule` | `Target.EcsParameters.PlacementStrategy.Field` |
+| `AWS::Scheduler::Schedule` | `Target.EcsParameters.PlacementStrategy.Type` |
 
 ## Shape pass — provider-handled re-shapings
 
@@ -146,6 +165,10 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::CloudFront::Distribution` | `ForwardedValues` | `QueryStringCacheKeys` | wrapper | SDK wraps it as `QueryStringCacheKeys` ({ Quantity, Items }) |
 | `AWS::CloudFront::Distribution` | `GeoRestriction` | `Locations` | definition | SDK interface `GeoRestriction` has no `Locations` member |
 | `AWS::ECS::Service` | `DeploymentLifecycleHook` | `HookDetails` | wrapper | — |
+| `AWS::Events::Rule` | `#top` | `EventPattern` | wrapper | — |
+| `AWS::Events::Rule` | `PlacementStrategy` | `Type` | definition | SDK interface `PlacementStrategy` has no `Type` member |
+| `AWS::Events::Rule` | `PlacementConstraint` | `Type` | definition | SDK interface `PlacementConstraint` has no `Type` member |
+| `AWS::Glue::Crawler` | `DynamoDBTarget` | `ScanAll` | definition | SDK interface `DynamoDBTarget` has no `ScanAll` member |
 | `AWS::Lambda::EventSourceMapping` | `#top` | `Tags` | wrapper | — |
 | `AWS::S3::Bucket` | `Destination` | `BucketArn` | definition | SDK interface `Destination` has no `BucketArn` member |
 | `AWS::S3::Bucket` | `Destination` | `BucketAccountId` | definition | SDK interface `Destination` has no `BucketAccountId` member |
@@ -179,6 +202,15 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | yes | 98 | 4 |
 | `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | yes | 114 | 4 |
 | `AWS::ECS::TaskDefinition` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | yes | 142 | 3 |
+| `AWS::Events::Rule` | `eventbridge-rule-provider.ts` | `@aws-sdk/client-eventbridge` | exact | no | 76 | 0 |
+| `AWS::Glue::Connection` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 37 | 0 |
+| `AWS::Glue::Crawler` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 46 | 1 |
+| `AWS::Glue::Database` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 15 | 1 |
+| `AWS::Glue::Job` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 7 | 2 |
+| `AWS::Glue::SecurityConfiguration` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 9 | 0 |
+| `AWS::Glue::Table` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 88 | 2 |
+| `AWS::Glue::Trigger` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | no | 16 | 0 |
 | `AWS::Lambda::EventSourceMapping` | `lambda-eventsource-provider.ts` | `@aws-sdk/client-lambda` | exact | no | 37 | 6 |
 | `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | yes | 190 | 15 |
+| `AWS::Scheduler::Schedule` | `scheduler-schedule-provider.ts` | `@aws-sdk/client-scheduler` | exact | no | 47 | 0 |
 

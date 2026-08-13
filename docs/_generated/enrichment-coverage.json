@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 134,
-    "enriched": 17,
-    "noComputedAttr": 15,
+    "enriched": 20,
+    "noComputedAttr": 17,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 102,
-    "allowListedTypes": 30
+    "sdkFallbackGap": 97,
+    "allowListedTypes": 33
   },
   "types": [
     {
@@ -1747,7 +1747,7 @@
     },
     {
       "resourceType": "AWS::Events::Rule",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Arn"
@@ -1756,12 +1756,11 @@
       "attributes": [
         {
           "name": "Arn",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Arn"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::FSx::FileSystem",
@@ -1807,7 +1806,7 @@
     },
     {
       "resourceType": "AWS::Glue::Connection",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -1816,12 +1815,11 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::Glue::Crawler",
@@ -1852,25 +1850,16 @@
     },
     {
       "resourceType": "AWS::Glue::SecurityConfiguration",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "no-computed-attr",
       "sdkBacked": true,
-      "readOnlyProperties": [
-        "Id"
-      ],
+      "readOnlyProperties": [],
       "enrichedKeys": [],
-      "attributes": [
-        {
-          "name": "Id",
-          "status": "gap"
-        }
-      ],
-      "gaps": [
-        "Id"
-      ]
+      "attributes": [],
+      "gaps": []
     },
     {
       "resourceType": "AWS::Glue::Table",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "enriched",
       "sdkBacked": true,
       "readOnlyProperties": [
         "Id"
@@ -1879,12 +1868,11 @@
       "attributes": [
         {
           "name": "Id",
-          "status": "gap"
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
         }
       ],
-      "gaps": [
-        "Id"
-      ]
+      "gaps": []
     },
     {
       "resourceType": "AWS::Glue::Trigger",
@@ -1897,21 +1885,12 @@
     },
     {
       "resourceType": "AWS::Glue::Workflow",
-      "bucket": "sdk-fallback-gap",
+      "bucket": "no-computed-attr",
       "sdkBacked": true,
-      "readOnlyProperties": [
-        "Id"
-      ],
+      "readOnlyProperties": [],
       "enrichedKeys": [],
-      "attributes": [
-        {
-          "name": "Id",
-          "status": "gap"
-        }
-      ],
-      "gaps": [
-        "Id"
-      ]
+      "attributes": [],
+      "gaps": []
     },
     {
       "resourceType": "AWS::IAM::AccessKey",

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Glue::Table",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CatalogId",
     "DatabaseName",
@@ -16,5 +16,315 @@
     "CatalogId",
     "DatabaseName",
     "Name"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "nestedProperties": {
+    "TableInput": [
+      "BucketColumns",
+      "CatalogId",
+      "Column",
+      "Columns",
+      "Comment",
+      "Compressed",
+      "DatabaseName",
+      "Definer",
+      "Description",
+      "Dialect",
+      "DialectVersion",
+      "InputFormat",
+      "IsProtected",
+      "Location",
+      "Name",
+      "NumberOfBuckets",
+      "OutputFormat",
+      "Owner",
+      "Parameters",
+      "PartitionKeys",
+      "Region",
+      "RegistryName",
+      "Representations",
+      "Retention",
+      "SchemaArn",
+      "SchemaId",
+      "SchemaName",
+      "SchemaReference",
+      "SchemaVersionId",
+      "SchemaVersionNumber",
+      "SerdeInfo",
+      "SerializationLibrary",
+      "SkewedColumnNames",
+      "SkewedColumnValueLocationMaps",
+      "SkewedColumnValues",
+      "SkewedInfo",
+      "SortColumns",
+      "SortOrder",
+      "StorageDescriptor",
+      "StoredAsSubDirectories",
+      "SubObjects",
+      "TableType",
+      "TargetTable",
+      "Type",
+      "ValidationConnection",
+      "ViewDefinition",
+      "ViewExpandedText",
+      "ViewOriginalText"
+    ],
+    "OpenTableFormatInput": [
+      "Direction",
+      "Doc",
+      "FieldId",
+      "Fields",
+      "IcebergInput",
+      "IcebergTableInput",
+      "Id",
+      "IdentifierFieldIds",
+      "Location",
+      "MetadataOperation",
+      "Name",
+      "NullOrder",
+      "OrderId",
+      "PartitionSpec",
+      "Properties",
+      "Required",
+      "Schema",
+      "SchemaId",
+      "SourceId",
+      "SpecId",
+      "Transform",
+      "Type",
+      "Version",
+      "WriteOrder"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "TableInput": [
+      "Description",
+      "Name",
+      "Owner",
+      "Parameters",
+      "PartitionKeys",
+      "PartitionKeys.Comment",
+      "PartitionKeys.Name",
+      "PartitionKeys.Type",
+      "Retention",
+      "StorageDescriptor",
+      "StorageDescriptor.BucketColumns",
+      "StorageDescriptor.Columns",
+      "StorageDescriptor.Columns.Comment",
+      "StorageDescriptor.Columns.Name",
+      "StorageDescriptor.Columns.Type",
+      "StorageDescriptor.Compressed",
+      "StorageDescriptor.InputFormat",
+      "StorageDescriptor.Location",
+      "StorageDescriptor.NumberOfBuckets",
+      "StorageDescriptor.OutputFormat",
+      "StorageDescriptor.Parameters",
+      "StorageDescriptor.SchemaReference",
+      "StorageDescriptor.SchemaReference.SchemaId",
+      "StorageDescriptor.SchemaReference.SchemaId.RegistryName",
+      "StorageDescriptor.SchemaReference.SchemaId.SchemaArn",
+      "StorageDescriptor.SchemaReference.SchemaId.SchemaName",
+      "StorageDescriptor.SchemaReference.SchemaVersionId",
+      "StorageDescriptor.SchemaReference.SchemaVersionNumber",
+      "StorageDescriptor.SerdeInfo",
+      "StorageDescriptor.SerdeInfo.Name",
+      "StorageDescriptor.SerdeInfo.Parameters",
+      "StorageDescriptor.SerdeInfo.SerializationLibrary",
+      "StorageDescriptor.SkewedInfo",
+      "StorageDescriptor.SkewedInfo.SkewedColumnNames",
+      "StorageDescriptor.SkewedInfo.SkewedColumnValueLocationMaps",
+      "StorageDescriptor.SkewedInfo.SkewedColumnValues",
+      "StorageDescriptor.SortColumns",
+      "StorageDescriptor.SortColumns.Column",
+      "StorageDescriptor.SortColumns.SortOrder",
+      "StorageDescriptor.StoredAsSubDirectories",
+      "TableType",
+      "TargetTable",
+      "TargetTable.CatalogId",
+      "TargetTable.DatabaseName",
+      "TargetTable.Name",
+      "TargetTable.Region",
+      "ViewDefinition",
+      "ViewDefinition.Definer",
+      "ViewDefinition.IsProtected",
+      "ViewDefinition.Representations",
+      "ViewDefinition.Representations.Dialect",
+      "ViewDefinition.Representations.DialectVersion",
+      "ViewDefinition.Representations.ValidationConnection",
+      "ViewDefinition.Representations.ViewExpandedText",
+      "ViewDefinition.Representations.ViewOriginalText",
+      "ViewDefinition.SubObjects",
+      "ViewExpandedText",
+      "ViewOriginalText"
+    ],
+    "OpenTableFormatInput": [
+      "IcebergInput",
+      "IcebergInput.IcebergTableInput",
+      "IcebergInput.IcebergTableInput.Location",
+      "IcebergInput.IcebergTableInput.PartitionSpec",
+      "IcebergInput.IcebergTableInput.PartitionSpec.Fields",
+      "IcebergInput.IcebergTableInput.PartitionSpec.Fields.FieldId",
+      "IcebergInput.IcebergTableInput.PartitionSpec.Fields.Name",
+      "IcebergInput.IcebergTableInput.PartitionSpec.Fields.SourceId",
+      "IcebergInput.IcebergTableInput.PartitionSpec.Fields.Transform",
+      "IcebergInput.IcebergTableInput.PartitionSpec.SpecId",
+      "IcebergInput.IcebergTableInput.Properties",
+      "IcebergInput.IcebergTableInput.Schema",
+      "IcebergInput.IcebergTableInput.Schema.Fields",
+      "IcebergInput.IcebergTableInput.Schema.Fields.Doc",
+      "IcebergInput.IcebergTableInput.Schema.Fields.Id",
+      "IcebergInput.IcebergTableInput.Schema.Fields.Name",
+      "IcebergInput.IcebergTableInput.Schema.Fields.Required",
+      "IcebergInput.IcebergTableInput.Schema.Fields.Type",
+      "IcebergInput.IcebergTableInput.Schema.IdentifierFieldIds",
+      "IcebergInput.IcebergTableInput.Schema.SchemaId",
+      "IcebergInput.IcebergTableInput.Schema.Type",
+      "IcebergInput.IcebergTableInput.WriteOrder",
+      "IcebergInput.IcebergTableInput.WriteOrder.Fields",
+      "IcebergInput.IcebergTableInput.WriteOrder.Fields.Direction",
+      "IcebergInput.IcebergTableInput.WriteOrder.Fields.NullOrder",
+      "IcebergInput.IcebergTableInput.WriteOrder.Fields.SourceId",
+      "IcebergInput.IcebergTableInput.WriteOrder.Fields.Transform",
+      "IcebergInput.IcebergTableInput.WriteOrder.OrderId",
+      "IcebergInput.MetadataOperation",
+      "IcebergInput.Version"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "DatabaseName": "scalar",
+      "TableInput": "object",
+      "OpenTableFormatInput": "object",
+      "Id": "scalar",
+      "CatalogId": "scalar",
+      "Name": "scalar"
+    },
+    "TableIdentifier": {
+      "DatabaseName": "scalar",
+      "Region": "scalar",
+      "CatalogId": "scalar",
+      "Name": "scalar"
+    },
+    "Order": {
+      "Column": "scalar",
+      "SortOrder": "scalar"
+    },
+    "OpenTableFormatInput": {
+      "IcebergInput": "object"
+    },
+    "IcebergSortOrder": {
+      "OrderId": "scalar",
+      "Fields": "array"
+    },
+    "ViewDefinition": {
+      "Definer": "scalar",
+      "SubObjects": "array",
+      "Representations": "array",
+      "IsProtected": "scalar"
+    },
+    "IcebergPartitionSpec": {
+      "SpecId": "scalar",
+      "Fields": "array"
+    },
+    "StorageDescriptor": {
+      "StoredAsSubDirectories": "scalar",
+      "Parameters": "object",
+      "BucketColumns": "array",
+      "NumberOfBuckets": "scalar",
+      "OutputFormat": "scalar",
+      "Columns": "array",
+      "SerdeInfo": "object",
+      "SortColumns": "array",
+      "Compressed": "scalar",
+      "SchemaReference": "object",
+      "SkewedInfo": "object",
+      "InputFormat": "scalar",
+      "Location": "scalar"
+    },
+    "SerdeInfo": {
+      "Parameters": "object",
+      "SerializationLibrary": "scalar",
+      "Name": "scalar"
+    },
+    "SchemaReference": {
+      "SchemaId": "object",
+      "SchemaVersionId": "scalar",
+      "SchemaVersionNumber": "scalar"
+    },
+    "IcebergTableInput": {
+      "WriteOrder": "object",
+      "Properties": "object",
+      "PartitionSpec": "object",
+      "Schema": "object",
+      "Location": "scalar"
+    },
+    "TableInput": {
+      "Owner": "scalar",
+      "ViewOriginalText": "scalar",
+      "Description": "scalar",
+      "TableType": "scalar",
+      "Parameters": "object",
+      "ViewDefinition": "object",
+      "StorageDescriptor": "object",
+      "Retention": "scalar",
+      "Name": "scalar",
+      "ViewExpandedText": "scalar",
+      "TargetTable": "object",
+      "PartitionKeys": "array"
+    },
+    "IcebergSchema": {
+      "SchemaId": "scalar",
+      "Type": "scalar",
+      "Fields": "array",
+      "IdentifierFieldIds": "array"
+    },
+    "ViewRepresentation": {
+      "Dialect": "scalar",
+      "ViewOriginalText": "scalar",
+      "DialectVersion": "scalar",
+      "ViewExpandedText": "scalar",
+      "ValidationConnection": "scalar"
+    },
+    "SkewedInfo": {
+      "SkewedColumnValues": "array",
+      "SkewedColumnValueLocationMaps": "object",
+      "SkewedColumnNames": "array"
+    },
+    "Column": {
+      "Comment": "scalar",
+      "Type": "scalar",
+      "Name": "scalar"
+    },
+    "IcebergSortField": {
+      "NullOrder": "scalar",
+      "Transform": "scalar",
+      "Direction": "scalar",
+      "SourceId": "scalar"
+    },
+    "SchemaId": {
+      "RegistryName": "scalar",
+      "SchemaName": "scalar",
+      "SchemaArn": "scalar"
+    },
+    "IcebergInput": {
+      "IcebergTableInput": "object",
+      "MetadataOperation": "object",
+      "Version": "scalar"
+    },
+    "IcebergPartitionField": {
+      "Transform": "scalar",
+      "SourceId": "scalar",
+      "FieldId": "scalar",
+      "Name": "scalar"
+    },
+    "IcebergStructField": {
+      "Doc": "scalar",
+      "Type": "scalar",
+      "Id": "scalar",
+      "Required": "scalar",
+      "Name": "scalar"
+    }
+  }
 }
