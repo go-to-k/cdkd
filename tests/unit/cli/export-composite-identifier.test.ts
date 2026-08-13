@@ -20,7 +20,8 @@ import type { AwsClients } from '../../../src/utils/aws-clients.js';
 
 const TABLE_ARN =
   'arn:aws:s3tables:us-east-1:123456789012:bucket/my-bucket/table/2a1b0c9d-1111-2222-3333-444455556666';
-const TABLE_COMPOSITE = 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-bucket|analytics|events';
+const TABLE_BUCKET_ARN = 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-bucket';
+const TABLE_COMPOSITE = `${TABLE_BUCKET_ARN}|analytics|events`;
 
 function ctx(overrides: {
   logicalId?: string;
@@ -157,7 +158,68 @@ describe('resolveCompositePhysicalIdIdentifier (issue #1659)', () => {
     // Composite cdkd id, but a MULTI-field CFn identifier — the splitter
     // family's job, not this table's.
     expect(hasCompositePhysicalIdIdentifier('AWS::ApiGateway::Method')).toBe(false);
+    expect(hasCompositePhysicalIdIdentifier('AWS::S3Tables::Namespace')).toBe(false);
     expect(hasCompositePhysicalIdIdentifier('AWS::S3::Bucket')).toBe(false);
+  });
+
+  it('trims a padded recorded ARN rather than shipping whitespace into the changeset', () => {
+    // The guard tests `.trim()` but the RETURN must be trimmed too — CFn
+    // rejects an identifier carrying leading / trailing whitespace verbatim.
+    expect(
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::S3Tables::Table',
+        ctx({ physicalId: TABLE_COMPOSITE, attributes: { TableARN: `  ${TABLE_ARN}\n` } })
+      ).value
+    ).toBe(TABLE_ARN);
+  });
+
+  it('rejects a bare ARN naming a DIFFERENT service on the physicalId arm', () => {
+    // Arm 2 exists for a row whose id is already this type's CFn identifier.
+    // An ARN for some other service is a different value entirely, so the
+    // `arn:` prefix alone is not enough evidence.
+    expect(() =>
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::S3Tables::Table',
+        ctx({ physicalId: 'arn:aws:s3:::my-bucket', attributes: {} })
+      )
+    ).toThrow(/attributes\.TableARN is missing or empty/);
+    // ...while the right service passes, in any partition.
+    expect(
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::S3Tables::Table',
+        ctx({
+          physicalId: TABLE_ARN.replace('arn:aws:', 'arn:aws-cn:'),
+          attributes: {},
+        })
+      ).value
+    ).toBe(TABLE_ARN.replace('arn:aws:', 'arn:aws-cn:'));
+  });
+
+  it('accepts an AppSync child adopted from CloudFormation, whose physicalId is the ARN', () => {
+    // `cdkd import --migrate-from-cloudformation` records CFn's
+    // PhysicalResourceId verbatim, which for these children is the ARN — the
+    // second live producer of arm 2 alongside S3TablesProvider.importTable.
+    const arn = 'arn:aws:appsync:us-east-1:123456789012:apis/abc123/datasources/MyDs';
+    expect(
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::AppSync::DataSource',
+        ctx({ physicalId: arn, attributes: {} })
+      ).value
+    ).toBe(arn);
+  });
+
+  it('refuses a recorded attribute that is not a string', () => {
+    // A state record whose attribute holds a number / object / array is
+    // corrupt, not a usable identifier — the typeof gate must reject it rather
+    // than stringify it into the changeset.
+    for (const bad of [12345, { arn: TABLE_ARN }, [TABLE_ARN], null, true]) {
+      expect(() =>
+        resolveCompositePhysicalIdIdentifier(
+          'AWS::S3Tables::Table',
+          ctx({ physicalId: TABLE_COMPOSITE, attributes: { TableARN: bad } })
+        )
+      ).toThrow(/attributes\.TableARN is missing or empty/);
+    }
   });
 });
 
@@ -214,13 +276,27 @@ const SCHEMAS: Record<string, SchemaStub> = {
     handlers: { create: {}, update: {}, delete: {} },
     provisioningType: 'NON_PROVISIONABLE',
   },
+  'AWS::EC2::SecurityGroupIngress': {
+    primaryIdentifier: ['/properties/Id'],
+    handlers: { create: {}, read: {}, update: {}, delete: {}, list: {} },
+    provisioningType: 'FULLY_MUTABLE',
+  },
+  'AWS::S3Tables::Namespace': {
+    primaryIdentifier: ['/properties/TableBucketARN', '/properties/Namespace'],
+    handlers: { create: {}, read: {}, delete: {}, list: {} },
+    provisioningType: 'IMMUTABLE',
+  },
 };
+
+/** Records one entry per DescribeType call the plan builder issues. */
+const describeTypeCalls: string[] = [];
 
 function cfnClientFor(
   schemas: Record<string, SchemaStub | 'describe-type-fails'> = SCHEMAS
 ): AwsClients['cloudFormation'] {
   return {
     async send(cmd: { input?: { TypeName?: string } }) {
+      describeTypeCalls.push(cmd.input?.TypeName ?? '');
       const typeName = cmd.input?.TypeName ?? '';
       const schema = schemas[typeName];
       if (schema === undefined || schema === 'describe-type-fails') {
@@ -331,6 +407,110 @@ describe('buildImportPlan — composite physicalId identifier (issue #1659)', ()
     expect(plan.blocked[0]!.reason).toMatch(
       /primaryIdentifier \[TableBucketARN, Namespace\].*registry schema changed under cdkd/s
     );
+  });
+
+  it('refuses when the registered field is renamed but the arity still matches', async () => {
+    // Fences the FIELD-NAME half of the drift guard on its own: a fixture where
+    // the arity ALSO changed satisfies both disjuncts and fences neither.
+    const state = stateWith({
+      Table: {
+        resourceType: 'AWS::S3Tables::Table',
+        physicalId: TABLE_COMPOSITE,
+        attributes: { TableARN: TABLE_ARN },
+      },
+    });
+    const template = { Resources: { Table: { Type: 'AWS::S3Tables::Table', Properties: {} } } };
+    const plan = await buildImportPlan(
+      state,
+      template,
+      cfnClientFor({
+        'AWS::S3Tables::Table': {
+          primaryIdentifier: ['/properties/TableArn'],
+          handlers: { read: {} },
+          provisioningType: 'FULLY_MUTABLE',
+        },
+      }),
+      'MyStack'
+    );
+    expect(plan.phase1Imports).toEqual([]);
+    expect(plan.blocked[0]!.reason).toMatch(
+      /primaryIdentifier \[TableArn\].*registry schema changed under cdkd/s
+    );
+  });
+
+  it('refuses when the field still matches but the identifier became composite', async () => {
+    // Fences the ARITY half on its own. Without it, a type AWS makes
+    // multi-field would silently ship a single-key identifier again — the
+    // exact #1659 defect, re-created.
+    const state = stateWith({
+      Table: {
+        resourceType: 'AWS::S3Tables::Table',
+        physicalId: TABLE_COMPOSITE,
+        attributes: { TableARN: TABLE_ARN },
+      },
+    });
+    const template = { Resources: { Table: { Type: 'AWS::S3Tables::Table', Properties: {} } } };
+    const plan = await buildImportPlan(
+      state,
+      template,
+      cfnClientFor({
+        'AWS::S3Tables::Table': {
+          primaryIdentifier: ['/properties/TableARN', '/properties/Namespace'],
+          handlers: { read: {} },
+          provisioningType: 'FULLY_MUTABLE',
+        },
+      }),
+      'MyStack'
+    );
+    expect(plan.phase1Imports).toEqual([]);
+    expect(plan.blocked[0]!.reason).toMatch(
+      /primaryIdentifier \[TableARN, Namespace\].*registry schema changed under cdkd/s
+    );
+  });
+
+  it('surfaces the AWS::EC2::SecurityGroupIngress refusal as a blocked row, not a crash', async () => {
+    // The type IS importable as far as CFn is concerned (read handler present,
+    // FULLY_MUTABLE), so it reaches the identifier resolution and is refused
+    // there — the run must continue and report it alongside other rows.
+    const state = stateWith({
+      SshIn: {
+        resourceType: 'AWS::EC2::SecurityGroupIngress',
+        physicalId: 'sg-0abc|tcp|22|22',
+      },
+      Bucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'mystack-bucket-123' },
+    });
+    const template = {
+      Resources: {
+        SshIn: { Type: 'AWS::EC2::SecurityGroupIngress', Properties: {} },
+        Bucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+      },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.logicalId).toBe('SshIn');
+    expect(plan.blocked[0]!.reason).toMatch(/could not resolve resource identifier.*issues\/1761/s);
+    // The sibling still resolved — a refusal is per-resource, not a run abort.
+    expect(plan.phase1Imports.map((p) => p.logicalId)).toEqual(['Bucket']);
+  });
+
+  it('routes AWS::S3Tables::Namespace through its splitter (multi-field arm)', async () => {
+    // The sibling splitter registered alongside this fix: without it an S3
+    // Tables stack aborts before ever reaching the Table row above.
+    const state = stateWith({
+      Namespace: {
+        resourceType: 'AWS::S3Tables::Namespace',
+        physicalId: `${TABLE_BUCKET_ARN}|analytics`,
+      },
+    });
+    const template = {
+      Resources: { Namespace: { Type: 'AWS::S3Tables::Namespace', Properties: {} } },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.blocked).toEqual([]);
+    expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({
+      TableBucketARN: TABLE_BUCKET_ARN,
+      Namespace: 'analytics',
+    });
   });
 
   it('leaves an ordinary single-key type resolving from its physical id', async () => {
@@ -487,6 +667,79 @@ describe('buildImportPlan — IMPORT read-handler pre-flight (issue #1659)', () 
     );
     expect(plan.blocked).toEqual([]);
     expect(plan.phase1Imports).toHaveLength(1);
+  });
+
+  it('reports the fallback-less unresolvable type as an identifier failure, not as unsupported', async () => {
+    // The `catch` around the shared lookup must keep `fetchPrimaryIdentifier`'s
+    // own remediation message. Every other DescribeType-fails fixture uses a
+    // type that IS in PRIMARY_IDENTIFIER_FALLBACK, so this is the only case
+    // that reaches the throw-through.
+    const state = stateWith({
+      Thing: { resourceType: 'AWS::Some::Thing', physicalId: 'thing-1' },
+    });
+    const template = { Resources: { Thing: { Type: 'AWS::Some::Thing', Properties: {} } } };
+    const plan = await buildImportPlan(
+      state,
+      template,
+      cfnClientFor({ 'AWS::Some::Thing': 'describe-type-fails' }),
+      'MyStack'
+    );
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.reason).toMatch(
+      /could not resolve resource identifier: primary identifier unknown/
+    );
+    // Must NOT be mis-reported as "AWS cannot import this type".
+    expect(plan.blocked[0]!.reason).not.toMatch(/does not support .* in IMPORT changesets/);
+  });
+
+  it('issues exactly ONE DescribeType per resource type across pre-flight + resolution', async () => {
+    // `cachedTypeSchemaInfo` exists so the two consumers share one call. A
+    // regression to a per-consumer fetch doubles DescribeType on every export
+    // and is otherwise invisible.
+    describeTypeCalls.length = 0;
+    const state = stateWith({
+      BucketA: { resourceType: 'AWS::S3::Bucket', physicalId: 'bucket-a' },
+      BucketB: { resourceType: 'AWS::S3::Bucket', physicalId: 'bucket-b' },
+      Table: {
+        resourceType: 'AWS::S3Tables::Table',
+        physicalId: TABLE_COMPOSITE,
+        attributes: { TableARN: TABLE_ARN },
+      },
+    });
+    const template = {
+      Resources: {
+        BucketA: { Type: 'AWS::S3::Bucket', Properties: {} },
+        BucketB: { Type: 'AWS::S3::Bucket', Properties: {} },
+        Table: { Type: 'AWS::S3Tables::Table', Properties: {} },
+      },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.blocked).toEqual([]);
+    expect(describeTypeCalls).toEqual(['AWS::S3::Bucket', 'AWS::S3Tables::Table']);
+  });
+
+  it('treats a `handlers: []` array (the legacy render) as no read handler', async () => {
+    // Real registry entries render an EMPTY handlers block as an array — see
+    // the AWS::ApiGatewayV2::Stage note in export.ts. `hasOwnProperty` on an
+    // array is false either way, but the fixture pins the real wire shape.
+    const state = stateWith({
+      Thing: { resourceType: 'AWS::Some::Thing', physicalId: 'thing-1' },
+    });
+    const template = { Resources: { Thing: { Type: 'AWS::Some::Thing', Properties: {} } } };
+    const plan = await buildImportPlan(
+      state,
+      template,
+      cfnClientFor({
+        'AWS::Some::Thing': {
+          primaryIdentifier: ['/properties/Id'],
+          handlers: [] as unknown as Record<string, unknown>,
+          provisioningType: 'NON_PROVISIONABLE',
+        },
+      }),
+      'MyStack'
+    );
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.reason).toMatch(/no 'read' handler/);
   });
 
   it('leaves the recreate-before-phase-2 types on their own path (ordering fence)', async () => {
