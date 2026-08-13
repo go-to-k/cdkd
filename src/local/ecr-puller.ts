@@ -5,6 +5,15 @@ import {
   runDockerForeground,
   runDockerStreaming,
 } from '../utils/docker-cmd.js';
+import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
+import { parseEcrRegistryHost } from '../utils/ecr-uri.js';
+
+/** The URL suffix an ECR registry host uses in `region`'s partition (issue #1758). */
+function ecrUrlSuffix(region: string): string {
+  return derivePartitionAndUrlSuffix(region).urlSuffix;
+}
+
+export { parseEcrRegistryHost };
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 
@@ -38,9 +47,6 @@ import { getLogger } from '../utils/logger.js';
  *     `--no-pull` or pre-pull manually.
  */
 
-/** Regex matching the `<acct>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` shape. */
-const ECR_URI_REGEX = /^(\d{12})\.dkr\.ecr\.([^.]+)\.amazonaws\.com(?:\.cn)?\/([^:]+):(.+)$/;
-
 export interface ParsedEcrUri {
   accountId: string;
   region: string;
@@ -54,13 +60,16 @@ export interface ParsedEcrUri {
  * images we don't try to authenticate against.
  */
 export function parseEcrUri(imageUri: string): ParsedEcrUri | undefined {
-  const m = ECR_URI_REGEX.exec(imageUri);
+  const host = parseEcrRegistryHost(imageUri);
+  if (!host) return undefined;
+  // The host carries no `/`, so the first one is the repository separator.
+  const m = /^([^:]+):(.+)$/.exec(imageUri.slice(imageUri.indexOf('/') + 1));
   if (!m) return undefined;
   return {
-    accountId: m[1]!,
-    region: m[2]!,
-    repository: m[3]!,
-    tag: m[4]!,
+    accountId: host.accountId,
+    region: host.region,
+    repository: m[1]!,
+    tag: m[2]!,
   };
 }
 
@@ -340,7 +349,12 @@ async function ecrLogin(client: ECRClient, accountId: string, region: string): P
       'ECR authorization token has unexpected shape (missing username/password)'
     );
   }
-  const endpoint = authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.amazonaws.com`;
+  // The suffix is DERIVED from the region (issue #1758). Hardcoding
+  // `amazonaws.com` here handed `docker login` a hostname that does not
+  // resolve outside the commercial partition whenever AWS reported no
+  // `proxyEndpoint`. Commercial output is byte-identical.
+  const endpoint =
+    authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.${ecrUrlSuffix(region)}`;
 
   try {
     await runDockerStreaming(['login', '--username', username, '--password-stdin', endpoint], {

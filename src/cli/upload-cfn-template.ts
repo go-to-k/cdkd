@@ -1,4 +1,5 @@
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { resolveBucketRegion } from '../utils/aws-region-resolver.js';
 import type { TemplateFormat } from './yaml-cfn.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
@@ -142,7 +143,14 @@ export async function uploadCfnTemplate(
   // (us-east-1 included). CloudFormation fetches the template using the
   // calling principal's IAM permissions; the same identity that just wrote
   // to the bucket can read it back.
-  const url = `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
+  //
+  // The host suffix is DERIVED from the bucket's region (issue #1758) —
+  // hardcoding `amazonaws.com` handed CloudFormation a `TemplateURL` that does
+  // not resolve outside the commercial partition (`aws-cn` buckets live under
+  // `amazonaws.com.cn`, `us-iso*` under `c2s.ic.gov` / `sc2s.sgov.gov`).
+  // Commercial output is byte-identical.
+  const { urlSuffix } = derivePartitionAndUrlSuffix(region);
+  const url = `https://${bucket}.s3.${region}.${urlSuffix}/${key}`;
   const cleanup = async (): Promise<void> => {
     try {
       await s3.send(

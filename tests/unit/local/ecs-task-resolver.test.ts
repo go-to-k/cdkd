@@ -473,6 +473,55 @@ describe('resolveEcsTaskTarget', () => {
     }
   });
 
+  it('classifies a us-iso registry as ECR, so run-task still runs docker login (issue #1758)', () => {
+    // The run-task twin of the pull-path fix. This site used to carry its own
+    // hardcoded `amazonaws.com(?:\.cn)?` pattern, so a us-iso URI classified as
+    // `public` and `ecs-task-runner`'s `case 'ecr'` never ran — an anonymous
+    // `docker pull` against a registry that requires auth. Both sites share one
+    // helper now, so they cannot drift apart again.
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: {
+          'Fn::Sub': '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/myrepo:latest',
+        },
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      pseudoParameters: {
+        accountId: '210987654321',
+        region: 'us-iso-east-1',
+        partition: 'aws-iso',
+        urlSuffix: 'c2s.ic.gov',
+      },
+    });
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('ecr');
+    if (img.kind === 'ecr') {
+      expect(img.uri).toBe('210987654321.dkr.ecr.us-iso-east-1.c2s.ic.gov/myrepo:latest');
+      expect(img.region).toBe('us-iso-east-1');
+    }
+  });
+
+  it('does NOT classify a look-alike host whose suffix is wrong for its region', () => {
+    // The counter-case that keeps the widening from becoming "accept any host".
+    // Without it, a pattern loosened to `[^/]+` would send a `docker login` to a
+    // registry cdkd does not own.
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: { 'Fn::Sub': '123456789012.dkr.ecr.us-east-1.example.com/myrepo:latest' },
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      pseudoParameters: {
+        accountId: '123456789012',
+        region: 'us-east-1',
+        partition: 'aws',
+        urlSuffix: 'amazonaws.com',
+      },
+    });
+    expect(r.containers[0]!.image.kind).toBe('public');
+  });
+
   it('hard-errors with --from-state hint when Fn::Sub references a same-stack ECR Repo and no state was provided', () => {
     const stack = buildStack('S1', {
       MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
@@ -554,6 +603,37 @@ describe('resolveEcsTaskTarget', () => {
     expect(img.kind).toBe('ecr');
     if (img.kind === 'ecr') {
       expect(img.uri).toBe('123456789012.dkr.ecr.us-east-1.amazonaws.com/deployed-repo-name');
+    }
+  });
+
+  it('classifies a us-iso RepositoryUri from state as ECR (issue #1758, second site)', () => {
+    // The SECOND classification site (`classifyResolvedImage`, reached via the
+    // Fn::GetAtt / Fn::Join state route) carried its own copy of the hardcoded
+    // commercial pattern. Without a non-commercial case here, only the
+    // parseContainerImage site is fenced against a partition-specific
+    // regression — the existing commercial cases would catch a full mutation of
+    // the line but not a re-hardcoded suffix.
+    const stack = buildStack('S1', {
+      MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+      TD: makeTaskDef({ image: { 'Fn::GetAtt': ['MyRepo', 'RepositoryUri'] } }),
+    });
+    const stateResources: Record<string, ResourceState> = {
+      MyRepo: {
+        physicalId: 'deployed-repo-name',
+        resourceType: 'AWS::ECR::Repository',
+        properties: {},
+        attributes: {
+          RepositoryUri: '210987654321.dkr.ecr.us-iso-east-1.c2s.ic.gov/deployed-repo-name',
+        },
+        dependencies: [],
+      },
+    };
+    const r = resolveEcsTaskTarget('TD', [stack], { stateResources });
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('ecr');
+    if (img.kind === 'ecr') {
+      expect(img.region).toBe('us-iso-east-1');
+      expect(img.account).toBe('210987654321');
     }
   });
 
