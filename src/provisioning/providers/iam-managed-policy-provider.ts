@@ -47,10 +47,33 @@ import type {
  *   - Detach-before-delete cleanup (a ManagedPolicy with attached principals
  *     or with non-default versions cannot be deleted directly)
  *
- * Physical id is the policy ARN (`arn:aws:iam::<account>:policy/<path><name>`)
+ * Physical id is the policy ARN (`arn:<partition>:iam::<account>:policy/<path><name>`)
  * since path is part of the identity — two policies with the same name in
  * different paths are distinct.
  */
+/**
+ * Matches an AWS-managed IAM policy ARN in ANY AWS partition (issue #1815).
+ *
+ * AWS-managed policies are the ones whose ACCOUNT segment is the literal
+ * `aws` — `arn:<partition>:iam::aws:policy/<path><name>` — as opposed to a
+ * customer-managed policy, which carries a 12-digit account id. They exist
+ * under every partition (`arn:aws-us-gov:iam::aws:policy/AdministratorAccess`
+ * is a real, attachable ARN in GovCloud), so pinning the PARTITION segment to
+ * the commercial `aws` recognised only a third of them.
+ *
+ * The partition is read OFF THE ARN rather than derived from a region through
+ * `derivePartitionAndUrlSuffix` (`src/utils/aws-partition.ts`): that helper
+ * answers "given a region, which partition am I in", which is the right
+ * question when BUILDING an ARN (the seven sites PR #1834 fixed) and the wrong
+ * one when CLASSIFYING an ARN the caller already holds. The loose
+ * `aws[a-z0-9-]*` partition segment matches `IAM_ROLE_ARN_RE` in
+ * `src/utils/role-arn.ts`; a closed partition list is precisely what goes
+ * stale when AWS adds a partition, and here staleness fails DANGEROUS (see the
+ * refusal's own comment — an unrecognised AWS-managed policy gets adopted, and
+ * destroy then detaches it from every principal in the account).
+ */
+const AWS_MANAGED_POLICY_ARN_RE = /^arn:aws[a-z0-9-]*:iam::aws:/;
+
 export class IAMManagedPolicyProvider implements ResourceProvider {
   private iamClient: IAMClient;
   private logger = getLogger().child('IAMManagedPolicyProvider');
@@ -509,15 +532,18 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     const explicit = resolveExplicitPhysicalId(input, 'ManagedPolicyName');
     if (explicit) {
       // If the override is already an ARN, trust it (verify exists). But
-      // refuse AWS-managed policies (`arn:aws:iam::aws:policy/...`) outright —
-      // adopting one would let cdkd's destroy path attempt `DeletePolicy`
-      // (always rejected by IAM) but only AFTER `detachAllPrincipals` has
-      // forcibly detached the policy from every user / role / group in the
-      // account. That's a major foot-gun (think `AdministratorAccess`); the
-      // tag-based fallback path is already guarded by `Scope: 'Local'`, and
-      // the explicit-ARN path needs the same guard.
+      // refuse AWS-managed policies (`arn:<partition>:iam::aws:policy/...`)
+      // outright — adopting one would let cdkd's destroy path attempt
+      // `DeletePolicy` (always rejected by IAM) but only AFTER
+      // `detachAllPrincipals` has forcibly detached the policy from every
+      // user / role / group in the account. That's a major foot-gun (think
+      // `AdministratorAccess`); the tag-based fallback path is already guarded
+      // by `Scope: 'Local'`, and the explicit-ARN path needs the same guard.
+      // The partition segment is matched across ALL partitions (issue #1815):
+      // this predicate's miss direction is the dangerous one, so a GovCloud /
+      // China `AdministratorAccess` ARN must trip it too.
       if (explicit.startsWith('arn:')) {
-        if (explicit.startsWith('arn:aws:iam::aws:')) {
+        if (AWS_MANAGED_POLICY_ARN_RE.test(explicit)) {
           throw new Error(
             `Refusing to import AWS-managed policy ${explicit}: cdkd only adopts customer-managed policies. ` +
               `If you need to attach an AWS-managed policy to a role / user / group, reference it via ManagedPolicyArns on the principal instead.`
@@ -809,15 +835,16 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
 }
 
 /**
- * Recover the policy name from `arn:aws:iam::<account>:policy/<path><name>`.
+ * Recover the policy name from `arn:<partition>:iam::<account>:policy/<path><name>`.
  * Used to decide whether `ManagedPolicyName` was mutated relative to the
  * physical id we recorded — name + path are immutable on AWS, so any
  * difference is a replacement signal.
  */
 function derivePolicyNameFromArn(arn: string): string {
-  // ARN shape: arn:aws:iam::<account>:policy/<path-may-contain-slashes>/<name>
+  // ARN shape: arn:<partition>:iam::<account>:policy/<path-may-contain-slashes>/<name>
   // The final '/'-delimited segment is the name; path is everything between
-  // the leading 'policy/' and the name.
+  // the leading 'policy/' and the name. Partition-agnostic already: the parse
+  // never looks left of the last '/', so no partition literal is involved.
   const ix = arn.lastIndexOf('/');
   return ix >= 0 ? arn.slice(ix + 1) : arn;
 }

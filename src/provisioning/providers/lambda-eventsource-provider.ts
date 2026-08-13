@@ -49,6 +49,44 @@ type EventSourceKind =
   | 'documentdb'
   | 'unknown';
 
+/**
+ * Captures the SERVICE segment of an ARN in ANY AWS partition (issue #1815).
+ *
+ * `arn:<partition>:<service>:<region>:<account>:<rest>` — group 1 is the
+ * service. The partition segment is matched loosely as `aws[a-z0-9-]*`, the
+ * same shape `IAM_ROLE_ARN_RE` (`src/utils/role-arn.ts`) uses, rather than
+ * enumerated: this classifier previously hand-listed `aws` and `aws-cn` per
+ * service and so returned `'unknown'` for every OTHER partition — GovCloud,
+ * all four iso partitions and `aws-eusc` — which silently disabled the
+ * type-discriminator gating below (see the `KINDS_WITH_*` sets) and let
+ * `cdkd drift --revert` push `FunctionResponseTypes` / `SourceAccessConfigurations`
+ * placeholders AWS rejects. A closed partition list is exactly what goes stale
+ * when AWS adds a partition; reading the partition off the ARN cannot.
+ *
+ * Note the partition is not derived from a region via
+ * `derivePartitionAndUrlSuffix` (`src/utils/aws-partition.ts`) because this
+ * CLASSIFIES an ARN already in hand — the partition is in the input, and no
+ * region reaches this function.
+ */
+const ARN_SERVICE_RE = /^arn:aws[a-z0-9-]*:([^:]+):/;
+
+/**
+ * ARN service segment -> {@link EventSourceKind}. Replaces the per-partition
+ * `startsWith` chain; every entry is partition-independent by construction.
+ */
+const ARN_SERVICE_TO_EVENT_SOURCE_KIND: Readonly<Record<string, EventSourceKind>> = {
+  sqs: 'sqs',
+  kinesis: 'kinesis',
+  dynamodb: 'dynamodb',
+  kafka: 'kafka',
+  mq: 'mq',
+  // DocumentDB cluster ARNs use the `rds` service prefix. A genuine RDS source
+  // is impossible here: `AWS::Lambda::EventSourceMapping` accepts no plain-RDS
+  // event source, and the DocumentDB-specific arms above (which run FIRST)
+  // catch the case where `DocumentDBEventSourceConfig` is present.
+  rds: 'documentdb',
+};
+
 function classifyEventSource(resp: {
   EventSourceArn?: string | undefined;
   SelfManagedEventSource?: unknown;
@@ -64,19 +102,9 @@ function classifyEventSource(resp: {
   if (resp.DocumentDBEventSourceConfig !== undefined) return 'documentdb';
   const arn = resp.EventSourceArn;
   if (!arn) return 'unknown';
-  // arn:aws:<service>:<region>:<account>:<rest>
-  if (arn.startsWith('arn:aws:sqs:') || arn.startsWith('arn:aws-cn:sqs:')) return 'sqs';
-  if (arn.startsWith('arn:aws:kinesis:') || arn.startsWith('arn:aws-cn:kinesis:')) return 'kinesis';
-  if (arn.startsWith('arn:aws:dynamodb:') || arn.startsWith('arn:aws-cn:dynamodb:'))
-    return 'dynamodb';
-  if (arn.startsWith('arn:aws:kafka:') || arn.startsWith('arn:aws-cn:kafka:')) return 'kafka';
-  if (arn.startsWith('arn:aws:mq:') || arn.startsWith('arn:aws-cn:mq:')) return 'mq';
-  if (arn.startsWith('arn:aws:rds:') || arn.startsWith('arn:aws-cn:rds:')) {
-    // DocumentDB cluster ARNs use the `rds` service prefix, but are
-    // disambiguated above by `DocumentDBEventSourceConfig`.
-    return 'documentdb';
-  }
-  return 'unknown';
+  const service = ARN_SERVICE_RE.exec(arn)?.[1];
+  if (!service) return 'unknown';
+  return ARN_SERVICE_TO_EVENT_SOURCE_KIND[service] ?? 'unknown';
 }
 
 /**

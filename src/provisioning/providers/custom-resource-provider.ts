@@ -266,6 +266,49 @@ const CR_LOG_TAIL_WARN_MAX_CHARS = 2000;
  * The trailing space is load-bearing: a handler's `print("REPORT: no bucket")`
  * emits `REPORT:` and must NOT be classified as boilerplate.
  */
+/**
+ * Matches an SNS topic ARN in ANY AWS partition (issue #1815).
+ *
+ * The partition segment is read OFF THE ARN rather than derived from a region
+ * through `derivePartitionAndUrlSuffix` (`src/utils/aws-partition.ts`), which
+ * is the right tool for the seven sites PR #1834 fixed but the wrong one here.
+ * That helper answers "given a region, which partition am I in"; this is a
+ * CLASSIFIER over an ARN the caller already holds, so the partition is present
+ * in the input and needs no derivation — and there is no region in hand at
+ * this call site to derive from anyway.
+ *
+ * `aws[a-z0-9-]*` deliberately accepts any partition name rather than
+ * enumerating today's (`aws` / `aws-cn` / `aws-us-gov` / `aws-iso*` /
+ * `aws-eusc`), matching `IAM_ROLE_ARN_RE` in `src/utils/role-arn.ts`. A closed
+ * list is exactly the failure this issue is about: it goes stale the moment
+ * AWS adds a partition. Being loose is safe for a routing predicate — the
+ * service segment (`:sns:`) is what discriminates, and a string that is not a
+ * real ARN cannot be a valid ServiceToken in the first place.
+ */
+const SNS_SERVICE_TOKEN_ARN_RE = /^arn:aws[a-z0-9-]*:sns:/;
+
+/**
+ * The synthetic `StackId` handed to a custom-resource handler in place of the
+ * CloudFormation stack ARN cdkd does not have.
+ *
+ * **Its `arn:aws:` prefix is deliberately NOT partition-derived** (issue
+ * #1815, which fixed the SNS routing predicate above). Every segment of this
+ * value is fabricated — the region is a fixed `us-east-1` rather than the
+ * deploy region, and the account is the all-zero placeholder — so it addresses
+ * nothing and cannot be made to. Deriving ONLY the partition would produce a
+ * strictly LESS coherent ARN (`arn:aws-cn:cloudformation:us-east-1:0000...`,
+ * a China partition carrying a commercial region) while fixing nothing a
+ * handler could rely on. The coherent fix is to synthesize the real
+ * partition / region / account together, which changes what every handler
+ * observes and belongs in its own change.
+ *
+ * Factored into one place so the rationale cannot go stale against two other
+ * copies: the create / update / delete request builders all use it.
+ */
+function syntheticStackId(logicalId: string): string {
+  return `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`;
+}
+
 const CR_LOG_TAIL_BOILERPLATE =
   /^(START|END|REPORT|XRAY|INIT_START|INIT_REPORT|RESTORE_START|RESTORE_REPORT|EXTENSION) /;
 
@@ -557,7 +600,7 @@ export class CustomResourceProvider implements ResourceProvider {
           ResponseURL: invocation.responseURL,
           ResourceType: resourceType,
           LogicalResourceId: logicalId,
-          StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`,
+          StackId: syntheticStackId(logicalId),
           ResourceProperties: this.stringifyProperties(properties),
         })
       );
@@ -632,7 +675,7 @@ export class CustomResourceProvider implements ResourceProvider {
           ResourceType: resourceType,
           LogicalResourceId: logicalId,
           PhysicalResourceId: physicalId,
-          StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`,
+          StackId: syntheticStackId(logicalId),
           ResourceProperties: this.stringifyProperties(properties),
           OldResourceProperties: this.stringifyProperties(previousProperties),
         })
@@ -762,7 +805,7 @@ export class CustomResourceProvider implements ResourceProvider {
           ResourceType: resourceType,
           LogicalResourceId: logicalId,
           PhysicalResourceId: physicalId,
-          StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`,
+          StackId: syntheticStackId(logicalId),
           ResourceProperties: this.stringifyProperties(properties),
         })
       );
@@ -783,10 +826,19 @@ export class CustomResourceProvider implements ResourceProvider {
   }
 
   /**
-   * Check if a ServiceToken is an SNS topic ARN
+   * Check if a ServiceToken is an SNS topic ARN.
+   *
+   * This is the SNS-vs-Lambda routing decision for the whole provider — it
+   * gates `sendRequest` (publish to SNS + poll S3 vs synchronous Invoke), the
+   * delete path's backing-Lambda pre-check, and `recycleBackingFunctionExecEnv`.
+   * A hardcoded `arn:aws:` prefix therefore did not merely record a wrong
+   * string outside the commercial partition: an `arn:aws-cn:sns:` /
+   * `arn:aws-us-gov:sns:` ServiceToken was classified Lambda-backed and every
+   * one of those paths took the wrong branch (issue #1815). See
+   * {@link SNS_SERVICE_TOKEN_ARN_RE} for why the partition is read off the ARN.
    */
   isSnsServiceToken(serviceToken: string): boolean {
-    return serviceToken.startsWith('arn:aws:sns:');
+    return SNS_SERVICE_TOKEN_ARN_RE.test(serviceToken);
   }
 
   /**

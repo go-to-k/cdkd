@@ -122,6 +122,82 @@ describe('CustomResourceProvider', () => {
         provider.isSnsServiceToken('arn:aws:lambda:us-east-1:123456789012:function:handler')
       ).toBe(false);
     });
+
+    // Issue #1815: this predicate is the SNS-vs-Lambda ROUTING decision, so a
+    // hardcoded `arn:aws:` prefix did not merely record a wrong string outside
+    // the commercial partition — it sent an SNS-backed custom resource down
+    // the Lambda Invoke path. A commercial-only test cannot see that, so every
+    // partition gets a case, and the commercial cases above are the
+    // byte-identical counter-cases proving nothing changed where it was right.
+    describe('issue #1815: partition-independent SNS routing', () => {
+      it.each([
+        ['aws-cn', 'arn:aws-cn:sns:cn-north-1:123456789012:my-topic'],
+        ['aws-us-gov', 'arn:aws-us-gov:sns:us-gov-west-1:123456789012:my-topic'],
+        ['aws-iso', 'arn:aws-iso:sns:us-iso-east-1:123456789012:my-topic'],
+        ['aws-iso-b', 'arn:aws-iso-b:sns:us-isob-east-1:123456789012:my-topic'],
+        ['aws-eusc', 'arn:aws-eusc:sns:eusc-de-east-1:123456789012:my-topic'],
+      ])('classifies an SNS topic ARN in the %s partition as SNS-backed', (_partition, arn) => {
+        expect(provider.isSnsServiceToken(arn)).toBe(true);
+      });
+
+      it.each([
+        ['aws-cn', 'arn:aws-cn:lambda:cn-north-1:123456789012:function:handler'],
+        ['aws-us-gov', 'arn:aws-us-gov:lambda:us-gov-west-1:123456789012:function:handler'],
+      ])(
+        'still classifies a Lambda function ARN in the %s partition as Lambda-backed',
+        (_partition, arn) => {
+          expect(provider.isSnsServiceToken(arn)).toBe(false);
+        }
+      );
+
+      // The service segment — not the partition — is what discriminates, so a
+      // non-ARN string or an ARN of another service must stay Lambda-backed no
+      // matter how `sns` appears elsewhere in it.
+      it.each([
+        ['a bare function name containing "sns"', 'my-sns-function'],
+        ['an SQS queue ARN whose queue is named "sns"', 'arn:aws-cn:sqs:cn-north-1:123456789012:sns'],
+        ['a non-AWS ARN-shaped string', 'arn:notaws:sns:cn-north-1:123456789012:my-topic'],
+      ])('does not classify %s as SNS-backed', (_label, token) => {
+        expect(provider.isSnsServiceToken(token)).toBe(false);
+      });
+    });
+  });
+
+  // Issue #1815, behavior level: the predicate above decides which AWS client
+  // the provider talks to. Pin the actual routing for a non-commercial
+  // partition, not just the boolean — a predicate test alone would pass even
+  // if the call sites stopped consulting it.
+  describe('issue #1815: SNS routing takes the SNS path outside the commercial partition', () => {
+    it.each([
+      ['aws-cn', 'arn:aws-cn:sns:cn-north-1:123456789012:my-topic'],
+      ['aws-us-gov', 'arn:aws-us-gov:sns:us-gov-west-1:123456789012:my-topic'],
+    ])('publishes to SNS (never invokes Lambda) for a %s topic ARN', async (_partition, arn) => {
+      // S3 PutObject for the response placeholder.
+      mockS3Send.mockResolvedValueOnce({});
+      // SNS publish succeeds.
+      mockSnsSend.mockResolvedValueOnce({ MessageId: 'msg-1815' });
+      // S3 GetObject returns the handler response on the first poll.
+      mockS3Send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({ Status: 'SUCCESS', PhysicalResourceId: 'sns-custom-id-1815' })
+            ),
+        },
+      });
+      // S3 DeleteObject for cleanup.
+      mockS3Send.mockResolvedValueOnce({});
+
+      const result = await provider.create('MySnsCustom', 'Custom::SnsResource', {
+        ServiceToken: arn,
+      });
+
+      expect(result.physicalId).toBe('sns-custom-id-1815');
+      expect(mockSnsSend).toHaveBeenCalledTimes(1);
+      // Pre-fix this ARN was classified Lambda-backed, so the Lambda client
+      // was the one that got called.
+      expect(mockLambdaSend).not.toHaveBeenCalled();
+    });
   });
 
   describe('create with Lambda ServiceToken', () => {
