@@ -1019,7 +1019,7 @@ describe('NestedStackProvider', () => {
       // The two arms must be distinguished by the MARKER alone, not by the
       // failure count or by anything else that happens to differ — otherwise
       // the pair above could pass for the wrong reason.
-      it('the two arms differ ONLY by the marker, not by the message', async () => {
+      it('the two arms are distinguished by the marker, not by the failure count', async () => {
         childCounts.value = { deletedCount: 0, errorCount: 2, interrupted: true };
         const marked = (await deleteAndCatch(POISON_ID)) as Error;
         childCounts.value = { deletedCount: 0, errorCount: 2, interrupted: false };
