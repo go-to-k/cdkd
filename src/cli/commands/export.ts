@@ -1266,6 +1266,20 @@ export interface IdentifierBackfillDeps {
    * cache would be shared across the stacks a `--concurrency > 1` run exports
    * in parallel, and the walk's answer is per-account/per-region.
    *
+   * That scope is also, deliberately, NARROWER than the whole export: a
+   * nested-stack tree runs one {@link buildImportPlan} per NODE (see
+   * `runPerStackImportLoop`), so a security group referenced by rows in two
+   * child stacks is walked once per child rather than once overall. That is
+   * accepted, not overlooked. Hoisting the map to the loop would deduplicate
+   * those few walks, but it would also keep every group's answer alive for the
+   * whole multi-stack run — and the value being cached is a LIVE READ of AWS,
+   * so the longer it lives the wider the window in which the rules it recorded
+   * no longer describe the group. The saving is a handful of describes on an
+   * uncommon shape; the cost is a stale answer feeding the exactly-one
+   * adoption, which is the one thing this lookup must not get wrong. The memo
+   * exists to stop the N-rows-on-one-group blowup, and that blowup is entirely
+   * within one stack, where this scope already covers it.
+   *
    * Caches the OUTCOME rather than the rules, so a failed walk is paid once
    * too, and caches a value that carries NO row identity — the per-row refusal
    * message is built by the caller from its own `logicalId`, or the second row
@@ -1639,8 +1653,21 @@ type SecurityGroupRuleLookup =
   | { readonly ok: true; readonly rules: SecurityGroupRule[] }
   | {
       readonly ok: false;
+      /**
+       * The walk was still paginating at the page ceiling. Carries NO
+       * `detail`, unlike the failure kinds below: there is no AWS error text
+       * to quote, and the only other thing this arm could carry — the group
+       * id — is one the caller already holds on its own tuple. A copy here
+       * would be a second place for it to go stale and a field the message
+       * never reads.
+       */
+      readonly kind: 'truncated';
+    }
+  | {
+      readonly ok: false;
       /** Which remedy the caller's message should prescribe. */
-      readonly kind: 'truncated' | 'auth' | 'throttled' | 'failed';
+      readonly kind: 'auth' | 'throttled' | 'failed';
+      /** The AWS failure text, quoted verbatim into the caller's refusal. */
       readonly detail: string;
     };
 
@@ -1698,7 +1725,7 @@ async function describeAllSecurityGroupRules(
   let pages = 0;
   do {
     if (pages >= MAX_SG_RULE_PAGES) {
-      return { ok: false, kind: 'truncated', detail: groupId };
+      return { ok: false, kind: 'truncated' };
     }
     let resp: DescribeSecurityGroupRulesResult;
     try {
@@ -1755,6 +1782,31 @@ function cachedSecurityGroupRules(
   securityGroupRuleCache.set(groupId, pending);
   return pending;
 }
+
+/**
+ * What to DO about a row more than one AWS rule matches — the part of the
+ * refusal that is about the ambiguity itself rather than about how cdkd
+ * noticed it.
+ *
+ * Written once because TWO arms below report a matched count above one: the
+ * plain `> 1` refusal, and the unusable-id refusal (whose own remedy is "open
+ * a cdkd issue" — right about the unreadable id, useless about the ambiguity).
+ * A row that hits the second arm has BOTH problems, and before this was shared
+ * it was the one row whose user never saw these two causes at all.
+ *
+ * Carries no row identity, so it can be appended to either message.
+ */
+const SG_INGRESS_AMBIGUITY_REMEDY =
+  `Two causes, with different remedies. (1) ONE resource declaring MORE THAN ONE source (e.g. ` +
+  `both CidrIp and CidrIpv6 on the same resource), for which AWS mints one rule per source: ` +
+  `split it into one AWS::EC2::SecurityGroupIngress resource per source, which is also the ` +
+  `shape CloudFormation will manage after the export. (2) TWO DISTINCT ` +
+  `AWS::EC2::SecurityGroupIngress resources that differ only by SOURCE — port 443 from a CIDR ` +
+  `and port 443 from a peer security group, say. cdkd's composite physical id carries no ` +
+  `source, so those two rows carry byte-identical ids and splitting is not their remedy: set ` +
+  `the row's attributes.Id to the 'sgr-...' id that belongs to it (cdkd then resolves from ` +
+  `state and issues no lookup at all), or remove the row from the stack before exporting. Then ` +
+  `re-run cdkd export.`;
 
 /** The remedy every refusal below ends with — one place, so they cannot drift. */
 function sgIngressExportEscapeHatch(logicalId: string): string {
@@ -1870,7 +1922,11 @@ async function backfillSecurityGroupIngressRuleId(
     .filter((id): id is string => typeof id === 'string' && SG_RULE_ID_PATTERN.test(id.trim()))
     .map((id) => id.trim());
 
-  if (matched.length > 0 && ids.length < matched.length) {
+  // No `matched.length > 0 &&` guard: `ids` is derived from `matched` by a
+  // filter, so an empty `matched` gives an empty `ids` and `0 < 0` is already
+  // false. The conjunct could not change the answer, and a reader who found it
+  // there would reasonably assume it could.
+  if (ids.length < matched.length) {
     const unusable = matched
       .filter(
         (rule) =>
@@ -1882,6 +1938,18 @@ async function backfillSecurityGroupIngressRuleId(
       .map((rule) =>
         typeof rule.SecurityGroupRuleId === 'string' ? `'${rule.SecurityGroupRuleId}'` : '<absent>'
       );
+    // A matched count above one means this row is ALSO the genuine ambiguity
+    // case, and the unreadable id is then the lesser of its two problems: even
+    // if AWS had reported every id, cdkd still could not say which rule the row
+    // is. Without this the user gets "open a cdkd issue" and never sees the
+    // remedy they can actually act on, because that remedy lives only in the
+    // `> 1` message this branch pre-empts.
+    const ambiguityNote =
+      matched.length > 1
+        ? ` Note that ${matched.length} rules matching one row is an ambiguity in its own ` +
+          `right, which cdkd could not resolve even if every id were readable: ` +
+          `${SG_INGRESS_AMBIGUITY_REMEDY}`
+        : '';
     throw new Error(
       `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}', and a live ` +
         `DescribeSecurityGroupRules lookup found ${matched.length} ingress rule(s) matching ` +
@@ -1890,7 +1958,7 @@ async function backfillSecurityGroupIngressRuleId(
         `that is a count of MATCHING RULES — so discarding the unreadable ones first would let ` +
         `a genuine two-match pass as "exactly one" and record an identifier naming the wrong ` +
         `rule. cdkd refuses instead. This is a DescribeSecurityGroupRules response shape cdkd ` +
-        `does not expect; please open a cdkd issue if it persists. ` +
+        `does not expect; please open a cdkd issue if it persists.${ambiguityNote} ` +
         `${sgIngressExportEscapeHatch(logicalId)}`
     );
   }
@@ -1914,17 +1982,8 @@ async function backfillSecurityGroupIngressRuleId(
       `DescribeSecurityGroupRules lookup found ${ids.length} ingress rules matching ${tupleNote} ` +
       `(${ids.join(', ')}). cdkd's physical id identifies a rule only by group, protocol and ` +
       `port range, so it cannot say which of them '${logicalId}' is, and CloudFormation IMPORT ` +
-      `needs exactly one — adopting either would record the wrong rule. Two causes, with ` +
-      `different remedies. (1) ONE resource declaring MORE THAN ONE source (e.g. both CidrIp ` +
-      `and CidrIpv6 on the same resource), for which AWS mints one rule per source: split it ` +
-      `into one AWS::EC2::SecurityGroupIngress resource per source, which is also the shape ` +
-      `CloudFormation will manage after the export. (2) TWO DISTINCT ` +
-      `AWS::EC2::SecurityGroupIngress resources that differ only by SOURCE — port 443 from a ` +
-      `CIDR and port 443 from a peer security group, say. cdkd's composite physical id carries ` +
-      `no source, so those two rows carry byte-identical ids and splitting is not their remedy: ` +
-      `set the row's attributes.Id to the 'sgr-...' id that belongs to it (cdkd then resolves ` +
-      `from state and issues no lookup at all), or remove the row from the stack before ` +
-      `exporting. Then re-run cdkd export. ${sgIngressExportEscapeHatch(logicalId)}`
+      `needs exactly one — adopting either would record the wrong rule. ` +
+      `${SG_INGRESS_AMBIGUITY_REMEDY} ${sgIngressExportEscapeHatch(logicalId)}`
   );
 }
 

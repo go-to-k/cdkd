@@ -787,25 +787,30 @@ only one of them is healed by re-deploying:
 `cdkd export` issues a paginated `DescribeSecurityGroupRules` on the
 security group its physical id names and adopts the rule only when
 EXACTLY ONE ingress rule on that group carries the composite's
-`(protocol, port range)` tuple. Zero matches, or more than one, is
-refused with a message naming the row and what was ambiguous — cdkd's
-physical id identifies a rule only by group, protocol and port range,
-so two rules sharing that tuple are two rules cdkd cannot tell apart
-either, and adopting one would import the wrong rule. Matching rules are
-counted BEFORE any is set aside, so a rule AWS reports without a usable
-`sgr-…` id refuses too rather than letting its sibling pass as "exactly
-one". "More than one" has two causes with different remedies: the
-multi-source rule above (split the resource), and two DISTINCT ingress
-resources differing only by SOURCE — port 443 from a CIDR and port 443
-from a peer security group — which cdkd's composite cannot tell apart
-because it carries no source. Those are already one resource per source,
-so their remedy is to set the row's `attributes.Id` to the `sgr-…` id
-that belongs to it, or to remove the row before exporting. The lookup
-needs `ec2:DescribeSecurityGroupRules`; without that permission the row
-is blocked with a message saying so, while a THROTTLED lookup is retried
-with backoff and, if it still fails, reported as a throttle rather than
-as a missing permission. A row that already records the `Id` — everything
-a current cdkd deploys — issues no live read at all.
+`(protocol, port range)` tuple. Zero matches is refused with a message
+naming the row and the tuple cdkd searched for, since nothing matched
+and there is nothing to name; more than one is refused with a message
+naming the row and EVERY candidate `sgr-…` id — cdkd's physical id
+identifies a rule only by group, protocol and port range, so two rules
+sharing that tuple are two rules cdkd cannot tell apart either, and
+adopting one would import the wrong rule. Matching rules are counted
+BEFORE any is set aside, so a rule AWS reports without a usable `sgr-…`
+id refuses too rather than letting its sibling pass as "exactly one" —
+and when more than one rule matched, that refusal carries the two-cause
+remedy below as well, since such a row is ambiguous no matter how
+readable the ids are. "More than one" has two causes with different
+remedies: the multi-source rule above (split the resource), and two
+DISTINCT ingress resources differing only by SOURCE — port 443 from a
+CIDR and port 443 from a peer security group — which cdkd's composite
+cannot tell apart because it carries no source. Those are already one
+resource per source, so their remedy is to set the row's `attributes.Id`
+to the `sgr-…` id that belongs to it, or to remove the row before
+exporting. The lookup needs `ec2:DescribeSecurityGroupRules`; without
+that permission the row is blocked with a message saying so, while a
+THROTTLED lookup is retried with backoff and, if it still fails,
+reported as a throttle rather than as a missing permission. A row that
+already records the `Id` — everything a current cdkd deploys — issues no
+live read at all.
 
 In both cases you can instead remove the rule from the stack before
 exporting: it stays in AWS and can be re-declared in CloudFormation

@@ -147,6 +147,34 @@ function throttlingThenAnsweringEc2Client(
   } as unknown as AwsClients['ec2'];
 }
 
+/**
+ * An EC2 stub that answers page 1 normally and then throttles the first
+ * `failures` requests that carry a `NextToken`. Distinct from
+ * {@link throttlingThenAnsweringEc2Client}, which throttles page 1: the retry
+ * has to wrap the request INSIDE the pagination loop, and a stub that only
+ * ever throttles the first call cannot tell that apart from one wrapping the
+ * walk from outside.
+ */
+function throttlingOnPagedRequestEc2Client(
+  failures: number,
+  pages: StubRule[][]
+): AwsClients['ec2'] {
+  let thrown = 0;
+  const inner = ec2ClientFor(pages) as unknown as { send: (cmd: unknown) => Promise<unknown> };
+  return {
+    async send(cmd: { input?: DescribeCall }) {
+      if (cmd.input?.NextToken && thrown < failures) {
+        thrown += 1;
+        describeCalls.push(cmd.input);
+        const err = new Error('Request limit exceeded.');
+        err.name = 'RequestLimitExceeded';
+        throw err;
+      }
+      return inner.send(cmd);
+    },
+  } as unknown as AwsClients['ec2'];
+}
+
 /** Two ingress rows on ONE security group, differing only by port range. */
 function stateWithTwoIngressRowsOnOneGroup(): StackState {
   const state = stateWithIngress(`${GROUP_ID}|tcp|443|443`);
@@ -422,6 +450,61 @@ describe('cdkd export — SecurityGroupIngress rule-id backfill (issue #1791)', 
     expect(plan.blocked[0]!.reason).toMatch(/count of MATCHING RULES/);
   });
 
+  it('gives a 2-match-with-an-unusable-id BOTH remedies, not just "open a cdkd issue"', async () => {
+    // This row has two problems at once, and the unusable-id branch pre-empts
+    // the `> 1` one — so its message used to be the only one the user saw, and
+    // it prescribed "please open a cdkd issue". True about the unreadable id,
+    // and no help at all about the ambiguity, which is the problem that would
+    // remain even if AWS reported every id: two rules match this row's tuple.
+    // The remedy the user can act on lives in the `> 1` message, so it is
+    // appended here rather than left unreachable.
+    const plan = await planWith(
+      stateWithIngress(`${GROUP_ID}|tcp|443|443`),
+      ec2ClientFor([
+        [
+          { SecurityGroupRuleId: SG_RULE_ID, IpProtocol: 'tcp', FromPort: 443, ToPort: 443 },
+          { IpProtocol: 'tcp', FromPort: 443, ToPort: 443 },
+        ],
+      ])
+    );
+
+    const reason = plan.blocked[0]!.reason;
+    // The unusable-id cause is still reported — this is an ADDITION, not a
+    // swap of one message for the other.
+    expect(reason).toMatch(/but 1 of them carry no usable 'sgr-\.\.\.' rule id/);
+    expect(reason).toMatch(/please open a cdkd issue if it persists/);
+    // ...and the ambiguity is named as a problem in its own right.
+    expect(reason).toMatch(/2 rules matching one row is an ambiguity in its own right/);
+    expect(reason).toMatch(/could not resolve even if every id were readable/);
+    // Both causes of that ambiguity, verbatim from the `> 1` arm: only one of
+    // them is splittable, so naming just the first sends half the users to a
+    // remedy they cannot apply.
+    expect(reason).toMatch(
+      /MORE THAN ONE source.*one AWS::EC2::SecurityGroupIngress resource per source/s
+    );
+    expect(reason).toMatch(
+      /TWO DISTINCT AWS::EC2::SecurityGroupIngress resources that differ only by SOURCE/
+    );
+    expect(reason).toMatch(/set the row's attributes\.Id to the 'sgr-\.\.\.' id that belongs to it/);
+  });
+
+  it('does NOT prescribe the ambiguity remedy when only ONE rule matched', async () => {
+    // The other polarity of the same branch: a single matching rule whose id
+    // AWS reported unusable is NOT ambiguous — there is nothing to split and
+    // no second candidate — so appending the two-cause remedy unconditionally
+    // would send this user chasing a problem they do not have.
+    const plan = await planWith(
+      stateWithIngress(`${GROUP_ID}|tcp|443|443`),
+      ec2ClientFor([[{ IpProtocol: 'tcp', FromPort: 443, ToPort: 443 }]])
+    );
+
+    const reason = plan.blocked[0]!.reason;
+    expect(reason).toMatch(/found 1 ingress rule\(s\) matching/);
+    expect(reason).toMatch(/please open a cdkd issue if it persists/);
+    expect(reason).not.toMatch(/ambiguity in its own right/);
+    expect(reason).not.toMatch(/MORE THAN ONE source/);
+  });
+
   it('refuses a physical id that is not cdkd composite, WITHOUT calling AWS', async () => {
     // A 5-segment id is the issue #1672 ambiguity (a segment carrying the
     // separator). Decoding its first four parts would look up a DIFFERENT
@@ -599,6 +682,31 @@ describe('cdkd export — SecurityGroupIngress rule-id backfill (issue #1791)', 
     expect(sleeps.reduce((a, b) => a + b, 0)).toBe(3000);
   });
 
+  it('retries a throttle on a SECOND page too — the retry is inside the walk', async () => {
+    // Pins WHERE the retry sits. A refactor that hoists `withRetry` outside
+    // the `do/while` still passes the page-1 throttle test above, but loses
+    // every page after the first: the walk would restart from page 1 on a
+    // retry, or the throttled page would abort the whole export. Long-lived
+    // security groups are exactly the ones that paginate AND the ones whose
+    // repeated describes get throttled, so this is not a hypothetical pair.
+    const plan = await planWith(
+      stateWithIngress(`${GROUP_ID}|tcp|443|443`),
+      throttlingOnPagedRequestEc2Client(2, [
+        [{ SecurityGroupRuleId: OTHER_RULE_ID, IpProtocol: 'tcp', FromPort: 22, ToPort: 22 }],
+        [{ SecurityGroupRuleId: SG_RULE_ID, IpProtocol: 'tcp', FromPort: 443, ToPort: 443 }],
+      ])
+    );
+
+    expect(plan.blocked).toEqual([]);
+    // The match lives on page 2, so healing at all proves the walk resumed
+    // rather than answered from the page it already had.
+    expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ Id: SG_RULE_ID });
+    // page 1, then the page-2 request throttled twice, then answered.
+    expect(describeCalls).toHaveLength(4);
+    expect(describeCalls.map((c) => c.NextToken)).toEqual([undefined, '1', '1', '1']);
+    expect(sleeps.reduce((a, b) => a + b, 0)).toBe(3000);
+  });
+
   it('reports a persistent throttle AS a throttle — never as a missing permission', async () => {
     const plan = await planWith(
       stateWithIngress(`${GROUP_ID}|tcp|443|443`),
@@ -616,6 +724,36 @@ describe('cdkd export — SecurityGroupIngress rule-id backfill (issue #1791)', 
     // (1s + 2s + 4s + 8s = the ~15s budget the constant documents).
     expect(describeCalls).toHaveLength(5);
     expect(sleeps.reduce((a, b) => a + b, 0)).toBe(15000);
+  });
+
+  it('recognizes EVERY authorization shape EC2 uses, not just the IAM sentence', async () => {
+    // `isAuthorizationShapedError` offers four alternatives and only the
+    // `not authorized to perform` sentence was exercised. The other three are
+    // ERROR CODES rather than prose, and EC2 picks between them by API and by
+    // credential problem — `UnauthorizedOperation` for a denied EC2 action,
+    // `AuthFailure` for credentials AWS would not accept at all. Dropping any
+    // one of them silently reclassifies that failure as the generic `failed`
+    // kind, whose remedy ("re-run once that cause is resolved") never names
+    // the permission the user is missing.
+    for (const name of ['AccessDenied', 'UnauthorizedOperation', 'AuthFailure']) {
+      describeCalls = [];
+      sleeps = [];
+      const plan = await planWith(
+        stateWithIngress(`${GROUP_ID}|tcp|443|443`),
+        // Deliberately NOT the IAM prose: the code must key on the NAME here,
+        // or this test passes for the reason the existing one already covers.
+        failingEc2Client('You do not have permission to access the specified resource.', name)
+      );
+
+      const reason = plan.blocked[0]!.reason;
+      expect(reason, name).toMatch(/Grant ec2:DescribeSecurityGroupRules and re-run cdkd export/);
+      // Not the throttle remedy, and not the generic one.
+      expect(reason, name).not.toMatch(/AWS throttled the lookup/);
+      expect(reason, name).not.toMatch(/Re-run cdkd export once that cause is resolved/);
+      // A permissions failure cannot heal by waiting, so it is not retried.
+      expect(describeCalls, name).toHaveLength(1);
+      expect(sleeps, name).toEqual([]);
+    }
   });
 
   it('does not prescribe the permission for a failure that is not about permissions', async () => {

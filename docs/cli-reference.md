@@ -2827,21 +2827,25 @@ cdkd export                                       # auto-detect single-stack app
    `DescribeSecurityGroupRules` on the group the physical id names, and
    the rule is adopted only when EXACTLY ONE ingress rule on that group
    carries the composite's `(protocol, port range)` tuple. Zero matches
-   or more than one is REFUSED, naming the row and the candidates —
-   two rules sharing that tuple are two rules cdkd's own physical id
+   is REFUSED naming the row and the tuple cdkd searched for — nothing
+   matched, so there are no candidates to name; more than one is
+   REFUSED naming the row and every candidate `sgr-…` id, since two
+   rules sharing that tuple are two rules cdkd's own physical id
    cannot tell apart either. Matching rules are counted BEFORE any is
    set aside, so a rule AWS reports without a usable `sgr-…` id refuses
-   too rather than letting its sibling pass as "exactly one". "More
-   than one" has two causes: the multi-source rule above (split the
-   resource), and two DISTINCT ingress resources differing only by
-   SOURCE, which the composite carries none of — those are already one
-   resource per source, so repair the row's `attributes.Id` or remove
-   the row before exporting. The lookup needs
-   `ec2:DescribeSecurityGroupRules`; without that permission the row is
-   blocked with a message saying so, while a THROTTLED lookup is
-   retried with backoff and reported as a throttle, not as a missing
-   permission. A row whose state already records the `Id` — everything
-   a current cdkd deploys — issues no live read at all.
+   too rather than letting its sibling pass as "exactly one" — and when
+   more than one rule matched, that refusal carries the two-cause
+   remedy below as well. "More than one" has two causes: the
+   multi-source rule above (split the resource), and two DISTINCT
+   ingress resources differing only by SOURCE, which the composite
+   carries none of — those are already one resource per source, so
+   repair the row's `attributes.Id` or remove the row before
+   exporting. The lookup needs `ec2:DescribeSecurityGroupRules`;
+   without that permission the row is blocked with a message saying
+   so, while a THROTTLED lookup is retried with backoff and reported
+   as a throttle, not as a missing permission. A row whose state
+   already records the `Id` — everything a current cdkd deploys —
+   issues no live read at all.
 
    **Types CloudFormation cannot IMPORT at all are refused up front.**
    A type whose registry schema declares no `read` handler AND reports
