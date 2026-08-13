@@ -27,7 +27,7 @@ basic	2026-08-01T10:00:06Z	PASS	81	standard	0801 regression sweep; 2 del/0 err, 
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-08-10T05:19:05Z	PASS	36	standard	0810 P2 sweep b6; 6 del 0 err, 0 orph
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bench-cdk-sample	2026-08-13T03:54:09Z	PASS	1500	standard	1745/1746 re-run after 3-axis review fixes; 37 del 0 err, retained logs swept
+bench-cdk-sample	2026-08-13T06:43:57Z	PASS	300	standard	PR 1774 BROAD gate; 39 created / 37 del 2 retained 0 err, retained log groups swept, 0 orphans
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-07-31T06:23:42Z	PASS	78	verify.sh	TTL-refresh sweep re-run in ca-central-1; marker+bucket swept, orph clean
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
@@ -65,11 +65,11 @@ custom-resource-provider	2026-08-12T10:09:17Z	PASS	296	standard	#1687 final; 17 
 data-analytics	2026-08-10T11:31:18Z	PASS	87	verify.sh	#1479 SD-subtree merge re-verified after review fixes (OR-gate bag semantics)
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 deep-getatt-chains	2026-08-01T10:07:21Z	PASS	53	verify.sh	0801 regression sweep; SDK+CC chain ok, 0 orphans
-deletion-ordering-complex	2026-07-26T20:00:52Z	PASS	187	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
+deletion-ordering-complex	2026-08-13T06:50:48Z	PASS	260	verify.sh	PR 1774; destroy-runner ordering, rc 0, 19 del 0 err, LB/TG/SG/subnet/IGW/VPC/EC2 all gone
 deletion-policy-retain	2026-08-08T16:25:24Z	PASS	26	verify.sh	P0 post-#1355/#1359/#1365 DeletionPolicy rework; Retain honored, 1 del/1 retain/0 err, manual cleanup ok
 deletion-policy-snapshot	2026-08-08T16:32:34Z	PASS	259	verify.sh	P0 first run post-#1360 EC2 Volume replacement rules; all 3 snapshot paths (engine/replacement/runner) ok, 0 orphans
 deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Redshift+ElastiCache RepGroup pre-delete snapshots verified; found 4 live defects across 5 runs
-deployment-events	2026-07-26T20:00:52Z	PASS	45	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
+deployment-events	2026-08-13T06:46:26Z	PASS	150	verify.sh	PR 1774; events.ts skip-count/reason rendering surface, rc 0, 2 del 0 err, sidecar removed
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
 destroy-interrupt	2026-07-26T20:00:52Z	PASS	400	verify.sh	0727b sweep-b13 staleness re-run (rc=0); account clean
 diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 sweep b12; diff detects GetAtt target rebind, clean destroy
@@ -209,7 +209,7 @@ multi-asset	2026-08-10T05:38:11Z	PASS	68	verify.sh	0810 P2 sweep b9; rc ok, ECR 
 multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 multi-resource	2026-08-12T19:26:19Z	PASS	62	standard	#1740/#1730 BROAD gate re-run on the post-review-round-2 head; 17 created / 17 deleted 0 err, 0 orphans
 multi-stack-deps	2026-08-12T10:36:46Z	PASS	300	standard	broad gate re-run post-rebase for #1697; 3 stacks clean, 0 orphans
-nested-stack	2026-07-26T18:10:48Z	PASS	30	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
+nested-stack	2026-08-13T06:45:24Z	PASS	120	standard	PR 1774; nested skip/interrupt propagation negative control - clean child still reports deleted; child 3 del + parent 2 del, 0 err, 0 orph
 nested-stack-3level	2026-08-10T04:45:42Z	PASS	78	verify.sh	0810 sweep b3; nested-stack-provider re-verify, 0 err, 0 orph
 nested-stack-deep	2026-07-26T18:10:48Z	PASS	65	verify.sh	0727b sweep-b2 staleness re-run (rc=0); account clean
 nlb-source-nat	2026-08-12T08:50:17Z	PASS	364	verify.sh	#1619 re-run after review fixes: prefix retention + phase-3 no-op added; 24 deleted, 0 err, 0 orph
@@ -268,7 +268,7 @@ sns-sqs-event	2026-08-11T03:25:52Z	PASS	420	verify.sh	1538 lane: delivery-status
 sns-subscription-filter	2026-08-10T05:38:11Z	PASS	39	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 sqs-cloudwatch	2026-07-31T07:00:20Z	PASS	75	standard	removalPolicy DESTROY fix verified: stream deleted on destroy, 0 orphans
 sqs-esm-max-concurrency	2026-08-10T04:23:28Z	PASS	76	verify.sh	0810 sweep b2; lambda-eventsource re-verify, 5 del 0 err, 0 orph
-state-destroy	2026-07-26T18:04:53Z	PASS	25	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
+state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
 state-info-command	2026-08-02T05:07:05Z	PASS	31	verify.sh	new verify.sh (#1335): state info human+json, flag+env sources, 1 del/0 err, 0 orphans
 stepfunctions	2026-08-10T05:24:30Z	PASS	58	verify.sh	0810 P2 sweep b7; SM ACTIVE + async-delete poll, 0 orph
 stepfunctions-logging	2026-08-10T05:24:30Z	PASS	81	verify.sh	0810 P2 sweep b7; SFN Express logging/tracing removal-clear, 0 orph
