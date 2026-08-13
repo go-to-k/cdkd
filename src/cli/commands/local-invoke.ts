@@ -38,6 +38,7 @@ import {
   type SubstitutionContext,
 } from '../../local/state-resolver.js';
 import { derivePartitionAndUrlSuffix } from '../../local/ecs-task-resolver.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
   resolveRuntimeCodeMountPath,
   resolveRuntimeFileExtension,
@@ -226,6 +227,12 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   }
 
   warnIfDeprecatedRegion(options);
+  // Issue #1795: fold `--region` ONCE, at the boundary, so every downstream
+  // SDK client sees the canonical spelling (AWS SDK endpoint resolution is
+  // case-sensitive, so a raw `--region CN-NORTH-1` reached the COMMERCIAL
+  // endpoint). The pseudo-parameter resolver folds again from its own four
+  // sources; double-folding is a no-op.
+  if (options.region !== undefined) options.region = canonicalizeRegion(options.region);
 
   // Track tmpdirs that may be materialized below so the outer `finally`
   // (and the SIGINT handler) can clean them up regardless of where in
@@ -1191,16 +1198,25 @@ export function envHasCrossStackIntrinsic(
  *
  * Region precedence (mirrors `local-run-task`): `--region` > `AWS_REGION`
  * > `AWS_DEFAULT_REGION` > the synth-derived stack region.
+ *
+ * The resolved region is CANONICALIZED (issue #1795) before anything consumes
+ * it. That covers all four sources — `--region`, both env vars, and the
+ * synth-derived stack region — and all three consumers: the STS client built
+ * for `${AWS::AccountId}`, the `${AWS::URLSuffix}` / `${AWS::Partition}`
+ * derivation, and the `${AWS::Region}` value itself.
+ *
+ * @internal exported for unit tests.
  */
-async function resolvePseudoParametersForInvoke(
+export async function resolvePseudoParametersForInvoke(
   stackRegion: string | undefined,
   options: LocalInvokeOptions
 ): Promise<
   { accountId?: string; region?: string; partition?: string; urlSuffix?: string } | undefined
 > {
   const logger = getLogger();
-  const region =
-    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? stackRegion;
+  const region = canonicalizeRegion(
+    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? stackRegion
+  );
   if (!region) {
     logger.warn(
       '--from-state: resolver references ${AWS::Region} but cdkd could not determine the target region. ' +

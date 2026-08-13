@@ -39,6 +39,7 @@ import {
   type SubstitutionContext,
 } from '../../local/state-resolver.js';
 import { derivePartitionAndUrlSuffix } from '../../local/ecs-task-resolver.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { resolveRuntimeFileExtension, resolveRuntimeImage } from '../../local/runtime-image.js';
 import { ensureDockerAvailable, pullImage } from '../../local/docker-runner.js';
 import { architectureToPlatform, buildContainerImage } from '../../local/docker-image-builder.js';
@@ -279,6 +280,12 @@ async function localStartApiCommand(
   if (options.verbose) {
     logger.setLevel('debug');
   }
+  // Issue #1795: fold `--region` ONCE, at the boundary, so every downstream
+  // SDK client sees the canonical spelling (AWS SDK endpoint resolution is
+  // case-sensitive, so a raw `--region CN-NORTH-1` reached the COMMERCIAL
+  // endpoint). The pseudo-parameter resolver folds again from its own four
+  // sources; double-folding is a no-op.
+  if (options.region !== undefined) options.region = canonicalizeRegion(options.region);
 
   // Resolve the API filter: positional `<target>` wins over `--api`.
   // `--api` is kept as a backward-compat alias for one release cycle —
@@ -3067,14 +3074,23 @@ async function loadStateForRoutedStacks(
  *
  * Region precedence: `--region` > `AWS_REGION` > `AWS_DEFAULT_REGION` >
  * the state record's region (returned by the active `LocalStateProvider`).
+ *
+ * The resolved region is CANONICALIZED (issue #1795) before anything consumes
+ * it. That covers all four sources — `--region`, both env vars, and the state
+ * record's region — and all three consumers: the STS client built for
+ * `${AWS::AccountId}`, the `${AWS::URLSuffix}` / `${AWS::Partition}`
+ * derivation, and the `${AWS::Region}` value itself.
+ *
+ * @internal exported for unit tests.
  */
-async function resolvePseudoParametersForStartApi(
+export async function resolvePseudoParametersForStartApi(
   stateRegion: string,
   options: LocalStartApiOptions
 ): Promise<PseudoParameters | undefined> {
   const logger = getLogger();
-  const region =
-    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? stateRegion;
+  const region = canonicalizeRegion(
+    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? stateRegion
+  );
   let accountId: string | undefined;
   try {
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');

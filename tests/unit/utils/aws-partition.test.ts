@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
   PARTITION_TABLE,
+  canonicalizeRegion,
   derivePartitionAndUrlSuffix,
 } from '../../../src/utils/aws-partition.js';
 import { parseEcrRegistryHost } from '../../../src/utils/ecr-uri.js';
@@ -15,6 +16,28 @@ import { parseEcrRegistryHost } from '../../../src/utils/ecr-uri.js';
  * commercial counter-case asserting the UNCHANGED string, so a change that
  * widened the table by breaking the fallback cannot pass.
  */
+describe('canonicalizeRegion (issue #1795)', () => {
+  it('lower-cases a region and is a no-op on an already-canonical one', () => {
+    expect(canonicalizeRegion('CN-NORTH-1')).toBe('cn-north-1');
+    expect(canonicalizeRegion('Us-Gov-West-1')).toBe('us-gov-west-1');
+    expect(canonicalizeRegion('us-east-1')).toBe('us-east-1');
+  });
+
+  it('is idempotent, which is what makes folding at BOTH layers safe', () => {
+    // The helper folds inside `derivePartitionAndUrlSuffix` AND at each
+    // `cdkd local *` region-resolution point; double-folding must not differ.
+    expect(canonicalizeRegion(canonicalizeRegion('CN-NORTH-1'))).toBe(
+      canonicalizeRegion('CN-NORTH-1')
+    );
+  });
+
+  it('passes undefined through, so an unresolved region stays unresolved', () => {
+    // Every call site resolves through a `??` chain that can end undefined and
+    // then WARNS about it; coercing to a string would silence that warning.
+    expect(canonicalizeRegion(undefined)).toBeUndefined();
+  });
+});
+
 describe('derivePartitionAndUrlSuffix', () => {
   const COMMERCIAL = { partition: 'aws', urlSuffix: 'amazonaws.com' };
 
@@ -102,6 +125,48 @@ describe('derivePartitionAndUrlSuffix', () => {
       urlSuffix: 'amazonaws.eu',
     });
     expect(derivePartitionAndUrlSuffix('eu-south-2')).toEqual(COMMERCIAL);
+  });
+
+  // ---------- case canonicalization (issue #1795) ----------
+
+  it('classifies an upper-cased region identically to its lower-cased form', () => {
+    // The prefix tests are `startsWith`, i.e. case-SENSITIVE, so before #1795
+    // every non-commercial region typed in another case fell through to the
+    // commercial fallback and the caller synthesized a look-alike host.
+    for (const row of PARTITION_TABLE) {
+      const lower = `${row.prefix}test-1`;
+      expect(derivePartitionAndUrlSuffix(lower.toUpperCase())).toEqual(
+        derivePartitionAndUrlSuffix(lower)
+      );
+    }
+  });
+
+  it('resolves CN-NORTH-1 to the aws-cn suffix — commercial unchanged', () => {
+    // The exact case from the issue: `--region CN-NORTH-1` used to yield
+    // `amazonaws.com`, so `cdkd local *` built
+    // `<acct>.dkr.ecr.CN-NORTH-1.amazonaws.com/...` — a host that does not
+    // exist. The commercial counter-case pins that nothing else moved.
+    expect(derivePartitionAndUrlSuffix('CN-NORTH-1')).toEqual({
+      partition: 'aws-cn',
+      urlSuffix: 'amazonaws.com.cn',
+    });
+    expect(derivePartitionAndUrlSuffix('US-EAST-1')).toEqual(COMMERCIAL);
+    expect(derivePartitionAndUrlSuffix('us-east-1')).toEqual(COMMERCIAL);
+  });
+
+  it('handles mixed case and leaves an unknown region on the commercial fallback', () => {
+    expect(derivePartitionAndUrlSuffix('Us-Gov-West-1')).toEqual({
+      partition: 'aws-us-gov',
+      urlSuffix: 'amazonaws.com',
+    });
+    expect(derivePartitionAndUrlSuffix('us-ISOB-east-1')).toEqual({
+      partition: 'aws-iso-b',
+      urlSuffix: 'sc2s.sgov.gov',
+    });
+    // Canonicalizing must not widen the table: a region no row names still
+    // resolves commercial, in either case.
+    expect(derivePartitionAndUrlSuffix('MARS-EAST-1')).toEqual(COMMERCIAL);
+    expect(derivePartitionAndUrlSuffix('mars-east-1')).toEqual(COMMERCIAL);
   });
 
   // ---------- table invariants ----------

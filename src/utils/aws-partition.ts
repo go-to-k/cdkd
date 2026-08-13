@@ -73,6 +73,40 @@ export const PARTITION_TABLE: ReadonlyArray<{
 ];
 
 /**
+ * Fold an AWS region name to its canonical lower-case spelling.
+ *
+ * AWS region ids ARE lower case — `${AWS::Region}` always returns that form —
+ * but nothing between a `--region` flag and an SDK client enforces it, and
+ * essentially everything downstream is case-SENSITIVE (issue
+ * [#1795](https://github.com/go-to-k/cdkd/issues/1795)):
+ *
+ * - This module's own `PARTITION_TABLE` walk is a `startsWith` prefix test, so
+ *   `--region CN-NORTH-1` fell through to the commercial partition and the
+ *   `cdkd local *` commands synthesized
+ *   `<acct>.dkr.ecr.CN-NORTH-1.amazonaws.com/...` — a `cn-` region carrying the
+ *   commercial suffix, a host that does not exist.
+ * - The AWS SDK's endpoint resolution is case-sensitive in the SAME direction.
+ *   Measured against this repo's vendored `@aws-sdk/util-endpoints` partition
+ *   data: `cn-north-1` resolves `aws-cn` / `amazonaws.com.cn` while
+ *   `CN-NORTH-1` resolves `aws` / `amazonaws.com` (both the exact-match table
+ *   and the `regionRegex` fallback are case-sensitive). So EVERY SDK client
+ *   built from a raw region — `STSClient` for `${AWS::AccountId}`, the ECR /
+ *   SecretsManager / SSM clients further down the `cdkd local` path — talks to
+ *   the wrong partition's endpoint and fails.
+ * - `${AWS::Region}` substituted from a raw value spells the region wrongly
+ *   inside every ARN the resolver builds from it.
+ *
+ * Applied BOTH in `derivePartitionAndUrlSuffix` (so any caller of the mapping
+ * inherits it) AND at the `cdkd local *` region-resolution points (so the
+ * region VALUE those commands hand to SDK clients and to `${AWS::Region}` is
+ * canonical too). Double-folding is a no-op, which is what makes having it in
+ * both places safe rather than redundant.
+ */
+export function canonicalizeRegion<T extends string | undefined>(region: T): T {
+  return (typeof region === 'string' ? region.toLowerCase() : region) as T;
+}
+
+/**
  * Derive the AWS partition / URL suffix for an AWS region. Same mapping
  * CloudFormation applies to `${AWS::Partition}` / `${AWS::URLSuffix}`.
  *
@@ -83,13 +117,28 @@ export const PARTITION_TABLE: ReadonlyArray<{
  * the COMMERCIAL suffix, so `parseEcrRegistryHost` (`src/utils/ecr-uri.ts`)
  * rejected it under the strict host check issue #1758 added and the image was
  * classified `public` — anonymous pull, no `docker login`, opaque failure.
+ *
+ * The region is CANONICALIZED through {@link canonicalizeRegion} before the
+ * prefix tests (issue [#1795](https://github.com/go-to-k/cdkd/issues/1795)),
+ * so every present and future caller inherits ONE normalization point and the
+ * three `cdkd local *` call sites cannot drift apart again.
+ *
+ * This is only HALF the answer at those call sites, and the half it is NOT is
+ * worth stating: canonicalizing here fixes the derived SUFFIX, but each caller
+ * also passes the raw region VALUE to its SDK clients and stores it as
+ * `${AWS::Region}`. The AWS SDK's own endpoint resolution is case-sensitive in
+ * exactly the same way (measured against this repo's vendored
+ * `@aws-sdk/util-endpoints` partition data: `CN-NORTH-1` resolves to the
+ * COMMERCIAL `amazonaws.com`), so the callers canonicalize the value too — see
+ * `canonicalizeRegion`'s own note.
  */
 export function derivePartitionAndUrlSuffix(region: string): {
   partition: string;
   urlSuffix: string;
 } {
+  const canonical = canonicalizeRegion(region);
   for (const { prefix, partition, urlSuffix } of PARTITION_TABLE) {
-    if (region.startsWith(prefix)) return { partition, urlSuffix };
+    if (canonical.startsWith(prefix)) return { partition, urlSuffix };
   }
   return { partition: 'aws', urlSuffix: 'amazonaws.com' };
 }

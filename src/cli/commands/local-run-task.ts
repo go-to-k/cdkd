@@ -25,6 +25,7 @@ import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
   applyCrossStackResolverToTask,
   derivePartitionAndUrlSuffix,
@@ -122,6 +123,14 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
   if (options.verbose) logger.setLevel('debug');
 
   warnIfDeprecatedRegion(options);
+  // Issue #1795: fold `--region` ONCE, at the boundary, so every downstream
+  // consumer sees the canonical spelling — the SDK clients this file builds
+  // (`applyRoleArnIfSet` / `assumeTaskRole` / `resolvePlaceholderAccount` /
+  // the bootstrap-marker read) and the ones `ecs-task-runner` builds further
+  // down (`pullEcrImage`, and `ecs-secrets-resolver`'s SecretsManager / SSM
+  // clients). AWS SDK endpoint resolution is case-sensitive, so a raw
+  // `--region CN-NORTH-1` reached the COMMERCIAL endpoint at every one.
+  if (options.region !== undefined) options.region = canonicalizeRegion(options.region);
 
   const state: EcsRunState = createEcsRunState();
   let sigintHandler: (() => void) | undefined;
@@ -448,8 +457,16 @@ async function assumeTaskRole(
  * load) routes through the active {@link LocalStateProvider} so both
  * `--from-state` and `--from-cfn-stack` produce the same downstream
  * context shape (issue #606).
+ *
+ * The resolved region is CANONICALIZED (issue #1795) before anything consumes
+ * it. That covers all four sources — `--region`, both env vars, and the
+ * synth-derived stack region — and all three consumers: the STS client built
+ * for `${AWS::AccountId}`, the `${AWS::URLSuffix}` / `${AWS::Partition}`
+ * derivation, and the `${AWS::Region}` value itself.
+ *
+ * @internal exported for unit tests.
  */
-async function buildEcsImageResolutionContext(
+export async function buildEcsImageResolutionContext(
   candidate: StackInfo | undefined,
   stateProvider: LocalStateProvider | undefined,
   options: LocalRunTaskOptions
@@ -476,11 +493,12 @@ async function buildEcsImageResolutionContext(
   // around a Ref to the parameter. Issue #291.
   const wantsPseudoForEnvOrSecret = !!stateProvider && needs.needsEnvOrSecretSubstitution;
   if (needs.needsPseudoParameters || wantsPseudoForEnvOrSecret) {
-    const region =
+    const region = canonicalizeRegion(
       options.region ??
-      process.env['AWS_REGION'] ??
-      process.env['AWS_DEFAULT_REGION'] ??
-      candidate.region;
+        process.env['AWS_REGION'] ??
+        process.env['AWS_DEFAULT_REGION'] ??
+        candidate.region
+    );
     if (!region) {
       logger.warn(
         'Resolver references ${AWS::Region} but cdkd could not determine the target region. ' +
