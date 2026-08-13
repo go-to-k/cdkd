@@ -170,27 +170,63 @@ JOINED_NAME_SERVERS_SORTED=$(printf '%s' "${JOINED_NAME_SERVERS}" \
   | jq -Rr 'split(",") | sort | join(",")')
 
 # The live read is a POSITIVE probe (the zone must exist here), so it follows
-# this file's header rule the same way the gone-probes do: capture combined
-# output, branch on the exit status, and report the canonical not-found case
-# separately from an undetermined failure (throttle / auth / network). The old
+# this file's header rule the same way the gone-probes do: branch on the exit
+# status, and report the canonical not-found case separately from an
+# undetermined failure (throttle / auth / network). The original
 # `$(aws ... 2>/dev/null)` form aborted the whole script at the assignment
 # under `set -euo pipefail` with the AWS error discarded, so an expired token
 # and a deleted zone were indistinguishable -- and both looked like the
 # NameServers assertion itself had blown up.
+#
+# stderr goes to a FILE, never `2>&1` into the captured value. The AWS CLI
+# writes to stderr on plenty of SUCCESSFUL calls (urllib3 / NotOpenSSLWarning,
+# python deprecation notices, SSO token refresh), and combining the streams
+# prepends those lines to the JSON payload we are about to parse. The
+# emptiness guard would pass (the string is neither empty nor `null`) and jq
+# would then die with `parse error: Invalid numeric literal` and rc=5, with no
+# FAIL: line naming the assertion -- reintroducing on the SUCCESS path exactly
+# the opacity this block removes from the failure path.
+LIVE_NS_STDERR=$(mktemp)
 if ! LIVE_NAME_SERVERS=$(aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGION}" \
-  --query 'DelegationSet.NameServers' --output json 2>&1); then
-  if printf '%s' "${LIVE_NAME_SERVERS}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  --query 'DelegationSet.NameServers' --output json 2>"${LIVE_NS_STDERR}"); then
+  LIVE_NS_ERR=$(cat "${LIVE_NS_STDERR}")
+  rm -f "${LIVE_NS_STDERR}"
+  # Route 53-specific signature, deliberately NARROWER than `gone_probe`'s
+  # generic pattern above -- do NOT hoist the two into one shared variable.
+  # gone_probe is a cross-service NEGATIVE probe whose caller wants any
+  # not-found spelling; this is a POSITIVE probe whose whole job is telling a
+  # deleted zone apart from a broken credential, and the generic pattern
+  # cannot do that here. Two of its alternations match failures that are not
+  # about the zone at all: botocore's SSO-token load error ends in the same
+  # words as a missing resource ("Token for https://... does not exist"), and
+  # a shell reporting a missing `aws` binary ends in the same words as a
+  # missing lookup target. Both would be reported as "the hosted zone is
+  # gone", which is the confusion this block exists to end. The exit code is 1
+  # either way -- it is the DIAGNOSTIC that would lie. (Spelled out rather
+  # than quoted: a verbatim copy of the shared alternation here would read to
+  # scripts/check-integ-probe-not-found.ts as a drifted partial duplicate of
+  # the canonical signature, which is a rule worth keeping.)
+  ROUTE53_ZONE_NOT_FOUND_RE='NoSuchHostedZone|no hosted zone found'
+  if printf '%s' "${LIVE_NS_ERR}" | grep -qiE "${ROUTE53_ZONE_NOT_FOUND_RE}"; then
     echo "FAIL: hosted zone ${ZONE_ID} does not exist while asserting its NameServers" >&2
   else
     echo "FAIL: get-hosted-zone probe undetermined for ${ZONE_ID}" >&2
   fi
-  echo "  aws said: ${LIVE_NAME_SERVERS}" >&2
+  echo "  aws said: ${LIVE_NS_ERR}" >&2
   exit 1
 fi
-# An absent delegation set serializes as the JSON literal `null`, on which the
-# `sort` below exits 5 -- a jq error where an assertion failure is meant.
-if [ -z "${LIVE_NAME_SERVERS}" ] || [ "${LIVE_NAME_SERVERS}" = "null" ]; then
-  echo "FAIL: hosted zone ${ZONE_ID} reports no DelegationSet.NameServers on AWS" >&2
+rm -f "${LIVE_NS_STDERR}"
+
+# Validate the PAYLOAD before any jq that assumes an array. This subsumes the
+# empty / `null` guard (an absent delegation set serializes as the JSON literal
+# `null`, on which `sort` exits 5 -- a jq error where an assertion failure is
+# meant) AND covers a case the emptiness check missed: an empty `[]` used to
+# fall through and resurface as a confusing joined-output mismatch with an
+# empty `expected:`. It is also what catches a stderr line smuggled into the
+# payload, should any future edit reintroduce `2>&1` here.
+if ! printf '%s' "${LIVE_NAME_SERVERS}" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+  echo "FAIL: get-hosted-zone did not return a NameServers array for ${ZONE_ID}" >&2
+  echo "  aws said: ${LIVE_NAME_SERVERS}" >&2
   exit 1
 fi
 LIVE_NAME_SERVERS_SORTED=$(printf '%s' "${LIVE_NAME_SERVERS}" \
@@ -216,7 +252,7 @@ LIVE_NAME_SERVERS_SORTED=$(printf '%s' "${LIVE_NAME_SERVERS}" \
 # pre-#1868 single-element collapse. The Output under test is already
 # `Fn::Join`ed with ',', so `['a','b']` and `['a,b']` render the identical
 # string and no post-join check can tell them apart (measured with a stubbed
-# aws, 2026-08-14 -- it passes). Pre-#1868 that shape surfaced here only
+# aws, 2026-08-13 UTC -- it passes). Pre-#1868 that shape surfaced here only
 # because Fn::Join THREW on a string operand and the Output went missing from
 # state, which is what the `-z "${JOINED_NAME_SERVERS}"` guard above catches.
 # The element COUNT itself is fenced by the same two unit tests.
