@@ -1,3 +1,10 @@
+## [0.283.2](https://github.com/go-to-k/cdkd/compare/v0.283.1...v0.283.2) (2026-08-13)
+
+
+### Bug Fixes
+
+* **provisioning:** derive the partition in seven provider ARN builders (partial [#1815](https://github.com/go-to-k/cdkd/issues/1815)) ([#1834](https://github.com/go-to-k/cdkd/issues/1834)) ([495e380](https://github.com/go-to-k/cdkd/commit/495e3805073e084c99a99c71c105c54f2013145f))
+
 ## [0.283.1](https://github.com/go-to-k/cdkd/compare/v0.283.0...v0.283.1) (2026-08-13)
 
 
