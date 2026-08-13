@@ -531,6 +531,18 @@ preserves end to end. Do not write code (or docs) that assumes a
 `state.outputs` value is a string; a consumer reading one back must handle the
 non-string shapes too.
 
+**The `Outputs:` block `cdkd deploy` prints is not evidence of the stored
+shape.** That summary renders each value with JavaScript's `String(value)`, and
+for an array that is a comma join with no brackets or spaces — a persisted
+`["ns-1.awsdns-00.com", "ns-2.awsdns-01.net"]` prints as
+`ns-1.awsdns-00.com,ns-2.awsdns-01.net`, indistinguishable from a genuine
+comma-separated string. (An object prints as `[object Object]`, and an
+unresolved output is dropped from the block entirely rather than printed as
+`undefined`.) To see what was actually stored, read the state file —
+`aws s3 cp s3://<bucket>/cdkd/{stackName}/{region}/state.json -` — or run
+`cdkd state show <stack>`, which renders any non-scalar through
+`JSON.stringify` and so preserves the distinction.
+
 #### Example
 
 ```json

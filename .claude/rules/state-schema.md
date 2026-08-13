@@ -65,6 +65,17 @@ otherwise: code reading a `state.outputs` value back must not assume `string`
 could not resolve is stored as `undefined` and therefore drops out of the
 persisted JSON entirely — absence means "not resolved", not "empty string".
 
+**Do not verify any of this from the deploy summary.** `cdkd deploy`'s
+`Outputs:` block prints each value with `String(value)`
+(`src/cli/commands/deploy.ts`), so a persisted ARRAY renders comma-joined with
+no brackets — byte-identical to a genuine comma-separated string, which is
+exactly the observation that makes a reader conclude the value was coerced.
+(`buildDisplayOutputs` in `src/deployment/deploy-engine.ts` does NOT stringify;
+it only selects the template's declared Output keys and drops `undefined` ones,
+so an unresolved output is absent from the block rather than printed.) The
+persisted shape is visible in `state.json` itself, or via `cdkd state show`,
+whose `formatAttributeValue` passes non-scalars through `JSON.stringify`.
+
 **`deletionPolicy` / `updateReplacePolicy`** (schema v5+) are the CFn template
 attributes recorded at deploy time so the next `cdkd deploy` / `cdkd diff` can
 detect attribute-only flips that have no AWS API impact but still matter to
