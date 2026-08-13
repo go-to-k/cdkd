@@ -1,3 +1,10 @@
+## [0.281.15](https://github.com/go-to-k/cdkd/compare/v0.281.14...v0.281.15) (2026-08-13)
+
+
+### Bug Fixes
+
+* **s3:** normalize the inventory/analytics destination shape, ship the canonicalize twin, and stop the silent create-path skip ([#1744](https://github.com/go-to-k/cdkd/issues/1744)) ([a9aa9ff](https://github.com/go-to-k/cdkd/commit/a9aa9ff421f9cbbed3722045dd8e3802ab7dd285))
+
 ## [0.281.14](https://github.com/go-to-k/cdkd/compare/v0.281.13...v0.281.14) (2026-08-12)
 
 
