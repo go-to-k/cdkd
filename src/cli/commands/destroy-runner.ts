@@ -2,6 +2,7 @@ import * as readline from 'node:readline/promises';
 import { getLogger } from '../../utils/logger.js';
 import { bold, green, red, yellow } from '../../utils/colors.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
+import { deleteSkipReason, UNSPECIFIED_SKIP_REASON } from '../../deployment/delete-outcome.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import {
@@ -1084,13 +1085,19 @@ export async function runDestroyForStack(
           if (deleteResult?.outcome === 'skipped') {
             // `reason` is REQUIRED by the discriminated union, so the line
             // always names a cause — a bare `skipped` would be barely more
-            // useful than the `deleted` it replaced.
+            // useful than the `deleted` it replaced. Read through the shared
+            // `deleteSkipReason` (issue #1762) rather than off the field, so
+            // an untyped producer that omits it renders the same
+            // `UNSPECIFIED_SKIP_REASON` here as on the deploy side instead of
+            // printing `skipped (undefined)` and storing `reason: undefined`
+            // in the durable event.
+            const skipReason = deleteSkipReason(deleteResult) ?? UNSPECIFIED_SKIP_REASON;
             logger.info(
               `  ${formatResourceLine(
                 'skipped',
                 logicalId,
                 resource.resourceType,
-                `skipped (${deleteResult.reason})`
+                `skipped (${skipReason})`
               )}`
             );
             result.skippedCount++;
@@ -1106,8 +1113,9 @@ export async function runDestroyForStack(
               // The events store is the DURABLE post-mortem, and a bare
               // `RESOURCE_SKIPPED` there cannot tell the user why cdkd could
               // not address the resource. `reason` is required on the
-              // `'skipped'` arm, so this is always populated.
-              reason: deleteResult.reason,
+              // `'skipped'` arm, and the shared reader defaults it when a
+              // producer omits it anyway, so this is always populated.
+              reason: skipReason,
               durationMs: Date.now() - resourceStartedAt,
             });
             // Deliberately NO `delete remainingResources[logicalId]` and no

@@ -147,9 +147,12 @@ export interface DeploymentEvent {
      * [#1752](https://github.com/go-to-k/cdkd/issues/1752)) — destroy-side, and
      * since issue [#1762](https://github.com/go-to-k/cdkd/issues/1762) the
      * deploy side's template-DELETE skips too. Omitted when zero.
-     * Without it a skip-only run records `result: 'FAILED'` with `deleted: N`
-     * and no `failed`, so `cdkd events` would show a failed run naming nothing
-     * that failed. Rendered by `printRunEvents` as ` ⚠N` alongside the
+     * On DESTROY, without it a skip-only run records `result: 'FAILED'` with
+     * `deleted: N` and no `failed`, so `cdkd events` would show a failed run
+     * naming nothing that failed. On DEPLOY the run is `SUCCEEDED` (the state
+     * record was kept, so the next deploy re-attempts the delete) and this
+     * count is the ONLY thing in the summary saying a resource survived.
+     * Rendered by `printRunEvents` as ` ⚠N` alongside the
      * `+created/~updated/-deleted` triple, so the claim holds for the text
      * surface and not only for `--json`.
      */
@@ -158,7 +161,8 @@ export interface DeploymentEvent {
   /**
    * `RESOURCE_SKIPPED`: one line saying why cdkd could not address the
    * resource (issue [#1752](https://github.com/go-to-k/cdkd/issues/1752)) —
-   * the same short text rendered inline on the destroy status line. The events
+   * the same short text rendered inline on the per-resource status line of
+   * whichever command skipped it (destroy, or a deploy template-DELETE). The events
    * store IS the durable post-mortem, so a bare `RESOURCE_SKIPPED` with no
    * cause is close to useless there. Metadata only: it is provider-authored
    * prose about the IDENTIFIER, never resource properties.

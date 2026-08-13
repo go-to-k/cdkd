@@ -376,6 +376,29 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
       expect(Object.keys(stateResources)).toEqual(['MyResource']);
       expect(counts.deleted).toBe(0);
       expect(counts.deleteSkipped).toBe(1);
+      // Guarded against the constant ever becoming '' (which every
+      // `toContain` satisfies vacuously).
+      expect(UNSPECIFIED_SKIP_REASON.length).toBeGreaterThan(0);
+      expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        UNSPECIFIED_SKIP_REASON
+      );
+    });
+
+    it('a NON-STRING reason does not crash the delete path', async () => {
+      // The guard above exists for untyped producers, so it must not itself
+      // assume the field is a string: `reason?.trim()` on a number throws a
+      // TypeError out of `provisionResource` and FAILS the deploy — a crash
+      // introduced by the hardening.
+      (provider.delete as ReturnType<typeof vi.fn>).mockResolvedValue({
+        outcome: 'skipped',
+        reason: 42,
+      });
+      const counts = freshCounts();
+
+      const { stateResources } = await invokeTemplateDelete(makeEngine(), counts);
+
+      expect(Object.keys(stateResources)).toEqual(['MyResource']);
+      expect(counts.deleteSkipped).toBe(1);
       expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
         UNSPECIFIED_SKIP_REASON
       );

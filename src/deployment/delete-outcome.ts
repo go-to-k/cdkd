@@ -43,7 +43,15 @@ export function deleteSkipReason(result: void | ResourceDeleteResult): string | 
   // dropping the state record of a resource that is still alive. That is
   // precisely the data loss this module exists to stop, so the one shape it
   // must never mistake is a skip that under-describes itself.
-  return result.reason?.trim() ? result.reason : UNSPECIFIED_SKIP_REASON;
+  // `typeof`, not `?.trim()`: the producers this default exists for are
+  // untyped, and a non-STRING reason (`42`, an object) makes `.trim` itself
+  // `undefined` — a TypeError thrown out of the delete path, i.e. a crash
+  // introduced by the very guard meant to harden it. Trimmed on return too,
+  // so a padded reason cannot break the status line or land verbatim in the
+  // durable event store.
+  if (typeof result.reason !== 'string') return UNSPECIFIED_SKIP_REASON;
+  const trimmed = result.reason.trim();
+  return trimmed === '' ? UNSPECIFIED_SKIP_REASON : trimmed;
 }
 
 /**

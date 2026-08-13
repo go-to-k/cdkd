@@ -27,9 +27,14 @@ Each deploy / destroy run appends one **JSONL** line per lifecycle event:
 | `RESOURCE_SKIPPED` | A skip where cdkd could **not address** the resource, so it may still exist (issue #1752). Emitted by `cdkd destroy` / `cdkd state destroy` AND, since issue #1762, by the `cdkd deploy` DELETE branch (a resource removed from the template whose provider refused the delete). Three producers: a malformed composite physicalId in state (no AWS call issued at all); a state record missing the id or the property the delete is addressed BY — Lambda layer / permission, Custom Resource, IAM policy / user-group (issue #1770, also no AWS call at all); and a nested stack whose own destroy skipped or was interrupted (the child's other resources *were* deleted first) — so the invariant is "this row was not destroyed", not "nothing happened". The opposite of `RESOURCE_RETAINED` in both halves: keeping the AWS resource is not intended, and the state record is **kept** so the orphan stays traceable. Carries no `error` (nothing failed); the cause is in `reason`. |
 | `ROLLBACK_STARTED` / `ROLLBACK_RESOURCE_SUCCEEDED` / `ROLLBACK_RESOURCE_FAILED` / `ROLLBACK_FINISHED` | Rollback phase — emitted both by the deploy-failure automatic rollback AND by a standalone `cdkd rollback` run (issue #1183), which records them under its own `runId` (with `command: rollback` in `index.json`). |
 
-A destroy `RUN_FINISHED` additionally carries `counts.skipped` when non-zero,
-and records `result: 'FAILED'` for a skip-only run — the stack was not
-destroyed, so `--purge-events` correctly leaves the history in place. `cdkd
+A `RUN_FINISHED` additionally carries `counts.skipped` when non-zero, on
+destroy AND — since issue
+[#1762](https://github.com/go-to-k/cdkd/issues/1762) — on deploy. The two
+differ in the run RESULT, not in the count: a skip-only DESTROY records
+`result: 'FAILED'` (the stack was not destroyed, so `--purge-events` correctly
+leaves the history in place), while a deploy that skipped a template-DELETE
+records `SUCCEEDED` with the `⚠N` marker — the state record was kept, so the
+next deploy re-attempts the delete. `cdkd
 events` renders it as `⚠N` after the `+created/~updated/-deleted` triple:
 
 ```text

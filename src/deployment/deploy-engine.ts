@@ -3873,10 +3873,10 @@ export class DeployEngine {
               'while removing it from the template'
             ) +
               `. Its cdkd state record was KEPT, so the next 'cdkd deploy' re-attempts the ` +
-              `delete; repair what the warning above names first — for most producers that ` +
-              `is this stack's state record ('cdkd state show ${stackName}'), and for a ` +
-              `nested stack it is the CHILD's own state, whose other resources may already ` +
-              `be gone.`
+              `delete. Repair the record first ('cdkd state show ${stackName}' to inspect; ` +
+              `for a nested stack it is the CHILD's own state, whose other resources may ` +
+              `already be gone), or delete the resource by hand and drop the record with ` +
+              `'cdkd state orphan ${stackName}'.`
           );
           // Deliberately NO `delete stateResources[logicalId]` and NO
           // `counts.deleted++`. Dropping the record is the data-loss half:
