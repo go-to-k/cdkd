@@ -357,6 +357,18 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-handled-property-wiring.ts --check',
         cache: false,
       },
+      // Escape hatch for issue #1842's evidence-loss verdict: the plain writer
+      // above REFUSES to overwrite the matrix with weaker per-property evidence
+      // than the committed one records. Use this only when the reduction is
+      // intended (the property genuinely lost that seam) and say why in the PR
+      // body — it prints every lost evidence shape and seeding member before
+      // writing. Deliberately NOT part of `gen:all-matrices`: the aggregate must
+      // stay the command that FAILS on an accidental degradation.
+      'gen:handled-property-wiring:accept-loss': {
+        command:
+          'node --experimental-strip-types scripts/gen-handled-property-wiring.ts --accept-evidence-loss',
+        cache: false,
+      },
       // Regenerates EVERY CI-enforced matrix in one shot, so `/verify-pr` (and
       // anyone about to push) can check freshness without knowing the list.
       //

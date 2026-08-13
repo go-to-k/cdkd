@@ -167,12 +167,49 @@
  *   - allow-listed — every remaining offender has a rationale'd allow-list
  *                    entry; stays VISIBLE in the matrix, does not block.
  *
+ * `wired` IS A FLOOR OF ONE — SO EVIDENCE LOSS IS ITS OWN VERDICT
+ * ---------------------------------------------------------------
+ * The three buckets above only ask whether SOME read survives, and that made
+ * the verdict insensitive to degradation (issue #1842). A property can fall
+ * from `delegated` + `element-read` proven across three seeding members down to
+ * a single weak seed and still print `OK — ... 0 gaps` byte-identically. The
+ * concrete case: switching real `dynamodb-table-provider.ts` reads to the
+ * `properties!['X']` spelling dropped `delegated` / `table-loop` evidence from
+ * `WarmThroughput`, `GlobalSecondaryIndexes` and `LocalSecondaryIndexes` — a
+ * loss the `--check` output could not express, visible only as a regenerated
+ * file diff that the SAME commit can carry. Green pipeline, weakened matrix.
+ *
+ * So {@link findEvidenceLosses} compares the fresh analysis against the
+ * COMMITTED matrix per (class, property) and fails when the evidence set or the
+ * seeding-member set shrank. The direction is deliberate: this critic exists to
+ * make a FALSE `handledProperties` claim reachable, so a REAL claim silently
+ * becoming unprovable is the dangerous failure, and a strengthening is free.
+ *
+ * The check is enforced on BOTH paths, which is what keeps it reachable:
+ *   - `--check` fails on any loss (the CI verdict). `--accept-evidence-loss` is
+ *     REJECTED here — the check can never be told to look away.
+ *   - the WRITER also refuses to overwrite the matrix with weaker evidence.
+ *     Without this half the check is vacuous for the author who edits the
+ *     source and regenerates in one commit: regenerating moves the baseline
+ *     underneath the comparison, which is exactly how the #1808 degradation
+ *     shipped green.
+ *
+ * ESCAPE HATCH: `--accept-evidence-loss` on the writer. Regeneration stays the
+ * way out — a property CAN genuinely lose a seam — but it becomes a deliberate,
+ * named act that prints every lost shape and seed rather than the silent
+ * default. A rationale belongs in the PR body; the JSON diff is its only trace.
+ *
  * Usage:
- *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts          # write the matrix
- *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts --check  # fail on a gap
+ *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts
+ *     # write the matrix; refuses on an unacknowledged evidence loss
+ *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts --check
+ *     # fail on a gap, a stale allow-list entry, or an evidence loss
+ *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts --accept-evidence-loss
+ *     # write the matrix, acknowledging (and printing) the reduction
  *
  * CI runs the writer then `git diff --quiet` on the output AND the `--check`
- * critic, mirroring the sdk-attr / update-wrap / nested-key guards.
+ * critic, mirroring the sdk-attr / update-wrap / nested-key guards. Neither CI
+ * invocation passes `--accept-evidence-loss`.
  */
 import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -395,10 +432,39 @@ export function collectFileFunctions(sf: ts.SourceFile): Map<string, Callable> {
 /** A CFn property name: PascalCase, letters/digits only. */
 const isCfnPropertyName = (name: string): boolean => /^[A-Z][A-Za-z0-9]*$/.test(name);
 
-/** Strip `as T` / `satisfies T` / parentheses so the underlying node is visible. */
+/**
+ * Wrappers that hand their operand through UNCHANGED at runtime, so a read
+ * spelled through one is the same read. All five erase to nothing (four are
+ * type-only syntax; parentheses are grouping), which is the ONLY admission
+ * criterion — a node that can change the value, short-circuit, or defer it
+ * (`await`, `?.`, `x ?? y`, a tagged template) must never be listed here,
+ * because peeling it would credit a read the runtime may never perform.
+ *
+ * {@link unwrap} peels these DOWNWARD from a wrapper to its operand;
+ * {@link climb} walks the same set UPWARD from an operand to its outermost
+ * wrapper. The two must agree: `NonNullExpression` was in `climb` but missing
+ * from `unwrap`, so `properties!['X']` — the `!`-asserted spelling of a read
+ * this walk otherwise recognizes — contributed NO evidence while the
+ * runtime-identical `properties['X']` contributed the full set (issue #1842).
+ */
+const isTransparentWrapper = (
+  n: ts.Node
+): n is
+  | ts.AsExpression
+  | ts.ParenthesizedExpression
+  | ts.SatisfiesExpression
+  | ts.NonNullExpression
+  | ts.TypeAssertion =>
+  ts.isAsExpression(n) ||
+  ts.isParenthesizedExpression(n) ||
+  ts.isSatisfiesExpression(n) ||
+  ts.isNonNullExpression(n) ||
+  ts.isTypeAssertionExpression(n);
+
+/** Strip `as T` / `satisfies T` / `<T>x` / `x!` / parentheses so the underlying node is visible. */
 function unwrap(node: ts.Expression): ts.Expression {
   let n = node;
-  while (ts.isAsExpression(n) || ts.isParenthesizedExpression(n) || ts.isSatisfiesExpression(n)) {
+  while (isTransparentWrapper(n)) {
     n = n.expression;
   }
   return n;
@@ -536,16 +602,14 @@ const COMPARISON_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.LessThanEqualsToken,
 ]);
 
-/** Climb the wrappers that pass a value through unchanged (`as T`, parens, `!`-assertions). */
+/**
+ * Climb the wrappers that pass a value through unchanged — the UPWARD twin of
+ * {@link unwrap}, over the same {@link isTransparentWrapper} set so the two
+ * cannot drift apart again (issue #1842).
+ */
 function climb(node: ts.Node): ts.Node {
   let n = node;
-  while (
-    n.parent &&
-    (ts.isParenthesizedExpression(n.parent) ||
-      ts.isAsExpression(n.parent) ||
-      ts.isSatisfiesExpression(n.parent) ||
-      ts.isNonNullExpression(n.parent))
-  ) {
+  while (n.parent && isTransparentWrapper(n.parent)) {
     n = n.parent;
   }
   return n;
@@ -1151,6 +1215,122 @@ export function findStaleAllowListEntries(
   return [...allowList.keys()].filter((k) => !live.has(k)).sort((a, b) => a.localeCompare(b));
 }
 
+/**
+ * One declared property whose PROVEN evidence is weaker than the committed
+ * matrix records. Reported per (class, property) with the exact shapes and
+ * seeding members that disappeared, because "wired" is a floor the aggregate
+ * counters cannot see through: a property can fall from
+ * `delegated` + `element-read` across three seeds down to a single weak seed
+ * and still be `wired`, keeping `0 gaps` byte-identical.
+ */
+export interface EvidenceLoss {
+  readonly className: string;
+  readonly property: string;
+  /** Evidence shapes the baseline proved and this run no longer does. */
+  readonly lostShapes: readonly EvidenceShape[];
+  /** Seeding members the baseline recorded and this run no longer reaches. */
+  readonly lostSeeds: readonly string[];
+}
+
+/** Render one loss as the single line both failure paths print. */
+const formatEvidenceLoss = (l: EvidenceLoss): string => {
+  const parts: string[] = [];
+  if (l.lostShapes.length > 0) parts.push(`evidence [${l.lostShapes.join(', ')}]`);
+  if (l.lostSeeds.length > 0) parts.push(`seeded-by [${l.lostSeeds.join(', ')}]`);
+  return `  ${l.className}#${l.property} — lost ${parts.join(' and ')}`;
+};
+
+/**
+ * Declared properties whose evidence SET shrank relative to the committed
+ * matrix (issue #1842).
+ *
+ * WHY A SET COMPARISON AND NOT A COUNT. The `--check` verdict before this was
+ * `gap`-only, and `gap` is a floor of ONE surviving read. Switching three real
+ * `dynamodb-table-provider.ts` reads to the `properties!['X']` spelling dropped
+ * `delegated` + `table-loop` evidence and two seeds from three properties while
+ * `--check` printed `OK — ... 0 gaps` byte-identically; the loss was visible
+ * only as a regenerated-file diff, which the same commit can carry. The
+ * direction that matters is exactly this one: the critic exists to make a FALSE
+ * `handledProperties` claim reachable, so a REAL claim quietly becoming
+ * unprovable — while still reporting zero gaps — is the dangerous failure, not
+ * the loud one.
+ *
+ * WHAT IS AND IS NOT COMPARED. Only (class, property) pairs present on BOTH
+ * sides. A property missing from this run is no longer a wiring CLAIM at all
+ * (moved to `unhandledByDesign`, deleted, or its class renamed), and
+ * `gen-property-coverage.ts` owns that transition — treating it as a loss here
+ * would make every legitimate removal a false failure. A renamed CLASS
+ * therefore drops out of the comparison wholesale; that is a knowingly accepted
+ * hole, and a visible one, since the rename is in the same diff.
+ *
+ * Seeds are compared alongside shapes because they are half of what a
+ * degradation costs: `WarmThroughput` losing its `getDriftUnknownPaths` and
+ * `readCurrentState` seeds is the same event as it losing `delegated`. A
+ * deliberate method rename does trip this, and that is intended — the escape
+ * hatch below is one command.
+ *
+ * A null baseline (no committed matrix yet, or an unparseable one) yields no
+ * losses: this check GRADES a change against a recorded state, and cannot
+ * invent one. Deleting the matrix to silence it does not work — the writer
+ * re-creates the file and CI's `git diff --quiet` step turns red on the
+ * re-added content.
+ */
+export function findEvidenceLosses(
+  baseline: HandledPropertyWiringReport | null,
+  current: HandledPropertyWiringReport
+): readonly EvidenceLoss[] {
+  if (!baseline) return [];
+  const previous = new Map<string, PropertyClassification>();
+  for (const c of baseline.classes) {
+    for (const p of c.properties) previous.set(allowKey(c.className, p.name), p);
+  }
+
+  const losses: EvidenceLoss[] = [];
+  for (const c of current.classes) {
+    for (const p of c.properties) {
+      const before = previous.get(allowKey(c.className, p.name));
+      if (!before) continue;
+      const shapes = new Set<string>(p.evidence);
+      const seeds = new Set<string>(p.seededBy);
+      const lostShapes = (before.evidence ?? []).filter((s) => !shapes.has(s));
+      const lostSeeds = (before.seededBy ?? []).filter((s) => !seeds.has(s));
+      if (lostShapes.length > 0 || lostSeeds.length > 0) {
+        losses.push({
+          className: c.className,
+          property: p.name,
+          lostShapes: [...lostShapes].sort((a, b) => a.localeCompare(b)),
+          lostSeeds: [...lostSeeds].sort((a, b) => a.localeCompare(b)),
+        });
+      }
+    }
+  }
+  return losses.sort(
+    (a, b) => a.className.localeCompare(b.className) || a.property.localeCompare(b.property)
+  );
+}
+
+/**
+ * The committed matrix, as the baseline {@link findEvidenceLosses} grades
+ * against. Returns null (rather than throwing) when the file is absent or not
+ * a v1 report — a fresh checkout, a first-ever generation, and a
+ * mid-schema-bump tree must all still be able to WRITE the matrix.
+ */
+export function loadBaseline(path: string = OUT_JSON): HandledPropertyWiringReport | null {
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<HandledPropertyWiringReport>;
+    if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.classes)) return null;
+    return parsed as HandledPropertyWiringReport;
+  } catch {
+    return null;
+  }
+}
+
 function renderMarkdown(report: HandledPropertyWiringReport): string {
   const lines: string[] = [];
   lines.push('# `handledProperties` wiring-evidence matrix');
@@ -1306,14 +1486,108 @@ const STALE_FAILURE =
   'These no longer match an un-wired declaration (the property is now wired,\n' +
   'renamed, or removed). Delete them so the critic verifies the fix:\n\n';
 
+/** The escape hatch, spelled out wherever an evidence loss is reported. */
+export const ACCEPT_LOSS_FLAG = '--accept-evidence-loss';
+
+const LOSS_PREAMBLE =
+  'handled-property-wiring: FAIL — declared properties LOST wiring evidence.\n' +
+  'Each property below is still counted `wired`, so the gap verdict stays silent,\n' +
+  'but this run can prove strictly LESS about it than the committed matrix records\n' +
+  '(issue #1842). The usual cause is a source edit that moved a read out of the\n' +
+  "walk's sight — a `properties!['X']`-style spelling, a delegation replaced by an\n" +
+  'unresolvable call, a delivery loop turned into a comparison — leaving a real\n' +
+  'claim quietly unprovable while `0 gaps` stays byte-identical.\n\n';
+
+const LOSS_ESCAPE_HATCH =
+  '\nIf the reduction is INTENDED (the property genuinely lost that seam), accept it\n' +
+  `deliberately by regenerating with the loss acknowledged:\n\n` +
+  `  node --experimental-strip-types scripts/gen-handled-property-wiring.ts ${ACCEPT_LOSS_FLAG}\n` +
+  '  (or: vp run gen:handled-property-wiring:accept-loss)\n\n' +
+  'That rewrites the baseline, so the reduced evidence is what the matrix then\n' +
+  'records — state WHY in the PR body, because the JSON diff is the only trace.\n';
+
+const USAGE =
+  'Usage: node scripts/gen-handled-property-wiring.ts [--check] [--accept-evidence-loss]\n' +
+  '                                                   [--providers-dir=<p>] [--baseline=<p>] [--out-dir=<p>]\n' +
+  '  --check                  fail on a gap, a stale allow-list entry, or an evidence loss\n' +
+  '  --accept-evidence-loss   WRITER only: acknowledge (and print) a reduction in the\n' +
+  '                           per-property evidence set, then write the weaker matrix\n' +
+  '  --providers-dir=<p>      TEST SEAM: walk a scratch copy of the providers tree\n' +
+  '                           (writer mode additionally requires --out-dir=)\n' +
+  '  --baseline=<p>           TEST SEAM: grade against a scratch matrix\n' +
+  '  --out-dir=<p>            TEST SEAM: write the matrix somewhere other than docs/_generated\n';
+
+const KNOWN_VALUE_FLAGS = ['--providers-dir=', '--baseline=', '--out-dir='];
+
 function main(argv: readonly string[] = process.argv.slice(2)): void {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(USAGE);
+    return;
+  }
+  // An unrecognized flag must NOT fall through to the WRITER path: `--chekc`
+  // would rewrite the committed matrix and exit 0, and the SPACE form
+  // `--providers-dir /tmp` would slip past the `=`-prefix tests below. Same
+  // guard shape (and same reason) as gen-nested-key-coverage.ts.
+  const unknown = argv.filter(
+    (a) =>
+      a.startsWith('-') &&
+      a !== '--check' &&
+      a !== ACCEPT_LOSS_FLAG &&
+      !KNOWN_VALUE_FLAGS.some((f) => a.startsWith(f))
+  );
+  if (unknown.length > 0) {
+    process.stderr.write(`Unknown flag(s): ${unknown.join(', ')}\n${USAGE}`);
+    process.exit(1);
+  }
+  const stray = argv.filter((a) => !a.startsWith('-'));
+  if (stray.length > 0) {
+    process.stderr.write(`Unexpected argument(s): ${stray.join(', ')}\n${USAGE}`);
+    process.exit(1);
+  }
+
   const checkMode = argv.includes('--check');
+  const acceptLoss = argv.includes(ACCEPT_LOSS_FLAG);
   // Test seam: point the walk at a scratch copy of the providers tree so the
   // shipped `--check` exit path can be exercised against a REAL provider file
   // carrying an injected gap, without ever mutating `src/` on disk.
   const dirFlag = argv.find((a) => a.startsWith('--providers-dir='));
+  // Test seam: grade against a scratch baseline instead of the committed matrix.
+  const baselineFlag = argv.find((a) => a.startsWith('--baseline='));
+  // Test seam: write the matrix somewhere other than docs/_generated, so the
+  // WRITER's refusal path can be exercised end-to-end without a broken refusal
+  // being able to overwrite the committed matrix with the probe's degradation.
+  const outDirFlag = argv.find((a) => a.startsWith('--out-dir='));
+  if (dirFlag !== undefined && !checkMode && outDirFlag === undefined) {
+    // The WRITER path would render the COMMITTED matrix from a scratch tree,
+    // silently rewriting docs/_generated from code that is not `src/`. Allowed
+    // only when the output is redirected too, which is what the writer-path
+    // probes do.
+    throw new Error(
+      '--providers-dir= may only write the matrix alongside --out-dir=; refusing to render ' +
+        'docs/_generated from a tree that is not src/'
+    );
+  }
+  const outDir = outDirFlag ? resolve(outDirFlag.slice('--out-dir='.length)) : dirname(OUT_JSON);
+  const outJson = join(outDir, 'handled-property-wiring.json');
+  const outMd = join(outDir, 'handled-property-wiring.md');
   const report = loadReport(dirFlag ? resolve(dirFlag.slice('--providers-dir='.length)) : undefined);
   const stale = findStaleAllowListEntries(report);
+  const losses = findEvidenceLosses(
+    loadBaseline(baselineFlag ? resolve(baselineFlag.slice('--baseline='.length)) : undefined),
+    report
+  );
+
+  // The escape hatch belongs to the WRITER only. `--check` is the CI verdict and
+  // must not be silenceable by a flag on its own command line: the sanctioned
+  // way past a loss is to regenerate the baseline (a visible file diff), never
+  // to tell the checker to look away.
+  if (checkMode && acceptLoss) {
+    process.stderr.write(
+      `handled-property-wiring: FAIL — ${ACCEPT_LOSS_FLAG} is a WRITER escape hatch and has no\n` +
+        'meaning with --check. Regenerate the matrix with it instead, then re-run --check.\n'
+    );
+    process.exit(1);
+  }
 
   if (checkMode) {
     // BOTH verdicts are reported before exiting: an earlier revision returned
@@ -1341,12 +1615,18 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
       for (const c of gaps) {
         for (const g of c.gaps) process.stderr.write(`  ${c.className}#${g} (${c.file})\n`);
       }
+      if (losses.length > 0) process.stderr.write('\n');
     }
-    if (stale.length > 0 || gaps.length > 0) process.exit(1);
+    if (losses.length > 0) {
+      process.stderr.write(LOSS_PREAMBLE);
+      for (const l of losses) process.stderr.write(`${formatEvidenceLoss(l)}\n`);
+      process.stderr.write(LOSS_ESCAPE_HATCH);
+    }
+    if (stale.length > 0 || gaps.length > 0 || losses.length > 0) process.exit(1);
     process.stderr.write(
       `handled-property-wiring: OK — ${report.summary.classifiedCount} provider classes, ` +
         `${report.summary.wiredProperties}/${report.summary.declaredProperties} declared ` +
-        `properties with read evidence, 0 gaps (${report.summary.wired} wired, ` +
+        `properties with read evidence, 0 gaps, 0 evidence losses (${report.summary.wired} wired, ` +
         `${report.summary.allowListed} allow-listed, ` +
         `${report.summary.classesWithBlindSpots} with a recorded blind spot).\n`
     );
@@ -1359,9 +1639,30 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
     process.exit(1);
   }
 
-  mkdirSync(dirname(OUT_JSON), { recursive: true });
-  atomicWrite(OUT_JSON, JSON.stringify(report, null, 2) + '\n');
-  atomicWrite(OUT_MD, renderMarkdown(report) + '\n');
+  // The WRITER refuses to overwrite the baseline with weaker evidence unless the
+  // loss is acknowledged. This is the half that makes the verdict reachable at
+  // all: `--check` alone still passes for the author who edits the source AND
+  // regenerates in the same commit, because regenerating moves the baseline
+  // underneath the comparison. Refusing here turns that silent default into a
+  // message naming exactly what was lost, which the author must then dismiss on
+  // purpose.
+  if (losses.length > 0 && !acceptLoss) {
+    process.stderr.write(LOSS_PREAMBLE);
+    for (const l of losses) process.stderr.write(`${formatEvidenceLoss(l)}\n`);
+    process.stderr.write(LOSS_ESCAPE_HATCH);
+    process.exit(1);
+  }
+  if (losses.length > 0) {
+    process.stderr.write(
+      `handled-property-wiring: ACCEPTED EVIDENCE LOSS (${ACCEPT_LOSS_FLAG}) — the matrix below\n` +
+        'records STRICTLY WEAKER evidence than before for:\n'
+    );
+    for (const l of losses) process.stderr.write(`${formatEvidenceLoss(l)}\n`);
+  }
+
+  mkdirSync(outDir, { recursive: true });
+  atomicWrite(outJson, JSON.stringify(report, null, 2) + '\n');
+  atomicWrite(outMd, renderMarkdown(report) + '\n');
   process.stderr.write(
     `handled-property-wiring: wrote handled-property-wiring.{json,md} — ` +
       `${report.summary.classifiedCount} classes, ${report.summary.declaredProperties} declared ` +
