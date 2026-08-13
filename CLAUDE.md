@@ -70,7 +70,7 @@ interface ResourceState {
   dependencies?: string[];
   deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate';
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate';
-  provisionedBy?: 'sdk' | 'cc-api'; // v7+: routing layer (absent = SDK legacy default)
+  provisionedBy?: 'sdk' | 'cc-api'; // v7+: routing layer (absent = pre-v7 record, SDK-managed then; NOT pinned — routing re-decides)
 }
 ```
 

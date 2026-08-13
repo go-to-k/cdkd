@@ -44,7 +44,7 @@ interface ResourceState {
   metadata?: Record<string, unknown>;           // Additional metadata
   deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+: template attribute recorded at deploy time
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+: template attribute recorded at deploy time
-  provisionedBy?: 'sdk' | 'cc-api';         // v7+: which provisioning layer owns this resource (absent = SDK legacy default)
+  provisionedBy?: 'sdk' | 'cc-api';         // v7+: which provisioning layer owns this resource (absent = pre-v7 record, SDK-managed then; NOT pinned — routing re-decides)
 }
 ```
 
@@ -108,10 +108,15 @@ provisioning-layer label: `'sdk'` (cdkd's preferred fast path, direct
 synchronous AWS SDK calls per resource type) or `'cc-api'` (the Cloud
 Control API fallback path, async polling create/update/delete via the
 unified CloudControlClient). Pre-#614 every resource was implicitly
-SDK-managed; the absent / `undefined` field on v6-and-earlier state
-records is treated by the v7 binary as "legacy SDK" (matches pre-#614
-behavior). v7 writers always emit the field explicitly so the routing
-decision is durable across deploys.
+SDK-managed, and the absent / `undefined` field on v6-and-earlier state
+records carries exactly that provenance — but it does NOT pin routing:
+rule 2 below gates on a RECORDED `'cc-api'` alone, so an absent field
+re-enters the matrix and can still be auto-routed to Cloud Control by
+rule 4 (the pre-#614 outcome for that resource). v7 writers always emit
+the field explicitly so the routing decision is durable across deploys.
+Fuller treatment in
+[docs/state-management.md](../../docs/state-management.md)'s `version: 7`
+section.
 
 Routing decision matrix (`ProviderRegistry.getProviderFor`, called by
 the deploy / drift / destroy / state-show paths):
@@ -132,8 +137,13 @@ the deploy / drift / destroy / state-show paths):
 The field is **sticky**: once a resource is `'cc-api'`, subsequent SDK
 Provider backfills (issue #609) do NOT auto-migrate it back. Avoids
 physical-ID churn + destroy + recreate cycles on every backfill
-release. User-initiated CC → SDK migration lives under #615 (or a
-future counterpart). `cdkd destroy` consults the field to pick the
+release. Exception: types in `STICKY_CC_MIGRATION_EXEMPT`
+(`src/provisioning/provider-registry.ts` — consult the constant, its
+membership changes) re-route to their SDK provider anyway, admitted only
+when CC routing is BROKEN and the physicalId is unchanged; see
+docs/state-management.md's `version: 7` section. User-initiated CC → SDK
+migration lives under #615 (or a future counterpart). `cdkd destroy`
+consults the field to pick the
 delete path; `cdkd drift` consults it to pick `readCurrentState`;
 `cdkd state show` displays `ProvisionedBy: sdk | cc-api | (sdk, legacy default)`
 for the absent-field case so users can audit the routing.
