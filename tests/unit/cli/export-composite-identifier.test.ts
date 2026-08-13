@@ -3,6 +3,7 @@ import {
   buildImportPlan,
   hasCompositePhysicalIdIdentifier,
   resolveCompositePhysicalIdIdentifier,
+  splitCompositePhysicalId,
 } from '../../../src/cli/commands/export.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
@@ -498,5 +499,49 @@ describe('buildImportPlan — IMPORT read-handler pre-flight (issue #1659)', () 
     const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
     expect(plan.blocked).toEqual([]);
     expect(plan.recreateBeforePhase2.map((r) => r.logicalId)).toEqual(['Policy']);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// The sibling splitter this change had to add to reach the fix above: without
+// it `cdkd export` aborts on every S3 Tables stack, because a table cannot be
+// exported without the namespace resource it lives in.
+// -----------------------------------------------------------------------------
+
+describe('AWS::S3Tables::Namespace composite-id splitter (issue #1659 live-test residual)', () => {
+  const BUCKET_ARN = 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-bucket';
+
+  it('splits `<tableBucketARN>|<namespaceName>` into the CFn identifier order', () => {
+    expect(splitCompositePhysicalId('AWS::S3Tables::Namespace', `${BUCKET_ARN}|analytics`)).toEqual({
+      resourceIdentifier: { TableBucketARN: BUCKET_ARN, Namespace: 'analytics' },
+    });
+  });
+
+  it('leaves propertiesOverlay at the whole-map default (neither field is read-only)', () => {
+    // Live DescribeType (us-east-1, 2026-08-13) reports no `readOnlyProperties`
+    // at all for this type, and the synth template carries both fields — so
+    // narrowing would be wrong here, unlike the sibling ApiGateway splitters.
+    expect(
+      splitCompositePhysicalId('AWS::S3Tables::Namespace', `${BUCKET_ARN}|analytics`)
+        .propertiesOverlay
+    ).toBeUndefined();
+  });
+
+  it('refuses a physical id with the wrong number of parts', () => {
+    expect(() => splitCompositePhysicalId('AWS::S3Tables::Namespace', BUCKET_ARN)).toThrow(
+      /expected 2 parts.*got 1/
+    );
+    expect(() =>
+      splitCompositePhysicalId('AWS::S3Tables::Namespace', `${BUCKET_ARN}|analytics|events`)
+    ).toThrow(/expected 2 parts.*got 3/);
+  });
+
+  it('refuses an empty segment rather than shipping a blank identifier field', () => {
+    expect(() => splitCompositePhysicalId('AWS::S3Tables::Namespace', `${BUCKET_ARN}|`)).toThrow(
+      /empty part/
+    );
+    expect(() => splitCompositePhysicalId('AWS::S3Tables::Namespace', '|analytics')).toThrow(
+      /empty part/
+    );
   });
 });

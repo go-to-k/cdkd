@@ -2525,8 +2525,12 @@ cdkd export                                       # auto-detect single-stack app
    ~30 single-key types). **Composite primary identifiers**
    (`primaryIdentifier.length > 1`) are supported for
    `AWS::ApiGateway::Method`, `AWS::ApiGateway::Resource`,
+   `AWS::ApiGateway::Deployment`, `AWS::ApiGateway::Stage`,
+   `AWS::ApiGateway::Authorizer`, `AWS::ApiGateway::Model`,
+   `AWS::ApiGateway::RequestValidator`,
    `AWS::EC2::VPCGatewayAttachment`, `AWS::ApiGatewayV2::Integration`,
-   `AWS::ApiGatewayV2::Route`, and `AWS::Lambda::Permission` via a
+   `AWS::ApiGatewayV2::Route`, `AWS::S3Tables::Namespace`, and
+   `AWS::Lambda::Permission` via a
    per-type splitter that maps cdkd's `physicalId` (plus the resource's
    recorded `properties` for sub-resource types where the parent
    identifier — `ApiId` / `FunctionName` — lives in `properties`, not

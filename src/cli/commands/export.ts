@@ -487,6 +487,33 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       propertiesOverlay: { ApiId: apiId },
     };
   },
+  // cdkd stores `<tableBucketARN>|<namespaceName>` (s3-tables-provider.ts's
+  // `createNamespace`); CFn primary identifier is [TableBucketARN, Namespace] —
+  // same order. Both fields are writable Properties the synth template already
+  // carries (live `DescribeType`, us-east-1, 2026-08-13:
+  // `readOnlyProperties` absent entirely, both fields `createOnlyProperties`
+  // and `required`, both plain strings), so the default whole-map overlay is
+  // correct and no narrowing is needed.
+  //
+  // Registered while live-testing issue #1659: without it, `cdkd export` aborts
+  // on EVERY S3 Tables stack with "composite primary identifier (2 fields:
+  // TableBucketARN, Namespace)", because CDK's `CfnTable` requires a namespace
+  // and the namespace is its own resource. That made the sibling
+  // `AWS::S3Tables::Table` identifier fix in this same change unreachable in
+  // practice — a table cannot be exported without its namespace in the plan.
+  'AWS::S3Tables::Namespace': (physicalId) => {
+    const parts = physicalId.split('|');
+    if (parts.length !== 2) {
+      throw new Error(
+        `expected 2 parts ('<tableBucketARN>|<namespaceName>'), got ${parts.length}: '${physicalId}'`
+      );
+    }
+    const [tableBucketARN, namespace] = parts as [string, string];
+    if (!tableBucketARN || !namespace) {
+      throw new Error(`empty part in '<tableBucketARN>|<namespaceName>': '${physicalId}'`);
+    }
+    return { resourceIdentifier: { TableBucketARN: tableBucketARN, Namespace: namespace } };
+  },
   // NOTE: `AWS::ApiGatewayV2::Stage` is intentionally NOT in this map.
   // (1) AWS reports its primaryIdentifier as `['/properties/Id']` (single-key),
   //     so cdkd's single-key resolution path handles it without a splitter.
