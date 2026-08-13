@@ -248,7 +248,9 @@ When `RoleArn` is set, cdkd's resolver:
 1. **Parses the role ARN** for the producer's account id via
    [`parseIamRoleArn`](../src/utils/role-arn.ts). The regex accepts every
    published AWS partition (`aws`, `aws-us-gov`, `aws-cn`, `aws-iso`,
-   `aws-iso-b`) and role-name path shapes including service-linked roles.
+   `aws-iso-b`, `aws-iso-e`, `aws-iso-f`, `aws-eusc` — matched loosely as
+   `aws[a-z0-9-]*`, so a partition added upstream needs no code change here)
+   and role-name path shapes including service-linked roles.
    Malformed ARNs / IAM user ARNs / non-12-digit account ids are rejected
    up front with a clear error.
 2. **Calls `sts:AssumeRole`** via
