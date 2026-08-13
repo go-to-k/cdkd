@@ -191,6 +191,13 @@ function effectiveS3BucketDestination(declared: unknown, sentFormat?: unknown): 
     ? declared
     : (declared['S3BucketDestination'] as unknown);
   if (!isPlainObject(bag)) return declared;
+  // The wire REQUIRES a bucket: `resolveS3BucketDestination` drops a bag with
+  // neither `BucketArn` nor `Bucket` and the item is SKIPPED, so folding one
+  // would describe a call that never went out (round-3 review — the same
+  // mirror-the-wire rule the schedule fold learned, one property over). The
+  // probe is truthiness, matching that guard exactly rather than approximating
+  // it with a presence test.
+  if (!bag['BucketArn'] && !bag['Bucket']) return declared;
   const out: Record<string, unknown> = {};
   const bucketArn = bag['BucketArn'] ?? bag['Bucket'];
   if (bucketArn !== undefined) out['BucketArn'] = bucketArn;
@@ -327,6 +334,12 @@ function effectiveInventoryItem(
   sent?: { frequency?: unknown; format?: unknown }
 ): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
+  // KNOWN DIVERGENCE, tracked as issue #1751: this is the one member whose WIRE
+  // read coerces SILENTLY (`IsEnabled: … ?? true`, no guard, no warning), so the
+  // presence test below does NOT mirror it — a declared `Enabled: null` is sent
+  // as `true` and recorded as `null`. Pre-existing and unchanged here; the two
+  // candidate fixes conflict, so it gets its own decision. Characterized by a
+  // test so whichever direction #1751 takes has to come past it.
   if (item['Enabled'] === undefined) patch['Enabled'] = INVENTORY_DEFAULT_ENABLED;
   if (item['IncludedObjectVersions'] === undefined) {
     patch['IncludedObjectVersions'] = INVENTORY_DEFAULT_INCLUDED_OBJECT_VERSIONS;
@@ -350,7 +363,13 @@ function effectiveInventoryItem(
   // RETAINED previous item, so `update()` is never called and the skip warning
   // stops.
   const declaredSchedule = item['Schedule'];
-  const declaresScheduleFrequency = 'ScheduleFrequency' in item;
+  // `!== undefined`, not `in`: the wire's own gate is
+  // `config['ScheduleFrequency'] !== undefined` (round-3 review). The two
+  // differ only for an explicitly-`undefined` key, which a resolved template
+  // cannot produce (`AWS::NoValue` omits the key and JSON has no `undefined`)
+  // — but this is a fold whose whole thesis is running the wire's test rather
+  // than one that merely agrees on the reachable inputs.
+  const declaresScheduleFrequency = item['ScheduleFrequency'] !== undefined;
   const scheduleFrequencyUsable =
     declaresScheduleFrequency &&
     configStringRefusal(
@@ -359,6 +378,12 @@ function effectiveInventoryItem(
       INVENTORY_DEFAULT_SCHEDULE_FREQUENCY,
       'AWS::S3::Bucket InventoryConfigurations[]'
     ) === undefined;
+  // Both sides pass a non-empty fallback and NO options, so the shared predicate
+  // cannot disagree with the applier today (`containerPath` only shapes the
+  // message). The one way that could drift is a future site threading
+  // `ConfigStringOptions` — `coerceNumber` in particular — into
+  // `skipOnUnusableConfigString` without threading it here (round-3 spec
+  // review). Keep the two argument lists identical if that ever happens.
   const scheduleContainerUsable =
     configStringRefusal(
       declaredSchedule,
@@ -382,7 +407,7 @@ function effectiveInventoryItem(
     // one, and an object without the key all take the default.
     const declaredFrequency = declaresScheduleFrequency
       ? item['ScheduleFrequency']
-      : isPlainObject(declaredSchedule) && 'Frequency' in declaredSchedule
+      : isPlainObject(declaredSchedule) && declaredSchedule['Frequency'] !== undefined
         ? declaredSchedule['Frequency']
         : INVENTORY_DEFAULT_SCHEDULE_FREQUENCY;
     const frequency = sent?.frequency ?? declaredFrequency;
@@ -4358,8 +4383,15 @@ export class S3BucketProvider implements ResourceProvider {
 
       // Anything a replay downgrade SKIPPED is dropped from the recorded bag,
       // and anything it SUBSTITUTED is recorded as SENT, so state describes the
-      // bucket AWS actually holds (issues #1612 / #1670). Absent on every
-      // template-path create — no downgrade is reachable there.
+      // bucket AWS actually holds (issues #1612 / #1670).
+      //
+      // It is NO LONGER absent on an ordinary template-path create, and this
+      // sentence said it was until issues #1707 / #1717 / #1718 — the same
+      // stale-rationale class those changes fixed elsewhere in this file. The
+      // per-item folds populate `substituted` whenever they change an item at
+      // all: a defaulted `Enabled` / `IncludedObjectVersions` /
+      // `OutputSchemaVersion`, or a destination declared in either tolerated
+      // spelling. None of those needs a downgrade to be reachable.
       const effectiveProperties = S3BucketProvider.applyEffectiveOverrides(
         properties,
         effectiveOverrides
@@ -4452,8 +4484,13 @@ export class S3BucketProvider implements ResourceProvider {
       // Any Put a warn-and-skip arm declined leaves the PREVIOUSLY applied
       // configuration live, so state records that rather than the desired
       // value AWS never received (issue #1612); a Put a warn-and-substitute
-      // read altered records the value AWS DID receive (issue #1670). Absent
-      // when neither happened, which is every ordinary update.
+      // read altered records the value AWS DID receive (issue #1670).
+      //
+      // "Absent when neither happened, which is every ordinary update" was true
+      // until issues #1707 / #1717 / #1718 and is not any more: an ordinary
+      // re-Put now yields a folded item with no skip and no substitution
+      // anywhere, whenever the template omits a defaulted-but-SENT member or
+      // spells the destination in a tolerated shape.
       const effectiveProperties = S3BucketProvider.applyEffectiveOverrides(
         properties,
         effectiveOverrides

@@ -1440,6 +1440,10 @@ describe('the Schedule container fold mirrors the WIRE, shape by shape', () => {
         BucketName: BUCKET,
         InventoryConfigurations: [LIVE_INVENTORY],
       });
+      // Assert the WIRE actually ran (round-3 review): without this the loop
+      // reads only the two folds and could pass on a shape the applier had
+      // silently skipped.
+      expect(sentCommands(PutBucketInventoryConfigurationCommand)).toHaveLength(1);
       const recorded = at(result.effectiveProperties?.['InventoryConfigurations'], 0);
       const canonicalTemplate = at(
         provider.canonicalizeDesiredProperties(RESOURCE_TYPE, properties),
@@ -1504,5 +1508,109 @@ describe('the destination bucket ALIAS read', () => {
 
     expect('BucketArn' in dest).toBe(false);
     expect(dest).toEqual({ Format: 'CSV' });
+  });
+});
+
+/**
+ * Two shapes where the fold deliberately declines, pinned so a later "tidy-up"
+ * cannot quietly re-open them (round-3 review).
+ */
+describe('the fold declines where the WIRE declines', () => {
+  it('a destination with NEITHER BucketArn nor Bucket is left alone', () => {
+    // `resolveS3BucketDestination` requires a bucket and drops the block, so the
+    // item is SKIPPED. Folding it would invent a `Format: 'CSV'` describing a
+    // call that never went out — the same mirror-the-wire rule the schedule fold
+    // learned, one property over.
+    const item = {
+      Id: 'i1',
+      Enabled: true,
+      IncludedObjectVersions: 'All',
+      ScheduleFrequency: 'Daily',
+      Destination: { BucketAccountId: '123456789012' },
+    };
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      InventoryConfigurations: [item],
+    });
+
+    expect(at(canonical, 'InventoryConfigurations', 0, 'Destination')).toEqual({
+      BucketAccountId: '123456789012',
+    });
+  });
+
+  it('...while a destination WITH a bucket still folds', () => {
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      InventoryConfigurations: [
+        {
+          Id: 'i1',
+          Enabled: true,
+          IncludedObjectVersions: 'All',
+          ScheduleFrequency: 'Daily',
+          Destination: { BucketAccountId: '123456789012', Bucket: DEST_ARN },
+        },
+      ],
+    });
+
+    expect(at(canonical, 'InventoryConfigurations', 0, 'Destination')).toEqual({
+      BucketArn: DEST_ARN,
+      BucketAccountId: '123456789012',
+      Format: 'CSV',
+    });
+  });
+});
+
+/**
+ * CHARACTERIZATION of the one known remaining divergence, tracked as issue 1751
+ * and deliberately NOT fixed here (it is pre-existing, and two reviewers
+ * proposed opposite fixes).
+ *
+ * This row asserts the CURRENT behavior rather than the desired one, so that
+ * whichever direction 1751 takes, the change is forced to come past this test
+ * and state its answer. Without it the divergence is invisible to the suite.
+ */
+describe('KNOWN DIVERGENCE (issue 1751): a declared Enabled: null', () => {
+  it('is SENT as true but recorded as null, and nothing warns', async () => {
+    const properties = {
+      BucketName: BUCKET,
+      InventoryConfigurations: [
+        {
+          Id: 'i1',
+          Enabled: null,
+          IncludedObjectVersions: 'All',
+          ScheduleFrequency: 'Daily',
+          Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+        },
+      ],
+    };
+
+    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+      BucketName: BUCKET,
+      InventoryConfigurations: [LIVE_INVENTORY],
+    });
+
+    // The wire coerces silently — `IsEnabled: (config['Enabled']) ?? true`.
+    expect(
+      at(sentCommands(PutBucketInventoryConfigurationCommand)[0]!.input, 'InventoryConfiguration', 'IsEnabled')
+    ).toBe(true);
+    // ...but the fold's presence test leaves the declared null alone, so it
+    // identity-returns, `effectiveProperties` is ABSENT, and the engine records
+    // the desired bag VERBATIM — `Enabled: null`. `inventorySdkToCfn` emits
+    // `Enabled: true` from the readback, so `cdkd drift` reports this forever.
+    expect(result.effectiveProperties).toBeUndefined();
+    const recorded = at(properties['InventoryConfigurations'], 0) as Record<string, unknown>;
+    expect(recorded['Enabled']).toBeNull();
+    // The twin folds the template side the same way, so `cdkd diff` stays
+    // clean — which is precisely why nothing surfaces this to the user.
+    expect(
+      at(
+        provider.canonicalizeDesiredProperties(RESOURCE_TYPE, properties),
+        'InventoryConfigurations',
+        0,
+        'Enabled'
+      )
+    ).toBeNull();
+    // And no guard announces it — unlike every sibling member of this item.
+    expect(
+      childLogger.warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('Enabled'))
+    ).toHaveLength(0);
   });
 });
