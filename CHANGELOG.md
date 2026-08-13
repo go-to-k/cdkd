@@ -1,3 +1,10 @@
+## [0.281.28](https://github.com/go-to-k/cdkd/compare/v0.281.27...v0.281.28) (2026-08-13)
+
+
+### Bug Fixes
+
+* **state:** aim the state-bucket region probe at the caller's partition ([#1798](https://github.com/go-to-k/cdkd/issues/1798)) ([0153bd4](https://github.com/go-to-k/cdkd/commit/0153bd4725761b792e1c2036b4750ddaac065eed))
+
 ## [0.281.27](https://github.com/go-to-k/cdkd/compare/v0.281.26...v0.281.27) (2026-08-13)
 
 
