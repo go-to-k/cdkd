@@ -355,16 +355,43 @@ export class NestedStackProvider implements ResourceProvider {
     // while the parent — with no signal — prints `✓ <Child> deleted`, drops the
     // child's row, and exits 0. It is reported as a skip for the same reason:
     // the child stack was NOT destroyed, so the parent's record of it must
-    // survive. Safe to do here where `errorCount` is not, because the run is
-    // already ending non-zero (the runner sets `interrupted` on the parent too,
-    // and both CLIs raise PartialFailureError for it) — so this changes what
-    // SURVIVES, not whether the command fails.
+    // survive. A skip rather than a throw is right for it because NOTHING
+    // failed — the run is already ending non-zero (the runner sets
+    // `interrupted` on the parent too, and both CLIs raise PartialFailureError
+    // for it), so this changes what SURVIVES, not whether the command fails,
+    // and an interrupt is a user-requested stop rather than a failure.
     //
-    // `errorCount` is deliberately NOT propagated here: that hole predates this
-    // issue and its answer is a THROW (a failed child delete must fail the
-    // parent's resource), which is a behavior change with its own blast radius.
-    // Tracked separately as issue
-    // [#1777](https://github.com/go-to-k/cdkd/issues/1777).
+    // `errorCount` is the THIRD field saying "this child stack is NOT gone",
+    // and it is the only one whose honest answer is a THROW rather than a skip
+    // (issue [#1777](https://github.com/go-to-k/cdkd/issues/1777)). A resource
+    // inside the child was ATTEMPTED and FAILED — so the parent's
+    // `AWS::CloudFormation::Stack` row must FAIL too, exactly as a failed
+    // delete of any other resource type does. Reporting it as a skip would be
+    // a lie in the other direction (a skip means no AWS call was issued), and
+    // swallowing it was the pre-#1777 behavior: the parent printed
+    // `✓ <Child> deleted`, dropped the child's row AND — with its own
+    // `errorCount` still 0 — deleted the parent's `state.json` and the exports
+    // index outright, exiting 0 over a child whose preserved state.json
+    // describes live resources. Throwing keeps the row, preserves the parent's
+    // state, and surfaces a non-zero exit. This is deliberately a BEHAVIOR
+    // CHANGE: a nested-stack delete that previously reported success now fails
+    // the parent's destroy.
+    if (childResult.errorCount > 0) {
+      const extra: string[] = [];
+      if (childResult.skippedCount > 0) {
+        extra.push(`${childResult.skippedCount} resource(s) were also skipped`);
+      }
+      if (childResult.interrupted) extra.push('the child destroy was also interrupted');
+      throw new Error(
+        `Nested stack ${childStackName} failed to destroy: ${childResult.errorCount} resource(s) ` +
+          `failed to delete` +
+          (extra.length > 0 ? ` (${extra.join('; ')})` : '') +
+          `. The child's state is PRESERVED and still lists them — inspect it with ` +
+          `'cdkd state show ${childStackName}', resolve the failure, and re-run the destroy. ` +
+          `The parent's record of this nested stack is kept so the child stays reachable.`
+      );
+    }
+
     if (childResult.skippedCount > 0 || childResult.interrupted) {
       const causes: string[] = [];
       if (childResult.skippedCount > 0) {

@@ -604,11 +604,123 @@ describe('NestedStackProvider', () => {
       expect(reason).toContain('was interrupted');
     });
 
-    it('does NOT propagate the child errorCount — deferred to issue #1777', async () => {
-      // The deliberate boundary: a FAILED child delete still reports as
-      // deleted here. Pinned so the deferral is visible rather than looking
-      // like an oversight, and so closing #1777 has to update this test.
+    // Issue #1777: the child's `errorCount` is the THIRD field saying "this
+    // child stack is NOT gone", and the only one whose honest answer is a
+    // THROW. Pre-fix it was swallowed entirely: the parent printed
+    // `✓ Child (AWS::CloudFormation::Stack) deleted`, dropped the child's row,
+    // and — with the parent's own errorCount still 0 — deleted the parent's
+    // state.json AND the exports index, exiting 0.
+    it('THROWS when a child resource genuinely FAILED to delete (issue #1777)', async () => {
       childCounts.value = { deletedCount: 1, skippedCount: 0, errorCount: 3 };
+      const provider = new NestedStackProvider();
+      const ctx = makeContext();
+
+      await expect(
+        withNestedStackContext(ctx, () =>
+          provider.delete(
+            'Child',
+            'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+            'AWS::CloudFormation::Stack'
+          )
+        )
+      ).rejects.toThrow(/Nested stack Parent~Child failed to destroy/);
+    });
+
+    it('the throw names the child stack, the failure COUNT and the child state remedy', async () => {
+      childCounts.value = { deletedCount: 1, skippedCount: 0, errorCount: 3 };
+      const provider = new NestedStackProvider();
+      const ctx = makeContext();
+
+      const err = await withNestedStackContext(ctx, () =>
+        provider
+          .delete(
+            'Child',
+            'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+            'AWS::CloudFormation::Stack'
+          )
+          .then(
+            () => undefined,
+            (e: unknown) => e as Error
+          )
+      );
+
+      expect(err).toBeInstanceOf(Error);
+      const msg = err!.message;
+      // The count is the only place a user learns HOW MUCH of the child is
+      // still live; the child's state key is the file they must actually open
+      // (the parent's own state.json says nothing about which resource failed).
+      expect(msg).toContain('3 resource(s) failed to delete');
+      expect(msg).toContain("'cdkd state show Parent~Child'");
+      // The runner's catch treats a "not found" / "does not exist" message as
+      // an ALREADY-DELETED success and drops the row — the exact outcome this
+      // throw exists to prevent. Pin that the wording cannot take that arm.
+      expect(msg).not.toMatch(/not found|does not exist|NotFoundException|NoSuchEntity/);
+    });
+
+    it('the errorCount THROW wins over a concurrent skip / interrupt, and names them', async () => {
+      // errorCount is the strongest of the three signals: something was
+      // ATTEMPTED and FAILED. Reporting the run as a mere skip would be a lie
+      // in the other direction (a skip means no AWS call was issued at all).
+      childCounts.value = {
+        deletedCount: 0,
+        skippedCount: 2,
+        errorCount: 1,
+        interrupted: true,
+      };
+      const provider = new NestedStackProvider();
+      const ctx = makeContext();
+
+      const err = await withNestedStackContext(ctx, () =>
+        provider
+          .delete(
+            'Child',
+            'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+            'AWS::CloudFormation::Stack'
+          )
+          .then(
+            () => undefined,
+            (e: unknown) => e as Error
+          )
+      );
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err!.message).toContain('1 resource(s) failed to delete');
+      expect(err!.message).toContain('2 resource(s) were also skipped');
+      expect(err!.message).toContain('the child destroy was also interrupted');
+    });
+
+    it('does NOT mention a skip / interrupt that did not happen', async () => {
+      // Inverted control for the composition above: without it a builder that
+      // ALWAYS appends both clauses passes the test above while telling every
+      // user their child was interrupted.
+      childCounts.value = { deletedCount: 0, skippedCount: 0, errorCount: 1 };
+      const provider = new NestedStackProvider();
+      const ctx = makeContext();
+
+      const err = await withNestedStackContext(ctx, () =>
+        provider
+          .delete(
+            'Child',
+            'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+            'AWS::CloudFormation::Stack'
+          )
+          .then(
+            () => undefined,
+            (e: unknown) => e as Error
+          )
+      );
+
+      expect(err!.message).toContain('1 resource(s) failed to delete');
+      expect(err!.message).not.toContain('also skipped');
+      expect(err!.message).not.toContain('also interrupted');
+    });
+
+    it('a child that skipped WITHOUT failing still returns { outcome: "skipped" }, not a throw', async () => {
+      // The other side of the errorCount boundary: a skip is not a failure, so
+      // it must NOT be converted into one. Without this control, "throw on
+      // anything non-clean" passes every errorCount test above while breaking
+      // the #1752 contract.
+      childCounts.value = { deletedCount: 0, skippedCount: 2, errorCount: 0 };
       const provider = new NestedStackProvider();
       const ctx = makeContext();
 
@@ -620,7 +732,7 @@ describe('NestedStackProvider', () => {
         )
       );
 
-      expect(result).toBeUndefined();
+      expect(result).toMatchObject({ outcome: 'skipped' });
     });
 
     it('returns void (= deleted) when the child skipped nothing', async () => {

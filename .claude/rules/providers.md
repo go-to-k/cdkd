@@ -1019,10 +1019,28 @@ stack; discarding that result re-creates the mis-report one level up — the
 parent prints `✓ <Child> (AWS::CloudFormation::Stack) deleted`, drops the
 child's row from parent state and exits 0, while the child's own `state.json`
 is sitting there preserved describing a live resource. It returns
-`{ outcome: 'skipped' }` when `childResult.skippedCount > 0`. The child's
-`errorCount` is swallowed by the same call and is deliberately NOT propagated
-here: its correct answer is a THROW (a failed child delete must fail the
-parent's resource), which is a behavior change with its own blast radius.
+`{ outcome: 'skipped' }` when `childResult.skippedCount > 0` OR
+`childResult.interrupted` — a SIGINT mid-child is the same data loss reached
+through another field.
+
+**But a child result carries THREE such fields, and the third one is a THROW,
+not a skip** (issue [#1777](https://github.com/go-to-k/cdkd/issues/1777)).
+`childResult.errorCount > 0` means a child resource was ATTEMPTED and FAILED,
+so the parent's `AWS::CloudFormation::Stack` row must FAIL exactly as any other
+type's failed delete does; reporting it as a skip would be a lie in the other
+direction, since a skip asserts no AWS call was issued. Swallowing it was worse
+than a dangling pointer: with the parent's own `errorCount` still 0 its
+`preserveState` evaluated to FALSE, so the parent deleted its `state.json` AND
+the exports index and exited 0, leaving the child's preserved `state.json`
+describing live resources with nothing naming it. This was a deliberate
+BEHAVIOR CHANGE — a nested-stack delete that previously reported success now
+fails the parent's destroy. Two details generalize to any provider that
+recurses: the throw's wording must avoid `not found` / `does not exist`, since
+the destroy runner's catch reads those as an idempotent already-deleted success
+and DROPS the row (the very outcome the throw exists to prevent); and the split
+between the three fields is decided by what was ATTEMPTED, not by whether the
+run was clean — so do not collapse them into one "anything non-clean throws"
+rule.
 
 Three things about it are decisions rather than accidents. The exit code is
 **not** a new policy: it is the same "state preserved, stack not destroyed"

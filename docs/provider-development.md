@@ -1581,11 +1581,18 @@ preserve state and fail the destroy for no reason. The `--purge-events` flag
 and the run-level `RUN_FINISHED` result both treat a skip as a failed run, so a
 new producer changes user-visible exit behavior — decide deliberately.
 
-**A provider that recurses into another destroy propagates the child's skip.**
-`NestedStackProvider.delete` returns `{ outcome: 'skipped' }` when the child
-runner reports `skippedCount > 0`; without that the parent would print
-`✓ <Child> (AWS::CloudFormation::Stack) deleted` and exit 0 over a child stack
-that kept a live resource.
+**A provider that recurses into another destroy propagates the child's
+result.** `NestedStackProvider.delete` returns `{ outcome: 'skipped' }` when the
+child runner reports `skippedCount > 0` OR `interrupted`; without that the
+parent would print `✓ <Child> (AWS::CloudFormation::Stack) deleted` and exit 0
+over a child stack that kept a live resource. The child's third
+not-gone signal, `errorCount > 0`, is a **THROW** rather than a skip (issue
+[#1777](https://github.com/go-to-k/cdkd/issues/1777)): a resource was attempted
+and FAILED, so the parent's row must fail too, and calling it a skip would
+assert the opposite of what happened (a skip means no AWS call was issued).
+Word such a throw so it contains neither `not found` nor `does not exist` — the
+destroy runner's catch reads those as an idempotent already-deleted success and
+DROPS the state record, which is the outcome the throw exists to prevent.
 
 Producers today: the malformed-composite-physicalId family
 (`src/provisioning/composite-id.ts`, five arms) plus the nested-stack
