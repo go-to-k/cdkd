@@ -225,6 +225,10 @@
       "description": "`cdkd local invoke` ZIP-runtime Lambda against the AWS Lambda Runtime Interface Emulator (RIE) container."
     },
     {
+      "tag": "local-region-case-fold",
+      "description": "Region CASE folding on the `cdkd local` path (issues #1795 / #1814 / #1836): an upper-cased region is structurally valid and nothing rejects it, while AWS SDK endpoint resolution, the partition table and cdkd's own state-record / marker-key comparisons are all case-SENSITIVE. Covers the two ends a Docker / real-AWS run can observe — the CONTAINER's own `AWS_REGION` (every SDK client the handler builds) must arrive canonical from an upper-cased shell, and an upper-cased `--stack-region` must still read the canonically-keyed `cdkd/{stack}/{region}/state.json` record instead of silently falling back to no state at all."
+    },
+    {
       "tag": "local-websocket-api",
       "description": "`cdkd local start-api` WebSocket API support: ws upgrade + $connect/$disconnect/$default/custom route dispatch + @connections data plane."
     },
@@ -1292,7 +1296,8 @@
       "name": "local-invoke",
       "annotated": true,
       "scenarios": [
-        "local-lambda-rie-zip"
+        "local-lambda-rie-zip",
+        "local-region-case-fold"
       ]
     },
     {
@@ -1352,7 +1357,8 @@
       "annotated": true,
       "scenarios": [
         "local-from-state-substitution",
-        "local-lambda-rie-zip"
+        "local-lambda-rie-zip",
+        "local-region-case-fold"
       ]
     },
     {
@@ -2437,6 +2443,14 @@
         "local-invoke-provided",
         "local-invoke-python",
         "local-invoke-ruby"
+      ]
+    },
+    {
+      "scenario": "local-region-case-fold",
+      "description": "Region CASE folding on the `cdkd local` path (issues #1795 / #1814 / #1836): an upper-cased region is structurally valid and nothing rejects it, while AWS SDK endpoint resolution, the partition table and cdkd's own state-record / marker-key comparisons are all case-SENSITIVE. Covers the two ends a Docker / real-AWS run can observe — the CONTAINER's own `AWS_REGION` (every SDK client the handler builds) must arrive canonical from an upper-cased shell, and an upper-cased `--stack-region` must still read the canonically-keyed `cdkd/{stack}/{region}/state.json` record instead of silently falling back to no state at all.",
+      "fixtures": [
+        "local-invoke",
+        "local-invoke-from-state"
       ]
     },
     {

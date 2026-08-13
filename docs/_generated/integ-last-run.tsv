@@ -167,7 +167,7 @@ launchtemplate-asg-inplace	2026-07-26T13:03:26Z	PASS	90	verify.sh	1225 classific
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 local-ecs-service-connect	2026-07-26T20:40:20Z	PASS	23	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
-local-invoke	2026-08-13T10:39:38Z	PASS	-	verify.sh	issue 1814 region-case boundary wrapper; rc 0, docker sweep clean
+local-invoke	2026-08-13T16:02:59Z	PASS	-	verify.sh	issue 1836 post-rebase re-run on current main; step 6 upper-cased AWS_REGION arrives canonical in-container, raw spelling absent; docker sweep clean
 local-invoke-agentcore	2026-08-13T11:40:45Z	PASS	-	verify.sh	final run after the issue 1814 fourth-chain fold; 21/21, docker sweep clean
 local-invoke-agentcore-from-state	2026-07-26T20:40:20Z	PASS	86	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
 local-invoke-buildkit	2026-07-26T20:35:19Z	PASS	18	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
@@ -175,7 +175,7 @@ local-invoke-container	2026-08-13T14:36:45Z	PASS	-	verify.sh	issue 1792/1793 no-
 local-invoke-dotnet	2026-07-26T20:35:19Z	PASS	58	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
 local-invoke-from-cfn-stack	2026-07-26T21:13:17Z	PASS	94	verify.sh	re-run post review fixes; install-guard exercised via fresh node_modules direct run (rc=0); clean
 local-invoke-from-cfn-stack-multi-stack	2026-07-26T21:13:17Z	PASS	113	verify.sh	re-run post review fixes; docker + account + CFn clean
-local-invoke-from-state	2026-07-26T20:29:11Z	PASS	61	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
+local-invoke-from-state	2026-08-13T16:02:59Z	PASS	-	verify.sh	issue 1836 post-rebase re-run after the round-4 bucket-region fold; upper-cased --stack-region reads the us-east-1 record; 7 deleted 0 err, 0 orph, docker clean
 local-invoke-java	2026-07-26T20:29:11Z	PASS	36	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
 local-invoke-layers	2026-07-26T20:29:11Z	PASS	17	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
 local-invoke-provided	2026-07-26T20:29:11Z	PASS	32	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean

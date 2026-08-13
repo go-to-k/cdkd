@@ -55,6 +55,13 @@ Shared across all three subcommands:
   deployed via `cdkd deploy` first.
 - `--stack-region <region>` — Disambiguate when the same stack name
   has cdkd state in multiple regions (only with `--from-state`).
+  Region CASE is not significant: the value is matched against the state
+  record's own spelling case-insensitively, so `--stack-region US-EAST-1`
+  reads the `us-east-1` record instead of silently falling back to no
+  state (issue #1836). A record spelled exactly the way you TYPED the
+  flag always wins, so with both `us-east-1` and `US-EAST-1` records
+  present each flag spelling reads its own; that collision is reported at
+  warn, naming the record read and which of the two rules chose it.
 - `--container-host <ip>` — Bind IP for published ports (default
   `127.0.0.1`). Must be a numeric IP; Docker rejects hostnames in
   `-p <ip>:<port>:<port>`.

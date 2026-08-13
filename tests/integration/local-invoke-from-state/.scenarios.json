@@ -1,6 +1,7 @@
 {
   "scenarios": [
     "local-from-state-substitution",
-    "local-lambda-rie-zip"
+    "local-lambda-rie-zip",
+    "local-region-case-fold"
   ]
 }

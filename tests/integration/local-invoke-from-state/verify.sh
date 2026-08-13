@@ -18,6 +18,10 @@
 #   4. PR 2: cdkd local invoke --from-state — assert BUCKET_NAME is the
 #      actual deployed S3 bucket name, and STATIC_VALUE still passes
 #      through unchanged.
+#   4b/4c (issue #1836): the same --from-state read with an UPPER-CASED
+#      --stack-region against the canonically-keyed state record, plus the
+#      canonical counter-case asserting byte-identical output. No extra
+#      deploy — it reuses the stack from step 2.
 #   5. cdkd destroy --force
 #
 # Run via `/run-integ local-invoke-from-state` (recommended) or directly:
@@ -133,8 +137,44 @@ echo "${RESULT_PR2}" | grep -q '"staticValue":"always-the-same"' || {
   exit 1
 }
 
+# Step 4b — `--stack-region` region-case fold (issue #1836).
+#
+# The stack is already deployed at this point, so this costs no extra deploy: the
+# state record was keyed `cdkd/<stack>/<region>/state.json` with the CANONICAL
+# region (AWS_REGION is pinned canonical at the top of this script), and the flag
+# is spelled UPPER-CASED here. Pre-fix the flag was compared to the record's
+# region with a raw `===`, so it missed, `--from-state` warn-and-fell-back, and
+# BUCKET_NAME silently came through as "unset" — a command that "works" against
+# no state at all. Both polarities: the canonical spelling must produce the same
+# answer, byte for byte.
+UPPER_REGION="$(printf '%s' "${REGION}" | tr '[:lower:]' '[:upper:]')"
+echo "[verify] step 4b: --from-state --stack-region ${UPPER_REGION} — expect BUCKET_NAME=${DEPLOYED_BUCKET}"
+RESULT_UPPER=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state \
+  --stack-region "${UPPER_REGION}" --no-pull --state-bucket "${STATE_BUCKET}")
+echo "[verify]   response: ${RESULT_UPPER}"
+echo "${RESULT_UPPER}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
+  echo "[verify] FAIL: an upper-cased --stack-region must still read the ${REGION} state record;"
+  echo "[verify]       expected BUCKET_NAME=${DEPLOYED_BUCKET}, got: ${RESULT_UPPER}"
+  exit 1
+}
+# The shape the regression emits: a silent fall-back to no state at all.
+echo "${RESULT_UPPER}" | grep -q '"bucketName":"unset"' && {
+  echo "[verify] FAIL: --stack-region ${UPPER_REGION} fell back to no state (BUCKET_NAME unset)"
+  exit 1
+}
+echo "[verify] step 4c: --from-state --stack-region ${REGION} (canonical counter-case)"
+RESULT_CANON=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state \
+  --stack-region "${REGION}" --no-pull --state-bucket "${STATE_BUCKET}")
+[ "${RESULT_UPPER}" = "${RESULT_CANON}" ] || {
+  echo "[verify] FAIL: an already-canonical --stack-region must be byte-identical to the folded one"
+  echo "[verify]   upper: ${RESULT_UPPER}"
+  echo "[verify]   lower: ${RESULT_CANON}"
+  exit 1
+}
+
 echo "[verify] step 5: cdkd destroy --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 
 echo ""
-echo "[verify] All checks passed: --from-state substituted BUCKET_NAME with the deployed bucket name."
+echo "[verify] All checks passed: --from-state substituted BUCKET_NAME with the deployed bucket name,"
+echo "[verify] and an upper-cased --stack-region still read the ${REGION} state record (#1836)."

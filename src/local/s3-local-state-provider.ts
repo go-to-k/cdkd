@@ -37,6 +37,14 @@ export interface S3LocalStateProviderOptions {
    * `cdkd local *` command.
    */
   stackRegion?: string;
+  /**
+   * The user's UNFOLDED `--stack-region` spelling (issue #1836 round 3),
+   * forwarded verbatim to `loadStateForStack` where the state-record match
+   * consults it — and nothing else does. See
+   * `LoadStateForStackOptions.rawStackRegion` for why the folded value cannot
+   * decide that compare.
+   */
+  rawStackRegion?: string;
 }
 
 export class S3LocalStateProvider implements LocalStateProvider {
@@ -60,6 +68,9 @@ export class S3LocalStateProvider implements LocalStateProvider {
     const loadOpts: LoadStateForStackOptions = {
       statePrefix: this.opts.statePrefix,
       ...(this.opts.stackRegion !== undefined && { stackRegion: this.opts.stackRegion }),
+      ...(this.opts.rawStackRegion !== undefined && {
+        rawStackRegion: this.opts.rawStackRegion,
+      }),
       ...(this.opts.stateBucket !== undefined && { stateBucket: this.opts.stateBucket }),
       ...(this.opts.region !== undefined && { region: this.opts.region }),
       ...(this.opts.profile !== undefined && { profile: this.opts.profile }),

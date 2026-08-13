@@ -290,6 +290,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     '`cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown.',
   'local-ecs-service-connect':
     '`cdkd local start-service` Service Connect + Cloud Map peer discovery: ServiceConnectConfiguration + ServiceRegistries parsing, in-process Cloud Map registry, docker `--add-host` DNS overlay (Issue #460).',
+  'local-region-case-fold':
+    "Region CASE folding on the `cdkd local` path (issues #1795 / #1814 / #1836): an upper-cased region is structurally valid and nothing rejects it, while AWS SDK endpoint resolution, the partition table and cdkd's own state-record / marker-key comparisons are all case-SENSITIVE. Covers the two ends a Docker / real-AWS run can observe — the CONTAINER's own `AWS_REGION` (every SDK client the handler builds) must arrive canonical from an upper-cased shell, and an upper-cased `--stack-region` must still read the canonically-keyed `cdkd/{stack}/{region}/state.json` record instead of silently falling back to no state at all.",
   'local-from-state-substitution':
     '`cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters.',
   'local-from-cfn-stack-substitution':
