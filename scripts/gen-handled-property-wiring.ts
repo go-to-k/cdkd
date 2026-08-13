@@ -218,25 +218,53 @@
  *     #1808 degradation shipped green.
  *   - `--check` fails on any loss for every OTHER caller: a local run, a
  *     reviewer grading a branch, or any pipeline that checks before it writes.
- *     `--accept-evidence-loss` is REJECTED here — the check can never be told
- *     to look away.
  *
- * ESCAPE HATCH: `--accept-evidence-loss` on the writer. Regeneration stays the
- * way out — a property CAN genuinely lose a seam — but it becomes a deliberate,
- * named act that prints every lost shape and seed rather than the silent
- * default. A rationale belongs in the PR body; the JSON diff is its only trace.
+ * A VERDICT REQUIRES A BASELINE THAT COULD HAVE FAILED
+ * ----------------------------------------------------
+ * Grading against a file invites making the file stop being able to fail.
+ * Review found three spellings of that, one per round — the matrix DELETED
+ * (staged, so `git diff --quiet` stayed green), TRUNCATED (parses, with a
+ * well-formed header), and EMPTY (`{"schemaVersion":1,"classes":[]}`, which
+ * passes every structural check) — each landing the same way: both modes report
+ * success at exit 0 and the tamper is overwritten without trace.
+ *
+ * So usability is defined POSITIVELY, in {@link assessBaseline}: a baseline is
+ * usable only when the comparison covers at least one (class, property) pair of
+ * the tree being graded, i.e. only when it COULD report a loss. Missing,
+ * truncated, empty and class-disjoint baselines all grade zero pairs and are one
+ * refusal, not four guards — which is what stops the next spelling from needing
+ * a fourth. Partial coverage is handled by visibility rather than by a threshold
+ * nobody could defend: every run prints `graded N/M pairs`, and the unit suite
+ * pins that the committed matrix grades 100% of the live tree.
+ *
+ * TWO ESCAPE HATCHES, deliberately SEPARATE, both WRITER-ONLY:
+ *   - `--accept-evidence-loss` acknowledges a measured reduction, and prints
+ *     every lost (class, property) with its shapes and seeds before writing.
+ *   - `--accept-missing-baseline` acknowledges having no comparison at all — a
+ *     first-ever generation. There is nothing to enumerate, which is exactly why
+ *     it is its own flag: while ONE flag covered both, the quietest tamper was
+ *     not `git rm` but a single corrupted byte, because the loss waiver then
+ *     also waived the absence and suppressed the enumeration.
+ * Both are REJECTED under `--check`, so the verdict can never be told to look
+ * away. (`--baseline=` is a different thing — a TEST SEAM that selects WHAT is
+ * compared. It can only make the loss comparison weaker, never suppress the gap
+ * or stale-allow-list verdicts, and CI never passes it.)
  *
  * Usage:
  *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts
- *     # write the matrix; refuses on an unacknowledged evidence loss
+ *     # write the matrix; refuses on an unacknowledged evidence loss OR an
+ *     # unusable baseline
  *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts --check
- *     # fail on a gap, a stale allow-list entry, or an evidence loss
+ *     # fail on a gap, a stale allow-list entry, an evidence loss, or a baseline
+ *     # that could not have failed
  *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts --accept-evidence-loss
  *     # write the matrix, acknowledging (and printing) the reduction
+ *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts --accept-missing-baseline
+ *     # write the matrix with no comparison at all (first-ever generation)
  *
  * CI runs the writer then `git diff --quiet` on the output AND the `--check`
  * critic, mirroring the sdk-attr / update-wrap / nested-key guards. Neither CI
- * invocation passes `--accept-evidence-loss`.
+ * invocation passes either waiver flag.
  */
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -1304,13 +1332,13 @@ const formatEvidenceLoss = (l: EvidenceLoss): string => {
  * deliberate method rename does trip this, and that is intended — the escape
  * hatch below is one command.
  *
- * A null baseline (no matrix yet, or a truncated / unparseable one) yields no
- * losses: this check GRADES a change against a recorded state, and cannot
- * invent one. That makes "delete or corrupt the baseline" the obvious bypass, so
- * BOTH modes refuse outright rather than proceeding ungraded — see
- * {@link shouldRefuseMissingBaseline} for why `--check` is not exempt, and
- * {@link missingBaselineFailure} before trusting any claim about what
- * `git diff --quiet` does or does not catch here.
+ * A null baseline yields no losses HERE — this function grades a change against
+ * a recorded state and cannot invent one — but that is not a permission to
+ * proceed. Whether a baseline may be graded against at all is
+ * {@link assessBaseline}'s question, and {@link main} refuses an unusable one in
+ * BOTH modes before ever calling this. See {@link shouldRefuseUnusableBaseline}
+ * for why `--check` is not exempt, and {@link unusableBaselineFailure} before
+ * trusting any claim about what `git diff --quiet` does or does not catch.
  */
 export function findEvidenceLosses(
   baseline: HandledPropertyWiringReport | null,
@@ -1354,10 +1382,12 @@ export function findEvidenceLosses(
 }
 
 /**
- * The committed matrix, as the baseline {@link findEvidenceLosses} grades
- * against. Returns null (rather than throwing) when the file is absent or not
- * a v1 report — a fresh checkout, a first-ever generation, and a
- * mid-schema-bump tree must all still be able to WRITE the matrix.
+ * Parse the committed matrix. STRUCTURAL validity only — whether it is USABLE as
+ * a baseline is {@link assessBaseline}'s question, because that depends on the
+ * report being graded and this function has not seen it.
+ *
+ * Returns null rather than throwing so an unreadable file is a verdict, not a
+ * crash.
  */
 export function loadBaseline(path: string = OUT_JSON): HandledPropertyWiringReport | null {
   let raw: string;
@@ -1369,15 +1399,69 @@ export function loadBaseline(path: string = OUT_JSON): HandledPropertyWiringRepo
   try {
     const parsed = JSON.parse(raw) as Partial<HandledPropertyWiringReport>;
     if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.classes)) return null;
-    // Validate one level deeper than the envelope: a TRUNCATED matrix parses as
-    // valid JSON with a well-formed header, and the comparison walk would then
-    // throw on `for (const p of c.properties)` — a crash where the contract is
-    // "unusable baseline means no comparison".
     if (parsed.classes.some((c) => !Array.isArray(c?.properties))) return null;
     return parsed as HandledPropertyWiringReport;
   } catch {
     return null;
   }
+}
+
+/** What a baseline can actually prove about the report it is grading. */
+export interface BaselineAssessment {
+  /** May this run proceed on the strength of this baseline? */
+  readonly usable: boolean;
+  /** (class, property) pairs the comparison actually covers. */
+  readonly gradedPairs: number;
+  /** (class, property) pairs the current report declares. */
+  readonly currentPairs: number;
+}
+
+/**
+ * Is this baseline usable — stated POSITIVELY, which is the whole point.
+ *
+ * A baseline is usable when the comparison it enables can actually FAIL: it must
+ * cover at least one (class, property) pair of the report being graded. That is
+ * the property every caller cares about, and it is what makes the verdict mean
+ * something.
+ *
+ * WHY A POSITIVE PREDICATE RATHER THAN A LIST OF BAD SHAPES. Three review rounds
+ * closed three spellings of the same tamper, one at a time:
+ *   - MISSING — the file deleted (`git rm`, so `git diff --quiet` stayed green);
+ *   - TRUNCATED — half a file, which parses as JSON with a well-formed header;
+ *   - EMPTY — `{"schemaVersion":1,"classes":[]}`, which passes every structural
+ *     check, so `findEvidenceLosses` skipped every pair on `if (!before)` and
+ *     both modes reported success at exit 0 with the tamper overwritten.
+ * Each fix enumerated one more bad shape, so a fourth was the default
+ * expectation — a DISJOINT class set, or classes present with every `properties`
+ * array empty, would land identically. Enumerating shapes loses that race by
+ * construction. Requiring a non-vacuous comparison collapses all four (and the
+ * ones nobody has thought of) into ONE refusal, because every one of them grades
+ * zero pairs.
+ *
+ * The threshold is ZERO rather than a ratio on purpose: any positive number is a
+ * magic constant that would itself need defending, and legitimate drift (a PR
+ * adding a provider class) must not trip it. Partial coverage is handled by
+ * VISIBILITY instead — {@link main} prints `graded N/M pairs` on every run, and
+ * the unit suite pins that the committed matrix grades 100% of the live tree, so
+ * erosion is loud rather than implied by silence.
+ */
+export function assessBaseline(
+  baseline: HandledPropertyWiringReport | null,
+  current: HandledPropertyWiringReport
+): BaselineAssessment {
+  const currentPairs = current.classes.reduce((n, c) => n + c.properties.length, 0);
+  if (!baseline) return { usable: false, gradedPairs: 0, currentPairs };
+  const known = new Set<string>();
+  for (const c of baseline.classes) {
+    for (const p of c.properties) known.add(allowKey(c.className, p.name));
+  }
+  let gradedPairs = 0;
+  for (const c of current.classes) {
+    for (const p of c.properties) {
+      if (known.has(allowKey(c.className, p.name))) gradedPairs += 1;
+    }
+  }
+  return { usable: gradedPairs > 0, gradedPairs, currentPairs };
 }
 
 function renderMarkdown(report: HandledPropertyWiringReport): string {
@@ -1597,46 +1681,25 @@ const LOSS_ESCAPE_HATCH =
  *
  * Applies to EVERY path — both modes, redirected or not. Earlier drafts scoped
  * it to the default output path and to the writer; both scopings were wrong, and
- * in the same direction. See {@link shouldRefuseMissingBaseline}.
+ * in the same direction. See {@link shouldRefuseUnusableBaseline}.
  */
-const missingBaselineFailure = (path: string): string =>
-  `handled-property-wiring: FAIL — no readable baseline at ${path}\n` +
-  'The evidence-loss check (issue #1842) grades this run against that matrix, so a\n' +
-  'missing, truncated or unparseable one means it can prove NOTHING. Reporting a\n' +
-  'green verdict here, or rewriting the file from here, would install whatever the\n' +
-  'current tree happens to support as the new baseline unreviewed.\n\n' +
-  'Restore it and re-run:\n\n' +
-  '  git checkout -- docs/_generated/handled-property-wiring.json\n\n' +
-  `If the matrix genuinely does not exist yet (a first-ever generation), pass\n` +
+const unusableBaselineFailure = (path: string, a: BaselineAssessment): string =>
+  `handled-property-wiring: FAIL — unusable baseline at ${path}\n` +
+  `It grades ${a.gradedPairs} of this tree's ${a.currentPairs} declared (class, property)\n` +
+  'pairs, so the evidence-loss check (issue #1842) can prove NOTHING. Reporting a green\n' +
+  'verdict here, or rewriting the file from here, would install whatever the current\n' +
+  'tree happens to support as the new baseline, unreviewed.\n\n' +
+  'A baseline reaches this state by being absent, truncated, empty, or written for a\n' +
+  'different set of provider classes — all one condition: it cannot fail.\n\n' +
+  `Restore it and re-run:\n\n  git checkout -- ${path}\n\n` +
+  'If the matrix genuinely does not exist yet (a first-ever generation), pass\n' +
   `${ACCEPT_MISSING_BASELINE_FLAG} to write it without a comparison.\n`;
 
-/**
- * Should this run refuse because it has no baseline to grade against?
- *
- * ONE rule for BOTH modes: no run of this script proceeds without a baseline
- * unless the absence is explicitly waived, and the waiver is writer-only
- * ({@link main} rejects it alongside `--check`).
- *
- * `--check` used to be exempt, on the reasoning that it writes nothing so it
- * cannot install a bad baseline. That reasoning covered the wrong risk: with the
- * matrix deleted, `--check` printed `OK — ... 0 gaps, 0 evidence losses` and
- * exited 0, which is an UNEARNED GREEN — the exact verdict this critic exists to
- * abolish, reporting success for a comparison it never made. CI happens to catch
- * the deletion today only because the `gen:` step runs first and now refuses,
- * and a checker must not depend on another step's ordering for its own honesty.
- *
- * Not exempted for a redirected (`--out-dir=`) write either: an earlier draft
- * was, which made the rule unreachable except by deleting the real matrix, so
- * the only test that could reach it had to write a tracked file — and that turns
- * `vp run test` permanently uncacheable (Vite+ invalidates on the write syscall,
- * not on content or mtime). A simpler rule that is cheap to test is worth more
- * than a narrower one that is not.
- */
-export function shouldRefuseMissingBaseline(opts: {
-  readonly hasBaseline: boolean;
+export function shouldRefuseUnusableBaseline(opts: {
+  readonly usable: boolean;
   readonly acceptMissingBaseline: boolean;
 }): boolean {
-  return !opts.hasBaseline && !opts.acceptMissingBaseline;
+  return !opts.usable && !opts.acceptMissingBaseline;
 }
 
 const USAGE =
@@ -1688,12 +1751,19 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
   const acceptLoss = argv.includes(ACCEPT_LOSS_FLAG);
   const acceptMissingBaseline = argv.includes(ACCEPT_MISSING_BASELINE_FLAG);
 
-  // The escape hatch belongs to the WRITER only. `--check` is a verdict and must
-  // not be silenceable by a flag on its own command line: the sanctioned way
-  // past a loss is to regenerate the baseline (a visible file diff), never to
-  // tell the checker to look away. Decided HERE, with the other argv guards,
-  // rather than after `loadReport()` — the answer does not depend on the report,
-  // and running an 84-file AST walk before refusing is work done to no purpose.
+  // Both waivers belong to the WRITER only. `--check` is a verdict and must not
+  // be silenceable by a flag on its own command line: the sanctioned way past a
+  // loss is to regenerate the baseline (a visible file diff), never to tell the
+  // checker to look away. Decided HERE, with the other argv guards, rather than
+  // after `loadReport()` — the answer does not depend on the report, and running
+  // an 84-file AST walk before refusing is work done to no purpose.
+  //
+  // `--baseline=` is deliberately NOT in this list, and the asymmetry is real
+  // rather than an oversight: it is a TEST SEAM selecting WHAT to compare, so
+  // `--check --baseline=<a weaker matrix>` legitimately reports no loss — there
+  // is none relative to that baseline. It cannot manufacture a false PASS of the
+  // gap or stale-allow-list verdicts, an unusable baseline is refused outright,
+  // and CI never passes it.
   const waiverOnCheck = [ACCEPT_LOSS_FLAG, ACCEPT_MISSING_BASELINE_FLAG].find(
     (f) => checkMode && argv.includes(f)
   );
@@ -1812,21 +1882,19 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
     ? resolve(baselineFlag.slice('--baseline='.length))
     : OUT_JSON;
   const baseline = loadBaseline(baselinePath);
+  const assessment = assessBaseline(baseline, report);
 
-  // Deleting (or corrupting) the matrix is the one-command way to defeat a check
-  // that grades against it. Refused in BOTH modes, redirected or not: a `--check`
-  // that reports `0 evidence losses` after comparing against nothing is an
-  // unearned green, which is the verdict this critic exists to abolish. See
-  // {@link missingBaselineFailure} for why CI's `git diff --quiet` step does not
-  // cover this on its own, and why the ordering of CI's steps must not be what
-  // makes the checker honest.
-  if (
-    shouldRefuseMissingBaseline({
-      hasBaseline: baseline !== null,
-      acceptMissingBaseline,
-    })
-  ) {
-    process.stderr.write(missingBaselineFailure(baselinePath));
+  // Defeating a check that grades against a file is a matter of making the file
+  // stop being able to fail — by deleting it, truncating it, emptying it, or
+  // writing it for other classes. One predicate covers all of them (see
+  // {@link assessBaseline}), in BOTH modes and redirected or not: a `--check`
+  // reporting `0 evidence losses` after comparing against nothing is an unearned
+  // green, the verdict this critic exists to abolish. See
+  // {@link unusableBaselineFailure} for why CI's `git diff --quiet` step does not
+  // cover this on its own, and why CI's step ORDERING must not be what makes the
+  // checker honest.
+  if (shouldRefuseUnusableBaseline({ usable: assessment.usable, acceptMissingBaseline })) {
+    process.stderr.write(unusableBaselineFailure(baselinePath, assessment));
     process.exit(1);
   }
 
@@ -1869,7 +1937,9 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
     process.stderr.write(
       `handled-property-wiring: OK — ${report.summary.classifiedCount} provider classes, ` +
         `${report.summary.wiredProperties}/${report.summary.declaredProperties} declared ` +
-        `properties with read evidence, 0 gaps, 0 evidence losses (${report.summary.wired} wired, ` +
+        `properties with read evidence, 0 gaps, 0 evidence losses ` +
+        `(graded ${assessment.gradedPairs}/${assessment.currentPairs} pairs against the baseline; ` +
+        `${report.summary.wired} wired, ` +
         `${report.summary.allowListed} allow-listed, ` +
         `${report.summary.classesWithBlindSpots} with a recorded blind spot).\n`
     );
@@ -1901,16 +1971,16 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
         'records STRICTLY WEAKER evidence than before for:\n'
     );
     for (const l of losses) process.stderr.write(`${formatEvidenceLoss(l)}\n`);
-  } else if (baseline === null) {
+  } else if (!assessment.usable) {
     // Say it, or the run looks like an ordinary write while it is in fact
     // installing an UNGRADED matrix. This is the ONLY output the missing-baseline
     // waiver produces — there is no per-property enumeration to print, which is
     // exactly why it is a separate flag from the loss waiver.
     process.stderr.write(
-      `handled-property-wiring: ACCEPTED MISSING BASELINE (${ACCEPT_MISSING_BASELINE_FLAG}) — no\n` +
-        `readable baseline at ${baselinePath}, so this run was graded against NOTHING and the\n` +
-        'file below becomes the new baseline unreviewed. Legitimate only for a first-ever\n' +
-        'generation.\n'
+      `handled-property-wiring: ACCEPTED MISSING BASELINE (${ACCEPT_MISSING_BASELINE_FLAG}) — the\n` +
+        `baseline at ${baselinePath} grades ${assessment.gradedPairs}/${assessment.currentPairs} pairs, so this run was graded\n` +
+        'against NOTHING and the file below becomes the new baseline unreviewed. Legitimate\n' +
+        'only for a first-ever generation.\n'
     );
   }
 
