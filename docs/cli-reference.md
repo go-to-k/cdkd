@@ -2425,17 +2425,23 @@ and still be billing. Three causes today:
   `AWS::EC2::NetworkAclEntry`) — no AWS call is issued at all, and the
   per-resource warning names the expected format;
 - a state record missing the id or the property the delete call is addressed
-  BY (issue [#1770](https://github.com/go-to-k/cdkd/issues/1770)) — also no AWS
-  call at all. A malformed `AWS::Lambda::LayerVersion` version ARN (the layer
-  version stays published); an `AWS::Lambda::Permission` with no
-  `FunctionName` (the statement stays on the function's resource policy, i.e.
-  an invoke grant outliving the stack); a Custom Resource with no properties or
-  no `ServiceToken` (its handler never receives a `Delete` request, so whatever
-  it manages elsewhere is untouched); an `AWS::IAM::Policy` whose physicalId
-  carries no policy name (the inline policy stays ATTACHED to its roles /
+  BY, in EVERY source cdkd can read it from (issue
+  [#1770](https://github.com/go-to-k/cdkd/issues/1770)) — also no AWS call at
+  all. A malformed `AWS::Lambda::LayerVersion` version ARN (the layer version
+  stays published); an `AWS::Lambda::Permission` with neither a `FunctionName`
+  property nor a function ARN in its physicalId (the statement stays on the
+  function's resource policy, i.e. an invoke grant outliving the stack); a
+  Custom Resource with no properties or no `ServiceToken` (its handler never
+  receives a `Delete` request, so whatever it manages elsewhere is untouched);
+  an `AWS::IAM::Policy` with neither a policy name in its physicalId nor a
+  `PolicyName` property (the inline policy stays ATTACHED to its roles /
   groups / users); an `AWS::IAM::UserToGroupAddition` missing `GroupName` or
   `Users` (the users keep every permission the group grants). Each warning
-  names what survived and how to repair it;
+  names what survived and how to repair it. Where the resource's PARENT is
+  part of the same destroy — the Lambda function, the IAM role / group / user
+  — that parent's own delete removes the skipped resource anyway, so AWS ends
+  clean and only the cdkd record is stale; the warning says so, and
+  `cdkd state orphan <stack>` clears it;
 - a **nested stack** (`AWS::CloudFormation::Stack`) whose own destroy skipped
   a resource or was interrupted. Here the child's *other* resources were
   deleted first, so "skipped" means the child stack as a whole was not

@@ -47,6 +47,22 @@ export const CR_NO_SERVICE_TOKEN_SKIP_REASON =
   'no ServiceToken in state — Delete handler not invoked';
 
 /**
+ * The deploy-side caveat both skip warnings in this file carry (issue
+ * [#1762](https://github.com/go-to-k/cdkd/issues/1762)).
+ *
+ * "Repair state.json and re-run" is only true on DESTROY, where the skip KEEPS
+ * the record. The same arms are ALSO reached from `deploy-engine.ts` and
+ * `rollback-executor.ts`, which discard the delete result and DROP the record —
+ * there the id is gone, so re-running cannot help and the resource has to be
+ * torn down by hand. Mirrors the caveat `compositeIdFormatMessage` already
+ * carries for the composite-id family.
+ */
+const DEPLOY_SKIP_CAVEAT =
+  `NOTE this arm is ALSO reached from cdkd deploy (the DELETE of a resource removed from the ` +
+  `template, plus the replacement / rollback deletes), which DROP the state record and report ` +
+  `success (https://github.com/go-to-k/cdkd/issues/1762) — there, tear the resource down by hand.`;
+
+/**
  * CloudFormation Custom Resource Response format
  * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/crpg-ref-responses.html
  */
@@ -675,12 +691,19 @@ export class CustomResourceProvider implements ResourceProvider {
     // Contrast the backing-Lambda-is-gone pre-check further down, which stays
     // a `deleted`: there the handler CANNOT run ever again, so the record is
     // dead weight rather than a live resource.
+    //
+    // "LEFT IN PLACE" is unconditional for these two, unlike the
+    // Lambda-permission / IAM-policy arms which qualify it: what survives is
+    // whatever the user's handler provisioned OUTSIDE this stack (a record in a
+    // third-party API, an object in another account), and no other delete in
+    // this destroy can undo that. Deleting the backing Lambda does not either —
+    // it only makes the teardown permanently unreachable.
     if (!properties) {
       this.logger.warn(
         `No properties available for custom resource ${logicalId}, skipping deletion — the ` +
           `handler is never invoked, so anything this custom resource manages is LEFT IN ` +
           `PLACE. Restore the record's properties in state.json and re-run, or tear the ` +
-          `resource down by hand.`
+          `resource down by hand. ${DEPLOY_SKIP_CAVEAT}`
       );
       return { outcome: 'skipped', reason: CR_NO_PROPERTIES_SKIP_REASON };
     }
@@ -692,7 +715,7 @@ export class CustomResourceProvider implements ResourceProvider {
         `No ServiceToken found for custom resource ${logicalId}, skipping deletion — there is ` +
           `no handler to send the Delete request to, so anything this custom resource manages ` +
           `is LEFT IN PLACE. Restore ServiceToken in state.json and re-run, or tear the ` +
-          `resource down by hand.`
+          `resource down by hand. ${DEPLOY_SKIP_CAVEAT}`
       );
       return { outcome: 'skipped', reason: CR_NO_SERVICE_TOKEN_SKIP_REASON };
     }

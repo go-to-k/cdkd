@@ -180,7 +180,15 @@ export type ResourceDeleteResult =
       readonly outcome: 'deleted';
     }
   | {
-      /** cdkd could NOT address the resource; no AWS call was issued. */
+      /**
+       * cdkd could NOT address the resource this result names, so it was NOT
+       * destroyed and may still be ALIVE.
+       *
+       * Deliberately NOT "no AWS call was issued" — see the invariant in the
+       * block comment above. Most producers do issue no call, but
+       * `NestedStackProvider.delete` reports `'skipped'` after its recursion
+       * has already DELETED the child's other resources.
+       */
       readonly outcome: 'skipped';
       /**
        * One line saying why, rendered inline on the per-resource status line

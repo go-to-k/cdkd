@@ -30,6 +30,23 @@ export const PERMISSION_FUNCTION_NAME_SKIP_REASON =
   'FunctionName missing from state — no delete issued';
 
 /**
+ * The deploy-side caveat the skip warning in this file carries (issue
+ * [#1762](https://github.com/go-to-k/cdkd/issues/1762)).
+ *
+ * "Repair state.json and re-run" is only true on DESTROY, where the skip KEEPS
+ * the record. The same arm is ALSO reached from `deploy-engine.ts` and
+ * `rollback-executor.ts`, which discard the delete result and DROP the record —
+ * there the id is gone, so re-running cannot help and the resource has to be
+ * removed by hand. Mirrors the caveat `compositeIdFormatMessage` already
+ * carries for the composite-id family; a remedy that is impossible on the path
+ * the user is actually on is worse than no remedy.
+ */
+const DEPLOY_SKIP_CAVEAT =
+  `NOTE this arm is ALSO reached from cdkd deploy (the DELETE of a resource removed from the ` +
+  `template, plus the replacement / rollback deletes), which DROP the state record and report ` +
+  `success (https://github.com/go-to-k/cdkd/issues/1762) — there, remove the resource by hand.`;
+
+/**
  * AWS Lambda Permission Provider
  *
  * Implements resource provisioning for AWS::Lambda::Permission using the Lambda SDK.
@@ -222,26 +239,49 @@ export class LambdaPermissionProvider implements ResourceProvider {
   ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting Lambda permission ${logicalId}: ${physicalId}`);
 
-    // Issue #1770: RemovePermission is addressed by FunctionName + StatementId.
-    // Without the function name there is no call to make, and the permission
-    // statement stays on the function's resource policy — an invoke grant that
-    // outlives the stack. That is a SKIP, not a delete.
-    const functionName = properties?.['FunctionName'] as string | undefined;
-    if (!functionName) {
-      this.logger.warn(
-        `FunctionName not available for Lambda permission ${logicalId}, skipping deletion — no ` +
-          `AWS call is issued, so the permission statement is LEFT IN PLACE on the function's ` +
-          `resource policy. Repair the record's FunctionName in state.json and re-run, or ` +
-          `remove the statement by hand ('aws lambda remove-permission').`
-      );
-      return { outcome: 'skipped', reason: PERMISSION_FUNCTION_NAME_SKIP_REASON };
-    }
-
     // physicalId may be in "functionArn|statementId" format (from CC API)
     // Extract just the statementId part
+    const physicalIdSegments = physicalId.split('|');
     let statementId = physicalId;
-    if (physicalId.includes('|')) {
-      statementId = physicalId.split('|').pop()!;
+    if (physicalIdSegments.length > 1) {
+      statementId = physicalIdSegments[physicalIdSegments.length - 1]!;
+    }
+
+    // Issue #1770: RemovePermission is addressed by FunctionName + StatementId.
+    // Only when NEITHER source names a function is there a call cdkd cannot
+    // make — and skipping is expensive now (it preserves the state record and
+    // exits non-zero), so exhaust both sources before reporting one.
+    //
+    // The second source is the physicalId itself: the composite
+    // "<functionArn>|<statementId>" shape above (CC-API records, and pre-v7
+    // records routed to this SDK provider) carries the function ARN in its
+    // leading segment, and Lambda's `FunctionName` parameter accepts a full
+    // ARN, so using it is a real delete rather than a guess. The `:function:`
+    // check keeps a non-Lambda ARN — or a statementId that merely happens to
+    // contain "|" — from being sent as a function name.
+    const leadingSegment = physicalIdSegments[0];
+    const functionArnFromPhysicalId =
+      physicalIdSegments.length > 1 &&
+      leadingSegment !== undefined &&
+      leadingSegment.startsWith('arn:') &&
+      leadingSegment.includes(':function:')
+        ? leadingSegment
+        : undefined;
+
+    const functionName =
+      (properties?.['FunctionName'] as string | undefined) || functionArnFromPhysicalId;
+    if (!functionName) {
+      this.logger.warn(
+        `FunctionName not available for Lambda permission ${logicalId} (neither the state ` +
+          `record's FunctionName nor a function ARN in the physicalId), skipping deletion — no ` +
+          `AWS call is issued, so the permission statement is LEFT IN PLACE on the function's ` +
+          `resource policy, UNLESS the function itself is part of this stack (deleting it ` +
+          `removes its whole resource policy, and then only the cdkd record is stale — clear ` +
+          `it with 'cdkd state orphan <stack>'). Otherwise repair the record's FunctionName in ` +
+          `state.json and re-run, or remove the statement by hand ` +
+          `('aws lambda remove-permission'). ${DEPLOY_SKIP_CAVEAT}`
+      );
+      return { outcome: 'skipped', reason: PERMISSION_FUNCTION_NAME_SKIP_REASON };
     }
 
     try {

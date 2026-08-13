@@ -44,6 +44,22 @@ export const LAYER_VERSION_SKIP_REASON =
   'unparsable version in state LayerVersionArn — no delete issued';
 
 /**
+ * The deploy-side caveat both skip warnings in this file carry (issue
+ * [#1762](https://github.com/go-to-k/cdkd/issues/1762)).
+ *
+ * "Repair state.json and re-run" is only true on DESTROY, where the skip KEEPS
+ * the record. The same arms are ALSO reached from `deploy-engine.ts` and
+ * `rollback-executor.ts`, which discard the delete result and DROP the record —
+ * there the id is gone, so re-running cannot help and the resource has to be
+ * removed by hand. Mirrors the caveat `compositeIdFormatMessage` already
+ * carries for the composite-id family.
+ */
+const DEPLOY_SKIP_CAVEAT =
+  `NOTE this arm is ALSO reached from cdkd deploy (the DELETE of a resource removed from the ` +
+  `template, plus the replacement / rollback deletes), which DROP the state record and report ` +
+  `success (https://github.com/go-to-k/cdkd/issues/1762) — there, remove the resource by hand.`;
+
+/**
  * AWS Lambda LayerVersion Provider
  *
  * Implements resource provisioning for AWS::Lambda::LayerVersion using the Lambda SDK.
@@ -200,12 +216,20 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
     // Neither means the layer version is GONE — cdkd simply cannot name it in
     // a DeleteLayerVersion call, so the version stays published in AWS. The
     // repair is in state.json (or a re-import), which is what the reason says.
+    //
+    // The ARN is the ONLY source here, unlike the Lambda-permission and
+    // IAM-policy arms which fall back to a second one: `DeleteLayerVersion`
+    // needs LayerName AND VersionNumber, and the version is AWS-assigned, so it
+    // appears nowhere in the template properties. Nor does "LEFT IN PLACE" need
+    // the in-stack-parent qualifier those two carry — a layer version is
+    // standalone, so nothing else in the destroy removes it on its way out.
     const arnParts = physicalId.split(':');
     if (arnParts.length < 8) {
       this.logger.warn(
         `Invalid LayerVersionArn format: ${physicalId}, skipping deletion — no AWS call is ` +
-          `issued, so the layer version is LEFT IN PLACE. Repair the physicalId in state.json ` +
-          `and re-run, or delete the layer version by hand.`
+          `issued, so the layer version is LEFT IN PLACE and still counts against the account's ` +
+          `storage quota. Repair the physicalId in state.json and re-run, or delete the layer ` +
+          `version by hand. ${DEPLOY_SKIP_CAVEAT}`
       );
       return { outcome: 'skipped', reason: LAYER_ARN_SKIP_REASON };
     }
@@ -215,8 +239,9 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
     if (isNaN(versionNumber)) {
       this.logger.warn(
         `Could not parse version number from ARN: ${physicalId}, skipping deletion — no AWS ` +
-          `call is issued, so the layer version is LEFT IN PLACE. Repair the physicalId in ` +
-          `state.json and re-run, or delete the layer version by hand.`
+          `call is issued, so the layer version is LEFT IN PLACE and still counts against the ` +
+          `account's storage quota. Repair the physicalId in state.json and re-run, or delete ` +
+          `the layer version by hand. ${DEPLOY_SKIP_CAVEAT}`
       );
       return { outcome: 'skipped', reason: LAYER_VERSION_SKIP_REASON };
     }

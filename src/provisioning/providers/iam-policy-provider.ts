@@ -26,13 +26,31 @@ import type {
 } from '../../types/resource.js';
 
 /**
- * The short `ResourceDeleteResult.reason` the empty-policy-name DELETE arm
+ * The short `ResourceDeleteResult.reason` the no-policy-name DELETE arm
  * reports (issue [#1770](https://github.com/go-to-k/cdkd/issues/1770)).
  *
  * Rendered inline on the destroy status line, so it is the SHORT form; the full
- * remediation sentence goes out as the `logger.warn` beside it.
+ * remediation sentence goes out as the `logger.warn` beside it. It says "in
+ * state" rather than "in physicalId" because the arm is only reached once BOTH
+ * sources have been exhausted — the physicalId and `properties['PolicyName']`.
  */
-export const POLICY_NAME_SKIP_REASON = 'empty policy name in physicalId — no delete issued';
+export const POLICY_NAME_SKIP_REASON = 'no policy name in state — no delete issued';
+
+/**
+ * The deploy-side caveat the skip warning in this file carries (issue
+ * [#1762](https://github.com/go-to-k/cdkd/issues/1762)).
+ *
+ * "Repair state.json and re-run" is only true on DESTROY, where the skip KEEPS
+ * the record. The same arm is ALSO reached from `deploy-engine.ts` and
+ * `rollback-executor.ts`, which discard the delete result and DROP the record —
+ * there the id is gone, so re-running cannot help and the resource has to be
+ * removed by hand. Mirrors the caveat `compositeIdFormatMessage` already
+ * carries for the composite-id family.
+ */
+const DEPLOY_SKIP_CAVEAT =
+  `NOTE this arm is ALSO reached from cdkd deploy (the DELETE of a resource removed from the ` +
+  `template, plus the replacement / rollback deletes), which DROP the state record and report ` +
+  `success (https://github.com/go-to-k/cdkd/issues/1762) — there, remove the resource by hand.`;
 
 /**
  * AWS IAM Policy Provider
@@ -359,17 +377,38 @@ export class IAMPolicyProvider implements ResourceProvider {
     this.logger.debug(`Deleting IAM policy ${logicalId}: ${physicalId}`);
 
     // Physical ID is the policy name (new format) or "policyName:roleName" (old format)
-    const policyName = physicalId.includes(':') ? physicalId.split(':')[0] : physicalId;
+    const policyNameFromPhysicalId = physicalId.includes(':')
+      ? physicalId.split(':')[0]
+      : physicalId;
 
-    // Issue #1770: every Delete*Policy call below is addressed by PolicyName.
-    // An empty one (physicalId `''` or leading `:`) leaves nothing to send, and
-    // the inline policy stays attached to its roles / groups / users — live
-    // permissions outliving the stack. That is a SKIP, not a delete.
+    // Issue #1770: every Delete*Policy call below is addressed by PolicyName,
+    // and an empty one (physicalId `''` or a leading `:`) leaves nothing to
+    // send. But the physicalId is not the only source — `PolicyName` is in
+    // `handledProperties`, and `create()` uses `properties['PolicyName']`
+    // verbatim as the real AWS name when the template sets it, so a record
+    // whose physicalId lost the name may still carry it. The physicalId stays
+    // FIRST (it is what was actually deployed, and it is the only source in the
+    // generated-name case where the template set no PolicyName); properties are
+    // the fallback. Skipping is expensive now — it preserves the record and
+    // exits non-zero — so both sources are exhausted before reporting one.
+    //
+    // The `typeof` check is load-bearing and the emptiness check is NOT: a
+    // non-string `PolicyName` (a number, an unresolved intrinsic object) would
+    // otherwise be handed to `DeleteRolePolicy` as-is, while an empty string is
+    // already falsy and falls through the `||` to the skip below.
+    const policyNameFromProperties =
+      typeof properties?.['PolicyName'] === 'string' ? properties['PolicyName'] : undefined;
+    const policyName = policyNameFromPhysicalId || policyNameFromProperties;
+
     if (!policyName) {
       this.logger.warn(
-        `Invalid physical ID format: ${physicalId}, skipping deletion — no AWS call is issued, ` +
-          `so the inline policy is LEFT ATTACHED to its roles / groups / users. Repair the ` +
-          `physicalId in state.json and re-run, or delete the inline policy by hand.`
+        `Invalid physical ID format: ${physicalId}, and no PolicyName in the state record's ` +
+          `properties — skipping deletion. No AWS call is issued, so the inline policy is LEFT ` +
+          `ATTACHED to its roles / groups / users, UNLESS the role / group / user it is attached ` +
+          `to is itself part of this stack (deleting that principal removes its inline policies, ` +
+          `and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack>'). ` +
+          `Otherwise repair the physicalId in state.json and re-run, or delete the inline policy ` +
+          `by hand. ${DEPLOY_SKIP_CAVEAT}`
       );
       return { outcome: 'skipped', reason: POLICY_NAME_SKIP_REASON };
     }

@@ -1187,6 +1187,50 @@ the destroy line must be able to say WHICH half of the record is broken), and
 the wording is pinned by a test. Do NOT reach for a skip when you know the
 resource is gone: it would preserve state and fail the destroy for no reason.
 
+**EXHAUST every addressable source before reporting a skip** (the #1770 code
+review, and the reason a skip is not a free "safe" default). A skip is not
+inert: it preserves the state record, prints a warning and makes `cdkd destroy`
+exit 2 — and it repeats on every re-run, so the destroy can never go green. So
+a guard reading ONE source and skipping is a defect wherever a second source
+carries the same value. Two of the eight arms were exactly that. The Lambda
+permission guard read only `properties['FunctionName']`, while the physicalId's
+documented `<functionArn>|<statementId>` shape — the same shape the code
+immediately below it already splits for the statementId — carries the function
+ARN, which `RemovePermission` accepts as `FunctionName`. The IAM policy guard
+derived the name only from the physicalId, while `PolicyName` is in
+`handledProperties` and `create()` uses it VERBATIM as the real AWS name. The
+audit question is "what else in the bag or the id names this resource", and it
+is worth asking at every skip arm; the other six have genuinely no second
+source (a layer's version number is AWS-assigned and appears in no property, a
+Custom Resource's teardown needs the `ServiceToken`, and a
+`UserToGroupAddition`'s physicalId is just the logicalId). Order the sources by
+what was DEPLOYED, not by convenience: the physicalId wins over
+`properties['PolicyName']`, because a template edit that changed the name
+without a replacement having landed would otherwise send a `DeleteRolePolicy`
+for a name AWS never had.
+
+**"LEFT IN PLACE" is FALSE when the resource's parent is in the same stack**
+(same review). After a skip the destroy keeps going, and for four of the eight
+arms the very next deletes remove the skipped resource anyway — `deleteGroup`
+-> `removeAllUsersFromGroup` and `deleteUser` -> `removeUserFromAllGroups`
+remove exactly those memberships, deleting a Lambda function drops its whole
+resource policy, deleting an IAM role drops its inline policies. So AWS ends
+CLEAN while cdkd prints a warning claiming an orphan, exits 2, keeps the record
+and repeats forever. Qualify the wording ("unless the group / function / role
+is itself part of this stack") and name `cdkd state orphan <stack>` as what
+clears the record. Do NOT copy the qualifier onto an arm where it is false — a
+Lambda layer version is standalone and a Custom Resource's external side
+effects are undone by nothing — since a false reassurance is worse than the
+warning it softens.
+
+**"Repair state.json and re-run" is only true on DESTROY.** The same arms are
+reached from `deploy-engine.ts` and `rollback-executor.ts`, which discard the
+delete result and DROP the record (issue #1762), so there the id is gone and
+re-running cannot help. Every skip warning carries the caveat
+`compositeIdFormatMessage` already carries for the composite-id family; a
+remedy that is impossible on the path the user is actually on is worse than no
+remedy.
+
 **A DEBUG level is not evidence that an arm is routine** (the #1770 judgment
 call, worth re-running rather than inheriting). The two `UserToGroupAddition`
 arms logged at DEBUG, which reads as "nothing to do" — but `GroupName` and

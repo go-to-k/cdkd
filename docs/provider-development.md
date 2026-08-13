@@ -1702,6 +1702,33 @@ arms in `custom-resource-provider.ts`, the empty-policy-name arm in
 `iam-user-group-provider.ts`. Each exports its `reason` as a named constant
 beside the provider, so the wording is pinned by a test instead of retyped.
 
+Three lessons from that issue's code review are worth reusing before you add a
+skip arm of your own.
+
+**Exhaust every addressable source first.** A skip is not a free "safe"
+default: it preserves the record, warns, and exits 2 — on every re-run, so the
+destroy can never go green. Two of the eight arms were skipping although a
+second source held the value. `RemovePermission` accepts a full ARN as
+`FunctionName`, and the physicalId's documented
+`<functionArn>|<statementId>` shape carries one; `PolicyName` is in
+`handledProperties` and `create()` uses it verbatim as the real AWS name. Order
+the sources by what was DEPLOYED — the physicalId wins over the property, or a
+template edit that renamed the policy without a replacement having landed would
+send a delete for a name AWS never had.
+
+**"LEFT IN PLACE" is false when the parent is in the same stack.** The destroy
+keeps going after a skip, and `deleteGroup` / `deleteUser` remove exactly those
+memberships, a deleted Lambda function drops its whole resource policy, a
+deleted IAM role drops its inline policies. Qualify the wording and name
+`cdkd state orphan <stack>`; do not copy the qualifier onto an arm where it is
+false (a layer version and a Custom Resource's external side effects are undone
+by nothing).
+
+**"Repair state.json and re-run" is only true on destroy** — the deploy engine
+and rollback executor DROP the record (issue
+[#1762](https://github.com/go-to-k/cdkd/issues/1762)), so every skip warning
+carries the same caveat `compositeIdFormatMessage` does.
+
 Two judgment calls from that issue are worth reusing. The
 `UserToGroupAddition` arms logged at DEBUG, which read as "routine, nothing to
 do" — but `GroupName` and `Users` are both REQUIRED by the CloudFormation
