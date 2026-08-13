@@ -19,6 +19,12 @@ import { stringifyValue, stringifyAttributeForLog } from '../utils/stringify.js'
 import { assumeRoleForCrossAccountStateRead, parseIamRoleArn } from '../utils/role-arn.js';
 import { resolveCrossAccountStateBucket } from '../utils/aws-region-resolver.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
+import {
+  s3BucketDomainName,
+  s3BucketDualStackDomainName,
+  s3BucketRegionalDomainName,
+  s3BucketWebsiteUrl,
+} from '../utils/s3-endpoints.js';
 import { IntrinsicResolutionRefusalError } from '../utils/error-handler.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState, StateImportEntry, StateOutputReadEntry } from '../types/state.js';
@@ -1894,11 +1900,13 @@ export class IntrinsicFunctionResolver {
         case 'Arn':
           return `arn:${partition}:s3:::${physicalId}`;
         case 'DomainName':
-          return `${physicalId}.s3.amazonaws.com`;
+          return s3BucketDomainName(physicalId, region);
         case 'RegionalDomainName':
-          return `${physicalId}.s3.${region}.amazonaws.com`;
+          return s3BucketRegionalDomainName(physicalId, region);
+        case 'DualStackDomainName':
+          return s3BucketDualStackDomainName(physicalId, region);
         case 'WebsiteURL':
-          return `http://${physicalId}.s3-website-${region}.amazonaws.com`;
+          return s3BucketWebsiteUrl(physicalId, region);
         default:
           return this.guardedPhysicalIdFallback(logicalId, attributeName, resourceType, physicalId);
       }

@@ -59,6 +59,13 @@ import {
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
+import {
+  s3BucketDomainName,
+  s3BucketDualStackDomainName,
+  s3BucketRegionalDomainName,
+  s3BucketWebsiteUrl,
+} from '../../utils/s3-endpoints.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
@@ -1618,11 +1625,11 @@ export class S3BucketProvider implements ResourceProvider {
   private async buildAttributes(bucketName: string): Promise<Record<string, unknown>> {
     const region = await this.getRegion();
     return {
-      Arn: `arn:aws:s3:::${bucketName}`,
-      DomainName: `${bucketName}.s3.amazonaws.com`,
-      DualStackDomainName: `${bucketName}.s3.dualstack.${region}.amazonaws.com`,
-      RegionalDomainName: `${bucketName}.s3.${region}.amazonaws.com`,
-      WebsiteURL: `http://${bucketName}.s3-website-${region}.amazonaws.com`,
+      Arn: `arn:${derivePartitionAndUrlSuffix(region).partition}:s3:::${bucketName}`,
+      DomainName: s3BucketDomainName(bucketName, region),
+      DualStackDomainName: s3BucketDualStackDomainName(bucketName, region),
+      RegionalDomainName: s3BucketRegionalDomainName(bucketName, region),
+      WebsiteURL: s3BucketWebsiteUrl(bucketName, region),
     };
   }
 
