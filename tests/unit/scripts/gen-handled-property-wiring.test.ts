@@ -1967,13 +1967,19 @@ describe('the shipped --check command', () => {
     // WRITER did not print it at all, which is the path CI runs and the path an
     // author runs when regenerating (the #1808 shape), so the sole stated
     // mitigation was absent exactly where it was needed.
+    // The DEPTH half is asserted too. Round 4 found the pairs figure pinned by
+    // nothing; the field added to fix that then shipped unasserted itself —
+    // stripping `(N evidence entries)` from all four print sites left the suite
+    // green, two lines from the sibling assertion for pairs.
     const checked = runCheck();
     expect(checked.status).toBe(0);
-    expect(checked.stderr).toMatch(/graded \d+\/\d+ pairs/);
+    expect(checked.stderr).toMatch(/graded \d+\/\d+ pairs, \d+ evidence entries/);
 
     const written = run([`--out-dir=${join(scratch, 'out-graded-line')}`]);
     expect(written.status).toBe(0);
-    expect(written.stderr, 'the WRITER must print it too').toMatch(/graded \d+\/\d+ pairs/);
+    expect(written.stderr, 'the WRITER must print it too').toMatch(
+      /graded \d+\/\d+ pairs \(\d+ evidence entries\)/
+    );
   }, SPAWN_TIMEOUT_MS);
 
   it('the refusal NAMES the pair counts and the remediation flag', () => {
@@ -1981,7 +1987,7 @@ describe('the shipped --check command', () => {
     // Without it, stripping the counts and the flag from the refusal is green.
     const { status, stderr } = runCheck(undefined, ['--baseline=/nonexistent-baseline.json']);
     expect(status).toBe(1);
-    expect(stderr).toMatch(/Graded \d+\/\d+ pairs/);
+    expect(stderr).toMatch(/Graded \d+\/\d+ pairs \(\d+ evidence entries\)/);
     expect(stderr).toContain(ACCEPT_MISSING_BASELINE_FLAG);
   }, SPAWN_TIMEOUT_MS);
 
@@ -2164,7 +2170,7 @@ describe('the shipped --check command', () => {
     const c = run([`--out-dir=${outDir('c')}`, UNUSABLE_BASELINE, ACCEPT_MISSING_BASELINE_FLAG]);
     expect(c.status, 'baseline waiver must waive an unusable baseline').toBe(0);
     expect(c.stderr).toContain('ACCEPTED MISSING BASELINE');
-    expect(c.stderr).toContain('grades 0/');
+    expect(c.stderr).toMatch(/0\/\d+ pairs\n\(0 evidence entries\)/);
     expect(c.stderr).toContain('/nonexistent-baseline.json');
     expect(existsSync(join(outDir('c'), 'handled-property-wiring.json'))).toBe(true);
 
@@ -2184,7 +2190,7 @@ describe('the shipped --check command', () => {
     expect(c2.stderr, 'the waiver must ANNOUNCE, not write silently').toContain(
       'ACCEPTED MISSING BASELINE'
     );
-    expect(c2.stderr).toContain('grades 0/');
+    expect(c2.stderr).toMatch(/0\/\d+ pairs\n\(0 evidence entries\)/);
     expect(existsSync(join(outDir('c2'), 'handled-property-wiring.json'))).toBe(true);
 
     // 4. baseline waiver + loss condition -> REFUSED (the mirror of 2).
@@ -2492,6 +2498,25 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
       expect(a.defect, why).toBe('evidence-stripped');
       expect(a.detail, why).toContain(expected);
     }
+
+    // ...and the SAME one-sided fixture fences the `provable` OR, which an
+    // earlier revision called unfenceable "because no input can distinguish
+    // them downstream of condition 2". Both halves of that were wrong:
+    // `provable` is computed UPSTREAM of condition 2, and these counts are
+    // returned on every failure path (and printed, and written on under
+    // `--accept-missing-baseline`). A one-sided entry is still provable — it can
+    // lose the side it has — so narrowing to `&&` undercounts by exactly one.
+    const oneSided = assessBaseline(
+      patch((x) => ({ ...x, status: 'gap' as const, evidence: [] })),
+      live
+    );
+    const intact = assessBaseline(real, live);
+    expect(oneSided.gradedPairs, 'the one-sided entry stays provable under `||`').toBe(
+      intact.gradedPairs
+    );
+    expect(oneSided.gradedDepth, 'it contributes only the side it still has').toBe(
+      intact.gradedDepth - real.classes[ci]!.properties[pi]!.evidence.length
+    );
   });
 
   it('measures the DEPTH of the record, not just pair presence', () => {
@@ -2532,6 +2557,39 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
     expect(after.gradedDepth, 'depth is not').toBe(
       intact.gradedDepth - (before.seededBy.length - 1)
     );
+  });
+
+  it('sums depth over the INTERSECTION with the live tree, not the whole baseline', () => {
+    // The correlation trap, third instance: every other depth fixture grades the
+    // committed matrix against the live tree, and those are IDENTICAL — so
+    // "sum over the intersection" and "sum over all baseline entries" cannot be
+    // told apart by real data, and forcing the latter left 145/145 green.
+    //
+    // It matters because a SUPERSET baseline is explicitly admitted (an older
+    // checked-out matrix), and summing the whole thing would over-report the
+    // announced depth — the same "the number claims presence, not provable
+    // content" defect this metric was added to fix, one level along.
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
+    const narrowed: HandledPropertyWiringReport = {
+      ...live,
+      classes: live.classes.slice(0, 10),
+    };
+    const a = assessBaseline(real, narrowed);
+    const expectedPairs = narrowed.classes.reduce((n, c) => n + c.properties.length, 0);
+    const baselineByKey = new Map(
+      real.classes.flatMap((c) => c.properties.map((p) => [allowKey(c.className, p.name), p] as const))
+    );
+    const expectedDepth = narrowed.classes
+      .flatMap((c) => c.properties.map((p) => baselineByKey.get(allowKey(c.className, p.name))))
+      .reduce((n, p) => n + (p ? p.evidence.length + p.seededBy.length : 0), 0);
+
+    expect(a.currentPairs).toBe(expectedPairs);
+    expect(a.gradedDepth, 'only the 10 classes being graded may contribute').toBe(expectedDepth);
+    // The discriminator: the whole baseline is far deeper than the slice.
+    const wholeBaselineDepth = real.classes
+      .flatMap((c) => c.properties)
+      .reduce((n, p) => n + p.evidence.length + p.seededBy.length, 0);
+    expect(a.gradedDepth).toBeLessThan(wholeBaselineDepth);
   });
 
   it('counts as GRADED only the pairs the baseline could actually fail on', () => {

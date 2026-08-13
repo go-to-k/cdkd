@@ -1558,12 +1558,25 @@ export interface BaselineAssessment {
  * A FOURTH, and the minimal one: any baseline entry may be weakened to a
  * non-empty SUBSET of what the current tree proves — trimming one `seededBy`
  * hides a real loss and moves no pair count at all. That is why the announced
- * metric now carries DEPTH (`evidence` + `seededBy` entries) as well as pairs:
- * the pair count is binary per pair and cannot see a record being thinned,
- * while the depth moves (measured: 5384 -> 5382 on exactly that tamper). None
- * of the four is REFUSED — they are self-consistent baselines describing real
- * trees — but each now costs a visible number on every exit-0 path, which is
- * the honest guarantee rather than a claim of closure.
+ * metric carries DEPTH (`evidence` + `seededBy` entries) as well as pairs: the
+ * pair count is binary per pair and cannot see a record being thinned, while
+ * the depth falls by EXACTLY THE NUMBER OF ENTRIES REMOVED. Stated as that
+ * formula rather than as a constant, because three correct measurements
+ * disagree until the probe is named: from the 5384 baseline, dropping two of
+ * `ApiGatewayProvider#CloudWatchRoleArn`'s four seeds gives 5382; trimming
+ * `ACMCertificateProvider#CertificateAuthorityArn`'s two seeds to one gives
+ * 5383; hiding `DynamoDBTableProvider#WarmThroughput` entirely gives 5378.
+ * None of the four shapes is REFUSED — they are self-consistent baselines
+ * describing real trees — but each costs a visible number on every exit-0 path.
+ *
+ * THE BOUND ON THAT GUARANTEE, since depth is a global SUM and therefore
+ * COMPENSABLE: a tree that loses one seed while genuinely gaining another,
+ * with the baseline hand-edited at BOTH sites (adding only entries the current
+ * tree proves, so no false loss is reported), produces stderr byte-identical to
+ * a clean run. Closing that needs a per-PAIR comparison of depth, which is a
+ * different critic — this one defends against the ACCIDENTAL shapes, and a
+ * two-site compensating hand-edit is not one. Documented, deliberately not
+ * chased.
  */
 export function assessBaseline(
   baseline: HandledPropertyWiringReport | null,
@@ -1594,13 +1607,18 @@ export function assessBaseline(
     for (const p of c.properties) {
       const key = allowKey(c.className, p.name);
       known.add(key);
-      // The `||` here is deliberately NOT narrowed to `&&`: narrowing would
-      // only ever UNDERCOUNT graded pairs, i.e. fail closed, and once condition
-      // 2 has passed the two are equivalent anyway — the biconditional
-      // guarantees a wired entry carries both fields and a non-wired one
-      // carries neither, so no baseline reaching the comparison has a one-sided
-      // entry. Noted rather than fenced, because no input can distinguish them
-      // downstream of condition 2.
+      // `||`, not `&&`: a ONE-SIDED entry can still produce a loss, so narrowing
+      // would undercount the pairs this baseline can fail on.
+      //
+      // An earlier revision said this was unfenceable "because no input can
+      // distinguish them downstream of condition 2". That was FALSE twice over,
+      // and is the shape `absence_rationale_goes_stale_silently` warns about —
+      // nobody re-tests a claim that says testing is impossible. `provable` is
+      // computed UPSTREAM of condition 2, and `base` (carrying these counts) is
+      // returned on every failure path, so a stripped baseline reaches the
+      // caller and PRINTS them; `--accept-missing-baseline` even writes on it.
+      // Measured with the existing one-sided fixture: 1136 pairs under `||`,
+      // 1135 under `&&`. Fenced.
       if (p.evidence.length > 0 || p.seededBy.length > 0) {
         provable.set(key, p.evidence.length + p.seededBy.length);
       }
@@ -2233,10 +2251,10 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
     // exactly why it is a separate flag from the loss waiver.
     process.stderr.write(
       `handled-property-wiring: ACCEPTED MISSING BASELINE (${ACCEPT_MISSING_BASELINE_FLAG}) — the\n` +
-        `baseline at ${baselinePath} grades ${assessment.gradedPairs}/${assessment.currentPairs} pairs\n` +
-        `(${assessment.gradedDepth} evidence entries), so this run was graded\n` +
-        'against NOTHING and the file below becomes the new baseline unreviewed. Legitimate\n' +
-        'only for a first-ever generation.\n'
+        `baseline at ${baselinePath} was REFUSED as unusable and the waiver overrode that, so\n` +
+        'this run was not graded against a trustworthy baseline and the file below becomes the\n' +
+        `new baseline unreviewed. What it did reach: ${assessment.gradedPairs}/${assessment.currentPairs} pairs\n` +
+        `(${assessment.gradedDepth} evidence entries). Legitimate only for a first-ever generation.\n`
     );
   }
 
