@@ -671,6 +671,127 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
     });
   });
 
+  describe('partial blocks and the member lists (regression round 3)', () => {
+    // `namesSendable` used `some`, so ONE literal member licensed the whole
+    // block and an intrinsic-valued sibling was dropped with no message: a
+    // cross-account link silently retargeted at the caller's own catalog. Both
+    // re-reviewers found it independently.
+    it('create() refuses a block that MIXES sendable members with unreadable ones', async () => {
+      await expect(
+        provider.create('L', 'AWS::Glue::Database', {
+          DatabaseInput: {
+            Name: 'db',
+            TargetDatabase: { DatabaseName: 'sourcedb', CatalogId: { Ref: 'Acct' } },
+          },
+        })
+      ).rejects.toThrow(/declares no member cdkd can send|NARROWED/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('update() RETAINS the previous block rather than shipping the narrowed one', async () => {
+      mockSend.mockResolvedValueOnce({ Database: { Parameters: {} } });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'mydb',
+        'AWS::Glue::Database',
+        {
+          DatabaseInput: {
+            Name: 'mydb',
+            TargetDatabase: { DatabaseName: 'sourcedb', CatalogId: { Ref: 'Acct' } },
+          },
+        },
+        {
+          DatabaseInput: {
+            Name: 'mydb',
+            TargetDatabase: { DatabaseName: 'sourcedb', CatalogId: '123456789012' },
+          },
+        }
+      );
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({
+        Name: 'mydb',
+        TargetDatabase: { DatabaseName: 'sourcedb', CatalogId: '123456789012' },
+      });
+    });
+
+    // The member-name lists (`TARGET_DATABASE_MEMBERS` /
+    // `FEDERATED_DATABASE_MEMBERS`) must stay in step with the per-member
+    // writes. Asserting each member ALONE fences BOTH directions: dropping a
+    // name makes that block unsendable (refused), and adding one the builder
+    // never writes makes the block build EMPTY.
+    it.each([
+      ['CatalogId', '123456789012'],
+      ['DatabaseName', 'sourcedb'],
+      ['Region', 'us-west-2'],
+    ])('a TargetDatabase naming only %s reaches AWS', async (member, value) => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.create('L', 'AWS::Glue::Database', {
+        DatabaseInput: { Name: 'db', TargetDatabase: { [member]: value } },
+      });
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({
+        Name: 'db',
+        TargetDatabase: { [member]: value },
+      });
+    });
+
+    it.each([
+      ['ConnectionName', 'my-connection'],
+      ['Identifier', 'ext'],
+    ])('a FederatedDatabase naming only %s reaches AWS', async (member, value) => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.create('L', 'AWS::Glue::Database', {
+        DatabaseInput: { Name: 'db', FederatedDatabase: { [member]: value } },
+      });
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({
+        Name: 'db',
+        FederatedDatabase: { [member]: value },
+      });
+    });
+
+    it('refuses a boolean and a non-finite number as leaf values', async () => {
+      // `isSendableLeaf` accepts a string or a FINITE number only — the same
+      // rule `catalogIdForApi` applies one indirection over.
+      for (const bad of [true, Number.NaN, Number.POSITIVE_INFINITY]) {
+        await expect(
+          provider.create('L', 'AWS::Glue::Database', {
+            DatabaseInput: { Name: 'db', TargetDatabase: { DatabaseName: bad } },
+          })
+        ).rejects.toThrow(/declares no member cdkd can send|NARROWED/);
+      }
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('coerces a numeric DataLakePrincipalIdentifier like every other leaf', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.create('L', 'AWS::Glue::Database', {
+        DatabaseInput: {
+          Name: 'db',
+          CreateTableDefaultPermissions: [
+            { Permissions: ['ALL'], Principal: { DataLakePrincipalIdentifier: 123456789012 } },
+          ],
+        },
+      });
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({
+        Name: 'db',
+        CreateTableDefaultPermissions: [
+          { Permissions: ['ALL'], Principal: { DataLakePrincipalIdentifier: '123456789012' } },
+        ],
+      });
+    });
+  });
+
   describe('getDriftUnknownPaths()', () => {
     // AWS materializes a Lake Formation DEFAULT for a database that declared no
     // block, and the observedProperties baseline walks the key UNION - so a
@@ -772,7 +893,10 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
 
       const result = await provider.readCurrentState('plaindb', 'L', 'AWS::Glue::Database');
 
-      expect(result).toEqual({
+      // `toStrictEqual`: `toEqual` ignores an `undefined`-valued key, and such a
+      // key SURVIVES the structuredClone into state, where the drift union-walk
+      // reads `Object.keys` and would see a key the other side lacks.
+      expect(result).toStrictEqual({
         DatabaseInput: { Name: 'plaindb', Description: '', Parameters: {} },
         DatabaseName: 'plaindb',
       });

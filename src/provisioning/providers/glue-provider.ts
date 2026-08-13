@@ -1441,9 +1441,20 @@ export class GlueProvider implements ResourceProvider {
       block: string,
       members: readonly string[]
     ): Record<string, unknown> | undefined => {
-      const namesSendable = (bag: Record<string, unknown> | undefined): boolean =>
-        bag !== undefined &&
-        members.some((m) => typeof bag[m] === 'string' || typeof bag[m] === 'number');
+      // Usable means EVERY declared member that is present is sendable, AND at
+      // least one is. `some` alone was the silent-narrowing shape this guard
+      // exists to refuse (both re-reviewers found it): one literal member would
+      // license the block while an intrinsic-valued sibling was dropped with no
+      // message, so `{DatabaseName: 'src', CatalogId: {Ref: 'Acct'}}` shipped
+      // WITHOUT `CatalogId` — a cross-account resource link silently retargeted
+      // at the caller's own catalog. It also made the guard's strictness depend
+      // on siblings: `{CatalogId: {Ref}}` alone was refused, the same value next
+      // to a literal `DatabaseName` was not.
+      const namesSendable = (bag: Record<string, unknown> | undefined): boolean => {
+        if (bag === undefined) return false;
+        const present = members.filter((m) => bag[m] !== undefined);
+        return present.length > 0 && present.every((m) => isSendableLeaf(bag[m]));
+      };
       const desired = guardOptions
         ? requireConfigObject(desiredRaw, path, guardOptions)
         : requireConfigObject(desiredRaw, path);
@@ -1556,10 +1567,12 @@ export class GlueProvider implements ResourceProvider {
           const declaredPrincipal = asRecord(entry['Principal']);
           if (declaredPrincipal !== undefined) {
             const principal: DataLakePrincipal = {};
-            if (declaredPrincipal['DataLakePrincipalIdentifier'] !== undefined) {
-              principal.DataLakePrincipalIdentifier = declaredPrincipal[
-                'DataLakePrincipalIdentifier'
-              ] as string;
+            if (isSendableLeaf(declaredPrincipal['DataLakePrincipalIdentifier'])) {
+              // Coerced like every other leaf: the entry guard accepts a NUMBER
+              // (CFn is stringly typed), and the SDK member is a string.
+              principal.DataLakePrincipalIdentifier = String(
+                declaredPrincipal['DataLakePrincipalIdentifier']
+              );
             }
             permission.Principal = principal;
           }
@@ -3487,8 +3500,11 @@ function parameterKeySet(value: unknown): Set<string> {
  * The CFn members of the two `DatabaseInput` object blocks, as the SENDABLE-ness
  * test sees them. They must stay in step with the per-member writes in
  * `buildDatabaseInput` — a name here that the builder does not write would let
- * an unsendable block through, and one the builder writes but this list omits
- * would refuse a valid template. The unit suite covers both directions.
+ * an EMPTY block onto the wire, and one the builder writes but this list omits
+ * would refuse a valid template that names only it. The unit suite fences both
+ * directions by asserting each member ALONE reaches AWS, which fails on a
+ * dropped entry (the member stops being sendable) and on an added one (the
+ * block builds empty).
  */
 const TARGET_DATABASE_MEMBERS = ['CatalogId', 'DatabaseName', 'Region'] as const;
 const FEDERATED_DATABASE_MEMBERS = ['ConnectionName', 'Identifier'] as const;
@@ -3500,7 +3516,7 @@ const FEDERATED_DATABASE_MEMBERS = ['ConnectionName', 'Identifier'] as const;
  * intrinsic cannot ride an unchecked cast into the request.
  */
 const isSendableLeaf = (value: unknown): boolean =>
-  typeof value === 'string' || typeof value === 'number';
+  typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
 
 /**
  * The refusal sentence for a `DatabaseInput` block that IS a plain object and
@@ -3508,9 +3524,12 @@ const isSendableLeaf = (value: unknown): boolean =>
  * Shared so the create refusal and the update warning cannot drift apart.
  */
 const emptyBlockMessage = (block: string): string =>
-  `AWS::Glue::Database DatabaseInput.${block} declares no member cdkd can send ` +
-  `(an unresolved intrinsic, an empty block, or only intrinsic-valued members); ` +
-  `sending it would put an empty ${block} on the wire, which Glue rejects`;
+  `AWS::Glue::Database DatabaseInput.${block} declares no member cdkd can send, ` +
+  `or mixes sendable members with unreadable ones (an unresolved intrinsic, an ` +
+  `empty block); sending it would put an empty or NARROWED ${block} on the wire. ` +
+  `On an update the previously applied block is retained when cdkd can still ` +
+  `read one, and otherwise the key is omitted — which UpdateDatabase, a ` +
+  `wholesale replace, applies as a removal`;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
