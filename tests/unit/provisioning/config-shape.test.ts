@@ -251,12 +251,17 @@ describe('onUnusable (issue #1513)', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it('says the value is ignored HERE and refused on create, so the split reads as a decision', () => {
+  it('describes THIS READ and refuses on create, so the split reads as a decision', () => {
     const warn = vi.fn();
     requireConfigString({ Ref: 'P' }, 'Active', PATH, { onUnusable: warn });
     const message = warn.mock.calls[0][0] as string;
     expect(message).toMatch(/AWS::IAM::AccessKey Status must be a non-empty string \(got an object\)/);
-    expect(message).toMatch(/Ignoring it and using the default \(Active\) here/);
+    // Issue #1735: the helper describes what IT returned, never an OUTCOME a
+    // caller's appended clause may override. "Ignoring it and using the
+    // default" claimed the latter and contradicted DynamoDBTableProvider's
+    // "the mode ... is kept".
+    expect(message).toMatch(/This read falls back to the default \(Active\)/);
+    expect(message).not.toMatch(/Ignoring it and using/);
     // Wording must stay true on a replay CREATE too, not just an update.
     expect(message).toMatch(/REFUSED on a template-path create/);
   });
@@ -304,7 +309,7 @@ describe('readConfigString container downgrade under onUnusable (issue #1544)', 
     const warn = vi.fn();
     expect(readConfigString(42, 'LogFilePrefix', '', 'AWS::S3::Bucket LoggingConfiguration', { onUnusable: warn })).toBe('');
     const message = warn.mock.calls[0][0] as string;
-    expect(message).toMatch(/takes its default here/);
+    expect(message).toMatch(/falls back to its default/);
     expect(message).not.toMatch(/default \(\)/);
   });
 
@@ -555,5 +560,91 @@ describe('configBooleanRefusal', () => {
         `${JSON.stringify(value)} refused=${coerceCfnBoolean(value) === undefined}`
       );
     }
+  });
+});
+
+describe('the onUnusable message COMPOSES with a caller clause (issue #1735)', () => {
+  // Every other assertion in this file uses a substring match, so none of them
+  // ever renders the JOINED string — which is why a live deploy was what
+  // surfaced both defects. These assert the composition itself.
+  //
+  // Callers append as `${message} <their sentence>`; the set GROWS, because
+  // `.claude/rules/providers.md` prescribes exactly such a per-site clause
+  // ("keep the PREVIOUS value" / "SKIP the block" / "SUPPRESS the diff").
+
+  /** Capture the message each guard hands its `onUnusable` callback. */
+  const capture = (run: (onUnusable: (message: string) => void) => void): string => {
+    const warn = vi.fn();
+    run(warn);
+    expect(warn).toHaveBeenCalledTimes(1);
+    return warn.mock.calls[0][0] as string;
+  };
+
+  const GUARDS: ReadonlyArray<readonly [string, (cb: (m: string) => void) => void]> = [
+    [
+      'requireConfigString',
+      (cb) =>
+        void requireConfigString('', 'PROVISIONED', 'AWS::DynamoDB::Table BillingMode', {
+          onUnusable: cb,
+        }),
+    ],
+    [
+      'readConfigString (container arm)',
+      (cb) =>
+        void readConfigString('', 'StreamViewType', 'NEW_AND_OLD_IMAGES', 'AWS::DynamoDB::GlobalTable StreamSpecification', {
+          onUnusable: cb,
+        }),
+    ],
+    [
+      'requireConfigArray',
+      (cb) => void requireConfigArray('GITHUB', 'AWS::CodeBuild::Project SecondarySources', { onUnusable: cb }),
+    ],
+    [
+      'requireConfigObject',
+      (cb) => void requireConfigObject('', 'AWS::S3::Bucket LifecycleConfiguration.Rules.Filter', { onUnusable: cb }),
+    ],
+  ];
+
+  it.each(GUARDS)('%s ends its message with a sentence separator', (_name, run) => {
+    const message = capture(run);
+    // Defect 1: without this, `${message} The mode this update...` runs two
+    // sentences together at exactly `...template-path create The mode...`.
+    expect(message.endsWith('.')).toBe(true);
+  });
+
+  it.each(GUARDS)('%s composes with an appended clause without running together', (_name, run) => {
+    const composed = `${capture(run)} The mode this update compared against (PAY_PER_REQUEST) is kept.`;
+    // The literal signature from the issue: a capitalized new sentence
+    // immediately after the un-terminated `...template-path create`.
+    expect(composed).not.toMatch(/create [A-Z]/);
+    expect(composed).toMatch(/create\. The mode/);
+  });
+
+  it('does not contradict the caller about which value reached AWS', () => {
+    // The reported composition, verbatim in shape: the helper used to assert
+    // "using the default (PROVISIONED)" while the caller asserts the compared
+    // mode "is kept" — both true of DIFFERENT things (what the helper RETURNED
+    // vs what the provider SENDS), but unreadable as one sentence.
+    const composed =
+      `AWS::DynamoDB::Table BravoTable: ` +
+      `${capture(GUARDS[0]![1])} The mode this update compared against ` +
+      `(PAY_PER_REQUEST) is kept for this update rather than flipped to the default.`;
+
+    // The helper speaks only about its own READ...
+    expect(composed).toMatch(/This read falls back to the default \(PROVISIONED\)/);
+    // ...and never claims the default is what was USED / applied / sent, which
+    // is the caller's clause to make.
+    expect(composed).not.toMatch(/Ignoring it and using the default/);
+    // The caller's answer survives intact and is the only outcome claim.
+    expect(composed).toMatch(/\(PAY_PER_REQUEST\) is kept/);
+  });
+
+  it('leaves the THROW arm unterminated — nothing composes onto those', () => {
+    // Scoped deliberately: the period exists for the append seam, and a throw
+    // message is rendered on its own. Pinning this stops a future sweep from
+    // "consistently" punctuating messages that have no composition problem.
+    expect(() => requireConfigString('', 'PROVISIONED', 'AWS::DynamoDB::Table BillingMode')).toThrow(
+      /Omit the field entirely to use the default \(PROVISIONED\)$/
+    );
   });
 });

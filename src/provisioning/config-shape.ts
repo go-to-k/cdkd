@@ -137,6 +137,40 @@
  * but a downstream refusal can still leave earlier sub-config PUTs applied —
  * the same exposure the pre-existing `applyOwnershipControls` throw has, and
  * still strictly better than a silent wrong-direction PUT.
+ *
+ * ## Every `onUnusable` message is a SENTENCE, and describes the READ only
+ *
+ * Issue #1735. Callers compose these as `${message} <their sentence>` — the
+ * `.claude/rules/providers.md` per-site clause ("keep the PREVIOUS value" /
+ * "SKIP the block" / "SUPPRESS the diff") is prescribed, so the appending set
+ * GROWS. Two defects lived in that seam, and both are fixed HERE rather than
+ * at the callers, so a future appender inherits the fix instead of repeating
+ * the bug:
+ *
+ * 1. **Terminal punctuation.** Every message ended bare, so the composition
+ *    ran two sentences together (`...template-path create The mode this
+ *    update...`). Each `onUnusable` message now ends with a period. The
+ *    `throw` arms deliberately do NOT — nothing composes onto those.
+ * 2. **The message must not claim an OUTCOME the caller overrides.**
+ *    `requireConfigString` said "Ignoring it and using the default
+ *    (PROVISIONED)" while `DynamoDBTableProvider`'s clause said the compared
+ *    mode (PAY_PER_REQUEST) "is kept" — both true of different things (what
+ *    the HELPER returned vs what the provider SENDS), but read as one sentence
+ *    the user could not tell which value reached AWS, which is the only
+ *    question the warning exists to answer. The helper now describes its own
+ *    READ ("This read falls back to the default (X)") and leaves the outcome
+ *    entirely to the caller. For a caller that appends NOTHING the read IS the
+ *    outcome, so nothing is lost there.
+ *
+ * `requireConfigArray` / `requireConfigObject` take (1) but NOT (2): they
+ * return `undefined` and every caller SKIPS, so "Leaving this configuration
+ * unapplied" is what actually happens on all of them and no caller's clause
+ * contradicts it.
+ *
+ * Every existing assertion in this family uses `stringContaining`, so none of
+ * them ever rendered the COMPOSED sentence — which is why a live run was what
+ * surfaced this. `config-shape.test.ts` carries a composition block that
+ * asserts the joined string directly.
  */
 
 /**
@@ -179,8 +213,8 @@ export function readConfigString(
       const named = fallback === '' ? '' : ` (${fallback})`;
       options.onUnusable(
         `${containerPath} must be an object ${detail}. Treating the block as empty, ` +
-          `so ${containerPath}.${key} takes its default${named} here; the same ` +
-          `value is REFUSED on a template-path create`
+          `so this read of ${containerPath}.${key} falls back to its default${named}; ` +
+          `the same value is REFUSED on a template-path create.`
       );
       return fallback;
     }
@@ -274,8 +308,8 @@ export function requireConfigString(
 
   if (options?.onUnusable) {
     options.onUnusable(
-      `${refusal}. Ignoring it and using the ` +
-        `default${named} here; the same value is REFUSED on a template-path create`
+      `${refusal}. This read falls back to the ` +
+        `default${named}; the same value is REFUSED on a template-path create.`
     );
     return fallback;
   }
@@ -357,7 +391,7 @@ export function requireConfigArray(
     if (options?.onUnusable) {
       options.onUnusable(
         `${path} must be an array ${detail}. Leaving this configuration ` +
-          `unapplied here; the same value is REFUSED on a template-path create`
+          `unapplied here; the same value is REFUSED on a template-path create.`
       );
       return undefined;
     }
@@ -422,7 +456,7 @@ export function requireConfigObject(
     if (options?.onUnusable) {
       options.onUnusable(
         `${path} must be an object ${detail}. Leaving this configuration ` +
-          `unapplied here; the same value is REFUSED on a template-path create`
+          `unapplied here; the same value is REFUSED on a template-path create.`
       );
       return undefined;
     }
