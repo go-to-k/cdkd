@@ -4,7 +4,8 @@ import { EcsTaskResolutionError } from 'cdk-local/internal';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
-import { parseEcrRegistryHost } from './ecr-puller.js';
+import { looksLikeEcrHostWithForeignSuffix, parseEcrRegistryHost } from '../utils/ecr-uri.js';
+import { getLogger } from '../utils/logger.js';
 import { matchStacks } from '../cli/stack-matcher.js';
 import {
   substituteImagePlaceholders,
@@ -1216,6 +1217,18 @@ function parseContainerImage(
   const ecrHost = parseEcrRegistryHost(substituted);
   if (ecrHost) {
     return { kind: 'ecr', uri: substituted, account: ecrHost.accountId, region: ecrHost.region };
+  }
+  // An ECR-SHAPED host whose suffix is not the one its region uses falls through
+  // to `public` below, which means an anonymous pull and, for a real registry,
+  // an opaque docker auth error. Saying so makes the partition-table gap
+  // (issue #1764) diagnosable from cdkd's side rather than only docker's.
+  if (looksLikeEcrHostWithForeignSuffix(substituted)) {
+    getLogger()
+      .child('ecs-task-resolver')
+      .debug(
+        `Image '${substituted}' has an ECR host shape but a URL suffix that does not ` +
+          `belong to its region's partition; treating it as a public image (no docker login).`
+      );
   }
 
   return { kind: 'public', uri: substituted };

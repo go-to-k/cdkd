@@ -6,6 +6,14 @@ import {
   runDockerStreaming,
 } from '../utils/docker-cmd.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
+import { parseEcrRegistryHost } from '../utils/ecr-uri.js';
+
+/** The URL suffix an ECR registry host uses in `region`'s partition (issue #1758). */
+function ecrUrlSuffix(region: string): string {
+  return derivePartitionAndUrlSuffix(region).urlSuffix;
+}
+
+export { parseEcrRegistryHost };
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 
@@ -39,20 +47,6 @@ import { getLogger } from '../utils/logger.js';
  *     `--no-pull` or pre-pull manually.
  */
 
-/**
- * Regex matching the `<acct>.dkr.ecr.<region>.<urlSuffix>/<repo>:<tag>` shape.
- *
- * The host suffix is CAPTURED rather than spelled out (issue #1758): the
- * previous pattern hardcoded `amazonaws.com` with an optional `.cn` tail, so a
- * `us-iso*` registry (`c2s.ic.gov` / `sc2s.sgov.gov`) never matched and the
- * caller silently classified a real ECR image as a user-managed one — skipping
- * the `docker login` it needs. {@link parseEcrUri} checks the captured suffix
- * against `derivePartitionAndUrlSuffix(region).urlSuffix`, so every partition
- * the shared helper knows is matched with no second literal to keep in sync
- * here.
- */
-const ECR_URI_HOST_REGEX = /^(\d{12})\.dkr\.ecr\.([^.]+)\.([^/]+)\//;
-
 export interface ParsedEcrUri {
   accountId: string;
   region: string;
@@ -77,31 +71,6 @@ export function parseEcrUri(imageUri: string): ParsedEcrUri | undefined {
     repository: m[1]!,
     tag: m[2]!,
   };
-}
-
-/**
- * The HOST half of {@link parseEcrUri}: `<acct>.dkr.ecr.<region>.<urlSuffix>/`.
- *
- * Split out because two callers need to CLASSIFY a URI as ECR without requiring
- * the `:<tag>` tail — `ecs-task-resolver.ts` decides `kind: 'ecr'` vs
- * `kind: 'public'` for a container image, which may carry a digest or no tag at
- * all. Both used to carry their own copy of the hardcoded commercial pattern,
- * so `cdkd local run-task` kept the whole of issue #1758 after the pull path was
- * fixed: outside the commercial partition the image classified as `public` and
- * `ecs-task-runner` never ran the `docker login` branch, failing with an opaque
- * anonymous-pull error. One definition, so the two cannot drift again.
- */
-export function parseEcrRegistryHost(
-  imageUri: string
-): { accountId: string; region: string } | undefined {
-  const m = ECR_URI_HOST_REGEX.exec(imageUri);
-  if (!m) return undefined;
-  const region = m[2]!;
-  // The captured suffix must be the one the region's partition actually uses.
-  // Accepting ANY suffix would classify `<acct>.dkr.ecr.<region>.example.com`
-  // as ECR and point a `docker login` at a registry cdkd does not own.
-  if (m[3] !== derivePartitionAndUrlSuffix(region).urlSuffix) return undefined;
-  return { accountId: m[1]!, region };
 }
 
 export interface EcrPullOptions {
@@ -385,8 +354,7 @@ async function ecrLogin(client: ECRClient, accountId: string, region: string): P
   // resolve outside the commercial partition whenever AWS reported no
   // `proxyEndpoint`. Commercial output is byte-identical.
   const endpoint =
-    authData.proxyEndpoint ||
-    `https://${accountId}.dkr.ecr.${region}.${derivePartitionAndUrlSuffix(region).urlSuffix}`;
+    authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.${ecrUrlSuffix(region)}`;
 
   try {
     await runDockerStreaming(['login', '--username', username, '--password-stdin', endpoint], {

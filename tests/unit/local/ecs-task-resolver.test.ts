@@ -606,6 +606,37 @@ describe('resolveEcsTaskTarget', () => {
     }
   });
 
+  it('classifies a us-iso RepositoryUri from state as ECR (issue #1758, second site)', () => {
+    // The SECOND classification site (`classifyResolvedImage`, reached via the
+    // Fn::GetAtt / Fn::Join state route) carried its own copy of the hardcoded
+    // commercial pattern. Without a non-commercial case here, only the
+    // parseContainerImage site is fenced against a partition-specific
+    // regression — the existing commercial cases would catch a full mutation of
+    // the line but not a re-hardcoded suffix.
+    const stack = buildStack('S1', {
+      MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+      TD: makeTaskDef({ image: { 'Fn::GetAtt': ['MyRepo', 'RepositoryUri'] } }),
+    });
+    const stateResources: Record<string, ResourceState> = {
+      MyRepo: {
+        physicalId: 'deployed-repo-name',
+        resourceType: 'AWS::ECR::Repository',
+        properties: {},
+        attributes: {
+          RepositoryUri: '210987654321.dkr.ecr.us-iso-east-1.c2s.ic.gov/deployed-repo-name',
+        },
+        dependencies: [],
+      },
+    };
+    const r = resolveEcsTaskTarget('TD', [stack], { stateResources });
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('ecr');
+    if (img.kind === 'ecr') {
+      expect(img.region).toBe('us-iso-east-1');
+      expect(img.account).toBe('210987654321');
+    }
+  });
+
   it('plain string image stays a public pass-through regardless of context', () => {
     const stack = buildStack('S1', { TD: makeTaskDef({ image: 'nginx:alpine' }) });
     const r = resolveEcsTaskTarget('TD', [stack], {
