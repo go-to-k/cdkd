@@ -325,7 +325,7 @@ fi
 # "defines only pk" assertion is vacuous — it would hold for a table that never
 # had `gsipk` in the first place, which is exactly the pre-#1741 fixture shape.
 GTO_V1_ATTRS="$(aws dynamodb describe-table --table-name "${GTO_NAME_V1}" \
-  --query 'sort(Table.AttributeDefinitions[].AttributeName) | join(`,`, @)' --output text)"
+  --query 'sort(Table.AttributeDefinitions[].AttributeName || `[]`) | join(`,`, @)' --output text)"
 if [ "${GTO_V1_ATTRS}" != "gsipk,pk" ]; then
   echo "FAIL: phase 1: ${GTO_NAME_V1} defines '${GTO_V1_ATTRS}', expected 'gsipk,pk'." >&2
   echo "      Phase 4's post-omit 'only pk' check would be vacuous -- the index" >&2
@@ -632,7 +632,7 @@ fi
 #
 # The WIRE half first: `gsipk` must not be defined on the re-created table.
 GTO_LIVE_ATTRS="$(aws dynamodb describe-table --table-name "${GTO_NAME_V1}" \
-  --query 'sort(Table.AttributeDefinitions[].AttributeName) | join(`,`, @)' --output text)"
+  --query 'sort(Table.AttributeDefinitions[].AttributeName || `[]`) | join(`,`, @)' --output text)"
 if [ "${GTO_LIVE_ATTRS}" != "pk" ]; then
   echo "FAIL: phase 4: issue #1741 -- the re-created omit table defines" >&2
   echo "      '${GTO_LIVE_ATTRS}', expected only 'pk'. The omit dropped the index" >&2

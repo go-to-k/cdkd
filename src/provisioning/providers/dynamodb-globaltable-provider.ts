@@ -811,9 +811,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // onto the pruned list and leave the re-created table permanently
           // missing the indexes the record was malformed about, which is the
           // opposite of the recovery this arm exists to enable.
-          // A copy, not the same array object: the rollback executor spreads the
-          // effective bag shallowly, so sharing it with `createParams` would let
-          // a later mutation of either side reach the other.
+          // A distinct array from the one on `createParams`, so a later mutation
+          // of either cannot reach the other (the rollback executor spreads the
+          // effective bag shallowly). Scoped to the PRUNED path deliberately:
+          // on the untouched path both sides still alias the caller's
+          // `properties['AttributeDefinitions']`, exactly as before this change.
           effectiveProperties['AttributeDefinitions'] = [...prunedAttributeDefinitions];
         }
       }
@@ -5095,10 +5097,12 @@ export function collectAutoScalingTargets(
  * redefine-in-place (replacement required); one outside it is the normal
  * bookkeeping of a GSI deletion and must NOT force a replacement.
  *
- * Malformed / intrinsic-valued entries contribute nothing, which errs on the
- * PERMISSIVE side of the guard — correct here, because the guard's failure
- * mode is a forced replacement of a live table, and AWS itself still rejects
- * a genuinely-bad `UpdateTable` loudly.
+ * Malformed / intrinsic-valued entries contribute nothing. For the `update()`
+ * guard that errs on the PERMISSIVE side — correct there, because that guard's
+ * failure mode is a forced replacement of a live table, and AWS still rejects a
+ * genuinely-bad `UpdateTable` loudly. For the create-path prune below it errs
+ * the other way (an unreadable LSI key schema prunes MORE), which is only
+ * reachable on a bag AWS would reject anyway.
  *
  * `options.indexListKeys` narrows which index lists contribute, for the ONE
  * caller whose question is not "what does the template reference" but "what

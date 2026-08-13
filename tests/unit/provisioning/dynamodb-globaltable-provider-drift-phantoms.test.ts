@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const { mockSend, appAutoScalingSend, childLogger } = vi.hoisted(() => ({
+const { mockSend, childLogger } = vi.hoisted(() => ({
   mockSend: vi.fn(),
-  appAutoScalingSend: vi.fn(),
   childLogger: {
     debug: vi.fn(),
     info: vi.fn(),
@@ -15,7 +14,6 @@ const { mockSend, appAutoScalingSend, childLogger } = vi.hoisted(() => ({
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     dynamoDB: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
-    applicationAutoScaling: { send: appAutoScalingSend },
   }),
 }));
 
@@ -36,13 +34,14 @@ import { DynamoDBGlobalTableProvider } from '../../../src/provisioning/providers
 import { canonicalizeUnorderedArraysAtPaths } from '../../../src/analyzer/drift-normalize.js';
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::GlobalTable';
-const TABLE_NAME = 'my-test-table-xxx';
 
 /**
- * The two PERMANENT phantom drifts issue #1742 measured on an UNTOUCHED table
- * (us-east-1, 2026-08-13, `tests/integration/rollback-replay-effective-props`).
+ * The `AttributeDefinitions`-ordering half of the two PERMANENT phantom drifts
+ * issue #1742 measured on an UNTOUCHED table (us-east-1, 2026-08-13,
+ * `tests/integration/rollback-replay-effective-props`). The `WarmThroughput`
+ * half is deliberately not fixed — see the trailer at the end of this file.
  *
- * Both are reachable whenever the drift baseline is `properties` rather than
+ * It is reachable whenever the drift baseline is `properties` rather than
  * `observedProperties` — i.e. after any reverse-replacement rollback, which
  * `rollback-executor.ts` strips `observedProperties` on. That is also why
  * neither had been seen: on the ordinary path both comparison sides come from
@@ -52,11 +51,7 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
   let provider: DynamoDBGlobalTableProvider;
 
   beforeEach(() => {
-    mockSend.mockReset();
-    appAutoScalingSend.mockReset();
-    childLogger.warn.mockReset();
     provider = new DynamoDBGlobalTableProvider();
-    appAutoScalingSend.mockResolvedValue({ ScalableTargets: [] });
   });
 
   // ─── defect 1: AttributeDefinitions is an unordered SET ────────────────

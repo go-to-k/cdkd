@@ -381,6 +381,33 @@ describe('DynamoDBGlobalTableProvider replay-CREATE effectiveProperties (issues 
     expect('GlobalSecondaryIndexes' in result.effectiveProperties!).toBe(false);
   });
 
+  it('prunes to an EMPTY list when nothing the call keys on is defined', async () => {
+    // Reachable, and shipped deliberately: AWS rejects an empty
+    // AttributeDefinitions just as it rejects the orphaned one, so the prune is
+    // not making anything worse. Pinned because a future `length > 0` guard
+    // would flip this silently, and the fail-open comment above covers the
+    // unreadable-KeySchema case rather than this one.
+    const result = await replayCreate({
+      ...ORPHANING_PROPS,
+      AttributeDefinitions: [{ AttributeName: 'gsipk', AttributeType: 'S' }],
+    });
+
+    expect(createInput()?.['AttributeDefinitions']).toEqual([]);
+    expect(result.effectiveProperties?.['AttributeDefinitions']).toEqual([]);
+  });
+
+  it('records a DISTINCT array from the one it puts on the wire', async () => {
+    // The rollback executor spreads the effective bag shallowly, so aliasing
+    // would let a later mutation of either side reach the other. Without this
+    // case, replacing the copy with the same reference passes the whole suite.
+    const result = await replayCreate(ORPHANING_PROPS);
+
+    const wire = createInput()?.['AttributeDefinitions'];
+    const recorded = result.effectiveProperties?.['AttributeDefinitions'];
+    expect(recorded).toEqual(wire);
+    expect(recorded).not.toBe(wire);
+  });
+
   it('fails OPEN when the KeySchema resolves to no attribute name', async () => {
     // An intrinsic-valued / malformed `KeySchema` means the prune has nothing
     // to keep, and stripping EVERY definition would turn a template defect
