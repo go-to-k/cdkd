@@ -1,3 +1,10 @@
+## [0.283.16](https://github.com/go-to-k/cdkd/compare/v0.283.15...v0.283.16) (2026-08-13)
+
+
+### Bug Fixes
+
+* **deployment:** fold the region into every constructed ARN / URI, not just AppSync's ([#1884](https://github.com/go-to-k/cdkd/issues/1884)) ([6f0d214](https://github.com/go-to-k/cdkd/commit/6f0d2148b3c5e05081dc749dc287f2a6cb718869))
+
 ## [0.283.15](https://github.com/go-to-k/cdkd/compare/v0.283.14...v0.283.15) (2026-08-13)
 
 
