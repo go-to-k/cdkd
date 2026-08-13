@@ -18,7 +18,7 @@ import { getAwsClients } from '../utils/aws-clients.js';
 import { stringifyValue, stringifyAttributeForLog } from '../utils/stringify.js';
 import { assumeRoleForCrossAccountStateRead, parseIamRoleArn } from '../utils/role-arn.js';
 import { resolveCrossAccountStateBucket } from '../utils/aws-region-resolver.js';
-import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
+import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import {
   s3BucketArn,
   s3BucketDomainName,
@@ -1896,7 +1896,21 @@ export class IntrinsicFunctionResolver {
     accountInfo: AwsAccountInfo
   ): Promise<unknown> {
     const { resourceType, physicalId } = resource;
-    const { region, accountId, partition } = accountInfo;
+    // The region is FOLDED once, here, rather than at each of the ~40 ARN / URI
+    // constructions below (issue #1850). `accountInfo.region` is whatever
+    // spelling the caller supplied (`--region || AWS_REGION || 'us-east-1'`),
+    // folded nowhere, and `cdkd deploy --region US-EAST-1` is REACHABLE: DNS is
+    // case-insensitive so the SDK endpoint resolves and the deploy SUCCEEDS,
+    // after which every value built here — `arn:aws:sns:US-EAST-1:...`, a
+    // `<acct>.dkr.ecr.US-EAST-1.amazonaws.com/...` registry host — is one no IAM
+    // policy matches (policy matching IS case-sensitive) and every SDK call
+    // taking it rejects. Folding at the DESTRUCTURE rather than per site is what
+    // makes it exhaustive: a constructed attribute added later inherits it
+    // instead of having to remember. `partition` needs no fold —
+    // `derivePartitionAndUrlSuffix` canonicalizes its own input (issue #1795) —
+    // and double-folding is a no-op, so the two are safe side by side.
+    const { accountId, partition } = accountInfo;
+    const region = canonicalizeRegion(accountInfo.region);
 
     // DynamoDB Table / GlobalTable (CDK TableV2 synthesizes as AWS::DynamoDB::GlobalTable; ARN format is identical)
     if (resourceType === 'AWS::DynamoDB::Table' || resourceType === 'AWS::DynamoDB::GlobalTable') {

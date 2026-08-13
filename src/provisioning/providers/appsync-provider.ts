@@ -74,7 +74,7 @@ import {
   type CompositeIdFormat,
 } from '../composite-id.js';
 import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
-import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
+import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -320,7 +320,18 @@ export class AppSyncProvider implements ResourceProvider {
     // derive through this same helper, so the two now agree; deriving here is
     // kept because it needs no STS hop and states the dependency locally.
     const { partition } = derivePartitionAndUrlSuffix(accountInfo.region);
-    return `arn:${partition}:appsync:${accountInfo.region}:${accountInfo.accountId}:${suffix}`;
+    // The REGION SEGMENT is folded too (issue #1850). `derivePartitionAndUrlSuffix`
+    // canonicalizes its own input (issue #1795), so the PARTITION above is already
+    // right for an upper-cased region — but `accountInfo.region` is whatever
+    // spelling the caller supplied (`--region || AWS_REGION || 'us-east-1'`),
+    // folded nowhere. `cdkd deploy --region US-EAST-1` is REACHABLE: DNS is
+    // case-insensitive so the SDK endpoint still resolves and the deploy
+    // SUCCEEDS, and cdkd then records `arn:aws:appsync:US-EAST-1:...` — a value
+    // no IAM policy matches (policy matching IS case-sensitive) and every SDK
+    // call taking the ARN rejects. It is persisted into state.json, so it
+    // outlives the deploy and is what every later `Fn::GetAtt` / `cdkd drift`
+    // reads. Double-folding is a no-op, so this is safe next to the derive.
+    return `arn:${partition}:appsync:${canonicalizeRegion(accountInfo.region)}:${accountInfo.accountId}:${suffix}`;
   }
 
   /**

@@ -24,7 +24,7 @@ import { DescribeReplicationGroupsCommand, ElastiCacheClient } from '@aws-sdk/cl
 import { DescribeClustersCommand, RedshiftClient } from '@aws-sdk/client-redshift';
 import { DescribeDomainCommand, OpenSearchClient } from '@aws-sdk/client-opensearch';
 import { getAccountInfo, type AwsAccountInfo } from '../deployment/intrinsic-function-resolver.js';
-import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
+import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import {
   disableInstanceApiTermination,
@@ -1192,8 +1192,19 @@ export class CloudControlProvider implements ResourceProvider {
               physicalId
             );
             if (kmsAccountInfo) {
+              // The region segment is FOLDED (issue #1850). `accountInfo.region`
+              // is whatever spelling the caller supplied — `cdkd deploy --region
+              // US-EAST-1` is REACHABLE, because DNS is case-insensitive so the
+              // SDK endpoint resolves and the deploy SUCCEEDS, and cdkd then
+              // records `arn:aws:kms:US-EAST-1:...`, which no IAM policy matches
+              // (policy matching IS case-sensitive) and every SDK call taking the
+              // ARN rejects. The value is persisted into state.json, so it is
+              // also what every later `Fn::GetAtt` / `cdkd drift` reads. The
+              // PARTITION needs no fold — `derivePartitionAndUrlSuffix`
+              // canonicalizes its own input (issue #1795) — and double-folding is
+              // a no-op, which is what makes the two safe side by side.
               enriched['Arn'] =
-                `arn:${kmsAccountInfo.partition}:kms:${kmsAccountInfo.region}:${kmsAccountInfo.accountId}:key/${physicalId}`;
+                `arn:${kmsAccountInfo.partition}:kms:${canonicalizeRegion(kmsAccountInfo.region)}:${kmsAccountInfo.accountId}:key/${physicalId}`;
               this.logger.debug(
                 `Enriched KMS Key Arn for ${physicalId}: ${String(enriched['Arn'])}`
               );
@@ -1229,8 +1240,9 @@ export class CloudControlProvider implements ResourceProvider {
               physicalId
             );
             if (ecrAccountInfo) {
+              // Region segment folded — see the KMS Key branch above (issue #1850).
               enriched['Arn'] =
-                `arn:${ecrAccountInfo.partition}:ecr:${ecrAccountInfo.region}:${ecrAccountInfo.accountId}:repository/${physicalId}`;
+                `arn:${ecrAccountInfo.partition}:ecr:${canonicalizeRegion(ecrAccountInfo.region)}:${ecrAccountInfo.accountId}:repository/${physicalId}`;
               this.logger.debug(
                 `Enriched ECR Repository Arn for ${physicalId}: ${String(enriched['Arn'])}`
               );
@@ -1251,10 +1263,22 @@ export class CloudControlProvider implements ResourceProvider {
             if (ecrAccountInfo) {
               // URL suffix derived, not hardcoded — `amazonaws.com.cn` in
               // `aws-cn` (issue #1730 review); mirrors the resolver's own
-              // `RepositoryUri` branch so the two cannot disagree.
+              // `RepositoryUri` branch so the two cannot disagree. That parity
+              // is what issue #1850 had to RESTORE rather than assume: folding
+              // the region here alone would have made the two disagree for an
+              // upper-cased region, so the resolver folds at its own
+              // `constructAttribute` destructure in the same change.
+              //
+              // The region label is FOLDED for the same reason the ARNs above are
+              // (issue #1850), and this is the site where it matters MOST: the
+              // recorded URI is handed to `docker` and parsed back by
+              // `parseEcrRegistryHost` (`src/utils/ecr-uri.ts`), whose own
+              // canonical-segment guards are what an upper-cased label has to get
+              // past. Recording the canonical spelling is the half of that story
+              // cdkd owns.
               const { urlSuffix } = derivePartitionAndUrlSuffix(ecrAccountInfo.region);
               enriched['RepositoryUri'] =
-                `${ecrAccountInfo.accountId}.dkr.ecr.${ecrAccountInfo.region}.${urlSuffix}/${physicalId}`;
+                `${ecrAccountInfo.accountId}.dkr.ecr.${canonicalizeRegion(ecrAccountInfo.region)}.${urlSuffix}/${physicalId}`;
             }
           } catch {
             /* best effort */
@@ -1298,8 +1322,9 @@ export class CloudControlProvider implements ResourceProvider {
               physicalId
             );
             if (kinesisAccountInfo) {
+              // Region segment folded — see the KMS Key branch above (issue #1850).
               enriched['Arn'] =
-                `arn:${kinesisAccountInfo.partition}:kinesis:${kinesisAccountInfo.region}:${kinesisAccountInfo.accountId}:stream/${physicalId}`;
+                `arn:${kinesisAccountInfo.partition}:kinesis:${canonicalizeRegion(kinesisAccountInfo.region)}:${kinesisAccountInfo.accountId}:stream/${physicalId}`;
               this.logger.debug(
                 `Enriched Kinesis Stream Arn for ${physicalId}: ${String(enriched['Arn'])}`
               );
