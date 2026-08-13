@@ -1,3 +1,10 @@
+# [0.283.0](https://github.com/go-to-k/cdkd/compare/v0.282.7...v0.283.0) (2026-08-13)
+
+
+### Features
+
+* **ec2:** record the `sgr-` SecurityGroupRuleId and resolve the `AWS::EC2::SecurityGroupIngress` CFn identifier from it ([#1829](https://github.com/go-to-k/cdkd/issues/1829)) ([5c86462](https://github.com/go-to-k/cdkd/commit/5c864626bdd68fa0286bc832d483aab898f13996))
+
 ## [0.282.7](https://github.com/go-to-k/cdkd/compare/v0.282.6...v0.282.7) (2026-08-13)
 
 
