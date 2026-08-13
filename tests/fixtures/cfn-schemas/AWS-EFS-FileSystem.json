@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EFS::FileSystem",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "AvailabilityZoneName",
@@ -27,5 +27,117 @@
     "Encrypted",
     "KmsKeyId",
     "PerformanceMode"
-  ]
+  ],
+  "primaryIdentifier": [
+    "FileSystemId"
+  ],
+  "nestedProperties": {
+    "FileSystemTags": [
+      "Key",
+      "Value"
+    ],
+    "LifecyclePolicies": [
+      "TransitionToArchive",
+      "TransitionToIA",
+      "TransitionToPrimaryStorageClass"
+    ],
+    "FileSystemProtection": [
+      "ReplicationOverwriteProtection"
+    ],
+    "BackupPolicy": [
+      "Status"
+    ],
+    "ReplicationConfiguration": [
+      "AvailabilityZoneName",
+      "Destinations",
+      "FileSystemId",
+      "KmsKeyId",
+      "Region",
+      "RoleArn",
+      "Status",
+      "StatusMessage"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "FileSystemTags": [
+      "Key",
+      "Value"
+    ],
+    "LifecyclePolicies": [
+      "TransitionToArchive",
+      "TransitionToIA",
+      "TransitionToPrimaryStorageClass"
+    ],
+    "FileSystemProtection": [
+      "ReplicationOverwriteProtection"
+    ],
+    "BackupPolicy": [
+      "Status"
+    ],
+    "ReplicationConfiguration": [
+      "Destinations",
+      "Destinations.AvailabilityZoneName",
+      "Destinations.FileSystemId",
+      "Destinations.KmsKeyId",
+      "Destinations.Region",
+      "Destinations.RoleArn",
+      "Destinations.Status",
+      "Destinations.StatusMessage"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "FileSystemId": "scalar",
+      "Arn": "scalar",
+      "Encrypted": "scalar",
+      "FileSystemTags": "array",
+      "KmsKeyId": "scalar",
+      "LifecyclePolicies": "array",
+      "FileSystemProtection": "object",
+      "PerformanceMode": "scalar",
+      "ProvisionedThroughputInMibps": "scalar",
+      "ThroughputMode": "scalar",
+      "FileSystemPolicy": "object",
+      "BypassPolicyLockoutSafetyCheck": "scalar",
+      "BackupPolicy": "object",
+      "AvailabilityZoneName": "scalar",
+      "ReplicationConfiguration": "object"
+    },
+    "ElasticFileSystemTag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "LifecyclePolicy": {
+      "TransitionToIA": "scalar",
+      "TransitionToPrimaryStorageClass": "scalar",
+      "TransitionToArchive": "scalar"
+    },
+    "BackupPolicy": {
+      "Status": "scalar"
+    },
+    "FileSystemProtection": {
+      "ReplicationOverwriteProtection": "scalar"
+    },
+    "ReplicationDestination": {
+      "Status": "scalar",
+      "StatusMessage": "scalar",
+      "FileSystemId": "scalar",
+      "Region": "scalar",
+      "RoleArn": "scalar",
+      "AvailabilityZoneName": "scalar",
+      "KmsKeyId": "scalar"
+    },
+    "ReplicationConfiguration": {
+      "Destinations": "array"
+    }
+  },
+  "definitionRequired": {
+    "ElasticFileSystemTag": [
+      "Key",
+      "Value"
+    ],
+    "BackupPolicy": [
+      "Status"
+    ]
+  }
 }

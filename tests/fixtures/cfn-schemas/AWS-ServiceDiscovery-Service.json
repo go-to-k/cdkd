@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ServiceDiscovery::Service",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "Description",
@@ -23,5 +23,102 @@
     "Name",
     "NamespaceId",
     "Type"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "nestedProperties": {
+    "HealthCheckCustomConfig": [
+      "FailureThreshold"
+    ],
+    "DnsConfig": [
+      "DnsRecords",
+      "NamespaceId",
+      "RoutingPolicy",
+      "TTL",
+      "Type"
+    ],
+    "HealthCheckConfig": [
+      "FailureThreshold",
+      "ResourcePath",
+      "Type"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "HealthCheckCustomConfig": [
+      "FailureThreshold"
+    ],
+    "DnsConfig": [
+      "DnsRecords",
+      "DnsRecords.TTL",
+      "DnsRecords.Type",
+      "NamespaceId",
+      "RoutingPolicy"
+    ],
+    "HealthCheckConfig": [
+      "FailureThreshold",
+      "ResourcePath",
+      "Type"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Type": "scalar",
+      "Description": "scalar",
+      "ServiceAttributes": "object",
+      "HealthCheckCustomConfig": "object",
+      "DnsConfig": "object",
+      "Id": "scalar",
+      "NamespaceId": "scalar",
+      "HealthCheckConfig": "object",
+      "Arn": "scalar",
+      "Tags": "array",
+      "Name": "scalar"
+    },
+    "HealthCheckCustomConfig": {
+      "FailureThreshold": "scalar"
+    },
+    "DnsConfig": {
+      "DnsRecords": "array",
+      "RoutingPolicy": "scalar",
+      "NamespaceId": "scalar"
+    },
+    "HealthCheckConfig": {
+      "Type": "scalar",
+      "ResourcePath": "scalar",
+      "FailureThreshold": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "DnsRecord": {
+      "TTL": "scalar",
+      "Type": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "DnsConfig": [
+      "DnsRecords"
+    ],
+    "HealthCheckConfig": [
+      "Type"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "DnsRecord": [
+      "TTL",
+      "Type"
+    ]
+  }
 }

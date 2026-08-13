@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::AppSync::Resolver",
-  "generatedAt": "2026-08-11",
+  "generatedAt": "2026-08-13",
   "properties": [
     "ApiId",
     "CachingConfig",
@@ -110,5 +110,22 @@
     "LambdaConflictHandlerConfig": {
       "LambdaConflictHandlerArn": "scalar"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "ApiId",
+      "FieldName",
+      "TypeName"
+    ],
+    "AppSyncRuntime": [
+      "Name",
+      "RuntimeVersion"
+    ],
+    "CachingConfig": [
+      "Ttl"
+    ],
+    "SyncConfig": [
+      "ConflictDetection"
+    ]
   }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Logs::LogGroup",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "BearerTokenAuthenticationEnabled",
@@ -19,5 +19,45 @@
   ],
   "createOnlyProperties": [
     "LogGroupName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "LogGroupName"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "LogGroupName": "scalar",
+      "KmsKeyId": "scalar",
+      "DataProtectionPolicy": "object",
+      "FieldIndexPolicies": "array",
+      "LogGroupClass": "scalar",
+      "RetentionInDays": "scalar",
+      "Tags": "array",
+      "Arn": "scalar",
+      "ResourcePolicyDocument": "object",
+      "DeletionProtectionEnabled": "scalar",
+      "BearerTokenAuthenticationEnabled": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

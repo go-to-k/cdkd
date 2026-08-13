@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::KMS::Alias",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AliasName",
     "TargetKeyId"
@@ -8,5 +8,20 @@
   "readOnlyProperties": [],
   "createOnlyProperties": [
     "AliasName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "AliasName"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "TargetKeyId": "scalar",
+      "AliasName": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "AliasName",
+      "TargetKeyId"
+    ]
+  }
 }

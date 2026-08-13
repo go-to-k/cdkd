@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudTrail::Trail",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AdvancedEventSelectors",
     "AggregationConfigurations",
@@ -28,5 +28,155 @@
   ],
   "createOnlyProperties": [
     "TrailName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "TrailName"
+  ],
+  "nestedProperties": {
+    "AdvancedEventSelectors": [
+      "EndsWith",
+      "Equals",
+      "Field",
+      "FieldSelectors",
+      "Name",
+      "NotEndsWith",
+      "NotEquals",
+      "NotStartsWith",
+      "StartsWith"
+    ],
+    "EventSelectors": [
+      "DataResources",
+      "ExcludeManagementEventSources",
+      "IncludeManagementEvents",
+      "ReadWriteType",
+      "Type",
+      "Values"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "InsightSelectors": [
+      "EventCategories",
+      "InsightType"
+    ],
+    "AggregationConfigurations": [
+      "EventCategory",
+      "Templates"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "AdvancedEventSelectors": [
+      "FieldSelectors",
+      "FieldSelectors.EndsWith",
+      "FieldSelectors.Equals",
+      "FieldSelectors.Field",
+      "FieldSelectors.NotEndsWith",
+      "FieldSelectors.NotEquals",
+      "FieldSelectors.NotStartsWith",
+      "FieldSelectors.StartsWith",
+      "Name"
+    ],
+    "EventSelectors": [
+      "DataResources",
+      "DataResources.Type",
+      "DataResources.Values",
+      "ExcludeManagementEventSources",
+      "IncludeManagementEvents",
+      "ReadWriteType"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "InsightSelectors": [
+      "EventCategories",
+      "InsightType"
+    ],
+    "AggregationConfigurations": [
+      "EventCategory",
+      "Templates"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "CloudWatchLogsLogGroupArn": "scalar",
+      "CloudWatchLogsRoleArn": "scalar",
+      "EnableLogFileValidation": "scalar",
+      "AdvancedEventSelectors": "array",
+      "EventSelectors": "array",
+      "IncludeGlobalServiceEvents": "scalar",
+      "IsLogging": "scalar",
+      "IsMultiRegionTrail": "scalar",
+      "IsOrganizationTrail": "scalar",
+      "KMSKeyId": "scalar",
+      "S3BucketName": "scalar",
+      "S3KeyPrefix": "scalar",
+      "SnsTopicName": "scalar",
+      "Tags": "array",
+      "TrailName": "scalar",
+      "Arn": "scalar",
+      "SnsTopicArn": "scalar",
+      "InsightSelectors": "array",
+      "AggregationConfigurations": "array"
+    },
+    "DataResource": {
+      "Type": "scalar",
+      "Values": "array"
+    },
+    "AdvancedFieldSelector": {
+      "Field": "scalar",
+      "Equals": "array",
+      "StartsWith": "array",
+      "EndsWith": "array",
+      "NotEquals": "array",
+      "NotStartsWith": "array",
+      "NotEndsWith": "array"
+    },
+    "AdvancedEventSelector": {
+      "Name": "scalar",
+      "FieldSelectors": "array"
+    },
+    "EventSelector": {
+      "DataResources": "array",
+      "IncludeManagementEvents": "scalar",
+      "ReadWriteType": "scalar",
+      "ExcludeManagementEventSources": "array"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "InsightSelector": {
+      "InsightType": "scalar",
+      "EventCategories": "array"
+    },
+    "AggregationConfiguration": {
+      "EventCategory": "scalar",
+      "Templates": "array"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "IsLogging",
+      "S3BucketName"
+    ],
+    "DataResource": [
+      "Type"
+    ],
+    "AdvancedFieldSelector": [
+      "Field"
+    ],
+    "AdvancedEventSelector": [
+      "FieldSelectors"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "AggregationConfiguration": [
+      "EventCategory",
+      "Templates"
+    ]
+  }
 }

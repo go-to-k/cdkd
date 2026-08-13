@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::NetworkAclEntry",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CidrBlock",
     "Egress",
@@ -20,5 +20,58 @@
     "Egress",
     "NetworkAclId",
     "RuleNumber"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "nestedProperties": {
+    "PortRange": [
+      "From",
+      "To"
+    ],
+    "Icmp": [
+      "Code",
+      "Type"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "PortRange": [
+      "From",
+      "To"
+    ],
+    "Icmp": [
+      "Code",
+      "Type"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "PortRange": "object",
+      "NetworkAclId": "scalar",
+      "RuleAction": "scalar",
+      "CidrBlock": "scalar",
+      "Egress": "scalar",
+      "RuleNumber": "scalar",
+      "Id": "scalar",
+      "Ipv6CidrBlock": "scalar",
+      "Protocol": "scalar",
+      "Icmp": "object"
+    },
+    "PortRange": {
+      "From": "scalar",
+      "To": "scalar"
+    },
+    "Icmp": {
+      "Type": "scalar",
+      "Code": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "NetworkAclId",
+      "Protocol",
+      "RuleAction",
+      "RuleNumber"
+    ]
+  }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::EventInvokeConfig",
-  "generatedAt": "2026-06-21",
+  "generatedAt": "2026-08-13",
   "properties": [
     "DestinationConfig",
     "FunctionName",
@@ -16,5 +16,51 @@
   "primaryIdentifier": [
     "FunctionName",
     "Qualifier"
-  ]
+  ],
+  "nestedProperties": {
+    "DestinationConfig": [
+      "Destination",
+      "OnFailure",
+      "OnSuccess"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "DestinationConfig": [
+      "OnFailure",
+      "OnFailure.Destination",
+      "OnSuccess",
+      "OnSuccess.Destination"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "DestinationConfig": "object",
+      "FunctionName": "scalar",
+      "MaximumEventAgeInSeconds": "scalar",
+      "MaximumRetryAttempts": "scalar",
+      "Qualifier": "scalar"
+    },
+    "DestinationConfig": {
+      "OnFailure": "object",
+      "OnSuccess": "object"
+    },
+    "OnFailure": {
+      "Destination": "scalar"
+    },
+    "OnSuccess": {
+      "Destination": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "FunctionName",
+      "Qualifier"
+    ],
+    "OnFailure": [
+      "Destination"
+    ],
+    "OnSuccess": [
+      "Destination"
+    ]
+  }
 }

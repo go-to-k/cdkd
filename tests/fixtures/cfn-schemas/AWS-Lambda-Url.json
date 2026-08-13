@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::Url",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AuthType",
     "Cors",
@@ -17,5 +17,53 @@
   "createOnlyProperties": [
     "Qualifier",
     "TargetFunctionArn"
-  ]
+  ],
+  "primaryIdentifier": [
+    "FunctionArn"
+  ],
+  "nestedProperties": {
+    "Cors": [
+      "AllowCredentials",
+      "AllowHeaders",
+      "AllowMethods",
+      "AllowOrigins",
+      "ExposeHeaders",
+      "MaxAge"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Cors": [
+      "AllowCredentials",
+      "AllowHeaders",
+      "AllowMethods",
+      "AllowOrigins",
+      "ExposeHeaders",
+      "MaxAge"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "TargetFunctionArn": "scalar",
+      "Qualifier": "scalar",
+      "AuthType": "scalar",
+      "InvokeMode": "scalar",
+      "FunctionArn": "scalar",
+      "FunctionUrl": "scalar",
+      "Cors": "object"
+    },
+    "Cors": {
+      "AllowCredentials": "scalar",
+      "AllowHeaders": "array",
+      "AllowMethods": "array",
+      "AllowOrigins": "array",
+      "ExposeHeaders": "array",
+      "MaxAge": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "AuthType",
+      "TargetFunctionArn"
+    ]
+  }
 }

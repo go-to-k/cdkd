@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGateway::Stage",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AccessLogSetting",
     "CacheClusterEnabled",
@@ -21,5 +21,118 @@
   "createOnlyProperties": [
     "RestApiId",
     "StageName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "RestApiId",
+    "StageName"
+  ],
+  "nestedProperties": {
+    "AccessLogSetting": [
+      "DestinationArn",
+      "Format"
+    ],
+    "CanarySetting": [
+      "DeploymentId",
+      "PercentTraffic",
+      "StageVariableOverrides",
+      "UseStageCache"
+    ],
+    "MethodSettings": [
+      "CacheDataEncrypted",
+      "CacheTtlInSeconds",
+      "CachingEnabled",
+      "DataTraceEnabled",
+      "HttpMethod",
+      "LoggingLevel",
+      "MetricsEnabled",
+      "ResourcePath",
+      "ThrottlingBurstLimit",
+      "ThrottlingRateLimit"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "AccessLogSetting": [
+      "DestinationArn",
+      "Format"
+    ],
+    "CanarySetting": [
+      "DeploymentId",
+      "PercentTraffic",
+      "StageVariableOverrides",
+      "UseStageCache"
+    ],
+    "MethodSettings": [
+      "CacheDataEncrypted",
+      "CacheTtlInSeconds",
+      "CachingEnabled",
+      "DataTraceEnabled",
+      "HttpMethod",
+      "LoggingLevel",
+      "MetricsEnabled",
+      "ResourcePath",
+      "ThrottlingBurstLimit",
+      "ThrottlingRateLimit"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "AccessLogSetting": "object",
+      "CacheClusterEnabled": "scalar",
+      "CacheClusterSize": "scalar",
+      "CanarySetting": "object",
+      "ClientCertificateId": "scalar",
+      "DeploymentId": "scalar",
+      "Description": "scalar",
+      "DocumentationVersion": "scalar",
+      "MethodSettings": "array",
+      "RestApiId": "scalar",
+      "StageName": "scalar",
+      "Tags": "array",
+      "TracingEnabled": "scalar",
+      "Variables": "object"
+    },
+    "CanarySetting": {
+      "DeploymentId": "scalar",
+      "PercentTraffic": "scalar",
+      "StageVariableOverrides": "object",
+      "UseStageCache": "scalar"
+    },
+    "AccessLogSetting": {
+      "DestinationArn": "scalar",
+      "Format": "scalar"
+    },
+    "MethodSetting": {
+      "CacheDataEncrypted": "scalar",
+      "CacheTtlInSeconds": "scalar",
+      "CachingEnabled": "scalar",
+      "DataTraceEnabled": "scalar",
+      "HttpMethod": "scalar",
+      "LoggingLevel": "scalar",
+      "MetricsEnabled": "scalar",
+      "ResourcePath": "scalar",
+      "ThrottlingBurstLimit": "scalar",
+      "ThrottlingRateLimit": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "RestApiId"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::S3Tables::Namespace",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Namespace",
     "TableBucketARN"
@@ -9,5 +9,21 @@
   "createOnlyProperties": [
     "Namespace",
     "TableBucketARN"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Namespace",
+    "TableBucketARN"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "TableBucketARN": "scalar",
+      "Namespace": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Namespace",
+      "TableBucketARN"
+    ]
+  }
 }

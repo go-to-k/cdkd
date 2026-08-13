@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::IAM::AccessKey",
-  "generatedAt": "2026-07-31",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Id",
     "SecretAccessKey",
@@ -18,5 +18,19 @@
   ],
   "primaryIdentifier": [
     "Id"
-  ]
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Id": "scalar",
+      "SecretAccessKey": "scalar",
+      "Serial": "scalar",
+      "Status": "scalar",
+      "UserName": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "UserName"
+    ]
+  }
 }

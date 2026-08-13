@@ -315,5 +315,50 @@
       "Value": "scalar",
       "Name": "scalar"
     }
+  },
+  "definitionRequired": {
+    "CapacityProviderStrategyItem": [
+      "CapacityProvider"
+    ],
+    "RunCommandParameters": [
+      "RunCommandTargets"
+    ],
+    "InputTransformer": [
+      "InputTemplate"
+    ],
+    "KinesisParameters": [
+      "PartitionKeyPath"
+    ],
+    "RedshiftDataParameters": [
+      "Database"
+    ],
+    "AppSyncParameters": [
+      "GraphQLOperation"
+    ],
+    "Target": [
+      "Arn",
+      "Id"
+    ],
+    "AwsVpcConfiguration": [
+      "Subnets"
+    ],
+    "SqsParameters": [
+      "MessageGroupId"
+    ],
+    "RunCommandTarget": [
+      "Key",
+      "Values"
+    ],
+    "EcsParameters": [
+      "TaskDefinitionArn"
+    ],
+    "BatchParameters": [
+      "JobDefinition",
+      "JobName"
+    ],
+    "SageMakerPipelineParameter": [
+      "Name",
+      "Value"
+    ]
   }
 }

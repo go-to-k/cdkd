@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::LayerVersion",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CompatibleArchitectures",
     "CompatibleRuntimes",
@@ -20,5 +20,50 @@
     "Description",
     "LayerName",
     "LicenseInfo"
-  ]
+  ],
+  "primaryIdentifier": [
+    "LayerVersionArn"
+  ],
+  "nestedProperties": {
+    "Content": [
+      "S3Bucket",
+      "S3Key",
+      "S3ObjectStorageMode",
+      "S3ObjectVersion"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Content": [
+      "S3Bucket",
+      "S3Key",
+      "S3ObjectStorageMode",
+      "S3ObjectVersion"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "CompatibleRuntimes": "array",
+      "LicenseInfo": "scalar",
+      "Description": "scalar",
+      "LayerName": "scalar",
+      "Content": "object",
+      "LayerVersionArn": "scalar",
+      "CompatibleArchitectures": "array"
+    },
+    "Content": {
+      "S3ObjectVersion": "scalar",
+      "S3Bucket": "scalar",
+      "S3Key": "scalar",
+      "S3ObjectStorageMode": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Content"
+    ],
+    "Content": [
+      "S3Bucket",
+      "S3Key"
+    ]
+  }
 }

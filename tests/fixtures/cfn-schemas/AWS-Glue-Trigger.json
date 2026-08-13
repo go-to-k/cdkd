@@ -109,5 +109,14 @@
       "Logical": "scalar",
       "Conditions": "array"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Actions",
+      "Type"
+    ],
+    "EventBatchingCondition": [
+      "BatchSize"
+    ]
   }
 }

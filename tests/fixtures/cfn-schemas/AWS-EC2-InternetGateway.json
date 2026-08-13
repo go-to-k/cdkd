@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::InternetGateway",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "InternetGatewayId",
     "Tags"
@@ -8,5 +8,36 @@
   "readOnlyProperties": [
     "InternetGatewayId"
   ],
-  "createOnlyProperties": []
+  "createOnlyProperties": [],
+  "primaryIdentifier": [
+    "InternetGatewayId"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "InternetGatewayId": "scalar",
+      "Tags": "array"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

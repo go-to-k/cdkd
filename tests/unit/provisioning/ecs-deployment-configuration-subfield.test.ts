@@ -55,6 +55,16 @@ const SCHEMA_FIXTURE_PATH = join(
   'AWS-ECS-Service.json'
 );
 
+interface EcsSchemaFixture {
+  nestedPropertyPaths?: Record<string, string[]>;
+  definitionShapes?: Record<string, Record<string, string>>;
+  /** Per-definition `required` list, captured since issue #1800. */
+  definitionRequired?: Record<string, string[]>;
+}
+
+const readSchemaFixture = (): EcsSchemaFixture =>
+  JSON.parse(readFileSync(SCHEMA_FIXTURE_PATH, 'utf8')) as EcsSchemaFixture;
+
 const baseProps = (): Record<string, unknown> => ({
   Cluster: 'my-cluster',
   TaskDefinition: 'my-task:1',
@@ -278,25 +288,14 @@ describe('ECS Service DeploymentConfiguration sub-field semantics (#1225)', () =
   });
 
   it('the nested blocks whose required-ness carries the depth-2 verdict are still modelled', () => {
-    // SCOPE, stated precisely because the obvious stronger claim is NOT one
-    // this fixture can make: the depth-2 DIVERGENCE verdict rests on
-    // CloudFormation REFUSING a partial nested block that cdkd forwards,
-    // i.e. on the registry schema's `required`
-    // lists — and `tests/fixtures/cfn-schemas/*.json` does not capture
-    // `required` at all (it carries properties / readOnly / createOnly /
-    // primaryIdentifier / nestedProperties / nestedPropertyPaths /
-    // definitionShapes). So this test CANNOT detect AWS relaxing those lists,
-    // and must not be read as doing so — an earlier revision of it claimed
-    // exactly that and was vacuous.
-    //
-    // What it does fence is the weaker, still-useful condition: that the
-    // members the verdict names have not been REMOVED from the type. If
-    // `Rollback` disappears, the sentence in `ecs-provider.ts` citing it stops
-    // describing the schema and the classification needs re-measuring.
-    // Capturing `required` so the real condition can be fenced is issue #1800.
-    const schema = JSON.parse(readFileSync(SCHEMA_FIXTURE_PATH, 'utf8')) as {
-      nestedPropertyPaths?: Record<string, string[]>;
-    };
+    // The weaker half of the fence: the members the verdict names have not
+    // been REMOVED from the type. If `Rollback` disappears, the sentence in
+    // `ecs-provider.ts` citing it stops describing the schema and the
+    // classification needs re-measuring. Kept alongside the required-ness
+    // assertion below because the two fail for different reasons — a member
+    // can be dropped from the type entirely without any `required` list
+    // changing, and vice versa.
+    const schema = readSchemaFixture();
     const paths = schema.nestedPropertyPaths?.['DeploymentConfiguration'] ?? [];
 
     expect(paths).toContain('DeploymentCircuitBreaker.Enable');
@@ -304,10 +303,55 @@ describe('ECS Service DeploymentConfiguration sub-field semantics (#1225)', () =
     expect(paths).toContain('Alarms.AlarmNames');
     expect(paths).toContain('Alarms.Enable');
     expect(paths).toContain('Alarms.Rollback');
+  });
 
-    // Guard the guard: if the fixture ever DOES start carrying `required`,
-    // this test is the place to upgrade, so fail loudly rather than keep
-    // silently under-claiming.
-    expect(JSON.stringify(schema).includes('"required"')).toBe(false);
+  it('the depth-2 verdict rests on required-ness, and the fixture now pins the actual lists (#1800)', () => {
+    // THE condition the depth-2 row of the table above rests on. Before issue
+    // #1800 the fixtures captured no `required` at all, so the strongest
+    // available assertion was that the member paths are still MODELLED — which
+    // stays true the day AWS relaxes a `required` list, silently turning a
+    // "parity by loud reject" verdict into a real silent drop with no test
+    // failing. The capture makes the real condition assertable:
+    // `UpdateService` REPLACES a nested struct rather than merging it (live
+    // A/B, us-east-1, 2026-08-13: a kept `DeploymentCircuitBreaker` missing
+    // `Rollback` had its live `rollback` flipped true -> false), so the ONLY
+    // thing making that shape unreachable from a valid template is
+    // CloudFormation's own model validation refusing it.
+    const schema = readSchemaFixture();
+    const required = schema.definitionRequired ?? {};
+
+    // Exact lists, not `toContain`: a member DROPPED from a required list is
+    // precisely the relaxation this test exists to catch, and `toContain`
+    // cannot see a removal.
+    expect(required['DeploymentCircuitBreaker']).toEqual(['Enable', 'Rollback']);
+    expect(required['DeploymentAlarms']).toEqual(['AlarmNames', 'Enable', 'Rollback']);
+
+    // The three SIBLING nested blocks #1806 is about. Two of them carry NO
+    // required list at all, so a kept-but-partial block there IS reachable
+    // from a template CloudFormation accepts — which is strictly worse than
+    // #1802, where CFn at least refuses. Asserting their ABSENCE states the
+    // SCOPE of the depth-2 parity verdict rather than over-claiming it, and
+    // means the day AWS adds a required list to one of them, #1806 shrinks
+    // visibly instead of silently. The third, `DeploymentLifecycleHook`, does
+    // carry one — but only `LifecycleStages`, leaving its other five members
+    // droppable, which is why it is in #1806's scope too.
+    // The two absences are only meaningful while the definitions still EXIST —
+    // `toBeUndefined()` passes just as well if AWS renames or deletes them, at
+    // which point the #1806 scope claim below would be about nothing. Pin
+    // their existence through the sibling capture first.
+    expect(schema.definitionShapes?.['LinearConfiguration']).toBeDefined();
+    expect(schema.definitionShapes?.['CanaryConfiguration']).toBeDefined();
+    expect(required['LinearConfiguration']).toBeUndefined();
+    expect(required['CanaryConfiguration']).toBeUndefined();
+    expect(required['DeploymentLifecycleHook']).toEqual(['LifecycleStages']);
+
+    // Non-vacuity guard. It is the two `toBeUndefined` assertions that need
+    // it: those pass just as happily against a fixture with NO
+    // `definitionRequired` section at all, or against a typo'd key name, since
+    // both read as `undefined`. (The `toEqual` assertions above are already
+    // self-guarding — they FAIL on `undefined`.) Pinning that the section
+    // exists and is populated is what stops a capture regression from
+    // silently downgrading this test to the vacuous shape it replaced.
+    expect(Object.keys(required).length).toBeGreaterThan(10);
   });
 });

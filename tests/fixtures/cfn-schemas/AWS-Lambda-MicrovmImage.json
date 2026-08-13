@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::MicrovmImage",
-  "generatedAt": "2026-07-22",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AdditionalOsCapabilities",
     "BaseImageArn",
@@ -36,5 +36,192 @@
   ],
   "primaryIdentifier": [
     "ImageArn"
-  ]
+  ],
+  "nestedProperties": {
+    "CodeArtifact": [
+      "Uri"
+    ],
+    "Logging": [
+      "CloudWatch",
+      "Disabled",
+      "LogGroup",
+      "LogStream"
+    ],
+    "CpuConfigurations": [
+      "Architecture"
+    ],
+    "Resources": [
+      "MinimumMemoryInMiB"
+    ],
+    "Hooks": [
+      "MicrovmHooks",
+      "MicrovmImageHooks",
+      "Port",
+      "Ready",
+      "ReadyTimeoutInSeconds",
+      "Resume",
+      "ResumeTimeoutInSeconds",
+      "Run",
+      "RunTimeoutInSeconds",
+      "Suspend",
+      "SuspendTimeoutInSeconds",
+      "Terminate",
+      "TerminateTimeoutInSeconds",
+      "Validate",
+      "ValidateTimeoutInSeconds"
+    ],
+    "EnvironmentVariables": [
+      "Key",
+      "Value"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "CodeArtifact": [
+      "Uri"
+    ],
+    "Logging": [
+      "CloudWatch",
+      "CloudWatch.LogGroup",
+      "CloudWatch.LogStream",
+      "Disabled"
+    ],
+    "CpuConfigurations": [
+      "Architecture"
+    ],
+    "Resources": [
+      "MinimumMemoryInMiB"
+    ],
+    "Hooks": [
+      "MicrovmHooks",
+      "MicrovmHooks.Resume",
+      "MicrovmHooks.ResumeTimeoutInSeconds",
+      "MicrovmHooks.Run",
+      "MicrovmHooks.RunTimeoutInSeconds",
+      "MicrovmHooks.Suspend",
+      "MicrovmHooks.SuspendTimeoutInSeconds",
+      "MicrovmHooks.Terminate",
+      "MicrovmHooks.TerminateTimeoutInSeconds",
+      "MicrovmImageHooks",
+      "MicrovmImageHooks.Ready",
+      "MicrovmImageHooks.ReadyTimeoutInSeconds",
+      "MicrovmImageHooks.Validate",
+      "MicrovmImageHooks.ValidateTimeoutInSeconds",
+      "Port"
+    ],
+    "EnvironmentVariables": [
+      "Key",
+      "Value"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "ImageArn": "scalar",
+      "Name": "scalar",
+      "State": "scalar",
+      "BaseImageArn": "scalar",
+      "BaseImageVersion": "scalar",
+      "BuildRoleArn": "scalar",
+      "Description": "scalar",
+      "CodeArtifact": "object",
+      "Logging": "object",
+      "EgressNetworkConnectors": "array",
+      "CpuConfigurations": "array",
+      "Resources": "array",
+      "AdditionalOsCapabilities": "array",
+      "Hooks": "object",
+      "EnvironmentVariables": "array",
+      "Tags": "array",
+      "LatestActiveImageVersion": "scalar",
+      "LatestFailedImageVersion": "scalar",
+      "CreatedAt": "scalar",
+      "UpdatedAt": "scalar"
+    },
+    "Logging": {
+      "Disabled": "scalar",
+      "CloudWatch": "object"
+    },
+    "CloudWatchLogging": {
+      "LogGroup": "scalar",
+      "LogStream": "scalar"
+    },
+    "CpuConfiguration": {
+      "Architecture": "scalar"
+    },
+    "Hooks": {
+      "Port": "scalar",
+      "MicrovmHooks": "object",
+      "MicrovmImageHooks": "object"
+    },
+    "MicrovmHooks": {
+      "Run": "scalar",
+      "RunTimeoutInSeconds": "scalar",
+      "Resume": "scalar",
+      "ResumeTimeoutInSeconds": "scalar",
+      "Suspend": "scalar",
+      "SuspendTimeoutInSeconds": "scalar",
+      "Terminate": "scalar",
+      "TerminateTimeoutInSeconds": "scalar"
+    },
+    "MicrovmImageHooks": {
+      "Ready": "scalar",
+      "ReadyTimeoutInSeconds": "scalar",
+      "Validate": "scalar",
+      "ValidateTimeoutInSeconds": "scalar"
+    },
+    "EnvironmentVariable": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "Resources": {
+      "MinimumMemoryInMiB": "scalar"
+    },
+    "CodeArtifact": {
+      "Uri": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "AdditionalOsCapabilities",
+      "BaseImageArn",
+      "BaseImageVersion",
+      "BuildRoleArn",
+      "CodeArtifact",
+      "CpuConfigurations",
+      "Description",
+      "EgressNetworkConnectors",
+      "EnvironmentVariables",
+      "Hooks",
+      "Logging",
+      "Name",
+      "Resources"
+    ],
+    "CpuConfiguration": [
+      "Architecture"
+    ],
+    "EnvironmentVariable": [
+      "Key",
+      "Value"
+    ],
+    "Resources": [
+      "MinimumMemoryInMiB"
+    ],
+    "CodeArtifact": [
+      "Uri"
+    ],
+    "Tag": [
+      "Key"
+    ]
+  }
 }

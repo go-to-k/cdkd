@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudFront::OriginAccessControl",
-  "generatedAt": "2026-07-28",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Id",
     "OriginAccessControlConfig"
@@ -11,5 +11,47 @@
   "createOnlyProperties": [],
   "primaryIdentifier": [
     "Id"
-  ]
+  ],
+  "nestedProperties": {
+    "OriginAccessControlConfig": [
+      "Description",
+      "Name",
+      "OriginAccessControlOriginType",
+      "SigningBehavior",
+      "SigningProtocol"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "OriginAccessControlConfig": [
+      "Description",
+      "Name",
+      "OriginAccessControlOriginType",
+      "SigningBehavior",
+      "SigningProtocol"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Id": "scalar",
+      "OriginAccessControlConfig": "object"
+    },
+    "OriginAccessControlConfig": {
+      "Description": "scalar",
+      "Name": "scalar",
+      "OriginAccessControlOriginType": "scalar",
+      "SigningBehavior": "scalar",
+      "SigningProtocol": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "OriginAccessControlConfig"
+    ],
+    "OriginAccessControlConfig": [
+      "Name",
+      "OriginAccessControlOriginType",
+      "SigningBehavior",
+      "SigningProtocol"
+    ]
+  }
 }

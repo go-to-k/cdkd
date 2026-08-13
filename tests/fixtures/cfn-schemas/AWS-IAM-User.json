@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::IAM::User",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "Groups",
@@ -17,5 +17,74 @@
   ],
   "createOnlyProperties": [
     "UserName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "UserName"
+  ],
+  "nestedProperties": {
+    "Policies": [
+      "PolicyDocument",
+      "PolicyName"
+    ],
+    "LoginProfile": [
+      "Password",
+      "PasswordResetRequired"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Policies": [
+      "PolicyDocument",
+      "PolicyName"
+    ],
+    "LoginProfile": [
+      "Password",
+      "PasswordResetRequired"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Path": "scalar",
+      "ManagedPolicyArns": "array",
+      "Policies": "array",
+      "UserName": "scalar",
+      "Groups": "array",
+      "Arn": "scalar",
+      "LoginProfile": "object",
+      "Tags": "array",
+      "PermissionsBoundary": "scalar"
+    },
+    "Policy": {
+      "PolicyDocument": "mixed",
+      "PolicyName": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "LoginProfile": {
+      "PasswordResetRequired": "scalar",
+      "Password": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "Policy": [
+      "PolicyDocument",
+      "PolicyName"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "LoginProfile": [
+      "Password"
+    ]
+  }
 }

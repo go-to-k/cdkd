@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::SecurityGroup",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "GroupDescription",
     "GroupId",
@@ -19,5 +19,117 @@
     "GroupDescription",
     "GroupName",
     "VpcId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "nestedProperties": {
+    "SecurityGroupIngress": [
+      "CidrIp",
+      "CidrIpv6",
+      "Description",
+      "FromPort",
+      "IpProtocol",
+      "SourcePrefixListId",
+      "SourceSecurityGroupId",
+      "SourceSecurityGroupName",
+      "SourceSecurityGroupOwnerId",
+      "ToPort"
+    ],
+    "SecurityGroupEgress": [
+      "CidrIp",
+      "CidrIpv6",
+      "Description",
+      "DestinationPrefixListId",
+      "DestinationSecurityGroupId",
+      "FromPort",
+      "IpProtocol",
+      "ToPort"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "SecurityGroupIngress": [
+      "CidrIp",
+      "CidrIpv6",
+      "Description",
+      "FromPort",
+      "IpProtocol",
+      "SourcePrefixListId",
+      "SourceSecurityGroupId",
+      "SourceSecurityGroupName",
+      "SourceSecurityGroupOwnerId",
+      "ToPort"
+    ],
+    "SecurityGroupEgress": [
+      "CidrIp",
+      "CidrIpv6",
+      "Description",
+      "DestinationPrefixListId",
+      "DestinationSecurityGroupId",
+      "FromPort",
+      "IpProtocol",
+      "ToPort"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "GroupDescription": "scalar",
+      "GroupName": "scalar",
+      "VpcId": "scalar",
+      "Id": "scalar",
+      "SecurityGroupIngress": "array",
+      "SecurityGroupEgress": "array",
+      "Tags": "array",
+      "GroupId": "scalar"
+    },
+    "Ingress": {
+      "CidrIp": "scalar",
+      "CidrIpv6": "scalar",
+      "Description": "scalar",
+      "FromPort": "scalar",
+      "SourceSecurityGroupName": "scalar",
+      "ToPort": "scalar",
+      "SourceSecurityGroupOwnerId": "scalar",
+      "IpProtocol": "scalar",
+      "SourceSecurityGroupId": "scalar",
+      "SourcePrefixListId": "scalar"
+    },
+    "Egress": {
+      "CidrIp": "scalar",
+      "CidrIpv6": "scalar",
+      "Description": "scalar",
+      "FromPort": "scalar",
+      "ToPort": "scalar",
+      "IpProtocol": "scalar",
+      "DestinationSecurityGroupId": "scalar",
+      "DestinationPrefixListId": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "GroupDescription"
+    ],
+    "Ingress": [
+      "IpProtocol"
+    ],
+    "Egress": [
+      "IpProtocol"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

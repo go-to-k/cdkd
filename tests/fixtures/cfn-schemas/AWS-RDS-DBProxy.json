@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::RDS::DBProxy",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Auth",
     "DBProxyArn",
@@ -30,5 +30,73 @@
     "EngineFamily",
     "TargetConnectionNetworkType",
     "VpcSubnetIds"
-  ]
+  ],
+  "primaryIdentifier": [
+    "DBProxyName"
+  ],
+  "nestedProperties": {
+    "Auth": [
+      "AuthScheme",
+      "ClientPasswordAuthType",
+      "Description",
+      "IAMAuth",
+      "SecretArn"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Auth": [
+      "AuthScheme",
+      "ClientPasswordAuthType",
+      "Description",
+      "IAMAuth",
+      "SecretArn"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Auth": "array",
+      "DBProxyArn": "scalar",
+      "DBProxyName": "scalar",
+      "DebugLogging": "scalar",
+      "DefaultAuthScheme": "scalar",
+      "Endpoint": "scalar",
+      "EndpointNetworkType": "scalar",
+      "EngineFamily": "scalar",
+      "IdleClientTimeout": "scalar",
+      "RequireTLS": "scalar",
+      "RoleArn": "scalar",
+      "Tags": "array",
+      "TargetConnectionNetworkType": "scalar",
+      "VpcId": "scalar",
+      "VpcSecurityGroupIds": "array",
+      "VpcSubnetIds": "array"
+    },
+    "AuthFormat": {
+      "AuthScheme": "scalar",
+      "Description": "scalar",
+      "IAMAuth": "scalar",
+      "SecretArn": "scalar",
+      "ClientPasswordAuthType": "scalar"
+    },
+    "TagFormat": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "DBProxyName",
+      "EngineFamily",
+      "RoleArn",
+      "VpcSubnetIds"
+    ]
+  }
 }

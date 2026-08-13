@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Neptune::DBSubnetGroup",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "DBSubnetGroupDescription",
     "DBSubnetGroupName",
@@ -10,5 +10,42 @@
   "readOnlyProperties": [],
   "createOnlyProperties": [
     "DBSubnetGroupName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "DBSubnetGroupName"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "DBSubnetGroupName": "scalar",
+      "DBSubnetGroupDescription": "scalar",
+      "SubnetIds": "array",
+      "Tags": "array"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "DBSubnetGroupDescription",
+      "SubnetIds"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

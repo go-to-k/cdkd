@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGateway::Resource",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "ParentId",
     "PathPart",
@@ -14,5 +14,24 @@
     "ParentId",
     "PathPart",
     "RestApiId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "ResourceId",
+    "RestApiId"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "ParentId": "scalar",
+      "PathPart": "scalar",
+      "ResourceId": "scalar",
+      "RestApiId": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "ParentId",
+      "PathPart",
+      "RestApiId"
+    ]
+  }
 }

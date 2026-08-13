@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ElastiCache::CacheCluster",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AZMode",
     "AutoMinorVersionUpgrade",
@@ -42,5 +42,134 @@
     "Port",
     "SnapshotArns",
     "SnapshotName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "ClusterName"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "LogDeliveryConfigurations": [
+      "CloudWatchLogsDetails",
+      "DeliveryStream",
+      "DestinationDetails",
+      "DestinationType",
+      "KinesisFirehoseDetails",
+      "LogFormat",
+      "LogGroup",
+      "LogType"
+    ],
+    "ConfigurationEndpoint": [
+      "Address",
+      "Port"
+    ],
+    "RedisEndpoint": [
+      "Address",
+      "Port"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "LogDeliveryConfigurations": [
+      "DestinationDetails",
+      "DestinationDetails.CloudWatchLogsDetails",
+      "DestinationDetails.CloudWatchLogsDetails.LogGroup",
+      "DestinationDetails.KinesisFirehoseDetails",
+      "DestinationDetails.KinesisFirehoseDetails.DeliveryStream",
+      "DestinationType",
+      "LogFormat",
+      "LogType"
+    ],
+    "ConfigurationEndpoint": [
+      "Address",
+      "Port"
+    ],
+    "RedisEndpoint": [
+      "Address",
+      "Port"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "AutoMinorVersionUpgrade": "scalar",
+      "AZMode": "scalar",
+      "CacheNodeType": "scalar",
+      "CacheParameterGroupName": "scalar",
+      "CacheSecurityGroupNames": "array",
+      "CacheSubnetGroupName": "scalar",
+      "NotificationTopicArn": "scalar",
+      "SnapshotArns": "array",
+      "Port": "scalar",
+      "NumCacheNodes": "scalar",
+      "SnapshotName": "scalar",
+      "PreferredAvailabilityZones": "array",
+      "VpcSecurityGroupIds": "array",
+      "ClusterName": "scalar",
+      "Engine": "scalar",
+      "Tags": "array",
+      "EngineVersion": "scalar",
+      "PreferredMaintenanceWindow": "scalar",
+      "PreferredAvailabilityZone": "scalar",
+      "SnapshotWindow": "scalar",
+      "NetworkType": "scalar",
+      "IpDiscovery": "scalar",
+      "SnapshotRetentionLimit": "scalar",
+      "LogDeliveryConfigurations": "array",
+      "TransitEncryptionEnabled": "scalar",
+      "ConfigurationEndpoint": "object",
+      "RedisEndpoint": "object"
+    },
+    "Endpoint": {
+      "Address": "scalar",
+      "Port": "scalar"
+    },
+    "LogDeliveryConfigurationRequest": {
+      "LogType": "scalar",
+      "LogFormat": "scalar",
+      "DestinationType": "scalar",
+      "DestinationDetails": "object"
+    },
+    "KinesisFirehoseDestinationDetails": {
+      "DeliveryStream": "scalar"
+    },
+    "CloudWatchLogsDestinationDetails": {
+      "LogGroup": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "DestinationDetails": {
+      "CloudWatchLogsDetails": "object",
+      "KinesisFirehoseDetails": "object"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "CacheNodeType",
+      "Engine",
+      "NumCacheNodes"
+    ],
+    "LogDeliveryConfigurationRequest": [
+      "DestinationDetails",
+      "DestinationType",
+      "LogFormat",
+      "LogType"
+    ],
+    "KinesisFirehoseDestinationDetails": [
+      "DeliveryStream"
+    ],
+    "CloudWatchLogsDestinationDetails": [
+      "LogGroup"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

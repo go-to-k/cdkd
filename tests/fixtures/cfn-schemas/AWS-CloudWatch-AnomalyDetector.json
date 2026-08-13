@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudWatch::AnomalyDetector",
-  "generatedAt": "2026-08-10",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Configuration",
     "Dimensions",
@@ -169,5 +169,27 @@
       "Stat": "scalar",
       "Namespace": "scalar"
     }
+  },
+  "definitionRequired": {
+    "MetricStat": [
+      "Metric",
+      "Period",
+      "Stat"
+    ],
+    "Metric": [
+      "MetricName",
+      "Namespace"
+    ],
+    "Dimension": [
+      "Name",
+      "Value"
+    ],
+    "MetricDataQuery": [
+      "Id"
+    ],
+    "Range": [
+      "EndTime",
+      "StartTime"
+    ]
   }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::WAFv2::WebACL",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "ApplicationConfig",
     "Arn",
@@ -14,6 +14,7 @@
     "Description",
     "Id",
     "LabelNamespace",
+    "MonetizationConfig",
     "Name",
     "OnSourceDDoSProtectionConfig",
     "Rules",
@@ -31,5 +32,1565 @@
   "createOnlyProperties": [
     "Name",
     "Scope"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id",
+    "Name",
+    "Scope"
+  ],
+  "nestedProperties": {
+    "DefaultAction": [
+      "Allow",
+      "Block",
+      "CustomRequestHandling",
+      "CustomResponse",
+      "CustomResponseBodyKey",
+      "InsertHeaders",
+      "Name",
+      "ResponseCode",
+      "ResponseHeaders",
+      "Value"
+    ],
+    "Rules": [
+      "ASN",
+      "AWSManagedRulesACFPRuleSet",
+      "AWSManagedRulesATPRuleSet",
+      "AWSManagedRulesAntiDDoSRuleSet",
+      "AWSManagedRulesBotControlRuleSet",
+      "Action",
+      "ActionToUse",
+      "AddressFields",
+      "AggregateKeyType",
+      "All",
+      "AllQueryArguments",
+      "Allow",
+      "AndStatement",
+      "Arn",
+      "AsnList",
+      "AsnMatchStatement",
+      "Block",
+      "Body",
+      "BodyContains",
+      "ByteMatchStatement",
+      "Captcha",
+      "CaptchaConfig",
+      "Challenge",
+      "ChallengeConfig",
+      "ClientSideActionConfig",
+      "CloudWatchMetricsEnabled",
+      "ComparisonOperator",
+      "Cookie",
+      "Cookies",
+      "Count",
+      "CountryCodes",
+      "CreationPath",
+      "CustomKeys",
+      "CustomRequestHandling",
+      "CustomResponse",
+      "CustomResponseBodyKey",
+      "EmailField",
+      "EnableMachineLearning",
+      "EnableRegexInPath",
+      "EvaluationWindowSec",
+      "ExcludedCookies",
+      "ExcludedHeaders",
+      "ExcludedRules",
+      "ExemptUriRegularExpressions",
+      "FailureCodes",
+      "FailureStrings",
+      "FailureValues",
+      "FallbackBehavior",
+      "FieldToMatch",
+      "ForwardedIP",
+      "ForwardedIPConfig",
+      "GeoMatchStatement",
+      "HTTPMethod",
+      "Header",
+      "HeaderName",
+      "HeaderOrder",
+      "Headers",
+      "IP",
+      "IPSetForwardedIPConfig",
+      "IPSetReferenceStatement",
+      "Identifier",
+      "ImmunityTime",
+      "ImmunityTimeProperty",
+      "IncludedCookies",
+      "IncludedHeaders",
+      "IncludedPaths",
+      "InsertHeaders",
+      "InspectionLevel",
+      "InvalidFallbackBehavior",
+      "JA3Fingerprint",
+      "JA4Fingerprint",
+      "Json",
+      "JsonBody",
+      "Key",
+      "LabelMatchStatement",
+      "LabelNamespace",
+      "Limit",
+      "LoginPath",
+      "ManagedRuleGroupConfigs",
+      "ManagedRuleGroupStatement",
+      "MatchPattern",
+      "MatchScope",
+      "Method",
+      "MetricName",
+      "Monetize",
+      "Name",
+      "Namespace",
+      "None",
+      "NotStatement",
+      "OrStatement",
+      "OverrideAction",
+      "OversizeHandling",
+      "PasswordField",
+      "PayloadType",
+      "PhoneNumberFields",
+      "Position",
+      "PositionalConstraint",
+      "PreParseTextTransformations",
+      "PriceMultiplier",
+      "Priority",
+      "QueryArgument",
+      "QueryString",
+      "RateBasedStatement",
+      "RegexMatchStatement",
+      "RegexPatternSetReferenceStatement",
+      "RegexString",
+      "RegistrationPagePath",
+      "RequestInspection",
+      "ResponseCode",
+      "ResponseHeaders",
+      "ResponseInspection",
+      "RuleActionOverrides",
+      "RuleGroupReferenceStatement",
+      "RuleLabels",
+      "SampledRequestsEnabled",
+      "Scope",
+      "ScopeDownStatement",
+      "SearchString",
+      "SearchStringBase64",
+      "Sensitivity",
+      "SensitivityLevel",
+      "SensitivityToBlock",
+      "SingleHeader",
+      "SingleQueryArgument",
+      "Size",
+      "SizeConstraintStatement",
+      "SqliMatchStatement",
+      "Statement",
+      "Statements",
+      "StatusCode",
+      "SuccessCodes",
+      "SuccessStrings",
+      "SuccessValues",
+      "TextTransformations",
+      "Type",
+      "UriFragment",
+      "UriPath",
+      "UsageOfAction",
+      "UsernameField",
+      "Value",
+      "VendorName",
+      "Version",
+      "VisibilityConfig",
+      "XssMatchStatement"
+    ],
+    "VisibilityConfig": [
+      "CloudWatchMetricsEnabled",
+      "MetricName",
+      "SampledRequestsEnabled"
+    ],
+    "DataProtectionConfig": [
+      "Action",
+      "DataProtections",
+      "ExcludeRateBasedDetails",
+      "ExcludeRuleMatchDetails",
+      "Field",
+      "FieldKeys",
+      "FieldType"
+    ],
+    "ApplicationConfig": [
+      "Attributes",
+      "Name",
+      "Values"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "CustomResponseBodies": [
+      "Content",
+      "ContentType"
+    ],
+    "CaptchaConfig": [
+      "ImmunityTime",
+      "ImmunityTimeProperty"
+    ],
+    "ChallengeConfig": [
+      "ImmunityTime",
+      "ImmunityTimeProperty"
+    ],
+    "AssociationConfig": [
+      "DefaultSizeInspectionLimit",
+      "RequestBody"
+    ],
+    "OnSourceDDoSProtectionConfig": [
+      "ALBLowReputationMode"
+    ],
+    "MonetizationConfig": [
+      "Amount",
+      "Chain",
+      "CryptoConfig",
+      "Currency",
+      "CurrencyMode",
+      "PaymentNetworks",
+      "Prices",
+      "WalletAddress"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "DefaultAction": [
+      "Allow",
+      "Allow.CustomRequestHandling",
+      "Allow.CustomRequestHandling.InsertHeaders",
+      "Allow.CustomRequestHandling.InsertHeaders.Name",
+      "Allow.CustomRequestHandling.InsertHeaders.Value",
+      "Block",
+      "Block.CustomResponse",
+      "Block.CustomResponse.CustomResponseBodyKey",
+      "Block.CustomResponse.ResponseCode",
+      "Block.CustomResponse.ResponseHeaders",
+      "Block.CustomResponse.ResponseHeaders.Name",
+      "Block.CustomResponse.ResponseHeaders.Value"
+    ],
+    "Rules": [
+      "Action",
+      "Action.Allow",
+      "Action.Allow.CustomRequestHandling",
+      "Action.Allow.CustomRequestHandling.InsertHeaders",
+      "Action.Allow.CustomRequestHandling.InsertHeaders.Name",
+      "Action.Allow.CustomRequestHandling.InsertHeaders.Value",
+      "Action.Block",
+      "Action.Block.CustomResponse",
+      "Action.Block.CustomResponse.CustomResponseBodyKey",
+      "Action.Block.CustomResponse.ResponseCode",
+      "Action.Block.CustomResponse.ResponseHeaders",
+      "Action.Block.CustomResponse.ResponseHeaders.Name",
+      "Action.Block.CustomResponse.ResponseHeaders.Value",
+      "Action.Captcha",
+      "Action.Captcha.CustomRequestHandling",
+      "Action.Captcha.CustomRequestHandling.InsertHeaders",
+      "Action.Captcha.CustomRequestHandling.InsertHeaders.Name",
+      "Action.Captcha.CustomRequestHandling.InsertHeaders.Value",
+      "Action.Challenge",
+      "Action.Challenge.CustomRequestHandling",
+      "Action.Challenge.CustomRequestHandling.InsertHeaders",
+      "Action.Challenge.CustomRequestHandling.InsertHeaders.Name",
+      "Action.Challenge.CustomRequestHandling.InsertHeaders.Value",
+      "Action.Count",
+      "Action.Count.CustomRequestHandling",
+      "Action.Count.CustomRequestHandling.InsertHeaders",
+      "Action.Count.CustomRequestHandling.InsertHeaders.Name",
+      "Action.Count.CustomRequestHandling.InsertHeaders.Value",
+      "Action.Monetize",
+      "Action.Monetize.PriceMultiplier",
+      "CaptchaConfig",
+      "CaptchaConfig.ImmunityTimeProperty",
+      "CaptchaConfig.ImmunityTimeProperty.ImmunityTime",
+      "ChallengeConfig",
+      "ChallengeConfig.ImmunityTimeProperty",
+      "ChallengeConfig.ImmunityTimeProperty.ImmunityTime",
+      "Name",
+      "OverrideAction",
+      "OverrideAction.Count",
+      "OverrideAction.None",
+      "Priority",
+      "RuleLabels",
+      "RuleLabels.Name",
+      "Statement",
+      "Statement.AndStatement",
+      "Statement.AndStatement.Statements",
+      "Statement.AsnMatchStatement",
+      "Statement.AsnMatchStatement.AsnList",
+      "Statement.AsnMatchStatement.ForwardedIPConfig",
+      "Statement.AsnMatchStatement.ForwardedIPConfig.FallbackBehavior",
+      "Statement.AsnMatchStatement.ForwardedIPConfig.HeaderName",
+      "Statement.ByteMatchStatement",
+      "Statement.ByteMatchStatement.FieldToMatch",
+      "Statement.ByteMatchStatement.FieldToMatch.AllQueryArguments",
+      "Statement.ByteMatchStatement.FieldToMatch.Body",
+      "Statement.ByteMatchStatement.FieldToMatch.Body.OversizeHandling",
+      "Statement.ByteMatchStatement.FieldToMatch.Cookies",
+      "Statement.ByteMatchStatement.FieldToMatch.Cookies.MatchPattern",
+      "Statement.ByteMatchStatement.FieldToMatch.Cookies.MatchPattern.All",
+      "Statement.ByteMatchStatement.FieldToMatch.Cookies.MatchPattern.ExcludedCookies",
+      "Statement.ByteMatchStatement.FieldToMatch.Cookies.MatchPattern.IncludedCookies",
+      "Statement.ByteMatchStatement.FieldToMatch.Cookies.MatchScope",
+      "Statement.ByteMatchStatement.FieldToMatch.Cookies.OversizeHandling",
+      "Statement.ByteMatchStatement.FieldToMatch.HeaderOrder",
+      "Statement.ByteMatchStatement.FieldToMatch.HeaderOrder.OversizeHandling",
+      "Statement.ByteMatchStatement.FieldToMatch.Headers",
+      "Statement.ByteMatchStatement.FieldToMatch.Headers.MatchPattern",
+      "Statement.ByteMatchStatement.FieldToMatch.Headers.MatchPattern.All",
+      "Statement.ByteMatchStatement.FieldToMatch.Headers.MatchPattern.ExcludedHeaders",
+      "Statement.ByteMatchStatement.FieldToMatch.Headers.MatchPattern.IncludedHeaders",
+      "Statement.ByteMatchStatement.FieldToMatch.Headers.MatchScope",
+      "Statement.ByteMatchStatement.FieldToMatch.Headers.OversizeHandling",
+      "Statement.ByteMatchStatement.FieldToMatch.JA3Fingerprint",
+      "Statement.ByteMatchStatement.FieldToMatch.JA3Fingerprint.FallbackBehavior",
+      "Statement.ByteMatchStatement.FieldToMatch.JA4Fingerprint",
+      "Statement.ByteMatchStatement.FieldToMatch.JA4Fingerprint.FallbackBehavior",
+      "Statement.ByteMatchStatement.FieldToMatch.JsonBody",
+      "Statement.ByteMatchStatement.FieldToMatch.JsonBody.InvalidFallbackBehavior",
+      "Statement.ByteMatchStatement.FieldToMatch.JsonBody.MatchPattern",
+      "Statement.ByteMatchStatement.FieldToMatch.JsonBody.MatchPattern.All",
+      "Statement.ByteMatchStatement.FieldToMatch.JsonBody.MatchPattern.IncludedPaths",
+      "Statement.ByteMatchStatement.FieldToMatch.JsonBody.MatchScope",
+      "Statement.ByteMatchStatement.FieldToMatch.JsonBody.OversizeHandling",
+      "Statement.ByteMatchStatement.FieldToMatch.Method",
+      "Statement.ByteMatchStatement.FieldToMatch.QueryString",
+      "Statement.ByteMatchStatement.FieldToMatch.SingleHeader",
+      "Statement.ByteMatchStatement.FieldToMatch.SingleHeader.Name",
+      "Statement.ByteMatchStatement.FieldToMatch.SingleQueryArgument",
+      "Statement.ByteMatchStatement.FieldToMatch.SingleQueryArgument.Name",
+      "Statement.ByteMatchStatement.FieldToMatch.UriFragment",
+      "Statement.ByteMatchStatement.FieldToMatch.UriFragment.FallbackBehavior",
+      "Statement.ByteMatchStatement.FieldToMatch.UriPath",
+      "Statement.ByteMatchStatement.PositionalConstraint",
+      "Statement.ByteMatchStatement.PreParseTextTransformations",
+      "Statement.ByteMatchStatement.PreParseTextTransformations.Priority",
+      "Statement.ByteMatchStatement.PreParseTextTransformations.Type",
+      "Statement.ByteMatchStatement.SearchString",
+      "Statement.ByteMatchStatement.SearchStringBase64",
+      "Statement.ByteMatchStatement.TextTransformations",
+      "Statement.ByteMatchStatement.TextTransformations.Priority",
+      "Statement.ByteMatchStatement.TextTransformations.Type",
+      "Statement.GeoMatchStatement",
+      "Statement.GeoMatchStatement.CountryCodes",
+      "Statement.GeoMatchStatement.ForwardedIPConfig",
+      "Statement.GeoMatchStatement.ForwardedIPConfig.FallbackBehavior",
+      "Statement.GeoMatchStatement.ForwardedIPConfig.HeaderName",
+      "Statement.IPSetReferenceStatement",
+      "Statement.IPSetReferenceStatement.Arn",
+      "Statement.IPSetReferenceStatement.IPSetForwardedIPConfig",
+      "Statement.IPSetReferenceStatement.IPSetForwardedIPConfig.FallbackBehavior",
+      "Statement.IPSetReferenceStatement.IPSetForwardedIPConfig.HeaderName",
+      "Statement.IPSetReferenceStatement.IPSetForwardedIPConfig.Position",
+      "Statement.LabelMatchStatement",
+      "Statement.LabelMatchStatement.Key",
+      "Statement.LabelMatchStatement.Scope",
+      "Statement.ManagedRuleGroupStatement",
+      "Statement.ManagedRuleGroupStatement.ExcludedRules",
+      "Statement.ManagedRuleGroupStatement.ExcludedRules.Name",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.CreationPath",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.EnableRegexInPath",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.RegistrationPagePath",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.RequestInspection",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.RequestInspection.AddressFields",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.RequestInspection.AddressFields.Identifier",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.RequestInspection.EmailField",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.RequestInspection.EmailField.Identifier",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.RequestInspection.PasswordField",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.RequestInspection.PasswordField.Identifier",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.RequestInspection.PayloadType",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.RequestInspection.PhoneNumberFields",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.RequestInspection.PhoneNumberFields.Identifier",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.RequestInspection.UsernameField",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.RequestInspection.UsernameField.Identifier",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection.BodyContains",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection.BodyContains.FailureStrings",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection.BodyContains.SuccessStrings",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection.Header",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection.Header.FailureValues",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection.Header.Name",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection.Header.SuccessValues",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection.Json",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection.Json.FailureValues",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection.Json.Identifier",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection.Json.SuccessValues",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection.StatusCode",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection.StatusCode.FailureCodes",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesACFPRuleSet.ResponseInspection.StatusCode.SuccessCodes",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.EnableRegexInPath",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.LoginPath",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.RequestInspection",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.RequestInspection.PasswordField",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.RequestInspection.PasswordField.Identifier",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.RequestInspection.PayloadType",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.RequestInspection.UsernameField",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.RequestInspection.UsernameField.Identifier",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection.BodyContains",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection.BodyContains.FailureStrings",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection.BodyContains.SuccessStrings",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection.Header",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection.Header.FailureValues",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection.Header.Name",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection.Header.SuccessValues",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection.Json",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection.Json.FailureValues",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection.Json.Identifier",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection.Json.SuccessValues",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection.StatusCode",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection.StatusCode.FailureCodes",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesATPRuleSet.ResponseInspection.StatusCode.SuccessCodes",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesAntiDDoSRuleSet",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesAntiDDoSRuleSet.ClientSideActionConfig",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesAntiDDoSRuleSet.ClientSideActionConfig.Challenge",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesAntiDDoSRuleSet.ClientSideActionConfig.Challenge.ExemptUriRegularExpressions",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesAntiDDoSRuleSet.ClientSideActionConfig.Challenge.ExemptUriRegularExpressions.RegexString",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesAntiDDoSRuleSet.ClientSideActionConfig.Challenge.Sensitivity",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesAntiDDoSRuleSet.ClientSideActionConfig.Challenge.UsageOfAction",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesAntiDDoSRuleSet.SensitivityToBlock",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesBotControlRuleSet",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesBotControlRuleSet.EnableMachineLearning",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.AWSManagedRulesBotControlRuleSet.InspectionLevel",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.LoginPath",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.PasswordField",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.PasswordField.Identifier",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.PayloadType",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.UsernameField",
+      "Statement.ManagedRuleGroupStatement.ManagedRuleGroupConfigs.UsernameField.Identifier",
+      "Statement.ManagedRuleGroupStatement.Name",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Allow",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Allow.CustomRequestHandling",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Allow.CustomRequestHandling.InsertHeaders",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Allow.CustomRequestHandling.InsertHeaders.Name",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Allow.CustomRequestHandling.InsertHeaders.Value",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Block",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Block.CustomResponse",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Block.CustomResponse.CustomResponseBodyKey",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Block.CustomResponse.ResponseCode",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Block.CustomResponse.ResponseHeaders",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Block.CustomResponse.ResponseHeaders.Name",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Block.CustomResponse.ResponseHeaders.Value",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Captcha",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Captcha.CustomRequestHandling",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Captcha.CustomRequestHandling.InsertHeaders",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Captcha.CustomRequestHandling.InsertHeaders.Name",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Captcha.CustomRequestHandling.InsertHeaders.Value",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Challenge",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Challenge.CustomRequestHandling",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Challenge.CustomRequestHandling.InsertHeaders",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Challenge.CustomRequestHandling.InsertHeaders.Name",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Challenge.CustomRequestHandling.InsertHeaders.Value",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Count",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Count.CustomRequestHandling",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Count.CustomRequestHandling.InsertHeaders",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Count.CustomRequestHandling.InsertHeaders.Name",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Count.CustomRequestHandling.InsertHeaders.Value",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Monetize",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.ActionToUse.Monetize.PriceMultiplier",
+      "Statement.ManagedRuleGroupStatement.RuleActionOverrides.Name",
+      "Statement.ManagedRuleGroupStatement.ScopeDownStatement",
+      "Statement.ManagedRuleGroupStatement.VendorName",
+      "Statement.ManagedRuleGroupStatement.Version",
+      "Statement.NotStatement",
+      "Statement.NotStatement.Statement",
+      "Statement.OrStatement",
+      "Statement.OrStatement.Statements",
+      "Statement.RateBasedStatement",
+      "Statement.RateBasedStatement.AggregateKeyType",
+      "Statement.RateBasedStatement.CustomKeys",
+      "Statement.RateBasedStatement.CustomKeys.ASN",
+      "Statement.RateBasedStatement.CustomKeys.Cookie",
+      "Statement.RateBasedStatement.CustomKeys.Cookie.Name",
+      "Statement.RateBasedStatement.CustomKeys.Cookie.TextTransformations",
+      "Statement.RateBasedStatement.CustomKeys.Cookie.TextTransformations.Priority",
+      "Statement.RateBasedStatement.CustomKeys.Cookie.TextTransformations.Type",
+      "Statement.RateBasedStatement.CustomKeys.ForwardedIP",
+      "Statement.RateBasedStatement.CustomKeys.HTTPMethod",
+      "Statement.RateBasedStatement.CustomKeys.Header",
+      "Statement.RateBasedStatement.CustomKeys.Header.Name",
+      "Statement.RateBasedStatement.CustomKeys.Header.TextTransformations",
+      "Statement.RateBasedStatement.CustomKeys.Header.TextTransformations.Priority",
+      "Statement.RateBasedStatement.CustomKeys.Header.TextTransformations.Type",
+      "Statement.RateBasedStatement.CustomKeys.IP",
+      "Statement.RateBasedStatement.CustomKeys.JA3Fingerprint",
+      "Statement.RateBasedStatement.CustomKeys.JA3Fingerprint.FallbackBehavior",
+      "Statement.RateBasedStatement.CustomKeys.JA4Fingerprint",
+      "Statement.RateBasedStatement.CustomKeys.JA4Fingerprint.FallbackBehavior",
+      "Statement.RateBasedStatement.CustomKeys.LabelNamespace",
+      "Statement.RateBasedStatement.CustomKeys.LabelNamespace.Namespace",
+      "Statement.RateBasedStatement.CustomKeys.QueryArgument",
+      "Statement.RateBasedStatement.CustomKeys.QueryArgument.Name",
+      "Statement.RateBasedStatement.CustomKeys.QueryArgument.TextTransformations",
+      "Statement.RateBasedStatement.CustomKeys.QueryArgument.TextTransformations.Priority",
+      "Statement.RateBasedStatement.CustomKeys.QueryArgument.TextTransformations.Type",
+      "Statement.RateBasedStatement.CustomKeys.QueryString",
+      "Statement.RateBasedStatement.CustomKeys.QueryString.TextTransformations",
+      "Statement.RateBasedStatement.CustomKeys.QueryString.TextTransformations.Priority",
+      "Statement.RateBasedStatement.CustomKeys.QueryString.TextTransformations.Type",
+      "Statement.RateBasedStatement.CustomKeys.UriPath",
+      "Statement.RateBasedStatement.CustomKeys.UriPath.TextTransformations",
+      "Statement.RateBasedStatement.CustomKeys.UriPath.TextTransformations.Priority",
+      "Statement.RateBasedStatement.CustomKeys.UriPath.TextTransformations.Type",
+      "Statement.RateBasedStatement.EvaluationWindowSec",
+      "Statement.RateBasedStatement.ForwardedIPConfig",
+      "Statement.RateBasedStatement.ForwardedIPConfig.FallbackBehavior",
+      "Statement.RateBasedStatement.ForwardedIPConfig.HeaderName",
+      "Statement.RateBasedStatement.Limit",
+      "Statement.RateBasedStatement.ScopeDownStatement",
+      "Statement.RegexMatchStatement",
+      "Statement.RegexMatchStatement.FieldToMatch",
+      "Statement.RegexMatchStatement.FieldToMatch.AllQueryArguments",
+      "Statement.RegexMatchStatement.FieldToMatch.Body",
+      "Statement.RegexMatchStatement.FieldToMatch.Body.OversizeHandling",
+      "Statement.RegexMatchStatement.FieldToMatch.Cookies",
+      "Statement.RegexMatchStatement.FieldToMatch.Cookies.MatchPattern",
+      "Statement.RegexMatchStatement.FieldToMatch.Cookies.MatchPattern.All",
+      "Statement.RegexMatchStatement.FieldToMatch.Cookies.MatchPattern.ExcludedCookies",
+      "Statement.RegexMatchStatement.FieldToMatch.Cookies.MatchPattern.IncludedCookies",
+      "Statement.RegexMatchStatement.FieldToMatch.Cookies.MatchScope",
+      "Statement.RegexMatchStatement.FieldToMatch.Cookies.OversizeHandling",
+      "Statement.RegexMatchStatement.FieldToMatch.HeaderOrder",
+      "Statement.RegexMatchStatement.FieldToMatch.HeaderOrder.OversizeHandling",
+      "Statement.RegexMatchStatement.FieldToMatch.Headers",
+      "Statement.RegexMatchStatement.FieldToMatch.Headers.MatchPattern",
+      "Statement.RegexMatchStatement.FieldToMatch.Headers.MatchPattern.All",
+      "Statement.RegexMatchStatement.FieldToMatch.Headers.MatchPattern.ExcludedHeaders",
+      "Statement.RegexMatchStatement.FieldToMatch.Headers.MatchPattern.IncludedHeaders",
+      "Statement.RegexMatchStatement.FieldToMatch.Headers.MatchScope",
+      "Statement.RegexMatchStatement.FieldToMatch.Headers.OversizeHandling",
+      "Statement.RegexMatchStatement.FieldToMatch.JA3Fingerprint",
+      "Statement.RegexMatchStatement.FieldToMatch.JA3Fingerprint.FallbackBehavior",
+      "Statement.RegexMatchStatement.FieldToMatch.JA4Fingerprint",
+      "Statement.RegexMatchStatement.FieldToMatch.JA4Fingerprint.FallbackBehavior",
+      "Statement.RegexMatchStatement.FieldToMatch.JsonBody",
+      "Statement.RegexMatchStatement.FieldToMatch.JsonBody.InvalidFallbackBehavior",
+      "Statement.RegexMatchStatement.FieldToMatch.JsonBody.MatchPattern",
+      "Statement.RegexMatchStatement.FieldToMatch.JsonBody.MatchPattern.All",
+      "Statement.RegexMatchStatement.FieldToMatch.JsonBody.MatchPattern.IncludedPaths",
+      "Statement.RegexMatchStatement.FieldToMatch.JsonBody.MatchScope",
+      "Statement.RegexMatchStatement.FieldToMatch.JsonBody.OversizeHandling",
+      "Statement.RegexMatchStatement.FieldToMatch.Method",
+      "Statement.RegexMatchStatement.FieldToMatch.QueryString",
+      "Statement.RegexMatchStatement.FieldToMatch.SingleHeader",
+      "Statement.RegexMatchStatement.FieldToMatch.SingleHeader.Name",
+      "Statement.RegexMatchStatement.FieldToMatch.SingleQueryArgument",
+      "Statement.RegexMatchStatement.FieldToMatch.SingleQueryArgument.Name",
+      "Statement.RegexMatchStatement.FieldToMatch.UriFragment",
+      "Statement.RegexMatchStatement.FieldToMatch.UriFragment.FallbackBehavior",
+      "Statement.RegexMatchStatement.FieldToMatch.UriPath",
+      "Statement.RegexMatchStatement.PreParseTextTransformations",
+      "Statement.RegexMatchStatement.PreParseTextTransformations.Priority",
+      "Statement.RegexMatchStatement.PreParseTextTransformations.Type",
+      "Statement.RegexMatchStatement.RegexString",
+      "Statement.RegexMatchStatement.TextTransformations",
+      "Statement.RegexMatchStatement.TextTransformations.Priority",
+      "Statement.RegexMatchStatement.TextTransformations.Type",
+      "Statement.RegexPatternSetReferenceStatement",
+      "Statement.RegexPatternSetReferenceStatement.Arn",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.AllQueryArguments",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Body",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Body.OversizeHandling",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Cookies",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Cookies.MatchPattern",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Cookies.MatchPattern.All",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Cookies.MatchPattern.ExcludedCookies",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Cookies.MatchPattern.IncludedCookies",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Cookies.MatchScope",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Cookies.OversizeHandling",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.HeaderOrder",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.HeaderOrder.OversizeHandling",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Headers",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Headers.MatchPattern",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Headers.MatchPattern.All",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Headers.MatchPattern.ExcludedHeaders",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Headers.MatchPattern.IncludedHeaders",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Headers.MatchScope",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Headers.OversizeHandling",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.JA3Fingerprint",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.JA3Fingerprint.FallbackBehavior",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.JA4Fingerprint",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.JA4Fingerprint.FallbackBehavior",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.JsonBody",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.JsonBody.InvalidFallbackBehavior",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.JsonBody.MatchPattern",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.JsonBody.MatchPattern.All",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.JsonBody.MatchPattern.IncludedPaths",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.JsonBody.MatchScope",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.JsonBody.OversizeHandling",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.Method",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.QueryString",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.SingleHeader",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.SingleHeader.Name",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.SingleQueryArgument",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.SingleQueryArgument.Name",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.UriFragment",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.UriFragment.FallbackBehavior",
+      "Statement.RegexPatternSetReferenceStatement.FieldToMatch.UriPath",
+      "Statement.RegexPatternSetReferenceStatement.PreParseTextTransformations",
+      "Statement.RegexPatternSetReferenceStatement.PreParseTextTransformations.Priority",
+      "Statement.RegexPatternSetReferenceStatement.PreParseTextTransformations.Type",
+      "Statement.RegexPatternSetReferenceStatement.TextTransformations",
+      "Statement.RegexPatternSetReferenceStatement.TextTransformations.Priority",
+      "Statement.RegexPatternSetReferenceStatement.TextTransformations.Type",
+      "Statement.RuleGroupReferenceStatement",
+      "Statement.RuleGroupReferenceStatement.Arn",
+      "Statement.RuleGroupReferenceStatement.ExcludedRules",
+      "Statement.RuleGroupReferenceStatement.ExcludedRules.Name",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Allow",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Allow.CustomRequestHandling",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Allow.CustomRequestHandling.InsertHeaders",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Allow.CustomRequestHandling.InsertHeaders.Name",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Allow.CustomRequestHandling.InsertHeaders.Value",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Block",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Block.CustomResponse",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Block.CustomResponse.CustomResponseBodyKey",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Block.CustomResponse.ResponseCode",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Block.CustomResponse.ResponseHeaders",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Block.CustomResponse.ResponseHeaders.Name",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Block.CustomResponse.ResponseHeaders.Value",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Captcha",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Captcha.CustomRequestHandling",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Captcha.CustomRequestHandling.InsertHeaders",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Captcha.CustomRequestHandling.InsertHeaders.Name",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Captcha.CustomRequestHandling.InsertHeaders.Value",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Challenge",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Challenge.CustomRequestHandling",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Challenge.CustomRequestHandling.InsertHeaders",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Challenge.CustomRequestHandling.InsertHeaders.Name",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Challenge.CustomRequestHandling.InsertHeaders.Value",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Count",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Count.CustomRequestHandling",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Count.CustomRequestHandling.InsertHeaders",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Count.CustomRequestHandling.InsertHeaders.Name",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Count.CustomRequestHandling.InsertHeaders.Value",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Monetize",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.ActionToUse.Monetize.PriceMultiplier",
+      "Statement.RuleGroupReferenceStatement.RuleActionOverrides.Name",
+      "Statement.SizeConstraintStatement",
+      "Statement.SizeConstraintStatement.ComparisonOperator",
+      "Statement.SizeConstraintStatement.FieldToMatch",
+      "Statement.SizeConstraintStatement.FieldToMatch.AllQueryArguments",
+      "Statement.SizeConstraintStatement.FieldToMatch.Body",
+      "Statement.SizeConstraintStatement.FieldToMatch.Body.OversizeHandling",
+      "Statement.SizeConstraintStatement.FieldToMatch.Cookies",
+      "Statement.SizeConstraintStatement.FieldToMatch.Cookies.MatchPattern",
+      "Statement.SizeConstraintStatement.FieldToMatch.Cookies.MatchPattern.All",
+      "Statement.SizeConstraintStatement.FieldToMatch.Cookies.MatchPattern.ExcludedCookies",
+      "Statement.SizeConstraintStatement.FieldToMatch.Cookies.MatchPattern.IncludedCookies",
+      "Statement.SizeConstraintStatement.FieldToMatch.Cookies.MatchScope",
+      "Statement.SizeConstraintStatement.FieldToMatch.Cookies.OversizeHandling",
+      "Statement.SizeConstraintStatement.FieldToMatch.HeaderOrder",
+      "Statement.SizeConstraintStatement.FieldToMatch.HeaderOrder.OversizeHandling",
+      "Statement.SizeConstraintStatement.FieldToMatch.Headers",
+      "Statement.SizeConstraintStatement.FieldToMatch.Headers.MatchPattern",
+      "Statement.SizeConstraintStatement.FieldToMatch.Headers.MatchPattern.All",
+      "Statement.SizeConstraintStatement.FieldToMatch.Headers.MatchPattern.ExcludedHeaders",
+      "Statement.SizeConstraintStatement.FieldToMatch.Headers.MatchPattern.IncludedHeaders",
+      "Statement.SizeConstraintStatement.FieldToMatch.Headers.MatchScope",
+      "Statement.SizeConstraintStatement.FieldToMatch.Headers.OversizeHandling",
+      "Statement.SizeConstraintStatement.FieldToMatch.JA3Fingerprint",
+      "Statement.SizeConstraintStatement.FieldToMatch.JA3Fingerprint.FallbackBehavior",
+      "Statement.SizeConstraintStatement.FieldToMatch.JA4Fingerprint",
+      "Statement.SizeConstraintStatement.FieldToMatch.JA4Fingerprint.FallbackBehavior",
+      "Statement.SizeConstraintStatement.FieldToMatch.JsonBody",
+      "Statement.SizeConstraintStatement.FieldToMatch.JsonBody.InvalidFallbackBehavior",
+      "Statement.SizeConstraintStatement.FieldToMatch.JsonBody.MatchPattern",
+      "Statement.SizeConstraintStatement.FieldToMatch.JsonBody.MatchPattern.All",
+      "Statement.SizeConstraintStatement.FieldToMatch.JsonBody.MatchPattern.IncludedPaths",
+      "Statement.SizeConstraintStatement.FieldToMatch.JsonBody.MatchScope",
+      "Statement.SizeConstraintStatement.FieldToMatch.JsonBody.OversizeHandling",
+      "Statement.SizeConstraintStatement.FieldToMatch.Method",
+      "Statement.SizeConstraintStatement.FieldToMatch.QueryString",
+      "Statement.SizeConstraintStatement.FieldToMatch.SingleHeader",
+      "Statement.SizeConstraintStatement.FieldToMatch.SingleHeader.Name",
+      "Statement.SizeConstraintStatement.FieldToMatch.SingleQueryArgument",
+      "Statement.SizeConstraintStatement.FieldToMatch.SingleQueryArgument.Name",
+      "Statement.SizeConstraintStatement.FieldToMatch.UriFragment",
+      "Statement.SizeConstraintStatement.FieldToMatch.UriFragment.FallbackBehavior",
+      "Statement.SizeConstraintStatement.FieldToMatch.UriPath",
+      "Statement.SizeConstraintStatement.PreParseTextTransformations",
+      "Statement.SizeConstraintStatement.PreParseTextTransformations.Priority",
+      "Statement.SizeConstraintStatement.PreParseTextTransformations.Type",
+      "Statement.SizeConstraintStatement.Size",
+      "Statement.SizeConstraintStatement.TextTransformations",
+      "Statement.SizeConstraintStatement.TextTransformations.Priority",
+      "Statement.SizeConstraintStatement.TextTransformations.Type",
+      "Statement.SqliMatchStatement",
+      "Statement.SqliMatchStatement.FieldToMatch",
+      "Statement.SqliMatchStatement.FieldToMatch.AllQueryArguments",
+      "Statement.SqliMatchStatement.FieldToMatch.Body",
+      "Statement.SqliMatchStatement.FieldToMatch.Body.OversizeHandling",
+      "Statement.SqliMatchStatement.FieldToMatch.Cookies",
+      "Statement.SqliMatchStatement.FieldToMatch.Cookies.MatchPattern",
+      "Statement.SqliMatchStatement.FieldToMatch.Cookies.MatchPattern.All",
+      "Statement.SqliMatchStatement.FieldToMatch.Cookies.MatchPattern.ExcludedCookies",
+      "Statement.SqliMatchStatement.FieldToMatch.Cookies.MatchPattern.IncludedCookies",
+      "Statement.SqliMatchStatement.FieldToMatch.Cookies.MatchScope",
+      "Statement.SqliMatchStatement.FieldToMatch.Cookies.OversizeHandling",
+      "Statement.SqliMatchStatement.FieldToMatch.HeaderOrder",
+      "Statement.SqliMatchStatement.FieldToMatch.HeaderOrder.OversizeHandling",
+      "Statement.SqliMatchStatement.FieldToMatch.Headers",
+      "Statement.SqliMatchStatement.FieldToMatch.Headers.MatchPattern",
+      "Statement.SqliMatchStatement.FieldToMatch.Headers.MatchPattern.All",
+      "Statement.SqliMatchStatement.FieldToMatch.Headers.MatchPattern.ExcludedHeaders",
+      "Statement.SqliMatchStatement.FieldToMatch.Headers.MatchPattern.IncludedHeaders",
+      "Statement.SqliMatchStatement.FieldToMatch.Headers.MatchScope",
+      "Statement.SqliMatchStatement.FieldToMatch.Headers.OversizeHandling",
+      "Statement.SqliMatchStatement.FieldToMatch.JA3Fingerprint",
+      "Statement.SqliMatchStatement.FieldToMatch.JA3Fingerprint.FallbackBehavior",
+      "Statement.SqliMatchStatement.FieldToMatch.JA4Fingerprint",
+      "Statement.SqliMatchStatement.FieldToMatch.JA4Fingerprint.FallbackBehavior",
+      "Statement.SqliMatchStatement.FieldToMatch.JsonBody",
+      "Statement.SqliMatchStatement.FieldToMatch.JsonBody.InvalidFallbackBehavior",
+      "Statement.SqliMatchStatement.FieldToMatch.JsonBody.MatchPattern",
+      "Statement.SqliMatchStatement.FieldToMatch.JsonBody.MatchPattern.All",
+      "Statement.SqliMatchStatement.FieldToMatch.JsonBody.MatchPattern.IncludedPaths",
+      "Statement.SqliMatchStatement.FieldToMatch.JsonBody.MatchScope",
+      "Statement.SqliMatchStatement.FieldToMatch.JsonBody.OversizeHandling",
+      "Statement.SqliMatchStatement.FieldToMatch.Method",
+      "Statement.SqliMatchStatement.FieldToMatch.QueryString",
+      "Statement.SqliMatchStatement.FieldToMatch.SingleHeader",
+      "Statement.SqliMatchStatement.FieldToMatch.SingleHeader.Name",
+      "Statement.SqliMatchStatement.FieldToMatch.SingleQueryArgument",
+      "Statement.SqliMatchStatement.FieldToMatch.SingleQueryArgument.Name",
+      "Statement.SqliMatchStatement.FieldToMatch.UriFragment",
+      "Statement.SqliMatchStatement.FieldToMatch.UriFragment.FallbackBehavior",
+      "Statement.SqliMatchStatement.FieldToMatch.UriPath",
+      "Statement.SqliMatchStatement.PreParseTextTransformations",
+      "Statement.SqliMatchStatement.PreParseTextTransformations.Priority",
+      "Statement.SqliMatchStatement.PreParseTextTransformations.Type",
+      "Statement.SqliMatchStatement.SensitivityLevel",
+      "Statement.SqliMatchStatement.TextTransformations",
+      "Statement.SqliMatchStatement.TextTransformations.Priority",
+      "Statement.SqliMatchStatement.TextTransformations.Type",
+      "Statement.XssMatchStatement",
+      "Statement.XssMatchStatement.FieldToMatch",
+      "Statement.XssMatchStatement.FieldToMatch.AllQueryArguments",
+      "Statement.XssMatchStatement.FieldToMatch.Body",
+      "Statement.XssMatchStatement.FieldToMatch.Body.OversizeHandling",
+      "Statement.XssMatchStatement.FieldToMatch.Cookies",
+      "Statement.XssMatchStatement.FieldToMatch.Cookies.MatchPattern",
+      "Statement.XssMatchStatement.FieldToMatch.Cookies.MatchPattern.All",
+      "Statement.XssMatchStatement.FieldToMatch.Cookies.MatchPattern.ExcludedCookies",
+      "Statement.XssMatchStatement.FieldToMatch.Cookies.MatchPattern.IncludedCookies",
+      "Statement.XssMatchStatement.FieldToMatch.Cookies.MatchScope",
+      "Statement.XssMatchStatement.FieldToMatch.Cookies.OversizeHandling",
+      "Statement.XssMatchStatement.FieldToMatch.HeaderOrder",
+      "Statement.XssMatchStatement.FieldToMatch.HeaderOrder.OversizeHandling",
+      "Statement.XssMatchStatement.FieldToMatch.Headers",
+      "Statement.XssMatchStatement.FieldToMatch.Headers.MatchPattern",
+      "Statement.XssMatchStatement.FieldToMatch.Headers.MatchPattern.All",
+      "Statement.XssMatchStatement.FieldToMatch.Headers.MatchPattern.ExcludedHeaders",
+      "Statement.XssMatchStatement.FieldToMatch.Headers.MatchPattern.IncludedHeaders",
+      "Statement.XssMatchStatement.FieldToMatch.Headers.MatchScope",
+      "Statement.XssMatchStatement.FieldToMatch.Headers.OversizeHandling",
+      "Statement.XssMatchStatement.FieldToMatch.JA3Fingerprint",
+      "Statement.XssMatchStatement.FieldToMatch.JA3Fingerprint.FallbackBehavior",
+      "Statement.XssMatchStatement.FieldToMatch.JA4Fingerprint",
+      "Statement.XssMatchStatement.FieldToMatch.JA4Fingerprint.FallbackBehavior",
+      "Statement.XssMatchStatement.FieldToMatch.JsonBody",
+      "Statement.XssMatchStatement.FieldToMatch.JsonBody.InvalidFallbackBehavior",
+      "Statement.XssMatchStatement.FieldToMatch.JsonBody.MatchPattern",
+      "Statement.XssMatchStatement.FieldToMatch.JsonBody.MatchPattern.All",
+      "Statement.XssMatchStatement.FieldToMatch.JsonBody.MatchPattern.IncludedPaths",
+      "Statement.XssMatchStatement.FieldToMatch.JsonBody.MatchScope",
+      "Statement.XssMatchStatement.FieldToMatch.JsonBody.OversizeHandling",
+      "Statement.XssMatchStatement.FieldToMatch.Method",
+      "Statement.XssMatchStatement.FieldToMatch.QueryString",
+      "Statement.XssMatchStatement.FieldToMatch.SingleHeader",
+      "Statement.XssMatchStatement.FieldToMatch.SingleHeader.Name",
+      "Statement.XssMatchStatement.FieldToMatch.SingleQueryArgument",
+      "Statement.XssMatchStatement.FieldToMatch.SingleQueryArgument.Name",
+      "Statement.XssMatchStatement.FieldToMatch.UriFragment",
+      "Statement.XssMatchStatement.FieldToMatch.UriFragment.FallbackBehavior",
+      "Statement.XssMatchStatement.FieldToMatch.UriPath",
+      "Statement.XssMatchStatement.PreParseTextTransformations",
+      "Statement.XssMatchStatement.PreParseTextTransformations.Priority",
+      "Statement.XssMatchStatement.PreParseTextTransformations.Type",
+      "Statement.XssMatchStatement.TextTransformations",
+      "Statement.XssMatchStatement.TextTransformations.Priority",
+      "Statement.XssMatchStatement.TextTransformations.Type",
+      "VisibilityConfig",
+      "VisibilityConfig.CloudWatchMetricsEnabled",
+      "VisibilityConfig.MetricName",
+      "VisibilityConfig.SampledRequestsEnabled"
+    ],
+    "VisibilityConfig": [
+      "CloudWatchMetricsEnabled",
+      "MetricName",
+      "SampledRequestsEnabled"
+    ],
+    "DataProtectionConfig": [
+      "DataProtections",
+      "DataProtections.Action",
+      "DataProtections.ExcludeRateBasedDetails",
+      "DataProtections.ExcludeRuleMatchDetails",
+      "DataProtections.Field",
+      "DataProtections.Field.FieldKeys",
+      "DataProtections.Field.FieldType"
+    ],
+    "ApplicationConfig": [
+      "Attributes",
+      "Attributes.Name",
+      "Attributes.Values"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "CustomResponseBodies": [
+      "Content",
+      "ContentType"
+    ],
+    "CaptchaConfig": [
+      "ImmunityTimeProperty",
+      "ImmunityTimeProperty.ImmunityTime"
+    ],
+    "ChallengeConfig": [
+      "ImmunityTimeProperty",
+      "ImmunityTimeProperty.ImmunityTime"
+    ],
+    "AssociationConfig": [
+      "RequestBody",
+      "RequestBody.DefaultSizeInspectionLimit"
+    ],
+    "OnSourceDDoSProtectionConfig": [
+      "ALBLowReputationMode"
+    ],
+    "MonetizationConfig": [
+      "CryptoConfig",
+      "CryptoConfig.PaymentNetworks",
+      "CryptoConfig.PaymentNetworks.Chain",
+      "CryptoConfig.PaymentNetworks.Prices",
+      "CryptoConfig.PaymentNetworks.Prices.Amount",
+      "CryptoConfig.PaymentNetworks.Prices.Currency",
+      "CryptoConfig.PaymentNetworks.WalletAddress",
+      "CurrencyMode"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Arn": "scalar",
+      "Capacity": "scalar",
+      "DefaultAction": "object",
+      "Description": "scalar",
+      "Name": "scalar",
+      "Id": "scalar",
+      "Scope": "scalar",
+      "Rules": "array",
+      "VisibilityConfig": "object",
+      "DataProtectionConfig": "object",
+      "ApplicationConfig": "object",
+      "Tags": "array",
+      "LabelNamespace": "scalar",
+      "CustomResponseBodies": "object",
+      "CaptchaConfig": "object",
+      "ChallengeConfig": "object",
+      "TokenDomains": "array",
+      "AssociationConfig": "object",
+      "OnSourceDDoSProtectionConfig": "object",
+      "MonetizationConfig": "object"
+    },
+    "ApplicationConfig": {
+      "Attributes": "array"
+    },
+    "ApplicationAttribute": {
+      "Name": "scalar",
+      "Values": "array"
+    },
+    "AndStatement": {
+      "Statements": "array"
+    },
+    "Body": {
+      "OversizeHandling": "scalar"
+    },
+    "ByteMatchStatement": {
+      "SearchString": "scalar",
+      "SearchStringBase64": "scalar",
+      "FieldToMatch": "object",
+      "TextTransformations": "array",
+      "PreParseTextTransformations": "array",
+      "PositionalConstraint": "scalar"
+    },
+    "DefaultAction": {
+      "Allow": "object",
+      "Block": "object"
+    },
+    "ExcludedRule": {
+      "Name": "scalar"
+    },
+    "RuleActionOverride": {
+      "Name": "scalar",
+      "ActionToUse": "object"
+    },
+    "FieldToMatch": {
+      "SingleHeader": "object",
+      "SingleQueryArgument": "object",
+      "AllQueryArguments": "object",
+      "UriPath": "object",
+      "QueryString": "object",
+      "Body": "object",
+      "Method": "object",
+      "JsonBody": "object",
+      "Headers": "object",
+      "Cookies": "object",
+      "JA3Fingerprint": "object",
+      "JA4Fingerprint": "object",
+      "UriFragment": "object",
+      "HeaderOrder": "object"
+    },
+    "JsonBody": {
+      "MatchPattern": "object",
+      "MatchScope": "scalar",
+      "InvalidFallbackBehavior": "scalar",
+      "OversizeHandling": "scalar"
+    },
+    "JsonMatchPattern": {
+      "All": "object",
+      "IncludedPaths": "array"
+    },
+    "GeoMatchStatement": {
+      "CountryCodes": "array",
+      "ForwardedIPConfig": "object"
+    },
+    "IPSetReferenceStatement": {
+      "Arn": "scalar",
+      "IPSetForwardedIPConfig": "object"
+    },
+    "ManagedRuleGroupStatement": {
+      "Name": "scalar",
+      "VendorName": "scalar",
+      "Version": "scalar",
+      "ExcludedRules": "array",
+      "ScopeDownStatement": "object",
+      "ManagedRuleGroupConfigs": "array",
+      "RuleActionOverrides": "array"
+    },
+    "NotStatement": {
+      "Statement": "object"
+    },
+    "OrStatement": {
+      "Statements": "array"
+    },
+    "OverrideAction": {
+      "Count": "object",
+      "None": "object"
+    },
+    "RateBasedStatement": {
+      "Limit": "scalar",
+      "EvaluationWindowSec": "scalar",
+      "AggregateKeyType": "scalar",
+      "CustomKeys": "array",
+      "ScopeDownStatement": "object",
+      "ForwardedIPConfig": "object"
+    },
+    "RateBasedStatementCustomKey": {
+      "Cookie": "object",
+      "ForwardedIP": "object",
+      "Header": "object",
+      "HTTPMethod": "object",
+      "IP": "object",
+      "LabelNamespace": "object",
+      "QueryArgument": "object",
+      "QueryString": "object",
+      "UriPath": "object",
+      "JA3Fingerprint": "object",
+      "JA4Fingerprint": "object",
+      "ASN": "object"
+    },
+    "RateLimitCookie": {
+      "Name": "scalar",
+      "TextTransformations": "array"
+    },
+    "RateLimitHeader": {
+      "Name": "scalar",
+      "TextTransformations": "array"
+    },
+    "RateLimitLabelNamespace": {
+      "Namespace": "scalar"
+    },
+    "RateLimitQueryArgument": {
+      "Name": "scalar",
+      "TextTransformations": "array"
+    },
+    "RateLimitQueryString": {
+      "TextTransformations": "array"
+    },
+    "RateLimitUriPath": {
+      "TextTransformations": "array"
+    },
+    "RateLimitJA3Fingerprint": {
+      "FallbackBehavior": "scalar"
+    },
+    "RateLimitJA4Fingerprint": {
+      "FallbackBehavior": "scalar"
+    },
+    "RegexPatternSetReferenceStatement": {
+      "Arn": "scalar",
+      "FieldToMatch": "object",
+      "TextTransformations": "array",
+      "PreParseTextTransformations": "array"
+    },
+    "ForwardedIPConfiguration": {
+      "HeaderName": "scalar",
+      "FallbackBehavior": "scalar"
+    },
+    "IPSetForwardedIPConfiguration": {
+      "HeaderName": "scalar",
+      "FallbackBehavior": "scalar",
+      "Position": "scalar"
+    },
+    "Rule": {
+      "Name": "scalar",
+      "Priority": "scalar",
+      "Statement": "object",
+      "Action": "object",
+      "OverrideAction": "object",
+      "RuleLabels": "array",
+      "VisibilityConfig": "object",
+      "CaptchaConfig": "object",
+      "ChallengeConfig": "object"
+    },
+    "RuleAction": {
+      "Allow": "object",
+      "Block": "object",
+      "Count": "object",
+      "Captcha": "object",
+      "Challenge": "object",
+      "Monetize": "object"
+    },
+    "AllowAction": {
+      "CustomRequestHandling": "object"
+    },
+    "CountAction": {
+      "CustomRequestHandling": "object"
+    },
+    "CaptchaAction": {
+      "CustomRequestHandling": "object"
+    },
+    "ChallengeAction": {
+      "CustomRequestHandling": "object"
+    },
+    "BlockAction": {
+      "CustomResponse": "object"
+    },
+    "CustomHTTPHeader": {
+      "Name": "scalar",
+      "Value": "scalar"
+    },
+    "CustomRequestHandling": {
+      "InsertHeaders": "array"
+    },
+    "CustomResponseBody": {
+      "ContentType": "scalar",
+      "Content": "scalar"
+    },
+    "CustomResponse": {
+      "ResponseCode": "scalar",
+      "CustomResponseBodyKey": "scalar",
+      "ResponseHeaders": "array"
+    },
+    "RuleGroupReferenceStatement": {
+      "Arn": "scalar",
+      "ExcludedRules": "array",
+      "RuleActionOverrides": "array"
+    },
+    "SingleHeader": {
+      "Name": "scalar"
+    },
+    "SingleQueryArgument": {
+      "Name": "scalar"
+    },
+    "SizeConstraintStatement": {
+      "FieldToMatch": "object",
+      "ComparisonOperator": "scalar",
+      "Size": "scalar",
+      "TextTransformations": "array",
+      "PreParseTextTransformations": "array"
+    },
+    "SqliMatchStatement": {
+      "FieldToMatch": "object",
+      "TextTransformations": "array",
+      "PreParseTextTransformations": "array",
+      "SensitivityLevel": "scalar"
+    },
+    "Statement": {
+      "ByteMatchStatement": "object",
+      "SqliMatchStatement": "object",
+      "XssMatchStatement": "object",
+      "SizeConstraintStatement": "object",
+      "GeoMatchStatement": "object",
+      "RuleGroupReferenceStatement": "object",
+      "IPSetReferenceStatement": "object",
+      "RegexPatternSetReferenceStatement": "object",
+      "ManagedRuleGroupStatement": "object",
+      "RateBasedStatement": "object",
+      "AndStatement": "object",
+      "OrStatement": "object",
+      "NotStatement": "object",
+      "LabelMatchStatement": "object",
+      "RegexMatchStatement": "object",
+      "AsnMatchStatement": "object"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "TextTransformation": {
+      "Priority": "scalar",
+      "Type": "scalar"
+    },
+    "PreParseTextTransformation": {
+      "Priority": "scalar",
+      "Type": "scalar"
+    },
+    "VisibilityConfig": {
+      "SampledRequestsEnabled": "scalar",
+      "CloudWatchMetricsEnabled": "scalar",
+      "MetricName": "scalar"
+    },
+    "DataProtectionConfig": {
+      "DataProtections": "array"
+    },
+    "DataProtect": {
+      "Field": "object",
+      "Action": "scalar",
+      "ExcludeRuleMatchDetails": "scalar",
+      "ExcludeRateBasedDetails": "scalar"
+    },
+    "FieldToProtect": {
+      "FieldType": "scalar",
+      "FieldKeys": "array"
+    },
+    "XssMatchStatement": {
+      "FieldToMatch": "object",
+      "TextTransformations": "array",
+      "PreParseTextTransformations": "array"
+    },
+    "Label": {
+      "Name": "scalar"
+    },
+    "LabelMatchStatement": {
+      "Scope": "scalar",
+      "Key": "scalar"
+    },
+    "RegexMatchStatement": {
+      "RegexString": "scalar",
+      "FieldToMatch": "object",
+      "TextTransformations": "array",
+      "PreParseTextTransformations": "array"
+    },
+    "AsnMatchStatement": {
+      "AsnList": "array",
+      "ForwardedIPConfig": "object"
+    },
+    "CaptchaConfig": {
+      "ImmunityTimeProperty": "object"
+    },
+    "ChallengeConfig": {
+      "ImmunityTimeProperty": "object"
+    },
+    "ImmunityTimeProperty": {
+      "ImmunityTime": "scalar"
+    },
+    "ManagedRuleGroupConfig": {
+      "LoginPath": "scalar",
+      "PayloadType": "scalar",
+      "UsernameField": "object",
+      "PasswordField": "object",
+      "AWSManagedRulesBotControlRuleSet": "object",
+      "AWSManagedRulesATPRuleSet": "object",
+      "AWSManagedRulesACFPRuleSet": "object",
+      "AWSManagedRulesAntiDDoSRuleSet": "object"
+    },
+    "AWSManagedRulesBotControlRuleSet": {
+      "InspectionLevel": "scalar",
+      "EnableMachineLearning": "scalar"
+    },
+    "AWSManagedRulesATPRuleSet": {
+      "LoginPath": "scalar",
+      "EnableRegexInPath": "scalar",
+      "RequestInspection": "object",
+      "ResponseInspection": "object"
+    },
+    "AWSManagedRulesACFPRuleSet": {
+      "CreationPath": "scalar",
+      "RegistrationPagePath": "scalar",
+      "RequestInspection": "object",
+      "ResponseInspection": "object",
+      "EnableRegexInPath": "scalar"
+    },
+    "AWSManagedRulesAntiDDoSRuleSet": {
+      "ClientSideActionConfig": "object",
+      "SensitivityToBlock": "scalar"
+    },
+    "ClientSideActionConfig": {
+      "Challenge": "object"
+    },
+    "ClientSideAction": {
+      "UsageOfAction": "scalar",
+      "Sensitivity": "scalar",
+      "ExemptUriRegularExpressions": "array"
+    },
+    "Regex": {
+      "RegexString": "scalar"
+    },
+    "RequestInspection": {
+      "PayloadType": "scalar",
+      "UsernameField": "object",
+      "PasswordField": "object"
+    },
+    "RequestInspectionACFP": {
+      "PayloadType": "scalar",
+      "UsernameField": "object",
+      "PasswordField": "object",
+      "EmailField": "object",
+      "PhoneNumberFields": "array",
+      "AddressFields": "array"
+    },
+    "ResponseInspection": {
+      "StatusCode": "object",
+      "Header": "object",
+      "BodyContains": "object",
+      "Json": "object"
+    },
+    "ResponseInspectionStatusCode": {
+      "SuccessCodes": "array",
+      "FailureCodes": "array"
+    },
+    "ResponseInspectionHeader": {
+      "Name": "scalar",
+      "SuccessValues": "array",
+      "FailureValues": "array"
+    },
+    "ResponseInspectionBodyContains": {
+      "SuccessStrings": "array",
+      "FailureStrings": "array"
+    },
+    "ResponseInspectionJson": {
+      "Identifier": "scalar",
+      "SuccessValues": "array",
+      "FailureValues": "array"
+    },
+    "AssociationConfig": {
+      "RequestBody": "object"
+    },
+    "RequestBodyAssociatedResourceTypeConfig": {
+      "DefaultSizeInspectionLimit": "scalar"
+    },
+    "FieldIdentifier": {
+      "Identifier": "scalar"
+    },
+    "Headers": {
+      "MatchPattern": "object",
+      "MatchScope": "scalar",
+      "OversizeHandling": "scalar"
+    },
+    "Cookies": {
+      "MatchPattern": "object",
+      "MatchScope": "scalar",
+      "OversizeHandling": "scalar"
+    },
+    "HeaderMatchPattern": {
+      "All": "object",
+      "IncludedHeaders": "array",
+      "ExcludedHeaders": "array"
+    },
+    "CookieMatchPattern": {
+      "All": "object",
+      "IncludedCookies": "array",
+      "ExcludedCookies": "array"
+    },
+    "JA3Fingerprint": {
+      "FallbackBehavior": "scalar"
+    },
+    "JA4Fingerprint": {
+      "FallbackBehavior": "scalar"
+    },
+    "UriFragment": {
+      "FallbackBehavior": "scalar"
+    },
+    "HeaderOrder": {
+      "OversizeHandling": "scalar"
+    },
+    "OnSourceDDoSProtectionConfig": {
+      "ALBLowReputationMode": "scalar"
+    },
+    "MonetizationConfig": {
+      "CryptoConfig": "object",
+      "CurrencyMode": "scalar"
+    },
+    "CryptoConfig": {
+      "PaymentNetworks": "array"
+    },
+    "PaymentNetwork": {
+      "Chain": "scalar",
+      "WalletAddress": "scalar",
+      "Prices": "array"
+    },
+    "Price": {
+      "Amount": "scalar",
+      "Currency": "scalar"
+    },
+    "MonetizeAction": {
+      "PriceMultiplier": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "DefaultAction",
+      "Scope",
+      "VisibilityConfig"
+    ],
+    "ApplicationConfig": [
+      "Attributes"
+    ],
+    "ApplicationAttribute": [
+      "Name",
+      "Values"
+    ],
+    "AndStatement": [
+      "Statements"
+    ],
+    "ByteMatchStatement": [
+      "FieldToMatch",
+      "PositionalConstraint",
+      "TextTransformations"
+    ],
+    "ExcludedRule": [
+      "Name"
+    ],
+    "RuleActionOverride": [
+      "ActionToUse",
+      "Name"
+    ],
+    "JsonBody": [
+      "MatchPattern",
+      "MatchScope"
+    ],
+    "IPSetReferenceStatement": [
+      "Arn"
+    ],
+    "ManagedRuleGroupStatement": [
+      "Name",
+      "VendorName"
+    ],
+    "NotStatement": [
+      "Statement"
+    ],
+    "OrStatement": [
+      "Statements"
+    ],
+    "RateBasedStatement": [
+      "AggregateKeyType",
+      "Limit"
+    ],
+    "RateLimitCookie": [
+      "Name",
+      "TextTransformations"
+    ],
+    "RateLimitHeader": [
+      "Name",
+      "TextTransformations"
+    ],
+    "RateLimitLabelNamespace": [
+      "Namespace"
+    ],
+    "RateLimitQueryArgument": [
+      "Name",
+      "TextTransformations"
+    ],
+    "RateLimitQueryString": [
+      "TextTransformations"
+    ],
+    "RateLimitUriPath": [
+      "TextTransformations"
+    ],
+    "RateLimitJA3Fingerprint": [
+      "FallbackBehavior"
+    ],
+    "RateLimitJA4Fingerprint": [
+      "FallbackBehavior"
+    ],
+    "RegexPatternSetReferenceStatement": [
+      "Arn",
+      "FieldToMatch",
+      "TextTransformations"
+    ],
+    "ForwardedIPConfiguration": [
+      "FallbackBehavior",
+      "HeaderName"
+    ],
+    "IPSetForwardedIPConfiguration": [
+      "FallbackBehavior",
+      "HeaderName",
+      "Position"
+    ],
+    "Rule": [
+      "Name",
+      "Priority",
+      "Statement",
+      "VisibilityConfig"
+    ],
+    "CustomHTTPHeader": [
+      "Name",
+      "Value"
+    ],
+    "CustomRequestHandling": [
+      "InsertHeaders"
+    ],
+    "CustomResponseBody": [
+      "Content",
+      "ContentType"
+    ],
+    "CustomResponse": [
+      "ResponseCode"
+    ],
+    "RuleGroupReferenceStatement": [
+      "Arn"
+    ],
+    "SizeConstraintStatement": [
+      "ComparisonOperator",
+      "FieldToMatch",
+      "Size",
+      "TextTransformations"
+    ],
+    "SqliMatchStatement": [
+      "FieldToMatch",
+      "TextTransformations"
+    ],
+    "TextTransformation": [
+      "Priority",
+      "Type"
+    ],
+    "PreParseTextTransformation": [
+      "Priority",
+      "Type"
+    ],
+    "VisibilityConfig": [
+      "CloudWatchMetricsEnabled",
+      "MetricName",
+      "SampledRequestsEnabled"
+    ],
+    "DataProtectionConfig": [
+      "DataProtections"
+    ],
+    "DataProtect": [
+      "Action",
+      "Field"
+    ],
+    "FieldToProtect": [
+      "FieldType"
+    ],
+    "XssMatchStatement": [
+      "FieldToMatch",
+      "TextTransformations"
+    ],
+    "Label": [
+      "Name"
+    ],
+    "LabelMatchStatement": [
+      "Key",
+      "Scope"
+    ],
+    "RegexMatchStatement": [
+      "FieldToMatch",
+      "RegexString",
+      "TextTransformations"
+    ],
+    "ImmunityTimeProperty": [
+      "ImmunityTime"
+    ],
+    "AWSManagedRulesBotControlRuleSet": [
+      "InspectionLevel"
+    ],
+    "AWSManagedRulesATPRuleSet": [
+      "LoginPath"
+    ],
+    "AWSManagedRulesACFPRuleSet": [
+      "CreationPath",
+      "RegistrationPagePath",
+      "RequestInspection"
+    ],
+    "AWSManagedRulesAntiDDoSRuleSet": [
+      "ClientSideActionConfig"
+    ],
+    "ClientSideActionConfig": [
+      "Challenge"
+    ],
+    "ClientSideAction": [
+      "UsageOfAction"
+    ],
+    "RequestInspection": [
+      "PasswordField",
+      "PayloadType",
+      "UsernameField"
+    ],
+    "RequestInspectionACFP": [
+      "PayloadType"
+    ],
+    "ResponseInspectionStatusCode": [
+      "FailureCodes",
+      "SuccessCodes"
+    ],
+    "ResponseInspectionHeader": [
+      "FailureValues",
+      "Name",
+      "SuccessValues"
+    ],
+    "ResponseInspectionBodyContains": [
+      "FailureStrings",
+      "SuccessStrings"
+    ],
+    "ResponseInspectionJson": [
+      "FailureValues",
+      "Identifier",
+      "SuccessValues"
+    ],
+    "RequestBodyAssociatedResourceTypeConfig": [
+      "DefaultSizeInspectionLimit"
+    ],
+    "FieldIdentifier": [
+      "Identifier"
+    ],
+    "Headers": [
+      "MatchPattern",
+      "MatchScope",
+      "OversizeHandling"
+    ],
+    "Cookies": [
+      "MatchPattern",
+      "MatchScope",
+      "OversizeHandling"
+    ],
+    "JA3Fingerprint": [
+      "FallbackBehavior"
+    ],
+    "JA4Fingerprint": [
+      "FallbackBehavior"
+    ],
+    "HeaderOrder": [
+      "OversizeHandling"
+    ],
+    "OnSourceDDoSProtectionConfig": [
+      "ALBLowReputationMode"
+    ],
+    "CryptoConfig": [
+      "PaymentNetworks"
+    ],
+    "PaymentNetwork": [
+      "Chain",
+      "Prices",
+      "WalletAddress"
+    ],
+    "Price": [
+      "Amount",
+      "Currency"
+    ]
+  }
 }

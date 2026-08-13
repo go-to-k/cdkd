@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::S3::Bucket",
-  "generatedAt": "2026-08-10",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AbacStatus",
     "AccelerateConfiguration",
@@ -49,8 +49,39 @@
     "BucketName"
   ],
   "nestedProperties": {
-    "AccelerateConfiguration": [
-      "AccelerationStatus"
+    "InventoryConfigurations": [
+      "BucketAccountId",
+      "BucketArn",
+      "Destination",
+      "Enabled",
+      "Format",
+      "Id",
+      "IncludedObjectVersions",
+      "OptionalFields",
+      "Prefix",
+      "ScheduleFrequency"
+    ],
+    "WebsiteConfiguration": [
+      "ErrorDocument",
+      "HostName",
+      "HttpErrorCodeReturnedEquals",
+      "HttpRedirectCode",
+      "IndexDocument",
+      "KeyPrefixEquals",
+      "Protocol",
+      "RedirectAllRequestsTo",
+      "RedirectRule",
+      "ReplaceKeyPrefixWith",
+      "ReplaceKeyWith",
+      "RoutingRuleCondition",
+      "RoutingRules"
+    ],
+    "MetadataTableConfiguration": [
+      "S3TablesDestination",
+      "TableArn",
+      "TableBucketArn",
+      "TableName",
+      "TableNamespace"
     ],
     "AnalyticsConfigurations": [
       "BucketAccountId",
@@ -66,74 +97,26 @@
       "TagFilters",
       "Value"
     ],
-    "BucketEncryption": [
-      "BlockedEncryptionTypes",
-      "BucketKeyEnabled",
-      "EncryptionType",
-      "KMSMasterKeyID",
-      "SSEAlgorithm",
-      "ServerSideEncryptionByDefault",
-      "ServerSideEncryptionConfiguration"
+    "AccelerateConfiguration": [
+      "AccelerationStatus"
     ],
-    "CorsConfiguration": [
-      "AllowedHeaders",
-      "AllowedMethods",
-      "AllowedOrigins",
-      "CorsRules",
-      "ExposedHeaders",
-      "Id",
-      "MaxAge"
+    "PublicAccessBlockConfiguration": [
+      "BlockPublicAcls",
+      "BlockPublicPolicy",
+      "IgnorePublicAcls",
+      "RestrictPublicBuckets"
     ],
-    "IntelligentTieringConfigurations": [
-      "AccessTier",
+    "OwnershipControls": [
+      "ObjectOwnership",
+      "Rules"
+    ],
+    "ObjectLockConfiguration": [
       "Days",
-      "Id",
-      "Key",
-      "Prefix",
-      "Status",
-      "TagFilters",
-      "Tierings",
-      "Value"
-    ],
-    "InventoryConfigurations": [
-      "BucketAccountId",
-      "BucketArn",
-      "Destination",
-      "Enabled",
-      "Format",
-      "Id",
-      "IncludedObjectVersions",
-      "OptionalFields",
-      "Prefix",
-      "ScheduleFrequency"
-    ],
-    "LifecycleConfiguration": [
-      "AbortIncompleteMultipartUpload",
-      "DaysAfterInitiation",
-      "ExpirationDate",
-      "ExpirationInDays",
-      "ExpiredObjectDeleteMarker",
-      "Id",
-      "Key",
-      "NewerNoncurrentVersions",
-      "NoncurrentDays",
-      "NoncurrentVersionExpiration",
-      "NoncurrentVersionExpirationInDays",
-      "NoncurrentVersionTransition",
-      "NoncurrentVersionTransitions",
-      "ObjectSizeGreaterThan",
-      "ObjectSizeLessThan",
-      "Prefix",
-      "Rules",
-      "Status",
-      "StorageClass",
-      "TagFilters",
-      "Transition",
-      "TransitionDate",
-      "TransitionDefaultMinimumObjectSize",
-      "TransitionInDays",
-      "Transitions",
-      "Value"
+      "DefaultRetention",
+      "Mode",
+      "ObjectLockEnabled",
+      "Rule",
+      "Years"
     ],
     "LoggingConfiguration": [
       "DestinationBucketName",
@@ -142,21 +125,6 @@
       "PartitionedPrefix",
       "SimplePrefix",
       "TargetObjectKeyFormat"
-    ],
-    "MetricsConfigurations": [
-      "AccessPointArn",
-      "Id",
-      "Key",
-      "Prefix",
-      "TagFilters",
-      "Value"
-    ],
-    "MetadataTableConfiguration": [
-      "S3TablesDestination",
-      "TableArn",
-      "TableBucketArn",
-      "TableName",
-      "TableNamespace"
     ],
     "MetadataConfiguration": [
       "AnnotationTableConfiguration",
@@ -176,40 +144,6 @@
       "TableBucketType",
       "TableName",
       "TableNamespace"
-    ],
-    "NotificationConfiguration": [
-      "Event",
-      "EventBridgeConfiguration",
-      "EventBridgeEnabled",
-      "Filter",
-      "Function",
-      "LambdaConfigurations",
-      "Name",
-      "Queue",
-      "QueueConfigurations",
-      "Rules",
-      "S3Key",
-      "Topic",
-      "TopicConfigurations",
-      "Value"
-    ],
-    "ObjectLockConfiguration": [
-      "Days",
-      "DefaultRetention",
-      "Mode",
-      "ObjectLockEnabled",
-      "Rule",
-      "Years"
-    ],
-    "OwnershipControls": [
-      "ObjectOwnership",
-      "Rules"
-    ],
-    "PublicAccessBlockConfiguration": [
-      "BlockPublicAcls",
-      "BlockPublicPolicy",
-      "IgnorePublicAcls",
-      "RestrictPublicBuckets"
     ],
     "ReplicationConfiguration": [
       "AccessControlTranslation",
@@ -246,28 +180,128 @@
       "Key",
       "Value"
     ],
+    "BucketEncryption": [
+      "BlockedEncryptionTypes",
+      "BucketKeyEnabled",
+      "EncryptionType",
+      "KMSMasterKeyID",
+      "SSEAlgorithm",
+      "ServerSideEncryptionByDefault",
+      "ServerSideEncryptionConfiguration"
+    ],
+    "NotificationConfiguration": [
+      "Event",
+      "EventBridgeConfiguration",
+      "EventBridgeEnabled",
+      "Filter",
+      "Function",
+      "LambdaConfigurations",
+      "Name",
+      "Queue",
+      "QueueConfigurations",
+      "Rules",
+      "S3Key",
+      "Topic",
+      "TopicConfigurations",
+      "Value"
+    ],
+    "LifecycleConfiguration": [
+      "AbortIncompleteMultipartUpload",
+      "DaysAfterInitiation",
+      "ExpirationDate",
+      "ExpirationInDays",
+      "ExpiredObjectDeleteMarker",
+      "Id",
+      "Key",
+      "NewerNoncurrentVersions",
+      "NoncurrentDays",
+      "NoncurrentVersionExpiration",
+      "NoncurrentVersionExpirationInDays",
+      "NoncurrentVersionTransition",
+      "NoncurrentVersionTransitions",
+      "ObjectSizeGreaterThan",
+      "ObjectSizeLessThan",
+      "Prefix",
+      "Rules",
+      "Status",
+      "StorageClass",
+      "TagFilters",
+      "Transition",
+      "TransitionDate",
+      "TransitionDefaultMinimumObjectSize",
+      "TransitionInDays",
+      "Transitions",
+      "Value"
+    ],
     "VersioningConfiguration": [
       "Status"
     ],
-    "WebsiteConfiguration": [
-      "ErrorDocument",
-      "HostName",
-      "HttpErrorCodeReturnedEquals",
-      "HttpRedirectCode",
-      "IndexDocument",
-      "KeyPrefixEquals",
-      "Protocol",
-      "RedirectAllRequestsTo",
-      "RedirectRule",
-      "ReplaceKeyPrefixWith",
-      "ReplaceKeyWith",
-      "RoutingRuleCondition",
-      "RoutingRules"
+    "MetricsConfigurations": [
+      "AccessPointArn",
+      "Id",
+      "Key",
+      "Prefix",
+      "TagFilters",
+      "Value"
+    ],
+    "IntelligentTieringConfigurations": [
+      "AccessTier",
+      "Days",
+      "Id",
+      "Key",
+      "Prefix",
+      "Status",
+      "TagFilters",
+      "Tierings",
+      "Value"
+    ],
+    "CorsConfiguration": [
+      "AllowedHeaders",
+      "AllowedMethods",
+      "AllowedOrigins",
+      "CorsRules",
+      "ExposedHeaders",
+      "Id",
+      "MaxAge"
     ]
   },
   "nestedPropertyPaths": {
-    "AccelerateConfiguration": [
-      "AccelerationStatus"
+    "InventoryConfigurations": [
+      "Destination",
+      "Destination.BucketAccountId",
+      "Destination.BucketArn",
+      "Destination.Format",
+      "Destination.Prefix",
+      "Enabled",
+      "Id",
+      "IncludedObjectVersions",
+      "OptionalFields",
+      "Prefix",
+      "ScheduleFrequency"
+    ],
+    "WebsiteConfiguration": [
+      "ErrorDocument",
+      "IndexDocument",
+      "RedirectAllRequestsTo",
+      "RedirectAllRequestsTo.HostName",
+      "RedirectAllRequestsTo.Protocol",
+      "RoutingRules",
+      "RoutingRules.RedirectRule",
+      "RoutingRules.RedirectRule.HostName",
+      "RoutingRules.RedirectRule.HttpRedirectCode",
+      "RoutingRules.RedirectRule.Protocol",
+      "RoutingRules.RedirectRule.ReplaceKeyPrefixWith",
+      "RoutingRules.RedirectRule.ReplaceKeyWith",
+      "RoutingRules.RoutingRuleCondition",
+      "RoutingRules.RoutingRuleCondition.HttpErrorCodeReturnedEquals",
+      "RoutingRules.RoutingRuleCondition.KeyPrefixEquals"
+    ],
+    "MetadataTableConfiguration": [
+      "S3TablesDestination",
+      "S3TablesDestination.TableArn",
+      "S3TablesDestination.TableBucketArn",
+      "S3TablesDestination.TableName",
+      "S3TablesDestination.TableNamespace"
     ],
     "AnalyticsConfigurations": [
       "Id",
@@ -284,84 +318,26 @@
       "TagFilters.Key",
       "TagFilters.Value"
     ],
-    "BucketEncryption": [
-      "ServerSideEncryptionConfiguration",
-      "ServerSideEncryptionConfiguration.BlockedEncryptionTypes",
-      "ServerSideEncryptionConfiguration.BlockedEncryptionTypes.EncryptionType",
-      "ServerSideEncryptionConfiguration.BucketKeyEnabled",
-      "ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault",
-      "ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault.KMSMasterKeyID",
-      "ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault.SSEAlgorithm"
+    "AccelerateConfiguration": [
+      "AccelerationStatus"
     ],
-    "CorsConfiguration": [
-      "CorsRules",
-      "CorsRules.AllowedHeaders",
-      "CorsRules.AllowedMethods",
-      "CorsRules.AllowedOrigins",
-      "CorsRules.ExposedHeaders",
-      "CorsRules.Id",
-      "CorsRules.MaxAge"
+    "PublicAccessBlockConfiguration": [
+      "BlockPublicAcls",
+      "BlockPublicPolicy",
+      "IgnorePublicAcls",
+      "RestrictPublicBuckets"
     ],
-    "IntelligentTieringConfigurations": [
-      "Id",
-      "Prefix",
-      "Status",
-      "TagFilters",
-      "TagFilters.Key",
-      "TagFilters.Value",
-      "Tierings",
-      "Tierings.AccessTier",
-      "Tierings.Days"
-    ],
-    "InventoryConfigurations": [
-      "Destination",
-      "Destination.BucketAccountId",
-      "Destination.BucketArn",
-      "Destination.Format",
-      "Destination.Prefix",
-      "Enabled",
-      "Id",
-      "IncludedObjectVersions",
-      "OptionalFields",
-      "Prefix",
-      "ScheduleFrequency"
-    ],
-    "LifecycleConfiguration": [
+    "OwnershipControls": [
       "Rules",
-      "Rules.AbortIncompleteMultipartUpload",
-      "Rules.AbortIncompleteMultipartUpload.DaysAfterInitiation",
-      "Rules.ExpirationDate",
-      "Rules.ExpirationInDays",
-      "Rules.ExpiredObjectDeleteMarker",
-      "Rules.Id",
-      "Rules.NoncurrentVersionExpiration",
-      "Rules.NoncurrentVersionExpiration.NewerNoncurrentVersions",
-      "Rules.NoncurrentVersionExpiration.NoncurrentDays",
-      "Rules.NoncurrentVersionExpirationInDays",
-      "Rules.NoncurrentVersionTransition",
-      "Rules.NoncurrentVersionTransition.NewerNoncurrentVersions",
-      "Rules.NoncurrentVersionTransition.StorageClass",
-      "Rules.NoncurrentVersionTransition.TransitionInDays",
-      "Rules.NoncurrentVersionTransitions",
-      "Rules.NoncurrentVersionTransitions.NewerNoncurrentVersions",
-      "Rules.NoncurrentVersionTransitions.StorageClass",
-      "Rules.NoncurrentVersionTransitions.TransitionInDays",
-      "Rules.ObjectSizeGreaterThan",
-      "Rules.ObjectSizeLessThan",
-      "Rules.Prefix",
-      "Rules.Status",
-      "Rules.TagFilters",
-      "Rules.TagFilters.Key",
-      "Rules.TagFilters.Value",
-      "Rules.Transition",
-      "Rules.Transition.StorageClass",
-      "Rules.Transition.TransitionDate",
-      "Rules.Transition.TransitionInDays",
-      "Rules.Transitions",
-      "Rules.Transitions.StorageClass",
-      "Rules.Transitions.TransitionDate",
-      "Rules.Transitions.TransitionInDays",
-      "TransitionDefaultMinimumObjectSize"
+      "Rules.ObjectOwnership"
+    ],
+    "ObjectLockConfiguration": [
+      "ObjectLockEnabled",
+      "Rule",
+      "Rule.DefaultRetention",
+      "Rule.DefaultRetention.Days",
+      "Rule.DefaultRetention.Mode",
+      "Rule.DefaultRetention.Years"
     ],
     "LoggingConfiguration": [
       "DestinationBucketName",
@@ -370,21 +346,6 @@
       "TargetObjectKeyFormat.PartitionedPrefix",
       "TargetObjectKeyFormat.PartitionedPrefix.PartitionDateSource",
       "TargetObjectKeyFormat.SimplePrefix"
-    ],
-    "MetricsConfigurations": [
-      "AccessPointArn",
-      "Id",
-      "Prefix",
-      "TagFilters",
-      "TagFilters.Key",
-      "TagFilters.Value"
-    ],
-    "MetadataTableConfiguration": [
-      "S3TablesDestination",
-      "S3TablesDestination.TableArn",
-      "S3TablesDestination.TableBucketArn",
-      "S3TablesDestination.TableName",
-      "S3TablesDestination.TableNamespace"
     ],
     "MetadataConfiguration": [
       "AnnotationTableConfiguration",
@@ -415,52 +376,6 @@
       "JournalTableConfiguration.RecordExpiration.Expiration",
       "JournalTableConfiguration.TableArn",
       "JournalTableConfiguration.TableName"
-    ],
-    "NotificationConfiguration": [
-      "EventBridgeConfiguration",
-      "EventBridgeConfiguration.EventBridgeEnabled",
-      "LambdaConfigurations",
-      "LambdaConfigurations.Event",
-      "LambdaConfigurations.Filter",
-      "LambdaConfigurations.Filter.S3Key",
-      "LambdaConfigurations.Filter.S3Key.Rules",
-      "LambdaConfigurations.Filter.S3Key.Rules.Name",
-      "LambdaConfigurations.Filter.S3Key.Rules.Value",
-      "LambdaConfigurations.Function",
-      "QueueConfigurations",
-      "QueueConfigurations.Event",
-      "QueueConfigurations.Filter",
-      "QueueConfigurations.Filter.S3Key",
-      "QueueConfigurations.Filter.S3Key.Rules",
-      "QueueConfigurations.Filter.S3Key.Rules.Name",
-      "QueueConfigurations.Filter.S3Key.Rules.Value",
-      "QueueConfigurations.Queue",
-      "TopicConfigurations",
-      "TopicConfigurations.Event",
-      "TopicConfigurations.Filter",
-      "TopicConfigurations.Filter.S3Key",
-      "TopicConfigurations.Filter.S3Key.Rules",
-      "TopicConfigurations.Filter.S3Key.Rules.Name",
-      "TopicConfigurations.Filter.S3Key.Rules.Value",
-      "TopicConfigurations.Topic"
-    ],
-    "ObjectLockConfiguration": [
-      "ObjectLockEnabled",
-      "Rule",
-      "Rule.DefaultRetention",
-      "Rule.DefaultRetention.Days",
-      "Rule.DefaultRetention.Mode",
-      "Rule.DefaultRetention.Years"
-    ],
-    "OwnershipControls": [
-      "Rules",
-      "Rules.ObjectOwnership"
-    ],
-    "PublicAccessBlockConfiguration": [
-      "BlockPublicAcls",
-      "BlockPublicPolicy",
-      "IgnorePublicAcls",
-      "RestrictPublicBuckets"
     ],
     "ReplicationConfiguration": [
       "Role",
@@ -507,281 +422,387 @@
       "Key",
       "Value"
     ],
+    "BucketEncryption": [
+      "ServerSideEncryptionConfiguration",
+      "ServerSideEncryptionConfiguration.BlockedEncryptionTypes",
+      "ServerSideEncryptionConfiguration.BlockedEncryptionTypes.EncryptionType",
+      "ServerSideEncryptionConfiguration.BucketKeyEnabled",
+      "ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault",
+      "ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault.KMSMasterKeyID",
+      "ServerSideEncryptionConfiguration.ServerSideEncryptionByDefault.SSEAlgorithm"
+    ],
+    "NotificationConfiguration": [
+      "EventBridgeConfiguration",
+      "EventBridgeConfiguration.EventBridgeEnabled",
+      "LambdaConfigurations",
+      "LambdaConfigurations.Event",
+      "LambdaConfigurations.Filter",
+      "LambdaConfigurations.Filter.S3Key",
+      "LambdaConfigurations.Filter.S3Key.Rules",
+      "LambdaConfigurations.Filter.S3Key.Rules.Name",
+      "LambdaConfigurations.Filter.S3Key.Rules.Value",
+      "LambdaConfigurations.Function",
+      "QueueConfigurations",
+      "QueueConfigurations.Event",
+      "QueueConfigurations.Filter",
+      "QueueConfigurations.Filter.S3Key",
+      "QueueConfigurations.Filter.S3Key.Rules",
+      "QueueConfigurations.Filter.S3Key.Rules.Name",
+      "QueueConfigurations.Filter.S3Key.Rules.Value",
+      "QueueConfigurations.Queue",
+      "TopicConfigurations",
+      "TopicConfigurations.Event",
+      "TopicConfigurations.Filter",
+      "TopicConfigurations.Filter.S3Key",
+      "TopicConfigurations.Filter.S3Key.Rules",
+      "TopicConfigurations.Filter.S3Key.Rules.Name",
+      "TopicConfigurations.Filter.S3Key.Rules.Value",
+      "TopicConfigurations.Topic"
+    ],
+    "LifecycleConfiguration": [
+      "Rules",
+      "Rules.AbortIncompleteMultipartUpload",
+      "Rules.AbortIncompleteMultipartUpload.DaysAfterInitiation",
+      "Rules.ExpirationDate",
+      "Rules.ExpirationInDays",
+      "Rules.ExpiredObjectDeleteMarker",
+      "Rules.Id",
+      "Rules.NoncurrentVersionExpiration",
+      "Rules.NoncurrentVersionExpiration.NewerNoncurrentVersions",
+      "Rules.NoncurrentVersionExpiration.NoncurrentDays",
+      "Rules.NoncurrentVersionExpirationInDays",
+      "Rules.NoncurrentVersionTransition",
+      "Rules.NoncurrentVersionTransition.NewerNoncurrentVersions",
+      "Rules.NoncurrentVersionTransition.StorageClass",
+      "Rules.NoncurrentVersionTransition.TransitionInDays",
+      "Rules.NoncurrentVersionTransitions",
+      "Rules.NoncurrentVersionTransitions.NewerNoncurrentVersions",
+      "Rules.NoncurrentVersionTransitions.StorageClass",
+      "Rules.NoncurrentVersionTransitions.TransitionInDays",
+      "Rules.ObjectSizeGreaterThan",
+      "Rules.ObjectSizeLessThan",
+      "Rules.Prefix",
+      "Rules.Status",
+      "Rules.TagFilters",
+      "Rules.TagFilters.Key",
+      "Rules.TagFilters.Value",
+      "Rules.Transition",
+      "Rules.Transition.StorageClass",
+      "Rules.Transition.TransitionDate",
+      "Rules.Transition.TransitionInDays",
+      "Rules.Transitions",
+      "Rules.Transitions.StorageClass",
+      "Rules.Transitions.TransitionDate",
+      "Rules.Transitions.TransitionInDays",
+      "TransitionDefaultMinimumObjectSize"
+    ],
     "VersioningConfiguration": [
       "Status"
     ],
-    "WebsiteConfiguration": [
-      "ErrorDocument",
-      "IndexDocument",
-      "RedirectAllRequestsTo",
-      "RedirectAllRequestsTo.HostName",
-      "RedirectAllRequestsTo.Protocol",
-      "RoutingRules",
-      "RoutingRules.RedirectRule",
-      "RoutingRules.RedirectRule.HostName",
-      "RoutingRules.RedirectRule.HttpRedirectCode",
-      "RoutingRules.RedirectRule.Protocol",
-      "RoutingRules.RedirectRule.ReplaceKeyPrefixWith",
-      "RoutingRules.RedirectRule.ReplaceKeyWith",
-      "RoutingRules.RoutingRuleCondition",
-      "RoutingRules.RoutingRuleCondition.HttpErrorCodeReturnedEquals",
-      "RoutingRules.RoutingRuleCondition.KeyPrefixEquals"
+    "MetricsConfigurations": [
+      "AccessPointArn",
+      "Id",
+      "Prefix",
+      "TagFilters",
+      "TagFilters.Key",
+      "TagFilters.Value"
+    ],
+    "IntelligentTieringConfigurations": [
+      "Id",
+      "Prefix",
+      "Status",
+      "TagFilters",
+      "TagFilters.Key",
+      "TagFilters.Value",
+      "Tierings",
+      "Tierings.AccessTier",
+      "Tierings.Days"
+    ],
+    "CorsConfiguration": [
+      "CorsRules",
+      "CorsRules.AllowedHeaders",
+      "CorsRules.AllowedMethods",
+      "CorsRules.AllowedOrigins",
+      "CorsRules.ExposedHeaders",
+      "CorsRules.Id",
+      "CorsRules.MaxAge"
     ]
   },
   "definitionShapes": {
     "#top": {
-      "AccelerateConfiguration": "object",
-      "AccessControl": "scalar",
-      "AnalyticsConfigurations": "array",
-      "BucketEncryption": "object",
-      "BucketName": "scalar",
-      "BucketNamePrefix": "scalar",
       "BucketNamespace": "scalar",
-      "CorsConfiguration": "object",
-      "IntelligentTieringConfigurations": "array",
       "InventoryConfigurations": "array",
-      "LifecycleConfiguration": "object",
-      "LoggingConfiguration": "object",
-      "MetricsConfigurations": "array",
+      "BucketNamePrefix": "scalar",
+      "WebsiteConfiguration": "object",
+      "DualStackDomainName": "scalar",
+      "AccessControl": "scalar",
       "MetadataTableConfiguration": "object",
-      "MetadataConfiguration": "object",
-      "NotificationConfiguration": "object",
+      "AnalyticsConfigurations": "array",
+      "AbacStatus": "scalar",
+      "AccelerateConfiguration": "object",
+      "PublicAccessBlockConfiguration": "object",
+      "BucketName": "scalar",
+      "RegionalDomainName": "scalar",
+      "OwnershipControls": "object",
       "ObjectLockConfiguration": "object",
       "ObjectLockEnabled": "scalar",
-      "OwnershipControls": "object",
-      "PublicAccessBlockConfiguration": "object",
+      "LoggingConfiguration": "object",
+      "MetadataConfiguration": "object",
       "ReplicationConfiguration": "object",
       "Tags": "array",
-      "AbacStatus": "scalar",
-      "VersioningConfiguration": "object",
-      "WebsiteConfiguration": "object",
-      "Arn": "scalar",
       "DomainName": "scalar",
-      "DualStackDomainName": "scalar",
-      "RegionalDomainName": "scalar",
-      "WebsiteURL": "scalar"
+      "BucketEncryption": "object",
+      "WebsiteURL": "scalar",
+      "NotificationConfiguration": "object",
+      "LifecycleConfiguration": "object",
+      "VersioningConfiguration": "object",
+      "MetricsConfigurations": "array",
+      "IntelligentTieringConfigurations": "array",
+      "CorsConfiguration": "object",
+      "Arn": "scalar"
     },
-    "TagFilter": {
-      "Value": "scalar",
-      "Key": "scalar"
-    },
-    "Destination": {
-      "BucketArn": "scalar",
-      "BucketAccountId": "scalar",
-      "Format": "scalar",
-      "Prefix": "scalar"
-    },
-    "AccelerateConfiguration": {
-      "AccelerationStatus": "scalar"
-    },
-    "AnalyticsConfiguration": {
-      "TagFilters": "array",
-      "StorageClassAnalysis": "object",
-      "Id": "scalar",
-      "Prefix": "scalar"
-    },
-    "StorageClassAnalysis": {
-      "DataExport": "object"
-    },
-    "DataExport": {
-      "Destination": "object",
-      "OutputSchemaVersion": "scalar"
-    },
-    "BucketEncryption": {
-      "ServerSideEncryptionConfiguration": "array"
-    },
-    "ServerSideEncryptionRule": {
-      "BucketKeyEnabled": "scalar",
-      "ServerSideEncryptionByDefault": "object",
-      "BlockedEncryptionTypes": "object"
-    },
-    "ServerSideEncryptionByDefault": {
-      "KMSMasterKeyID": "scalar",
-      "SSEAlgorithm": "scalar"
-    },
-    "BlockedEncryptionTypes": {
-      "EncryptionType": "array"
-    },
-    "CorsConfiguration": {
-      "CorsRules": "array"
-    },
-    "CorsRule": {
-      "AllowedHeaders": "array",
-      "AllowedMethods": "array",
-      "AllowedOrigins": "array",
-      "ExposedHeaders": "array",
-      "Id": "scalar",
-      "MaxAge": "scalar"
-    },
-    "IntelligentTieringConfiguration": {
-      "Id": "scalar",
-      "Prefix": "scalar",
-      "Status": "scalar",
-      "TagFilters": "array",
-      "Tierings": "array"
-    },
-    "Tiering": {
-      "AccessTier": "scalar",
-      "Days": "scalar"
-    },
-    "InventoryConfiguration": {
-      "Destination": "object",
-      "Enabled": "scalar",
-      "Id": "scalar",
-      "IncludedObjectVersions": "scalar",
-      "OptionalFields": "array",
-      "Prefix": "scalar",
-      "ScheduleFrequency": "scalar"
-    },
-    "LifecycleConfiguration": {
-      "Rules": "array",
-      "TransitionDefaultMinimumObjectSize": "scalar"
-    },
-    "Rule": {
-      "AbortIncompleteMultipartUpload": "object",
-      "ExpirationDate": "scalar",
-      "ExpirationInDays": "scalar",
-      "ExpiredObjectDeleteMarker": "scalar",
-      "Id": "scalar",
-      "NoncurrentVersionExpirationInDays": "scalar",
-      "NoncurrentVersionExpiration": "object",
-      "NoncurrentVersionTransition": "object",
-      "NoncurrentVersionTransitions": "array",
-      "Prefix": "scalar",
-      "Status": "scalar",
-      "TagFilters": "array",
-      "ObjectSizeGreaterThan": "scalar",
-      "ObjectSizeLessThan": "scalar",
-      "Transition": "object",
-      "Transitions": "array"
-    },
-    "AbortIncompleteMultipartUpload": {
-      "DaysAfterInitiation": "scalar"
-    },
-    "NoncurrentVersionExpiration": {
-      "NoncurrentDays": "scalar",
-      "NewerNoncurrentVersions": "scalar"
-    },
-    "NoncurrentVersionTransition": {
-      "StorageClass": "scalar",
-      "TransitionInDays": "scalar",
-      "NewerNoncurrentVersions": "scalar"
-    },
-    "Transition": {
-      "StorageClass": "scalar",
-      "TransitionDate": "scalar",
-      "TransitionInDays": "scalar"
-    },
-    "LoggingConfiguration": {
-      "DestinationBucketName": "scalar",
-      "LogFilePrefix": "scalar",
-      "TargetObjectKeyFormat": "object"
-    },
-    "PartitionedPrefix": {
-      "PartitionDateSource": "scalar"
-    },
-    "MetricsConfiguration": {
-      "AccessPointArn": "scalar",
-      "Id": "scalar",
-      "Prefix": "scalar",
-      "TagFilters": "array"
-    },
-    "NotificationConfiguration": {
-      "EventBridgeConfiguration": "object",
-      "LambdaConfigurations": "array",
-      "QueueConfigurations": "array",
-      "TopicConfigurations": "array"
-    },
-    "EventBridgeConfiguration": {
-      "EventBridgeEnabled": "scalar"
-    },
-    "LambdaConfiguration": {
-      "Event": "scalar",
-      "Filter": "object",
-      "Function": "scalar"
-    },
-    "QueueConfiguration": {
-      "Event": "scalar",
-      "Filter": "object",
-      "Queue": "scalar"
-    },
-    "TopicConfiguration": {
-      "Event": "scalar",
-      "Filter": "object",
-      "Topic": "scalar"
-    },
-    "NotificationFilter": {
-      "S3Key": "object"
-    },
-    "S3KeyFilter": {
-      "Rules": "array"
-    },
-    "FilterRule": {
-      "Name": "scalar",
-      "Value": "scalar"
-    },
-    "ObjectLockConfiguration": {
-      "ObjectLockEnabled": "scalar",
-      "Rule": "object"
-    },
-    "ObjectLockRule": {
-      "DefaultRetention": "object"
+    "JournalTableConfiguration": {
+      "TableName": "scalar",
+      "TableArn": "scalar",
+      "EncryptionConfiguration": "object",
+      "RecordExpiration": "object"
     },
     "DefaultRetention": {
       "Years": "scalar",
       "Days": "scalar",
       "Mode": "scalar"
     },
+    "S3TablesDestination": {
+      "TableBucketArn": "scalar",
+      "TableName": "scalar",
+      "TableArn": "scalar",
+      "TableNamespace": "scalar"
+    },
+    "SourceSelectionCriteria": {
+      "ReplicaModifications": "object",
+      "SseKmsEncryptedObjects": "object"
+    },
+    "ReplicationTimeValue": {
+      "Minutes": "scalar"
+    },
+    "FilterRule": {
+      "Value": "scalar",
+      "Name": "scalar"
+    },
+    "ReplicationRule": {
+      "Status": "scalar",
+      "Destination": "object",
+      "Filter": "object",
+      "Priority": "scalar",
+      "SourceSelectionCriteria": "object",
+      "Id": "scalar",
+      "Prefix": "scalar",
+      "DeleteMarkerReplication": "object"
+    },
+    "MetadataTableConfiguration": {
+      "S3TablesDestination": "object"
+    },
+    "InventoryTableConfiguration": {
+      "TableName": "scalar",
+      "ConfigurationState": "scalar",
+      "TableArn": "scalar",
+      "EncryptionConfiguration": "object"
+    },
+    "AccelerateConfiguration": {
+      "AccelerationStatus": "scalar"
+    },
+    "Metrics": {
+      "Status": "scalar",
+      "EventThreshold": "object"
+    },
+    "RoutingRuleCondition": {
+      "KeyPrefixEquals": "scalar",
+      "HttpErrorCodeReturnedEquals": "scalar"
+    },
     "OwnershipControls": {
       "Rules": "array"
     },
-    "OwnershipControlsRule": {
-      "ObjectOwnership": "scalar"
+    "MetadataDestination": {
+      "TableBucketArn": "scalar",
+      "TableBucketType": "scalar",
+      "TableNamespace": "scalar"
     },
-    "PublicAccessBlockConfiguration": {
-      "BlockPublicAcls": "scalar",
-      "BlockPublicPolicy": "scalar",
-      "IgnorePublicAcls": "scalar",
-      "RestrictPublicBuckets": "scalar"
+    "DeleteMarkerReplication": {
+      "Status": "scalar"
+    },
+    "RoutingRule": {
+      "RedirectRule": "object",
+      "RoutingRuleCondition": "object"
+    },
+    "NotificationFilter": {
+      "S3Key": "object"
     },
     "ReplicationConfiguration": {
       "Role": "scalar",
       "Rules": "array"
     },
-    "ReplicationRule": {
-      "DeleteMarkerReplication": "object",
-      "Destination": "object",
-      "Filter": "object",
-      "Id": "scalar",
-      "Prefix": "scalar",
-      "Priority": "scalar",
-      "SourceSelectionCriteria": "object",
-      "Status": "scalar"
+    "AnnotationTableConfiguration": {
+      "Role": "scalar",
+      "TableName": "scalar",
+      "ConfigurationState": "scalar",
+      "TableArn": "scalar",
+      "EncryptionConfiguration": "object"
     },
-    "DeleteMarkerReplication": {
-      "Status": "scalar"
+    "ServerSideEncryptionRule": {
+      "BucketKeyEnabled": "scalar",
+      "BlockedEncryptionTypes": "object",
+      "ServerSideEncryptionByDefault": "object"
     },
     "ReplicationDestination": {
       "AccessControlTranslation": "object",
       "Account": "scalar",
+      "Metrics": "object",
       "Bucket": "scalar",
       "EncryptionConfiguration": "object",
-      "Metrics": "object",
-      "ReplicationTime": "object",
-      "StorageClass": "scalar"
+      "StorageClass": "scalar",
+      "ReplicationTime": "object"
+    },
+    "OwnershipControlsRule": {
+      "ObjectOwnership": "scalar"
+    },
+    "EventBridgeConfiguration": {
+      "EventBridgeEnabled": "scalar"
+    },
+    "CorsRule": {
+      "ExposedHeaders": "array",
+      "AllowedMethods": "array",
+      "AllowedOrigins": "array",
+      "AllowedHeaders": "array",
+      "MaxAge": "scalar",
+      "Id": "scalar"
     },
     "AccessControlTranslation": {
       "Owner": "scalar"
     },
-    "EncryptionConfiguration": {
-      "ReplicaKmsKeyID": "scalar"
+    "ObjectLockRule": {
+      "DefaultRetention": "object"
     },
-    "Metrics": {
-      "EventThreshold": "object",
-      "Status": "scalar"
+    "RecordExpiration": {
+      "Days": "scalar",
+      "Expiration": "scalar"
     },
-    "ReplicationTimeValue": {
-      "Minutes": "scalar"
+    "Rule": {
+      "Status": "scalar",
+      "ExpiredObjectDeleteMarker": "scalar",
+      "NoncurrentVersionExpirationInDays": "scalar",
+      "Transitions": "array",
+      "ObjectSizeGreaterThan": "scalar",
+      "TagFilters": "array",
+      "NoncurrentVersionTransitions": "array",
+      "Prefix": "scalar",
+      "ObjectSizeLessThan": "scalar",
+      "NoncurrentVersionTransition": "object",
+      "ExpirationDate": "scalar",
+      "NoncurrentVersionExpiration": "object",
+      "ExpirationInDays": "scalar",
+      "Transition": "object",
+      "Id": "scalar",
+      "AbortIncompleteMultipartUpload": "object"
+    },
+    "S3KeyFilter": {
+      "Rules": "array"
+    },
+    "AnalyticsConfiguration": {
+      "StorageClassAnalysis": "object",
+      "TagFilters": "array",
+      "Id": "scalar",
+      "Prefix": "scalar"
+    },
+    "Destination": {
+      "BucketArn": "scalar",
+      "Format": "scalar",
+      "BucketAccountId": "scalar",
+      "Prefix": "scalar"
+    },
+    "PartitionedPrefix": {
+      "PartitionDateSource": "scalar"
+    },
+    "RedirectAllRequestsTo": {
+      "Protocol": "scalar",
+      "HostName": "scalar"
+    },
+    "TagFilter": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "WebsiteConfiguration": {
+      "IndexDocument": "scalar",
+      "RedirectAllRequestsTo": "object",
+      "RoutingRules": "array",
+      "ErrorDocument": "scalar"
+    },
+    "TopicConfiguration": {
+      "Filter": "object",
+      "Event": "scalar",
+      "Topic": "scalar"
+    },
+    "IntelligentTieringConfiguration": {
+      "Status": "scalar",
+      "Tierings": "array",
+      "TagFilters": "array",
+      "Id": "scalar",
+      "Prefix": "scalar"
+    },
+    "PublicAccessBlockConfiguration": {
+      "RestrictPublicBuckets": "scalar",
+      "BlockPublicPolicy": "scalar",
+      "BlockPublicAcls": "scalar",
+      "IgnorePublicAcls": "scalar"
+    },
+    "NoncurrentVersionTransition": {
+      "StorageClass": "scalar",
+      "TransitionInDays": "scalar",
+      "NewerNoncurrentVersions": "scalar"
+    },
+    "StorageClassAnalysis": {
+      "DataExport": "object"
+    },
+    "ServerSideEncryptionByDefault": {
+      "SSEAlgorithm": "scalar",
+      "KMSMasterKeyID": "scalar"
+    },
+    "MetricsConfiguration": {
+      "AccessPointArn": "scalar",
+      "TagFilters": "array",
+      "Id": "scalar",
+      "Prefix": "scalar"
+    },
+    "ObjectLockConfiguration": {
+      "ObjectLockEnabled": "scalar",
+      "Rule": "object"
+    },
+    "LoggingConfiguration": {
+      "TargetObjectKeyFormat": "object",
+      "LogFilePrefix": "scalar",
+      "DestinationBucketName": "scalar"
+    },
+    "LambdaConfiguration": {
+      "Function": "scalar",
+      "Filter": "object",
+      "Event": "scalar"
+    },
+    "MetadataConfiguration": {
+      "Destination": "object",
+      "JournalTableConfiguration": "object",
+      "InventoryTableConfiguration": "object",
+      "AnnotationTableConfiguration": "object"
+    },
+    "MetadataTableEncryptionConfiguration": {
+      "KmsKeyArn": "scalar",
+      "SseAlgorithm": "scalar"
+    },
+    "DataExport": {
+      "Destination": "object",
+      "OutputSchemaVersion": "scalar"
+    },
+    "Tiering": {
+      "AccessTier": "scalar",
+      "Days": "scalar"
     },
     "ReplicationTime": {
       "Status": "scalar",
@@ -789,101 +810,254 @@
     },
     "ReplicationRuleFilter": {
       "And": "object",
+      "TagFilter": "object",
+      "Prefix": "scalar"
+    },
+    "RedirectRule": {
+      "ReplaceKeyWith": "scalar",
+      "HttpRedirectCode": "scalar",
+      "Protocol": "scalar",
+      "HostName": "scalar",
+      "ReplaceKeyPrefixWith": "scalar"
+    },
+    "EncryptionConfiguration": {
+      "ReplicaKmsKeyID": "scalar"
+    },
+    "BucketEncryption": {
+      "ServerSideEncryptionConfiguration": "array"
+    },
+    "NotificationConfiguration": {
+      "TopicConfigurations": "array",
+      "QueueConfigurations": "array",
+      "LambdaConfigurations": "array",
+      "EventBridgeConfiguration": "object"
+    },
+    "LifecycleConfiguration": {
+      "TransitionDefaultMinimumObjectSize": "scalar",
+      "Rules": "array"
+    },
+    "InventoryConfiguration": {
+      "Destination": "object",
+      "OptionalFields": "array",
+      "IncludedObjectVersions": "scalar",
+      "Enabled": "scalar",
+      "Id": "scalar",
       "Prefix": "scalar",
-      "TagFilter": "object"
+      "ScheduleFrequency": "scalar"
     },
     "ReplicationRuleAndOperator": {
-      "Prefix": "scalar",
-      "TagFilters": "array"
+      "TagFilters": "array",
+      "Prefix": "scalar"
     },
-    "SourceSelectionCriteria": {
-      "ReplicaModifications": "object",
-      "SseKmsEncryptedObjects": "object"
+    "VersioningConfiguration": {
+      "Status": "scalar"
+    },
+    "BlockedEncryptionTypes": {
+      "EncryptionType": "array"
+    },
+    "CorsConfiguration": {
+      "CorsRules": "array"
     },
     "ReplicaModifications": {
       "Status": "scalar"
+    },
+    "NoncurrentVersionExpiration": {
+      "NoncurrentDays": "scalar",
+      "NewerNoncurrentVersions": "scalar"
+    },
+    "QueueConfiguration": {
+      "Filter": "object",
+      "Event": "scalar",
+      "Queue": "scalar"
+    },
+    "Transition": {
+      "TransitionDate": "scalar",
+      "StorageClass": "scalar",
+      "TransitionInDays": "scalar"
     },
     "SseKmsEncryptedObjects": {
       "Status": "scalar"
     },
     "Tag": {
-      "Key": "scalar",
-      "Value": "scalar"
+      "Value": "scalar",
+      "Key": "scalar"
     },
-    "VersioningConfiguration": {
-      "Status": "scalar"
-    },
-    "WebsiteConfiguration": {
-      "ErrorDocument": "scalar",
-      "IndexDocument": "scalar",
-      "RoutingRules": "array",
-      "RedirectAllRequestsTo": "object"
-    },
-    "RoutingRule": {
-      "RedirectRule": "object",
-      "RoutingRuleCondition": "object"
-    },
-    "RedirectRule": {
-      "HostName": "scalar",
-      "HttpRedirectCode": "scalar",
-      "Protocol": "scalar",
-      "ReplaceKeyPrefixWith": "scalar",
-      "ReplaceKeyWith": "scalar"
-    },
-    "RoutingRuleCondition": {
-      "KeyPrefixEquals": "scalar",
-      "HttpErrorCodeReturnedEquals": "scalar"
-    },
-    "RedirectAllRequestsTo": {
-      "HostName": "scalar",
-      "Protocol": "scalar"
-    },
-    "MetadataTableConfiguration": {
-      "S3TablesDestination": "object"
-    },
-    "S3TablesDestination": {
-      "TableBucketArn": "scalar",
-      "TableName": "scalar",
-      "TableNamespace": "scalar",
-      "TableArn": "scalar"
-    },
-    "RecordExpiration": {
-      "Expiration": "scalar",
-      "Days": "scalar"
-    },
-    "MetadataTableEncryptionConfiguration": {
-      "SseAlgorithm": "scalar",
-      "KmsKeyArn": "scalar"
-    },
-    "MetadataDestination": {
-      "TableBucketType": "scalar",
-      "TableBucketArn": "scalar",
-      "TableNamespace": "scalar"
-    },
-    "JournalTableConfiguration": {
-      "TableName": "scalar",
-      "TableArn": "scalar",
-      "RecordExpiration": "object",
-      "EncryptionConfiguration": "object"
-    },
-    "InventoryTableConfiguration": {
-      "TableName": "scalar",
-      "TableArn": "scalar",
-      "ConfigurationState": "scalar",
-      "EncryptionConfiguration": "object"
-    },
-    "AnnotationTableConfiguration": {
-      "TableName": "scalar",
-      "TableArn": "scalar",
-      "ConfigurationState": "scalar",
-      "EncryptionConfiguration": "object",
-      "Role": "scalar"
-    },
-    "MetadataConfiguration": {
-      "Destination": "object",
-      "JournalTableConfiguration": "object",
-      "InventoryTableConfiguration": "object",
-      "AnnotationTableConfiguration": "object"
+    "AbortIncompleteMultipartUpload": {
+      "DaysAfterInitiation": "scalar"
     }
+  },
+  "definitionRequired": {
+    "JournalTableConfiguration": [
+      "RecordExpiration"
+    ],
+    "S3TablesDestination": [
+      "TableBucketArn",
+      "TableName"
+    ],
+    "ReplicationTimeValue": [
+      "Minutes"
+    ],
+    "FilterRule": [
+      "Name",
+      "Value"
+    ],
+    "ReplicationRule": [
+      "Destination",
+      "Status"
+    ],
+    "MetadataTableConfiguration": [
+      "S3TablesDestination"
+    ],
+    "InventoryTableConfiguration": [
+      "ConfigurationState"
+    ],
+    "AccelerateConfiguration": [
+      "AccelerationStatus"
+    ],
+    "Metrics": [
+      "Status"
+    ],
+    "OwnershipControls": [
+      "Rules"
+    ],
+    "MetadataDestination": [
+      "TableBucketType"
+    ],
+    "RoutingRule": [
+      "RedirectRule"
+    ],
+    "NotificationFilter": [
+      "S3Key"
+    ],
+    "ReplicationConfiguration": [
+      "Role",
+      "Rules"
+    ],
+    "AnnotationTableConfiguration": [
+      "ConfigurationState"
+    ],
+    "ReplicationDestination": [
+      "Bucket"
+    ],
+    "EventBridgeConfiguration": [
+      "EventBridgeEnabled"
+    ],
+    "CorsRule": [
+      "AllowedMethods",
+      "AllowedOrigins"
+    ],
+    "AccessControlTranslation": [
+      "Owner"
+    ],
+    "RecordExpiration": [
+      "Expiration"
+    ],
+    "Rule": [
+      "Status"
+    ],
+    "S3KeyFilter": [
+      "Rules"
+    ],
+    "AnalyticsConfiguration": [
+      "Id",
+      "StorageClassAnalysis"
+    ],
+    "Destination": [
+      "BucketArn",
+      "Format"
+    ],
+    "RedirectAllRequestsTo": [
+      "HostName"
+    ],
+    "TagFilter": [
+      "Key",
+      "Value"
+    ],
+    "TopicConfiguration": [
+      "Event",
+      "Topic"
+    ],
+    "IntelligentTieringConfiguration": [
+      "Id",
+      "Status",
+      "Tierings"
+    ],
+    "NoncurrentVersionTransition": [
+      "StorageClass",
+      "TransitionInDays"
+    ],
+    "ServerSideEncryptionByDefault": [
+      "SSEAlgorithm"
+    ],
+    "MetricsConfiguration": [
+      "Id"
+    ],
+    "LambdaConfiguration": [
+      "Event",
+      "Function"
+    ],
+    "MetadataConfiguration": [
+      "JournalTableConfiguration"
+    ],
+    "MetadataTableEncryptionConfiguration": [
+      "SseAlgorithm"
+    ],
+    "DataExport": [
+      "Destination",
+      "OutputSchemaVersion"
+    ],
+    "Tiering": [
+      "AccessTier",
+      "Days"
+    ],
+    "ReplicationTime": [
+      "Status",
+      "Time"
+    ],
+    "EncryptionConfiguration": [
+      "ReplicaKmsKeyID"
+    ],
+    "BucketEncryption": [
+      "ServerSideEncryptionConfiguration"
+    ],
+    "LifecycleConfiguration": [
+      "Rules"
+    ],
+    "InventoryConfiguration": [
+      "Destination",
+      "Enabled",
+      "Id",
+      "IncludedObjectVersions",
+      "ScheduleFrequency"
+    ],
+    "VersioningConfiguration": [
+      "Status"
+    ],
+    "CorsConfiguration": [
+      "CorsRules"
+    ],
+    "ReplicaModifications": [
+      "Status"
+    ],
+    "NoncurrentVersionExpiration": [
+      "NoncurrentDays"
+    ],
+    "QueueConfiguration": [
+      "Event",
+      "Queue"
+    ],
+    "Transition": [
+      "StorageClass"
+    ],
+    "SseKmsEncryptedObjects": [
+      "Status"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "AbortIncompleteMultipartUpload": [
+      "DaysAfterInitiation"
+    ]
   }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGateway::Deployment",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "DeploymentCanarySettings",
     "DeploymentId",
@@ -15,5 +15,161 @@
   "createOnlyProperties": [
     "DeploymentCanarySettings",
     "RestApiId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "DeploymentId",
+    "RestApiId"
+  ],
+  "nestedProperties": {
+    "StageDescription": [
+      "AccessLogSetting",
+      "CacheClusterEnabled",
+      "CacheClusterSize",
+      "CacheDataEncrypted",
+      "CacheTtlInSeconds",
+      "CachingEnabled",
+      "CanarySetting",
+      "ClientCertificateId",
+      "DataTraceEnabled",
+      "Description",
+      "DestinationArn",
+      "DocumentationVersion",
+      "Format",
+      "HttpMethod",
+      "Key",
+      "LoggingLevel",
+      "MethodSettings",
+      "MetricsEnabled",
+      "PercentTraffic",
+      "ResourcePath",
+      "StageVariableOverrides",
+      "Tags",
+      "ThrottlingBurstLimit",
+      "ThrottlingRateLimit",
+      "TracingEnabled",
+      "UseStageCache",
+      "Value",
+      "Variables"
+    ],
+    "DeploymentCanarySettings": [
+      "PercentTraffic",
+      "StageVariableOverrides",
+      "UseStageCache"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "StageDescription": [
+      "AccessLogSetting",
+      "AccessLogSetting.DestinationArn",
+      "AccessLogSetting.Format",
+      "CacheClusterEnabled",
+      "CacheClusterSize",
+      "CacheDataEncrypted",
+      "CacheTtlInSeconds",
+      "CachingEnabled",
+      "CanarySetting",
+      "CanarySetting.PercentTraffic",
+      "CanarySetting.StageVariableOverrides",
+      "CanarySetting.UseStageCache",
+      "ClientCertificateId",
+      "DataTraceEnabled",
+      "Description",
+      "DocumentationVersion",
+      "LoggingLevel",
+      "MethodSettings",
+      "MethodSettings.CacheDataEncrypted",
+      "MethodSettings.CacheTtlInSeconds",
+      "MethodSettings.CachingEnabled",
+      "MethodSettings.DataTraceEnabled",
+      "MethodSettings.HttpMethod",
+      "MethodSettings.LoggingLevel",
+      "MethodSettings.MetricsEnabled",
+      "MethodSettings.ResourcePath",
+      "MethodSettings.ThrottlingBurstLimit",
+      "MethodSettings.ThrottlingRateLimit",
+      "MetricsEnabled",
+      "Tags",
+      "Tags.Key",
+      "Tags.Value",
+      "ThrottlingBurstLimit",
+      "ThrottlingRateLimit",
+      "TracingEnabled",
+      "Variables"
+    ],
+    "DeploymentCanarySettings": [
+      "PercentTraffic",
+      "StageVariableOverrides",
+      "UseStageCache"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "DeploymentId": "scalar",
+      "Description": "scalar",
+      "StageDescription": "object",
+      "StageName": "scalar",
+      "RestApiId": "scalar",
+      "DeploymentCanarySettings": "object"
+    },
+    "MethodSetting": {
+      "CacheTtlInSeconds": "scalar",
+      "LoggingLevel": "scalar",
+      "ResourcePath": "scalar",
+      "CacheDataEncrypted": "scalar",
+      "DataTraceEnabled": "scalar",
+      "ThrottlingBurstLimit": "scalar",
+      "CachingEnabled": "scalar",
+      "MetricsEnabled": "scalar",
+      "HttpMethod": "scalar",
+      "ThrottlingRateLimit": "scalar"
+    },
+    "StageDescription": {
+      "CacheTtlInSeconds": "scalar",
+      "Description": "scalar",
+      "LoggingLevel": "scalar",
+      "CanarySetting": "object",
+      "ThrottlingRateLimit": "scalar",
+      "ClientCertificateId": "scalar",
+      "Variables": "object",
+      "DocumentationVersion": "scalar",
+      "CacheDataEncrypted": "scalar",
+      "DataTraceEnabled": "scalar",
+      "ThrottlingBurstLimit": "scalar",
+      "CachingEnabled": "scalar",
+      "TracingEnabled": "scalar",
+      "MethodSettings": "array",
+      "AccessLogSetting": "object",
+      "CacheClusterSize": "scalar",
+      "MetricsEnabled": "scalar",
+      "Tags": "array",
+      "CacheClusterEnabled": "scalar"
+    },
+    "CanarySetting": {
+      "StageVariableOverrides": "object",
+      "PercentTraffic": "scalar",
+      "UseStageCache": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "DeploymentCanarySettings": {
+      "StageVariableOverrides": "object",
+      "PercentTraffic": "scalar",
+      "UseStageCache": "scalar"
+    },
+    "AccessLogSetting": {
+      "Format": "scalar",
+      "DestinationArn": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "RestApiId"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

@@ -1,27 +1,85 @@
 {
   "resourceType": "AWS::CertificateManager::Certificate",
-  "generatedAt": "2026-05-26",
+  "generatedAt": "2026-08-13",
   "properties": [
+    "CertificateArn",
     "CertificateAuthorityArn",
     "CertificateExport",
     "CertificateTransparencyLoggingPreference",
     "DomainName",
     "DomainValidationOptions",
-    "Id",
     "KeyAlgorithm",
     "SubjectAlternativeNames",
     "Tags",
     "ValidationMethod"
   ],
   "readOnlyProperties": [
-    "Id"
+    "CertificateArn"
   ],
   "createOnlyProperties": [
     "CertificateAuthorityArn",
+    "CertificateExport",
     "DomainName",
     "DomainValidationOptions",
     "KeyAlgorithm",
     "SubjectAlternativeNames",
     "ValidationMethod"
-  ]
+  ],
+  "primaryIdentifier": [
+    "CertificateArn"
+  ],
+  "nestedProperties": {
+    "DomainValidationOptions": [
+      "DomainName",
+      "HostedZoneId",
+      "ValidationDomain"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "DomainValidationOptions": [
+      "DomainName",
+      "HostedZoneId",
+      "ValidationDomain"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "CertificateArn": "scalar",
+      "CertificateAuthorityArn": "scalar",
+      "CertificateTransparencyLoggingPreference": "scalar",
+      "DomainName": "scalar",
+      "DomainValidationOptions": "array",
+      "KeyAlgorithm": "scalar",
+      "Tags": "array",
+      "SubjectAlternativeNames": "array",
+      "ValidationMethod": "scalar",
+      "CertificateExport": "scalar"
+    },
+    "DomainValidationOption": {
+      "DomainName": "scalar",
+      "ValidationDomain": "scalar",
+      "HostedZoneId": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "DomainName"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

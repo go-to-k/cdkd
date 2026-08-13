@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::RouteTable",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "RouteTableId",
     "Tags",
@@ -11,5 +11,40 @@
   ],
   "createOnlyProperties": [
     "VpcId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "RouteTableId"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "RouteTableId": "scalar",
+      "VpcId": "scalar",
+      "Tags": "array"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "VpcId"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

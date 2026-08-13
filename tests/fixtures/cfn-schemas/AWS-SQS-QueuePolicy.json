@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::SQS::QueuePolicy",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Id",
     "PolicyDocument",
@@ -9,5 +9,21 @@
   "readOnlyProperties": [
     "Id"
   ],
-  "createOnlyProperties": []
+  "createOnlyProperties": [],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "PolicyDocument": "mixed",
+      "Queues": "array",
+      "Id": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "PolicyDocument",
+      "Queues"
+    ]
+  }
 }

@@ -12,11 +12,11 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 ## Summary
 
 - Classified types (cached schema): **134**
-- Fully enriched: **20**
-- No computed attribute (Ref == physicalId is correct): **17**
+- Fully enriched: **50**
+- No computed attribute (Ref == physicalId is correct): **15**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **97**
-- Types with allow-listed (not-a-gap) attributes: **33**
+- SDK-fallback gaps (informational, #614 path only): **69**
+- Types with allow-listed (not-a-gap) attributes: **87**
 
 ## Pure-CC latent gaps
 
@@ -28,10 +28,6 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 
 | Resource type | Unenriched computed attributes (CC-fallback only) |
 | --- | --- |
-| `AWS::ApiGateway::Account` | `Id` |
-| `AWS::ApiGateway::Authorizer` | `AuthorizerId` |
-| `AWS::ApiGateway::Deployment` | `DeploymentId` |
-| `AWS::ApiGateway::Resource` | `ResourceId` |
 | `AWS::ApiGatewayV2::Api` | `ApiEndpoint` |
 | `AWS::AppSync::ApiKey` | `ApiKey`, `Arn` |
 | `AWS::AppSync::GraphQLApi` | `Arn`, `GraphQLDns`, `GraphQLEndpointArn`, `GraphQLUrl`, `RealtimeDns`, `RealtimeUrl` |
@@ -39,64 +35,46 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::BedrockAgentCore::Browser` | `BrowserId`, `Name`, `Status` |
 | `AWS::BedrockAgentCore::CodeInterpreter` | `CodeInterpreterId`, `Status` |
 | `AWS::BedrockAgentCore::Evaluator` | `CreatedAt`, `EvaluatorId`, `Status`, `UpdatedAt` |
-| `AWS::BedrockAgentCore::Runtime` | `AgentRuntimeArn`, `AgentRuntimeId`, `AgentRuntimeVersion`, `CreatedAt`, `FailureReason`, `LastUpdatedAt`, `Status`, `WorkloadIdentityDetails` |
-| `AWS::CertificateManager::Certificate` | `Id` |
-| `AWS::CloudFormation::Stack` | `ChangeSetId`, `CreationTime`, `LastUpdateTime`, `Outputs`, `ParentId`, `RootId`, `StackId`, `StackStatus` |
-| `AWS::CloudFront::CloudFrontOriginAccessIdentity` | `Id` |
+| `AWS::BedrockAgentCore::Runtime` | `AgentRuntimeArn`, `AgentRuntimeVersion`, `CreatedAt`, `FailureReason`, `LastUpdatedAt`, `Status`, `WorkloadIdentityDetails` |
+| `AWS::CloudFormation::Stack` | `ChangeSetId`, `CreationTime`, `LastUpdateTime`, `Outputs`, `ParentId`, `RootId`, `StackStatus` |
 | `AWS::CloudFront::Distribution` | `DomainName` |
 | `AWS::CloudTrail::Trail` | `Arn`, `SnsTopicArn` |
 | `AWS::CloudWatch::Alarm` | `Arn` |
 | `AWS::CodeBuild::Project` | `Arn` |
 | `AWS::CodeCommit::Repository` | `Arn`, `CloneUrlHttp`, `CloneUrlSsh`, `Name` |
-| `AWS::Cognito::UserPool` | `Arn`, `ProviderName`, `ProviderURL`, `UserPoolId` |
+| `AWS::Cognito::UserPool` | `Arn`, `ProviderName`, `ProviderURL` |
 | `AWS::DLM::LifecyclePolicy` | `Arn` |
-| `AWS::DocDB::DBCluster` | `ClusterResourceId`, `Endpoint`, `Id`, `ReadEndpoint` |
-| `AWS::DocDB::DBInstance` | `Endpoint`, `Id`, `Port` |
-| `AWS::DocDB::DBSubnetGroup` | `Id` |
+| `AWS::DocDB::DBCluster` | `ClusterResourceId`, `Endpoint`, `ReadEndpoint` |
+| `AWS::DocDB::DBInstance` | `Endpoint`, `Port` |
 | `AWS::DynamoDB::GlobalTable` | `Arn`, `StreamArn`, `TableId` |
 | `AWS::DynamoDB::Table` | `Arn` |
-| `AWS::EC2::Instance` | `InstanceId`, `PrivateDnsName`, `PrivateIp`, `PublicDnsName`, `PublicIp`, `State`, `VpcId` |
-| `AWS::EC2::InternetGateway` | `InternetGatewayId` |
-| `AWS::EC2::NatGateway` | `AutoProvisionZones`, `AutoScalingIps`, `EniId`, `NatGatewayId`, `RouteTableId` |
-| `AWS::EC2::NetworkAcl` | `Id` |
-| `AWS::EC2::NetworkAclEntry` | `Id` |
-| `AWS::EC2::Route` | `CidrBlock` |
-| `AWS::EC2::RouteTable` | `RouteTableId` |
-| `AWS::EC2::SecurityGroup` | `GroupId`, `Id` |
-| `AWS::EC2::SecurityGroupIngress` | `Id` |
-| `AWS::EC2::Subnet` | `BlockPublicAccessStates`, `Ipv6CidrBlocks`, `NetworkAclAssociationId`, `SubnetId` |
-| `AWS::EC2::SubnetNetworkAclAssociation` | `AssociationId` |
-| `AWS::EC2::SubnetRouteTableAssociation` | `Id` |
-| `AWS::EC2::VPC` | `CidrBlockAssociations`, `DefaultNetworkAcl`, `DefaultSecurityGroup`, `Ipv6CidrBlocks`, `VpcId` |
-| `AWS::EC2::VPCGatewayAttachment` | `AttachmentType` |
+| `AWS::EC2::Instance` | `PrivateDnsName`, `PrivateIp`, `PublicDnsName`, `PublicIp`, `State`, `VpcId` |
+| `AWS::EC2::NatGateway` | `AutoProvisionZones`, `AutoScalingIps`, `EniId`, `RouteTableId` |
+| `AWS::EC2::SecurityGroup` | `GroupId` |
+| `AWS::EC2::Subnet` | `BlockPublicAccessStates`, `Ipv6CidrBlocks`, `NetworkAclAssociationId` |
+| `AWS::EC2::VPC` | `CidrBlockAssociations`, `DefaultNetworkAcl`, `DefaultSecurityGroup`, `Ipv6CidrBlocks` |
 | `AWS::ECS::Cluster` | `Arn` |
 | `AWS::ECS::Service` | `Name` |
-| `AWS::EFS::AccessPoint` | `AccessPointId`, `Arn` |
-| `AWS::EFS::FileSystem` | `Arn`, `FileSystemId` |
-| `AWS::EFS::MountTarget` | `Id` |
+| `AWS::EFS::AccessPoint` | `Arn` |
+| `AWS::EFS::FileSystem` | `Arn` |
 | `AWS::ElastiCache::CacheCluster` | `ConfigurationEndpoint`, `RedisEndpoint` |
-| `AWS::ElasticLoadBalancingV2::Listener` | `ListenerArn` |
-| `AWS::ElasticLoadBalancingV2::LoadBalancer` | `CanonicalHostedZoneID`, `DNSName`, `LoadBalancerArn`, `LoadBalancerFullName`, `LoadBalancerName` |
-| `AWS::ElasticLoadBalancingV2::TargetGroup` | `LoadBalancerArns`, `TargetGroupArn`, `TargetGroupFullName`, `TargetGroupName` |
+| `AWS::ElasticLoadBalancingV2::LoadBalancer` | `CanonicalHostedZoneID`, `DNSName`, `LoadBalancerFullName`, `LoadBalancerName` |
+| `AWS::ElasticLoadBalancingV2::TargetGroup` | `LoadBalancerArns`, `TargetGroupFullName`, `TargetGroupName` |
 | `AWS::EMR::Cluster` | `MasterPublicDNS` |
 | `AWS::Events::EventBus` | `Arn` |
 | `AWS::FSx::FileSystem` | `DNSName`, `LustreMountName`, `ResourceARN`, `RootVolumeId` |
 | `AWS::IAM::AccessKey` | `SecretAccessKey` |
 | `AWS::IAM::Group` | `Arn` |
 | `AWS::IAM::InstanceProfile` | `Arn` |
-| `AWS::IAM::ManagedPolicy` | `AttachmentCount`, `CreateDate`, `DefaultVersionId`, `IsAttachable`, `PermissionsBoundaryUsageCount`, `PolicyArn`, `PolicyId`, `UpdateDate` |
-| `AWS::IAM::Policy` | `Id` |
+| `AWS::IAM::ManagedPolicy` | `AttachmentCount`, `CreateDate`, `DefaultVersionId`, `IsAttachable`, `PermissionsBoundaryUsageCount`, `PolicyId`, `UpdateDate` |
 | `AWS::IAM::Role` | `Arn`, `RoleId` |
 | `AWS::IAM::User` | `Arn` |
-| `AWS::IAM::UserToGroupAddition` | `Id` |
 | `AWS::Kinesis::Stream` | `WarmThroughputObject` |
-| `AWS::Kinesis::StreamConsumer` | `ConsumerARN`, `ConsumerCreationTimestamp`, `ConsumerStatus` |
+| `AWS::Kinesis::StreamConsumer` | `ConsumerCreationTimestamp`, `ConsumerStatus` |
 | `AWS::KinesisFirehose::DeliveryStream` | `Arn` |
 | `AWS::Lambda::EventSourceMapping` | `EventSourceMappingArn` |
 | `AWS::Lambda::Function` | `Arn`, `SnapStartResponse` |
-| `AWS::Lambda::LayerVersion` | `LayerVersionArn` |
 | `AWS::Lambda::MicrovmImage` | `CreatedAt`, `LatestActiveImageVersion`, `LatestFailedImageVersion`, `State`, `UpdatedAt` |
-| `AWS::Lambda::Permission` | `Id` |
 | `AWS::Logs::LogGroup` | `Arn` |
 | `AWS::Neptune::DBCluster` | `ClusterResourceId`, `Endpoint`, `Port`, `ReadEndpoint` |
 | `AWS::Neptune::DBInstance` | `Endpoint`, `Port` |
@@ -104,37 +82,31 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::RDS::DBInstance` | `AutomaticRestartTime`, `CertificateDetails`, `DBInstanceArn`, `DBInstanceStatus`, `DbiResourceId`, `InstanceCreateTime`, `IsStorageConfigUpgradeAvailable`, `LatestRestorableTime`, `ListenerEndpoint`, `PercentProgress`, `ReadReplicaDBClusterIdentifiers`, `ReadReplicaDBInstanceIdentifiers`, `ResumeFullAutomationModeTime`, `SecondaryAvailabilityZone`, `StatusInfos` |
 | `AWS::RDS::DBProxy` | `DBProxyArn`, `Endpoint`, `VpcId` |
 | `AWS::RDS::DBProxyEndpoint` | `DBProxyEndpointArn`, `Endpoint`, `IsDefault`, `VpcId` |
-| `AWS::RDS::DBProxyTargetGroup` | `TargetGroupArn` |
-| `AWS::Route53::HostedZone` | `Id`, `NameServers` |
-| `AWS::Route53::RecordSet` | `Id` |
+| `AWS::RDS::DBSubnetGroup` | `DBSubnetGroupArn` |
+| `AWS::Route53::HostedZone` | `NameServers` |
 | `AWS::S3::Bucket` | `DomainName`, `DualStackDomainName`, `RegionalDomainName`, `WebsiteURL` |
 | `AWS::S3Express::DirectoryBucket` | `Arn`, `AvailabilityZoneName` |
-| `AWS::S3Tables::Table` | `TableARN`, `VersionToken`, `WarehouseLocation` |
-| `AWS::S3Tables::TableBucket` | `TableBucketARN` |
-| `AWS::S3Vectors::VectorBucket` | `CreationTime`, `VectorBucketArn` |
+| `AWS::S3Tables::Table` | `VersionToken`, `WarehouseLocation` |
+| `AWS::S3Vectors::VectorBucket` | `CreationTime` |
 | `AWS::Scheduler::Schedule` | `Arn` |
-| `AWS::SecretsManager::Secret` | `Id` |
 | `AWS::ServiceDiscovery::HttpNamespace` | `Arn` |
-| `AWS::ServiceDiscovery::PrivateDnsNamespace` | `Arn`, `HostedZoneId`, `Id` |
+| `AWS::ServiceDiscovery::PrivateDnsNamespace` | `Arn`, `HostedZoneId` |
 | `AWS::ServiceDiscovery::PublicDnsNamespace` | `Arn`, `HostedZoneId` |
-| `AWS::ServiceDiscovery::Service` | `Arn`, `Id` |
-| `AWS::SNS::Subscription` | `Arn` |
-| `AWS::SNS::Topic` | `TopicArn` |
-| `AWS::SNS::TopicPolicy` | `Id` |
-| `AWS::SQS::Queue` | `Arn`, `QueueUrl` |
-| `AWS::SQS::QueuePolicy` | `Id` |
-| `AWS::StepFunctions::StateMachine` | `Arn`, `Name`, `StateMachineRevisionId` |
-| `AWS::WAFv2::WebACL` | `Arn`, `Capacity`, `Id`, `LabelNamespace` |
+| `AWS::ServiceDiscovery::Service` | `Arn` |
+| `AWS::SQS::Queue` | `Arn` |
+| `AWS::SSM::Parameter` | `Arn` |
+| `AWS::StepFunctions::StateMachine` | `Name`, `StateMachineRevisionId` |
+| `AWS::WAFv2::WebACL` | `Arn`, `Capacity`, `LabelNamespace` |
 
 ## Full classification
 
 | Resource type | SDK | Bucket | readOnly attributes (status) |
 | --- | --- | --- | --- |
-| `AWS::ApiGateway::Account` | yes | sdk-fallback-gap | `Id` (GAP) |
-| `AWS::ApiGateway::Authorizer` | yes | sdk-fallback-gap | `AuthorizerId` (GAP) |
-| `AWS::ApiGateway::Deployment` | yes | sdk-fallback-gap | `DeploymentId` (GAP) |
+| `AWS::ApiGateway::Account` | yes | enriched | `Id` (allow) |
+| `AWS::ApiGateway::Authorizer` | yes | enriched | `AuthorizerId` (allow) |
+| `AWS::ApiGateway::Deployment` | yes | enriched | `DeploymentId` (allow) |
 | `AWS::ApiGateway::Method` | yes | no-computed-attr | _(none)_ |
-| `AWS::ApiGateway::Resource` | yes | sdk-fallback-gap | `ResourceId` (GAP) |
+| `AWS::ApiGateway::Resource` | yes | enriched | `ResourceId` (allow) |
 | `AWS::ApiGateway::Stage` | yes | no-computed-attr | _(none)_ |
 | `AWS::ApiGatewayV2::Api` | yes | sdk-fallback-gap | `ApiEndpoint` (GAP), `ApiId` (allow) |
 | `AWS::ApiGatewayV2::Authorizer` | yes | enriched | `AuthorizerId` (allow) |
@@ -150,12 +122,12 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::BedrockAgentCore::Browser` | yes | sdk-fallback-gap | `BrowserArn` (allow), `BrowserId` (GAP), `Name` (GAP), `Status` (GAP) |
 | `AWS::BedrockAgentCore::CodeInterpreter` | yes | sdk-fallback-gap | `CodeInterpreterArn` (allow), `CodeInterpreterId` (GAP), `Status` (GAP) |
 | `AWS::BedrockAgentCore::Evaluator` | yes | sdk-fallback-gap | `CreatedAt` (GAP), `EvaluatorArn` (allow), `EvaluatorId` (GAP), `Status` (GAP), `UpdatedAt` (GAP) |
-| `AWS::BedrockAgentCore::Runtime` | yes | sdk-fallback-gap | `AgentRuntimeArn` (GAP), `AgentRuntimeId` (GAP), `AgentRuntimeVersion` (GAP), `CreatedAt` (GAP), `FailureReason` (GAP), `LastUpdatedAt` (GAP), `Status` (GAP), `WorkloadIdentityDetails` (GAP) |
+| `AWS::BedrockAgentCore::Runtime` | yes | sdk-fallback-gap | `AgentRuntimeArn` (GAP), `AgentRuntimeId` (allow), `AgentRuntimeVersion` (GAP), `CreatedAt` (GAP), `FailureReason` (GAP), `LastUpdatedAt` (GAP), `Status` (GAP), `WorkloadIdentityDetails` (GAP) |
 | `AWS::Budgets::Budget` | yes | enriched | `Id` (allow) |
-| `AWS::CertificateManager::Certificate` | yes | sdk-fallback-gap | `Id` (GAP) |
-| `AWS::CloudFormation::Stack` | yes | sdk-fallback-gap | `ChangeSetId` (GAP), `CreationTime` (GAP), `LastUpdateTime` (GAP), `Outputs` (GAP), `ParentId` (GAP), `RootId` (GAP), `StackId` (GAP), `StackStatus` (GAP) |
+| `AWS::CertificateManager::Certificate` | yes | enriched | `CertificateArn` (allow) |
+| `AWS::CloudFormation::Stack` | yes | sdk-fallback-gap | `ChangeSetId` (GAP), `CreationTime` (GAP), `LastUpdateTime` (GAP), `Outputs` (GAP), `ParentId` (GAP), `RootId` (GAP), `StackId` (allow), `StackStatus` (GAP) |
 | `AWS::CloudFormation::WaitConditionHandle` | yes | enriched | `Id` (allow) |
-| `AWS::CloudFront::CloudFrontOriginAccessIdentity` | yes | sdk-fallback-gap | `Id` (GAP), `S3CanonicalUserId` (OK) |
+| `AWS::CloudFront::CloudFrontOriginAccessIdentity` | yes | enriched | `Id` (allow), `S3CanonicalUserId` (OK) |
 | `AWS::CloudFront::Distribution` | yes | sdk-fallback-gap | `DomainName` (GAP), `Id` (allow) |
 | `AWS::CloudFront::OriginAccessControl` | yes | enriched | `Id` (OK) |
 | `AWS::CloudTrail::Trail` | yes | sdk-fallback-gap | `Arn` (GAP), `SnsTopicArn` (GAP) |
@@ -163,40 +135,40 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CloudWatch::AnomalyDetector` | yes | enriched | `Id` (allow) |
 | `AWS::CodeBuild::Project` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (allow) |
 | `AWS::CodeCommit::Repository` | yes | sdk-fallback-gap | `Arn` (GAP), `CloneUrlHttp` (GAP), `CloneUrlSsh` (GAP), `Id` (allow), `Name` (GAP) |
-| `AWS::Cognito::UserPool` | yes | sdk-fallback-gap | `Arn` (GAP), `ProviderName` (GAP), `ProviderURL` (GAP), `UserPoolId` (GAP) |
+| `AWS::Cognito::UserPool` | yes | sdk-fallback-gap | `Arn` (GAP), `ProviderName` (GAP), `ProviderURL` (GAP), `UserPoolId` (allow) |
 | `AWS::DLM::LifecyclePolicy` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (allow) |
-| `AWS::DocDB::DBCluster` | yes | sdk-fallback-gap | `ClusterResourceId` (GAP), `Endpoint` (GAP), `Id` (GAP), `ReadEndpoint` (GAP) |
-| `AWS::DocDB::DBInstance` | yes | sdk-fallback-gap | `Endpoint` (GAP), `Id` (GAP), `Port` (GAP) |
-| `AWS::DocDB::DBSubnetGroup` | yes | sdk-fallback-gap | `Id` (GAP) |
+| `AWS::DocDB::DBCluster` | yes | sdk-fallback-gap | `ClusterResourceId` (GAP), `Endpoint` (GAP), `Id` (allow), `ReadEndpoint` (GAP) |
+| `AWS::DocDB::DBInstance` | yes | sdk-fallback-gap | `Endpoint` (GAP), `Id` (allow), `Port` (GAP) |
+| `AWS::DocDB::DBSubnetGroup` | yes | enriched | `Id` (allow) |
 | `AWS::DynamoDB::GlobalTable` | yes | sdk-fallback-gap | `Arn` (GAP), `StreamArn` (GAP), `TableId` (GAP) |
 | `AWS::DynamoDB::Table` | yes | sdk-fallback-gap | `Arn` (GAP), `StreamArn` (OK) |
 | `AWS::EC2::EIP` | yes | enriched | `AllocationId` (OK), `PublicIp` (OK) |
-| `AWS::EC2::Instance` | yes | sdk-fallback-gap | `InstanceId` (GAP), `PrivateDnsName` (GAP), `PrivateIp` (GAP), `PublicDnsName` (GAP), `PublicIp` (GAP), `State` (GAP), `VpcId` (GAP) |
-| `AWS::EC2::InternetGateway` | yes | sdk-fallback-gap | `InternetGatewayId` (GAP) |
-| `AWS::EC2::NatGateway` | yes | sdk-fallback-gap | `AutoProvisionZones` (GAP), `AutoScalingIps` (GAP), `EniId` (GAP), `NatGatewayId` (GAP), `RouteTableId` (GAP) |
-| `AWS::EC2::NetworkAcl` | yes | sdk-fallback-gap | `Id` (GAP) |
-| `AWS::EC2::NetworkAclEntry` | yes | sdk-fallback-gap | `Id` (GAP) |
-| `AWS::EC2::Route` | yes | sdk-fallback-gap | `CidrBlock` (GAP) |
-| `AWS::EC2::RouteTable` | yes | sdk-fallback-gap | `RouteTableId` (GAP) |
-| `AWS::EC2::SecurityGroup` | yes | sdk-fallback-gap | `GroupId` (GAP), `Id` (GAP) |
-| `AWS::EC2::SecurityGroupIngress` | yes | sdk-fallback-gap | `Id` (GAP) |
-| `AWS::EC2::Subnet` | yes | sdk-fallback-gap | `BlockPublicAccessStates` (GAP), `Ipv6CidrBlocks` (GAP), `NetworkAclAssociationId` (GAP), `SubnetId` (GAP) |
-| `AWS::EC2::SubnetNetworkAclAssociation` | yes | sdk-fallback-gap | `AssociationId` (GAP) |
-| `AWS::EC2::SubnetRouteTableAssociation` | yes | sdk-fallback-gap | `Id` (GAP) |
-| `AWS::EC2::VPC` | yes | sdk-fallback-gap | `CidrBlockAssociations` (GAP), `DefaultNetworkAcl` (GAP), `DefaultSecurityGroup` (GAP), `Ipv6CidrBlocks` (GAP), `VpcId` (GAP) |
-| `AWS::EC2::VPCGatewayAttachment` | yes | sdk-fallback-gap | `AttachmentType` (GAP) |
+| `AWS::EC2::Instance` | yes | sdk-fallback-gap | `InstanceId` (allow), `PrivateDnsName` (GAP), `PrivateIp` (GAP), `PublicDnsName` (GAP), `PublicIp` (GAP), `State` (GAP), `VpcId` (GAP) |
+| `AWS::EC2::InternetGateway` | yes | enriched | `InternetGatewayId` (allow) |
+| `AWS::EC2::NatGateway` | yes | sdk-fallback-gap | `AutoProvisionZones` (GAP), `AutoScalingIps` (GAP), `EniId` (GAP), `NatGatewayId` (allow), `RouteTableId` (GAP) |
+| `AWS::EC2::NetworkAcl` | yes | enriched | `Id` (allow) |
+| `AWS::EC2::NetworkAclEntry` | yes | enriched | `Id` (allow) |
+| `AWS::EC2::Route` | yes | enriched | `CidrBlock` (allow) |
+| `AWS::EC2::RouteTable` | yes | enriched | `RouteTableId` (allow) |
+| `AWS::EC2::SecurityGroup` | yes | sdk-fallback-gap | `GroupId` (GAP), `Id` (allow) |
+| `AWS::EC2::SecurityGroupIngress` | yes | enriched | `Id` (allow) |
+| `AWS::EC2::Subnet` | yes | sdk-fallback-gap | `BlockPublicAccessStates` (GAP), `Ipv6CidrBlocks` (GAP), `NetworkAclAssociationId` (GAP), `SubnetId` (allow) |
+| `AWS::EC2::SubnetNetworkAclAssociation` | yes | enriched | `AssociationId` (allow) |
+| `AWS::EC2::SubnetRouteTableAssociation` | yes | enriched | `Id` (allow) |
+| `AWS::EC2::VPC` | yes | sdk-fallback-gap | `CidrBlockAssociations` (GAP), `DefaultNetworkAcl` (GAP), `DefaultSecurityGroup` (GAP), `Ipv6CidrBlocks` (GAP), `VpcId` (allow) |
+| `AWS::EC2::VPCGatewayAttachment` | yes | enriched | `AttachmentType` (allow) |
 | `AWS::ECR::Repository` | yes | enriched | `Arn` (OK), `RepositoryUri` (OK) |
 | `AWS::ECS::Cluster` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::ECS::Service` | yes | sdk-fallback-gap | `Name` (GAP), `ServiceArn` (allow) |
 | `AWS::ECS::TaskDefinition` | yes | enriched | `TaskDefinitionArn` (allow) |
-| `AWS::EFS::AccessPoint` | yes | sdk-fallback-gap | `AccessPointId` (GAP), `Arn` (GAP) |
-| `AWS::EFS::FileSystem` | yes | sdk-fallback-gap | `Arn` (GAP), `FileSystemId` (GAP) |
-| `AWS::EFS::MountTarget` | yes | sdk-fallback-gap | `Id` (GAP) |
+| `AWS::EFS::AccessPoint` | yes | sdk-fallback-gap | `AccessPointId` (allow), `Arn` (GAP) |
+| `AWS::EFS::FileSystem` | yes | sdk-fallback-gap | `Arn` (GAP), `FileSystemId` (allow) |
+| `AWS::EFS::MountTarget` | yes | enriched | `Id` (allow) |
 | `AWS::ElastiCache::CacheCluster` | yes | sdk-fallback-gap | `ConfigurationEndpoint` (GAP), `RedisEndpoint` (GAP) |
 | `AWS::ElastiCache::SubnetGroup` | yes | no-computed-attr | _(none)_ |
-| `AWS::ElasticLoadBalancingV2::Listener` | yes | sdk-fallback-gap | `ListenerArn` (GAP) |
-| `AWS::ElasticLoadBalancingV2::LoadBalancer` | yes | sdk-fallback-gap | `CanonicalHostedZoneID` (GAP), `DNSName` (GAP), `LoadBalancerArn` (GAP), `LoadBalancerFullName` (GAP), `LoadBalancerName` (GAP) |
-| `AWS::ElasticLoadBalancingV2::TargetGroup` | yes | sdk-fallback-gap | `LoadBalancerArns` (GAP), `TargetGroupArn` (GAP), `TargetGroupFullName` (GAP), `TargetGroupName` (GAP) |
+| `AWS::ElasticLoadBalancingV2::Listener` | yes | enriched | `ListenerArn` (allow) |
+| `AWS::ElasticLoadBalancingV2::LoadBalancer` | yes | sdk-fallback-gap | `CanonicalHostedZoneID` (GAP), `DNSName` (GAP), `LoadBalancerArn` (allow), `LoadBalancerFullName` (GAP), `LoadBalancerName` (GAP) |
+| `AWS::ElasticLoadBalancingV2::TargetGroup` | yes | sdk-fallback-gap | `LoadBalancerArns` (GAP), `TargetGroupArn` (allow), `TargetGroupFullName` (GAP), `TargetGroupName` (GAP) |
 | `AWS::EMR::Cluster` | yes | sdk-fallback-gap | `Id` (allow), `MasterPublicDNS` (GAP) |
 | `AWS::EMR::InstanceFleetConfig` | yes | enriched | `Id` (allow) |
 | `AWS::EMR::InstanceGroupConfig` | yes | enriched | `Id` (allow) |
@@ -214,22 +186,22 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::IAM::AccessKey` | yes | sdk-fallback-gap | `Id` (allow), `SecretAccessKey` (GAP) |
 | `AWS::IAM::Group` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::IAM::InstanceProfile` | yes | sdk-fallback-gap | `Arn` (GAP) |
-| `AWS::IAM::ManagedPolicy` | yes | sdk-fallback-gap | `AttachmentCount` (GAP), `CreateDate` (GAP), `DefaultVersionId` (GAP), `IsAttachable` (GAP), `PermissionsBoundaryUsageCount` (GAP), `PolicyArn` (GAP), `PolicyId` (GAP), `UpdateDate` (GAP) |
-| `AWS::IAM::Policy` | yes | sdk-fallback-gap | `Id` (GAP) |
+| `AWS::IAM::ManagedPolicy` | yes | sdk-fallback-gap | `AttachmentCount` (GAP), `CreateDate` (GAP), `DefaultVersionId` (GAP), `IsAttachable` (GAP), `PermissionsBoundaryUsageCount` (GAP), `PolicyArn` (allow), `PolicyId` (GAP), `UpdateDate` (GAP) |
+| `AWS::IAM::Policy` | yes | enriched | `Id` (allow) |
 | `AWS::IAM::Role` | yes | sdk-fallback-gap | `Arn` (GAP), `RoleId` (GAP) |
 | `AWS::IAM::User` | yes | sdk-fallback-gap | `Arn` (GAP) |
-| `AWS::IAM::UserToGroupAddition` | yes | sdk-fallback-gap | `Id` (GAP) |
+| `AWS::IAM::UserToGroupAddition` | yes | enriched | `Id` (allow) |
 | `AWS::Kinesis::Stream` | yes | sdk-fallback-gap | `Arn` (OK), `WarmThroughputObject` (GAP) |
-| `AWS::Kinesis::StreamConsumer` | yes | sdk-fallback-gap | `ConsumerARN` (GAP), `ConsumerCreationTimestamp` (GAP), `ConsumerStatus` (GAP) |
+| `AWS::Kinesis::StreamConsumer` | yes | sdk-fallback-gap | `ConsumerARN` (allow), `ConsumerCreationTimestamp` (GAP), `ConsumerStatus` (GAP) |
 | `AWS::KinesisFirehose::DeliveryStream` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::KMS::Alias` | yes | no-computed-attr | _(none)_ |
 | `AWS::KMS::Key` | yes | enriched | `Arn` (OK), `KeyId` (OK) |
 | `AWS::Lambda::EventInvokeConfig` | yes | no-computed-attr | _(none)_ |
 | `AWS::Lambda::EventSourceMapping` | yes | sdk-fallback-gap | `EventSourceMappingArn` (GAP), `Id` (allow) |
 | `AWS::Lambda::Function` | yes | sdk-fallback-gap | `Arn` (GAP), `SnapStartResponse` (GAP) |
-| `AWS::Lambda::LayerVersion` | yes | sdk-fallback-gap | `LayerVersionArn` (GAP) |
+| `AWS::Lambda::LayerVersion` | yes | enriched | `LayerVersionArn` (allow) |
 | `AWS::Lambda::MicrovmImage` | yes | sdk-fallback-gap | `CreatedAt` (GAP), `ImageArn` (allow), `LatestActiveImageVersion` (GAP), `LatestFailedImageVersion` (GAP), `State` (GAP), `UpdatedAt` (GAP) |
-| `AWS::Lambda::Permission` | yes | sdk-fallback-gap | `Id` (GAP) |
+| `AWS::Lambda::Permission` | yes | enriched | `Id` (allow) |
 | `AWS::Lambda::Url` | yes | enriched | `FunctionArn` (OK), `FunctionUrl` (OK) |
 | `AWS::Logs::LogGroup` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::Neptune::DBCluster` | yes | sdk-fallback-gap | `ClusterResourceId` (GAP), `Endpoint` (GAP), `Port` (GAP), `ReadEndpoint` (GAP) |
@@ -239,31 +211,31 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::RDS::DBInstance` | yes | sdk-fallback-gap | `AutomaticRestartTime` (GAP), `CertificateDetails` (GAP), `DBInstanceArn` (GAP), `DBInstanceStatus` (GAP), `DbiResourceId` (GAP), `Endpoint` (OK), `InstanceCreateTime` (GAP), `IsStorageConfigUpgradeAvailable` (GAP), `LatestRestorableTime` (GAP), `ListenerEndpoint` (GAP), `PercentProgress` (GAP), `ReadReplicaDBClusterIdentifiers` (GAP), `ReadReplicaDBInstanceIdentifiers` (GAP), `ResumeFullAutomationModeTime` (GAP), `SecondaryAvailabilityZone` (GAP), `StatusInfos` (GAP) |
 | `AWS::RDS::DBProxy` | yes | sdk-fallback-gap | `DBProxyArn` (GAP), `Endpoint` (GAP), `VpcId` (GAP) |
 | `AWS::RDS::DBProxyEndpoint` | yes | sdk-fallback-gap | `DBProxyEndpointArn` (GAP), `Endpoint` (GAP), `IsDefault` (GAP), `VpcId` (GAP) |
-| `AWS::RDS::DBProxyTargetGroup` | yes | sdk-fallback-gap | `TargetGroupArn` (GAP) |
-| `AWS::RDS::DBSubnetGroup` | yes | no-computed-attr | _(none)_ |
-| `AWS::Route53::HostedZone` | yes | sdk-fallback-gap | `Id` (GAP), `NameServers` (GAP) |
-| `AWS::Route53::RecordSet` | yes | sdk-fallback-gap | `Id` (GAP) |
+| `AWS::RDS::DBProxyTargetGroup` | yes | enriched | `TargetGroupArn` (allow) |
+| `AWS::RDS::DBSubnetGroup` | yes | sdk-fallback-gap | `DBSubnetGroupArn` (GAP) |
+| `AWS::Route53::HostedZone` | yes | sdk-fallback-gap | `Id` (allow), `NameServers` (GAP) |
+| `AWS::Route53::RecordSet` | yes | enriched | `Id` (allow) |
 | `AWS::S3::Bucket` | yes | sdk-fallback-gap | `Arn` (OK), `DomainName` (GAP), `DualStackDomainName` (GAP), `RegionalDomainName` (GAP), `WebsiteURL` (GAP) |
 | `AWS::S3::BucketPolicy` | yes | no-computed-attr | _(none)_ |
 | `AWS::S3Express::DirectoryBucket` | yes | sdk-fallback-gap | `Arn` (GAP), `AvailabilityZoneName` (GAP) |
 | `AWS::S3Tables::Namespace` | yes | no-computed-attr | _(none)_ |
-| `AWS::S3Tables::Table` | yes | sdk-fallback-gap | `TableARN` (GAP), `VersionToken` (GAP), `WarehouseLocation` (GAP) |
-| `AWS::S3Tables::TableBucket` | yes | sdk-fallback-gap | `TableBucketARN` (GAP) |
-| `AWS::S3Vectors::VectorBucket` | yes | sdk-fallback-gap | `CreationTime` (GAP), `VectorBucketArn` (GAP) |
+| `AWS::S3Tables::Table` | yes | sdk-fallback-gap | `TableARN` (allow), `VersionToken` (GAP), `WarehouseLocation` (GAP) |
+| `AWS::S3Tables::TableBucket` | yes | enriched | `TableBucketARN` (allow) |
+| `AWS::S3Vectors::VectorBucket` | yes | sdk-fallback-gap | `CreationTime` (GAP), `VectorBucketArn` (allow) |
 | `AWS::Scheduler::Schedule` | yes | sdk-fallback-gap | `Arn` (GAP) |
-| `AWS::SecretsManager::Secret` | yes | sdk-fallback-gap | `Id` (GAP) |
+| `AWS::SecretsManager::Secret` | yes | enriched | `Id` (allow) |
 | `AWS::ServiceDiscovery::HttpNamespace` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (allow) |
-| `AWS::ServiceDiscovery::PrivateDnsNamespace` | yes | sdk-fallback-gap | `Arn` (GAP), `HostedZoneId` (GAP), `Id` (GAP) |
+| `AWS::ServiceDiscovery::PrivateDnsNamespace` | yes | sdk-fallback-gap | `Arn` (GAP), `HostedZoneId` (GAP), `Id` (allow) |
 | `AWS::ServiceDiscovery::PublicDnsNamespace` | yes | sdk-fallback-gap | `Arn` (GAP), `HostedZoneId` (GAP), `Id` (allow) |
-| `AWS::ServiceDiscovery::Service` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (GAP) |
-| `AWS::SNS::Subscription` | yes | sdk-fallback-gap | `Arn` (GAP) |
-| `AWS::SNS::Topic` | yes | sdk-fallback-gap | `TopicArn` (GAP) |
-| `AWS::SNS::TopicPolicy` | yes | sdk-fallback-gap | `Id` (GAP) |
-| `AWS::SQS::Queue` | yes | sdk-fallback-gap | `Arn` (GAP), `QueueUrl` (GAP) |
-| `AWS::SQS::QueuePolicy` | yes | sdk-fallback-gap | `Id` (GAP) |
-| `AWS::SSM::Parameter` | yes | no-computed-attr | _(none)_ |
-| `AWS::StepFunctions::StateMachine` | yes | sdk-fallback-gap | `Arn` (GAP), `Name` (GAP), `StateMachineRevisionId` (GAP) |
-| `AWS::WAFv2::WebACL` | yes | sdk-fallback-gap | `Arn` (GAP), `Capacity` (GAP), `Id` (GAP), `LabelNamespace` (GAP) |
+| `AWS::ServiceDiscovery::Service` | yes | sdk-fallback-gap | `Arn` (GAP), `Id` (allow) |
+| `AWS::SNS::Subscription` | yes | enriched | `Arn` (allow) |
+| `AWS::SNS::Topic` | yes | enriched | `TopicArn` (allow) |
+| `AWS::SNS::TopicPolicy` | yes | enriched | `Id` (allow) |
+| `AWS::SQS::Queue` | yes | sdk-fallback-gap | `Arn` (GAP), `QueueUrl` (allow) |
+| `AWS::SQS::QueuePolicy` | yes | enriched | `Id` (allow) |
+| `AWS::SSM::Parameter` | yes | sdk-fallback-gap | `Arn` (GAP) |
+| `AWS::StepFunctions::StateMachine` | yes | sdk-fallback-gap | `Arn` (allow), `Name` (GAP), `StateMachineRevisionId` (GAP) |
+| `AWS::WAFv2::WebACL` | yes | sdk-fallback-gap | `Arn` (GAP), `Capacity` (GAP), `Id` (allow), `LabelNamespace` (GAP) |
 
 ## Enrichment cases without a cached schema
 

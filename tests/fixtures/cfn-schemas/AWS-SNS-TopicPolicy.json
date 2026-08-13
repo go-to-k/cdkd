@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::SNS::TopicPolicy",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Id",
     "PolicyDocument",
@@ -9,5 +9,21 @@
   "readOnlyProperties": [
     "Id"
   ],
-  "createOnlyProperties": []
+  "createOnlyProperties": [],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Topics": "array",
+      "PolicyDocument": "mixed",
+      "Id": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "PolicyDocument",
+      "Topics"
+    ]
+  }
 }

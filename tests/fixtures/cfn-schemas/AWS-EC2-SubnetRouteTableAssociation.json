@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::SubnetRouteTableAssociation",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Id",
     "RouteTableId",
@@ -12,5 +12,21 @@
   "createOnlyProperties": [
     "RouteTableId",
     "SubnetId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "RouteTableId": "scalar",
+      "Id": "scalar",
+      "SubnetId": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "RouteTableId",
+      "SubnetId"
+    ]
+  }
 }

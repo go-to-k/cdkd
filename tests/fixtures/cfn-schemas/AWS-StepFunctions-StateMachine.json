@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::StepFunctions::StateMachine",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "Definition",
@@ -25,5 +25,122 @@
   "createOnlyProperties": [
     "StateMachineName",
     "StateMachineType"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Arn"
+  ],
+  "nestedProperties": {
+    "LoggingConfiguration": [
+      "CloudWatchLogsLogGroup",
+      "Destinations",
+      "IncludeExecutionData",
+      "Level",
+      "LogGroupArn"
+    ],
+    "TracingConfiguration": [
+      "Enabled"
+    ],
+    "EncryptionConfiguration": [
+      "KmsDataKeyReusePeriodSeconds",
+      "KmsKeyId",
+      "Type"
+    ],
+    "DefinitionS3Location": [
+      "Bucket",
+      "Key",
+      "Version"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "LoggingConfiguration": [
+      "Destinations",
+      "Destinations.CloudWatchLogsLogGroup",
+      "Destinations.CloudWatchLogsLogGroup.LogGroupArn",
+      "IncludeExecutionData",
+      "Level"
+    ],
+    "TracingConfiguration": [
+      "Enabled"
+    ],
+    "EncryptionConfiguration": [
+      "KmsDataKeyReusePeriodSeconds",
+      "KmsKeyId",
+      "Type"
+    ],
+    "DefinitionS3Location": [
+      "Bucket",
+      "Key",
+      "Version"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Arn": "scalar",
+      "Name": "scalar",
+      "DefinitionString": "scalar",
+      "RoleArn": "scalar",
+      "StateMachineName": "scalar",
+      "StateMachineType": "scalar",
+      "StateMachineRevisionId": "scalar",
+      "LoggingConfiguration": "object",
+      "TracingConfiguration": "object",
+      "EncryptionConfiguration": "object",
+      "DefinitionS3Location": "object",
+      "DefinitionSubstitutions": "object",
+      "Definition": "object",
+      "Tags": "array"
+    },
+    "TagsEntry": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "CloudWatchLogsLogGroup": {
+      "LogGroupArn": "scalar"
+    },
+    "LogDestination": {
+      "CloudWatchLogsLogGroup": "object"
+    },
+    "LoggingConfiguration": {
+      "Level": "scalar",
+      "IncludeExecutionData": "scalar",
+      "Destinations": "array"
+    },
+    "TracingConfiguration": {
+      "Enabled": "scalar"
+    },
+    "EncryptionConfiguration": {
+      "KmsKeyId": "scalar",
+      "KmsDataKeyReusePeriodSeconds": "scalar",
+      "Type": "scalar"
+    },
+    "S3Location": {
+      "Bucket": "scalar",
+      "Key": "scalar",
+      "Version": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "RoleArn"
+    ],
+    "TagsEntry": [
+      "Key",
+      "Value"
+    ],
+    "EncryptionConfiguration": [
+      "Type"
+    ],
+    "S3Location": [
+      "Bucket",
+      "Key"
+    ]
+  }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGateway::Method",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "ApiKeyRequired",
     "AuthorizationScopes",
@@ -21,5 +21,132 @@
     "HttpMethod",
     "ResourceId",
     "RestApiId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "HttpMethod",
+    "ResourceId",
+    "RestApiId"
+  ],
+  "nestedProperties": {
+    "Integration": [
+      "CacheKeyParameters",
+      "CacheNamespace",
+      "ConnectionId",
+      "ConnectionType",
+      "ContentHandling",
+      "Credentials",
+      "IntegrationHttpMethod",
+      "IntegrationResponses",
+      "IntegrationTarget",
+      "PassthroughBehavior",
+      "RequestParameters",
+      "RequestTemplates",
+      "ResponseParameters",
+      "ResponseTemplates",
+      "ResponseTransferMode",
+      "SelectionPattern",
+      "StatusCode",
+      "TimeoutInMillis",
+      "Type",
+      "Uri"
+    ],
+    "MethodResponses": [
+      "ResponseModels",
+      "ResponseParameters",
+      "StatusCode"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Integration": [
+      "CacheKeyParameters",
+      "CacheNamespace",
+      "ConnectionId",
+      "ConnectionType",
+      "ContentHandling",
+      "Credentials",
+      "IntegrationHttpMethod",
+      "IntegrationResponses",
+      "IntegrationResponses.ContentHandling",
+      "IntegrationResponses.ResponseParameters",
+      "IntegrationResponses.ResponseTemplates",
+      "IntegrationResponses.SelectionPattern",
+      "IntegrationResponses.StatusCode",
+      "IntegrationTarget",
+      "PassthroughBehavior",
+      "RequestParameters",
+      "RequestTemplates",
+      "ResponseTransferMode",
+      "TimeoutInMillis",
+      "Type",
+      "Uri"
+    ],
+    "MethodResponses": [
+      "ResponseModels",
+      "ResponseParameters",
+      "StatusCode"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Integration": "object",
+      "OperationName": "scalar",
+      "RequestModels": "object",
+      "RestApiId": "scalar",
+      "AuthorizationScopes": "array",
+      "RequestValidatorId": "scalar",
+      "RequestParameters": "object",
+      "MethodResponses": "array",
+      "AuthorizerId": "scalar",
+      "ResourceId": "scalar",
+      "ApiKeyRequired": "scalar",
+      "AuthorizationType": "scalar",
+      "HttpMethod": "scalar"
+    },
+    "MethodResponse": {
+      "ResponseParameters": "object",
+      "StatusCode": "scalar",
+      "ResponseModels": "object"
+    },
+    "Integration": {
+      "CacheNamespace": "scalar",
+      "ConnectionType": "scalar",
+      "IntegrationResponses": "array",
+      "IntegrationHttpMethod": "scalar",
+      "ResponseTransferMode": "scalar",
+      "Uri": "scalar",
+      "PassthroughBehavior": "scalar",
+      "RequestParameters": "object",
+      "ConnectionId": "scalar",
+      "Type": "scalar",
+      "CacheKeyParameters": "array",
+      "IntegrationTarget": "scalar",
+      "ContentHandling": "scalar",
+      "RequestTemplates": "object",
+      "TimeoutInMillis": "scalar",
+      "Credentials": "scalar"
+    },
+    "IntegrationResponse": {
+      "ResponseTemplates": "object",
+      "SelectionPattern": "scalar",
+      "ContentHandling": "scalar",
+      "ResponseParameters": "object",
+      "StatusCode": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "HttpMethod",
+      "ResourceId",
+      "RestApiId"
+    ],
+    "MethodResponse": [
+      "StatusCode"
+    ],
+    "Integration": [
+      "Type"
+    ],
+    "IntegrationResponse": [
+      "StatusCode"
+    ]
+  }
 }

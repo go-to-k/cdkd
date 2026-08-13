@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::S3Tables::TableBucket",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "EncryptionConfiguration",
     "MetricsConfiguration",
@@ -16,5 +16,122 @@
   ],
   "createOnlyProperties": [
     "TableBucketName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "TableBucketARN"
+  ],
+  "nestedProperties": {
+    "UnreferencedFileRemoval": [
+      "NoncurrentDays",
+      "Status",
+      "UnreferencedDays"
+    ],
+    "EncryptionConfiguration": [
+      "KMSKeyArn",
+      "SSEAlgorithm"
+    ],
+    "MetricsConfiguration": [
+      "Status"
+    ],
+    "StorageClassConfiguration": [
+      "StorageClass"
+    ],
+    "ReplicationConfiguration": [
+      "DestinationTableBucketARN",
+      "Destinations",
+      "Role",
+      "Rules"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "UnreferencedFileRemoval": [
+      "NoncurrentDays",
+      "Status",
+      "UnreferencedDays"
+    ],
+    "EncryptionConfiguration": [
+      "KMSKeyArn",
+      "SSEAlgorithm"
+    ],
+    "MetricsConfiguration": [
+      "Status"
+    ],
+    "StorageClassConfiguration": [
+      "StorageClass"
+    ],
+    "ReplicationConfiguration": [
+      "Role",
+      "Rules",
+      "Rules.Destinations",
+      "Rules.Destinations.DestinationTableBucketARN"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "TableBucketARN": "scalar",
+      "TableBucketName": "scalar",
+      "UnreferencedFileRemoval": "object",
+      "EncryptionConfiguration": "object",
+      "MetricsConfiguration": "object",
+      "StorageClassConfiguration": "object",
+      "ReplicationConfiguration": "object",
+      "Tags": "array"
+    },
+    "UnreferencedFileRemoval": {
+      "Status": "scalar",
+      "UnreferencedDays": "scalar",
+      "NoncurrentDays": "scalar"
+    },
+    "EncryptionConfiguration": {
+      "SSEAlgorithm": "scalar",
+      "KMSKeyArn": "scalar"
+    },
+    "MetricsConfiguration": {
+      "Status": "scalar"
+    },
+    "StorageClassConfiguration": {
+      "StorageClass": "scalar"
+    },
+    "ReplicationConfiguration": {
+      "Role": "scalar",
+      "Rules": "array"
+    },
+    "ReplicationRule": {
+      "Destinations": "array"
+    },
+    "ReplicationDestination": {
+      "DestinationTableBucketARN": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "TableBucketName"
+    ],
+    "ReplicationConfiguration": [
+      "Role",
+      "Rules"
+    ],
+    "ReplicationRule": [
+      "Destinations"
+    ],
+    "ReplicationDestination": [
+      "DestinationTableBucketARN"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

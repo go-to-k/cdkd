@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::Function",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Architectures",
     "Arn",
@@ -44,5 +44,307 @@
     "FunctionName",
     "PackageType",
     "TenancyConfig"
-  ]
+  ],
+  "primaryIdentifier": [
+    "FunctionName"
+  ],
+  "nestedProperties": {
+    "FunctionScalingConfig": [
+      "MaxExecutionEnvironments",
+      "MinExecutionEnvironments"
+    ],
+    "TracingConfig": [
+      "Mode"
+    ],
+    "VpcConfig": [
+      "Ipv6AllowedForDualStack",
+      "SecurityGroupIds",
+      "SubnetIds"
+    ],
+    "RuntimeManagementConfig": [
+      "RuntimeVersionArn",
+      "UpdateRuntimeOn"
+    ],
+    "DurableConfig": [
+      "ExecutionTimeout",
+      "KMSKeyArn",
+      "RetentionPeriodInDays"
+    ],
+    "SnapStart": [
+      "ApplyOn"
+    ],
+    "FileSystemConfigs": [
+      "Arn",
+      "LocalMountPath"
+    ],
+    "TenancyConfig": [
+      "TenantIsolationMode"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "ImageConfig": [
+      "Command",
+      "EntryPoint",
+      "WorkingDirectory"
+    ],
+    "DeadLetterConfig": [
+      "TargetArn"
+    ],
+    "CapacityProviderConfig": [
+      "CapacityProviderArn",
+      "ExecutionEnvironmentMemoryGiBPerVCpu",
+      "LambdaManagedInstancesCapacityProviderConfig",
+      "PerExecutionEnvironmentMaxConcurrency"
+    ],
+    "SnapStartResponse": [
+      "ApplyOn",
+      "OptimizationStatus"
+    ],
+    "Code": [
+      "ImageUri",
+      "S3Bucket",
+      "S3Key",
+      "S3ObjectStorageMode",
+      "S3ObjectVersion",
+      "SourceKMSKeyArn",
+      "ZipFile"
+    ],
+    "LoggingConfig": [
+      "ApplicationLogLevel",
+      "LogFormat",
+      "LogGroup",
+      "SystemLogLevel"
+    ],
+    "Environment": [
+      "Variables"
+    ],
+    "EphemeralStorage": [
+      "Size"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "FunctionScalingConfig": [
+      "MaxExecutionEnvironments",
+      "MinExecutionEnvironments"
+    ],
+    "TracingConfig": [
+      "Mode"
+    ],
+    "VpcConfig": [
+      "Ipv6AllowedForDualStack",
+      "SecurityGroupIds",
+      "SubnetIds"
+    ],
+    "RuntimeManagementConfig": [
+      "RuntimeVersionArn",
+      "UpdateRuntimeOn"
+    ],
+    "DurableConfig": [
+      "ExecutionTimeout",
+      "KMSKeyArn",
+      "RetentionPeriodInDays"
+    ],
+    "SnapStart": [
+      "ApplyOn"
+    ],
+    "FileSystemConfigs": [
+      "Arn",
+      "LocalMountPath"
+    ],
+    "TenancyConfig": [
+      "TenantIsolationMode"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "ImageConfig": [
+      "Command",
+      "EntryPoint",
+      "WorkingDirectory"
+    ],
+    "DeadLetterConfig": [
+      "TargetArn"
+    ],
+    "CapacityProviderConfig": [
+      "LambdaManagedInstancesCapacityProviderConfig",
+      "LambdaManagedInstancesCapacityProviderConfig.CapacityProviderArn",
+      "LambdaManagedInstancesCapacityProviderConfig.ExecutionEnvironmentMemoryGiBPerVCpu",
+      "LambdaManagedInstancesCapacityProviderConfig.PerExecutionEnvironmentMaxConcurrency"
+    ],
+    "SnapStartResponse": [
+      "ApplyOn",
+      "OptimizationStatus"
+    ],
+    "Code": [
+      "ImageUri",
+      "S3Bucket",
+      "S3Key",
+      "S3ObjectStorageMode",
+      "S3ObjectVersion",
+      "SourceKMSKeyArn",
+      "ZipFile"
+    ],
+    "LoggingConfig": [
+      "ApplicationLogLevel",
+      "LogFormat",
+      "LogGroup",
+      "SystemLogLevel"
+    ],
+    "Environment": [
+      "Variables"
+    ],
+    "EphemeralStorage": [
+      "Size"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "FunctionScalingConfig": "object",
+      "Description": "scalar",
+      "TracingConfig": "object",
+      "VpcConfig": "object",
+      "RuntimeManagementConfig": "object",
+      "DurableConfig": "object",
+      "ReservedConcurrentExecutions": "scalar",
+      "SnapStart": "object",
+      "FileSystemConfigs": "array",
+      "FunctionName": "scalar",
+      "Runtime": "scalar",
+      "KmsKeyArn": "scalar",
+      "PublishToLatestPublished": "scalar",
+      "PackageType": "scalar",
+      "CodeSigningConfigArn": "scalar",
+      "Layers": "array",
+      "TenancyConfig": "object",
+      "Tags": "array",
+      "ImageConfig": "object",
+      "MemorySize": "scalar",
+      "DeadLetterConfig": "object",
+      "Timeout": "scalar",
+      "CapacityProviderConfig": "object",
+      "Handler": "scalar",
+      "SnapStartResponse": "object",
+      "Code": "object",
+      "Role": "scalar",
+      "LoggingConfig": "object",
+      "RecursiveLoop": "scalar",
+      "Environment": "object",
+      "Arn": "scalar",
+      "EphemeralStorage": "object",
+      "Architectures": "array"
+    },
+    "ImageConfig": {
+      "WorkingDirectory": "scalar",
+      "Command": "array",
+      "EntryPoint": "array"
+    },
+    "FunctionScalingConfig": {
+      "MinExecutionEnvironments": "scalar",
+      "MaxExecutionEnvironments": "scalar"
+    },
+    "LambdaManagedInstancesCapacityProviderConfig": {
+      "ExecutionEnvironmentMemoryGiBPerVCpu": "scalar",
+      "CapacityProviderArn": "scalar",
+      "PerExecutionEnvironmentMaxConcurrency": "scalar"
+    },
+    "TracingConfig": {
+      "Mode": "scalar"
+    },
+    "VpcConfig": {
+      "Ipv6AllowedForDualStack": "scalar",
+      "SecurityGroupIds": "array",
+      "SubnetIds": "array"
+    },
+    "DeadLetterConfig": {
+      "TargetArn": "scalar"
+    },
+    "CapacityProviderConfig": {
+      "LambdaManagedInstancesCapacityProviderConfig": "object"
+    },
+    "RuntimeManagementConfig": {
+      "UpdateRuntimeOn": "scalar",
+      "RuntimeVersionArn": "scalar"
+    },
+    "DurableConfig": {
+      "KMSKeyArn": "scalar",
+      "ExecutionTimeout": "scalar",
+      "RetentionPeriodInDays": "scalar"
+    },
+    "SnapStart": {
+      "ApplyOn": "scalar"
+    },
+    "SnapStartResponse": {
+      "OptimizationStatus": "scalar",
+      "ApplyOn": "scalar"
+    },
+    "Code": {
+      "SourceKMSKeyArn": "scalar",
+      "S3ObjectVersion": "scalar",
+      "S3Bucket": "scalar",
+      "ZipFile": "scalar",
+      "S3Key": "scalar",
+      "S3ObjectStorageMode": "scalar",
+      "ImageUri": "scalar"
+    },
+    "LoggingConfig": {
+      "LogFormat": "scalar",
+      "ApplicationLogLevel": "scalar",
+      "LogGroup": "scalar",
+      "SystemLogLevel": "scalar"
+    },
+    "Environment": {
+      "Variables": "object"
+    },
+    "FileSystemConfig": {
+      "Arn": "scalar",
+      "LocalMountPath": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "EphemeralStorage": {
+      "Size": "scalar"
+    },
+    "TenancyConfig": {
+      "TenantIsolationMode": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Code",
+      "Role"
+    ],
+    "LambdaManagedInstancesCapacityProviderConfig": [
+      "CapacityProviderArn"
+    ],
+    "CapacityProviderConfig": [
+      "LambdaManagedInstancesCapacityProviderConfig"
+    ],
+    "RuntimeManagementConfig": [
+      "UpdateRuntimeOn"
+    ],
+    "DurableConfig": [
+      "ExecutionTimeout"
+    ],
+    "SnapStart": [
+      "ApplyOn"
+    ],
+    "FileSystemConfig": [
+      "Arn",
+      "LocalMountPath"
+    ],
+    "Tag": [
+      "Key"
+    ],
+    "EphemeralStorage": [
+      "Size"
+    ],
+    "TenancyConfig": [
+      "TenantIsolationMode"
+    ]
+  }
 }

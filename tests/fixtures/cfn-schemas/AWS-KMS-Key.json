@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::KMS::Key",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "BypassPolicyLockoutSafetyCheck",
@@ -21,5 +21,48 @@
     "Arn",
     "KeyId"
   ],
-  "createOnlyProperties": []
+  "createOnlyProperties": [],
+  "primaryIdentifier": [
+    "KeyId"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Description": "scalar",
+      "Enabled": "scalar",
+      "EnableKeyRotation": "scalar",
+      "KeyPolicy": "mixed",
+      "KeyUsage": "scalar",
+      "Origin": "scalar",
+      "KeySpec": "scalar",
+      "MultiRegion": "scalar",
+      "PendingWindowInDays": "scalar",
+      "Tags": "array",
+      "Arn": "scalar",
+      "KeyId": "scalar",
+      "BypassPolicyLockoutSafetyCheck": "scalar",
+      "RotationPeriodInDays": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

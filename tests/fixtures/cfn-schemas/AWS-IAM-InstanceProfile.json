@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::IAM::InstanceProfile",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "InstanceProfileName",
@@ -13,5 +13,21 @@
   "createOnlyProperties": [
     "InstanceProfileName",
     "Path"
-  ]
+  ],
+  "primaryIdentifier": [
+    "InstanceProfileName"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Path": "scalar",
+      "Roles": "array",
+      "InstanceProfileName": "scalar",
+      "Arn": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Roles"
+    ]
+  }
 }

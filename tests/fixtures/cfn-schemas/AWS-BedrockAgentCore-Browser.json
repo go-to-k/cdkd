@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::BedrockAgentCore::Browser",
-  "generatedAt": "2026-07-17",
+  "generatedAt": "2026-08-13",
   "properties": [
     "BrowserArn",
     "BrowserId",
@@ -16,5 +16,13 @@
   "createOnlyProperties": [],
   "primaryIdentifier": [
     "BrowserArn"
-  ]
+  ],
+  "definitionShapes": {
+    "#top": {
+      "BrowserArn": "scalar",
+      "BrowserId": "scalar",
+      "Name": "scalar",
+      "Status": "scalar"
+    }
+  }
 }

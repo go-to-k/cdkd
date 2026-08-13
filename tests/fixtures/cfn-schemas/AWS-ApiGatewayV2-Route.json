@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGatewayV2::Route",
-  "generatedAt": "2026-08-10",
+  "generatedAt": "2026-08-13",
   "properties": [
     "ApiId",
     "ApiKeyRequired",
@@ -55,5 +55,14 @@
     "ParameterConstraints": {
       "Required": "scalar"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "ApiId",
+      "RouteKey"
+    ],
+    "ParameterConstraints": [
+      "Required"
+    ]
   }
 }

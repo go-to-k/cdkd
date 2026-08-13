@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudFormation::WaitConditionHandle",
-  "generatedAt": "2026-07-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Id"
   ],
@@ -10,5 +10,10 @@
   "createOnlyProperties": [],
   "primaryIdentifier": [
     "Id"
-  ]
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Id": "scalar"
+    }
+  }
 }

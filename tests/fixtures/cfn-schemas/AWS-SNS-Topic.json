@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::SNS::Topic",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "ArchivePolicy",
     "ContentBasedDeduplication",
@@ -23,5 +23,85 @@
   "createOnlyProperties": [
     "FifoTopic",
     "TopicName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "TopicArn"
+  ],
+  "nestedProperties": {
+    "Subscription": [
+      "Endpoint",
+      "Protocol"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "DeliveryStatusLogging": [
+      "FailureFeedbackRoleArn",
+      "Protocol",
+      "SuccessFeedbackRoleArn",
+      "SuccessFeedbackSampleRate"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Subscription": [
+      "Endpoint",
+      "Protocol"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "DeliveryStatusLogging": [
+      "FailureFeedbackRoleArn",
+      "Protocol",
+      "SuccessFeedbackRoleArn",
+      "SuccessFeedbackSampleRate"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "DisplayName": "scalar",
+      "KmsMasterKeyId": "scalar",
+      "DataProtectionPolicy": "object",
+      "Subscription": "array",
+      "FifoTopic": "scalar",
+      "ContentBasedDeduplication": "scalar",
+      "ArchivePolicy": "object",
+      "FifoThroughputScope": "scalar",
+      "Tags": "array",
+      "TopicName": "scalar",
+      "TopicArn": "scalar",
+      "SignatureVersion": "scalar",
+      "TracingConfig": "scalar",
+      "DeliveryStatusLogging": "array"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "Subscription": {
+      "Endpoint": "scalar",
+      "Protocol": "scalar"
+    },
+    "LoggingConfig": {
+      "Protocol": "scalar",
+      "SuccessFeedbackRoleArn": "scalar",
+      "SuccessFeedbackSampleRate": "scalar",
+      "FailureFeedbackRoleArn": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "Subscription": [
+      "Endpoint",
+      "Protocol"
+    ],
+    "LoggingConfig": [
+      "Protocol"
+    ]
+  }
 }

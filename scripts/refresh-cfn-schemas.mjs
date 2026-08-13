@@ -464,6 +464,92 @@ export function extractDefinitionShapes(schemaJson) {
 }
 
 /**
+ * Extract, per schema DEFINITION, its `required` member list — the members
+ * CloudFormation's own model validation refuses a payload for omitting
+ * (issue #1800).
+ *
+ * Captured because a whole class of parity verdicts rests ENTIRELY on it. The
+ * #1225 classification of `AWS::ECS::Service.DeploymentConfiguration` concluded
+ * that cdkd's verbatim pass-through is CloudFormation parity at depth 2 only
+ * because CFn REFUSES a kept-but-partial `DeploymentCircuitBreaker`
+ * (`required: [Enable, Rollback]`), making the shape unreachable from a valid
+ * template. Without this capture, the strongest available assertion is that the
+ * member paths are still MODELLED — which stays true the day AWS relaxes the
+ * `required` list, silently turning a "parity by loud reject" verdict into a
+ * real silent drop with no test failing. `docs/provider-development.md` already
+ * tells provider authors to check the nested definition's `required` list
+ * before treating a depth-2 replace as reachable; this is the data that makes
+ * that checkable.
+ *
+ * The top-level `required` block is included under the reserved key `#top`,
+ * matching {@link extractDefinitionShapes} (no CFn definition may legally be
+ * named `#top` — `#` starts a JSON-pointer).
+ *
+ * A definition with no `required` list, or an empty one, gets NO entry — the
+ * absence IS the fact ("nothing is required here"), and emitting `[]` for the
+ * ~90% of definitions in that state would triple the fixture size for no
+ * signal. Consumers must therefore read a missing key as "no required members",
+ * not as "not captured".
+ *
+ * The SECTION's presence does NOT distinguish the two, and an earlier revision
+ * of this note claimed it did: seven re-captured fixtures legitimately carry no
+ * `definitionRequired` at all, because nothing in those schemas requires
+ * anything (`AWS-Glue-Workflow`, `AWS-ECS-Cluster`, `AWS-ApiGateway-Account`,
+ * `AWS-ApiGatewayV2-Api`, `AWS-CloudFormation-WaitConditionHandle`, and the two
+ * `AWS-BedrockAgentCore-*` types). The working discriminator is `generatedAt`:
+ * a capture dated on or after 2026-08-13 ran this extractor.
+ *
+ * KNOWN BOUND, and it narrows the sentence above: only a definition's OWN,
+ * top-level `required` array is captured. CloudFormation registry schemas also
+ * express required-ness two other ways, and both are silently absent here:
+ *
+ * - inside a COMBINATOR — `AWS::S3::Bucket`'s `TargetObjectKeyFormat` is
+ *   `oneOf: [{required: ['SimplePrefix']}, {required: ['PartitionedPrefix']}]`
+ *   with no root `required` (measured live, us-east-1, 2026-08-13);
+ * - on an INLINE nested object rather than a named definition —
+ *   `AWS::WAFv2::WebACL`'s `FieldToMatch.SingleHeader` carries
+ *   `required: ['Name']` and has no key of its own to hang an entry on.
+ *
+ * So for those shapes a missing entry means "no PLAIN required list", NOT
+ * "CloudFormation requires nothing" — and a consumer that read it the strong
+ * way would derive exactly the false "a kept-but-partial block is reachable"
+ * verdict this capture exists to prevent. Treat a missing entry as UNKNOWN
+ * rather than as proof of permissiveness before concluding a parity verdict;
+ * measure the shape against the live schema first. Capturing the combinator
+ * and inline forms is left undone deliberately: both need a shape richer than
+ * `Record<string, string[]>` (an arm is an ALTERNATIVE, not an addition), and
+ * no consumer needs them yet.
+ *
+ * @param {string} schemaJson
+ * @returns {Record<string, string[]>}
+ */
+export function extractDefinitionRequired(schemaJson) {
+  /** @type {{properties?: Record<string, unknown>, required?: unknown, definitions?: Record<string, unknown>}} */
+  const schema = JSON.parse(schemaJson);
+  const definitions =
+    schema.definitions && typeof schema.definitions === 'object' ? schema.definitions : {};
+
+  /** @type {Record<string, string[]>} */
+  const out = {};
+  /**
+   * @param {string} name
+   * @param {unknown} required
+   */
+  const addRequired = (name, required) => {
+    if (!Array.isArray(required)) return;
+    const members = required.filter((m) => typeof m === 'string').sort();
+    if (members.length > 0) out[name] = members;
+  };
+
+  addRequired('#top', schema.required);
+  for (const [name, def] of Object.entries(definitions)) {
+    if (def === null || typeof def !== 'object') continue;
+    addRequired(name, /** @type {Record<string, unknown>} */ (def)['required']);
+  }
+  return out;
+}
+
+/**
  * Retry on CloudFormation's throttling shape ("Rate exceeded" / HTTP 429).
  * Exponential backoff with jitter, 1s -> 2s -> 4s -> 8s -> 16s -> 32s.
  *
@@ -524,6 +610,7 @@ async function processType(client, resourceType) {
     const nestedProperties = extractNestedPropertyNames(resp.Schema);
     const nestedPropertyPaths = extractNestedPropertyPaths(resp.Schema, resourceType);
     const definitionShapes = extractDefinitionShapes(resp.Schema);
+    const definitionRequired = extractDefinitionRequired(resp.Schema);
     const fixture = {
       resourceType,
       // YYYY-MM-DD only so an unchanged schema produces an unchanged fixture
@@ -544,6 +631,11 @@ async function processType(client, resourceType) {
       // `#top` is always present, so this field only stays out for a
       // fixture with no properties at all.
       ...(Object.keys(definitionShapes).length > 0 ? { definitionShapes } : {}),
+      // The required-ness capture (issue #1800). Same omit-when-empty rule as
+      // the two above — but here the omission is common rather than degenerate:
+      // a type whose schema requires nothing anywhere legitimately has no
+      // section at all.
+      ...(Object.keys(definitionRequired).length > 0 ? { definitionRequired } : {}),
     };
     const path = join(FIXTURES_DIR, fixtureFilename(resourceType));
     await writeFile(path, JSON.stringify(fixture, null, 2) + '\n', 'utf8');

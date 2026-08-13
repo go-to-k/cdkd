@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGatewayV2::Integration",
-  "generatedAt": "2026-08-10",
+  "generatedAt": "2026-08-13",
   "properties": [
     "ApiId",
     "ConnectionId",
@@ -88,5 +88,15 @@
       "Key": "scalar",
       "Value": "scalar"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "ApiId",
+      "IntegrationType"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
   }
 }

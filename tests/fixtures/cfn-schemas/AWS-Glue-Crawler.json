@@ -213,5 +213,11 @@
       "Tables": "array",
       "EventQueueArn": "scalar"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Role",
+      "Targets"
+    ]
   }
 }

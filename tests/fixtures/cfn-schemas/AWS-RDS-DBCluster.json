@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::RDS::DBCluster",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AllocatedStorage",
     "AssociatedRoles",
@@ -96,5 +96,187 @@
     "SourceRegion",
     "StorageEncrypted",
     "UseLatestRestorableTime"
-  ]
+  ],
+  "primaryIdentifier": [
+    "DBClusterIdentifier"
+  ],
+  "nestedProperties": {
+    "Endpoint": [
+      "Address",
+      "Port"
+    ],
+    "ReadEndpoint": [
+      "Address"
+    ],
+    "AssociatedRoles": [
+      "FeatureName",
+      "RoleArn"
+    ],
+    "MasterUserSecret": [
+      "KmsKeyId",
+      "SecretArn"
+    ],
+    "ServerlessV2ScalingConfiguration": [
+      "MaxCapacity",
+      "MinCapacity",
+      "SecondsUntilAutoPause"
+    ],
+    "ScalingConfiguration": [
+      "AutoPause",
+      "MaxCapacity",
+      "MinCapacity",
+      "SecondsBeforeTimeout",
+      "SecondsUntilAutoPause",
+      "TimeoutAction"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Endpoint": [
+      "Address",
+      "Port"
+    ],
+    "ReadEndpoint": [
+      "Address"
+    ],
+    "AssociatedRoles": [
+      "FeatureName",
+      "RoleArn"
+    ],
+    "MasterUserSecret": [
+      "KmsKeyId",
+      "SecretArn"
+    ],
+    "ServerlessV2ScalingConfiguration": [
+      "MaxCapacity",
+      "MinCapacity",
+      "SecondsUntilAutoPause"
+    ],
+    "ScalingConfiguration": [
+      "AutoPause",
+      "MaxCapacity",
+      "MinCapacity",
+      "SecondsBeforeTimeout",
+      "SecondsUntilAutoPause",
+      "TimeoutAction"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Endpoint": "object",
+      "ReadEndpoint": "object",
+      "AllocatedStorage": "scalar",
+      "AssociatedRoles": "array",
+      "AvailabilityZones": "array",
+      "AutoMinorVersionUpgrade": "scalar",
+      "BacktrackWindow": "scalar",
+      "BackupRetentionPeriod": "scalar",
+      "ClusterScalabilityType": "scalar",
+      "CopyTagsToSnapshot": "scalar",
+      "DatabaseInsightsMode": "scalar",
+      "DatabaseName": "scalar",
+      "DBClusterArn": "scalar",
+      "DBClusterInstanceClass": "scalar",
+      "DBClusterResourceId": "scalar",
+      "DBInstanceParameterGroupName": "scalar",
+      "DBSystemId": "scalar",
+      "GlobalClusterIdentifier": "scalar",
+      "DBClusterIdentifier": "scalar",
+      "DBClusterParameterGroupName": "scalar",
+      "DBSubnetGroupName": "scalar",
+      "DeleteAutomatedBackups": "scalar",
+      "DeletionProtection": "scalar",
+      "Domain": "scalar",
+      "DomainIAMRoleName": "scalar",
+      "EnableCloudwatchLogsExports": "array",
+      "EnableGlobalWriteForwarding": "scalar",
+      "EnableHttpEndpoint": "scalar",
+      "EnableIAMDatabaseAuthentication": "scalar",
+      "EnableLocalWriteForwarding": "scalar",
+      "Engine": "scalar",
+      "EngineLifecycleSupport": "scalar",
+      "EngineMode": "scalar",
+      "EngineVersion": "scalar",
+      "ManageMasterUserPassword": "scalar",
+      "Iops": "scalar",
+      "KmsKeyId": "scalar",
+      "MasterUserAuthenticationType": "scalar",
+      "MasterUsername": "scalar",
+      "MasterUserPassword": "scalar",
+      "MasterUserSecret": "object",
+      "MonitoringInterval": "scalar",
+      "MonitoringRoleArn": "scalar",
+      "NetworkType": "scalar",
+      "PerformanceInsightsEnabled": "scalar",
+      "PerformanceInsightsKmsKeyId": "scalar",
+      "PerformanceInsightsRetentionPeriod": "scalar",
+      "Port": "scalar",
+      "PreferredBackupWindow": "scalar",
+      "PreferredMaintenanceWindow": "scalar",
+      "PubliclyAccessible": "scalar",
+      "ReplicationSourceIdentifier": "scalar",
+      "RestoreToTime": "scalar",
+      "RestoreType": "scalar",
+      "ServerlessV2ScalingConfiguration": "object",
+      "ScalingConfiguration": "object",
+      "SnapshotIdentifier": "scalar",
+      "SourceDBClusterIdentifier": "scalar",
+      "SourceDbClusterResourceId": "scalar",
+      "SourceRegion": "scalar",
+      "StorageEncrypted": "scalar",
+      "StorageEncryptionType": "scalar",
+      "StorageThroughput": "scalar",
+      "StorageType": "scalar",
+      "Tags": "array",
+      "UseLatestRestorableTime": "scalar",
+      "VpcSecurityGroupIds": "array"
+    },
+    "Endpoint": {
+      "Address": "scalar",
+      "Port": "scalar"
+    },
+    "ReadEndpoint": {
+      "Address": "scalar"
+    },
+    "DBClusterRole": {
+      "FeatureName": "scalar",
+      "RoleArn": "scalar"
+    },
+    "ServerlessV2ScalingConfiguration": {
+      "MinCapacity": "scalar",
+      "MaxCapacity": "scalar",
+      "SecondsUntilAutoPause": "scalar"
+    },
+    "ScalingConfiguration": {
+      "AutoPause": "scalar",
+      "MaxCapacity": "scalar",
+      "MinCapacity": "scalar",
+      "SecondsBeforeTimeout": "scalar",
+      "SecondsUntilAutoPause": "scalar",
+      "TimeoutAction": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "MasterUserSecret": {
+      "SecretArn": "scalar",
+      "KmsKeyId": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "DBClusterRole": [
+      "RoleArn"
+    ],
+    "Tag": [
+      "Key"
+    ]
+  }
 }

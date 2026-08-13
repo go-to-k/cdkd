@@ -118,21 +118,68 @@ const OUT_MD = resolve(repoRoot, 'docs/_generated/sdk-attr-coverage.md');
 export interface AllowListEntry {
   readonly attributes: readonly string[];
   readonly rationale: string;
+  /**
+   * `true` when the entry silences a REAL, tracked gap rather than a
+   * not-a-bug. Both kinds have to live in one list (the classifier needs the
+   * same "do not count this as a gap" answer for both), but they mean opposite
+   * things, and folding them together made the summary claim `gap: 0` for two
+   * types whose `Fn::GetAtt` hard-fails at deploy. The count is surfaced
+   * separately so the headline stays honest; the bucket is deliberately still
+   * `covered`, so CI passes while the debt is visible.
+   */
+  readonly knownGap?: boolean;
 }
 
 export const SDK_ATTR_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Map<
   string,
   AllowListEntry
 >([
+  // `AWS::SNS::Subscription` USED to be listed here with the rationale
+  // "Arn == physicalId, so guardedPhysicalIdFallback resolves it". That entry
+  // was RETIRED by the issue-1800 fixture re-capture, and the retirement is the
+  // mechanism working as designed rather than a regression: the type's fixture
+  // predated the #1694 `primaryIdentifier` capture, and once the re-capture
+  // gave it `primaryIdentifier: ['Arn']`, `classifyType` filters the attribute
+  // out BEFORE consulting this list — which is exactly the "auto-classify those
+  // as not-a-gap instead of requiring a hand-written entry per type" behavior
+  // `extractPrimaryIdentifier` exists for. The staleness fence in
+  // `gen-sdk-attr-coverage.test.ts` is what surfaced it.
   [
-    'AWS::SNS::Subscription',
+    'AWS::RDS::DBSubnetGroup',
     {
-      // NOT-A-BUG: SNSSubscriptionProvider.create returns the subscription ARN
-      // AS the physicalId, so `Fn::GetAtt [Subscription, Arn]` resolves through
-      // guardedPhysicalIdFallback to that physicalId — which IS `arn:`-shaped,
-      // so the guard passes and returns the correct ARN. No caching needed.
+      // KNOWN GAP, tracked in issue 1824. Surfaced by the issue-1800 fixture
+      // re-capture: AWS added `DBSubnetGroupArn` to the schema after the
+      // 2026-05-16 capture, and RDSProvider does not record it, so an output
+      // `Fn::GetAtt [SubnetGroup, DBSubnetGroupArn]` hard-fails the resolver's
+      // *Arn shape guard. `CreateDBSubnetGroup` DOES return the value, so this
+      // is the ordinary "record the ARN under its CFn name" fix — deliberately
+      // not done in the capture PR, which changes no provider (a provider edit
+      // activates the integ-destroy gate). DELETE this entry when it is fixed —
+      // `sdk-attr-coverage.test.ts` asserts every allow-listed attribute still
+      // classifies `allow-listed`, so caching the ARN reds that test and forces
+      // the removal. (The classifier tests `cachedKeys` BEFORE the allow-list,
+      // so without that test a fixed entry would silently go inert.)
+      knownGap: true,
+      attributes: ['DBSubnetGroupArn'],
+      rationale:
+        'KNOWN GAP (issue 1824): new schema attribute; CreateDBSubnetGroup returns it but the provider does not cache it',
+    },
+  ],
+  [
+    'AWS::SSM::Parameter',
+    {
+      // KNOWN GAP, tracked in issue 1824. Same re-capture, harder fix than its
+      // sibling above: `PutParameter` returns only Version / Tier, so the ARN
+      // has to come from a follow-up `GetParameter` (an extra call on every
+      // parameter create) or be constructed from account / region / name — and
+      // a constructed one must honor the `fabricated`-account guard, which
+      // refuses an ARN built from the placeholder account. That decision is the
+      // issue's, not this capture PR's. DELETE this entry when it is fixed;
+      // the same allow-list staleness test as its sibling above forces it.
+      knownGap: true,
       attributes: ['Arn'],
-      rationale: 'Arn == physicalId (create returns the subscription ARN as the physical id); guard fallback resolves it',
+      rationale:
+        'KNOWN GAP (issue 1824): new schema attribute with no create-response source; needs a GetParameter read or a guarded constructed ARN',
     },
   ],
 ]);
@@ -326,6 +373,8 @@ export interface SdkAttrCoverageReport {
     readonly covered: number;
     readonly noArnAttr: number;
     readonly gap: number;
+    /** Allow-listed attributes whose entry is flagged `knownGap` (real, tracked debt). */
+    readonly knownGap: number;
   };
   readonly types: readonly TypeClassification[];
 }
@@ -363,6 +412,15 @@ export function buildReport(
       covered: types.filter((t) => t.bucket === 'covered').length,
       noArnAttr: types.filter((t) => t.bucket === 'no-arn-attr').length,
       gap: types.filter((t) => t.bucket === 'gap').length,
+      knownGap: types.reduce(
+        (n, t) =>
+          n +
+          t.arnAttributes.filter(
+            (a) =>
+              a.status === 'allow-listed' && allowList.get(t.resourceType)?.knownGap === true
+          ).length,
+        0
+      ),
     },
     types,
   };
@@ -395,6 +453,10 @@ function renderMarkdown(report: SdkAttrCoverageReport): string {
   lines.push(`- Covered (every Arn/Url readOnly resolvable): **${report.summary.covered}**`);
   lines.push(`- No Arn/Url readOnly attribute: **${report.summary.noArnAttr}**`);
   lines.push(`- **Latent gaps (blocks CI): ${report.summary.gap}**`);
+  lines.push(
+    `- Allow-listed KNOWN GAPs (real debt, tracked, does not block CI): ` +
+      `**${report.summary.knownGap}**`
+  );
   lines.push('');
 
   const gapTypes = report.types.filter((t) => t.bucket === 'gap');
@@ -498,7 +560,8 @@ function main(): void {
     }
     process.stderr.write(
       `sdk-attr-coverage: OK — ${report.summary.classifiedCount} SDK-backed types classified, ` +
-        `0 gaps (${report.summary.covered} covered, ${report.summary.noArnAttr} no-arn-attr).\n`
+        `0 gaps (${report.summary.covered} covered, ${report.summary.noArnAttr} no-arn-attr, ` +
+        `${report.summary.knownGap} allow-listed known-gap).\n`
     );
     return;
   }

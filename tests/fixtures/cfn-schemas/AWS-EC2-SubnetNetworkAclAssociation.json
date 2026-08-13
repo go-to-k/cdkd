@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::SubnetNetworkAclAssociation",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AssociationId",
     "NetworkAclId",
@@ -12,5 +12,21 @@
   "createOnlyProperties": [
     "NetworkAclId",
     "SubnetId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "AssociationId"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "SubnetId": "scalar",
+      "NetworkAclId": "scalar",
+      "AssociationId": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "NetworkAclId",
+      "SubnetId"
+    ]
+  }
 }

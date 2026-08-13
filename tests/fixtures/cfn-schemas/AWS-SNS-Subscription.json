@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::SNS::Subscription",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "DeliveryPolicy",
@@ -22,5 +22,30 @@
     "Endpoint",
     "Protocol",
     "TopicArn"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Arn"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Arn": "scalar",
+      "ReplayPolicy": "mixed",
+      "RawMessageDelivery": "scalar",
+      "Endpoint": "scalar",
+      "FilterPolicy": "mixed",
+      "TopicArn": "scalar",
+      "RedrivePolicy": "mixed",
+      "DeliveryPolicy": "mixed",
+      "Region": "scalar",
+      "SubscriptionRoleArn": "scalar",
+      "FilterPolicyScope": "scalar",
+      "Protocol": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Protocol",
+      "TopicArn"
+    ]
+  }
 }

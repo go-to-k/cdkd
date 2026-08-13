@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ECR::Repository",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "EmptyOnDelete",
@@ -21,5 +21,97 @@
   "createOnlyProperties": [
     "EncryptionConfiguration",
     "RepositoryName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "RepositoryName"
+  ],
+  "nestedProperties": {
+    "LifecyclePolicy": [
+      "LifecyclePolicyText",
+      "RegistryId"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "ImageTagMutabilityExclusionFilters": [
+      "ImageTagMutabilityExclusionFilterType",
+      "ImageTagMutabilityExclusionFilterValue"
+    ],
+    "ImageScanningConfiguration": [
+      "ScanOnPush"
+    ],
+    "EncryptionConfiguration": [
+      "EncryptionType",
+      "KmsKey"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "LifecyclePolicy": [
+      "LifecyclePolicyText",
+      "RegistryId"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "ImageTagMutabilityExclusionFilters": [
+      "ImageTagMutabilityExclusionFilterType",
+      "ImageTagMutabilityExclusionFilterValue"
+    ],
+    "ImageScanningConfiguration": [
+      "ScanOnPush"
+    ],
+    "EncryptionConfiguration": [
+      "EncryptionType",
+      "KmsKey"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "EmptyOnDelete": "scalar",
+      "LifecyclePolicy": "object",
+      "RepositoryName": "scalar",
+      "RepositoryPolicyText": "mixed",
+      "Tags": "array",
+      "Arn": "scalar",
+      "RepositoryUri": "scalar",
+      "ImageTagMutability": "scalar",
+      "ImageTagMutabilityExclusionFilters": "array",
+      "ImageScanningConfiguration": "object",
+      "EncryptionConfiguration": "object"
+    },
+    "LifecyclePolicy": {
+      "LifecyclePolicyText": "scalar",
+      "RegistryId": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "ImageScanningConfiguration": {
+      "ScanOnPush": "scalar"
+    },
+    "EncryptionConfiguration": {
+      "EncryptionType": "scalar",
+      "KmsKey": "scalar"
+    },
+    "ImageTagMutabilityExclusionFilter": {
+      "ImageTagMutabilityExclusionFilterType": "scalar",
+      "ImageTagMutabilityExclusionFilterValue": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "EncryptionConfiguration": [
+      "EncryptionType"
+    ],
+    "ImageTagMutabilityExclusionFilter": [
+      "ImageTagMutabilityExclusionFilterType",
+      "ImageTagMutabilityExclusionFilterValue"
+    ]
+  }
 }

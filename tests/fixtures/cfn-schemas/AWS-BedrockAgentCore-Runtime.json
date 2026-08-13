@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::BedrockAgentCore::Runtime",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AgentRuntimeArn",
     "AgentRuntimeArtifact",
@@ -35,5 +35,351 @@
   ],
   "createOnlyProperties": [
     "AgentRuntimeName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "AgentRuntimeId"
+  ],
+  "nestedProperties": {
+    "AgentRuntimeArtifact": [
+      "Bucket",
+      "Code",
+      "CodeConfiguration",
+      "ContainerConfiguration",
+      "ContainerUri",
+      "EntryPoint",
+      "Prefix",
+      "Runtime",
+      "S3",
+      "VersionId"
+    ],
+    "NetworkConfiguration": [
+      "NetworkMode",
+      "NetworkModeConfig",
+      "SecurityGroups",
+      "Subnets"
+    ],
+    "AuthorizerConfiguration": [
+      "AllowedAudience",
+      "AllowedClients",
+      "AllowedScopes",
+      "AllowedWorkloadConfiguration",
+      "Arn",
+      "AuthorizingClaimMatchValue",
+      "ClaimMatchOperator",
+      "ClaimMatchValue",
+      "CustomClaims",
+      "CustomJWTAuthorizer",
+      "DiscoveryUrl",
+      "Domain",
+      "EndpointIpAddressType",
+      "HostingEnvironments",
+      "InboundTokenClaimName",
+      "InboundTokenClaimValueType",
+      "ManagedVpcResource",
+      "MatchValueString",
+      "MatchValueStringList",
+      "PrivateEndpoint",
+      "PrivateEndpointOverrides",
+      "ResourceConfigurationIdentifier",
+      "RoutingDomain",
+      "SecurityGroupIds",
+      "SelfManagedLatticeResource",
+      "SubnetIds",
+      "Tags",
+      "VpcIdentifier",
+      "WorkloadIdentities"
+    ],
+    "LifecycleConfiguration": [
+      "IdleRuntimeSessionTimeout",
+      "MaxLifetime"
+    ],
+    "RequestHeaderConfiguration": [
+      "RequestHeaderAllowlist"
+    ],
+    "FilesystemConfigurations": [
+      "AccessPointArn",
+      "EfsAccessPoint",
+      "MountPath",
+      "S3FilesAccessPoint",
+      "SessionStorage"
+    ],
+    "WorkloadIdentityDetails": [
+      "WorkloadIdentityArn"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "AgentRuntimeArtifact": [
+      "CodeConfiguration",
+      "CodeConfiguration.Code",
+      "CodeConfiguration.Code.S3",
+      "CodeConfiguration.Code.S3.Bucket",
+      "CodeConfiguration.Code.S3.Prefix",
+      "CodeConfiguration.Code.S3.VersionId",
+      "CodeConfiguration.EntryPoint",
+      "CodeConfiguration.Runtime",
+      "ContainerConfiguration",
+      "ContainerConfiguration.ContainerUri"
+    ],
+    "NetworkConfiguration": [
+      "NetworkMode",
+      "NetworkModeConfig",
+      "NetworkModeConfig.SecurityGroups",
+      "NetworkModeConfig.Subnets"
+    ],
+    "AuthorizerConfiguration": [
+      "CustomJWTAuthorizer",
+      "CustomJWTAuthorizer.AllowedAudience",
+      "CustomJWTAuthorizer.AllowedClients",
+      "CustomJWTAuthorizer.AllowedScopes",
+      "CustomJWTAuthorizer.AllowedWorkloadConfiguration",
+      "CustomJWTAuthorizer.AllowedWorkloadConfiguration.HostingEnvironments",
+      "CustomJWTAuthorizer.AllowedWorkloadConfiguration.HostingEnvironments.Arn",
+      "CustomJWTAuthorizer.AllowedWorkloadConfiguration.WorkloadIdentities",
+      "CustomJWTAuthorizer.CustomClaims",
+      "CustomJWTAuthorizer.CustomClaims.AuthorizingClaimMatchValue",
+      "CustomJWTAuthorizer.CustomClaims.AuthorizingClaimMatchValue.ClaimMatchOperator",
+      "CustomJWTAuthorizer.CustomClaims.AuthorizingClaimMatchValue.ClaimMatchValue",
+      "CustomJWTAuthorizer.CustomClaims.AuthorizingClaimMatchValue.ClaimMatchValue.MatchValueString",
+      "CustomJWTAuthorizer.CustomClaims.AuthorizingClaimMatchValue.ClaimMatchValue.MatchValueStringList",
+      "CustomJWTAuthorizer.CustomClaims.InboundTokenClaimName",
+      "CustomJWTAuthorizer.CustomClaims.InboundTokenClaimValueType",
+      "CustomJWTAuthorizer.DiscoveryUrl",
+      "CustomJWTAuthorizer.PrivateEndpoint",
+      "CustomJWTAuthorizer.PrivateEndpoint.ManagedVpcResource",
+      "CustomJWTAuthorizer.PrivateEndpoint.ManagedVpcResource.EndpointIpAddressType",
+      "CustomJWTAuthorizer.PrivateEndpoint.ManagedVpcResource.RoutingDomain",
+      "CustomJWTAuthorizer.PrivateEndpoint.ManagedVpcResource.SecurityGroupIds",
+      "CustomJWTAuthorizer.PrivateEndpoint.ManagedVpcResource.SubnetIds",
+      "CustomJWTAuthorizer.PrivateEndpoint.ManagedVpcResource.Tags",
+      "CustomJWTAuthorizer.PrivateEndpoint.ManagedVpcResource.VpcIdentifier",
+      "CustomJWTAuthorizer.PrivateEndpoint.SelfManagedLatticeResource",
+      "CustomJWTAuthorizer.PrivateEndpoint.SelfManagedLatticeResource.ResourceConfigurationIdentifier",
+      "CustomJWTAuthorizer.PrivateEndpointOverrides",
+      "CustomJWTAuthorizer.PrivateEndpointOverrides.Domain",
+      "CustomJWTAuthorizer.PrivateEndpointOverrides.PrivateEndpoint",
+      "CustomJWTAuthorizer.PrivateEndpointOverrides.PrivateEndpoint.ManagedVpcResource",
+      "CustomJWTAuthorizer.PrivateEndpointOverrides.PrivateEndpoint.ManagedVpcResource.EndpointIpAddressType",
+      "CustomJWTAuthorizer.PrivateEndpointOverrides.PrivateEndpoint.ManagedVpcResource.RoutingDomain",
+      "CustomJWTAuthorizer.PrivateEndpointOverrides.PrivateEndpoint.ManagedVpcResource.SecurityGroupIds",
+      "CustomJWTAuthorizer.PrivateEndpointOverrides.PrivateEndpoint.ManagedVpcResource.SubnetIds",
+      "CustomJWTAuthorizer.PrivateEndpointOverrides.PrivateEndpoint.ManagedVpcResource.Tags",
+      "CustomJWTAuthorizer.PrivateEndpointOverrides.PrivateEndpoint.ManagedVpcResource.VpcIdentifier",
+      "CustomJWTAuthorizer.PrivateEndpointOverrides.PrivateEndpoint.SelfManagedLatticeResource",
+      "CustomJWTAuthorizer.PrivateEndpointOverrides.PrivateEndpoint.SelfManagedLatticeResource.ResourceConfigurationIdentifier"
+    ],
+    "LifecycleConfiguration": [
+      "IdleRuntimeSessionTimeout",
+      "MaxLifetime"
+    ],
+    "RequestHeaderConfiguration": [
+      "RequestHeaderAllowlist"
+    ],
+    "FilesystemConfigurations": [
+      "EfsAccessPoint",
+      "EfsAccessPoint.AccessPointArn",
+      "EfsAccessPoint.MountPath",
+      "S3FilesAccessPoint",
+      "S3FilesAccessPoint.AccessPointArn",
+      "S3FilesAccessPoint.MountPath",
+      "SessionStorage",
+      "SessionStorage.MountPath"
+    ],
+    "WorkloadIdentityDetails": [
+      "WorkloadIdentityArn"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "AgentRuntimeArn": "scalar",
+      "AgentRuntimeId": "scalar",
+      "AgentRuntimeName": "scalar",
+      "Description": "scalar",
+      "AgentRuntimeArtifact": "object",
+      "RoleArn": "scalar",
+      "NetworkConfiguration": "object",
+      "ProtocolConfiguration": "scalar",
+      "EnvironmentVariables": "object",
+      "AuthorizerConfiguration": "object",
+      "LifecycleConfiguration": "object",
+      "RequestHeaderConfiguration": "object",
+      "FilesystemConfigurations": "array",
+      "AgentRuntimeVersion": "scalar",
+      "WorkloadIdentityDetails": "object",
+      "CreatedAt": "scalar",
+      "LastUpdatedAt": "scalar",
+      "Status": "scalar",
+      "Tags": "object",
+      "FailureReason": "scalar"
+    },
+    "NetworkConfiguration": {
+      "NetworkMode": "scalar",
+      "NetworkModeConfig": "object"
+    },
+    "VpcConfig": {
+      "SecurityGroups": "array",
+      "Subnets": "array"
+    },
+    "AuthorizerConfiguration": {
+      "CustomJWTAuthorizer": "object"
+    },
+    "CustomJWTAuthorizerConfiguration": {
+      "DiscoveryUrl": "scalar",
+      "AllowedAudience": "array",
+      "AllowedClients": "array",
+      "AllowedScopes": "array",
+      "CustomClaims": "array",
+      "AllowedWorkloadConfiguration": "object",
+      "PrivateEndpoint": "object",
+      "PrivateEndpointOverrides": "array"
+    },
+    "AllowedWorkloadConfiguration": {
+      "HostingEnvironments": "array",
+      "WorkloadIdentities": "array"
+    },
+    "HostingEnvironment": {
+      "Arn": "scalar"
+    },
+    "CustomClaimValidationType": {
+      "AuthorizingClaimMatchValue": "object",
+      "InboundTokenClaimName": "scalar",
+      "InboundTokenClaimValueType": "scalar"
+    },
+    "AuthorizingClaimMatchValueType": {
+      "ClaimMatchOperator": "scalar",
+      "ClaimMatchValue": "object"
+    },
+    "ClaimMatchValueType": {
+      "MatchValueString": "scalar",
+      "MatchValueStringList": "array"
+    },
+    "WorkloadIdentityDetails": {
+      "WorkloadIdentityArn": "scalar"
+    },
+    "AgentRuntimeArtifact": {
+      "ContainerConfiguration": "object",
+      "CodeConfiguration": "object"
+    },
+    "CodeConfiguration": {
+      "Code": "object",
+      "Runtime": "scalar",
+      "EntryPoint": "array"
+    },
+    "Code": {
+      "S3": "object"
+    },
+    "S3Location": {
+      "Bucket": "scalar",
+      "Prefix": "scalar",
+      "VersionId": "scalar"
+    },
+    "ContainerConfiguration": {
+      "ContainerUri": "scalar"
+    },
+    "LifecycleConfiguration": {
+      "IdleRuntimeSessionTimeout": "scalar",
+      "MaxLifetime": "scalar"
+    },
+    "RequestHeaderConfiguration": {
+      "RequestHeaderAllowlist": "array"
+    },
+    "SessionStorageConfiguration": {
+      "MountPath": "scalar"
+    },
+    "EfsAccessPointConfiguration": {
+      "AccessPointArn": "scalar",
+      "MountPath": "scalar"
+    },
+    "S3FilesAccessPointConfiguration": {
+      "AccessPointArn": "scalar",
+      "MountPath": "scalar"
+    },
+    "FilesystemConfiguration": {
+      "SessionStorage": "object",
+      "EfsAccessPoint": "object",
+      "S3FilesAccessPoint": "object"
+    },
+    "SelfManagedLatticeResource": {
+      "ResourceConfigurationIdentifier": "scalar"
+    },
+    "ManagedVpcResource": {
+      "VpcIdentifier": "scalar",
+      "SubnetIds": "array",
+      "EndpointIpAddressType": "scalar",
+      "SecurityGroupIds": "array",
+      "RoutingDomain": "scalar",
+      "Tags": "object"
+    },
+    "PrivateEndpointOverride": {
+      "Domain": "scalar",
+      "PrivateEndpoint": "object"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "AgentRuntimeArtifact",
+      "AgentRuntimeName",
+      "NetworkConfiguration",
+      "RoleArn"
+    ],
+    "NetworkConfiguration": [
+      "NetworkMode"
+    ],
+    "VpcConfig": [
+      "SecurityGroups",
+      "Subnets"
+    ],
+    "CustomJWTAuthorizerConfiguration": [
+      "DiscoveryUrl"
+    ],
+    "HostingEnvironment": [
+      "Arn"
+    ],
+    "CustomClaimValidationType": [
+      "AuthorizingClaimMatchValue",
+      "InboundTokenClaimName",
+      "InboundTokenClaimValueType"
+    ],
+    "AuthorizingClaimMatchValueType": [
+      "ClaimMatchOperator",
+      "ClaimMatchValue"
+    ],
+    "WorkloadIdentityDetails": [
+      "WorkloadIdentityArn"
+    ],
+    "CodeConfiguration": [
+      "Code",
+      "EntryPoint",
+      "Runtime"
+    ],
+    "S3Location": [
+      "Bucket",
+      "Prefix"
+    ],
+    "ContainerConfiguration": [
+      "ContainerUri"
+    ],
+    "SessionStorageConfiguration": [
+      "MountPath"
+    ],
+    "EfsAccessPointConfiguration": [
+      "AccessPointArn",
+      "MountPath"
+    ],
+    "S3FilesAccessPointConfiguration": [
+      "AccessPointArn",
+      "MountPath"
+    ],
+    "SelfManagedLatticeResource": [
+      "ResourceConfigurationIdentifier"
+    ],
+    "ManagedVpcResource": [
+      "EndpointIpAddressType",
+      "SubnetIds",
+      "VpcIdentifier"
+    ],
+    "PrivateEndpointOverride": [
+      "Domain",
+      "PrivateEndpoint"
+    ]
+  }
 }

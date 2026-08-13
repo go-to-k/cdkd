@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EMR::InstanceFleetConfig",
-  "generatedAt": "2026-07-19",
+  "generatedAt": "2026-08-13",
   "properties": [
     "ClusterId",
     "Id",
@@ -23,5 +23,194 @@
   ],
   "primaryIdentifier": [
     "Id"
-  ]
+  ],
+  "nestedProperties": {
+    "LaunchSpecifications": [
+      "AllocationStrategy",
+      "BlockDurationMinutes",
+      "CapacityReservationOptions",
+      "CapacityReservationPreference",
+      "CapacityReservationResourceGroupArn",
+      "OnDemandSpecification",
+      "SpotSpecification",
+      "TimeoutAction",
+      "TimeoutDurationMinutes",
+      "UsageStrategy"
+    ],
+    "ResizeSpecifications": [
+      "AllocationStrategy",
+      "CapacityReservationOptions",
+      "CapacityReservationPreference",
+      "CapacityReservationResourceGroupArn",
+      "OnDemandResizeSpecification",
+      "SpotResizeSpecification",
+      "TimeoutDurationMinutes",
+      "UsageStrategy"
+    ],
+    "InstanceTypeConfigs": [
+      "BidPrice",
+      "BidPriceAsPercentageOfOnDemandPrice",
+      "Classification",
+      "ConfigurationProperties",
+      "Configurations",
+      "CustomAmiId",
+      "EbsBlockDeviceConfigs",
+      "EbsConfiguration",
+      "EbsOptimized",
+      "InstanceType",
+      "Iops",
+      "Priority",
+      "SizeInGB",
+      "Throughput",
+      "VolumeSpecification",
+      "VolumeType",
+      "VolumesPerInstance",
+      "WeightedCapacity"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "LaunchSpecifications": [
+      "OnDemandSpecification",
+      "OnDemandSpecification.AllocationStrategy",
+      "OnDemandSpecification.CapacityReservationOptions",
+      "OnDemandSpecification.CapacityReservationOptions.CapacityReservationPreference",
+      "OnDemandSpecification.CapacityReservationOptions.CapacityReservationResourceGroupArn",
+      "OnDemandSpecification.CapacityReservationOptions.UsageStrategy",
+      "SpotSpecification",
+      "SpotSpecification.AllocationStrategy",
+      "SpotSpecification.BlockDurationMinutes",
+      "SpotSpecification.TimeoutAction",
+      "SpotSpecification.TimeoutDurationMinutes"
+    ],
+    "ResizeSpecifications": [
+      "OnDemandResizeSpecification",
+      "OnDemandResizeSpecification.AllocationStrategy",
+      "OnDemandResizeSpecification.CapacityReservationOptions",
+      "OnDemandResizeSpecification.CapacityReservationOptions.CapacityReservationPreference",
+      "OnDemandResizeSpecification.CapacityReservationOptions.CapacityReservationResourceGroupArn",
+      "OnDemandResizeSpecification.CapacityReservationOptions.UsageStrategy",
+      "OnDemandResizeSpecification.TimeoutDurationMinutes",
+      "SpotResizeSpecification",
+      "SpotResizeSpecification.AllocationStrategy",
+      "SpotResizeSpecification.TimeoutDurationMinutes"
+    ],
+    "InstanceTypeConfigs": [
+      "BidPrice",
+      "BidPriceAsPercentageOfOnDemandPrice",
+      "Configurations",
+      "Configurations.Classification",
+      "Configurations.ConfigurationProperties",
+      "Configurations.Configurations",
+      "CustomAmiId",
+      "EbsConfiguration",
+      "EbsConfiguration.EbsBlockDeviceConfigs",
+      "EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification",
+      "EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.Iops",
+      "EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.SizeInGB",
+      "EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.Throughput",
+      "EbsConfiguration.EbsBlockDeviceConfigs.VolumeSpecification.VolumeType",
+      "EbsConfiguration.EbsBlockDeviceConfigs.VolumesPerInstance",
+      "EbsConfiguration.EbsOptimized",
+      "InstanceType",
+      "Priority",
+      "WeightedCapacity"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "InstanceFleetType": "scalar",
+      "TargetOnDemandCapacity": "scalar",
+      "ClusterId": "scalar",
+      "TargetSpotCapacity": "scalar",
+      "LaunchSpecifications": "object",
+      "ResizeSpecifications": "object",
+      "Id": "scalar",
+      "InstanceTypeConfigs": "array",
+      "Name": "scalar"
+    },
+    "VolumeSpecification": {
+      "SizeInGB": "scalar",
+      "Throughput": "scalar",
+      "VolumeType": "scalar",
+      "Iops": "scalar"
+    },
+    "EbsConfiguration": {
+      "EbsBlockDeviceConfigs": "array",
+      "EbsOptimized": "scalar"
+    },
+    "Configuration": {
+      "ConfigurationProperties": "object",
+      "Configurations": "array",
+      "Classification": "scalar"
+    },
+    "OnDemandCapacityReservationOptions": {
+      "UsageStrategy": "scalar",
+      "CapacityReservationResourceGroupArn": "scalar",
+      "CapacityReservationPreference": "scalar"
+    },
+    "InstanceFleetResizingSpecifications": {
+      "OnDemandResizeSpecification": "object",
+      "SpotResizeSpecification": "object"
+    },
+    "InstanceFleetProvisioningSpecifications": {
+      "SpotSpecification": "object",
+      "OnDemandSpecification": "object"
+    },
+    "OnDemandResizingSpecification": {
+      "CapacityReservationOptions": "object",
+      "AllocationStrategy": "scalar",
+      "TimeoutDurationMinutes": "scalar"
+    },
+    "OnDemandProvisioningSpecification": {
+      "CapacityReservationOptions": "object",
+      "AllocationStrategy": "scalar"
+    },
+    "EbsBlockDeviceConfig": {
+      "VolumeSpecification": "object",
+      "VolumesPerInstance": "scalar"
+    },
+    "InstanceTypeConfig": {
+      "BidPrice": "scalar",
+      "WeightedCapacity": "scalar",
+      "EbsConfiguration": "object",
+      "Priority": "scalar",
+      "BidPriceAsPercentageOfOnDemandPrice": "scalar",
+      "CustomAmiId": "scalar",
+      "Configurations": "array",
+      "InstanceType": "scalar"
+    },
+    "SpotResizingSpecification": {
+      "AllocationStrategy": "scalar",
+      "TimeoutDurationMinutes": "scalar"
+    },
+    "SpotProvisioningSpecification": {
+      "AllocationStrategy": "scalar",
+      "TimeoutDurationMinutes": "scalar",
+      "TimeoutAction": "scalar",
+      "BlockDurationMinutes": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "ClusterId",
+      "InstanceFleetType"
+    ],
+    "VolumeSpecification": [
+      "SizeInGB",
+      "VolumeType"
+    ],
+    "OnDemandProvisioningSpecification": [
+      "AllocationStrategy"
+    ],
+    "EbsBlockDeviceConfig": [
+      "VolumeSpecification"
+    ],
+    "InstanceTypeConfig": [
+      "InstanceType"
+    ],
+    "SpotProvisioningSpecification": [
+      "TimeoutAction",
+      "TimeoutDurationMinutes"
+    ]
+  }
 }

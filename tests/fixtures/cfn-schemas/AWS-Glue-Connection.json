@@ -156,5 +156,17 @@
       "BasicAuthenticationCredentials": "object",
       "AuthenticationType": "scalar"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "CatalogId",
+      "ConnectionInput"
+    ],
+    "ConnectionInput": [
+      "ConnectionType"
+    ],
+    "AuthenticationConfigurationInput": [
+      "AuthenticationType"
+    ]
   }
 }

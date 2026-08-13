@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ElastiCache::SubnetGroup",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CacheSubnetGroupName",
     "Description",
@@ -10,5 +10,42 @@
   "readOnlyProperties": [],
   "createOnlyProperties": [
     "CacheSubnetGroupName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "CacheSubnetGroupName"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Description": "scalar",
+      "SubnetIds": "array",
+      "CacheSubnetGroupName": "scalar",
+      "Tags": "array"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Description",
+      "SubnetIds"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

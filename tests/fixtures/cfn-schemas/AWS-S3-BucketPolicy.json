@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::S3::BucketPolicy",
-  "generatedAt": "2026-08-09",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Bucket",
     "PolicyDocument"
@@ -17,5 +17,11 @@
       "Bucket": "scalar",
       "PolicyDocument": "mixed"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Bucket",
+      "PolicyDocument"
+    ]
   }
 }

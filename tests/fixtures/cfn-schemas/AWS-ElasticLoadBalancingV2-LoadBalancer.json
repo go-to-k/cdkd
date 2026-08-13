@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ElasticLoadBalancingV2::LoadBalancer",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CanonicalHostedZoneID",
     "DNSName",
@@ -33,5 +33,100 @@
     "Name",
     "Scheme",
     "Type"
-  ]
+  ],
+  "primaryIdentifier": [
+    "LoadBalancerArn"
+  ],
+  "nestedProperties": {
+    "LoadBalancerAttributes": [
+      "Key",
+      "Value"
+    ],
+    "MinimumLoadBalancerCapacity": [
+      "CapacityUnits"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "SubnetMappings": [
+      "AllocationId",
+      "IPv6Address",
+      "PrivateIPv4Address",
+      "SourceNatIpv6Prefix",
+      "SubnetId"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "LoadBalancerAttributes": [
+      "Key",
+      "Value"
+    ],
+    "MinimumLoadBalancerCapacity": [
+      "CapacityUnits"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "SubnetMappings": [
+      "AllocationId",
+      "IPv6Address",
+      "PrivateIPv4Address",
+      "SourceNatIpv6Prefix",
+      "SubnetId"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "IpAddressType": "scalar",
+      "EnablePrefixForIpv6SourceNat": "scalar",
+      "SecurityGroups": "array",
+      "LoadBalancerAttributes": "array",
+      "MinimumLoadBalancerCapacity": "object",
+      "EnableCapacityReservationProvisionStabilize": "scalar",
+      "Scheme": "scalar",
+      "DNSName": "scalar",
+      "Name": "scalar",
+      "LoadBalancerName": "scalar",
+      "LoadBalancerFullName": "scalar",
+      "Subnets": "array",
+      "Type": "scalar",
+      "CanonicalHostedZoneID": "scalar",
+      "Tags": "array",
+      "LoadBalancerArn": "scalar",
+      "SubnetMappings": "array",
+      "EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic": "scalar",
+      "Ipv4IpamPoolId": "scalar"
+    },
+    "MinimumLoadBalancerCapacity": {
+      "CapacityUnits": "scalar"
+    },
+    "SubnetMapping": {
+      "SubnetId": "scalar",
+      "AllocationId": "scalar",
+      "PrivateIPv4Address": "scalar",
+      "IPv6Address": "scalar",
+      "SourceNatIpv6Prefix": "scalar"
+    },
+    "LoadBalancerAttribute": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "MinimumLoadBalancerCapacity": [
+      "CapacityUnits"
+    ],
+    "SubnetMapping": [
+      "SubnetId"
+    ],
+    "Tag": [
+      "Key"
+    ]
+  }
 }

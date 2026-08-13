@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Neptune::DBCluster",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AssociatedRoles",
     "AvailabilityZones",
@@ -16,8 +16,10 @@
     "EnableCloudwatchLogsExports",
     "Endpoint",
     "EngineVersion",
+    "GlobalClusterIdentifier",
     "IamAuthEnabled",
     "KmsKeyId",
+    "NetworkType",
     "Port",
     "PreferredBackupWindow",
     "PreferredMaintenanceWindow",
@@ -42,6 +44,7 @@
     "AvailabilityZones",
     "DBClusterIdentifier",
     "DBSubnetGroupName",
+    "GlobalClusterIdentifier",
     "KmsKeyId",
     "RestoreToTime",
     "RestoreType",
@@ -49,5 +52,95 @@
     "SourceDBClusterIdentifier",
     "StorageEncrypted",
     "UseLatestRestorableTime"
-  ]
+  ],
+  "primaryIdentifier": [
+    "DBClusterIdentifier"
+  ],
+  "nestedProperties": {
+    "AssociatedRoles": [
+      "FeatureName",
+      "RoleArn"
+    ],
+    "ServerlessScalingConfiguration": [
+      "MaxCapacity",
+      "MinCapacity"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "AssociatedRoles": [
+      "FeatureName",
+      "RoleArn"
+    ],
+    "ServerlessScalingConfiguration": [
+      "MaxCapacity",
+      "MinCapacity"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Endpoint": "scalar",
+      "ReadEndpoint": "scalar",
+      "ClusterResourceId": "scalar",
+      "AssociatedRoles": "array",
+      "AvailabilityZones": "array",
+      "BackupRetentionPeriod": "scalar",
+      "CopyTagsToSnapshot": "scalar",
+      "DBClusterIdentifier": "scalar",
+      "DBClusterParameterGroupName": "scalar",
+      "DBInstanceParameterGroupName": "scalar",
+      "DBPort": "scalar",
+      "DBSubnetGroupName": "scalar",
+      "DeletionProtection": "scalar",
+      "EnableCloudwatchLogsExports": "array",
+      "EngineVersion": "scalar",
+      "GlobalClusterIdentifier": "scalar",
+      "IamAuthEnabled": "scalar",
+      "KmsKeyId": "scalar",
+      "Port": "scalar",
+      "PreferredBackupWindow": "scalar",
+      "PreferredMaintenanceWindow": "scalar",
+      "RestoreToTime": "scalar",
+      "RestoreType": "scalar",
+      "ServerlessScalingConfiguration": "object",
+      "SnapshotIdentifier": "scalar",
+      "SourceDBClusterIdentifier": "scalar",
+      "StorageEncrypted": "scalar",
+      "Tags": "array",
+      "UseLatestRestorableTime": "scalar",
+      "VpcSecurityGroupIds": "array",
+      "NetworkType": "scalar"
+    },
+    "DBClusterRole": {
+      "FeatureName": "scalar",
+      "RoleArn": "scalar"
+    },
+    "ServerlessScalingConfiguration": {
+      "MinCapacity": "scalar",
+      "MaxCapacity": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "DBClusterRole": [
+      "RoleArn"
+    ],
+    "ServerlessScalingConfiguration": [
+      "MaxCapacity",
+      "MinCapacity"
+    ],
+    "Tag": [
+      "Key"
+    ]
+  }
 }

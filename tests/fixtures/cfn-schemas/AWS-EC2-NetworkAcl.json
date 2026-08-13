@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::NetworkAcl",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Id",
     "Tags",
@@ -11,5 +11,40 @@
   ],
   "createOnlyProperties": [
     "VpcId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "VpcId": "scalar",
+      "Id": "scalar",
+      "Tags": "array"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "VpcId"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

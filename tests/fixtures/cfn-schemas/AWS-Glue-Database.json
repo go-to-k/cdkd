@@ -82,5 +82,11 @@
       "FederatedDatabase": "object",
       "Name": "scalar"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "CatalogId",
+      "DatabaseInput"
+    ]
   }
 }

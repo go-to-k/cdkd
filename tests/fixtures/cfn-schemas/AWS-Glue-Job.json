@@ -116,5 +116,11 @@
     "NotificationProperty": {
       "NotifyDelayAfter": "scalar"
     }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Command",
+      "Role"
+    ]
   }
 }

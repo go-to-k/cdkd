@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::FSx::FileSystem",
-  "generatedAt": "2026-07-17",
+  "generatedAt": "2026-08-13",
   "properties": [
     "BackupId",
     "DNSName",
@@ -38,5 +38,390 @@
   ],
   "primaryIdentifier": [
     "Id"
-  ]
+  ],
+  "nestedProperties": {
+    "LustreConfiguration": [
+      "AutoImportPolicy",
+      "AutomaticBackupRetentionDays",
+      "CopyTagsToBackups",
+      "DailyAutomaticBackupStartTime",
+      "DataCompressionType",
+      "DataReadCacheConfiguration",
+      "DeploymentType",
+      "DriveCacheType",
+      "EfaEnabled",
+      "ExportPath",
+      "ImportPath",
+      "ImportedFileChunkSize",
+      "Iops",
+      "MetadataConfiguration",
+      "Mode",
+      "PerUnitStorageThroughput",
+      "SizeGiB",
+      "SizingMode",
+      "ThroughputCapacity",
+      "WeeklyMaintenanceStartTime"
+    ],
+    "OntapConfiguration": [
+      "AutomaticBackupRetentionDays",
+      "DailyAutomaticBackupStartTime",
+      "DeploymentType",
+      "DiskIopsConfiguration",
+      "EndpointIpAddressRange",
+      "EndpointIpv6AddressRange",
+      "FsxAdminPassword",
+      "HAPairs",
+      "Iops",
+      "Mode",
+      "PreferredSubnetId",
+      "RouteTableIds",
+      "ThroughputCapacity",
+      "ThroughputCapacityPerHAPair",
+      "WeeklyMaintenanceStartTime"
+    ],
+    "WindowsConfiguration": [
+      "ActiveDirectoryId",
+      "Aliases",
+      "AuditLogConfiguration",
+      "AuditLogDestination",
+      "AutomaticBackupRetentionDays",
+      "CopyTagsToBackups",
+      "DailyAutomaticBackupStartTime",
+      "DeploymentType",
+      "DiskIopsConfiguration",
+      "DnsIps",
+      "DomainJoinServiceAccountSecret",
+      "DomainName",
+      "EventLogDestination",
+      "FileAccessAuditLogLevel",
+      "FileShareAccessAuditLogLevel",
+      "FileSystemAdministratorsGroup",
+      "FsrmConfiguration",
+      "FsrmServiceEnabled",
+      "Iops",
+      "Mode",
+      "OrganizationalUnitDistinguishedName",
+      "Password",
+      "PreferredSubnetId",
+      "SelfManagedActiveDirectoryConfiguration",
+      "ThroughputCapacity",
+      "UserName",
+      "WeeklyMaintenanceStartTime"
+    ],
+    "OpenZFSConfiguration": [
+      "AutomaticBackupRetentionDays",
+      "ClientConfigurations",
+      "Clients",
+      "CopyTagsToBackups",
+      "CopyTagsToSnapshots",
+      "CopyTagsToVolumes",
+      "DailyAutomaticBackupStartTime",
+      "DataCompressionType",
+      "DeploymentType",
+      "DiskIopsConfiguration",
+      "EndpointIpAddressRange",
+      "EndpointIpv6AddressRange",
+      "Id",
+      "Iops",
+      "Mode",
+      "NfsExports",
+      "Options",
+      "PreferredSubnetId",
+      "ReadCacheConfiguration",
+      "ReadOnly",
+      "RecordSizeKiB",
+      "RootVolumeConfiguration",
+      "RouteTableIds",
+      "SizeGiB",
+      "SizingMode",
+      "StorageCapacityQuotaGiB",
+      "ThroughputCapacity",
+      "Type",
+      "UserAndGroupQuotas",
+      "WeeklyMaintenanceStartTime"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "LustreConfiguration": [
+      "AutoImportPolicy",
+      "AutomaticBackupRetentionDays",
+      "CopyTagsToBackups",
+      "DailyAutomaticBackupStartTime",
+      "DataCompressionType",
+      "DataReadCacheConfiguration",
+      "DataReadCacheConfiguration.SizeGiB",
+      "DataReadCacheConfiguration.SizingMode",
+      "DeploymentType",
+      "DriveCacheType",
+      "EfaEnabled",
+      "ExportPath",
+      "ImportPath",
+      "ImportedFileChunkSize",
+      "MetadataConfiguration",
+      "MetadataConfiguration.Iops",
+      "MetadataConfiguration.Mode",
+      "PerUnitStorageThroughput",
+      "ThroughputCapacity",
+      "WeeklyMaintenanceStartTime"
+    ],
+    "OntapConfiguration": [
+      "AutomaticBackupRetentionDays",
+      "DailyAutomaticBackupStartTime",
+      "DeploymentType",
+      "DiskIopsConfiguration",
+      "DiskIopsConfiguration.Iops",
+      "DiskIopsConfiguration.Mode",
+      "EndpointIpAddressRange",
+      "EndpointIpv6AddressRange",
+      "FsxAdminPassword",
+      "HAPairs",
+      "PreferredSubnetId",
+      "RouteTableIds",
+      "ThroughputCapacity",
+      "ThroughputCapacityPerHAPair",
+      "WeeklyMaintenanceStartTime"
+    ],
+    "WindowsConfiguration": [
+      "ActiveDirectoryId",
+      "Aliases",
+      "AuditLogConfiguration",
+      "AuditLogConfiguration.AuditLogDestination",
+      "AuditLogConfiguration.FileAccessAuditLogLevel",
+      "AuditLogConfiguration.FileShareAccessAuditLogLevel",
+      "AutomaticBackupRetentionDays",
+      "CopyTagsToBackups",
+      "DailyAutomaticBackupStartTime",
+      "DeploymentType",
+      "DiskIopsConfiguration",
+      "DiskIopsConfiguration.Iops",
+      "DiskIopsConfiguration.Mode",
+      "FsrmConfiguration",
+      "FsrmConfiguration.EventLogDestination",
+      "FsrmConfiguration.FsrmServiceEnabled",
+      "PreferredSubnetId",
+      "SelfManagedActiveDirectoryConfiguration",
+      "SelfManagedActiveDirectoryConfiguration.DnsIps",
+      "SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecret",
+      "SelfManagedActiveDirectoryConfiguration.DomainName",
+      "SelfManagedActiveDirectoryConfiguration.FileSystemAdministratorsGroup",
+      "SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName",
+      "SelfManagedActiveDirectoryConfiguration.Password",
+      "SelfManagedActiveDirectoryConfiguration.UserName",
+      "ThroughputCapacity",
+      "WeeklyMaintenanceStartTime"
+    ],
+    "OpenZFSConfiguration": [
+      "AutomaticBackupRetentionDays",
+      "CopyTagsToBackups",
+      "CopyTagsToVolumes",
+      "DailyAutomaticBackupStartTime",
+      "DeploymentType",
+      "DiskIopsConfiguration",
+      "DiskIopsConfiguration.Iops",
+      "DiskIopsConfiguration.Mode",
+      "EndpointIpAddressRange",
+      "EndpointIpv6AddressRange",
+      "Options",
+      "PreferredSubnetId",
+      "ReadCacheConfiguration",
+      "ReadCacheConfiguration.SizeGiB",
+      "ReadCacheConfiguration.SizingMode",
+      "RootVolumeConfiguration",
+      "RootVolumeConfiguration.CopyTagsToSnapshots",
+      "RootVolumeConfiguration.DataCompressionType",
+      "RootVolumeConfiguration.NfsExports",
+      "RootVolumeConfiguration.NfsExports.ClientConfigurations",
+      "RootVolumeConfiguration.NfsExports.ClientConfigurations.Clients",
+      "RootVolumeConfiguration.NfsExports.ClientConfigurations.Options",
+      "RootVolumeConfiguration.ReadOnly",
+      "RootVolumeConfiguration.RecordSizeKiB",
+      "RootVolumeConfiguration.UserAndGroupQuotas",
+      "RootVolumeConfiguration.UserAndGroupQuotas.Id",
+      "RootVolumeConfiguration.UserAndGroupQuotas.StorageCapacityQuotaGiB",
+      "RootVolumeConfiguration.UserAndGroupQuotas.Type",
+      "RouteTableIds",
+      "ThroughputCapacity",
+      "WeeklyMaintenanceStartTime"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "StorageType": "scalar",
+      "KmsKeyId": "scalar",
+      "StorageCapacity": "scalar",
+      "RootVolumeId": "scalar",
+      "LustreConfiguration": "object",
+      "BackupId": "scalar",
+      "OntapConfiguration": "object",
+      "DNSName": "scalar",
+      "SubnetIds": "array",
+      "SecurityGroupIds": "array",
+      "WindowsConfiguration": "object",
+      "FileSystemTypeVersion": "scalar",
+      "OpenZFSConfiguration": "object",
+      "ResourceARN": "scalar",
+      "NetworkType": "scalar",
+      "FileSystemType": "scalar",
+      "Id": "scalar",
+      "LustreMountName": "scalar",
+      "Tags": "array"
+    },
+    "SelfManagedActiveDirectoryConfiguration": {
+      "FileSystemAdministratorsGroup": "scalar",
+      "UserName": "scalar",
+      "DomainName": "scalar",
+      "OrganizationalUnitDistinguishedName": "scalar",
+      "DomainJoinServiceAccountSecret": "scalar",
+      "DnsIps": "array",
+      "Password": "scalar"
+    },
+    "AuditLogConfiguration": {
+      "FileAccessAuditLogLevel": "scalar",
+      "FileShareAccessAuditLogLevel": "scalar",
+      "AuditLogDestination": "scalar"
+    },
+    "LustreConfiguration": {
+      "DriveCacheType": "scalar",
+      "AutoImportPolicy": "scalar",
+      "EfaEnabled": "scalar",
+      "ImportedFileChunkSize": "scalar",
+      "DeploymentType": "scalar",
+      "ThroughputCapacity": "scalar",
+      "DataCompressionType": "scalar",
+      "DataReadCacheConfiguration": "object",
+      "ImportPath": "scalar",
+      "WeeklyMaintenanceStartTime": "scalar",
+      "MetadataConfiguration": "object",
+      "DailyAutomaticBackupStartTime": "scalar",
+      "CopyTagsToBackups": "scalar",
+      "ExportPath": "scalar",
+      "PerUnitStorageThroughput": "scalar",
+      "AutomaticBackupRetentionDays": "scalar"
+    },
+    "OntapConfiguration": {
+      "HAPairs": "scalar",
+      "FsxAdminPassword": "scalar",
+      "ThroughputCapacityPerHAPair": "scalar",
+      "DeploymentType": "scalar",
+      "ThroughputCapacity": "scalar",
+      "EndpointIpAddressRange": "scalar",
+      "RouteTableIds": "array",
+      "WeeklyMaintenanceStartTime": "scalar",
+      "DiskIopsConfiguration": "object",
+      "DailyAutomaticBackupStartTime": "scalar",
+      "AutomaticBackupRetentionDays": "scalar",
+      "EndpointIpv6AddressRange": "scalar",
+      "PreferredSubnetId": "scalar"
+    },
+    "RootVolumeConfiguration": {
+      "ReadOnly": "scalar",
+      "DataCompressionType": "scalar",
+      "NfsExports": "array",
+      "CopyTagsToSnapshots": "scalar",
+      "RecordSizeKiB": "scalar",
+      "UserAndGroupQuotas": "array"
+    },
+    "WindowsConfiguration": {
+      "SelfManagedActiveDirectoryConfiguration": "object",
+      "AuditLogConfiguration": "object",
+      "ActiveDirectoryId": "scalar",
+      "DeploymentType": "scalar",
+      "Aliases": "array",
+      "ThroughputCapacity": "scalar",
+      "WeeklyMaintenanceStartTime": "scalar",
+      "DiskIopsConfiguration": "object",
+      "CopyTagsToBackups": "scalar",
+      "DailyAutomaticBackupStartTime": "scalar",
+      "AutomaticBackupRetentionDays": "scalar",
+      "FsrmConfiguration": "object",
+      "PreferredSubnetId": "scalar"
+    },
+    "OpenZFSConfiguration": {
+      "Options": "array",
+      "CopyTagsToVolumes": "scalar",
+      "DeploymentType": "scalar",
+      "ThroughputCapacity": "scalar",
+      "RootVolumeConfiguration": "object",
+      "EndpointIpAddressRange": "scalar",
+      "ReadCacheConfiguration": "object",
+      "RouteTableIds": "array",
+      "WeeklyMaintenanceStartTime": "scalar",
+      "DiskIopsConfiguration": "object",
+      "DailyAutomaticBackupStartTime": "scalar",
+      "CopyTagsToBackups": "scalar",
+      "AutomaticBackupRetentionDays": "scalar",
+      "EndpointIpv6AddressRange": "scalar",
+      "PreferredSubnetId": "scalar"
+    },
+    "ReadCacheConfiguration": {
+      "SizingMode": "scalar",
+      "SizeGiB": "scalar"
+    },
+    "DataReadCacheConfiguration": {
+      "SizingMode": "scalar",
+      "SizeGiB": "scalar"
+    },
+    "DiskIopsConfiguration": {
+      "Mode": "scalar",
+      "Iops": "scalar"
+    },
+    "MetadataConfiguration": {
+      "Mode": "scalar",
+      "Iops": "scalar"
+    },
+    "NfsExports": {
+      "ClientConfigurations": "array"
+    },
+    "ClientConfigurations": {
+      "Clients": "scalar",
+      "Options": "array"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "FsrmConfiguration": {
+      "FsrmServiceEnabled": "scalar",
+      "EventLogDestination": "scalar"
+    },
+    "UserAndGroupQuotas": {
+      "Type": "scalar",
+      "Id": "scalar",
+      "StorageCapacityQuotaGiB": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "FileSystemType",
+      "SubnetIds"
+    ],
+    "AuditLogConfiguration": [
+      "FileAccessAuditLogLevel",
+      "FileShareAccessAuditLogLevel"
+    ],
+    "OntapConfiguration": [
+      "DeploymentType"
+    ],
+    "WindowsConfiguration": [
+      "ThroughputCapacity"
+    ],
+    "OpenZFSConfiguration": [
+      "DeploymentType"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "FsrmConfiguration": [
+      "FsrmServiceEnabled"
+    ]
+  }
 }

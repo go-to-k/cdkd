@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Kinesis::Stream",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Arn",
     "DesiredShardLevelMetrics",
@@ -20,5 +20,85 @@
   ],
   "createOnlyProperties": [
     "Name"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Name"
+  ],
+  "nestedProperties": {
+    "StreamModeDetails": [
+      "StreamMode"
+    ],
+    "StreamEncryption": [
+      "EncryptionType",
+      "KeyId"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "WarmThroughputObject": [
+      "CurrentMiBps",
+      "TargetMiBps"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "StreamModeDetails": [
+      "StreamMode"
+    ],
+    "StreamEncryption": [
+      "EncryptionType",
+      "KeyId"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "WarmThroughputObject": [
+      "CurrentMiBps",
+      "TargetMiBps"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Arn": "scalar",
+      "Name": "scalar",
+      "DesiredShardLevelMetrics": "array",
+      "RetentionPeriodHours": "scalar",
+      "ShardCount": "scalar",
+      "StreamModeDetails": "object",
+      "StreamEncryption": "object",
+      "Tags": "array",
+      "MaxRecordSizeInKiB": "scalar",
+      "WarmThroughputMiBps": "scalar",
+      "WarmThroughputObject": "object"
+    },
+    "StreamModeDetails": {
+      "StreamMode": "scalar"
+    },
+    "StreamEncryption": {
+      "EncryptionType": "scalar",
+      "KeyId": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "WarmThroughputObject": {
+      "TargetMiBps": "scalar",
+      "CurrentMiBps": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "StreamModeDetails": [
+      "StreamMode"
+    ],
+    "StreamEncryption": [
+      "EncryptionType",
+      "KeyId"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

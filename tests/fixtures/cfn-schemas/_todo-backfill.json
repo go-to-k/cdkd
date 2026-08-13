@@ -24,25 +24,12 @@
   ],
   "types": {
     "AWS::ApiGateway::Deployment": [
-      "DeploymentCanarySettings",
-      "StageDescription",
-      "StageName"
-    ],
-    "AWS::ApiGateway::Stage": [
-      "AccessLogSetting",
-      "CacheClusterEnabled",
-      "CacheClusterSize",
-      "CanarySetting",
-      "ClientCertificateId",
-      "DocumentationVersion",
-      "MethodSettings"
+      "DeploymentCanarySettings"
     ],
     "AWS::AutoScaling::AutoScalingGroup": [
       "AvailabilityZoneIds",
       "InstanceId",
       "InstanceLifecyclePolicy",
-      "LaunchConfigurationName",
-      "NotificationConfiguration",
       "PlacementGroup"
     ],
     "AWS::BedrockAgentCore::Runtime": [
@@ -55,13 +42,16 @@
       "AggregationConfigurations"
     ],
     "AWS::CloudWatch::Alarm": [
-      "EvaluationCriteria",
-      "EvaluationInterval"
+      "EvaluationWindow"
     ],
     "AWS::CodeBuild::Project": [
       "ResourceAccessRole",
       "Triggers",
       "Visibility"
+    ],
+    "AWS::Cognito::UserPool": [
+      "IssuerConfiguration",
+      "KeyConfiguration"
     ],
     "AWS::DocDB::DBCluster": [
       "AvailabilityZones",
@@ -96,10 +86,7 @@
     "AWS::EC2::Instance": [
       "AdditionalInfo",
       "Affinity",
-      "AvailabilityZone",
       "CpuOptions",
-      "ElasticGpuSpecifications",
-      "ElasticInferenceAccelerators",
       "EnclaveOptions",
       "HibernationOptions",
       "HostId",
@@ -110,7 +97,6 @@
       "KernelId",
       "LaunchTemplate",
       "LicenseSpecifications",
-      "NetworkInterfaces",
       "PlacementGroupName",
       "PrivateDnsNameOptions",
       "PrivateIpAddress",
@@ -123,25 +109,10 @@
     ],
     "AWS::EC2::NatGateway": [
       "AvailabilityMode",
-      "AvailabilityZoneAddresses",
-      "VpcId"
-    ],
-    "AWS::EC2::NetworkAclEntry": [
-      "Icmp"
+      "AvailabilityZoneAddresses"
     ],
     "AWS::EC2::Route": [
-      "CarrierGatewayId",
-      "CoreNetworkArn",
-      "DestinationPrefixListId",
-      "LocalGatewayId",
-      "TransitGatewayId",
-      "VpcEndpointId"
-    ],
-    "AWS::EC2::SecurityGroupIngress": [
-      "CidrIpv6",
-      "GroupName",
-      "SourcePrefixListId",
-      "SourceSecurityGroupName"
+      "OdbNetworkArn"
     ],
     "AWS::EC2::Subnet": [
       "AssignIpv6AddressOnCreation",
@@ -159,22 +130,11 @@
     ],
     "AWS::EC2::VPC": [
       "Ipv4IpamPoolId",
-      "Ipv4NetmaskLength"
+      "Ipv4NetmaskLength",
+      "VpcEncryptionControl"
     ],
     "AWS::EC2::VPCGatewayAttachment": [
       "VpnGatewayId"
-    ],
-    "AWS::EFS::AccessPoint": [
-      "ClientToken"
-    ],
-    "AWS::EFS::FileSystem": [
-      "AvailabilityZoneName",
-      "BackupPolicy",
-      "BypassPolicyLockoutSafetyCheck",
-      "FileSystemPolicy",
-      "FileSystemProtection",
-      "LifecyclePolicies",
-      "ReplicationConfiguration"
     ],
     "AWS::EFS::MountTarget": [
       "IpAddress",
@@ -182,27 +142,10 @@
       "Ipv6Address"
     ],
     "AWS::ElastiCache::CacheCluster": [
-      "CacheSecurityGroupNames",
       "SnapshotArns"
     ],
-    "AWS::ElastiCache::SubnetGroup": [
-      "Description"
-    ],
     "AWS::ElasticLoadBalancingV2::Listener": [
-      "ListenerAttributes"
-    ],
-    "AWS::ElasticLoadBalancingV2::LoadBalancer": [
-      "EnableCapacityReservationProvisionStabilize",
-      "EnablePrefixForIpv6SourceNat",
-      "EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic",
-      "Ipv4IpamPoolId",
-      "MinimumLoadBalancerCapacity"
-    ],
-    "AWS::ElasticLoadBalancingV2::TargetGroup": [
-      "IpAddressType",
-      "TargetControlPort",
-      "TargetGroupAttributes",
-      "Targets"
+      "Tags"
     ],
     "AWS::Kinesis::Stream": [
       "WarmThroughputMiBps"
@@ -223,8 +166,9 @@
       "AvailabilityZones",
       "CopyTagsToSnapshot",
       "DBInstanceParameterGroupName",
-      "DBPort",
       "EnableCloudwatchLogsExports",
+      "GlobalClusterIdentifier",
+      "NetworkType",
       "RestoreToTime",
       "RestoreType",
       "ServerlessScalingConfiguration",
@@ -250,7 +194,6 @@
       "DBInstanceParameterGroupName",
       "DBSystemId",
       "DatabaseInsightsMode",
-      "DeleteAutomatedBackups",
       "Domain",
       "DomainIAMRoleName",
       "EnableCloudwatchLogsExports",
@@ -282,7 +225,6 @@
     "AWS::RDS::DBInstance": [
       "AdditionalStorageVolumes",
       "AllowMajorVersionUpgrade",
-      "ApplyImmediately",
       "AssociatedRoles",
       "AutoMinorVersionUpgrade",
       "AutomaticBackupReplicationKmsKeyId",
@@ -299,12 +241,10 @@
       "DBClusterSnapshotIdentifier",
       "DBName",
       "DBParameterGroupName",
-      "DBSecurityGroups",
       "DBSnapshotIdentifier",
       "DBSystemId",
       "DatabaseInsightsMode",
       "DedicatedLogVolume",
-      "DeleteAutomatedBackups",
       "Domain",
       "DomainAuthSecretArn",
       "DomainDnsIps",
@@ -353,7 +293,6 @@
     ],
     "AWS::S3::Bucket": [
       "AbacStatus",
-      "AccessControl",
       "BucketNamePrefix",
       "BucketNamespace",
       "MetadataConfiguration",
@@ -363,15 +302,13 @@
       "BucketEncryption",
       "InventoryConfigurations",
       "LifecycleConfiguration",
-      "MetricsConfigurations",
-      "Tags"
+      "MetricsConfigurations"
     ],
     "AWS::S3Tables::Table": [
       "Compaction",
       "IcebergMetadata",
       "SnapshotManagement",
       "StorageClassConfiguration",
-      "TableName",
       "WithoutMetadata"
     ],
     "AWS::S3Tables::TableBucket": [
@@ -381,15 +318,10 @@
       "StorageClassConfiguration",
       "UnreferencedFileRemoval"
     ],
-    "AWS::ServiceDiscovery::Service": [
-      "ServiceAttributes"
-    ],
-    "AWS::StepFunctions::StateMachine": [
-      "DefinitionS3Location"
-    ],
     "AWS::WAFv2::WebACL": [
       "ApplicationConfig",
       "DataProtectionConfig",
+      "MonetizationConfig",
       "OnSourceDDoSProtectionConfig"
     ]
   },

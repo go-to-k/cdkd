@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Route53::HostedZone",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "HostedZoneConfig",
     "HostedZoneFeatures",
@@ -17,5 +17,88 @@
   ],
   "createOnlyProperties": [
     "Name"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "nestedProperties": {
+    "HostedZoneTags": [
+      "Key",
+      "Value"
+    ],
+    "VPCs": [
+      "VPCId",
+      "VPCRegion"
+    ],
+    "HostedZoneFeatures": [
+      "EnableAcceleratedRecovery"
+    ],
+    "HostedZoneConfig": [
+      "Comment"
+    ],
+    "QueryLoggingConfig": [
+      "CloudWatchLogsLogGroupArn"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "HostedZoneTags": [
+      "Key",
+      "Value"
+    ],
+    "VPCs": [
+      "VPCId",
+      "VPCRegion"
+    ],
+    "HostedZoneFeatures": [
+      "EnableAcceleratedRecovery"
+    ],
+    "HostedZoneConfig": [
+      "Comment"
+    ],
+    "QueryLoggingConfig": [
+      "CloudWatchLogsLogGroupArn"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "HostedZoneTags": "array",
+      "VPCs": "array",
+      "HostedZoneFeatures": "object",
+      "HostedZoneConfig": "object",
+      "Id": "scalar",
+      "NameServers": "array",
+      "QueryLoggingConfig": "object",
+      "Name": "scalar"
+    },
+    "HostedZoneFeatures": {
+      "EnableAcceleratedRecovery": "scalar"
+    },
+    "HostedZoneTag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "VPC": {
+      "VPCRegion": "scalar",
+      "VPCId": "scalar"
+    },
+    "HostedZoneConfig": {
+      "Comment": "scalar"
+    },
+    "QueryLoggingConfig": {
+      "CloudWatchLogsLogGroupArn": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "HostedZoneTag": [
+      "Key",
+      "Value"
+    ],
+    "VPC": [
+      "VPCId",
+      "VPCRegion"
+    ],
+    "QueryLoggingConfig": [
+      "CloudWatchLogsLogGroupArn"
+    ]
+  }
 }

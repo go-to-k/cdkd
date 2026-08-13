@@ -1,14 +1,54 @@
 {
   "resourceType": "AWS::RDS::DBSubnetGroup",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
+    "DBSubnetGroupArn",
     "DBSubnetGroupDescription",
     "DBSubnetGroupName",
     "SubnetIds",
     "Tags"
   ],
-  "readOnlyProperties": [],
+  "readOnlyProperties": [
+    "DBSubnetGroupArn"
+  ],
   "createOnlyProperties": [
     "DBSubnetGroupName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "DBSubnetGroupName"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "DBSubnetGroupDescription": "scalar",
+      "DBSubnetGroupName": "scalar",
+      "SubnetIds": "array",
+      "Tags": "array",
+      "DBSubnetGroupArn": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "DBSubnetGroupDescription",
+      "SubnetIds"
+    ],
+    "Tag": [
+      "Key"
+    ]
+  }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::BedrockAgentCore::CodeInterpreter",
-  "generatedAt": "2026-07-17",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CodeInterpreterArn",
     "CodeInterpreterId",
@@ -14,5 +14,12 @@
   "createOnlyProperties": [],
   "primaryIdentifier": [
     "CodeInterpreterArn"
-  ]
+  ],
+  "definitionShapes": {
+    "#top": {
+      "CodeInterpreterArn": "scalar",
+      "CodeInterpreterId": "scalar",
+      "Status": "scalar"
+    }
+  }
 }

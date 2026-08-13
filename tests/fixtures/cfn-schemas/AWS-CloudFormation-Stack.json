@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudFormation::Stack",
-  "generatedAt": "2026-05-23",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Capabilities",
     "ChangeSetId",
@@ -38,5 +38,78 @@
   ],
   "createOnlyProperties": [
     "StackName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "StackId"
+  ],
+  "nestedProperties": {
+    "Outputs": [
+      "Description",
+      "ExportName",
+      "OutputKey",
+      "OutputValue"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Outputs": [
+      "Description",
+      "ExportName",
+      "OutputKey",
+      "OutputValue"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Capabilities": "array",
+      "RoleARN": "scalar",
+      "Outputs": "array",
+      "Description": "scalar",
+      "DisableRollback": "scalar",
+      "EnableTerminationProtection": "scalar",
+      "NotificationARNs": "array",
+      "Parameters": "object",
+      "ParentId": "scalar",
+      "RootId": "scalar",
+      "ChangeSetId": "scalar",
+      "StackName": "scalar",
+      "StackId": "scalar",
+      "StackPolicyBody": "object",
+      "StackPolicyURL": "scalar",
+      "StackStatus": "scalar",
+      "StackStatusReason": "scalar",
+      "Tags": "array",
+      "TemplateBody": "mixed",
+      "TemplateURL": "scalar",
+      "TimeoutInMinutes": "scalar",
+      "LastUpdateTime": "scalar",
+      "CreationTime": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "Output": {
+      "Description": "scalar",
+      "ExportName": "scalar",
+      "OutputKey": "scalar",
+      "OutputValue": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "StackName"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

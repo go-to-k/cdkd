@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ElasticLoadBalancingV2::TargetGroup",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "HealthCheckEnabled",
     "HealthCheckIntervalSeconds",
@@ -41,5 +41,103 @@
     "ProtocolVersion",
     "TargetType",
     "VpcId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "TargetGroupArn"
+  ],
+  "nestedProperties": {
+    "Matcher": [
+      "GrpcCode",
+      "HttpCode"
+    ],
+    "Targets": [
+      "AvailabilityZone",
+      "Id",
+      "Port",
+      "QuicServerId"
+    ],
+    "TargetGroupAttributes": [
+      "Key",
+      "Value"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Matcher": [
+      "GrpcCode",
+      "HttpCode"
+    ],
+    "Targets": [
+      "AvailabilityZone",
+      "Id",
+      "Port",
+      "QuicServerId"
+    ],
+    "TargetGroupAttributes": [
+      "Key",
+      "Value"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "IpAddressType": "scalar",
+      "HealthCheckIntervalSeconds": "scalar",
+      "LoadBalancerArns": "array",
+      "Matcher": "object",
+      "HealthCheckPath": "scalar",
+      "Port": "scalar",
+      "Targets": "array",
+      "HealthCheckEnabled": "scalar",
+      "ProtocolVersion": "scalar",
+      "UnhealthyThresholdCount": "scalar",
+      "HealthCheckTimeoutSeconds": "scalar",
+      "Name": "scalar",
+      "VpcId": "scalar",
+      "TargetGroupFullName": "scalar",
+      "HealthyThresholdCount": "scalar",
+      "HealthCheckProtocol": "scalar",
+      "TargetGroupAttributes": "array",
+      "TargetType": "scalar",
+      "HealthCheckPort": "scalar",
+      "TargetGroupArn": "scalar",
+      "Protocol": "scalar",
+      "TargetGroupName": "scalar",
+      "Tags": "array",
+      "TargetControlPort": "scalar"
+    },
+    "Matcher": {
+      "GrpcCode": "scalar",
+      "HttpCode": "scalar"
+    },
+    "TargetDescription": {
+      "AvailabilityZone": "scalar",
+      "Id": "scalar",
+      "Port": "scalar",
+      "QuicServerId": "scalar"
+    },
+    "TargetGroupAttribute": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "TargetDescription": [
+      "Id"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

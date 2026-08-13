@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::IAM::Policy",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Groups",
     "Id",
@@ -12,5 +12,24 @@
   "readOnlyProperties": [
     "Id"
   ],
-  "createOnlyProperties": []
+  "createOnlyProperties": [],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Groups": "array",
+      "PolicyName": "scalar",
+      "PolicyDocument": "mixed",
+      "Roles": "array",
+      "Id": "scalar",
+      "Users": "array"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "PolicyDocument",
+      "PolicyName"
+    ]
+  }
 }

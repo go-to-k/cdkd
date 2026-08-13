@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::Subnet",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AssignIpv6AddressOnCreation",
     "AvailabilityZone",
@@ -41,5 +41,74 @@
     "Ipv6NetmaskLength",
     "OutpostArn",
     "VpcId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "SubnetId"
+  ],
+  "nestedProperties": {
+    "PrivateDnsNameOptionsOnLaunch": [
+      "EnableResourceNameDnsAAAARecord",
+      "EnableResourceNameDnsARecord",
+      "HostnameType"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "BlockPublicAccessStates": [
+      "InternetGatewayBlockMode"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "PrivateDnsNameOptionsOnLaunch": [
+      "EnableResourceNameDnsAAAARecord",
+      "EnableResourceNameDnsARecord",
+      "HostnameType"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "BlockPublicAccessStates": [
+      "InternetGatewayBlockMode"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "AssignIpv6AddressOnCreation": "scalar",
+      "VpcId": "scalar",
+      "MapPublicIpOnLaunch": "scalar",
+      "EnableLniAtDeviceIndex": "scalar",
+      "NetworkAclAssociationId": "scalar",
+      "AvailabilityZone": "scalar",
+      "AvailabilityZoneId": "scalar",
+      "CidrBlock": "scalar",
+      "SubnetId": "scalar",
+      "Ipv6CidrBlocks": "array",
+      "Ipv6CidrBlock": "scalar",
+      "OutpostArn": "scalar",
+      "Ipv6Native": "scalar",
+      "EnableDns64": "scalar",
+      "PrivateDnsNameOptionsOnLaunch": "object",
+      "Tags": "array",
+      "Ipv4IpamPoolId": "scalar",
+      "Ipv4NetmaskLength": "scalar",
+      "Ipv6IpamPoolId": "scalar",
+      "Ipv6NetmaskLength": "scalar",
+      "BlockPublicAccessStates": "object"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "VpcId"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  }
 }

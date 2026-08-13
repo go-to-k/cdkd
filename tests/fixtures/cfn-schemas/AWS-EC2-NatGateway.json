@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::EC2::NatGateway",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "AllocationId",
     "AutoProvisionZones",
@@ -34,5 +34,69 @@
     "PrivateIpAddress",
     "SubnetId",
     "VpcId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "NatGatewayId"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "AvailabilityZoneAddresses": [
+      "AllocationIds",
+      "AvailabilityZone",
+      "AvailabilityZoneId"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "AvailabilityZoneAddresses": [
+      "AllocationIds",
+      "AvailabilityZone",
+      "AvailabilityZoneId"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "SubnetId": "scalar",
+      "NatGatewayId": "scalar",
+      "ConnectivityType": "scalar",
+      "PrivateIpAddress": "scalar",
+      "Tags": "array",
+      "AllocationId": "scalar",
+      "SecondaryAllocationIds": "array",
+      "SecondaryPrivateIpAddresses": "array",
+      "SecondaryPrivateIpAddressCount": "scalar",
+      "MaxDrainDurationSeconds": "scalar",
+      "VpcId": "scalar",
+      "EniId": "scalar",
+      "RouteTableId": "scalar",
+      "AvailabilityMode": "scalar",
+      "AvailabilityZoneAddresses": "array",
+      "AutoProvisionZones": "scalar",
+      "AutoScalingIps": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "AvailabilityZoneAddress": {
+      "AvailabilityZone": "scalar",
+      "AvailabilityZoneId": "scalar",
+      "AllocationIds": "array"
+    }
+  },
+  "definitionRequired": {
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "AvailabilityZoneAddress": [
+      "AllocationIds"
+    ]
+  }
 }

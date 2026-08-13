@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::CloudWatch::Alarm",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "ActionsEnabled",
     "AlarmActions",
@@ -14,6 +14,7 @@
     "EvaluationCriteria",
     "EvaluationInterval",
     "EvaluationPeriods",
+    "EvaluationWindow",
     "ExtendedStatistic",
     "InsufficientDataActions",
     "MetricName",
@@ -33,5 +34,176 @@
   ],
   "createOnlyProperties": [
     "AlarmName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "AlarmName"
+  ],
+  "nestedProperties": {
+    "Metrics": [
+      "AccountId",
+      "Dimensions",
+      "Expression",
+      "Id",
+      "Label",
+      "Metric",
+      "MetricName",
+      "MetricStat",
+      "Name",
+      "Namespace",
+      "Period",
+      "ReturnData",
+      "Stat",
+      "Unit",
+      "Value"
+    ],
+    "EvaluationWindow": [
+      "SlidingWindow",
+      "Timezone",
+      "WallClockWindow"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "Dimensions": [
+      "Name",
+      "Value"
+    ],
+    "EvaluationCriteria": [
+      "PendingPeriod",
+      "PromQLCriteria",
+      "Query",
+      "RecoveryPeriod"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Metrics": [
+      "AccountId",
+      "Expression",
+      "Id",
+      "Label",
+      "MetricStat",
+      "MetricStat.Metric",
+      "MetricStat.Metric.Dimensions",
+      "MetricStat.Metric.Dimensions.Name",
+      "MetricStat.Metric.Dimensions.Value",
+      "MetricStat.Metric.MetricName",
+      "MetricStat.Metric.Namespace",
+      "MetricStat.Period",
+      "MetricStat.Stat",
+      "MetricStat.Unit",
+      "Period",
+      "ReturnData"
+    ],
+    "EvaluationWindow": [
+      "SlidingWindow",
+      "WallClockWindow",
+      "WallClockWindow.Timezone"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "Dimensions": [
+      "Name",
+      "Value"
+    ],
+    "EvaluationCriteria": [
+      "PromQLCriteria",
+      "PromQLCriteria.PendingPeriod",
+      "PromQLCriteria.Query",
+      "PromQLCriteria.RecoveryPeriod"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "ThresholdMetricId": "scalar",
+      "ComparisonOperator": "scalar",
+      "EvaluationPeriods": "scalar",
+      "Unit": "scalar",
+      "OKActions": "array",
+      "MetricName": "scalar",
+      "ActionsEnabled": "scalar",
+      "Metrics": "array",
+      "AlarmName": "scalar",
+      "Statistic": "scalar",
+      "EvaluationWindow": "object",
+      "InsufficientDataActions": "array",
+      "EvaluationInterval": "scalar",
+      "DatapointsToAlarm": "scalar",
+      "Tags": "array",
+      "Threshold": "scalar",
+      "EvaluateLowSampleCountPercentile": "scalar",
+      "ExtendedStatistic": "scalar",
+      "TreatMissingData": "scalar",
+      "Dimensions": "array",
+      "Period": "scalar",
+      "EvaluationCriteria": "object",
+      "Namespace": "scalar",
+      "AlarmActions": "array",
+      "AlarmDescription": "scalar",
+      "Arn": "scalar"
+    },
+    "WallClockWindow": {
+      "Timezone": "scalar"
+    },
+    "AlarmPromQLCriteria": {
+      "PendingPeriod": "scalar",
+      "Query": "scalar",
+      "RecoveryPeriod": "scalar"
+    },
+    "MetricStat": {
+      "Stat": "scalar",
+      "Period": "scalar",
+      "Metric": "object",
+      "Unit": "scalar"
+    },
+    "EvaluationWindow": {
+      "WallClockWindow": "object",
+      "SlidingWindow": "object"
+    },
+    "Metric": {
+      "MetricName": "scalar",
+      "Dimensions": "array",
+      "Namespace": "scalar"
+    },
+    "Dimension": {
+      "Value": "scalar",
+      "Name": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "EvaluationCriteria": {
+      "PromQLCriteria": "object"
+    },
+    "MetricDataQuery": {
+      "AccountId": "scalar",
+      "ReturnData": "scalar",
+      "Expression": "scalar",
+      "Label": "scalar",
+      "MetricStat": "object",
+      "Period": "scalar",
+      "Id": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "MetricStat": [
+      "Metric",
+      "Period",
+      "Stat"
+    ],
+    "Dimension": [
+      "Name",
+      "Value"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ],
+    "MetricDataQuery": [
+      "Id"
+    ]
+  }
 }

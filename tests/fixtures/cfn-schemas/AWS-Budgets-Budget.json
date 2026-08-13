@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Budgets::Budget",
-  "generatedAt": "2026-07-17",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Budget",
     "Id",
@@ -15,5 +15,251 @@
   ],
   "primaryIdentifier": [
     "Id"
-  ]
+  ],
+  "nestedProperties": {
+    "Budget": [
+      "Amount",
+      "And",
+      "AutoAdjustData",
+      "AutoAdjustType",
+      "BillingViewArn",
+      "BudgetAdjustmentPeriod",
+      "BudgetLimit",
+      "BudgetName",
+      "BudgetType",
+      "CostCategories",
+      "CostFilters",
+      "CostTypes",
+      "Dimensions",
+      "End",
+      "FilterExpression",
+      "HistoricalOptions",
+      "IncludeCredit",
+      "IncludeDiscount",
+      "IncludeOtherSubscription",
+      "IncludeRecurring",
+      "IncludeRefund",
+      "IncludeSubscription",
+      "IncludeSupport",
+      "IncludeTax",
+      "IncludeUpfront",
+      "Key",
+      "MatchOptions",
+      "Metrics",
+      "Not",
+      "Or",
+      "PlannedBudgetLimits",
+      "Start",
+      "Tags",
+      "TimePeriod",
+      "TimeUnit",
+      "Unit",
+      "UseAmortized",
+      "UseBlended",
+      "Values"
+    ],
+    "NotificationsWithSubscribers": [
+      "Address",
+      "ComparisonOperator",
+      "Notification",
+      "NotificationType",
+      "Subscribers",
+      "SubscriptionType",
+      "Threshold",
+      "ThresholdType"
+    ],
+    "ResourceTags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Budget": [
+      "AutoAdjustData",
+      "AutoAdjustData.AutoAdjustType",
+      "AutoAdjustData.HistoricalOptions",
+      "AutoAdjustData.HistoricalOptions.BudgetAdjustmentPeriod",
+      "BillingViewArn",
+      "BudgetLimit",
+      "BudgetLimit.Amount",
+      "BudgetLimit.Unit",
+      "BudgetName",
+      "BudgetType",
+      "CostFilters",
+      "CostTypes",
+      "CostTypes.IncludeCredit",
+      "CostTypes.IncludeDiscount",
+      "CostTypes.IncludeOtherSubscription",
+      "CostTypes.IncludeRecurring",
+      "CostTypes.IncludeRefund",
+      "CostTypes.IncludeSubscription",
+      "CostTypes.IncludeSupport",
+      "CostTypes.IncludeTax",
+      "CostTypes.IncludeUpfront",
+      "CostTypes.UseAmortized",
+      "CostTypes.UseBlended",
+      "FilterExpression",
+      "FilterExpression.And",
+      "FilterExpression.CostCategories",
+      "FilterExpression.CostCategories.Key",
+      "FilterExpression.CostCategories.MatchOptions",
+      "FilterExpression.CostCategories.Values",
+      "FilterExpression.Dimensions",
+      "FilterExpression.Dimensions.Key",
+      "FilterExpression.Dimensions.MatchOptions",
+      "FilterExpression.Dimensions.Values",
+      "FilterExpression.Not",
+      "FilterExpression.Or",
+      "FilterExpression.Tags",
+      "FilterExpression.Tags.Key",
+      "FilterExpression.Tags.MatchOptions",
+      "FilterExpression.Tags.Values",
+      "Metrics",
+      "PlannedBudgetLimits",
+      "TimePeriod",
+      "TimePeriod.End",
+      "TimePeriod.Start",
+      "TimeUnit"
+    ],
+    "NotificationsWithSubscribers": [
+      "Notification",
+      "Notification.ComparisonOperator",
+      "Notification.NotificationType",
+      "Notification.Threshold",
+      "Notification.ThresholdType",
+      "Subscribers",
+      "Subscribers.Address",
+      "Subscribers.SubscriptionType"
+    ],
+    "ResourceTags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Budget": "object",
+      "Id": "scalar",
+      "NotificationsWithSubscribers": "array",
+      "ResourceTags": "array"
+    },
+    "HistoricalOptions": {
+      "BudgetAdjustmentPeriod": "scalar"
+    },
+    "CostCategoryValues": {
+      "Values": "array",
+      "Key": "scalar",
+      "MatchOptions": "array"
+    },
+    "BudgetData": {
+      "TimePeriod": "object",
+      "PlannedBudgetLimits": "object",
+      "CostFilters": "object",
+      "CostTypes": "object",
+      "BudgetType": "scalar",
+      "Metrics": "array",
+      "BudgetLimit": "object",
+      "BillingViewArn": "scalar",
+      "AutoAdjustData": "object",
+      "TimeUnit": "scalar",
+      "FilterExpression": "object",
+      "BudgetName": "scalar"
+    },
+    "TimePeriod": {
+      "Start": "scalar",
+      "End": "scalar"
+    },
+    "NotificationWithSubscribers": {
+      "Subscribers": "array",
+      "Notification": "object"
+    },
+    "Notification": {
+      "ComparisonOperator": "scalar",
+      "NotificationType": "scalar",
+      "Threshold": "scalar",
+      "ThresholdType": "scalar"
+    },
+    "CostTypes": {
+      "IncludeSupport": "scalar",
+      "IncludeOtherSubscription": "scalar",
+      "IncludeTax": "scalar",
+      "IncludeSubscription": "scalar",
+      "UseBlended": "scalar",
+      "IncludeUpfront": "scalar",
+      "IncludeDiscount": "scalar",
+      "IncludeCredit": "scalar",
+      "IncludeRecurring": "scalar",
+      "UseAmortized": "scalar",
+      "IncludeRefund": "scalar"
+    },
+    "TagValues": {
+      "Values": "array",
+      "Key": "scalar",
+      "MatchOptions": "array"
+    },
+    "ResourceTag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    },
+    "Subscriber": {
+      "Address": "scalar",
+      "SubscriptionType": "scalar"
+    },
+    "Expression": {
+      "Not": "object",
+      "Or": "array",
+      "And": "array",
+      "Dimensions": "object",
+      "CostCategories": "object",
+      "Tags": "object"
+    },
+    "Spend": {
+      "Unit": "scalar",
+      "Amount": "scalar"
+    },
+    "AutoAdjustData": {
+      "AutoAdjustType": "scalar",
+      "HistoricalOptions": "object"
+    },
+    "ExpressionDimensionValues": {
+      "Values": "array",
+      "Key": "scalar",
+      "MatchOptions": "array"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Budget"
+    ],
+    "HistoricalOptions": [
+      "BudgetAdjustmentPeriod"
+    ],
+    "BudgetData": [
+      "BudgetType",
+      "TimeUnit"
+    ],
+    "NotificationWithSubscribers": [
+      "Notification",
+      "Subscribers"
+    ],
+    "Notification": [
+      "ComparisonOperator",
+      "NotificationType",
+      "Threshold"
+    ],
+    "ResourceTag": [
+      "Key"
+    ],
+    "Subscriber": [
+      "Address",
+      "SubscriptionType"
+    ],
+    "Spend": [
+      "Amount",
+      "Unit"
+    ],
+    "AutoAdjustData": [
+      "AutoAdjustType"
+    ]
+  }
 }
