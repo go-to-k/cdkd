@@ -1,3 +1,11 @@
+## [0.283.5](https://github.com/go-to-k/cdkd/compare/v0.283.4...v0.283.5) (2026-08-13)
+
+
+### Bug Fixes
+
+* **export:** register the VPCCidrBlock splitter and stop an array-valued identifier reaching CloudFormation as-is ([#1833](https://github.com/go-to-k/cdkd/issues/1833)) ([f3f8ce4](https://github.com/go-to-k/cdkd/commit/f3f8ce49049fa669e9f9f208769a60247ffe2d64))
+* **provisioning:** report the eight non-composite-id warn-and-SKIP delete arms as skipped, not deleted ([#1826](https://github.com/go-to-k/cdkd/issues/1826)) ([02028bf](https://github.com/go-to-k/cdkd/commit/02028bf4ff66deacd69e2bd1f17f2717d8c7e8ff))
+
 ## [0.283.4](https://github.com/go-to-k/cdkd/compare/v0.283.3...v0.283.4) (2026-08-13)
 
 
