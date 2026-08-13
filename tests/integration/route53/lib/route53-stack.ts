@@ -14,6 +14,8 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  * - AWS::Route53::CidrCollection (CC-API) + RecordSet with CidrRoutingConfig (#609 backfill)
  * - Resource dependencies (RecordSet depends on HostedZone)
  * - Fn::GetAtt for outputs (HostedZoneId, HostedZone NameServers, HealthCheckId)
+ * - The NameServers list read BOTH ways: through Fn::Join, and bare so the
+ *   Output persists a JSON array whose element count is observable (#1873)
  * - HostedZoneTags + QueryLoggingConfig REMOVAL resets (#1160 route53 batch)
  *
  * The REMOVAL phase (gated on CDKD_TEST_REMOVAL, issue #1160 route53 batch)
@@ -170,6 +172,26 @@ export class Route53Stack extends cdk.Stack {
     // provider attribute capture -> Fn::GetAtt -> Fn::Join -> state output.
     new cdk.CfnOutput(this, 'HostedZoneNameServers', {
       value: cdk.Fn.join(',', zone.hostedZoneNameServers ?? []),
+    });
+
+    // Issue #1873: the SAME attribute with NO Fn::Join, so the Output value is
+    // the bare Fn::GetAtt over a list-valued attribute. This is the shape the
+    // joined Output above structurally cannot check: Fn::Join with ',' renders
+    // `['a','b']` and `['a,b']` to the identical string, so a single-element
+    // collapse is invisible to any post-join comparison. Here cdkd stores the
+    // resolved value verbatim, so `state.outputs` carries a JSON ARRAY and
+    // verify.sh can assert the element COUNT and the members directly.
+    //
+    // `CfnOutput.value` is typed `string` because CloudFormation Outputs must
+    // be strings; the cast is deliberate. cdkd resolves Outputs itself and
+    // persists whatever the resolver returned (`outputs` is
+    // `Record<string, unknown>`), which is exactly the user-visible shape
+    // under test. This Output is therefore cdkd-specific by construction and
+    // is not claimed to round-trip through real CloudFormation.
+    const cfnZone = zone.node.defaultChild as route53.CfnHostedZone;
+    new cdk.CfnOutput(this, 'HostedZoneNameServersList', {
+      value: cdk.Fn.getAtt(cfnZone.logicalId, 'NameServers') as unknown as string,
+      description: 'Bare Fn::GetAtt over the NameServers LIST (no Fn::Join) — issue #1873',
     });
 
     new cdk.CfnOutput(this, 'HealthCheckId', {

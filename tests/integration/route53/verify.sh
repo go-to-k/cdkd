@@ -231,6 +231,47 @@ if [ "${JOINED_NAME_SERVERS_SORTED}" != "${LIVE_NAME_SERVERS_SORTED}" ]; then
 fi
 echo "    OK: Fn::Join resolved the HostedZone NameServers list (${JOINED_NAME_SERVERS})"
 
+# --- Assertion: the BARE Fn::GetAtt Output round-trips as a real LIST -------
+# Issue #1873. This is the arm the joined Output above structurally cannot
+# provide: `Fn::Join` with ',' renders `['a','b']` and `['a,b']` identically,
+# so a single-element collapse survives every post-join comparison. cdkd
+# resolves Outputs itself and stores the resolved value verbatim
+# (`resolveOutputs` -> `state.outputs`, typed `Record<string, unknown>`), so
+# the bare Fn::GetAtt persists a JSON ARRAY and the element COUNT and members
+# become directly observable.
+NS_LIST_TYPE=$(echo "${STATE}" | jq -r '.outputs.HostedZoneNameServersList | type')
+if [ "${NS_LIST_TYPE}" != "array" ]; then
+  echo "FAIL: HostedZoneNameServersList is '${NS_LIST_TYPE}', expected 'array'" >&2
+  echo "  a bare Fn::GetAtt over a list-valued attribute must persist a JSON array" >&2
+  echo "${STATE}" | jq '.outputs.HostedZoneNameServersList'
+  exit 1
+fi
+
+# Count first, and compare it to the LIVE count rather than to a literal: the
+# delegation-set size is AWS's to choose, so a hardcoded 4 would be a fixture
+# assumption rather than a measurement. This is the check that catches the
+# pre-#1868 collapse -- one element holding the whole comma-joined string.
+NS_LIST_COUNT=$(echo "${STATE}" | jq -r '.outputs.HostedZoneNameServersList | length')
+LIVE_NAME_SERVERS_COUNT=$(printf '%s' "${LIVE_NAME_SERVERS}" | jq -r 'length')
+if [ "${NS_LIST_COUNT}" != "${LIVE_NAME_SERVERS_COUNT}" ]; then
+  echo "FAIL: HostedZoneNameServersList has ${NS_LIST_COUNT} element(s), Route 53 reports ${LIVE_NAME_SERVERS_COUNT}" >&2
+  echo "  (1 element vs several is the pre-#1868 comma-string collapse)" >&2
+  echo "${STATE}" | jq '.outputs.HostedZoneNameServersList'
+  exit 1
+fi
+
+# Then the members. Sorted for the same reason as the joined assertion above
+# (AWS does not guarantee a stable delegation-set order across calls); the
+# count check above is what the sort cannot give us.
+NS_LIST_SORTED=$(echo "${STATE}" | jq -r '.outputs.HostedZoneNameServersList | sort | join(",")')
+if [ "${NS_LIST_SORTED}" != "${LIVE_NAME_SERVERS_SORTED}" ]; then
+  echo "FAIL: HostedZoneNameServersList members do not match Route 53" >&2
+  echo "  got:      ${NS_LIST_SORTED}" >&2
+  echo "  expected: ${LIVE_NAME_SERVERS_SORTED}" >&2
+  exit 1
+fi
+echo "    OK: bare Fn::GetAtt persisted a ${NS_LIST_COUNT}-element LIST matching the live delegation set (#1873)"
+
 # --- Assertion: Ref to a RecordSet is the record NAME (issue #1681) ----
 # cdkd stores the composite physicalId `<hostedZoneId>|<name>|<type>`, while
 # CloudFormation's `Ref` returns "the name of the record" — the MIDDLE
