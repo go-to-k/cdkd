@@ -31,6 +31,7 @@ import {
   shouldRefuseUnusableBaseline,
   type AllowListEntry,
   type ClassClassification,
+  type PropertyClassification,
   type HandledPropertyWiringReport,
 } from '../../../scripts/gen-handled-property-wiring.js';
 
@@ -2021,6 +2022,90 @@ describe('the shipped --check command', () => {
     expect(b.stderr).toContain('it carries no summary at all');
   }, SPAWN_TIMEOUT_MS);
 
+  it('every malformed FIELD gets a STRUCTURED refusal, not a caught crash', () => {
+    // `expect(loadBaseline(x)).toBeNull()` is a weak assertion here: the outer
+    // try/catch turns the walk's TypeError into null too, so it passes with the
+    // shape checks DELETED — it cannot tell a structured refusal from the very
+    // crash those checks exist to replace. Drive the shipped command and assert
+    // the verdict text, plus the absence of the crash prefix.
+    //
+    // Each payload is built from the REAL matrix with its summary RECOMPUTED
+    // around the malformation, so no earlier condition can fire and the shape
+    // check is the only thing that can refuse. A first attempt used a synthetic
+    // payload with `summary: {}`, and the `status` / `bucket` mutants passed on
+    // condition 1 instead — the "trips an earlier clause" trap, reproduced in
+    // the very test written to avoid it.
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
+    const firstWired = real.classes.findIndex((c) => c.properties.some((p) => p.status === 'wired'));
+    const withClass = (
+      mutate: (c: ClassClassification) => unknown
+    ): Record<string, unknown> => {
+      const classes = real.classes.map((c, i) => (i === firstWired ? mutate(c) : c));
+      return { ...buildReport(real.classes), classes };
+    };
+    const consistent = (mutate: (c: ClassClassification) => ClassClassification): Record<string, unknown> => {
+      const classes = real.classes.map((c, i) => (i === firstWired ? mutate(c) : c));
+      // Recomputed AROUND the malformation, so condition 1 is satisfied and only
+      // the union check can refuse.
+      return buildReport(classes) as unknown as Record<string, unknown>;
+    };
+    const mutateFirstProp = (
+      c: ClassClassification,
+      f: (p: PropertyClassification) => unknown
+    ): ClassClassification => {
+      const pi = c.properties.findIndex((p) => p.status === 'wired');
+      return { ...c, properties: c.properties.map((p, j) => (j === pi ? f(p) : p)) } as ClassClassification;
+    };
+
+    const mutations: ReadonlyArray<[string, Record<string, unknown>]> = [
+      // Union violations, with a summary consistent WITH the malformed value —
+      // these are the ones only `BUCKETS.has` can catch.
+      [
+        // The panel's exact one-line tamper: relabel ONE property to a value not
+        // in the union AND blank its evidence. Consistent summary (condition 1
+        // satisfied), no label contradiction (condition 2 sees a non-wired entry
+        // with no evidence), still overlapping (condition 3 fine) — so ONLY the
+        // union check stands between this and hiding the loss being committed.
+        // Leaving the evidence in place instead made condition 2 fire, and the
+        // fixture passed without exercising the union check at all.
+        'status not in the union',
+        consistent(
+          (c) =>
+            mutateFirstProp(c, (p) => ({
+              ...p,
+              status: 'totally-bogus-status',
+              evidence: [],
+              seededBy: [],
+            })) as ClassClassification
+        ),
+      ],
+      [
+        'bucket not in the union',
+        consistent((c) => ({ ...c, bucket: 'not-a-bucket' } as unknown as ClassClassification)),
+      ],
+      // Shape / type errors.
+      ['className missing', withClass((c) => ({ ...c, className: undefined }))],
+      ['className not a string', withClass((c) => ({ ...c, className: 42 }))],
+      ['file missing', withClass((c) => ({ ...c, file: undefined }))],
+      ['gaps not an array', withClass((c) => ({ ...c, gaps: 'none' }))],
+      ['blindSpots not an array', withClass((c) => ({ ...c, blindSpots: null }))],
+      ['properties not an array', withClass((c) => ({ ...c, properties: 'Alpha' }))],
+      ['property name missing', withClass((c) => mutateFirstProp(c, (p) => ({ ...p, name: undefined })))],
+      ['evidence not an array', withClass((c) => mutateFirstProp(c, (p) => ({ ...p, evidence: 'element-read' })))],
+      ['seededBy not an array', withClass((c) => mutateFirstProp(c, (p) => ({ ...p, seededBy: 'create' })))],
+    ];
+    for (const [why, payload] of mutations) {
+      const file = join(scratch, `malformed-${why.replace(/\W+/g, '-')}.json`);
+      writeFileSync(file, JSON.stringify(payload));
+      const { status, stderr } = runCheck(undefined, [`--baseline=${file}`]);
+      expect(status, `${why} must be refused`).toBe(1);
+      expect(stderr, `${why} must get the structured verdict`).toContain('unusable baseline at');
+      expect(stderr, `${why} must NOT surface as a raw crash`).not.toContain(
+        'handled-property-wiring: failed —'
+      );
+    }
+  }, SPAWN_TIMEOUT_MS);
+
   it('a TRUNCATED baseline is refused the same way a missing one is', () => {
     // `loadBaseline` answers null for both, so the refusal must not be keyed on
     // the file being absent — a half-written matrix is the likelier accident.
@@ -2340,6 +2425,81 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
     expect(a.detail).toContain('classifiedCount');
   });
 
+  it('detects EACH label defect ON ITS OWN (the biconditional, per half)', () => {
+    // Round 5's fix reproduced round 5's defect INSIDE itself: the evidence
+    // requirement was `evidence.length === 0 || seededBy.length === 0`, and the
+    // sole fixture blanked BOTH, so dropping either half stayed green. Every
+    // clause is itself a conjunction or disjunction needing its own fixture —
+    // the lesson recurses, so it is applied here to all three directions.
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
+    const firstWired = (): { ci: number; pi: number } => {
+      for (const [ci, c] of real.classes.entries()) {
+        const pi = c.properties.findIndex((x) => x.status === 'wired');
+        if (pi >= 0) return { ci, pi };
+      }
+      throw new Error('the fixture needs a wired property');
+    };
+    const { ci, pi } = firstWired();
+    // The summary is RECOMPUTED for each fixture. Without that, relabelling a
+    // property changes `wiredProperties` and condition 1 fires first, so the
+    // label check would never be reached and the fixture would pass for the
+    // wrong reason — the same "trips an earlier clause" trap one layer over.
+    const patch = (
+      mutate: (p: PropertyClassification) => PropertyClassification
+    ): HandledPropertyWiringReport =>
+      buildReport(
+        real.classes.map((c, i) =>
+          i !== ci
+            ? c
+            : { ...c, properties: c.properties.map((x, j) => (j !== pi ? x : mutate(x))) }
+        )
+      );
+
+    const cases: ReadonlyArray<[string, HandledPropertyWiringReport, string]> = [
+      // wired, evidence blanked, seeds intact — only the evidence half fires.
+      ['evidence half', patch((x) => ({ ...x, evidence: [] })), 'wired with no evidence'],
+      // wired, seeds blanked, evidence intact — only the seeds half fires.
+      ['seeds half', patch((x) => ({ ...x, seededBy: [] })), 'wired with no seeding member'],
+      // the CONVERSE direction: relabelled away from wired while still carrying
+      // evidence. A one-way check keyed on `status` misses this entirely.
+      [
+        'converse',
+        patch((x) => ({ ...x, status: 'gap' as const })),
+        'not wired yet carrying evidence',
+      ],
+    ];
+    for (const [why, baseline, expected] of cases) {
+      const a = assessBaseline(baseline, live);
+      expect(a.usable, `${why} must be caught alone`).toBe(false);
+      expect(a.defect, why).toBe('evidence-stripped');
+      expect(a.detail, why).toContain(expected);
+    }
+  });
+
+  it('counts as GRADED only the pairs the baseline could actually fail on', () => {
+    // The announced number was a claim about KEY PRESENCE, so a wholesale
+    // blanking still printed `graded 1138/1138` — the mitigation asserting full
+    // coverage of a baseline that could prove nothing. Counting provable pairs
+    // makes the printed line mean what it says, which is worth more than the
+    // refusal: a surgical one-property tamper now announces 1135 rather than a
+    // clean 1138.
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
+    const intact = assessBaseline(real, live);
+    expect(intact.gradedPairs).toBeLessThan(intact.currentPairs);
+    expect(intact.gradedPairs, 'the 2 allow-listed pairs have no evidence to lose').toBe(
+      real.classes.flatMap((c) => c.properties).filter((p) => p.evidence.length || p.seededBy.length)
+        .length
+    );
+    const blanked = {
+      ...real,
+      classes: real.classes.map((c) => ({
+        ...c,
+        properties: c.properties.map((p) => ({ ...p, status: 'gap' as const, evidence: [], seededBy: [] })),
+      })),
+    } as HandledPropertyWiringReport;
+    expect(assessBaseline(blanked, live).gradedPairs, 'blanked pairs grade nothing').toBe(0);
+  });
+
   it('refuses a baseline whose counts are perfect but whose EVIDENCE is stripped', () => {
     // Strictly worse than any shrink: every count is immaculate, so the
     // mitigation announces `graded 1138/1138` while the comparison reads blank
@@ -2356,7 +2516,10 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
     const a = assessBaseline(blanked, live);
     expect(a.usable).toBe(false);
     expect(a.defect).toBe('evidence-stripped');
-    expect(a.gradedPairs, 'full coverage, zero provable content').toBe(a.currentPairs);
+    // It still holds every KEY — which is why key-presence counting announced a
+    // clean `graded 1138/1138` here — but nothing it holds can fail.
+    expect(a.baselinePairs).toBe(a.currentPairs);
+    expect(a.gradedPairs, 'every key present, zero provable content').toBe(0);
   });
 
   it('counts DISTINCT pairs, so replication cannot fake a length', () => {
@@ -2408,14 +2571,23 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
     expect(a.gradedPairs).toBeLessThan(a.currentPairs);
   });
 
-  it('the COMMITTED matrix grades 100% of the live tree', () => {
+  it('the COMMITTED matrix grades every pair that CAN fail', () => {
     // The repo invariant that makes the zero-threshold safe: erosion of coverage
-    // is loud here rather than implied by a silent OK.
+    // is loud here rather than implied by a silent OK. Stated against the
+    // PROVABLE pairs rather than all declared ones — the 2 allow-listed
+    // properties carry no evidence by definition, so 1136/1138 is the honest
+    // ceiling and pinning 100% would have been pinning a falsehood.
     const a = assessBaseline(
       loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json')),
       live
     );
     expect(a.usable).toBe(true);
-    expect(a.gradedPairs).toBe(a.currentPairs);
+    const provable = live.classes
+      .flatMap((c) => c.properties)
+      .filter((p) => p.evidence.length > 0 || p.seededBy.length > 0).length;
+    expect(a.gradedPairs).toBe(provable);
+    expect(a.currentPairs - a.gradedPairs, 'exactly the allow-listed pairs').toBe(
+      live.classes.flatMap((c) => c.properties).filter((p) => p.status !== 'wired').length
+    );
   });
 });

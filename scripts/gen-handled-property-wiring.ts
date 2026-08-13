@@ -242,9 +242,9 @@
  *
  * Partial coverage is handled by visibility rather than by a threshold nobody
  * could defend: EVERY run — writer included — prints `graded N/M pairs`. The
- * residual bound is stated on {@link assessBaseline}: any baseline whose
- * declared counts match the content it holds is accepted, WHATEVER TREE it
- * describes, and grades only what it covers.
+ * residual bound is stated on {@link assessBaseline}: what conditions 1-3 admit
+ * is a baseline that agrees with itself AND overlaps this tree — so a
+ * self-consistent SUBSET is usable and grades only what it covers.
  *
  * TWO ESCAPE HATCHES, deliberately SEPARATE, both WRITER-ONLY:
  *   - `--accept-evidence-loss` acknowledges a measured reduction, and prints
@@ -332,7 +332,7 @@ export const PROPERTY_BAG_PARAM_NAMES: ReadonlySet<string> = new Set([
  * No such shape exists in the tree today; if one appears, the fix is an
  * allow-list entry naming it, not re-admitting the previous bag wholesale.
  *
- * Measured: excluding these names moves ZERO of the 1063 declared properties
+ * Measured: excluding these names moves ZERO of the 1138 declared properties
  * out of `wired`, so the strictness costs nothing today.
  */
 export const PREVIOUS_PROPERTY_BAG_PARAM_NAMES: ReadonlySet<string> = new Set([
@@ -1114,6 +1114,9 @@ export function parseHandledProperties(cls: ts.ClassDeclaration): Map<string, Se
 /** The verdict vocabulary, shared by a class's bucket and a single property's status. */
 export type Bucket = 'wired' | 'gap' | 'allow-listed';
 
+/** The runtime twin of {@link Bucket}, for validating a baseline's labels. */
+export const BUCKETS: ReadonlySet<string> = new Set<Bucket>(['wired', 'gap', 'allow-listed']);
+
 export interface PropertyClassification {
   readonly name: string;
   readonly status: Bucket;
@@ -1379,8 +1382,8 @@ export function findEvidenceLosses(
       if (!before) continue;
       const shapes = new Set<string>(p.evidence);
       const seeds = new Set<string>(p.seededBy);
-      const lostShapes = (before.evidence ?? []).filter((s) => !shapes.has(s));
-      const lostSeeds = (before.seededBy ?? []).filter((s) => !seeds.has(s));
+      const lostShapes = before.evidence.filter((s) => !shapes.has(s));
+      const lostSeeds = before.seededBy.filter((s) => !seeds.has(s));
       if (lostShapes.length > 0 || lostSeeds.length > 0) {
         losses.push({
           className: c.className,
@@ -1414,6 +1417,11 @@ export function loadBaseline(path: string = OUT_JSON): HandledPropertyWiringRepo
   try {
     const parsed = JSON.parse(raw) as Partial<HandledPropertyWiringReport>;
     if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.classes)) return null;
+    // Defence in depth, and honestly labelled as such: the element walk below
+    // would also throw on a non-array and the outer catch would convert that to
+    // null, so no test can tell this clause from its absence. It is kept because
+    // a future refactor removing that catch would otherwise turn this into a
+    // crash, not because it changes today's verdict.
     if (parsed.classes.some((c) => !Array.isArray(c?.properties))) return null;
     // Element shape too, not just the array: `properties: [null]` cleared the
     // `Array.isArray` check and then died in the comparison walk with a bare
@@ -1435,12 +1443,18 @@ export function loadBaseline(path: string = OUT_JSON): HandledPropertyWiringRepo
         (c) =>
           typeof c?.className !== 'string' ||
           typeof c.file !== 'string' ||
-          typeof c.bucket !== 'string' ||
+          !BUCKETS.has(c.bucket) ||
           !Array.isArray(c.gaps) ||
           !Array.isArray(c.blindSpots) ||
           c.properties.some(
             (x: PropertyClassification | null) =>
               typeof x?.name !== 'string' ||
+              // `status` is a LABEL the usability rules key on, so an
+              // unconstrained one disarms them: a single property relabelled
+              // `"totally-bogus-status"` — a value not even in the union — took
+              // it out of the evidence requirement and hid the very loss being
+              // committed.
+              !BUCKETS.has(x.status) ||
               !Array.isArray(x.evidence) ||
               !Array.isArray(x.seededBy)
           )
@@ -1508,16 +1522,22 @@ export interface BaselineAssessment {
  * WHY NOT A COVERAGE RATIO. Any threshold is a magic constant needing its own
  * defence, and legitimate drift (a PR adding a provider class) must not trip it.
  *
- * THE RESIDUAL BOUND, stated as what is actually CHECKED rather than as a claim
- * about intent: any baseline whose declared counts match the content it holds is
- * accepted, WHATEVER TREE IT DESCRIBES, and it grades only the pairs it covers.
- * A self-consistent SUBSET is therefore usable — the committed matrix minus one
- * pair, with `declaredProperties` decremented, grades 1137/1138 and is accepted.
- * So is an OLDER committed matrix restored by a merge or checkout, and accepting
- * that is CORRECT: it is a real baseline describing a real tree, and it reports
- * real losses. What the run does about the difference is announce it — every
- * exit-0 path prints `graded N/M pairs`, so a subset says so in output the
- * author is already reading.
+ * THE RESIDUAL BOUND, stated as exactly what conditions 1-3 ADMIT rather than as
+ * a claim about intent. They admit a baseline that (1) agrees with its own
+ * summary, (2) whose labels match its evidence, and (3) that overlaps this tree
+ * — nothing weaker. So NOT "whatever tree it describes": a disjoint one is
+ * refused by 3, and a blanked one by 2. What IS admitted, and is the bound:
+ *   - a self-consistent SUBSET — the committed matrix minus one pair with
+ *     `declaredProperties` decremented is accepted and grades 1137/1138;
+ *   - an OLDER committed matrix restored by a merge or checkout, which is
+ *     self-consistent by construction. Accepting that is CORRECT: it is a real
+ *     baseline describing a real tree and it reports real losses;
+ *   - a property relabelled to a DIFFERENT VALID status with its evidence
+ *     blanked and the summary recomputed — a deliberate, hand-made edit that
+ *     hides exactly one loss.
+ * All three announce themselves: every exit-0 path prints `graded N/M pairs`,
+ * and because that count is over PROVABLE pairs, each of these reports a number
+ * below the ceiling rather than a clean full-coverage line.
  */
 export function assessBaseline(
   baseline: HandledPropertyWiringReport | null,
@@ -1538,8 +1558,17 @@ export function assessBaseline(
   // DISTINCT keys: a baseline that replicates one property to preserve `length`
   // satisfies a naive count while holding a single real pair.
   const known = new Set<string>();
+  // ...and separately, the keys that can actually FAIL. A baseline entry with no
+  // evidence and no seeds cannot lose any, so counting it as "graded" made the
+  // announced number a claim about key presence rather than about provable
+  // content: a wholesale blanking still printed `graded 1138/1138`.
+  const provable = new Set<string>();
   for (const c of baseline.classes) {
-    for (const p of c.properties) known.add(allowKey(c.className, p.name));
+    for (const p of c.properties) {
+      const key = allowKey(c.className, p.name);
+      known.add(key);
+      if (p.evidence.length > 0 || p.seededBy.length > 0) provable.add(key);
+    }
   }
   const baselinePairs = known.size;
   const claimedPairs =
@@ -1550,7 +1579,7 @@ export function assessBaseline(
   let gradedPairs = 0;
   for (const c of current.classes) {
     for (const p of c.properties) {
-      if (known.has(allowKey(c.className, p.name))) gradedPairs += 1;
+      if (provable.has(allowKey(c.className, p.name))) gradedPairs += 1;
     }
   }
   const base = { gradedPairs, currentPairs, baselinePairs, baselineClaimedPairs: claimedPairs };
@@ -1575,21 +1604,47 @@ export function assessBaseline(
     };
   }
 
-  // 2. The fields the comparison CONSUMES. Counts can be immaculate while these
-  //    are blank, and then the run reports full coverage having graded nothing.
-  const stripped = baseline.classes.flatMap((c) =>
-    c.properties
-      .filter((p) => p.status === 'wired' && (p.evidence.length === 0 || p.seededBy.length === 0))
-      .map((p) => allowKey(c.className, p.name))
-  );
-  if (stripped.length > 0) {
+  // 2. The labels must be TRUTHFUL about the content — a BICONDITIONAL, not a
+  //    one-way check. `status === 'wired'` must mean the entry carries evidence,
+  //    AND carrying evidence must mean it is labelled wired. A one-way check
+  //    keyed on `status` is disarmed by editing `status`, which is exactly what
+  //    happened: the recomputed `wiredProperties` then agrees with the new
+  //    labels, so condition 1 is satisfied BY CONSTRUCTION. "Self-consistent"
+  //    means the summary agrees with the LABELS, never that the labels describe
+  //    real output.
+  //
+  //    Each direction is reported separately because each is independently live
+  //    (see the per-half fixtures): a fixture tripping both at once fences
+  //    neither, which is the defect this very condition was added to fix, one
+  //    level up.
+  const wiredWithoutEvidence: string[] = [];
+  const wiredWithoutSeeds: string[] = [];
+  const unwiredWithEvidence: string[] = [];
+  for (const c of baseline.classes) {
+    for (const p of c.properties) {
+      const key = allowKey(c.className, p.name);
+      if (p.status === 'wired') {
+        if (p.evidence.length === 0) wiredWithoutEvidence.push(key);
+        if (p.seededBy.length === 0) wiredWithoutSeeds.push(key);
+      } else if (p.evidence.length > 0 || p.seededBy.length > 0) {
+        unwiredWithEvidence.push(key);
+      }
+    }
+  }
+  const labelDefects = [
+    ['wired with no evidence', wiredWithoutEvidence],
+    ['wired with no seeding member', wiredWithoutSeeds],
+    ['not wired yet carrying evidence', unwiredWithEvidence],
+  ] as const;
+  const brokenLabels = labelDefects.filter(([, keys]) => keys.length > 0);
+  if (brokenLabels.length > 0) {
     return {
       ...base,
       usable: false,
       defect: 'evidence-stripped',
-      detail:
-        `${stripped.length} wired propert${stripped.length === 1 ? 'y' : 'ies'} carry no evidence ` +
-        `or no seeding member (e.g. ${stripped.slice(0, 3).join(', ')})`,
+      detail: brokenLabels
+        .map(([why, keys]) => `${keys.length} ${why} (e.g. ${keys.slice(0, 2).join(', ')})`)
+        .join('; '),
     };
   }
 
