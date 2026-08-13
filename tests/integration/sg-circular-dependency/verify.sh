@@ -17,6 +17,21 @@
 #      cannot be deleted — AWS rejects `DeleteSecurityGroup` with
 #      `DependencyViolation: resource sg-xxx has a dependent object`. If cdkd
 #      orders the deletes wrong, destroy FAILS or orphans SGs/VPC here.
+#   3. The `sgr-...` SECURITY-GROUP RULE ID (issue #1761). CloudFormation
+#      identifies an ingress rule by the single field `Id`, which is that rule
+#      id — NOT any segment of cdkd's composite physicalId — so `cdkd export`
+#      can only build a correct `ResourcesToImport[].ResourceIdentifier` from a
+#      recorded attribute. Two assertions cover it: state must carry
+#      `attributes.Id` in `sgr-` shape after deploy, and `cdkd export --dry-run`
+#      must RESOLVE that exact value into the import plan.
+#
+#      The export arm runs against a SECOND stack, `CdkdSgIngressExportExample`
+#      — see `lib/sg-ingress-export-stack.ts` for why. Short version: `cdkd
+#      export` aborts the whole run on the first resource it cannot resolve
+#      (under `--dry-run` too), and this fixture's `ec2.Vpc` emits an
+#      `AWS::EC2::Route`, whose two-field CFn identifier has no composite-id
+#      splitter registered (issue #1771) — so the export would abort before ever
+#      reaching an ingress row.
 #
 # Asserts post-deploy: both SGs exist, each carries the cross-referencing
 # ingress rule (UserIdGroupPairs points at the OTHER SG). Asserts post-destroy:
@@ -67,8 +82,12 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 cd "$(dirname "$0")"
 
 STACK="CdkdSgCircularExample"
+# The issue #1761 export arm (see the header). Deployed, asserted and destroyed
+# inside phase 1b so the main destroy phase below is unchanged.
+EXPORT_STACK="CdkdSgIngressExportExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+EXPORT_STATE_KEY="cdkd/${EXPORT_STACK}/${REGION}/state.json"
 FIXTURE_TAG_KEY="cdkd:integ-fixture"
 FIXTURE_TAG_VALUE="sg-circular-dependency"
 
@@ -82,6 +101,9 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 SG_A_ID=""
 SG_B_ID=""
 VPC_ID=""
+EXPORT_SG_A_ID=""
+EXPORT_SG_B_ID=""
+EXPORT_VPC_ID=""
 
 # Revoke every ingress rule off both SGs, then delete the SGs, then the VPC.
 # This is the SAME ordering cdkd must perform — doing it here in cleanup
@@ -89,7 +111,7 @@ VPC_ID=""
 force_cleanup_aws() {
   set +eu
   # 1) Revoke ALL ingress on each SG so neither references the other anymore.
-  for SG in "${SG_A_ID}" "${SG_B_ID}"; do
+  for SG in "${SG_A_ID}" "${SG_B_ID}" "${EXPORT_SG_A_ID}" "${EXPORT_SG_B_ID}"; do
     [ -z "${SG}" ] && continue
     PERMS=$(aws ec2 describe-security-groups \
       --group-ids "${SG}" \
@@ -104,17 +126,18 @@ force_cleanup_aws() {
     fi
   done
   # 2) Now the cross-references are gone, the SGs can be deleted.
-  for SG in "${SG_A_ID}" "${SG_B_ID}"; do
+  for SG in "${SG_A_ID}" "${SG_B_ID}" "${EXPORT_SG_A_ID}" "${EXPORT_SG_B_ID}"; do
     [ -z "${SG}" ] && continue
     echo "    [cleanup] deleting ${SG}"
     aws ec2 delete-security-group --group-id "${SG}" --region "${REGION}" >/dev/null 2>&1 || true
   done
-  # 3) VPC last (subnet/IGW/route-table teardown is left to cdkd; if cdkd
+  # 3) VPCs last (subnet/IGW/route-table teardown is left to cdkd; if cdkd
   #    already removed them this is a no-op, otherwise we at least try).
-  if [ -n "${VPC_ID}" ]; then
-    echo "    [cleanup] attempting VPC delete ${VPC_ID} (best-effort)"
-    aws ec2 delete-vpc --vpc-id "${VPC_ID}" --region "${REGION}" >/dev/null 2>&1 || true
-  fi
+  for VPC in "${VPC_ID}" "${EXPORT_VPC_ID}"; do
+    [ -z "${VPC}" ] && continue
+    echo "    [cleanup] attempting VPC delete ${VPC} (best-effort)"
+    aws ec2 delete-vpc --vpc-id "${VPC}" --region "${REGION}" >/dev/null 2>&1 || true
+  done
   set -eu
 }
 
@@ -128,6 +151,10 @@ cleanup() {
       --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" \
       --yes
+    node "${LOCAL_DIST}" state destroy "${EXPORT_STACK}" \
+      --state-bucket "${STATE_BUCKET:-}" \
+      --region "${REGION}" \
+      --yes
   fi
   # Belt-and-suspenders direct revoke-then-delete in case state destroy could
   # not complete (e.g. ordering bug left SGs cross-referencing each other).
@@ -135,6 +162,8 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/${EXPORT_STATE_KEY}" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${EXPORT_STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
   set -eu
 }
@@ -285,6 +314,157 @@ if [ "${B_REFERENCES_A}" != "true" ]; then
   exit 1
 fi
 echo "    OK: SG-A ingress references SG-B AND SG-B ingress references SG-A (circular ref is live on AWS)"
+
+# --- Issue #1761: the sgr- rule id must be RECORDED in state ----------------
+# Every AWS::EC2::SecurityGroupIngress row must carry `attributes.Id` holding
+# the `sgr-...` id AuthorizeSecurityGroupIngress returned. Before the fix the
+# provider recorded `attributes: {}`, so this loop fails on the FIRST row.
+#
+# NOTE: no `jq -e` anywhere below. `jq -e` exits non-zero when the RESULT is
+# `false`, so a boolean probe written that way takes the read-failure branch and
+# accuses the fix instead of reporting the value.
+assert_recorded_rule_ids() { # usage: assert_recorded_rule_ids "<state json>" "<label>"
+  local state_json="$1"
+  local label="$2"
+  local rows logical_id rule_id count
+
+  rows=$(printf '%s' "${state_json}" | jq -r '
+    .resources | to_entries[]
+    | select(.value.resourceType == "AWS::EC2::SecurityGroupIngress")
+    | .key + " " + (.value.attributes.Id // "<MISSING>")')
+
+  count=0
+  while IFS=' ' read -r logical_id rule_id; do
+    [ -z "${logical_id}" ] && continue
+    count=$((count + 1))
+    case "${rule_id}" in
+      sgr-*)
+        echo "    OK: ${label} ${logical_id} recorded attributes.Id=${rule_id}"
+        ;;
+      *)
+        echo "FAIL: ${label} ${logical_id} (AWS::EC2::SecurityGroupIngress) has attributes.Id='${rule_id}' — expected the 'sgr-...' security-group rule id AWS returns from AuthorizeSecurityGroupIngress. Without it 'cdkd export' cannot build the CloudFormation import identifier (issue #1761)." >&2
+        printf '%s' "${state_json}" | jq '.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::SecurityGroupIngress") | {id: .key, physicalId: .value.physicalId, attributes: .value.attributes}' >&2
+        exit 1
+        ;;
+    esac
+  done <<EOF
+${rows}
+EOF
+
+  if [ "${count}" -lt 2 ]; then
+    echo "FAIL: ${label} expected >= 2 AWS::EC2::SecurityGroupIngress rows in state, found ${count} — the assertion above would have passed vacuously" >&2
+    exit 1
+  fi
+}
+
+assert_recorded_rule_ids "${STATE}" "${STACK}"
+
+# --- Phase 1b: issue #1761 export arm --------------------------------------
+# Deploy the companion stack, assert the same recorded attribute, then prove
+# `cdkd export --dry-run` RESOLVES it into the CloudFormation import plan.
+echo "==> Phase 1b: deploy the export-arm stack (${EXPORT_STACK})"
+node "${LOCAL_DIST}" deploy "${EXPORT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+EXPORT_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${EXPORT_STATE_KEY}" - 2>/dev/null)
+if [ -z "${EXPORT_STATE}" ]; then
+  echo "FAIL: no state file at s3://${STATE_BUCKET}/${EXPORT_STATE_KEY} after deploy (deploy likely failed)" >&2
+  exit 1
+fi
+
+EXPORT_SG_IDS=$(echo "${EXPORT_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::SecurityGroup") | .value.physicalId] | .[]')
+EXPORT_SG_A_ID=$(echo "${EXPORT_SG_IDS}" | sed -n '1p')
+EXPORT_SG_B_ID=$(echo "${EXPORT_SG_IDS}" | sed -n '2p')
+EXPORT_VPC_ID=$(echo "${EXPORT_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::VPC") | .value.physicalId] | first // ""')
+echo "    resolved export SG-A=${EXPORT_SG_A_ID} SG-B=${EXPORT_SG_B_ID} VPC=${EXPORT_VPC_ID}"
+
+assert_recorded_rule_ids "${EXPORT_STATE}" "${EXPORT_STACK}"
+
+# The end-to-end claim: `cdkd export` must resolve the CFn identifier for each
+# ingress row FROM that attribute. `--dry-run` prints the import plan and stops
+# before any lock / changeset, so nothing is mutated here.
+#
+# Against a binary WITHOUT the fix this step fails rather than passing quietly:
+# `buildImportPlan` cannot resolve the identifier, pushes each ingress row into
+# `blocked`, and aborts the whole run before the plan is ever printed — so the
+# `Id=sgr-...` line the loop below greps for does not exist. It also fails on
+# the PRE-#1659 behavior, which shipped the composite (`Id=sg-0abc|tcp|443|443`)
+# and does not match the `sgr-` shape either.
+echo "==> Phase 1b: cdkd export --dry-run must resolve Id=sgr-... for every ingress row"
+# Assignment inside the `if` condition, not a bare `VAR=$(...)`: under `set -e`
+# a failing command substitution in a standalone assignment aborts the script
+# before `$?` can be read, so the diagnostic below would never print.
+if EXPORT_PLAN_RAW=$(node "${LOCAL_DIST}" export "${EXPORT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --dry-run 2>&1); then
+  EXPORT_PLAN_EXIT=0
+else
+  EXPORT_PLAN_EXIT=$?
+fi
+# Strip ANSI so a colorized plan line still matches the fixed-string greps.
+EXPORT_PLAN=$(printf '%s' "${EXPORT_PLAN_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
+
+if [ "${EXPORT_PLAN_EXIT}" -ne 0 ]; then
+  echo "FAIL: cdkd export --dry-run exited ${EXPORT_PLAN_EXIT} for ${EXPORT_STACK}. If the failure names AWS::EC2::SecurityGroupIngress, cdkd could not resolve the rule's CloudFormation identifier from state (issue #1761). Full output:" >&2
+  printf '%s\n' "${EXPORT_PLAN}" >&2
+  exit 1
+fi
+
+EXPORT_INGRESS_ROWS=$(echo "${EXPORT_STATE}" | jq -r '
+  .resources | to_entries[]
+  | select(.value.resourceType == "AWS::EC2::SecurityGroupIngress")
+  | .key + " " + (.value.attributes.Id // "<MISSING>")')
+
+EXPORT_ASSERTED=0
+while IFS=' ' read -r LID RID; do
+  [ -z "${LID}" ] && continue
+  PLAN_LINE=$(printf '%s\n' "${EXPORT_PLAN}" | grep -F "${LID} (AWS::EC2::SecurityGroupIngress)" || true)
+  if [ -z "${PLAN_LINE}" ]; then
+    echo "FAIL: cdkd export --dry-run printed no import-plan row for ${LID} (AWS::EC2::SecurityGroupIngress). Full output:" >&2
+    printf '%s\n' "${EXPORT_PLAN}" >&2
+    exit 1
+  fi
+  # The exact recorded value, not merely 'an sgr- shaped string': that is what
+  # excludes a plan built from anything other than the attribute this PR records.
+  if ! printf '%s\n' "${PLAN_LINE}" | grep -qF "Id=${RID}"; then
+    echo "FAIL: import-plan row for ${LID} does not carry the recorded rule id 'Id=${RID}' — got: ${PLAN_LINE}" >&2
+    exit 1
+  fi
+  echo "    OK: export plan resolves ${LID} <- Id=${RID}"
+  EXPORT_ASSERTED=$((EXPORT_ASSERTED + 1))
+done <<EOF
+${EXPORT_INGRESS_ROWS}
+EOF
+
+if [ "${EXPORT_ASSERTED}" -lt 2 ]; then
+  echo "FAIL: expected to assert >= 2 export-plan ingress rows, asserted ${EXPORT_ASSERTED} — the loop above passed vacuously" >&2
+  exit 1
+fi
+
+echo "==> Phase 1b: destroy the export-arm stack"
+if ! node "${LOCAL_DIST}" destroy "${EXPORT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force; then
+  echo "FAIL: cdkd destroy returned non-zero for ${EXPORT_STACK}" >&2
+  exit 1
+fi
+
+assert_gone "state file s3://${STATE_BUCKET}/${EXPORT_STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${EXPORT_STATE_KEY}"
+for SG in "${EXPORT_SG_A_ID}" "${EXPORT_SG_B_ID}"; do
+  assert_gone "export-arm security group ${SG} still exists after destroy (orphan)" aws ec2 describe-security-groups --group-ids "${SG}" --region "${REGION}"
+done
+if [ -n "${EXPORT_VPC_ID}" ]; then
+  assert_gone "export-arm VPC ${EXPORT_VPC_ID} still exists after destroy (orphan)" aws ec2 describe-vpcs --vpc-ids "${EXPORT_VPC_ID}" --region "${REGION}"
+fi
+echo "    OK: export-arm stack destroyed cleanly (SGs + VPC + state gone)"
+# Cleared so the EXIT trap does not try to re-delete them.
+EXPORT_SG_A_ID=""
+EXPORT_SG_B_ID=""
+EXPORT_VPC_ID=""
 
 # --- Phase 2: destroy (THE KEY TEST) ---------------------------------------
 # cdkd MUST revoke both ingress rules BEFORE deleting either SG. If it deletes

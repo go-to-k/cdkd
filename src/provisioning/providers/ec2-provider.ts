@@ -39,6 +39,7 @@ import {
   DeleteTagsCommand,
   DescribeSubnetsCommand,
   DescribeSecurityGroupsCommand,
+  DescribeSecurityGroupRulesCommand,
   RunInstancesCommand,
   TerminateInstancesCommand,
   DescribeInstancesCommand,
@@ -68,6 +69,7 @@ import {
   type VolumeType,
   type BlockDeviceMapping,
   type IpPermission,
+  type SecurityGroupRule,
   type Volume,
   type InstanceMetadataOptionsRequest,
   type CreditSpecificationRequest,
@@ -3092,7 +3094,7 @@ export class EC2Provider implements ResourceProvider {
     );
 
     try {
-      await this.ec2Client.send(
+      const response = await this.ec2Client.send(
         new AuthorizeSecurityGroupIngressCommand({
           GroupId: groupId,
           // Override the protocol with the GUARDED value. `buildIpPermission`
@@ -3106,21 +3108,54 @@ export class EC2Provider implements ResourceProvider {
         })
       );
 
+      // Issue #1761: the `sgr-...` rule id is read off the response the
+      // MUTATING call itself returned — deliberately not from a follow-up
+      // `DescribeSecurityGroupRules`. Adding an `await` between the Authorize
+      // above and the return below re-creates the issue #1710 orphan class: a
+      // throw there leaves the rule live on AWS while the failed CREATE
+      // journals no physicalId, so nothing ever revokes it. `singleRuleId`
+      // is pure and cannot throw.
+      const ruleId = singleSecurityGroupRuleId(response.SecurityGroupRules);
+
       this.logger.debug(`Successfully created SecurityGroupIngress ${logicalId}: ${physicalId}`);
 
       return {
         physicalId,
-        attributes: {},
+        // Recorded under `Id`, which is BOTH the type's CloudFormation
+        // `primaryIdentifier` and its only `Fn::GetAtt` attribute name (live
+        // `describe-type`, us-east-1, 2026-08-13: `primaryIdentifier` and
+        // `readOnlyProperties` are both exactly `["/properties/Id"]`). cdkd's
+        // physicalId for the type is the composite tuple its own revoke call
+        // needs, which is NOT the CFn identifier — so without this attribute
+        // `cdkd export` has nothing to resolve (issue #1761).
+        attributes: ruleId ? { Id: ruleId } : {},
         ...(effectiveProperties && { effectiveProperties }),
       };
     } catch (error) {
       // Treat "already exists" as success (idempotent, like CloudFormation)
       if (error instanceof Error && error.message.includes('already exists')) {
         this.logger.debug(`SecurityGroupIngress ${logicalId} already exists, treating as success`);
+        // The Authorize FAILED, so no response carries the rule id — but this
+        // arm still reports the rule as provisioned and state is written from
+        // it, so the id has to be looked up or `cdkd export` refuses exactly
+        // the resources a re-run adopted (issue #1761). Best-effort by
+        // construction: `lookupIngressRuleId` swallows its own failures and
+        // returns `undefined`, because turning today's idempotent success into
+        // a deploy failure over a missing export-time convenience would be a
+        // strictly worse trade. Safe to `await` here in a way the success arm
+        // is not — this path created nothing, so there is nothing to orphan.
+        const existingRuleId = await this.lookupIngressRuleId(logicalId, groupId, {
+          ...properties,
+          IpProtocol: ipProtocol,
+        });
         // The same record the success arm writes: this arm reports the rule as
         // provisioned, so state is written here too and the narrowing has to
         // reach it or the phantom drift survives on the idempotent path.
-        return { physicalId, attributes: {}, ...(effectiveProperties && { effectiveProperties }) };
+        return {
+          physicalId,
+          attributes: existingRuleId ? { Id: existingRuleId } : {},
+          ...(effectiveProperties && { effectiveProperties }),
+        };
       }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -3130,6 +3165,62 @@ export class EC2Provider implements ResourceProvider {
         undefined,
         cause
       );
+    }
+  }
+
+  /**
+   * Best-effort lookup of the `sgr-...` id of an ALREADY-EXISTING ingress rule
+   * (issue #1761).
+   *
+   * Only the idempotent "already exists" arm of {@link createSecurityGroupIngress}
+   * calls this: the successful arm reads the id straight off
+   * `AuthorizeSecurityGroupIngress`'s own response, which is what keeps the
+   * mutating path free of the issue #1710 orphan hazard.
+   *
+   * **Never throws.** A `DescribeSecurityGroupRules` failure (permissions,
+   * throttle, a rule that no longer matches) degrades to `undefined`, which
+   * records no attribute — `cdkd export` then refuses that one resource with
+   * its own actionable message, which is strictly better than failing a deploy
+   * that AWS already considers satisfied.
+   *
+   * Returns a value only when EXACTLY ONE non-egress rule on the group matches
+   * the requested `(protocol, ports, source)` triple. Zero matches means the
+   * "already exists" error came from a rule cdkd cannot pin down; two or more
+   * means the identifier would be ambiguous, and adopting an ambiguous id is
+   * the #1658 failure mode (a state row that looks adopted but names the wrong
+   * AWS object).
+   */
+  private async lookupIngressRuleId(
+    logicalId: string,
+    groupId: string,
+    properties: Record<string, unknown>
+  ): Promise<string | undefined> {
+    try {
+      const resp = await this.ec2Client.send(
+        new DescribeSecurityGroupRulesCommand({
+          Filters: [{ Name: 'group-id', Values: [groupId] }],
+        })
+      );
+      const matches = (resp.SecurityGroupRules ?? []).filter(
+        (rule) => rule.IsEgress !== true && securityGroupRuleMatchesCfnIngress(rule, properties)
+      );
+      const ids = matches
+        .map((rule) => rule.SecurityGroupRuleId)
+        .filter((id): id is string => typeof id === 'string' && id.trim() !== '');
+      if (ids.length !== 1) {
+        this.logger.debug(
+          `SecurityGroupIngress ${logicalId}: ${ids.length} existing rule(s) on ${groupId} match ` +
+            `the requested protocol/ports/source — not recording an Id attribute`
+        );
+        return undefined;
+      }
+      return ids[0];
+    } catch (error) {
+      this.logger.debug(
+        `SecurityGroupIngress ${logicalId}: could not look up the existing rule id on ${groupId} ` +
+          `(${error instanceof Error ? error.message : String(error)}) — not recording an Id attribute`
+      );
+      return undefined;
     }
   }
 
@@ -5980,6 +6071,49 @@ export class EC2Provider implements ResourceProvider {
           );
           return resp.SecurityGroups?.[0] ? { physicalId, attributes: {} } : null;
         }
+        case 'AWS::EC2::SecurityGroupIngress': {
+          // Only the `sgr-...` rule id is accepted: it is CloudFormation's own
+          // `primaryIdentifier` for the type and the id the EC2 console shows,
+          // while cdkd's composite `<groupId>|<ipProtocol>|<fromPort>|<toPort>`
+          // is an internal shape a user cannot read off AWS (and one the same
+          // tuple can share with several rules). The composite is still what
+          // gets RECORDED — the revoke path needs the tuple — alongside the
+          // `Id` attribute `cdkd export` resolves from (issue #1761).
+          if (!physicalId.startsWith('sgr-')) return null;
+          const resp = await this.ec2Client.send(
+            new DescribeSecurityGroupRulesCommand({ SecurityGroupRuleIds: [physicalId] })
+          );
+          const rule = resp.SecurityGroupRules?.[0];
+          // An EGRESS rule id is a different CFn type
+          // (`AWS::EC2::SecurityGroupEgress`); adopting it here would record a
+          // row whose delete calls `RevokeSecurityGroupIngress` and silently
+          // does nothing.
+          if (!rule || rule.IsEgress === true) return null;
+          if (!rule.GroupId || !rule.IpProtocol || !rule.SecurityGroupRuleId) return null;
+          const segments = [
+            { name: 'groupId', value: rule.GroupId },
+            { name: 'ipProtocol', value: rule.IpProtocol },
+            { name: 'fromPort', value: rule.FromPort ?? '-1' },
+            { name: 'toPort', value: rule.ToPort ?? '-1' },
+          ];
+          // Warn-and-SKIP, matching the `AWS::EC2::EIP` arm below: an
+          // `import()` may decline a row, but it must never ADOPT an id it
+          // knows decodes ambiguously (#1658). Unreachable in practice — every
+          // segment comes from `DescribeSecurityGroupRules`.
+          const refusal = compositeIdSeparatorRefusal(
+            'AWS::EC2::SecurityGroupIngress',
+            logicalId,
+            segments
+          );
+          if (refusal !== undefined) {
+            this.logger.warn(`${refusal} Skipping import.`);
+            return null;
+          }
+          return {
+            physicalId: packCompositeId('AWS::EC2::SecurityGroupIngress', logicalId, segments),
+            attributes: { Id: rule.SecurityGroupRuleId },
+          };
+        }
         case 'AWS::EC2::NatGateway': {
           const resp = await this.ec2Client.send(
             new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
@@ -6153,6 +6287,69 @@ function sgProtocolKey(value: unknown): unknown {
   // here too, and keeps the standalone lookup and the inline-rule reconcile
   // reading ONE definition of protocol identity.
   return canonicalizeIpProtocolValue(value ?? '-1');
+}
+
+/**
+ * The single `sgr-...` id an `AuthorizeSecurityGroupIngress` response reports
+ * for a standalone `AWS::EC2::SecurityGroupIngress` (issue #1761).
+ *
+ * Pure by design: {@link EC2Provider.createSecurityGroupIngress} calls it
+ * between the mutating Authorize and its return, where an `await` of anything
+ * that can throw would re-create the issue #1710 orphan class.
+ *
+ * `undefined` unless the response carries EXACTLY ONE rule id. AWS mints one
+ * rule per source entry, and cdkd sends one `IpPermission` per CFn resource —
+ * but a template declaring both `CidrIp` and `CidrIpv6` on the same ingress
+ * resource makes `buildIpPermission` emit two sources and AWS answers with two
+ * rules. Neither is "the" CloudFormation identifier for the resource, so
+ * recording nothing (and letting `cdkd export` refuse with its own message) is
+ * the only answer that cannot silently name the wrong rule.
+ */
+function singleSecurityGroupRuleId(rules: SecurityGroupRule[] | undefined): string | undefined {
+  const ids = (rules ?? [])
+    .map((rule) => rule.SecurityGroupRuleId)
+    .filter((id): id is string => typeof id === 'string' && id.trim() !== '');
+  return ids.length === 1 ? ids[0] : undefined;
+}
+
+/**
+ * Does a `DescribeSecurityGroupRules` rule describe the same ingress rule the
+ * given CFn `AWS::EC2::SecurityGroupIngress` properties ask for?
+ *
+ * Deliberately NOT expressed via {@link sgRuleKey}: that key includes
+ * `SourceSecurityGroupOwnerId` and `Description`, both of which AWS fills in on
+ * the read side even when the template omits them, so a whole-key compare
+ * would report "no match" for the ordinary same-account SG-to-SG rule this
+ * lookup exists to find. Matching the fields the template actually pins —
+ * protocol, port range, and whichever ONE source key it declares — is what
+ * makes the comparison decidable from a partial template.
+ *
+ * Ports are compared with AWS's own `-1` ("all") spelling on both sides, since
+ * an omitted `FromPort` / `ToPort` reads back as `-1`.
+ */
+function securityGroupRuleMatchesCfnIngress(
+  rule: SecurityGroupRule,
+  properties: Record<string, unknown>
+): boolean {
+  if (sgProtocolKey(rule.IpProtocol) !== sgProtocolKey(properties['IpProtocol'])) return false;
+  if ((rule.FromPort ?? -1) !== ((properties['FromPort'] as number | undefined) ?? -1))
+    return false;
+  if ((rule.ToPort ?? -1) !== ((properties['ToPort'] as number | undefined) ?? -1)) return false;
+
+  // One source key per CFn ingress resource. When the template declares none
+  // (legal — an all-sources rule is rejected by AWS, so this is the degenerate
+  // case), protocol + ports alone decide, and the caller's "exactly one match"
+  // rule still refuses an ambiguous answer.
+  const sources: Array<[unknown, unknown]> = [
+    [properties['CidrIp'], rule.CidrIpv4],
+    [properties['CidrIpv6'], rule.CidrIpv6],
+    [properties['SourceSecurityGroupId'], rule.ReferencedGroupInfo?.GroupId],
+    [properties['SourcePrefixListId'], rule.PrefixListId],
+  ];
+  for (const [declared, actual] of sources) {
+    if (declared !== undefined && declared !== null && declared !== actual) return false;
+  }
+  return true;
 }
 
 function sgRuleKey(rule: CfnSgRule, direction: SgDirection): string {
