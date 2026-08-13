@@ -700,18 +700,6 @@ function effectiveLifecycleConfiguration(config: unknown): unknown {
 }
 
 /**
- * Apply a per-ITEM fold to an array-valued member on BOTH sides of a diff — the
- * `canonicalizeDesiredProperties` plumbing every fold in this file shares, from
- * the top-level `Id`-keyed properties down to the nested `Rules[].Transitions[]`
- * list (the bag is the containing OBJECT, which at the top level is the property
- * bag and one level down is the rule).
- *
- * Identity-returns at every level (untouched item -> untouched array ->
- * untouched bag), and leaves a non-array property or a non-object element ALONE
- * so a malformed template still reaches the provider's own refusal rather than
- * being reshaped into something that looks valid.
- */
-/**
  * Apply a WHOLE-BLOCK fold to one top-level property on BOTH sides of a diff —
  * the {@link canonicalizeItemList} sibling for the two #1748 folds, whose unit
  * is the block rather than an item of a list.
@@ -738,6 +726,18 @@ function canonicalizeBlock(
   return folded === properties[key] ? properties : { ...properties, [key]: folded };
 }
 
+/**
+ * Apply a per-ITEM fold to an array-valued member on BOTH sides of a diff — the
+ * `canonicalizeDesiredProperties` plumbing every fold in this file shares, from
+ * the top-level `Id`-keyed properties down to the nested `Rules[].Transitions[]`
+ * list (the bag is the containing OBJECT, which at the top level is the property
+ * bag and one level down is the rule).
+ *
+ * Identity-returns at every level (untouched item -> untouched array ->
+ * untouched bag), and leaves a non-array property or a non-object element ALONE
+ * so a malformed template still reaches the provider's own refusal rather than
+ * being reshaped into something that looks valid.
+ */
 function canonicalizeItemList(
   properties: Record<string, unknown>,
   key: string,
@@ -2624,6 +2624,14 @@ export class S3BucketProvider implements ResourceProvider {
       // stringly typed and cdkd is not — so the predicate is
       // `configBooleanRefusal`, which runs `coerceCfnBoolean`, i.e. literally
       // the function the wire read below calls.
+      //
+      // A NUMBER is refused, and that is a decision rather than an oversight —
+      // the string sibling records its own `coerceNumber` relaxation the same
+      // way. `requireConfigString` accepts a number at the sites where CFn's
+      // scalar coercion makes one legitimate (an unquoted YAML `IpProtocol: -1`
+      // deploys today); there is no such shape for `Enabled`, whose CFn type is
+      // `boolean`, so a `1` here is a template bug and forwarding it — which is
+      // what the pre-#1751 read did — put a non-boolean on the wire.
       const enabledRefusal = configBooleanRefusal(
         config,
         'Enabled',
@@ -4352,15 +4360,6 @@ export class S3BucketProvider implements ResourceProvider {
   ): Promise<Map<string, unknown>> {
     const overrides = new Map<string, unknown>();
     /**
-     * Record a per-ITEM applier outcome.
-     *
-     * A SKIPPED item is DROPPED — there is no previously-applied item to
-     * substitute on a fresh bucket. An item applied with a SUBSTITUTED value
-     * (issue #1670) is kept in place as SENT, which is a decision the create
-     * path makes for the same reason the update path does: the Put SUCCEEDED,
-     * so AWS holds the substituted value and state must say so.
-     */
-    /**
      * Record a WHOLE-BLOCK fold: the effective value is what was SENT (issue
      * #1748). The create-path twin of `applySubConfigDiffs`'s helper of the same
      * name; identity sets no override, so an ordinary CFn-spelled template is
@@ -4369,6 +4368,15 @@ export class S3BucketProvider implements ResourceProvider {
     const recordEffectiveFold = (key: string, sent: unknown): void => {
       if (sent !== properties[key]) overrides.set(key, sent);
     };
+    /**
+     * Record a per-ITEM applier outcome.
+     *
+     * A SKIPPED item is DROPPED — there is no previously-applied item to
+     * substitute on a fresh bucket. An item applied with a SUBSTITUTED value
+     * (issue #1670) is kept in place as SENT, which is a decision the create
+     * path makes for the same reason the update path does: the Put SUCCEEDED,
+     * so AWS holds the substituted value and state must say so.
+     */
     const recordItemOutcome = (
       key: string,
       configs: Array<Record<string, unknown>>,

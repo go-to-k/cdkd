@@ -1690,16 +1690,22 @@ describe('issue #1751: a declared but unusable inventory Enabled', () => {
   // was sent for that item, so there is no effective value to record, and
   // leaving it visible is what keeps `cdkd diff` reporting the fault until the
   // template is corrected.
-  it('the twin leaves an unusable value untouched', () => {
-    expect(
-      at(
-        provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
-          InventoryConfigurations: [inventoryWithEnabled(null)],
-        }),
-        'InventoryConfigurations',
-        0,
-        'Enabled'
-      )
-    ).toBeNull();
-  });
+  for (const value of [null, '', '   ', 'yes', 1, [], {}]) {
+    it(`the twin leaves an unusable value untouched (${JSON.stringify(value)})`, () => {
+      // Every shape, not just `null`: the fold's job is to leave a
+      // declared-but-unusable value ALONE so `cdkd diff` keeps reporting the
+      // fault, and a fold that normalized only the nullish spelling would pass
+      // a `null`-only row while silently concealing the others.
+      expect(
+        at(
+          provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+            InventoryConfigurations: [inventoryWithEnabled(value)],
+          }),
+          'InventoryConfigurations',
+          0,
+          'Enabled'
+        )
+      ).toEqual(value);
+    });
+  }
 });

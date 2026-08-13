@@ -281,6 +281,9 @@ describe('issue #1748: notification ARN aliases', () => {
         },
       });
 
+      // The Put FIRED — without this, "no effective bag" is also satisfied by
+      // an applier that never ran at all, which is a different (and worse) bug.
+      expect(sentCommands(PutBucketNotificationConfigurationCommand)).toHaveLength(1);
       expect(effective).toBeUndefined();
     });
   }
@@ -488,7 +491,7 @@ describe('issue #1748: lifecycle transition aliases', () => {
   }
 
   it('leaves an ordinary CFn-spelled lifecycle template completely alone', async () => {
-    const { effective } = await update({
+    const { effective, lifecycleInput } = await update({
       BucketName: BUCKET,
       LifecycleConfiguration: {
         Rules: [
@@ -502,6 +505,8 @@ describe('issue #1748: lifecycle transition aliases', () => {
       },
     });
 
+    // Same vacuity guard as the notification sibling: the Put fired.
+    expect(lifecycleInput).toBeDefined();
     expect(effective).toBeUndefined();
   });
 
@@ -596,5 +601,120 @@ describe('issue #1748: the fold and its twin converge', () => {
     expect(canonicalTemplate['LifecycleConfiguration']).toEqual(
       effective?.['LifecycleConfiguration']
     );
+  });
+});
+
+describe('issue #1748: the arms the update path does not reach', () => {
+  const aliasRule = {
+    Id: 'r1',
+    Status: 'Enabled',
+    Prefix: '',
+    Transitions: [{ Days: 30, StorageClass: 'GLACIER' }],
+  };
+
+  // The create path has its OWN `recordEffectiveFold` and its own skip answer,
+  // and only lifecycle has a skip arm there — so neither is reachable from the
+  // update rows above.
+  it('records the fold on a template-path CREATE', async () => {
+    const result = await provider.create('L', RESOURCE_TYPE, {
+      BucketName: BUCKET,
+      LifecycleConfiguration: { Rules: [aliasRule] },
+    });
+
+    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(1);
+    const item = at(
+      result.effectiveProperties,
+      'LifecycleConfiguration',
+      'Rules',
+      0,
+      'Transitions',
+      0
+    ) as Record<string, unknown>;
+    expect(item['TransitionInDays']).toBe(30);
+    expect('Days' in item).toBe(false);
+  });
+
+  it('DROPS the key when the create-path Put is skipped — a fresh bucket has no previous value', async () => {
+    // Reachable only from the rollback executor's reverse-replacement arm,
+    // whose `replayingState` context downgrades the refusal a malformed
+    // `Status` would otherwise throw. Nothing was applied, so the effective bag
+    // must not describe a call that never went out — and must not fold either.
+    const result = await provider.create(
+      'L',
+      RESOURCE_TYPE,
+      {
+        BucketName: BUCKET,
+        LifecycleConfiguration: { Rules: [{ ...aliasRule, Status: null }] },
+      },
+      { replayingState: true }
+    );
+
+    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+    expect(result.effectiveProperties).toBeDefined();
+    expect('LifecycleConfiguration' in (result.effectiveProperties ?? {})).toBe(false);
+  });
+
+  it('leaves a non-array Events alone rather than reshaping it', () => {
+    // The wire prefers `Event` and ignores a malformed `Events`; with neither
+    // usable there is nothing to fold onto, so the item is left for the
+    // applier's own handling.
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      NotificationConfiguration: {
+        TopicConfigurations: [{ Topic: TOPIC_ARN, Events: 'ObjectCreated' }],
+      },
+    });
+
+    expect(at(canonical, 'NotificationConfiguration', 'TopicConfigurations', 0)).toEqual({
+      Topic: TOPIC_ARN,
+      Events: 'ObjectCreated',
+    });
+  });
+
+  it('identity-returns a non-plain-object block on either fold', () => {
+    // A malformed block must still reach the provider's own refusal rather than
+    // being reshaped into something that looks valid.
+    for (const block of ['Enabled', 42, [], null]) {
+      const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+        NotificationConfiguration: block,
+        LifecycleConfiguration: block,
+      });
+      expect(canonical['NotificationConfiguration']).toEqual(block);
+      expect(canonical['LifecycleConfiguration']).toEqual(block);
+    }
+  });
+
+  it('falls through a NULLISH TransitionInDays to the Days alias, as the wire does', () => {
+    // The notification family pins this; the lifecycle aliases run the same
+    // helper and are pinned here so a per-family regression cannot hide.
+    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+      LifecycleConfiguration: {
+        Rules: [
+          {
+            ...aliasRule,
+            Transitions: [{ TransitionInDays: null, Days: 30, StorageClass: 'GLACIER' }],
+            NoncurrentVersionTransitions: [
+              { TransitionInDays: null, NoncurrentDays: 45, StorageClass: 'GLACIER' },
+            ],
+          },
+        ],
+      },
+    });
+
+    const t = at(canonical, 'LifecycleConfiguration', 'Rules', 0, 'Transitions', 0) as Record<
+      string,
+      unknown
+    >;
+    expect(t['TransitionInDays']).toBe(30);
+    expect('Days' in t).toBe(false);
+    const nvt = at(
+      canonical,
+      'LifecycleConfiguration',
+      'Rules',
+      0,
+      'NoncurrentVersionTransitions',
+      0
+    ) as Record<string, unknown>;
+    expect(nvt['TransitionInDays']).toBe(45);
+    expect('NoncurrentDays' in nvt).toBe(false);
   });
 });

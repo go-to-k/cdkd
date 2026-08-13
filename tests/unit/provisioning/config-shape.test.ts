@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import {
+  coerceCfnBoolean,
+  configBooleanRefusal,
   configStringRefusal,
   readConfigString,
   requireConfigArray,
@@ -489,6 +491,69 @@ describe('configStringRefusal (issue #1595)', () => {
         const where = `container=${label(container)} fallback=${label(fallback)}`;
         expect(`${where} refused=${refused !== undefined}`).toBe(`${where} refused=${threw}`);
       }
+    }
+  });
+});
+
+/**
+ * The BOOLEAN twin (issue #1751), which exists for the shape neither string
+ * guard can see: a member read as `x ?? <default>`, where `??` treats a
+ * DECLARED `null` as absent and substitutes the default.
+ *
+ * Rows mirror `configStringRefusal`'s, because the two must answer the same
+ * SHAPE questions in the same order — container first, then field — or a
+ * boolean guard and a string guard on sibling members of one block would word
+ * the same fault differently.
+ */
+describe('configBooleanRefusal', () => {
+  const P = 'AWS::S3::Bucket InventoryConfigurations[]';
+
+  it('defaults for an ABSENT container', () => {
+    expect(configBooleanRefusal(undefined, 'Enabled', P)).toBeUndefined();
+    expect(configBooleanRefusal(null, 'Enabled', P)).toBeUndefined();
+  });
+
+  it('refuses a present-but-non-object container, naming the container path', () => {
+    for (const container of ['Enabled', 42, [], true]) {
+      const refusal = configBooleanRefusal(container, 'Enabled', P);
+      expect(refusal).toBeDefined();
+      expect(refusal).toContain(`${P} must be an object`);
+      // The shared detail clause, so a boolean fault reads like its string
+      // sibling rather than like a second dialect.
+      expect(refusal).toContain('check for an unresolved intrinsic');
+    }
+  });
+
+  it('defaults for an ABSENT key — an omitted boolean legitimately takes the default', () => {
+    expect(configBooleanRefusal({}, 'Enabled', P)).toBeUndefined();
+    expect(configBooleanRefusal({ Other: true }, 'Enabled', P)).toBeUndefined();
+  });
+
+  it('refuses a present-but-unusable value, naming the FIELD path', () => {
+    // `null` leads: it is the one shape `??` read as absent, which is the whole
+    // reason this guard exists.
+    for (const value of [null, '', '   ', 'yes', 1, 0, [], {}]) {
+      const refusal = configBooleanRefusal({ Enabled: value }, 'Enabled', P);
+      expect(refusal).toBeDefined();
+      expect(refusal).toContain(`${P}.Enabled must be a boolean`);
+    }
+  });
+
+  it('accepts a real boolean and a CFn STRING boolean, case-insensitively', () => {
+    for (const value of [true, false, 'true', 'false', 'True', 'FALSE']) {
+      expect(configBooleanRefusal({ Enabled: value }, 'Enabled', P)).toBeUndefined();
+    }
+  });
+
+  it('shares its FIELD predicate with coerceCfnBoolean rather than restating it', () => {
+    // The guard-mismatch shape this module exists to stop: a hand-written
+    // `typeof value === 'boolean'` twin would disagree with the wire read on
+    // exactly the string spellings. Enumerated over every value both see.
+    for (const value of [true, false, 'true', 'false', 'True', 'FALSE', null, '', 'yes', 1, [], {}]) {
+      const refused = configBooleanRefusal({ Enabled: value }, 'Enabled', P) !== undefined;
+      expect(`${JSON.stringify(value)} refused=${refused}`).toBe(
+        `${JSON.stringify(value)} refused=${coerceCfnBoolean(value) === undefined}`
+      );
     }
   });
 });
