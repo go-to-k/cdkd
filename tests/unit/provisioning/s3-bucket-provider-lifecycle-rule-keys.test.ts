@@ -128,7 +128,8 @@ describe('S3 lifecycle rule-level + legacy singular keys (issue #1388)', () => {
 
   describe('rule-level TagFilters (data-loss class)', () => {
     it('scopes a multi-tag rule with And.Tags instead of expiring the whole bucket', async () => {
-      // Pre-fix `gatherScope` read ONLY `Filter.TagFilters`, so this rule had
+      // Pre-fix the scope gatherer (`lifecycleRuleScope`, in-method `gatherScope`
+      // at the time) read ONLY `Filter.TagFilters`, so this rule had
       // no scope at all and fell through to `Filter: { Prefix: '' }` — a
       // 30-day expiration applied to EVERY object in the bucket.
       const rules = await putRules(TAG_SCOPED_RULES);

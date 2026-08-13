@@ -372,6 +372,26 @@ const WIRING_SITES: WiringSite[] = [
     expected: { DestinationBucketName: 'live-logs', LogFilePrefix: 'p/' },
   },
   {
+    // Issue #1759's whole-Put skip, which was in NEITHER fence: without this row
+    // a regression that records the FOLD on a skipped notification Put — state
+    // claiming a configuration AWS never received — passes the whole suite. The
+    // eventbridge file covers only the create-path THROW (PR review).
+    name: 'notification (whole Put, EventBridgeEnabled refusal)',
+    key: 'NotificationConfiguration',
+    previous: {
+      TopicConfigurations: [{ Topic: 'arn:aws:sns:us-east-1:123456789012:t', Event: 's3:ObjectCreated:*' }],
+      EventBridgeConfiguration: { EventBridgeEnabled: true },
+    },
+    desired: {
+      TopicConfigurations: [{ Topic: 'arn:aws:sns:us-east-1:123456789012:t', Event: 's3:ObjectCreated:*' }],
+      EventBridgeConfiguration: { EventBridgeEnabled: 'yes' },
+    },
+    expected: {
+      TopicConfigurations: [{ Topic: 'arn:aws:sns:us-east-1:123456789012:t', Event: 's3:ObjectCreated:*' }],
+      EventBridgeConfiguration: { EventBridgeEnabled: true },
+    },
+  },
+  {
     name: 'replication (whole Put)',
     key: 'ReplicationConfiguration',
     previous: {

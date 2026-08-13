@@ -1309,7 +1309,7 @@ const S3_BUCKET_TERMINAL_RENAMES = {
   // Per-item config families: the `TagFilters` ARRAY itself, forwarded
   // verbatim under the SDK's `Filter.And.Tags` (the members beneath are
   // covered by the scoped segment renames above; lifecycle's array is the
-  // destructured-gatherScope shape and carries an allow-list entry instead).
+  // destructured-`lifecycleRuleScope` shape and carries an allow-list entry instead).
   'AnalyticsConfigurations.TagFilters': 'Filter.And.Tags',
   'IntelligentTieringConfigurations.TagFilters': 'Filter.And.Tags',
   'MetricsConfigurations.TagFilters': 'Filter.And.Tags',
@@ -1636,7 +1636,7 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     // scoped write evidence (or a resolving terminal rename), so the
     // per-family `TagFilters` / `TransitionInDays` paths are write-verified
     // and their strip-probes exist in the unit test; only the lifecycle
-    // `TagFilters` array (destructured-gatherScope, walker-invisible) stays
+    // `TagFilters` array (destructured-`lifecycleRuleScope`, walker-invisible) stays
     // allow-list-gated. Rule-level `ExpiredObjectDeleteMarker`
     // is not reachable either — the shape pass matches CFn definitions to
     // same-named SDK interfaces, and `@aws-sdk/client-s3` spells it
@@ -1656,7 +1656,7 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     // Measured at 0 findings; the three shapes no mechanism can express carry
     // reviewed `passes: ['write']` allow-list entries (the request-level
     // `TransitionDefaultMinimumObjectSize` hoist and the two
-    // destructured-gatherScope lifecycle `TagFilters` members).
+    // destructured-`lifecycleRuleScope` lifecycle `TagFilters` members).
     freshObjectMapper: true,
     // Measured at opt-in (#1540): 157 written member names, 156 non-empty
     // write scopes, rounded down generously per the field docs.
@@ -2066,7 +2066,7 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
     {
       rationale:
         'Forwarded verbatim into `Filter{,.And}.Tags` by applyLifecycleConfiguration through ' +
-        'the destructured-gatherScope shape the hand-off taint walk deliberately does not ' +
+        'the destructured-`lifecycleRuleScope` shape the hand-off taint walk deliberately does not ' +
         'cross — same class as the `LifecycleConfiguration.Rules.TagFilters.Key` / `.Value` ' +
         'write-pass entries, here for the ARRAY itself on the key pass (issue #1393). The ' +
         'per-item config families (Analytics / Metrics / IntelligentTiering) resolve via ' +

@@ -5808,7 +5808,7 @@
           "topLevelProperty": "LifecycleConfiguration",
           "terminalKey": "TagFilters",
           "bucket": "allow-listed",
-          "rationale": "Forwarded verbatim into `Filter{,.And}.Tags` by applyLifecycleConfiguration through the destructured-gatherScope shape the hand-off taint walk deliberately does not cross — same class as the `LifecycleConfiguration.Rules.TagFilters.Key` / `.Value` write-pass entries, here for the ARRAY itself on the key pass (issue #1393). The per-item config families (Analytics / Metrics / IntelligentTiering) resolve via declared terminal renames and need no entry.",
+          "rationale": "Forwarded verbatim into `Filter{,.And}.Tags` by applyLifecycleConfiguration through the destructured-`lifecycleRuleScope` shape the hand-off taint walk deliberately does not cross — same class as the `LifecycleConfiguration.Rules.TagFilters.Key` / `.Value` write-pass entries, here for the ARRAY itself on the key pass (issue #1393). The per-item config families (Analytics / Metrics / IntelligentTiering) resolve via declared terminal renames and need no entry.",
           "allowMatchKey": "AWS::S3::Bucket#LifecycleConfiguration.Rules.TagFilters"
         },
         {

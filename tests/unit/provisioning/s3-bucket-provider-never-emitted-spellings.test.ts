@@ -1645,3 +1645,155 @@ describe('PR-review residuals: transition dates and junk list elements', () => {
     expect(at(canonical, 'LifecycleConfiguration', 'Rules')).toEqual(rules);
   });
 });
+
+/**
+ * The second review round's rows: the falsy-date defect, the TIMEZONE bound the
+ * date fold now carries, and the marker / nested-date arms that had only their
+ * negative twins.
+ */
+describe('second-round review: falsy dates, timezone determinism, marker arms', () => {
+  const rule = (extra: Record<string, unknown>) => ({
+    Id: 'r1',
+    Status: 'Enabled',
+    Prefix: 'x/',
+    ...extra,
+  });
+  const canonicalRule = (extra: Record<string, unknown>): Record<string, unknown> =>
+    at(
+      provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+        LifecycleConfiguration: { Rules: [rule(extra)] },
+      }),
+      'LifecycleConfiguration',
+      'Rules',
+      0
+    ) as Record<string, unknown>;
+
+  it('leaves a FALSY TransitionDate alone rather than recording the epoch', async () => {
+    // The defect: `cfnDateToIso(0)` answers `1970-01-01T00:00:00.000Z`, while the
+    // applier's `(t['TransitionDate'] ?? t['Date']) ? new Date(...) : undefined`
+    // sends NO date — so folding on PRESENCE manufactured exactly the permanent
+    // phantom drift this fold exists to remove.
+    const { recorded } = await lifecycleRoundTrip([
+      rule({ Transitions: [{ TransitionDate: 0, StorageClass: 'GLACIER' }] }),
+    ]);
+    expect(at(recorded, 'Rules', 0, 'Transitions', 0)).toEqual({
+      TransitionDate: 0,
+      StorageClass: 'GLACIER',
+    });
+  });
+
+  it('...and through the SDK Date alias, which the alias fold renames first', () => {
+    const item = at(
+      canonicalRule({ Transitions: [{ Date: 0, StorageClass: 'GLACIER' }] }),
+      'Transitions',
+      0
+    );
+    expect(item).toEqual({ TransitionDate: 0, StorageClass: 'GLACIER' });
+  });
+
+  const TZ_FOLDED = [
+    ['a bare YYYY-MM-DD (spec-UTC)', '2030-01-01', '2030-01-01T00:00:00.000Z'],
+    ['a Z-suffixed date-time', '2030-01-01T00:00:00.000Z', '2030-01-01T00:00:00.000Z'],
+    ['an offset-bearing date-time', '2030-01-01T09:00:00+09:00', '2030-01-01T00:00:00.000Z'],
+  ] as const;
+  const TZ_LEFT_ALONE = [
+    ['a non-ISO human date', 'Jan 1 2030'],
+    ['an offset-LESS ISO date-time (local by spec)', '2030-01-01T00:00:00'],
+    ['a bare numeric string', '0'],
+  ] as const;
+
+  for (const [label, declared, iso] of TZ_FOLDED) {
+    it(`folds ${label} on both date members`, () => {
+      expect(canonicalRule({ ExpirationDate: declared })['ExpirationDate']).toBe(iso);
+      expect(
+        at(canonicalRule({ Transitions: [{ TransitionDate: declared, StorageClass: 'G' }] }), 'Transitions', 0, 'TransitionDate')
+      ).toBe(iso);
+    });
+  }
+
+  for (const [label, declared] of TZ_LEFT_ALONE) {
+    it(`leaves ${label} ALONE, because its Date depends on the host timezone`, () => {
+      // `canonicalizeDesiredProperties` is a DIFF-side pure function that runs
+      // wherever the CLI runs, so a UTC runner and a JST laptop would fold the
+      // same template to different ISO strings and manufacture a diff neither
+      // machine can clear — strictly worse than the phantom drift being removed.
+      expect(canonicalRule({ ExpirationDate: declared })['ExpirationDate']).toBe(declared);
+      expect(
+        at(canonicalRule({ Transitions: [{ TransitionDate: declared, StorageClass: 'G' }] }), 'Transitions', 0, 'TransitionDate')
+      ).toBe(declared);
+    });
+  }
+
+  it('folds the same template identically under a non-UTC TZ', () => {
+    // The property that matters, asserted directly rather than inferred from the
+    // regex: two hosts must agree. `process.env.TZ` is what `new Date` reads.
+    const template = {
+      LifecycleConfiguration: {
+        Rules: [
+          rule({
+            ExpirationDate: '2030-01-01',
+            Transitions: [{ TransitionDate: '2030-01-01T09:00:00+09:00', StorageClass: 'G' }],
+          }),
+        ],
+      },
+    };
+    const original = process.env.TZ;
+    try {
+      process.env.TZ = 'UTC';
+      const utc = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, template);
+      process.env.TZ = 'Asia/Tokyo';
+      const jst = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, template);
+      expect(JSON.stringify(jst)).toBe(JSON.stringify(utc));
+    } finally {
+      if (original === undefined) delete process.env.TZ;
+      else process.env.TZ = original;
+    }
+  });
+
+  it('DROPS a rule-level ExpiredObjectDeleteMarker: false, which is never sent', async () => {
+    // `false` is a legal synth and the applier only engages on TRUE, so AWS is
+    // sent no marker and the readback emits none. Every other marker row uses
+    // `true` / an intrinsic / the nested form.
+    const { recorded, readback } = await lifecycleRoundTrip([
+      rule({ ExpirationInDays: 30, ExpiredObjectDeleteMarker: false }),
+    ]);
+    const recordedRule = at(recorded, 'Rules', 0) as Record<string, unknown>;
+    expect('ExpiredObjectDeleteMarker' in recordedRule).toBe(false);
+    expect(recordedRule['ExpirationInDays']).toBe(30);
+    expect(at(readback, 'Rules', 0)).toEqual(recordedRule);
+  });
+
+  it.each([
+    ['true', true],
+    ['false', false],
+  ])('coerces a stringly-typed rule-level marker "%s" exactly as the wire does', (declared, coerced) => {
+    const folded = canonicalRule({ ExpirationInDays: 30, ExpiredObjectDeleteMarker: declared });
+    if (coerced) {
+      // TRUE alongside a Days is the warned S3 conflict — left visible.
+      expect(folded['ExpiredObjectDeleteMarker']).toBe(declared);
+    } else {
+      expect('ExpiredObjectDeleteMarker' in folded).toBe(false);
+      expect(folded['ExpirationInDays']).toBe(30);
+    }
+  });
+
+  it('coerces a stringly-typed marker on a marker-ONLY rule to the boolean AWS reports', async () => {
+    const { recorded, readback } = await lifecycleRoundTrip([
+      rule({ ExpiredObjectDeleteMarker: 'true' }),
+    ]);
+    expect(at(recorded, 'Rules', 0, 'ExpiredObjectDeleteMarker')).toBe(true);
+    expect(at(readback, 'Rules', 0)).toEqual(at(recorded, 'Rules', 0));
+  });
+
+  it('folds a VALID nested Expiration.Date onto the rule-level CFn spelling', async () => {
+    // The positive arm; only its falsy (`Date: 0`) and invalid (`'not-a-date'`)
+    // twins existed.
+    const { recorded, readback } = await lifecycleRoundTrip([
+      rule({ Expiration: { Date: '2030-01-01' } }),
+    ]);
+    const recordedRule = at(recorded, 'Rules', 0) as Record<string, unknown>;
+    expect('Expiration' in recordedRule).toBe(false);
+    expect(recordedRule['ExpirationDate']).toBe('2030-01-01T00:00:00.000Z');
+    expect(at(readback, 'Rules', 0)).toEqual(recordedRule);
+  });
+});

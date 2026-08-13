@@ -14,7 +14,7 @@ import {
  * Two live hazards, both silent:
  *
  * 1. **Lifecycle `Filter`.** A non-object `Filter` indexed every probe in
- *    `gatherScope` to `undefined`, so the rule kept NO scope and fell through
+ *    `lifecycleRuleScope` to `undefined`, so the rule kept NO scope and fell through
  *    to the empty-prefix V2 `Filter` — an expiration rule then applied to the
  *    WHOLE bucket (the #1388 hazard through the parent container).
  * 2. **Analytics `StorageClassAnalysis`.** A non-object container indexed the

@@ -799,6 +799,8 @@ const LIFECYCLE_FILTER_PATH = `${LIFECYCLE_RULE_PATH}.Filter`;
 const LIFECYCLE_TAG_FILTERS_PATH = `${LIFECYCLE_RULE_PATH}.TagFilters`;
 /** What `readConfigString(rule, 'Status', ...)` substitutes for an ABSENT key. */
 const LIFECYCLE_DEFAULT_STATUS = 'Enabled';
+/** The rule's status member, held in a CONST so the fold writes it COMPUTED. */
+const LIFECYCLE_STATUS_KEY = 'Status';
 
 /** A lifecycle rule's location scope, gathered from EVERY source CFn expresses it in. */
 interface LifecycleScope {
@@ -922,11 +924,32 @@ function deepSameValue(a: unknown, b: unknown): boolean {
  * The ISO string `readLifecycle` emits for a date the applier sends as
  * `new Date(value)`.
  *
- * @returns `undefined` for a value that cannot become a valid `Date` — the
- *   applier would put an Invalid Date on the wire and AWS reject it, so there
- *   is no effective value to record and the fold leaves the rule alone.
+ * DETERMINISM IS A PRECONDITION, not a nicety (PR review). `new Date(str)`
+ * resolves an offset-less string in the HOST's local zone — `new Date('0')` is
+ * `1999-12-31T15:00:00Z` under JST and `2000-01-01T00:00:00Z` under UTC, and
+ * `'2030-01-01T00:00:00'` (ISO, no offset) is local by spec. The APPLIER shares
+ * that dependence, so the wire and the readback still agree on any one machine —
+ * but this feeds `canonicalizeDesiredProperties`, a DIFF-side pure function that
+ * runs wherever the CLI runs. A CI runner in UTC and a laptop in JST would
+ * canonicalize the SAME template to different ISO strings and manufacture a diff
+ * neither machine can clear, which is strictly worse than the phantom drift the
+ * fold exists to remove. So only the forms whose meaning is fixed by the ISO
+ * 8601 spec are folded: a bare `YYYY-MM-DD` (spec-UTC), a date-time carrying
+ * `Z` or a `±HH:MM` offset, and an epoch NUMBER. Everything else — `'Jan 1
+ * 2030'`, `'0'`, an offset-less date-time — is left ALONE, which keeps the
+ * record machine-independent at the cost of not normalizing a shape almost no
+ * template uses.
+ *
+ * @returns `undefined` for a value that cannot become a valid `Date`, or whose
+ *   `Date` would depend on the host timezone — in both cases there is no
+ *   effective value this can claim AWS will report, so the fold leaves the rule
+ *   alone.
  */
+const TIMEZONE_INDEPENDENT_DATE =
+  /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/;
+
 function cfnDateToIso(value: unknown): string | undefined {
+  if (typeof value === 'string' && !TIMEZONE_INDEPENDENT_DATE.test(value)) return undefined;
   if (typeof value !== 'string' && typeof value !== 'number') return undefined;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
@@ -952,13 +975,19 @@ const LEGACY_SINGULAR_TRANSITIONS = [
  * It shares `mergeLegacySingular` itself rather than re-deriving the collision
  * rule, per the share-ONE-helper rule. What it does NOT do is pass a no-op
  * callback and fold regardless: on a `StorageClass` COLLISION the wire DROPS the
- * singular and WARNS, and folding both sides identically would make the
- * comparison equal, so `update()` would never be called again and that warning
- * would stop after one deploy — the #1670 finding-3 concealment. A colliding
- * rule is therefore left COMPLETELY alone (both keys kept), which keeps the
- * difference between the record and the readback visible to `cdkd drift` until
- * the template drops one of the two declarations. The NON-colliding case, which
- * is the population this exists for, has no fault to report and folds.
+ * singular and WARNS, so a colliding rule is left COMPLETELY alone (both keys
+ * kept). The NON-colliding case, which is the population this exists for, has
+ * no fault to report and folds.
+ *
+ * Be precise about WHICH signal that preserves, because the obvious answer is
+ * wrong (PR review). It is NOT the deploy-time warning: the record and the
+ * canonicalized template are folded by the same function either way, so they
+ * compare equal after the first deploy and the Put stops re-firing whichever
+ * choice is made. What leaving it alone preserves is the `cdkd drift` report —
+ * state keeps a `Transition` key `readLifecycle` can never emit, so drift
+ * re-reports the rule until the template drops one of the two declarations.
+ * Folding it would make state match the readback exactly and render a
+ * template fault S3 itself rejects completely invisible.
  *
  * @returns `rule` BY IDENTITY when no legacy singular is declared.
  */
@@ -985,8 +1014,10 @@ function foldLegacySingularTransitions(rule: Record<string, unknown>): Record<st
     out ??= { ...rule };
     if (collided) {
       // The singular stays visible (see above), but the plural's junk elements
-      // still went nowhere.
-      if (needsFilter) out[pluralKey] = (plural as unknown[]).filter(isPlainObject);
+      // still went nowhere. `merged` IS that filtered array — `mergeLegacySingular`
+      // returns the screened plural on a collision — so this reuses the helper's
+      // answer instead of re-deriving its `.filter(isPlainObject)` rule.
+      if (needsFilter) out[pluralKey] = merged;
       continue;
     }
     out[pluralKey] = merged;
@@ -1016,7 +1047,13 @@ function foldLegacySingularTransitions(rule: Record<string, unknown>): Record<st
  */
 function foldTransitionDate(item: Record<string, unknown>): Record<string, unknown> {
   const declared = item[TRANSITION_DATE_KEY];
-  if (declared === undefined) return item;
+  // TRUTHINESS, not presence — the same defect this fold's own commit fixed one
+  // member over for the nested `Expiration.Date`, and missed on the member it
+  // was adding. The applier reads `(t['TransitionDate'] ?? t['Date']) ? new
+  // Date(...) : undefined`, so a declared `0` sends NO date at all while
+  // `cfnDateToIso(0)` happily answers `1970-01-01T00:00:00.000Z` — recording it
+  // would MANUFACTURE the permanent phantom drift this fold exists to remove.
+  if (!declared) return item;
   const iso = cfnDateToIso(declared);
   if (iso === undefined || iso === declared) return item;
   // COMPUTED key, for the same #1475 reason {@link EVENTBRIDGE_CONFIG_KEY}
@@ -1070,7 +1107,8 @@ function dropEmptyTransitionLists(rule: Record<string, unknown>): Record<string,
  * - a rule-level `ExpiredObjectDeleteMarker` the wire cannot read
  *   (`coerceCfnBoolean` answers `undefined`): the wire silently ignores it, and
  *   nothing warns, so the difference is the user's only signal;
- * - a date the wire would send as an Invalid Date;
+ * - a date the wire would send as an Invalid Date, or one whose `Date` depends
+ *   on the host timezone (see {@link cfnDateToIso});
  * - a rule-level `ExpiredObjectDeleteMarker: true` ALONGSIDE a `Days` / `Date`:
  *   S3 forbids the combination, so the applier sends the `Days` / `Date` and
  *   WARNS that the marker was not applied. Folding the marker away on both sides
@@ -1198,6 +1236,22 @@ function foldNoncurrentVersionExpiration(rule: Record<string, unknown>): Record<
  * `useFilterForm` is decided ACROSS ALL RULES, which is why this takes it as a
  * parameter instead of being a pure per-rule function: in a V1 configuration
  * (every rule scoped by exactly one top-level `Prefix`) nothing moves at all.
+ *
+ * WHY THIS RECORDS `Filter` WHEN THE EXPIRATION SIBLING REFUSED THE SDK SHAPE,
+ * since the two answer the same objection opposite ways one member apart (PR
+ * review — without this, the next author "fixes" one to match the other). The
+ * CFn `Rule` definition declares no `Filter` member either, so by the
+ * `Expiration` argument this too should have been fixed on the READBACK side.
+ * It is not, for a reason that does not apply there: the rule-level CFn scalars
+ * can express every `Expiration` the SDK returns, and so the reverse map is
+ * LOSSLESS — whereas the V2 `Filter` carries a distinction with no rule-level
+ * spelling at all. A scope-less rule is SENT `Filter: {Prefix: ''}`, and the
+ * only rule-level rendering of that is a top-level `Prefix: ''`, which is the V1
+ * form — a different configuration that S3 forbids mixing with V2. Reverse-
+ * mapping would therefore destroy the V1/V2 distinction state needs to
+ * reproduce the call. `readLifecycle` has emitted `Filter` since issue #1388, so
+ * both sides already meet there; this fold makes the desired side agree rather
+ * than moving the meeting point.
  */
 function foldLifecycleScope(
   rule: Record<string, unknown>,
@@ -1345,7 +1399,16 @@ function effectiveLifecycleRule(
   // `??`: a DECLARED-but-malformed `Status` is already screened out by
   // `lifecycleRuleRefused` above, so the only way to reach the default here is
   // the ABSENT key the rule is scoped to.
-  if (out['Status'] === undefined) out = { ...out, Status: LIFECYCLE_DEFAULT_STATUS };
+  // COMPUTED key, like {@link EVENTBRIDGE_CONFIG_KEY} and
+  // {@link foldTransitionDate} — a named-member spread-and-patch in a DIFF-side
+  // fold is the #1475 hand-off spelling this file avoids in three other places,
+  // and it also withdraws the name from the reverse-map exclusion. Inert for
+  // `Status` today; spelled consistently so the convention cannot rot.
+  if (out[LIFECYCLE_STATUS_KEY] === undefined) {
+    const withStatus = { ...out };
+    withStatus[LIFECYCLE_STATUS_KEY] = LIFECYCLE_DEFAULT_STATUS;
+    out = withStatus;
+  }
   return deepSameValue(rule, out) ? rule : out;
 }
 
