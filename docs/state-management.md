@@ -288,10 +288,10 @@ a clear error** if it sees a higher-versioned blob (e.g. `Unsupported
 state schema version 3. Upgrade cdkd.`) instead of silently mishandling
 unknown fields.
 
-### `version: 3` adds `observedProperties` (current writers)
+### `version: 3` adds `observedProperties` (v3+ writers)
 
 Schema `version: 3` adds an optional `observedProperties` field to each
-`ResourceState`. Writers always emit `version: 3`. The on-disk key layout
+`ResourceState`. Writers emit `version: 3` or later. The on-disk key layout
 (`cdkd/{stackName}/{region}/state.json`) is unchanged from `version: 2` —
 only the per-resource shape grew. v2 readers see a `version: 3` blob and
 fail clearly with the same "upgrade cdkd" error as above.
@@ -333,7 +333,7 @@ Schema `version: 5` adds two optional template-attribute fields to each
 `ResourceState`: `deletionPolicy` and `updateReplacePolicy`. They mirror the
 CloudFormation `DeletionPolicy` / `UpdateReplacePolicy` attributes that the
 synth template carried at the resource's last successful create / update.
-Writers always emit `version: 5`. The on-disk key layout is unchanged from
+Writers emit `version: 5` or later. The on-disk key layout is unchanged from
 `version: 2`; only the per-resource shape grew. v4 readers see a `version: 5`
 blob and fail clearly with the same "upgrade cdkd" error.
 
@@ -373,7 +373,7 @@ promises before deleting (see the "DeletionPolicy: Snapshot" section in
 > only surface `UPDATE` for resources whose template attribute actually
 > changed.
 
-### `version: 6` adds `parentStack` / `parentLogicalId` / `parentRegion` (current writers)
+### `version: 6` adds `parentStack` / `parentLogicalId` / `parentRegion` (v6+ writers)
 
 Schema `version: 6` adds three optional stack-level fields to `StackState`:
 `parentStack`, `parentLogicalId`, `parentRegion`. They are populated **only on
@@ -388,13 +388,13 @@ Child state files live at `cdkd/{parentStack}~{parentLogicalId}/{region}/state.j
 — the `~` separator avoids ambiguity with CDK Stage's `/`-separated
 display paths. The on-disk shape is otherwise identical to v5.
 
-Writers always emit `version: 6`. v5 readers see a `version: 6` blob
+Writers emit `version: 6` or later. v5 readers see a `version: 6` blob
 and fail with the same "upgrade cdkd" error. **v5 → v6 upgrade is
 fully transparent** — read a v5 state file with a v6 binary and the
 parser tolerates the missing fields (degrades to "top-level stack");
 the next write persists `version: 6` silently. No `cdkd state
 migrate-schema` command, no env flag, no manual JSON edit. The
-[`tests/integration/schema-v5-to-v6-migration/`](../../tests/integration/schema-v5-to-v6-migration/)
+[`tests/integration/schema-v5-to-v6-migration/`](../tests/integration/schema-v5-to-v6-migration/)
 integ test proves the round-trip against real AWS.
 
 The v6 prep PR added the type bump alone. The
@@ -422,17 +422,70 @@ state for every stack in the tree is deleted leaf-first after the
 CFn-side IMPORT loop completes. Fresh `cdkd deploy` of new nested
 stacks has been supported since #459.
 
+### `version: 7` adds `provisionedBy` (v7+ writers)
+
+Schema `version: 7` adds an optional `provisionedBy` field to each
+`ResourceState`: `'sdk'` (cdkd's preferred fast path — direct synchronous AWS
+SDK calls) or `'cc-api'` (the Cloud Control API fallback), i.e. which
+provisioning layer owns the resource
+([#614](https://github.com/go-to-k/cdkd/issues/614)). Pre-#614 every resource
+was implicitly SDK-managed, so a v7 reader treats the absent field on a
+v6-and-earlier record as "legacy SDK" — which is what those records mean.
+v7+ writers always emit the field explicitly so the routing decision is
+durable across deploys.
+
+The field is **sticky**: once a resource is `'cc-api'`, a later SDK-provider
+backfill does NOT migrate it back, because that would mean physical-ID churn
+(destroy + recreate) on every backfill release. `cdkd destroy` reads it to pick
+the delete path, `cdkd drift` to pick `readCurrentState`, and `cdkd state show`
+displays it (`ProvisionedBy: sdk | cc-api | (sdk, legacy default)`).
+
+**v6 → v7 upgrade is fully transparent** — a v6 state file read by a v7 binary
+parses with the field undefined, and the next write persists `version: 7`
+silently. No command, no flag, no manual JSON edit. The
+[`tests/integration/schema-v6-to-v7-migration/`](../tests/integration/schema-v6-to-v7-migration/)
+integ test proves the round-trip against real AWS.
+
+### `version: 8` adds `outputReads` (current writers)
+
+Schema `version: 8` adds an optional stack-level `outputReads` array — one
+`StateOutputReadEntry` per successful **same-account** `Fn::GetStackOutput`
+resolution during the consumer stack's deploy
+([#668](https://github.com/go-to-k/cdkd/issues/668)). It is the sibling of v4's
+`imports`, with one deliberate difference: `outputReads` is **informational
+only**. There is no destroy-time refusal for `Fn::GetStackOutput`, because that
+intrinsic is a weak reference by design — the producer stays deletable
+independently of its consumers. The entries are consumed by
+`findDownstreamConsumers` to name affected downstream stacks in the
+`--recreate-via-cc-api` / `--recreate-via-sdk-provider` warn block.
+
+The field is omitted from the JSON when the resolved set is empty, so the
+on-the-wire shape is byte-identical to v7 for stacks that use no
+`Fn::GetStackOutput`. Cross-account (`RoleArn`-based) reads are deliberately
+NOT recorded in v8 — an unambiguous match key would need a `sourceAccountId`
+field, deferred to a future bump. Same-account cross-region reads ARE recorded
+(`sourceRegion` carries the producer's region).
+
+**v7 → v8 upgrade is fully transparent** — `outputReads === undefined` on a
+pre-v8 record reads as "no `Fn::GetStackOutput` consumers known" and the
+enumeration degrades to imports-only (the v4-shipped behavior); the next deploy
+under a v8 binary repopulates the field and persists `version: 8` silently. The
+[`tests/integration/schema-v7-to-v8-migration/`](../tests/integration/schema-v7-to-v8-migration/)
+integ test proves the round-trip against real AWS.
+
 ## State Schema
 
 ### StackState (`state.json`)
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5 | 6           // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption)
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8   // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState, 8 = +outputReads[]
   stackName: string                        // Stack name
   region?: string                          // Required on version >= 2
   resources: Record<string, ResourceState> // Logical ID → Resource state
-  outputs: Record<string, string>          // Output name → Resolved value
+  outputs: Record<string, unknown>         // Output name → Resolved value (NOT coerced to string)
+  imports?: StateImportEntry[]             // v4+: Fn::ImportValue refs (strong reference — blocks the producer's destroy)
+  outputReads?: StateOutputReadEntry[]     // v8+: Fn::GetStackOutput refs (informational — weak reference, never destroy-blocking)
   parentStack?: string                     // v6+: populated on nested-stack child state records (undefined on top-level)
   parentLogicalId?: string                 // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string                    // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
@@ -440,11 +493,21 @@ interface StackState {
 }
 ```
 
+**`outputs` values are `unknown`, not `string`** — cdkd persists whatever the
+intrinsic resolver produced for the Output's `Value`, with no stringification
+step. Most Outputs do resolve to a string, but an `Fn::GetAtt` that
+CloudFormation defines as a LIST persists a JSON **array** when it is used as
+the Output value directly (rather than wrapped in `Fn::Join`) — e.g.
+`AWS::Route53::HostedZone.NameServers`, whose list shape the Route 53 provider
+preserves end to end. Do not write code (or docs) that assumes a
+`state.outputs` value is a string; a consumer reading one back must handle the
+non-string shapes too.
+
 #### Example
 
 ```json
 {
-  "version": 3,
+  "version": 8,
   "stackName": "MyAppStack",
   "region": "us-east-1",
   "resources": {
@@ -462,7 +525,8 @@ interface StackState {
         "DomainName": "myappstack-mybucket-abc123xyz.s3.amazonaws.com",
         "RegionalDomainName": "myappstack-mybucket-abc123xyz.s3.us-east-1.amazonaws.com"
       },
-      "dependencies": []
+      "dependencies": [],
+      "provisionedBy": "sdk"
     },
     "MyFunction": {
       "physicalId": "arn:aws:lambda:us-east-1:123456789012:function:MyAppStack-MyFunction",
@@ -480,7 +544,8 @@ interface StackState {
       "attributes": {
         "Arn": "arn:aws:lambda:us-east-1:123456789012:function:MyAppStack-MyFunction"
       },
-      "dependencies": ["MyFunctionRole", "MyBucket"]
+      "dependencies": ["MyFunctionRole", "MyBucket"],
+      "provisionedBy": "sdk"
     }
   },
   "outputs": {
@@ -496,12 +561,16 @@ interface StackState {
 
 ```typescript
 interface ResourceState {
-  physicalId: string                       // AWS physical ID (ARN, name, etc.)
-  resourceType: string                     // CloudFormation resource type
-  properties: Record<string, any>          // Resolved template intent (what cdkd was asked to deploy)
-  observedProperties?: Record<string, any> // AWS-current snapshot at deploy time (drift baseline)
-  attributes: Record<string, any>          // Attributes for Fn::GetAtt
-  dependencies: string[]                   // List of dependent logical IDs
+  physicalId: string                           // AWS physical ID (ARN, name, etc.)
+  resourceType: string                         // CloudFormation resource type
+  properties: Record<string, unknown>          // Resolved template intent (what cdkd was asked to deploy)
+  observedProperties?: Record<string, unknown> // AWS-current snapshot at deploy time (drift baseline)
+  attributes?: Record<string, unknown>         // Attributes for Fn::GetAtt
+  dependencies?: string[]                      // List of dependent logical IDs
+  metadata?: Record<string, unknown>           // Additional metadata
+  deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'      // v5+: template attribute recorded at deploy time
+  updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' // v5+: template attribute recorded at deploy time
+  provisionedBy?: 'sdk' | 'cc-api'             // v7+: provisioning layer (absent = SDK legacy default)
 }
 ```
 
@@ -1471,13 +1540,16 @@ explicit on-demand answer.
 
 ### Schema Version
 
-Current writers emit **`version: 2`** (region-prefixed key layout —
-`cdkd/{stackName}/{region}/state.json`). Older `version: 1` blobs at the
-non-region key (`cdkd/{stackName}/state.json`) are still readable; the
-next save migrates them to v2 and deletes the legacy key.
+Current writers emit **`version: 8`** on the region-prefixed key layout
+(`cdkd/{stackName}/{region}/state.json`, introduced by `version: 2`). Older
+`version: 1` blobs at the non-region key (`cdkd/{stackName}/state.json`) are
+still readable; the next save migrates them to the region-prefixed key and
+deletes the legacy key. Every v1..v7 blob is read and auto-upgraded in memory
+by the current binary, and the next write persists the current version
+silently — no user action, no migration command.
 
-A `version: 1` writer encountering a `version: 2` blob fails closed
-rather than silently mishandling unknown fields.
+An older writer encountering a newer blob fails closed rather than silently
+mishandling unknown fields.
 
 ## Troubleshooting
 

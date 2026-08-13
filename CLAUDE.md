@@ -52,7 +52,7 @@ interface StackState {
   stackName: string;
   region?: string;
   resources: Record<string, ResourceState>;
-  outputs: Record<string, string>;
+  outputs: Record<string, unknown>; // NOT coerced to string — a list-valued Fn::GetAtt persists a JSON array
   imports?: StateImportEntry[];
   outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs (informational, NOT destroy-blocking)
   parentStack?: string;        // v6+: populated on nested-stack child state records (undefined on top-level stacks)
@@ -64,10 +64,10 @@ interface StackState {
 interface ResourceState {
   physicalId: string;
   resourceType: string;
-  properties: Record<string, any>;
-  observedProperties?: Record<string, any>;
-  attributes: Record<string, any>;
-  dependencies: string[];
+  properties: Record<string, unknown>;
+  observedProperties?: Record<string, unknown>;
+  attributes?: Record<string, unknown>;
+  dependencies?: string[];
   deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate';
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate';
   provisionedBy?: 'sdk' | 'cc-api'; // v7+: routing layer (absent = SDK legacy default)

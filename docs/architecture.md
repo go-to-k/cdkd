@@ -359,14 +359,16 @@ interface S3StateBackend {
 }
 ```
 
-**State Schema** (`types/state.ts`):
+**State Schema** (`types/state.ts`) — abbreviated; the full current-version
+shape (v8, incl. `region` / `imports` / `outputReads` / the nested-stack parent
+links) is in [state-management.md](state-management.md#state-schema):
 
 ```typescript
 interface StackState {
   version: number
   stackName: string
   resources: Record<string, ResourceState>
-  outputs: Record<string, string>
+  outputs: Record<string, unknown>  // resolved Output values, NOT coerced to string
   lastModified: number
 }
 

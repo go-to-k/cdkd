@@ -13,7 +13,7 @@ interface StackState {
   stackName: string;
   region?: string;      // Required on version >= 2 (load-bearing for the S3 key)
   resources: Record<string, ResourceState>;
-  outputs: Record<string, string>;
+  outputs: Record<string, unknown>; // Resolved Output values — NOT coerced to string (see below)
   imports?: StateImportEntry[]; // v4+: Fn::ImportValue refs recorded for strong-reference destroy refusal
   outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs (informational; NO destroy-time refusal — weak reference by design)
   parentStack?: string;        // v6+: populated on nested-stack child state records (undefined on top-level)
@@ -35,17 +35,35 @@ interface StateOutputReadEntry {
 }
 
 interface ResourceState {
-  physicalId: string;                       // AWS physical ID
-  resourceType: string;                     // e.g., "AWS::S3::Bucket"
-  properties: Record<string, any>;          // Resolved template intent (what cdkd was asked to deploy)
-  observedProperties?: Record<string, any>; // AWS-current snapshot at deploy time (drift baseline)
-  attributes: Record<string, any>;          // For Fn::GetAtt resolution
-  dependencies: string[];                   // For proper deletion order
+  physicalId: string;                           // AWS physical ID
+  resourceType: string;                         // e.g., "AWS::S3::Bucket"
+  properties: Record<string, unknown>;          // Resolved template intent (what cdkd was asked to deploy)
+  observedProperties?: Record<string, unknown>; // AWS-current snapshot at deploy time (drift baseline)
+  attributes?: Record<string, unknown>;         // For Fn::GetAtt resolution
+  dependencies?: string[];                      // For proper deletion order
+  metadata?: Record<string, unknown>;           // Additional metadata
   deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+: template attribute recorded at deploy time
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+: template attribute recorded at deploy time
   provisionedBy?: 'sdk' | 'cc-api';         // v7+: which provisioning layer owns this resource (absent = SDK legacy default)
 }
 ```
+
+**`outputs`** values are `unknown`, NOT `string`. `DeployEngine.resolveOutputs`
+returns `Record<string, unknown>` and persists whatever
+`IntrinsicFunctionResolver.resolve` produced for the Output's `Value` — there
+is no stringification step anywhere on that path. Most Outputs do resolve to a
+string, but an `Fn::GetAtt` that CloudFormation defines as a LIST persists a
+JSON **array** into `state.outputs` whenever it is used as the Output value
+directly instead of being wrapped in `Fn::Join` — `AWS::Route53::HostedZone`'s
+`NameServers` is the shipped case (PR #1868 made the provider preserve the SDK
+array through create / update / `getAttribute`, so the list shape now survives
+into state). Two consequences worth stating because both have been assumed
+otherwise: code reading a `state.outputs` value back must not assume `string`
+(narrow before use), and a doc or a type annotation spelling this field
+`Record<string, string>` is wrong (issue
+[#1876](https://github.com/go-to-k/cdkd/issues/1876)). An output the resolver
+could not resolve is stored as `undefined` and therefore drops out of the
+persisted JSON entirely — absence means "not resolved", not "empty string".
 
 **`deletionPolicy` / `updateReplacePolicy`** (schema v5+) are the CFn template
 attributes recorded at deploy time so the next `cdkd deploy` / `cdkd diff` can
