@@ -171,13 +171,24 @@
  * ---------------------------------------------------------------
  * The three buckets above only ask whether SOME read survives, and that made
  * the verdict insensitive to degradation (issue #1842). A property can fall
- * from `delegated` + `element-read` proven across three seeding members down to
- * a single weak seed and still print `OK — ... 0 gaps` byte-identically. The
- * concrete case: switching real `dynamodb-table-provider.ts` reads to the
- * `properties!['X']` spelling dropped `delegated` / `table-loop` evidence from
- * `WarmThroughput`, `GlobalSecondaryIndexes` and `LocalSecondaryIndexes` — a
- * loss the `--check` output could not express, visible only as a regenerated
- * file diff that the SAME commit can carry. Green pipeline, weakened matrix.
+ * from `delegated` + `element-read` proven across four seeding members down to
+ * a single weak seed and still print `OK — ... 0 gaps` byte-identically.
+ *
+ * TWO MEASURED cases on the real `dynamodb-table-provider.ts`, both of which
+ * left the pre-fix `--check` output byte-identical to its clean-tree line:
+ *   - respelling ALL SEVEN `properties['GlobalSecondaryIndexes']` reads drops
+ *     the `update` SEED (the property keeps `element-read` from `create`);
+ *   - respelling the ONE delegated read inside `declaresWarmThroughput()` drops
+ *     `WarmThroughput`'s `delegated` evidence AND its `getDriftUnknownPaths` /
+ *     `readCurrentState` seeds.
+ * Stated per-site because the breadth matters: respelling EVERY
+ * `WarmThroughput` read instead removes the last evidence and is caught as an
+ * ordinary `gap`, which proves nothing about this verdict. (The issue's own
+ * summary also named `table-loop` evidence and `LocalSecondaryIndexes`;
+ * measured against the tree, NO property of this provider carries `table-loop`
+ * and `LocalSecondaryIndexes` has a single `create` seed, so neither is part of
+ * the real case.) The loss is visible only as a regenerated file diff that the
+ * SAME commit can carry. Green pipeline, weakened matrix.
  *
  * So {@link findEvidenceLosses} compares the fresh analysis against the
  * COMMITTED matrix per (class, property) and fails when the evidence set or the
@@ -186,13 +197,17 @@
  * becoming unprovable is the dangerous failure, and a strengthening is free.
  *
  * The check is enforced on BOTH paths, which is what keeps it reachable:
- *   - `--check` fails on any loss (the CI verdict). `--accept-evidence-loss` is
- *     REJECTED here — the check can never be told to look away.
- *   - the WRITER also refuses to overwrite the matrix with weaker evidence.
- *     Without this half the check is vacuous for the author who edits the
- *     source and regenerates in one commit: regenerating moves the baseline
- *     underneath the comparison, which is exactly how the #1808 degradation
- *     shipped green.
+ *   - the WRITER refuses to overwrite the matrix with weaker evidence. This is
+ *     the half CI actually exercises: the workflow runs the writer FIRST and
+ *     then `git diff --quiet`, so by the time `--check` runs, the baseline on
+ *     disk is the file the writer just produced and its loss arm can no longer
+ *     fire. It is also the half that closes the hole, because regenerating is
+ *     what moves the baseline underneath the comparison — exactly how the
+ *     #1808 degradation shipped green.
+ *   - `--check` fails on any loss for every OTHER caller: a local run, a
+ *     reviewer grading a branch, or any pipeline that checks before it writes.
+ *     `--accept-evidence-loss` is REJECTED here — the check can never be told
+ *     to look away.
  *
  * ESCAPE HATCH: `--accept-evidence-loss` on the writer. Regeneration stays the
  * way out — a property CAN genuinely lose a seam — but it becomes a deliberate,
@@ -223,7 +238,6 @@ const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, '..');
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
 const OUT_JSON = resolve(repoRoot, 'docs/_generated/handled-property-wiring.json');
-const OUT_MD = resolve(repoRoot, 'docs/_generated/handled-property-wiring.md');
 
 /**
  * Parameter names that hold the DESIRED-state CFn property bag — the one whose
@@ -434,11 +448,15 @@ const isCfnPropertyName = (name: string): boolean => /^[A-Z][A-Za-z0-9]*$/.test(
 
 /**
  * Wrappers that hand their operand through UNCHANGED at runtime, so a read
- * spelled through one is the same read. All five erase to nothing (four are
+ * spelled through one is the same read. Each erases to nothing (four are
  * type-only syntax; parentheses are grouping), which is the ONLY admission
  * criterion — a node that can change the value, short-circuit, or defer it
  * (`await`, `?.`, `x ?? y`, a tagged template) must never be listed here,
- * because peeling it would credit a read the runtime may never perform.
+ * because peeling it would credit a read the runtime may never perform. The
+ * list is not claimed exhaustive over erase-to-nothing syntax —
+ * `ExpressionWithTypeArguments` (an instantiation expression) qualifies and is
+ * absent; omitting one only fails CLOSED (a read goes unseen), which is the
+ * safe direction, while admitting a non-transparent one fails OPEN.
  *
  * {@link unwrap} peels these DOWNWARD from a wrapper to its operand;
  * {@link climb} walks the same set UPWARD from an operand to its outermost
@@ -1245,12 +1263,17 @@ const formatEvidenceLoss = (l: EvidenceLoss): string => {
  * matrix (issue #1842).
  *
  * WHY A SET COMPARISON AND NOT A COUNT. The `--check` verdict before this was
- * `gap`-only, and `gap` is a floor of ONE surviving read. Switching three real
- * `dynamodb-table-provider.ts` reads to the `properties!['X']` spelling dropped
- * `delegated` + `table-loop` evidence and two seeds from three properties while
- * `--check` printed `OK — ... 0 gaps` byte-identically; the loss was visible
- * only as a regenerated-file diff, which the same commit can carry. The
- * direction that matters is exactly this one: the critic exists to make a FALSE
+ * `gap`-only, and `gap` is a floor of ONE surviving read, so a property that
+ * still has one read is indistinguishable from one that has four. MEASURED on
+ * the real `dynamodb-table-provider.ts`: respelling the single delegated read
+ * inside `declaresWarmThroughput()` as `properties!['WarmThroughput']` dropped
+ * `WarmThroughput`'s `delegated` evidence and its `getDriftUnknownPaths` /
+ * `readCurrentState` seeds, and respelling all seven
+ * `properties['GlobalSecondaryIndexes']` reads dropped that property's `update`
+ * seed — while `--check` printed its clean-tree `OK — ... 0 gaps` line
+ * BYTE-IDENTICALLY in both cases. The loss was visible only as a
+ * regenerated-file diff, which the same commit can carry. The direction that
+ * matters is exactly this one: the critic exists to make a FALSE
  * `handledProperties` claim reachable, so a REAL claim quietly becoming
  * unprovable — while still reporting zero gaps — is the dangerous failure, not
  * the loud one.
@@ -1305,8 +1328,8 @@ export function findEvidenceLosses(
         losses.push({
           className: c.className,
           property: p.name,
-          lostShapes: [...lostShapes].sort((a, b) => a.localeCompare(b)),
-          lostSeeds: [...lostSeeds].sort((a, b) => a.localeCompare(b)),
+          lostShapes: lostShapes.sort((a, b) => a.localeCompare(b)),
+          lostSeeds: lostSeeds.sort((a, b) => a.localeCompare(b)),
         });
       }
     }
@@ -1332,6 +1355,11 @@ export function loadBaseline(path: string = OUT_JSON): HandledPropertyWiringRepo
   try {
     const parsed = JSON.parse(raw) as Partial<HandledPropertyWiringReport>;
     if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.classes)) return null;
+    // Validate one level deeper than the envelope: a TRUNCATED matrix parses as
+    // valid JSON with a well-formed header, and the comparison walk would then
+    // throw on `for (const p of c.properties)` — a crash where the contract is
+    // "unusable baseline means no comparison".
+    if (parsed.classes.some((c) => !Array.isArray(c?.properties))) return null;
     return parsed as HandledPropertyWiringReport;
   } catch {
     return null;
@@ -1554,6 +1582,21 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
 
   const checkMode = argv.includes('--check');
   const acceptLoss = argv.includes(ACCEPT_LOSS_FLAG);
+
+  // The escape hatch belongs to the WRITER only. `--check` is a verdict and must
+  // not be silenceable by a flag on its own command line: the sanctioned way
+  // past a loss is to regenerate the baseline (a visible file diff), never to
+  // tell the checker to look away. Decided HERE, with the other argv guards,
+  // rather than after `loadReport()` — the answer does not depend on the report,
+  // and running an 84-file AST walk before refusing is work done to no purpose.
+  if (checkMode && acceptLoss) {
+    process.stderr.write(
+      `handled-property-wiring: FAIL — ${ACCEPT_LOSS_FLAG} is a WRITER escape hatch and has no\n` +
+        'meaning with --check. Regenerate the matrix with it instead, then re-run --check.\n'
+    );
+    process.exit(1);
+  }
+
   // Test seam: point the walk at a scratch copy of the providers tree so the
   // shipped `--check` exit path can be exercised against a REAL provider file
   // carrying an injected gap, without ever mutating `src/` on disk.
@@ -1564,16 +1607,29 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
   // WRITER's refusal path can be exercised end-to-end without a broken refusal
   // being able to overwrite the committed matrix with the probe's degradation.
   const outDirFlag = argv.find((a) => a.startsWith('--out-dir='));
-  if (dirFlag !== undefined && !checkMode && outDirFlag === undefined) {
-    // The WRITER path would render the COMMITTED matrix from a scratch tree,
-    // silently rewriting docs/_generated from code that is not `src/`. Allowed
-    // only when the output is redirected too, which is what the writer-path
-    // probes do.
-    throw new Error(
-      '--providers-dir= may only write the matrix alongside --out-dir=; refusing to render ' +
-        'docs/_generated from a tree that is not src/'
-    );
+
+  // BOTH grading seams are refused on the WRITER path unless the output is
+  // redirected too. `--providers-dir=` would render the COMMITTED matrix from a
+  // tree that is not `src/`; `--baseline=` is subtler and strictly worse —
+  // pointing it anywhere unreadable makes `loadBaseline` answer null, which the
+  // loss check reads as "nothing to compare", so the writer would overwrite
+  // docs/_generated with WEAKER evidence, exit 0, and print nothing. That is the
+  // silent default this whole verdict exists to remove, reachable by one flag.
+  // Allowed together with `--out-dir=`, which is what the writer-path probes do.
+  for (const [flag, present] of [
+    ['--providers-dir=', dirFlag !== undefined],
+    ['--baseline=', baselineFlag !== undefined],
+  ] as const) {
+    if (present && !checkMode && outDirFlag === undefined) {
+      process.stderr.write(
+        `handled-property-wiring: FAIL — ${flag} may only accompany a WRITE when --out-dir= also\n` +
+          'redirects the output. Refusing to render docs/_generated from a tree or a baseline\n' +
+          `that is not the committed one.\n${USAGE}`
+      );
+      process.exit(1);
+    }
   }
+
   const outDir = outDirFlag ? resolve(outDirFlag.slice('--out-dir='.length)) : dirname(OUT_JSON);
   const outJson = join(outDir, 'handled-property-wiring.json');
   const outMd = join(outDir, 'handled-property-wiring.md');
@@ -1583,18 +1639,6 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
     loadBaseline(baselineFlag ? resolve(baselineFlag.slice('--baseline='.length)) : undefined),
     report
   );
-
-  // The escape hatch belongs to the WRITER only. `--check` is the CI verdict and
-  // must not be silenceable by a flag on its own command line: the sanctioned
-  // way past a loss is to regenerate the baseline (a visible file diff), never
-  // to tell the checker to look away.
-  if (checkMode && acceptLoss) {
-    process.stderr.write(
-      `handled-property-wiring: FAIL — ${ACCEPT_LOSS_FLAG} is a WRITER escape hatch and has no\n` +
-        'meaning with --check. Regenerate the matrix with it instead, then re-run --check.\n'
-    );
-    process.exit(1);
-  }
 
   if (checkMode) {
     // BOTH verdicts are reported before exiting: an earlier revision returned

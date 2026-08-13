@@ -773,19 +773,19 @@ describe('real-repo coverage floors', () => {
     classes.filter((c) => c.properties.some((p) => p.evidence.includes(shape as never))).length;
 
   it('parses a realistic number of provider classes and declarations', () => {
-    // 84 classes / 1063 declared properties at the time of writing.
+    // 84 classes / 1138 declared properties as measured today.
     expect(classes.length).toBeGreaterThanOrEqual(70);
     expect(report.summary.declaredProperties).toBeGreaterThanOrEqual(900);
   });
 
   it('floors the element-read shape (the dominant one)', () => {
-    // 1030 properties across 81 classes today.
+    // 1107 properties across 81 classes today.
     expect(propsWith('element-read')).toBeGreaterThanOrEqual(900);
     expect(classesWith('element-read')).toBeGreaterThanOrEqual(70);
   });
 
   it('floors the table-loop shape', () => {
-    // 43 properties across 5 classes today (Glue / SQS / RDS DBProxy / ...).
+    // 47 properties across 7 classes today (Glue / SQS / RDS DBProxy / ...).
     // Without this recognizer those would all be false-positive gaps, so a
     // regression here is loud in the other direction too — but the floor makes
     // it loud even if someone "fixes" the noise by weakening the check.
@@ -807,7 +807,7 @@ describe('real-repo coverage floors', () => {
   });
 
   it('floors the delegated-read edge (the interprocedural part)', () => {
-    // 666 properties across 47 classes today. If the `this.x()` / file-function
+    // 744 properties across 51 classes today. If the `this.x()` / file-function
     // edges broke, this collapses long before the aggregate does.
     expect(propsWith('delegated')).toBeGreaterThanOrEqual(400);
     expect(classesWith('delegated')).toBeGreaterThanOrEqual(30);
@@ -824,7 +824,7 @@ describe('real-repo coverage floors', () => {
   });
 
   it('records blind spots in the real tree (the recorder is alive)', () => {
-    // 19 classes today. A zero here would mean the blind-spot walk went dead
+    // 21 classes today. A zero here would mean the blind-spot walk went dead
     // and the matrix silently stopped showing where the analysis cannot see.
     expect(report.summary.classesWithBlindSpots).toBeGreaterThanOrEqual(10);
   });
@@ -1157,16 +1157,43 @@ describe('evidence-loss verdict (#1842)', () => {
     expect(findEvidenceLosses(before, after)).toEqual([]);
   });
 
-  it('sorts losses by class then property so the failure text is stable', () => {
-    const before = reportOf([
-      ...(stub(['delegated', 'element-read'], ['create'], 'wired', 'Zeta').classes as ClassClassification[]),
-      ...(stub(['delegated', 'element-read'], ['create'], 'wired', 'Alpha').classes as ClassClassification[]),
+  /** Rename a one-class stub's class + file, so a report can hold several. */
+  const renamed = (r: HandledPropertyWiringReport, className: string): ClassClassification[] =>
+    r.classes.map((c) => ({ ...c, className, file: `${className.toLowerCase()}.ts` }));
+
+  it('sorts losses by CLASS then property so the failure text is stable', () => {
+    // Both keys are exercised: two distinct classes (in distinct files, as the
+    // real generator always produces) each losing two properties. An earlier
+    // version of this test built both classes as `P`, so the className
+    // comparator could be deleted with no test failing.
+    const build = (evidence: readonly string[]): HandledPropertyWiringReport =>
+      reportOf([
+        ...renamed(stub(evidence, ['create'], 'wired', 'Zeta'), 'ZProvider'),
+        ...renamed(stub(evidence, ['create'], 'wired', 'Alpha'), 'ZProvider'),
+        ...renamed(stub(evidence, ['create'], 'wired', 'Zeta'), 'AProvider'),
+        ...renamed(stub(evidence, ['create'], 'wired', 'Alpha'), 'AProvider'),
+      ]);
+    const losses = findEvidenceLosses(build(['delegated', 'element-read']), build(['element-read']));
+    expect(losses.map((l) => `${l.className}#${l.property}`)).toEqual([
+      'AProvider#Alpha',
+      'AProvider#Zeta',
+      'ZProvider#Alpha',
+      'ZProvider#Zeta',
     ]);
-    const after = reportOf([
-      ...(stub(['element-read'], ['create'], 'wired', 'Zeta').classes as ClassClassification[]),
-      ...(stub(['element-read'], ['create'], 'wired', 'Alpha').classes as ClassClassification[]),
-    ]);
-    expect(findEvidenceLosses(before, after).map((l) => l.property)).toEqual(['Alpha', 'Zeta']);
+  });
+
+  it('sorts the lost shapes and lost seeds WITHIN a loss', () => {
+    // Fixture inputs elsewhere happen to be pre-sorted, so the inner sorts were
+    // unfenced: dropping them changed nothing. The failure text is compared
+    // literally by the shipped-command test, so their order is load-bearing.
+    const before = stub(
+      ['table-loop', 'delegated', 'element-read'],
+      ['update', 'create', 'readCurrentState']
+    );
+    const after = stub(['element-read'], ['create']);
+    const [loss] = findEvidenceLosses(before, after);
+    expect(loss?.lostShapes).toEqual(['delegated', 'table-loop']);
+    expect(loss?.lostSeeds).toEqual(['readCurrentState', 'update']);
   });
 
   it('every classified class name is DISTINCT, which is what the class-only key relies on', () => {
@@ -1284,6 +1311,13 @@ describe('REAL-CODE evidence-loss probes (#1842)', () => {
 // The floors and probes above all drive the library functions. This block drives
 // the SHIPPED command — argv parsing, `loadReport`, the failure text and the
 // exit code — because that is what CI actually runs.
+// Each case here `cpSync`s the whole providers tree and spawns a full 84-file
+// AST walk, so 5s (Vitest's default) is not a safe budget under a loaded
+// parallel run — two of these flaked on timeout while the suite was otherwise
+// green. The generous per-test budget is about machine load, not about any of
+// them being slow enough to be worth optimizing.
+const SPAWN_TIMEOUT_MS = 60_000;
+
 describe('the shipped --check command', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'cdkd-hpw-'));
   afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -1334,7 +1368,7 @@ describe('the shipped --check command', () => {
     expect(status).toBe(0);
     expect(stderr).toContain('handled-property-wiring: OK');
     expect(stderr).toContain('0 gaps');
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('exits 1 naming the class#property when a REAL provider drops its wiring', () => {
     // A scratch COPY of the providers tree carries the injected regression, so
@@ -1353,7 +1387,7 @@ describe('the shipped --check command', () => {
     expect(status).toBe(1);
     expect(stderr).toContain('declared-but-unwired handledProperties entries');
     expect(stderr).toContain('ECRProvider#ImageTagMutabilityExclusionFilters');
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('exits 1 naming a STALE allow-list entry, alongside any gap', () => {
     // Both verdicts have to be reported in one run: an earlier revision returned
@@ -1406,14 +1440,14 @@ describe('the shipped --check command', () => {
     // Not a gap. If this ever starts matching, the probe stopped exercising the
     // degradation-under-a-surviving-read case that the gap verdict is blind to.
     expect(stderr).not.toContain('declared-but-unwired handledProperties entries');
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('names the escape hatch in the failure text', () => {
     const dir = providersCopyWith('providers-loss-hatch', 'dynamodb-table-provider.ts', degradeWarmThroughput);
     const { stderr } = runCheck(dir);
     expect(stderr).toContain(ACCEPT_LOSS_FLAG);
     expect(stderr).toContain('vp run gen:handled-property-wiring:accept-loss');
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('stays green when the SAME real reads are respelled with `!`', () => {
     // The other half of the probe: the parser fix means the `!` spelling is not
@@ -1424,7 +1458,7 @@ describe('the shipped --check command', () => {
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(0);
     expect(stderr).toContain('0 evidence losses');
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('REFUSES --accept-evidence-loss on the check path', () => {
     // The escape hatch belongs to the writer. A `--check` that could be told to
@@ -1436,7 +1470,7 @@ describe('the shipped --check command', () => {
     // Even on a CLEAN tree the flag is refused, so it can never be pasted into
     // the CI task as a no-op that quietly disarms the check later.
     expect(runCheck(undefined, [ACCEPT_LOSS_FLAG]).status).toBe(1);
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('the WRITER refuses to overwrite the matrix with weaker evidence', () => {
     // This is the half that makes the verdict reachable at all: `--check` alone
@@ -1449,7 +1483,7 @@ describe('the shipped --check command', () => {
     expect(stderr).toContain('declared properties LOST wiring evidence');
     expect(stderr).toContain('DynamoDBTableProvider#WarmThroughput');
     expect(existsSync(join(outDir, 'handled-property-wiring.json'))).toBe(false);
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('the WRITER writes, and ANNOUNCES the reduction, once the loss is accepted', () => {
     const dir = providersCopyWith('providers-writer-accepted', 'dynamodb-table-provider.ts', degradeWarmThroughput);
@@ -1470,7 +1504,7 @@ describe('the shipped --check command', () => {
       ?.properties.find((x) => x.name === 'WarmThroughput');
     expect(p?.status).toBe('wired');
     expect(p?.evidence).toEqual(['element-read']);
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('rejects an unrecognized flag / a stray argument instead of falling through to WRITER mode', () => {
     // A typo must not rewrite the committed matrix and exit 0 — and with
@@ -1488,22 +1522,106 @@ describe('the shipped --check command', () => {
     const positional = run([PROVIDERS_DIR]);
     expect(positional.status).toBe(1);
     expect(positional.stderr).toContain('Unexpected argument(s)');
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('refuses --providers-dir= in WRITER mode unless the output is redirected too', () => {
     // Otherwise the writer renders docs/_generated from a tree that is not src/.
     const dir = providersCopyWith('providers-writer-guard', 'dynamodb-table-provider.ts', degradeWarmThroughput);
     const { status, stderr } = run([`--providers-dir=${dir}`]);
     expect(status).toBe(1);
-    expect(stderr).toContain('refusing to render');
-  });
+    expect(stderr).toContain('Refusing to render');
+    // ...and it IS allowed once the output is redirected (the writer probes).
+    expect(run([`--providers-dir=${dir}`, `--out-dir=${join(scratch, 'guard-ok')}`]).status).toBe(1);
+  }, SPAWN_TIMEOUT_MS);
+
+  it('refuses --baseline= in WRITER mode unless the output is redirected too', () => {
+    // The subtler and strictly worse half of the same guard, and the one with no
+    // coverage before: an unreadable `--baseline=` makes `loadBaseline` answer
+    // null, which the loss check reads as "nothing to compare" — so without this
+    // guard the writer would overwrite the COMMITTED matrix with weaker
+    // evidence, exit 0, and print nothing. Verified against real degraded input.
+    const dir = providersCopyWith('providers-baseline-guard', 'dynamodb-table-provider.ts', degradeWarmThroughput);
+    const committed = resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json');
+    const before = readFileSync(committed, 'utf8');
+    const { status, stderr } = run([`--providers-dir=${dir}`, '--baseline=/nonexistent-baseline.json']);
+    expect(status).toBe(1);
+    expect(stderr).toContain('--baseline=');
+    expect(stderr).toContain('Refusing to render');
+    expect(readFileSync(committed, 'utf8'), 'the committed matrix must be untouched').toBe(before);
+  }, SPAWN_TIMEOUT_MS);
+
+  it('--baseline= actually redirects the grading, and is not silently ignored', () => {
+    // Without this the flag could be parsed wrong (an off-by-one `slice`) and
+    // every `--check` using it would pass vacuously via the null-baseline
+    // fail-open. A baseline that RECORDS MORE than the tree can prove must fail.
+    const inflated = join(scratch, 'inflated-baseline.json');
+    const real = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'), 'utf8')
+    ) as HandledPropertyWiringReport;
+    writeFileSync(
+      inflated,
+      JSON.stringify({
+        ...real,
+        classes: real.classes.map((c) =>
+          c.className === 'ECRProvider'
+            ? {
+                ...c,
+                properties: c.properties.map((p) =>
+                  p.name === 'ImageTagMutabilityExclusionFilters'
+                    ? { ...p, seededBy: [...p.seededBy, 'aMemberThatDoesNotExist'] }
+                    : p
+                ),
+              }
+            : c
+        ),
+      })
+    );
+    const { status, stderr } = runCheck(undefined, [`--baseline=${inflated}`]);
+    expect(status).toBe(1);
+    expect(stderr).toContain('ECRProvider#ImageTagMutabilityExclusionFilters');
+    expect(stderr).toContain('seeded-by [aMemberThatDoesNotExist]');
+    // The same run against the REAL baseline is clean - so the failure came
+    // from the redirect, not from the tree.
+    expect(runCheck().status).toBe(0);
+  }, SPAWN_TIMEOUT_MS);
+
+  it('reports a gap AND a loss in the SAME run, not one instead of the other', () => {
+    // Every other loss case here has zero gaps, so turning the loss block into
+    // an `else if` after the gap block would have gone unnoticed - the same
+    // both-verdicts-in-one-run property the stale+gap test above protects.
+    const dir = providersCopyWith('providers-gap-and-loss', 'ecr-provider.ts', (src) =>
+      src.replaceAll("properties['ImageTagMutabilityExclusionFilters']", 'undefined')
+    );
+    const ddb = join(dir, 'dynamodb-table-provider.ts');
+    writeFileSync(ddb, degradeWarmThroughput(readFileSync(ddb, 'utf8')));
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('declared-but-unwired handledProperties entries');
+    expect(stderr).toContain('ECRProvider#ImageTagMutabilityExclusionFilters');
+    expect(stderr).toContain('declared properties LOST wiring evidence');
+    expect(stderr).toContain('DynamoDBTableProvider#WarmThroughput');
+  }, SPAWN_TIMEOUT_MS);
+
+  it('the escape-hatch vp task is a NO-OP on a clean tree (writes, announces nothing)', () => {
+    // `vp run gen:handled-property-wiring:accept-loss` runs exactly this. On a
+    // tree with nothing to accept it must behave like the plain writer, not
+    // announce a phantom reduction.
+    const outDir = join(scratch, 'out-accept-clean');
+    const { status, stderr } = run([`--out-dir=${outDir}`, ACCEPT_LOSS_FLAG]);
+    expect(status).toBe(0);
+    expect(stderr).not.toContain('ACCEPTED EVIDENCE LOSS');
+    expect(stderr).toContain('wrote handled-property-wiring');
+    expect(readFileSync(join(outDir, 'handled-property-wiring.json'), 'utf8')).toBe(
+      readFileSync(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'), 'utf8')
+    );
+  }, SPAWN_TIMEOUT_MS);
 
   it('--help prints usage and writes nothing', () => {
     const proc = spawnSync(process.execPath, [SCRIPT, '--help'], { cwd: REPO_ROOT, encoding: 'utf8' });
     expect(proc.status).toBe(0);
     expect(proc.stdout).toContain('Usage: node scripts/gen-handled-property-wiring.ts');
     expect(proc.stdout).toContain(ACCEPT_LOSS_FLAG);
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('the WRITER is clean on the real tree and reproduces the COMMITTED matrix byte-for-byte', () => {
     // The baseline every future run grades against has to be reproducible from
@@ -1516,5 +1634,5 @@ describe('the shipped --check command', () => {
         readFileSync(resolve(REPO_ROOT, 'docs/_generated', name), 'utf8')
       );
     }
-  });
+  }, SPAWN_TIMEOUT_MS);
 });
