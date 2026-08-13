@@ -83,13 +83,30 @@ export const PARTITION_TABLE: ReadonlyArray<{
  * the COMMERCIAL suffix, so `parseEcrRegistryHost` (`src/utils/ecr-uri.ts`)
  * rejected it under the strict host check issue #1758 added and the image was
  * classified `public` — anonymous pull, no `docker login`, opaque failure.
+ *
+ * The region is CANONICALIZED to lower case before the prefix tests (issue
+ * [#1795](https://github.com/go-to-k/cdkd/issues/1795)). AWS region names are
+ * lower case by convention but nothing rejects another spelling on the way in:
+ * `cdkd local run-task / invoke / start-api` each derive `${AWS::URLSuffix}`
+ * from the RAW `--region` the user typed, so `--region CN-NORTH-1` fell through
+ * every case-SENSITIVE `startsWith` to the commercial partition and the three
+ * commands synthesized `<acct>.dkr.ecr.CN-NORTH-1.amazonaws.com/...` — a `cn-`
+ * region carrying the commercial suffix, a host that does not exist. Doing it
+ * HERE rather than at each CLI boundary is what keeps ONE normalization point:
+ * every present and future caller inherits it, and the three call sites cannot
+ * drift apart again.
+ *
+ * This does NOT retire `parseEcrRegistryHost`'s own normalization: that one is
+ * the boundary where an untrusted, DNS-shaped string from a template or a state
+ * record enters cdkd, which is a different trust question from a CLI flag.
  */
 export function derivePartitionAndUrlSuffix(region: string): {
   partition: string;
   urlSuffix: string;
 } {
+  const canonicalRegion = region.toLowerCase();
   for (const { prefix, partition, urlSuffix } of PARTITION_TABLE) {
-    if (region.startsWith(prefix)) return { partition, urlSuffix };
+    if (canonicalRegion.startsWith(prefix)) return { partition, urlSuffix };
   }
   return { partition: 'aws', urlSuffix: 'amazonaws.com' };
 }

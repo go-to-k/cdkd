@@ -52,24 +52,65 @@ export interface ParsedEcrUri {
   region: string;
   repository: string;
   tag: string;
+  /**
+   * The input URI with its HOST lower-cased and its repository path + tag
+   * untouched — the ONE spelling every docker-facing consumer must use
+   * (issue [#1801](https://github.com/go-to-k/cdkd/issues/1801)). See
+   * {@link canonicalizeImageUriHost} for why only the host may be folded.
+   */
+  canonicalUri: string;
+}
+
+/**
+ * Lower-case the HOST portion of an image reference — everything up to the
+ * first `/` — and leave the repository path and tag byte-identical.
+ *
+ * A registry host is a DNS name and therefore case-INSENSITIVE, but docker's
+ * credential store is keyed on the hostname VERBATIM: measured against a real
+ * daemon with a `DOCKER_CONFIG` holding auth for
+ * `<acct>.dkr.ecr.us-east-1.amazonaws.com`, a pull of
+ * `<acct>.dkr.ecr.US-EAST-1.amazonaws.com/...` sent NO credentials at all
+ * (`no basic auth credentials`) while the lower-cased spelling authenticated
+ * and failed with a token error instead. So cdkd logging in to one spelling
+ * and pulling from another authenticates against neither.
+ *
+ * The repository path and tag are deliberately NOT folded: only the domain is
+ * case-insensitive, docker already requires the path to be lower case, and
+ * rewriting it would change WHICH image is pulled.
+ */
+export function canonicalizeImageUriHost(imageUri: string): string {
+  const slash = imageUri.indexOf('/');
+  if (slash < 0) return imageUri;
+  return imageUri.slice(0, slash).toLowerCase() + imageUri.slice(slash);
 }
 
 /**
  * Parse an ECR image URI. Returns `undefined` for non-ECR URIs (typically:
  * Docker Hub, public.ecr.aws, gcr.io, ...) — those are user-managed
  * images we don't try to authenticate against.
+ *
+ * The host is canonicalized BEFORE the registry-host match, so a mixed-case
+ * genuine ECR host classifies as ECR (and its `region` comes back in the
+ * spelling the ECR endpoint and the `docker login` both use) rather than
+ * falling through to the anonymous-pull path.
  */
 export function parseEcrUri(imageUri: string): ParsedEcrUri | undefined {
-  const host = parseEcrRegistryHost(imageUri);
+  const canonicalUri = canonicalizeImageUriHost(imageUri);
+  const host = parseEcrRegistryHost(canonicalUri);
   if (!host) return undefined;
   // The host carries no `/`, so the first one is the repository separator.
-  const m = /^([^:]+):(.+)$/.exec(imageUri.slice(imageUri.indexOf('/') + 1));
+  const m = /^([^:]+):(.+)$/.exec(canonicalUri.slice(canonicalUri.indexOf('/') + 1));
   if (!m) return undefined;
   return {
     accountId: host.accountId,
-    region: host.region,
+    // Belt-and-braces: `canonicalUri` already lower-cased the host the region
+    // was captured from, so this is a no-op today. It stays because the region
+    // seeds the ECR client AND the `docker login` endpoint, and a raw-cased one
+    // there is the exact login/pull mismatch this module was fixed for.
+    region: host.region.toLowerCase(),
     repository: m[1]!,
     tag: m[2]!,
+    canonicalUri,
   };
 }
 
@@ -166,7 +207,11 @@ function isCredentialFresh(creds: TempCredentials): boolean {
  *
  * Auto-detects cross-account from `STS:GetCallerIdentity` and assumes
  * the supplied role when set. Returns the image URI the caller should
- * pass to `docker run` (same as the input — no rewriting).
+ * pass to `docker run`: the input with its HOST lower-cased and its
+ * repository path + tag untouched (issue #1801). That is the SAME
+ * spelling `docker pull` / `docker image inspect` were handed here and
+ * the same one `docker login` authenticated, so the caller's `docker
+ * run` cannot land on a third host.
  */
 export async function pullEcrImage(imageUri: string, options: EcrPullOptions): Promise<string> {
   const logger = getLogger().child('ecr-puller');
@@ -179,6 +224,10 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
     );
   }
 
+  // Every docker-facing use below goes through the canonical spelling, never
+  // the raw input — see `canonicalizeImageUriHost` (issue #1801).
+  const canonicalUri = parsed.canonicalUri;
+
   const callerRegion =
     options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
 
@@ -187,9 +236,9 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // `GetCallerIdentity` block avoids a wasted STS round-trip on every
   // container in an ECS run-task that pre-pulled the image manually.
   if (options.skipPull) {
-    logger.info(`Skipping ECR pull (--no-pull). Verifying ${imageUri} is in local cache...`);
-    await verifyImageInLocalCache(imageUri);
-    return imageUri;
+    logger.info(`Skipping ECR pull (--no-pull). Verifying ${canonicalUri} is in local cache...`);
+    await verifyImageInLocalCache(canonicalUri);
+    return canonicalUri;
   }
 
   // Look up the caller's identity (cached per region — invariant for the
@@ -216,7 +265,12 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   }
 
   const crossAccount = callerAccount !== parsed.accountId;
-  const crossRegion = callerRegion !== undefined && callerRegion !== parsed.region;
+  // Compare CANONICAL forms on both sides (issue #1801): `parsed.region` is
+  // lower-cased, so `--region US-EAST-1` against a lower-case host otherwise
+  // logged a spurious `Cross-region ECR pull` line. Log-only, but the line
+  // reads as a real misconfiguration.
+  const crossRegion =
+    callerRegion !== undefined && callerRegion.toLowerCase() !== parsed.region.toLowerCase();
 
   // Optionally assume a role to gain credentials for the target account.
   // When `ecrRoleArn` is not set but the pull is cross-account, we
@@ -270,15 +324,15 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
     ecr.destroy();
   }
 
-  logger.info(`Pulling ${imageUri}...`);
+  logger.info(`Pulling ${canonicalUri}...`);
   try {
-    await runDockerForeground(['pull', imageUri]);
+    await runDockerForeground(['pull', canonicalUri]);
   } catch (err) {
     const e = err as Error;
-    throw new LocalInvokeBuildError(`docker pull ${imageUri} failed: ${e.message}`);
+    throw new LocalInvokeBuildError(`docker pull ${canonicalUri} failed: ${e.message}`);
   }
 
-  return imageUri;
+  return canonicalUri;
 }
 
 /**

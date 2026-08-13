@@ -1191,8 +1191,14 @@ export function envHasCrossStackIntrinsic(
  *
  * Region precedence (mirrors `local-run-task`): `--region` > `AWS_REGION`
  * > `AWS_DEFAULT_REGION` > the synth-derived stack region.
+ *
+ * The region is passed to `derivePartitionAndUrlSuffix` in the spelling the
+ * user typed; that helper canonicalizes case itself (issue #1795), so an
+ * upper-cased `--region` cannot fall through to the commercial partition here.
+ *
+ * @internal exported for unit tests.
  */
-async function resolvePseudoParametersForInvoke(
+export async function resolvePseudoParametersForInvoke(
   stackRegion: string | undefined,
   options: LocalInvokeOptions
 ): Promise<

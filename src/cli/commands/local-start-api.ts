@@ -3067,8 +3067,14 @@ async function loadStateForRoutedStacks(
  *
  * Region precedence: `--region` > `AWS_REGION` > `AWS_DEFAULT_REGION` >
  * the state record's region (returned by the active `LocalStateProvider`).
+ *
+ * The region is passed to `derivePartitionAndUrlSuffix` in the spelling the
+ * user typed; that helper canonicalizes case itself (issue #1795), so an
+ * upper-cased `--region` cannot fall through to the commercial partition here.
+ *
+ * @internal exported for unit tests.
  */
-async function resolvePseudoParametersForStartApi(
+export async function resolvePseudoParametersForStartApi(
   stateRegion: string,
   options: LocalStartApiOptions
 ): Promise<PseudoParameters | undefined> {

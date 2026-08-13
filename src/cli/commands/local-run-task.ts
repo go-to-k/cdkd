@@ -448,8 +448,14 @@ async function assumeTaskRole(
  * load) routes through the active {@link LocalStateProvider} so both
  * `--from-state` and `--from-cfn-stack` produce the same downstream
  * context shape (issue #606).
+ *
+ * The region is passed to `derivePartitionAndUrlSuffix` in the spelling the
+ * user typed; that helper canonicalizes case itself (issue #1795), so an
+ * upper-cased `--region` cannot fall through to the commercial partition here.
+ *
+ * @internal exported for unit tests.
  */
-async function buildEcsImageResolutionContext(
+export async function buildEcsImageResolutionContext(
   candidate: StackInfo | undefined,
   stateProvider: LocalStateProvider | undefined,
   options: LocalRunTaskOptions
