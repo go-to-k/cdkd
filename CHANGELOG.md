@@ -1,3 +1,10 @@
+## [0.283.3](https://github.com/go-to-k/cdkd/compare/v0.283.2...v0.283.3) (2026-08-13)
+
+
+### Bug Fixes
+
+* **local:** canonicalize the region at the cdk-local intrinsic-image boundary and across invoke-agentcore ([#1828](https://github.com/go-to-k/cdkd/issues/1828)) ([2f9e990](https://github.com/go-to-k/cdkd/commit/2f9e990bba81d753d28ef53dab772c2405963e7a))
+
 ## [0.283.2](https://github.com/go-to-k/cdkd/compare/v0.283.1...v0.283.2) (2026-08-13)
 
 
