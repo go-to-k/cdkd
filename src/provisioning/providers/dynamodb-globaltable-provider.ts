@@ -1387,13 +1387,44 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // `UpdateTable`, which DynamoDB rejects when no capacity change rides
       // along: the deploy fails, state stays unchanged, and the rejection
       // repeats on every deploy. `DescribeTable` was already issued above, so
-      // this costs no extra call. An ABSENT previous keeps defaulting to
-      // PAY_PER_REQUEST (the create-path default) — only the
-      // present-but-unusable case consults AWS.
+      // this costs no extra call.
+      //
+      // Since issue #1733 an ABSENT recorded previous consults AWS TOO, under a
+      // narrower gate. The rule the two branches now share is "consult AWS
+      // whenever the recorded previous cannot serve as a baseline", and an
+      // absent one cannot: it resolved to the create-path default
+      // PAY_PER_REQUEST without ever asking the table, so a record with no
+      // `BillingMode` — left by `cdkd import` of a PROVISIONED table, or by
+      // this method's own DROP arm below — made a corrected `PAY_PER_REQUEST`
+      // template compare EQUAL, issue no `UpdateTable`, and silently lose the
+      // flip. `readCurrentState` emits `BillingMode` only where AWS reports a
+      // `BillingModeSummary`, so `cdkd drift` could not report it either.
+      //
+      // Two deliberate narrowings keep that from becoming a re-pricing of its
+      // own, and each answers one of the questions issue #1733 raised:
+      //
+      //  - the live read is consulted ONLY when the DESIRED side declares
+      //    `BillingMode` at all. A template that legitimately OMITS the
+      //    property means "GlobalTable's own default", and seeding AWS's mode
+      //    there would flip an imported PROVISIONED table to on-demand on its
+      //    next deploy — a live re-pricing nobody asked for, on the exact
+      //    population #1733 flagged as needing measurement. Where the property
+      //    is declared, the user IS stating a mode, and comparing it against
+      //    the table's real one is the whole point.
+      //  - a `BillingModeSummary` AWS does not report (or reports as a value
+      //    cdkd does not know) falls back to the PRE-#1733 answer for each
+      //    branch rather than inventing a mode: the create-path default for the
+      //    absent branch, PROVISIONED for the present-but-unusable one.
+      //
+      // This cannot re-introduce the same-mode `UpdateTable` rejection #1552
+      // exists to prevent: the flip below is gated on `oldBilling !==
+      // newBilling`, and a baseline seeded from `DescribeTable` IS the mode AWS
+      // holds — so an inequality there is a flip AWS accepts, where a junk
+      // baseline produced an inequality against a mode the table already had.
       const recordedOldBilling = previousProperties['BillingMode'];
+      const recordedOldBillingAbsent = recordedOldBilling === undefined;
       const recordedOldBillingUsable =
-        recordedOldBilling === undefined ||
-        (typeof recordedOldBilling === 'string' && recordedOldBilling.trim() !== '');
+        typeof recordedOldBilling === 'string' && recordedOldBilling.trim() !== '';
       // NOT this provider's create-path default: the two answer different
       // questions. An ABSENT recorded previous means "the template declared no
       // BillingMode", where PAY_PER_REQUEST is GlobalTable's own default; an
@@ -1407,16 +1438,48 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // #1571) needs the SAME answer: `DescribeTable` reports
       // `ProvisionedThroughput: {0, 0}` for every index of an on-demand table,
       // so which live members are safe to read is decided by this value.
-      const liveBillingMode = describeResp.Table?.BillingModeSummary?.BillingMode ?? 'PROVISIONED';
+      const rawLiveBillingMode = describeResp.Table?.BillingModeSummary?.BillingMode;
+      const liveBillingMode = rawLiveBillingMode ?? 'PROVISIONED';
+      // The live READING, present only when AWS actually reported a mode cdkd
+      // knows. Distinct from `liveBillingMode` above, whose PROVISIONED default
+      // is an INFERENCE about how the table was created — correct as the GSI
+      // baseline's mode gate, wrong as "what AWS told us", which is what the
+      // two fallbacks below have to be able to test for.
+      const reportedBillingMode =
+        rawLiveBillingMode === 'PROVISIONED' || rawLiveBillingMode === 'PAY_PER_REQUEST'
+          ? rawLiveBillingMode
+          : undefined;
+      const desiredDeclaresBillingMode = properties['BillingMode'] !== undefined;
+      const seedAbsentFromLive = recordedOldBillingAbsent && desiredDeclaresBillingMode;
       const oldBilling = recordedOldBillingUsable
-        ? ((recordedOldBilling as string | undefined) ?? 'PAY_PER_REQUEST')
-        : liveBillingMode;
-      if (!recordedOldBillingUsable) {
+        ? (recordedOldBilling as string)
+        : recordedOldBillingAbsent
+          ? seedAbsentFromLive
+            ? (reportedBillingMode ?? 'PAY_PER_REQUEST')
+            : 'PAY_PER_REQUEST'
+          : (reportedBillingMode ?? 'PROVISIONED');
+      if (!recordedOldBillingUsable && !recordedOldBillingAbsent) {
         this.logger.warn(
           `AWS::DynamoDB::GlobalTable ${logicalId}: the recorded previous BillingMode ` +
             `is unusable (${JSON.stringify(recordedOldBilling)}) — using the table's ` +
             `actual billing mode (${oldBilling}) as the comparison baseline for this ` +
             `update so a corrected template does not issue a same-mode UpdateTable.`
+        );
+      }
+      // Announced only where the seeded baseline DIFFERS from the create-path
+      // default this branch used before #1733 — i.e. exactly the deploys whose
+      // behavior changes. Firing on every table whose record simply carries no
+      // mode would be noise on the ordinary on-demand path.
+      if (
+        seedAbsentFromLive &&
+        reportedBillingMode !== undefined &&
+        oldBilling !== 'PAY_PER_REQUEST'
+      ) {
+        this.logger.warn(
+          `AWS::DynamoDB::GlobalTable ${logicalId}: the cdkd state record declares no ` +
+            `BillingMode — using the table's actual billing mode (${oldBilling}) as the ` +
+            `comparison baseline for this update, so a template declaring a different mode ` +
+            `still applies the flip instead of comparing equal to the create-path default.`
         );
       }
       // An UNUSABLE desired value must fall back to the PREVIOUS billing mode,
@@ -1893,17 +1956,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       //    template asking for PAY_PER_REQUEST would compare equal, issue no
       //    `UpdateTable`, and silently lose the flip on a live PROVISIONED
       //    table that `readCurrentState` cannot even report.
-      //  - recorded previous ABSENT: `oldBilling` is the create-path default,
-      //    so recording it would INVENT a key the record never had on a table
-      //    AWS may hold as PROVISIONED. Dropped instead — the same answer the
-      //    GSI arm above and the Lambda URL `AuthType` arm (#1654) take, and
-      //    the record is left exactly as it was. That branch KEEPS one
-      //    exposure, named rather than papered over (issue #1733): an absent
-      //    previous resolves without consulting AWS, so a later corrected
-      //    PAY_PER_REQUEST template compares equal and issues no call. Fixing
-      //    it means widening #1552's live-read fallback to cover ABSENT too,
-      //    which is a decision about the whole update path and needs its own
-      //    real-AWS measurement.
+      //  - recorded previous ABSENT: the record never carried the key, so it is
+      //    left exactly as it was — the same answer the GSI arm above and the
+      //    Lambda URL `AuthType` arm (#1654) take. Since issue #1733 the
+      //    baseline for this shape is no longer a blind create-path default
+      //    (see the resolution block above), so the DROP no longer strands the
+      //    corrected template: the next deploy re-reads AWS rather than
+      //    comparing against a key this arm could have invented. Recording
+      //    `oldBilling` here anyway is deliberately NOT done — where the desired
+      //    side declares no mode the baseline is still the template default, so
+      //    the key would be an invention on a table AWS may hold as PROVISIONED.
       if (billingUnusable) {
         effectiveProperties = { ...(effectiveProperties ?? properties) };
         if (recordedOldBilling === undefined) {
@@ -1911,17 +1973,26 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         } else {
           effectiveProperties['BillingMode'] = oldBilling;
         }
+        // The capacity twin of the same suppression (issue #1738, the
+        // UPDATE-side sibling of #1726's CREATE half). With the flip suppressed
+        // the capacity call for the OTHER mode never fires either, yet the bag
+        // above still carries whatever blocks the template declared — state
+        // describing capacity AWS never received, which `readCurrentState` can
+        // never match and the NEXT update reads as its previous side.
+        //
+        // The create-side answer does not transfer, for the two reasons #1726's
+        // own note gives: there the substituted mode is always PAY_PER_REQUEST
+        // so the unsendable set is decidable outright, and the resource is NEW
+        // so a DROP is right. Here the KEPT mode is resolved at run time and the
+        // table already EXISTS, so `.claude/rules/providers.md`'s UPDATE row
+        // applies instead — retain the PREVIOUS value, validated first.
+        effectiveProperties = retainUnsendableCapacityMembers(
+          effectiveProperties,
+          previousProperties,
+          newBilling
+        );
       }
 
-      // Known residual, the update-side twin of issue #1726 (whose CREATE half
-      // is fixed — see `stripProvisionedCapacityKeys`), tracked as issue #1738:
-      // with the flip suppressed no provisioned-throughput or on-demand-ceiling
-      // call fires either, yet the bag above still carries whatever capacity
-      // blocks the template declared. The create-side answer does NOT transfer.
-      // There the substituted mode is always PAY_PER_REQUEST, so the unsendable
-      // set is decidable outright; here the KEPT mode can be either, and the
-      // resource already EXISTS — so the rules file's UPDATE row applies (retain
-      // the PREVIOUS value, validated first) rather than the replay-CREATE drop.
       // Table-level on-demand ceilings, BOTH halves. The write half lives at
       // top-level `WriteOnDemandThroughputSettings`; the read half lives on
       // the LOCAL replica as `ReadOnDemandThroughputSettings` and was never
@@ -5898,6 +5969,211 @@ export function stripProvisionedCapacityKeys(
   }
 
   return result;
+}
+
+/**
+ * The capacity member keys that can only reach AWS while the table is
+ * PROVISIONED, per container level (issue #1738).
+ *
+ * Identical to the set {@link stripProvisionedCapacityKeys} removes, and that
+ * is not a coincidence: both answer "which members are unsendable once the mode
+ * is PAY_PER_REQUEST". The two spellings a pre-#1387 cdkd wrote into state
+ * (`ProvisionedThroughput` / `ProvisionedThroughputOverride`) are included for
+ * the same reason — a state replay is exactly that population.
+ */
+const PROVISIONED_ONLY_CAPACITY_KEYS = {
+  table: ['WriteProvisionedThroughputSettings'],
+  index: [
+    'WriteProvisionedThroughputSettings',
+    'ReadProvisionedThroughputSettings',
+    'ProvisionedThroughput',
+  ],
+  replica: ['ReadProvisionedThroughputSettings', 'ProvisionedThroughputOverride'],
+  replicaIndex: ['ReadProvisionedThroughputSettings', 'ProvisionedThroughputOverride'],
+} as const;
+
+/**
+ * The mirror set: capacity members that can only reach AWS while the table is
+ * PAY_PER_REQUEST (issue #1738).
+ *
+ * `stripProvisionedCapacityKeys` has no equivalent because the create arm it
+ * serves always substitutes PAY_PER_REQUEST — the mode under which these ARE
+ * sent, which is why its header says they are deliberately not stripped. On the
+ * UPDATE path the kept mode can be PROVISIONED, and then it is this half that
+ * never leaves the process.
+ */
+const ON_DEMAND_ONLY_CAPACITY_KEYS = {
+  table: ['WriteOnDemandThroughputSettings'],
+  index: [
+    'WriteOnDemandThroughputSettings',
+    'ReadOnDemandThroughputSettings',
+    'OnDemandThroughput',
+  ],
+  replica: ['ReadOnDemandThroughputSettings', 'OnDemandThroughputOverride'],
+  replicaIndex: ['ReadOnDemandThroughputSettings', 'OnDemandThroughputOverride'],
+} as const;
+
+/**
+ * Replace every capacity member the KEPT billing mode cannot send with the
+ * PREVIOUS record's value (issue #1738).
+ *
+ * Called from `update()`'s `BillingMode` warn-and-KEEP arm, where an unusable
+ * desired mode suppresses the flip: AWS is left holding the mode it already
+ * had, so every block belonging to the OTHER mode was silently dropped on the
+ * way out while the engine recorded what the template declared.
+ *
+ * **The split is per MEMBER against the KEPT mode**, and each side was read off
+ * the gates in this file rather than off the member's name-shape (the
+ * name-shape trap #1726 records — an on-demand ceiling looks like capacity and
+ * goes on the wire under precisely the on-demand mode):
+ *
+ * - KEPT `PROVISIONED` — the on-demand half is unsendable. Step 3's table-level
+ *   `OnDemandThroughput` is gated on `newBilling !== 'PROVISIONED'`;
+ *   `toSdkGlobalSecondaryIndexes` and `toSdkReplicaThroughputOverrides` both
+ *   drop their on-demand branch under PROVISIONED. The provisioned half is NOT
+ *   retained: step 4b and step 6b's auto-scaling reconcile are live whenever
+ *   either side is PROVISIONED, and step 6's GSI diff carries per-index
+ *   `ProvisionedThroughput` — those blocks really are applied.
+ * - KEPT `PAY_PER_REQUEST` — the provisioned half is unsendable. The table-level
+ *   `ProvisionedThroughput` rides step 4's flip and nothing else, the two
+ *   auto-scaling reconciles are gated on either side being PROVISIONED, and both
+ *   translators drop their provisioned branch. The on-demand half is NOT
+ *   retained: step 3 sends the table-level ceilings and step 6 the per-index
+ *   ones under exactly this mode.
+ *
+ * One residual is deliberately NOT covered, because the suppression did not
+ * create it: the TABLE-level provisioned capacity NUMBER rides step 4's flip
+ * and nothing else, so on ANY non-flip PROVISIONED -> PROVISIONED update it is
+ * unsent while its `*CapacityAutoScalingSettings` sibling in the same block IS
+ * reconciled. Retaining the block wholesale under a kept PROVISIONED mode would
+ * therefore erase a real auto-scaling update to hide a pre-existing gap — so
+ * the block stays as declared and the gap stays where it already lives.
+ *
+ * Retaining rather than DROPPING is the UPDATE row of
+ * `.claude/rules/providers.md`: the call never ran, so AWS still holds the
+ * previously-applied block and that IS what state should describe. Dropping
+ * would leave a later template that REMOVES the block deriving no removal, so
+ * the live setting would survive forever.
+ *
+ * **The previous side is VALIDATED before it is retained** (the #1653-review
+ * rule) through `asRecord` — the SAME predicate every wire read of these blocks
+ * applies, so the two cannot disagree about what a bare string / an array / a
+ * number means. Be honest about what that buys: it refuses exactly the
+ * not-a-plain-object shapes, and a block whose NUMERIC member is an unresolved
+ * intrinsic passes it, because the wire accepts that block too (and then sends
+ * nothing for the member, which is the same "AWS keeps what it had" outcome).
+ * When the previous side is unusable OR absent the key is DROPPED — there is no
+ * value cdkd can vouch for either way.
+ *
+ * COPIES each retained block one level rather than aliasing it: the rollback
+ * executor spreads the returned bag shallowly, so handing back the previous
+ * record's own object would leave two state records sharing one mutable value.
+ * Scope that claim honestly — it covers the retained blocks only; every other
+ * key of the input bag stays aliased, exactly as the sibling arms leave it.
+ *
+ * Deliberately NOT paired with a `canonicalizeDesiredProperties` twin: this is
+ * a SKIP, not a narrowing, so there is no pure function of the desired bag to
+ * fold both comparison sides with, and folding one would derive a REMOVAL of a
+ * live capacity block from a template whose only fault is `BillingMode`.
+ *
+ * Pure and non-mutating at every level.
+ */
+export function retainUnsendableCapacityMembers(
+  desired: Record<string, unknown>,
+  previous: Record<string, unknown>,
+  keptBillingMode: string
+): Record<string, unknown> {
+  const unsendable =
+    keptBillingMode === 'PROVISIONED'
+      ? ON_DEMAND_ONLY_CAPACITY_KEYS
+      : PROVISIONED_ONLY_CAPACITY_KEYS;
+
+  const result = retainCapacityKeys({ ...desired }, previous, unsendable.table);
+
+  const indexes = result['GlobalSecondaryIndexes'];
+  if (Array.isArray(indexes)) {
+    const previousIndexes = indexCapacityContainers(
+      previous['GlobalSecondaryIndexes'],
+      'IndexName'
+    );
+    result['GlobalSecondaryIndexes'] = indexes.map((entry) => {
+      const gsi = asRecord(entry);
+      if (!gsi) return entry;
+      const previousGsi = previousIndexes.get(gsi['IndexName']);
+      return retainCapacityKeys({ ...gsi }, previousGsi, unsendable.index);
+    });
+  }
+
+  const replicas = result['Replicas'];
+  if (Array.isArray(replicas)) {
+    const previousReplicas = indexCapacityContainers(previous['Replicas'], 'Region');
+    result['Replicas'] = replicas.map((entry) => {
+      const replica = asRecord(entry);
+      if (!replica) return entry;
+      const previousReplica = previousReplicas.get(replica['Region']);
+      const copy = retainCapacityKeys({ ...replica }, previousReplica, unsendable.replica);
+      const replicaIndexes = copy['GlobalSecondaryIndexes'];
+      if (Array.isArray(replicaIndexes)) {
+        const previousReplicaIndexes = indexCapacityContainers(
+          previousReplica?.['GlobalSecondaryIndexes'],
+          'IndexName'
+        );
+        copy['GlobalSecondaryIndexes'] = replicaIndexes.map((indexEntry) => {
+          const gsi = asRecord(indexEntry);
+          if (!gsi) return indexEntry;
+          const previousGsi = previousReplicaIndexes.get(gsi['IndexName']);
+          return retainCapacityKeys({ ...gsi }, previousGsi, unsendable.replicaIndex);
+        });
+      }
+      return copy;
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Retain (or drop) one container's unsendable capacity members, in place on a
+ * bag the caller already copied.
+ *
+ * The counterpart container being `undefined` — no matching index / replica in
+ * the previous record — is the ABSENT case, not a special one: there is nothing
+ * to vouch for, so the key is dropped exactly as it is for an unusable value.
+ */
+function retainCapacityKeys(
+  target: Record<string, unknown>,
+  previousContainer: Record<string, unknown> | undefined,
+  keys: readonly string[]
+): Record<string, unknown> {
+  for (const key of keys) {
+    const previousValue = asRecord(previousContainer?.[key]);
+    if (previousValue) {
+      target[key] = { ...previousValue };
+    } else {
+      delete target[key];
+    }
+  }
+  return target;
+}
+
+/**
+ * Index a previous-side array by its identity member, so a per-index /
+ * per-replica retain reads the counterpart entry rather than the positional
+ * one — AWS does not guarantee readback order and a template edit can reorder
+ * either list.
+ */
+function indexCapacityContainers(
+  value: unknown,
+  identityKey: 'IndexName' | 'Region'
+): Map<unknown, Record<string, unknown>> {
+  const byIdentity = new Map<unknown, Record<string, unknown>>();
+  if (!Array.isArray(value)) return byIdentity;
+  for (const entry of value) {
+    const record = asRecord(entry);
+    const identity = record?.[identityKey];
+    if (record && typeof identity === 'string') byIdentity.set(identity, record);
+  }
+  return byIdentity;
 }
 
 /**
