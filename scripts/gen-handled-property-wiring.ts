@@ -1294,9 +1294,10 @@ const formatEvidenceLoss = (l: EvidenceLoss): string => {
  *
  * A null baseline (no committed matrix yet, or an unparseable one) yields no
  * losses: this check GRADES a change against a recorded state, and cannot
- * invent one. Deleting the matrix to silence it does not work — the writer
- * re-creates the file and CI's `git diff --quiet` step turns red on the
- * re-added content.
+ * invent one. That makes "delete the baseline" the obvious bypass, so the
+ * WRITER refuses it outright on the default output path — see
+ * {@link MISSING_BASELINE_FAILURE}, and read its comment before trusting any
+ * claim about what `git diff --quiet` does or does not catch here.
  */
 export function findEvidenceLosses(
   baseline: HandledPropertyWiringReport | null,
@@ -1541,6 +1542,70 @@ const LOSS_ESCAPE_HATCH =
   'That rewrites the baseline, so the reduced evidence is what the matrix then\n' +
   'records — state WHY in the PR body, because the JSON diff is the only trace.\n';
 
+/**
+ * The WRITER's refusal when the DEFAULT output path has no readable baseline.
+ *
+ * Deleting the matrix is the obvious way to defeat a check that grades against
+ * it: `loadBaseline` answers null, {@link findEvidenceLosses} reads that as
+ * "nothing to compare", and the writer would rewrite the file with whatever the
+ * current tree can prove — silently, exit 0.
+ *
+ * An earlier revision of this file asserted that CI's `git diff --quiet` step
+ * caught that anyway. MEASURED, and it depends entirely on whether the deletion
+ * is STAGED, which is why the claim was wrong as stated:
+ *   - a bare `rm` leaves the path tracked in the index, so the re-created file
+ *     reads as ` M <path>` and `git diff --quiet -- <path>` exits 1 -> CI red;
+ *   - a STAGED deletion (`git rm` / `git rm --cached`) drops the index entry, so
+ *     the re-created file is UNTRACKED, and `git diff --quiet -- <path>` exits
+ *     0 -> CI green, with no trace of the reduction anywhere.
+ * So the diff guard covers one spelling of the bypass and not the other, and
+ * relying on it left a one-command hole. This refusal closes both spellings at
+ * the point where they would take effect, without the script needing to shell
+ * out to git.
+ *
+ * Scoped to the DEFAULT output path only: `--out-dir=` writes are probes and
+ * first-ever generations, which legitimately have no baseline.
+ */
+const MISSING_BASELINE_FAILURE =
+  'handled-property-wiring: FAIL — no readable baseline at the committed matrix path.\n' +
+  'The evidence-loss check (issue #1842) grades this run against the COMMITTED\n' +
+  'matrix, so a missing or unparseable one means it can prove nothing — and\n' +
+  'rewriting the file from here would silently install whatever the current tree\n' +
+  'happens to support as the new baseline.\n\n' +
+  'Restore it and re-run:\n\n' +
+  '  git checkout -- docs/_generated/handled-property-wiring.json\n\n' +
+  `If the matrix genuinely does not exist yet (a first-ever generation), pass\n` +
+  `${ACCEPT_LOSS_FLAG} to write it without a comparison.\n`;
+
+/**
+ * Should the WRITER refuse because it has no baseline to grade against?
+ *
+ * Exported and pure so every combination is unit-testable: the situation it
+ * guards (the committed matrix physically absent) cannot be produced by any
+ * flag, since {@link main}'s seam guard already refuses `--baseline=` on an
+ * un-redirected write.
+ *
+ * TRUE when a WRITE (`--check` writes nothing) would proceed with no usable
+ * baseline and no explicit acknowledgement — i.e. "grade against nothing, then
+ * install the result as the new baseline".
+ *
+ * Deliberately NOT exempted for a redirected (`--out-dir=`) write. The earlier
+ * draft exempted it on the theory that only probes and first-ever generations
+ * redirect, but `--accept-evidence-loss` already names both of those, and the
+ * exemption made the rule unreachable except by deleting the real matrix — so
+ * the only test that could reach it had to write a tracked file, which turns
+ * `vp run test` permanently uncacheable (Vite+ invalidates on the write syscall,
+ * not on content or mtime). A simpler rule that is cheap to test is worth more
+ * than a narrower one that is not.
+ */
+export function shouldRefuseMissingBaseline(opts: {
+  readonly checkMode: boolean;
+  readonly hasBaseline: boolean;
+  readonly acceptLoss: boolean;
+}): boolean {
+  return !opts.checkMode && !opts.hasBaseline && !opts.acceptLoss;
+}
+
 const USAGE =
   'Usage: node scripts/gen-handled-property-wiring.ts [--check] [--accept-evidence-loss]\n' +
   '                                                   [--providers-dir=<p>] [--baseline=<p>] [--out-dir=<p>]\n' +
@@ -1608,6 +1673,39 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
   // being able to overwrite the committed matrix with the probe's degradation.
   const outDirFlag = argv.find((a) => a.startsWith('--out-dir='));
 
+  // A value flag given TWICE would silently take the first and ignore the rest,
+  // so `--baseline=<real> --baseline=/nope` would read as the real one while the
+  // author believed the opposite (or vice versa). Any seam that decides what the
+  // loss check grades against must not have a silent precedence rule.
+  for (const flag of KNOWN_VALUE_FLAGS) {
+    const given = argv.filter((a) => a.startsWith(flag));
+    if (given.length > 1) {
+      process.stderr.write(
+        `handled-property-wiring: FAIL — ${flag} given ${given.length} times ` +
+          `(${given.join(' ')}).\nPass it at most once.\n${USAGE}`
+      );
+      process.exit(1);
+    }
+  }
+
+  // `--out-dir=` only means anything to the WRITER. Accepting-and-ignoring it on
+  // the check path invites "I redirected the output, so this run was harmless".
+  if (checkMode && outDirFlag !== undefined) {
+    process.stderr.write(
+      'handled-property-wiring: FAIL — --out-dir= is a WRITER flag; --check writes nothing.\n' +
+        `Drop it, or drop --check.\n${USAGE}`
+    );
+    process.exit(1);
+  }
+
+  const defaultOutDir = dirname(OUT_JSON);
+  const outDir = outDirFlag ? resolve(outDirFlag.slice('--out-dir='.length)) : defaultOutDir;
+  // The redirect must be a REAL redirect. Checking only that `--out-dir=` is
+  // PRESENT let `--out-dir=docs/_generated` satisfy the guard below while still
+  // rendering the committed matrix — which is verbatim what the guard exists to
+  // prevent, so the flag became its own bypass.
+  const redirected = outDirFlag !== undefined && outDir !== defaultOutDir;
+
   // BOTH grading seams are refused on the WRITER path unless the output is
   // redirected too. `--providers-dir=` would render the COMMITTED matrix from a
   // tree that is not `src/`; `--baseline=` is subtler and strictly worse —
@@ -1615,30 +1713,39 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
   // loss check reads as "nothing to compare", so the writer would overwrite
   // docs/_generated with WEAKER evidence, exit 0, and print nothing. That is the
   // silent default this whole verdict exists to remove, reachable by one flag.
-  // Allowed together with `--out-dir=`, which is what the writer-path probes do.
+  // Allowed together with a real `--out-dir=`, which is what the probes do.
   for (const [flag, present] of [
     ['--providers-dir=', dirFlag !== undefined],
     ['--baseline=', baselineFlag !== undefined],
   ] as const) {
-    if (present && !checkMode && outDirFlag === undefined) {
+    if (present && !checkMode && !redirected) {
       process.stderr.write(
         `handled-property-wiring: FAIL — ${flag} may only accompany a WRITE when --out-dir= also\n` +
-          'redirects the output. Refusing to render docs/_generated from a tree or a baseline\n' +
-          `that is not the committed one.\n${USAGE}`
+          'redirects the output SOMEWHERE ELSE. Refusing to render docs/_generated from a tree\n' +
+          `or a baseline that is not the committed one.\n${USAGE}`
       );
       process.exit(1);
     }
   }
 
-  const outDir = outDirFlag ? resolve(outDirFlag.slice('--out-dir='.length)) : dirname(OUT_JSON);
   const outJson = join(outDir, 'handled-property-wiring.json');
   const outMd = join(outDir, 'handled-property-wiring.md');
   const report = loadReport(dirFlag ? resolve(dirFlag.slice('--providers-dir='.length)) : undefined);
   const stale = findStaleAllowListEntries(report);
-  const losses = findEvidenceLosses(
-    loadBaseline(baselineFlag ? resolve(baselineFlag.slice('--baseline='.length)) : undefined),
-    report
+  const baseline = loadBaseline(
+    baselineFlag ? resolve(baselineFlag.slice('--baseline='.length)) : undefined
   );
+
+  // Deleting the matrix is the one-command way to defeat a check that grades
+  // against it. Refused on the DEFAULT output path, where the only baseline that
+  // can be meant is the committed one; see {@link MISSING_BASELINE_FAILURE} for
+  // why CI's `git diff --quiet` step does NOT cover this on its own.
+  if (shouldRefuseMissingBaseline({ checkMode, hasBaseline: baseline !== null, acceptLoss })) {
+    process.stderr.write(MISSING_BASELINE_FAILURE);
+    process.exit(1);
+  }
+
+  const losses = findEvidenceLosses(baseline, report);
 
   if (checkMode) {
     // BOTH verdicts are reported before exiting: an earlier revision returned
@@ -1709,6 +1816,15 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
         'records STRICTLY WEAKER evidence than before for:\n'
     );
     for (const l of losses) process.stderr.write(`${formatEvidenceLoss(l)}\n`);
+  } else if (baseline === null) {
+    // The other thing `--accept-evidence-loss` waives on the default path: the
+    // missing-baseline refusal. Say so, or the run looks like an ordinary write
+    // while it is in fact installing an UNGRADED matrix.
+    process.stderr.write(
+      `handled-property-wiring: ACCEPTED MISSING BASELINE (${ACCEPT_LOSS_FLAG}) — no readable\n` +
+        'committed matrix, so this run was graded against NOTHING and the file below becomes\n' +
+        'the new baseline unreviewed. Legitimate only for a first-ever generation.\n'
+    );
   }
 
   mkdirSync(outDir, { recursive: true });
