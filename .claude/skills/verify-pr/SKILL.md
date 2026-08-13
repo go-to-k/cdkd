@@ -275,6 +275,12 @@ Present results as a table:
 If all pass, confirm "PR is ready to merge."
 If any fail, list the issues to fix.
 
+Then add the **State** line CLAUDE.md's wrap-report rule requires — this skill's report is the single most common place it is needed, because "ready to merge" is almost never the end of the turn:
+
+- A check that is merely *pending* (CI still running, an integ in flight, a reviewer agent not back yet) is **WAITING**, not a failure and not a stop. Say what you are waiting on, the signal that will re-invoke you (`gh pr checks <N> --watch`, a background-task completion notification), and that you will merge once it is green. Do not hand the user a "ready to merge" verdict and then go quiet — that reads as STOPPED and leaves them unsure whether to intervene.
+- A check that legitimately **cannot** pass (no AWS credentials for the live-test, a decision only the maintainer can make) is not WAITING either — there is no signal coming. Either resolve it, or ask through the `AskUserQuestion` tool so the run continues from the answer. Never end the turn with the question in prose.
+- Report **STOPPED** only when the PR is merged (or the user explicitly owns the next step) and nothing is pending.
+
 ## Final Step
 
 After all checks pass, record THREE markers via [markgate](https://github.com/go-to-k/markgate) so the gate hooks allow the next `git commit`, `gh pr create`, and `gh pr merge`. `/verify-pr` is a superset of `/check` (code correctness) and `/check-docs` (docs consistency), and adds live-test + retrospective + scope-match on top — so its success implies all three. cdkd pins markgate via mise, so use `mise exec` to avoid PATH issues when shims aren't active:

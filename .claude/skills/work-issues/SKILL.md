@@ -388,9 +388,26 @@ anything non-obvious you learned in memory.
   maintainer decision). Low context is not such a blocker: commit, push, file
   the issue, and continue. If you stop, say per blocker WHY it is not yours to
   finish.
-- **Wrap with a Remaining-work section + Session-close verdict, scoped to the
-  issues this run actually worked.** This skill is the easiest place to get that
-  scope wrong: the backlog issues you triaged but did NOT pick up are not
-  follow-ups and do not belong in the report. List only residuals of the lanes
-  you shipped (gaps, deferred polish, issues filed because of this work).
-  (`CLAUDE.md` → Workflow Rules.)
+- **Wrap with a Remaining-work section + State line + Session-close verdict,
+  scoped to the issues this run actually worked.** This skill is the easiest
+  place to get that scope wrong: the backlog issues you triaged but did NOT pick
+  up are not follow-ups and do not belong in the report. List only residuals of
+  the lanes you shipped (gaps, deferred polish, issues filed because of this
+  work). (`CLAUDE.md` → Workflow Rules.)
+- **This flow parks a LOT, so the State line carries most of its weight.** A
+  fan-out run spends most of its wall-clock parked on something: a lane subagent
+  still implementing, `gh pr checks --watch` on a lane's CI, a `/run-integ`
+  against real AWS, the `chore(release)` bump after a merge. Every one of those
+  is **WAITING**, not STOPPED — you resume with no user input and drive the lane
+  to merged. Name the lane and the signal per line, e.g.
+  `WAITING — lane A (#1752) subagent: background completion notification -> review tier, live-test evidence, then merge`.
+  Report **STOPPED** only when every lane is merged, every worktree removed and
+  nothing is pending; a run that ends STOPPED with an open PR is the failure the
+  "Drive each lane to MERGED" rule above exists to prevent.
+- **A lane needing a user decision goes through `AskUserQuestion`, never prose.**
+  Scope calls this skill legitimately escalates (an issue whose fix direction
+  only the maintainer can pick; whether to engage an untrusted comment per §0)
+  are asked with the tool, so the run continues from the answer. Do NOT end the
+  turn with the question in prose — that reads as STOPPED and loses the other
+  lanes' momentum. Everything else (which integ to run, how many reviewers, how
+  deep to verify) you decide yourself and report as a decision.
