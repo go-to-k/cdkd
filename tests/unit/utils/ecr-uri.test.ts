@@ -229,7 +229,23 @@ describe('parseEcrRegistryHost / looksLikeEcrHostWithForeignSuffix', () => {
         region,
       });
     });
-  });
+
+    it('refuses a folded look-alike SUFFIX as well as a folded region', () => {
+      // The region guard's twin, one layer over. `aws-isoe`'s suffix is
+      // `cloud.adc-e.uk`, which CONTAINS a `k`, so U+212A KELVIN SIGN folds
+      // onto it -- guarding only the region would accept this as a genuine
+      // ISO-E registry. Reachable only since #1790 added that partition, which
+      // is why the first cut of this guard covered the region alone.
+      expect(verdict(uri('eu-isoe-west-1', 'cloud.adc-e.uK'))).toEqual({
+        parse: undefined,
+        foreignSuffix: false,
+      });
+      // Inverted control: the real suffix is still accepted, in any casing.
+      expect(parseEcrRegistryHost(uri('eu-isoe-west-1', 'CLOUD.ADC-E.UK'))).toEqual({
+        accountId: '123456789012',
+        region: 'eu-isoe-west-1',
+      });
+    });
 
     it('withdraws the #1764 foreign-suffix diagnostic too, deliberately', () => {
       // A malformed region carrying a genuinely FOREIGN suffix used to report
@@ -251,6 +267,7 @@ describe('parseEcrRegistryHost / looksLikeEcrHostWithForeignSuffix', () => {
         foreignSuffix: true,
       });
     });
+  });
 
   // Pins the bound the #1786 fix deliberately did NOT widen, so a future change
   // to ECR_URI_HOST_REGEX cannot silently expand what cdkd `docker login`s to.

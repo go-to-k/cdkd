@@ -47,17 +47,40 @@ const ECR_URI_HOST_REGEX = /^(\d{12})\.dkr\.ecr\.([^.]+)\.([^/]+)\//;
  * admitting only characters that fold to themselves.
  *
  * ONE DELIBERATE SIDE EFFECT, called out because it is a withdrawal rather than
- * an addition: refusing here also withdraws the #1764 foreign-suffix diagnostic
- * from a malformed-region host, so `<acct>.dkr.ecr.us_east_1.example.com/…`
- * now classifies as an ordinary public image and `ecs-task-resolver.ts` logs
- * nothing, where before the guard it logged the partition-gap warning. That is
- * the correct verdict rather than a regression: the diagnostic's whole subject
- * is "this suffix does not belong to its region's PARTITION", and for a segment
- * that is not a region id there is no partition to belong to — reporting it
- * would send the reader hunting for a table entry that could never exist. It is
- * pinned by a test so a future widening of the guard cannot flip it silently.
+ * an addition: a malformed-region host is now classified as an ordinary public
+ * image with NO cdkd-side signal at all — neither the ECR verdict nor the #1764
+ * foreign-suffix diagnostic. Both arms change, not just the foreign one:
+ * `<acct>.dkr.ecr.us_east_1.example.com/…` used to log the partition-gap
+ * warning and now logs nothing, and `<acct>.dkr.ecr.us_east_1.amazonaws.com/…`
+ * used to be ACCEPTED as ECR and is now refused. That is the correct verdict
+ * rather than a regression — the diagnostic's whole subject is "this suffix does
+ * not belong to its region's PARTITION", and a segment that is not a region id
+ * has no partition to belong to, so reporting it would send the reader hunting
+ * for a table entry that could never exist — but it does mean a typo'd region
+ * gets no cdkd-side hint, only docker's own pull failure. Both arms are pinned
+ * by tests so a future widening of the guard cannot flip them silently.
  */
 const CANONICAL_REGION_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
+
+/**
+ * A URL suffix cdkd is willing to compare against the partition table.
+ *
+ * The SAME raw-capture rule as the region, and for the same reason one layer
+ * over: the suffix is folded before the comparison, so a code point folding
+ * into ASCII can impersonate a partition's suffix. This became reachable the
+ * moment issue #1764 landed `aws-isoe`'s `cloud.adc-e.uk` — that suffix
+ * contains a `k`, so `…dkr.ecr.eu-isoe-west-1.cloud.adc-e.uK/…` (Kelvin
+ * sign) folded onto it and was ACCEPTED. Not a credential leak, since UTS-46
+ * maps U+212A to `k` too and the host resolves to the real AWS domain, but it
+ * falsifies the invariant the region guard's comment above states, so both
+ * captures are held to the same rule rather than only the one that was
+ * measured first.
+ *
+ * Dots are admitted because a suffix is a dotted DNS name; every other
+ * character is refused, so the accepted set stays exactly the partition
+ * table's own literals.
+ */
+const CANONICAL_URL_SUFFIX = /^[A-Za-z0-9][A-Za-z0-9.-]*$/;
 
 /**
  * The ONE case-normalization boundary of this module (issue #1786).
@@ -80,18 +103,17 @@ const CANONICAL_REGION_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
  * cdkd, and keeping it in ONE function means both exported entry points below —
  * and the suffix COMPARISON itself — cannot drift apart.
  *
- * That is NOT the same as claiming every other caller of the partition helper
- * is already canonical, and the PR review measured that it is not:
- * `local-run-task.ts` / `local-invoke.ts` / `local-start-api.ts` derive
- * `${AWS::URLSuffix}` from the raw user `--region`, so `--region CN-NORTH-1`
- * synthesizes `…dkr.ecr.CN-NORTH-1.amazonaws.com/…` — a host carrying the
- * COMMERCIAL suffix for a `cn-` region, which this module then correctly
- * rejects as a look-alike. Both spellings are broken (the pre-#1786 code
- * accepted it and pointed a `docker login` at a host that does not exist), so
- * the right repair is to canonicalize the region where the CLI ACCEPTS it —
- * tracked as issue #1795. That repair does not replace this one: a CLI flag and
- * a host string read out of a template or a state record are different trust
- * questions, so this boundary keeps its own normalization either way.
+ * This does NOT duplicate `canonicalizeRegion`, which issue #1795 added inside
+ * `derivePartitionAndUrlSuffix` so the mapping folds its own input. The two
+ * answer different questions and both are needed: that one makes the partition
+ * LOOKUP case-insensitive for every caller, while these guards decide whether
+ * the captured segments are a region id and a URL suffix AT ALL. Folding alone
+ * cannot do that — folding is precisely what turns `us-eKst-1` into the
+ * plausible `us-ekst-1` (see the guards' own comments), so a fold-only helper
+ * makes the substitution easier to reach, not harder. Double-folding is a
+ * no-op, which is why the redundant `toLowerCase()` calls below are left in
+ * rather than removed: they keep this function the single answer for the
+ * comparison even if the helper's behaviour changes again.
  *
  * The derived suffix is lower-cased too. Every entry in the partition table is
  * a lower-case literal today, so that is a no-op; it is there so this function
@@ -102,10 +124,12 @@ function matchEcrRegistryHost(
 ): { accountId: string; region: string; suffix: string; expectedSuffix: string } | undefined {
   const m = ECR_URI_HOST_REGEX.exec(imageUri);
   if (!m) return undefined;
-  // Guarded on the RAW capture, BEFORE folding — see the regex's own comment:
-  // `toLowerCase()` maps U+212A onto ASCII `k`, so testing the folded segment
-  // would admit `us-eKst-1` as the region `us-ekst-1`.
+  // BOTH guarded on the RAW capture, BEFORE folding — see each regex's own
+  // comment: `toLowerCase()` maps U+212A onto ASCII `k`, so testing the folded
+  // value would admit `us-eKst-1` as the region `us-ekst-1`, and `cloud.adc-e.uK`
+  // as the `aws-isoe` suffix `cloud.adc-e.uk`.
   if (!CANONICAL_REGION_SEGMENT.test(m[2]!)) return undefined;
+  if (!CANONICAL_URL_SUFFIX.test(m[3]!)) return undefined;
   // The account id is `\d{12}`, so it has no case to normalize.
   const region = m[2]!.toLowerCase();
   return {
