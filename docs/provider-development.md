@@ -1929,8 +1929,121 @@ Checklist when writing or reviewing an `update()`:
   measure against the live schema before concluding a parity verdict.
   That absence is itself load-bearing: `LinearConfiguration` and
   `CanaryConfiguration` carry no required list, so a kept-but-partial block
-  there IS reachable from a template CFn accepts, which is issue #1806 and is
-  strictly worse than #1802 because there is no CFn-side refusal to point at.
+  there IS reachable from a template CFn accepts — which is issue #1806, and
+  was expected to be strictly worse than #1802 precisely because there is no
+  CFn-side refusal to point at. It MEASURED as parity instead; the next
+  paragraph is that measurement, and it is a good example of why the
+  reachability of a shape does not predict its verdict.
+
+  **And REPLACE does not imply divergence — ask the second question before
+  concluding one** (issue #1806, measured us-east-1 2026-08-13 on the same
+  type, SDK and CloudFormation A/B per block). The three DEPTH-1
+  `DeploymentConfiguration` blocks whose partials CFn ACCEPTS —
+  `LinearConfiguration` and `CanaryConfiguration` (no `required` list at all)
+  and `LifecycleHooks[]`, whose element requires only `LifecycleStages` (the
+  partial measured there is one element's `TimeoutConfiguration`) — are what
+  made this the worrying case. All three replace the nested
+  struct exactly as `DeploymentCircuitBreaker` does, but the absent member is
+  filled with an AWS-side DEFAULT (`StepBakeTimeInMinutes` -> 6,
+  `CanaryBakeTimeInMinutes` -> 10, the hook's `Action` -> `ROLLBACK`) and
+  CloudFormation handed the same partial template reached the IDENTICAL end
+  state every time — so the verbatim pass-through is PARITY and re-filling the
+  member from the previous side would be the divergence. What separates them
+  from the #1802 row is only the second question: nothing refuses the shape,
+  on either side. Two further findings generalize:
+  - **A block reachable only under one MODE has to be probed in that mode, and
+    the mode may not be the one the issue names.** These three are documented
+    as blue/green machinery, but `LinearConfiguration` is gated on
+    `Strategy: LINEAR` and `CanaryConfiguration` on `CANARY` — AWS answers a
+    `BLUE_GREEN` service carrying one with `Linear configuration can only be
+    present with LINEAR deployment strategy`, so the fixture the issue
+    prescribed could not have reached them at all. `LifecycleHooks` is not
+    strategy-gated that way (measured under `CANARY`; its reach under
+    `ROLLING` was not probed).
+  - **The default-fill is not phantom drift**, because the deploy engine
+    captures `observedProperties` from `readCurrentState` and the AWS-filled
+    value lands in the drift baseline. Check that before reaching for
+    `effectiveProperties`: a value AWS computes belongs in `observedProperties`
+    by this file's own rule, and the capture already puts it there. It holds
+    only while the property stays drift-COMPARED, so fence it — declaring the
+    property in `getDriftUnknownPaths` later would falsify the parity verdict
+    with every send-side test still green.
+
+  The rest of the tree splits TWO ways, plus the array shape below — so neither "the other blocks are
+  refused" nor "the rest is parity" is the thing to carry away, and
+  `DeploymentAlarms` keeps the permissive-divergence disposition above:
+  - **AWS ITSELF REFUSES** (the ASG `InstanceMaintenancePolicy` disposition —
+    cdkd fails loudly, no nested required-ness check involved): a hook element
+    missing `LifecycleStages`; a hook element missing `TargetType` (absent
+    DEFAULTS to `AWS_LAMBDA`, which then demands a target ARN and role a PAUSE
+    hook does not carry, so dropping ONE member arms a requirement for TWO
+    others); and `DeploymentCircuitBreaker.ThresholdConfiguration` missing
+    `Value`.
+  - **AWS RETAINS it and CLOUDFORMATION RESETS it** — the one DIVERGENCE the
+    sweep found, and the opposite polarity to the permissive one above:
+    `DeploymentCircuitBreaker`'s OPTIONAL children (`ResetOnHealthyTask`, and
+    the whole `ThresholdConfiguration` block). Dropping them from an otherwise
+    complete parent is a CFn-accepted partial that reaches AWS; from the
+    identical baseline, with a sibling flipped in the same call so the update
+    demonstrably applied, cdkd left `false` / `{COUNT, 7}` intact while
+    CloudFormation reset them to `true` / `{BOUNDED_PERCENT, 50}`. So cdkd
+    fails to apply a removal CFn applies — too STICKY rather than too
+    permissive. Tracked as issue #1861; the classification ships the
+    pass-through unchanged because the reset is a behavior change that needs
+    its own per-member measurement.
+
+  The `LifecycleHooks` ARRAY is replaced WHOLESALE, so a per-element drop is a
+  non-issue. Three things generalize:
+  - **Enumerate the tree from the registry definitions, not from the blocks
+    the issue names.** #1806 named three; the live schema has more, and the two
+    the issue never mentioned (`ThresholdConfiguration`, `ResetOnHealthyTask`)
+    are the ones that produced new behavior.
+  - **Check the CHILD's own `required` list before calling a nested partial
+    reachable.** A satisfied PARENT requirement does not make the child's
+    partial CFn-accepted: `ThresholdConfiguration` carries
+    `required: [Type, Value]`, so CFn refuses it up front — the parity there
+    comes from BOTH engines failing, not from agreeing on an end state. **What
+    decides the verdict is whether AWS ACCEPTS, not whether CFn refuses**:
+    `DeploymentCircuitBreaker` missing `Rollback` is refused by CFn and
+    ACCEPTED by AWS, which is precisely why that row is the permissive
+    divergence (#1802) and this one is not.
+  - **Members of ONE block can carry DIFFERENT semantics.** In
+    `DeploymentCircuitBreaker`, the required `Rollback` reads as replaced while
+    the optional children are retained. Measure per member; do not generalize a
+    row to its siblings.
+  - **Where the API RETAINS an omitted optional member of a STILL-DECLARED
+    struct, cdkd diverges from CloudFormation**, which treats the omission as a
+    REMOVAL and resets the member to its default. Scope that sentence
+    carefully, because two neighbouring shapes behave differently and both were
+    measured: removing the WHOLE property resets nothing under either engine
+    (the depth-0 row), and a member the template NEVER declared is left alone by
+    CFn too — an out-of-band value survived a CFn update that changed an
+    unrelated member — and it still survived when a SIBLING INSIDE the same
+    block was flipped, which is what excludes the competing reading "CFn
+    re-serializes a struct with defaults whenever its declared content
+    changed". So this is a previous-present / current-absent REMOVAL, the
+    semantic `clearOnUpdateRemoval` implements one level up, NOT a handler that
+    materializes every default. Treat the member-vs-whole-property boundary as
+    EMPIRICAL rather than derived: a top-level property is previous-present /
+    current-absent too, and removing it resets nothing. The `LinearConfiguration` family is parity
+    because the API ITSELF default-fills there, so both engines land in the same
+    place. And the two behaviors are indistinguishable until you probe a member
+    whose live value DIFFERS from its default — measuring from a live value that
+    happens to EQUAL the default proves nothing, which is a mistake this
+    measurement made once and had to redo. Capture the resource's identity on
+    both sides too (a replacement trivially shows defaults, and reads as a
+    reset).
+
+  A note on HOW to probe, because it changes the answer: the AWS CLI refuses
+  the `ThresholdConfiguration` partial CLIENT-side (botocore validates the
+  required trait before sending), so it never reaches the service. The JS SDK
+  cdkd uses declares the same member required in its TYPE (`value: number |
+  undefined`, a non-optional key, unlike the optional `targetType?:`) but
+  performs no runtime required check, so it serializes the partial and the
+  refusal arrives from the SERVICE. The models agree; only where the validation
+  runs differs — so probe through `@aws-sdk/client-*`, or a CLI probe reports
+  the right verdict for the wrong reason, and reports the WRONG verdict
+  entirely if the service would have accepted it.
 - Unit-test **three** shapes: removed → exact reset value; never-present →
   stays absent; mixed kept/removed → kept fields pass through unchanged.
 - A per-key removal test (one key dropped from a still-present map) does NOT

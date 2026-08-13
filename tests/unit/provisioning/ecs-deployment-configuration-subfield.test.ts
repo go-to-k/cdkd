@@ -104,9 +104,10 @@ const FULL_BLOCK = {
  * `DeploymentCircuitBreaker` and `DeploymentAlarms`. It is NOT a claim about
  * the property's other nested blocks: `LinearConfiguration` and
  * `CanaryConfiguration` have no `required` list and `DeploymentLifecycleHook`
- * requires only `LifecycleStages`, so CFn ACCEPTS a partial there and the SDK
- * side is unmeasured (they are reachable only under `Strategy: BLUE_GREEN`,
- * which the ROLLING probe could not exercise). Tracked as issue #1806.
+ * requires only `LifecycleStages`, so CFn ACCEPTS a partial there. Those were
+ * unmeasured when this file was written (the ROLLING probe could not reach
+ * them); issue #1806 measured them and they are PARITY — see the second
+ * describe block below, which is where their pins live.
  *
  * The third row is NOT parity, and an earlier revision of this file said it
  * was. The SDK ACCEPTS the partial nested struct and replaces it (a live
@@ -131,12 +132,17 @@ describe('ECS Service DeploymentConfiguration sub-field semantics (#1225)', () =
     provider = new ECSProvider();
   });
 
-  const update = (
+  const update = async (
     props: Record<string, unknown>,
     prev: Record<string, unknown>
   ): Promise<unknown> => {
     mockSend.mockResolvedValueOnce(updateResponse);
-    return provider.update('Svc', SERVICE_ARN, TYPE, props, prev);
+    const result = await provider.update('Svc', SERVICE_ARN, TYPE, props, prev);
+    // Same rationale as the #1806 block's helper: this file drains its `*Once`
+    // queue, so the leak detector can never flag it and nothing else would
+    // notice the update path starting to issue a second call.
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    return result;
   };
 
   it('forwards a FULLY specified block verbatim (control polarity)', async () => {
@@ -216,6 +222,7 @@ describe('ECS Service DeploymentConfiguration sub-field semantics (#1225)', () =
       DeploymentConfiguration: { MaximumPercent: 150 },
     });
 
+    expect(mockSend).toHaveBeenCalledTimes(1);
     expect(findCommand(CreateServiceCommand).input.deploymentConfiguration).toEqual({
       maximumPercent: 150,
     });
@@ -236,6 +243,7 @@ describe('ECS Service DeploymentConfiguration sub-field semantics (#1225)', () =
       DeploymentConfiguration: { DeploymentCircuitBreaker: { Enable: false } },
     });
 
+    expect(mockSend).toHaveBeenCalledTimes(1);
     expect(findCommand(CreateServiceCommand).input.deploymentConfiguration).toEqual({
       deploymentCircuitBreaker: { enable: false },
     });
@@ -328,13 +336,17 @@ describe('ECS Service DeploymentConfiguration sub-field semantics (#1225)', () =
 
     // The three SIBLING nested blocks #1806 is about. Two of them carry NO
     // required list at all, so a kept-but-partial block there IS reachable
-    // from a template CloudFormation accepts — which is strictly worse than
-    // #1802, where CFn at least refuses. Asserting their ABSENCE states the
-    // SCOPE of the depth-2 parity verdict rather than over-claiming it, and
-    // means the day AWS adds a required list to one of them, #1806 shrinks
-    // visibly instead of silently. The third, `DeploymentLifecycleHook`, does
-    // carry one — but only `LifecycleStages`, leaving its other five members
-    // droppable, which is why it is in #1806's scope too.
+    // from a template CloudFormation accepts — which is why they were EXPECTED
+    // to be strictly worse than #1802, where CFn at least refuses. They
+    // MEASURED as parity instead (the API default-fills the omitted member and
+    // CFn reaches the identical end state; see the #1806 describe block), so
+    // asserting their ABSENCE states the SCOPE of that verdict rather than
+    // over-claiming it: the day AWS adds a required list to one of them, the
+    // row moves into the #1802-shaped class — CFn refusing a template cdkd
+    // still deploys — visibly instead of silently. The third,
+    // `DeploymentLifecycleHook`, does carry one — but only `LifecycleStages`,
+    // leaving its other five members droppable, which is why it is in #1806's
+    // scope too.
     // The two absences are only meaningful while the definitions still EXIST —
     // `toBeUndefined()` passes just as well if AWS renames or deletes them, at
     // which point the #1806 scope claim below would be about nothing. Pin
@@ -353,5 +365,578 @@ describe('ECS Service DeploymentConfiguration sub-field semantics (#1225)', () =
     // exists and is populated is what stops a capture regression from
     // silently downgrading this test to the vacuous shape it replaced.
     expect(Object.keys(required).length).toBeGreaterThan(10);
+  });
+});
+
+/** The traffic-shifting baselines the #1806 live A/B used. */
+const LINEAR_FULL = {
+  Strategy: 'LINEAR',
+  BakeTimeInMinutes: 0,
+  MaximumPercent: 200,
+  MinimumHealthyPercent: 100,
+  LinearConfiguration: { StepPercent: 33, StepBakeTimeInMinutes: 9 },
+};
+const CANARY_FULL = {
+  Strategy: 'CANARY',
+  BakeTimeInMinutes: 0,
+  MaximumPercent: 200,
+  MinimumHealthyPercent: 100,
+  CanaryConfiguration: { CanaryPercent: 21, CanaryBakeTimeInMinutes: 9 },
+};
+const HOOK_FULL = {
+  Strategy: 'CANARY',
+  LifecycleHooks: [
+    {
+      TargetType: 'PAUSE',
+      LifecycleStages: ['PRE_SCALE_UP'],
+      TimeoutConfiguration: { TimeoutInMinutes: 31, Action: 'CONTINUE' },
+    },
+  ],
+};
+
+/**
+ * Issue #1806 — the three `DeploymentConfiguration` nested blocks that carry
+ * NO `required` list, so unlike the #1802 depth-2 case a kept-but-partial
+ * block there is reachable from a template CloudFormation ACCEPTS.
+ *
+ * Measured against real AWS on 2026-08-13 (us-east-1), SDK and CloudFormation
+ * side by side on the same traffic-shifting service, one A/B per block:
+ *
+ * | block (partial sent)                      | SDK end state   | CFn end state   | verdict |
+ * |-------------------------------------------|-----------------|-----------------|---------|
+ * | LinearConfiguration {StepPercent 44}      | {44, 6}         | {44, 6}         | parity  |
+ * | CanaryConfiguration {CanaryPercent 30}    | {30, 10}        | {30, 10}        | parity  |
+ * | hook TimeoutConfiguration {TimeoutMin 45} | {45, ROLLBACK}  | {45, ROLLBACK}  | parity  |
+ *
+ * So the nested struct IS replaced (the #1802 mechanism), but the absent
+ * member is filled with an AWS-side DEFAULT rather than retained — and
+ * CloudFormation handed the same partial template reaches the IDENTICAL end
+ * state, so the verbatim pass-through cdkd performs is parity and a
+ * "fill the missing member from the previous side" normalization would be the
+ * DIVERGENCE. The defaults are fixed, not derived: an empty
+ * `LinearConfiguration: {}` sent from a live {33, 9} came back {10, 6}.
+ *
+ * One PREMISE of the issue did not survive the measurement, and one FINDING it
+ * does not discuss is recorded beside it: these configs are NOT reachable under
+ * `Strategy: BLUE_GREEN` (AWS answers `Linear configuration can only be
+ * present with LINEAR deployment strategy`; each config is gated on its own
+ * strategy, while `LifecycleHooks` is not — measured under `CANARY`, with its
+ * reach under `ROLLING` not probed), and the default-fill
+ * does not become phantom drift, because the deploy engine captures
+ * `observedProperties` from `readCurrentState` and the AWS-filled value lands
+ * in the drift baseline.
+ *
+ * `LifecycleHooks[].LifecycleStages` — the family's one required member — is
+ * the ASG `InstanceMaintenancePolicy` disposition (#1227) instead: AWS ITSELF
+ * refuses the element (`InvalidParameterException: Lifecycle stage cannot be
+ * null or empty for any deployment lifecycle hooks`), so cdkd's pass-through
+ * fails loudly and is parity with no nested required-ness check involved.
+ *
+ * Each assertion below is written against the shape the REGRESSION would emit
+ * (a previous-side member merged back in), not merely against "something was
+ * sent".
+ */
+describe('ECS Service DeploymentConfiguration optional nested blocks (#1806)', () => {
+  let provider: ECSProvider;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    provider = new ECSProvider();
+  });
+
+  /**
+   * Primes exactly ONE response and asserts exactly one send was consumed.
+   * The count pin lives here rather than in each test because this file drains
+   * its `*Once` queue in `beforeEach` — which is correct, but means the
+   * once-leak detector can never flag it, so nothing else would notice the
+   * update path starting to issue a second call (the change that silently
+   * invalidates a priming). See `.claude/rules/testing.md`.
+   */
+  const update = async (
+    props: Record<string, unknown>,
+    prev: Record<string, unknown>
+  ): Promise<unknown> => {
+    mockSend.mockResolvedValueOnce(updateResponse);
+    const result = await provider.update('Svc', SERVICE_ARN, TYPE, props, prev);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    return result;
+  };
+
+  it('kept-but-partial LinearConfiguration is forwarded verbatim — StepBakeTimeInMinutes is NOT merged back', async () => {
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: { ...LINEAR_FULL, LinearConfiguration: { StepPercent: 44 } },
+      },
+      { ...baseProps(), DeploymentConfiguration: LINEAR_FULL }
+    );
+
+    const sent = findCommand(UpdateServiceCommand).input.deploymentConfiguration;
+
+    // The exact `toEqual` excludes both regressions at once: the previous
+    // side's `stepBakeTimeInMinutes: 9` merged back in (which would make cdkd
+    // hold a value CloudFormation does NOT send), and AWS's own default 6
+    // synthesized locally (which would make state describe a value cdkd never
+    // put on the wire).
+    expect(sent).toEqual({
+      strategy: 'LINEAR',
+      bakeTimeInMinutes: 0,
+      maximumPercent: 200,
+      minimumHealthyPercent: 100,
+      linearConfiguration: { stepPercent: 44 },
+    });
+  });
+
+  it('kept-but-partial CanaryConfiguration is forwarded verbatim (the sibling shape)', async () => {
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: { ...CANARY_FULL, CanaryConfiguration: { CanaryPercent: 30 } },
+      },
+      { ...baseProps(), DeploymentConfiguration: CANARY_FULL }
+    );
+
+    const sent = findCommand(UpdateServiceCommand).input.deploymentConfiguration;
+
+    expect(sent).toEqual({
+      strategy: 'CANARY',
+      bakeTimeInMinutes: 0,
+      maximumPercent: 200,
+      minimumHealthyPercent: 100,
+      canaryConfiguration: { canaryPercent: 30 },
+    });
+  });
+
+  it('a LifecycleHooks element with a partial TimeoutConfiguration is forwarded verbatim (depth 3, inside an array)', async () => {
+    // The deepest reachable case of the class: the drop is two levels below
+    // the audited property AND inside an array element, so a per-element
+    // "fill from the previous element of the same index" is the regression
+    // this pins against. The live A/B says the omitted `Action` comes back as
+    // AWS's `ROLLBACK` default under BOTH engines.
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          ...HOOK_FULL,
+          LifecycleHooks: [
+            {
+              TargetType: 'PAUSE',
+              LifecycleStages: ['PRE_SCALE_UP'],
+              TimeoutConfiguration: { TimeoutInMinutes: 45 },
+            },
+          ],
+        },
+      },
+      { ...baseProps(), DeploymentConfiguration: HOOK_FULL }
+    );
+
+    const sent = findCommand(UpdateServiceCommand).input.deploymentConfiguration;
+
+    expect(sent).toEqual({
+      strategy: 'CANARY',
+      lifecycleHooks: [
+        {
+          targetType: 'PAUSE',
+          lifecycleStages: ['PRE_SCALE_UP'],
+          timeoutConfiguration: { timeoutInMinutes: 45 },
+        },
+      ],
+    });
+  });
+
+  it('a LifecycleHooks element missing the required LifecycleStages is still forwarded verbatim (AWS refuses it, so cdkd fails loudly)', async () => {
+    // Deliberately NOT the #1802 shape: cdkd forwards the element unchanged
+    // and the AWS API rejects it, so the loud failure IS the parity behavior
+    // and no nested required-ness check is owed here. What is pinned is that
+    // cdkd does not paper over it by re-filling `LifecycleStages` from the
+    // previous side — that would deploy a hook stage the template dropped.
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          ...HOOK_FULL,
+          LifecycleHooks: [
+            { TargetType: 'PAUSE', TimeoutConfiguration: { TimeoutInMinutes: 45 } },
+          ],
+        },
+      },
+      { ...baseProps(), DeploymentConfiguration: HOOK_FULL }
+    );
+
+    const sent = findCommand(UpdateServiceCommand).input.deploymentConfiguration;
+
+    expect(sent).toEqual({
+      strategy: 'CANARY',
+      lifecycleHooks: [{ targetType: 'PAUSE', timeoutConfiguration: { timeoutInMinutes: 45 } }],
+    });
+  });
+
+  it('the CREATE path forwards a partial LinearConfiguration verbatim too', async () => {
+    // Same reason the #1225 block pins its own create-path case: a
+    // fill-only-the-missing-member synthesis would be added at the fill site,
+    // not in the shared converter, so create needs its own pin — and on
+    // create there is no previous side at all, which makes AWS's default the
+    // only value a synthesis could invent.
+    mockSend.mockResolvedValueOnce({
+      service: { serviceArn: SERVICE_ARN, serviceName: 'my-service' },
+    });
+
+    await provider.create('Svc', TYPE, {
+      ...baseProps(),
+      ServiceName: 'my-service',
+      DeploymentConfiguration: { Strategy: 'LINEAR', LinearConfiguration: { StepPercent: 44 } },
+    });
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(findCommand(CreateServiceCommand).input.deploymentConfiguration).toEqual({
+      strategy: 'LINEAR',
+      linearConfiguration: { stepPercent: 44 },
+    });
+  });
+
+  it('a hook element missing TargetType is forwarded verbatim (AWS refuses it — the #1227 disposition)', async () => {
+    // Measured: dropping `TargetType` makes AWS answer `Role arn or Hook
+    // Target arn is missing for one or more deployment lifecycle hooks`,
+    // because an absent TargetType DEFAULTS to AWS_LAMBDA — so one dropped
+    // member arms a requirement for two others. cdkd must not paper over that
+    // by re-filling `TargetType` from the previous side: the loud failure IS
+    // the parity behavior, and inventing `PAUSE` would deploy a hook kind the
+    // template stopped asking for.
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          ...HOOK_FULL,
+          LifecycleHooks: [
+            {
+              LifecycleStages: ['PRE_SCALE_UP'],
+              TimeoutConfiguration: { TimeoutInMinutes: 41, Action: 'CONTINUE' },
+            },
+          ],
+        },
+      },
+      { ...baseProps(), DeploymentConfiguration: HOOK_FULL }
+    );
+
+    expect(findCommand(UpdateServiceCommand).input.deploymentConfiguration).toEqual({
+      strategy: 'CANARY',
+      lifecycleHooks: [
+        {
+          lifecycleStages: ['PRE_SCALE_UP'],
+          timeoutConfiguration: { timeoutInMinutes: 41, action: 'CONTINUE' },
+        },
+      ],
+    });
+  });
+
+  it('a SHORTENED LifecycleHooks array is forwarded verbatim — the array is replaced wholesale', async () => {
+    // Measured: a 2-element list re-sent with ONE element left exactly that
+    // one, so the array is replaced wholesale (the #1227 array shape) and a
+    // per-element drop needs no special handling. The regression this pins is
+    // a "merge the previous elements back in" normalization, which would
+    // resurrect a hook the template deleted.
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          ...HOOK_FULL,
+          LifecycleHooks: [
+            {
+              TargetType: 'PAUSE',
+              LifecycleStages: ['PRE_SCALE_UP'],
+              TimeoutConfiguration: { TimeoutInMinutes: 51, Action: 'CONTINUE' },
+            },
+          ],
+        },
+      },
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          ...HOOK_FULL,
+          LifecycleHooks: [
+            ...(HOOK_FULL.LifecycleHooks as Array<Record<string, unknown>>),
+            {
+              TargetType: 'PAUSE',
+              LifecycleStages: ['POST_SCALE_UP'],
+              TimeoutConfiguration: { TimeoutInMinutes: 32, Action: 'CONTINUE' },
+            },
+          ],
+        },
+      }
+    );
+
+    const sent = findCommand(UpdateServiceCommand).input.deploymentConfiguration;
+
+    expect(sent.lifecycleHooks).toHaveLength(1);
+    expect(sent.lifecycleHooks).toEqual([
+      {
+        targetType: 'PAUSE',
+        lifecycleStages: ['PRE_SCALE_UP'],
+        timeoutConfiguration: { timeoutInMinutes: 51, action: 'CONTINUE' },
+      },
+    ]);
+  });
+
+  it('a partial ThresholdConfiguration inside a COMPLETE DeploymentCircuitBreaker is forwarded verbatim', async () => {
+    // The FOURTH block in this property tree, and the one a depth-1 scan
+    // misses: it nests under a block that DOES carry a required list, so the
+    // parent's requirement is satisfied and the template reaches AWS. Measured
+    // through `@aws-sdk/client-ecs` (NOT the AWS CLI, which refuses it
+    // client-side off botocore's required trait and so would have answered for
+    // the wrong reason): the service refuses with `Invalid deployment circuit
+    // breaker threshold value.` — the #1227 disposition again.
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: {
+            Enable: true,
+            Rollback: true,
+            ThresholdConfiguration: { Type: 'BOUNDED_PERCENT' },
+          },
+        },
+      },
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: {
+            Enable: true,
+            Rollback: true,
+            ThresholdConfiguration: { Type: 'BOUNDED_PERCENT', Value: 30 },
+          },
+        },
+      }
+    );
+
+    // The previous side's `Value: 30` must NOT be merged back in.
+    expect(findCommand(UpdateServiceCommand).input.deploymentConfiguration).toEqual({
+      deploymentCircuitBreaker: {
+        enable: true,
+        rollback: true,
+        thresholdConfiguration: { type: 'BOUNDED_PERCENT' },
+      },
+    });
+  });
+
+  it('a dropped ResetOnHealthyTask is forwarded verbatim — the known DIVERGENCE row (#1861)', async () => {
+    // `ResetOnHealthyTask` is OPTIONAL (`DeploymentCircuitBreaker` requires
+    // only [Enable, Rollback]), so dropping it from an otherwise complete block
+    // is a CFn-accepted partial that reaches AWS. Measured: AWS RETAINS the
+    // live value while CloudFormation RESETS it to the default — cdkd fails to
+    // apply a removal CFn applies, the opposite polarity to #1802's permissive
+    // divergence. Tracked as issue #1861.
+    //
+    // What this pins is therefore the CURRENT, deliberately unchanged
+    // behavior, exactly as the #1802 row above pins its own divergence: the
+    // fix is a behavior change needing its own per-member measurement, and
+    // shipping a re-fill here without it would invent a value the template
+    // never declared. Pinning it also protects the eventual fix from being
+    // mistaken for a no-op — and note the required sibling `Rollback` in the
+    // very same block reads as REPLACED, so neither row generalizes to the
+    // other.
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: { Enable: true, Rollback: false },
+        },
+      },
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: { Enable: true, Rollback: true, ResetOnHealthyTask: false },
+        },
+      }
+    );
+
+    expect(findCommand(UpdateServiceCommand).input.deploymentConfiguration).toEqual({
+      deploymentCircuitBreaker: { enable: true, rollback: false },
+    });
+  });
+
+  it('a WHOLE dropped ThresholdConfiguration is forwarded verbatim — the other half of #1861', async () => {
+    // The divergence row has two halves and the sibling pin above covers only
+    // the scalar one. Dropping the whole `ThresholdConfiguration` BLOCK from a
+    // still-declared `DeploymentCircuitBreaker` is the same shape one level
+    // up: cdkd retains the live `{COUNT, 7}`, CloudFormation resets it to
+    // `{BOUNDED_PERCENT, 50}`. Pinning it separately matters because a fix for
+    // #1861 could plausibly handle scalar members and miss a nested BLOCK.
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: { Enable: true, Rollback: false },
+        },
+      },
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: {
+            Enable: true,
+            Rollback: true,
+            ThresholdConfiguration: { Type: 'COUNT', Value: 7 },
+          },
+        },
+      }
+    );
+
+    expect(findCommand(UpdateServiceCommand).input.deploymentConfiguration).toEqual({
+      deploymentCircuitBreaker: { enable: true, rollback: false },
+    });
+  });
+
+  it('an EMPTY nested block is forwarded verbatim — never dropped as "nothing to say"', async () => {
+    // The DISCRIMINATOR that proved the AWS defaults are FIXED rather than
+    // derived from the sibling member: an empty `LinearConfiguration: {}` sent
+    // from a live {33, 9} came back {10, 6}, i.e. BOTH members took their
+    // default. That measurement is what the parity verdict rests on, so the
+    // shape has to reach AWS — a "prune the empty block" normalization would
+    // silently turn it into the whole-block-omitted case, which AWS treats as
+    // the OPPOSITE instruction (retain the live block, per the #1225 row).
+    await update(
+      { ...baseProps(), DeploymentConfiguration: { ...LINEAR_FULL, LinearConfiguration: {} } },
+      { ...baseProps(), DeploymentConfiguration: LINEAR_FULL }
+    );
+
+    const sent = findCommand(UpdateServiceCommand).input.deploymentConfiguration;
+
+    expect(sent).toEqual({
+      strategy: 'LINEAR',
+      bakeTimeInMinutes: 0,
+      maximumPercent: 200,
+      minimumHealthyPercent: 100,
+      linearConfiguration: {},
+    });
+  });
+
+  it('the CREATE path forwards a partial CanaryConfiguration and a partial hook TimeoutConfiguration verbatim', async () => {
+    // The Linear create pin above states its rationale as "the fill site, not
+    // the shared converter, is where a synthesis would be added" — which
+    // applies just as much to the other two arms, so pin them rather than
+    // leaving Linear as the only covered create path.
+    mockSend.mockResolvedValueOnce({
+      service: { serviceArn: SERVICE_ARN, serviceName: 'my-service' },
+    });
+
+    await provider.create('Svc', TYPE, {
+      ...baseProps(),
+      ServiceName: 'my-service',
+      DeploymentConfiguration: {
+        Strategy: 'CANARY',
+        CanaryConfiguration: { CanaryPercent: 30 },
+        LifecycleHooks: [
+          {
+            TargetType: 'PAUSE',
+            LifecycleStages: ['PRE_SCALE_UP'],
+            TimeoutConfiguration: { TimeoutInMinutes: 45 },
+          },
+        ],
+      },
+    });
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(findCommand(CreateServiceCommand).input.deploymentConfiguration).toEqual({
+      strategy: 'CANARY',
+      canaryConfiguration: { canaryPercent: 30 },
+      lifecycleHooks: [
+        {
+          targetType: 'PAUSE',
+          lifecycleStages: ['PRE_SCALE_UP'],
+          timeoutConfiguration: { timeoutInMinutes: 45 },
+        },
+      ],
+    });
+  });
+
+  it('DeploymentConfiguration stays drift-COMPARED, which is what makes the default-fill benign', () => {
+    // The parity verdict has a load-bearing second half: the AWS-filled default
+    // is not phantom drift ONLY because the deploy engine captures
+    // `observedProperties` from `readCurrentState` and this block is read back
+    // there, so the baseline already holds the filled value. Every other test
+    // in this file inspects the SEND side, so declaring the property
+    // drift-unknown later would falsify the verdict with all of them still
+    // green. Pin the two conditions the claim actually rests on.
+    expect(provider.getDriftUnknownPaths(TYPE)).not.toContain('DeploymentConfiguration');
+  });
+
+  it('readCurrentState round-trips the AWS-filled block into the CFn shape the baseline compares against', async () => {
+    // The OTHER half of the same claim, and it needs a round-trip rather than
+    // a source grep: a reverse-mapper that still WRITES the key but stops
+    // re-casing it (raw SDK camelCase) keeps every send-side test green while
+    // the recorded baseline becomes `linearConfiguration.stepBakeTimeInMinutes`
+    // against a PascalCase state record — precisely the permanent phantom
+    // drift the parity verdict rests on NOT happening.
+    mockSend.mockResolvedValueOnce({
+      services: [
+        {
+          serviceArn: SERVICE_ARN,
+          serviceName: 'my-service',
+          status: 'ACTIVE',
+          deploymentConfiguration: {
+            strategy: 'LINEAR',
+            // What AWS reports after the partial update: the declared member
+            // plus the DEFAULT it filled in.
+            linearConfiguration: { stepPercent: 44, stepBakeTimeInMinutes: 6 },
+          },
+        },
+      ],
+    });
+
+    const observed = (await provider.readCurrentState?.(SERVICE_ARN, 'Svc', TYPE)) as
+      | Record<string, unknown>
+      | undefined;
+
+    expect(observed?.['DeploymentConfiguration']).toEqual({
+      Strategy: 'LINEAR',
+      LinearConfiguration: { StepPercent: 44, StepBakeTimeInMinutes: 6 },
+    });
+  });
+
+  it('the nested blocks this classification names are still modelled by the type', () => {
+    // Fences BOTH halves the classification rests on, now that issue #1800's
+    // `definitionRequired` capture makes the second one checkable offline:
+    // that the members the verdict cites still EXIST, and that their
+    // required-ness is still what each row assumed. The second is the one that
+    // would silently invalidate the verdict — AWS ADDING a required list to
+    // `LinearConfiguration` / `CanaryConfiguration` is exactly the change that
+    // moves them out of "CFn accepts this partial" and into the #1802 row.
+    const schema = readSchemaFixture();
+    const paths = schema.nestedPropertyPaths?.['DeploymentConfiguration'] ?? [];
+    const required = schema.definitionRequired ?? {};
+
+    expect(paths).toContain('LinearConfiguration.StepPercent');
+    expect(paths).toContain('LinearConfiguration.StepBakeTimeInMinutes');
+    expect(paths).toContain('CanaryConfiguration.CanaryPercent');
+    expect(paths).toContain('CanaryConfiguration.CanaryBakeTimeInMinutes');
+    expect(paths).toContain('LifecycleHooks.LifecycleStages');
+    expect(paths).toContain('LifecycleHooks.TimeoutConfiguration.Action');
+    expect(paths).toContain('LifecycleHooks.TimeoutConfiguration.TimeoutInMinutes');
+    // The two the issue's depth-1 scan never listed, and which produced the
+    // DIVERGENCE (#1861) and the both-engines-refuse rows respectively.
+    expect(paths).toContain('DeploymentCircuitBreaker.ResetOnHealthyTask');
+    expect(paths).toContain('DeploymentCircuitBreaker.ThresholdConfiguration.Value');
+
+    // A MISSING key means "nothing is required here" (issue #1800's contract),
+    // which is precisely the premise of the parity rows for these two.
+    expect(required['LinearConfiguration']).toBeUndefined();
+    expect(required['CanaryConfiguration']).toBeUndefined();
+    // The rows that turn on a required list carrying a specific member.
+    expect(required['DeploymentLifecycleHook']).toEqual(['LifecycleStages']);
+    expect(required['ThresholdConfiguration']).toEqual(['Type', 'Value']);
+    // `ResetOnHealthyTask` is RETAINED by AWS precisely because it is NOT
+    // required here, while its sibling `Rollback` is and reads as replaced —
+    // the row that proves one block can hold members with different semantics,
+    // and the one CFn resets on removal while cdkd does not (issue #1861).
+    expect(required['DeploymentCircuitBreaker']).toEqual(['Enable', 'Rollback']);
+    // The depth-3 hook row rests on this block accepting a partial, so its
+    // required-ness needs pinning too — AWS adding `required: ['Action']` here
+    // would move that row into the permissive-divergence class silently.
+    expect(required['HookTimeoutConfig']).toBeUndefined();
+    // NOTE the reach of this fence: the fixture is a CHECKED-IN capture, so it
+    // trips on the next `refresh-cfn-schemas` regen rather than the day AWS
+    // changes the schema. It is a tripwire, not a monitor. (For THIS type the
+    // "missing key = nothing required" reading is a fact rather than an
+    // assumption: the schema contains no `oneOf`/`anyOf`/`allOf`, so issue
+    // #1800's uncaptured-combinator bound cannot apply.)
   });
 });
