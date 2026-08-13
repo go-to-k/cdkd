@@ -1829,7 +1829,7 @@ the small additional call is reasonable to add.
 
 ### 3b. `readCurrentState()` for drift detection — always emit user-controllable top-level keys
 
-`readCurrentState(physicalId, logicalId, resourceType)` returns the AWS-current snapshot of a resource for `cdkd drift` and `cdkd state refresh-observed`. The drift comparator walks **state's top-level keys only** (intentionally — to avoid surfacing every `FunctionArn` / `RevisionId` / `LastModified` / etc. that AWS auto-attaches to every response). That design has one consequence the provider author MUST account for:
+`readCurrentState(physicalId, logicalId, resourceType, properties?, context?)` returns the AWS-current snapshot of a resource for `cdkd drift` and `cdkd state refresh-observed`. The drift comparator walks **state's top-level keys only** (intentionally — to avoid surfacing every `FunctionArn` / `RevisionId` / `LastModified` / etc. that AWS auto-attaches to every response). That design has one consequence the provider author MUST account for:
 
 > **Any user-controllable top-level CFn property `update()` can mutate must be emitted with a placeholder when AWS returns the field as undefined / empty.**
 
@@ -1880,6 +1880,10 @@ it('emits placeholders for every user-controllable top-level key on AWS minimum 
 See [tests/unit/provisioning/lambda-function-provider-readcurrentstate.test.ts](../tests/unit/provisioning/lambda-function-provider-readcurrentstate.test.ts) and [tests/unit/provisioning/cognito-provider-readcurrentstate.test.ts](../tests/unit/provisioning/cognito-provider-readcurrentstate.test.ts) for canonical examples.
 
 This is the **structural defense** against the "provider author forgets to emit a key" regression class. Without it, the bug only surfaces when a user runs drift on a resource configured exactly the way the test missed (and PR review missed). The test makes silent regression mechanically impossible — a refactor that drops a placeholder fails the key-set assertion immediately.
+
+**The `properties` argument is the DESIRED side, and gating an emission on it is sometimes the only available fix** (issue [#1742](https://github.com/go-to-k/cdkd/issues/1742)). Every caller passes the resource's state-recorded / template-resolved bag (`drift.ts`, the deploy engine's observed capture, `import.ts`, `state.ts`), so a provider can ask what the user actually declared. Reach for it when AWS reports a COMPUTED value the desired side can never carry: `AWS::DynamoDB::GlobalTable` gets a per-index `GlobalSecondaryIndexes[].WarmThroughput` default (12000/4000 plus a `Status` member) for every index whether or not the template asked for one, so an unconditional emission is a permanent one-sided difference — `cdkd drift` reports an untouched table forever and `--revert` re-issues calls for it.
+
+Note what is NOT available here: `getDriftUnknownPaths()` cannot express it, because an ignore-path never sees a path crossing an array (see the divergence note below), so a per-ELEMENT key has no declarable form and the readback is the only place to decide. Gate on the desired bag rather than dropping the key outright — the CFn type accepts an explicit value, and a blanket drop would hide a real change for users who set one — and treat an absent bag as "not declared", the direction that cannot manufacture drift. This runs the opposite way from `getDriftUnknownPaths()`'s "default to COMPARING" rule, and deliberately: there the unknown is whether AWS can report the field at all, here the value is known to be AWS-authored, which by the `observedProperties` rule does not belong in the desired baseline in the first place.
 
 #### `getDriftUnknownPaths()` for unreadable fields
 

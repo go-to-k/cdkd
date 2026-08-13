@@ -128,19 +128,35 @@ export class RollbackReplayStack extends cdk.Stack {
       tableName: process.env['GT_TABLE_NAME'] || 'cdkd-rollback-replay-gt-v1',
       billingMode: 'PAY_PER_REQUEST',
       //
-      // NO global secondary index here, and that is a recorded COVERAGE BOUND
-      // rather than an oversight: a GSI on this table exposes two PRE-EXISTING
-      // phantom drifts that have nothing to do with the arms under test and
-      // would fail phase 5 while blaming this change (issue #1742) -- AWS returns
-      // `AttributeDefinitions` in an arbitrary order (compared positionally),
-      // and it reports a computed `GlobalSecondaryIndexes[].WarmThroughput` the
-      // template can never carry. Both are filed separately; both are visible
-      // here only because the rollback strips `observedProperties`, leaving the
-      // template-shaped bag as the drift baseline. So the integ proves the
-      // TOP-LEVEL and PER-REPLICA members of the strip live, and the per-INDEX
-      // members stay unit-covered until those two are fixed.
-      attributeDefinitions: [{ attributeName: 'pk', attributeType: 'S' }],
+      // This table DOES carry a global secondary index, and the index is what
+      // makes phase 5 a real assertion. An earlier revision deliberately had
+      // none, because a GSI exposed two phantom drifts (issue #1742) that would
+      // fail that phase while blaming the arms under test: AWS returns
+      // `AttributeDefinitions` in an arbitrary order and the comparator
+      // compares arrays positionally, and AWS reports a computed
+      // `GlobalSecondaryIndexes[].WarmThroughput` the template can never carry.
+      // Both are FIXED now, so the coverage bound that comment recorded is
+      // lifted and the index is back — which is also what puts the per-INDEX
+      // members of the #1726 capacity strip under live coverage rather than
+      // leaving them unit-only.
+      //
+      // Both phantoms are visible here and nowhere else for the same reason:
+      // the rollback strips `observedProperties`, so the drift baseline is the
+      // template-shaped bag rather than a readback that would already agree
+      // with itself. A clean phase 5 over this table IS the regression test for
+      // both fixes; do not remove the index to make a future phase quieter.
+      attributeDefinitions: [
+        { attributeName: 'pk', attributeType: 'S' },
+        { attributeName: 'capgsipk', attributeType: 'S' },
+      ],
       keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
+      globalSecondaryIndexes: [
+        {
+          indexName: 'capgsi1',
+          keySchema: [{ attributeName: 'capgsipk', keyType: 'HASH' }],
+          projection: { projectionType: 'KEYS_ONLY' },
+        },
+      ],
       replicas: [localReplica()],
     });
 
@@ -150,23 +166,32 @@ export class RollbackReplayStack extends cdk.Stack {
     const gsiOmitTable = new dynamodb.CfnGlobalTable(this, 'GsiOmitTable', {
       tableName: process.env['GT_OMIT_TABLE_NAME'] || 'cdkd-rollback-replay-gto-v1',
       billingMode: 'PAY_PER_REQUEST',
-      // The index is keyed on the TABLE's own partition key, so
-      // `AttributeDefinitions` carries no attribute that exists solely for the
-      // index. That is load-bearing rather than incidental: when the replay
-      // OMITS the malformed index block, an attribute defined only for that
-      // index becomes unused and `CreateTable` rejects the whole call
-      // (`AttributeDefinitions ... does not match KeySchema`), so the
-      // reverse-replacement re-create fails and the arm under test never gets
-      // to record anything. Measured on run 3 of this fixture, which is what
-      // the first `gsipk`-keyed version did. The underlying sharp edge in the
-      // #1544 omit arm — it drops the indexes but not the attribute
-      // definitions that existed only for them — is issue #1741.
-      attributeDefinitions: [{ attributeName: 'pk', attributeType: 'S' }],
+      // The index is keyed on a DEDICATED attribute (`gsipk`) that exists
+      // solely for it, and that is the whole point of this arm rather than an
+      // incidental choice. When the replay OMITS the malformed index block,
+      // `gsipk` becomes an attribute no key schema references, and DynamoDB
+      // requires `AttributeDefinitions` to be EXACTLY the referenced set — so
+      // before issue #1741 shipped, `CreateTable` rejected the whole call
+      // (`Some AttributeDefinitions are not used. AttributeDefinitions:
+      // [pk, gsipk], KeySchema: [pk]`), the reverse-replacement re-create
+      // failed, and the arm under test never got to record anything. Measured
+      // on run 3 of this fixture.
+      //
+      // An earlier revision keyed the index on the table's own `pk` to dodge
+      // exactly that, with a comment calling the choice load-bearing. It was
+      // load-bearing for the WRONG reason — it made the fixture pass over a
+      // real provider bug — so it is deliberately reverted here now that the
+      // omit arm prunes the orphaned definitions. Keying this index back on
+      // `pk` would silently retire the only live coverage #1741 has.
+      attributeDefinitions: [
+        { attributeName: 'pk', attributeType: 'S' },
+        { attributeName: 'gsipk', attributeType: 'S' },
+      ],
       keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
       globalSecondaryIndexes: [
         {
           indexName: 'gsi1',
-          keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
+          keySchema: [{ attributeName: 'gsipk', keyType: 'HASH' }],
           projection: { projectionType: 'KEYS_ONLY' },
         },
       ],

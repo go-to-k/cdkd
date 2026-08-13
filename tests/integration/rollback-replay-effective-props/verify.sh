@@ -321,7 +321,19 @@ if [ "${GTO_V1_INDEXES}" != "1" ]; then
   exit 1
 fi
 
-echo "[verify] phase 1: OK (state records ${V1_DEST}; fixture tag resolves to ${TAGGED_VPC}; both tables ACTIVE, omit table has 1 index)"
+# The omit table must define BOTH attributes before the replay, or phase 4's
+# "defines only pk" assertion is vacuous — it would hold for a table that never
+# had `gsipk` in the first place, which is exactly the pre-#1741 fixture shape.
+GTO_V1_ATTRS="$(aws dynamodb describe-table --table-name "${GTO_NAME_V1}" \
+  --query 'sort(Table.AttributeDefinitions[].AttributeName) | join(`,`, @)' --output text)"
+if [ "${GTO_V1_ATTRS}" != "gsipk,pk" ]; then
+  echo "FAIL: phase 1: ${GTO_NAME_V1} defines '${GTO_V1_ATTRS}', expected 'gsipk,pk'." >&2
+  echo "      Phase 4's post-omit 'only pk' check would be vacuous -- the index" >&2
+  echo "      must be keyed on a DEDICATED attribute for #1741 to be exercised." >&2
+  exit 1
+fi
+
+echo "[verify] phase 1: OK (state records ${V1_DEST}; fixture tag resolves to ${TAGGED_VPC}; both tables ACTIVE, omit table has 1 index keyed on a dedicated gsipk)"
 
 # --------------------------------------------------------------------------
 # Phase 2 — doctor state so the recorded bag carries a SECOND destination key.
@@ -357,8 +369,12 @@ jq --arg id "${ROUTE_LOGICAL_ID}" --arg ipv6 "${BAD_IPV6_DEST}" \
    | .resources[$gt].properties.WriteProvisionedThroughputSettings = {WriteCapacityUnits: $wcu}
    | .resources[$gt].properties.Replicas[0].ReadProvisionedThroughputSettings = {ReadCapacityUnits: $wcu}
    | .resources[$gt].properties.Replicas[0].ProvisionedThroughputOverride = {ReadCapacityUnits: $wcu}
+   # Named for the REAL index on the capacity table (capgsi1), not an invented
+   # one: that table carries a genuine GSI again now that the two #1742 phantoms
+   # are fixed, so the per-INDEX members of the strip are exercised against an
+   # entry that actually exists rather than a synthetic husk.
    | .resources[$gt].properties.Replicas[0].GlobalSecondaryIndexes = [
-       {IndexName: "gsi1",
+       {IndexName: "capgsi1",
         ReadProvisionedThroughputSettings: {ReadCapacityUnits: $wcu},
         ProvisionedThroughputOverride: {ReadCapacityUnits: $wcu}}
      ]
@@ -608,6 +624,34 @@ if [ "${GTO_LIVE_INDEXES}" != "0" ]; then
   echo "FAIL: phase 4: the re-created omit table reports ${GTO_LIVE_INDEXES} index(es);" >&2
   echo "      the omit arm was supposed to send none, so the dropped key would be" >&2
   echo "      hiding indexes AWS actually holds." >&2
+  exit 1
+fi
+
+# #1741 -- the omit must ALSO prune the AttributeDefinitions that existed only
+# for the omitted index. This is the assertion the fixture could not make until
+# the prune shipped: the template keys `gsi1` on a DEDICATED `gsipk`, so before
+# the fix `CreateTable` was rejected outright ("Some AttributeDefinitions are
+# not used. AttributeDefinitions: [pk, gsipk], KeySchema: [pk]"), the replay
+# never completed, and every assertion above failed for that reason instead.
+#
+# The WIRE half first: `gsipk` must not be defined on the re-created table.
+GTO_LIVE_ATTRS="$(aws dynamodb describe-table --table-name "${GTO_NAME_V1}" \
+  --query 'sort(Table.AttributeDefinitions[].AttributeName) | join(`,`, @)' --output text)"
+if [ "${GTO_LIVE_ATTRS}" != "pk" ]; then
+  echo "FAIL: phase 4: issue #1741 -- the re-created omit table defines" >&2
+  echo "      '${GTO_LIVE_ATTRS}', expected only 'pk'. The omit dropped the index" >&2
+  echo "      but kept the attribute that existed solely for it." >&2
+  exit 1
+fi
+# ...and the RECORD half: an attribute definition that was not SENT is the same
+# phantom-drift class as the index key itself (#1724).
+GTO_REC_ATTRS="$(jq -r --arg gto "${GTO_LOGICAL_ID}" \
+  '[.resources[$gto].properties.AttributeDefinitions[]?.AttributeName] | sort | join(",")' \
+  "${WORK_DIR}/state-rolled-back.json")"
+if [ "${GTO_REC_ATTRS}" != "pk" ]; then
+  echo "FAIL: phase 4: issue #1741 -- the record lists AttributeDefinitions" >&2
+  echo "      '${GTO_REC_ATTRS}', expected only 'pk'. The pruned list is what the" >&2
+  echo "      create actually sent, so the record must describe THAT." >&2
   exit 1
 fi
 
