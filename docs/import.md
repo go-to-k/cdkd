@@ -481,6 +481,7 @@ physical id via `--resource`.
 - AWS::ElasticLoadBalancingV2::Listener
 - AWS::EFS::MountTarget
 - AWS::RDS::DBProxyTargetGroup
+- AWS::EC2::SecurityGroupIngress (pass the `sgr-...` rule id — CloudFormation's own identifier for the type and the id the EC2 console shows. cdkd verifies it with `DescribeSecurityGroupRules`, declines an EGRESS rule id, and records its own composite `<groupId>|<ipProtocol>|<fromPort>|<toPort>` as the physical id plus the rule id as the `Id` attribute. The composite itself is deliberately NOT accepted here: the same tuple can name several rules)
 
 ### Override-only — sub-resources / attachments
 

@@ -24,6 +24,16 @@ const TABLE_ARN =
 const TABLE_BUCKET_ARN = 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-bucket';
 const TABLE_COMPOSITE = `${TABLE_BUCKET_ARN}|analytics|events`;
 
+/**
+ * Issue #1761. The rule-id shape is the one measured live (us-east-1,
+ * 2026-08-14) as a CloudFormation stack's `PhysicalResourceId` for a standalone
+ * `AWS::EC2::SecurityGroupIngress`; the composite is what `EC2Provider` stores
+ * as the physical id. Deliberately unrelated strings — a fixture where the two
+ * coincided would fence neither arm of the source preference.
+ */
+const SG_RULE_ID = 'sgr-02345615af6d2db0d';
+const SG_INGRESS_COMPOSITE = 'sg-0abc0def0|tcp|443|443';
+
 function ctx(overrides: {
   logicalId?: string;
   physicalId: string;
@@ -118,25 +128,119 @@ describe('resolveCompositePhysicalIdIdentifier (issue #1659)', () => {
     ).toThrow(/attributes\.DataSourceArn is missing or empty/);
   });
 
-  it('refuses AWS::EC2::SecurityGroupIngress with a pointer at the sgr- recording issue', () => {
-    expect(() =>
-      resolveCompositePhysicalIdIdentifier(
-        'AWS::EC2::SecurityGroupIngress',
-        ctx({ logicalId: 'SshIn', physicalId: 'sg-0abc|tcp|22|22' })
-      )
-    ).toThrow(/'sgr-\.\.\.'.*issues\/1761.*Remove 'SshIn' from the stack/s);
+  it('resolves AWS::EC2::SecurityGroupIngress from the recorded Id, not the composite', () => {
+    // Inverted by issue #1761: this used to PIN the refusal, with a comment
+    // saying "nothing in cdkd writes an `Id` attribute for this type today".
+    // `EC2Provider` writes it now, so pinning the refusal kept CI green over
+    // the wrong behavior.
+    const resolved = resolveCompositePhysicalIdIdentifier(
+      'AWS::EC2::SecurityGroupIngress',
+      ctx({ physicalId: SG_INGRESS_COMPOSITE, attributes: { Id: SG_RULE_ID } })
+    );
+    expect(resolved).toEqual({ field: 'Id', value: SG_RULE_ID });
+    // The pre-#1659 defect: the single-key branch shipped the composite AS the
+    // identifier value.
+    expect(resolved.value).not.toBe(SG_INGRESS_COMPOSITE);
   });
 
-  it('refuses AWS::EC2::SecurityGroupIngress even when an Id attribute happens to be present', () => {
-    // The refusal is deliberate, not a lookup miss: nothing in cdkd writes an
-    // `Id` attribute for this type today, so a record carrying one is not
-    // evidence the value is the rule id AWS minted.
+  it('accepts a bare sgr- physicalId when no attribute was recorded', () => {
+    // CloudFormation's own `PhysicalResourceId` for the type IS the bare rule
+    // id (measured live, us-east-1 2026-08-14: `sgr-02345615af6d2db0d`), so a
+    // row hand-repaired from a CFn listing carries an unambiguous identifier.
+    expect(
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::EC2::SecurityGroupIngress',
+        ctx({ physicalId: SG_RULE_ID, attributes: {} })
+      )
+    ).toEqual({ field: 'Id', value: SG_RULE_ID });
+  });
+
+  it('prefers the recorded attribute over a bare sgr- physicalId (both arms present)', () => {
+    const other = 'sgr-99999999999999999';
+    expect(
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::EC2::SecurityGroupIngress',
+        ctx({ physicalId: SG_RULE_ID, attributes: { Id: other } })
+      ).value
+    ).toBe(other);
+  });
+
+  it('trims a padded recorded rule id rather than shipping the whitespace', () => {
+    expect(
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::EC2::SecurityGroupIngress',
+        ctx({ physicalId: SG_INGRESS_COMPOSITE, attributes: { Id: `  ${SG_RULE_ID}\n` } })
+      ).value
+    ).toBe(SG_RULE_ID);
+  });
+
+  it('trims a padded FALLBACK physicalId too — the other return path', () => {
+    // Its own case: the attribute arm's `.trim()` and the physicalId arm's are
+    // separate returns, so a test that only pads the attribute leaves the
+    // second one unfenced (dropping `.trim()` there alone stays green).
+    expect(
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::EC2::SecurityGroupIngress',
+        ctx({ physicalId: `  ${SG_RULE_ID}\n`, attributes: {} })
+      ).value
+    ).toBe(SG_RULE_ID);
+  });
+
+  it('refuses a composite physicalId with no recorded rule id, naming the real remedy', () => {
+    // The remedy differs from the ARN family's plain "re-deploy the stack":
+    // AWS returns the rule id only from `AuthorizeSecurityGroupIngress`, so a
+    // no-op deploy issues no call and heals nothing.
     expect(() =>
       resolveCompositePhysicalIdIdentifier(
         'AWS::EC2::SecurityGroupIngress',
-        ctx({ physicalId: 'sg-0abc|tcp|22|22', attributes: { Id: 'sgr-0123456789abcdef0' } })
+        ctx({ logicalId: 'SshIn', physicalId: SG_INGRESS_COMPOSITE, attributes: {} })
       )
-    ).toThrow(/issues\/1761/);
+    ).toThrow(
+      /'SshIn'.*attributes\.Id is missing or empty.*no-op re-deploy will NOT heal the record/s
+    );
+  });
+
+  it('names the MULTI-SOURCE cause too — re-deploying does not heal that one', () => {
+    // `buildIpPermission` emits both `IpRanges` and `Ipv6Ranges` when one
+    // ingress resource sets `CidrIp` AND `CidrIpv6`; AWS mints a rule per
+    // source and `singleSecurityGroupRuleId` deliberately records neither. A
+    // message offering only "re-deploy" as the remedy sends that user round a
+    // loop that can never terminate, so both causes are named.
+    expect(() =>
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::EC2::SecurityGroupIngress',
+        ctx({ physicalId: SG_INGRESS_COMPOSITE, attributes: {} })
+      )
+    ).toThrow(/MORE THAN ONE source.*Re-deploying does not help.*one .* resource per source/s);
+  });
+
+  it.each([
+    ['the parent group id', 'sg-0abc0def0'],
+    ['cdkd’s own composite', 'sg-0abc|tcp|22|22'],
+    ['an sgr- id with composite segments appended', 'sgr-0123456789abcdef0|tcp|22|22'],
+    ['a blank value', '   '],
+    ['an uppercase / non-hex body', 'sgr-NOTHEXAT4LL'],
+  ])('refuses %s under attributes.Id rather than shipping it as the identifier', (_why, value) => {
+    // Anchoring is what discriminates: a bare `startsWith('sgr-')` accepts the
+    // third row, which is the composite wearing the identifier's prefix.
+    expect(() =>
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::EC2::SecurityGroupIngress',
+        ctx({ physicalId: SG_INGRESS_COMPOSITE, attributes: { Id: value } })
+      )
+    ).toThrow(/attributes\.Id is (missing or empty|recorded as)/);
+  });
+
+  it('refuses BOTH sources at once — a bad attribute does not fall through to a bad physicalId', () => {
+    // The #1771 finding applied here: validating one side is not a
+    // discriminator. Both sources share one predicate, so a row whose
+    // attribute AND physicalId are both unusable is refused, not resolved.
+    expect(() =>
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::EC2::SecurityGroupIngress',
+        ctx({ physicalId: 'sg-0abc|tcp|22|22', attributes: { Id: 'sg-0abc' } })
+      )
+    ).toThrow(/which is not an 'sgr-…' security-group rule id/);
   });
 
   it.each(['constructor', 'toString', 'valueOf', '__proto__'])(
@@ -544,10 +648,36 @@ describe('buildImportPlan — composite physicalId identifier (issue #1659)', ()
     );
   });
 
-  it('surfaces the AWS::EC2::SecurityGroupIngress refusal as a blocked row, not a crash', async () => {
+  it('plans an AWS::EC2::SecurityGroupIngress from its recorded Id, with an EMPTY overlay', async () => {
+    // The end-to-end shape issue #1761 unblocks. The overlay must be empty:
+    // `Id` is the type's only identifier field AND is `readOnlyProperties`
+    // (live DescribeType, us-east-1 2026-08-14), and CFn rejects a read-only
+    // property write at changeset-create.
+    const state = stateWith({
+      SshIn: {
+        resourceType: 'AWS::EC2::SecurityGroupIngress',
+        physicalId: SG_INGRESS_COMPOSITE,
+        attributes: { Id: SG_RULE_ID },
+      },
+    });
+    const template = {
+      Resources: { SshIn: { Type: 'AWS::EC2::SecurityGroupIngress', Properties: {} } },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.blocked).toEqual([]);
+    expect(plan.phase1Imports).toHaveLength(1);
+    expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ Id: SG_RULE_ID });
+    expect(plan.phase1Imports[0]!.propertiesOverlay).toEqual({});
+    // The pre-#1659 defect one more time, at the plan level: the composite must
+    // not reach CloudFormation as the identifier.
+    expect(plan.phase1Imports[0]!.resourceIdentifier['Id']).not.toBe(SG_INGRESS_COMPOSITE);
+  });
+
+  it('surfaces an UNRECORDED AWS::EC2::SecurityGroupIngress as a blocked row, not a crash', async () => {
     // The type IS importable as far as CFn is concerned (read handler present,
-    // FULLY_MUTABLE), so it reaches the identifier resolution and is refused
-    // there — the run must continue and report it alongside other rows.
+    // FULLY_MUTABLE), so it reaches the identifier resolution. A rule deployed
+    // before issue #1761 carries no `Id`, and is refused THERE — the run must
+    // continue and report it alongside other rows.
     const state = stateWith({
       SshIn: {
         resourceType: 'AWS::EC2::SecurityGroupIngress',

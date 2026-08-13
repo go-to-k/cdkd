@@ -2630,10 +2630,23 @@ cdkd export                                       # auto-detect single-stack app
    message when state does not carry it (a record written before cdkd
    started recording the ARN — re-deploy the stack once to heal it, as
    [state-management.md](state-management.md#the-composite-id-is-not-what-ref-returns)
-   describes). `AWS::EC2::SecurityGroupIngress` is refused outright:
-   CFn identifies a rule by the `sgr-...` id AWS mints and cdkd records
-   nothing that carries it (tracked in
-   [#1761](https://github.com/go-to-k/cdkd/issues/1761)).
+   describes). `AWS::EC2::SecurityGroupIngress` is the fourth member and
+   works the same way: CFn identifies a rule by the `sgr-...` id AWS
+   mints, which cdkd records as the rule's `Id` attribute (issue
+   [#1761](https://github.com/go-to-k/cdkd/issues/1761)) while its
+   physical id stays the `<groupId>|<ipProtocol>|<fromPort>|<toPort>`
+   tuple the revoke path needs. Its remedies differ from the other
+   three, because there are two ways to lack the attribute. A rule
+   declaring **more than one source** (both `CidrIp` and `CidrIpv6` on
+   one resource) makes AWS mint one rule per source, and cdkd records
+   neither id — neither is "the" identifier — so re-deploying never
+   heals it; split it into one ingress resource per source. A rule
+   simply **older than #1761** is not healed by a *no-op* re-deploy
+   either, since AWS returns the rule id only from
+   `AuthorizeSecurityGroupIngress` itself: change any property of the
+   rule (cdkd revokes and re-authorizes, minting a fresh id, with a
+   momentary traffic interruption) or destroy and re-deploy it, then
+   re-run the export.
 
    **Types CloudFormation cannot IMPORT at all are refused up front.**
    A type whose registry schema declares no `read` handler AND reports
