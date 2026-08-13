@@ -1490,8 +1490,8 @@ node ${CDKD_PATH}/dist/cli.js deploy ... --verbose
 3. **Pseudo Parameters**: All pseudo parameters are supported:
    - ✅ `AWS::AccountId` - Retrieves actual value from STS GetCallerIdentity
    - ✅ `AWS::Region` - Uses configured region
-   - ✅ `AWS::Partition` - Derived from the region (`aws` / `aws-cn` / `aws-us-gov` / `aws-iso` / `aws-iso-b`)
+   - ✅ `AWS::Partition` - Derived from the region (`aws` / `aws-cn` / `aws-us-gov` / `aws-iso` / `aws-iso-b` / `aws-iso-e` / `aws-iso-f` / `aws-eusc`)
    - ✅ `AWS::StackName` - From stack configuration
    - ✅ `AWS::StackId` - Generated unique identifier
-   - ✅ `AWS::URLSuffix` - Derived from the region (`amazonaws.com` / `amazonaws.com.cn` / `c2s.ic.gov` / `sc2s.sgov.gov`)
+   - ✅ `AWS::URLSuffix` - Derived from the region (`amazonaws.com` / `amazonaws.com.cn` / `c2s.ic.gov` / `sc2s.sgov.gov` / `cloud.adc-e.uk` / `csp.hci.ic.gov` / `amazonaws.eu`)
    - ✅ `AWS::NoValue` - For conditional property omission

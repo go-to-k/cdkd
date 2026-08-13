@@ -495,11 +495,13 @@ interface ResolutionContext {
 - `AWS::AccountId`: Retrieved from STS `GetCallerIdentity`
 - `AWS::Region`: From CLI options
 - `AWS::Partition`: Derived from the region (`aws` / `aws-cn` / `aws-us-gov` /
-  `aws-iso` / `aws-iso-b`) via `derivePartitionAndUrlSuffix` — issue #1730
+  `aws-iso` / `aws-iso-b` / `aws-iso-e` / `aws-iso-f` / `aws-eusc`) via
+  `derivePartitionAndUrlSuffix` — issues #1730 / #1764
 - `AWS::StackId`: Generated unique identifier (partition-aware)
 - `AWS::StackName`: From stack configuration
 - `AWS::URLSuffix`: Derived from the region (`amazonaws.com` /
-  `amazonaws.com.cn` / `c2s.ic.gov` / `sc2s.sgov.gov`) — issue #1730
+  `amazonaws.com.cn` / `c2s.ic.gov` / `sc2s.sgov.gov` / `cloud.adc-e.uk` /
+  `csp.hci.ic.gov` / `amazonaws.eu`) — issues #1730 / #1764
 - `AWS::NoValue`: For conditional property omission
 
 ### 7. Provisioning Layer (`src/provisioning/`)
