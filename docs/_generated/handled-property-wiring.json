@@ -5976,10 +5976,13 @@
             "AWS::DynamoDB::Table"
           ],
           "evidence": [
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
             "create",
+            "getDriftUnknownPaths",
+            "readCurrentState",
             "update"
           ]
         },
@@ -6017,10 +6020,13 @@
             "AWS::DynamoDB::Table"
           ],
           "evidence": [
-            "element-read"
+            "element-read",
+            "table-loop"
           ],
           "seededBy": [
-            "create"
+            "create",
+            "getDriftUnknownPaths",
+            "readCurrentState"
           ]
         },
         {

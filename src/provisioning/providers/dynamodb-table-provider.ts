@@ -29,6 +29,7 @@ import {
   type AttributeDefinition,
   type GlobalSecondaryIndex,
   type GlobalSecondaryIndexUpdate,
+  type UpdateGlobalSecondaryIndexAction,
   type LocalSecondaryIndex,
   type StreamSpecification,
   type OnDemandThroughput,
@@ -37,6 +38,7 @@ import {
   type ProvisionedThroughput,
   type ProvisionedThroughputDescription,
   type GlobalSecondaryIndexDescription,
+  type LocalSecondaryIndexDescription,
 } from '@aws-sdk/client-dynamodb';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -262,10 +264,151 @@ const BILLING_FLIP_ACTIVE_WAIT_ATTEMPTS = 600;
  * though the template had asked, and `--revert` can never clear it because the
  * write gate skips the falsy value. Keep this the ONLY spelling of the rule.
  *
- * Deliberately TRUTHINESS, because that is what the wire has always done.
+ * It USED to be bare truthiness, "because that is what the wire has always
+ * done". PR review of issue #1768 showed that is not a rule, it is the absence
+ * of one: `WarmThroughput: {}` and `WarmThroughput: 'nonsense'` are both truthy,
+ * so they went out as `UpdateTable{WarmThroughput: {}}` /
+ * `{WarmThroughput: 'nonsense'}` — a call that can only be rejected, and one
+ * cdkd would repeat on every deploy. Harmless-looking at the table level (one
+ * doomed call, loudly); newly REACHABLE per index once issue #1768's per-index
+ * send path landed, where the same value is emitted once per index. So the rule
+ * is now: at least ONE of the two user-settable members must resolve to a
+ * finite number.
+ *
+ * Still not `!== undefined`, and still ONE spelling for the write sites and the
+ * drift side both: a value this refuses is a value cdkd does not send, so the
+ * readback must not emit AWS's computed value as though the template had asked
+ * for it. A YAML-borne numeric STRING is accepted, via {@link capacityNumber},
+ * because `'12000'` genuinely means 12000.
  */
 function isSendableWarmThroughput(value: unknown): boolean {
-  return Boolean(value);
+  return coerceWarmThroughput(value) !== undefined;
+}
+
+/**
+ * Turn a template-declared `WarmThroughput` into the NUMERIC spec cdkd puts on
+ * the wire, or `undefined` when nothing in it is usable (PR review round 5).
+ *
+ * The send sites used to forward the declared value VERBATIM while
+ * {@link isSendableWarmThroughput} accepted a numeric STRING, so the predicate
+ * blessed the one shape it exists to stop: `{ReadUnitsPerSecond: '12000'}` went
+ * out as `"WarmThroughput":{"ReadUnitsPerSecond":"12000"}` — a string in a Long
+ * field, which DynamoDB rejects — and the drift side then answered "declared"
+ * for it, so the readback emitted AWS's numeric value and the table drifted on
+ * every run. Coercing rather than dropping string support is the better answer
+ * for a stringly-typed CFn template (`'12000'` genuinely means 12000, and
+ * `create()`'s table-level `ProvisionedThroughput` already coerces one line
+ * over), and it makes the quoted form WORK instead of merely warning.
+ *
+ * Per MEMBER, so a bad one cannot take a good one with it, and never `NaN`:
+ * {@link capacityNumber} accepts a number or a numeric string and rejects
+ * everything else, so a member that does not resolve is OMITTED from the spec
+ * and reported in `dropped` for the caller to announce. AWS accepts a
+ * one-member `WarmThroughput` (measured us-east-1, 2026-08-13: an
+ * `UpdateTable` carrying only `ReadUnitsPerSecond` is a valid request shape —
+ * it was refused for being a DECREASE, not for its shape), so a partial send
+ * is a real request rather than a malformed one.
+ *
+ * {@link isSendableWarmThroughput} is defined AS this function's success, so
+ * the drift-side gate and the write-side coercion cannot answer differently —
+ * structurally, not by hand. That identity is exact at the BLOCK level and
+ * ONLY there (PR review round 6, where the earlier wording was measured and
+ * found broader than the truth): both sides ask "is any member usable", so a
+ * block cdkd sends is a block drift compares, and a block cdkd refuses is one
+ * drift ignores.
+ *
+ * PER MEMBER it does NOT hold, and the residual is real:
+ * `{ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: {Ref: 'Unset'}}` sends only
+ * `ReadUnitsPerSecond`, while `readCurrentState` emits AWS's computed value for
+ * BOTH members and `getDriftUnknownPaths` leaves the path compared — so AWS's
+ * `WriteUnitsPerSecond`, which cdkd never sent, is compared against the
+ * template forever. It fails OPEN — the difference is REPORTED by `cdkd drift`,
+ * never hidden — and {@link DynamoDBTableProvider.coerceWarmThroughputForSend}
+ * names the dropped member when the value is APPLIED.
+ *
+ * How loud, precisely (measured, PR review round 7 — an earlier version of this
+ * sentence said "on every deploy" and was falsified by the code two hundred
+ * lines down): every warn in this provider sits behind a CHANGE gate, so the
+ * drop is announced on the deploy that INTRODUCES it and is silent on every
+ * repeat deploy of the same value, while the drift report persists. Loud once,
+ * then a standing drift entry — not a per-deploy nag, and not silent either.
+ * Closing the residual means emitting per-member, which is a `readCurrentState`
+ * shape change with its own drift-baseline migration — deliberately not folded
+ * into this issue.
+ *
+ * NOT a drift fix either way: state records what the TEMPLATE said, so a
+ * `properties` baseline still holds `'12000'` against a numeric readback and
+ * the comparator's `deepEqual` is strict about that. It is the generic
+ * stringly-typed-CFn class (every numeric property has it), not something this
+ * coercion can reach from the write side.
+ */
+function coerceWarmThroughput(
+  value: unknown
+): { spec: WarmThroughput; dropped: string[] } | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const bag = value as Record<string, unknown>;
+  const spec: WarmThroughput = {};
+  const dropped: string[] = [];
+  let usable = 0;
+  for (const member of ['ReadUnitsPerSecond', 'WriteUnitsPerSecond'] as const) {
+    if (bag[member] === undefined) continue;
+    const n = capacityNumber(bag[member]);
+    if (n === undefined) {
+      dropped.push(member);
+      continue;
+    }
+    spec[member] = n;
+    usable++;
+  }
+  if (usable === 0) return undefined;
+  return { spec, dropped };
+}
+
+/**
+ * Is this a `WarmThroughput` the user WROTE that the tightened send rule then
+ * refuses (PR review of issue #1768)?
+ *
+ * The set of values whose OUTCOME this issue changed, and the exact set the
+ * write sites must warn about. Tightening {@link isSendableWarmThroughput}
+ * closed a doomed-call class, and silently: a template declaring
+ * `{ ReadUnitsPerSecnd: 20000 }` (a member typo), `'nonsense'`, `{}`, or an
+ * unresolved intrinsic used to reach AWS and be REJECTED BY NAME, and now
+ * vanishes with no warning, no debug line, and a green deploy — the "loud
+ * failure for a quiet lie" trade the adopted-index arm in `applyGsiUpdates`
+ * refuses, and out of step with every other skip in this file
+ * ({@link DynamoDBTableProvider.skipZeroCapacityIndexUpdate},
+ * {@link DynamoDBTableProvider.skipWarmThroughputDecrease}), which all warn.
+ *
+ * ABSENT is silent, because that is the ordinary case — the overwhelming
+ * majority of templates declare no warm throughput at all and must not be
+ * nagged. FALSY-but-present (`null`, `''`, `false`, `0`) is silent too: those
+ * were skipped silently BEFORE this issue as well (`Boolean(value)` was the
+ * whole rule), so they are not a behavior this PR changed and warning about
+ * them would be a new noise source, not a restored signal.
+ */
+function isRefusedWarmThroughput(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (!value) return false;
+  return !isSendableWarmThroughput(value);
+}
+
+/**
+ * Does the DESIRED bag carry enough for the drift side to answer "what did the
+ * template declare"?
+ *
+ * An ABSENT or EMPTY bag answers NO: `drift.ts` passes `properties ?? {}`, and
+ * other callers pass nothing at all, so `{}` means "nothing recorded" rather
+ * than "this key is absent" (the contract on {@link ResourceProvider.getDriftUnknownPaths}).
+ * Every gate below falls back to the pre-gate behavior on a NO, since dropping
+ * a key on the strength of a bag that was never populated is unrecoverable
+ * phantom drift in the other direction.
+ *
+ * Named once and shared by the table-level `WarmThroughput` gate (issue #1760)
+ * and the per-index gates (issue #1767) so the two cannot answer the
+ * "uninformative bag" question differently.
+ */
+function desiredBagIsInformative(properties?: Record<string, unknown>): boolean {
+  return properties !== undefined && Object.keys(properties).length > 0;
 }
 
 /**
@@ -289,8 +432,398 @@ function isSendableWarmThroughput(value: unknown): boolean {
  * phantom drift, while the residual is a loud, per-resource revert failure.
  */
 function declaresWarmThroughput(properties?: Record<string, unknown>): boolean {
-  if (properties === undefined || Object.keys(properties).length === 0) return true;
-  return isSendableWarmThroughput(properties['WarmThroughput']);
+  if (!desiredBagIsInformative(properties)) return true;
+  // `properties !== undefined &&` rather than a non-null `!` (PR review round
+  // 4). The two are identical at runtime — `desiredBagIsInformative` already
+  // proved it — but `scripts/gen-handled-property-wiring.ts` does not walk
+  // through a `NonNullExpression`, so the `!` spelling made this read
+  // INVISIBLE to that critic and silently dropped `WarmThroughput`'s
+  // `getDriftUnknownPaths` / `readCurrentState` evidence from the checked-in
+  // matrix. A property whose drift side no critic can see is a property whose
+  // next regression nothing reports.
+  return properties !== undefined && isSendableWarmThroughput(properties['WarmThroughput']);
+}
+
+/**
+ * The two user-settable members of a warm-throughput description, spelled
+ * structurally so the same predicate serves the table-level
+ * `TableWarmThroughputDescription` and the per-index
+ * `GlobalSecondaryIndexWarmThroughputDescription` (both add an AWS-managed
+ * `Status` this never reads).
+ */
+interface WarmThroughputUnits {
+  ReadUnitsPerSecond?: number | undefined;
+  WriteUnitsPerSecond?: number | undefined;
+}
+
+/**
+ * Is the WarmThroughput this update would SEND a DECREASE of what AWS already
+ * holds (issue #1768)?
+ *
+ * Measured live (us-east-1, 2026-08-13) against a table AWS reports
+ * `{ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000}` for:
+ *
+ * ```
+ * UpdateTable WarmThroughput={ReadUnitsPerSecond: 6000, WriteUnitsPerSecond: 2000}
+ *   ValidationException: One or more parameter values were invalid: Requested
+ *   ReadUnitsPerSecond for WarmThroughput for table is lower than current
+ *   WarmThroughput, decreasing WarmThroughput is not supported
+ * UpdateTable WarmThroughput={ReadUnitsPerSecond: 6000}      -> same rejection
+ * UpdateTable WarmThroughput={WriteUnitsPerSecond: 2000}     -> same rejection, naming WriteUnitsPerSecond
+ * UpdateTable WarmThroughput={12000, 4000}  (re-assert)      -> ACCEPTED
+ * ```
+ *
+ * So the value is one AWS raises with the table's traffic and never lowers,
+ * and a decrease is REJECTED rather than accepted-and-ignored — which is what
+ * the issue said to measure before choosing, because the two produce different
+ * correct answers. The caller SKIPS the call on a true here.
+ *
+ * Rules, each one chosen so the skip is right for EVERY `update()` caller
+ * (the deploy engine, `cdkd drift --revert`, and the rollback executor's two
+ * revert arms — none of which can make AWS lower the value, so none of them
+ * loses anything a doomed call would have achieved):
+ *
+ * - Only the members the desired side DECLARES are examined; an omitted member
+ *   is not sent and cannot be a decrease.
+ * - EVERY declared member must be at-or-below its live counterpart AND at
+ *   least one strictly below. A MIXED request (one member up, one down) still
+ *   goes out: AWS rejects it by name, which is the pre-fix behavior and better
+ *   than silently dropping the increase the user asked for.
+ * - Anything not resolvable to a finite number fails OPEN (the call is still
+ *   issued): the worst case is the pre-fix behavior, whereas a false positive
+ *   would silently drop a real increase. Only the LIVE side can actually reach
+ *   that arm now (PR review round 8): the desired side is a COERCED spec, so a
+ *   malformed template value or an unresolved intrinsic has already been
+ *   dropped by {@link coerceWarmThroughput} and cannot arrive here. The check
+ *   is kept for the live side, which is whatever `DescribeTable` returned.
+ */
+function isWarmThroughputDecrease(
+  // The COERCED spec — every call site passes one (PR review round 8), so the
+  // type says so rather than leaving it to convention.
+  desired: WarmThroughput,
+  live: WarmThroughputUnits | undefined
+): boolean {
+  if (live === undefined) return false;
+  let sawDecrease = false;
+  for (const member of ['ReadUnitsPerSecond', 'WriteUnitsPerSecond'] as const) {
+    if (desired[member] === undefined) continue;
+    const wanted = capacityNumber(desired[member]);
+    const current = capacityNumber(live[member]);
+    // Unusable on either side: fail open, and stop — a partial verdict on the
+    // remaining member could still skip a call carrying an unreadable one.
+    // Only the LIVE side can reach this now (see the header).
+    if (wanted === undefined || current === undefined) return false;
+    if (wanted > current) return false;
+    if (wanted < current) sawDecrease = true;
+  }
+  return sawDecrease;
+}
+
+/**
+ * Does the warm throughput AWS currently holds already equal what this update
+ * would request (issue #1768 PR review)?
+ *
+ * The warm-throughput twin of {@link liveCapacityAlreadyMatches}, and compared
+ * the same way and for the same reason: the live side is a
+ * `...WarmThroughputDescription` carrying an AWS-managed `Status` alongside the
+ * two units, so a structural compare against the two-member desired object
+ * could never match and the suppression would be dead code that only LOOKED
+ * safe.
+ *
+ * Only the members the desired side DECLARES are compared — an omitted member
+ * is not part of the request, so it cannot make the request differ. Anything
+ * unresolvable fails OPEN (the call is still issued): the worst case is a
+ * redundant `UpdateTable`, whereas a false MATCH silently drops a
+ * warm-throughput raise the user asked for. As in
+ * {@link isWarmThroughputDecrease}, only the LIVE side can reach that arm now
+ * that the desired side is a coerced spec.
+ *
+ * Deliberately NOT applied to the TABLE-level branch, which still sends an
+ * equal re-assert: that is measured-accepted by AWS (us-east-1, 2026-08-13 —
+ * re-asserting `{12000, 4000}` returns a normal `TableDescription`), it is ONE
+ * call rather than one per index, and its own change gate already requires the
+ * value to differ from the recorded previous. The per-index path is where the
+ * redundancy multiplies and where the carried #1767 residual reaches it.
+ */
+function warmThroughputAlreadyMatches(
+  // The COERCED spec, as in {@link isWarmThroughputDecrease}.
+  desired: WarmThroughput,
+  live: WarmThroughputUnits | undefined
+): boolean {
+  if (live === undefined) return false;
+  let compared = 0;
+  for (const member of ['ReadUnitsPerSecond', 'WriteUnitsPerSecond'] as const) {
+    if (desired[member] === undefined) continue;
+    const wanted = capacityNumber(desired[member]);
+    const current = capacityNumber(live[member]);
+    if (wanted === undefined || current === undefined) return false;
+    if (wanted !== current) return false;
+    compared++;
+  }
+  // A request declaring no comparable member is not "already matching"; it is
+  // one this predicate cannot speak about, so it takes the fail-open answer.
+  return compared > 0;
+}
+
+/**
+ * Reverse-map one live secondary-index description to its CloudFormation
+ * shape (issue #1767).
+ *
+ * `DescribeTable` describes an index with a superset of the CFn members —
+ * measured live, us-east-1 2026-08-13, on a `PAY_PER_REQUEST` table with one
+ * GSI and no capacity settings:
+ *
+ * ```json
+ * { "IndexName": "gsi1",
+ *   "KeySchema": [{ "AttributeName": "gsipk", "KeyType": "HASH" }],
+ *   "Projection": { "ProjectionType": "ALL" },
+ *   "IndexStatus": "CREATING", "Backfilling": true,
+ *   "ProvisionedThroughput": { "NumberOfDecreasesToday": 0, "ReadCapacityUnits": 0, "WriteCapacityUnits": 0 },
+ *   "IndexSizeBytes": 0, "ItemCount": 0,
+ *   "IndexArn": "arn:aws:dynamodb:...:table/.../index/gsi1",
+ *   "WarmThroughput": { "ReadUnitsPerSecond": 12000, "WriteUnitsPerSecond": 4000, "Status": "UPDATING" } }
+ * ```
+ *
+ * NONE of `IndexStatus` / `Backfilling` / `IndexSizeBytes` / `ItemCount` /
+ * `IndexArn` is a CFn property, the `ProvisionedThroughput` block is AWS's
+ * `{0, 0}` on-demand placeholder (the #1571 trap), and the per-index
+ * `WarmThroughput` is the AWS-computed value the table-level gate already
+ * refuses to surface (issue #1760). Forwarding the description verbatim put
+ * all of them into the drift comparison, and — unlike a top-level key the
+ * baseline lacks — they are members of an ARRAY the baseline DOES carry, which
+ * `deepEqual` compares positionally, so every one of them participated.
+ *
+ * The mapper is therefore an ALLOW-LIST rather than a deny-list: a member AWS
+ * adds later is dropped by construction instead of silently joining the
+ * comparison.
+ *
+ * `desired` is the DESIRED bag's entry for the SAME `IndexName` (matched by
+ * name, never by position — the list is an unordered set, see
+ * {@link DynamoDBTableProvider.getDriftUnorderedPaths}). The three throughput
+ * blocks are emitted only when that entry declares them, the #1760 shape one
+ * nesting level down; `bagInformative` false means the caller supplied no bag
+ * to decide with and every block is emitted, cleaned of its AWS-managed
+ * members.
+ *
+ * Known residual, unchanged by this fix: CFn's per-index
+ * `ContributorInsightsSpecification` has no `DescribeTable` counterpart (it
+ * needs a per-index `DescribeContributorInsights` call), so a template
+ * declaring one still cannot converge against a `properties` baseline. It is
+ * ALSO dropped on the write side, since `create()` forwards the CFn blob to
+ * `CreateTable` and the SDK serializer discards the unknown member — still
+ * true after round 6 taught that path to coerce `WarmThroughput`, because the
+ * entry is rebuilt with a SPREAD and every other member, known or not, rides
+ * along unchanged. Filed as issue
+ * [#1782](https://github.com/go-to-k/cdkd/issues/1782).
+ */
+function reverseMapSecondaryIndex(
+  live: GlobalSecondaryIndexDescription | LocalSecondaryIndexDescription,
+  desired: Record<string, unknown> | undefined,
+  bagInformative: boolean
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (live.IndexName !== undefined) out['IndexName'] = live.IndexName;
+  // KeySchema is order-SIGNIFICANT (HASH before RANGE) and its elements carry
+  // only CFn members, so the ORDER and the members pass through unchanged —
+  // but COPIED, not aliased: every other member here is a fresh object, and
+  // handing the caller a live reference into the SDK response would let a
+  // later mutation of the emitted snapshot reach back into it.
+  if (live.KeySchema !== undefined) {
+    out['KeySchema'] = live.KeySchema.map((element) => ({ ...element }));
+  }
+  // `Projection` is rebuilt member by member, fixing its key ORDER as
+  // [ProjectionType, NonKeyAttributes]. That matters because `applyGsiUpdates`
+  // compares this shape with `JSON.stringify`, which is key-order sensitive: a
+  // mismatched order reads as a CHANGED `Projection` and hits the "cannot
+  // modify in place" THROW instead of a no-op.
+  //
+  // Which order actually differs was measured, and the round-6 version of this
+  // note named the wrong one (PR review round 7). Two facts:
+  //  - a READBACK is always [ProjectionType, NonKeyAttributes] — the SDK
+  //    deserializer rebuilds each struct in schema order — so a stale
+  //    pre-#1767 `observedProperties` baseline, itself a readback, CANNOT
+  //    produce the flip. That was the path the earlier note named.
+  //  - a TEMPLATE is the other way round: `aws-cdk-lib`'s generated renderer
+  //    emits `{NonKeyAttributes, ProjectionType}` (verified in
+  //    `aws-dynamodb/lib/dynamodb.generated.js`,
+  //    `convertCfnTableProjectionPropertyToCloudFormation`, aws-cdk-lib
+  //    2.264.0 — and the `CfnGlobalTable` twin does the same).
+  //
+  // So the reachable shape is a TEMPLATE-ordered value meeting a
+  // READBACK-ordered one inside that compare — a `--revert` on a record with no
+  // `observedProperties`, where the desired side is built from the readback
+  // while the recorded previous is template-shaped. Pre-existing, and REDUCED
+  // by this issue (a readback used to carry the whole SDK description, so the
+  // two sides differed in far more than key order). Left as a note rather than
+  // a key-order-independent compare, which changes the WRITE path's equality
+  // rule and belongs with the canonicalization work in #1812.
+  if (live.Projection !== undefined) {
+    const projection: Record<string, unknown> = {};
+    if (live.Projection.ProjectionType !== undefined) {
+      projection['ProjectionType'] = live.Projection.ProjectionType;
+    }
+    if (live.Projection.NonKeyAttributes !== undefined) {
+      // COPIED for the same reason `KeySchema` is, two blocks up: nothing this
+      // mapper returns may alias the SDK response.
+      projection['NonKeyAttributes'] = [...live.Projection.NonKeyAttributes];
+    }
+    if (Object.keys(projection).length > 0) out['Projection'] = projection;
+  }
+
+  // The LSI description has no throughput members at all (an LSI shares the
+  // table's capacity), so this half applies only to a GSI. NARROWED rather
+  // than cast across the union (PR review): a cast reads GSI-only members off
+  // an LSI and merely happens to find `undefined`, so it would keep
+  // typechecking if a member ever moved.
+  //
+  // PER BLOCK, and that is the whole point (PR review round 4). A single
+  // `if (!('ProvisionedThroughput' in live)) return out;` guard ahead of all
+  // three blocks type-checks identically and is WRONG: every member here is
+  // SDK-optional, so a description carrying `OnDemandThroughput` +
+  // `WarmThroughput` and no `ProvisionedThroughput` key — the ordinary
+  // PAY_PER_REQUEST-with-caps shape — dropped BOTH declared blocks from the
+  // readback and produced permanent one-sided drift, i.e. exactly the defect
+  // this function exists to remove. Narrowing where each member is read keeps
+  // the type safety and drops the coupling.
+  if (
+    'ProvisionedThroughput' in live &&
+    indexDeclares(desired, 'ProvisionedThroughput', bagInformative) &&
+    live.ProvisionedThroughput
+  ) {
+    const provisioned = live.ProvisionedThroughput;
+    const pt: Record<string, unknown> = {};
+    // The description's `NumberOfDecreasesToday` / `LastIncreaseDateTime` /
+    // `LastDecreaseDateTime` are AWS bookkeeping and never surfaced — the same
+    // trim the table-level `ProvisionedThroughput` emit already does.
+    if (provisioned.ReadCapacityUnits !== undefined) {
+      pt['ReadCapacityUnits'] = provisioned.ReadCapacityUnits;
+    }
+    if (provisioned.WriteCapacityUnits !== undefined) {
+      pt['WriteCapacityUnits'] = provisioned.WriteCapacityUnits;
+    }
+    if (Object.keys(pt).length > 0) out['ProvisionedThroughput'] = pt;
+  }
+  if (
+    'OnDemandThroughput' in live &&
+    indexDeclares(desired, 'OnDemandThroughput', bagInformative) &&
+    live.OnDemandThroughput
+  ) {
+    const onDemand = live.OnDemandThroughput;
+    const odt: Record<string, unknown> = {};
+    if (onDemand.MaxReadRequestUnits !== undefined) {
+      odt['MaxReadRequestUnits'] = onDemand.MaxReadRequestUnits;
+    }
+    if (onDemand.MaxWriteRequestUnits !== undefined) {
+      odt['MaxWriteRequestUnits'] = onDemand.MaxWriteRequestUnits;
+    }
+    if (Object.keys(odt).length > 0) out['OnDemandThroughput'] = odt;
+  }
+  if (
+    'WarmThroughput' in live &&
+    indexDeclares(desired, 'WarmThroughput', bagInformative) &&
+    live.WarmThroughput
+  ) {
+    const warm = live.WarmThroughput;
+    const wt: Record<string, unknown> = {};
+    // `Status` is AWS-managed, exactly as at the table level.
+    if (warm.ReadUnitsPerSecond !== undefined) {
+      wt['ReadUnitsPerSecond'] = warm.ReadUnitsPerSecond;
+    }
+    if (warm.WriteUnitsPerSecond !== undefined) {
+      wt['WriteUnitsPerSecond'] = warm.WriteUnitsPerSecond;
+    }
+    if (Object.keys(wt).length > 0) out['WarmThroughput'] = wt;
+  }
+  return out;
+}
+
+/**
+ * Does the DESIRED entry for one index declare this block (issue #1767)?
+ *
+ * The question is always "would cdkd SEND this block", because that is what
+ * makes AWS's readback value explainable by the template — so each block is
+ * answered by the write rule that actually governs it, never by a second
+ * spelling of one:
+ *
+ *  - `WarmThroughput` routes through {@link isSendableWarmThroughput}, the
+ *    predicate EVERY per-index write path calls — the `Create` / `Update` GSI
+ *    actions in `applyGsiUpdates` AND `create()`'s `CreateTable` forward, which
+ *    maps each entry through
+ *    {@link DynamoDBTableProvider.coerceIndexWarmThroughputForCreate}. It is
+ *    TIGHTER than truthiness (at least one member resolving to a finite
+ *    number), so `WarmThroughput: {}` is neither sent nor emitted on any path.
+ *    An earlier version of this bullet carved out the TABLE-create path as an
+ *    exception, and that exception was a DEFECT rather than a design: it also
+ *    put a quoted `'12000'` on the wire as a string in a Long field, so one
+ *    template failed on a fresh create and succeeded on a later GSI add. Fixed
+ *    in PR review round 6; the carve-out is gone because the divergence is.
+ *  - `ProvisionedThroughput` / `OnDemandThroughput` keep TRUTHINESS, which is
+ *    what their write path does: those two members ARE still forwarded verbatim
+ *    (the create-path mapper rewrites only `WarmThroughput`), and
+ *    `applyGsiUpdates` gates on `gsi.ProvisionedThroughput` alone. Widening
+ *    `isSendableWarmThroughput` over them would be wrong twice over — it reads
+ *    members those blocks do not have (`ReadUnitsPerSecond` vs
+ *    `ReadCapacityUnits`), so every declared capacity would read as undeclared.
+ *
+ * An UNINFORMATIVE bag answers TRUE for every block, keeping the pre-#1767
+ * behavior for a caller that supplied nothing to decide with. A bag that IS
+ * informative but names no entry for this index answers FALSE: the index
+ * exists in AWS and not in the template, so nothing cdkd sent can explain any
+ * of its throughput blocks.
+ */
+function indexDeclares(
+  desired: Record<string, unknown> | undefined,
+  key: string,
+  bagInformative: boolean
+): boolean {
+  if (!bagInformative) return true;
+  const value = desired?.[key];
+  return key === 'WarmThroughput' ? isSendableWarmThroughput(value) : Boolean(value);
+}
+
+/**
+ * Is this value an index list that DECLARES at least one index (issue #1767)?
+ *
+ * The ONE spelling of that question, shared by {@link desiredIndexEntriesByName}
+ * (which decides what each live index is matched against) and by
+ * {@link DynamoDBTableProvider.getDriftUnknownPaths} (which decides whether the
+ * list is compared at all). Spelled independently they disagreed: a plain
+ * truthiness test reads `[]` and an unresolved `{Fn::If: [...]}` as DECLARED —
+ * so the list stayed in the comparison while the mapper, which needs an ARRAY
+ * to match names against, treated the same value as declaring nothing and
+ * stripped every throughput block from the readback. That is a one-sided
+ * difference manufactured by the pair, which is the failure this file's
+ * `isSendableWarmThroughput` header exists to prevent.
+ *
+ * Consequence worth stating: a template declaring `GlobalSecondaryIndexes: []`
+ * now has that path IGNORED by the comparator, so an index created out of band
+ * on such a table is not reported. That is the same answer the readback gives
+ * (nothing the template declared can explain that index), and consistency
+ * between the two is worth more than detection on a shape where the two used to
+ * contradict each other.
+ */
+function declaresIndexList(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0;
+}
+
+/**
+ * Index the DESIRED bag's secondary-index list by `IndexName` (issue #1767).
+ *
+ * Returns an empty map for anything {@link declaresIndexList} rejects — an
+ * empty array, an unresolved intrinsic, a mis-nested template value — which
+ * routes every live index through {@link indexDeclares}'s "declares nothing"
+ * arm. Sharing that predicate with `getDriftUnknownPaths` is what keeps the
+ * emission and the comparison from answering differently for the same bag.
+ */
+function desiredIndexEntriesByName(value: unknown): Map<string, Record<string, unknown>> {
+  const byName = new Map<string, Record<string, unknown>>();
+  if (!declaresIndexList(value)) return byName;
+  for (const entry of value as unknown[]) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue;
+    const name = (entry as Record<string, unknown>)['IndexName'];
+    if (typeof name === 'string') byName.set(name, entry as Record<string, unknown>);
+  }
+  return byName;
 }
 
 export class DynamoDBTableProvider implements ResourceProvider {
@@ -429,12 +962,22 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // Warm throughput — pre-warmed read/write capacity. Like
       // OnDemandThroughput it rides directly on CreateTable (the
       // WarmThroughput input field), NOT a post-ACTIVE control-plane call.
-      // Works with BOTH PROVISIONED and PAY_PER_REQUEST billing modes. Pass
-      // it through verbatim when present. The send rule lives in
-      // `isSendableWarmThroughput` so the drift side cannot answer "declared"
-      // for a value this line skips (issue #1760).
-      if (isSendableWarmThroughput(properties['WarmThroughput'])) {
-        createParams.WarmThroughput = properties['WarmThroughput'] as WarmThroughput;
+      // Works with BOTH PROVISIONED and PAY_PER_REQUEST billing modes. The send
+      // rule lives in `isSendableWarmThroughput` so the drift side cannot
+      // answer "declared" for a value this line skips (issue #1760), and the
+      // value is COERCED rather than forwarded verbatim so a template's quoted
+      // `'12000'` reaches AWS as a number (PR review round 5).
+      const createWarmThroughput = this.coerceWarmThroughputForSend(
+        `AWS::DynamoDB::Table ${logicalId}`,
+        properties['WarmThroughput']
+      );
+      if (createWarmThroughput) {
+        createParams.WarmThroughput = createWarmThroughput;
+      } else {
+        this.warnRefusedWarmThroughput(
+          `AWS::DynamoDB::Table ${logicalId}`,
+          properties['WarmThroughput']
+        );
       }
 
       // Stream specification - CDK omits StreamEnabled, SDK requires it
@@ -446,11 +989,31 @@ export class DynamoDBTableProvider implements ResourceProvider {
         } as StreamSpecification;
       }
 
-      // Global secondary indexes
+      // Global secondary indexes. The array is forwarded as-is EXCEPT for each
+      // entry's `WarmThroughput`, which is coerced by the same helper the four
+      // update-side send sites use (PR review round 6). This was the FIFTH send
+      // site and it was missed: a per-index `{ReadUnitsPerSecond: '12000'}`
+      // reached `CreateTable` as the STRING `"12000"` in a Long field, and
+      // `WarmThroughput: {}` as an empty block, both silently — so one template
+      // SUCCEEDED when the index was added by a later update and FAILED on a
+      // fresh create, which is the divergence the coercion exists to remove.
+      //
+      // Only `GlobalSecondaryIndexes` is mapped: `WarmThroughput` is not a
+      // member of CFn's `LocalSecondaryIndex` (nor of the SDK's), so an LSI has
+      // nothing to coerce, and rewriting those entries would be motion without
+      // a shape behind it.
+      //
+      // A non-array value is passed through untouched rather than mapped: an
+      // unresolved intrinsic or a mis-nested template value is AWS's to reject
+      // by name, which is the pre-existing behavior and the fail-OPEN direction
+      // this file takes everywhere.
       if (properties['GlobalSecondaryIndexes']) {
-        createParams.GlobalSecondaryIndexes = properties[
-          'GlobalSecondaryIndexes'
-        ] as GlobalSecondaryIndex[];
+        const declaredGsis = properties['GlobalSecondaryIndexes'];
+        createParams.GlobalSecondaryIndexes = Array.isArray(declaredGsis)
+          ? (declaredGsis as GlobalSecondaryIndex[]).map((entry) =>
+              this.coerceIndexWarmThroughputForCreate(logicalId, entry)
+            )
+          : (declaredGsis as GlobalSecondaryIndex[]);
       }
 
       // Local secondary indexes
@@ -1024,16 +1587,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
           )
         : undefined;
 
-      // The per-index capacity AWS holds RIGHT NOW, for the Update arm's
-      // idempotency check (issue #1630). Populated only when the table is LIVE
-      // on PROVISIONED, and the gate is the whole risk of this change rather
-      // than a formality: `DescribeTable` reports
-      // `ProvisionedThroughput: {0, 0}` for every index of a PAY_PER_REQUEST
-      // table (the #1571 trap), so the numbers mean nothing there — and when
-      // THIS deploy is flipping to PROVISIONED, the flip itself delivers the
-      // capacity, which `gsiHandledByBillingFlip` already suppresses through a
-      // different route. Left `undefined` in both cases, which restores the
-      // pre-change behavior (always emit the Update) rather than guessing.
+      // The live per-index DESCRIPTIONS, keyed by name. Populated whenever
+      // there is a `DescribeTable` snapshot at all — for EVERY billing mode.
+      // The PROVISIONED-only gate is the SEPARATE `liveCapacityComparable`
+      // flag below, and conflating the two in this comment used to be
+      // harmless prose; it is not any more (PR review round 4), because issue
+      // #1768's `warmThroughputOpFor` reads this same map on PAY_PER_REQUEST
+      // tables for its idempotency and decrease gates. Saying the map is
+      // PROVISIONED-only would now describe those two gates as dead code on
+      // the mode where they matter most.
+      //
+      // What IS PROVISIONED-only is the CAPACITY comparison (issue #1630), and
+      // that gate is the whole risk of this change rather than a formality:
+      // `DescribeTable` reports `ProvisionedThroughput: {0, 0}` for every index
+      // of a PAY_PER_REQUEST table (the #1571 trap), so the numbers mean
+      // nothing there — and when THIS deploy is flipping to PROVISIONED, the
+      // flip itself delivers the capacity, which `gsiHandledByBillingFlip`
+      // already suppresses through a different route.
       const currentLiveIndexByName = table
         ? new Map(
             liveIndexes
@@ -1259,12 +1829,70 @@ export class DynamoDBTableProvider implements ResourceProvider {
         JSON.stringify(properties['WarmThroughput']) !==
         JSON.stringify(previousProperties['WarmThroughput'])
       ) {
-        if (isSendableWarmThroughput(properties['WarmThroughput'])) {
+        // Placed on the CHANGE gate, not inside the send gate below, so the
+        // warning fires exactly when a user's edit was dropped — once per
+        // changed value rather than on every no-op deploy that re-presents the
+        // same unusable block. (An earlier draft justified the placement by
+        // saying it stops this warning and the decrease skip's from both
+        // firing; that was never the reason — the `&&` short-circuits, so a
+        // value `isSendableWarmThroughput` refuses never reaches
+        // `skipWarmThroughputDecrease` wherever this call sits.)
+        this.warnRefusedWarmThroughput(
+          `AWS::DynamoDB::Table ${logicalId}`,
+          properties['WarmThroughput']
+        );
+        // COERCED ONCE, here, and used for BOTH the gate below and the wire
+        // (PR review round 7). Two rules meet at this line:
+        //  - every gate that analyses a value before sending it must analyse
+        //    what will ACTUALLY be sent. Reading the raw bag let
+        //    `isWarmThroughputDecrease` fail open on an unusable member and
+        //    then send the coerced remainder — for
+        //    `{ReadUnitsPerSecond: {Ref: 'X'}, WriteUnitsPerSecond: 2000}`
+        //    against a live `{12000, 4000}` that is a `{WriteUnitsPerSecond:
+        //    2000}` decrease, i.e. the exact call this branch exists to
+        //    withhold, so the DEPLOY FAILED while the per-index arm warned and
+        //    continued on the identical input.
+        //  - the dropped-member announcement must not depend on the gate
+        //    letting the call through. `coerceWarmThroughputForSend` is the
+        //    only site that names a dropped member, so calling it on the send
+        //    path alone meant a skip swallowed that half of the diagnosis.
+        //    Placed inside the CHANGE gate, so it still says it once per
+        //    changed value rather than on every deploy.
+        const warmThroughputToSend = this.coerceWarmThroughputForSend(
+          `AWS::DynamoDB::Table ${logicalId}`,
+          properties['WarmThroughput']
+        );
+        if (
+          warmThroughputToSend !== undefined &&
+          // A DECREASE is refused by AWS, so the call can only fail (issue
+          // #1768, measured — see `isWarmThroughputDecrease`). Skipping it with
+          // a warning is right for EVERY caller of `update()`, which is the
+          // question a skip has to answer:
+          //  - the deploy engine (template-borne): a template asking for less
+          //    than AWS holds is not applicable, and failing the whole deploy
+          //    over it helps nobody. `cdkd drift` keeps REPORTING the
+          //    difference, which is the user's signal to edit the template —
+          //    hence no `effectiveProperties` here: recording AWS's value
+          //    would make the comparison equal and silence exactly that
+          //    report.
+          //  - `cdkd drift --revert`: the arm the issue was filed from. It
+          //    overlays the declared value onto the readback and lands here,
+          //    where the call could never succeed; the resource used to fail
+          //    with `could not revert — <AWS message>` (exit 2) instead of
+          //    reverting everything else and saying why this key stayed.
+          //  - the rollback executor's `revert` / `revert-failed-update` arms:
+          //    the desired bag is an older TEMPLATE from cdkd state, so the
+          //    same reasoning applies — and a throw there would leave the
+          //    resource un-rollbackable with no template-side remedy.
+          !this.skipWarmThroughputDecrease(
+            logicalId,
+            physicalId,
+            warmThroughputToSend,
+            table?.WarmThroughput
+          )
+        ) {
           await this.dynamoDBClient.send(
-            new UpdateTableCommand({
-              TableName: physicalId,
-              WarmThroughput: properties['WarmThroughput'] as WarmThroughput,
-            })
+            new UpdateTableCommand({ TableName: physicalId, WarmThroughput: warmThroughputToSend })
           );
           // UpdateTable is async; wait for ACTIVE so later branches (SSE /
           // Stream / GSI) don't race a still-UPDATING table.
@@ -2193,6 +2821,32 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * between GSI mutations because a freshly-created index keeps backfilling
    * after the table itself returns to ACTIVE, and AWS rejects the next GSI op
    * until the prior index settles.
+   *
+   * `WarmThroughput.Status` is deliberately NOT part of the predicate, and that
+   * is MEASURED rather than assumed (PR review of issue #1768 raised it as a
+   * suspected race, since the per-index warm-throughput send path this provider
+   * gained has no other reason to wait). Live, us-east-1 2026-08-13, on a
+   * PAY_PER_REQUEST table with two ACTIVE GSIs: raising `gsi1`'s warm
+   * throughput 12000/4000 -> 14000/5000 left
+   *
+   * ```
+   * TableStatus: ACTIVE | gsi1: IndexStatus ACTIVE, WarmThroughput.Status UPDATING
+   *                     | gsi2: IndexStatus ACTIVE, WarmThroughput.Status ACTIVE
+   * ```
+   *
+   * for 90+ seconds — so this predicate IS satisfied while a warm update is
+   * still settling, exactly as the review described. What does not follow is
+   * the failure: with `gsi1` in that state, all three next-op shapes were
+   * ACCEPTED, no `ResourceInUseException` —
+   *
+   *  - a warm-throughput `Update` on the OTHER index (`gsi2`);
+   *  - a warm-throughput `Update` on the SAME index (`gsi1`);
+   *  - a GSI `Create` (`gsi3`), the op AWS gates most strictly.
+   *
+   * So warm throughput settles OUT OF BAND of the index lifecycle, and adding
+   * it to this predicate would only make every GSI op wait on a status that
+   * blocks nothing — minutes of wait budget spent per op, with a real risk of
+   * exhausting it on a table whose warm status lingers.
    */
   private async waitForTableAndIndexesActive(tableName: string, maxAttempts = 1800): Promise<void> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -2342,15 +2996,31 @@ export class DynamoDBTableProvider implements ResourceProvider {
           //
           // Capacity is comparable and is therefore repaired: fall through to
           // the same `Update` the same-name path would emit.
+          // ONE action carrying whichever members need repair, for the same
+          // reason as the same-name arm below.
+          const adopted: UpdateGlobalSecondaryIndexAction = { IndexName: name };
+          let adoptedHasMember = false;
           if (
             liveCapacityComparable &&
             gsi.ProvisionedThroughput &&
             !handledByBillingFlip.has(name) &&
-            !liveCapacityAlreadyMatches(live.ProvisionedThroughput, gsi.ProvisionedThroughput)
+            !liveCapacityAlreadyMatches(live.ProvisionedThroughput, gsi.ProvisionedThroughput) &&
+            !this.skipZeroCapacityIndexUpdate(name, physicalId, gsi.ProvisionedThroughput)
           ) {
-            ops.push({
-              Update: { IndexName: name, ProvisionedThroughput: gsi.ProvisionedThroughput },
-            });
+            adopted.ProvisionedThroughput = gsi.ProvisionedThroughput;
+            adoptedHasMember = true;
+          }
+          // WarmThroughput is repaired on the adopted index for the same reason
+          // capacity is (issue #1768): the Create was skipped, so nothing else
+          // in this deploy would ever send it. There is no recorded previous
+          // side here, so the value is compared only against what AWS holds.
+          const adoptedWarm = this.warmThroughputOpFor(name, physicalId, gsi, undefined, live);
+          if (adoptedWarm) {
+            adopted.WarmThroughput = adoptedWarm;
+            adoptedHasMember = true;
+          }
+          if (adoptedHasMember) {
+            ops.push({ Update: adopted });
           }
           // KeySchema / Projection are deliberately NOT compared here, and the
           // divergence is ANNOUNCED instead of refused. The same-name path can
@@ -2368,6 +3038,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
           );
           continue;
         }
+        // A declared-but-unsendable WarmThroughput is announced here rather
+        // than vanishing into the spread below (PR review of issue #1768).
+        this.warnRefusedWarmThroughput(
+          `GSI ${name} on DynamoDB table ${physicalId}`,
+          gsi.WarmThroughput
+        );
+        // COERCED, not forwarded verbatim (PR review round 5): a quoted
+        // `'12000'` must reach AWS as a number, not as a string in a Long
+        // field.
+        const createWarm = this.coerceWarmThroughputForSend(
+          `GSI ${name} on DynamoDB table ${physicalId}`,
+          gsi.WarmThroughput
+        );
         ops.push({
           Create: {
             IndexName: name,
@@ -2377,6 +3060,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
               ? { ProvisionedThroughput: gsi.ProvisionedThroughput }
               : {}),
             ...(gsi.OnDemandThroughput ? { OnDemandThroughput: gsi.OnDemandThroughput } : {}),
+            // A declared per-index WarmThroughput rides the Create action
+            // (issue #1768): `CreateGlobalSecondaryIndexAction` accepts it, and
+            // without it the property was silently dropped for every index
+            // added after the table's own creation. This used to add that
+            // `create()` "forwards it on the CreateTable path, so only this arm
+            // was missing" — true when written, and made false by PR review
+            // round 6, which found that forward was itself uncoerced and routed
+            // it through the same helper. BOTH paths coerce now.
+            ...(createWarm ? { WarmThroughput: createWarm } : {}),
           },
         });
       } else {
@@ -2401,6 +3093,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
             physicalId
           );
         }
+        // ONE Update action per index, carrying whichever members changed
+        // (PR review of issue #1768). `UpdateGlobalSecondaryIndexAction` takes
+        // `ProvisionedThroughput` AND `WarmThroughput`, both optional, so
+        // splitting them cost a second `UpdateTable` PLUS a second full
+        // index-ACTIVE wait against the 1800s budget for an index that changed
+        // both. `runGsiOps` issues one call per op, so merging here is what
+        // makes it one call.
+        const update: UpdateGlobalSecondaryIndexAction = { IndexName: name };
+        let updateHasMember = false;
         // Only ProvisionedThroughput is mutable in place on an existing index.
         // A numeric RCU/WCU change on a PROVISIONED GSI is issued as an Update;
         // a PROVISIONED->on-demand per-index drop is driven by the table-wide
@@ -2429,16 +3130,303 @@ export class DynamoDBTableProvider implements ResourceProvider {
               `GSI ${name} on DynamoDB table ${physicalId} already carries the requested ` +
                 `capacity in AWS; skipping its throughput Update`
             );
-          } else {
-            ops.push({
-              Update: { IndexName: name, ProvisionedThroughput: gsi.ProvisionedThroughput },
-            });
+          } else if (
+            !this.skipZeroCapacityIndexUpdate(name, physicalId, gsi.ProvisionedThroughput)
+          ) {
+            update.ProvisionedThroughput = gsi.ProvisionedThroughput;
+            updateHasMember = true;
           }
+        }
+        // WarmThroughput on an existing index (issue #1768), on the SAME action.
+        const warm = this.warmThroughputOpFor(
+          name,
+          physicalId,
+          gsi,
+          before,
+          liveIndexByName?.get(name)
+        );
+        if (warm) {
+          update.WarmThroughput = warm;
+          updateHasMember = true;
+        }
+        if (updateHasMember) {
+          ops.push({ Update: update });
         }
       }
     }
 
     await this.runGsiOps(physicalId, ops, desiredAttributeDefinitions);
+  }
+
+  /**
+   * The NUMERIC `WarmThroughput` spec to put on the wire, announcing any member
+   * that had to be dropped (PR review round 5).
+   *
+   * The single send-side entry point for all four write sites, so a template's
+   * quoted `'12000'` reaches AWS as `12000` rather than as a string in a Long
+   * field. Returns `undefined` for a value {@link isSendableWarmThroughput}
+   * refuses — the caller's existing refusal warning covers that case, and the
+   * two messages are disjoint by construction: this one fires only when
+   * something DID resolve.
+   */
+  private coerceWarmThroughputForSend(scope: string, value: unknown): WarmThroughput | undefined {
+    const coerced = coerceWarmThroughput(value);
+    if (coerced === undefined) return undefined;
+    if (coerced.dropped.length > 0) {
+      this.logger.warn(
+        `${scope}: WarmThroughput member(s) ${coerced.dropped.join(', ')} in ` +
+          `${JSON.stringify(value)} are not a number DynamoDB accepts, so they were dropped from ` +
+          `the request, which leaves ${JSON.stringify(coerced.spec)}. Check for an unresolved ` +
+          `intrinsic or a non-numeric value.`
+      );
+    }
+    return coerced.spec;
+  }
+
+  /**
+   * One `CreateTable` index entry with its `WarmThroughput` coerced (PR review
+   * round 6).
+   *
+   * `create()` forwards the declared `GlobalSecondaryIndexes` array to
+   * `CreateTable`, so it is a SEND SITE for the same per-index value the
+   * update path coerces — and it was the one the round-5 sweep missed. Entries
+   * are rebuilt rather than mutated: the input bag belongs to the caller (the
+   * resolved template, which the engine also records into state), and a
+   * provider that edits it in place would change what state reports cdkd sent.
+   *
+   * An entry that is not a plain object, or that declares no `WarmThroughput`,
+   * is returned UNCHANGED — including the identity of the object, so the
+   * common case allocates nothing.
+   */
+  private coerceIndexWarmThroughputForCreate(
+    logicalId: string,
+    entry: GlobalSecondaryIndex
+  ): GlobalSecondaryIndex {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return entry;
+    const declared = (entry as unknown as Record<string, unknown>)['WarmThroughput'];
+    if (declared === undefined) return entry;
+    const scope = `GSI ${entry.IndexName ?? '<unnamed>'} on AWS::DynamoDB::Table ${logicalId}`;
+    const coerced = this.coerceWarmThroughputForSend(scope, declared);
+    if (coerced === undefined) {
+      // Nothing usable: drop the block from the request and say so, exactly as
+      // the update-side arms do.
+      this.warnRefusedWarmThroughput(scope, declared);
+      const { WarmThroughput: _dropped, ...rest } = entry;
+      return rest;
+    }
+    return { ...entry, WarmThroughput: coerced };
+  }
+
+  /**
+   * Announce a `WarmThroughput` the send rule REFUSES (PR review of issue
+   * #1768) — the missing half of tightening {@link isSendableWarmThroughput}.
+   *
+   * Called at all FOUR write sites (`create()`, the table-level `update()`
+   * branch, the GSI `Create` action, and {@link warmThroughputOpFor}) because
+   * the value vanishes at each of them independently. `scope` names the
+   * resource or the index so a table with several GSIs says WHICH one.
+   *
+   * Silent for an ABSENT or FALSY value — see {@link isRefusedWarmThroughput}
+   * for why those two are not this warning's business.
+   */
+  private warnRefusedWarmThroughput(scope: string, value: unknown): void {
+    if (!isRefusedWarmThroughput(value)) return;
+    this.logger.warn(
+      `${scope}: the declared WarmThroughput ${JSON.stringify(value)} carries no usable ` +
+        `ReadUnitsPerSecond or WriteUnitsPerSecond, so it was NOT sent — DynamoDB accepts only ` +
+        `those two members and rejects a request without either. Check for a misspelled member ` +
+        `name or an unresolved intrinsic. Nothing else on this resource was affected.`
+    );
+  }
+
+  /**
+   * Should this per-index capacity `Update` be SKIPPED because the value is
+   * AWS's on-demand `{0, 0}` placeholder rather than a capacity anyone asked
+   * for (issue #1767 review)?
+   *
+   * Newly reachable BECAUSE of the #1767 readback change, on the transition
+   * residual `getDriftUnknownPaths` deliberately carries. A pre-#1767
+   * `observedProperties` baseline holds the whole `DescribeTable` index
+   * description, including the `{NumberOfDecreasesToday: 0, ReadCapacityUnits:
+   * 0, WriteCapacityUnits: 0}` block AWS reports for every index of a
+   * PAY_PER_REQUEST table (the #1571 trap). `cdkd drift --revert` hands that
+   * blob to `update()` as the DESIRED side against the trimmed readback as the
+   * previous side, so the values differ, `liveCapacityComparable` is false on
+   * PAY_PER_REQUEST (which disables the #1630 idempotency skip), and the op
+   * that goes out asks AWS for capacity 0 — which AWS rejects, since the
+   * minimum is 1. Before #1767 both sides carried the same blob, compared
+   * equal, and no revert was ever offered.
+   *
+   * Deliberately NOT gated on the live billing mode. A `{0, 0}` request is
+   * refused by AWS in EITHER mode, so gating would leave the same doomed call
+   * reachable for a PROVISIONED table whose stale baseline carries the
+   * placeholder. Scoped tightly to BOTH members resolving to 0: any other
+   * capacity — including a half-declared or malformed one — still goes out and
+   * is answered by AWS, the fail-OPEN direction this file uses everywhere.
+   *
+   * CALLER-BLIND, decided rather than overlooked (PR review). A TEMPLATE-borne
+   * `{0, 0}` warn-skips here while `create()` fails loudly on the same value,
+   * which reads like the "loud failure for a quiet lie" trade the adopted-index
+   * arm below forbids. It stands for three reasons:
+   *
+   *  - The discriminator that EXISTS does not separate the callers that matter.
+   *    `ResourceProvider.update` DOES take an optional `UpdateContext` — an
+   *    earlier draft of this comment claimed the signature carries no context
+   *    at all, which is simply false (`s3-bucket-provider.ts` consumes it
+   *    today) — but its one field, `desiredFromAwsReadback`, is set ONLY by
+   *    `cdkd drift --revert` (`src/cli/commands/drift.ts`). The rollback
+   *    executor's revert arms deliberately pass NO context: their desired bag
+   *    is `previousState.properties`, a TEMPLATE recorded earlier, so they are
+   *    indistinguishable from an ordinary template deploy — and THAT is the
+   *    pair this decision turns on. Knowing the value came from a readback
+   *    would not license throwing on the other two.
+   *  - With the caller unknowable, the repo's rule for the UPDATE path is
+   *    WARN-never-throw (issues #1545 / #1552): the desired bag here can BE a
+   *    historical cdkd state record, and a refusal would make the table
+   *    un-updatable and un-rollbackable with no template-side remedy.
+   *  - The lie is bounded and self-surfacing. AWS never accepted `{0, 0}` at
+   *    create either, so no live table can be holding it; and where the value
+   *    would actually matter — a PROVISIONED table, whose indexes hold a real
+   *    capacity — recording `{0, 0}` diverges from the readback and `cdkd drift`
+   *    REPORTS it. On a PAY_PER_REQUEST table the recorded `{0, 0}` matches what
+   *    `DescribeTable` reports for every index anyway, so there is no divergence
+   *    to hide.
+   */
+  private skipZeroCapacityIndexUpdate(
+    indexName: string,
+    physicalId: string,
+    requested: ProvisionedThroughput | undefined
+  ): boolean {
+    if (requested === undefined) return false;
+    if (
+      capacityNumber(requested.ReadCapacityUnits) !== 0 ||
+      capacityNumber(requested.WriteCapacityUnits) !== 0
+    ) {
+      return false;
+    }
+    this.logger.warn(
+      `GSI ${indexName} on DynamoDB table ${physicalId}: the requested ProvisionedThroughput is ` +
+        `{ReadCapacityUnits: 0, WriteCapacityUnits: 0}, which is AWS's on-demand placeholder rather ` +
+        `than a capacity DynamoDB accepts (the minimum is 1), so no per-index throughput update was ` +
+        `sent. This usually means the value came from a pre-#1767 cdkd state record — a ` +
+        `\`cdkd drift --revert\` of such a record, or a rollback replaying it. Re-run ` +
+        `\`cdkd deploy\` (or \`cdkd drift --accept\`) to refresh the record.`
+    );
+    return true;
+  }
+
+  /**
+   * The per-index `WarmThroughput` this update should send, or `undefined`
+   * (issue #1768, one nesting level down from the table-level branch).
+   *
+   * `applyGsiUpdates` used to send only `ProvisionedThroughput` /
+   * `OnDemandThroughput` on both of its arms, while `readCurrentState` emits a
+   * declared per-index `WarmThroughput` — so a template declaring one had it
+   * silently dropped on every index add / change, `cdkd drift` reported the
+   * difference forever, and `--revert` emitted no op at all and exited 0
+   * claiming success. That silent-success shape is worse than the loud
+   * table-level dead end #1768 fixed.
+   *
+   * The rules mirror the table-level branch exactly:
+   *  - only a value the write side would SEND at all
+   *    ({@link isSendableWarmThroughput});
+   *  - only when it CHANGED against the recorded previous entry (an absent
+   *    previous — the adopted-index arm — is treated as changed, since nothing
+   *    was recorded to compare with);
+   *  - never a DECREASE. Measured live (us-east-1, 2026-08-13) on a GSI AWS
+   *    reports `{12000, 4000}` for: a `WarmThroughput`-only `Update` action
+   *    with `{12000, 4000}` is ACCEPTED (so the action shape needs no
+   *    `ProvisionedThroughput` companion), while `{6000, 2000}` is rejected
+   *    with `Requested ReadUnitsPerSecond for WarmThroughput for index gsi1 is
+   *    lower than current WarmThroughput, decreasing WarmThroughput is not
+   *    supported`.
+   */
+  private warmThroughputOpFor(
+    indexName: string,
+    physicalId: string,
+    desired: GlobalSecondaryIndex,
+    previous: GlobalSecondaryIndex | undefined,
+    live: GlobalSecondaryIndexDescription | undefined
+  ): WarmThroughput | undefined {
+    const requested = desired.WarmThroughput;
+    // The UNCHANGED gate runs FIRST, so the refusal below warns once per
+    // CHANGED value rather than on every deploy that touches any other index
+    // (PR review round 5) — the same "once per changed value" meaning the
+    // table-level placement has. Comparing the raw values is right here: an
+    // unsendable value is unchanged only against an identically unsendable
+    // one.
+    if (
+      previous !== undefined &&
+      JSON.stringify(previous.WarmThroughput) === JSON.stringify(requested)
+    ) {
+      return undefined;
+    }
+    // Coerced ONCE, before the gates, so the dropped-member announcement lands
+    // even when a gate then skips the send (PR review round 7) — the skip
+    // messages quote `sendable`, which is narrower than what the user wrote,
+    // and without this the missing member went unmentioned entirely.
+    const sendable = this.coerceWarmThroughputForSend(
+      `GSI ${indexName} on DynamoDB table ${physicalId}`,
+      requested
+    );
+    if (sendable === undefined) {
+      this.warnRefusedWarmThroughput(`GSI ${indexName} on DynamoDB table ${physicalId}`, requested);
+      return undefined;
+    }
+    // Both gates below read the COERCED spec, not the raw declared value (PR
+    // review round 6). They are what cdkd would actually PUT ON THE WIRE, and
+    // analysing anything else is analysing a request that is never made: for
+    // `{Read: 12000, Write: 'abc'}` the raw value made both gates bail on the
+    // unusable member and fail OPEN, so an already-matching `{Read: 12000}`
+    // still cost a redundant per-index `UpdateTable` plus a full index-ACTIVE
+    // wait. Safe in direction either way — the point is that the analysis now
+    // describes the actual request. The table-level branch reads the same rule
+    // off the same helper (round 7), where getting it wrong FAILED the deploy
+    // rather than costing a call.
+    // AWS already holds exactly this — the per-index twin of the capacity
+    // path's `liveCapacityAlreadyMatches` (issue #1630), and the reason the
+    // carried #1767 residual is a no-op again. Without it, a `drift --revert`
+    // of a pre-#1767 state blob (whose index entry holds the whole
+    // `DescribeTable` description, `WarmThroughput` included) emitted a pure
+    // re-assert `UpdateTable` PER INDEX, each followed by a full index-ACTIVE
+    // wait. Compared member by member for the same reason the capacity twin is:
+    // the live side is a description carrying an AWS-managed `Status`, so a
+    // structural compare could never match and the skip would be dead code that
+    // only LOOKED safe.
+    if (warmThroughputAlreadyMatches(sendable, live?.WarmThroughput)) {
+      this.logger.debug(
+        `GSI ${indexName} on DynamoDB table ${physicalId} already carries the requested warm ` +
+          `throughput in AWS; skipping its WarmThroughput Update`
+      );
+      return undefined;
+    }
+    if (isWarmThroughputDecrease(sendable, live?.WarmThroughput)) {
+      // The remedy names the TEMPLATE, not "the value AWS holds": this arm is
+      // reached both by a template that declares a per-index WarmThroughput and
+      // by a `--revert` / rollback replaying a state blob for an index whose
+      // template declares NONE, and telling the second user to "set the index's
+      // WarmThroughput to the value AWS holds" is advice about a property their
+      // template does not have (PR review). The deploy-path caveat is the same
+      // one the table-level twin carries: a successful deploy re-captures
+      // `observedProperties` through this provider's own `readCurrentState`, so
+      // the drift signal this leaves standing is erased by the next deploy.
+      this.logger.warn(
+        `GSI ${indexName} on DynamoDB table ${physicalId}: the requested WarmThroughput ` +
+          `${JSON.stringify(sendable)} is lower than the ${JSON.stringify({
+            ReadUnitsPerSecond: live?.WarmThroughput?.ReadUnitsPerSecond,
+            WriteUnitsPerSecond: live?.WarmThroughput?.WriteUnitsPerSecond,
+          })} DynamoDB currently holds for that index. Warm throughput only ever RISES with an ` +
+          `index's traffic and cannot be lowered — AWS rejects the UpdateTable with "decreasing ` +
+          `WarmThroughput is not supported" — so it was NOT sent and every other change on this ` +
+          `table still applied. On a deploy this warning may be the only signal you get: a ` +
+          `successful deploy re-captures AWS's current value as the drift baseline. If your ` +
+          `template declares this index's WarmThroughput, set it to the value AWS holds (or ` +
+          `remove it, which AWS treats as keeping the last-set value); if it does not, the value ` +
+          `came from a cdkd state record and 'cdkd deploy' (or 'cdkd drift --accept') refreshes it.`
+      );
+      return undefined;
+    }
+    return sendable;
   }
 
   /**
@@ -2520,6 +3508,54 @@ export class DynamoDBTableProvider implements ResourceProvider {
   }
 
   /**
+   * Should this update SKIP its `WarmThroughput` call because the value would
+   * DECREASE what AWS already holds (issue #1768)?
+   *
+   * Thin logging wrapper over the pure {@link isWarmThroughputDecrease}, kept
+   * on the class so the warning is emitted at exactly the one site that skips.
+   *
+   * The warning is what makes the skip honest, and its WORDING is checked
+   * against the code rather than assumed (PR review): the first version
+   * promised `cdkd drift` would "keep reporting the difference", which is TRUE
+   * on the `drift --revert` path — nothing is recorded, so the observed
+   * baseline still holds the declared value — and FALSE on the DEPLOY path.
+   * A successful deploy re-captures `observedProperties` through this same
+   * `readCurrentState` (`deploy-engine.ts`'s `kickOffObservedCapture`), which
+   * for a DECLARING template emits AWS's CURRENT value, so the very deploy
+   * that warned equalises the comparison and the next `cdkd drift` reports the
+   * resource clean. The message therefore says the warning may be the only
+   * signal, and names both numbers so the template edit needs no second look.
+   */
+  private skipWarmThroughputDecrease(
+    logicalId: string,
+    physicalId: string,
+    // The COERCED spec, never the raw declared bag (PR review round 7): this
+    // gate decides whether to make a call, so it has to analyse the call that
+    // would be made. The message below quotes it for the same reason — a user
+    // reading "the requested WarmThroughput {...}" needs the request, not a
+    // bag containing members cdkd already dropped.
+    desired: WarmThroughput,
+    live: WarmThroughputUnits | undefined
+  ): boolean {
+    if (!isWarmThroughputDecrease(desired, live)) return false;
+    this.logger.warn(
+      `AWS::DynamoDB::Table ${logicalId}: the requested WarmThroughput ` +
+        `${JSON.stringify(desired)} is lower than the ${JSON.stringify({
+          ReadUnitsPerSecond: live?.ReadUnitsPerSecond,
+          WriteUnitsPerSecond: live?.WriteUnitsPerSecond,
+        })} DynamoDB currently holds for table ${physicalId}. Warm throughput only ever RISES ` +
+        `with a table's traffic and cannot be lowered — AWS rejects the UpdateTable with ` +
+        `"decreasing WarmThroughput is not supported" — so it was NOT sent and every other ` +
+        `change on this resource still applied. On a deploy this warning may be the only signal ` +
+        `you get: a successful deploy re-captures AWS's current value as the drift baseline, so ` +
+        `the next 'cdkd drift' reports this table clean (a 'cdkd drift --revert' records nothing ` +
+        `and keeps reporting it). To make cdkd and AWS agree, set WarmThroughput to the value ` +
+        `AWS holds (or remove the property, which AWS treats as keeping the last-set value).`
+    );
+    return true;
+  }
+
+  /**
    * `AttributeDefinitions` is a SET, keyed by `AttributeName`: CFn accepts the
    * members in any order and `DescribeTable` returns them in an order matching
    * neither the request nor the template. Measured live (us-east-1,
@@ -2539,6 +3575,29 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * `KeySchema` is deliberately NOT declared, at the table level or the index
    * level: it is order-SIGNIFICANT (HASH before RANGE), so sorting it would
    * HIDE a real key change rather than remove a phantom one.
+   *
+   * `GlobalSecondaryIndexes` / `LocalSecondaryIndexes` are NOT declared either,
+   * and that is a MECHANISM limit rather than a judgement about the lists —
+   * both really are sets keyed by `IndexName` (issue #1767 proposes declaring
+   * them). Every entry here is a SUBTREE declaration, and unlike
+   * `getDriftUnknownPaths` this walk DESCENDS INTO ARRAY ELEMENTS giving each
+   * the parent's path (`drift-normalize.ts`), so a `'GlobalSecondaryIndexes'`
+   * entry also reaches `GlobalSecondaryIndexes.KeySchema` and would sort the
+   * per-index key schema — reversing the sentence above at the index level
+   * only. Issue #1767 calls the sort and the member reverse-map separable;
+   * this change ships the reverse-map, and the ordering half needed a
+   * leaf-only form of the declaration first (issue
+   * [#1783](https://github.com/go-to-k/cdkd/issues/1783)). **That form now
+   * EXISTS** — `LEAF_ONLY_PATH_SUFFIX` (`[]`) landed in
+   * [#1799](https://github.com/go-to-k/cdkd/pull/1799), so
+   * `'GlobalSecondaryIndexes[]'` would claim the list alone without reaching
+   * the per-index `KeySchema`. It is deliberately NOT declared here yet:
+   * adopting it is its own change with its own real-AWS verification, tracked
+   * as issue [#1812](https://github.com/go-to-k/cdkd/issues/1812). Consequence
+   * until then, stated so it is not mistaken for solved: an index list AWS
+   * returns in a different ORDER than the template declared is still phantom
+   * drift against a `properties` baseline. It is not reachable on the ordinary
+   * `observedProperties` path, where both sides come from this same readback.
    */
   getDriftUnorderedPaths(resourceType: string): string[] {
     if (resourceType !== 'AWS::DynamoDB::Table') return [];
@@ -2583,11 +3642,79 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * `TlsConfig` (issue #1602): an absent / empty bag falls back to the
    * type-level answer of COMPARING, since hiding a real drift is the worse
    * failure.
+   *
+   * `GlobalSecondaryIndexes` / `LocalSecondaryIndexes` join it under the SAME
+   * rule for the SAME reason (issue #1767), one nesting level up: the readback
+   * now emits the reverse-mapped CFn shape, so every `observedProperties`
+   * baseline an earlier binary wrote — which carries `IndexStatus` /
+   * `ItemCount` / `IndexArn` / the on-demand `{0, 0}` placeholder / the
+   * computed per-index `WarmThroughput` — no longer equals it. Ignoring the
+   * path on both sides when the template declares NO index list covers the
+   * transition and the steady state for that population, exactly as the
+   * `WarmThroughput` arm does: an index list the template never declared is
+   * AWS-authored (created out of band, or by a sibling), which is the #1498
+   * class.
+   *
+   * Known residual, deliberately NOT covered, because covering it costs more
+   * than it buys: a table whose template DOES declare indexes keeps comparing,
+   * so its already-written observed baseline reports a one-sided
+   * `GlobalSecondaryIndexes` difference until the next deploy re-captures it
+   * (or `cdkd drift --accept` does). `cdkd drift --revert` is the third thing a
+   * user may reach for on that report, and for the shapes measured here it
+   * applies NOTHING to AWS — which is a property of three separate skips, not
+   * "by construction", and the distinction is load-bearing because this PR
+   * briefly broke it. The index names match, so no Create / Delete is derived;
+   * the stale blob's `{0, 0}` capacity is refused by
+   * {@link skipZeroCapacityIndexUpdate}; and its per-index `WarmThroughput` —
+   * which the same PR taught `applyGsiUpdates` to SEND (issue #1768), turning
+   * an earlier "by construction" wording false the moment it landed — is
+   * refused by {@link warmThroughputAlreadyMatches}, since a stale blob carries
+   * exactly what AWS holds. Remove any of the three and the residual stops
+   * being harmless: the revert starts issuing one redundant `UpdateTable` plus
+   * a full index-ACTIVE wait per GSI, or a doomed one.
+   *
+   * "Applies nothing" is NOT the same as "reaches those skips" (PR review round
+   * 5). `applyGsiUpdates` compares `KeySchema` / `Projection` between the
+   * recorded previous and the desired entry BEFORE any of them and THROWS on a
+   * difference, because DynamoDB cannot modify either in place. On this path
+   * that compare is a trimmed readback against a stale full description, and
+   * both members survive the #1767 reverse-map unchanged — `KeySchema`
+   * verbatim, `Projection` rebuilt member-for-member — so for every shape
+   * exercised here it matches and the throw does not fire. It is named because
+   * it is the outcome an enumeration of skips would otherwise hide: a stale
+   * blob whose `Projection` AWS has since re-normalized would fail the revert
+   * loudly rather than no-op it. Suppressing the residual instead would mean ignoring the
+   * whole array for the population that HAS indexes — i.e. never detecting an
+   * out-of-band index add / remove / capacity change again, permanently, to
+   * remove a one-time report. No PATH can express the middle ground:
+   * `isIgnoredPath` is never asked about a path that crosses an array
+   * (`diffAt` compares arrays wholesale via `deepEqual`), so a per-MEMBER
+   * ignore path does not exist — the same wall issue #1742 records for the
+   * `AWS::DynamoDB::GlobalTable` twin. **A non-path seam now EXISTS**:
+   * `ResourceProvider.canonicalizeDriftProperties`, applied to BOTH comparison
+   * sides, landed in [#1799](https://github.com/go-to-k/cdkd/pull/1799) (which
+   * closed issue [#1784](https://github.com/go-to-k/cdkd/issues/1784)) and can
+   * strip the AWS-managed member from each bag — converging an already-written
+   * record with a post-fix readback, with no ignore-path and no lost
+   * detection. It is deliberately NOT adopted here yet: doing so is its own
+   * change with its own real-AWS verification, tracked as issue
+   * [#1812](https://github.com/go-to-k/cdkd/issues/1812).
    */
   getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
     if (resourceType !== 'AWS::DynamoDB::Table') return [];
-    if (declaresWarmThroughput(properties)) return [];
-    return ['WarmThroughput'];
+    const paths: string[] = [];
+    if (!declaresWarmThroughput(properties)) paths.push('WarmThroughput');
+    // The SAME predicate the readback's matcher uses (see
+    // {@link declaresIndexList}), so a bag whose list the mapper treats as
+    // declaring nothing is never left in the comparison.
+    if (desiredBagIsInformative(properties)) {
+      for (const key of ['GlobalSecondaryIndexes', 'LocalSecondaryIndexes']) {
+        // Same reason as `declaresWarmThroughput` above: the `!` spelling is
+        // invisible to the handled-property-wiring critic.
+        if (properties !== undefined && !declaresIndexList(properties[key])) paths.push(key);
+      }
+    }
+    return paths;
   }
 
   /**
@@ -2602,18 +3729,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *  - StreamSpecification's CFn shape includes only `StreamViewType`; the
    *    API response carries `StreamEnabled` too. We surface both since the
    *    drift comparator only descends into keys present in state.
-   *  - GSI / LSI in the API response include `IndexStatus`, `ItemCount`,
-   *    `IndexArn` and sizing fields cdkd never sets, and they are forwarded
-   *    VERBATIM. This used to claim "the comparator filters them" — it does
-   *    NOT, and issue #1767 quotes that sentence as the bug: the filter is
-   *    `calculateResourceDrift`'s state-keys-only walk, which only reaches an
-   *    absent TOP-LEVEL key. These are members of an array under a key the
-   *    baseline DOES carry, and arrays compare positionally, so every
-   *    AWS-managed member participates — `ItemCount` MOVES as data lands, so
-   *    an in-use table with an index drifts against its own
-   *    `observedProperties` on the ordinary path. Fixing it needs a full
-   *    reverse-mapper plus the same migration companion this issue's
-   *    `WarmThroughput` gate needed, hence a separate issue.
+   *  - GSI / LSI in the API response include `IndexStatus`, `Backfilling`,
+   *    `ItemCount`, `IndexArn` and sizing fields cdkd never sets. They used to
+   *    be forwarded VERBATIM under a comment claiming "the comparator filters
+   *    them" — it does NOT, and issue #1767 quotes that sentence as the bug:
+   *    the filter is `calculateResourceDrift`'s state-keys-only walk, which
+   *    only reaches an absent TOP-LEVEL key. These are members of an array
+   *    under a key the baseline DOES carry, and arrays compare positionally,
+   *    so every AWS-managed member participated — and `ItemCount` MOVES as
+   *    data lands, so an in-use table with any index drifted against its own
+   *    `observedProperties` on the ORDINARY path, on a schedule set by its own
+   *    write traffic. Each entry is now reverse-mapped to its CFn shape by
+   *    {@link reverseMapSecondaryIndex}.
    *
    * Returns `undefined` when the table is gone (`ResourceNotFoundException`).
    *
@@ -2625,8 +3752,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * template carries them).
    *
    * `properties` is the DESIRED bag (the state-recorded template intent every
-   * caller passes) and is consulted for exactly one field, `WarmThroughput` —
-   * see {@link getDriftUnknownPaths} for the measurement and the reasoning.
+   * caller passes). It is consulted for the table-level `WarmThroughput` — see
+   * {@link getDriftUnknownPaths} for the measurement and the reasoning — and,
+   * since issue #1767, for the per-index throughput blocks of each secondary
+   * index, matched by `IndexName`.
    */
   async readCurrentState(
     physicalId: string,
@@ -2722,11 +3851,30 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // the empty-array placeholder is a guaranteed AWS rejection on any
       // future provider.update() that learns to handle the field. Only
       // surface when AWS reports indexes.
+      //
+      // Each entry is REVERSE-MAPPED to its CFn shape rather than forwarded
+      // verbatim (issue #1767) — see {@link reverseMapSecondaryIndex} for the
+      // measured description and the per-block gates.
+      const bagInformative = desiredBagIsInformative(properties);
       if (table.GlobalSecondaryIndexes && table.GlobalSecondaryIndexes.length > 0) {
-        result['GlobalSecondaryIndexes'] = table.GlobalSecondaryIndexes;
+        const desiredByName = desiredIndexEntriesByName(properties?.['GlobalSecondaryIndexes']);
+        result['GlobalSecondaryIndexes'] = table.GlobalSecondaryIndexes.map((live) =>
+          reverseMapSecondaryIndex(
+            live,
+            live.IndexName === undefined ? undefined : desiredByName.get(live.IndexName),
+            bagInformative
+          )
+        );
       }
       if (table.LocalSecondaryIndexes && table.LocalSecondaryIndexes.length > 0) {
-        result['LocalSecondaryIndexes'] = table.LocalSecondaryIndexes;
+        const desiredByName = desiredIndexEntriesByName(properties?.['LocalSecondaryIndexes']);
+        result['LocalSecondaryIndexes'] = table.LocalSecondaryIndexes.map((live) =>
+          reverseMapSecondaryIndex(
+            live,
+            live.IndexName === undefined ? undefined : desiredByName.get(live.IndexName),
+            bagInformative
+          )
+        );
       }
       // Class 1 guard: CFn's SSESpecification.KMSMasterKeyId / SSEType are
       // only valid when SSEEnabled=true. AWS reports SSEDescription.Status

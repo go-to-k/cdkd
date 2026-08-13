@@ -7,6 +7,9 @@ import {
 } from '@aws-sdk/client-dynamodb';
 
 const mockSend = vi.fn();
+// Hoisted so the create-path refusal test can read what the provider WARNED
+// (the factory-local childLogger below is not reachable from a test body).
+const warnSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -18,7 +21,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warnSpy,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -127,6 +130,237 @@ describe('DynamoDBTableProvider WarmThroughput wiring', () => {
 
       const createCall = findCalls(CreateTableCommand)[0]!;
       expect(createCall.input).not.toHaveProperty('WarmThroughput');
+    });
+
+    it('omits an EMPTY or NON-OBJECT WarmThroughput from CreateTable', async () => {
+      // The create-side twin of the update fences in
+      // `dynamodb-table-provider-warm-throughput-decrease.test.ts`: the shared
+      // send rule was bare truthiness, so `{}` reached CreateTable as an empty
+      // block and a string as a scalar — neither is a value AWS accepts.
+      for (const junk of [{}, 'nonsense', []]) {
+        mockSend.mockReset();
+        vi.clearAllMocks();
+        provider = new DynamoDBTableProvider();
+        mockSend.mockResolvedValueOnce({}); // CreateTable
+        mockSend.mockResolvedValueOnce({
+          Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+        });
+
+        await provider.create('L', RESOURCE_TYPE, {
+          KeySchema: KEY_SCHEMA,
+          AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+          BillingMode: 'PAY_PER_REQUEST',
+          WarmThroughput: junk,
+        });
+
+        const createCall = findCalls(CreateTableCommand)[0]!;
+        expect({ junk, sent: 'WarmThroughput' in createCall.input }).toEqual({
+          junk,
+          sent: false,
+        });
+      }
+    });
+  });
+
+  describe('numeric strings reach the wire as numbers (PR review round 5)', () => {
+    it('COERCES a quoted WarmThroughput on CreateTable', async () => {
+      // The predicate accepted `'12000'` while the send path forwarded it, so
+      // the body carried a string in a Long field and DynamoDB rejected the
+      // whole CreateTable — the one doomed shape the tightening exists to
+      // stop. A stringly-typed CFn template is a real shape, so it is coerced
+      // rather than refused.
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+      });
+
+      await provider.create('L', RESOURCE_TYPE, {
+        KeySchema: KEY_SCHEMA,
+        AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+        BillingMode: 'PAY_PER_REQUEST',
+        WarmThroughput: { ReadUnitsPerSecond: '12000', WriteUnitsPerSecond: '4000' },
+      });
+
+      expect(findCalls(CreateTableCommand)[0]!.input.WarmThroughput).toEqual({
+        ReadUnitsPerSecond: 12000,
+        WriteUnitsPerSecond: 4000,
+      });
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('COERCES a quoted WarmThroughput on UpdateTable', async () => {
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+      });
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+      });
+
+      await provider.update(
+        'L',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { WarmThroughput: { ReadUnitsPerSecond: '24000', WriteUnitsPerSecond: 8000 } },
+        { WarmThroughput: { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 } }
+      );
+
+      const sent = findCalls(UpdateTableCommand)
+        .map((c) => c.input)
+        .filter((i) => i.WarmThroughput !== undefined);
+      expect(sent.map((i) => i.WarmThroughput)).toEqual([
+        { ReadUnitsPerSecond: 24000, WriteUnitsPerSecond: 8000 },
+      ]);
+    });
+
+    it('never puts NaN on the wire for a NON-numeric string', async () => {
+      // `Number('abc')` is NaN, which serializes as `null` — worse than the
+      // string. `capacityNumber` rejects it, so the member is dropped and the
+      // whole block is refused when nothing is left.
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+      });
+
+      await provider.create('L', RESOURCE_TYPE, {
+        KeySchema: KEY_SCHEMA,
+        AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+        BillingMode: 'PAY_PER_REQUEST',
+        WarmThroughput: { ReadUnitsPerSecond: 'abc', WriteUnitsPerSecond: 'def' },
+      });
+
+      expect(findCalls(CreateTableCommand)[0]!.input).not.toHaveProperty('WarmThroughput');
+      expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain('carries no usable');
+    });
+  });
+
+  describe('PER-INDEX WarmThroughput on the CreateTable path (PR review round 6)', () => {
+    const gsi = (warm: unknown) => ({
+      IndexName: 'gsi1',
+      KeySchema: [{ AttributeName: 'gsipk', KeyType: 'HASH' }],
+      Projection: { ProjectionType: 'ALL' },
+      ...(warm === undefined ? {} : { WarmThroughput: warm }),
+    });
+    function primeCreate(): void {
+      mockSend.mockResolvedValueOnce({}); // CreateTable
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+      });
+    }
+    async function createWithIndex(warm: unknown): Promise<CreateTableCommand> {
+      primeCreate();
+      await provider.create('L', RESOURCE_TYPE, {
+        KeySchema: KEY_SCHEMA,
+        AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+        BillingMode: 'PAY_PER_REQUEST',
+        GlobalSecondaryIndexes: [gsi(warm)],
+      });
+      return findCalls(CreateTableCommand)[0]!;
+    }
+
+    it('COERCES a quoted per-index value — the FIFTH send site', async () => {
+      // `create()` forwarded the whole index array verbatim, so the same
+      // template SUCCEEDED when the index was added by a later update (where
+      // the Create ACTION coerces) and FAILED on a fresh create.
+      const call = await createWithIndex({ ReadUnitsPerSecond: '12000' });
+
+      expect(call.input.GlobalSecondaryIndexes).toEqual([
+        { ...gsi(undefined), WarmThroughput: { ReadUnitsPerSecond: 12000 } },
+      ]);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('DROPS an unusable per-index block and announces it', async () => {
+      const call = await createWithIndex({});
+
+      expect(call.input.GlobalSecondaryIndexes).toEqual([gsi(undefined)]);
+      expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain('carries no usable');
+    });
+
+    it('drops only the unusable MEMBER and names it', async () => {
+      const call = await createWithIndex({ ReadUnitsPerSecond: 24000, WriteUnitsPerSecond: 'abc' });
+
+      expect(call.input.GlobalSecondaryIndexes).toEqual([
+        { ...gsi(undefined), WarmThroughput: { ReadUnitsPerSecond: 24000 } },
+      ]);
+      expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'WriteUnitsPerSecond'
+      );
+    });
+
+    it('leaves an index with NO WarmThroughput untouched and silent', async () => {
+      const call = await createWithIndex(undefined);
+
+      expect(call.input.GlobalSecondaryIndexes).toEqual([gsi(undefined)]);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not MUTATE the caller\'s template bag', async () => {
+      // The engine records the same resolved bag into state; editing it in
+      // place would change what state reports cdkd sent.
+      const declared = { GlobalSecondaryIndexes: [gsi({ ReadUnitsPerSecond: '12000' })] };
+      const snapshot = JSON.stringify(declared);
+      primeCreate();
+
+      await provider.create('L', RESOURCE_TYPE, {
+        KeySchema: KEY_SCHEMA,
+        AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+        BillingMode: 'PAY_PER_REQUEST',
+        ...declared,
+      });
+
+      expect(JSON.stringify(declared)).toBe(snapshot);
+    });
+
+    it('passes a NON-ARRAY index list through untouched — AWS names it', async () => {
+      primeCreate();
+      await provider.create('L', RESOURCE_TYPE, {
+        KeySchema: KEY_SCHEMA,
+        AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+        BillingMode: 'PAY_PER_REQUEST',
+        GlobalSecondaryIndexes: { Ref: 'Unresolved' },
+      });
+
+      expect(findCalls(CreateTableCommand)[0]!.input.GlobalSecondaryIndexes).toEqual({
+        Ref: 'Unresolved',
+      });
+    });
+  });
+
+  describe('create refusal is announced', () => {
+    it('WARNS when create() refuses a declared WarmThroughput', async () => {
+      mockSend.mockResolvedValueOnce({}); // CreateTable
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+      });
+
+      await provider.create('L', RESOURCE_TYPE, {
+        KeySchema: KEY_SCHEMA,
+        AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+        BillingMode: 'PAY_PER_REQUEST',
+        WarmThroughput: { ReadUnitsPerSecnd: 20000 },
+      });
+
+      const createCall = findCalls(CreateTableCommand)[0]!;
+      expect(createCall.input).not.toHaveProperty('WarmThroughput');
+      const message = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(message).toContain('carries no usable');
+      expect(message).toContain('ReadUnitsPerSecnd');
+    });
+
+    it('stays SILENT on create when WarmThroughput is absent', async () => {
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+      });
+
+      await provider.create('L', RESOURCE_TYPE, {
+        KeySchema: KEY_SCHEMA,
+        AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+        BillingMode: 'PAY_PER_REQUEST',
+      });
+
+      expect(warnSpy).not.toHaveBeenCalled();
     });
   });
 

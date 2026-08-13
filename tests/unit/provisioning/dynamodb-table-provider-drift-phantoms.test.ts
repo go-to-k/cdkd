@@ -257,19 +257,26 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
       });
     });
 
+    // The index-list entries in these expectations belong to issue #1767, which
+    // added the same per-resource gate for `GlobalSecondaryIndexes` /
+    // `LocalSecondaryIndexes`; a bag declaring no index list gets them too. The
+    // WHOLE list is asserted rather than filtered down to `WarmThroughput`, so
+    // a future entry has to be re-stated here instead of arriving unnoticed.
     it('declares WarmThroughput unknown when the template does not declare it', () => {
-      expect(
-        provider.getDriftUnknownPaths(RESOURCE_TYPE, { TableName: TABLE_NAME })
-      ).toEqual(['WarmThroughput']);
+      expect(provider.getDriftUnknownPaths(RESOURCE_TYPE, { TableName: TABLE_NAME })).toEqual([
+        'WarmThroughput',
+        'GlobalSecondaryIndexes',
+        'LocalSecondaryIndexes',
+      ]);
     });
 
-    it('declares nothing when the template DOES declare WarmThroughput', () => {
+    it('declares no WarmThroughput path when the template DOES declare WarmThroughput', () => {
       expect(
         provider.getDriftUnknownPaths(RESOURCE_TYPE, {
           TableName: TABLE_NAME,
           WarmThroughput: { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 },
         })
-      ).toEqual([]);
+      ).toEqual(['GlobalSecondaryIndexes', 'LocalSecondaryIndexes']);
     });
 
     it('treats a FALSY declaration as undeclared, matching what the write path sends', async () => {
@@ -289,7 +296,11 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
       const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, declared);
 
       expect(result).not.toHaveProperty('WarmThroughput');
-      expect(provider.getDriftUnknownPaths(RESOURCE_TYPE, declared)).toEqual(['WarmThroughput']);
+      expect(provider.getDriftUnknownPaths(RESOURCE_TYPE, declared)).toEqual([
+        'WarmThroughput',
+        'GlobalSecondaryIndexes',
+        'LocalSecondaryIndexes',
+      ]);
     });
 
     it('keeps the emit gate and the ignore path in agreement for every bag shape', async () => {
@@ -309,7 +320,18 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
         { TableName: TABLE_NAME, WarmThroughput: null },
         { TableName: TABLE_NAME, WarmThroughput: undefined },
         { TableName: TABLE_NAME, WarmThroughput: '' },
+        // Issue #1768 PR review: the send rule used to be bare truthiness, so
+        // these two were SENT (`UpdateTable{WarmThroughput: {}}` /
+        // `{WarmThroughput: 'nonsense'}`) — calls that can only be rejected —
+        // AND emitted by the readback as though the template had asked for
+        // AWS's computed value. Both consumers must now read them as
+        // undeclared.
+        { TableName: TABLE_NAME, WarmThroughput: {} },
+        { TableName: TABLE_NAME, WarmThroughput: 'nonsense' },
         { TableName: TABLE_NAME, WarmThroughput: { ReadUnitsPerSecond: 12000 } },
+        // A YAML-borne numeric STRING is a real template shape and still counts
+        // as declared.
+        { TableName: TABLE_NAME, WarmThroughput: { WriteUnitsPerSecond: '4000' } },
       ];
       const observed: Array<{ bag: unknown; emitted: boolean; ignored: boolean }> = [];
       for (const bag of bags) {
@@ -337,8 +359,19 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
         { bag: { TableName: TABLE_NAME, WarmThroughput: null }, emitted: false, ignored: true },
         { bag: { TableName: TABLE_NAME, WarmThroughput: undefined }, emitted: false, ignored: true },
         { bag: { TableName: TABLE_NAME, WarmThroughput: '' }, emitted: false, ignored: true },
+        { bag: { TableName: TABLE_NAME, WarmThroughput: {} }, emitted: false, ignored: true },
+        {
+          bag: { TableName: TABLE_NAME, WarmThroughput: 'nonsense' },
+          emitted: false,
+          ignored: true,
+        },
         {
           bag: { TableName: TABLE_NAME, WarmThroughput: { ReadUnitsPerSecond: 12000 } },
+          emitted: true,
+          ignored: false,
+        },
+        {
+          bag: { TableName: TABLE_NAME, WarmThroughput: { WriteUnitsPerSecond: '4000' } },
           emitted: true,
           ignored: false,
         },

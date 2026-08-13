@@ -1436,6 +1436,7 @@
     "--internet-gateway-ids",
     "--invocation-type",
     "--ip-permissions",
+    "--item",
     "--job-name",
     "--json",
     "--key",
