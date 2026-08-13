@@ -1,3 +1,10 @@
+## [0.282.4](https://github.com/go-to-k/cdkd/compare/v0.282.3...v0.282.4) (2026-08-13)
+
+
+### Bug Fixes
+
+* **export:** register composite-id splitters for EC2 Route / EIP and Lambda EventInvokeConfig, and correct the VPCGatewayAttachment AttachmentType ([#1810](https://github.com/go-to-k/cdkd/issues/1810)) ([1297f78](https://github.com/go-to-k/cdkd/commit/1297f781ed259a4c895ee91aa67cd888aad6e2b1))
+
 ## [0.282.3](https://github.com/go-to-k/cdkd/compare/v0.282.2...v0.282.3) (2026-08-13)
 
 
