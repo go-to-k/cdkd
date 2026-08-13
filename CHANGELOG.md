@@ -1,3 +1,10 @@
+## [0.282.2](https://github.com/go-to-k/cdkd/compare/v0.282.1...v0.282.2) (2026-08-13)
+
+
+### Bug Fixes
+
+* **destroy:** fail the parent's nested-stack resource when a child's destroy reported errors, and name the child in the failed-delete remedy ([#1804](https://github.com/go-to-k/cdkd/issues/1804)) ([a13162b](https://github.com/go-to-k/cdkd/commit/a13162bf4acfb668b2240d586391561156ec9c5a))
+
 ## [0.282.1](https://github.com/go-to-k/cdkd/compare/v0.282.0...v0.282.1) (2026-08-13)
 
 
