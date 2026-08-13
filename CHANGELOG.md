@@ -1,3 +1,10 @@
+## [0.281.23](https://github.com/go-to-k/cdkd/compare/v0.281.22...v0.281.23) (2026-08-13)
+
+
+### Bug Fixes
+
+* **destroy:** report a warn-and-SKIP delete as skipped, not deleted ([#1774](https://github.com/go-to-k/cdkd/issues/1774)) ([32e04a1](https://github.com/go-to-k/cdkd/commit/32e04a1b129fa5f94550609b3d9bd14b80fdf984))
+
 ## [0.281.22](https://github.com/go-to-k/cdkd/compare/v0.281.21...v0.281.22) (2026-08-13)
 
 
