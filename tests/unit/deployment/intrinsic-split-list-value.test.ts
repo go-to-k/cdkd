@@ -225,8 +225,20 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     expect(plainKey.message).toContain('must be a string, got object');
     expect(plainKey.message).not.toContain('(from ');
 
-    const twoKeys = await splitError(resolver, [',', { A: 1, B: 2 }], mkContext());
-    expect(twoKeys.message).toContain('must be a string, got object');
+    // The multi-key arm needs an input that (a) still REACHES the refusal and
+    // (b) is not ALSO caught by the non-intrinsic-key arm above — otherwise
+    // mutating `keys.length !== 1` to `< 1` stays green because the probe is
+    // inert for that input rather than the guard being covered. `{A: 1, B: 2}`
+    // was exactly that. A CFn intrinsic is always a SINGLE-key object, so a
+    // second key means this is a plain record that merely looks like one; the
+    // dispatcher nonetheless resolves it by its intrinsic key, and a nested
+    // Fn::Split yields an array, which lands on the already-a-list refusal.
+    const twoKeys = await splitError(
+      resolver,
+      [',', { 'Fn::Split': [',', 'a,b'], Extra: 'y' }],
+      mkContext()
+    );
+    expect(twoKeys.message).toContain('is ALREADY a list');
     expect(twoKeys.message).not.toContain('(from ');
   });
 
@@ -248,9 +260,7 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     expect(error.message).toContain('(from Fn::If)');
     // The NEUTRAL remedy: neither source-specific story applies, so neither
     // the #1868 note nor the Route 53 example may appear.
-    expect(error.message).toContain(
-      'A list-valued Fn::GetAtt and a CommaDelimitedList parameter'
-    );
+    expect(error.message).toContain('Several intrinsics already return a list');
     expect(error.message).not.toContain('#1868');
     expect(error.message).not.toContain('NameServers');
   });
@@ -264,9 +274,7 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     // itself, so it takes the neutral remedy. Asserting only the absence of
     // the #1868 note let the remedy silently flip to the Fn::GetAtt text
     // (which is what shipped, and what two reviewers caught).
-    expect(error.message).toContain(
-      'A list-valued Fn::GetAtt and a CommaDelimitedList parameter both already'
-    );
+    expect(error.message).toContain('Several intrinsics already return a list');
     // ...so the Route 53 example and the workaround note must NOT appear.
     expect(error.message).not.toContain('#1868');
     expect(error.message).not.toContain('NameServers');

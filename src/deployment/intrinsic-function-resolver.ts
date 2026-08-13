@@ -2894,6 +2894,22 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Render ONE `Fn::GetAtt` argument for {@link describeSplitValueSource}'s
+   * label. A string is emitted verbatim; anything else is named by its
+   * intrinsic key (`<Fn::Sub>`) or, failing that, as `<intrinsic>` — never by
+   * default stringification, whose answer for an object is `[object Object]`.
+   */
+  private renderGetAttArg(arg: unknown): string {
+    if (typeof arg === 'string') return arg;
+    if (typeof arg === 'object' && arg !== null && !Array.isArray(arg)) {
+      const keys = Object.keys(arg as Record<string, unknown>);
+      const key = keys.length === 1 ? keys[0] : undefined;
+      if (key !== undefined && (key === 'Ref' || key.startsWith('Fn::'))) return `<${key}>`;
+    }
+    return '<intrinsic>';
+  }
+
+  /**
    * Name the UNRESOLVED value argument of an `Fn::Split` for its refusal
    * message (issue [#1874](https://github.com/go-to-k/cdkd/issues/1874)).
    *
@@ -2915,24 +2931,8 @@ export class IntrinsicFunctionResolver {
    * `kind` is not decoration: the caller uses it to pick the remedy, since the
    * `Fn::GetAtt` remedy (drop the `Fn::Split`, and the #1868 note for the
    * reader whose `Fn::Split` was that bug's workaround) is irrelevant and
-   * confusing for a parameter reference.
+   * confusing for a parameter reference or a hand-written literal.
    */
-  /**
-   * Render ONE `Fn::GetAtt` argument for {@link describeSplitValueSource}'s
-   * label. A string is emitted verbatim; anything else is named by its
-   * intrinsic key (`<Fn::Sub>`) or, failing that, as `<intrinsic>` — never by
-   * default stringification, whose answer for an object is `[object Object]`.
-   */
-  private renderGetAttArg(arg: unknown): string {
-    if (typeof arg === 'string') return arg;
-    if (typeof arg === 'object' && arg !== null && !Array.isArray(arg)) {
-      const keys = Object.keys(arg as Record<string, unknown>);
-      const key = keys.length === 1 ? keys[0] : undefined;
-      if (key !== undefined && (key === 'Ref' || key.startsWith('Fn::'))) return `<${key}>`;
-    }
-    return '<intrinsic>';
-  }
-
   private describeSplitValueSource(
     value: unknown
   ): { label: string; kind: 'getatt' | 'ref' | 'other' } | undefined {
@@ -3068,8 +3068,14 @@ export class IntrinsicFunctionResolver {
                 `already returns a list. If you wrote the Fn::Split as a workaround for ` +
                 `cdkd resolving that attribute to a comma-delimited string, that bug is ` +
                 `fixed (PR #1868) and the workaround is no longer needed.`
-              : `A list-valued Fn::GetAtt and a CommaDelimitedList parameter both already ` +
-                `return a list.`;
+              : // Not an exhaustive list on purpose: the source clause above
+                // already names the actual intrinsic, and several others reach
+                // this arm (Fn::GetAZs, Fn::Cidr, a nested Fn::Split, an
+                // Fn::If / Fn::FindInMap selecting a list).
+                `Several intrinsics already return a list — among them a ` +
+                `list-valued Fn::GetAtt, a Ref to a CommaDelimitedList / ` +
+                `List<Number> parameter, Fn::GetAZs, Fn::Cidr, and Fn::Split ` +
+                `itself.`;
         throw markNonRetryable(
           new IntrinsicResolutionRefusalError(
             `Fn::Split: the value to split${sourceClause} is ALREADY a list ` +
