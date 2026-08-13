@@ -219,8 +219,12 @@ async function bootstrapCommand(options: {
       // the PR review, and the reason the earlier
       // "credentials are partition-scoped so both agree" argument was wrong —
       // it is sound about credentials vs bucket, but `region` is not derived
-      // from the credentials. `stateBucketS3` is authoritative for both: it is
-      // the client already region-corrected for this bucket.
+      // from the credentials. `stateBucketS3` is authoritative either way: on
+      // the existing-bucket path it is the client region-corrected FOR this
+      // bucket, and on the first-time path (`rebuildClientForBucketRegion`
+      // returns null, so it is the plain shared client) it is the client that
+      // CREATED the bucket a few lines above — so the bucket is in its
+      // partition by construction.
       logger.debug('Setting bucket policy...');
       const bucketPolicy = buildDenyExternalAccessPolicy(
         bucketName,

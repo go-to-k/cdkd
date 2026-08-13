@@ -317,6 +317,15 @@ describe('ensureAssetStorage', () => {
       existingMarkerBody?: string;
       assetBucketName?: string;
       containerRepoName?: string;
+      /**
+       * Region of the CLIENT, when it must differ from the `region` OPTION.
+       * `cdkd bootstrap` really can pass a client whose region the SDK chain
+       * resolved from the profile while its `region` option fell back to a
+       * hardcoded `us-east-1` (issue #1820) — and the bucket policy's partition
+       * is derived from the CLIENT. Defaults to `region`, matching the
+       * auto-create path, which builds its own client for it.
+       */
+      clientRegion?: string;
     } = {}
   ) {
     const putRawObject = vi.fn().mockResolvedValue(undefined);
@@ -326,9 +335,7 @@ describe('ensureAssetStorage', () => {
       putRawObject,
       getRawObject,
       options: {
-        // Region-scoped, matching the auto-create path that builds its own
-        // client for `region`; the bucket policy's partition reads it back.
-        s3Client: new S3Client({ region }) as S3Client,
+        s3Client: new S3Client({ region: overrides.clientRegion ?? region }) as S3Client,
         ecrClient: new ECRClient({}) as ECRClient,
         stateBackend: { putRawObject, getRawObject } as unknown as S3StateBackend,
         accountId: ACCOUNT,
@@ -415,6 +422,37 @@ describe('ensureAssetStorage', () => {
     expect(JSON.parse(policyCall.Policy).Statement[0].Resource).toEqual([
       `arn:${partition}:s3:::${bucket}`,
       `arn:${partition}:s3:::${bucket}/*`,
+    ]);
+  });
+
+  // The case the `it.each` above CANNOT catch: it builds the client from the
+  // same `region` it passes as the option, so the two never diverge and the
+  // rows stay green even with the partition derived from the option. That is
+  // the vacuity the PR review flagged. `cdkd bootstrap` really does hand this
+  // function a client whose region came from the SDK chain (the profile) while
+  // its `region` option fell back to a hardcoded `us-east-1`, and the bucket
+  // then physically lives in the CLIENT's partition.
+  it('derives the partition from the client when it disagrees with the region option', async () => {
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket' ? Promise.reject(awsError('NotFound', 404)) : Promise.resolve({})
+    );
+    mockEcrSend.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'DescribeRepositories'
+        ? Promise.reject(awsError('RepositoryNotFoundException'))
+        : Promise.resolve({})
+    );
+    const { options } = makeOptions({ region: 'us-east-1', clientRegion: 'us-gov-west-1' });
+
+    await ensureAssetStorage(options);
+
+    const policyCall = mockS3Send.mock.calls.find((c) => c[0]._type === 'PutBucketPolicy')![0];
+    // The bucket is NAMED after the option (`…-us-east-1`) — that mis-naming is
+    // issue #1820 and is deliberately not fixed here — but its ARN must name
+    // the partition it actually lives in.
+    const bucket = `cdkd-assets-${ACCOUNT}-us-east-1`;
+    expect(JSON.parse(policyCall.Policy).Statement[0].Resource).toEqual([
+      `arn:aws-us-gov:s3:::${bucket}`,
+      `arn:aws-us-gov:s3:::${bucket}/*`,
     ]);
   });
 
