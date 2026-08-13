@@ -701,6 +701,274 @@ describe('cdkd drift', () => {
     expect(output).toContain('WindowsConfiguration.Aliases');
   });
 
+  // Issue #1783. Same rules as the #1096 block above: these drive the REAL
+  // command path, so they exercise the provider call site AND the matcher.
+  // The DynamoDB Table shape the leaf-only form exists for — the index LIST is
+  // an unordered set keyed by IndexName, each index's KeySchema is
+  // order-SIGNIFICANT (HASH before RANGE).
+  const indexes = (order: 'ab' | 'ba', keySchema: 'hash-first' | 'range-first' = 'hash-first') => {
+    const keys =
+      keySchema === 'hash-first'
+        ? [
+            { AttributeName: 'author', KeyType: 'HASH' },
+            { AttributeName: 'createdAt', KeyType: 'RANGE' },
+          ]
+        : [
+            { AttributeName: 'createdAt', KeyType: 'RANGE' },
+            { AttributeName: 'author', KeyType: 'HASH' },
+          ];
+    const byAuthor = { IndexName: 'byAuthor', KeySchema: keys };
+    const byStatus = {
+      IndexName: 'byStatus',
+      KeySchema: [{ AttributeName: 'status', KeyType: 'HASH' }],
+    };
+    return order === 'ab' ? [byAuthor, byStatus] : [byStatus, byAuthor];
+  };
+
+  it('sorts a leaf-only declared array without descending into its elements (issue #1783)', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Table1: makeResource({
+          physicalId: 'table-1',
+          resourceType: 'AWS::DynamoDB::Table',
+          properties: { GlobalSecondaryIndexes: indexes('ab') },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      // AWS returns the same two indexes in the other order.
+      readCurrentState: async () => ({ GlobalSecondaryIndexes: indexes('ba') }),
+      getDriftUnorderedPaths: () => ['GlobalSecondaryIndexes[]'],
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect(error).toBeUndefined();
+    expect(output).toContain('no drift detected');
+  });
+
+  it('still DETECTS a per-index KeySchema reorder under a leaf-only declaration (issue #1783)', async () => {
+    // The load-bearing half: `KeySchema` is order-significant (HASH before
+    // RANGE), so the declaration must not reach inside the elements. Swap the
+    // subtree form back in and this drift is silently sorted away.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Table1: makeResource({
+          physicalId: 'table-1',
+          resourceType: 'AWS::DynamoDB::Table',
+          properties: { GlobalSecondaryIndexes: indexes('ab') },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ GlobalSecondaryIndexes: indexes('ab', 'range-first') }),
+      getDriftUnorderedPaths: () => ['GlobalSecondaryIndexes[]'],
+    });
+
+    const { output } = await runDrift(['TestStack']);
+
+    expect(output).toContain('GlobalSecondaryIndexes');
+  });
+
+  it('the SUBTREE form HIDES that KeySchema reorder — the behavior #1783 could not accept', async () => {
+    // Negative control for the test above, and the reason the leaf-only form
+    // had to exist: identical fixture, declaration spelled without `[]`.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Table1: makeResource({
+          physicalId: 'table-1',
+          resourceType: 'AWS::DynamoDB::Table',
+          properties: { GlobalSecondaryIndexes: indexes('ab') },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ GlobalSecondaryIndexes: indexes('ab', 'range-first') }),
+      getDriftUnorderedPaths: () => ['GlobalSecondaryIndexes'],
+    });
+
+    const { output } = await runDrift(['TestStack']);
+
+    expect(output).toContain('no drift detected');
+  });
+
+  // Issue #1784: the provider-declared BOTH-SIDES canonicalizer, for a
+  // difference no ignore-path can express — a member of an ARRAY ELEMENT.
+  it('applies canonicalizeDriftProperties to BOTH sides so an old baseline converges (issue #1784)', async () => {
+    // The real shape: a pre-fix `observedProperties` record froze an
+    // AWS-managed per-index member (`ItemCount`) that the readback no longer
+    // emits. It sits inside an array element, so `ignorePaths` could only
+    // suppress the WHOLE index list — i.e. never detect an index change again.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Table1: makeResource({
+          physicalId: 'table-1',
+          resourceType: 'AWS::DynamoDB::Table',
+          properties: { GlobalSecondaryIndexes: [{ IndexName: 'byAuthor' }] },
+          observedProperties: {
+            GlobalSecondaryIndexes: [{ IndexName: 'byAuthor', ItemCount: 42 }],
+          },
+        }),
+      })
+    );
+    const canonicalizeDriftProperties = vi.fn(
+      (_type: string, properties: Record<string, unknown>) => {
+        const list = properties['GlobalSecondaryIndexes'];
+        if (!Array.isArray(list)) return properties;
+        return {
+          ...properties,
+          GlobalSecondaryIndexes: list.map((index) => {
+            const { ItemCount: _dropped, ...rest } = index as Record<string, unknown>;
+            return rest;
+          }),
+        };
+      }
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ GlobalSecondaryIndexes: [{ IndexName: 'byAuthor' }] }),
+      canonicalizeDriftProperties,
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect(error).toBeUndefined();
+    expect(output).toContain('no drift detected');
+    // BOTH sides, not just the readback — one-sided normalization is the
+    // mistake drift-normalize.ts's header records.
+    expect(canonicalizeDriftProperties).toHaveBeenCalledTimes(2);
+    const bags = canonicalizeDriftProperties.mock.calls.map((call) => call[1]);
+    expect(bags.some((bag) => JSON.stringify(bag).includes('ItemCount'))).toBe(true);
+    expect(bags.some((bag) => !JSON.stringify(bag).includes('ItemCount'))).toBe(true);
+  });
+
+  it('reports that stranded array member as drift when the provider declares no canonicalizer', async () => {
+    // Negative control: identical fixture minus the hook. Proves the clean
+    // result above comes from the hook being threaded through both sides.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Table1: makeResource({
+          physicalId: 'table-1',
+          resourceType: 'AWS::DynamoDB::Table',
+          properties: { GlobalSecondaryIndexes: [{ IndexName: 'byAuthor' }] },
+          observedProperties: {
+            GlobalSecondaryIndexes: [{ IndexName: 'byAuthor', ItemCount: 42 }],
+          },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ GlobalSecondaryIndexes: [{ IndexName: 'byAuthor' }] }),
+      // No canonicalizeDriftProperties.
+    });
+
+    const { output } = await runDrift(['TestStack']);
+
+    expect(output).toContain('GlobalSecondaryIndexes');
+  });
+
+  it('keeps a REAL index change visible through canonicalizeDriftProperties (issue #1784)', async () => {
+    // The trade the hook exists to avoid: suppressing the whole array. Same
+    // canonicalizer, but AWS also dropped an index — that must still report.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Table1: makeResource({
+          physicalId: 'table-1',
+          resourceType: 'AWS::DynamoDB::Table',
+          properties: {
+            GlobalSecondaryIndexes: [{ IndexName: 'byAuthor' }, { IndexName: 'byStatus' }],
+          },
+          observedProperties: {
+            GlobalSecondaryIndexes: [
+              { IndexName: 'byAuthor', ItemCount: 42 },
+              { IndexName: 'byStatus', ItemCount: 7 },
+            ],
+          },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      // Out-of-band: byStatus was deleted in the console.
+      readCurrentState: async () => ({ GlobalSecondaryIndexes: [{ IndexName: 'byAuthor' }] }),
+      canonicalizeDriftProperties: (_type: string, properties: Record<string, unknown>) => {
+        const list = properties['GlobalSecondaryIndexes'];
+        if (!Array.isArray(list)) return properties;
+        return {
+          ...properties,
+          GlobalSecondaryIndexes: list.map((index) => {
+            const { ItemCount: _dropped, ...rest } = index as Record<string, unknown>;
+            return rest;
+          }),
+        };
+      },
+    });
+
+    const { output } = await runDrift(['TestStack']);
+
+    expect(output).toContain('GlobalSecondaryIndexes');
+  });
+
+  it('--accept PERSISTS the canonicalized value, not the raw AWS one (issue #1784)', async () => {
+    // Pins the asymmetry the seam's docs now state explicitly: `--revert`
+    // diffs against the RAW `awsProperties`, but `--accept` writes each
+    // change's `awsValue`, which comes from the CANONICALIZED bags. So on a
+    // path that still drifts after canonicalization, the stripped shape is
+    // what lands in observedProperties. The first cut of this PR documented
+    // the opposite; a reviewer caught it, and this test is what stops the
+    // claim from silently drifting back.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Table1: makeResource({
+          physicalId: 'table-1',
+          resourceType: 'AWS::DynamoDB::Table',
+          properties: { GlobalSecondaryIndexes: [{ IndexName: 'byAuthor' }] },
+          observedProperties: {
+            GlobalSecondaryIndexes: [{ IndexName: 'byAuthor', ItemCount: 42 }],
+          },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      // A REAL change (the index was renamed out of band) alongside the
+      // AWS-managed member the canonicalizer strips — so the path still
+      // drifts and --accept has something to write.
+      readCurrentState: async () => ({
+        GlobalSecondaryIndexes: [{ IndexName: 'byEditor', ItemCount: 99 }],
+      }),
+      canonicalizeDriftProperties: (_type: string, properties: Record<string, unknown>) => {
+        const list = properties['GlobalSecondaryIndexes'];
+        if (!Array.isArray(list)) return properties;
+        return {
+          ...properties,
+          GlobalSecondaryIndexes: list.map((index) => {
+            const { ItemCount: _dropped, ...rest } = index as Record<string, unknown>;
+            return rest;
+          }),
+        };
+      },
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const [, , savedState] = mockSaveState.mock.calls[0]!;
+    const persisted = (
+      savedState as {
+        resources: Record<string, { observedProperties?: Record<string, unknown> }>;
+      }
+    ).resources['Table1']?.observedProperties?.['GlobalSecondaryIndexes'];
+    // The real change landed ...
+    expect(persisted).toEqual([{ IndexName: 'byEditor' }]);
+    // ... and the stripped member did NOT come back with it.
+    expect(JSON.stringify(persisted)).not.toContain('ItemCount');
+  });
+
   it('silently skips `Custom::*` resource types (drift not applicable, issue #323)', async () => {
     // Originally: when a stack contains a `Custom::*` resource (e.g.
     // CDK's S3 auto-delete-objects helper), the provider has no

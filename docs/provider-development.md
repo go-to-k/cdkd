@@ -2013,7 +2013,9 @@ getDriftUnorderedPaths(resourceType: string): string[] {
 }
 ```
 
-Path matching uses the same shared `matchesPathPrefix` rule as `getDriftUnknownPaths()` (exact match, or entry followed by `.`). **Every entry is a subtree declaration** — `'WindowsConfiguration.Aliases'` covers that path *and everything beneath it*; there is no leaf-only form.
+Path matching uses the same shared `matchesPathPrefix` rule as `getDriftUnknownPaths()` (exact match, or entry followed by `.`). **A plain entry is a subtree declaration** — `'WindowsConfiguration.Aliases'` covers that path *and everything beneath it*.
+
+**Append `[]` to declare the path ALONE** (issue [#1783](https://github.com/go-to-k/cdkd/issues/1783)). Because this walk descends into array elements (see the divergence note below), a subtree entry for an object list also claims every array nested *inside* its elements — and that is frequently wrong: `AWS::DynamoDB::Table.GlobalSecondaryIndexes` is an unordered set keyed by `IndexName`, but each element carries a `KeySchema` that is order-SIGNIFICANT (HASH before RANGE), so `'GlobalSecondaryIndexes'` would sort the per-index key schema too and **hide a real key change**. `'GlobalSecondaryIndexes[]'` sorts the list and stops there. The marker is understood by `getDriftUnknownPaths()` as well, so the two lists keep one spelling; a bare `'[]'` matches nothing.
 
 Two element shapes are sorted, each only when the array is **homogeneous** in it: every element a plain string (sorted lexically), or every element a plain object (sorted by a key-order-independent canonical JSON — issue [#1620](https://github.com/go-to-k/cdkd/issues/1620)). Key order deliberately does not participate: AWS's readback order for an object's own keys is no more guaranteed than its order for the list, so sorting on a raw `JSON.stringify` would reintroduce the phantom drift the pass exists to remove. A MIXED array, and a nested array inside a declared path, are both left alone — so a mis-declared path can never reorder a heterogeneous or array-valued list.
 
@@ -2028,6 +2030,35 @@ One semantic divergence from `getDriftUnknownPaths()`, required for this pass to
 **Only declare a path AWS documents — or you can demonstrate — as order-insensitive.** The failure modes are not symmetric: an undeclared unordered set produces a *visible* false positive the user can see and correct, but declaring an order-*significant* list silently hides real drift, which is the worse failure for a drift tool. FSx's `SelfManagedActiveDirectoryConfiguration.DnsIps` is left undeclared for exactly this reason (DNS resolver lists are conventionally preference-ordered and AWS documents no set semantics), as is ElastiCache's `PreferredAvailabilityZones` (documented as positionally aligned to node index).
 
 **Do NOT sort inside the reverse-mapper instead.** It looks like a one-liner, but it breaks the `properties` fallback baseline: `runDriftForStack` uses `observedProperties` as the baseline only when present and falls back to the template `properties` otherwise, so for a resource deployed before observed-capture the baseline would be the user's TEMPLATE order while the read side is sorted — manufacturing drift instead of removing it. The normalizer runs on both comparison sides, which is exactly the property needed.
+
+#### `canonicalizeDriftProperties()` for a member INSIDE an array element
+
+The two seams above are declared as PATHS, and a path can never cross an array: `calculateResourceDrift` compares arrays wholesale via `deepEqual` and never descends into elements, so `isIgnoredPath` is never asked about a member of one. The only suppression an ignore-path can express there is the WHOLE array — which for `GlobalSecondaryIndexes` means never detecting an out-of-band index add / remove / capacity change again, permanently, to remove a one-time report. That trade is not worth making.
+
+`canonicalizeDriftProperties(resourceType, properties)` (issue [#1784](https://github.com/go-to-k/cdkd/issues/1784)) is the seam for exactly that shape. `cdkd drift` applies it to **both** comparison sides, last in the normalization chain, so a provider can strip the AWS-managed member from the baseline as well as from the readback — an old `observedProperties` record and a new readback then converge with no ignore-path and no lost detection:
+
+```typescript
+canonicalizeDriftProperties(
+  resourceType: string,
+  properties: Record<string, unknown>
+): Record<string, unknown> {
+  const indexes = properties['GlobalSecondaryIndexes'];
+  if (!Array.isArray(indexes)) return properties;   // identity when nothing applies
+  return {
+    ...properties,
+    GlobalSecondaryIndexes: indexes.map(({ ItemCount, IndexArn, ...rest }) => rest),
+  };
+}
+```
+
+Four rules, each load-bearing:
+
+- **There is deliberately no `side` parameter.** One-sided normalization is the mistake `src/analyzer/drift-normalize.ts`'s header already records — it manufactures drift on the `properties`-fallback baseline, where the baseline is the user's raw template. The same pure function must see both bags.
+- **Pure, synchronous, no AWS calls, NON-mutating.** It runs inside the comparison, and `--revert` diffs against the raw, uncanonicalized AWS bag — mutating the input would corrupt it.
+- **`--accept` persists your output.** It writes each reported change's `awsValue`, and those come from the canonicalized bags — so on a path that still drifts after canonicalization, `--accept` freezes the *stripped* shape into `observedProperties`. For the intended use (dropping a member the readback no longer reports) that is the right direction, but do not strip anything you would be unwilling to see removed from state.
+- **Position in the chain matters.** The hook runs after the principal / `IpProtocol` passes and *before* the tag-list / id-array / unordered-path passes, which live inside `calculateResourceDrift`. That order is required: an element strip must precede the unordered sort, or the two sides' canonical sort keys are computed over different member sets and diverge.
+- **Return the input by identity** when nothing applies, so an unaffected resource pays nothing.
+- **Reach for it only for a per-array-element member.** A top-level key a readback stopped emitting is `getDriftUnknownPaths()`'s job; a difference that is only about ORDER is `getDriftUnorderedPaths()`'.
 
 #### When there is NO observed baseline at all
 

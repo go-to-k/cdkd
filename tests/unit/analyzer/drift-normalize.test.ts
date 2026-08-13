@@ -305,3 +305,96 @@ describe('matchesPathPrefix (shared by both provider-declared path lists)', () =
     expect(matchesPathPrefix('Code', [])).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #1783: the LEAF-ONLY declaration form. Every entry used to be a
+// SUBTREE claim, so an unordered OBJECT list whose elements contain an
+// order-SIGNIFICANT array of their own could not be declared at all — the one
+// available spelling sorted the inner array too and would HIDE a real change.
+// ---------------------------------------------------------------------------
+describe('matchesPathPrefix — leaf-only entries (issue #1783)', () => {
+  it('matches the declared path itself', () => {
+    expect(matchesPathPrefix('GlobalSecondaryIndexes', ['GlobalSecondaryIndexes[]'])).toBe(true);
+  });
+
+  it('does NOT match anything beneath it (the whole point)', () => {
+    expect(matchesPathPrefix('GlobalSecondaryIndexes.KeySchema', ['GlobalSecondaryIndexes[]'])).toBe(
+      false
+    );
+    expect(
+      matchesPathPrefix('GlobalSecondaryIndexes.Projection.NonKeyAttributes', [
+        'GlobalSecondaryIndexes[]',
+      ])
+    ).toBe(false);
+  });
+
+  it('leaves the plain subtree form untouched in the same list', () => {
+    const entries = ['GlobalSecondaryIndexes[]', 'AttributeDefinitions'];
+    expect(matchesPathPrefix('GlobalSecondaryIndexes', entries)).toBe(true);
+    expect(matchesPathPrefix('GlobalSecondaryIndexes.KeySchema', entries)).toBe(false);
+    // The sibling plain entry keeps subtree semantics.
+    expect(matchesPathPrefix('AttributeDefinitions.Anything', entries)).toBe(true);
+  });
+
+  it('does not match a sibling sharing a string prefix', () => {
+    expect(matchesPathPrefix('GlobalSecondaryIndexesArn', ['GlobalSecondaryIndexes[]'])).toBe(false);
+  });
+
+  it('ignores a bare `[]` entry rather than matching the root bag', () => {
+    expect(matchesPathPrefix('', ['[]'])).toBe(false);
+    expect(matchesPathPrefix('Anything', ['[]'])).toBe(false);
+  });
+});
+
+describe('canonicalizeUnorderedArraysAtPaths — leaf-only entries (issue #1783)', () => {
+  // The DynamoDB Table shape the form exists for: the index LIST is an
+  // unordered set keyed by IndexName, while each index's KeySchema is
+  // order-SIGNIFICANT (HASH before RANGE).
+  const table = {
+    GlobalSecondaryIndexes: [
+      {
+        IndexName: 'byStatus',
+        KeySchema: [
+          { AttributeName: 'status', KeyType: 'HASH' },
+          { AttributeName: 'createdAt', KeyType: 'RANGE' },
+        ],
+      },
+      {
+        IndexName: 'byAuthor',
+        KeySchema: [
+          { AttributeName: 'author', KeyType: 'HASH' },
+          { AttributeName: 'createdAt', KeyType: 'RANGE' },
+        ],
+      },
+    ],
+  };
+
+  it('sorts the declared array without reordering arrays inside its elements', () => {
+    const out = canonicalizeUnorderedArraysAtPaths(table, ['GlobalSecondaryIndexes[]']) as typeof table;
+
+    // The index list IS sorted (byAuthor sorts before byStatus).
+    expect(out.GlobalSecondaryIndexes.map((i) => i.IndexName)).toEqual(['byAuthor', 'byStatus']);
+    // ... and every per-index KeySchema keeps HASH before RANGE.
+    for (const index of out.GlobalSecondaryIndexes) {
+      expect(index.KeySchema.map((k) => k.KeyType)).toEqual(['HASH', 'RANGE']);
+    }
+  });
+
+  it('the SUBTREE form sorts the inner KeySchema too — the behavior #1783 could not accept', () => {
+    // Negative control. `[{author,HASH},{createdAt,RANGE}]` canonical-sorts to
+    // `[{createdAt,RANGE},{author,HASH}]`, i.e. RANGE first: a real key change
+    // would compare equal to the correct schema.
+    const out = canonicalizeUnorderedArraysAtPaths(table, ['GlobalSecondaryIndexes']) as typeof table;
+
+    const keyTypes = out.GlobalSecondaryIndexes.map((i) => i.KeySchema.map((k) => k.KeyType));
+    expect(keyTypes).not.toEqual([
+      ['HASH', 'RANGE'],
+      ['HASH', 'RANGE'],
+    ]);
+  });
+
+  it('is a no-op at a path the leaf-only entry does not name', () => {
+    const other = { Other: ['b', 'a'] };
+    expect(canonicalizeUnorderedArraysAtPaths(other, ['GlobalSecondaryIndexes[]'])).toEqual(other);
+  });
+});

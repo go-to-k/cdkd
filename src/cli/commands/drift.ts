@@ -665,7 +665,40 @@ async function runDriftForStack(
         normalized.aws,
         resource.resourceType
       );
-      const changes = calculateResourceDrift(protocolNormalized.baseline, protocolNormalized.aws, {
+      // Issue #1784: the provider's own BOTH-SIDES canonicalizer, for a
+      // difference no ignore-path can express — a member of an ARRAY ELEMENT.
+      // `calculateResourceDrift` compares arrays wholesale, so the only
+      // expressible suppression is the whole array; stripping the AWS-managed
+      // member from BOTH bags instead converges an OLD observedProperties
+      // record with a NEW readback while keeping the array compared.
+      //
+      // Position: after the principal (#1515) and IpProtocol (#1643) passes,
+      // and necessarily BEFORE the tag-list / id-array / unordered-path passes,
+      // which run INSIDE `calculateResourceDrift` — an element strip has to
+      // precede the unordered sort or the two sides' canonical sort keys are
+      // computed over different member sets and diverge.
+      //
+      // It rewrites the COMPARISON copies only, so `outcome.awsProperties` —
+      // the raw bag `--revert` diffs against — keeps the stripped member. Note
+      // `--accept` is NOT symmetric with that: it writes each change's
+      // `awsValue`, which comes from these canonicalized bags, so a stripping
+      // canonicalizer means `--accept` persists the stripped shape on a path
+      // that still drifts. That is the intended direction (state should stop
+      // carrying a member the readback no longer reports), but a provider
+      // author must know it is a WRITE, not just a comparison filter.
+      const canonicalized = provider.canonicalizeDriftProperties
+        ? {
+            baseline: provider.canonicalizeDriftProperties(
+              resource.resourceType,
+              protocolNormalized.baseline
+            ),
+            aws: provider.canonicalizeDriftProperties(
+              resource.resourceType,
+              protocolNormalized.aws
+            ),
+          }
+        : protocolNormalized;
+      const changes = calculateResourceDrift(canonicalized.baseline, canonicalized.aws, {
         ignorePaths: observedIgnorePaths.length
           ? [...ignorePaths, ...observedIgnorePaths]
           : ignorePaths,

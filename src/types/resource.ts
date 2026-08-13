@@ -751,12 +751,80 @@ export interface ResourceProvider {
    *
    * Paths use dot-notation for nested keys and match the same way as
    * {@link getDriftUnknownPaths}: exactly equal, or an entry followed by `.`.
+   * Appending `[]` makes an entry LEAF-ONLY — the path alone, nothing beneath
+   * it (issue [#1783](https://github.com/go-to-k/cdkd/issues/1783)). That form
+   * exists because this walk DESCENDS INTO ARRAY ELEMENTS, giving each element
+   * its parent's path, so a subtree entry for an object list also claims every
+   * array nested inside its elements: `AWS::DynamoDB::Table`'s
+   * `GlobalSecondaryIndexes` is an unordered set keyed by `IndexName`, but each
+   * element's `KeySchema` is order-SIGNIFICANT (HASH before RANGE) and sorting
+   * it would HIDE a real key change. Declare `'GlobalSecondaryIndexes[]'` for
+   * that shape. The marker is understood by {@link getDriftUnknownPaths} too,
+   * so the two lists keep one spelling.
    *
    * @param resourceType e.g. `AWS::FSx::FileSystem`
    * @returns paths whose array (of plain strings or of objects) is unordered;
    *          defaults to empty when not implemented
    */
   getDriftUnorderedPaths?(resourceType: string): string[];
+
+  /**
+   * Canonicalize a drift comparison bag — applied by `cdkd drift` to BOTH
+   * sides (issue [#1784](https://github.com/go-to-k/cdkd/issues/1784)).
+   *
+   * This is the escape hatch for a difference an IGNORE-PATH structurally
+   * cannot express: a member of an ARRAY ELEMENT. `calculateResourceDrift`
+   * compares arrays wholesale via `deepEqual` and never descends into
+   * elements, so `isIgnoredPath` is never asked about a path that crosses one
+   * — the only expressible suppression is the WHOLE array, which for e.g.
+   * `GlobalSecondaryIndexes` would mean never detecting an out-of-band index
+   * add / remove / capacity change again. Stripping the AWS-managed member
+   * from BOTH sides converges an OLD `observedProperties` record and a NEW
+   * readback with no ignore-path and no lost detection.
+   *
+   * That symmetry is the whole point and the reason there is deliberately no
+   * `side` parameter: one-sided normalization is the mistake
+   * `src/analyzer/drift-normalize.ts`'s header already records — it
+   * manufactures drift on the `properties`-fallback baseline (a resource
+   * deployed before observed-capture, whose baseline is the user's raw
+   * template). The same pure function must see both bags.
+   *
+   * Reach for it only when the residual is a per-array-element member. A
+   * TOP-LEVEL key that a readback stopped emitting is
+   * {@link getDriftUnknownPaths}' job (the #1760 shape), and a difference that
+   * is only about ORDER is {@link getDriftUnorderedPaths}'.
+   *
+   * MUST be pure, synchronous, free of AWS calls, and NON-MUTATING — the bag
+   * it receives is the state record / the provider's own readback. Return the
+   * input by IDENTITY when nothing applies (the common case), so an unaffected
+   * resource pays nothing.
+   *
+   * **It is not only a comparison filter — `--accept` PERSISTS its output.**
+   * `cdkd drift --revert` diffs against the raw, uncanonicalized AWS bag, but
+   * `--accept` writes each reported change's `awsValue`, and those come from
+   * the canonicalized bags. So on a path that still drifts after
+   * canonicalization (a real change alongside a stripped member), `--accept`
+   * freezes the STRIPPED shape into `observedProperties`. For the intended use
+   * — dropping a member the readback no longer reports — that is the right
+   * direction, but do not strip anything you would be unwilling to see removed
+   * from the state record.
+   *
+   * Same CC-API-fallback caveat as {@link getDriftUnknownPaths} and
+   * {@link getDriftUnorderedPaths}: when the type has no `readCurrentState`,
+   * the AWS side comes from the Cloud Control fallback while THIS method is
+   * still the registry provider's, so the bag may not be the shape the
+   * provider's own readback would produce. Shape-guard before descending
+   * rather than assume — an `Array.isArray` / `typeof` test on the value you
+   * intend to rewrite is the whole guard.
+   *
+   * @param resourceType e.g. `AWS::DynamoDB::Table`
+   * @param properties one comparison side (baseline or AWS-current)
+   * @returns the canonicalized bag, or the input unchanged
+   */
+  canonicalizeDriftProperties?(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown>;
 
   /**
    * Find an already-deployed AWS resource matching the given logicalId from
