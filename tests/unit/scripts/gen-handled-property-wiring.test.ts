@@ -1906,6 +1906,67 @@ describe('the shipped --check command', () => {
     }
   }, SPAWN_TIMEOUT_MS);
 
+  it('PRINTS the graded coverage on BOTH the check and the WRITE path', () => {
+    // The zero threshold is defended in-code by "every run prints graded N/M",
+    // so that string is load-bearing prose — and nothing pinned it. Worse, the
+    // WRITER did not print it at all, which is the path CI runs and the path an
+    // author runs when regenerating (the #1808 shape), so the sole stated
+    // mitigation was absent exactly where it was needed.
+    const checked = runCheck();
+    expect(checked.status).toBe(0);
+    expect(checked.stderr).toMatch(/graded \d+\/\d+ pairs/);
+
+    const written = run([`--out-dir=${join(scratch, 'out-graded-line')}`]);
+    expect(written.status).toBe(0);
+    expect(written.stderr, 'the WRITER must print it too').toMatch(/graded \d+\/\d+ pairs/);
+  }, SPAWN_TIMEOUT_MS);
+
+  it('the refusal NAMES the pair counts and the remediation flag', () => {
+    // The twin of "names the escape hatch in the failure text" on the loss path.
+    // Without it, stripping the counts and the flag from the refusal is green.
+    const { status, stderr } = runCheck(undefined, ['--baseline=/nonexistent-baseline.json']);
+    expect(status).toBe(1);
+    expect(stderr).toMatch(/Graded \d+\/\d+ pairs/);
+    expect(stderr).toContain(ACCEPT_MISSING_BASELINE_FLAG);
+  }, SPAWN_TIMEOUT_MS);
+
+  it('refuses a SELF-INCONSISTENT baseline, whose summary disagrees with its classes', () => {
+    // The measured bypass: cutting the real matrix to ONE pair with a single
+    // `jq` line grades 1 pair, so a bare non-vacuity test waved it through while
+    // the other 1137 went ungraded — writer exit 0, CI's regenerate-and-diff
+    // clean, `--check` OK. The cut file still advertises the full
+    // `declaredProperties`, and that disagreement is a free discriminator.
+    const real = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'), 'utf8')
+    ) as HandledPropertyWiringReport;
+    const one = real.classes[0]!;
+    const shrunk = join(scratch, 'shrunk-one-pair.json');
+    writeFileSync(
+      shrunk,
+      JSON.stringify({ ...real, classes: [{ ...one, properties: [one.properties[0]!] }] })
+    );
+    const degraded = providersCopyWith('providers-shrunk-baseline', 'dynamodb-table-provider.ts', degradeWarmThroughput);
+    const outDir = join(scratch, 'out-shrunk-baseline');
+    const { status, stderr } = run([
+      `--providers-dir=${degraded}`,
+      `--out-dir=${outDir}`,
+      `--baseline=${shrunk}`,
+    ]);
+    expect(status, 'a shrunken baseline must not be graded against').toBe(1);
+    expect(stderr).toContain('its own summary claims');
+    expect(existsSync(join(outDir, 'handled-property-wiring.json'))).toBe(false);
+    // ...and a baseline with NO summary at all is the same defect: the generator
+    // always writes one, so its absence means the file is not generator output.
+    const noSummary = join(scratch, 'no-summary.json');
+    writeFileSync(
+      noSummary,
+      JSON.stringify({ schemaVersion: 1, classes: [{ ...one, properties: [one.properties[0]!] }] })
+    );
+    const b = runCheck(undefined, [`--baseline=${noSummary}`]);
+    expect(b.status).toBe(1);
+    expect(b.stderr).toContain('its own summary claims none');
+  }, SPAWN_TIMEOUT_MS);
+
   it('a TRUNCATED baseline is refused the same way a missing one is', () => {
     // `loadBaseline` answers null for both, so the refusal must not be keyed on
     // the file being absent — a half-written matrix is the likelier accident.
@@ -1967,6 +2028,25 @@ describe('the shipped --check command', () => {
     expect(c.stderr).toContain('grades 0/');
     expect(c.stderr).toContain('/nonexistent-baseline.json');
     expect(existsSync(join(outDir('c'), 'handled-property-wiring.json'))).toBe(true);
+
+    // 3b. The SAME cell with a PARSEABLE but unusable payload. Cell 3 above uses
+    // an absent file, so `baseline === null` and `!assessment.usable` are
+    // indistinguishable there — which is exactly how the silent-write bug
+    // survived: keying the announcement on the former left this path writing
+    // with NO announcement at all, and the whole suite stayed green.
+    const parseableUnusable = join(scratch, 'matrix-empty-classes.json');
+    writeFileSync(parseableUnusable, '{"schemaVersion":1,"classes":[]}');
+    const c2 = run([
+      `--out-dir=${outDir('c2')}`,
+      `--baseline=${parseableUnusable}`,
+      ACCEPT_MISSING_BASELINE_FLAG,
+    ]);
+    expect(c2.status, 'a parseable-but-unusable baseline must also be waivable').toBe(0);
+    expect(c2.stderr, 'the waiver must ANNOUNCE, not write silently').toContain(
+      'ACCEPTED MISSING BASELINE'
+    );
+    expect(c2.stderr).toContain('grades 0/');
+    expect(existsSync(join(outDir('c2'), 'handled-property-wiring.json'))).toBe(true);
 
     // 4. baseline waiver + loss condition -> REFUSED (the mirror of 2).
     const d = run([
@@ -2083,6 +2163,46 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
       expect(a.gradedPairs, why).toBe(0);
       expect(a.currentPairs, why).toBeGreaterThan(900);
     }
+  });
+
+  it('refuses a SELF-INCONSISTENT baseline before asking about overlap', () => {
+    // The fourth spelling, and the one a bare non-vacuity test cannot see: the
+    // real matrix cut to one pair DOES overlap, so only the artifact disagreeing
+    // with itself distinguishes it from a legitimately tiny tree.
+    const real = live.classes[0]!;
+    const shrunk = buildReport([{ ...real, properties: [real.properties[0]!] }]);
+    const withStaleSummary = {
+      ...shrunk,
+      summary: { ...shrunk.summary, declaredProperties: 1138, classifiedCount: 84 },
+    } as HandledPropertyWiringReport;
+    const a = assessBaseline(withStaleSummary, live);
+    expect(a.usable).toBe(false);
+    expect(a.defect).toBe('self-inconsistent');
+    expect(a.baselinePairs).toBe(1);
+    expect(a.baselineClaimedPairs).toBe(1138);
+    // It DOES overlap — which is exactly why non-vacuity alone waved it through.
+    expect(a.gradedPairs).toBe(1);
+  });
+
+  it('names WHICH defect made a baseline unusable', () => {
+    expect(assessBaseline(null, live).defect).toBe('absent');
+    const disjoint = buildReport([pair('NoSuchProvider', 'Whatever')]);
+    expect(assessBaseline(disjoint, live).defect).toBe('no-overlap');
+  });
+
+  it('DOCUMENTS the residual bound: a self-consistent miniature IS accepted', () => {
+    // Stated as a test rather than glossed in prose. The accidental shapes (a
+    // bad merge, a partial write, a truncation, a `jq` edit) all leave the
+    // summary disagreeing and are refused; producing a CONSISTENT miniature
+    // requires hand-authoring a file claiming the tree has one property, which
+    // is no longer an accident — and every run prints `graded 1/1138`, so it
+    // announces itself in output the author is already reading.
+    const real = live.classes[0]!;
+    const mini = buildReport([{ ...real, properties: [real.properties[0]!] }]);
+    const a = assessBaseline(mini, live);
+    expect(a.usable, 'a self-consistent miniature is accepted — the documented bound').toBe(true);
+    expect(a.gradedPairs).toBe(1);
+    expect(a.currentPairs).toBeGreaterThan(900);
   });
 
   it('a baseline sharing even ONE real pair is usable, and says how much it covers', () => {

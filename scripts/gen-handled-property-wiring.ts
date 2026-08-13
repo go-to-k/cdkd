@@ -140,7 +140,7 @@
  * exactly ZERO properties while creating a general-purpose mute button.
  * The sanctioned escape hatch for a genuinely un-followable shape is a
  * rationale'd {@link HANDLED_WIRING_ALLOW_LIST} entry (or, better, teaching the
- * walk the shape, as the table-driven rule above does for 43 properties).
+ * walk the shape, as the table-driven rule above does for 49 properties).
  *
  * An UNRESOLVABLE whole-bag call whose RESULT is only compared or measured is
  * not a forward at all and is not even recorded: `JSON.stringify(properties) ===
@@ -228,14 +228,19 @@
  * passes every structural check) — each landing the same way: both modes report
  * success at exit 0 and the tamper is overwritten without trace.
  *
- * So usability is defined POSITIVELY, in {@link assessBaseline}: a baseline is
- * usable only when the comparison covers at least one (class, property) pair of
- * the tree being graded, i.e. only when it COULD report a loss. Missing,
- * truncated, empty and class-disjoint baselines all grade zero pairs and are one
- * refusal, not four guards — which is what stops the next spelling from needing
- * a fourth. Partial coverage is handled by visibility rather than by a threshold
- * nobody could defend: every run prints `graded N/M pairs`, and the unit suite
- * pins that the committed matrix grades 100% of the live tree.
+ * So usability is defined POSITIVELY, in {@link assessBaseline}: a baseline must
+ * be SELF-CONSISTENT (its own `summary` agreeing with the classes it holds) and
+ * NON-VACUOUS (covering at least one (class, property) pair of the tree being
+ * graded) — i.e. it must be generator output, and it must be able to FAIL.
+ * Missing, truncated, empty and class-disjoint baselines grade zero pairs; a
+ * SHRUNKEN one — the real matrix cut to a single pair by one `jq` line — does
+ * overlap, and is caught by self-consistency because it still advertises the
+ * full `declaredProperties`. One refusal, not five guards.
+ *
+ * Partial coverage is handled by visibility rather than by a threshold nobody
+ * could defend: EVERY run — writer included — prints `graded N/M pairs`, and the
+ * unit suite pins that the committed matrix grades 100% of the live tree. The
+ * residual bound is stated on {@link assessBaseline} rather than glossed.
  *
  * TWO ESCAPE HATCHES, deliberately SEPARATE, both WRITER-ONLY:
  *   - `--accept-evidence-loss` acknowledges a measured reduction, and prints
@@ -1400,11 +1405,28 @@ export function loadBaseline(path: string = OUT_JSON): HandledPropertyWiringRepo
     const parsed = JSON.parse(raw) as Partial<HandledPropertyWiringReport>;
     if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.classes)) return null;
     if (parsed.classes.some((c) => !Array.isArray(c?.properties))) return null;
+    // Element shape too, not just the array: `properties: [null]` cleared the
+    // `Array.isArray` check and then died in the comparison walk with a bare
+    // `Cannot read properties of null (reading 'name')`. It failed CLOSED, so it
+    // was never a bypass — but it skipped the structured refusal, and a verdict
+    // this critic can only deliver as a stack trace is a verdict nobody reads.
+    if (
+      parsed.classes.some(
+        (c) =>
+          typeof c?.className !== 'string' ||
+          c.properties.some((x: PropertyClassification | null) => typeof x?.name !== 'string')
+      )
+    ) {
+      return null;
+    }
     return parsed as HandledPropertyWiringReport;
   } catch {
     return null;
   }
 }
+
+/** Why a baseline is not usable, when it is not. */
+export type BaselineDefect = 'absent' | 'self-inconsistent' | 'no-overlap';
 
 /** What a baseline can actually prove about the report it is grading. */
 export interface BaselineAssessment {
@@ -1414,43 +1436,75 @@ export interface BaselineAssessment {
   readonly gradedPairs: number;
   /** (class, property) pairs the current report declares. */
   readonly currentPairs: number;
+  /** (class, property) pairs the baseline actually holds. */
+  readonly baselinePairs: number;
+  /** What the baseline itself claims to hold, from its own `summary`. */
+  readonly baselineClaimedPairs: number | null;
+  readonly defect?: BaselineDefect;
 }
 
 /**
  * Is this baseline usable — stated POSITIVELY, which is the whole point.
  *
- * A baseline is usable when the comparison it enables can actually FAIL: it must
- * cover at least one (class, property) pair of the report being graded. That is
- * the property every caller cares about, and it is what makes the verdict mean
- * something.
+ * TWO conditions, both of which the baseline must satisfy on its own terms:
  *
- * WHY A POSITIVE PREDICATE RATHER THAN A LIST OF BAD SHAPES. Three review rounds
- * closed three spellings of the same tamper, one at a time:
- *   - MISSING — the file deleted (`git rm`, so `git diff --quiet` stayed green);
- *   - TRUNCATED — half a file, which parses as JSON with a well-formed header;
- *   - EMPTY — `{"schemaVersion":1,"classes":[]}`, which passes every structural
- *     check, so `findEvidenceLosses` skipped every pair on `if (!before)` and
- *     both modes reported success at exit 0 with the tamper overwritten.
- * Each fix enumerated one more bad shape, so a fourth was the default
- * expectation — a DISJOINT class set, or classes present with every `properties`
- * array empty, would land identically. Enumerating shapes loses that race by
- * construction. Requiring a non-vacuous comparison collapses all four (and the
- * ones nobody has thought of) into ONE refusal, because every one of them grades
- * zero pairs.
+ *  1. SELF-CONSISTENT — its `summary.declaredProperties` / `classifiedCount`
+ *     must match what its `classes` actually hold. The generator always writes
+ *     them in agreement, so a disagreement means the file was edited or
+ *     partially written after generation, whatever the reason.
+ *  2. NON-VACUOUS — the comparison must cover at least one (class, property)
+ *     pair of the report being graded, i.e. it must be able to FAIL at all.
  *
- * The threshold is ZERO rather than a ratio on purpose: any positive number is a
- * magic constant that would itself need defending, and legitimate drift (a PR
- * adding a provider class) must not trip it. Partial coverage is handled by
- * VISIBILITY instead — {@link main} prints `graded N/M pairs` on every run, and
- * the unit suite pins that the committed matrix grades 100% of the live tree, so
- * erosion is loud rather than implied by silence.
+ * WHY POSITIVE RATHER THAN A LIST OF BAD SHAPES. Four review rounds closed four
+ * spellings of one tamper, one per round: MISSING (deleted — staged, so
+ * `git diff --quiet` stayed green), TRUNCATED (parses, well-formed header),
+ * EMPTY (`{"schemaVersion":1,"classes":[]}`, which passes every structural
+ * check), and SHRUNKEN (the real matrix cut to a single pair by one `jq` line —
+ * it grades one pair, so a bare non-vacuity test waves it through while the
+ * other 1137 go ungraded). Enumerating shapes loses that race by construction.
+ *
+ * Condition 1 is what kills the shrunken case, and it costs nothing: a cut-down
+ * matrix still advertises `declaredProperties: 1138` while holding one pair.
+ * That is the same positive-predicate move applied one level up — the artifact
+ * must agree with itself before it is allowed to vouch for anything.
+ *
+ * WHY NOT A COVERAGE RATIO. Any threshold is a magic constant needing its own
+ * defence, and legitimate drift (a PR adding a provider class) must not trip it.
+ *
+ * THE RESIDUAL BOUND, stated rather than glossed. A hand-written baseline that
+ * is INTERNALLY CONSISTENT but tiny — one class, one property, a matching
+ * summary — is accepted, and grades only that pair. This is a deliberate limit,
+ * not an oversight: the accidental shapes (a bad merge, a partial write, a
+ * truncation, a `jq` edit) all leave the summary disagreeing and are refused,
+ * while producing a consistent miniature requires hand-authoring a file that
+ * claims the tree has one property. That is no longer an accident, and it is
+ * visible — every run, WRITER included, prints `graded N/M pairs`, so such a run
+ * announces `graded 1/1138` in the output the author is already reading.
  */
 export function assessBaseline(
   baseline: HandledPropertyWiringReport | null,
   current: HandledPropertyWiringReport
 ): BaselineAssessment {
   const currentPairs = current.classes.reduce((n, c) => n + c.properties.length, 0);
-  if (!baseline) return { usable: false, gradedPairs: 0, currentPairs };
+  if (!baseline) {
+    return {
+      usable: false,
+      gradedPairs: 0,
+      currentPairs,
+      baselinePairs: 0,
+      baselineClaimedPairs: null,
+      defect: 'absent',
+    };
+  }
+
+  const baselinePairs = baseline.classes.reduce((n, c) => n + c.properties.length, 0);
+  const claimedPairs =
+    typeof baseline.summary?.declaredProperties === 'number'
+      ? baseline.summary.declaredProperties
+      : null;
+  const claimedClasses =
+    typeof baseline.summary?.classifiedCount === 'number' ? baseline.summary.classifiedCount : null;
+
   const known = new Set<string>();
   for (const c of baseline.classes) {
     for (const p of c.properties) known.add(allowKey(c.className, p.name));
@@ -1461,7 +1515,20 @@ export function assessBaseline(
       if (known.has(allowKey(c.className, p.name))) gradedPairs += 1;
     }
   }
-  return { usable: gradedPairs > 0, gradedPairs, currentPairs };
+
+  const base = { gradedPairs, currentPairs, baselinePairs, baselineClaimedPairs: claimedPairs };
+  // A missing summary is as inconsistent as a wrong one: the generator always
+  // writes it, so its absence means this file did not come from the generator.
+  if (
+    claimedPairs === null ||
+    claimedPairs !== baselinePairs ||
+    claimedClasses === null ||
+    claimedClasses !== baseline.classes.length
+  ) {
+    return { ...base, usable: false, defect: 'self-inconsistent' };
+  }
+  if (gradedPairs === 0) return { ...base, usable: false, defect: 'no-overlap' };
+  return { ...base, usable: true };
 }
 
 function renderMarkdown(report: HandledPropertyWiringReport): string {
@@ -1683,14 +1750,24 @@ const LOSS_ESCAPE_HATCH =
  * it to the default output path and to the writer; both scopings were wrong, and
  * in the same direction. See {@link shouldRefuseUnusableBaseline}.
  */
+const BASELINE_DEFECT_LINE: Record<BaselineDefect, (a: BaselineAssessment) => string> = {
+  absent: () => 'It is absent, or not a readable v1 matrix, so there is nothing to compare against.',
+  'self-inconsistent': (a) =>
+    `It holds ${a.baselinePairs} (class, property) pairs but its own summary claims ` +
+    `${a.baselineClaimedPairs ?? 'none'} — so it was edited or partially written after ` +
+    'generation, and cannot be trusted to describe the tree it was generated from.',
+  'no-overlap': (a) =>
+    `It grades ${a.gradedPairs} of this tree's ${a.currentPairs} declared (class, property) ` +
+    'pairs, so no regression in this tree could make it fail.',
+};
+
 const unusableBaselineFailure = (path: string, a: BaselineAssessment): string =>
   `handled-property-wiring: FAIL — unusable baseline at ${path}\n` +
-  `It grades ${a.gradedPairs} of this tree's ${a.currentPairs} declared (class, property)\n` +
-  'pairs, so the evidence-loss check (issue #1842) can prove NOTHING. Reporting a green\n' +
-  'verdict here, or rewriting the file from here, would install whatever the current\n' +
+  `${BASELINE_DEFECT_LINE[a.defect ?? 'absent'](a)}\n` +
+  `Graded ${a.gradedPairs}/${a.currentPairs} pairs.\n\n` +
+  'The evidence-loss check (issue #1842) grades this run against that matrix, so reporting a\n' +
+  'green verdict here, or rewriting the file from here, would install whatever the current\n' +
   'tree happens to support as the new baseline, unreviewed.\n\n' +
-  'A baseline reaches this state by being absent, truncated, empty, or written for a\n' +
-  'different set of provider classes — all one condition: it cannot fail.\n\n' +
   `Restore it and re-run:\n\n  git checkout -- ${path}\n\n` +
   'If the matrix genuinely does not exist yet (a first-ever generation), pass\n' +
   `${ACCEPT_MISSING_BASELINE_FLAG} to write it without a comparison.\n`;
@@ -1707,7 +1784,7 @@ const USAGE =
   '                                                   [--accept-missing-baseline]\n' +
   '                                                   [--providers-dir=<p>] [--baseline=<p>] [--out-dir=<p>]\n' +
   '  --check                     fail on a gap, a stale allow-list entry, an evidence loss,\n' +
-  '                              or a baseline it cannot read\n' +
+  '                              or a baseline that could not have failed\n' +
   '  --accept-evidence-loss      WRITER only: acknowledge (and print) a reduction in the\n' +
   '                              per-property evidence set, then write the weaker matrix\n' +
   '  --accept-missing-baseline   WRITER only: proceed with NO comparison at all (a\n' +
@@ -1987,6 +2064,10 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
   mkdirSync(outDir, { recursive: true });
   atomicWrite(outJson, JSON.stringify(report, null, 2) + '\n');
   atomicWrite(outMd, renderMarkdown(report) + '\n');
+  process.stderr.write(
+    `handled-property-wiring: graded ${assessment.gradedPairs}/${assessment.currentPairs} pairs ` +
+      `against the baseline at ${baselinePath}.\n`
+  );
   process.stderr.write(
     `handled-property-wiring: wrote handled-property-wiring.{json,md} — ` +
       `${report.summary.classifiedCount} classes, ${report.summary.declaredProperties} declared ` +
