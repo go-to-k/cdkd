@@ -1,3 +1,10 @@
+## [0.283.11](https://github.com/go-to-k/cdkd/compare/v0.283.10...v0.283.11) (2026-08-13)
+
+
+### Bug Fixes
+
+* **ecr:** fold the ECR registry-host case, spell the host grammar once, and stop gc deleting an upper-cased-digest reference ([#1872](https://github.com/go-to-k/cdkd/issues/1872)) ([2a417f0](https://github.com/go-to-k/cdkd/commit/2a417f0642b3514efbd8fa236aa1063eec98ea38))
+
 ## [0.283.10](https://github.com/go-to-k/cdkd/compare/v0.283.9...v0.283.10) (2026-08-13)
 
 
