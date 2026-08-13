@@ -68,6 +68,23 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * The CLOSED path table {@link DynamoDBGlobalTableProvider.canonicalizeDriftProperties}
+ * strips from BOTH drift comparison sides (issue #1742).
+ *
+ * One entry today: the AWS-computed `GlobalSecondaryIndexes[].WarmThroughput`.
+ * A table rather than an inline check so a second per-array-element member
+ * lands as a row instead of a second walk — and so the scope is READABLE as a
+ * list of paths, which is what "closed table" means here. Deliberately does
+ * NOT include `LocalSecondaryIndexes` (this provider's readback assigns the
+ * raw SDK descriptions there, a wider divergence than one member) or
+ * `Replicas[].GlobalSecondaryIndexes` (whose entries carry only the read-half
+ * throughput blocks — no `WarmThroughput` is emitted or accepted there).
+ */
+const DRIFT_STRIPPED_INDEX_MEMBERS: ReadonlyArray<{ listKey: string; member: string }> = [
+  { listKey: 'GlobalSecondaryIndexes', member: 'WarmThroughput' },
+];
+
+/**
  * AWS DynamoDB GlobalTable Provider
  *
  * Implements resource provisioning for AWS::DynamoDB::GlobalTable using the
@@ -4156,7 +4173,40 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           const entry: Record<string, unknown> = { IndexName: gsi.IndexName };
           if (gsi.KeySchema) entry['KeySchema'] = gsi.KeySchema;
           if (gsi.Projection) entry['Projection'] = gsi.Projection;
-          if (gsi.WarmThroughput) entry['WarmThroughput'] = gsi.WarmThroughput;
+          // WarmThroughput reverse-mapped to the CFn shape (issue #1742). AWS
+          // returns a `GlobalSecondaryIndexWarmThroughputDescription`, which
+          // carries a `Status` member (`CREATING` / `UPDATING` / `ACTIVE`) the
+          // CFn `WarmThroughputType` has no concept of — so a template that
+          // DECLARES `WarmThroughput` drifted permanently against its own
+          // declaration, on the AWS-managed member alone. Surface only the two
+          // user-settable sub-fields, the same shape the sibling
+          // `AWS::DynamoDB::Table` readback takes for the table-level member.
+          //
+          // Dropping `Status` would ordinarily strand every ALREADY-WRITTEN
+          // `observedProperties` record (the #1760 lesson: the baseline still
+          // carries the member the readback stopped emitting, and the
+          // comparator compares `GlobalSecondaryIndexes` wholesale). It does
+          // not here, because `canonicalizeDriftProperties` below strips the
+          // WHOLE `WarmThroughput` member from BOTH comparison sides — an old
+          // record and this readback converge on having no member at all. The
+          // two halves ship together for that reason; do not land one alone.
+          //
+          // That convergence is BOUNDED to records written by a post-#1420
+          // binary. An `observedProperties` bag written before the #1420 CFn
+          // reverse map holds the raw `GlobalSecondaryIndexDescription[]`
+          // (`IndexArn` / `IndexStatus` / `ItemCount` / `Backfilling`), which a
+          // one-member strip cannot converge — those records were already
+          // drifting on four other members and are outside what this closes.
+          if (gsi.WarmThroughput) {
+            const warm: Record<string, unknown> = {};
+            if (gsi.WarmThroughput.ReadUnitsPerSecond !== undefined) {
+              warm['ReadUnitsPerSecond'] = gsi.WarmThroughput.ReadUnitsPerSecond;
+            }
+            if (gsi.WarmThroughput.WriteUnitsPerSecond !== undefined) {
+              warm['WriteUnitsPerSecond'] = gsi.WarmThroughput.WriteUnitsPerSecond;
+            }
+            if (Object.keys(warm).length > 0) entry['WarmThroughput'] = warm;
+          }
 
           const replicaEntry: Record<string, unknown> = { IndexName: gsi.IndexName };
           if (billingMode === 'PROVISIONED') {
@@ -4609,6 +4659,119 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    */
   getDriftUnorderedPaths(_resourceType: string): string[] {
     return ['AttributeDefinitions'];
+  }
+
+  /**
+   * Strip the AWS-computed per-index `WarmThroughput` from BOTH drift
+   * comparison sides (issue #1742 defect 2, on the #1784 seam).
+   *
+   * `DescribeTable` reports a `WarmThroughput` for EVERY index whether or not
+   * the template asked for one — a default `{ReadUnitsPerSecond: 12000,
+   * WriteUnitsPerSecond: 4000, Status: 'ACTIVE'}`, measured us-east-1
+   * 2026-08-13 on the `rollback-replay-effective-props` fixture — so on a
+   * `properties`-only baseline (what a reverse-replacement rollback leaves
+   * behind, since `rollback-executor.ts` strips `observedProperties`) the
+   * member is a permanent one-sided difference: `cdkd drift` reports the table
+   * forever and `--revert` re-issues calls for it.
+   *
+   * Why this mechanism and not the two cheaper ones:
+   *
+   * - `getDriftUnknownPaths` (the #1760 answer for the sibling type's
+   *   TOP-LEVEL member) cannot express it. `calculateResourceDrift` compares
+   *   arrays wholesale, so `isIgnoredPath` is never asked about a path that
+   *   crosses one; the only expressible suppression is the WHOLE
+   *   `GlobalSecondaryIndexes` subtree, i.e. never detecting an index add /
+   *   remove / capacity change again — the #1420 stopgap already refused.
+   * - Gating the READBACK emission on the desired side (this issue's own
+   *   second candidate answer) removes the phantom for the `properties`
+   *   baseline and CREATES one for the far larger `observedProperties`
+   *   population: every bag already in S3 was written by a binary that emitted
+   *   the computed member, so the first `cdkd drift` after upgrading compares
+   *   a baseline that HAS it against a readback that does not, and reports the
+   *   whole array on an untouched table. It does not self-heal — the observed
+   *   capture only runs on CREATE / UPDATE. That attempt was implemented,
+   *   reviewed and REVERTED; do not re-propose it.
+   *
+   * Stripping from BOTH sides is what converges the two populations at once: a
+   * stale observed record and a fresh readback both lose the member, and a
+   * `properties` baseline that never had it now faces an AWS side without it.
+   *
+   * ACCEPTED COST, stated because it is a real loss: a template that DECLARES
+   * a per-index `WarmThroughput` no longer has changes to it REPORTED by
+   * `cdkd drift`. The value is still SENT (`toSdkGlobalSecondaryIndexes`
+   * forwards it on create and on a new index), so this is a detection gap, not
+   * a delivery one, and it is bounded by what cdkd could do about a difference
+   * anyway: warm throughput only ever GROWS on the AWS side and cannot be
+   * lowered, so `--revert` would issue a decrease AWS rejects — the residual
+   * issue #1768 records for the sibling type's declared arm. A per-index
+   * declared-gate is not expressible here in any case: this hook sees ONE bag
+   * with no `side` argument and no reference to the desired side, which is the
+   * symmetry the #1784 contract requires and the reason one-sided
+   * normalization is refused.
+   *
+   * Scope is a CLOSED table rather than a walk for any key named
+   * `WarmThroughput`: `Replicas[].GlobalSecondaryIndexes[]` entries carry only
+   * the read-half throughput blocks (no `WarmThroughput` is emitted or
+   * accepted there), and a blanket strip would remove a member from a path
+   * nobody measured. The table is a FLAT list of `{listKey, member}` pairs —
+   * the type is hardcoded one line below, not a key of it — and nothing
+   * mechanically fences it against `readCurrentState`: a future per-replica
+   * `WarmThroughput` emission would desync silently, so a member added to the
+   * readback needs a row added here in the same change.
+   *
+   * The `resourceType` guard is kept but is UNREACHABLE, and the earlier
+   * claim that it followed the #1784 CC-API-fallback caveat was WRONG — that
+   * caveat is about the BAG SHAPE when a type has no `readCurrentState`, and
+   * never produces a foreign `resourceType`. `drift.ts` resolves the provider
+   * by `(resourceType, provisionedBy)` and then passes that SAME type back in,
+   * and this provider is registered for exactly one type, so the `!==` arm
+   * cannot fire. It stays as a cheap shape guard for a future second
+   * registration, not because anything routes a foreign type here.
+   *
+   * UNCOVERED POPULATION, stated because the fix does NOT reach it: a
+   * cc-api-routed GlobalTable gets neither half. Top-level `WarmThroughput` is
+   * a `silentDrop` property for this type, so a template declaring it
+   * auto-routes the whole resource through Cloud Control (the #614 routing)
+   * and the route is STICKY — `drift.ts` then resolves `provider` to
+   * `CloudControlProvider`, this hook is never invoked, and the AWS side comes
+   * from CC's `GetResource`. So the `properties`-only-baseline phantom drift
+   * this closes survives there. Pre-existing, not introduced here.
+   *
+   * Note the trigger is the TOP-LEVEL `WarmThroughput`, NOT the per-index
+   * member this strips: a template declaring only the per-index member keeps
+   * `GlobalSecondaryIndexes` (a handled property), stays SDK-routed, and IS
+   * covered. Do not read this bound as "warm-throughput templates are
+   * uncovered" — an earlier draft of this comment said so and was wrong.
+   *
+   * Pure, non-mutating, and identity-returning when nothing applies: the input
+   * bag is the caller's state record / readback, an unaffected table pays
+   * nothing, and only the index entries that actually carry the member are
+   * rebuilt.
+   */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::DynamoDB::GlobalTable') return properties;
+    let result = properties;
+    for (const { listKey, member } of DRIFT_STRIPPED_INDEX_MEMBERS) {
+      const list = result[listKey];
+      if (!Array.isArray(list)) continue;
+      let stripped = false;
+      const canonical = list.map((element) => {
+        const entry = asRecord(element);
+        // A non-object entry (an unresolved intrinsic, a malformed record) is
+        // passed through untouched — the comparator can still report it, which
+        // is the honest answer for a value cdkd could not read.
+        if (!entry || !(member in entry)) return element;
+        stripped = true;
+        const copy = { ...entry };
+        delete copy[member];
+        return copy;
+      });
+      if (stripped) result = { ...result, [listKey]: canonical };
+    }
+    return result;
   }
 
   /**

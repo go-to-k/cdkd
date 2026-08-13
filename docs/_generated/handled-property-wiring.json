@@ -5900,8 +5900,10 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "computed key in canonicalizeDriftProperties()",
         "computed key in collectDesiredKeyAttributeNames()",
         "extractLocalTags(...) in update()",
+        "object spread in canonicalizeDriftProperties()",
         "object spread in create()",
         "object spread in stripProvisionedCapacityKeys()"
       ]
