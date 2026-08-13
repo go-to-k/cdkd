@@ -185,6 +185,14 @@ describe('DynamoDBTableProvider WarmThroughput wiring', () => {
   });
 
   describe('readCurrentState', () => {
+    // Issue #1760: the emission is gated on the DESIRED bag DECLARING
+    // WarmThroughput, because AWS reports a computed 12000/4000 for a table
+    // that never asked (measured us-east-1, 2026-08-13). These cases pass a
+    // declaring bag so they exercise the shape every production caller sends;
+    // the undeclared arms and the absent-bag fallback are covered by
+    // `dynamodb-table-provider-drift-phantoms.test.ts`.
+    const DECLARED = { WarmThroughput: { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 } };
+
     function primeTtlPitrEmpty(): void {
       mockSend.mockResolvedValueOnce({}); // DescribeContinuousBackups (empty)
       mockSend.mockResolvedValueOnce({}); // DescribeTimeToLive (empty)
@@ -207,7 +215,7 @@ describe('DynamoDBTableProvider WarmThroughput wiring', () => {
       mockSend.mockResolvedValueOnce({ Tags: [] }); // ListTagsOfResource
       primeTtlPitrEmpty();
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE);
+      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, DECLARED);
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeTableCommand);
       expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsOfResourceCommand);
@@ -218,6 +226,11 @@ describe('DynamoDBTableProvider WarmThroughput wiring', () => {
     });
 
     it('omits WarmThroughput when DescribeTable does not return it', async () => {
+      // The absent-RESPONSE branch. Note this is NOT the shape a table without
+      // warm throughput has: AWS reports a computed 12000/4000 for those too
+      // (issue #1760), and the undeclared case is gated on the desired bag
+      // rather than on the response. This case pins the branch that still
+      // fires where AWS genuinely reports nothing.
       mockSend.mockResolvedValueOnce({
         Table: {
           TableName: TABLE_NAME,
@@ -229,7 +242,7 @@ describe('DynamoDBTableProvider WarmThroughput wiring', () => {
       mockSend.mockResolvedValueOnce({ Tags: [] });
       primeTtlPitrEmpty();
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE);
+      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, DECLARED);
 
       expect(result).toBeDefined();
       expect(result).not.toHaveProperty('WarmThroughput');
@@ -247,7 +260,7 @@ describe('DynamoDBTableProvider WarmThroughput wiring', () => {
       mockSend.mockResolvedValueOnce({ Tags: [] });
       primeTtlPitrEmpty();
 
-      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE);
+      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, DECLARED);
 
       expect(result?.WarmThroughput).toEqual({ ReadUnitsPerSecond: 12000 });
     });

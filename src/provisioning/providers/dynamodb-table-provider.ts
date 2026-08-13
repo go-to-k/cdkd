@@ -246,6 +246,29 @@ const TABLE_ACTIVE_WAIT_ATTEMPTS = 60;
  */
 const BILLING_FLIP_ACTIVE_WAIT_ATTEMPTS = 600;
 
+/**
+ * Does this desired-property bag DECLARE a table-level `WarmThroughput`, in the
+ * sense the WIRE uses (issue #1760)?
+ *
+ * Deliberately TRUTHINESS, matching `create()`'s and `update()`'s own gates
+ * (`if (properties['WarmThroughput'])`) rather than an `!== undefined` test:
+ * the question both drift-side callers actually ask is "did cdkd SEND one",
+ * and a `WarmThroughput: null` is a key the write path skips. Spelling it
+ * `!== undefined` re-creates the very defect this predicate exists to close,
+ * one value over — cdkd would send nothing, AWS would still compute
+ * 12000/4000, the readback would emit it as though the template had asked, and
+ * `--revert` could never clear the difference because the write gate skips a
+ * falsy value. One predicate, both sites, so the three spellings cannot drift.
+ *
+ * An ABSENT or EMPTY bag answers TRUE: the caller supplied nothing to decide
+ * with, so both consumers keep the pre-#1760 behavior (emit it, compare it)
+ * rather than dropping a key on the strength of a bag that was never passed.
+ */
+function declaresWarmThroughput(properties?: Record<string, unknown>): boolean {
+  if (properties === undefined || Object.keys(properties).length === 0) return true;
+  return Boolean(properties['WarmThroughput']);
+}
+
 export class DynamoDBTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
   private logger = getLogger().child('DynamoDBTableProvider');
@@ -2511,9 +2534,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * `observedProperties` baseline, a later AWS-side increase surfaces as drift
    * on a property the user never declared and `--revert` would issue a
    * decrease AWS rejects. `readCurrentState` therefore emits it only when the
-   * DESIRED bag declares it (issue #1742's fix, applied here per issue #1760),
-   * never as a blanket drop — `AWS::DynamoDB::Table` accepts an explicit
-   * `WarmThroughput` and a real change to one must stay visible.
+   * DESIRED bag declares it (the fix issue #1742 PROPOSES for the per-index
+   * sibling — still open and unlanded at the time of writing, so this is the
+   * first site to carry the shape), never as a blanket drop:
+   * `AWS::DynamoDB::Table` accepts an explicit `WarmThroughput` and a real
+   * change to one must stay visible. Known residual on that declared arm
+   * (issue #1768): AWS may GROW a declared value, which is reported as drift —
+   * correctly, cdkd holds a value AWS no longer has — but `--revert` then
+   * issues a decrease AWS rejects, surfacing as a per-resource revert failure
+   * rather than as a silent wrong answer.
    *
    * This declaration is the OTHER half: a state record written by an earlier
    * binary already carries the computed value in `observedProperties`, so the
@@ -2529,8 +2558,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
    */
   getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
     if (resourceType !== 'AWS::DynamoDB::Table') return [];
-    if (properties === undefined || Object.keys(properties).length === 0) return [];
-    if (properties['WarmThroughput'] !== undefined) return [];
+    if (declaresWarmThroughput(properties)) return [];
     return ['WarmThroughput'];
   }
 
@@ -2624,11 +2652,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // rejected) UpdateTable. An absent / empty bag keeps the pre-#1760
       // behavior, since the caller supplied nothing to decide with.
       // Surface ONLY the user-settable sub-fields — Status is AWS-managed.
-      const warmThroughputDeclared =
-        properties === undefined ||
-        Object.keys(properties).length === 0 ||
-        properties['WarmThroughput'] !== undefined;
-      if (table.WarmThroughput && warmThroughputDeclared) {
+      if (table.WarmThroughput && declaresWarmThroughput(properties)) {
         const wt: Record<string, unknown> = {};
         if (table.WarmThroughput.ReadUnitsPerSecond !== undefined) {
           wt['ReadUnitsPerSecond'] = table.WarmThroughput.ReadUnitsPerSecond;

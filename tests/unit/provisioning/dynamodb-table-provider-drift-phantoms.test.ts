@@ -272,6 +272,49 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
       ).toEqual([]);
     });
 
+    it('treats a FALSY declaration as undeclared, matching what the write path sends', async () => {
+      // `create()` / `update()` gate on truthiness (`if (properties['WarmThroughput'])`),
+      // so a declared `null` sends NOTHING while AWS still computes 12000/4000.
+      // Spelling the drift-side gate `!== undefined` would emit that computed
+      // value as though the template had asked for it — the same permanent
+      // phantom drift, one value over, and `--revert` could never clear it
+      // because the write gate skips a falsy value.
+      primeDescribeTable({
+        TableName: TABLE_NAME,
+        TableArn: TABLE_ARN,
+        WarmThroughput: AWS_COMPUTED_WARM_THROUGHPUT,
+      });
+
+      const declared = { TableName: TABLE_NAME, WarmThroughput: null };
+      const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, declared);
+
+      expect(result).not.toHaveProperty('WarmThroughput');
+      expect(provider.getDriftUnknownPaths(RESOURCE_TYPE, declared)).toEqual(['WarmThroughput']);
+    });
+
+    it('keeps the emit gate and the ignore path in agreement for every bag shape', () => {
+      // The two consumers must never disagree: a bag the readback treats as
+      // DECLARED (emits) must be COMPARED, and one it treats as undeclared
+      // (omits) must be IGNORED — otherwise the pair manufactures exactly the
+      // one-sided difference it exists to remove.
+      const bags: Array<Record<string, unknown> | undefined> = [
+        undefined,
+        {},
+        { TableName: TABLE_NAME },
+        { TableName: TABLE_NAME, WarmThroughput: null },
+        { TableName: TABLE_NAME, WarmThroughput: undefined },
+        { TableName: TABLE_NAME, WarmThroughput: '' },
+        { TableName: TABLE_NAME, WarmThroughput: { ReadUnitsPerSecond: 12000 } },
+      ];
+      for (const bag of bags) {
+        const ignored = provider.getDriftUnknownPaths(RESOURCE_TYPE, bag).includes('WarmThroughput');
+        const declares = bag === undefined || Object.keys(bag).length === 0
+          ? true
+          : Boolean(bag['WarmThroughput']);
+        expect({ bag, ignored }).toEqual({ bag, ignored: !declares });
+      }
+    });
+
     it('falls back to COMPARING for an absent / empty bag and for another type', () => {
       expect(provider.getDriftUnknownPaths(RESOURCE_TYPE)).toEqual([]);
       expect(provider.getDriftUnknownPaths(RESOURCE_TYPE, {})).toEqual([]);
