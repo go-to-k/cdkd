@@ -28,37 +28,24 @@
  * - `bucketRegionalDomainName`    -> `<bucket>.s3.<region>.<urlSuffix>`
  * - `bucketDualStackDomainName`   -> `<bucket>.s3.dualstack.<region>.<urlSuffix>`
  * - `bucketWebsiteUrl`            -> `http://<bucket>.<staticWebsiteEndpoint>`
+ *
+ * The REGION is canonicalized on entry by the three helpers whose output carries
+ * a region SEGMENT (issue [#1850](https://github.com/go-to-k/cdkd/issues/1850)).
+ * It belongs HERE rather than at either call site for the reason this module
+ * exists: `S3BucketProvider.buildAttributes` passes a raw
+ * `client.config.region()` while `IntrinsicFunctionResolver.constructAttribute`
+ * passes `accountInfo.region`, so folding at one caller alone re-creates exactly
+ * the divergence described above. `bucketArn` / `bucketDomainName` need no fold:
+ * neither embeds the region, and the URL suffix they DO derive goes through
+ * `derivePartitionAndUrlSuffix`, which canonicalizes its own input (#1795).
+ *
+ * For `WebsiteURL` the fold is not a spelling difference at all: the separator
+ * comes from a case-SENSITIVE Set lookup, so an upper-cased region misses the
+ * legacy-dash set and takes the wrong separator. It is folded BEFORE that
+ * lookup for that reason.
  */
 
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from './aws-partition.js';
-
-/**
- * Fold the region ONCE, here, for every helper below (issue
- * [#1850](https://github.com/go-to-k/cdkd/issues/1850)).
- *
- * The fold belongs in THIS module rather than at either call site, and that is
- * the whole reason this module exists: `S3BucketProvider.buildAttributes`
- * (what lands in state) passes `this.s3Client.config.region()` while
- * `IntrinsicFunctionResolver.constructAttribute` passes `accountInfo.region`.
- * Folding at one call site alone re-creates the exact divergence the header
- * above says this module prevents -- the resolver's `Fn::GetAtt` answer would
- * stop matching what `readCurrentState` reports, which is the phantom-drift
- * shape `.claude/rules/providers.md` warns about (#1745).
- *
- * For `WebsiteURL` the fold is not merely a spelling difference: the
- * separator comes from a case-sensitive Set lookup, so an upper-cased region
- * MISSES the legacy-dash set and silently picks the wrong separator. That is
- * the one place in this module where the region flips a BRANCH rather than a
- * substring, and it is why folding here also fixes the provider side that was
- * never reached by the resolver's own fold.
- *
- * `derivePartitionAndUrlSuffix` canonicalizes its own input (#1795), so the
- * suffix was already right; double-folding is a no-op, which is what makes the
- * two safe side by side.
- */
-function foldRegion(region: string): string {
-  return canonicalizeRegion(region);
-}
 
 /**
  * The regions whose S3 static-website endpoint uses the LEGACY hyphen form
@@ -124,13 +111,13 @@ export function s3BucketDomainName(bucketName: string, region: string): string {
 
 /** `<bucket>.s3.<region>.<urlSuffix>` — the regional domain name. */
 export function s3BucketRegionalDomainName(bucketName: string, region: string): string {
-  const folded = foldRegion(region);
+  const folded = canonicalizeRegion(region);
   return `${bucketName}.s3.${folded}.${derivePartitionAndUrlSuffix(folded).urlSuffix}`;
 }
 
 /** `<bucket>.s3.dualstack.<region>.<urlSuffix>` — the IPv6 dual-stack domain name. */
 export function s3BucketDualStackDomainName(bucketName: string, region: string): string {
-  const folded = foldRegion(region);
+  const folded = canonicalizeRegion(region);
   return `${bucketName}.s3.dualstack.${folded}.${derivePartitionAndUrlSuffix(folded).urlSuffix}`;
 }
 
@@ -145,7 +132,7 @@ export function s3BucketWebsiteUrl(bucketName: string, region: string): string {
   // Folded BEFORE the Set lookup, not after: the set holds canonical ids, so
   // an upper-cased region would miss it and take the dot form for a region
   // AWS serves on the hyphen one (issue #1850).
-  const folded = foldRegion(region);
+  const folded = canonicalizeRegion(region);
   const { urlSuffix } = derivePartitionAndUrlSuffix(folded);
   const separator = S3_WEBSITE_ENDPOINT_LEGACY_DASH_REGIONS.has(folded) ? '-' : '.';
   return `http://${bucketName}.s3-website${separator}${folded}.${urlSuffix}`;
