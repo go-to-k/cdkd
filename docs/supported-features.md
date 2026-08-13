@@ -14,7 +14,7 @@ runtime / handler support, see [cli-reference.md](cli-reference.md).
 | `Fn::Join` | ✅ | String concatenation |
 | `Fn::Sub` | ✅ | Template string substitution |
 | `Fn::Select` | ✅ | Array index selection |
-| `Fn::Split` | ✅ | String splitting |
+| `Fn::Split` | ✅ | String splitting. A non-string value is refused, matching CloudFormation — in particular a list-valued `Fn::GetAtt` (`AWS::Route53::HostedZone.NameServers`, `AWS::EC2::VPC.Ipv6CidrBlocks`) is already a list, so drop the `Fn::Split` and use the `Fn::GetAtt` directly (issue [#1874](https://github.com/go-to-k/cdkd/issues/1874)) |
 | `Fn::If` | ✅ | Conditional values |
 | `Fn::Equals` | ✅ | Equality comparison |
 | `Fn::And` | ✅ | Logical AND (2-10 conditions) |

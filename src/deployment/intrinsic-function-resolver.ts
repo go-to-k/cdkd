@@ -2872,10 +2872,70 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Name the UNRESOLVED value argument of an `Fn::Split` for its refusal
+   * message (issue [#1874](https://github.com/go-to-k/cdkd/issues/1874)).
+   *
+   * `ResolverContext` carries no referencing logical id / attribute, and
+   * threading one through this cross-cutting file for a message would be a
+   * plumbing change out of proportion to the win. The value EXPRESSION is
+   * already in hand, though, and for the shape that actually hits this refusal
+   * it is exactly what the user needs to find the site: a list-valued
+   * `Fn::GetAtt` renders as `Fn::GetAtt [Zone, NameServers]`, naming both the
+   * resource and the attribute. Anything else degrades to its intrinsic key, or
+   * to `undefined` for a literal (which the message then simply omits).
+   */
+  private describeSplitValueSource(value: unknown): string | undefined {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+    const keys = Object.keys(value as Record<string, unknown>);
+    if (keys.length !== 1) return undefined;
+    const key = keys[0] as string;
+    if (key !== 'Fn::GetAtt') return key.startsWith('Fn::') || key === 'Ref' ? key : undefined;
+    const args = (value as Record<string, unknown>)['Fn::GetAtt'];
+    // Both CFn spellings: the `[logicalId, attribute]` list and the
+    // `"logicalId.attribute"` string the shorthand YAML `!GetAtt` produces.
+    if (Array.isArray(args) && args.every((a) => typeof a === 'string')) {
+      return `Fn::GetAtt [${(args as string[]).join(', ')}]`;
+    }
+    if (typeof args === 'string') return `Fn::GetAtt [${args.split('.').join(', ')}]`;
+    return 'Fn::GetAtt';
+  }
+
+  /**
    * Resolve Fn::Split intrinsic function
    *
    * Fn::Split: [delimiter, string]
    * Splits a string into a list of strings using the specified delimiter
+   *
+   * A non-string value is REFUSED, and an ARRAY is refused with its own
+   * message (issue [#1874](https://github.com/go-to-k/cdkd/issues/1874)).
+   * Passing an array through unchanged was considered and rejected: real
+   * CloudFormation rejects `Fn::Split` over a list too, so a template written
+   * that way was never valid CFn. It only ever worked because cdkd resolved
+   * `AWS::Route53::HostedZone.NameServers` to a comma-delimited STRING, which
+   * was the defect PR #1868 fixed — so the post-upgrade failure is a correct
+   * rejection of an invalid template, not a regression. Accepting the array
+   * would let cdkd deploy templates that `cdkd export` /
+   * `cdkd import --migrate-from-cloudformation` then cannot hand back to
+   * CloudFormation, breaking the bidirectional-migration guarantee. What WAS
+   * genuinely wrong is the message: `value must be a string, got object` names
+   * neither the situation nor the remedy.
+   *
+   * Both refusals throw {@link IntrinsicResolutionRefusalError} rather than a
+   * bare `Error`, matching the three deliberate refusals already in this file.
+   * The #1740 laundering path this class exists for is NOT reachable from here
+   * today and that is deliberate rather than accidental: `Fn::Sub`'s
+   * `${LogicalId.Attribute}` form cannot syntactically contain an
+   * `Fn::Split`, and its 2-arg variable-map form resolves each value through
+   * `resolveValue` OUTSIDE any catch, so either class would propagate
+   * identically. Using the class anyway keeps "deliberate refusal" a property
+   * of the THROW rather than of the one catch that happens to inspect it, so a
+   * future catch site cannot silently launder this one. Deliberately NOT
+   * `markNonRetryable`: the refusal is terminal, but the retry classifier
+   * matches by SUBSTRING and neither message contains any entry of
+   * `RETRYABLE_ERROR_MESSAGE_PATTERNS` (verified against all 45, notably
+   * `does not exist`), so there is no ~47s retry schedule to burn (issue
+   * #1838). The unit tests pin that, so a future reword cannot drift into a
+   * retryable phrase unnoticed.
    */
   private async resolveSplit(
     splitArgs: [string, unknown],
@@ -2887,7 +2947,27 @@ export class IntrinsicFunctionResolver {
     const resolvedValue = await this.resolveValue(value, context);
 
     if (typeof resolvedValue !== 'string') {
-      throw new Error(`Fn::Split: value must be a string, got ${typeof resolvedValue}`);
+      const source = this.describeSplitValueSource(value);
+      const sourceClause = source ? ` (from ${source})` : '';
+      if (Array.isArray(resolvedValue)) {
+        throw new IntrinsicResolutionRefusalError(
+          `Fn::Split: the value to split${sourceClause} is ALREADY a list ` +
+            `(an array of ${resolvedValue.length} item${resolvedValue.length === 1 ? '' : 's'}), ` +
+            `not a string. CloudFormation rejects Fn::Split over a list too, so this ` +
+            `template is not valid CloudFormation either. Remove the Fn::Split and use ` +
+            `the value directly — a list-valued Fn::GetAtt (for example ` +
+            `AWS::Route53::HostedZone.NameServers or AWS::EC2::VPC.Ipv6CidrBlocks) already ` +
+            `returns a list. If you wrote the Fn::Split as a workaround for cdkd ` +
+            `resolving that attribute to a comma-delimited string, that bug is fixed ` +
+            `(PR #1868) and the workaround is no longer needed.`
+        );
+      }
+      const got = resolvedValue === null ? 'null' : typeof resolvedValue;
+      throw new IntrinsicResolutionRefusalError(
+        `Fn::Split: the value to split${sourceClause} must be a string, got ${got}. ` +
+          `Fn::Split accepts only a string; check the value or the intrinsic that ` +
+          `produced it.`
+      );
     }
 
     const result = resolvedValue.split(delimiter);
