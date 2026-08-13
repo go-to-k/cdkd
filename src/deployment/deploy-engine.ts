@@ -4272,10 +4272,25 @@ export class DeployEngine {
         // breaks downstream Fn::ImportValue consumers with "export not
         // found" long after this deploy exits 0).
         if (this.options.strictGetAtt) {
+          // `cause` is load-bearing, not decoration (issue #1874 review). The
+          // non-retryable marker is a NON-ENUMERABLE symbol on the original
+          // error, so re-wrapping without a cause DROPS it — while inlining
+          // the refusal's full text, which for a resolver refusal includes
+          // template-controlled identifiers. A logical id like
+          // `MyDependencyViolationHandler` then puts `DependencyViolation`
+          // (the substring table's only whitespace-free entry) into this
+          // message, and the classifier reads it as transient. That is
+          // reachable: this throw leaves `executeDeployment`, leaves the child
+          // `deploy()`, passes through `NestedStackProvider.create`, and lands
+          // in the PARENT's `withRetry` — so a nested stack would re-run a
+          // whole child deploy plus rollback per retry on a path that can
+          // never succeed. `isMarkedNonRetryable` walks the `.cause` chain, so
+          // threading the cause preserves the marker.
           throw new Error(
             `Failed to resolve output ${outputKey}: ${error instanceof Error ? error.message : String(error)} ` +
               `(--strict-getatt promotes output resolution failures to deploy errors; ` +
-              `drop the flag to warn and skip the output instead)`
+              `drop the flag to warn and skip the output instead)`,
+            { cause: error }
           );
         }
         this.logger.warn(`Failed to resolve output ${outputKey}: ${String(error)}`);

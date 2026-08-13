@@ -74,7 +74,11 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     expect(arrayError.message).toContain('Remove the Fn::Split');
     // The refusal must state WHY it is not a cdkd divergence, so a reader does
     // not re-open the accept-the-array option the maintainer decided against.
-    expect(arrayError.message).toContain('CloudFormation rejects Fn::Split over a list too');
+    // Asserted as a two-token kernel, not the whole sentence: a
+    // meaning-preserving copy-edit must not red this. The machine-shaped
+    // renderings (item count, source clause, `got <type>`, the #1868 token)
+    // stay exact — those ARE the contract.
+    expect(arrayError.message).toContain('CloudFormation rejects');
   });
 
   it('singularizes the item count for a one-element array', async () => {
@@ -125,11 +129,104 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     expect(error.message).toContain('(from Fn::GetAtt [Zone, NameServers])');
   });
 
-  it('omits the source clause for a literal value (nothing to name)', async () => {
+  it('renders a dotted ATTRIBUTE whole (splits on the FIRST dot only)', async () => {
+    // CloudFormation parses `Child.Outputs.Key` as [Child, Outputs.Key] — a
+    // nested stack's output. Splitting on every dot would render a
+    // three-element Fn::GetAtt that does not exist, which is worse than
+    // useless in a message whose only job is to name the site.
+    //
+    // The three-segment STRING spelling cannot reach the refusal today:
+    // `resolveGetAtt` rejects `parts.length !== 2` first, so `resolveValue`
+    // throws before `resolveSplit` classifies anything. That is pinned below,
+    // so if nested-path GetAtt ever lands, this test reds and the reader finds
+    // the rendering already correct. The reachable arm drives the equivalent
+    // shape through the ARRAY spelling.
+    const resolver = new IntrinsicFunctionResolver();
+    const unreachable = await splitError(
+      resolver,
+      [',', { 'Fn::GetAtt': 'Child.Outputs.Key' }],
+      mkContext()
+    );
+    expect(unreachable.message).toContain('Invalid Fn::GetAtt format');
+    expect(unreachable).not.toBeInstanceOf(IntrinsicResolutionRefusalError);
+
+    const dotted = mkContext({ Child: mkResource({ 'Outputs.Key': ['a', 'b'] }) });
+    const rendered = await splitError(
+      resolver,
+      [',', { 'Fn::GetAtt': ['Child', 'Outputs.Key'] }],
+      dotted
+    );
+    expect(rendered.message).toContain('(from Fn::GetAtt [Child, Outputs.Key])');
+    expect(rendered.message).not.toContain('[Child, Outputs, Key]');
+  });
+
+  it('refuses a `Ref` to a CommaDelimitedList parameter, naming the PARAMETER', async () => {
+    // The second genuinely reachable array source: `coerceParameterValue`
+    // returns an array for CommaDelimitedList / List<Number>, so this shape
+    // reaches the same refusal as a list-valued Fn::GetAtt.
+    const resolver = new IntrinsicFunctionResolver();
+    const template = {
+      Parameters: { MyListParam: { Type: 'CommaDelimitedList' } },
+    } as unknown as CloudFormationTemplate;
+    const context: ResolverContext = {
+      resources: {},
+      template,
+      parameters: await resolver.resolveParameters(template, { MyListParam: 'a,b,c' }),
+    };
+    // The parameter really was coerced to a list by the resolver itself, not
+    // hand-shaped by the test.
+    expect(context.parameters?.['MyListParam']).toEqual(['a', 'b', 'c']);
+
+    const error = await splitError(resolver, [',', { Ref: 'MyListParam' }], context);
+
+    expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(error.message).toContain('(from Ref MyListParam)');
+    expect(error.message).toContain('an array of 3 items');
+    // The remedy must be the PARAMETER one — asserted precisely enough to
+    // distinguish it from the NEUTRAL remedy, which also names
+    // CommaDelimitedList but drags Fn::GetAtt in beside it.
+    expect(error.message).toContain('A CommaDelimitedList / List<Number> parameter');
+    expect(error.message).not.toContain('Fn::GetAtt');
+    // ...and it must NOT drag in the Route 53 / #1868 story, which is about a
+    // different source entirely and only confuses this reader.
+    expect(error.message).not.toContain('#1868');
+    expect(error.message).not.toContain('NameServers');
+  });
+
+  it('renders a bare intrinsic key for a source it has no specific shape for', async () => {
+    // The describer's non-Fn::GetAtt branch: name the intrinsic, and use the
+    // neutral remedy (neither the GetAtt nor the parameter story applies).
+    const resolver = new IntrinsicFunctionResolver();
+    const context: ResolverContext = {
+      resources: {},
+      template: {} as CloudFormationTemplate,
+      conditions: { UseList: true },
+    };
+
+    const error = await splitError(
+      resolver,
+      [',', { 'Fn::If': ['UseList', ['a', 'b'], 'x'] }],
+      context
+    );
+    expect(error.message).toContain('(from Fn::If)');
+    // The NEUTRAL remedy: neither source-specific story applies, so neither
+    // the #1868 note nor the Route 53 example may appear.
+    expect(error.message).toContain(
+      'A list-valued Fn::GetAtt and a CommaDelimitedList parameter'
+    );
+    expect(error.message).not.toContain('#1868');
+    expect(error.message).not.toContain('NameServers');
+  });
+
+  it('omits the source clause AND the #1868 note for a literal value', async () => {
     const resolver = new IntrinsicFunctionResolver();
     const error = await splitError(resolver, [',', ['a', 'b']], mkContext());
     expect(error.message).toContain('Fn::Split: the value to split is ALREADY a list');
     expect(error.message).not.toContain('(from ');
+    // The #1868 note is addressed to the reader whose Fn::Split was a
+    // workaround for THAT attribute bug, so it is gated on the value actually
+    // being an Fn::GetAtt — a literal array did not come from one.
+    expect(error.message).not.toContain('#1868');
   });
 
   it('keeps a distinct refusal for a non-array non-string, never claiming "already a list"', async () => {
@@ -219,6 +316,50 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     expect(RETRYABLE_ERROR_MESSAGE_PATTERNS).toContain('DependencyViolation');
     // ...and the classifier must still refuse to retry it.
     expect(isRetryableTransientError(error, error.message)).toBe(false);
+  });
+
+  it('PROPAGATES out of an `Fn::Sub` 2-arg variable map (not laundered)', async () => {
+    // The JSDoc's error-class reasoning rests on this: `Fn::Sub`'s `${...}`
+    // form cannot syntactically contain an Fn::Split, and its 2-arg
+    // variable-map form resolves each value through `resolveValue` OUTSIDE any
+    // catch — so the #1740 laundering path is unreachable from here and the
+    // class choice changes no behavior. Nothing tested that, so a future catch
+    // added around the variable-map loop would rot the rationale silently.
+    const resolver = new IntrinsicFunctionResolver();
+    let thrown: Error | undefined;
+    try {
+      await resolver.resolve(
+        { 'Fn::Sub': ['x-${v}', { v: { 'Fn::Split': [',', ['a', 'b']] } }] },
+        mkContext()
+      );
+    } catch (error) {
+      thrown = error as Error;
+    }
+
+    expect(thrown).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(thrown?.message).toContain('is ALREADY a list');
+    expect(isMarkedNonRetryable(thrown)).toBe(true);
+  });
+
+  it('IS laundered inside a `Conditions` entry (the corrected comment, pinned)', async () => {
+    // `evaluateConditions` catches everything per condition, warns, and
+    // downgrades that condition to `false`. Both the in-code comment and the
+    // PR body assert this happens TODAY — as the reason the error class is not
+    // a guarantee against a class-agnostic catch — so it needs a test of its
+    // own. Both classes behave identically here, so this is a documented
+    // limitation rather than a regression.
+    const resolver = new IntrinsicFunctionResolver();
+    const template = {
+      Conditions: {
+        Refuses: { 'Fn::Equals': [{ 'Fn::Split': [',', ['a', 'b']] }, 'x'] },
+        Plain: { 'Fn::Equals': ['x', 'x'] },
+      },
+    } as unknown as CloudFormationTemplate;
+
+    const conditions = await resolver.evaluateConditions({ resources: {}, template });
+
+    expect(conditions['Refuses']).toBe(false);
+    expect(conditions['Plain']).toBe(true);
   });
 
   it('carries no retryable message pattern on its own, either', async () => {

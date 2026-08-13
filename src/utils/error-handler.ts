@@ -228,11 +228,18 @@ function formatDuration(ms: number): string {
  *    behavior by being this class.
  *
  * The class is deliberately NOT `markNonRetryable` at construction, unlike
- * {@link ResourceUpdateNotSupportedError}: group 1's fabricated-account arm is
- * genuinely time-dependent (`getAccountInfo` caches a fabricated answer for
- * only 10s precisely so a later attempt can heal), so a constructor-level
- * marker would wrongly make it terminal. A site that IS terminal marks at its
- * own `throw` — group 2 does.
+ * {@link ResourceUpdateNotSupportedError}: EXACTLY ONE of its throw sites is
+ * genuinely time-dependent — the fabricated-account guard, where
+ * `getAccountInfo` caches a fabricated answer for only 10s precisely so a
+ * later attempt can heal — so a constructor-level marker would wrongly make
+ * that one terminal. Every OTHER site marks at its own `throw`: all five
+ * decide from inputs a retry cannot change (a persisted state record, an
+ * attribute-name suffix, a CLI flag, an already-resolved value's type), and
+ * all five interpolate template-controlled text into their message, which the
+ * SUBSTRING-matching retry classifiers can read as transient (issue #1838 —
+ * a logical id like `MyDependencyViolationHandler` is enough). So the split is
+ * "which SITE can heal", not "which class"; do not read the unmarked class as
+ * a statement that these refusals are retryable.
  */
 export class IntrinsicResolutionRefusalError extends CdkdError {
   constructor(message: string, cause?: Error) {
