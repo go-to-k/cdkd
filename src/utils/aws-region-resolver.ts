@@ -29,6 +29,39 @@ export interface ResolveBucketRegionOptions {
     sessionToken?: string;
   };
   fallbackRegion?: string;
+  /**
+   * The CALLER's own AWS region, used to place the `GetBucketLocation` probe
+   * endpoint in the caller's PARTITION (issue
+   * [#1763](https://github.com/go-to-k/cdkd/issues/1763)).
+   *
+   * Distinct from {@link ResolveBucketRegionOptions.fallbackRegion} only in
+   * intent — a caller that already passes `fallbackRegion` (every
+   * `rebuildClientForBucketRegion` consumer does, sourcing it from the
+   * client's own `config.region()`) needs no change, since the probe falls
+   * through to it. Supply this when the caller has a region in hand but no
+   * opinion about what a failed probe should return.
+   */
+  region?: string;
+}
+
+/**
+ * Read an S3 client's resolved region without issuing a network call.
+ *
+ * Used to discover what the AWS SDK's own region chain (env vars, shared
+ * config profile) picked for a client that was constructed WITHOUT an
+ * explicit region. Never throws — an unresolvable chain (and a hand-rolled
+ * test double with no `config`) both degrade to `undefined` so the caller
+ * falls through to its own default.
+ */
+async function readClientRegion(client: S3Client): Promise<string | undefined> {
+  try {
+    const config = (client as { config?: { region?: unknown } }).config;
+    if (!config || typeof config.region !== 'function') return undefined;
+    const region = await (config.region as () => Promise<unknown>)();
+    return typeof region === 'string' && region.length > 0 ? region : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -42,17 +75,35 @@ export interface ResolveBucketRegionOptions {
  *   `GetBucketLocation` is a GET with an XML body and is not subject to the
  *   same SDK glitch.
  *
- * Why a region-agnostic client (us-east-1):
- *   `GetBucketLocation` works against the global S3 endpoint regardless of
- *   the bucket's actual region, so we don't need to know the answer to ask
- *   the question.
+ * Why the probe is NOT pinned to us-east-1 (issue
+ * [#1763](https://github.com/go-to-k/cdkd/issues/1763)):
+ *   `GetBucketLocation` is answered by ANY regional S3 endpoint for any
+ *   bucket in the SAME PARTITION — measured 2026-08-13 against a real
+ *   eu-west-1 bucket, which resolved identically from us-east-1 / us-west-2 /
+ *   ap-northeast-1 / eu-west-1 clients — so the probe never needs to know the
+ *   answer to ask the question. But it DOES have to reach the right
+ *   partition: a hardcoded `us-east-1` endpoint is unreachable from `aws-cn`
+ *   / `us-iso*`, so outside the commercial partition the probe could not run
+ *   at all, every call fell through to the commercial default, and every
+ *   consumer (the state backend, the lock manager, the exports index, the
+ *   custom-resource response path, `upload-cfn-template`) proceeded against
+ *   the wrong region. The probe endpoint is therefore taken from, in order:
+ *   `opts.region`, `opts.fallbackRegion`, the AWS SDK's own region chain
+ *   (env / shared config profile — the chain every other cdkd client
+ *   consults), and only then `us-east-1`. Commercial behavior is unchanged:
+ *   the resolved value is identical from any commercial endpoint, and a
+ *   caller with no region configured anywhere still probes `us-east-1`.
  *
- * The result is cached per bucket name for the process lifetime — bucket
- * regions never move, so the cache never needs invalidation.
+ * A SUCCESSFUL result is cached per bucket name for the process lifetime —
+ * bucket regions never move, so the cache never needs invalidation. A FAILED
+ * probe is deliberately NOT cached (mirroring `write-only-properties.ts`):
+ * the failure answer is a guess, and caching it let one transient error pin
+ * every later caller in the process to the wrong region with no way to heal.
  *
  * @returns The bucket's region (e.g. `us-west-2`). An empty `LocationConstraint`
- *   in the response means `us-east-1` (S3 quirk). On any error, returns
- *   `opts.fallbackRegion` if provided, else `us-east-1`.
+ *   in the response means `us-east-1` (S3 quirk — non-commercial partitions
+ *   always report their region explicitly). On any error, returns
+ *   `opts.fallbackRegion` if provided, else the region the probe was aimed at.
  */
 export async function resolveBucketRegion(
   bucketName: string,
@@ -61,12 +112,26 @@ export async function resolveBucketRegion(
   const cached = cache.get(bucketName);
   if (cached) return cached;
 
+  // Set by the probe when it degrades to a guess, so the entry can be evicted
+  // and a later call retry instead of inheriting one transient failure.
+  let probeFailed = false;
+
   const promise = (async (): Promise<string> => {
-    const client = new S3Client({
-      region: 'us-east-1',
+    const auth = {
       ...(opts.profile && { profile: opts.profile }),
       ...(opts.credentials && { credentials: opts.credentials }),
-    });
+    };
+    const explicitRegion = opts.region ?? opts.fallbackRegion;
+    let client = new S3Client({ ...(explicitRegion && { region: explicitRegion }), ...auth });
+    // With no caller-supplied region the client resolves its own; when that
+    // chain yields nothing the client cannot send at all, so pin the historic
+    // us-east-1 endpoint rather than turning a working probe into a guess.
+    let probeRegion = explicitRegion ?? (await readClientRegion(client));
+    if (!probeRegion) {
+      client.destroy();
+      probeRegion = 'us-east-1';
+      client = new S3Client({ region: probeRegion, ...auth });
+    }
     try {
       // ExpectedBucketOwner: a foreign-owned bucket 403s here and falls into
       // the fallback below — it must not even leak its region (the data
@@ -84,14 +149,19 @@ export async function resolveBucketRegion(
       // The resolver never throws: cdkd would rather surface the actionable
       // downstream error (HeadBucket → `normalizeAwsError`) than mask it
       // behind a noisy GetBucketLocation failure.
-      return opts.fallbackRegion ?? 'us-east-1';
+      probeFailed = true;
+      return opts.fallbackRegion ?? probeRegion;
     } finally {
       client.destroy();
     }
   })();
 
   cache.set(bucketName, promise);
-  return promise;
+  const region = await promise;
+  // Evict only OUR entry — a concurrent caller may already have installed a
+  // fresh probe for the same bucket.
+  if (probeFailed && cache.get(bucketName) === promise) cache.delete(bucketName);
+  return region;
 }
 
 /**
