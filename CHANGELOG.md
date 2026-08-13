@@ -1,3 +1,10 @@
+## [0.283.17](https://github.com/go-to-k/cdkd/compare/v0.283.16...v0.283.17) (2026-08-13)
+
+
+### Bug Fixes
+
+* **resolver:** name the situation and the remedy when Fn::Split gets an already-list value, and mark the refusal non-retryable ([#1883](https://github.com/go-to-k/cdkd/issues/1883)) ([19584ea](https://github.com/go-to-k/cdkd/commit/19584eaa9c925af60611a56292c0308a02d8e4b5))
+
 ## [0.283.16](https://github.com/go-to-k/cdkd/compare/v0.283.15...v0.283.16) (2026-08-13)
 
 
