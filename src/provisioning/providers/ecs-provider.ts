@@ -1173,12 +1173,16 @@ export class ECSProvider implements ResourceProvider {
     // Fargate service). Two limits of that probe, stated rather than
     // dismissed: the DAEMON scheduling strategy was not exercised — harmless,
     // since the deployment-type-dependent defaults only mattered for the reset
-    // that is no longer being added — and ROLLING makes the BLUE_GREEN-only
-    // blocks (LinearConfiguration / CanaryConfiguration / LifecycleHooks)
-    // unreachable, so they are UNMEASURED. That matters because they carry no
-    // (or a partial) `required` list, unlike the two blocks below, so a
-    // kept-but-partial block there IS reachable from a template CFn accepts.
-    // Tracked as issue #1806.
+    // that is no longer being added — and ROLLING did not exercise the
+    // traffic-shifting blocks (LinearConfiguration / CanaryConfiguration /
+    // LifecycleHooks), so #1805 left them UNMEASURED. That mattered because they
+    // carry no (or a partial) `required` list, unlike the two required-listed
+    // blocks whose rows follow, so a kept-but-partial block there IS reachable
+    // from a template CFn accepts. Issue #1806 measured them: the three blocks
+    // it names are PARITY (the API default-fills the omitted member), while
+    // the sweep of the REST of the tree found a loud AWS refusal for some
+    // shapes and ONE genuine DIVERGENCE — see the last two bullets, and issue
+    // #1861 for the divergence.
     //   - KEPT block, sub-field dropped (send only `MaximumPercent: 150`):
     //     UpdateService MERGES server-side — MinimumHealthyPercent stayed 50
     //     and the circuit breaker survived. A CloudFormation stack given the
@@ -1216,6 +1220,130 @@ export class ECSProvider implements ResourceProvider {
     //     InstanceMaintenancePolicy disposition (#1227): there AWS ITSELF
     //     rejected the partial, so cdkd failed loudly too and pass-through
     //     really was parity.
+    //   - The three DEPTH-1 sibling blocks #1806 names — `LinearConfiguration`
+    //     and `CanaryConfiguration` (neither carries a required list) and
+    //     `LifecycleHooks[]`, whose element requires only `LifecycleStages` —
+    //     are PARITY, which is the answer the row above makes it easy to guess
+    //     wrong. Measured us-east-1 2026-08-13
+    //     on a real traffic-shifting service, SDK and CloudFormation A/B.
+    //     A kept-but-partial block IS replaced like the depth-2 case, but the
+    //     absent member is filled with an AWS-side DEFAULT rather than left
+    //     at its live value: `LinearConfiguration` {StepPercent 33,
+    //     StepBakeTimeInMinutes 9} re-sent as {StepPercent 44} came back
+    //     {44, 6}; `CanaryConfiguration` {21, 9} re-sent as {CanaryPercent
+    //     30} came back {30, 10}; a hook's `TimeoutConfiguration` {31,
+    //     CONTINUE} re-sent as {TimeoutInMinutes 45} came back {45,
+    //     ROLLBACK}. The defaults are FIXED, not derived from the sibling
+    //     member — an empty `LinearConfiguration: {}` sent from a live
+    //     {33, 9} came back {10, 6}. CloudFormation given the SAME partial
+    //     template reached the IDENTICAL end state in all three cases, so the
+    //     reset is ECS's own behavior and normalizing it away would DIVERGE —
+    //     the top-level row's conclusion, reached the same way. What was
+    //     measured is again the END STATE; that CFn's handler submits the same
+    //     partial to `UpdateService` is the inference, though a CFn-side
+    //     fill-from-previous would have produced {44, 9} rather than the
+    //     observed {44, 6}. One PREMISE of #1806 did not survive contact: these
+    //     configs are NOT BLUE_GREEN-reachable (`Linear configuration can only
+    //     be present with LINEAR deployment strategy` — each is gated on its
+    //     OWN strategy, while `LifecycleHooks` is not, measured under CANARY;
+    //     its reach under ROLLING was not probed), so the heavier BLUE_GREEN
+    //     fixture the issue prescribed could not have reached two of them at
+    //     all. And one FINDING the issue does not discuss: the default-fill
+    //     does not become phantom drift, because the deploy engine captures
+    //     `observedProperties` from `readCurrentState` — which reverse-maps
+    //     this whole block from `DescribeServices` — so the AWS-filled value
+    //     lands in the drift baseline. That holds only while the property
+    //     stays drift-COMPARED; the test file fences it.
+    //     (The hook block's schema definition is named `HookTimeoutConfig`,
+    //     NOT the unrelated ServiceConnect `TimeoutConfiguration` definition —
+    //     the property PATH is `LifecycleHooks[].TimeoutConfiguration`.)
+    //   - The shapes the rows ABOVE do not already cover split TWO ways (plus
+    //     the array shape at the end of this bullet), so
+    //     neither "the rest of the tree is fine" nor "the other blocks are
+    //     refused" is the takeaway, and `DeploymentAlarms` keeps the #1802
+    //     disposition the row above gives it. Enumerated from
+    //     the LIVE registry definitions (`describe-type`, us-east-1
+    //     2026-08-13) rather than from the blocks #1806 names, and measured
+    //     the same day on the same service:
+    //       * AWS ITSELF REFUSES (the ASG `InstanceMaintenancePolicy`
+    //         disposition, #1227 — cdkd fails LOUDLY, no nested required-ness
+    //         check involved): a hook element missing `LifecycleStages`
+    //         (`InvalidParameterException: Lifecycle stage cannot be null or
+    //         empty for any deployment lifecycle hooks`); a hook element
+    //         missing `TargetType` (`Role arn or Hook Target arn is missing
+    //         for one or more deployment lifecycle hooks`, because an absent
+    //         `TargetType` DEFAULTS to `AWS_LAMBDA`, which then requires
+    //         members a PAUSE hook does not carry — dropping ONE member arms a
+    //         requirement for TWO others); and
+    //         `DeploymentCircuitBreaker.ThresholdConfiguration` missing
+    //         `Value` (`Invalid deployment circuit breaker threshold value.`) —
+    //         a block the issue's depth-1 scan never listed.
+    //         That one is REFUSED BY CFn TOO — its definition carries
+    //         `required: [Type, Value]` — so it is NOT an example of a
+    //         CFn-accepted partial, and the parity comes from both engines
+    //         failing rather than from agreeing on an end state. What decides
+    //         the verdict is whether AWS ACCEPTS, not whether CFn refuses:
+    //         `DeploymentCircuitBreaker` missing `Rollback` is refused by CFn
+    //         and ACCEPTED by AWS, which is exactly why that row is the #1802
+    //         divergence and this one is not.
+    //       * AWS RETAINS the live value AND CLOUDFORMATION RESETS IT — the
+    //         one DIVERGENT row this sweep found, opposite in polarity to
+    //         #1802 and tracked as issue #1861. `DeploymentCircuitBreaker`'s
+    //         OPTIONAL children (`ResetOnHealthyTask`, and the whole
+    //         `ThresholdConfiguration` block) dropped from an otherwise
+    //         complete parent form a partial CFn ACCEPTS, so it reaches AWS.
+    //         From the IDENTICAL baseline, with `Rollback` flipped in the same
+    //         call so the update demonstrably applied: cdkd's `UpdateService`
+    //         left `resetOnHealthyTask: false` / `{COUNT, 7}` intact, while
+    //         CloudFormation handed the same template RESET them to AWS's
+    //         defaults (`true` / `{BOUNDED_PERCENT, 50}`). So cdkd silently
+    //         fails to apply a removal CFn applies — too STICKY, where #1802
+    //         is too PERMISSIVE. The pass-through is still what ships and what
+    //         the tests pin: the reset is a behavior change needing its own
+    //         per-member measurement across the block, which #1861 owns.
+    //         What CFn is doing there is applying a REMOVAL, not materializing
+    //         defaults wholesale — measured, because the distinction decides
+    //         the fix: a member the template NEVER declared (set out of band)
+    //         SURVIVED a CFn update that changed only `MinimumHealthyPercent`,
+    //         while the same member declared-then-dropped was reset. That is
+    //         a previous-present / current-absent REMOVAL — the semantic
+    //         `clearOnUpdateRemoval` implements one level up, though the
+    //         member-vs-whole-property boundary here is EMPIRICAL rather than
+    //         derived from it: removing the WHOLE `DeploymentConfiguration`
+    //         resets nothing under either engine, so only a member dropped
+    //         from a struct the template STILL DECLARES is treated as a
+    //         removal. Two details make that arm discriminating, and both had
+    //         to be measured because the obvious one alone does not: the block
+    //         itself STAYED DECLARED while the member was absent, AND a later
+    //         arm flipped `Rollback` INSIDE the block while the optional
+    //         members remained never-declared — they still survived. That
+    //         excludes the competing reading "CFn re-serializes a nested
+    //         struct with defaults whenever its declared content CHANGED",
+    //         which the first two arms fit just as well. Service identity was captured on
+    //         both sides (same `serviceArn` / `createdAt`, stack events showing
+    //         UPDATE not a second CREATE) so a replacement cannot be mistaken
+    //         for a reset. Two things this row teaches. ONE nested block holds
+    //         members with DIFFERENT semantics — the required `Rollback` reads
+    //         as replaced while the optional children are retained — so do not
+    //         generalize a row to its siblings. And the shape to carry: where
+    //         the API RETAINS an omitted optional member of a STILL-DECLARED
+    //         struct, cdkd diverges, because CFn treats the omission as a
+    //         removal; the `LinearConfiguration` family above is parity only
+    //         because the API ITSELF default-fills there, which is exactly why
+    //         each block had to be measured rather than reasoned about.
+    //     The `LifecycleHooks` ARRAY itself is REPLACED WHOLESALE (a 2-element
+    //     list re-sent with one element left exactly that one), which is the
+    //     #1227 array shape and makes a per-element DROP a non-issue.
+    //     A note on HOW that was probed, because it changes the answer: the
+    //     AWS CLI refuses the `ThresholdConfiguration` partial CLIENT-side
+    //     (botocore validates the required trait before sending), so it never
+    //     reaches the service. The JS SDK cdkd uses declares the same member
+    //     required in its TYPE (`value: number | undefined`, a non-optional
+    //     key, vs the optional `targetType?:`) but performs no runtime
+    //     required check, so it SERIALIZES the partial and cdkd's refusal
+    //     arrives from the SERVICE. The models agree; only where the
+    //     validation runs differs — which is why the row was probed through
+    //     `@aws-sdk/client-ecs` directly rather than through the CLI.
     // Pinned by `ecs-deployment-configuration-subfield.test.ts`.
     // Absent-from-template still passes `undefined` (no reset) below. Also not
     // reset (immutable / required / always-carried): ServiceName (immutable,
