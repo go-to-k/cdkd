@@ -70,6 +70,12 @@ const destroyCalls: Array<{
   destroyCtx: Record<string, unknown>;
   capturedCtx: NestedStackProviderContext | undefined;
 }> = [];
+/**
+ * Issue #1752: per-test override of the child runner's reported counts, so a
+ * case can make the child report a SKIPPED resource. `vi.hoisted` because the
+ * `vi.mock` factory below is hoisted above ordinary module scope.
+ */
+const childCounts = vi.hoisted(() => ({ value: {} as Record<string, number> }));
 vi.mock('../../../src/cli/commands/destroy-runner.js', () => ({
   runDestroyForStack: vi.fn(async (stackName: string, _state: StackState, ctx: Record<string, unknown>) => {
     const ctxMod = await import('../../../src/provisioning/nested-stack-context.js');
@@ -86,7 +92,10 @@ vi.mock('../../../src/cli/commands/destroy-runner.js', () => ({
       skippedEmpty: false,
       deletedCount: 1,
       retainedCount: 0,
+      skippedCount: 0,
       errorCount: 0,
+      interrupted: false,
+      ...childCounts.value,
     };
   }),
 }));
@@ -127,6 +136,7 @@ function makeContext(overrides: Partial<NestedStackProviderContext> = {}): Neste
 beforeEach(() => {
   deployCalls.length = 0;
   destroyCalls.length = 0;
+  childCounts.value = {};
 });
 
 describe('NestedStackProvider', () => {
@@ -521,6 +531,51 @@ describe('NestedStackProvider', () => {
       expect(captured?.parentStackName).toBe('Parent~Child');
       expect(captured?.parentRegion).toBe('us-east-1');
       expect(captured?.nestedTemplates).toBeUndefined();
+    });
+
+    // Issue #1752: the child runner reports a resource it could not address as
+    // `skippedCount`. Swallowing it here re-creates the mis-report one level
+    // up — the PARENT would print `✓ Child (AWS::CloudFormation::Stack)
+    // deleted`, drop the child's row from parent state and exit 0, while the
+    // child's own state.json sits there preserved describing a live resource.
+    it('propagates a child skip up as { outcome: "skipped" } (issue #1752)', async () => {
+      childCounts.value = { deletedCount: 2, skippedCount: 1 };
+      const provider = new NestedStackProvider();
+      const ctx = makeContext();
+
+      const result = await withNestedStackContext(ctx, () =>
+        provider.delete(
+          'Child',
+          'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+          'AWS::CloudFormation::Stack'
+        )
+      );
+
+      expect(result).toEqual({
+        outcome: 'skipped',
+        reason: expect.stringContaining('Parent~Child'),
+      });
+      // The reason must carry the COUNT — the parent's status line is the only
+      // place a user sees that the child left something behind.
+      expect((result as { reason: string }).reason).toContain('1 resource(s)');
+      expect(destroyCalls.length).toBe(1);
+    });
+
+    it('returns void (= deleted) when the child skipped nothing', async () => {
+      childCounts.value = { deletedCount: 3, skippedCount: 0 };
+      const provider = new NestedStackProvider();
+      const ctx = makeContext();
+
+      const result = await withNestedStackContext(ctx, () =>
+        provider.delete(
+          'Child',
+          'arn:cdkd-local:us-east-1:123:nested-stack/Parent/Child',
+          'AWS::CloudFormation::Stack'
+        )
+      );
+
+      // Byte-identical to the pre-#1752 behavior for every ordinary child.
+      expect(result).toBeUndefined();
     });
 
     // B3 (issue #556): delete() forwards every per-resource budget / per-type

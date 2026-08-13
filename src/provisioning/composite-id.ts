@@ -284,8 +284,14 @@ function formatShape(segments: readonly string[]): string {
  * `{ outcome: 'skipped', reason: COMPOSITE_ID_SKIP_REASON }` so `cdkd destroy`
  * prints a `⚠ … skipped` line instead of `✓ … deleted`, reports
  * `N deleted, 1 skipped`, KEEPS the state record, and exits non-zero. The
- * wording here changed accordingly — it used to promise that cdkd "will report
- * this delete as successful", which it no longer does.
+ * wording here changed accordingly — it used to promise unconditionally that
+ * cdkd "will report this delete as successful", which is no longer true on the
+ * destroy path. It is STILL true for the deploy engine's replacement / rollback
+ * deletes, which discard the return value (issue
+ * [#1762](https://github.com/go-to-k/cdkd/issues/1762)), so the message names
+ * both callers rather than describing only the fixed one — a remedy of
+ * "drop the record with 'cdkd state orphan'" is impossible on a path that has
+ * already dropped it.
  */
 export function compositeIdFormatMessage(
   format: CompositeIdFormat,
@@ -305,9 +311,12 @@ export function compositeIdFormatMessage(
 
   return (
     `${head}. Skipping the delete — no AWS call is issued, so the resource is LEFT ` +
-    `IN PLACE. Repair the id in state.json and re-run, or delete the resource by ` +
-    `hand and drop the record with 'cdkd state orphan'. NOTE this arm is reached ` +
-    `from cdkd destroy AND from the deploy engine's replacement / rollback deletes.`
+    `IN PLACE. On 'cdkd destroy' / 'cdkd state destroy' the state record is KEPT ` +
+    `and the run exits non-zero, so repair the id in state.json and re-run (or ` +
+    `delete the resource by hand and drop the record with 'cdkd state orphan'). ` +
+    `NOTE this arm is ALSO reached from the deploy engine's replacement / rollback ` +
+    `deletes, which still DROP the record and report success ` +
+    `(https://github.com/go-to-k/cdkd/issues/1762) — there, delete it by hand.`
   );
 }
 

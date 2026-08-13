@@ -113,12 +113,40 @@ describe('malformed-composite-id DELETE arms report outcome: skipped (issue #175
     expect(COMPOSITE_ID_SKIP_REASON).toContain('no delete issued');
   });
 
-  it('a WELL-FORMED id takes the normal path and reports no skip', () => {
-    // Guard against a guard that fires unconditionally: the arms above must
-    // be reachable only for a genuinely malformed id.
+  // Inverted controls: a guard that fired UNCONDITIONALLY would satisfy every
+  // assertion above, so each arm needs a well-formed id that must NOT skip.
+  const wellFormed: Array<{ name: string; run: () => Promise<unknown> }> = [
+    {
+      name: 'AWS::Glue::Table',
+      run: () => new GlueProvider().delete('MyTable', 'mydb|mytable', 'AWS::Glue::Table'),
+    },
+    {
+      name: 'AWS::EC2::NetworkAclEntry',
+      run: () =>
+        new EC2Provider().delete('MyEntry', 'acl-123|100|false', 'AWS::EC2::NetworkAclEntry'),
+    },
+    {
+      name: 'AWS::AppSync::DataSource',
+      run: () => new AppSyncProvider().delete('MyDs', 'api1|ds1', 'AWS::AppSync::DataSource'),
+    },
+    {
+      name: 'AWS::AppSync::Resolver',
+      run: () =>
+        new AppSyncProvider().delete('MyRes', 'api1|Query|field', 'AWS::AppSync::Resolver'),
+    },
+    {
+      name: 'AWS::AppSync::ApiKey',
+      run: () => new AppSyncProvider().delete('MyKey', 'api1|key1', 'AWS::AppSync::ApiKey'),
+    },
+  ];
+
+  it.each(wellFormed)('$name: a WELL-FORMED id deletes and reports no skip', async ({ run }) => {
     send.mockResolvedValue({});
-    return expect(
-      new GlueProvider().delete('MyTable', 'mydb|mytable', 'AWS::Glue::Table')
-    ).resolves.toBeUndefined();
+
+    await expect(run()).resolves.toBeUndefined();
+
+    // The delete really went out — otherwise "no skip" would also be satisfied
+    // by an arm that silently did nothing.
+    expect(send).toHaveBeenCalled();
   });
 });

@@ -968,9 +968,11 @@ export async function runDestroyForStack(
                       ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
                     }
                   );
-                  // Assign INSIDE the loop, not after it: a retried attempt
-                  // must overwrite a previous attempt's outcome, and a
-                  // provider returning void must clear one too.
+                  // Assign INSIDE the loop, not after it: the loop can
+                  // reach this line on a LATER attempt after an earlier one
+                  // threw, and the outcome must be that attempt's. (It can
+                  // never overwrite a previous non-throwing attempt — the
+                  // `break` below ends the loop on the first one.)
                   deleteResult = outcome ?? undefined;
                   lastDeleteError = null;
                   break;
@@ -1035,9 +1037,16 @@ export async function runDestroyForStack(
           // state record: without it the user has neither the AWS resource
           // deleted nor a cdkd record pointing at it, and no way to retry.
           if (deleteResult?.outcome === 'skipped') {
-            const verb = deleteResult.reason ? `skipped (${deleteResult.reason})` : 'skipped';
+            // `reason` is REQUIRED by the discriminated union, so the line
+            // always names a cause — a bare `skipped` would be barely more
+            // useful than the `deleted` it replaced.
             logger.info(
-              `  ${formatResourceLine('skipped', logicalId, resource.resourceType, verb)}`
+              `  ${formatResourceLine(
+                'skipped',
+                logicalId,
+                resource.resourceType,
+                `skipped (${deleteResult.reason})`
+              )}`
             );
             result.skippedCount++;
             ctx.eventRecorder?.record({

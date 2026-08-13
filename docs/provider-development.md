@@ -1569,11 +1569,24 @@ What the destroy runner then does, and why each half matters:
 
 Reach for this ONLY when cdkd genuinely cannot address the resource. If you
 know the resource is gone, return `void` — reporting a skip there would
-preserve state and fail the destroy for no reason. The one producer today is
-the malformed-composite-physicalId family
-(`src/provisioning/composite-id.ts`); the `--purge-events` flag and the
-run-level `RUN_FINISHED` result both treat a skip as a failed run, so a new
-producer changes user-visible exit behavior — decide deliberately.
+preserve state and fail the destroy for no reason. The `--purge-events` flag
+and the run-level `RUN_FINISHED` result both treat a skip as a failed run, so a
+new producer changes user-visible exit behavior — decide deliberately.
+
+**A provider that recurses into another destroy propagates the child's skip.**
+`NestedStackProvider.delete` returns `{ outcome: 'skipped' }` when the child
+runner reports `skippedCount > 0`; without that the parent would print
+`✓ <Child> (AWS::CloudFormation::Stack) deleted` and exit 0 over a child stack
+that kept a live resource.
+
+Producers today: the malformed-composite-physicalId family
+(`src/provisioning/composite-id.ts`, five arms) plus the nested-stack
+propagation above. Same-class arms elsewhere in the tree (Lambda layer /
+permission, Custom Resource, IAM policy / user-group) have NOT been converted
+yet — issue [#1770](https://github.com/go-to-k/cdkd/issues/1770) — and neither
+have the deploy-engine / rollback-executor callers, which discard the return
+value entirely (issue
+[#1762](https://github.com/go-to-k/cdkd/issues/1762)).
 
 ### 2a. UPDATE removal semantics — clear-on-removal (issue #1155)
 

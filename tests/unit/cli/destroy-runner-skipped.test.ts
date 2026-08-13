@@ -176,6 +176,30 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
   });
 
   it('KEEPS the state record for a skipped resource and preserves state.json', async () => {
+    // ONE resource, and it is the skipped one: no sibling delete fires an
+    // incremental persist, so the only saveState call there can be is the
+    // FINAL preserve-write. With a sibling present this assertion is vacuous —
+    // the sibling's incremental persist writes the same snapshot, so deleting
+    // the final write leaves the test green.
+    mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+
+    const result = await runDestroyForStack('TestStack', makeState({ Table: res() }), makeCtx());
+
+    expect(result.skippedCount).toBe(1);
+    expect(result.deletedCount).toBe(0);
+
+    // The second half of the data loss: without the record the user has
+    // neither the AWS resource deleted nor an id to go and delete it with.
+    expect(mockDeleteState).not.toHaveBeenCalled();
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = lastSavedState();
+    expect(Object.keys(saved.resources)).toEqual(['Table']);
+    // The physical id must survive intact — it IS the id the user needs to
+    // repair (or to go and delete the resource by hand).
+    expect(saved.resources['Table']!.physicalId).toBe('phys-id');
+  });
+
+  it('a skipped resource does not block a sibling from being deleted and trimmed', async () => {
     mockProviderDelete.mockImplementation((logicalId: string) =>
       logicalId === 'Table'
         ? Promise.resolve({ outcome: 'skipped', reason: 'bad id' })
@@ -190,9 +214,6 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
 
     expect(result.deletedCount).toBe(1);
     expect(result.skippedCount).toBe(1);
-
-    // The second half of the data loss: without the record the user has
-    // neither the AWS resource deleted nor an id to go and delete it with.
     expect(mockDeleteState).not.toHaveBeenCalled();
     expect(Object.keys(lastSavedState().resources)).toEqual(['Table']);
   });
@@ -207,9 +228,27 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     const skipped = recorded.find((e) => e.eventType === 'RESOURCE_SKIPPED')!;
     expect(skipped.logicalId).toBe('Table');
     expect(skipped.operation).toBe('DELETE');
-    // Nothing was attempted, so there is no error metadata to carry.
+    expect(skipped.resourceType).toBe('AWS::Glue::Table');
+    expect(skipped.physicalId).toBe('phys-id');
+    expect(typeof skipped.durationMs).toBe('number');
+    // Nothing was attempted, so there is no error metadata to carry. Asserting
+    // that ALONE would be unconditional (nothing on this path ever sets
+    // `error`), so the control below proves the recorder does populate it when
+    // a delete genuinely fails.
     expect(skipped.error).toBeUndefined();
   });
+
+  it('control: a genuinely FAILED delete still records RESOURCE_FAILED *with* error metadata', async () => {
+    // Makes the `error` assertion above meaningful rather than vacuous.
+    mockProviderDelete.mockRejectedValue(new Error('kaboom'));
+
+    await runDestroyForStack('TestStack', makeState({ Table: res() }), makeCtx());
+
+    const failed = recorded.find((e) => e.eventType === 'RESOURCE_FAILED')!;
+    expect(failed).toBeDefined();
+    expect(failed.error).toBeDefined();
+    expect(recorded.some((e) => e.eventType === 'RESOURCE_SKIPPED')).toBe(false);
+  }, 30_000);
 
   it('reports "N deleted, M skipped" in the summary and does NOT claim a clean destroy', async () => {
     mockProviderDelete.mockImplementation((logicalId: string) =>
@@ -228,9 +267,41 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     expect(warn).toContain('partially destroyed');
     expect(warn).toContain('1 skipped');
     expect(warn).toContain('0 errors');
+    // Pin the SKIPPED-ONLY branch specifically. `partially destroyed` /
+    // `1 skipped` / `0 errors` are all printed by the pre-existing
+    // errors-present branch too (ANSI-stripped, `red(0)` reads as `0`), so
+    // without these two the new branch is not distinguished at all.
+    expect(warn).toContain('could not address the skipped resource(s)');
+    expect(warn).toContain('Fix the physicalId in state.json');
+    // ...and the separate preserve-state warning, which nothing else emits.
+    expect(warn).toContain('State preserved (the records are kept');
     // The headline mis-report: the clean-destroy banner must not appear.
     expect(allInfo()).not.toContain('destroyed');
   });
+
+  it('errors + skipped keeps the ERROR branch primary and still shows the skip count', async () => {
+    mockProviderDelete.mockImplementation((logicalId: string) => {
+      if (logicalId === 'Table') return Promise.resolve({ outcome: 'skipped', reason: 'bad id' });
+      if (logicalId === 'Boom') return Promise.reject(new Error('kaboom'));
+      return Promise.resolve();
+    });
+
+    const result = await runDestroyForStack(
+      'TestStack',
+      makeState({ Table: res(), Boom: res({ resourceType: 'AWS::S3::Bucket' }) }),
+      makeCtx()
+    );
+
+    expect(result.skippedCount).toBe(1);
+    expect(result.errorCount).toBe(1);
+    const warn = allWarn();
+    expect(warn).toContain('1 skipped');
+    // The error branch owns the message: a run with a real failure must lead
+    // with "re-run to clean up", not with the skip remedy.
+    expect(warn).toContain("re-run 'cdkd destroy'");
+    expect(warn).not.toContain('could not address the skipped resource(s)');
+    expect(mockDeleteState).not.toHaveBeenCalled();
+  }, 30_000);
 
   it('is BYTE-IDENTICAL to the pre-fix behavior when no resource is skipped', async () => {
     // A provider returning void (the ~80 that never changed) still counts as

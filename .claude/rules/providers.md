@@ -949,6 +949,17 @@ then prints `⚠ … skipped (<reason>)`, counts a separate `skippedCount`, emit
 the loss — neither the resource deleted nor an id to delete it with), preserves
 `state.json`, and exits 2.
 
+**A provider that RECURSES into another destroy must propagate the child's
+skip.** `NestedStackProvider.delete` drives `runDestroyForStack` for the child
+stack; discarding that result re-creates the mis-report one level up — the
+parent prints `✓ <Child> (AWS::CloudFormation::Stack) deleted`, drops the
+child's row from parent state and exits 0, while the child's own `state.json`
+is sitting there preserved describing a live resource. It returns
+`{ outcome: 'skipped' }` when `childResult.skippedCount > 0`. The child's
+`errorCount` is swallowed by the same call and is deliberately NOT propagated
+here: its correct answer is a THROW (a failed child delete must fail the
+parent's resource), which is a behavior change with its own blast radius.
+
 Three things about it are decisions rather than accidents. The exit code is
 **not** a new policy: it is the same "state preserved, stack not destroyed"
 contract `errorCount > 0` and a graceful interrupt already carry, so a run that
@@ -959,7 +970,10 @@ already has its own message-matched already-deleted branch. And the DEPLOY-side
 callers (`deploy-engine.ts`'s template-DELETE + replacement deletes,
 `rollback-executor.ts`'s rollback deletes) still discard the return value, so
 the same arms still mis-report there — tracked as issue
-[#1762](https://github.com/go-to-k/cdkd/issues/1762). Do NOT reach for a skip
+[#1762](https://github.com/go-to-k/cdkd/issues/1762), and eight same-class arms
+OUTSIDE the composite-id family (Lambda layer / permission, Custom Resource, IAM
+policy / user-group) still return bare `void` — issue
+[#1770](https://github.com/go-to-k/cdkd/issues/1770). Do NOT reach for a skip
 when you know the resource is gone: it would preserve state and fail the destroy
 for no reason.
 

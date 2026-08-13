@@ -1320,7 +1320,7 @@ async function stateDestroyCommand(
             })
         );
         totalErrors += result.errorCount;
-        totalSkipped += result.skippedCount;
+        totalSkipped += result.skippedCount ?? 0;
         if (result.interrupted) interrupted = true;
         // Graceful interrupt (issue #816): stop iterating this stack's regions.
         if (interrupted) break;

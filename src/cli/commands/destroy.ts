@@ -641,7 +641,7 @@ async function destroyCommand(
             })
         );
         totalErrors += result.errorCount;
-        totalSkipped += result.skippedCount;
+        totalSkipped += result.skippedCount ?? 0;
         if (result.interrupted) interrupted = true;
 
         // Map the per-stack runner outcome to a run-level result. A
@@ -660,6 +660,9 @@ async function destroyCommand(
             updated: 0,
             deleted: result.deletedCount,
             ...(result.errorCount > 0 && { failed: result.errorCount }),
+            // Issue #1752: a skip-only run is recorded FAILED, so without this
+            // the event says a run failed and names nothing that failed.
+            ...((result.skippedCount ?? 0) > 0 && { skipped: result.skippedCount }),
           },
         });
       } catch (destroyError) {

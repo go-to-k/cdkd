@@ -4,6 +4,7 @@ import type {
   CloudFormationTemplate,
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   DeleteContext,
 } from '../../types/resource.js';
@@ -265,7 +266,7 @@ export class NestedStackProvider implements ResourceProvider {
     _resourceType: string,
     _properties?: Record<string, unknown>,
     deleteContext?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     const ctx = this.requireContext();
     const childStackName = this.deriveChildStackName(ctx.parentStackName, logicalId);
     const childRegion = ctx.parentRegion;
@@ -303,7 +304,7 @@ export class NestedStackProvider implements ResourceProvider {
       nestedTemplates: undefined,
     };
 
-    await withNestedStackContext(childCtx, () =>
+    const childResult = await withNestedStackContext(childCtx, () =>
       runDestroyForStack(childStackName, childStateData.state, {
         stateBackend: ctx.stateBackend,
         lockManager: ctx.lockManager,
@@ -338,6 +339,26 @@ export class NestedStackProvider implements ResourceProvider {
         }),
       })
     );
+
+    // Issue #1752: the child runner reports a resource it could NOT address
+    // (no AWS call issued, the resource may still be alive) as `skippedCount`.
+    // Swallowing that here re-creates the very mis-report the issue is about,
+    // one level up: the PARENT would print `✓ <Child> (AWS::CloudFormation::Stack)
+    // deleted`, drop the child's row from parent state, and exit 0 — while the
+    // child's own state.json is sitting there preserved, describing a live
+    // resource nobody will ever look for again. Propagating the skip makes the
+    // parent preserve its own state too, so the whole tree stays traceable.
+    //
+    // `errorCount` is deliberately NOT propagated here: that hole predates this
+    // issue and its answer is a THROW (a failed child delete must fail the
+    // parent's resource), which is a behavior change with its own blast radius.
+    // Tracked separately — see the issue linked from #1752.
+    if ((childResult.skippedCount ?? 0) > 0) {
+      return {
+        outcome: 'skipped',
+        reason: `nested stack ${childStackName} skipped ${childResult.skippedCount} resource(s)`,
+      };
+    }
   }
 
   async getAttribute(

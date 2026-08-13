@@ -79,6 +79,22 @@ vi.mock('../../../src/cli/commands/destroy-runner.js', () => ({
   runDestroyForStack: mockRunDestroyForStack,
 }));
 
+// Issue #1752: capture the run-level events so the tests below can assert the
+// RUN_FINISHED result a skip-only run records. The real recorder writes JSONL
+// through the (mocked) state backend; a spy is both simpler and lets the
+// assertions read the decision directly.
+const recordedRunEvents = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
+  startRunRecorder: vi.fn(() => ({
+    record: (event: Record<string, unknown>) => {
+      recordedRunEvents.push(event);
+    },
+    finalize: vi.fn(async () => {}),
+  })),
+  recordRunFailed: vi.fn(),
+  recordRunSucceeded: vi.fn(),
+}));
+
 // Mock the synthesizer so we can return arbitrary StackInfo[] (including
 // with terminationProtection set on individual stacks).
 const mockSynthesize = vi.hoisted(() => vi.fn());
@@ -167,6 +183,7 @@ describe('cdkd destroy: terminationProtection guard', () => {
       errorCount: 0,
     });
     mockSynthesize.mockReset();
+    recordedRunEvents.length = 0;
     errorSpy.mockReset();
     infoSpy.mockReset();
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
@@ -260,6 +277,17 @@ describe('cdkd destroy: terminationProtection guard', () => {
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
     expect(message).toContain('skipped 1 resource(s)');
     expect(message).toContain('may still exist in AWS');
+
+    // The run-level record must agree with the exit code — a skip-only run is
+    // FAILED, which is also what suppresses `--purge-events` (the post-mortem
+    // must survive a destroy that did not finish).
+    const finished = recordedRunEvents.find((e) => e['eventType'] === 'RUN_FINISHED')!;
+    expect(finished).toBeDefined();
+    expect(finished['result']).toBe('FAILED');
+    // ...and it must NAME the skip, or the event says a run failed while
+    // listing nothing that failed.
+    expect(finished['counts']).toMatchObject({ deleted: 2, skipped: 1 });
+    expect((finished['counts'] as Record<string, unknown>)['failed']).toBeUndefined();
   });
 
   it('still exits 0 when nothing was skipped (no behavior change, issue #1752)', async () => {
@@ -284,6 +312,10 @@ describe('cdkd destroy: terminationProtection guard', () => {
     await runDestroy(['destroy', 'Clean', '--yes']);
 
     expect(exitSpy).not.toHaveBeenCalled();
+    const finished = recordedRunEvents.find((e) => e['eventType'] === 'RUN_FINISHED')!;
+    expect(finished['result']).toBe('SUCCEEDED');
+    // No `skipped` member is emitted on a zero-skip run.
+    expect((finished['counts'] as Record<string, unknown>)['skipped']).toBeUndefined();
   });
 
   it('--remove-protection bypasses terminationProtection guard with a WARN log and dispatches the runner', async () => {

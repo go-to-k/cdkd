@@ -373,10 +373,22 @@ function printRunEvents(
   }
 }
 
-/** Color the event-type token by its lifecycle phase. */
-function colorizeEventType(eventType: DeploymentEvent['eventType']): string {
+/**
+ * Color the event-type token by its lifecycle phase.
+ *
+ * Exported for unit-test coverage (matching `destroy-runner.ts`'s
+ * `PROTECTION_PROPERTY_BY_TYPE` convention) — it is pure, so testing it
+ * directly beats driving it through the renderer's log output.
+ */
+export function colorizeEventType(eventType: DeploymentEvent['eventType']): string {
   if (eventType.endsWith('FAILED')) return red(eventType);
   if (eventType.endsWith('SUCCEEDED') || eventType === 'RUN_FINISHED') return green(eventType);
+  // Issue #1752: a SKIPPED resource is one cdkd could not address, so it may
+  // still be alive — yellow, not the neutral cyan the default arm gives every
+  // informational token. Deliberately NOT extended to `RESOURCE_RETAINED`,
+  // which is the opposite case: keeping that resource is what the user ASKED
+  // for via `DeletionPolicy: Retain`, so it stays informational.
+  if (eventType === 'RESOURCE_SKIPPED') return yellow(eventType);
   if (eventType.startsWith('ROLLBACK')) return yellow(eventType);
   return cyan(eventType);
 }

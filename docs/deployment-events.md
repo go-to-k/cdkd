@@ -27,6 +27,10 @@ Each deploy / destroy run appends one **JSONL** line per lifecycle event:
 | `RESOURCE_SKIPPED` | Destroy-side skip where cdkd could **not address** the resource and issued no AWS call, so it may still exist (issue #1752; today only a malformed composite physicalId in state). The opposite of `RESOURCE_RETAINED` in both halves: keeping the AWS resource is not intended, and the state record is **kept** so the orphan stays traceable. Carries no `error` — nothing was attempted. |
 | `ROLLBACK_STARTED` / `ROLLBACK_RESOURCE_SUCCEEDED` / `ROLLBACK_RESOURCE_FAILED` / `ROLLBACK_FINISHED` | Rollback phase — emitted both by the deploy-failure automatic rollback AND by a standalone `cdkd rollback` run (issue #1183), which records them under its own `runId` (with `command: rollback` in `index.json`). |
 
+A destroy `RUN_FINISHED` additionally carries `counts.skipped` when non-zero,
+and records `result: 'FAILED'` for a skip-only run — the stack was not
+destroyed, so `--purge-events` correctly leaves the history in place.
+
 Failure events carry an `error` object: `{ name, message, awsErrorCode?,
 requestId? }`. The AWS error code + request id are extracted from the
 innermost AWS-SDK-shaped error in the thrown error's `.cause` chain.

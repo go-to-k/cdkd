@@ -162,17 +162,28 @@ export interface ResourceUpdateResult extends EffectivePropertiesResult {
  * Returning nothing (`undefined`) means `'deleted'`, so the ~80 providers
  * that already return `void` need no change.
  */
-export interface ResourceDeleteResult {
-  /** What happened. See the type docs for the exact meaning of each value. */
-  readonly outcome: 'deleted' | 'skipped';
-  /**
-   * REQUIRED on `'skipped'`: one line saying why cdkd could not address the
-   * resource, rendered on the per-resource status line and carried into the
-   * `RESOURCE_SKIPPED` deployment event. Providers normally also `logger.warn`
-   * the full remediation text; this is the short form.
-   */
-  readonly reason?: string;
-}
+export type ResourceDeleteResult =
+  | {
+      /** cdkd addressed the resource — identical to returning `void`. */
+      readonly outcome: 'deleted';
+    }
+  | {
+      /** cdkd could NOT address the resource; no AWS call was issued. */
+      readonly outcome: 'skipped';
+      /**
+       * One line saying why, rendered inline on the per-resource status line
+       * (`⚠ MyTable (AWS::Glue::Table) skipped (<reason>)`) and carried into
+       * the `RESOURCE_SKIPPED` deployment event. Providers normally also
+       * `logger.warn` the full remediation text; this is the short form.
+       *
+       * A DISCRIMINATED union rather than one interface with an optional
+       * `reason`, so "required on skipped" is enforced by the compiler instead
+       * of only asserted in a doc comment — a skip whose line reads a bare
+       * `skipped` with no cause is barely better than the `deleted` it
+       * replaced.
+       */
+      readonly reason: string;
+    };
 
 /**
  * Input passed to a provider's `import` method.

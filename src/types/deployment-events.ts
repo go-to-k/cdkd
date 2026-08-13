@@ -133,6 +133,14 @@ export interface DeploymentEvent {
     updated: number;
     deleted: number;
     failed?: number;
+    /**
+     * Destroy-side resources cdkd could NOT address (issue
+     * [#1752](https://github.com/go-to-k/cdkd/issues/1752)). Omitted when zero.
+     * Without it a skip-only run records `result: 'FAILED'` with `deleted: N`
+     * and no `failed`, so `cdkd events` shows a failed run and nothing that
+     * failed.
+     */
+    skipped?: number;
   };
   /** Failure events: extracted error metadata (never properties). */
   error?: DeploymentEventError;
