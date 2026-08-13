@@ -1,3 +1,10 @@
+## [0.281.19](https://github.com/go-to-k/cdkd/compare/v0.281.18...v0.281.19) (2026-08-13)
+
+
+### Bug Fixes
+
+* **s3:** normalize the never-emitted notification / lifecycle spellings, and stop a malformed inventory Enabled from enabling the report ([#1756](https://github.com/go-to-k/cdkd/issues/1756)) ([383ffdd](https://github.com/go-to-k/cdkd/commit/383ffdd62ab21074ca20fbaa7e08156d32873287))
+
 ## [0.281.18](https://github.com/go-to-k/cdkd/compare/v0.281.17...v0.281.18) (2026-08-13)
 
 
