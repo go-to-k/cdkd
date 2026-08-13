@@ -37,6 +37,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
@@ -481,8 +482,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       createdUserPoolId = userPoolId;
       const userPoolArn = userPool.Arn;
       const region = await this.getClient().config.region();
-      const providerName = `cognito-idp.${region}.amazonaws.com/${userPoolId}`;
-      const providerUrl = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`;
+      // Suffix DERIVED from the region, not hardcoded (issue #1745): outside the
+      // commercial partition `amazonaws.com` names a host that does not resolve,
+      // and the value is structurally valid so nothing downstream can catch it.
+      const { urlSuffix } = derivePartitionAndUrlSuffix(region);
+      const providerName = `cognito-idp.${region}.${urlSuffix}/${userPoolId}`;
+      const providerUrl = `https://cognito-idp.${region}.${urlSuffix}/${userPoolId}`;
 
       // EnabledMfas / Email-OTP message+subject / WebAuthn config do NOT ride
       // on CreateUserPool — they go through the SetUserPoolMfaConfig
@@ -726,8 +731,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
 
       const userPool = describeResponse.UserPool;
       const region = await this.getClient().config.region();
-      const providerName = `cognito-idp.${region}.amazonaws.com/${physicalId}`;
-      const providerUrl = `https://cognito-idp.${region}.amazonaws.com/${physicalId}`;
+      // Same derivation as the create path (issue #1745) — the two must agree or
+      // an update would rewrite a correct suffix into a commercial-only one.
+      const { urlSuffix } = derivePartitionAndUrlSuffix(region);
+      const providerName = `cognito-idp.${region}.${urlSuffix}/${physicalId}`;
+      const providerUrl = `https://cognito-idp.${region}.${urlSuffix}/${physicalId}`;
 
       return {
         physicalId,

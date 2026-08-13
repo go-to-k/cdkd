@@ -10,6 +10,7 @@ import type { CloudFormationTemplate } from '../types/resource.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import { AssetModeResolver, type BootstrapMarker } from './asset-storage.js';
 import { isCfnTemplateAssetPath } from './asset-manifest-loader.js';
+import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 
 /**
  * Asset-location redirection to cdkd-owned storage (issue #1002 PR 2, design
@@ -252,10 +253,21 @@ function evaluatePseudoParam(name: string, map: AssetRedirectMap): string {
     case 'AWS::Region':
       return map.region;
     case 'AWS::Partition':
-      return map.partition;
+      // DERIVED, like the suffix below. `map.partition` is unconditionally
+      // 'aws': every `buildAssetRedirectMap` caller omits the argument and takes
+      // the parameter default. Leaving this arm alone while fixing the suffix
+      // made ONE switch self-contradictory — a folded `Fn::Join` in `cn-north-1`
+      // emitted `arn:aws:` and `amazonaws.com.cn` in the same template. (The
+      // other consumers of `map.partition` are a separate concern; this is the
+      // arm that renders a pseudo-parameter.)
+      return derivePartitionAndUrlSuffix(map.region).partition;
     case 'AWS::URLSuffix':
-      // Mirrors IntrinsicFunctionResolver's AWS::URLSuffix resolution.
-      return 'amazonaws.com';
+      // Mirrors IntrinsicFunctionResolver's AWS::URLSuffix resolution, which
+      // DERIVES the suffix from the region (issue #1745) — a hardcoded
+      // `amazonaws.com` here folded a `Fn::Join` to a host that does not
+      // resolve outside the commercial partition, and the claim to mirror the
+      // resolver had gone stale.
+      return derivePartitionAndUrlSuffix(map.region).urlSuffix;
     default:
       throw new Error(`Not a foldable pseudo parameter: ${name}`);
   }

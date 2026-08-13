@@ -9,15 +9,38 @@ const mockAccountInfo = vi.hoisted(() => ({
   } as Record<string, unknown>,
 }));
 
+const ccClientRegion = vi.hoisted(() => ({ value: 'us-east-1' }));
+const getAccountInfoCalls = vi.hoisted(() => [] as (string | undefined)[]);
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    cloudControl: { send: vi.fn(), config: { region: 'us-east-1' } },
+    // `config.region` is a PROVIDER function on a real SDK client, not a
+    // string — `CloudControlProvider` awaits it (see `accountInfoForSynthesizedArn`
+    // and the instance-protection path). The string form made this mock unfaithful.
+    cloudControl: {
+      send: vi.fn(),
+      config: { region: () => Promise.resolve(ccClientRegion.value) },
+    },
     cloudFormation: { send: vi.fn() },
   }),
 }));
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
-  getAccountInfo: () => Promise.resolve(mockAccountInfo.value),
+  // Records the override it was CALLED with. Ignoring the argument is what let
+  // the region fix ship unpinned: reverting the call site to a bare
+  // `getAccountInfo()` left every test green (PR review).
+  getAccountInfo: (overrideRegion?: string) => {
+    // NOTE the enrichment path ALWAYS passes an override (the CC client's
+    // region), so `ccClientRegion` — not the `region:` field of the
+    // `mockAccountInfo.value` literals below — is the live knob for the region
+    // that reaches a built ARN. Those `region:` fields are kept only so the
+    // records read as realistic; changing one alone has no effect.
+    getAccountInfoCalls.push(overrideRegion);
+    return Promise.resolve({
+      ...mockAccountInfo.value,
+      ...(overrideRegion ? { region: overrideRegion } : {}),
+    });
+  },
 }));
 
 vi.mock('../../../src/utils/logger.js', () => ({
@@ -68,12 +91,34 @@ describe('CloudControlProvider ARN enrichment refuses a fabricated account (issu
 
   beforeEach(() => {
     mockLoggerWarn.mockClear();
+    getAccountInfoCalls.length = 0;
+    ccClientRegion.value = 'us-east-1';
     provider = new CloudControlProvider();
     mockAccountInfo.value = {
       partition: 'aws',
       region: 'us-east-1',
       accountId: '123456789012',
     };
+  });
+
+  // Issue #1746 review: the enrichment path is the ONLY `getAccountInfo` caller
+  // that passes no override, so after that change it resolved the ambient
+  // `AWS_REGION` — which `deploy` mutates globally while stacks run
+  // concurrently. It must pass the CC client's own region instead.
+  it('passes the CC client region as the override, not the ambient one', async () => {
+    ccClientRegion.value = 'eu-west-1';
+    const previous = process.env['AWS_REGION'];
+    process.env['AWS_REGION'] = 'us-east-1';
+    try {
+      const enriched = await enrich('AWS::KMS::Key', 'abcd-1234');
+
+      expect(getAccountInfoCalls).toEqual(['eu-west-1']);
+      // ...and the override actually reaches the built ARN.
+      expect(enriched['Arn']).toBe('arn:aws:kms:eu-west-1:123456789012:key/abcd-1234');
+    } finally {
+      if (previous === undefined) delete process.env['AWS_REGION'];
+      else process.env['AWS_REGION'] = previous;
+    }
   });
 
   const fabricate = () => {
@@ -133,9 +178,13 @@ describe('CloudControlProvider ARN enrichment refuses a fabricated account (issu
   });
 
   it('the ECR registry host follows the partition URL suffix (counter-case)', async () => {
+    ccClientRegion.value = 'cn-north-1';
     mockAccountInfo.value = {
       partition: 'aws-cn',
       region: 'cn-north-1',
+      // The CC client's region is what the enrichment now passes as the
+      // override (issue #1746 review), so it must agree with the account info's
+      // region or the ARN carries the client's.
       accountId: '123456789012',
     };
     const enriched = await enrich('AWS::ECR::Repository', 'my-repo');
@@ -164,6 +213,7 @@ describe('CloudControlProvider ARN enrichment refuses a fabricated account (issu
   });
 
   it('carries a NON-commercial partition into the built ARN (counter-case)', async () => {
+    ccClientRegion.value = 'cn-north-1';
     mockAccountInfo.value = {
       partition: 'aws-cn',
       region: 'cn-north-1',
