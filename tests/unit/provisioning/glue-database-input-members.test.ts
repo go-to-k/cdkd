@@ -19,11 +19,17 @@ vi.mock('@aws-sdk/client-glue', async () => {
   };
 });
 
+// The child logger is hoisted out of the factory so the WARNING arms can be
+// asserted: without it, replacing `onUnusable: (m) => this.logger.warn(m)` with
+// a no-op passes the whole suite, and the shared refusal message would be
+// pinned on the throw side only.
+const warn = vi.fn();
+
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: (message: string) => warn(message),
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -32,7 +38,7 @@ vi.mock('../../../src/utils/logger.js', () => {
       child: () => childLogger,
       debug: vi.fn(),
       info: vi.fn(),
-      warn: vi.fn(),
+      warn: (message: string) => warn(message),
       error: vi.fn(),
     }),
   };
@@ -59,6 +65,7 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
 
   beforeEach(() => {
     vi.clearAllMocks();
+    warn.mockClear();
     provider = new GlueProvider();
   });
 
@@ -418,20 +425,248 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
       });
     });
 
-    it('accepts a permission entry with no Principal and one with an empty Principal', async () => {
+    it('coerces an unquoted-YAML numeric CatalogId to the string the SDK expects', async () => {
       mockSend.mockResolvedValueOnce({});
 
       await provider.create('L', 'AWS::Glue::Database', {
         DatabaseInput: {
           Name: 'db',
-          CreateTableDefaultPermissions: [{ Permissions: ['SELECT'] }, { Principal: {} }],
+          TargetDatabase: { CatalogId: 123456789012, DatabaseName: 'sourcedb' },
         },
       });
 
       const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateDatabaseCommand);
       expect(databaseInputOf(call![0])).toStrictEqual({
         Name: 'db',
-        CreateTableDefaultPermissions: [{ Permissions: ['SELECT'] }, { Principal: {} }],
+        TargetDatabase: { CatalogId: '123456789012', DatabaseName: 'sourcedb' },
+      });
+    });
+
+    it('refuses a permission entry whose Principal names no sendable identifier', async () => {
+      await expect(
+        provider.create('L', 'AWS::Glue::Database', {
+          DatabaseInput: {
+            Name: 'db',
+            CreateTableDefaultPermissions: [{ Principal: { Ref: 'Role' } }],
+          },
+        })
+      ).rejects.toThrow(/carries an entry cdkd cannot read/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('accepts a permission entry with no Principal', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.create('L', 'AWS::Glue::Database', {
+        DatabaseInput: {
+          Name: 'db',
+          CreateTableDefaultPermissions: [{ Permissions: ['SELECT'] }],
+        },
+      });
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({
+        Name: 'db',
+        CreateTableDefaultPermissions: [{ Permissions: ['SELECT'] }],
+      });
+    });
+  });
+
+  describe('malformed blocks — the UPDATE-side ladder (regression round 2)', () => {
+    // The first cut of the guards fixed the wrong-SHAPE case and still ERASED a
+    // live block for the readable-but-empty one: a bare `{}` / `{Ref: ...}` is a
+    // plain object, so `guard(desired) ?? previous` never reached the previous
+    // side, the block built empty and UpdateDatabase — a wholesale replace —
+    // dropped it. Both re-reviewers found it; these are its fences.
+    it.each([
+      ['an unresolved intrinsic', { Ref: 'SomeDb' }],
+      ['an empty block', {}],
+      ['only intrinsic-valued members', { DatabaseName: { Ref: 'SomeDb' } }],
+    ])(
+      'update() RETAINS the previous TargetDatabase when the desired side is %s',
+      async (_label, bad) => {
+        mockSend.mockResolvedValueOnce({ Database: { Parameters: {} } });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'L',
+          'mydb',
+          'AWS::Glue::Database',
+          { DatabaseInput: { Name: 'mydb', TargetDatabase: bad } },
+          {
+            DatabaseInput: {
+              Name: 'mydb',
+              TargetDatabase: { CatalogId: '123456789012', DatabaseName: 'sourcedb' },
+            },
+          }
+        );
+
+        const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+        expect(databaseInputOf(call![0])).toStrictEqual({
+          Name: 'mydb',
+          TargetDatabase: { CatalogId: '123456789012', DatabaseName: 'sourcedb' },
+        });
+        expect(warn).toHaveBeenCalledWith(expect.stringMatching(/TargetDatabase/));
+      }
+    );
+
+    it('update() DROPS the key when the desired side is unreadable and there is no previous block', async () => {
+      mockSend.mockResolvedValueOnce({ Database: { Parameters: {} } });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'mydb',
+        'AWS::Glue::Database',
+        { DatabaseInput: { Name: 'mydb', TargetDatabase: {} } },
+        { DatabaseInput: { Name: 'mydb' } }
+      );
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({ Name: 'mydb' });
+    });
+
+    it('update() WARNS with the shared refusal wording rather than failing', async () => {
+      mockSend.mockResolvedValueOnce({ Database: { Parameters: {} } });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'mydb',
+        'AWS::Glue::Database',
+        { DatabaseInput: { Name: 'mydb', TargetDatabase: 'linked' } },
+        { DatabaseInput: { Name: 'mydb' } }
+      );
+
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/TargetDatabase must be an object/));
+    });
+
+    it('update() RETAINS a usable previous permission list when the desired one has a bad entry', async () => {
+      mockSend.mockResolvedValueOnce({ Database: { Parameters: {} } });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'mydb',
+        'AWS::Glue::Database',
+        {
+          DatabaseInput: {
+            Name: 'mydb',
+            CreateTableDefaultPermissions: [{ Permissions: 'ALL' }],
+          },
+        },
+        {
+          DatabaseInput: {
+            Name: 'mydb',
+            CreateTableDefaultPermissions: [
+              {
+                Permissions: ['SELECT'],
+                Principal: { DataLakePrincipalIdentifier: 'IAM_ALLOWED_PRINCIPALS' },
+              },
+            ],
+          },
+        }
+      );
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({
+        Name: 'mydb',
+        CreateTableDefaultPermissions: [
+          {
+            Permissions: ['SELECT'],
+            Principal: { DataLakePrincipalIdentifier: 'IAM_ALLOWED_PRINCIPALS' },
+          },
+        ],
+      });
+      // The warning must say what a dropped block MEANS on a wholesale replace.
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/RESET/));
+    });
+
+    it('rejects a previous permission list that is itself unusable, silently', async () => {
+      mockSend.mockResolvedValueOnce({ Database: { Parameters: {} } });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'mydb',
+        'AWS::Glue::Database',
+        { DatabaseInput: { Name: 'mydb', CreateTableDefaultPermissions: [{ Permissions: 'ALL' }] } },
+        {
+          DatabaseInput: {
+            Name: 'mydb',
+            CreateTableDefaultPermissions: [{ Principal: 'IAM_ALLOWED_PRINCIPALS' }],
+          },
+        }
+      );
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({ Name: 'mydb' });
+      // The DESIRED side warned; the previous side is validated with the same
+      // predicate but must not warn a second time about a historical record.
+      expect(warn.mock.calls.filter((c) => /cannot read/.test(String(c[0])))).toHaveLength(1);
+    });
+  });
+
+  describe('FederatedDatabase — the same ladder, its own arms', () => {
+    // The FederatedDatabase arms are a hand-copy of the TargetDatabase ones, so
+    // a `previous?.['TargetDatabase']` slip in them would fail no test without
+    // these. Each case mirrors its TargetDatabase twin.
+    it('create() refuses a non-object FederatedDatabase before any AWS call', async () => {
+      await expect(
+        provider.create('L', 'AWS::Glue::Database', {
+          DatabaseInput: { Name: 'db', FederatedDatabase: 'external' },
+        })
+      ).rejects.toThrow(/FederatedDatabase must be an object/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('create() refuses a readable-but-empty FederatedDatabase', async () => {
+      await expect(
+        provider.create('L', 'AWS::Glue::Database', {
+          DatabaseInput: { Name: 'db', FederatedDatabase: { Ref: 'Conn' } },
+        })
+      ).rejects.toThrow(/FederatedDatabase declares no member cdkd can send/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('create() DOWNGRADES the FederatedDatabase refusal on a state replay', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.create(
+        'L',
+        'AWS::Glue::Database',
+        { DatabaseInput: { Name: 'db', FederatedDatabase: 'external' } },
+        { replayingState: true }
+      );
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({ Name: 'db' });
+    });
+
+    it('update() retains the previous FederatedDatabase, not the previous TargetDatabase', async () => {
+      // The copy-paste fence: a slip that reads the sibling key would produce a
+      // FederatedDatabase carrying the LINK's members.
+      mockSend.mockResolvedValueOnce({ Database: { Parameters: {} } });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'mydb',
+        'AWS::Glue::Database',
+        { DatabaseInput: { Name: 'mydb', FederatedDatabase: {} } },
+        {
+          DatabaseInput: {
+            Name: 'mydb',
+            TargetDatabase: { DatabaseName: 'sourcedb' },
+            FederatedDatabase: { ConnectionName: 'conn', Identifier: 'ext' },
+          },
+        }
+      );
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({
+        Name: 'mydb',
+        FederatedDatabase: { ConnectionName: 'conn', Identifier: 'ext' },
       });
     });
   });
@@ -460,12 +695,18 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
       }
     });
 
-    it('defaults to COMPARING when the properties bag is absent or unreadable', () => {
-      // Hiding real drift is the worse failure of the two.
-      expect(provider.getDriftUnknownPaths('AWS::Glue::Database')).toEqual([]);
+    it('IGNORES it when the bag is absent or unreadable — this one key inverts the default', () => {
+      // The usual rule is "default to COMPARING, hiding real drift is worse".
+      // This key inverts it for a measured reason: AWS ALWAYS materializes a
+      // Lake Formation default here, so a record cdkd cannot read a declaration
+      // out of (an older import carrying only the top-level DatabaseName) would
+      // report drift on EVERY run with no way to clear it.
+      expect(provider.getDriftUnknownPaths('AWS::Glue::Database')).toEqual([
+        'DatabaseInput.CreateTableDefaultPermissions',
+      ]);
       expect(
         provider.getDriftUnknownPaths('AWS::Glue::Database', { DatabaseInput: 'malformed' })
-      ).toEqual([]);
+      ).toEqual(['DatabaseInput.CreateTableDefaultPermissions']);
     });
 
     it('leaves the Table entry untouched', () => {

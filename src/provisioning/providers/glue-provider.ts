@@ -1418,10 +1418,45 @@ export class GlueProvider implements ResourceProvider {
     // the guards branch on the KEY being present.
     const guardOptions = options?.onUnusable ? { onUnusable: options.onUnusable } : undefined;
     const previous = options?.previousDatabaseInput;
-    const guardObject = (value: unknown, path: string): Record<string, unknown> | undefined =>
-      guardOptions
-        ? requireConfigObject(value, path, guardOptions)
-        : requireConfigObject(value, path);
+    /**
+     * The record a nested block is BUILT FROM: the desired side when it names
+     * at least one sendable member, else the previous side when IT does, else
+     * nothing.
+     *
+     * The emptiness test is what makes the ladder complete, and getting it
+     * wrong is how the first cut of this guard still erased a live resource
+     * link: a bare `{}` and an unresolved `{Ref: ...}` are plain OBJECTS, so
+     * the shape guard accepts them and a `?? previous` fallback never fires —
+     * the block then built empty and `UpdateDatabase`, which replaces
+     * `DatabaseInput` wholesale, dropped a link the template still declared.
+     *
+     * A member counts as sendable only when it is a STRING or a NUMBER: the
+     * leaf casts below are unchecked, so an intrinsic-valued `DatabaseName`
+     * would otherwise put an OBJECT on the wire — the same defect one level in.
+     */
+    const pickBlockSource = (
+      desiredRaw: unknown,
+      previousRaw: unknown,
+      path: string,
+      block: string,
+      members: readonly string[]
+    ): Record<string, unknown> | undefined => {
+      const namesSendable = (bag: Record<string, unknown> | undefined): boolean =>
+        bag !== undefined &&
+        members.some((m) => typeof bag[m] === 'string' || typeof bag[m] === 'number');
+      const desired = guardOptions
+        ? requireConfigObject(desiredRaw, path, guardOptions)
+        : requireConfigObject(desiredRaw, path);
+      if (namesSendable(desired)) return desired;
+      if (desired !== undefined) {
+        // Right SHAPE, nothing cdkd can send. Same ladder as a wrong shape.
+        const message = emptyBlockMessage(block);
+        if (options?.onUnusable) options.onUnusable(message);
+        else throw new Error(message);
+      }
+      const retained = asRecord(previousRaw);
+      return namesSendable(retained) ? retained : undefined;
+    };
     const result: DatabaseInput = {
       Name: (databaseInput['Name'] as string | undefined) ?? fallbackName,
     };
@@ -1456,60 +1491,47 @@ export class GlueProvider implements ResourceProvider {
     // this drop belonged to. Naming them also makes the next member AWS adds
     // fail the critic instead of silently vanishing.
     if (databaseInput['TargetDatabase'] !== undefined) {
-      const target =
-        guardObject(
-          databaseInput['TargetDatabase'],
-          'AWS::Glue::Database DatabaseInput.TargetDatabase'
-        ) ?? asRecord(previous?.['TargetDatabase']);
+      const target = pickBlockSource(
+        databaseInput['TargetDatabase'],
+        previous?.['TargetDatabase'],
+        'AWS::Glue::Database DatabaseInput.TargetDatabase',
+        'TargetDatabase',
+        TARGET_DATABASE_MEMBERS
+      );
       if (target !== undefined) {
         const targetDatabase: DatabaseIdentifier = {};
-        if (target['CatalogId'] !== undefined) {
-          targetDatabase.CatalogId = target['CatalogId'] as string;
+        if (isSendableLeaf(target['CatalogId'])) {
+          targetDatabase.CatalogId = String(target['CatalogId']);
         }
-        if (target['DatabaseName'] !== undefined) {
-          targetDatabase.DatabaseName = target['DatabaseName'] as string;
+        if (isSendableLeaf(target['DatabaseName'])) {
+          targetDatabase.DatabaseName = String(target['DatabaseName']);
         }
-        if (target['Region'] !== undefined) {
-          targetDatabase.Region = target['Region'] as string;
+        if (isSendableLeaf(target['Region'])) {
+          targetDatabase.Region = String(target['Region']);
         }
-        // A plain object is not automatically a READABLE one: an unresolved
-        // intrinsic (`{Ref: ...}`) and a bare `{}` both pass the shape guard and
-        // then name no member cdkd can send, so the wire would carry an empty
-        // block AWS rejects with a far less actionable error. Refuse / retain /
-        // drop it exactly like a wrong-shaped value.
-        if (Object.keys(targetDatabase).length > 0) {
-          result.TargetDatabase = targetDatabase;
-        } else if (options?.onUnusable) {
-          options.onUnusable(EMPTY_BLOCK_MESSAGE('TargetDatabase'));
-        } else {
-          throw new Error(EMPTY_BLOCK_MESSAGE('TargetDatabase'));
-        }
+        result.TargetDatabase = targetDatabase;
       }
     }
 
     if (databaseInput['FederatedDatabase'] !== undefined) {
-      const federated =
-        guardObject(
-          databaseInput['FederatedDatabase'],
-          'AWS::Glue::Database DatabaseInput.FederatedDatabase'
-        ) ?? asRecord(previous?.['FederatedDatabase']);
+      const federated = pickBlockSource(
+        databaseInput['FederatedDatabase'],
+        previous?.['FederatedDatabase'],
+        'AWS::Glue::Database DatabaseInput.FederatedDatabase',
+        'FederatedDatabase',
+        FEDERATED_DATABASE_MEMBERS
+      );
       if (federated !== undefined) {
         const federatedDatabase: FederatedDatabase = {};
-        if (federated['ConnectionName'] !== undefined) {
-          federatedDatabase.ConnectionName = federated['ConnectionName'] as string;
+        if (isSendableLeaf(federated['ConnectionName'])) {
+          federatedDatabase.ConnectionName = String(federated['ConnectionName']);
         }
-        if (federated['Identifier'] !== undefined) {
-          federatedDatabase.Identifier = federated['Identifier'] as string;
+        if (isSendableLeaf(federated['Identifier'])) {
+          federatedDatabase.Identifier = String(federated['Identifier']);
         }
         // The SDK also declares `ConnectionType`, which the CFn schema does not,
         // so no template can set it and it is deliberately not mapped.
-        if (Object.keys(federatedDatabase).length > 0) {
-          result.FederatedDatabase = federatedDatabase;
-        } else if (options?.onUnusable) {
-          options.onUnusable(EMPTY_BLOCK_MESSAGE('FederatedDatabase'));
-        } else {
-          throw new Error(EMPTY_BLOCK_MESSAGE('FederatedDatabase'));
-        }
+        result.FederatedDatabase = federatedDatabase;
       }
     }
 
@@ -1578,16 +1600,23 @@ export class GlueProvider implements ResourceProvider {
     if (entries === undefined) return undefined;
 
     for (const entry of entries) {
+      const principal = asRecord(entry['Principal']);
       const usable =
         asRecord(entry) !== undefined &&
         (entry['Permissions'] !== undefined || entry['Principal'] !== undefined) &&
         (entry['Permissions'] === undefined || Array.isArray(entry['Permissions'])) &&
-        (entry['Principal'] === undefined || asRecord(entry['Principal']) !== undefined);
+        // A `Principal` naming no sendable identifier is the empty-block defect
+        // one level in: it would ride an unchecked cast onto the wire as `{}`.
+        (entry['Principal'] === undefined ||
+          (principal !== undefined && isSendableLeaf(principal['DataLakePrincipalIdentifier'])));
       if (usable) continue;
-      const detail = `${path} carries an entry cdkd cannot read (each entry must be an object whose Permissions is a list and whose Principal is an object)`;
+      const detail = `${path} carries an entry cdkd cannot read (each entry must be an object naming Permissions as a list and/or Principal as an object whose DataLakePrincipalIdentifier is a string)`;
       if (guardOptions?.onUnusable) {
         guardOptions.onUnusable(
-          `${detail}. Leaving the whole block unapplied rather than sending a NARROWED grant list`
+          `${detail}. Leaving the whole block unapplied rather than sending a NARROWED grant list. ` +
+            `On an UPDATE that is a RESET: UpdateDatabase replaces DatabaseInput wholesale, so ` +
+            `unless a usable previous list is retained the database falls back to the account default ` +
+            `(IAM_ALLOWED_PRINCIPALS / ALL) — fix the template value to restore the declared grants`
         );
         return undefined;
       }
@@ -1876,10 +1905,15 @@ export class GlueProvider implements ResourceProvider {
       return ['OpenTableFormatInput'];
     }
     if (resourceType === 'AWS::Glue::Database') {
+      // The usual default is to COMPARE when the bag is absent or unreadable —
+      // hiding real drift is the worse failure. This one key inverts it, and
+      // the reason is specific rather than a preference: AWS ALWAYS materializes
+      // a Lake Formation default here, so a record cdkd cannot read the
+      // declaration out of (an older import carrying only the top-level
+      // `DatabaseName`) would report drift on EVERY run with no way to clear it.
+      // The path is compared exactly when the template DECLARES the block.
       const declared = asRecord(properties?.['DatabaseInput']);
-      // Default to COMPARING when the bag is absent or unreadable: hiding real
-      // drift is the worse failure of the two (`.claude/rules/code-layout.md`).
-      if (declared !== undefined && declared['CreateTableDefaultPermissions'] === undefined) {
+      if (declared?.['CreateTableDefaultPermissions'] === undefined) {
         return ['DatabaseInput.CreateTableDefaultPermissions'];
       }
     }
@@ -3450,14 +3484,33 @@ function parameterKeySet(value: unknown): Set<string> {
  * resolved values.)
  */
 /**
+ * The CFn members of the two `DatabaseInput` object blocks, as the SENDABLE-ness
+ * test sees them. They must stay in step with the per-member writes in
+ * `buildDatabaseInput` — a name here that the builder does not write would let
+ * an unsendable block through, and one the builder writes but this list omits
+ * would refuse a valid template. The unit suite covers both directions.
+ */
+const TARGET_DATABASE_MEMBERS = ['CatalogId', 'DatabaseName', 'Region'] as const;
+const FEDERATED_DATABASE_MEMBERS = ['ConnectionName', 'Identifier'] as const;
+
+/**
+ * Is this leaf value one cdkd can put on the wire? A STRING or a NUMBER — CFn
+ * is stringly typed and an unquoted YAML account id arrives as a number (the
+ * reason `catalogIdForApi` exists) — and nothing else, so an unresolved
+ * intrinsic cannot ride an unchecked cast into the request.
+ */
+const isSendableLeaf = (value: unknown): boolean =>
+  typeof value === 'string' || typeof value === 'number';
+
+/**
  * The refusal sentence for a `DatabaseInput` block that IS a plain object and
  * still names nothing cdkd can send — an unresolved intrinsic or a bare `{}`.
  * Shared so the create refusal and the update warning cannot drift apart.
  */
-const EMPTY_BLOCK_MESSAGE = (block: string): string =>
+const emptyBlockMessage = (block: string): string =>
   `AWS::Glue::Database DatabaseInput.${block} declares no member cdkd can send ` +
-  `(an unresolved intrinsic, or an empty block); sending it would put an empty ` +
-  `${block} on the wire, which Glue rejects`;
+  `(an unresolved intrinsic, an empty block, or only intrinsic-valued members); ` +
+  `sending it would put an empty ${block} on the wire, which Glue rejects`;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
