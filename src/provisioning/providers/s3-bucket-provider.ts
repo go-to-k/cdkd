@@ -271,8 +271,11 @@ const ANALYTICS_DEFAULT_OUTPUT_SCHEMA_VERSION = 'V_1';
 function sameScalarRecord(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
   const aKeys = Object.keys(a);
   if (aKeys.length !== Object.keys(b).length) return false;
-  // `Object.is`, not `===`, to match the fold's own comparisons: `===` reports
-  // two `NaN` day-counts as DIFFERENT and would rebuild an identical block.
+  // `Object.is`, not `===`, to match the fold's own comparisons. The only shapes
+  // where they differ are `NaN` (a `Format` / `Prefix` that arrived as one would
+  // otherwise rebuild an identical block on every deploy) and `-0` vs `0`, which
+  // cannot diverge here because every slot is copied by reference from the same
+  // bag. Verdict-neutral today; taken for consistency with `effectiveInventoryItem`.
   return aKeys.every((k) => Object.prototype.hasOwnProperty.call(b, k) && Object.is(a[k], b[k]));
 }
 
@@ -329,39 +332,59 @@ function effectiveInventoryItem(
     patch['IncludedObjectVersions'] = INVENTORY_DEFAULT_INCLUDED_OBJECT_VERSIONS;
   }
 
-  // The two-source precedence, resolved by PRESENCE for the same reason
-  // {@link declaredOrDefault} exists: the applier prefers `ScheduleFrequency`
-  // when it is present AND usable and falls through to `Schedule.Frequency`
-  // otherwise, but the fall-through is driven by a REFUSAL this pure fold
-  // cannot run. Preferring a present-but-malformed first source leaves the two
-  // sides DIFFERENT, which keeps the warning and the diff line alive; a `??`
-  // chain would instead fall through exactly like the applier for the nullish
-  // spellings and conceal them.
-  const declaredSchedule = item['Schedule'];
-  // A DECLARED-but-unfoldable `Schedule` container is left completely alone —
-  // no `ScheduleFrequency` patch, and the key is NOT dropped. Found by review;
-  // the first cut fell through to the default and deleted the key, which is the
-  // {@link declaredOrDefault} concealment reached through the container SHAPE
-  // instead of through `??`: for `Schedule: 'Weekly'` / `[]` / `42` the applier
-  // SKIPS the item (its `skipOnUnusableConfigString` refuses a non-object
-  // container), so AWS holds the PREVIOUS configuration and state retains it —
-  // while a desired side folded to a bare `ScheduleFrequency: 'Weekly'` could
-  // compare EQUAL to exactly that retained item. `update()` would then never be
-  // called and the skip warning would stop, on a template whose only fault is
-  // the malformed container.
+  // The two-source precedence, mirrored from the wire by running the wire's OWN
+  // predicate rather than approximating it. Two review rounds got this wrong
+  // with a hand-rolled test, in three different directions, so the shape of the
+  // fix matters more than the fix: `configStringRefusal` is PURE and importable,
+  // and an earlier comment here claiming "a REFUSAL this pure fold cannot run"
+  // was simply false. Measured against every container shape:
   //
-  // `sent` is still honoured: when the applier DID send something it knows what
-  // went on the wire, and that is never this branch (it skipped).
-  const scheduleIsFoldable =
-    declaredSchedule === undefined ||
-    (isPlainObject(declaredSchedule) && 'Frequency' in declaredSchedule);
-  if (sent?.frequency !== undefined || scheduleIsFoldable) {
-    const declaredFrequency =
-      'ScheduleFrequency' in item
-        ? item['ScheduleFrequency']
-        : isPlainObject(declaredSchedule) && 'Frequency' in declaredSchedule
-          ? declaredSchedule['Frequency']
-          : INVENTORY_DEFAULT_SCHEDULE_FREQUENCY;
+  //   undefined / null / {} / {Frequency:'Daily'}  -> the wire SENDS (defaults)
+  //   'Weekly' / [] / 42 / {Frequency:null|'   '}  -> the wire SKIPS (refuses)
+  //
+  // A hand-rolled `isPlainObject(x) && 'Frequency' in x` disagrees on THREE of
+  // those. The two error directions cost differently and both are real:
+  // treating a SENDS shape as unfoldable leaves state folded while the template
+  // is not, which is the permanent `1 to update` issue #1717 exists to close;
+  // treating a SKIPS shape as foldable collapses the desired side onto the
+  // RETAINED previous item, so `update()` is never called and the skip warning
+  // stops.
+  const declaredSchedule = item['Schedule'];
+  const declaresScheduleFrequency = 'ScheduleFrequency' in item;
+  const scheduleFrequencyUsable =
+    declaresScheduleFrequency &&
+    configStringRefusal(
+      item,
+      'ScheduleFrequency',
+      INVENTORY_DEFAULT_SCHEDULE_FREQUENCY,
+      'AWS::S3::Bucket InventoryConfigurations[]'
+    ) === undefined;
+  const scheduleContainerUsable =
+    configStringRefusal(
+      declaredSchedule,
+      'Frequency',
+      INVENTORY_DEFAULT_SCHEDULE_FREQUENCY,
+      'AWS::S3::Bucket InventoryConfigurations[].Schedule'
+    ) === undefined;
+  // A present-but-REFUSED `ScheduleFrequency` is deliberately NOT foldable even
+  // when the container would carry the fall-through: the applier warns
+  // ("Falling back to Schedule.Frequency") and the record holds the fallen-back
+  // value, so folding the desired side onto it would compare equal and silence
+  // that warning — the #1670 finding-3 concealment, which is the one thing the
+  // presence rule elsewhere in this fold is protecting.
+  const canFoldSchedule =
+    sent?.frequency !== undefined ||
+    scheduleFrequencyUsable ||
+    (!declaresScheduleFrequency && scheduleContainerUsable);
+
+  if (canFoldSchedule) {
+    // Mirrors `readConfigString`'s own fallback: an absent container, a null
+    // one, and an object without the key all take the default.
+    const declaredFrequency = declaresScheduleFrequency
+      ? item['ScheduleFrequency']
+      : isPlainObject(declaredSchedule) && 'Frequency' in declaredSchedule
+        ? declaredSchedule['Frequency']
+        : INVENTORY_DEFAULT_SCHEDULE_FREQUENCY;
     const frequency = sent?.frequency ?? declaredFrequency;
     if (!Object.is(item['ScheduleFrequency'], frequency)) patch['ScheduleFrequency'] = frequency;
   }
@@ -369,8 +392,11 @@ function effectiveInventoryItem(
   const destination = effectiveS3BucketDestination(item['Destination'], sent?.format);
   if (destination !== item['Destination']) patch['Destination'] = destination;
 
-  const dropsSchedule =
-    declaredSchedule !== undefined && (sent?.frequency !== undefined || scheduleIsFoldable);
+  // The key is dropped exactly when the wire sent SOMETHING — `inventorySdkToCfn`
+  // can never emit `Schedule`, so a record that kept it could not match the
+  // readback. When the wire skipped, AWS holds the previous configuration and
+  // the declared item is left untouched, malformed container and all.
+  const dropsSchedule = declaredSchedule !== undefined && canFoldSchedule;
   if (!dropsSchedule && Object.keys(patch).length === 0) return item;
   const out = { ...item, ...patch };
   // REMOVE the key rather than setting it to `undefined` (issue #1686): the
@@ -907,20 +933,21 @@ export class S3BucketProvider implements ResourceProvider {
    * {@link S3BucketProvider.canonicalizeDesiredProperties} and
    * {@link declaredOrDefault}.
    *
-   * Two details are load-bearing:
+   * **It is now a verbatim alias of `readConfigString`**, and the bullets that
+   * used to sit here described a probe that no longer exists — the same stale
+   * -rationale class this round fixed one paragraph up, so it is named rather
+   * than quietly rewritten. The `onSubstituted` callback it used to take is GONE
+   * (review of #1707): recording is the per-item fold's job now, and all three
+   * call sites had been left passing a comment-only no-op, so the probe ran a
+   * second `configStringRefusal` per read purely to invoke nothing.
    *
-   * - `options` is forwarded to BOTH the probe and the read, so a site that
-   *   ever needs `coerceNumber` cannot make the two disagree.
-   * - Without `options.onUnusable` there is no probe: the read still THROWS,
-   *   and recording a value the provider merely failed to send is what the
-   *   "already ANNOUNCED" condition on `effectiveProperties` forbids.
-   *
-   * The `onSubstituted` callback this used to take is GONE (review of #1707).
-   * Recording is the per-item fold's job now, and all three call sites had been
-   * left passing a comment-only no-op — so the probe ran a second
-   * `configStringRefusal` per read purely to invoke nothing. What remains is the
-   * WARNING, which `options.onUnusable` already carries, and that warning is
-   * what the "already ANNOUNCED" condition needs.
+   * It is kept rather than inlined for ONE reason, which is worth stating so the
+   * next reader can weigh it: the name marks these three reads as the
+   * warn-and-SUBSTITUTE sites, distinguishing them at a glance from the
+   * SKIP-guarded ones (`skipOnUnusableConfigString`) and the plain strict reads.
+   * The behavior is `readConfigString`'s, unchanged — `options.onUnusable`
+   * carries the WARNING the "already ANNOUNCED" condition on
+   * `effectiveProperties` needs, and without it the read still THROWS.
    */
   private readSubstitutedConfigString(
     container: unknown,

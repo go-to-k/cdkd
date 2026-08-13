@@ -4,6 +4,7 @@ import {
   PutBucketAnalyticsConfigurationCommand,
   PutBucketInventoryConfigurationCommand,
   PutBucketMetricsConfigurationCommand,
+  PutBucketIntelligentTieringConfigurationCommand,
 } from '@aws-sdk/client-s3';
 
 /**
@@ -1157,7 +1158,16 @@ describe('#1718 the sibling per-item appliers', () => {
       IntelligentTieringConfigurations: [live],
     });
 
-    // Nothing was sent, so the effective entry is what AWS still HOLDS.
+    // The row's own title is "skips the item", so assert the SKIP directly
+    // rather than only its consequence (review of #1718): no Put went out, and
+    // the skip was announced.
+    expect(sentCommands(PutBucketIntelligentTieringConfigurationCommand)).toHaveLength(0);
+    expect(
+      childLogger.warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes('Skipping this intelligent tiering configuration'))
+    ).toHaveLength(1);
+    // ...so the effective entry is what AWS still HOLDS.
     expect(result.effectiveProperties?.['IntelligentTieringConfigurations']).toEqual([live]);
   });
 
@@ -1276,44 +1286,104 @@ describe('the twin must not conceal a DECLARED-but-malformed value', () => {
  * malformed key deleted) could compare EQUAL to exactly that retained item.
  * `update()` would then never be called and the skip warning would stop.
  */
-describe('the twin must not conceal a malformed Schedule CONTAINER', () => {
-  for (const malformedContainer of ['Weekly', [], 42, null] as const) {
-    it(`leaves Schedule: ${JSON.stringify(malformedContainer)} untouched on the desired side`, () => {
-      const item = {
-        Id: 'i1',
-        Enabled: true,
-        IncludedObjectVersions: 'All',
-        Schedule: malformedContainer,
-        Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
-      };
+describe('the Schedule container fold mirrors the WIRE, shape by shape', () => {
+  // Measured against `configStringRefusal` / `readConfigString` directly, which
+  // is what the applier consults. Two review rounds got this table wrong from a
+  // hand-rolled predicate, and an earlier revision of THIS suite pinned the
+  // wrong answer for `null` — so the table is stated explicitly and both arms
+  // are asserted.
+  const SKIPS = ['Weekly', [], 42, { Frequency: null }, { Frequency: '   ' }] as const;
+  const SENDS = [null, {}, { Frequency: 'Daily' }] as const;
 
-      const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
-        InventoryConfigurations: [item],
-      });
-      const folded = at(canonical, 'InventoryConfigurations', 0) as Record<string, unknown>;
+  const foldOne = (schedule: unknown) =>
+    at(
+      provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+        InventoryConfigurations: [
+          {
+            Id: 'i1',
+            Enabled: true,
+            IncludedObjectVersions: 'All',
+            Schedule: schedule,
+            Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+          },
+        ],
+      }),
+      'InventoryConfigurations',
+      0
+    ) as Record<string, unknown>;
 
-      // The malformed key SURVIVES — deleting it is what let the fold collapse
-      // onto the retained previous item.
+  for (const schedule of SKIPS) {
+    it(`leaves Schedule: ${JSON.stringify(schedule)} ALONE — the wire skips the item`, () => {
+      // The applier refuses this container (or its `Frequency`) and SKIPS, so
+      // AWS keeps the previous configuration and state retains it. Folding the
+      // desired side to a bare `ScheduleFrequency` could compare EQUAL to that
+      // retained item, so `update()` would never run and the skip warning would
+      // stop — the concealment reached through the container SHAPE.
+      const folded = foldOne(schedule);
       expect('Schedule' in folded).toBe(true);
-      expect(folded['Schedule']).toEqual(malformedContainer);
-      // ...and no cadence is invented for it.
+      expect(folded['Schedule']).toEqual(schedule);
       expect('ScheduleFrequency' in folded).toBe(false);
     });
   }
 
-  it('control: a WELL-FORMED container still folds', () => {
-    const canonical = provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
-      InventoryConfigurations: [
-        {
-          Id: 'i1',
-          Enabled: true,
-          IncludedObjectVersions: 'All',
-          Schedule: { Frequency: 'Daily' },
-          Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
-        },
-      ],
+  for (const schedule of SENDS) {
+    it(`FOLDS Schedule: ${JSON.stringify(schedule)} — the wire sends a cadence`, () => {
+      // `configStringRefusal` returns nothing for these, so the applier sends
+      // (defaulting where the key is absent) and RECORDS the folded spelling.
+      // Leaving the desired side unfolded here is the OTHER error direction: a
+      // permanent `1 to update`, which is the defect issue #1717 exists to close.
+      const folded = foldOne(schedule);
+      expect('Schedule' in folded).toBe(false);
+      expect(folded['ScheduleFrequency']).toBe(
+        isPlainObjectWithFrequency(schedule) ? schedule.Frequency : 'Weekly'
+      );
     });
-    const folded = at(canonical, 'InventoryConfigurations', 0) as Record<string, unknown>;
+  }
+
+  it('a REFUSED ScheduleFrequency is not folded even when the container would carry it', () => {
+    // The applier warns "Falling back to Schedule.Frequency" and records the
+    // fallen-back value. Folding the desired side onto it would compare equal
+    // and silence that warning — #1670's finding 3.
+    const folded = at(
+      provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+        InventoryConfigurations: [
+          {
+            Id: 'i1',
+            Enabled: true,
+            IncludedObjectVersions: 'All',
+            ScheduleFrequency: '   ',
+            Schedule: { Frequency: 'Daily' },
+            Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+          },
+        ],
+      }),
+      'InventoryConfigurations',
+      0
+    ) as Record<string, unknown>;
+
+    expect(folded['ScheduleFrequency']).toBe('   ');
+    expect(folded['Schedule']).toEqual({ Frequency: 'Daily' });
+  });
+
+  it('a USABLE ScheduleFrequency wins and drops even a malformed container', () => {
+    // The applier never reads `Schedule` in this case, so the item is sent and
+    // the record cannot carry a key the readback never emits.
+    const folded = at(
+      provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+        InventoryConfigurations: [
+          {
+            Id: 'i1',
+            Enabled: true,
+            IncludedObjectVersions: 'All',
+            ScheduleFrequency: 'Daily',
+            Schedule: 'Weekly',
+            Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+          },
+        ],
+      }),
+      'InventoryConfigurations',
+      0
+    ) as Record<string, unknown>;
 
     expect(folded['ScheduleFrequency']).toBe('Daily');
     expect('Schedule' in folded).toBe(false);
@@ -1321,8 +1391,7 @@ describe('the twin must not conceal a malformed Schedule CONTAINER', () => {
 
   it('the APPLIER still records the fold when it actually sent a cadence', async () => {
     // The other side of the same gate: when the applier DID send something it
-    // knows what went on the wire, so the fold must still run. A guard that
-    // keyed only off the container shape would stop recording here.
+    // knows what went on the wire, so the fold must still run.
     const properties = {
       BucketName: BUCKET,
       InventoryConfigurations: [
@@ -1348,7 +1417,44 @@ describe('the twin must not conceal a malformed Schedule CONTAINER', () => {
     expect(recorded['ScheduleFrequency']).toBe('Daily');
     expect('Schedule' in recorded).toBe(false);
   });
+
+  it('converges: a SENDS-shaped container folds to the same thing the applier records', async () => {
+    // The end-to-end statement, and the row that would have caught the `null` /
+    // `{}` regression directly: whatever the applier RECORDS for a shape the
+    // wire sends, the twin must produce from the template.
+    for (const schedule of SENDS) {
+      mockSend.mockClear();
+      const properties = {
+        BucketName: BUCKET,
+        InventoryConfigurations: [
+          {
+            Id: 'i1',
+            Enabled: true,
+            IncludedObjectVersions: 'All',
+            Schedule: schedule,
+            Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+          },
+        ],
+      };
+      const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+        BucketName: BUCKET,
+        InventoryConfigurations: [LIVE_INVENTORY],
+      });
+      const recorded = at(result.effectiveProperties?.['InventoryConfigurations'], 0);
+      const canonicalTemplate = at(
+        provider.canonicalizeDesiredProperties(RESOURCE_TYPE, properties),
+        'InventoryConfigurations',
+        0
+      );
+
+      expect(canonicalTemplate).toEqual(recorded);
+    }
+  });
 });
+
+function isPlainObjectWithFrequency(v: unknown): v is { Frequency: string } {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) && 'Frequency' in v;
+}
 
 /**
  * The `BucketArn ?? Bucket` ALIAS read — the one `??` inside the folds, and NOT

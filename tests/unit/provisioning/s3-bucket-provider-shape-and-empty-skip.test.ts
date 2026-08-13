@@ -738,13 +738,25 @@ describe('#1718 CREATE: an empty rules collection skips the Put and SAYS SO', ()
     expect(
       calculateResourceDrift(recorded, awsCurrent as Record<string, unknown>)
     ).toEqual([]);
-    // The negative twin: a record with the key DROPPED (the tempting
-    // replay-CREATE answer) leaves the template declaring one the record does
-    // not — which is the churn this design decision avoids.
-    const dropped = { BucketName: BUCKET };
-    expect(
-      JSON.stringify(dropped) === JSON.stringify(recorded)
-    ).toBe(false);
+    // The negative twin, and it deliberately does NOT go through
+    // `calculateResourceDrift` (review of #1718): that comparator walks STATE
+    // keys only, so a record missing the key yields `[]` too and the headline
+    // assertion above cannot tell "converges" from "not compared at all". The
+    // cost of dropping shows up on the DIFF instead — the template keeps
+    // declaring a key the record does not — so assert the record KEEPS both
+    // keys, per collection, which a partial drop also fails.
+    expect(recorded).toHaveProperty('LifecycleConfiguration');
+    expect(recorded).toHaveProperty('CorsConfiguration');
+    expect((recorded as Record<string, unknown>)['LifecycleConfiguration']).toEqual({ Rules: [] });
+    expect((recorded as Record<string, unknown>)['CorsConfiguration']).toEqual({ CorsRules: [] });
+    // And state it explicitly: the recorded value is byte-equal to what the
+    // readback just produced, which is the claim "record nothing" rests on.
+    expect((recorded as Record<string, unknown>)['LifecycleConfiguration']).toEqual(
+      awsCurrent?.['LifecycleConfiguration']
+    );
+    expect((recorded as Record<string, unknown>)['CorsConfiguration']).toEqual(
+      awsCurrent?.['CorsConfiguration']
+    );
   });
 
   it('control: a NON-empty collection applies and warns nothing', async () => {

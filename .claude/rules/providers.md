@@ -630,6 +630,24 @@ Ask, per member, what the wire does with the malformed value; do not apply one
 spelling rule across the item. (Issue #1751 tracks the `Enabled` half, which is
 pre-existing and needs its own decision.)
 
+**And do not HAND-ROLL the mirror — run the wire's own predicate.**
+`configStringRefusal` is PURE and importable, so a fold can call the very
+function the applier's guard calls. The S3 schedule fold took two review rounds
+to get right because it approximated that guard with
+`isPlainObject(x) && 'Frequency' in x`, and the approximation disagreed with the
+wire on THREE of nine container shapes (measured: `undefined` / `null` / `{}` /
+`{Frequency: 'Daily'}` all SEND, while `'Weekly'` / `[]` / `42` /
+`{Frequency: null}` / `{Frequency: '   '}` all SKIP). Both error directions are
+real defects and they cost differently: treating a SENDS shape as unfoldable
+leaves state folded while the template is not — the permanent `1 to update` the
+twin exists to close — and treating a SKIPS shape as foldable collapses the
+desired side onto the RETAINED previous item, so the provider is never called and
+the skip warning stops. A comment in that fold claimed "a REFUSAL this pure fold
+cannot run"; it was false, and the false premise is what produced the hand-rolled
+approximation. When a fold needs to know what the wire did, import the predicate
+rather than restating it, and pin the whole shape TABLE — both arms — in one
+test, so a wrong row cannot be mistaken for the spec.
+
 Two things about the obstacle #1717 recorded, because a later reader will meet
 it as a claim rather than as a measurement. The issue warned that a
 `canonicalizeDesiredProperties` folding this key makes `gen-nested-key-coverage`
