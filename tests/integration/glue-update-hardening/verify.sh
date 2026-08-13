@@ -23,6 +23,16 @@
 #      dropped it, and the #1479 live-merge made a DECLARED one worse than a
 #      plain drop. Asserted via `aws glue get-table` on BOTH phases; the update
 #      phase flips the skewed value so a stale carry-forward cannot pass.
+#   7. Database `DatabaseInput.TargetDatabase` / `.CreateTableDefaultPermissions`
+#      reaching AWS (issue #1807). `buildDatabaseInput` was a fresh-object
+#      builder naming only Description / LocationUri / Parameters, so a
+#      RESOURCE LINK database deployed as a plain empty one and a declared Lake
+#      Formation default-permission set was dropped on the floor — same
+#      spelling on the CFn and SDK sides, so nothing errored and drift could
+#      not see it either. Asserted via `aws glue get-database` on BOTH phases;
+#      the update phase flips the permission set (UpdateDatabase REPLACES
+#      DatabaseInput wholesale, so a regression ERASES it from a live
+#      database).
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -154,6 +164,8 @@ SKEWED_DB_NAME=$(echo "${STATE}" | jq -r '.outputs.SkewedTableDbName // empty')
 [ -z "${SKEWED_DB_NAME}" ] && SKEWED_DB_NAME="${LOWER}-table-db"
 SKEWED_TABLE_NAME=$(echo "${STATE}" | jq -r '.outputs.SkewedTableName // empty')
 [ -z "${SKEWED_TABLE_NAME}" ] && SKEWED_TABLE_NAME="${LOWER}-skewed-table"
+LINK_DB_NAME="${LOWER}-link-db"
+PERM_DB_NAME="${LOWER}-perm-db"
 
 echo "    Using job '${JOB_NAME}', workflow '${WORKFLOW_NAME}', crawler '${CRAWLER_NAME}', trigger '${TRIGGER_NAME}', crawler table '${CRAWLER_TABLE_NAME}'"
 
@@ -299,6 +311,56 @@ assert_skewed_info() { # usage: assert_skewed_info <want skewed value> <phase la
 }
 assert_skewed_info 'US' 'create'
 
+# --- issue #1807: DatabaseInput.TargetDatabase / CreateTableDefaultPermissions
+# `buildDatabaseInput` named only Description / LocationUri / Parameters, so a
+# database declared as a RESOURCE LINK deployed as a plain empty database and
+# a declared Lake Formation default-permission set never reached AWS. Both
+# spell identically on the CFn and SDK sides, so nothing errored and the
+# nested-key critic's KEY pass could not see it either — only its write pass
+# could, which is why the fix and the `freshObjectMapper` opt-in landed
+# together.
+assert_resource_link() { # usage: assert_resource_link <phase label>
+  local phase="$1" db_json got_db got_catalog
+  # `|| return 1` on every capture (#1120): errexit is CLEARED inside `$( )`.
+  db_json=$(aws glue get-database --name "${LINK_DB_NAME}" --region "${REGION}" --output json) || return 1
+  got_db=$(printf '%s' "${db_json}" | jq -r '.Database.TargetDatabase.DatabaseName // "<absent>"') || return 1
+  if [ "${got_db}" != "${SKEWED_DB_NAME}" ]; then
+    echo "FAIL: ${phase}: TargetDatabase.DatabaseName is '${got_db}', expected '${SKEWED_DB_NAME}' — the resource link never reached AWS (issue #1807)" >&2
+    exit 1
+  fi
+  got_catalog=$(printf '%s' "${db_json}" | jq -r '.Database.TargetDatabase.CatalogId // "<absent>"') || return 1
+  case "${got_catalog}" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+    *)
+      echo "FAIL: ${phase}: TargetDatabase.CatalogId is '${got_catalog}', expected a 12-digit account id (issue #1807)" >&2
+      exit 1
+      ;;
+  esac
+  echo "    OK: ${phase}: DatabaseInput.TargetDatabase reached AWS (${got_catalog}/${got_db})"
+}
+
+assert_default_permissions() { # usage: assert_default_permissions <want perms, sorted+joined> <phase label>
+  local want="$1" phase="$2" db_json got_perms got_principal
+  db_json=$(aws glue get-database --name "${PERM_DB_NAME}" --region "${REGION}" --output json) || return 1
+  # sort() both sides: AWS does not guarantee list order on readback.
+  got_perms=$(printf '%s' "${db_json}" \
+    | jq -r '[.Database.CreateTableDefaultPermissions[]?.Permissions[]?] | sort | join(",")') || return 1
+  if [ "${got_perms}" != "${want}" ]; then
+    echo "FAIL: ${phase}: CreateTableDefaultPermissions grants '${got_perms}', expected '${want}' — the block never reached AWS (issue #1807; AWS defaults an undeclared database to ALL, so a drop reads as 'ALL')" >&2
+    exit 1
+  fi
+  got_principal=$(printf '%s' "${db_json}" \
+    | jq -r '.Database.CreateTableDefaultPermissions[0].Principal.DataLakePrincipalIdentifier // "<absent>"') || return 1
+  if [ "${got_principal}" != "IAM_ALLOWED_PRINCIPALS" ]; then
+    echo "FAIL: ${phase}: CreateTableDefaultPermissions[0].Principal.DataLakePrincipalIdentifier is '${got_principal}', expected IAM_ALLOWED_PRINCIPALS (issue #1807)" >&2
+    exit 1
+  fi
+  echo "    OK: ${phase}: CreateTableDefaultPermissions reached AWS (${got_principal} -> ${got_perms})"
+}
+
+assert_resource_link 'create'
+assert_default_permissions 'SELECT' 'create'
+
 # --- Sanity: trigger exists -------------------------------------------
 if aws glue get-trigger --name "${TRIGGER_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   echo "    OK: trigger ${TRIGGER_NAME} exists"
@@ -336,6 +398,14 @@ CRAWLER_JSON=$(aws glue get-crawler --name "${CRAWLER_NAME}" --region "${REGION}
 # phase asserts the drop-proof pair, false/0.9, and fails first anyway.)
 assert_ddb_scan_tuning "${CRAWLER_JSON}" 'true' '1.2' 'update'
 
+# The UPDATE path shares `buildDatabaseInput` with create, but through
+# UpdateDatabase — which REPLACES DatabaseInput wholesale, so a member the
+# builder stopped naming is erased from a LIVE database rather than merely
+# never sent. The resource link is re-asserted unchanged; the permission set
+# flips to a second, distinct payload so a stale carry-forward cannot pass.
+assert_resource_link 'update'
+assert_default_permissions 'ALL,DROP' 'update'
+
 # The UPDATE path is where the #1479 interaction bites: the merge's key sets
 # come from the RAW template, so DECLARING SkewedInfo suppresses the live
 # carry-forward — and before #1505 the builder sent nothing, so UpdateTable's
@@ -356,7 +426,9 @@ for chk in \
   "get-trigger --name ${TRIGGER_NAME}" \
   "get-workflow --name ${WORKFLOW_NAME}" \
   "get-table --database-name ${SKEWED_DB_NAME} --name ${SKEWED_TABLE_NAME}" \
-  "get-database --name ${SKEWED_DB_NAME}"; do
+  "get-database --name ${SKEWED_DB_NAME}" \
+  "get-database --name ${LINK_DB_NAME}" \
+  "get-database --name ${PERM_DB_NAME}"; do
   # Route through gone_probe (issue #1097 pattern 2): Glue get-* not-found is
   # EntityNotFoundException, which matches the canonical signature; any other
   # probe failure (throttle, auth) hard-FAILs instead of reading as "gone".
@@ -392,4 +464,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + clean destroy)"
+echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + clean destroy)"

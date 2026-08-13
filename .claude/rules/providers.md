@@ -1383,7 +1383,16 @@ That is a far more common template shape than the base64 search string.
   `Resolver` measured 0 on the first run, `DataSource` measured 10 and needed
   the `HttpConfig.AuthorizationConfig` + `DynamoDBConfig.DeltaSyncConfig` /
   `.Versioned` forwards the opt-in exposed) are in; `AWS::S3::Bucket` carries a
-  recorded, measured reason it is not.
+  recorded, measured reason it is not. `AWS::Glue::Database` joined at issue
+  #1807, and it is the one worth reading for the SHAPE of the deferral this
+  rule prescribes: its forced-on measurement (11 paths) was a REAL drop, so the
+  opt-in was held back — pinned by name in a calibration test rather than
+  silenced by 11 allow-list entries — until the provider fix could land in the
+  same change, which is what forced `buildDatabaseInput` to name every member
+  of `TargetDatabase` / `FederatedDatabase` / `CreateTableDefaultPermissions`
+  individually instead of casting the blocks through verbatim. The other six
+  Glue targets stay key-pass-only, their forced-on residuals having been
+  verified false positives.
 - **A whole sub-blob handed to a GENERIC key converter is credited (issue
   #1445).** `ECSProvider.convertLinuxParameters` is
   `return pascalToCamelCaseKeys(config)` — one call delivers `Capabilities` /

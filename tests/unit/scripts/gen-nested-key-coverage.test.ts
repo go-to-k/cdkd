@@ -12,7 +12,6 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import {
-  GLUE_DATABASE_DROPPED_PATHS,
   MIN_WRITTEN_MEMBERS_PER_PROVIDER,
   NESTED_KEY_ALLOW_LIST,
   NESTED_KEY_TARGETS,
@@ -3841,6 +3840,11 @@ describe('real-repo audit (regression floors)', () => {
     // this SDK member" has no answer for the members it never names. If one of
     // them is ever rewritten to hand-build its SDK object, this expectation is
     // the prompt to re-measure and opt in rather than leave the pass unused.
+    //
+    // `AWS::Glue::Database` is deliberately NOT in this list: it is the one
+    // member of the slice whose forced-on measurement was a REAL drop, and
+    // issue #1807 fixed the provider and opted it in — so it is asserted the
+    // other way, in the write-evidence fence further down this file.
     for (const type of [
       'AWS::Events::Rule',
       'AWS::Scheduler::Schedule',
@@ -3848,7 +3852,6 @@ describe('real-repo audit (regression floors)', () => {
       'AWS::Glue::Table',
       'AWS::Glue::Connection',
       'AWS::Glue::Trigger',
-      'AWS::Glue::Database',
       'AWS::Glue::SecurityConfiguration',
       'AWS::Glue::Job',
     ]) {
@@ -4175,39 +4178,52 @@ describe('real-repo audit (regression floors)', () => {
     ]);
   });
 
-  it('pins the ELEVEN Glue Database paths that reach no AWS call today (#1393 item 3)', () => {
-    // A REAL silent drop, recorded rather than allow-listed.
-    // `GlueProvider.buildDatabaseInput` is a fresh-object builder naming only
-    // `Name` / `Description` / `LocationUri` / `Parameters`; CFn and the SDK's
-    // `DatabaseInput` both also declare `TargetDatabase`, `FederatedDatabase`
-    // and `CreateTableDefaultPermissions`, and none of those three spellings
-    // exists anywhere under `src/`.
+  it('fences the ELEVEN Glue Database paths that used to reach no AWS call (#1393 item 3 / #1807)', () => {
+    // The INVERSE of the pin this test used to carry, kept for the same reason
+    // the S3 never-written pin was inverted after #1495: the drop is fixed, so
+    // an empty finding set IS the assertion and a re-drop fails BY NAME rather
+    // than as a bare count.
     //
-    // The key pass CANNOT see this (same spelling on both sides, so every path
-    // is `same-spelling`), which is why the type audits clean above. Only the
-    // write-evidence pass sees it — so this asserts the FORCED measurement,
-    // exactly, and the target deliberately does not carry
-    // `freshObjectMapper: true` yet: turning it on today exits 1 on a live drop
-    // this lane cannot fix, and the only way to keep CI green would be 11
-    // allow-list entries silencing a real divergence.
+    // `GlueProvider.buildDatabaseInput` was a fresh-object builder naming only
+    // `Name` / `Description` / `LocationUri` / `Parameters` while CFn and the
+    // SDK's `DatabaseInput` both also declare `TargetDatabase`,
+    // `FederatedDatabase` and `CreateTableDefaultPermissions` — same spelling
+    // on both sides, so every path is `same-spelling` and the key pass audits
+    // the type clean; only the write-evidence pass could ever see it, which is
+    // why the opt-in and the provider fix had to land together (#1807).
     //
-    // WHEN THE PROVIDER IS FIXED this test fails, and the correct response is
-    // NOT to edit the list — it is to add `freshObjectMapper: true` to the
-    // target and delete this test, which is the fix's acceptance criterion.
+    // If this fails, the provider stopped WRITING a member it declares — do not
+    // allow-list it, and do not drop `freshObjectMapper` to make it green.
     const target = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::Glue::Database')!;
-    expect(target.freshObjectMapper, 'opt in and delete this test once fixed').toBeUndefined();
-    const forced = loadReport([{ ...target, freshObjectMapper: true }]);
+    expect(target.freshObjectMapper, 'the write pass is what fences this type').toBe(true);
+    const glue = report.targets.find((t) => t.resourceType === 'AWS::Glue::Database')!;
     expect(
-      forced.targets[0]!.entries
-        .filter((e) => e.bucket === 'no-write-evidence')
-        .map((e) => e.nestedKey)
+      glue.entries.filter((e) => e.bucket === 'no-write-evidence').map((e) => e.nestedKey)
+    ).toEqual([]);
+    // The eleven formerly-dropped paths, named so a regression reads as the
+    // members it lost rather than as a bucket count.
+    expect(
+      glue.entries
+        .filter((e) =>
+          /^DatabaseInput\.(TargetDatabase|FederatedDatabase|CreateTableDefaultPermissions)\b/.test(
+            e.nestedKey
+          )
+        )
+        .map((e) => `${e.nestedKey}:${e.bucket}`)
         .sort()
-    ).toEqual([...GLUE_DATABASE_DROPPED_PATHS].sort());
-    // The three unwired top-level members, stated separately so the failure
-    // names the SDK members rather than only the paths.
-    expect(
-      [...new Set(GLUE_DATABASE_DROPPED_PATHS.map((p) => p.split('.')[1]!))].sort()
-    ).toEqual(['CreateTableDefaultPermissions', 'FederatedDatabase', 'TargetDatabase']);
+    ).toEqual([
+      'DatabaseInput.CreateTableDefaultPermissions.Permissions:same-spelling',
+      'DatabaseInput.CreateTableDefaultPermissions.Principal.DataLakePrincipalIdentifier:same-spelling',
+      'DatabaseInput.CreateTableDefaultPermissions.Principal:same-spelling',
+      'DatabaseInput.CreateTableDefaultPermissions:same-spelling',
+      'DatabaseInput.FederatedDatabase.ConnectionName:same-spelling',
+      'DatabaseInput.FederatedDatabase.Identifier:same-spelling',
+      'DatabaseInput.FederatedDatabase:same-spelling',
+      'DatabaseInput.TargetDatabase.CatalogId:same-spelling',
+      'DatabaseInput.TargetDatabase.DatabaseName:same-spelling',
+      'DatabaseInput.TargetDatabase.Region:same-spelling',
+      'DatabaseInput.TargetDatabase:same-spelling',
+    ]);
   });
 
   it('pins the shape pass BLIND SPOT on these targets — unmatchedDefinitions (#1393 item 5)', () => {
@@ -4478,11 +4494,12 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       //     positives. Those builders name their full member set; the
       //     residuals are shapes the write-SCOPE index cannot resolve, so
       //     opting in would flag values that do reach AWS.
-      //   - `Database` 11 is a REAL SILENT DROP (`buildDatabaseInput` never
-      //     names `TargetDatabase` / `FederatedDatabase` /
-      //     `CreateTableDefaultPermissions`). It is not a reason the pass stays
-      //     off — it is the reason the type must eventually opt IN, and the
-      //     test right below pins the dropped paths BY NAME.
+      //   - `Database` was 11, a REAL SILENT DROP (`buildDatabaseInput` named
+      //     neither `TargetDatabase` nor `FederatedDatabase` nor
+      //     `CreateTableDefaultPermissions`). It was never a reason the pass
+      //     stays off — it was the reason the type had to opt IN, which issue
+      //     #1807 did after wiring all three blocks member-by-member, so the
+      //     count here is now 0 and the fence below asserts the empty set.
       // The five zeros are the types whose blobs the recognizers already credit
       // in full (the ECS-target and crawler-target families) or that carry no
       // divergent key at all — for those the pass is merely redundant rather
@@ -4493,7 +4510,7 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       'AWS::Glue::Connection': 0,
       'AWS::Glue::Job': 0,
       'AWS::Glue::Table': 36,
-      'AWS::Glue::Database': 11,
+      'AWS::Glue::Database': 0,
       'AWS::Glue::Trigger': 9,
       'AWS::Glue::SecurityConfiguration': 2,
       // 81 before issue #1520 (segment renames + widened reverse-map
@@ -6032,7 +6049,7 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     // a target silently dropping out of the table cannot satisfy this probe.
     expect(stderr).toContain('nested-key-coverage: OK');
     expect(stderr).toContain('0 divergences');
-    expect(stderr).toContain('14 fresh-object target(s)');
+    expect(stderr).toContain('15 fresh-object target(s)');
   });
 
   it('exits 1 naming ONLY the members a partial hand-mapping leaves out', () => {

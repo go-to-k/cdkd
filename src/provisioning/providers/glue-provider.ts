@@ -41,6 +41,11 @@ import {
   CrawlerRunningException,
   ConcurrentModificationException,
   type DatabaseInput,
+  type DatabaseIdentifier,
+  type FederatedDatabase,
+  type PrincipalPermissions,
+  type DataLakePrincipal,
+  type Permission,
   type TableInput,
   type OpenTableFormatInput,
   type StorageDescriptor,
@@ -1381,6 +1386,75 @@ export class GlueProvider implements ResourceProvider {
       result.Parameters = stringifyParameterValues(databaseInput['Parameters']);
     }
 
+    // `TargetDatabase` (resource links), `FederatedDatabase` (an entity outside
+    // the Glue Data Catalog) and `CreateTableDefaultPermissions` (Lake Formation
+    // defaults) complete the CFn `DatabaseInput` member set. Until issue #1807
+    // this builder named only Description / LocationUri / Parameters, so a
+    // template setting any of the three deployed "successfully" as a plain empty
+    // database — no error, no warning, and nothing for `cdkd drift` to report
+    // because `readDatabase` did not surface them either.
+    //
+    // Every member is named INDIVIDUALLY rather than cast through verbatim:
+    // both spellings agree, so a cast would typecheck, but the write-evidence
+    // pass of the nested-key critic (`freshObjectMapper: true` on this type,
+    // added in the same change) can only see per-member writes — a verbatim
+    // forward would leave all 8 child paths reporting `no-write-evidence`,
+    // which is precisely the "membership does not guarantee delivery" class
+    // this drop belonged to. Naming them also makes the next member AWS adds
+    // fail the critic instead of silently vanishing.
+    if (databaseInput['TargetDatabase'] !== undefined) {
+      const target = databaseInput['TargetDatabase'] as Record<string, unknown>;
+      const targetDatabase: DatabaseIdentifier = {};
+      if (target['CatalogId'] !== undefined) {
+        targetDatabase.CatalogId = target['CatalogId'] as string;
+      }
+      if (target['DatabaseName'] !== undefined) {
+        targetDatabase.DatabaseName = target['DatabaseName'] as string;
+      }
+      if (target['Region'] !== undefined) {
+        targetDatabase.Region = target['Region'] as string;
+      }
+      result.TargetDatabase = targetDatabase;
+    }
+
+    if (databaseInput['FederatedDatabase'] !== undefined) {
+      const federated = databaseInput['FederatedDatabase'] as Record<string, unknown>;
+      const federatedDatabase: FederatedDatabase = {};
+      if (federated['ConnectionName'] !== undefined) {
+        federatedDatabase.ConnectionName = federated['ConnectionName'] as string;
+      }
+      if (federated['Identifier'] !== undefined) {
+        federatedDatabase.Identifier = federated['Identifier'] as string;
+      }
+      // The SDK also declares `ConnectionType`, which the CFn schema does not,
+      // so no template can set it and it is deliberately not mapped.
+      result.FederatedDatabase = federatedDatabase;
+    }
+
+    if (databaseInput['CreateTableDefaultPermissions'] !== undefined) {
+      const permissions = databaseInput['CreateTableDefaultPermissions'] as Record<
+        string,
+        unknown
+      >[];
+      result.CreateTableDefaultPermissions = permissions.map((entry) => {
+        const permission: PrincipalPermissions = {};
+        if (entry['Permissions'] !== undefined) {
+          permission.Permissions = entry['Permissions'] as Permission[];
+        }
+        if (entry['Principal'] !== undefined) {
+          const declaredPrincipal = entry['Principal'] as Record<string, unknown>;
+          const principal: DataLakePrincipal = {};
+          if (declaredPrincipal['DataLakePrincipalIdentifier'] !== undefined) {
+            principal.DataLakePrincipalIdentifier = declaredPrincipal[
+              'DataLakePrincipalIdentifier'
+            ] as string;
+          }
+          permission.Principal = principal;
+        }
+        return permission;
+      });
+    }
+
     return result;
   }
 
@@ -1672,6 +1746,27 @@ export class GlueProvider implements ResourceProvider {
     dbInput['Description'] = db.Description ?? '';
     if (db.LocationUri !== undefined) dbInput['LocationUri'] = db.LocationUri;
     dbInput['Parameters'] = db.Parameters ?? {};
+    // The three members the write side gained with issue #1807, reverse-mapped
+    // so `cdkd drift` can see them at all. EMIT-WHEN-PRESENT rather than the
+    // always-emit placeholder Description / Parameters use: AWS reports a
+    // Lake Formation DEFAULT for `CreateTableDefaultPermissions` on databases
+    // whose template never declared one (`IAM_ALLOWED_PRINCIPALS` / `ALL` on a
+    // catalog that has not been onboarded to Lake Formation), and a placeholder
+    // would have to invent one of the two shapes and be wrong on the other
+    // population. An AWS-only key is ignored by the drift comparator (it only
+    // descends into keys present in the baseline), so the emitted value fires
+    // no phantom drift on a template that declares nothing.
+    if (db.TargetDatabase !== undefined) {
+      dbInput['TargetDatabase'] = { ...db.TargetDatabase };
+    }
+    if (db.FederatedDatabase !== undefined) {
+      dbInput['FederatedDatabase'] = { ...db.FederatedDatabase };
+    }
+    if (db.CreateTableDefaultPermissions !== undefined) {
+      dbInput['CreateTableDefaultPermissions'] = db.CreateTableDefaultPermissions.map((entry) => ({
+        ...entry,
+      }));
+    }
     // CFn schema accepts BOTH nested `DatabaseInput.Name` AND top-level
     // `DatabaseName` (see #613 B-bucket fix in createDatabase). Surface
     // both so drift comparison works for either template shape.
