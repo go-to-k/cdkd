@@ -207,7 +207,7 @@ migrate-from-cfn	2026-08-10T06:32:58Z	PASS	338	run.sh	0810 P2 sweep b11r; run.sh
 monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 multi-asset	2026-08-10T05:38:11Z	PASS	68	verify.sh	0810 P2 sweep b9; rc ok, ECR swept, 0 orph
 multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
-multi-resource	2026-08-13T13:57:10Z	PASS	240	standard	#1762 BROAD gate re-run after the 3-axis review fixes (deploy-engine.ts re-touched); 17 created / 17 deleted 0 err; 2 auto-created lambda log groups swept, then 0 orphans
+multi-resource	2026-08-13T14:12:56Z	PASS	245	standard	#1762 BROAD gate re-run after the re-review fixes (deploy-engine.ts touched a 3rd time); 17 created / 17 deleted 0 err; 2 auto-created lambda log groups swept, then 0 orphans
 multi-stack-deps	2026-08-12T10:36:46Z	PASS	300	standard	broad gate re-run post-rebase for #1697; 3 stacks clean, 0 orphans
 nested-stack	2026-08-13T09:23:51Z	PASS	46	verify.sh	#1777 re-run on the final head; failing child destroy exits 2, both state files + Child row preserved, remedy asserted to name the CHILD not the parent; clean path unchanged; 0 err 0 orph
 nested-stack-3level	2026-08-10T04:45:42Z	PASS	78	verify.sh	0810 sweep b3; nested-stack-provider re-verify, 0 err, 0 orph
