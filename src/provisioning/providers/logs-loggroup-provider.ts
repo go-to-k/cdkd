@@ -644,11 +644,19 @@ export class LogsLogGroupProvider implements ResourceProvider {
       return `arn:${partition}:logs:${region}:${accountId}:log-group:${logGroupName}:*`;
     } catch {
       // Fallback: return a placeholder ARN. The region / account segments stay
-      // the pre-existing `unknown` sentinels — nothing resolved them — but the
-      // partition takes the best answer available rather than a commercial
-      // guess: `AWS_REGION` is the same source the try arm's own fallback
-      // chain trusts, and an unset or unrecognized value derives to `aws`, so
-      // this is byte-identical to the old placeholder wherever it was right.
+      // the pre-existing `unknown` sentinels — nothing resolved them.
+      //
+      // `AWS_REGION` is a BEST-EFFORT hint for the partition, not an
+      // authoritative read: this arm is dominated by the STS failure above
+      // (the account lookup runs first), so the client's own region is
+      // usually still available, and `AWS_REGION` is only the SECOND source
+      // in the try arm's chain — the shared `AwsClients` logs client may have
+      // been built from an explicit `AwsClientConfig.region` or from the SDK's
+      // own chain instead. What it does guarantee is the direction: an unset
+      // or unrecognized value derives to the commercial `aws`, so this is
+      // byte-identical to the old placeholder wherever it was right, and a
+      // non-commercial `AWS_REGION` upgrades it rather than leaving a silent
+      // commercial claim.
       const { partition } = derivePartitionAndUrlSuffix(process.env['AWS_REGION'] ?? '');
       return `arn:${partition}:logs:unknown:unknown:log-group:${logGroupName}:*`;
     }

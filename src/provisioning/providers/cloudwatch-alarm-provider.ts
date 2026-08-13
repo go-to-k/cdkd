@@ -284,12 +284,18 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       return `arn:${partition}:cloudwatch:${region}:*:alarm:${alarmName}`;
     } catch {
       // `config.region()` THREW, so there is no region in hand for the region
-      // segment — hence the `*` wildcard, which predates this change. The
-      // partition still gets the best answer available rather than a guess:
-      // `AWS_REGION` is the very source the try arm's own fallback chain
-      // trusts one step down, and an unset/unrecognized value derives to the
-      // commercial `aws`, so this stays byte-identical to the old output
-      // everywhere the old output was right.
+      // segment — hence the `*` wildcard, which predates this change.
+      //
+      // NOTE this arm is very nearly DEAD in production, and the `AWS_REGION`
+      // read below is correspondingly near-inert. A real SDK region provider
+      // resolves FROM `AWS_REGION` (among other sources), so "region() throws
+      // while AWS_REGION is set" is a combination the runtime does not
+      // normally produce: in practice reaching this arm means no region could
+      // be resolved from anywhere, and the derived partition is the
+      // commercial `aws`. It is written this way so the arm cannot silently
+      // claim commercial in some future configuration where the two sources
+      // ARE decoupled, and the unit test pins the stated behavior — but do
+      // not read the test as evidence of a live non-commercial path here.
       const { partition } = derivePartitionAndUrlSuffix(process.env['AWS_REGION'] ?? '');
       return `arn:${partition}:cloudwatch:*:*:alarm:${alarmName}`;
     }

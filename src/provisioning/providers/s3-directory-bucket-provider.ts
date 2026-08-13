@@ -148,6 +148,14 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
    * mutation, so outside the commercial partition the wrong literal does not
    * merely record a bad string — it aims the tag call at an ARN that does not
    * name this bucket.
+   *
+   * KNOWN BOUND (pre-existing, not introduced by #1815): the region — and now
+   * the partition derived from it — comes from `s3Client`, while the tag
+   * calls that consume this ARN go through `s3ControlClient`, built from
+   * `providerRegion` (`process.env['AWS_REGION']`). Those two can disagree,
+   * so the ARN can name a different region than the client receiving it. The
+   * region SEGMENT already had this exposure before the partition rode along
+   * with it; unifying the two clients' region resolution is a separate change.
    */
   private async buildBucketArn(bucketName: string, accountId?: string): Promise<string> {
     const region = await this.getRegion();

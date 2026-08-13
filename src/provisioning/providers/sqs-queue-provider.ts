@@ -502,11 +502,19 @@ export class SQSQueueProvider implements ResourceProvider {
     } catch {
       this.logger.warn('Failed to construct SQS ARN from STS, using placeholder');
       // The region / account segments stay the pre-existing `unknown`
-      // sentinels — nothing resolved them. The partition still takes the best
-      // answer available instead of a commercial guess: `AWS_REGION` is what
-      // the client itself was configured from, and an unset or unrecognized
-      // value derives to `aws`, so the placeholder is byte-identical to the
-      // old one everywhere the old one was right.
+      // sentinels — nothing resolved them.
+      //
+      // `AWS_REGION` is a BEST-EFFORT hint for the partition, not an
+      // authoritative read: this arm is dominated by the STS failure above
+      // (the account lookup runs first), so the client's own region is
+      // usually still available — but the shared `AwsClients` sqs client may
+      // equally have been built from an explicit `AwsClientConfig.region` or
+      // from the SDK's own chain, so the env var is not guaranteed to be what
+      // it was configured with. What it does guarantee is the direction: an
+      // unset or unrecognized value derives to the commercial `aws`, so the
+      // placeholder is byte-identical to the old one wherever the old one was
+      // right, and a non-commercial `AWS_REGION` upgrades it rather than
+      // leaving a silent commercial claim.
       const { partition } = derivePartitionAndUrlSuffix(process.env['AWS_REGION'] ?? '');
       return `arn:${partition}:sqs:unknown:unknown:${queueName}`;
     }

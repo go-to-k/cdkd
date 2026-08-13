@@ -75,6 +75,11 @@ describe('ServiceDiscoveryProvider — HttpNamespace / PublicDnsNamespace', () =
 
   afterEach(() => {
     vi.useRealTimers();
+    // Restore `vi.spyOn(STSClient.prototype, 'send')`. Several tests install
+    // it to drive `buildNamespaceArn`'s STS-built fallback; `vi.clearAllMocks`
+    // does NOT remove a spy's implementation, so without this the stub leaks
+    // into every later describe in the file.
+    vi.restoreAllMocks();
   });
 
   describe('create — HttpNamespace', () => {
