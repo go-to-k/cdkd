@@ -161,6 +161,269 @@ describe('DynamoDBGlobalTableProvider replay-CREATE effectiveProperties (issues 
     ).rejects.toThrow(/GlobalSecondaryIndexes must be an array/);
   });
 
+  // ─── issue #1741: the omit must PRUNE the orphaned AttributeDefinitions ──
+
+  /**
+   * The shape the omit arm actually fails on, and the reason the fixture that
+   * found it has to key its index on the table's own partition key. DynamoDB
+   * requires `AttributeDefinitions` to be EXACTLY the attributes referenced by
+   * `KeySchema` and by the indexes being created, so omitting the indexes
+   * while still sending `gsipk` earns:
+   *
+   *   ValidationException: One or more parameter values were invalid: Some
+   *   AttributeDefinitions are not used. AttributeDefinitions: [pk, gsipk],
+   *   KeySchema: [pk]
+   *
+   * Measured us-east-1 2026-08-13 on run 3 of
+   * `tests/integration/rollback-replay-effective-props/`.
+   */
+  const ORPHANING_PROPS = {
+    ...baseProps,
+    BillingMode: 'PAY_PER_REQUEST',
+    AttributeDefinitions: [
+      { AttributeName: 'pk', AttributeType: 'S' },
+      { AttributeName: 'gsipk', AttributeType: 'S' },
+    ],
+    GlobalSecondaryIndexes: 'bad',
+  };
+
+  it('prunes the omitted indexes key attribute off the CreateTable call', async () => {
+    await replayCreate(ORPHANING_PROPS);
+
+    // The WIRE assertion is the one that matters — this is a real AWS
+    // rejection, and every mock in this file returns success, which is exactly
+    // why unit tests could not see it before.
+    expect(createInput()?.['AttributeDefinitions']).toEqual([
+      { AttributeName: 'pk', AttributeType: 'S' },
+    ]);
+    expect(createInput()?.['GlobalSecondaryIndexes']).toBeUndefined();
+  });
+
+  it('records the PRUNED AttributeDefinitions, not the declared list', async () => {
+    const result = await replayCreate(ORPHANING_PROPS);
+
+    // Same reason the index key itself is dropped (#1724): an attribute
+    // definition that was not SENT is a record `readCurrentState` can never
+    // match, which the next update reads as its previous side.
+    expect(result.effectiveProperties?.['AttributeDefinitions']).toEqual([
+      { AttributeName: 'pk', AttributeType: 'S' },
+    ]);
+    expect('GlobalSecondaryIndexes' in result.effectiveProperties!).toBe(false);
+  });
+
+  it('KEEPS an LSI key attribute, which the same create still sends', async () => {
+    // `LocalSecondaryIndexes` is create-only and is NOT omitted by this arm, so
+    // a naive "keep only the table KeySchema" prune would strip `lsisk` and
+    // break the call in the opposite direction.
+    const result = await replayCreate({
+      ...ORPHANING_PROPS,
+      AttributeDefinitions: [
+        { AttributeName: 'pk', AttributeType: 'S' },
+        { AttributeName: 'gsipk', AttributeType: 'S' },
+        { AttributeName: 'lsisk', AttributeType: 'S' },
+      ],
+      LocalSecondaryIndexes: [
+        {
+          IndexName: 'lsi1',
+          KeySchema: [
+            { AttributeName: 'pk', KeyType: 'HASH' },
+            { AttributeName: 'lsisk', KeyType: 'RANGE' },
+          ],
+          Projection: { ProjectionType: 'ALL' },
+        },
+      ],
+    });
+
+    const expected = [
+      { AttributeName: 'pk', AttributeType: 'S' },
+      { AttributeName: 'lsisk', AttributeType: 'S' },
+    ];
+    expect(createInput()?.['AttributeDefinitions']).toEqual(expected);
+    expect(result.effectiveProperties?.['AttributeDefinitions']).toEqual(expected);
+  });
+
+  it('leaves AttributeDefinitions untouched when the omit orphans nothing', async () => {
+    // The fixture's own workaround shape — an index keyed on the table's own
+    // partition key. Nothing is orphaned, so both the wire and the record must
+    // carry the DECLARED list verbatim.
+    //
+    // The key is still PRESENT in the effective bag, and that is not the prune
+    // firing: the bag replaces the desired properties WHOLESALE, so it carries
+    // every declared key whether or not this arm touched it. Asserting the
+    // VALUE is what discriminates — an assertion on presence alone would pass
+    // against a prune that had stripped `pk` too.
+    const result = await replayCreate({
+      ...baseProps,
+      BillingMode: 'PAY_PER_REQUEST',
+      GlobalSecondaryIndexes: 'bad',
+    });
+
+    const declared = [{ AttributeName: 'pk', AttributeType: 'S' }];
+    expect(createInput()?.['AttributeDefinitions']).toEqual(declared);
+    expect(result.effectiveProperties?.['AttributeDefinitions']).toEqual(declared);
+  });
+
+  it('does NOT prune on a create whose GSI block is valid', async () => {
+    await replayCreate({
+      ...baseProps,
+      BillingMode: 'PAY_PER_REQUEST',
+      AttributeDefinitions: [
+        { AttributeName: 'pk', AttributeType: 'S' },
+        { AttributeName: 'gsipk', AttributeType: 'S' },
+      ],
+      GlobalSecondaryIndexes: [
+        {
+          IndexName: 'gsi1',
+          KeySchema: [{ AttributeName: 'gsipk', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'ALL' },
+        },
+      ],
+    });
+
+    // `gsipk` is genuinely referenced here, so the definitions go out whole.
+    expect(createInput()?.['AttributeDefinitions']).toEqual([
+      { AttributeName: 'pk', AttributeType: 'S' },
+      { AttributeName: 'gsipk', AttributeType: 'S' },
+    ]);
+  });
+
+  it('fails OPEN on a NON-ARRAY AttributeDefinitions instead of throwing a raw TypeError', async () => {
+    // A single state record can carry MORE than one malformed value — the arm's
+    // own comment says the three replay arms compose for exactly that reason —
+    // so `AttributeDefinitions` can be junk on the very path the prune runs on.
+    // `.filter` on a non-array throws a raw TypeError OUTSIDE any try, which
+    // would escape untyped into the deploy engine's retry loop; before the
+    // prune existed this input simply reached AWS and came back as a
+    // ValidationException.
+    await expect(
+      replayCreate({
+        ...baseProps,
+        BillingMode: 'PAY_PER_REQUEST',
+        AttributeDefinitions: 'bad',
+        GlobalSecondaryIndexes: 'bad',
+      })
+    ).resolves.toBeDefined();
+
+    // ...and the junk still goes on the wire, which is the pre-fix behavior the
+    // fail-open arm deliberately preserves.
+    expect(createInput()?.['AttributeDefinitions']).toBe('bad');
+  });
+
+  it('leaves a NON-OBJECT definition entry alone rather than silently pruning it', async () => {
+    // A malformed ENTRY is not an orphan — cdkd cannot read its AttributeName,
+    // so it cannot know whether some key schema references it. Dropping it
+    // would be a silent loss on the strength of a value that was never parsed,
+    // which is the class the provider rules exist to refuse.
+    await replayCreate({
+      ...ORPHANING_PROPS,
+      AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }, 'junk'],
+    });
+
+    expect(createInput()?.['AttributeDefinitions']).toEqual([
+      { AttributeName: 'pk', AttributeType: 'S' },
+      'junk',
+    ]);
+  });
+
+  it('KEEPS a CROSS-REGION replica index block while dropping the LOCAL one', async () => {
+    // The fence for the region guard the omit arm relies on. A cross-region
+    // block has its OWN send path (`toSdkReplicaGlobalSecondaryIndexes`, wired
+    // after CreateTable), so withdrawing it would record a loss that did not
+    // happen; the LOCAL block is only a capacity source for the translation
+    // that returned empty. Without this case, deleting the region guard so BOTH
+    // are dropped passes the entire suite.
+    //
+    // A cross-region replica makes `create()` run `addReplica`, which polls
+    // until the replica reports ACTIVE — the file's blanket mock returns a
+    // Table with no `Replicas`, so the waiter would never settle.
+    mockSend.mockResolvedValue({
+      Table: {
+        TableName: TABLE_NAME,
+        TableStatus: 'ACTIVE',
+        Replicas: [
+          { RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' },
+          { RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' },
+        ],
+      },
+    });
+
+    const result = await replayCreate({
+      ...baseProps,
+      BillingMode: 'PAY_PER_REQUEST',
+      GlobalSecondaryIndexes: 'bad',
+      Replicas: [
+        { Region: 'us-east-1', GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }] },
+        { Region: 'eu-west-1', GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }] },
+      ],
+    });
+
+    const replicas = result.effectiveProperties?.['Replicas'] as Record<string, unknown>[];
+    expect(replicas.find((r) => r['Region'] === 'us-east-1')).toEqual({ Region: 'us-east-1' });
+    expect(replicas.find((r) => r['Region'] === 'eu-west-1')).toEqual({
+      Region: 'eu-west-1',
+      GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }],
+    });
+  });
+
+  it('COMPOSES with the sibling BillingMode arm on one record', async () => {
+    // The arms compose via `?? properties`, and a single-arm fixture cannot
+    // tell a composed answer from one that overwrote its predecessor.
+    const result = await replayCreate({
+      ...ORPHANING_PROPS,
+      BillingMode: '',
+      WriteProvisionedThroughputSettings: { WriteCapacityUnits: 25 },
+    });
+
+    expect(result.effectiveProperties?.['BillingMode']).toBe('PAY_PER_REQUEST');
+    expect(result.effectiveProperties?.['AttributeDefinitions']).toEqual([
+      { AttributeName: 'pk', AttributeType: 'S' },
+    ]);
+    expect('GlobalSecondaryIndexes' in result.effectiveProperties!).toBe(false);
+  });
+
+  it('prunes to an EMPTY list when nothing the call keys on is defined', async () => {
+    // Reachable, and shipped deliberately: AWS rejects an empty
+    // AttributeDefinitions just as it rejects the orphaned one, so the prune is
+    // not making anything worse. Pinned because a future `length > 0` guard
+    // would flip this silently, and the fail-open comment above covers the
+    // unreadable-KeySchema case rather than this one.
+    const result = await replayCreate({
+      ...ORPHANING_PROPS,
+      AttributeDefinitions: [{ AttributeName: 'gsipk', AttributeType: 'S' }],
+    });
+
+    expect(createInput()?.['AttributeDefinitions']).toEqual([]);
+    expect(result.effectiveProperties?.['AttributeDefinitions']).toEqual([]);
+  });
+
+  it('records a DISTINCT array from the one it puts on the wire', async () => {
+    // The rollback executor spreads the effective bag shallowly, so aliasing
+    // would let a later mutation of either side reach the other. Without this
+    // case, replacing the copy with the same reference passes the whole suite.
+    const result = await replayCreate(ORPHANING_PROPS);
+
+    const wire = createInput()?.['AttributeDefinitions'];
+    const recorded = result.effectiveProperties?.['AttributeDefinitions'];
+    expect(recorded).toEqual(wire);
+    expect(recorded).not.toBe(wire);
+  });
+
+  it('fails OPEN when the KeySchema resolves to no attribute name', async () => {
+    // An intrinsic-valued / malformed `KeySchema` means the prune has nothing
+    // to keep, and stripping EVERY definition would turn a template defect
+    // into a different, more confusing AWS error. Pre-fix behavior stands and
+    // AWS still rejects the genuinely-bad call loudly.
+    await replayCreate({
+      ...ORPHANING_PROPS,
+      KeySchema: [{ AttributeName: { Ref: 'SomeParam' }, KeyType: 'HASH' }],
+    });
+
+    expect(createInput()?.['AttributeDefinitions']).toEqual([
+      { AttributeName: 'pk', AttributeType: 'S' },
+      { AttributeName: 'gsipk', AttributeType: 'S' },
+    ]);
+  });
+
   // ─── issue #1726: the BillingMode substitution strips capacity keys ────
 
   it('records the SUBSTITUTED BillingMode and strips the top-level provisioned block', async () => {

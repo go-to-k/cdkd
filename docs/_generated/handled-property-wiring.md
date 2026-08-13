@@ -38,7 +38,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `ACMCertificateProvider` (acm-certificate-provider.ts) | `computed key in update()` |
 | `ApiGatewayProvider` (apigateway-provider.ts) | `computed key in updateAuthorizer()`, `computed key in updateMethod()` |
 | `AppSyncProvider` (appsync-provider.ts) | `computed key in applyGraphQLApiConfig()`, `computed key in updateDataSource()`, `computed key in updateGraphQLApi()`, `computed key in updateResolver()` |
-| `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `extractLocalTags(...) in update()`, `object spread in create()`, `object spread in stripProvisionedCapacityKeys()` |
+| `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `computed key in collectDesiredKeyAttributeNames()`, `extractLocalTags(...) in update()`, `object spread in create()`, `object spread in stripProvisionedCapacityKeys()` |
 | `EC2Provider` (ec2-provider.ts) | `computed key in narrowRouteDestinations()`, `object spread in canonicalizeSgInlineRuleProtocols()`, `object spread in narrowIngressIpProtocol()`, `object spread in narrowRouteDestinations()` |
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |
 | `EFSProvider` (efs-provider.ts) | `computed key in updateFileSystem()` |

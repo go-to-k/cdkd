@@ -5746,8 +5746,7 @@
           ],
           "evidence": [
             "delegated",
-            "element-read",
-            "table-loop"
+            "element-read"
           ],
           "seededBy": [
             "create",
@@ -5776,9 +5775,7 @@
             "AWS::DynamoDB::GlobalTable"
           ],
           "evidence": [
-            "delegated",
-            "element-read",
-            "table-loop"
+            "element-read"
           ],
           "seededBy": [
             "create",
@@ -5903,6 +5900,7 @@
       ],
       "gaps": [],
       "blindSpots": [
+        "computed key in collectDesiredKeyAttributeNames()",
         "extractLocalTags(...) in update()",
         "object spread in create()",
         "object spread in stripProvisionedCapacityKeys()"

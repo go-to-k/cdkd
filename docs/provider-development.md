@@ -1829,7 +1829,7 @@ the small additional call is reasonable to add.
 
 ### 3b. `readCurrentState()` for drift detection — always emit user-controllable top-level keys
 
-`readCurrentState(physicalId, logicalId, resourceType)` returns the AWS-current snapshot of a resource for `cdkd drift` and `cdkd state refresh-observed`. The drift comparator walks **state's top-level keys only** (intentionally — to avoid surfacing every `FunctionArn` / `RevisionId` / `LastModified` / etc. that AWS auto-attaches to every response). That design has one consequence the provider author MUST account for:
+`readCurrentState(physicalId, logicalId, resourceType, properties?, context?)` returns the AWS-current snapshot of a resource for `cdkd drift` and `cdkd state refresh-observed`. The drift comparator walks **state's top-level keys only** (intentionally — to avoid surfacing every `FunctionArn` / `RevisionId` / `LastModified` / etc. that AWS auto-attaches to every response). That design has one consequence the provider author MUST account for:
 
 > **Any user-controllable top-level CFn property `update()` can mutate must be emitted with a placeholder when AWS returns the field as undefined / empty.**
 
@@ -1880,6 +1880,17 @@ it('emits placeholders for every user-controllable top-level key on AWS minimum 
 See [tests/unit/provisioning/lambda-function-provider-readcurrentstate.test.ts](../tests/unit/provisioning/lambda-function-provider-readcurrentstate.test.ts) and [tests/unit/provisioning/cognito-provider-readcurrentstate.test.ts](../tests/unit/provisioning/cognito-provider-readcurrentstate.test.ts) for canonical examples.
 
 This is the **structural defense** against the "provider author forgets to emit a key" regression class. Without it, the bug only surfaces when a user runs drift on a resource configured exactly the way the test missed (and PR review missed). The test makes silent regression mechanically impossible — a refactor that drops a placeholder fails the key-set assertion immediately.
+
+**The `properties` argument is the DESIRED side, and gating an emission on it is a fix with a TRANSITION COST — do not reach for it alone** (issues [#1742](https://github.com/go-to-k/cdkd/issues/1742) / [#1760](https://github.com/go-to-k/cdkd/issues/1760)). Every caller passes the resource's state-recorded / template-resolved bag (`drift.ts`, the deploy engine's observed capture, `import.ts`, `state.ts`), so a provider CAN ask what the user actually declared, and the temptation is to use that to stop emitting an AWS-COMPUTED value the desired side can never carry.
+
+**The half that is easy to miss:** `observedProperties` bags already in S3 were written by a binary that DID emit the member. The moment the new binary stops, the comparison is `baseline has it` vs `aws side undefined`, and the first `cdkd drift` after the upgrade reports a one-sided phantom on every such resource. It does not self-heal — the observed capture runs only on CREATE / UPDATE, and the auto-refresh skips a record that already has a capture — so the window is however long until the user's next deploy, which is exactly when they are running `drift` instead. Measured live on `AWS::DynamoDB::Table` (#1760).
+
+So the emission gate needs a companion that removes the path from the COMPARISON too:
+
+- For a TOP-LEVEL key, declare it in `getDriftUnknownPaths(resourceType, properties)` — per-resource via the #1602 seam, so it is ignored on BOTH sides when the template declares nothing and still compared when it does. That covers the transition and the steady state with one declaration.
+- For a PER-ELEMENT key there is no such declaration: an ignore-path never crosses an array (see the divergence note below), and declaring the enclosing array instead switches drift off for the whole subtree. That case needs a BOTH-SIDES normalizer in the `drift-protocol-normalize.ts` mould, and a live test seeded with a STALE observed baseline — a fresh-deploy fixture takes both sides from the same readback and structurally cannot exercise the transition. `AWS::DynamoDB::GlobalTable`'s `GlobalSecondaryIndexes[].WarmThroughput` is exactly this shape, which is why #1742 ships its ordering half and leaves that one open.
+
+Contrast an ORDERING fix, which has no such asymmetry: `getDriftUnorderedPaths` canonicalizes both sides, so an existing baseline and the readback converge rather than diverge, and it can ship on its own.
 
 #### `getDriftUnknownPaths()` for unreadable fields
 

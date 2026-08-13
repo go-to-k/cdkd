@@ -438,6 +438,31 @@ skip-reporting S3 bucket appliers carry all three:
   UPDATE-side twin of the same property is NOT the same problem (the kept mode
   can be either value and the resource already exists, so the retain-the-
   PREVIOUS-value row above applies instead); it is tracked as issue #1738.
+  **An OMIT can leave the call itself invalid, and that is a separate question
+  from what to record** (issue #1741, the first LIVE exercise of these arms).
+  The GlobalTable GSI omit sent `CreateTable` with no indexes but with the
+  record's `AttributeDefinitions` unchanged; DynamoDB requires the definitions
+  to be EXACTLY the attributes referenced by `KeySchema` and by the indexes
+  being created, so for the ORDINARY shape — an index keyed on its own
+  attribute — AWS rejected the whole call and the reverse-replacement rollback
+  failed to re-create the table at all. So the downgrade broke on precisely the
+  population it exists for, and the refusal it replaced at least failed before
+  touching AWS. **When an omit fires, prune everything DOWNSTREAM that
+  referenced the omitted thing, not only the thing itself**, and prune the
+  effective bag to match (an unsent definition is the same phantom-drift class).
+  Two details that generalize: scope the prune to what this call still sends —
+  the create-only `LocalSecondaryIndexes` are NOT omitted by that arm, so their
+  key attributes must survive, which is why the shared name-collector takes the
+  index lists explicitly rather than defaulting to all of them — and fail OPEN
+  when the referencing side is unreadable (an intrinsic-valued `KeySchema`
+  resolves to no names, and pruning against an empty set would strip everything
+  and turn a template defect into a more confusing AWS error). Unit mocks cannot
+  see any of this: the failure is a real AWS rejection and every mock returns
+  success. A second instance of the same class is still open — the omit keeps
+  cross-region `Replicas[].GlobalSecondaryIndexes` overrides (correctly, they
+  are a separate key with their own send path) but `addReplica` sends them
+  AFTER `CreateTable`, against a table the omit just created with zero indexes;
+  it needs a cross-region fixture arm and stays on #1741.
 - **per-item appliers** (a Put keyed by `Id`): the skip unit is one
   configuration ITEM, so the effective array substitutes the previous item of
   the same `Id` IN PLACE, or drops it when the skipped item was an ADD.

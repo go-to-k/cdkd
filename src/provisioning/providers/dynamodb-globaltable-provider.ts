@@ -715,6 +715,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // CROSS-REGION replica index blocks are KEPT: those have their own send
       // path (`toSdkReplicaGlobalSecondaryIndexes`, wired after CreateTable),
       // so withdrawing them would record a loss that did not happen.
+      //
+      // KNOWN GAP, deliberately not closed here (issue #1741, second instance).
+      // Keeping them is right for the RECORDING question this paragraph answers,
+      // and wrong for a question it does not: `addReplica` SENDS those overrides
+      // after `CreateTable`, against the table this arm just created with ZERO
+      // indexes, so AWS rejects an override naming an index that does not
+      // exist. It is the same shape as the `AttributeDefinitions` prune below —
+      // when the omit fires, everything downstream that referenced the indexes
+      // has to be pruned too — but it is unreachable from the current fixture
+      // (whose omit table is deliberately single-replica, so the rollback's
+      // delete-of-the-new-table is never a replica removal and cannot arm
+      // DynamoDB's 24h source-region lock). Reproducing it needs a cross-region
+      // fixture arm, which should land WITH the fix rather than after it.
       const replicasForOmit = effectiveProperties['Replicas'];
       if (Array.isArray(replicasForOmit)) {
         effectiveProperties['Replicas'] = replicasForOmit.map((entry) => {
@@ -724,6 +737,87 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           delete copy['GlobalSecondaryIndexes'];
           return copy;
         });
+      }
+      // ...and PRUNE `AttributeDefinitions` down to the attributes this call
+      // still keys on (issue #1741). DynamoDB requires the definitions to be
+      // EXACTLY the attributes referenced by `KeySchema` and by the indexes
+      // being created, so omitting the indexes while sending their key
+      // attributes leaves an orphan and AWS rejects the WHOLE call:
+      //
+      //   ValidationException: One or more parameter values were invalid: Some
+      //   AttributeDefinitions are not used. AttributeDefinitions: [pk, gsipk],
+      //   KeySchema: [pk]
+      //
+      // That is the ordinary shape — an index keyed on its own attribute — so
+      // before this the downgrade FAILED on exactly the population it exists
+      // for: a reverse-replacement rollback of a table whose state record an
+      // older binary wrote badly did not re-create the table at all, and the
+      // refusal it replaced at least failed before touching AWS.
+      //
+      // LSI key attributes MUST survive: `LocalSecondaryIndexes` is create-only
+      // and is NOT omitted by this arm (it is sent from `properties` a few
+      // lines below), so a naive "keep only the table KeySchema" would break a
+      // table with an LSI — which is why the scope is passed explicitly rather
+      // than defaulted.
+      const keptKeyAttributes = collectDesiredKeyAttributeNames(properties, {
+        indexListKeys: ['LocalSecondaryIndexes'],
+      });
+      // Fail OPEN on an unreadable key schema OR a non-array definitions bag.
+      // An empty set means no key schema resolved to a name at all (an
+      // intrinsic-valued `KeySchema`, a malformed block), and pruning against
+      // it would strip EVERY definition and turn a template defect into a
+      // different, more confusing AWS error. Leaving the definitions alone is
+      // the pre-fix behavior, and AWS still rejects the genuinely-bad call
+      // loudly.
+      //
+      // The `Array.isArray` half is not defensive padding: `attributeDefinitions`
+      // is a bare cast guarded only by a truthiness test above, so a state
+      // record carrying `{}` / a string / an unresolved intrinsic reaches here
+      // — and this is the REPLAY path, where a malformed record IS the premise.
+      // `.filter` on a non-array throws a raw `TypeError` outside any `try`,
+      // which would escape untyped into the deploy engine instead of the
+      // `ValidationException` AWS returns today.
+      if (keptKeyAttributes.size > 0 && Array.isArray(attributeDefinitions)) {
+        const prunedAttributeDefinitions = attributeDefinitions.filter((definition) => {
+          const name = asRecord(definition)?.['AttributeName'];
+          // An UNPARSEABLE entry is KEPT, not pruned. Only a definition whose
+          // `AttributeName` cdkd can actually read is knowably orphaned;
+          // dropping one it could not parse would be a silent loss decided on
+          // the strength of a value that was never read — the class the
+          // config-shape guards exist to refuse — and it would do so on the
+          // replay path, where malformed records are the premise. Keeping it
+          // reproduces the pre-fix behavior for that entry: AWS rejects the
+          // call loudly and names the field.
+          if (typeof name !== 'string') return true;
+          return keptKeyAttributes.has(name);
+        });
+        if (prunedAttributeDefinitions.length !== attributeDefinitions.length) {
+          createParams.AttributeDefinitions = prunedAttributeDefinitions;
+          // Recorded for the same reason the index key itself is dropped: an
+          // attribute definition that was not SENT is the phantom-drift class
+          // (#1724), so the effective bag has to describe the pruned list.
+          //
+          // NO `canonicalizeDesiredProperties` twin, and the question is asked
+          // here rather than inherited (the `.claude/rules/providers.md` rule
+          // is to re-ask it at every recording site). The twin exists because a
+          // narrowed record makes the next diff read the difference as a
+          // user-made ADD, and for a CREATE-ONLY property that classifies as a
+          // REPLACEMENT. Neither holds: `AWS::DynamoDB::GlobalTable` has no
+          // `ReplacementRulesRegistry` entry and its schema's
+          // `createOnlyProperties` is `TableName` alone, so the un-canonicalized
+          // diff derives an IN-PLACE update — and that update genuinely
+          // converges, because `update()` re-adds the definitions a restored
+          // index needs. Canonicalizing instead would fold the template side
+          // onto the pruned list and leave the re-created table permanently
+          // missing the indexes the record was malformed about, which is the
+          // opposite of the recovery this arm exists to enable.
+          // A distinct array from the one on `createParams`, so a later mutation
+          // of either cannot reach the other (the rollback executor spreads the
+          // effective bag shallowly). Scoped to the PRUNED path deliberately:
+          // on the untouched path both sides still alias the caller's
+          // `properties['AttributeDefinitions']`, exactly as before this change.
+          effectiveProperties['AttributeDefinitions'] = [...prunedAttributeDefinitions];
+        }
       }
     }
     if (sdkIndexes.length > 0) {
@@ -4401,6 +4495,32 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * `AttributeDefinitions` is an unordered SET, and the comparator compares
+   * arrays positionally (issue #1742).
+   *
+   * `DescribeTable` returns the definitions in an order matching neither the
+   * request nor alphabetical — measured us-east-1 2026-08-13 on the
+   * `rollback-replay-effective-props` fixture, where a table declaring
+   * `[pk, gsipk]` read back as `[gsipk, pk]` — so an UNTOUCHED table drifted
+   * forever. Sorting cannot hide a real change here because the list is a
+   * genuine set: members are keyed by `AttributeName`, so adding, removing or
+   * retyping one still changes the canonicalized form.
+   *
+   * Reachable whenever the drift baseline is `properties` rather than
+   * `observedProperties` — i.e. after any reverse-replacement rollback, which
+   * `rollback-executor.ts` strips `observedProperties` on. That is also why it
+   * went unseen: on the ordinary path both sides come from the same readback.
+   *
+   * `KeySchema` is deliberately NOT declared, at the table level or per index:
+   * it is order-SIGNIFICANT (HASH before RANGE), so sorting it would silently
+   * hide a real key change — the failure direction this file's sibling rules
+   * call the worse one.
+   */
+  getDriftUnorderedPaths(_resourceType: string): string[] {
+    return ['AttributeDefinitions'];
+  }
+
+  /**
    * Adopt an existing DynamoDB GlobalTable into cdkd state.
    *
    * Lookup order:
@@ -4977,12 +5097,24 @@ export function collectAutoScalingTargets(
  * redefine-in-place (replacement required); one outside it is the normal
  * bookkeeping of a GSI deletion and must NOT force a replacement.
  *
- * Malformed / intrinsic-valued entries contribute nothing, which errs on the
- * PERMISSIVE side of the guard — correct here, because the guard's failure
- * mode is a forced replacement of a live table, and AWS itself still rejects
- * a genuinely-bad `UpdateTable` loudly.
+ * Malformed / intrinsic-valued entries contribute nothing. For the `update()`
+ * guard that errs on the PERMISSIVE side — correct there, because that guard's
+ * failure mode is a forced replacement of a live table, and AWS still rejects a
+ * genuinely-bad `UpdateTable` loudly. For the create-path prune below it errs
+ * the other way (an unreadable LSI key schema prunes MORE), which is only
+ * reachable on a bag AWS would reject anyway.
+ *
+ * `options.indexListKeys` narrows which index lists contribute, for the ONE
+ * caller whose question is not "what does the template reference" but "what
+ * will this call actually key on" — `create()`'s replay-CREATE GSI omit arm
+ * (issue #1741), which sends NO indexes and therefore must not count the
+ * omitted block's key attributes as still-referenced. It defaults to BOTH
+ * lists, so the `update()` guard above reads exactly as it did before.
  */
-export function collectDesiredKeyAttributeNames(properties: Record<string, unknown>): Set<string> {
+export function collectDesiredKeyAttributeNames(
+  properties: Record<string, unknown>,
+  options?: { indexListKeys?: readonly ('GlobalSecondaryIndexes' | 'LocalSecondaryIndexes')[] }
+): Set<string> {
   const names = new Set<string>();
   const addKeySchema = (value: unknown): void => {
     if (!Array.isArray(value)) return;
@@ -4992,7 +5124,11 @@ export function collectDesiredKeyAttributeNames(properties: Record<string, unkno
     }
   };
   addKeySchema(properties['KeySchema']);
-  for (const indexListKey of ['GlobalSecondaryIndexes', 'LocalSecondaryIndexes'] as const) {
+  const indexListKeys = options?.indexListKeys ?? [
+    'GlobalSecondaryIndexes',
+    'LocalSecondaryIndexes',
+  ];
+  for (const indexListKey of indexListKeys) {
     const indexes = properties[indexListKey];
     if (!Array.isArray(indexes)) continue;
     for (const index of indexes) {
