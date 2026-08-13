@@ -74,9 +74,10 @@ import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js'
 // MESSAGE: an already-deleted-shaped phrase (`not found` / `does not exist` /
 // …) is read as idempotent success and DROPS the state row. A stale literal
 // here would keep passing while the production wording drifted into that shape.
-// (The provider module is a legitimate import: it already depends on
-// destroy-runner in production, so this cycle is the shipped one.)
-import { nestedStackChildFailureMessage } from '../../../src/provisioning/providers/nested-stack-provider.js';
+// Imported from the LEAF module rather than from the provider: the provider
+// pulls in destroy-runner -> register-providers -> every provider, which both
+// closes an import cycle and drags the whole registry into this unit test.
+import { nestedStackChildFailureMessage } from '../../../src/provisioning/nested-stack-messages.js';
 
 const REGION = 'us-east-1';
 const NESTED_TYPE = 'AWS::CloudFormation::Stack';
@@ -263,6 +264,47 @@ describe('runDestroyForStack: a nested-stack child that did not go away (issues 
     const warn = allWarn();
     expect(warn).toContain("'cdkd state orphan TestStack~Child'");
     expect(warn).toContain("'cdkd state orphan TestStack'");
+  });
+
+  it('a run with BOTH an error and a skip keeps #1752 guidance for the skipped row', async () => {
+    // The error arm owns the both-kinds case (the skip-only arm is unreachable
+    // once errorCount > 0), so naming only the failed target would print
+    // `, 1 skipped` in the counters and then silently drop the skipped row's
+    // remedy — which is different IN KIND: a skip is not retryable, it needs
+    // the state record repaired first.
+    mockProviderDelete.mockImplementation((logicalId: string) =>
+      logicalId === 'Child'
+        ? Promise.reject(new Error(CHILD_FAILURE_MESSAGE))
+        : Promise.resolve({ outcome: 'skipped', reason: 'malformed physicalId in state' })
+    );
+
+    const result = await runDestroyForStack(
+      'TestStack',
+      makeState({ Child: nestedRes(), Table: res({ resourceType: 'AWS::Glue::Table' }) }),
+      makeCtx()
+    );
+
+    expect(result.errorCount).toBe(1);
+    expect(result.skippedCount).toBe(1);
+
+    const warn = allWarn();
+    // The failure's remedy still names the child.
+    expect(warn).toContain("'cdkd state orphan TestStack~Child'");
+    // ...AND the skip's own guidance survives, naming ITS target.
+    expect(warn).toContain("'cdkd state show TestStack'");
+    expect(warn).toContain('were SKIPPED');
+  });
+
+  it('control: an error-only run prints no skipped guidance', async () => {
+    // Inverted control for the clause above: an unconditional clause would
+    // tell every failed destroy that resources were skipped when none were.
+    mockProviderDelete.mockRejectedValue(new Error(CHILD_FAILURE_MESSAGE));
+
+    await runDestroyForStack('TestStack', makeState({ Child: nestedRes() }), makeCtx());
+
+    const warn = allWarn();
+    expect(warn).not.toContain('were SKIPPED');
+    expect(warn).not.toContain("'cdkd state show");
   });
 
   it('a SKIPPED nested-stack delete (interrupt / child skip) preserves the same three things', async () => {

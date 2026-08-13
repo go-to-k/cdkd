@@ -100,8 +100,9 @@ at `s3://cdkd-state-{accountId}/cdkd/`.
   expanding the scope to 3+ extra resources). That absence is now
   load-bearing rather than incidental: it is exactly what lets Phase B
   provoke a genuinely failing child delete without changing the CDK app.
-  Adding `autoDeleteObjects: true` here would silently turn Phase B into
-  a clean destroy and the #1777 assertions would stop testing anything.
+  Adding `autoDeleteObjects: true` would auto-empty the seeded bucket, so
+  the child would destroy cleanly and Phase B would FAIL at its `rc -ne 2`
+  check — loud, but with a cause that is not obvious from the error.
 - Cross-region nested stacks are out of scope per design §1 (AWS
   doesn't support them either) — the child inherits the parent's
   region.

@@ -2479,7 +2479,10 @@ cleanly before removing it from the template.
 The remedy the summary prints names the CHILD's state file
 (`cdkd state orphan <parent>~<child>`), not the parent's — the resource that
 failed lives in the child, and orphaning the parent would drop the very row
-that keeps the child reachable.
+that keeps the child reachable. A run that has BOTH failures and skips prints
+each remedy separately, since they are different in kind: a failure is
+retryable (`cdkd destroy` again), while a skip needs its state record repaired
+first.
 
 The run-level exit message counts **entries**, not resources: a skipped
 nested-stack row is one entry however many of the child's own resources it

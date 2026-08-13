@@ -33,7 +33,10 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
-import { nestedStackChildFailureMessage } from '../../../src/provisioning/providers/nested-stack-provider.js';
+// Leaf module, deliberately NOT `providers/nested-stack-provider.js`: that path
+// drags destroy-runner -> register-providers -> every provider into this
+// deploy-engine unit test and closes an import cycle.
+import { nestedStackChildFailureMessage } from '../../../src/provisioning/nested-stack-messages.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 

@@ -20,6 +20,10 @@ import {
   type AssetRedirectMap,
 } from '../../assets/asset-redirect.js';
 import { getLogger } from '../../utils/logger.js';
+// Leaf module by design — see the note in nested-stack-messages.ts: importing
+// this builder from anywhere on the provider/destroy-runner ring re-creates the
+// cycle it was extracted to break.
+import { nestedStackChildFailureMessage } from '../nested-stack-messages.js';
 
 /**
  * Returns `true` when `p` is absolute on the current platform OR begins
@@ -32,43 +36,6 @@ import { getLogger } from '../../utils/logger.js';
  */
 export function isAbsoluteCrossPlatform(p: string): boolean {
   return path.isAbsolute(p) || p.startsWith('/');
-}
-
-/**
- * The message `NestedStackProvider.delete` throws when the child stack's own
- * destroy reported `errorCount > 0` (issue
- * [#1777](https://github.com/go-to-k/cdkd/issues/1777)).
- *
- * Exported as a builder — rather than being inlined at the throw site — so a
- * test that needs the exact string cannot drift onto a stale hand-written
- * literal. `tests/unit/cli/destroy-runner-nested-child-failure.test.ts` drives
- * the PARENT-side runner with a fake provider and needs the real wording,
- * because the runner's catch classifies a delete failure by MESSAGE: an
- * already-deleted-shaped phrase (`not found` / `does not exist` / …) is read as
- * idempotent success and DROPS the state row, which is the exact outcome this
- * throw exists to prevent. `tests/unit/provisioning/nested-stack-provider.test.ts`
- * pins that property against both callers' phrase sets.
- */
-export function nestedStackChildFailureMessage(
-  childStackName: string,
-  errorCount: number,
-  alsoSkippedCount: number,
-  alsoInterrupted: boolean
-): string {
-  const extra: string[] = [];
-  if (alsoSkippedCount > 0) extra.push(`${alsoSkippedCount} resource(s) were also skipped`);
-  if (alsoInterrupted) extra.push('the child destroy was also interrupted');
-  return (
-    `Nested stack ${childStackName} failed to destroy: ${errorCount} resource(s) ` +
-    `failed to delete` +
-    // Empty parens would read as a dropped clause; the suffix appears only when
-    // there is something to say. Fenced by a test asserting no `()` in the
-    // no-extra case.
-    (extra.length > 0 ? ` (${extra.join('; ')})` : '') +
-    `. The child's state is PRESERVED and still lists them — inspect it with ` +
-    `'cdkd state show ${childStackName}', resolve the failure, and re-run the destroy. ` +
-    `The parent's record of this nested stack is kept so the child stays reachable.`
-  );
 }
 
 /**

@@ -74,6 +74,31 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 
+# The INVERSE assertion, and it needs the same three-way discipline for the
+# same reason: a wrapped `if ! aws ...` reports "GONE" on ANY probe failure --
+# throttle, expired creds, a transient 5xx -- which here means ACCUSING the fix
+# of deleting state it actually preserved. It fails closed (never a false PASS),
+# but a false FAIL on an unrelated AWS blip is its own kind of wrong.
+# assert_exists returns 0 when the probe succeeds (resource confirmed present),
+# FAILs with the caller's description when the probe reports not-found, and
+# hard-FAILs as UNDETERMINED on any other probe failure without blaming the
+# code under test.
+assert_exists() { # usage: assert_exists "<missing description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  [ "${1:-}" = "aws" ] || { echo "FAIL: assert_exists: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 0
+  fi
+  if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+  echo "FAIL: exists-probe undetermined ($*): ${out}" >&2
+  exit 1
+}
+
 cd "$(dirname "$0")"
 
 export AWS_PAGER=""
@@ -133,8 +158,10 @@ trap '(exit 143); cleanup; exit 143' TERM
 echo "=== Phase A: deploying ${STACK} ==="
 node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" --state-bucket "${BUCKET}"
 
-aws s3api head-object --bucket "${BUCKET}" --key "${PARENT_KEY}" --region "${REGION}" >/dev/null
-aws s3api head-object --bucket "${BUCKET}" --key "${CHILD_KEY}" --region "${REGION}" >/dev/null
+assert_exists "the parent state.json was not written by the deploy" \
+  aws s3api head-object --bucket "${BUCKET}" --key "${PARENT_KEY}" --region "${REGION}"
+assert_exists "the child state.json was not written by the deploy" \
+  aws s3api head-object --bucket "${BUCKET}" --key "${CHILD_KEY}" --region "${REGION}"
 echo "PASS: parent + child state files exist after deploy"
 
 child_state="$(aws s3 cp "s3://${BUCKET}/${CHILD_KEY}" - --region "${REGION}")"
@@ -191,18 +218,34 @@ if ! grep -q "Nested stack ${CHILD_STACK} failed to destroy" "${WORK_DIR}/destro
 fi
 echo "PASS: the failure names the child stack"
 
+# The last-resort remedy must name the CHILD's state target, not the parent's.
+# This is the half of the fix that is easiest to regress silently: following a
+# parent-named `cdkd state orphan NestedStackExample` would drop the `Child`
+# row, i.e. destroy the exact pointer the throw above exists to preserve. The
+# negative half is what makes this discriminating -- pre-fix the summary named
+# the parent, so asserting only the child form could pass on a line that named
+# both.
+if ! grep -q "cdkd state orphan ${CHILD_STACK}" "${WORK_DIR}/destroy-fail.txt"; then
+  echo "FAIL: the failed-delete remedy did not name the child's state target" >&2
+  echo "      (expected 'cdkd state orphan ${CHILD_STACK}')" >&2
+  exit 1
+fi
+if grep -q "cdkd state orphan ${STACK}'" "${WORK_DIR}/destroy-fail.txt"; then
+  echo "FAIL: the remedy still names the PARENT state target -- following it" >&2
+  echo "      would drop the Child row this fix preserves" >&2
+  exit 1
+fi
+echo "PASS: the failed-delete remedy names the child's state target, not the parent's"
+
 # The three things the pre-fix path destroyed: the parent state file, the
 # parent's row pointing at the child, and the child's own state file.
-# Wrapped rather than left bare: an unwrapped head-object aborts via `set -e`
-# with a raw AWS error, and every other check here reports `FAIL: ...`.
-if ! aws s3api head-object --bucket "${BUCKET}" --key "${PARENT_KEY}" --region "${REGION}" >/dev/null; then
-  echo "FAIL: the parent state.json was DELETED by the failing destroy" >&2
-  exit 1
-fi
-if ! aws s3api head-object --bucket "${BUCKET}" --key "${CHILD_KEY}" --region "${REGION}" >/dev/null; then
-  echo "FAIL: the child state.json was DELETED by the failing destroy" >&2
-  exit 1
-fi
+# Routed through assert_exists, not a bare call or a blind `if !`: the first
+# aborts on a raw AWS error, and the second would accuse the fix of deleting
+# state whenever the probe merely failed to answer.
+assert_exists "the parent state.json was DELETED by the failing destroy" \
+  aws s3api head-object --bucket "${BUCKET}" --key "${PARENT_KEY}" --region "${REGION}"
+assert_exists "the child state.json was DELETED by the failing destroy" \
+  aws s3api head-object --bucket "${BUCKET}" --key "${CHILD_KEY}" --region "${REGION}"
 echo "PASS: parent AND child state files both survived the failed destroy"
 
 parent_state="$(aws s3 cp "s3://${BUCKET}/${PARENT_KEY}" - --region "${REGION}")"

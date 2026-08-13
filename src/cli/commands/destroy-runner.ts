@@ -680,6 +680,9 @@ export async function runDestroyForStack(
   // error arm's `cdkd state orphan <parent>` last-resort hint would drop the
   // parent's `Child` row — the exact pointer the throw exists to preserve.
   const failedStateTargets = new Set<string>();
+  /** `'cmd A' / 'cmd B'` — the quoted, slash-joined hint both summary arms print. */
+  const hintFor = (command: string, targets: string[]): string =>
+    targets.map((t) => `'${command} ${t}'`).join(' / ');
 
   // Build the partial-destroy snapshot persisted by both the incremental
   // writes and the final preserve-write (issue #804). `outputs` / `imports`
@@ -1270,8 +1273,8 @@ export async function runDestroyForStack(
       // count would misdescribe the run — and the remedy is different too:
       // there is nothing to retry until the state record is repaired.
       const targets = [...skippedStateTargets];
-      const showHint = targets.map((t) => `'cdkd state show ${t}'`).join(' / ');
-      const orphanHint = targets.map((t) => `'cdkd state orphan ${t}'`).join(' / ');
+      const showHint = hintFor('cdkd state show', targets);
+      const orphanHint = hintFor('cdkd state orphan', targets);
       logger.warn(
         `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}, ${result.errorCount} errors). ` +
           `cdkd could not address the skipped resource(s), so they may still exist in AWS. ` +
@@ -1288,11 +1291,25 @@ export async function runDestroyForStack(
       // skip arm. The `stackName` fallback keeps the hint non-empty if a future
       // path ever increments `errorCount` without recording a target.
       const failedTargets = failedStateTargets.size > 0 ? [...failedStateTargets] : [stackName];
-      const orphanHint = failedTargets.map((t) => `'cdkd state orphan ${t}'`).join(' / ');
+      const orphanHint = hintFor('cdkd state orphan', failedTargets);
+      // Issue #1777: a run can carry BOTH kinds at once, and this arm owns that
+      // case (the skip-only arm above is unreachable once errorCount > 0). The
+      // counters already print `, N skipped`, so saying nothing about them here
+      // would name a remedy for the failures and silently drop #1752's guidance
+      // for the skips — whose remedy is DIFFERENT in kind: a skip is not
+      // retryable, it needs the state record repaired first.
+      const skippedTargets = [...skippedStateTargets];
+      const skippedClause =
+        skippedTargets.length > 0
+          ? ` Separately, ${result.skippedCount} resource(s) were SKIPPED — cdkd could not address them, so no delete was issued and they may still exist in AWS. ` +
+            `Fix the physicalId in state.json (${hintFor('cdkd state show', skippedTargets)}) and re-run, ` +
+            `or delete them by hand and drop the records with ${hintFor('cdkd state orphan', skippedTargets)}.`
+          : '';
       logger.warn(
         `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}, ${red(result.errorCount)} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up. ` +
-          `If the same resource keeps failing, ${orphanHint} is the last resort: it removes the state record without deleting AWS resources.`
+          `If the same resource keeps failing, ${orphanHint} is the last resort: it removes the state record without deleting AWS resources.` +
+          skippedClause
       );
     }
   } finally {
