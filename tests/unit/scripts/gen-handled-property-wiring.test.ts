@@ -665,6 +665,30 @@ describe('transparent wrappers around the property bag (#1842)', () => {
     expect(c.properties.map((p) => p.name)).toEqual(['Alpha', 'Beta']);
   });
 
+  it('CREDITS an optional-chained read, which is the correct behavior', () => {
+    // Pinned because the header claimed `?.` was "excluded and pinned by a
+    // test": neither half was true, AND the behavior it described would have
+    // been wrong. `properties?.['X']` is an element access whose own
+    // `.expression` is the bag, so the walk credits it — correctly, because when
+    // the bag exists the read happens. Pinning the real behavior is worth more
+    // than deleting the sentence.
+    const c = only(
+      withDeclaration(['Alpha'], `create(id, type, properties) { send(properties?.['Alpha']); }`)
+    );
+    expect(c.bucket).toBe('wired');
+    expect(c.properties[0]?.evidence).toContain('element-read');
+  });
+
+  it('does NOT credit a read off a DEFAULTED bag', () => {
+    // The counter-case that keeps the above from being a blanket "peel anything
+    // near a bag": `(properties ?? {})['X']` reads a DIFFERENT object when the
+    // bag is absent, so it must fail closed.
+    const c = only(
+      withDeclaration(['Alpha'], `create(id, type, properties) { send((properties ?? {})['Alpha']); }`)
+    );
+    expect(c.bucket).toBe('gap');
+  });
+
   it('does NOT peel a node that is not transparent at runtime', () => {
     // The admission rule is "erases to nothing". `await` defers and can change
     // the value, so peeling it would credit a read the runtime may never make.
@@ -1247,6 +1271,36 @@ describe('evidence-loss verdict (#1842)', () => {
       // `c.properties is not iterable` — a CRASH where the stated contract is
       // "unusable baseline means no comparison". Deleting the guard left 106/106
       // green before this case existed.
+      // The fields the comparison CONSUMES must be shape-checked, not just
+      // present: `"evidence": "element-read"` (a string) exited 1 as
+      // `(before.evidence ?? []).filter is not a function` — the raw-TypeError
+      // shape a structured refusal exists to replace.
+      for (const bad of [
+        { evidence: 'element-read', seededBy: ['create'] },
+        { evidence: ['element-read'], seededBy: 'create' },
+      ]) {
+        const f = join(dir, `bad-${typeof bad.evidence === 'string' ? 'evidence' : 'seeds'}.json`);
+        writeFileSync(
+          f,
+          JSON.stringify({
+            schemaVersion: 1,
+            summary: {},
+            classes: [
+              {
+                className: 'P',
+                file: 'p.ts',
+                bucket: 'wired',
+                declaredCount: 1,
+                gaps: [],
+                blindSpots: [],
+                properties: [{ name: 'Alpha', status: 'wired', types: [], ...bad }],
+              },
+            ],
+          })
+        );
+        expect(loadBaseline(f), `${JSON.stringify(bad)} must be rejected`).toBeNull();
+      }
+
       const truncated = join(dir, 'truncated.json');
       writeFileSync(truncated, JSON.stringify({ schemaVersion: 1, classes: [{ className: 'P' }] }));
       expect(loadBaseline(truncated)).toBeNull();
@@ -1953,7 +2007,7 @@ describe('the shipped --check command', () => {
       `--baseline=${shrunk}`,
     ]);
     expect(status, 'a shrunken baseline must not be graded against').toBe(1);
-    expect(stderr).toContain('its own summary claims');
+    expect(stderr).toContain('Its own summary disagrees with the classes it holds');
     expect(existsSync(join(outDir, 'handled-property-wiring.json'))).toBe(false);
     // ...and a baseline with NO summary at all is the same defect: the generator
     // always writes one, so its absence means the file is not generator output.
@@ -1964,7 +2018,7 @@ describe('the shipped --check command', () => {
     );
     const b = runCheck(undefined, [`--baseline=${noSummary}`]);
     expect(b.status).toBe(1);
-    expect(b.stderr).toContain('its own summary claims none');
+    expect(b.stderr).toContain('it carries no summary at all');
   }, SPAWN_TIMEOUT_MS);
 
   it('a TRUNCATED baseline is refused the same way a missing one is', () => {
@@ -2067,6 +2121,42 @@ describe('the shipped --check command', () => {
     expect(f.stderr).toContain('unusable baseline at');
   }, SPAWN_TIMEOUT_MS);
 
+  it('BOTH waivers together announce BOTH acceptances, not just the loss', () => {
+    // The notice was an `else if` chained to the loss acceptance. An ABSENT
+    // baseline cannot expose that: with nothing to compare there are no losses,
+    // so the `else` branch runs either way and the test passes under both
+    // keyings. It needs a baseline that is UNUSABLE yet content-rich enough to
+    // still produce losses — a self-inconsistent copy of the real matrix — so
+    // both conditions hold at once and chaining them visibly swallows one.
+    const real = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'), 'utf8')
+    ) as HandledPropertyWiringReport;
+    const inconsistent = join(scratch, 'inconsistent-but-rich.json');
+    writeFileSync(
+      inconsistent,
+      JSON.stringify({
+        ...real,
+        summary: { ...real.summary, classifiedCount: real.summary.classifiedCount + 7 },
+      })
+    );
+    const degraded = providersCopyWith('providers-both-waivers', 'dynamodb-table-provider.ts', degradeWarmThroughput);
+    const outDir = join(scratch, 'out-both-waivers');
+    const { status, stderr } = run([
+      `--providers-dir=${degraded}`,
+      `--out-dir=${outDir}`,
+      `--baseline=${inconsistent}`,
+      ACCEPT_LOSS_FLAG,
+      ACCEPT_MISSING_BASELINE_FLAG,
+    ]);
+    expect(status).toBe(0);
+    expect(stderr, 'the loss enumeration must be printed').toContain('ACCEPTED EVIDENCE LOSS');
+    expect(stderr).toContain('DynamoDBTableProvider#WarmThroughput');
+    expect(stderr, 'the missing-baseline notice must not be swallowed by the loss notice').toContain(
+      'ACCEPTED MISSING BASELINE'
+    );
+    expect(stderr).toContain('wrote handled-property-wiring');
+  }, SPAWN_TIMEOUT_MS);
+
   it('MATRIX: BOTH waivers are rejected under --check, together and separately', () => {
     // Round 3 fenced only ACCEPT_LOSS_FLAG here; dropping the other from the
     // rejection list left 125 green while
@@ -2140,7 +2230,16 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
     bucket: 'wired' as const,
     declaredCount: 1,
     properties: [
-      { name, status: 'wired' as const, types: [], evidence: [] as never[], seededBy: [] as string[] },
+      {
+        name,
+        status: 'wired' as const,
+        types: [],
+        // Non-empty: a `wired` property with blank evidence is now itself a
+        // defect (`evidence-stripped`), so a fixture using it would test that
+        // rather than whatever it meant to.
+        evidence: ['element-read'] as never[],
+        seededBy: ['create'],
+      },
     ],
     gaps: [],
     blindSpots: [],
@@ -2182,6 +2281,98 @@ describe('assessBaseline — usability stated POSITIVELY (#1842)', () => {
     expect(a.baselineClaimedPairs).toBe(1138);
     // It DOES overlap — which is exactly why non-vacuity alone waved it through.
     expect(a.gradedPairs).toBe(1);
+  });
+
+  it('detects a mismatch in EACH summary field ON ITS OWN', () => {
+    // Round 5's check was a two-clause conjunction and NEITHER clause was
+    // fenced: both fixtures shrank the matrix to one class AND one property, so
+    // each tripped both clauses at once and deleting either half stayed green.
+    // A fixture that trips every clause of a conjunction fences none of them.
+    // The property-only shrink is also the LIKELIER accident — a partial write
+    // or bad merge drops properties inside classes while the class count holds.
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
+    const fields = [
+      'classifiedCount',
+      'declaredProperties',
+      'wiredProperties',
+      'wired',
+      'gap',
+      'allowListed',
+      'classesWithBlindSpots',
+    ] as const;
+    for (const field of fields) {
+      const tampered = {
+        ...real,
+        summary: { ...real.summary, [field]: (real.summary[field] as number) + 1 },
+      } as HandledPropertyWiringReport;
+      const a = assessBaseline(tampered, live);
+      expect(a.usable, `a wrong ${field} alone must be caught`).toBe(false);
+      expect(a.defect, field).toBe('self-inconsistent');
+      expect(a.detail, field).toContain(field);
+    }
+  });
+
+  it('catches a PROPERTY-only shrink that leaves the class count intact', () => {
+    // The realistic `jq` cut: keep all 84 classes, trim each to its first
+    // property. `classifiedCount` still agrees; only the property-side fields
+    // disagree. Measured before this: reported OK, exit 0, graded 81/1138.
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
+    const shrunk = {
+      ...real,
+      classes: real.classes.map((c) => ({ ...c, properties: c.properties.slice(0, 1) })),
+    } as HandledPropertyWiringReport;
+    expect(shrunk.classes.length, 'the class count must still agree').toBe(real.summary.classifiedCount);
+    const a = assessBaseline(shrunk, live);
+    expect(a.usable).toBe(false);
+    expect(a.defect).toBe('self-inconsistent');
+    expect(a.detail).toContain('declaredProperties');
+    expect(a.gradedPairs, 'it DOES overlap — which is why non-vacuity missed it').toBeGreaterThan(0);
+  });
+
+  it('catches a CLASS-only drop that leaves the property arrays untouched', () => {
+    // The mirror: remove whole classes, so `declaredProperties` and
+    // `classifiedCount` disagree in the other direction.
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
+    const dropped = { ...real, classes: real.classes.slice(0, 40) } as HandledPropertyWiringReport;
+    const a = assessBaseline(dropped, live);
+    expect(a.usable).toBe(false);
+    expect(a.defect).toBe('self-inconsistent');
+    expect(a.detail).toContain('classifiedCount');
+  });
+
+  it('refuses a baseline whose counts are perfect but whose EVIDENCE is stripped', () => {
+    // Strictly worse than any shrink: every count is immaculate, so the
+    // mitigation announces `graded 1138/1138` while the comparison reads blank
+    // fields and can report nothing. Rounds 1-4 all constrained something
+    // ADJACENT to the comparison; this is the field it actually consumes.
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
+    const blanked = {
+      ...real,
+      classes: real.classes.map((c) => ({
+        ...c,
+        properties: c.properties.map((p) => ({ ...p, evidence: [], seededBy: [] })),
+      })),
+    } as HandledPropertyWiringReport;
+    const a = assessBaseline(blanked, live);
+    expect(a.usable).toBe(false);
+    expect(a.defect).toBe('evidence-stripped');
+    expect(a.gradedPairs, 'full coverage, zero provable content').toBe(a.currentPairs);
+  });
+
+  it('counts DISTINCT pairs, so replication cannot fake a length', () => {
+    const real = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'))!;
+    const replicated = {
+      ...real,
+      classes: real.classes.map((c) => ({
+        ...c,
+        properties: c.properties.map(() => c.properties[0]!),
+      })),
+    } as HandledPropertyWiringReport;
+    const a = assessBaseline(replicated, live);
+    expect(a.baselinePairs, 'distinct keys, not array length').toBeLessThan(
+      replicated.classes.reduce((n, c) => n + c.properties.length, 0)
+    );
+    expect(a.usable).toBe(false);
   });
 
   it('names WHICH defect made a baseline unusable', () => {

@@ -135,7 +135,7 @@
  * silenced the very #1392 property this critic exists to catch. Checking the
  * whole tree, EVERY whole-bag site today is a diff / comparison loop
  * (`Object.keys({ ...properties, ...previousProperties })`,
- * `JSON.stringify(properties[k]) !== ...`), never a delivery, and 1059/1063
+ * `JSON.stringify(properties[k]) !== ...`), never a delivery, and 1136/1138
  * declared properties have direct read evidence — so the excuse rescued
  * exactly ZERO properties while creating a general-purpose mute button.
  * The sanctioned escape hatch for a genuinely un-followable shape is a
@@ -222,25 +222,29 @@
  * A VERDICT REQUIRES A BASELINE THAT COULD HAVE FAILED
  * ----------------------------------------------------
  * Grading against a file invites making the file stop being able to fail.
- * Review found three spellings of that, one per round — the matrix DELETED
- * (staged, so `git diff --quiet` stayed green), TRUNCATED (parses, with a
- * well-formed header), and EMPTY (`{"schemaVersion":1,"classes":[]}`, which
- * passes every structural check) — each landing the same way: both modes report
- * success at exit 0 and the tamper is overwritten without trace.
+ * Review found FIVE spellings of that, one per round, each slipping the previous
+ * round's guard — DELETED (staged, so `git diff --quiet` stayed green),
+ * TRUNCATED (parses, well-formed header), EMPTY (`classes: []`, passing every
+ * structural check), SHRUNKEN (cut to one pair, which OVERLAPS so non-vacuity
+ * waved it through) and STRIPPED (`evidence` / `seededBy` blanked while every
+ * count stays intact). Each landed the same way: both modes report success at
+ * exit 0 and the tamper is overwritten without trace. STRIPPED is the worst,
+ * because the mitigation then announces `graded 1138/1138` having graded nothing.
  *
- * So usability is defined POSITIVELY, in {@link assessBaseline}: a baseline must
- * be SELF-CONSISTENT (its own `summary` agreeing with the classes it holds) and
- * NON-VACUOUS (covering at least one (class, property) pair of the tree being
- * graded) — i.e. it must be generator output, and it must be able to FAIL.
- * Missing, truncated, empty and class-disjoint baselines grade zero pairs; a
- * SHRUNKEN one — the real matrix cut to a single pair by one `jq` line — does
- * overlap, and is caught by self-consistency because it still advertises the
- * full `declaredProperties`. One refusal, not five guards.
+ * The pattern behind all five is one bug: rounds 1-4 each constrained something
+ * ADJACENT to the comparison — a pair count, then two summary counts — and never
+ * the fields the comparison READS. So the rule is not "reject these five
+ * shapes"; it is that an integrity check must constrain exactly what the
+ * consumer consumes. {@link assessBaseline} states that as three positive
+ * conditions (self-consistent over the WHOLE summary, evidence-bearing on every
+ * `wired` property, non-vacuous against the tree being graded), and the five
+ * spellings fall out of it rather than being enumerated.
  *
  * Partial coverage is handled by visibility rather than by a threshold nobody
- * could defend: EVERY run — writer included — prints `graded N/M pairs`, and the
- * unit suite pins that the committed matrix grades 100% of the live tree. The
- * residual bound is stated on {@link assessBaseline} rather than glossed.
+ * could defend: EVERY run — writer included — prints `graded N/M pairs`. The
+ * residual bound is stated on {@link assessBaseline}: any baseline whose
+ * declared counts match the content it holds is accepted, WHATEVER TREE it
+ * describes, and grades only what it covers.
  *
  * TWO ESCAPE HATCHES, deliberately SEPARATE, both WRITER-ONLY:
  *   - `--accept-evidence-loss` acknowledges a measured reduction, and prints
@@ -496,8 +500,14 @@ const isCfnPropertyName = (name: string): boolean => /^[A-Z][A-Za-z0-9]*$/.test(
  * spelled through one is the same read. Each erases to nothing (four are
  * type-only syntax; parentheses are grouping), which is the ONLY admission
  * criterion — a node that can change the value, short-circuit, or defer it
- * (`await`, `?.`, `x ?? y`, a tagged template) must never be listed here,
- * because peeling it would credit a read the runtime may never perform. The
+ * (`await`, `x ?? y`, a tagged template) must never be listed here, because
+ * peeling it would credit a read the runtime may never perform. Optional
+ * chaining is NOT in that group and is deliberately not excluded:
+ * `properties?.['X']` parses as an element access whose own `.expression` is the
+ * bag, so the walk credits it — correctly, because when the bag exists the read
+ * happens. (An earlier revision listed `?.` here as "excluded and pinned by a
+ * test"; neither half was true, and the behavior it described would have been
+ * wrong. The real behavior is pinned below instead.) The
  * list is not claimed exhaustive over erase-to-nothing syntax —
  * `ExpressionWithTypeArguments` (an instantiation expression) qualifies and is
  * absent; omitting one only fails CLOSED (a read goes unseen), which is the
@@ -852,7 +862,7 @@ export function loopDeliversKeyedReads(
 /**
  * How a property earned its evidence. Recorded per property so the matrix (and
  * the unit tests' per-SHAPE real-repo floors) can tell a live recognizer from a
- * dead one — an aggregate "1059 wired" would let a whole shape stop working
+ * dead one — an aggregate "1136 wired" would let a whole shape stop working
  * while the total absorbed the loss.
  *
  * `delegated` is orthogonal to the other four: it rides along when the read
@@ -1410,11 +1420,30 @@ export function loadBaseline(path: string = OUT_JSON): HandledPropertyWiringRepo
     // `Cannot read properties of null (reading 'name')`. It failed CLOSED, so it
     // was never a bypass — but it skipped the structured refusal, and a verdict
     // this critic can only deliver as a stack trace is a verdict nobody reads.
+    // Constrain exactly the fields the comparison CONSUMES —
+    // `className` / `name` / `evidence` / `seededBy`. An unconstrained one does
+    // not fail safe: `"evidence": "element-read"` (a string, not an array) died
+    // in the walk as `(before.evidence ?? []).filter is not a function`, the
+    // raw-TypeError shape a structured refusal exists to replace.
+    // Class-level shape too: {@link assessBaseline} recomputes the summary via
+    // `buildReport`, which reads `gaps` / `blindSpots` / `bucket` / `file` — so
+    // those are CONSUMED and must be constrained. Leaving them unchecked crashed
+    // on `{"classes":[{"className":"P","properties":[]}]}` with a bare
+    // `Cannot read properties of undefined (reading 'length')`.
     if (
       parsed.classes.some(
         (c) =>
           typeof c?.className !== 'string' ||
-          c.properties.some((x: PropertyClassification | null) => typeof x?.name !== 'string')
+          typeof c.file !== 'string' ||
+          typeof c.bucket !== 'string' ||
+          !Array.isArray(c.gaps) ||
+          !Array.isArray(c.blindSpots) ||
+          c.properties.some(
+            (x: PropertyClassification | null) =>
+              typeof x?.name !== 'string' ||
+              !Array.isArray(x.evidence) ||
+              !Array.isArray(x.seededBy)
+          )
       )
     ) {
       return null;
@@ -1426,7 +1455,7 @@ export function loadBaseline(path: string = OUT_JSON): HandledPropertyWiringRepo
 }
 
 /** Why a baseline is not usable, when it is not. */
-export type BaselineDefect = 'absent' | 'self-inconsistent' | 'no-overlap';
+export type BaselineDefect = 'absent' | 'self-inconsistent' | 'evidence-stripped' | 'no-overlap';
 
 /** What a baseline can actually prove about the report it is grading. */
 export interface BaselineAssessment {
@@ -1436,50 +1465,59 @@ export interface BaselineAssessment {
   readonly gradedPairs: number;
   /** (class, property) pairs the current report declares. */
   readonly currentPairs: number;
-  /** (class, property) pairs the baseline actually holds. */
+  /** DISTINCT `Class#Property` keys the baseline holds. */
   readonly baselinePairs: number;
-  /** What the baseline itself claims to hold, from its own `summary`. */
+  /** What the baseline's own `summary` claims it holds. */
   readonly baselineClaimedPairs: number | null;
   readonly defect?: BaselineDefect;
+  /** Human-readable specifics for {@link unusableBaselineFailure}. */
+  readonly detail?: string;
 }
 
 /**
  * Is this baseline usable — stated POSITIVELY, which is the whole point.
  *
- * TWO conditions, both of which the baseline must satisfy on its own terms:
+ * THREE conditions, and the ORDER OF DISCOVERY is the lesson worth keeping:
  *
- *  1. SELF-CONSISTENT — its `summary.declaredProperties` / `classifiedCount`
- *     must match what its `classes` actually hold. The generator always writes
- *     them in agreement, so a disagreement means the file was edited or
- *     partially written after generation, whatever the reason.
- *  2. NON-VACUOUS — the comparison must cover at least one (class, property)
+ *  1. SELF-CONSISTENT — its ENTIRE `summary` must equal the summary recomputed
+ *     from its own `classes`. Not two hand-picked count fields: the whole
+ *     record, so a field added later is constrained automatically.
+ *  2. EVIDENCE-BEARING — every `wired` property must actually carry `evidence`
+ *     and `seededBy`. These are the fields {@link findEvidenceLosses} CONSUMES.
+ *  3. NON-VACUOUS — the comparison must cover at least one (class, property)
  *     pair of the report being graded, i.e. it must be able to FAIL at all.
  *
- * WHY POSITIVE RATHER THAN A LIST OF BAD SHAPES. Four review rounds closed four
- * spellings of one tamper, one per round: MISSING (deleted — staged, so
- * `git diff --quiet` stayed green), TRUNCATED (parses, well-formed header),
- * EMPTY (`{"schemaVersion":1,"classes":[]}`, which passes every structural
- * check), and SHRUNKEN (the real matrix cut to a single pair by one `jq` line —
- * it grades one pair, so a bare non-vacuity test waves it through while the
- * other 1137 go ungraded). Enumerating shapes loses that race by construction.
+ * WHY THE LIST GREW, AND WHY IT SHOULD NOW STOP. Five review rounds closed five
+ * spellings of one tamper, each slipping the previous round's guard:
+ *   - MISSING (deleted; staged, so `git diff --quiet` stayed green),
+ *   - TRUNCATED (parses, well-formed header),
+ *   - EMPTY (`classes: []`, passing every structural check),
+ *   - SHRUNKEN (cut to one pair — it OVERLAPS, so non-vacuity waved it through),
+ *   - STRIPPED (`evidence` / `seededBy` blanked on every property while every
+ *     count stays intact — strictly the worst, because the mitigation then
+ *     announces `graded 1138/1138` while grading nothing).
  *
- * Condition 1 is what kills the shrunken case, and it costs nothing: a cut-down
- * matrix still advertises `declaredProperties: 1138` while holding one pair.
- * That is the same positive-predicate move applied one level up — the artifact
- * must agree with itself before it is allowed to vouch for anything.
+ * Rounds 1-4 each constrained something ADJACENT to the comparison — a pair
+ * count, then summary counts — and never the fields the comparison reads. That
+ * is the actual bug behind all five: an integrity check must constrain exactly
+ * what the consumer CONSUMES. Condition 2 is that, stated directly, and it is
+ * free — all 1136 wired properties in the committed matrix carry both fields.
+ * Condition 1 is likewise widened from two fields to the whole summary so the
+ * next field cannot be the sixth spelling.
  *
  * WHY NOT A COVERAGE RATIO. Any threshold is a magic constant needing its own
  * defence, and legitimate drift (a PR adding a provider class) must not trip it.
  *
- * THE RESIDUAL BOUND, stated rather than glossed. A hand-written baseline that
- * is INTERNALLY CONSISTENT but tiny — one class, one property, a matching
- * summary — is accepted, and grades only that pair. This is a deliberate limit,
- * not an oversight: the accidental shapes (a bad merge, a partial write, a
- * truncation, a `jq` edit) all leave the summary disagreeing and are refused,
- * while producing a consistent miniature requires hand-authoring a file that
- * claims the tree has one property. That is no longer an accident, and it is
- * visible — every run, WRITER included, prints `graded N/M pairs`, so such a run
- * announces `graded 1/1138` in the output the author is already reading.
+ * THE RESIDUAL BOUND, stated as what is actually CHECKED rather than as a claim
+ * about intent: any baseline whose declared counts match the content it holds is
+ * accepted, WHATEVER TREE IT DESCRIBES, and it grades only the pairs it covers.
+ * A self-consistent SUBSET is therefore usable — the committed matrix minus one
+ * pair, with `declaredProperties` decremented, grades 1137/1138 and is accepted.
+ * So is an OLDER committed matrix restored by a merge or checkout, and accepting
+ * that is CORRECT: it is a real baseline describing a real tree, and it reports
+ * real losses. What the run does about the difference is announce it — every
+ * exit-0 path prints `graded N/M pairs`, so a subset says so in output the
+ * author is already reading.
  */
 export function assessBaseline(
   baseline: HandledPropertyWiringReport | null,
@@ -1497,36 +1535,65 @@ export function assessBaseline(
     };
   }
 
-  const baselinePairs = baseline.classes.reduce((n, c) => n + c.properties.length, 0);
-  const claimedPairs =
-    typeof baseline.summary?.declaredProperties === 'number'
-      ? baseline.summary.declaredProperties
-      : null;
-  const claimedClasses =
-    typeof baseline.summary?.classifiedCount === 'number' ? baseline.summary.classifiedCount : null;
-
+  // DISTINCT keys: a baseline that replicates one property to preserve `length`
+  // satisfies a naive count while holding a single real pair.
   const known = new Set<string>();
   for (const c of baseline.classes) {
     for (const p of c.properties) known.add(allowKey(c.className, p.name));
   }
+  const baselinePairs = known.size;
+  const claimedPairs =
+    typeof baseline.summary?.declaredProperties === 'number'
+      ? baseline.summary.declaredProperties
+      : null;
+
   let gradedPairs = 0;
   for (const c of current.classes) {
     for (const p of c.properties) {
       if (known.has(allowKey(c.className, p.name))) gradedPairs += 1;
     }
   }
-
   const base = { gradedPairs, currentPairs, baselinePairs, baselineClaimedPairs: claimedPairs };
-  // A missing summary is as inconsistent as a wrong one: the generator always
-  // writes it, so its absence means this file did not come from the generator.
-  if (
-    claimedPairs === null ||
-    claimedPairs !== baselinePairs ||
-    claimedClasses === null ||
-    claimedClasses !== baseline.classes.length
-  ) {
-    return { ...base, usable: false, defect: 'self-inconsistent' };
+
+  // 1. The WHOLE summary, recomputed from the baseline's own classes. The
+  //    generator writes them in agreement by construction, so any disagreement
+  //    means the file was edited or partially written afterwards.
+  const recomputed = buildReport(baseline.classes).summary;
+  const mismatched = (Object.keys(recomputed) as Array<keyof typeof recomputed>).filter(
+    (k) => baseline.summary?.[k] !== recomputed[k]
+  );
+  if (!baseline.summary || mismatched.length > 0) {
+    return {
+      ...base,
+      usable: false,
+      defect: 'self-inconsistent',
+      detail: !baseline.summary
+        ? 'it carries no summary at all'
+        : mismatched
+            .map((k) => `${k}: claims ${String(baseline.summary[k])}, holds ${String(recomputed[k])}`)
+            .join('; '),
+    };
   }
+
+  // 2. The fields the comparison CONSUMES. Counts can be immaculate while these
+  //    are blank, and then the run reports full coverage having graded nothing.
+  const stripped = baseline.classes.flatMap((c) =>
+    c.properties
+      .filter((p) => p.status === 'wired' && (p.evidence.length === 0 || p.seededBy.length === 0))
+      .map((p) => allowKey(c.className, p.name))
+  );
+  if (stripped.length > 0) {
+    return {
+      ...base,
+      usable: false,
+      defect: 'evidence-stripped',
+      detail:
+        `${stripped.length} wired propert${stripped.length === 1 ? 'y' : 'ies'} carry no evidence ` +
+        `or no seeding member (e.g. ${stripped.slice(0, 3).join(', ')})`,
+    };
+  }
+
+  // 3. Can this comparison fail at all?
   if (gradedPairs === 0) return { ...base, usable: false, defect: 'no-overlap' };
   return { ...base, usable: true };
 }
@@ -1753,9 +1820,12 @@ const LOSS_ESCAPE_HATCH =
 const BASELINE_DEFECT_LINE: Record<BaselineDefect, (a: BaselineAssessment) => string> = {
   absent: () => 'It is absent, or not a readable v1 matrix, so there is nothing to compare against.',
   'self-inconsistent': (a) =>
-    `It holds ${a.baselinePairs} (class, property) pairs but its own summary claims ` +
-    `${a.baselineClaimedPairs ?? 'none'} — so it was edited or partially written after ` +
-    'generation, and cannot be trusted to describe the tree it was generated from.',
+    `Its own summary disagrees with the classes it holds (${a.detail ?? 'mismatch'}), so it was ` +
+    'edited or partially written after generation and cannot be trusted to describe the tree it ' +
+    'was generated from.',
+  'evidence-stripped': (a) =>
+    `Its counts are intact but the fields the comparison READS are not: ${a.detail ?? 'blank'}. ` +
+    'A baseline recording no evidence cannot report a loss, however complete it looks.',
   'no-overlap': (a) =>
     `It grades ${a.gradedPairs} of this tree's ${a.currentPairs} declared (class, property) ` +
     'pairs, so no regression in this tree could make it fail.',
@@ -2048,7 +2118,12 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
         'records STRICTLY WEAKER evidence than before for:\n'
     );
     for (const l of losses) process.stderr.write(`${formatEvidenceLoss(l)}\n`);
-  } else if (!assessment.usable) {
+  }
+  // Independent `if`, not an `else if` chained to the loss notice: with BOTH
+  // waivers on an unusable baseline the run printed only the loss acceptance and
+  // never said it had graded against nothing — contradicting this notice's own
+  // claim to be the ONLY output the missing-baseline waiver produces.
+  if (!assessment.usable) {
     // Say it, or the run looks like an ordinary write while it is in fact
     // installing an UNGRADED matrix. This is the ONLY output the missing-baseline
     // waiver produces — there is no per-property enumeration to print, which is
