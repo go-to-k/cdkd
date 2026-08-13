@@ -276,10 +276,19 @@ describe('the PAY_PER_REQUEST gate — the whole risk of the change (#1571 trap)
     // in, never a capacity to compare against — so the suppression must be
     // disabled entirely rather than "happen not to match".
     //
-    // Asserted through a template that requests EXACTLY {0, 0}: under an
-    // ungated comparison the zeros would match and the Update would vanish.
-    // Any non-zero request would pass this row for the wrong reason.
-    primeDescribeTable('PAY_PER_REQUEST', [liveGsi('gsi1', 0, 0)]);
+    // The teeth are a live entry whose capacity EQUALS the request: under an
+    // ungated comparison the two would match and the Update would vanish, so
+    // only the mode gate can be what keeps it. Any live value DIFFERING from
+    // the request would pass this row for the wrong reason.
+    //
+    // Those teeth used to come from requesting exactly {0, 0} against the live
+    // {0, 0} an on-demand table really reports. Issue #1767 made that shape
+    // unusable HERE: a {0, 0} REQUEST is now refused outright (it is AWS's
+    // placeholder, and the minimum capacity is 1), so the row would pass
+    // whatever the mode gate did. A non-zero live capacity is not a shape a
+    // real PAY_PER_REQUEST table reports, which is precisely why it isolates
+    // the gate from the values.
+    primeDescribeTable('PAY_PER_REQUEST', [liveGsi('gsi1', 5, 5)]);
     mockSend.mockResolvedValueOnce({});
     mockSend.mockResolvedValueOnce({
       Table: { TableName: TABLE_NAME, TableStatus: 'ACTIVE' },
@@ -289,12 +298,12 @@ describe('the PAY_PER_REQUEST gate — the whole risk of the change (#1571 trap)
       'L',
       TABLE_NAME,
       RESOURCE_TYPE,
-      { GlobalSecondaryIndexes: [cfnGsi('gsi1', 0, 0)] },
+      { GlobalSecondaryIndexes: [cfnGsi('gsi1', 5, 5)] },
       { GlobalSecondaryIndexes: [cfnGsi('gsi1', 3, 3)] }
     );
 
     expect(gsiUpdates()).toEqual([
-      { Update: { IndexName: 'gsi1', ProvisionedThroughput: { ReadCapacityUnits: 0, WriteCapacityUnits: 0 } } },
+      { Update: { IndexName: 'gsi1', ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 } } },
     ]);
   });
 

@@ -7,6 +7,11 @@
 # exists" -> deploy fails + rollback). The fix routes the GSI add through
 # UpdateTable's GlobalSecondaryIndexUpdates so the table is updated in place.
 #
+# It ALSO carries the live coverage for issue #1767 (the GSI / LSI readback was
+# forwarded VERBATIM off `DescribeTable`, so its AWS-managed members took part in
+# drift detection) — see the Phase 2b block below for what that arm proves and
+# why each half of it is shaped the way it is.
+#
 # Phases:
 #   1. Deploy the table with only the `pk` partition key; capture its
 #      CreationDateTime + assert no GSI.
@@ -14,6 +19,17 @@
 #      Assert: deploy succeeds, the table's CreationDateTime is UNCHANGED (no
 #      replacement), GSI `gsi1` exists and reaches ACTIVE, and the table routes
 #      via the SDK provider (provisionedBy=sdk).
+#   2a. Assert (issue #1768): the deploy SUCCEEDED although the template
+#      declares a WarmThroughput below what AWS holds, cdkd said why it skipped
+#      the call, and AWS's value is unchanged.
+#   2d. Assert (issue #1768, EMIT half): the per-index WarmThroughput the
+#      template declares on gsi1 actually reached AWS (12001/4000, which the
+#      AWS default 12000/4000 cannot produce).
+#   2b. Put real items into the table, then assert (issue #1767): the
+#      deploy-written `observedProperties` index entry carries ONLY the CFn
+#      members, `cdkd drift` reports the table CLEAN (not "drift unknown"), and
+#      it stays clean against the TEMPLATE baseline once `observedProperties` is
+#      stripped.
 #   3. Destroy + assert the table is gone and the cdkd state file is removed.
 #
 # Required env vars:
@@ -67,9 +83,17 @@ GSI_NAME="gsi1"
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# Scratch files, declared HERE so `cleanup` can sweep them on EVERY exit path.
+# Each assertion below can `exit 1` between the write and its own `rm -f`, and
+# a PID-suffixed leftover in TMPDIR is invisible until it accumulates.
+DEPLOY_LOG="${TMPDIR:-/tmp}/cdkd-1768-deploy.$$.log"
+STATE_JSON="${TMPDIR:-/tmp}/cdkd-1767-state.$$.json"
+DRIFT_JSON="${TMPDIR:-/tmp}/cdkd-1767-drift.$$.json"
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  rm -f "${DEPLOY_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -119,10 +143,30 @@ CREATION_P1="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region
   --query 'Table.CreationDateTime' --output text)"
 echo "    baseline table CreationDateTime=${CREATION_P1}"
 
+# Issue #1768: what AWS holds for warm throughput BEFORE the update that asks
+# for less. Read as the pair rather than a hardcoded 12000/4000 so the
+# assertion stays true on an account whose table has grown past the floor.
+WARM_P1="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'join(`/`, [to_string(Table.WarmThroughput.ReadUnitsPerSecond), to_string(Table.WarmThroughput.WriteUnitsPerSecond)])' \
+  --output text)"
+case "${WARM_P1}" in
+  *null* | '' )
+    # AWS reports a WarmThroughput for EVERY table, so an absent one means the
+    # probe broke — and a "null/null" on both sides would let the Phase 2a
+    # comparison pass without measuring anything.
+    echo "FAIL (issue #1768): could not read the table's WarmThroughput ('${WARM_P1}') — the Phase 2a assertion would be vacuous" >&2
+    exit 1
+    ;;
+esac
+echo "    baseline WarmThroughput=${WARM_P1}"
+
 # --- Phase 2: add a GSI (in-place UPDATE, must NOT replace) ------------
 echo "==> Phase 2: re-deploy adding GSI ${GSI_NAME} (in-place UpdateTable)"
+# The template also declares a WarmThroughput BELOW the value AWS holds (issue
+# #1768). Pre-fix that made this very deploy FAIL, so the tee'd log is both the
+# evidence for the skip and the reason the deploy still succeeds.
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${DEPLOY_LOG}"
 
 # The table must be the SAME table (no replacement): CreationDateTime unchanged.
 CREATION_P2="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
@@ -152,6 +196,234 @@ if [ "${PROVISIONED_BY}" != "sdk" ]; then
 fi
 echo "    table routed via SDK provider (provisionedBy=sdk)"
 
+# --- Phase 2a: the unrevertable WarmThroughput decrease (issue #1768) --------
+# `set -o pipefail` already failed the run if the deploy itself errored, which
+# IS the pre-fix behavior (the doomed UpdateTable is rejected with
+# `decreasing WarmThroughput is not supported`). These two assertions pin that
+# the deploy succeeded for the RIGHT reason — cdkd skipped the call and said so
+# — rather than because AWS quietly accepted a lower value.
+if ! grep -q 'decreasing WarmThroughput is not supported' "${DEPLOY_LOG}"; then
+  echo "FAIL (issue #1768): the deploy did not report skipping the WarmThroughput decrease" >&2
+  grep -i 'warmthroughput' "${DEPLOY_LOG}" >&2 || echo "  (no WarmThroughput line at all)" >&2
+  rm -f "${DEPLOY_LOG}"
+  exit 1
+fi
+WARM_P2="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'join(`/`, [to_string(Table.WarmThroughput.ReadUnitsPerSecond), to_string(Table.WarmThroughput.WriteUnitsPerSecond)])' \
+  --output text)"
+if [ "${WARM_P2}" != "${WARM_P1}" ]; then
+  echo "FAIL (issue #1768): AWS WarmThroughput changed ${WARM_P1} -> ${WARM_P2}; nothing should have been sent" >&2
+  rm -f "${DEPLOY_LOG}"
+  exit 1
+fi
+rm -f "${DEPLOY_LOG}"
+echo "    WarmThroughput decrease skipped with a warning; AWS still holds ${WARM_P2}"
+
+# --- Phase 2d: the per-index WarmThroughput EMIT arm (issue #1768) -----------
+# Phase 2a covers the SKIP. This covers the opposite half: a per-index
+# WarmThroughput cdkd must actually put on the wire. `applyGsiUpdates` used to
+# send only ProvisionedThroughput / OnDemandThroughput, so a template declaring
+# a per-index WarmThroughput had it silently dropped — `cdkd drift` then
+# reported the difference forever and `--revert` emitted no op at all while
+# exiting 0. Nothing but a real deploy proves the value reaches AWS.
+#
+# The stack declares 12001/4000 on gsi1 (see the stack file for the cost note).
+# 12001 is the discriminator: an index created with NO WarmThroughput reports
+# exactly 12000/4000 (AWS's floor, measured us-east-1 2026-08-13 on a sibling
+# index in the same table), so this assertion fails the moment the emit stops
+# happening — it cannot pass on the default.
+#
+# Read WITHOUT waiting for the warm status to settle. Measured on the same run:
+# the units report the REQUESTED value from the first poll (t=5s, while
+# IndexStatus is still CREATING) whereas WarmThroughput.Status stays UPDATING
+# for minutes — and cdkd deliberately does not gate its index wait on that
+# status, so a "wait for ACTIVE warm status" assertion here would block on
+# something the provider never waits for. The bounded poll below is for
+# eventual consistency of the READ, not for the warm update to finish.
+GSI_WARM_EXPECTED_READ=12001
+GSI_WARM_EXPECTED_WRITE=4000
+GSI_WARM_DEFAULT_READ=12000
+gsi_warm_units() { # -> "<read>/<write>" for ${GSI_NAME}
+  aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query "join(\`/\`, [to_string(Table.GlobalSecondaryIndexes[?IndexName=='${GSI_NAME}'].WarmThroughput.ReadUnitsPerSecond | [0]), to_string(Table.GlobalSecondaryIndexes[?IndexName=='${GSI_NAME}'].WarmThroughput.WriteUnitsPerSecond | [0])])" \
+    --output text || return 1
+}
+GSI_WARM=""
+for _ in $(seq 1 12); do
+  # `if !` rather than a bare assignment: under `set -e` a failing command
+  # substitution ABORTS the whole verify, which is the opposite of what the
+  # retry loop is for — a throttled / transient describe must be retried, not
+  # fatal. (`gsi_warm_units`'s own `|| return 1` propagates the failure here.)
+  if ! GSI_WARM="$(gsi_warm_units)"; then
+    GSI_WARM=""
+  fi
+  [ "${GSI_WARM}" = "${GSI_WARM_EXPECTED_READ}/${GSI_WARM_EXPECTED_WRITE}" ] && break
+  sleep 5
+done
+if [ "${GSI_WARM}" != "${GSI_WARM_EXPECTED_READ}/${GSI_WARM_EXPECTED_WRITE}" ]; then
+  echo "FAIL (issue #1768): GSI ${GSI_NAME} WarmThroughput is '${GSI_WARM}', expected ${GSI_WARM_EXPECTED_READ}/${GSI_WARM_EXPECTED_WRITE} — the per-index WarmThroughput the template declares never reached AWS" >&2
+  case "${GSI_WARM}" in
+    "${GSI_WARM_DEFAULT_READ}/"*)
+      echo "  (it reports AWS's default floor, which is exactly what an index created with NO declared WarmThroughput looks like)" >&2
+      ;;
+  esac
+  aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query "Table.GlobalSecondaryIndexes[?IndexName=='${GSI_NAME}'].WarmThroughput" --output json >&2
+  exit 1
+fi
+echo "    per-index WarmThroughput reached AWS: ${GSI_WARM} (not the ${GSI_WARM_DEFAULT_READ}/4000 default)"
+
+# --- Phase 2b: no phantom drift on an in-use table with a GSI (issue #1767) ---
+# `readCurrentState` used to forward the `DescribeTable` index descriptions
+# VERBATIM, so `IndexStatus`, `Backfilling`, `ItemCount`, `IndexSizeBytes`,
+# `IndexArn`, the on-demand `{0, 0}` `ProvisionedThroughput` placeholder and the
+# AWS-computed per-index `WarmThroughput` all reached the drift comparison. They
+# are members of an ARRAY the baseline carries, and arrays are compared
+# positionally by `deepEqual`, so every one of them participated — the
+# state-keys-only walk that filters an AWS-only TOP-LEVEL key never reaches
+# them. Two failures came out of that, and this phase defends both.
+#
+# The items are written FIRST so the index holds real data and its AWS-managed
+# members are genuinely populated rather than the all-zero shape a fresh table
+# reports. Note the counters themselves are NOT the load-bearing signal here:
+# DynamoDB refreshes `ItemCount` / `IndexSizeBytes` roughly every six hours, so
+# a run cannot rely on them moving within its own lifetime. The two assertions
+# below are the deterministic ones, and each FAILS against the pre-fix code:
+#
+#   1. the `observedProperties` entry cdkd wrote from a REAL `DescribeTable`
+#      must carry only the CFn members. Pre-fix it carried all of the above,
+#      which is the necessary condition for the traffic-driven drift: once the
+#      moving members are not in the baseline, they cannot drift out of it.
+#   2. with `observedProperties` stripped, the TEMPLATE `properties` baseline
+#      must compare clean. That is failure 1 of the issue, and it is the arm
+#      that BINDS: with the observed baseline present both comparison sides come
+#      from the same `readCurrentState`, so they move together and a reverted fix
+#      would still report "no drift" (the vacuous-pass shape
+#      `apigatewayv2-update-removal` documents).
+echo "==> Phase 2b: write items, then assert no phantom drift on the GSI table (issue #1767)"
+
+ITEM_PAYLOAD="$(printf 'x%.0s' $(seq 1 512))"
+for i in 1 2 3 4 5; do
+  aws dynamodb put-item --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --item "{\"pk\":{\"S\":\"p${i}\"},\"gsipk\":{\"S\":\"g${i}\"},\"payload\":{\"S\":\"${ITEM_PAYLOAD}\"}}" \
+    >/dev/null
+done
+echo "    wrote 5 items — the GSI now holds real entries"
+
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${STATE_JSON}" --region "${REGION}" >/dev/null
+
+TABLE_LID="$(jq -r '[.resources | to_entries[]
+  | select(.value.resourceType == "AWS::DynamoDB::Table") | .key] | first // ""' "${STATE_JSON}")"
+if [ -z "${TABLE_LID}" ]; then
+  echo "FAIL: no AWS::DynamoDB::Table resource in the cdkd state record" >&2
+  exit 1
+fi
+
+# Vacuity guard: without a deploy-time capture there is nothing to assert the
+# shape of, and the strip below would be a no-op.
+if [ "$(jq -r --arg l "${TABLE_LID}" '.resources[$l].observedProperties | type' "${STATE_JSON}")" != "object" ]; then
+  echo "FAIL: ${TABLE_LID} has no observedProperties — the issue #1767 assertions would be vacuous" >&2
+  exit 1
+fi
+
+# `keys` is sorted, so the expected value is alphabetical. Asserting the WHOLE
+# key set rather than probing for named members is deliberate: the reverse map
+# is an allow-list, and a deny-list-shaped assertion misses whatever member AWS
+# adds next (`Backfilling` is already one the issue's own sample omitted).
+OBSERVED_GSI_KEYS="$(jq -r --arg l "${TABLE_LID}" \
+  '((.resources[$l].observedProperties.GlobalSecondaryIndexes // [])[0] // {}) | keys | join(",")' \
+  "${STATE_JSON}")"
+if [ -z "${OBSERVED_GSI_KEYS}" ]; then
+  echo "FAIL: the observed baseline for ${TABLE_LID} captured no GlobalSecondaryIndexes entry — the issue #1767 assertion would be vacuous" >&2
+  exit 1
+fi
+# `WarmThroughput` belongs in this set BECAUSE the template declares one for
+# this index (the Phase 2d emit arm) — the reverse-map emits a throughput block
+# the desired bag declares and drops the AWS-managed members either way, so this
+# key set asserts BOTH halves at once: the declared block survived, the
+# `IndexStatus` / `Backfilling` / `ItemCount` / `IndexSizeBytes` / `IndexArn` /
+# on-demand `{0,0}` `ProvisionedThroughput` noise did not.
+if [ "${OBSERVED_GSI_KEYS}" != "IndexName,KeySchema,Projection,WarmThroughput" ]; then
+  echo "FAIL (issue #1767): the observed GSI baseline has the wrong member set — got '${OBSERVED_GSI_KEYS}', expected 'IndexName,KeySchema,Projection,WarmThroughput'" >&2
+  jq --arg l "${TABLE_LID}" '.resources[$l].observedProperties.GlobalSecondaryIndexes' "${STATE_JSON}" >&2
+  exit 1
+fi
+echo "    observed GSI baseline carries only the CFn members (${OBSERVED_GSI_KEYS})"
+
+# `cdkd drift` exits non-zero when it DETECTS drift, so the exit status cannot
+# be the assertion on its own — and a resource reported as "drift unknown"
+# exits ZERO, which would read as clean. Parse the report instead and require
+# the table to be in the `clean` bucket by name.
+run_drift_json() { # $1 = label -> writes ${DRIFT_JSON}
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --json >"${DRIFT_JSON}" 2>/dev/null || true
+  if ! jq empty "${DRIFT_JSON}" >/dev/null 2>&1; then
+    echo "FAIL: cdkd drift --json ($1) produced no parseable JSON report:" >&2
+    cat "${DRIFT_JSON}" >&2
+    exit 1
+  fi
+  # `jq empty` accepts an EMPTY file (no input satisfies it), so a crashed run
+  # that printed nothing would pass the parse check and then satisfy every
+  # "no drift on this path" assertion vacuously. Require a real stack report.
+  # Compared as a string rather than via `jq -e`, which exits non-zero on a
+  # `false` RESULT and would be indistinguishable from a jq failure.
+  if [ "$(jq -r 'if type == "array" and length > 0 then "yes" else "no" end' "${DRIFT_JSON}")" != "yes" ]; then
+    echo "FAIL: cdkd drift --json ($1) reported no stacks — the assertions below would be vacuous:" >&2
+    cat "${DRIFT_JSON}" >&2
+    exit 1
+  fi
+}
+table_outcome_count() { # $1 = bucket (clean|drifted|notSupported)
+  jq --arg b "$1" '[.[][$b][] | select(.type == "AWS::DynamoDB::Table")] | length' "${DRIFT_JSON}"
+}
+
+run_drift_json "observed baseline"
+if [ "$(table_outcome_count notSupported)" != "0" ]; then
+  echo "FAIL (issue #1767): the table was reported as drift UNKNOWN — a provider that stopped reading back reads as clean on the exit code alone" >&2
+  exit 1
+fi
+if [ "$(table_outcome_count drifted)" != "0" ]; then
+  echo "FAIL (issue #1767): cdkd drift reported drift on the in-use GSI table against its own deploy-time capture:" >&2
+  jq '[.[].drifted[] | select(.type == "AWS::DynamoDB::Table")]' "${DRIFT_JSON}" >&2
+  exit 1
+fi
+if [ "$(table_outcome_count clean)" != "1" ]; then
+  echo "FAIL: the table appears in no drift outcome bucket — the assertion checked nothing" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
+echo "    observed baseline: table reported CLEAN"
+
+# Now the binding half. Dropping the capture makes the comparison run against
+# the TEMPLATE `properties` baseline — the real user condition after a
+# reverse-replacement rollback (which strips observedProperties) or on a record
+# written before observed-capture existed. Pre-fix the template's GSI entry
+# (IndexName / KeySchema / Projection) could NEVER equal the readback.
+# A plain `cdkd drift` is read-only (only --accept / --revert write state), so
+# the stripped record stays stripped for this assertion.
+jq --arg l "${TABLE_LID}" 'del(.resources[$l].observedProperties)' "${STATE_JSON}" > "${STATE_JSON}.stripped"
+aws s3 cp "${STATE_JSON}.stripped" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+
+run_drift_json "properties baseline"
+INDEX_DRIFT_PATHS="$(jq -r '[.[].drifted[] | select(.type == "AWS::DynamoDB::Table") | .changes[].path
+  | select(startswith("GlobalSecondaryIndexes") or startswith("LocalSecondaryIndexes"))] | join(" ")' \
+  "${DRIFT_JSON}")"
+if [ -n "${INDEX_DRIFT_PATHS}" ]; then
+  echo "FAIL (issue #1767): the TEMPLATE baseline still drifts on the index list (${INDEX_DRIFT_PATHS}) — the readback does not round-trip to the CFn shape:" >&2
+  jq '[.[].drifted[] | select(.type == "AWS::DynamoDB::Table")]' "${DRIFT_JSON}" >&2
+  exit 1
+fi
+# Any OTHER template-baseline difference is out of this arm's scope (it defends
+# the index lists), so it is reported rather than failed — silence would hide it.
+OTHER_DRIFT_PATHS="$(jq -r '[.[].drifted[] | select(.type == "AWS::DynamoDB::Table") | .changes[].path]
+  | join(" ")' "${DRIFT_JSON}")"
+if [ -n "${OTHER_DRIFT_PATHS}" ]; then
+  echo "    note: template baseline differs on non-index paths (out of scope for issue #1767): ${OTHER_DRIFT_PATHS}"
+fi
+echo "    properties baseline: no GlobalSecondaryIndexes / LocalSecondaryIndexes drift"
+
+rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}"
+
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -180,4 +452,4 @@ echo "    table deleted (status: ${status})"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — DynamoDB GSI add is an in-place UPDATE (no replacement), all 3 phases passed"
+echo "[verify] PASS — DynamoDB GSI add is an in-place UPDATE (no replacement) and an in-use table with a GSI reports no phantom drift (issue #1767), all phases passed"
