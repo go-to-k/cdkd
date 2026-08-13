@@ -1640,16 +1640,35 @@ describe('the shipped --check command', () => {
     const link = join(scratch, 'link-to-generated');
     rmSync(link, { force: true });
     symlinkSync(resolve(REPO_ROOT, 'docs/_generated'), link);
-    const spellings = [
+
+    // Whether a CASE variant names the same directory is a property of the
+    // filesystem, not of the guard: macOS/APFS folds case (so `docs/_GENERATED`
+    // IS docs/_generated and must be refused), while CI on ext4 does not (so it
+    // is a genuine, safe redirect to a new directory). Asserting the
+    // redirect-guard message unconditionally passed locally and failed on CI —
+    // the guard was right in both places, the test was wrong in one. Probe the
+    // filesystem rather than assume either behavior.
+    const sameInode = (a: string, b: string): boolean => {
+      try {
+        const x = statSync(a);
+        const y = statSync(b);
+        return x.dev === y.dev && x.ino === y.ino;
+      } catch {
+        return false;
+      }
+    };
+    const generated = resolve(REPO_ROOT, 'docs/_generated');
+    const caseFolding = sameInode(generated, resolve(REPO_ROOT, 'docs/_GENERATED'));
+
+    const alwaysSameDir = [
       'docs/_generated',
       './docs/_generated/.',
       'docs/_generated/../_generated',
-      resolve(REPO_ROOT, 'docs/_generated'),
-      'docs/_GENERATED',
-      'DOCS/_GENERATED',
+      generated,
       link,
     ];
-    for (const outDir of spellings) {
+    const caseVariants = ['docs/_GENERATED', 'DOCS/_GENERATED'];
+    for (const outDir of [...alwaysSameDir, ...(caseFolding ? caseVariants : [])]) {
       const { status, stderr } = run([
         `--providers-dir=${dir}`,
         `--out-dir=${outDir}`,
@@ -1658,6 +1677,7 @@ describe('the shipped --check command', () => {
       expect(status, `--out-dir=${outDir} must be refused`).toBe(1);
       expect(stderr, `--out-dir=${outDir} must name the redirect guard`).toContain('SOMEWHERE ELSE');
     }
+    // The invariant that holds on EVERY filesystem, whichever guard spoke.
     expect(readFileSync(committed, 'utf8'), 'the committed matrix must be untouched').toBe(before);
   }, SPAWN_TIMEOUT_MS);
 
