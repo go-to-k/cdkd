@@ -1,3 +1,10 @@
+## [0.283.4](https://github.com/go-to-k/cdkd/compare/v0.283.3...v0.283.4) (2026-08-13)
+
+
+### Bug Fixes
+
+* **provisioning:** stop six call sites discarding a provider's delete outcome, and abort the SNS replace instead of double-subscribing ([#1827](https://github.com/go-to-k/cdkd/issues/1827)) ([55c810f](https://github.com/go-to-k/cdkd/commit/55c810ffc4e29a94a318cb04c30f8daec96c900e))
+
 ## [0.283.3](https://github.com/go-to-k/cdkd/compare/v0.283.2...v0.283.3) (2026-08-13)
 
 
