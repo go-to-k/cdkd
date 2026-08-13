@@ -1,0 +1,173 @@
+/**
+ * Rollback-executor consumption of `{ outcome: 'skipped' }` (issue
+ * https://github.com/go-to-k/cdkd/issues/1762).
+ *
+ * A rollback delete that the provider refused to issue is a rollback op that
+ * did NOT happen. Before #1762 every arm read it as a successful revert:
+ * `delete stateResources[op.logicalId]` ran, `ROLLBACK_RESOURCE_SUCCEEDED` was
+ * emitted, `failures` stayed 0 — so the journal segment popped and `cdkd
+ * rollback` reported a clean revert over a resource that is still alive.
+ *
+ * Each case here fails against pre-#1762 code, because the skip is a plain
+ * resolved value the old arms walked straight past.
+ */
+
+import { describe, it, expect, vi } from 'vite-plus/test';
+import {
+  replayRollback,
+  replayFailedOperations,
+  type CompletedOperation,
+  type FailedOperation,
+  type RollbackExecutorContext,
+} from '../../../src/deployment/rollback-executor.js';
+import type { ResourceState } from '../../../src/types/state.js';
+import type { ResourceDeleteResult } from '../../../src/types/resource.js';
+
+vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/deployment/retry.js')>();
+  return { ...actual, withRetry: vi.fn((fn: () => Promise<unknown>) => fn()) };
+});
+
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({}),
+  setAwsClients: vi.fn(),
+  AwsClients: vi.fn(),
+}));
+
+const SKIP: ResourceDeleteResult = {
+  outcome: 'skipped',
+  reason: 'malformed physicalId in state — no delete issued',
+};
+
+function res(overrides: Partial<ResourceState> = {}): ResourceState {
+  return {
+    physicalId: 'phys',
+    resourceType: 'AWS::S3::Bucket',
+    properties: {},
+    attributes: {},
+    dependencies: [],
+    ...overrides,
+  };
+}
+
+const silentLogger = {
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  setLevel: vi.fn(),
+  child: () => silentLogger,
+} as unknown as RollbackExecutorContext['logger'];
+
+function makeCtx(provider: { delete?: unknown; create?: unknown }): {
+  ctx: RollbackExecutorContext;
+  events: string[];
+} {
+  const events: string[] = [];
+  const ctx: RollbackExecutorContext = {
+    region: 'us-east-1',
+    logger: silentLogger,
+    providerRegistry: {
+      getProviderFor: () => ({ provider }),
+    } as unknown as RollbackExecutorContext['providerRegistry'],
+    recordEvent: (e) => events.push(e.eventType),
+  };
+  return { ctx, events };
+}
+
+describe('rollback executor — a provider-reported delete skip (#1762)', () => {
+  it('rollback-of-a-CREATE: counted as a failure, state record KEPT', async () => {
+    const del = vi.fn().mockResolvedValue(SKIP);
+    const { ctx, events } = makeCtx({ delete: del });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'CREATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'phys-B',
+      },
+    ];
+    const state: Record<string, ResourceState> = { B: res({ physicalId: 'phys-B' }) };
+
+    const result = await replayRollback(ops, state, 'S', ctx);
+
+    expect(del).toHaveBeenCalledOnce();
+    // A failure (not a warning): failures BLOCK the journal-segment pop, so
+    // the user can re-run `cdkd rollback` once the state record is repaired.
+    expect(result.failures).toBe(1);
+    // The resource is still in AWS — dropping the record would leave it
+    // untracked, which is the deploy-side half of the same data loss.
+    expect(state['B']).toBeDefined();
+    expect(events).toContain('ROLLBACK_RESOURCE_FAILED');
+    expect(events).not.toContain('ROLLBACK_RESOURCE_SUCCEEDED');
+  });
+
+  it('control: a `void` return still reverts the CREATE and drops the record', async () => {
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, events } = makeCtx({ delete: del });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'CREATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'phys-B',
+      },
+    ];
+    const state: Record<string, ResourceState> = { B: res({ physicalId: 'phys-B' }) };
+
+    const result = await replayRollback(ops, state, 'S', ctx);
+
+    expect(result.failures).toBe(0);
+    expect(state['B']).toBeUndefined();
+    expect(events).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
+  });
+
+  it('reverse-replacement re-adopt: the state re-point does NOT happen on a skip', async () => {
+    // `UpdateReplacePolicy: Retain` orphaned the OLD resource, so the revert
+    // is "delete the new one, re-adopt the old". A skip that still re-pointed
+    // state would leave TWO live resources with state describing one.
+    const del = vi.fn().mockResolvedValue(SKIP);
+    const { ctx } = makeCtx({ delete: del });
+    const prev = res({ physicalId: 'old-b', updateReplacePolicy: 'Retain' as const });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'new-b',
+        previousState: prev,
+      },
+    ];
+    const current = res({ physicalId: 'new-b', updateReplacePolicy: 'Retain' as const });
+    const state: Record<string, ResourceState> = { B: current };
+
+    const result = await replayRollback(ops, state, 'S', ctx);
+
+    expect(result.failures).toBe(1);
+    expect(state['B']).toBe(current);
+    expect(state['B']?.physicalId).toBe('new-b');
+  });
+
+  it('--revert-failed partially-created delete: the op stays outstanding', async () => {
+    const del = vi.fn().mockResolvedValue(SKIP);
+    const { ctx } = makeCtx({ delete: del });
+    const failed: FailedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'CREATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'phys-B',
+        attemptedProperties: {},
+      },
+    ];
+    const state: Record<string, ResourceState> = { B: res({ physicalId: 'phys-B' }) };
+
+    const result = await replayFailedOperations(failed, state, 'S', ctx, {});
+
+    expect(result.failures).toBe(1);
+    // Kept for a re-run: a successfully-reverted op must never be re-issued,
+    // and an unreverted one must never be dropped.
+    expect(result.remainingFailedOps.map((op) => op.logicalId)).toEqual(['B']);
+    expect(state['B']).toBeDefined();
+  });
+});

@@ -61,9 +61,13 @@ describe('compositeIdFormatMessage (issue #1657)', () => {
     // template-removal DELETE is the MOST COMMON one and was omitted, so a
     // user hitting it read a message that did not describe their situation
     // (issue #1752 review).
-    expect(msg).toContain('the plain DELETE of a resource removed from the template');
-    expect(msg).toContain('replacement and rollback deletes');
-    expect(msg).toContain('DROP the record and report success');
+    expect(msg).toContain('removed from the template');
+    // Issue #1762 taught the deploy engine to consume the outcome, so the
+    // message must no longer claim deploy drops the record and reports
+    // success — only the REPLACEMENT / rollback arm is still distinguished.
+    expect(msg).toContain('REPLACEMENT or rollback delete');
+    expect(msg).toContain('FAILS the resource');
+    expect(msg).not.toContain('DROP the record');
     // Issue #1752 REVERSED the old promise: this message used to say cdkd
     // "will report this delete as successful", which was the mis-accounting
     // that issue fixed. `cdkd destroy` now reports the skip and exits 2, so

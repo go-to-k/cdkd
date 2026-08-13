@@ -380,8 +380,10 @@ export class NestedStackProvider implements ResourceProvider {
     // state, and surfaces a non-zero exit.
     //
     // This is deliberately a BEHAVIOR CHANGE, and it reaches BOTH callers of
-    // `delete` — unlike a `{ outcome: 'skipped' }` return value, which the
-    // deploy-side sites still discard (issue #1762), a throw cannot be ignored:
+    // `delete`. A `{ outcome: 'skipped' }` return value reaches both too since
+    // issue #1762 — but it is deliberately WEAKER there (the deploy's
+    // template-removal DELETE warns and keeps the record), whereas a child that
+    // FAILED must fail its parent's row on either path:
     //   - `cdkd destroy` / `cdkd state destroy` — the parent's nested-stack row
     //     now fails (exit 2) where it previously reported the child deleted;
     //   - `cdkd deploy` — REMOVING a nested stack from the template routes the

@@ -53,9 +53,10 @@ export const PERMISSION_STATEMENT_ID_SKIP_REASON =
  * the user is actually on is worse than no remedy.
  */
 const DEPLOY_SKIP_CAVEAT =
-  `NOTE this arm is ALSO reached from cdkd deploy (the DELETE of a resource removed from the ` +
-  `template, plus the replacement / rollback deletes), which DROP the state record and report ` +
-  `success (https://github.com/go-to-k/cdkd/issues/1762) — there, remove the resource by hand.`;
+  `NOTE this arm is ALSO reached from cdkd deploy. Since issue 1762 the DELETE of a resource ` +
+  `removed from the template behaves like destroy — the record is KEPT and the next deploy ` +
+  `re-attempts it — but a REPLACEMENT / rollback delete FAILS the resource instead ` +
+  `(https://github.com/go-to-k/cdkd/issues/1762), leaving the old one untracked; there, remove the resource by hand.`;
 
 /**
  * AWS Lambda Permission Provider

@@ -47,17 +47,18 @@ export const LAYER_VERSION_SKIP_REASON =
  * The deploy-side caveat both skip warnings in this file carry (issue
  * [#1762](https://github.com/go-to-k/cdkd/issues/1762)).
  *
- * "Repair state.json and re-run" is only true on DESTROY, where the skip KEEPS
- * the record. The same arms are ALSO reached from `deploy-engine.ts` and
- * `rollback-executor.ts`, which discard the delete result and DROP the record —
- * there the id is gone, so re-running cannot help and the resource has to be
- * removed by hand. Mirrors the caveat `compositeIdFormatMessage` already
- * carries for the composite-id family.
+ * "Repair state.json and re-run" holds on DESTROY and, since #1762, on the
+ * deploy engine's template-removal DELETE — both keep the record. It does NOT
+ * hold for a deploy-side REPLACEMENT or rollback delete: those now FAIL the
+ * resource rather than reporting success, and the old resource can be left
+ * untracked, so it has to be removed by hand. Mirrors the caveat
+ * `compositeIdFormatMessage` carries for the composite-id family.
  */
 const DEPLOY_SKIP_CAVEAT =
-  `NOTE this arm is ALSO reached from cdkd deploy (the DELETE of a resource removed from the ` +
-  `template, plus the replacement / rollback deletes), which DROP the state record and report ` +
-  `success (https://github.com/go-to-k/cdkd/issues/1762) — there, remove the resource by hand.`;
+  `NOTE this arm is ALSO reached from cdkd deploy. Since issue 1762 the DELETE of a resource ` +
+  `removed from the template behaves like destroy — the record is KEPT and the next deploy ` +
+  `re-attempts it — but a REPLACEMENT / rollback delete FAILS the resource instead ` +
+  `(https://github.com/go-to-k/cdkd/issues/1762), leaving the old one untracked; there, remove the resource by hand.`;
 
 /**
  * AWS Lambda LayerVersion Provider

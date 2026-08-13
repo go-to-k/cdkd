@@ -205,12 +205,14 @@ export interface DestroyRunnerResult {
   /**
    * Number of resources whose provider reported `{ outcome: 'skipped' }` —
    * cdkd could NOT address the resource, so it may still be ALIVE (issue
-   * [#1752](https://github.com/go-to-k/cdkd/issues/1752)). Two producers
-   * today: the malformed-composite-physicalId delete arms (which issue no AWS
-   * call at all), and `NestedStackProvider.delete` when the child stack's own
-   * destroy skipped or was interrupted (which may have deleted the child's
-   * other resources first). So this counts ROWS NOT DESTROYED, and a row can
-   * be a whole nested stack — see the note on the CLI's aggregate message.
+   * [#1752](https://github.com/go-to-k/cdkd/issues/1752)). The producers are
+   * enumerated on `ResourceDeleteResult` in `src/types/resource.ts`, which is
+   * the single source of truth — deliberately NOT restated here (issue
+   * [#1803](https://github.com/go-to-k/cdkd/issues/1803): this copy said "two
+   * producers today" and went stale three times, once per lane that added
+   * one). What matters at THIS layer is that it counts ROWS NOT DESTROYED,
+   * and a row can be a whole nested stack — see the note on the CLI's
+   * aggregate message.
    *
    * Distinct from every neighbouring counter:
    * - `deletedCount` — cdkd addressed it (a delete was issued, or the

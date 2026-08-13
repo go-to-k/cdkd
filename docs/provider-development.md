@@ -1598,10 +1598,11 @@ Word such a throw so it contains none of `not found` / `does not exist` /
 engine's `was not found` / `ResourceNotFoundException`) — both callers' catch
 blocks read those as an idempotent already-deleted success and DROP the state
 record, which is the outcome the throw exists to prevent. Note the asymmetry
-between the two return channels: a `{ outcome: 'skipped' }` value is still
-DISCARDED by the deploy-side delete call sites (issue #1762), while a throw
-reaches every caller — so converting a skip into a throw also changes
-`cdkd deploy`'s behavior when the resource is removed from the template.
+between the two return channels: since issue #1762 a `{ outcome: 'skipped' }`
+value reaches the deploy-side sites too, but WEAKER — the template-removal
+DELETE warns and keeps the record — while a throw FAILS the resource at every
+caller, so converting a skip into a throw still changes `cdkd deploy`'s
+behavior when the resource is removed from the template.
 
 **A provider that DELEGATES its delete to another provider propagates the
 delegate's outcome** (issue
@@ -1739,10 +1740,12 @@ deleted IAM role drops its inline policies. Qualify the wording and name
 false (a layer version and a Custom Resource's external side effects are undone
 by nothing).
 
-**"Repair state.json and re-run" is only true on destroy** — the deploy engine
-and rollback executor DROP the record (issue
-[#1762](https://github.com/go-to-k/cdkd/issues/1762)), so every skip warning
-carries the same caveat `compositeIdFormatMessage` does.
+**"Repair state.json and re-run" holds on destroy AND on the deploy engine's
+template-removal DELETE** — both keep the record (issue
+[#1762](https://github.com/go-to-k/cdkd/issues/1762)). It does NOT hold for a
+deploy-side REPLACEMENT or rollback delete, which fail the resource and can
+leave the old one untracked, so every skip warning carries the same caveat
+`compositeIdFormatMessage` does.
 
 Two judgment calls from that issue are worth reusing. The
 `UserToGroupAddition` arms logged at DEBUG, which read as "routine, nothing to
@@ -1757,8 +1760,10 @@ it falls through to the removal loop and correctly does nothing.
 The `*NotFound` idempotent arms in those same files are deliberately
 untouched, as is `CustomResourceProvider`'s backing-Lambda-is-gone pre-check —
 those mean the resource IS gone. The deploy-engine / rollback-executor callers
-still discard the return value entirely (issue
-[#1762](https://github.com/go-to-k/cdkd/issues/1762)).
+consume the return value as of issue
+[#1762](https://github.com/go-to-k/cdkd/issues/1762): the template-removal
+DELETE warns and keeps the record, a replacement delete fails the resource, and
+a rollback delete counts as a per-op failure.
 
 ### 2a. UPDATE removal semantics — clear-on-removal (issue #1155)
 

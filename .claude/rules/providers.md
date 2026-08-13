@@ -1086,8 +1086,9 @@ BEHAVIOR CHANGE, and it reaches BOTH callers of `delete()`: `cdkd destroy` /
 REMOVING a nested stack from the template routes the row through the deploy
 engine's DELETE path — so a failing child now fails the DEPLOY and triggers its
 rollback. That asymmetry is worth internalizing before adding a throw anywhere:
-a `{ outcome: 'skipped' }` return value IS still discarded by the deploy-side
-delete call sites (issue #1762), but a throw cannot be ignored by any of them.
+a `{ outcome: 'skipped' }` return value reaches the deploy-side call sites too
+since issue #1762, but WEAKER there (the template-removal DELETE warns and keeps
+the record), whereas a throw fails the resource at every one of them.
 
 Three more details generalize to any provider that recurses:
 
@@ -1172,11 +1173,14 @@ contract `errorCount > 0` and a graceful interrupt already carry, so a run that
 leaves a resource behind cannot report success. The outcome union is TWO values,
 not the three the issue sketched — `'already-absent'` had no producer and no
 consumer that would treat it differently from `'deleted'`, and the runner
-already has its own message-matched already-deleted branch. And the DEPLOY-side
-callers (`deploy-engine.ts`'s template-DELETE + replacement deletes,
-`rollback-executor.ts`'s rollback deletes) still discard the return value, so
-the same arms still mis-report there — tracked as issue
-[#1762](https://github.com/go-to-k/cdkd/issues/1762). The eight same-class arms
+already has its own message-matched already-deleted branch. The DEPLOY-side callers
+(`deploy-engine.ts`'s template-DELETE + replacement deletes,
+`rollback-executor.ts`'s rollback deletes) consume the return value as of issue
+[#1762](https://github.com/go-to-k/cdkd/issues/1762), each in the way its
+situation allows: the template-removal DELETE warns and KEEPS the record (the
+next deploy re-attempts it), a replacement delete FAILS the resource (its create
+would otherwise run beside a live old one), and a rollback delete counts as a
+per-op failure so the journal segment is kept for a re-run. The eight same-class arms
 OUTSIDE the composite-id family were converted by issue
 [#1770](https://github.com/go-to-k/cdkd/issues/1770): both malformed
 `LayerVersionArn` arms, the missing-`FunctionName` Lambda-permission arm, the
@@ -1267,10 +1271,10 @@ Lambda layer version is standalone and a Custom Resource's external side
 effects are undone by nothing — since a false reassurance is worse than the
 warning it softens.
 
-**"Repair state.json and re-run" is only true on DESTROY.** The same arms are
-reached from `deploy-engine.ts` and `rollback-executor.ts`, which discard the
-delete result and DROP the record (issue #1762), so there the id is gone and
-re-running cannot help. Every skip warning carries the caveat
+**"Repair state.json and re-run" holds on DESTROY and on the deploy engine's
+template-removal DELETE** — both keep the record (issue #1762). It does NOT hold
+for a deploy-side REPLACEMENT or rollback delete: those fail the resource, and
+the replacement path can leave the old resource untracked. Every skip warning carries the caveat
 `compositeIdFormatMessage` already carries for the composite-id family; a
 remedy that is impossible on the path the user is actually on is worse than no
 remedy.

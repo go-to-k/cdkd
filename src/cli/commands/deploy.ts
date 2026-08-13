@@ -894,6 +894,12 @@ async function deployCommand(
         logger.info(
           `  Deleted: ${deployResult.deleted > 0 ? red(deployResult.deleted) : gray(deployResult.deleted)}`
         );
+        // Issue #1762: only shown when non-zero — a skipped DELETE is rare
+        // and abnormal (cdkd could not address the resource), so a permanent
+        // `Skipped: 0` row would train the reader to ignore it.
+        if (deployResult.deleteSkipped > 0) {
+          logger.info(`  Skipped (not deleted): ${yellow(deployResult.deleteSkipped)}`);
+        }
         logger.info(`  Unchanged: ${gray(deployResult.unchanged)}`);
         logger.info(`  Duration: ${cyan((deployResult.durationMs / 1000).toFixed(2) + 's')}`);
 

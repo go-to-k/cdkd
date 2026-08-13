@@ -23,6 +23,7 @@ import { DagExecutor } from './dag-executor.js';
 import type {
   CloudFormationTemplate,
   EffectivePropertiesResult,
+  ResourceDeleteResult,
   ResourceProvider,
   ResourceUpdateResult,
 } from '../types/resource.js';
@@ -68,6 +69,7 @@ import {
 import { withRetry } from './retry.js';
 import { isNameCollisionError, isRecreateRetryableError } from './retryable-errors.js';
 import { withResourceDeadline } from './resource-deadline.js';
+import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
 import { findUnrewrittenAssetReferences, type AssetRedirectMap } from '../assets/asset-redirect.js';
 import {
   replayRollback,
@@ -357,6 +359,40 @@ export interface DeployEngineOptions {
 }
 
 /**
+ * Reported up from a template-DELETE whose provider returned
+ * `{ outcome: 'skipped' }` (issue #1762).
+ *
+ * It travels as a RETURN VALUE rather than a thrown error because the deploy
+ * deliberately continues: the state record is kept, so the next run re-attempts
+ * the delete. The two callers that must know are the event emitter (a skip is
+ * not `RESOURCE_SUCCEEDED`) and the DELETE executor, whose rollback journal
+ * must NOT record a delete that never happened.
+ */
+interface DeleteSkipSignal {
+  /** The provider's `ResourceDeleteResult.reason` — always present on a skip. */
+  deleteSkipped: string;
+}
+
+/**
+ * Per-resource operation tallies threaded through `provisionResource`.
+ *
+ * `skipped` and `deleteSkipped` are NOT the same thing and must never be
+ * merged: `skipped` counts resources whose UPDATE resolved to no actual
+ * change (it feeds `DeployResult.unchanged`), while `deleteSkipped` counts
+ * DELETEs a provider refused to issue (issue #1762) — a resource that is
+ * still alive and still in state.
+ */
+interface ProvisionCounts {
+  created: number;
+  updated: number;
+  deleted: number;
+  /** UPDATE resolved to no actual change — folded into `unchanged`. */
+  skipped: number;
+  /** Provider reported `{ outcome: 'skipped' }` for a template DELETE. */
+  deleteSkipped: number;
+}
+
+/**
  * Deploy result
  */
 export interface DeployResult {
@@ -368,6 +404,26 @@ export interface DeployResult {
   updated: number;
   /** Number of resources deleted */
   deleted: number;
+  /**
+   * Number of template-DELETE resources whose provider reported
+   * `{ outcome: 'skipped' }` — cdkd could not address the resource, so it was
+   * NOT deleted and may still be ALIVE (issue
+   * [#1762](https://github.com/go-to-k/cdkd/issues/1762), the deploy-side twin
+   * of `DestroyRunnerResult.skippedCount`).
+   *
+   * Counted separately from `deleted` for the same reason it is on destroy: a
+   * skip never reached AWS, so counting it as deleted reports success over a
+   * resource nothing touched. Distinct from `unchanged` too — that counts
+   * resources cdkd deliberately left alone, whereas this one counts resources
+   * cdkd MEANT to delete and could not.
+   *
+   * The state record is deliberately KEPT for these, so the next deploy still
+   * sees the resource as a pending DELETE and re-attempts it. That
+   * self-healing is why a skip here is a warning rather than a failed
+   * resource, and why the deploy still exits 0 (`cdkd destroy` exits 2,
+   * because there is no next run to heal it).
+   */
+  deleteSkipped: number;
   /** Number of resources unchanged */
   unchanged: number;
   /** Total deployment time in milliseconds */
@@ -1358,6 +1414,7 @@ export class DeployEngine {
           created: 0,
           updated: 0,
           deleted: 0,
+          deleteSkipped: 0,
           unchanged: Object.keys(currentState.resources).length,
           durationMs: Date.now() - startTime,
           outputs: this.buildDisplayOutputs(template, persistedOutputs),
@@ -1381,6 +1438,8 @@ export class DeployEngine {
           created: createChanges.length,
           updated: updateChanges.length,
           deleted: deleteChanges.length,
+          // A dry run issues no provider call, so nothing can be skipped.
+          deleteSkipped: 0,
           unchanged: this.diffCalculator.filterByType(changes, 'NO_CHANGE').length,
           durationMs: Date.now() - startTime,
           attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
@@ -1486,6 +1545,7 @@ export class DeployEngine {
         created: actualCounts.created,
         updated: actualCounts.updated,
         deleted: actualCounts.deleted,
+        deleteSkipped: actualCounts.deleteSkipped,
         unchanged: unchangedCount,
         durationMs,
         outputs: this.buildDisplayOutputs(template, newState.outputs ?? {}),
@@ -1540,11 +1600,17 @@ export class DeployEngine {
     migrationPending = false
   ): Promise<{
     state: StackState;
-    actualCounts: { created: number; updated: number; deleted: number; skipped: number };
+    actualCounts: ProvisionCounts;
   }> {
     const concurrency = this.options.concurrency!;
     const newResources: Record<string, ResourceState> = { ...currentState.resources };
-    const actualCounts = { created: 0, updated: 0, deleted: 0, skipped: 0 };
+    const actualCounts: ProvisionCounts = {
+      created: 0,
+      updated: 0,
+      deleted: 0,
+      skipped: 0,
+      deleteSkipped: 0,
+    };
     const completedOperations: CompletedOperation[] = [];
     // #1198: the op(s) that FAILED mid-deploy (usually one; concurrent
     // siblings can add more). Journaled alongside completedOperations so
@@ -1746,8 +1812,9 @@ export class DeployEngine {
                 ? { ...currentState.resources[logicalId] }
                 : undefined;
 
+              let deleteOutcome: DeleteSkipSignal | void;
               try {
-                await this.provisionResource(
+                deleteOutcome = await this.provisionResource(
                   logicalId,
                   change,
                   newResources,
@@ -1773,6 +1840,14 @@ export class DeployEngine {
                 });
                 throw provisionError;
               }
+
+              // Issue #1762: a skipped DELETE is NOT a completed operation.
+              // Journaling it would make `cdkd rollback` re-CREATE a resource
+              // that was never deleted — colliding on its name at best, and
+              // producing a second live copy at worst. The state record was
+              // kept, so there is nothing to revert and nothing to persist
+              // beyond what is already there.
+              if (deleteOutcome) return;
 
               completedOperations.push({
                 logicalId,
@@ -2278,9 +2353,9 @@ export class DeployEngine {
     template?: CloudFormationTemplate,
     parameterValues?: Record<string, unknown>,
     conditions?: Record<string, boolean>,
-    counts?: { created: number; updated: number; deleted: number; skipped: number },
+    counts?: ProvisionCounts,
     progress?: { current: number; total: number }
-  ): Promise<void> {
+  ): Promise<DeleteSkipSignal | void> {
     const resourceType = change.resourceType;
 
     const renderer = getLiveRenderer();
@@ -2371,10 +2446,16 @@ export class DeployEngine {
       ...(labelRouting && { provisionedBy: labelRouting }),
     });
 
+    // Issue #1762: set when the body's DELETE branch consumed a
+    // `{ outcome: 'skipped' }` from the provider. Assigned inside the
+    // deadline callback (same shape destroy-runner.ts uses for its own
+    // `deleteResult`) because the body's return value is otherwise swallowed
+    // by `withResourceDeadline`.
+    let deleteSkipped: string | undefined;
     try {
       await withResourceDeadline(
         async () => {
-          await this.provisionResourceBody(
+          const bodyResult = await this.provisionResourceBody(
             logicalId,
             change,
             stateResources,
@@ -2385,6 +2466,7 @@ export class DeployEngine {
             counts,
             progress
           );
+          deleteSkipped = bodyResult?.deleteSkipped;
         },
         {
           warnAfterMs,
@@ -2412,6 +2494,29 @@ export class DeployEngine {
             ),
         }
       );
+      // Issue #1762: a DELETE the provider refused to issue is NOT a
+      // success — the events store is the durable post-mortem, and
+      // `RESOURCE_SUCCEEDED` there would claim cdkd deleted a resource that
+      // is still alive. Mirrors destroy-runner.ts's RESOURCE_SKIPPED emit,
+      // `reason` included: a bare event cannot tell the user why.
+      if (deleteSkipped !== undefined) {
+        this.recordEvent({
+          eventType: 'RESOURCE_SKIPPED',
+          stackName,
+          operation: eventOp,
+          logicalId,
+          resourceType,
+          ...(stateResources[logicalId]?.provisionedBy
+            ? { provisionedBy: stateResources[logicalId]?.provisionedBy }
+            : labelRouting && { provisionedBy: labelRouting }),
+          ...(stateResources[logicalId]?.physicalId && {
+            physicalId: stateResources[logicalId]?.physicalId,
+          }),
+          reason: deleteSkipped,
+          durationMs: Date.now() - resourceStartedAt,
+        });
+        return { deleteSkipped };
+      }
       // #808 best-effort event: per-resource op succeeded. Read the
       // freshly-stamped routing layer + physical id off the state record
       // the body just wrote (falls back to the label inference / undefined).
@@ -2601,8 +2706,9 @@ export class DeployEngine {
       currentResource,
       updateReplacePolicy
     );
+    let deleteResult: void | ResourceDeleteResult;
     try {
-      await oldDeleteProvider.delete(
+      deleteResult = await oldDeleteProvider.delete(
         logicalId,
         currentResource.physicalId,
         resourceType,
@@ -2623,6 +2729,23 @@ export class DeployEngine {
         `Failed to delete old resource ${logicalId} (${currentResource.physicalId}) ` +
           `during the --replace delete-first fallback: ` +
           `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+      );
+    }
+    // Issue #1762: a skip here FAILS the resource, unlike the template-DELETE
+    // branch. The old resource is still alive and the whole point of this
+    // path is that the re-create needs its name released — proceeding would
+    // either collide or, for a type with no name conflict, leave two live
+    // resources with state describing one. Checked outside the catch above so
+    // the wrapping never sees it (a return value, not a throw).
+    const replaceSkipReason = deleteSkipReason(deleteResult);
+    if (replaceSkipReason !== undefined) {
+      throw new Error(
+        deleteSkippedMessage(
+          logicalId,
+          currentResource.physicalId,
+          replaceSkipReason,
+          'during the --replace delete-first fallback'
+        )
       );
     }
     this.logger.info(`  ${green('✓')} Old resource deleted`);
@@ -2686,9 +2809,9 @@ export class DeployEngine {
     template?: CloudFormationTemplate,
     parameterValues?: Record<string, unknown>,
     conditions?: Record<string, boolean>,
-    counts?: { created: number; updated: number; deleted: number; skipped: number },
+    counts?: ProvisionCounts,
     progress?: { current: number; total: number }
-  ): Promise<void> {
+  ): Promise<DeleteSkipSignal | void> {
     const resourceType = change.resourceType;
     // Existing state record (UPDATE / DELETE) — load-bearing for the
     // sticky `provisionedBy` routing introduced in #614: a resource
@@ -3021,8 +3144,9 @@ export class DeployEngine {
                 currentResource,
                 updateReplacePolicy
               );
+              let recreateDeleteResult: void | ResourceDeleteResult;
               try {
-                await oldDeleteProvider.delete(
+                recreateDeleteResult = await oldDeleteProvider.delete(
                   logicalId,
                   currentResource.physicalId,
                   resourceType,
@@ -3035,7 +3159,6 @@ export class DeployEngine {
                     }),
                   }
                 );
-                this.logger.info(`  ${green('✓')} Old resource deleted`);
               } catch (deleteError) {
                 // Re-throw so the deploy engine's existing rollback path
                 // sees the failure — recreate's destroy is load-bearing
@@ -3048,6 +3171,21 @@ export class DeployEngine {
                     `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
                 );
               }
+              // Issue #1762: same reasoning as the delete-first fallback —
+              // this destroy is load-bearing, so a skip has to fail the
+              // resource rather than let the create run beside a live old one.
+              const recreateSkipReason = deleteSkipReason(recreateDeleteResult);
+              if (recreateSkipReason !== undefined) {
+                throw new Error(
+                  deleteSkippedMessage(
+                    logicalId,
+                    currentResource.physicalId,
+                    recreateSkipReason,
+                    `during ${recreateFlagName}`
+                  )
+                );
+              }
+              this.logger.info(`  ${green('✓')} Old resource deleted`);
             }
 
             this.logger.info(`  Creating new ${logicalId}...`);
@@ -3303,8 +3441,11 @@ export class DeployEngine {
                 );
               }
               if (!snapshotBlockedDelete) {
+                // Initialized because the catch below can leave it unassigned.
+                let cleanupDeleteResult: void | ResourceDeleteResult = undefined;
+                let cleanupDeleteFailed = false;
                 try {
-                  await oldDeleteProvider.delete(
+                  cleanupDeleteResult = await oldDeleteProvider.delete(
                     logicalId,
                     currentResource.physicalId,
                     resourceType,
@@ -3317,11 +3458,30 @@ export class DeployEngine {
                       }),
                     }
                   );
-                  this.logger.info(`  ${green('✓')} Old resource deleted`);
                 } catch (deleteError) {
                   this.logger.warn(
                     `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
                   );
+                  cleanupDeleteFailed = true;
+                }
+                // Issue #1762: this is the ONE replacement site where a skip
+                // is a warning rather than a failure, and it takes that from
+                // the site's existing policy for a delete FAILURE right above:
+                // the new resource is already created and recorded, so the old
+                // one is untracked either way — failing the resource here
+                // would roll back a replacement that actually succeeded.
+                const cleanupSkipReason = deleteSkipReason(cleanupDeleteResult);
+                if (cleanupSkipReason !== undefined) {
+                  this.logger.warn(
+                    `  ⚠ ${deleteSkippedMessage(
+                      logicalId,
+                      currentResource.physicalId,
+                      cleanupSkipReason,
+                      'while cleaning up the replaced resource'
+                    )}. Delete it manually — it is no longer tracked in state.`
+                  );
+                } else if (!cleanupDeleteFailed) {
+                  this.logger.info(`  ${green('✓')} Old resource deleted`);
                 }
               }
             }
@@ -3451,8 +3611,10 @@ export class DeployEngine {
                 template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
                   currentResource.updateReplacePolicy
               );
+              // Initialized because the catch below can leave it unassigned.
+              let fallbackDeleteResult: void | ResourceDeleteResult = undefined;
               try {
-                await updateProvider.delete(
+                fallbackDeleteResult = await updateProvider.delete(
                   logicalId,
                   currentResource.physicalId,
                   resourceType,
@@ -3480,6 +3642,22 @@ export class DeployEngine {
                 } else {
                   throw deleteError;
                 }
+              }
+              // Issue #1762: a skip fails the resource here too — the CREATE
+              // below re-provisions the resource, so proceeding would leave
+              // the old one alive and untracked. Deliberately OUTSIDE the
+              // catch: the classifier above reads "already gone" out of an
+              // error MESSAGE, and a skip must never be read that way.
+              const fallbackSkipReason = deleteSkipReason(fallbackDeleteResult);
+              if (fallbackSkipReason !== undefined) {
+                throw new Error(
+                  deleteSkippedMessage(
+                    logicalId,
+                    currentResource.physicalId,
+                    fallbackSkipReason,
+                    'during the UPDATE-not-supported replacement'
+                  )
+                );
               }
               // The replacement create gets a fresh routing decision.
               const replDecision = this.providerRegistry.getProviderFor({
@@ -3627,8 +3805,12 @@ export class DeployEngine {
         }).provider;
 
         this.logger.debug(`Deleting ${logicalId} (${resourceType})`);
+        // Issue #1762: what the provider actually DID. `undefined` (the
+        // back-compat `void` return) means "deleted"; a `'skipped'` outcome
+        // means the resource was NOT deleted and may still be alive.
+        let deleteResult: void | ResourceDeleteResult = undefined;
         try {
-          await this.withRetry(
+          deleteResult = await this.withRetry(
             () =>
               deleteProvider.delete(
                 logicalId,
@@ -3663,6 +3845,45 @@ export class DeployEngine {
           } else {
             throw deleteError;
           }
+        }
+
+        // Issue #1762: handled OUTSIDE the catch above on purpose — a skip is
+        // a RETURN VALUE, so it can never be read by that block's
+        // already-deleted message classifier, whatever a provider puts in
+        // `reason`. Reading a skip as "already deleted" is precisely the
+        // mis-accounting this branch used to commit.
+        const deleteSkipped = deleteSkipReason(deleteResult);
+        if (deleteSkipped !== undefined) {
+          if (progress) progress.current++;
+          const skipPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+          renderer.removeTask(logicalId);
+          this.logger.info(
+            `${skipPrefix}${formatResourceLine(
+              'skipped',
+              logicalId,
+              resourceType,
+              `skipped (${deleteSkipped})`
+            )}`
+          );
+          this.logger.warn(
+            deleteSkippedMessage(
+              logicalId,
+              currentResource.physicalId,
+              deleteSkipped,
+              'while removing it from the template'
+            ) +
+              `. Its cdkd state record was KEPT, so the next 'cdkd deploy' re-attempts the ` +
+              `delete; fix the record (or delete the resource by hand) first.`
+          );
+          // Deliberately NO `delete stateResources[logicalId]` and NO
+          // `counts.deleted++`. Dropping the record is the data-loss half:
+          // the user would have neither the AWS resource deleted nor a cdkd
+          // record pointing at it. Keeping it also means the resource is
+          // still diffed as a DELETE next run, which is why a skip here is a
+          // warning rather than a resource failure — unlike `cdkd destroy`,
+          // `cdkd deploy` self-heals on the next run.
+          if (counts) counts.deleteSkipped++;
+          return { deleteSkipped };
         }
 
         delete stateResources[logicalId];
