@@ -434,6 +434,7 @@
         "fsx-openzfs",
         "fsx-windows",
         "gc-custom-asset-names",
+        "getatt-fallback-guard",
         "getstackoutput-crossregion",
         "glue-securityconfig-replace",
         "glue-update-hardening",

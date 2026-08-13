@@ -378,7 +378,7 @@ Types with an `import()` that auto-resolves via the above:
 - AWS::KMS::Key
 - AWS::KMS::Alias
 - AWS::SecretsManager::Secret
-- AWS::SSM::Parameter
+- AWS::SSM::Parameter (the parameter NAME only — an ARN or a `name:version` / `name:label` selector is REFUSED with the name to pass instead, because `GetParameter` accepts those forms while `PutParameter` / `DeleteParameter` reject them, so adopting one would break the next `cdkd deploy` and `cdkd destroy`)
 - AWS::EC2::VPC
 - AWS::EC2::Subnet
 - AWS::EC2::SecurityGroup

@@ -5,7 +5,7 @@
     "covered": 42,
     "noArnAttr": 92,
     "gap": 0,
-    "knownGap": 2
+    "knownGap": 0
   },
   "types": [
     {
@@ -853,8 +853,7 @@
       "arnAttributes": [
         {
           "name": "DBSubnetGroupArn",
-          "status": "allow-listed",
-          "rationale": "KNOWN GAP (issue 1824): new schema attribute; CreateDBSubnetGroup returns it but the provider does not cache it"
+          "status": "cached"
         }
       ],
       "gaps": []
@@ -1025,8 +1024,7 @@
       "arnAttributes": [
         {
           "name": "Arn",
-          "status": "allow-listed",
-          "rationale": "KNOWN GAP (issue 1824): new schema attribute with no create-response source; needs a GetParameter read or a guarded constructed ARN"
+          "status": "cached"
         }
       ],
       "gaps": []

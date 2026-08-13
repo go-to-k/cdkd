@@ -1356,6 +1356,42 @@ hand-fed inline `Tags` and so agreed with the bug.
 - Ask of any test: "would this still pass if the API returned nothing for this
   field?" If yes, it pins your assumption, not the behavior.
 
+## A read API that accepts MORE id forms than the write APIs breaks `import()`
+
+`import()` verifies a physical id with a `Get*` / `Describe*` and then RECORDS
+it, so the id has to satisfy every WRITE call the type will ever make — and the
+read API is routinely the more permissive of the two. `AWS::SSM::Parameter` is
+the live case (issue #1824 review): `GetParameterRequest.Name` accepts a NAME, a
+full ARN, and a `name:version` / `name:label` selector, while
+`PutParameterRequest.Name` and `DeleteParameterRequest.Name` both say "You can't
+enter the Amazon Resource Name (ARN) for a parameter, only the parameter name
+itself" and constrain the name charset to `a-zA-Z0-9_.-` plus `/`. So
+`cdkd import --resource Param=arn:aws:ssm:...:parameter/foo` verified cleanly and
+the damage landed later and elsewhere — the next `cdkd deploy` failing at
+`PutParameter` and `cdkd destroy` at `DeleteParameter`.
+
+Three things about fixing it generalize:
+
+- **Refuse at the boundary where the value ENTERS** (`import()`, against
+  `resolveExplicitPhysicalId`'s answer), before the verification call. A guard
+  further in cannot help: the write call that rejects the id runs BEFORE any
+  later consumer of the physicalId, so a guard behind it is unreachable in
+  production and testable only by priming a mock to accept a wire shape AWS
+  rejects — which is how the first attempt at this shipped an inert guard plus a
+  test that endorsed an impossible API.
+- **Prefer refusing over NORMALIZING unless the mapping is unambiguous for every
+  shape.** Deriving `foo` from `arn:...:parameter/foo` looks mechanical and is
+  not: the name's leading `/` IS the ARN separator, so that ARN is equally the
+  ARN of `foo` and of `/foo` (`aws-cdk-lib`'s `arnForParameterName` renders both
+  identically, which is why CDK needs an explicit `simpleName` flag), and a
+  cross-account SHARED parameter has no name form at all. A wrong normalization
+  writes a physicalId naming a DIFFERENT resource — a silent wrong-resource
+  write — where a refusal is loud and one edit away from fixed.
+- **Derive the predicate from the documented constraint, not from the shape you
+  saw.** Refusing a COLON (illegal in any writable parameter name) covers the
+  ARN and the selector at once; refusing an `arn:` prefix would have covered only
+  the reported half.
+
 ## Never infer a default from a possibly-malformed value
 
 `(config['Status'] as string) || 'Suspended'` reads correctly and is wrong: when

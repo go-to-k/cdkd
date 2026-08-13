@@ -16,9 +16,14 @@
 # explicit-ARN branch — a NON-EMPTY map. That makes step 6's assertion a
 # direct discriminator: it PASSES only against fixed cdkd and FAILS against
 # pre-fix cdkd, where `attributes` is `{}` and `PolicyArn` is absent.
-# (`import-nested-stack`, the other import fixture, cannot cover this: its
-# only leaf type is `AWS::SSM::Parameter`, whose `import()` returns
-# `attributes: {}`, so it passes identically either way.)
+# (`import-nested-stack`, the other import fixture, could not cover this when
+# this fixture was written: its only leaf type is `AWS::SSM::Parameter`, whose
+# `import()` returned `attributes: {}` at the time, so it passed identically
+# either way. That is no longer true — issue 1824 made
+# `SSMParameterProvider.import()` return `{ Arn: <arn> }`, read off the
+# verification `GetParameter` — so that fixture WOULD now discriminate too. This
+# fixture keeps the managed policy as its probe regardless: it is the resource
+# every assertion below names, and nothing here depends on the SSM claim.)
 #
 # Phases:
 #   1. `cdkd deploy` the stack (creates the managed policy on AWS).

@@ -12,6 +12,8 @@ import {
 } from '@aws-sdk/client-ssm';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
+import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -86,6 +88,162 @@ export class SSMParameterProvider implements ResourceProvider {
       out.push({ Key: key, Value: coerce(value) });
     }
     return out;
+  }
+
+  /**
+   * Build the `Arn` attribute for an SSM parameter (issue #1824).
+   *
+   * WHY THIS EXISTS. An output / cross-resource `Fn::GetAtt` reads the CACHED
+   * `resource.attributes[<CFnName>]` in
+   * `IntrinsicFunctionResolver.constructAttribute`, which never calls a
+   * provider's `getAttribute` — and for an `*Arn` name the resolver's shape
+   * guard HARD-FAILS rather than degrading when the cached value is missing and
+   * the physicalId is name-shaped (an SSM physicalId IS the parameter name). So
+   * `new cdk.CfnOutput(this, 'ParamArn', { value: param.attrArn })` failed the
+   * deploy until the ARN was cached under its CFn name.
+   *
+   * SOURCE DECISION — CONSTRUCTED, not read back. `PutParameter` returns only
+   * `Version` / `Tier`, so there were exactly two candidate sources, and the
+   * rejected one is recorded here so the call stays challengeable:
+   *
+   *  - `GetParameter`'s `Parameter.ARN` is authoritative, and cdkd already
+   *    issues that call in `readCurrentState` / `import`, so it needs no new IAM
+   *    permission. It was REJECTED on COST: it would be a brand-new round trip
+   *    on EVERY parameter create AND every update, and SSM parameters are among
+   *    the most numerous resources in real CDK stacks — a 50-parameter stack
+   *    would pay 50 extra reads for a value that is a pure function of data
+   *    cdkd already holds, against a project whose whole premise is removing
+   *    round trips.
+   *  - CONSTRUCTION is deterministic. The parameter ARN is the documented
+   *    `arn:{partition}:ssm:{region}:{account}:parameter/{name}`, with the
+   *    name's leading `/` folded into the separator — the same formula
+   *    `aws-cdk-lib`'s `StringParameter.parameterArn` uses — so nothing has to
+   *    be discovered from AWS. It is also the established idiom in this repo for
+   *    "the create response carries no ARN": `AppSyncProvider.buildAppSyncArn`
+   *    and the four `CloudControlProvider` enrichment sites (KMS key, ECR
+   *    repository x2, Kinesis stream) all construct through the same
+   *    `getAccountInfo` + `derivePartitionAndUrlSuffix` + `fabricated`-refusal
+   *    pair this method reuses.
+   *
+   * The PARTITION is DERIVED, never hardcoded `arn:aws:` — that hardcoding is an
+   * active bug class here (#1794 / #1815), and on a `cn-` / `us-gov-` deploy it
+   * would record an ARN naming a partition the parameter is not in.
+   *
+   * The `fabricated`-account guard (#1730 / #1746) is honored by REFUSING rather
+   * than by substituting: `getAccountInfo` catches its own STS failure and
+   * answers the placeholder `123456789012`, which carries no wildcard and is
+   * therefore invisible to `isPlaceholderArn`, so a fabricated id must yield NO
+   * attribute instead of a plausible-looking wrong one. Returning `undefined`
+   * degrades to exactly the pre-fix behavior — the resolver's shape guard fails
+   * LOUDLY on the name-shaped physicalId — never to a silently wrong value.
+   *
+   * DEGRADATION ON THE UPDATE PATH is a DELIBERATE trade-off, not one this
+   * design avoids. An update result's `attributes` REPLACE the state record's
+   * rather than merging into it (`deploy-engine.ts`:
+   * `result.attributes ?? (wasReplaced ? undefined : currentResource.attributes)`),
+   * so whenever this method degrades during an `update` the returned map carries
+   * no `Arn` and the create-time one is DROPPED. Construction does not prevent
+   * that — it only swaps WHICH dependency can fail, STS plus the client's region
+   * resolver instead of SSM — so read the source decision above as buying one
+   * fewer round trip and nothing else.
+   *
+   * The alternative is to return NO `attributes` at all on the degraded path, so
+   * the engine's `??` carries the previous map forward and the `Arn` survives.
+   * That is REJECTED: the same map carries `Type` / `Value`, which are the values
+   * THIS update just sent. Carrying the previous map forward would answer
+   * `Fn::GetAtt [Param, Value]` with the SUPERSEDED value — silently, and to a
+   * question cdkd can answer correctly — and would hand `cdkd drift` a baseline
+   * AWS does not hold. Dropping the `Arn` instead degrades to the resolver's LOUD
+   * `*Arn` shape-guard failure, which is exactly the pre-fix behavior, and the
+   * resource's next UPDATE re-records it. A loud missing value beats a quiet
+   * wrong one — the same reasoning the `fabricated`-account arm above applies.
+   *
+   * Two honest bounds on that "next update re-records it". `getAccountInfo`
+   * caches a SUCCESSFUL identity for the process, so within one deploy only a run
+   * whose FIRST `GetCallerIdentity` fails degrades at all — but the 10s
+   * fabricated-answer TTL then covers every parameter created in that window
+   * rather than a random subset. And a plain re-deploy does NOT heal it: a
+   * resource whose resolved properties equal its state record is skipped with no
+   * provider call, so healing needs a real property change (issue
+   * [#1852](https://github.com/go-to-k/cdkd/issues/1852), which also covers the
+   * resolver message that currently misattributes this to a missing enrichment).
+   *
+   * NEVER THROWS, and that is enforced here rather than asserted at the call
+   * sites. `create` calls this AFTER `PutParameter` has already committed a
+   * parameter, so a throw would surface as a failed create over a missing
+   * ATTRIBUTE — leaving an orphan that makes the next deploy hit
+   * `ParameterAlreadyExists` (the issue #376 class), and the cleanup that exists
+   * for that is deliberately out of reach by then. `getAccountInfo` catches its
+   * own STS failure, but `config.region()` is a resolver that can reject, so the
+   * whole body is wrapped: an unexpected failure degrades to "no Arn recorded"
+   * exactly as the fabricated-account arm does.
+   */
+  private async buildParameterArn(name: string): Promise<string | undefined> {
+    try {
+      return await this.buildParameterArnUnguarded(name);
+    } catch (error) {
+      this.logger.warn(
+        `Could not build the Arn attribute for SSM parameter ${name}: ` +
+          `${error instanceof Error ? error.message : String(error)}. The parameter itself is ` +
+          `unaffected; the Arn is NOT recorded, so an Fn::GetAtt on it will fail until a later ` +
+          `deploy records it.`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * {@link buildParameterArn}'s body. Only that method may call it.
+   *
+   * `name` is always a parameter NAME, never an ARN, and that is an INVARIANT
+   * rather than an assumption this method has to defend (issue #1824 review
+   * round 3). Both callers pass a value SSM has just accepted as a
+   * `PutParameter` `Name`, and that field forbids an ARN outright — "You can't
+   * enter the Amazon Resource Name (ARN) for a parameter, only the parameter
+   * name itself", plus a name charset of `a-zA-Z0-9_.-` and `/` that excludes
+   * `:`. So an ARN-shaped id fails at `PutParameter` several statements ABOVE
+   * this method on both paths, and a guard here could only ever fire against a
+   * mock. Round 2 added exactly such a guard, believing an ARN could arrive from
+   * `cdkd import --resource Param=arn:...`; it can, but the defect is that the
+   * import RECORDED it, so the fix belongs at the import boundary — where
+   * `import()` now refuses it — and not here. Do not re-add it.
+   */
+  private async buildParameterArnUnguarded(name: string): Promise<string | undefined> {
+    const region = await this.ssmClient.config.region();
+    const accountInfo = await getAccountInfo(region);
+    if (accountInfo.fabricated) {
+      this.logger.warn(
+        `Cannot determine the AWS account (STS is unreachable, and the resolved account id is ` +
+          `a placeholder), so the Arn attribute for SSM parameter ${name} would be fabricated ` +
+          `and is NOT recorded. An Fn::GetAtt on it will fail until a later deploy resolves ` +
+          `the account.`
+      );
+      return undefined;
+    }
+    // Derived locally through the closed region -> partition mapping the repo
+    // already uses for `${AWS::Partition}`. `accountInfo.partition` derives
+    // through the SAME helper since issue #1730, so the two agree; deriving here
+    // states the dependency locally and costs no extra STS hop, matching
+    // `AppSyncProvider.buildAppSyncArn`.
+    const { partition } = derivePartitionAndUrlSuffix(accountInfo.region);
+    // The ARN's resource part is `parameter/<fully-qualified name>`: a
+    // hierarchical name already begins with `/`, which is the separator, so
+    // emitting it verbatim would produce a double slash. A flat name (`foo`,
+    // legal in SSM) has no leading slash and is appended as-is.
+    const qualifiedName = name.startsWith('/') ? name.slice(1) : name;
+    // The ARN's own region segment is CANONICALIZED (issue #1795 / #1814 class).
+    // `derivePartitionAndUrlSuffix` folds the case INTERNALLY, so the PARTITION
+    // above is already right for an upper-cased region — but the segment
+    // interpolated here is not, and `accountInfo.region` is whatever spelling
+    // reached `effectiveAccountInfoRegion` (`overrideRegion || AWS_REGION ||
+    // 'us-east-1'`), folded nowhere. This is REACHABLE rather than theoretical:
+    // DNS is case-insensitive, so `cdkd deploy --region US-EAST-1` SUCCEEDS and
+    // then records `arn:aws:ssm:US-EAST-1:...`, which matches no IAM policy and
+    // is rejected by every SDK call taking the ARN — and it is persisted into
+    // `state.json`, so the wrong value outlives the deploy. Folding here rather
+    // than at the read above keeps ONE fold covering every source
+    // `effectiveAccountInfoRegion` can fall back to.
+    return `arn:${partition}:ssm:${canonicalizeRegion(accountInfo.region)}:${accountInfo.accountId}:parameter/${qualifiedName}`;
   }
 
   /**
@@ -172,11 +330,22 @@ export class SSMParameterProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully created SSM parameter ${logicalId}: ${name}`);
 
+      // Built AFTER the cleanup-guarded wiring block on purpose (issue #1824):
+      // a failure here must NOT trigger the best-effort `DeleteParameter` above,
+      // which would destroy a successfully created parameter over a missing
+      // attribute. `buildParameterArn` never throws (enforced in its own body,
+      // not assumed here), so it cannot fail the create either.
+      const arn = await this.buildParameterArn(name);
+
       return {
         physicalId: name,
         attributes: {
           Type: type as ParameterType,
           Value: value,
+          // Spread CONDITIONALLY rather than writing `undefined`: a
+          // present-but-undefined key survives `structuredClone` into the state
+          // record, so every `Object.keys` consumer sees a key carrying nothing.
+          ...(arn !== undefined && { Arn: arn }),
         },
       };
     } catch (error) {
@@ -283,12 +452,24 @@ export class SSMParameterProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully updated SSM parameter ${logicalId}`);
 
+      // Re-report `Arn` here even though an in-place update cannot change it
+      // (issue #1824): an update result's `attributes` REPLACE the state
+      // record's rather than merging into it, so returning only Type / Value
+      // would WIPE the ARN recorded at create time and re-break the `Fn::GetAtt`
+      // the create-side fix repairs. Construction is what makes re-reporting it
+      // cost no AWS call — see `buildParameterArn`'s source-decision note, which
+      // also records why the DEGRADED case here still returns the partial map
+      // (dropping `Arn`, a loud failure) rather than no attributes at all
+      // (keeping a superseded `Value`, a silent wrong answer).
+      const arn = await this.buildParameterArn(physicalId);
+
       return {
         physicalId,
         wasReplaced: false,
         attributes: {
           Type: type as ParameterType,
           Value: value,
+          ...(arn !== undefined && { Arn: arn }),
         },
       };
     } catch (error) {
@@ -472,6 +653,79 @@ export class SSMParameterProvider implements ResourceProvider {
   }
 
   /**
+   * Refuse a physical id SSM's WRITE APIs could never accept (issue #1824
+   * review round 3).
+   *
+   * An SSM parameter's physicalId must always be the parameter NAME, because
+   * that is the only thing the write APIs take. `PutParameterRequest.Name`:
+   * "You can't enter the Amazon Resource Name (ARN) for a parameter, only the
+   * parameter name itself", with a name charset of `a-zA-Z0-9_.-` plus `/` as
+   * the hierarchy separator; `DeleteParameterRequest.Name` repeats the ARN
+   * prohibition verbatim. A COLON therefore cannot appear in any writable name,
+   * which is the single predicate used here — it covers both shapes
+   * `GetParameter` additionally accepts and this method has to stop:
+   *
+   *  - an ARN (`arn:aws:ssm:us-east-1:111122223333:parameter/foo`), and
+   *  - a version / label SELECTOR (`GetParameterRequest.Name`: "To query by
+   *    parameter label, use `"Name": "name:label"`. To query by parameter
+   *    version, use `"Name": "name:version"`").
+   *
+   * Both sail through this provider's existence check, so before this guard the
+   * value was RECORDED as the physicalId and the damage landed later and
+   * elsewhere: `cdkd deploy` failing at `PutParameter({Name: physicalId})` with
+   * a `ValidationException` after a `Value` change, and `cdkd destroy` failing
+   * identically at `DeleteParameter`. This is where the bad value ENTERS
+   * (`--resource` / `Properties.Name`), so it is where it is stopped.
+   *
+   * REFUSED, NOT NORMALIZED to the name, and the ARN grammar is the reason. The
+   * mapping back is genuinely ambiguous rather than merely awkward:
+   *
+   *  - The leading `/` is NOT recoverable. `arn:…:parameter/foo` is the ARN of
+   *    BOTH the simple name `foo` and the one-level hierarchical name `/foo`,
+   *    since the name's leading slash IS the separator — `aws-cdk-lib`'s
+   *    `arnForParameterName` renders the two to the identical string, and that
+   *    is precisely why CDK needs an explicit `simpleName` flag whenever the
+   *    name is a token. Guessing wrong writes a physicalId naming a DIFFERENT
+   *    parameter, i.e. converts a loud failure into a silent wrong-resource
+   *    write.
+   *  - A parameter SHARED from another account has no name form at all
+   *    ("For parameters shared with you from another account, you must use the
+   *    full ARN"), so for that shape there is nothing to normalize TO.
+   *
+   * A refusal is a loud, fixable error, and the message names the exact command
+   * that prints the name to pass instead.
+   */
+  private refuseUnwritableParameterId(input: ResourceImportInput, explicit: string): void {
+    if (!explicit.includes(':')) return;
+
+    const isArn = explicit.startsWith('arn:');
+    const shape = isArn ? 'an ARN' : 'a version / label selector';
+    const remedy =
+      input.knownPhysicalId === explicit
+        ? `pass the parameter NAME instead: --resource ${input.logicalId}=<parameterName>`
+        : `set Properties.Name to the parameter NAME rather than ${shape}`;
+    // The ARN case is the one with a derivation a reader may expect cdkd to
+    // perform, so only it carries the why-not note.
+    const whyNotDerived = isArn
+      ? ' cdkd deliberately does NOT derive the name from the ARN: the leading "/" is not ' +
+        'recoverable (arn:...:parameter/foo is the ARN of BOTH the simple name "foo" and the ' +
+        'hierarchical name "/foo"), and a parameter shared from another account has no name ' +
+        'form at all — so a derived name could silently address a DIFFERENT parameter.'
+      : '';
+
+    throw new ProvisioningError(
+      `Cannot adopt SSM parameter ${input.logicalId} from ${shape} ('${explicit}'): cdkd records ` +
+        `a parameter's NAME as its physical id, because SSM's write APIs accept only the name ` +
+        `(PutParameter and DeleteParameter both reject an ARN, and a name cannot contain ':'), ` +
+        `so the next cdkd deploy and cdkd destroy would fail with a ValidationException. ` +
+        `${remedy}.${whyNotDerived} Read the name AWS holds with: ` +
+        `aws ssm get-parameter --name '${explicit}' --query Parameter.Name --output text`,
+      input.resourceType,
+      input.logicalId
+    );
+  }
+
+  /**
    * Adopt an existing SSM parameter into cdkd state.
    *
    * SSM physical IDs ARE the parameter names (`/foo/bar`). The CDK template
@@ -479,14 +733,26 @@ export class SSMParameterProvider implements ResourceProvider {
    * covers most cases.
    *
    * Lookup order:
-   *  1. `--resource` override or `Properties.Name` → verify via `GetParameter`.
+   *  1. `--resource` override or `Properties.Name` → refuse it outright when it
+   *     is not a writable NAME (see {@link refuseUnwritableParameterId} — note
+   *     `GetParameter` accepts an ARN and a `name:version` selector while every
+   *     write API rejects both), else verify via `GetParameter`.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'Name');
     if (explicit) {
+      this.refuseUnwritableParameterId(input, explicit);
       try {
-        await this.ssmClient.send(new GetParameterCommand({ Name: explicit }));
-        return { physicalId: explicit, attributes: {} };
+        const resp = await this.ssmClient.send(new GetParameterCommand({ Name: explicit }));
+        // Record `Arn` on the import path too (issue #1824): the state record an
+        // import writes is what a later `Fn::GetAtt` reads, so leaving it empty
+        // left an ADOPTED parameter hitting the same resolver shape-guard
+        // hard-fail the create-side fix repairs. Unlike create / update this
+        // needs no construction and no extra call — the existence-verification
+        // `GetParameter` above ALREADY reports the authoritative ARN, so prefer
+        // the value AWS holds over deriving one.
+        const arn = resp.Parameter?.ARN;
+        return { physicalId: explicit, attributes: { ...(arn !== undefined && { Arn: arn }) } };
       } catch (err) {
         if (err instanceof ParameterNotFound) return null;
         throw err;
