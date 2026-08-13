@@ -747,7 +747,13 @@ describe('pullEcrImage', () => {
       authorizationData: [
         {
           authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
-          proxyEndpoint: 'https://111111111111.dkr.ecr.cn-north-1.amazonaws.com.cn',
+          // Deliberately NOT what the derived fallback would compute for this
+          // region — a VPC-endpoint host. The obvious fixture reports the same
+          // string the fallback derives, so the two candidates COINCIDE and the
+          // test cannot tell which one won: deleting `authData.proxyEndpoint ||`
+          // outright passes it. Making them differ is what fences the
+          // precedence.
+          proxyEndpoint: 'https://vpce-0abc-xyz.dkr.ecr.cn-north-1.vpce.amazonaws.com.cn',
         },
       ],
     });
@@ -755,6 +761,6 @@ describe('pullEcrImage', () => {
     await pullEcrImage('111111111111.dkr.ecr.cn-north-1.amazonaws.com.cn/r:t', {
       skipPull: false,
     });
-    expect(loginEndpointOf()).toBe('https://111111111111.dkr.ecr.cn-north-1.amazonaws.com.cn');
+    expect(loginEndpointOf()).toBe('https://vpce-0abc-xyz.dkr.ecr.cn-north-1.vpce.amazonaws.com.cn');
   });
 });
