@@ -20,7 +20,12 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { compositeIdSeparatorRefusal, packCompositeId } from '../composite-id.js';
+import {
+  compositeIdFormatMessage,
+  compositeIdSeparatorRefusal,
+  packCompositeId,
+} from '../composite-id.js';
+import type { CompositeIdFormat } from '../composite-id.js';
 import { findSilentDropProperties } from '../property-coverage.js';
 import type {
   ResourceProvider,
@@ -119,6 +124,18 @@ function tableIdentityFromGetTable(
  * S3 Tables API calls are synchronous - the CC API adds unnecessary
  * polling overhead for operations that complete immediately.
  */
+/** Shapes of the two `AWS::S3Tables::*` composite physicalIds (issue #1657). */
+const S3_TABLES_NAMESPACE_ID_FORMAT: CompositeIdFormat = {
+  label: 'S3 Tables Namespace',
+  segments: ['tableBucketARN', 'namespaceName'],
+};
+
+const S3_TABLES_TABLE_ID_FORMAT: CompositeIdFormat = {
+  label: 'S3 Tables Table',
+  segments: ['tableBucketARN', 'namespace', 'name'],
+  alsoAccepts: 'a table ARN',
+};
+
 export class S3TablesProvider implements ResourceProvider {
   private client: S3TablesClient | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
@@ -543,7 +560,7 @@ export class S3TablesProvider implements ResourceProvider {
     const [tableBucketARN, namespaceName] = physicalId.split('|');
     if (!tableBucketARN || !namespaceName) {
       throw new ProvisioningError(
-        `Invalid physical ID format for S3 Tables Namespace ${logicalId}: ${physicalId}`,
+        compositeIdFormatMessage(S3_TABLES_NAMESPACE_ID_FORMAT, logicalId, physicalId),
         resourceType,
         logicalId,
         physicalId
@@ -1273,8 +1290,7 @@ export class S3TablesProvider implements ResourceProvider {
     }
     if (resolved === 'unparseable') {
       throw new ProvisioningError(
-        `Invalid physical ID format for S3 Tables Table ${logicalId}: ${physicalId} ` +
-          `(expected '<tableBucketARN>|<namespace>|<name>' or a table ARN)`,
+        compositeIdFormatMessage(S3_TABLES_TABLE_ID_FORMAT, logicalId, physicalId),
         resourceType,
         logicalId,
         physicalId

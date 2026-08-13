@@ -67,7 +67,8 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { requireConfigArray } from '../config-shape.js';
-import { packCompositeId } from '../composite-id.js';
+import { compositeIdFormatMessage, packCompositeId } from '../composite-id.js';
+import type { CompositeIdFormat } from '../composite-id.js';
 import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import type {
@@ -132,6 +133,22 @@ const MUTABLE_GRAPHQL_API_CONFIG_PROPERTIES = [
  * - AWS::AppSync::Resolver
  * - AWS::AppSync::ApiKey
  */
+/** Shapes of the three `AWS::AppSync::*` child composite physicalIds (issue #1657). */
+const APPSYNC_DATASOURCE_ID_FORMAT: CompositeIdFormat = {
+  label: 'AppSync DataSource',
+  segments: ['apiId', 'name'],
+};
+
+const APPSYNC_RESOLVER_ID_FORMAT: CompositeIdFormat = {
+  label: 'AppSync Resolver',
+  segments: ['apiId', 'typeName', 'fieldName'],
+};
+
+const APPSYNC_APIKEY_ID_FORMAT: CompositeIdFormat = {
+  label: 'AppSync ApiKey',
+  segments: ['apiId', 'apiKeyId'],
+};
+
 export class AppSyncProvider implements ResourceProvider {
   private client: AppSyncClient | undefined;
   private s3Client: S3Client | undefined;
@@ -908,7 +925,7 @@ export class AppSyncProvider implements ResourceProvider {
     const [apiId, name] = physicalId.split('|');
     if (!apiId || !name) {
       throw new ProvisioningError(
-        `Invalid DataSource physical ID format: ${physicalId}`,
+        compositeIdFormatMessage(APPSYNC_DATASOURCE_ID_FORMAT, logicalId, physicalId),
         resourceType,
         logicalId,
         physicalId
@@ -987,7 +1004,7 @@ export class AppSyncProvider implements ResourceProvider {
     const parts = physicalId.split('|');
     if (parts.length < 3) {
       throw new ProvisioningError(
-        `Invalid Resolver physical ID format: ${physicalId}`,
+        compositeIdFormatMessage(APPSYNC_RESOLVER_ID_FORMAT, logicalId, physicalId),
         resourceType,
         logicalId,
         physicalId
@@ -1082,7 +1099,7 @@ export class AppSyncProvider implements ResourceProvider {
     const [apiId, apiKeyId] = physicalId.split('|');
     if (!apiId || !apiKeyId) {
       throw new ProvisioningError(
-        `Invalid ApiKey physical ID format: ${physicalId}`,
+        compositeIdFormatMessage(APPSYNC_APIKEY_ID_FORMAT, logicalId, physicalId),
         resourceType,
         logicalId,
         physicalId
@@ -2607,7 +2624,11 @@ export class AppSyncProvider implements ResourceProvider {
 
     const [apiId, name] = physicalId.split('|');
     if (!apiId || !name) {
-      this.logger.warn(`Invalid DataSource physical ID format: ${physicalId}, skipping`);
+      this.logger.warn(
+        compositeIdFormatMessage(APPSYNC_DATASOURCE_ID_FORMAT, logicalId, physicalId, {
+          skipping: true,
+        })
+      );
       return;
     }
 
@@ -2741,7 +2762,11 @@ export class AppSyncProvider implements ResourceProvider {
 
     const parts = physicalId.split('|');
     if (parts.length < 3) {
-      this.logger.warn(`Invalid Resolver physical ID format: ${physicalId}, skipping`);
+      this.logger.warn(
+        compositeIdFormatMessage(APPSYNC_RESOLVER_ID_FORMAT, logicalId, physicalId, {
+          skipping: true,
+        })
+      );
       return;
     }
     const [apiId, typeName, fieldName] = parts;
@@ -2874,7 +2899,11 @@ export class AppSyncProvider implements ResourceProvider {
 
     const [apiId, apiKeyId] = physicalId.split('|');
     if (!apiId || !apiKeyId) {
-      this.logger.warn(`Invalid ApiKey physical ID format: ${physicalId}, skipping`);
+      this.logger.warn(
+        compositeIdFormatMessage(APPSYNC_APIKEY_ID_FORMAT, logicalId, physicalId, {
+          skipping: true,
+        })
+      );
       return;
     }
 

@@ -87,8 +87,10 @@ import {
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import {
+  compositeIdFormatMessage,
   compositeIdSeparatorRefusal,
   packCompositeId,
+  type CompositeIdFormat,
   type CompositeIdOptions,
 } from '../composite-id.js';
 import {
@@ -273,6 +275,29 @@ function canonicalizeSgInlineRuleProtocols(
  * - AWS::EC2::SecurityGroupIngress
  * - AWS::EC2::Instance
  */
+/** Shapes of the four `AWS::EC2::*` composite physicalIds (issue #1657). */
+const EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT: CompositeIdFormat = {
+  label: 'VPCGatewayAttachment',
+  // `IGW` is a fixed token cdkd packs, not a value the user substitutes — which
+  // is why `CompositeIdShapeSegment` has a literal form at all.
+  segments: [{ literal: 'IGW' }, 'vpcId'],
+};
+
+const EC2_ROUTE_ID_FORMAT: CompositeIdFormat = {
+  label: 'Route',
+  segments: ['routeTableId', 'destination'],
+};
+
+const EC2_SG_INGRESS_ID_FORMAT: CompositeIdFormat = {
+  label: 'SecurityGroupIngress',
+  segments: ['groupId', 'protocol', 'fromPort', 'toPort'],
+};
+
+const EC2_NETWORK_ACL_ENTRY_ID_FORMAT: CompositeIdFormat = {
+  label: 'NetworkAclEntry',
+  segments: ['networkAclId', 'ruleNumber', 'egress'],
+};
+
 export class EC2Provider implements ResourceProvider {
   private ec2Client: EC2Client;
   private logger = getLogger().child('EC2Provider');
@@ -1863,7 +1888,7 @@ export class EC2Provider implements ResourceProvider {
     const parts = physicalId.split('|');
     if (parts.length !== 2) {
       throw new ProvisioningError(
-        `Invalid physicalId format for VPCGatewayAttachment ${logicalId}: expected "IGW|VpcId", got "${physicalId}"`,
+        compositeIdFormatMessage(EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT, logicalId, physicalId),
         resourceType,
         logicalId,
         physicalId
@@ -2443,7 +2468,7 @@ export class EC2Provider implements ResourceProvider {
     const parts = physicalId.split('|');
     if (parts.length !== 2) {
       throw new ProvisioningError(
-        `Invalid physicalId format for Route ${logicalId}: expected "RouteTableId|Destination", got "${physicalId}"`,
+        compositeIdFormatMessage(EC2_ROUTE_ID_FORMAT, logicalId, physicalId),
         resourceType,
         logicalId,
         physicalId
@@ -3181,7 +3206,7 @@ export class EC2Provider implements ResourceProvider {
     const parts = physicalId.split('|');
     if (parts.length !== 4) {
       throw new ProvisioningError(
-        `Invalid physicalId format for SecurityGroupIngress ${logicalId}: expected "GroupId|Protocol|FromPort|ToPort", got "${physicalId}"`,
+        compositeIdFormatMessage(EC2_SG_INGRESS_ID_FORMAT, logicalId, physicalId),
         resourceType,
         logicalId,
         physicalId
@@ -4519,7 +4544,11 @@ export class EC2Provider implements ResourceProvider {
 
     const parts = physicalId.split('|');
     if (parts.length < 3) {
-      this.logger.warn(`Invalid NetworkAclEntry physical ID format: ${physicalId}, skipping`);
+      this.logger.warn(
+        compositeIdFormatMessage(EC2_NETWORK_ACL_ENTRY_ID_FORMAT, logicalId, physicalId, {
+          skipping: true,
+        })
+      );
       return;
     }
     const networkAclId = parts[0]!;
