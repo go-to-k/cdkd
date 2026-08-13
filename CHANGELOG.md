@@ -1,3 +1,10 @@
+## [0.281.21](https://github.com/go-to-k/cdkd/compare/v0.281.20...v0.281.21) (2026-08-13)
+
+
+### Bug Fixes
+
+* **dynamodb:** sort the Table AttributeDefinitions set, and stop the AWS-computed WarmThroughput reaching the drift baseline ([#1769](https://github.com/go-to-k/cdkd/issues/1769)) ([3bf3fdb](https://github.com/go-to-k/cdkd/commit/3bf3fdbff7a72c15a54150a101697d714ff5005b))
+
 ## [0.281.20](https://github.com/go-to-k/cdkd/compare/v0.281.19...v0.281.20) (2026-08-13)
 
 
