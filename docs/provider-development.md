@@ -1668,14 +1668,17 @@ Two mechanical details any such abort inherits:
   heuristic, so the refusal is terminal by DECLARATION and no wording can
   overturn it. Reach for it only where the error means "this cannot succeed on
   a retry" as a matter of cdkd's own logic — never for a relayed AWS failure,
-  whose retryability is the classifiers' business. Keep the message discipline
-  above as well: the marker covers callers that classify through
-  `isRetryableTransientError` (today every `update()` caller, via `withRetry`'s
-  default), while `isNameCollisionError` (`AlreadyExists`) and
-  `isNameCooldownError` (`QueueDeletedRecently`) take only a message and so
-  cannot consult it — both spellings match a bare logical id, and
-  `rollback-executor.ts` already wires `isRecreateRetryableError` onto its
-  CREATE arms, so a caller change would arm them.
+  whose retryability is the classifiers' business.
+
+  The fence is at the RETRY LOOP, not only in that one classifier: `withRetry`
+  rethrows a marked error BEFORE choosing between the default classifier and a
+  caller-supplied `opts.isRetryable`, and the destroy runner's delete-retry
+  loop gates its own `Too Many Requests` message test the same way. So the
+  message-only classifiers (`isNameCollisionError`'s `AlreadyExists`,
+  `isNameCooldownError`'s `QueueDeletedRecently` — both of which match a bare
+  logical id) cannot resurrect a refusal even though they cannot read the
+  marker themselves. Keep the message discipline above regardless: it is what
+  a future classifier added outside those two loops still relies on.
 - **Point the remediation at the STATE record, not only at AWS.** Both skip
   families shipping today — the state-borne composite-id arms and
   `NestedStackProvider`'s propagation — describe a resource whose repair

@@ -51,6 +51,7 @@ import {
   type CompletedOperation,
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
+import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
 import { SNSSubscriptionProvider } from '../../../src/provisioning/providers/sns-subscription-provider.js';
 import type { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import type { ResourceState } from '../../../src/types/state.js';
@@ -181,9 +182,20 @@ describe("the SNS replacement abort surfaces ONCE through the rollback executor'
 
     expect(updateSpy).toHaveBeenCalledTimes(1);
     expect(result.failures).toBe(1);
+
+    // The abort — not some other failure — is what surfaced.
     const rollbackWarnings = rollbackLogger.warn.mock.calls.map((call) => String(call[0]));
-    // The pattern really is in the surfaced message — the marker is the fence.
-    expect(rollbackWarnings.some((m) => m.includes('DependencyViolation'))).toBe(true);
+    const abortWarning = rollbackWarnings.find((m) => m.includes('deliver every message twice'));
+    expect(abortWarning).toBeDefined();
+
+    // TEETH: assert the surfaced message WOULD be classified retryable if it
+    // were not marked. A bare `includes('DependencyViolation')` passes either
+    // way (the logical id is echoed regardless), so it proves nothing; this
+    // fails the moment the input stops being able to exercise the marker —
+    // e.g. if the message stopped carrying the logical id, or the pattern
+    // left the retryable table — instead of quietly going inert.
+    const surfaced = String(abortWarning);
+    expect(isRetryableTransientError(new Error(surfaced), surfaced)).toBe(true);
   });
 
   it('INVERTED CONTROL — a successful delete lets the same revert complete', async () => {

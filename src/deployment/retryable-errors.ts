@@ -435,8 +435,28 @@ const NON_RETRYABLE_MARKER = Symbol.for('cdkd.nonRetryable');
  * Reach for it when the error means "this cannot succeed on a retry" as a
  * matter of cdkd's own logic — NOT for a relayed AWS failure, whose
  * retryability is the classifiers' business.
+ *
+ * KNOWN LIVE INSTANCE NOT YET COVERED: `ResourceUpdateNotSupportedError`
+ * (`src/utils/error-handler.ts`) interpolates the logical id and is thrown by
+ * ~20 providers from inside the retried `update()` in `deploy-engine.ts`, so a
+ * stack with a resource named e.g. `MyDependencyViolationSub` burns the full
+ * ~47s backoff schedule before the `--replace` fallback is even reached. That
+ * is a LIVE occurrence of the class this marker exists for, unlike the
+ * latent-today SNS abort that motivated it. Marking it belongs in that error's
+ * constructor, in a file this change does not own; tracked separately.
  */
-export function markNonRetryable<E extends object>(error: E): E {
+export function markNonRetryable<E extends Error>(error: E): E {
+  // `E extends Error`, not `object`: a class or a shared prototype is an
+  // object too, and the reader below is a PROTOTYPE-CHAIN lookup, so marking
+  // one would silently mark every instance of it as terminal.
+  //
+  // A non-extensible (frozen / sealed) error is returned UNMARKED rather than
+  // allowed to throw. Callers use this inline — `throw markNonRetryable(...)`
+  // — so a `TypeError` raised here would REPLACE the refusal the caller meant
+  // to raise, turning a precise message into an unrelated crash. Losing the
+  // marker degrades to the pre-marker behavior (the message heuristics still
+  // apply); losing the refusal loses the diagnosis.
+  if (!Object.isExtensible(error)) return error;
   Object.defineProperty(error, NON_RETRYABLE_MARKER, {
     value: true,
     enumerable: false,
@@ -453,6 +473,17 @@ export function markNonRetryable<E extends object>(error: E): E {
  * The chain walk mirrors {@link isThrottlingError}'s: cdkd wraps errors, so a
  * marked refusal can end up one or more links deep, and a marker that stopped
  * counting after a single wrap would be a fence that quietly falls open.
+ *
+ * That reach is DIRECTIONAL, and the upward direction is a hazard worth
+ * stating. Downward — a marked refusal wrapped by an outer error — is the
+ * intended case and stays terminal. UPWARD is the inverse: wrapping a marked
+ * refusal as the `cause` of a genuinely RETRYABLE outer error
+ * (`new Error(msg, { cause: markedRefusal })`) makes the outer error terminal
+ * too, because this walk finds the marker on the cause. Unconstructible today
+ * (`ProvisioningError` is built with no `cause` at the one marking site), and
+ * the failure is fail-fast rather than silent, but a future wrapper that
+ * carries a marked cause into a transient error would stop retrying something
+ * that should retry. Strip or re-raise the cause there rather than nesting it.
  */
 export function isMarkedNonRetryable(error: unknown): boolean {
   let current: unknown = error;
