@@ -103,9 +103,16 @@ assert_composite_id_plan() {
     '\(AWS::Lambda::EventInvokeConfig\).*FunctionName=cdkd-export-test-[a-z0-9]+, Qualifier=\$LATEST'
 }
 
-# assert_cfn_physical_id <logicalId> <glob>
+# assert_cfn_physical_id <logicalId> <anchored-ERE>
 # CloudFormation's own recorded PhysicalResourceId after IMPORT — proves WHICH
 # AWS resource each identifier map adopted, not merely that the stack finished.
+#
+# An ANCHORED extended regex, not a glob. A glob cannot express "and nothing
+# else follows" without care: `[0-9]*.[0-9]*.[0-9]*.[0-9]*` matched the bare IP
+# this asserts AND the `<ip>|eipalloc-…` composite it is meant to exclude,
+# because the trailing `*` eats the separator and everything after it. `^…$`
+# EREs make each shape exact, and match `assert_plan_identifier`, which already
+# uses `grep -E` — one regex dialect in this file instead of two.
 assert_cfn_physical_id() {
   local logical="$1" pattern="$2" pid
   # Two distinct not-matching outcomes, kept distinguishable on purpose:
@@ -122,17 +129,13 @@ assert_cfn_physical_id() {
     echo "[verify] FAIL: could not read PhysicalResourceId for ${logical} (probe failed, result undetermined)"
     exit 1
   fi
-  # shellcheck disable=SC2254  # unquoted on purpose: ${pattern} IS the glob
-  case "${pid}" in
-    ${pattern})
-      echo "[verify]   ${logical} -> ${pid}"
-      ;;
-    *)
-      echo "[verify] FAIL: ${logical} PhysicalResourceId '${pid}' does not match '${pattern}'"
-      echo "[verify] (the composite-id splitter adopted the wrong resource, or none)"
-      exit 1
-      ;;
-  esac
+  if [[ "${pid}" =~ ${pattern} ]]; then
+    echo "[verify]   ${logical} -> ${pid}"
+  else
+    echo "[verify] FAIL: ${logical} PhysicalResourceId '${pid}' does not match /${pattern}/"
+    echo "[verify] (the composite-id splitter adopted the wrong resource, or none)"
+    exit 1
+  fi
 }
 # ---------------------------------------------------------------------------
 
@@ -226,23 +229,11 @@ case "${VARIANT}" in
       echo "[verify] (composite-id splitters in src/cli/commands/export.ts are missing entries)"
       exit 1
     fi
-    # Issue #1771: the three types whose MISSING splitter entry aborted the
-    # whole command (`AWS::EC2::Route` is the widest blast radius — essentially
-    # every public-subnet VPC declares one), plus `AWS::EC2::VPCGatewayAttachment`
-    # whose entry shipped with a GUESSED AttachmentType value. Each assertion
-    # pins the resolved identifier VALUE, so it fails both ways a splitter can
-    # be wrong: absent (no plan line at all, because the command aborted) and
-    # present-but-wrong (`AttachmentType=InternetGateway`, which CFn rejects at
-    # changeset-create with `Invalid Attachment Type`).
+    # Issue #1771 — SAME helper the default arm calls. Two copies of the same
+    # four regexes would drift, and a fifth registered type added to the helper
+    # would silently never reach this arm.
     echo "[verify] step 3a: composite-id identifiers resolved in the plan (issue #1771)"
-    assert_plan_identifier /tmp/verify-dry-run.log 'AWS::EC2::Route' \
-      '\(AWS::EC2::Route\).*RouteTableId=rtb-[0-9a-f]+, CidrBlock=0\.0\.0\.0/0'
-    assert_plan_identifier /tmp/verify-dry-run.log 'AWS::EC2::EIP' \
-      '\(AWS::EC2::EIP\).*PublicIp=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+, AllocationId=eipalloc-[0-9a-f]+'
-    assert_plan_identifier /tmp/verify-dry-run.log 'AWS::EC2::VPCGatewayAttachment' \
-      '\(AWS::EC2::VPCGatewayAttachment\).*AttachmentType=IGW, VpcId=vpc-[0-9a-f]+'
-    assert_plan_identifier /tmp/verify-dry-run.log 'AWS::Lambda::EventInvokeConfig' \
-      '\(AWS::Lambda::EventInvokeConfig\).*FunctionName=cdkd-export-test-[a-z0-9]+, Qualifier=\$LATEST'
+    assert_composite_id_plan /tmp/verify-dry-run.log
     echo "[verify] step 3a ok"
 
     # Assert the dry-run plan announces the Stage pre-delete + re-CREATE
@@ -478,13 +469,13 @@ case "${VARIANT}" in
     # the primaryIdentifier order the splitter builds) while CFn reports
     # `vpc-…|IGW` (VpcId first). The EIP is the other trap — CFn reports the
     # bare public IP, not the `<publicIp>|<allocationId>` composite cdkd stores.
-    # `|` inside an EXPANDED case pattern is a literal glob character (bash
-    # parses alternation before expansion), so the order IS load-bearing here.
+    # The order is load-bearing, which is why each pattern is anchored: `^…$`
+    # rejects a composite that merely STARTS with the right shape.
     echo "[verify] step 4b2: CFn adopted the right resource per composite id (issue #1771)"
-    assert_cfn_physical_id 'DefaultRoute' 'rtb-*|0.0.0.0/0'
-    assert_cfn_physical_id 'Eip' '[0-9]*.[0-9]*.[0-9]*.[0-9]*'
-    assert_cfn_physical_id 'IgwAttachment' 'vpc-*|IGW'
-    assert_cfn_physical_id 'HandlerEventInvokeConfig' 'cdkd-export-test-*|$LATEST'
+    assert_cfn_physical_id 'DefaultRoute' '^rtb-[0-9a-f]+\|0\.0\.0\.0/0$'
+    assert_cfn_physical_id 'Eip' '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
+    assert_cfn_physical_id 'IgwAttachment' '^vpc-[0-9a-f]+\|IGW$'
+    assert_cfn_physical_id 'HandlerEventInvokeConfig' '^cdkd-export-test-[a-z0-9]+\|\$LATEST$'
     echo "[verify] step 4b2 ok"
 
     # Regression guard: phase-2 UPDATE must NOT have caused silent

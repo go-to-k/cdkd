@@ -139,6 +139,20 @@ describe('resolveCompositePhysicalIdIdentifier (issue #1659)', () => {
     ).toThrow(/issues\/1761/);
   });
 
+  it.each(['constructor', 'toString', 'valueOf', '__proto__'])(
+    'reports %s as unregistered rather than resolving an inherited member',
+    (resourceType) => {
+      // A bare index into the identifier map answers for Object.prototype
+      // members, so `constructor` would make `entry` the Object constructor —
+      // truthy, and `entry.field` / `entry.resolve` then fail somewhere far
+      // from the actual cause instead of at this not-registered check.
+      expect(() =>
+        resolveCompositePhysicalIdIdentifier(resourceType, ctx({ physicalId: 'whatever' }))
+      ).toThrow(/no composite-physicalId identifier registered/);
+      expect(hasCompositePhysicalIdIdentifier(resourceType)).toBe(false);
+    }
+  );
+
   it('throws for a type with no registered entry', () => {
     expect(() =>
       resolveCompositePhysicalIdIdentifier('AWS::S3::Bucket', ctx({ physicalId: 'my-bucket' }))

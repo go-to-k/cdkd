@@ -959,6 +959,20 @@ describe('splitCompositePhysicalId', () => {
       /no composite-id splitter registered/
     );
   });
+
+  it.each(['constructor', 'toString', 'valueOf', '__proto__'])(
+    'reports %s as unregistered rather than calling an inherited member',
+    (resourceType) => {
+      // A bare index into the splitter map answers for Object.prototype members,
+      // so `constructor` would make `splitter` the Object constructor — truthy,
+      // callable, and silently returning a String object instead of taking the
+      // not-registered branch. Same hazard as the AttachmentType alias lookup.
+      expect(() => splitCompositePhysicalId(resourceType, 'whatever')).toThrow(
+        /no composite-id splitter registered/
+      );
+      expect(hasCompositeIdSplitter(resourceType)).toBe(false);
+    }
+  );
 });
 
 /**
@@ -1135,8 +1149,28 @@ describe('splitCompositePhysicalId — issue #1771 types', () => {
 
   it('refuses an EIP composite in which neither segment is an allocation id', () => {
     expect(() => splitCompositePhysicalId('AWS::EC2::EIP', '52.1.2.3|52.1.2.4', {})).toThrow(
-      /neither segment.*is an allocation id/s
+      /must be an allocation id/s
     );
+  });
+
+  it('refuses an EIP composite of TWO allocation ids', () => {
+    // The half the shape bind originally forgot: this satisfies an
+    // allocation-id-only guard and then ships `PublicIp: 'eipalloc-b'` — the
+    // opaque changeset-create failure the discriminator exists to prevent. A
+    // discriminator that validates one side only is not a discriminator.
+    expect(() =>
+      splitCompositePhysicalId('AWS::EC2::EIP', 'eipalloc-0aaa|eipalloc-0bbb', {})
+    ).toThrow(/dotted-quad public IP/s);
+  });
+
+  it('refuses an EIP public-IP segment that is not a dotted quad', () => {
+    expect(() =>
+      splitCompositePhysicalId('AWS::EC2::EIP', 'not-an-ip|eipalloc-0aaa', {})
+    ).toThrow(/dotted-quad public IP/s);
+  });
+
+  it('throws on whitespace-only EIP segments', () => {
+    expect(() => splitCompositePhysicalId('AWS::EC2::EIP', '  |  ', {})).toThrow(/empty part/);
   });
 
   it.each(['eipalloc-0abc123def456789a', '52.1.2.3'])(
@@ -1270,6 +1304,125 @@ describe('splitCompositePhysicalId — issue #1771 types', () => {
     }
   });
 
+  it('canonicalizes a Route identifier the SDK path stored with host bits set', () => {
+    // The defect this fences: `createRoute` packs the destination it SENT, and
+    // EC2 clears host bits on the way in, so state can hold
+    // `rtb-…|100.68.0.18/18` while AWS/CFn hold `100.68.0.0/18`. The recorded
+    // properties hold the SAME non-canonical value, so the agreement check
+    // passes and a verbatim return would ship an identifier CloudFormation
+    // cannot resolve — the exact opaque rejection this path exists to prevent.
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      expect(
+        splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|100.68.0.18/18', {
+          DestinationCidrBlock: '100.68.0.18/18',
+        })
+      ).toEqual({
+        resourceIdentifier: { RouteTableId: 'rtb-abc123', CidrBlock: '100.68.0.0/18' },
+        propertiesOverlay: { RouteTableId: 'rtb-abc123' },
+      });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('canonicalizes even when state records no destination at all', () => {
+    // The no-properties early return is a separate exit from the agreement
+    // check, and it shipped the raw segment too.
+    expect(
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|10.1.2.3/24', {})
+        .resourceIdentifier
+    ).toEqual({ RouteTableId: 'rtb-abc123', CidrBlock: '10.1.2.0/24' });
+  });
+
+  it('leaves a non-IPv4 destination untouched (no canonicalization modelled)', () => {
+    for (const destination of ['::/0', 'pl-63a5400a']) {
+      expect(
+        splitCompositePhysicalId('AWS::EC2::Route', `rtb-abc123|${destination}`, {})
+          .resourceIdentifier['CidrBlock']
+      ).toBe(destination);
+    }
+  });
+
+  it('REFUSES a conclusive prefix-list mismatch (measured: stored verbatim)', () => {
+    // A prefix-list destination is stored VERBATIM on both sides (measured via
+    // Cloud Control), so there is no unmodelled rewrite to excuse a difference:
+    // `pl-AAA` vs `pl-BBB` is the wrong-route case, not a formatting one.
+    expect(() =>
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|pl-63a5400a', {
+        DestinationPrefixListId: 'pl-0123abcd',
+      })
+    ).toThrow(/would then REPLACE \(delete\) it/);
+  });
+
+  it('fences EVERY vs SOME on the decidability boundary', () => {
+    // A record declaring BOTH a modelled and an unmodelled destination is the
+    // only input that tells the two quantifiers apart — with `some` the modelled
+    // IPv4 value would make this throw. The whole refusal policy rests on it
+    // being `every`, i.e. "refuse only when nothing here could excuse the gap".
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      expect(
+        splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|::/0', {
+          DestinationCidrBlock: '10.0.0.0/16',
+          DestinationIpv6CidrBlock: '2001:db8::/64',
+        }).resourceIdentifier
+      ).toEqual({ RouteTableId: 'rtb-abc123', CidrBlock: '::/0' });
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+    // The mirror image: both declared values modelled (IPv4 + prefix list), so
+    // the same shape of record REFUSES. Without the prefix-list class this one
+    // would only warn, and `every` would be unreachable for a multi-key record
+    // (DestinationCidrBlock is the only IPv4 key of the three).
+    expect(() =>
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|172.16.0.0/12', {
+        DestinationCidrBlock: '10.0.0.0/16',
+        DestinationPrefixListId: 'pl-63a5400a',
+      })
+    ).toThrow(/would then REPLACE \(delete\) it/);
+  });
+
+  it('treats a malformed pl- value as unmodelled rather than comparable', () => {
+    // `pl-` + non-hex is not a prefix-list id; classifying it as one would make
+    // an unrelated malformed record throw instead of warn.
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|pl-63a5400a', {
+        DestinationPrefixListId: 'pl-NOT-HEX',
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('canonicalizes a /0 whose address is not already zero', () => {
+    // Fences the `prefixLength === 0` special case: JS shifts are mod 32, so
+    // `0xffffffff << 32` is `0xffffffff`, not 0 — without the ternary a
+    // host-bits-set /0 would come back unchanged.
+    expect(
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|10.0.0.0/0', {})
+        .resourceIdentifier['CidrBlock']
+    ).toBe('0.0.0.0/0');
+  });
+
+  it.each(['999.1.2.3/24', '10.0.0.0/33', '10.0.0/24', 'not-a-cidr'])(
+    'treats %s as un-canonicalizable rather than mangling it',
+    (destination) => {
+      expect(
+        splitCompositePhysicalId('AWS::EC2::Route', `rtb-abc123|${destination}`, {})
+          .resourceIdentifier['CidrBlock']
+      ).toBe(destination);
+    }
+  );
+
+  it('throws on whitespace-only Route segments', () => {
+    expect(() => splitCompositePhysicalId('AWS::EC2::Route', '  |  ', {})).toThrow(/empty part/);
+  });
+
   it('REFUSES a Route whose IPv4 divergence canonicalization cannot explain', () => {
     // Decidable case: every declared destination is a parseable IPv4 CIDR, so
     // the benign explanation is fully modelled and its failure is conclusive.
@@ -1282,25 +1435,24 @@ describe('splitCompositePhysicalId — issue #1771 types', () => {
     ).toThrow(/would then REPLACE \(delete\) it/);
   });
 
-  it('WARNS instead of refusing when a declared destination is not an IPv4 CIDR', () => {
-    // IPv6 / prefix-list canonicalization is not modelled, so the divergence is
-    // merely unexplained rather than conclusive — refusing on an undecidable
-    // signal would block exports that are fine.
-    for (const properties of [
-      { DestinationIpv6CidrBlock: '2001:db8::/64' },
-      { DestinationPrefixListId: 'pl-63a5400a' },
-    ]) {
-      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
-      try {
-        expect(
-          splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|::/0', properties)
-            .resourceIdentifier
-        ).toEqual({ RouteTableId: 'rtb-abc123', CidrBlock: '::/0' });
-        expect(warn).toHaveBeenCalledTimes(1);
-        expect(warn.mock.calls[0]![0]).toMatch(/REPLACE \(delete\) it/);
-      } finally {
-        warn.mockRestore();
-      }
+  it('WARNS instead of refusing when a declared destination is an IPv6 CIDR', () => {
+    // IPv6 canonicalization (zero-run compression, host-bit clearing) is the
+    // one shape cdkd does NOT model, so the divergence is merely unexplained
+    // rather than conclusive — refusing on an undecidable signal would block
+    // exports that are fine. A prefix-list id is deliberately NOT in this list:
+    // it is stored verbatim on both sides, so its mismatch IS conclusive and
+    // takes the throw arm (see the dedicated case above).
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      expect(
+        splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|::/0', {
+          DestinationIpv6CidrBlock: '2001:db8::/64',
+        }).resourceIdentifier
+      ).toEqual({ RouteTableId: 'rtb-abc123', CidrBlock: '::/0' });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toMatch(/REPLACE \(delete\) it/);
+    } finally {
+      warn.mockRestore();
     }
   });
 
