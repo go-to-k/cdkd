@@ -171,7 +171,7 @@ local-invoke	2026-08-13T06:36:00Z	PASS	45	verify.sh	#1758 post-review re-run; FL
 local-invoke-agentcore	2026-07-26T20:40:20Z	PASS	97	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
 local-invoke-agentcore-from-state	2026-07-26T20:40:20Z	PASS	86	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
 local-invoke-buildkit	2026-07-26T20:35:19Z	PASS	18	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
-local-invoke-container	2026-07-26T20:35:19Z	PASS	24	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
+local-invoke-container	2026-08-13T10:02:43Z	PASS	19	verify.sh	#1795/#1801 region+ECR host case fold; 4/4 container-Lambda invokes, 0 docker orphans
 local-invoke-dotnet	2026-07-26T20:35:19Z	PASS	58	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
 local-invoke-from-cfn-stack	2026-07-26T21:13:17Z	PASS	94	verify.sh	re-run post review fixes; install-guard exercised via fresh node_modules direct run (rc=0); clean
 local-invoke-from-cfn-stack-multi-stack	2026-07-26T21:13:17Z	PASS	113	verify.sh	re-run post review fixes; docker + account + CFn clean
@@ -181,7 +181,7 @@ local-invoke-layers	2026-07-26T20:29:11Z	PASS	17	verify.sh	0727b sweep-L4 stalen
 local-invoke-provided	2026-07-26T20:29:11Z	PASS	32	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
 local-invoke-python	2026-07-26T20:22:00Z	PASS	23	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
 local-invoke-ruby	2026-07-26T20:22:00Z	PASS	33	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
-local-run-task	2026-08-13T06:31:00Z	PASS	16	verify.sh	#1758 post-review re-run at the utils/ecr-uri extraction; 0 docker orphans
+local-run-task	2026-08-13T10:02:43Z	PASS	13	verify.sh	#1795/#1801 region+ECR host case fold; detach+curl 200, 0 docker orphans
 local-run-task-awsvpc	2026-07-26T20:22:00Z	PASS	10	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
 local-run-task-cdkd-assets	2026-07-31T06:38:30Z	PASS	13	verify.sh	TTL-refresh sweep re-run; custom-qualifier asset classify+build+run ok, docker sweep clean
 local-run-task-from-state	2026-07-26T20:22:00Z	PASS	105	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
