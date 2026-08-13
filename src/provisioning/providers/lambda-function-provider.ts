@@ -1829,54 +1829,62 @@ export class LambdaFunctionProvider implements ResourceProvider {
         }
       }
 
-      // RuntimeManagementConfig: a SEPARATE control-plane read
-      // (GetRuntimeManagementConfig), emit-when-present. AWS returns the
-      // default `UpdateRuntimeOn: 'Auto'` for functions that never set it;
-      // the comparator's state-keys-only walk ignores the field unless state
-      // carries it, so the always-emit shape produces no phantom drift.
-      try {
-        const rmResp = await this.lambdaClient.send(
-          new GetRuntimeManagementConfigCommand({ FunctionName: physicalId })
-        );
-        if (rmResp.UpdateRuntimeOn !== undefined) {
-          const rm: Record<string, unknown> = { UpdateRuntimeOn: rmResp.UpdateRuntimeOn };
-          // Only meaningful under Manual; AWS omits it otherwise.
-          if (rmResp.RuntimeVersionArn !== undefined) {
-            rm['RuntimeVersionArn'] = rmResp.RuntimeVersionArn;
+      // Runtime-management controls and code signing apply to managed-runtime
+      // ZIP functions only. Container-image functions own their runtime in the
+      // image and do not support Lambda code signing, so AWS rejects both
+      // secondary reads. Skip them when GetFunction already identified the
+      // package as Image; otherwise those expected rejections become warnings
+      // and can make drift look like a property removal.
+      if (cfg.PackageType !== 'Image') {
+        // RuntimeManagementConfig: a SEPARATE control-plane read
+        // (GetRuntimeManagementConfig), emit-when-present. AWS returns the
+        // default `UpdateRuntimeOn: 'Auto'` for functions that never set it;
+        // the comparator's state-keys-only walk ignores the field unless state
+        // carries it, so the always-emit shape produces no phantom drift.
+        try {
+          const rmResp = await this.lambdaClient.send(
+            new GetRuntimeManagementConfigCommand({ FunctionName: physicalId })
+          );
+          if (rmResp.UpdateRuntimeOn !== undefined) {
+            const rm: Record<string, unknown> = { UpdateRuntimeOn: rmResp.UpdateRuntimeOn };
+            // Only meaningful under Manual; AWS omits it otherwise.
+            if (rmResp.RuntimeVersionArn !== undefined) {
+              rm['RuntimeVersionArn'] = rmResp.RuntimeVersionArn;
+            }
+            result['RuntimeManagementConfig'] = rm;
           }
-          result['RuntimeManagementConfig'] = rm;
+        } catch (rmErr) {
+          if (!(rmErr instanceof ResourceNotFoundException)) {
+            // WARN, not debug: this read backs a drift-compared key, so a
+            // permission / throttle failure omits RuntimeManagementConfig from
+            // the snapshot and `cdkd drift` then reports it as a REMOVAL against
+            // state. The warning is what makes that false drift explainable.
+            this.logger.warn(
+              `GetRuntimeManagementConfig failed for ${physicalId} — RuntimeManagementConfig omitted from the drift snapshot (may surface as a false removal): ${rmErr instanceof Error ? rmErr.message : String(rmErr)}`
+            );
+          }
         }
-      } catch (rmErr) {
-        if (!(rmErr instanceof ResourceNotFoundException)) {
-          // WARN, not debug: this read backs a drift-compared key, so a
-          // permission / throttle failure omits RuntimeManagementConfig from
-          // the snapshot and `cdkd drift` then reports it as a REMOVAL against
-          // state. The warning is what makes that false drift explainable.
-          this.logger.warn(
-            `GetRuntimeManagementConfig failed for ${physicalId} — RuntimeManagementConfig omitted from the drift snapshot (may surface as a false removal): ${rmErr instanceof Error ? rmErr.message : String(rmErr)}`
-          );
-        }
-      }
 
-      // CodeSigningConfigArn: a SEPARATE control-plane read
-      // (GetFunctionCodeSigningConfig), emit-when-present. AWS raises
-      // ResourceNotFoundException for a function with no code-signing config
-      // attached, which the shared catch below maps to omit-from-readback —
-      // no phantom drift on the typical function.
-      try {
-        const csResp = await this.lambdaClient.send(
-          new GetFunctionCodeSigningConfigCommand({ FunctionName: physicalId })
-        );
-        if (csResp.CodeSigningConfigArn !== undefined) {
-          result['CodeSigningConfigArn'] = csResp.CodeSigningConfigArn;
-        }
-      } catch (csErr) {
-        if (!(csErr instanceof ResourceNotFoundException)) {
-          // WARN for the same reason as the read above — an omitted
-          // CodeSigningConfigArn reads as a removed security control.
-          this.logger.warn(
-            `GetFunctionCodeSigningConfig failed for ${physicalId} — CodeSigningConfigArn omitted from the drift snapshot (may surface as a false removal): ${csErr instanceof Error ? csErr.message : String(csErr)}`
+        // CodeSigningConfigArn: a SEPARATE control-plane read
+        // (GetFunctionCodeSigningConfig), emit-when-present. AWS raises
+        // ResourceNotFoundException for a function with no code-signing config
+        // attached, which the shared catch below maps to omit-from-readback —
+        // no phantom drift on the typical function.
+        try {
+          const csResp = await this.lambdaClient.send(
+            new GetFunctionCodeSigningConfigCommand({ FunctionName: physicalId })
           );
+          if (csResp.CodeSigningConfigArn !== undefined) {
+            result['CodeSigningConfigArn'] = csResp.CodeSigningConfigArn;
+          }
+        } catch (csErr) {
+          if (!(csErr instanceof ResourceNotFoundException)) {
+            // WARN for the same reason as the read above — an omitted
+            // CodeSigningConfigArn reads as a removed security control.
+            this.logger.warn(
+              `GetFunctionCodeSigningConfig failed for ${physicalId} — CodeSigningConfigArn omitted from the drift snapshot (may surface as a false removal): ${csErr instanceof Error ? csErr.message : String(csErr)}`
+            );
+          }
         }
       }
 
