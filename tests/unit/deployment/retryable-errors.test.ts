@@ -10,6 +10,14 @@ import {
   isRetryableTransientError,
   markNonRetryable,
 } from '../../../src/deployment/retryable-errors.js';
+import {
+  CdkdError,
+  IntrinsicResolutionRefusalError,
+  PartialFailureError,
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+  StackTerminationProtectionError,
+} from '../../../src/utils/error-handler.js';
 
 describe('isRetryableTransientError', () => {
   describe('HTTP status code based retries', () => {
@@ -823,5 +831,102 @@ describe('markNonRetryable / isMarkedNonRetryable (issue #1778)', () => {
     class Refusal extends Error {}
     markNonRetryable(new Refusal('one'));
     expect(isMarkedNonRetryable(new Refusal('two'))).toBe(false);
+  });
+});
+
+describe('ResourceUpdateNotSupportedError is terminal by construction (issue #1838)', () => {
+  // The defect: the message interpolates the LOGICAL ID, and the classifiers
+  // match by SUBSTRING, so an ordinary composite CDK id containing
+  // `DependencyViolation` (the only whitespace-free entry in
+  // RETRYABLE_ERROR_MESSAGE_PATTERNS) made a deterministic refusal look
+  // transient and burned the full ~47s generic schedule before the
+  // `--replace` DELETE+CREATE fallback the error exists to trigger.
+  const LOGICAL_ID = 'MyDependencyViolationSub';
+
+  const build = (): ResourceUpdateNotSupportedError =>
+    new ResourceUpdateNotSupportedError('AWS::Lambda::LayerVersion', LOGICAL_ID);
+
+  it('puts the retryable pattern in the message — the premise the rest of this block rests on', () => {
+    // Without this, every assertion below could pass vacuously against a
+    // message that never carried a pattern in the first place.
+    expect(build().message).toContain('DependencyViolation');
+    expect(RETRYABLE_ERROR_MESSAGE_PATTERNS).toContain('DependencyViolation');
+  });
+
+  it('is NOT classified retryable even though its message carries the pattern', () => {
+    const err = build();
+    expect(isMarkedNonRetryable(err)).toBe(true);
+    expect(isRetryableTransientError(err, err.message)).toBe(false);
+  });
+
+  it('CONTROL: an UNMARKED error with the SAME message IS still retryable', () => {
+    // Pins the MARKER, not the wording — if the fix ever regressed to
+    // scrubbing the logical id out of the message instead, this control
+    // would still pass while the test above failed.
+    const sameMessage = build().message;
+    expect(isRetryableTransientError(new Error(sameMessage), sameMessage)).toBe(true);
+  });
+
+  it('marks EVERY construction, across all four constructor arg shapes', () => {
+    // Marking lives in the constructor precisely so no provider throw site
+    // has to remember; a per-site marker would leave whichever shape a
+    // provider happens to use unmarked.
+    const cause = new Error('underlying');
+    expect(
+      [
+        new ResourceUpdateNotSupportedError('AWS::EFS::FileSystem', LOGICAL_ID),
+        new ResourceUpdateNotSupportedError('AWS::EFS::FileSystem', LOGICAL_ID, 'delete + re-add'),
+        new ResourceUpdateNotSupportedError(
+          'AWS::EFS::FileSystem',
+          LOGICAL_ID,
+          'delete + re-add',
+          cause
+        ),
+        new ResourceUpdateNotSupportedError('AWS::EFS::FileSystem', LOGICAL_ID, undefined, cause),
+      ].map(isMarkedNonRetryable)
+    ).toEqual([true, true, true, true]);
+  });
+
+  it('stays terminal after the deploy engine wraps it', () => {
+    // `deploy-engine.ts` / `drift.ts` can re-raise the refusal inside an
+    // outer error; the marker walk follows `.cause`, so the wrap must not
+    // resurrect the backoff.
+    const wrapped = new Error(`Failed to update ${LOGICAL_ID}`, { cause: build() });
+    expect(isRetryableTransientError(wrapped, wrapped.message)).toBe(false);
+  });
+
+  it('beats a co-occurring throttle signal', () => {
+    const err = Object.assign(build(), { $metadata: { httpStatusCode: 429 } });
+    expect(isRetryableTransientError(err, err.message)).toBe(false);
+  });
+
+  it('keeps class identity and payload intact for the --replace fallback', () => {
+    // The deploy engine selects the DELETE+CREATE fallback by `instanceof`,
+    // and `handleError` reads `exitCode`; marking must not disturb either.
+    const err = new ResourceUpdateNotSupportedError('AWS::Lambda::LayerVersion', LOGICAL_ID, 'hint');
+    expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(err).toBeInstanceOf(CdkdError);
+    expect(err.name).toBe('ResourceUpdateNotSupportedError');
+    expect(err.code).toBe('RESOURCE_UPDATE_NOT_SUPPORTED');
+    expect(err.exitCode).toBe(2);
+    expect(err.resourceType).toBe('AWS::Lambda::LayerVersion');
+    expect(err.logicalId).toBe(LOGICAL_ID);
+    expect(err.suggestion).toBe('hint');
+  });
+
+  it('does not mark sibling refusal classes that the audit left unmarked', () => {
+    // Each is a deliberate refusal too, but none is thrown from inside a
+    // retried closure (see the PR body for the per-class reasoning), and
+    // `ProvisioningError` in particular MUST stay unmarked — it is the
+    // generic wrapper for relayed AWS failures, so marking it would make
+    // every transient AWS error terminal.
+    expect(
+      [
+        new ProvisioningError('relayed', 'AWS::S3::Bucket', LOGICAL_ID),
+        new PartialFailureError('aggregate'),
+        new StackTerminationProtectionError(LOGICAL_ID),
+        new IntrinsicResolutionRefusalError('refusal'),
+      ].map(isMarkedNonRetryable)
+    ).toEqual([false, false, false, false]);
   });
 });

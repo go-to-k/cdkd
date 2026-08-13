@@ -436,14 +436,15 @@ const NON_RETRYABLE_MARKER = Symbol.for('cdkd.nonRetryable');
  * matter of cdkd's own logic — NOT for a relayed AWS failure, whose
  * retryability is the classifiers' business.
  *
- * KNOWN LIVE INSTANCE NOT YET COVERED: `ResourceUpdateNotSupportedError`
- * (`src/utils/error-handler.ts`) interpolates the logical id and is thrown by
- * ~20 providers from inside the retried `update()` in `deploy-engine.ts`, so a
- * stack with a resource named e.g. `MyDependencyViolationSub` burns the full
- * ~47s backoff schedule before the `--replace` fallback is even reached. That
- * is a LIVE occurrence of the class this marker exists for, unlike the
- * latent-today SNS abort that motivated it. Marking it belongs in that error's
- * constructor, in a file this change does not own; tracked separately.
+ * The known live instance this JSDoc used to flag as uncovered —
+ * `ResourceUpdateNotSupportedError` (`src/utils/error-handler.ts`), which
+ * interpolates the logical id and is thrown by ~20 providers from inside the
+ * retried `update()` in `deploy-engine.ts` — IS covered as of issue
+ * [#1838](https://github.com/go-to-k/cdkd/issues/1838): it marks itself in its
+ * CONSTRUCTOR, so every construction is terminal and no provider throw site
+ * has to remember. That is the shape to prefer for a whole error CLASS that is
+ * always a refusal; mark at the `throw` (as the SNS abort below does) only
+ * when the class is retryable in general and this one raising of it is not.
  */
 export function markNonRetryable<E extends Error>(error: E): E {
   // `E extends Error`, not `object`: a class or a shared prototype is an

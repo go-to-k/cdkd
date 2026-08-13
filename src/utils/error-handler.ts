@@ -1,3 +1,4 @@
+import { markNonRetryable } from '../deployment/retryable-errors.js';
 import { getLogger } from './logger.js';
 
 /**
@@ -291,6 +292,27 @@ export class PartialFailureError extends CdkdError {
  * success rather than fatal — the rest of the drifted resources still
  * had their `update` invoked, and the user has a clear next step printed
  * for the unsupported one.
+ *
+ * **Marked non-retryable in the constructor** (issue
+ * [#1838](https://github.com/go-to-k/cdkd/issues/1838)). This is a
+ * deterministic, cdkd-authored refusal — the deploy engine matches it BY
+ * CLASS to choose the `--replace` DELETE+CREATE fallback, and `cdkd drift
+ * --revert` reports it as its own per-resource outcome — so it can never
+ * succeed on a retry, whatever its message happens to say. That last clause
+ * is the whole point: the message interpolates the resource's LOGICAL ID,
+ * and the retry classifiers match by SUBSTRING, so a perfectly ordinary
+ * composite CDK id like `MyDependencyViolationSub` made
+ * `isRetryableTransientError` return true (`DependencyViolation` is the only
+ * whitespace-free entry in `RETRYABLE_ERROR_MESSAGE_PATTERNS`) and burned the
+ * full generic schedule — 8 retries, ~47s of pure sleep — on a path that was
+ * never going to succeed, before the fallback the error exists to trigger was
+ * even reached.
+ *
+ * Marking in the CONSTRUCTOR rather than at each `throw` is deliberate: ~20
+ * providers raise this from inside the `update()` call `deploy-engine.ts`
+ * wraps in `withRetry` (plus `drift.ts`'s `--revert` update), and a per-site
+ * marker is one forgotten call away from re-opening the hole for exactly one
+ * provider.
  */
 export class ResourceUpdateNotSupportedError extends CdkdError {
   readonly exitCode: number = 2;
@@ -319,6 +341,12 @@ export class ResourceUpdateNotSupportedError extends CdkdError {
     this.suggestion = suggestion;
     this.name = 'ResourceUpdateNotSupportedError';
     Object.setPrototypeOf(this, ResourceUpdateNotSupportedError.prototype);
+    // Terminal by construction — see the class JSDoc. Called AFTER
+    // `setPrototypeOf` so the marker lands on the instance that callers
+    // actually receive, and its return value is ignored on purpose: the
+    // helper marks in place and returns the same object for the inline
+    // `throw markNonRetryable(...)` spelling other call sites use.
+    markNonRetryable(this);
   }
 }
 
