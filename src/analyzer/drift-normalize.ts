@@ -78,20 +78,54 @@ export function canonicalizeIdArraysDeep(v: unknown): unknown {
 }
 
 /**
+ * Suffix marking a provider-declared path entry as LEAF-ONLY — the path
+ * itself, and nothing beneath it (issue
+ * [#1783](https://github.com/go-to-k/cdkd/issues/1783)).
+ *
+ * Spelled `[]` because every real consumer is an ARRAY at the declared path
+ * whose ELEMENTS must be left alone: `'GlobalSecondaryIndexes[]'` reads as
+ * "the index list is an unordered set", which is exactly the claim being
+ * made, while `'GlobalSecondaryIndexes'` would additionally claim it about
+ * every array inside each element.
+ */
+export const LEAF_ONLY_PATH_SUFFIX = '[]';
+
+/**
  * Match a dotted property path against a provider-declared path list.
  *
  * An entry matches when the path is exactly equal to it, OR when the entry is
- * a prefix followed by `.`. Every entry is therefore a SUBTREE declaration:
+ * a prefix followed by `.` — so a plain entry is a SUBTREE declaration:
  * `'VpcConfig'` matches `VpcConfig`, `VpcConfig.SubnetIds`, and anything
- * deeper. There is no leaf-only form.
+ * deeper.
  *
- * Shared by the two provider-declared path lists so their semantics cannot
- * drift apart: `getDriftUnknownPaths` (via `isIgnoredPath` in
- * `drift-calculator.ts`) and `getDriftUnorderedPaths` (via
+ * An entry ending in {@link LEAF_ONLY_PATH_SUFFIX} is LEAF-ONLY and matches
+ * that one path exactly. It exists because a subtree declaration is the wrong
+ * unit whenever a declared array's ELEMENTS contain a member the claim must
+ * not extend to (issue [#1783](https://github.com/go-to-k/cdkd/issues/1783)):
+ * `AWS::DynamoDB::Table.GlobalSecondaryIndexes` is an unordered set keyed by
+ * `IndexName`, but each element carries a `KeySchema` that is order-SIGNIFICANT
+ * (HASH before RANGE), and the unordered walk descends into array elements
+ * giving them their parent's path — so `'GlobalSecondaryIndexes'` would sort
+ * the per-index key schema too and HIDE a real key change. Declaring
+ * `'GlobalSecondaryIndexes[]'` sorts the list and stops there.
+ *
+ * The marker is understood by BOTH provider-declared lists rather than only by
+ * the one that needed it, so their spellings cannot diverge — which is the
+ * whole reason this matcher is shared: `getDriftUnknownPaths` (via
+ * `isIgnoredPath` in `drift-calculator.ts`) and `getDriftUnorderedPaths` (via
  * {@link canonicalizeUnorderedArraysAtPaths} below).
+ *
+ * A bare `'[]'` entry (empty base path) matches NOTHING. It would otherwise
+ * name the root bag, which no caller can mean, and silently sorting a root
+ * array is a worse answer than ignoring a malformed declaration.
  */
 export function matchesPathPrefix(path: string, entries: readonly string[]): boolean {
   for (const entry of entries) {
+    if (entry.endsWith(LEAF_ONLY_PATH_SUFFIX)) {
+      const leaf = entry.slice(0, -LEAF_ONLY_PATH_SUFFIX.length);
+      if (leaf !== '' && path === leaf) return true;
+      continue;
+    }
     if (path === entry) return true;
     if (path.startsWith(`${entry}.`)) return true;
   }
@@ -108,8 +142,10 @@ export function matchesPathPrefix(path: string, entries: readonly string[]): boo
  * Paths use dot-notation for nested keys and are matched by the shared
  * {@link matchesPathPrefix} rule, the same one `getDriftUnknownPaths` uses. So
  * `'WindowsConfiguration'` covers every plain-string array in that subtree, and
- * `'WindowsConfiguration.Aliases'` covers that path and everything beneath it
- * (every entry is a subtree declaration — there is no leaf-only form).
+ * `'WindowsConfiguration.Aliases'` covers that path and everything beneath it.
+ * Append {@link LEAF_ONLY_PATH_SUFFIX} to claim the path ALONE —
+ * `'GlobalSecondaryIndexes[]'` sorts that list without reaching the arrays
+ * inside its elements.
  *
  * One semantic DIVERGENCE from `getDriftUnknownPaths`, required for this pass
  * to work: `isIgnoredPath` never sees a path that crosses an array, because the

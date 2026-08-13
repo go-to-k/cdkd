@@ -665,7 +665,28 @@ async function runDriftForStack(
         normalized.aws,
         resource.resourceType
       );
-      const changes = calculateResourceDrift(protocolNormalized.baseline, protocolNormalized.aws, {
+      // Issue #1784: the provider's own BOTH-SIDES canonicalizer, for a
+      // difference no ignore-path can express — a member of an ARRAY ELEMENT.
+      // `calculateResourceDrift` compares arrays wholesale, so the only
+      // expressible suppression is the whole array; stripping the AWS-managed
+      // member from BOTH bags instead converges an OLD observedProperties
+      // record with a NEW readback while keeping the array compared. Applied
+      // LAST so the provider sees bags the shared passes have already
+      // canonicalized, and applied to the COMPARISON copies only — `aws` (the
+      // bag `--accept` writes and `--revert` diffs against) is untouched.
+      const canonicalized = provider.canonicalizeDriftProperties
+        ? {
+            baseline: provider.canonicalizeDriftProperties(
+              resource.resourceType,
+              protocolNormalized.baseline
+            ),
+            aws: provider.canonicalizeDriftProperties(
+              resource.resourceType,
+              protocolNormalized.aws
+            ),
+          }
+        : protocolNormalized;
+      const changes = calculateResourceDrift(canonicalized.baseline, canonicalized.aws, {
         ignorePaths: observedIgnorePaths.length
           ? [...ignorePaths, ...observedIgnorePaths]
           : ignorePaths,
