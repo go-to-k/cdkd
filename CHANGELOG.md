@@ -1,3 +1,10 @@
+## [0.282.7](https://github.com/go-to-k/cdkd/compare/v0.282.6...v0.282.7) (2026-08-13)
+
+
+### Bug Fixes
+
+* **utils:** normalize ECR registry-host case at one boundary so the [#1758](https://github.com/go-to-k/cdkd/issues/1758) strict check is not bypassable by case ([#1797](https://github.com/go-to-k/cdkd/issues/1797)) ([29bcf90](https://github.com/go-to-k/cdkd/commit/29bcf9082f3d3dddff7536b95e9aa61b3ace28fa))
+
 ## [0.282.6](https://github.com/go-to-k/cdkd/compare/v0.282.5...v0.282.6) (2026-08-13)
 
 
