@@ -1,3 +1,10 @@
+## [0.283.10](https://github.com/go-to-k/cdkd/compare/v0.283.9...v0.283.10) (2026-08-13)
+
+
+### Bug Fixes
+
+* **dynamodb:** reverse-map the Table GSI / LSI readback, and stop sending a WarmThroughput decrease AWS rejects ([#1808](https://github.com/go-to-k/cdkd/issues/1808)) ([ec5e757](https://github.com/go-to-k/cdkd/commit/ec5e757b7769016bd0bc9cfa550ca2e45ba8725b)), closes [#1760](https://github.com/go-to-k/cdkd/issues/1760) [#1767](https://github.com/go-to-k/cdkd/issues/1767) [#1760](https://github.com/go-to-k/cdkd/issues/1760) [#1784](https://github.com/go-to-k/cdkd/issues/1784) [#1783](https://github.com/go-to-k/cdkd/issues/1783) [#1767](https://github.com/go-to-k/cdkd/issues/1767) [#1768](https://github.com/go-to-k/cdkd/issues/1768)
+
 ## [0.283.9](https://github.com/go-to-k/cdkd/compare/v0.283.8...v0.283.9) (2026-08-13)
 
 
