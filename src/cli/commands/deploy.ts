@@ -894,6 +894,12 @@ async function deployCommand(
         logger.info(
           `  Deleted: ${deployResult.deleted > 0 ? red(deployResult.deleted) : gray(deployResult.deleted)}`
         );
+        // Issue #1762: only shown when non-zero — a skipped DELETE is rare
+        // and abnormal (cdkd could not address the resource), so a permanent
+        // `Skipped: 0` row would train the reader to ignore it.
+        if (deployResult.deleteSkipped > 0) {
+          logger.info(`  Skipped (not deleted): ${yellow(deployResult.deleteSkipped)}`);
+        }
         logger.info(`  Unchanged: ${gray(deployResult.unchanged)}`);
         logger.info(`  Duration: ${cyan((deployResult.durationMs / 1000).toFixed(2) + 's')}`);
 
@@ -927,6 +933,13 @@ async function deployCommand(
             created: deployResult.created,
             updated: deployResult.updated,
             deleted: deployResult.deleted,
+            // Issue #1762: the run-level counterpart of the summary row above.
+            // `cdkd events` renders `RunCounts.skipped` as `⚠N`, and destroy
+            // has populated it since #1752 — without it here a deploy that
+            // skipped a DELETE records a run summary that says only what it
+            // DID delete, so the durable post-mortem understates the run in
+            // exactly the direction this change exists to correct.
+            ...(deployResult.deleteSkipped > 0 && { skipped: deployResult.deleteSkipped }),
           },
           deployResult.durationMs
         );

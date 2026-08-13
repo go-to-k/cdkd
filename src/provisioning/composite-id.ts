@@ -285,13 +285,14 @@ function formatShape(segments: readonly string[]): string {
  * prints a `⚠ … skipped` line instead of `✓ … deleted`, reports
  * `N deleted, 1 skipped`, KEEPS the state record, and exits non-zero. The
  * wording here changed accordingly — it used to promise unconditionally that
- * cdkd "will report this delete as successful", which is no longer true on the
- * destroy path. It is STILL true for the deploy engine's replacement / rollback
- * deletes, which discard the return value (issue
- * [#1762](https://github.com/go-to-k/cdkd/issues/1762)), so the message names
- * both callers rather than describing only the fixed one — a remedy of
- * "drop the record with 'cdkd state orphan'" is impossible on a path that has
- * already dropped it.
+ * cdkd "will report this delete as successful", which is no longer true on
+ * either path. Issue [#1762](https://github.com/go-to-k/cdkd/issues/1762) then
+ * taught the deploy engine to consume the outcome too, so the message no longer
+ * warns that deploy drops the record: the template-removal DELETE keeps it,
+ * exactly like destroy. What it DOES still distinguish is the replacement /
+ * rollback delete, which fails the resource and can leave the old one
+ * untracked — there "drop the record with 'cdkd state orphan'" is not the
+ * remedy, deleting the resource by hand is.
  */
 export function compositeIdFormatMessage(
   format: CompositeIdFormat,
@@ -311,14 +312,15 @@ export function compositeIdFormatMessage(
 
   return (
     `${head}. Skipping the delete — no AWS call is issued, so the resource is LEFT ` +
-    `IN PLACE. On 'cdkd destroy' / 'cdkd state destroy' the state record is KEPT ` +
-    `and the run exits non-zero, so repair the id in state.json and re-run (or ` +
-    `delete the resource by hand and drop the record with 'cdkd state orphan'). ` +
-    `NOTE this arm is ALSO reached from cdkd deploy — the plain DELETE of a ` +
-    `resource removed from the template (the most common one), plus the ` +
-    `replacement and rollback deletes — all of which still DROP the record and ` +
-    `report success ` +
-    `(https://github.com/go-to-k/cdkd/issues/1762) — there, delete it by hand.`
+    `IN PLACE. The state record is KEPT and the run reports the skip: on ` +
+    `'cdkd destroy' / 'cdkd state destroy' (which exits non-zero) and, since issue ` +
+    `1762, on the plain DELETE of a resource removed from the template during ` +
+    `cdkd deploy (which re-attempts it on the next deploy). So repair the id in ` +
+    `state.json and re-run, or delete the resource by hand and drop the record ` +
+    `with 'cdkd state orphan'. NOTE a deploy-side REPLACEMENT or rollback delete ` +
+    `instead FAILS the resource ` +
+    `(https://github.com/go-to-k/cdkd/issues/1762) — the old resource is left ` +
+    `untracked there, so delete it by hand.`
   );
 }
 

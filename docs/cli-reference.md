@@ -2469,6 +2469,22 @@ the destroy, repair whatever the per-resource warning names — the
 hand and drop the record with `cdkd state orphan <stack>`. The summary line names the exact
 state file(s) to open, which for a nested-stack skip is the child's.
 
+#### A skip on `cdkd deploy`, not just on destroy (issue #1762)
+
+The same provider outcome reaches `cdkd deploy`, which issues a DELETE for
+every resource removed from the template plus one for the old resource of a
+replacement. Each site handles it in the way that resource's situation allows:
+
+| Deploy-side site | On a skip |
+| --- | --- |
+| a resource removed from the template | warns, prints `⚠ <id> (<type>) skipped (<reason>)`, **keeps the state record**, and counts it under `Skipped (not deleted)` in the summary. The deploy still exits `0`: the record is kept, so the resource is still a pending DELETE and the next `cdkd deploy` re-attempts it |
+| the old resource of a replacement (`--replace`, `--recreate-via-*`, an UPDATE the type does not support in place) | **fails the resource** — the replacement create would otherwise run beside a live old one, or collide with its name |
+| the cleanup delete after a create-first replacement | warns; the new resource is already created and recorded, so the old one is untracked whether the delete failed or was skipped. Delete it by hand |
+| a rollback delete (automatic, or `cdkd rollback`) | counted as a per-op **failure** at four of the five arms, so the journal segment is kept and re-running `cdkd rollback` re-attempts it. The exception is the delete of the NEW resource AFTER the old one was re-created: that arm's delete is already best-effort (the revert itself succeeded and state points at the old resource), so a skip warns and counts as a warning — the new resource is left untracked and must be deleted by hand |
+
+Unlike destroy, a deploy-side skip does not change the exit code — `cdkd
+destroy` has no next run to heal it, whereas a kept record on deploy does.
+
 #### A nested stack whose child FAILED is an error, not a skip (issue #1777)
 
 The third outcome a child stack's destroy can report is a resource that was

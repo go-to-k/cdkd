@@ -52,6 +52,7 @@ import type { ResourceState } from '../types/state.js';
 import type {
   CreateContext,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceProvider,
   ResourceUpdateResult,
 } from '../types/resource.js';
@@ -74,6 +75,32 @@ import {
   isNameCooldownError,
   isRecreateRetryableError,
 } from './retryable-errors.js';
+import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
+
+/**
+ * Issue [#1762](https://github.com/go-to-k/cdkd/issues/1762): turn a
+ * `{ outcome: 'skipped' }` delete into a thrown error at every rollback delete
+ * arm.
+ *
+ * A skip means the resource was NOT deleted, so the rollback op did not
+ * happen. Throwing routes it into the per-op accounting each arm already has —
+ * `result.failures++` plus a `ROLLBACK_RESOURCE_FAILED` event and a kept
+ * journal segment for the shared catch, or the local warn + `result.warnings++`
+ * at the one arm whose delete is already best-effort. Both are correct and
+ * neither needs a second code path; what is NOT correct is the pre-#1762
+ * behavior, where every arm read a skip as a successful revert, dropped the
+ * state record, and popped the segment.
+ */
+function throwIfDeleteSkipped(
+  result: void | ResourceDeleteResult,
+  logicalId: string,
+  physicalId: string,
+  duringClause: string
+): void {
+  const reason = deleteSkipReason(result);
+  if (reason === undefined) return;
+  throw new Error(deleteSkippedMessage(logicalId, physicalId, reason, duringClause));
+}
 
 /** The `--skip-final-snapshot` flag name cited by every refusal below. */
 const SKIP_FINAL_SNAPSHOT_FLAG = '--skip-final-snapshot';
@@ -942,10 +969,22 @@ async function replaySingle(
           resourceType: op.resourceType,
           provisionedBy: deleteProvisionedBy,
         });
-        await provider.delete(op.logicalId, op.physicalId, op.resourceType, op.properties, {
-          expectedRegion: ctx.region,
-          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
-        });
+        const createRollbackDelete = await provider.delete(
+          op.logicalId,
+          op.physicalId,
+          op.resourceType,
+          op.properties,
+          {
+            expectedRegion: ctx.region,
+            ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+          }
+        );
+        throwIfDeleteSkipped(
+          createRollbackDelete,
+          op.logicalId,
+          op.physicalId,
+          'while rolling back its CREATE'
+        );
         delete stateResources[op.logicalId];
         logger.info(`  Rollback: ${op.logicalId} deleted successfully`);
         await afterOp?.(op.logicalId);
@@ -984,7 +1023,7 @@ async function replaySingle(
             current,
             op.provisionedBy
           );
-          await newDeleteProvider.delete(
+          const readoptDelete = await newDeleteProvider.delete(
             op.logicalId,
             current.physicalId,
             op.resourceType,
@@ -993,6 +1032,15 @@ async function replaySingle(
               expectedRegion: ctx.region,
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
             }
+          );
+          // Issue #1762: BEFORE the state re-point, so a skip cannot leave
+          // state naming the retained OLD resource while the NEW one is still
+          // alive — two live resources with state describing one.
+          throwIfDeleteSkipped(
+            readoptDelete,
+            op.logicalId,
+            current.physicalId,
+            'while reversing its replacement (re-adopting the retained old resource)'
           );
         }
         stateResources[op.logicalId] = prev;
@@ -1095,7 +1143,7 @@ async function replaySingle(
               current,
               op.provisionedBy
             );
-            await newDeleteProvider.delete(
+            const deleteNewFirst = await newDeleteProvider.delete(
               op.logicalId,
               current.physicalId,
               op.resourceType,
@@ -1104,6 +1152,16 @@ async function replaySingle(
                 expectedRegion: ctx.region,
                 ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
               }
+            );
+            // Issue #1762: this delete exists to release the name the
+            // re-create just collided on, so a skip means the retry below
+            // collides again — fail the op now, with the cause named, rather
+            // than after another full re-create attempt.
+            throwIfDeleteSkipped(
+              deleteNewFirst,
+              op.logicalId,
+              current.physicalId,
+              'while clearing the new resource so the old one could be re-created'
             );
           }
           deletedNewFirst = true;
@@ -1218,7 +1276,7 @@ async function replaySingle(
               current,
               op.provisionedBy
             );
-            await newDeleteProvider.delete(
+            const deleteNewAfterRecreate = await newDeleteProvider.delete(
               op.logicalId,
               current.physicalId,
               op.resourceType,
@@ -1227,6 +1285,17 @@ async function replaySingle(
                 expectedRegion: ctx.region,
                 ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
               }
+            );
+            // Issue #1762: the old resource is already re-created and state
+            // already points at it, so the site's existing policy for a
+            // FAILED delete applies to a skip too — warn, count it, and tell
+            // the user the new resource is now untracked. Thrown into that
+            // same catch so the two outcomes cannot drift apart.
+            throwIfDeleteSkipped(
+              deleteNewAfterRecreate,
+              op.logicalId,
+              current.physicalId,
+              'while deleting the new resource after re-creating the old one'
             );
           } catch (deleteError) {
             logger.warn(
@@ -1495,7 +1564,7 @@ export async function replayFailedOperations(
           // visible to the provider's delete — with `undefined` a
           // partially-created bucket/repo that already received data would
           // guard-fail this rollback delete even though the template opted in.
-          await provider.delete(
+          const failedCreateDelete = await provider.delete(
             op.logicalId,
             op.physicalId!,
             op.resourceType,
@@ -1504,6 +1573,15 @@ export async function replayFailedOperations(
               expectedRegion: ctx.region,
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
             }
+          );
+          // Issue #1762: the partially-created resource is still there, so
+          // the op did NOT happen — let the shared catch record the failure
+          // and keep it in `remainingFailedOps` for a re-run.
+          throwIfDeleteSkipped(
+            failedCreateDelete,
+            op.logicalId,
+            op.physicalId!,
+            'while deleting the partially-created resource (--revert-failed)'
           );
           delete stateResources[op.logicalId];
           await options.afterOp?.(op.logicalId);

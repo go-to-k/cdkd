@@ -12,9 +12,10 @@
  * carried on.
  *
  * That asymmetry is the point, and it is why this file exists rather than being
- * folded into the destroy-side coverage: a `{ outcome: 'skipped' }` RETURN value
- * is still discarded by this call site (issue #1762), so the skip half of #1752
- * genuinely does not reach here — but a THROW cannot be discarded by anyone.
+ * folded into the destroy-side coverage: this call site treats the child's THROW
+ * as a resource failure, whereas a `{ outcome: 'skipped' }` RETURN value is a
+ * warning that keeps the state record (issue #1762, covered in
+ * `deploy-engine-delete-skipped.test.ts`).
  *
  * These tests drive the engine's private `provisionResource` with a fake
  * provider, exactly like `deploy-engine-deletion-policy-snapshot.test.ts`

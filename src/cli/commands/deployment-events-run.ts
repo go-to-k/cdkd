@@ -75,6 +75,19 @@ export interface RunCounts {
   deleted: number;
   /** Failed-resource count (destroy partial failure); omitted when 0. */
   failed?: number;
+  /**
+   * Resources cdkd could NOT address, so they were not destroyed (issue
+   * [#1752](https://github.com/go-to-k/cdkd/issues/1752) on destroy, issue
+   * [#1762](https://github.com/go-to-k/cdkd/issues/1762) on the deploy side's
+   * template-DELETE branch). Omitted when 0.
+   *
+   * `cdkd events` renders it as `⚠N` beside the `+created/~updated/-deleted`
+   * triple. Without it a run whose only anomaly was a skip records a summary
+   * that names nothing anomalous — the events store is the durable
+   * post-mortem, so under-reporting there is the same mis-accounting the two
+   * issues fix one layer down.
+   */
+  skipped?: number;
 }
 
 /**
