@@ -1623,7 +1623,7 @@ export class GlueProvider implements ResourceProvider {
         (entry['Principal'] === undefined ||
           (principal !== undefined && isSendableLeaf(principal['DataLakePrincipalIdentifier'])));
       if (usable) continue;
-      const detail = `${path} carries an entry cdkd cannot read (each entry must be an object naming Permissions as a list and/or Principal as an object whose DataLakePrincipalIdentifier is a string)`;
+      const detail = `${path} carries an entry cdkd cannot read (each entry must be an object naming Permissions as a list and/or Principal as an object whose DataLakePrincipalIdentifier is a string or a number)`;
       if (guardOptions?.onUnusable) {
         guardOptions.onUnusable(
           `${detail}. Leaving the whole block unapplied rather than sending a NARROWED grant list. ` +
@@ -3524,12 +3524,13 @@ const isSendableLeaf = (value: unknown): boolean =>
  * Shared so the create refusal and the update warning cannot drift apart.
  */
 const emptyBlockMessage = (block: string): string =>
-  `AWS::Glue::Database DatabaseInput.${block} declares no member cdkd can send, ` +
-  `or mixes sendable members with unreadable ones (an unresolved intrinsic, an ` +
-  `empty block); sending it would put an empty or NARROWED ${block} on the wire. ` +
-  `On an update the previously applied block is retained when cdkd can still ` +
-  `read one, and otherwise the key is omitted — which UpdateDatabase, a ` +
-  `wholesale replace, applies as a removal`;
+  `AWS::Glue::Database DatabaseInput.${block} declares no member cdkd can send ` +
+  `(an unresolved intrinsic, an empty block), or mixes sendable members with ` +
+  `unreadable ones; sending it would put an empty or NARROWED ${block} on the ` +
+  `wire. Where this is only WARNED — an update, or a state replay — the ` +
+  `previously applied block is retained if cdkd can still read one, and ` +
+  `otherwise the key is omitted, which UpdateDatabase applies as a removal ` +
+  `because it replaces DatabaseInput wholesale`;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
