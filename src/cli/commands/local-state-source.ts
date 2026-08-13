@@ -26,6 +26,7 @@ import {
   type LocalStateSourceOptions as LocalStateSourceOptionsBase,
 } from 'cdk-local';
 import { S3LocalStateProvider } from '../../local/s3-local-state-provider.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
 
 export {
   CfnLocalStateProvider,
@@ -79,6 +80,18 @@ export interface LocalStateSourceOptions {
    * synth-derived stack region.
    */
   stackRegion?: string;
+  /**
+   * The user's UNFOLDED `--stack-region` spelling, captured by each command's
+   * handler BEFORE it folds the flag (issue #1836 round 3). Consumed only by
+   * the state-record match in `local-state-loader.ts` — see
+   * `LoadStateForStackOptions.rawStackRegion` for the full rationale.
+   *
+   * Absent for the ECS / CloudFront / AgentCore ENGINE commands, whose handler
+   * cdk-local owns and which therefore never reach a cdkd capture point; the
+   * factory below fills it from the still-raw `stackRegion` it receives, which
+   * is why those commands get the exact-match rule too.
+   */
+  rawStackRegion?: string;
 }
 
 /**
@@ -93,12 +106,54 @@ const fromStateFactory: LocalStateProviderFactory = (options) => {
   // only ever invokes this factory with the options bag the shim
   // wrapper passed in, which carries every cdkd field.
   const opts = options as unknown as LocalStateSourceOptions;
+  const clientRegion = canonicalizeRegion(opts.region) || undefined;
+  // Issue #1836 round 4: the FOLDED half is gated on blank-is-absent too, so the
+  // `rawStackRegion` line below can honestly claim to match it. Round 3's gate
+  // was `opts.stackRegion !== undefined`, so `--stack-region ''` still forwarded
+  // `stackRegion: ''` while the comment beside it claimed parity with the raw
+  // half. That was harmless downstream (`loadStateForStack` gates on
+  // TRUTHINESS), but a false parity claim is exactly what the round-3 review
+  // found twice, and this branch already adopted blank-is-absent at the four
+  // client boundaries — a blank names no region at any of them.
+  const stackRegion = canonicalizeRegion(opts.stackRegion) || undefined;
+  // The RAW `--stack-region` spelling for the state-record match (issue #1836
+  // round 3). A command that owns its handler captured it there, BEFORE its own
+  // fold; an ENGINE command has no such capture point, and the value this
+  // factory receives is still the user's own — so falling back to it is what
+  // gives those commands the exact-match rule as well. Blank counts as absent,
+  // matching the `stackRegion` gate above.
+  const rawStackRegion = opts.rawStackRegion || opts.stackRegion || undefined;
   return new S3LocalStateProvider({
     statePrefix: opts.statePrefix,
     ...(opts.stateBucket !== undefined && { stateBucket: opts.stateBucket }),
-    ...(opts.region !== undefined && { region: opts.region }),
+    // Issue #1836: `--region` needs the SAME boundary fold as `--stack-region`
+    // below, and for a consequence one step worse than a missed compare: it
+    // builds the `AwsClients` + `S3StateBackend` in `local-state-loader.ts`, and
+    // SDK endpoint resolution is case-SENSITIVE — so `cdkd local start-service
+    // --from-state --region CN-NORTH-1` reached a COMMERCIAL endpoint. The four
+    // commands with their own handler fold `--region` on entry (#1795), so this
+    // is idempotent for them; the ENGINE commands have no other cdkd-owned stop.
+    // A blank `--region ''` is treated as ABSENT rather than forwarded: it names
+    // no endpoint, and omitting it is what lets the SDK's own chain resolve the
+    // profile's region.
+    ...(clientRegion !== undefined && { region: clientRegion }),
     ...(opts.profile !== undefined && { profile: opts.profile }),
-    ...(opts.stackRegion !== undefined && { stackRegion: opts.stackRegion }),
+    // Issue #1836: fold `--stack-region` at THIS boundary as well as at each
+    // command's handler entry. The four `cdkd local` commands that declare the
+    // flag themselves (`invoke` / `start-api` / `run-task` / `invoke-agentcore`)
+    // fold it on entry, so this is idempotent for them — but the ECS /
+    // CloudFront / AgentCore ENGINE commands (`start-service` / `start-alb` /
+    // `start-cloudfront` / `start-agentcore`) inherit the flag from cdk-local
+    // and cdk-local owns their handler, so this factory is the only cdkd-owned
+    // point their `--stack-region` passes through. Downstream it is compared
+    // against a state record's region and used to build the state key, both
+    // case-SENSITIVE. A blank `--stack-region ''` is ABSENT here — see the
+    // `stackRegion` binding above.
+    ...(stackRegion !== undefined && { stackRegion }),
+    // ... and carry the RAW spelling beside it, because the folded value is the
+    // one an endpoint needs and the raw one is the only thing that can make
+    // "an exactly-spelled region wins over a case-variant record" true.
+    ...(rawStackRegion !== undefined && { rawStackRegion }),
   });
 };
 

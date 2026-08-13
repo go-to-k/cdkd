@@ -204,6 +204,14 @@ interface LocalInvokeOptions {
    * `--cfn-stack-region` flag).
    */
   stackRegion?: string;
+  /**
+   * The user's UNFOLDED `--stack-region` spelling, captured at handler entry
+   * before the fold above it (issue #1836 round 3). Consumed ONLY by the
+   * state-record match in `local-state-loader.ts`, which resolves an
+   * exactly-spelled region in preference to a case-variant record — a rule the
+   * folded value cannot express. Never reaches an SDK client or an endpoint.
+   */
+  rawStackRegion?: string;
 }
 
 /**
@@ -233,6 +241,26 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   // endpoint). The pseudo-parameter resolver folds again from its own four
   // sources; double-folding is a no-op.
   if (options.region !== undefined) options.region = canonicalizeRegion(options.region);
+  // Issue #1836: `--stack-region` needs the SAME fold, at the same point. It is
+  // not a chain-local derivation — it is a flag whose raw value is COMPARED
+  // against a state record's region (`local-state-loader.ts`) and forwarded to
+  // cdk-local as the CFn client's region, both case-SENSITIVE. Folding here
+  // rather than at each consumer keeps ONE normalization point per command;
+  // `canonicalizeRegion` is idempotent, so the boundary fold in
+  // `local-state-source.ts`'s `--from-state` factory (which the ECS /
+  // CloudFront / AgentCore engine commands need, since cdk-local owns THEIR
+  // handler) double-folds harmlessly.
+  //
+  // The RAW spelling is captured FIRST, and it is not a nicety: the state-record
+  // match in `local-state-loader.ts` resolves an exactly-spelled `--stack-region`
+  // in preference to a case-variant record, and with only the folded value in
+  // hand that rule could never fire from a real CLI invocation (round 3 of the
+  // #1836 review — `--stack-region US-EAST-1` read the `us-east-1` record while
+  // reporting it as the exact spelling). Nothing else reads `rawStackRegion`.
+  if (options.stackRegion !== undefined) {
+    options.rawStackRegion = options.stackRegion;
+    options.stackRegion = canonicalizeRegion(options.stackRegion);
+  }
 
   // Track tmpdirs that may be materialized below so the outer `finally`
   // (and the SIGINT handler) can clean them up regardless of where in
@@ -580,48 +608,16 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       ...envResult.resolved,
     };
     // Swap the developer's credentials for STS-issued temporary credentials
-    // scoped to the function's deployed execution role when one was resolved.
-    // STS failures degrade to a warn + dev-creds fallback rather than hard
-    // error — this is a developer-loop tool, not a security boundary, and
-    // the most common cause is the role's `AssumeRolePolicy` not trusting
-    // the developer's IAM principal (a config gap, not a cdkd bug).
-    let assumeSucceeded = false;
-    if (resolvedAssumeRoleArn) {
-      const stsRegion =
-        options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
-      try {
-        const creds = await assumeLambdaExecutionRole(resolvedAssumeRoleArn, stsRegion);
-        dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
-        dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
-        dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
-        if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
-        assumeSucceeded = true;
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        logger.warn(
-          `--assume-role: STS AssumeRole(${resolvedAssumeRoleArn}) failed: ${reason}. ` +
-            "Falling back to the developer's shell credentials."
-        );
-      }
-    }
-    if (!assumeSucceeded) {
-      forwardAwsEnv(dockerEnv);
-      // Issue #657: when `--profile <p>` was supplied AND assume-role
-      // did not produce creds for this Lambda (either not asked for or
-      // STS failed), overlay the profile-resolved {AKID, SAK,
-      // sessionToken?} on top of whatever `forwardAwsEnv` copied from
-      // `process.env`. See `applyProfileCredentialsOverlay`'s doc for
-      // the full precedence table + session-token-strip rationale.
-      applyProfileCredentialsOverlay(dockerEnv, profileCredentials, false);
-      // Issue #2 deferred from #655: point the container's SDK chain at
-      // the bind-mounted credentials file so `fromIni({ profile })` calls
-      // inside the handler resolve to the same creds. `AWS_PROFILE` makes
-      // `fromIni()` (no explicit arg) ALSO use this profile.
-      if (profileCredsFile) {
-        dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = profileCredsFile.containerPath;
-        dockerEnv['AWS_PROFILE'] = profileCredsFile.profileName;
-      }
-    }
+    // scoped to the function's deployed execution role when one was resolved,
+    // else forward the dev shell creds / `--profile` overlay. See
+    // {@link applyLambdaCredentialEnv} for the full precedence + the
+    // degrade-on-STS-failure rationale.
+    await applyLambdaCredentialEnv(dockerEnv, {
+      ...(resolvedAssumeRoleArn && { assumeRoleArn: resolvedAssumeRoleArn }),
+      ...(options.region !== undefined && { region: options.region }),
+      ...(profileCredentials && { profileCredentials }),
+      ...(profileCredsFile && { profileCredsFile }),
+    });
 
     // Optional inspector: --debug-port enables `node --inspect-brk` inside
     // the container. The Lambda Node.js base image's RIE entrypoint
@@ -1347,6 +1343,92 @@ async function readStdin(): Promise<string> {
 }
 
 /**
+ * Inject AWS credentials into the container env. Precedence:
+ *   1. `--assume-role` → STS-issued temp creds for the resolved ARN (on
+ *      STS failure, warn + fall through to dev creds). Swapping the
+ *      developer's credentials for the function's deployed execution role
+ *      degrades rather than hard-errors: this is a developer-loop tool, not
+ *      a security boundary, and the most common cause is the role's
+ *      `AssumeRolePolicy` not trusting the developer's IAM principal (a
+ *      config gap, not a cdkd bug).
+ *   2. dev shell creds (`forwardAwsEnv` — which folds the region case for the
+ *      same reason arm 1 does) + `--profile` overlay
+ *      ({@link applyProfileCredentialsOverlay}) + the bind-mounted
+ *      credentials-file env so handler `fromIni({ profile })` resolves.
+ *      Applied in that order: the overlay intentionally wins over whatever
+ *      `forwardAwsEnv` copied, and the credentials-file env is additive.
+ *
+ * Extracted from `localInvokeCommand`'s body by issue
+ * [#1836](https://github.com/go-to-k/cdkd/issues/1836) and shaped to mirror
+ * `applyAgentCoreCredentialEnv` in `local-invoke-agentcore.ts` (the sibling
+ * issue [#1814](https://github.com/go-to-k/cdkd/issues/1814) fixed), so a unit
+ * test can lock the STS-client region binding with a mocked STS instead of
+ * driving the full synth + docker pipeline.
+ */
+export async function applyLambdaCredentialEnv(
+  dockerEnv: Record<string, string>,
+  args: {
+    assumeRoleArn?: string;
+    region?: string;
+    profileCredentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+    profileCredsFile?: { containerPath: string; profileName: string };
+  }
+): Promise<void> {
+  const logger = getLogger();
+  let assumeSucceeded = false;
+  if (args.assumeRoleArn) {
+    // Issue #1836: the chain that ESCAPES the handler-entry fold. `--region`
+    // arrives already folded, but the two env-var fall-throughs do not — so
+    // `--assume-role` with `AWS_REGION=CN-NORTH-1` and no `--region` handed the
+    // raw value BOTH to the AssumeRole STS client below (whose endpoint
+    // resolution is case-SENSITIVE, so it talked to the COMMERCIAL partition)
+    // and to the container's own `AWS_REGION`, i.e. to every SDK client the
+    // handler builds. Same shape as `applyAgentCoreCredentialEnv`'s fourth
+    // chain (issue #1814).
+    //
+    // This arm covers the `--assume-role` path ONLY. The default path's copy of
+    // the container region is folded in {@link forwardAwsEnv} below — folding
+    // just here made the same command answer differently depending on whether
+    // `--assume-role` was passed.
+    const stsRegion = canonicalizeRegion(
+      args.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']
+    );
+    try {
+      const creds = await assumeLambdaExecutionRole(args.assumeRoleArn, stsRegion);
+      dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
+      dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
+      dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
+      if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
+      assumeSucceeded = true;
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn(
+        `--assume-role: STS AssumeRole(${args.assumeRoleArn}) failed: ${reason}. ` +
+          "Falling back to the developer's shell credentials."
+      );
+    }
+  }
+  if (!assumeSucceeded) {
+    forwardAwsEnv(dockerEnv);
+    // Issue #657: when `--profile <p>` was supplied AND assume-role
+    // did not produce creds for this Lambda (either not asked for or
+    // STS failed), overlay the profile-resolved {AKID, SAK,
+    // sessionToken?} on top of whatever `forwardAwsEnv` copied from
+    // `process.env`. See `applyProfileCredentialsOverlay`'s doc for
+    // the full precedence table + session-token-strip rationale.
+    applyProfileCredentialsOverlay(dockerEnv, args.profileCredentials, false);
+    // Issue #2 deferred from #655: point the container's SDK chain at
+    // the bind-mounted credentials file so `fromIni({ profile })` calls
+    // inside the handler resolve to the same creds. `AWS_PROFILE` makes
+    // `fromIni()` (no explicit arg) ALSO use this profile.
+    if (args.profileCredsFile) {
+      dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = args.profileCredsFile.containerPath;
+      dockerEnv['AWS_PROFILE'] = args.profileCredsFile.profileName;
+    }
+  }
+}
+
+/**
  * Assume the Lambda execution role and return temporary credentials.
  *
  * Closes the "developer has admin creds, the deployed function has narrow
@@ -1395,6 +1477,16 @@ async function assumeLambdaExecutionRole(
  *
  * Region is inherited from `AWS_REGION` / `AWS_DEFAULT_REGION` so
  * `aws.config.region` inside the handler works without extra setup.
+ *
+ * Issue [#1836](https://github.com/go-to-k/cdkd/issues/1836): the two REGION
+ * entries are folded through `canonicalizeRegion` on the way in, the credentials
+ * are copied verbatim. This is the DEFAULT path — no `--assume-role` — and it
+ * carries the same exposure the assume-role branch had: the value lands in the
+ * container's own `AWS_REGION`, i.e. in every SDK client the handler builds, and
+ * SDK endpoint resolution is case-SENSITIVE (`CN-NORTH-1` resolves the
+ * COMMERCIAL partition). Folding only inside `applyLambdaCredentialEnv`'s
+ * assume-role arm made ONE command yield two different container regions for the
+ * same shell — `cn-north-1` with `--assume-role`, `CN-NORTH-1` without.
  */
 function forwardAwsEnv(env: Record<string, string>): void {
   const passThrough = [
@@ -1404,9 +1496,11 @@ function forwardAwsEnv(env: Record<string, string>): void {
     'AWS_REGION',
     'AWS_DEFAULT_REGION',
   ] as const;
+  const regionKeys = new Set<string>(['AWS_REGION', 'AWS_DEFAULT_REGION']);
   for (const key of passThrough) {
     const value = process.env[key];
-    if (value !== undefined) env[key] = value;
+    if (value === undefined) continue;
+    env[key] = regionKeys.has(key) ? canonicalizeRegion(value) : value;
   }
 }
 

@@ -182,6 +182,14 @@ interface LocalInvokeAgentCoreOptions {
   /** `--stack-region` — region of the state record / CFn client (issue #606). */
   stackRegion?: string;
   /**
+   * The user's UNFOLDED `--stack-region` spelling, captured at handler entry
+   * before the fold above it (issue #1836 round 3). Consumed ONLY by the
+   * state-record match in `local-state-loader.ts`, which resolves an
+   * exactly-spelled region in preference to a case-variant record — a rule the
+   * folded value cannot express. Never reaches an SDK client or an endpoint.
+   */
+  rawStackRegion?: string;
+  /**
    * Per-request timeout in milliseconds, applied to the HTTP `/invocations`
    * POST, the MCP `POST /mcp` request, and the `/ws` open-to-close window.
    * Default 120000 (120s). Raise this for long-running agent calls that
@@ -258,6 +266,19 @@ async function localInvokeAgentCoreCommand(
   // the signing scope, and `--assume-role` with an upper-cased `AWS_REGION`
   // still reached the AssumeRole STS client and the container's own env.
   if (options.region !== undefined) options.region = canonicalizeRegion(options.region);
+  // Issue #1836 folds `options.stackRegion` here too, which narrows the note
+  // above: the two chains that fall through to it now receive a value that is
+  // ALREADY canonical (their own folds stay, and are what cover the env-var and
+  // stack-region-of-record fall-throughs). The flag needs its own fold because
+  // it is not only a chain link — its raw value is COMPARED against a state
+  // record's region (`local-state-loader.ts`) and forwarded to cdk-local as the
+  // CFn client's region, both case-SENSITIVE. The RAW spelling is captured first
+  // so the state-record match can honor an exactly-spelled region (see the
+  // identical statement in `local-invoke.ts`).
+  if (options.stackRegion !== undefined) {
+    options.rawStackRegion = options.stackRegion;
+    options.stackRegion = canonicalizeRegion(options.stackRegion);
+  }
 
   let containerId: string | undefined;
   let stopLogs: (() => void) | undefined;
@@ -1747,6 +1768,24 @@ export function platformToArchitecture(platform: string): 'x86_64' | 'arm64' {
   return platform === 'linux/amd64' ? 'x86_64' : 'arm64';
 }
 
+/**
+ * Copy the developer's AWS credentials + region into the container env for the
+ * DEFAULT (no `--assume-role`) path.
+ *
+ * Issue [#1836](https://github.com/go-to-k/cdkd/issues/1836): the two REGION
+ * entries are folded through `canonicalizeRegion` on the way in; the credentials
+ * are copied verbatim (an AKID / session token is case-SENSITIVE, so lower-casing
+ * the whole pass-through list would corrupt every one of them). The value lands
+ * in the container's own `AWS_REGION`, i.e. in every SDK client the agent builds,
+ * and SDK endpoint resolution is case-SENSITIVE (`CN-NORTH-1` resolves the
+ * COMMERCIAL partition).
+ *
+ * Folding only inside `applyAgentCoreCredentialEnv`'s assume-role arm — which is
+ * where issue #1814 stopped, and what round 3 of the #1836 review found still
+ * open here after the same gap was closed in `local-invoke.ts` — made ONE command
+ * yield two different container regions for the same shell: `cn-north-1` with
+ * `--assume-role`, `CN-NORTH-1` without.
+ */
 function forwardAwsEnv(env: Record<string, string>): void {
   const passThrough = [
     'AWS_ACCESS_KEY_ID',
@@ -1755,9 +1794,11 @@ function forwardAwsEnv(env: Record<string, string>): void {
     'AWS_REGION',
     'AWS_DEFAULT_REGION',
   ] as const;
+  const regionKeys = new Set<string>(['AWS_REGION', 'AWS_DEFAULT_REGION']);
   for (const key of passThrough) {
     const value = process.env[key];
-    if (value !== undefined) env[key] = value;
+    if (value === undefined) continue;
+    env[key] = regionKeys.has(key) ? canonicalizeRegion(value) : value;
   }
 }
 

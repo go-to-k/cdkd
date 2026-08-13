@@ -104,6 +104,21 @@ interface LocalRunTaskOptions {
    * invoke --stack-region`.
    */
   stackRegion?: string;
+  /**
+   * The user's UNFOLDED `--stack-region` spelling, captured at handler entry
+   * before the fold above it (issue #1836 round 3). Consumed by exactly TWO
+   * things in `local-state-loader.ts`, both of which need a spelling the fold
+   * has destroyed: the state-record match in `loadStateForStack`, which resolves
+   * an exactly-spelled region in preference to a case-variant record, and the
+   * raw marker-key fallback probe in `loadBootstrapContainerRepo`, which this
+   * file feeds from `options.rawStackRegion` further down (the `cdkd bootstrap`
+   * WRITE side does not fold, so a canonical-only read would miss the
+   * `cdkd-bootstrap/{RAW}.json` key an upper-cased bootstrap wrote). It never
+   * reaches an SDK client or an endpoint. This differs from the three sibling
+   * commands' copies of this comment, which say ONLY the record match: they do
+   * not call `loadBootstrapContainerRepo` at all.
+   */
+  rawStackRegion?: string;
 }
 
 /**
@@ -131,6 +146,16 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
   // clients). AWS SDK endpoint resolution is case-sensitive, so a raw
   // `--region CN-NORTH-1` reached the COMMERCIAL endpoint at every one.
   if (options.region !== undefined) options.region = canonicalizeRegion(options.region);
+  // Issue #1836: `--stack-region` needs the same fold at the same point — its
+  // raw value is COMPARED against a state record's region and is forwarded to
+  // cdk-local as the CFn client's region, both case-SENSITIVE. The RAW spelling
+  // is captured first so the state-record match can honor an exactly-spelled
+  // region — see the fuller rationale on the identical statement in
+  // `local-invoke.ts`.
+  if (options.stackRegion !== undefined) {
+    options.rawStackRegion = options.stackRegion;
+    options.stackRegion = canonicalizeRegion(options.stackRegion);
+  }
 
   const state: EcsRunState = createEcsRunState();
   let sigintHandler: (() => void) | undefined;
@@ -220,7 +245,11 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     // same-stack ECR Repository refs) get rewritten in-place during
     // `parseContainerImage`. STS / state-load are lazy — we only fire them
     // when at least one stack's template references the placeholders.
-    const imageContext = await buildEcsImageResolutionContext(candidate, stateProvider, options);
+    const { context: imageContext, stateRecordRegion } = await buildEcsImageResolutionContext(
+      candidate,
+      stateProvider,
+      options
+    );
     const task = resolveEcsTaskTarget(target, stacks, imageContext);
     logger.info(
       `Target: ${task.stack.stackName}/${task.taskDefinitionLogicalId} (family=${task.family}, containers=${task.containers.length})`
@@ -234,12 +263,11 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     const taskStack = stacks.find((s) => s.stackName === task.stack.stackName) ?? task.stack;
     const taskNeeds = detectEcsImageResolutionNeeds(taskStack);
     if (stateProvider && taskNeeds.needsCrossStackResolver) {
-      const consumerRegion =
-        options.region ??
-        process.env['AWS_REGION'] ??
-        process.env['AWS_DEFAULT_REGION'] ??
-        task.stack.region ??
-        'us-east-1';
+      const consumerRegion = resolveEcsConsumerRegion(
+        stateRecordRegion,
+        options,
+        task.stack.region
+      );
       const resolver = await stateProvider.buildCrossStackResolver(consumerRegion);
       if (resolver) {
         const subContext: SubstitutionContext = {
@@ -447,9 +475,65 @@ async function assumeTaskRole(
 }
 
 /**
+ * Region the cross-stack resolver is scoped to for `cdkd local run-task`
+ * (issue #1836).
+ *
+ * This value does THREE things (round 3 said TWO and was wrong — corrected in
+ * round 4), and the first is why the state record's own spelling outranks the env
+ * chain:
+ *
+ * 1. it becomes the exports-index KEY `cdkd/_index/{region}/exports.json`;
+ * 2. it is the same-region filter of the index-miss per-stack scan; and
+ * 3. via `SubstitutionContext.consumerRegion`, it is cdk-local's DEFAULT producer
+ *    region for an `Fn::GetStackOutput` that carries no explicit `Region` — i.e.
+ *    it becomes the `cdkd/{producer}/{region}/state.json` key that intrinsic
+ *    reads.
+ *
+ * All three land in `buildCrossStackResolver` (`local-state-loader.ts`), whose
+ * `resolveImport` scan (2) and — since round 4 — `resolveGetStackOutput` (3) fold
+ * BOTH sides for the comparison / recovery, while (1) is deliberately raw.
+ *
+ * `local invoke` / `local invoke-agentcore` both pass `loaded.region` there; this
+ * command passed a FOLDED env-chain value instead, so the two commands keyed one
+ * index differently — and a key the state records do not spell makes
+ * `ExportIndexStore`'s rebuild filter match zero refs and PUT an EMPTY index,
+ * permanently degrading every `Fn::ImportValue` to the O(N) scan. Keyed by a
+ * record's spelling the filter always matches.
+ *
+ * The env-chain arm remains for the case where no state record was loaded at all
+ * (nothing in the task needed one), and it stays FOLDED for the reason the rest
+ * of this file folds: both env-var links escape the handler-entry `--region`
+ * fold, and a raw upper-cased spelling reaches an S3 key and an SDK client.
+ *
+ * @internal exported for unit tests.
+ */
+export function resolveEcsConsumerRegion(
+  stateRecordRegion: string | undefined,
+  options: Pick<LocalRunTaskOptions, 'region'>,
+  synthRegion: string | undefined
+): string {
+  if (stateRecordRegion) return stateRecordRegion;
+  return canonicalizeRegion(
+    // Issue #1836 round 4: `||`, not `??`, on the FLAG link. Round 3's `??` let
+    // `--region ''` beat `AWS_REGION` and yield `''` — which would then be the
+    // exports-index key AND the bucket-resolution region, contradicting the
+    // blank-is-absent rule this branch adopted at the four client boundaries. The
+    // two env links keep `??` for parity with the sibling chains in this file
+    // (an exported-but-empty `AWS_REGION` is not a shape this branch changed),
+    // and `synthRegion` keeps `??` because a blank synth region is not user input.
+    (options.region || process.env['AWS_REGION']) ??
+      process.env['AWS_DEFAULT_REGION'] ??
+      synthRegion ??
+      'us-east-1'
+  );
+}
+
+/**
  * Build the substitution context the ECS task resolver consumes (issue
- * #264). Returns `undefined` when no container's `Image` field needs
- * substitution — the resolver behaves as before in that case.
+ * #264), plus the region of the state record it loaded (if any — issue #1836;
+ * see {@link resolveEcsConsumerRegion} for what reads it). `context` is
+ * `undefined` when no container's `Image` field needs substitution — the
+ * resolver behaves as before in that case.
  *
  * Tier 1 (pseudo parameters) fires `sts:GetCallerIdentity` once for
  * `${AWS::AccountId}`; region / partition / URL suffix come from the CLI
@@ -470,9 +554,9 @@ export async function buildEcsImageResolutionContext(
   candidate: StackInfo | undefined,
   stateProvider: LocalStateProvider | undefined,
   options: LocalRunTaskOptions
-): Promise<EcsImageResolutionContext | undefined> {
+): Promise<{ context?: EcsImageResolutionContext; stateRecordRegion?: string }> {
   const logger = getLogger();
-  if (!candidate) return undefined;
+  if (!candidate) return {};
 
   const needs = detectEcsImageResolutionNeeds(candidate);
   if (
@@ -481,10 +565,16 @@ export async function buildEcsImageResolutionContext(
     !needs.needsEnvOrSecretSubstitution &&
     !needs.needsAssetRepoMarker
   ) {
-    return undefined;
+    return {};
   }
 
   const ctx: EcsImageResolutionContext = {};
+  // Region of the state record the load below resolved to, if any. Reported
+  // separately rather than stashed on `ctx`: `EcsImageResolutionContext` is
+  // cdk-local's `ImageResolutionContext` plus one cdkd field, and the region is
+  // not part of the resolver's contract — it only scopes the cross-stack
+  // resolver the caller builds afterwards (issue #1836).
+  let stateRecordRegion: string | undefined;
 
   // Pseudo parameters are needed (a) by image Fn::Sub references to AWS::*,
   // and (b) by env / secret Fn::Join / Fn::Sub bodies when a state
@@ -530,6 +620,7 @@ export async function buildEcsImageResolutionContext(
     const loaded = await stateProvider.load(candidate.stackName, candidate.region);
     if (loaded) {
       ctx.stateResources = loaded.resources;
+      stateRecordRegion = loaded.region;
     }
   } else if (!stateProvider && needs.needsStateResources) {
     logger.warn(
@@ -557,6 +648,10 @@ export async function buildEcsImageResolutionContext(
     const containerRepo = await loadBootstrapContainerRepo(candidate.region, {
       statePrefix: options.statePrefix,
       ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
+      // Issue #1836: the raw spelling too, so the marker-key fallback probe can
+      // reach the key an upper-cased `cdkd bootstrap` wrote (see
+      // `loadBootstrapContainerRepo`'s `rawRegion` note).
+      ...(options.rawStackRegion !== undefined && { rawStackRegion: options.rawStackRegion }),
       ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
       ...(options.region !== undefined && { region: options.region }),
       ...(options.profile !== undefined && { profile: options.profile }),
@@ -567,7 +662,7 @@ export async function buildEcsImageResolutionContext(
     }
   }
 
-  return ctx;
+  return { context: ctx, ...(stateRecordRegion !== undefined && { stateRecordRegion }) };
 }
 
 function pickCandidateStack(

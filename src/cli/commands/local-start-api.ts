@@ -226,6 +226,14 @@ interface LocalStartApiOptions {
    */
   stackRegion?: string;
   /**
+   * The user's UNFOLDED `--stack-region` spelling, captured at handler entry
+   * before the fold above it (issue #1836 round 3). Consumed ONLY by the
+   * state-record match in `local-state-loader.ts`, which resolves an
+   * exactly-spelled region in preference to a case-variant record — a rule the
+   * folded value cannot express. Never reaches an SDK client or an endpoint.
+   */
+  rawStackRegion?: string;
+  /**
    * Path to a PEM-encoded CA bundle. Client certificates that don't
    * chain to one of these CAs are rejected at the TLS handshake.
    * mTLS is enabled when ALL THREE `--mtls-truststore` / `--mtls-cert` /
@@ -286,6 +294,16 @@ async function localStartApiCommand(
   // endpoint). The pseudo-parameter resolver folds again from its own four
   // sources; double-folding is a no-op.
   if (options.region !== undefined) options.region = canonicalizeRegion(options.region);
+  // Issue #1836: `--stack-region` needs the same fold at the same point — its
+  // raw value is COMPARED against a state record's region and is forwarded to
+  // cdk-local as the CFn client's region, both case-SENSITIVE. The RAW spelling
+  // is captured first so the state-record match can honor an exactly-spelled
+  // region — see the fuller rationale on the identical statement in
+  // `local-invoke.ts`.
+  if (options.stackRegion !== undefined) {
+    options.rawStackRegion = options.stackRegion;
+    options.stackRegion = canonicalizeRegion(options.stackRegion);
+  }
 
   // Resolve the API filter: positional `<target>` wins over `--api`.
   // `--api` is kept as a backward-compat alias for one release cycle —
