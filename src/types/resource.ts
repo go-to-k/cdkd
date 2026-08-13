@@ -800,6 +800,14 @@ export interface ResourceProvider {
    * `--revert` diffs against. Return the input by IDENTITY when nothing
    * applies (the common case), so an unaffected resource pays nothing.
    *
+   * Same CC-API-fallback caveat as {@link getDriftUnknownPaths} and
+   * {@link getDriftUnorderedPaths}: when the type has no `readCurrentState`,
+   * the AWS side comes from the Cloud Control fallback while THIS method is
+   * still the registry provider's, so the bag may not be the shape the
+   * provider's own readback would produce. Shape-guard before descending
+   * rather than assume — an `Array.isArray` / `typeof` test on the value you
+   * intend to rewrite is the whole guard.
+   *
    * @param resourceType e.g. `AWS::DynamoDB::Table`
    * @param properties one comparison side (baseline or AWS-current)
    * @returns the canonicalized bag, or the input unchanged
