@@ -129,6 +129,35 @@ describe('DockerAssetPublisher derives the ECR registry suffix (issue #1745)', (
       `${ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/my-repo:abc123`
     );
   });
+
+  // `publish()` above has NO production caller — `AssetPublisher` drives
+  // `build()` + `push()` (src/assets/asset-publisher.ts). PR review caught that
+  // testing only `publish()` left the ACTUAL deploy push target unpinned, so a
+  // hardcoded suffix there would have shipped green. These two cover `push()`.
+  it('push() — the method the deploy path actually calls — uses the derived suffix', async () => {
+    await publisher.push(asset(), ACCOUNT, 'cn-north-1', 'local-tag');
+
+    expect(dockerArgs('push')[0]?.[1]).toBe(
+      `${ACCOUNT}.dkr.ecr.cn-north-1.amazonaws.com.cn/my-repo:abc123`
+    );
+  });
+
+  it('push() in a commercial region is byte-identical', async () => {
+    await publisher.push(asset(), ACCOUNT, 'us-east-1', 'local-tag');
+
+    expect(dockerArgs('push')[0]?.[1]).toBe(
+      `${ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/my-repo:abc123`
+    );
+  });
+
+  it('the login cache is keyed by the SUFFIXED registry — two pushes, one login', async () => {
+    await publisher.push(asset(), ACCOUNT, 'cn-north-1', 'local-tag');
+    await publisher.push(asset(), ACCOUNT, 'cn-north-1', 'local-tag');
+
+    // The first push fails auth once (see beforeEach) and triggers the lazy
+    // login; the second must reuse the cached entry rather than re-login.
+    expect(dockerArgs('login')).toHaveLength(1);
+  });
 });
 
 /**
@@ -144,7 +173,10 @@ describe('asset-redirect folds AWS::URLSuffix from the region (issue #1745)', ()
     entries: [{ source: `cdk-hnb659fds-assets-${ACCOUNT}-${region}`, target: 'cdkd-assets' }],
     accountId: ACCOUNT,
     region,
-    partition: region.startsWith('cn-') ? 'aws-cn' : 'aws',
+    // Production shape: every `buildAssetRedirectMap` caller omits the
+    // `partition` argument, so this field is ALWAYS the 'aws' default. Hand-building
+    // 'aws-cn' here is what masked the un-derived `AWS::Partition` arm from review.
+    partition: 'aws',
   });
 
   const templateFor = (region: string): CloudFormationTemplate =>
@@ -184,11 +216,49 @@ describe('asset-redirect folds AWS::URLSuffix from the region (issue #1745)', ()
     expect(JSON.stringify(codeUriOf(template))).toContain('cdkd-assets');
   });
 
+  it('AWS::Partition folds from the region too — the same switch must not contradict itself', () => {
+    // Review finding: fixing only the URLSuffix arm left `AWS::Partition`
+    // returning `map.partition`, which is unconditionally 'aws' because every
+    // caller omits the argument. A cn fold then emitted `arn:aws:` alongside
+    // `amazonaws.com.cn` in ONE template.
+    const template = {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Arn: {
+              'Fn::Join': [
+                '',
+                [
+                  'arn:',
+                  { Ref: 'AWS::Partition' },
+                  ':s3:::cdk-hnb659fds-assets-' + ACCOUNT + '-cn-north-1/x.zip',
+                ],
+              ],
+            },
+          },
+        },
+      },
+    } as unknown as CloudFormationTemplate;
+    expect(rewriteTemplateAssetReferences(template, mapFor('cn-north-1'))).toBe(1);
+    const rendered = JSON.stringify(
+      (
+        (template.Resources!['Fn'] as { Properties: Record<string, unknown> }).Properties as {
+          Arn: unknown;
+        }
+      ).Arn
+    );
+    expect(rendered).toContain('arn:aws-cn:');
+    expect(rendered).not.toContain('arn:aws:');
+  });
+
   it('a commercial region still folds to amazonaws.com', () => {
     const template = templateFor('us-east-1');
     expect(rewriteTemplateAssetReferences(template, mapFor('us-east-1'))).toBe(1);
     const rendered = JSON.stringify(codeUriOf(template));
-    expect(rendered).toContain('amazonaws.com');
+    // NOT `toContain('amazonaws.com')` — that is satisfied by `amazonaws.com.cn`
+    // too, so it could not tell the commercial fold from the cn one.
+    expect(rendered).toContain('s3.us-east-1.amazonaws.com/');
     expect(rendered).not.toContain('amazonaws.com.cn');
   });
 });

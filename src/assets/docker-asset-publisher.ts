@@ -11,8 +11,21 @@ import { buildDockerImage } from './docker-build.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 
 /**
+ * The ECR registry host suffix for a region (issue #1745).
+ *
+ * Every registry URI here was hardcoded to `amazonaws.com`, so outside the
+ * commercial partition cdkd built a hostname that does not resolve —
+ * `aws-cn` registries live under `amazonaws.com.cn`, and `us-iso*` under
+ * `c2s.ic.gov` / `sc2s.sgov.gov`. Commercial output is byte-identical, which is
+ * what makes the change safe to ship without a non-commercial account.
+ */
+function ecrUrlSuffix(region: string): string {
+  return derivePartitionAndUrlSuffix(region).urlSuffix;
+}
+
+/**
  * Registries this process has already logged in to, keyed by registry host
- * (`<accountId>.dkr.ecr.<region>.amazonaws.com`, which uniquely encodes the
+ * (`<accountId>.dkr.ecr.<region>.<urlSuffix>`, which uniquely encodes the
  * account + region credential context). ECR authorization tokens are valid
  * for ~12h and a deploy process is short-lived, so a successful login is
  * reused for the process lifetime — mirroring `cdk-assets`, which skips
@@ -55,19 +68,6 @@ export function isDockerAuthFailure(errText: string): boolean {
  * - lazy ECR authentication (push first, log in only on an auth failure)
  * - docker tag + docker push
  */
-/**
- * The ECR registry host suffix for a region (issue #1745).
- *
- * Every registry URI here was hardcoded to `amazonaws.com`, so outside the
- * commercial partition cdkd built a hostname that does not resolve —
- * `aws-cn` registries live under `amazonaws.com.cn`, and `us-iso*` under
- * `c2s.ic.gov` / `sc2s.sgov.gov`. Commercial output is byte-identical, which is
- * what makes the change safe to ship without a non-commercial account.
- */
-function ecrUrlSuffix(region: string): string {
-  return derivePartitionAndUrlSuffix(region).urlSuffix;
-}
-
 export class DockerAssetPublisher {
   private logger = getLogger().child('DockerAssetPublisher');
 
@@ -106,8 +106,7 @@ export class DockerAssetPublisher {
         await this.buildImage(asset, cdkOutputDir, localTag);
 
         // Tag and push (login lazily, only if the push hits an auth failure).
-        const fullUri = `${accountId}.dkr.ecr.${destRegion}.${ecrUrlSuffix(destRegion)}/${repositoryName}:${imageTag}`;
-        await this.tagAndPushWithLazyLogin(client, localTag, fullUri, accountId, destRegion);
+        await this.tagAndPushWithLazyLogin(client, localTag, ecrUri, accountId, destRegion);
 
         this.logger.debug(`✅ Published: ${ecrUri}`);
       } finally {
@@ -155,8 +154,7 @@ export class DockerAssetPublisher {
           continue;
         }
 
-        const fullUri = `${accountId}.dkr.ecr.${destRegion}.${ecrUrlSuffix(destRegion)}/${repositoryName}:${imageTag}`;
-        await this.tagAndPushWithLazyLogin(client, localTag, fullUri, accountId, destRegion);
+        await this.tagAndPushWithLazyLogin(client, localTag, ecrUri, accountId, destRegion);
 
         this.logger.debug(`✅ Published: ${ecrUri}`);
       } finally {

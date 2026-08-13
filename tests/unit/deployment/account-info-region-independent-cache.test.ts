@@ -4,7 +4,9 @@ import {
   resetAccountInfoCache,
   accountInfoClock,
   embedsAccountId,
+  IntrinsicFunctionResolver,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
@@ -22,9 +24,18 @@ vi.mock('../../../src/utils/logger.js', () => ({
 }));
 
 const stsSend = vi.hoisted(() => vi.fn());
+const ec2Send = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  getAwsClients: () => ({ sts: { send: stsSend }, ec2: { send: vi.fn() } }),
+  getAwsClients: () => ({ sts: { send: stsSend }, ec2: { send: ec2Send } }),
 }));
+
+// The `Ipv6CidrBlocks` branch dynamically imports `@aws-sdk/client-ec2` and
+// builds its OWN client rather than taking `getAwsClients().ec2`, so the module
+// itself has to be mocked or the test reaches the network and silently gets [].
+vi.mock('@aws-sdk/client-ec2', async () => {
+  const actual = await vi.importActual<Record<string, unknown>>('@aws-sdk/client-ec2');
+  return { ...actual, EC2Client: vi.fn().mockImplementation(() => ({ send: ec2Send })) };
+});
 
 /**
  * Issue #1746 item 1 — the account-info cache used to pin the FIRST caller's
@@ -181,6 +192,45 @@ describe('embedsAccountId (issue #1746)', () => {
 
   it('does not fire on an array carrying no account', () => {
     expect(embedsAccountId(['2001:db8::/64', '2001:db8:1::/64'], '123456789012')).toBe(false);
+  });
+
+  it('does NOT refuse a real array attribute under a fabricated account (the false-positive direction)', async () => {
+    // PR review: the array TYPE arm IS reachable end to end — `AWS::EC2::VPC`
+    // `Ipv6CidrBlocks` returns `string[]` through the same guard. What must
+    // never happen is the guard REFUSING it: those CIDRs carry no account, so a
+    // fabricated account must still let them through.
+    stsSend.mockRejectedValue(new Error('STS unreachable'));
+    ec2Send.mockResolvedValue({
+      Vpcs: [
+        {
+          Ipv6CidrBlockAssociationSet: [
+            { Ipv6CidrBlock: '2001:db8::/56', Ipv6CidrBlockState: { State: 'associated' } },
+          ],
+        },
+      ],
+    });
+
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const template: CloudFormationTemplate = {
+      Resources: { Vpc: { Type: 'AWS::EC2::VPC', Properties: {} } },
+    };
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['Vpc', 'Ipv6CidrBlocks'] },
+      {
+        template,
+        resources: {
+          Vpc: {
+            physicalId: 'vpc-123',
+            resourceType: 'AWS::EC2::VPC',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      }
+    );
+
+    expect(result).toEqual(['2001:db8::/56']);
   });
 
   it('ignores non-string, non-array values rather than stringifying them', () => {

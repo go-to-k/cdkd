@@ -962,6 +962,10 @@ export function resetAccountInfoCache(): void {
   // clear with it, or a test (or a later phase) would keep reading a fabricated
   // answer it just asked to forget.
   fabricatedAccountIdentity = null;
+  // ...and so is the in-flight promise: a reset while a lookup is pending would
+  // otherwise hand the next caller the identity this call asked to forget, and
+  // the resolve arm would re-populate the cache AFTER the reset.
+  accountInfoInFlight = null;
   // Also reset AZ cache
   for (const key of Object.keys(cachedAvailabilityZones)) {
     delete cachedAvailabilityZones[key];

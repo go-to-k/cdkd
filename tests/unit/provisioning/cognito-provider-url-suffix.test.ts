@@ -118,6 +118,28 @@ describe('CognitoUserPoolProvider derives the OIDC provider host suffix (issue #
     );
   });
 
+  it('update in a COMMERCIAL region is byte-identical too — the create twin is not enough', async () => {
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({
+      UserPool: {
+        Id: 'us-east-1_abc123',
+        Arn: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_abc123',
+      },
+    });
+
+    const result = await provider.update(
+      'MyUserPool',
+      'us-east-1_abc123',
+      'AWS::Cognito::UserPool',
+      { UserPoolName: 'my-user-pool' },
+      { UserPoolName: 'my-user-pool' }
+    );
+
+    expect(result.attributes?.['ProviderName']).toBe(
+      'cognito-idp.us-east-1.amazonaws.com/us-east-1_abc123'
+    );
+  });
+
   it('a us-gov region keeps amazonaws.com (the partition differs, the suffix does not)', async () => {
     clientRegion.value = 'us-gov-west-1';
     mockSend.mockResolvedValueOnce({

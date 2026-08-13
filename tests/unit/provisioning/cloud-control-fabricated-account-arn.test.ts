@@ -11,7 +11,10 @@ const mockAccountInfo = vi.hoisted(() => ({
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    cloudControl: { send: vi.fn(), config: { region: 'us-east-1' } },
+    // `config.region` is a PROVIDER function on a real SDK client, not a
+    // string — `CloudControlProvider` awaits it (see `accountInfoForSynthesizedArn`
+    // and the instance-protection path). The string form made this mock unfaithful.
+    cloudControl: { send: vi.fn(), config: { region: () => Promise.resolve('us-east-1') } },
     cloudFormation: { send: vi.fn() },
   }),
 }));

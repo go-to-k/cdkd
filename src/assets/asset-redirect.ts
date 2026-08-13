@@ -253,7 +253,14 @@ function evaluatePseudoParam(name: string, map: AssetRedirectMap): string {
     case 'AWS::Region':
       return map.region;
     case 'AWS::Partition':
-      return map.partition;
+      // DERIVED, like the suffix below. `map.partition` is unconditionally
+      // 'aws': every `buildAssetRedirectMap` caller omits the argument and takes
+      // the parameter default. Leaving this arm alone while fixing the suffix
+      // made ONE switch self-contradictory — a folded `Fn::Join` in `cn-north-1`
+      // emitted `arn:aws:` and `amazonaws.com.cn` in the same template. (The
+      // other consumers of `map.partition` are a separate concern; this is the
+      // arm that renders a pseudo-parameter.)
+      return derivePartitionAndUrlSuffix(map.region).partition;
     case 'AWS::URLSuffix':
       // Mirrors IntrinsicFunctionResolver's AWS::URLSuffix resolution, which
       // DERIVES the suffix from the region (issue #1745) — a hardcoded
