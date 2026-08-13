@@ -578,6 +578,12 @@ cdkd export MyApp                             # nested-stack tree: leaf-first pe
 them through CFn — the Custom Resource Lambda must be idempotent.
 **Nested stacks** are supported via a leaf-first per-stack IMPORT loop
 (AWS rejects `--include-nested-stacks` for IMPORT changesets).
+**Some resource types CloudFormation cannot import at all** (`AWS::Glue::Table`,
+`AWS::Route53::RecordSet` / `::RecordSetGroup`, `AWS::AppSync::ApiKey`,
+`AWS::EC2::NetworkAclEntry`, `AWS::SQS::QueuePolicy`,
+`AWS::SNS::TopicPolicy`, …). cdkd detects those before touching AWS and
+names every affected resource at once, so you fix them in one pass
+instead of one per re-run.
 
 See **[docs/import.md](docs/import.md)** for the full guide — Custom Resource
 2-phase flow, nested-stack adoption mechanics (`--cfn-child-stack-name`
