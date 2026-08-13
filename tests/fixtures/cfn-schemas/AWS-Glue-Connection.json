@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Glue::Connection",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CatalogId",
     "ConnectionInput",
@@ -11,5 +11,150 @@
   ],
   "createOnlyProperties": [
     "CatalogId"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "nestedProperties": {
+    "ConnectionInput": [
+      "AWSManagedClientApplicationReference",
+      "AccessToken",
+      "AthenaProperties",
+      "AuthenticationConfiguration",
+      "AuthenticationType",
+      "AuthorizationCode",
+      "AuthorizationCodeProperties",
+      "AvailabilityZone",
+      "BasicAuthenticationCredentials",
+      "ConnectionProperties",
+      "ConnectionType",
+      "CustomAuthenticationCredentials",
+      "Description",
+      "JwtToken",
+      "KmsKeyArn",
+      "MatchCriteria",
+      "Name",
+      "OAuth2ClientApplication",
+      "OAuth2Credentials",
+      "OAuth2GrantType",
+      "OAuth2Properties",
+      "Password",
+      "PhysicalConnectionRequirements",
+      "PythonProperties",
+      "RedirectUri",
+      "RefreshToken",
+      "SecretArn",
+      "SecurityGroupIdList",
+      "SparkProperties",
+      "SubnetId",
+      "TokenUrl",
+      "TokenUrlParametersMap",
+      "UserManagedClientApplicationClientId",
+      "UserManagedClientApplicationClientSecret",
+      "Username",
+      "ValidateCredentials",
+      "ValidateForComputeEnvironments"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "ConnectionInput": [
+      "AthenaProperties",
+      "AuthenticationConfiguration",
+      "AuthenticationConfiguration.AuthenticationType",
+      "AuthenticationConfiguration.BasicAuthenticationCredentials",
+      "AuthenticationConfiguration.BasicAuthenticationCredentials.Password",
+      "AuthenticationConfiguration.BasicAuthenticationCredentials.Username",
+      "AuthenticationConfiguration.CustomAuthenticationCredentials",
+      "AuthenticationConfiguration.KmsKeyArn",
+      "AuthenticationConfiguration.OAuth2Properties",
+      "AuthenticationConfiguration.OAuth2Properties.AuthorizationCodeProperties",
+      "AuthenticationConfiguration.OAuth2Properties.AuthorizationCodeProperties.AuthorizationCode",
+      "AuthenticationConfiguration.OAuth2Properties.AuthorizationCodeProperties.RedirectUri",
+      "AuthenticationConfiguration.OAuth2Properties.OAuth2ClientApplication",
+      "AuthenticationConfiguration.OAuth2Properties.OAuth2ClientApplication.AWSManagedClientApplicationReference",
+      "AuthenticationConfiguration.OAuth2Properties.OAuth2ClientApplication.UserManagedClientApplicationClientId",
+      "AuthenticationConfiguration.OAuth2Properties.OAuth2Credentials",
+      "AuthenticationConfiguration.OAuth2Properties.OAuth2Credentials.AccessToken",
+      "AuthenticationConfiguration.OAuth2Properties.OAuth2Credentials.JwtToken",
+      "AuthenticationConfiguration.OAuth2Properties.OAuth2Credentials.RefreshToken",
+      "AuthenticationConfiguration.OAuth2Properties.OAuth2Credentials.UserManagedClientApplicationClientSecret",
+      "AuthenticationConfiguration.OAuth2Properties.OAuth2GrantType",
+      "AuthenticationConfiguration.OAuth2Properties.TokenUrl",
+      "AuthenticationConfiguration.OAuth2Properties.TokenUrlParametersMap",
+      "AuthenticationConfiguration.SecretArn",
+      "ConnectionProperties",
+      "ConnectionType",
+      "Description",
+      "MatchCriteria",
+      "Name",
+      "PhysicalConnectionRequirements",
+      "PhysicalConnectionRequirements.AvailabilityZone",
+      "PhysicalConnectionRequirements.SecurityGroupIdList",
+      "PhysicalConnectionRequirements.SubnetId",
+      "PythonProperties",
+      "SparkProperties",
+      "ValidateCredentials",
+      "ValidateForComputeEnvironments"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "ConnectionInput": "object",
+      "CatalogId": "scalar",
+      "Id": "scalar"
+    },
+    "OAuth2PropertiesInput": {
+      "AuthorizationCodeProperties": "object",
+      "OAuth2ClientApplication": "object",
+      "TokenUrl": "scalar",
+      "OAuth2Credentials": "object",
+      "OAuth2GrantType": "scalar",
+      "TokenUrlParametersMap": "object"
+    },
+    "ConnectionInput": {
+      "AuthenticationConfiguration": "object",
+      "PythonProperties": "object",
+      "Description": "scalar",
+      "ConnectionType": "scalar",
+      "MatchCriteria": "array",
+      "ConnectionProperties": "object",
+      "AthenaProperties": "object",
+      "ValidateForComputeEnvironments": "array",
+      "Name": "scalar",
+      "SparkProperties": "object",
+      "PhysicalConnectionRequirements": "object",
+      "ValidateCredentials": "scalar"
+    },
+    "PhysicalConnectionRequirements": {
+      "AvailabilityZone": "scalar",
+      "SecurityGroupIdList": "array",
+      "SubnetId": "scalar"
+    },
+    "BasicAuthenticationCredentials": {
+      "Username": "scalar",
+      "Password": "scalar"
+    },
+    "AuthorizationCodeProperties": {
+      "AuthorizationCode": "scalar",
+      "RedirectUri": "scalar"
+    },
+    "OAuth2ClientApplication": {
+      "AWSManagedClientApplicationReference": "scalar",
+      "UserManagedClientApplicationClientId": "scalar"
+    },
+    "OAuth2Credentials": {
+      "UserManagedClientApplicationClientSecret": "scalar",
+      "JwtToken": "scalar",
+      "RefreshToken": "scalar",
+      "AccessToken": "scalar"
+    },
+    "AuthenticationConfigurationInput": {
+      "SecretArn": "scalar",
+      "KmsKeyArn": "scalar",
+      "OAuth2Properties": "object",
+      "CustomAuthenticationCredentials": "object",
+      "BasicAuthenticationCredentials": "object",
+      "AuthenticationType": "scalar"
+    }
+  }
 }

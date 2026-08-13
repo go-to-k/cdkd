@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Glue::Trigger",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Actions",
     "Description",
@@ -18,5 +18,96 @@
     "Name",
     "Type",
     "WorkflowName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Name"
+  ],
+  "nestedProperties": {
+    "Actions": [
+      "Arguments",
+      "CrawlerName",
+      "JobName",
+      "NotificationProperty",
+      "NotifyDelayAfter",
+      "SecurityConfiguration",
+      "Timeout"
+    ],
+    "EventBatchingCondition": [
+      "BatchSize",
+      "BatchWindow"
+    ],
+    "Predicate": [
+      "Conditions",
+      "CrawlState",
+      "CrawlerName",
+      "JobName",
+      "Logical",
+      "LogicalOperator",
+      "State"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Actions": [
+      "Arguments",
+      "CrawlerName",
+      "JobName",
+      "NotificationProperty",
+      "NotificationProperty.NotifyDelayAfter",
+      "SecurityConfiguration",
+      "Timeout"
+    ],
+    "EventBatchingCondition": [
+      "BatchSize",
+      "BatchWindow"
+    ],
+    "Predicate": [
+      "Conditions",
+      "Conditions.CrawlState",
+      "Conditions.CrawlerName",
+      "Conditions.JobName",
+      "Conditions.LogicalOperator",
+      "Conditions.State",
+      "Logical"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Type": "scalar",
+      "StartOnCreation": "scalar",
+      "Description": "scalar",
+      "Actions": "array",
+      "EventBatchingCondition": "object",
+      "WorkflowName": "scalar",
+      "Schedule": "scalar",
+      "Tags": "object",
+      "Name": "scalar",
+      "Predicate": "object"
+    },
+    "Condition": {
+      "JobName": "scalar",
+      "CrawlerName": "scalar",
+      "State": "scalar",
+      "CrawlState": "scalar",
+      "LogicalOperator": "scalar"
+    },
+    "NotificationProperty": {
+      "NotifyDelayAfter": "scalar"
+    },
+    "Action": {
+      "NotificationProperty": "object",
+      "CrawlerName": "scalar",
+      "Timeout": "scalar",
+      "JobName": "scalar",
+      "Arguments": "object",
+      "SecurityConfiguration": "scalar"
+    },
+    "EventBatchingCondition": {
+      "BatchSize": "scalar",
+      "BatchWindow": "scalar"
+    },
+    "Predicate": {
+      "Logical": "scalar",
+      "Conditions": "array"
+    }
+  }
 }

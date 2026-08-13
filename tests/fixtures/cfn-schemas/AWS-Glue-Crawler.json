@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Glue::Crawler",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "Classifiers",
     "Configuration",
@@ -20,5 +20,198 @@
   "readOnlyProperties": [],
   "createOnlyProperties": [
     "Name"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Name"
+  ],
+  "nestedProperties": {
+    "SchemaChangePolicy": [
+      "DeleteBehavior",
+      "UpdateBehavior"
+    ],
+    "RecrawlPolicy": [
+      "RecrawlBehavior"
+    ],
+    "Targets": [
+      "CatalogTargets",
+      "ConnectionName",
+      "CreateNativeDeltaTable",
+      "DatabaseName",
+      "DeltaTables",
+      "DeltaTargets",
+      "DlqEventQueueArn",
+      "DynamoDBTargets",
+      "EnableAdditionalMetadata",
+      "EventQueueArn",
+      "Exclusions",
+      "HudiTargets",
+      "IcebergTargets",
+      "JdbcTargets",
+      "MaximumTraversalDepth",
+      "MongoDBTargets",
+      "Path",
+      "Paths",
+      "S3Targets",
+      "SampleSize",
+      "ScanAll",
+      "ScanRate",
+      "Tables",
+      "WriteManifest"
+    ],
+    "LakeFormationConfiguration": [
+      "AccountId",
+      "UseLakeFormationCredentials"
+    ],
+    "Schedule": [
+      "ScheduleExpression"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "SchemaChangePolicy": [
+      "DeleteBehavior",
+      "UpdateBehavior"
+    ],
+    "RecrawlPolicy": [
+      "RecrawlBehavior"
+    ],
+    "Targets": [
+      "CatalogTargets",
+      "CatalogTargets.ConnectionName",
+      "CatalogTargets.DatabaseName",
+      "CatalogTargets.DlqEventQueueArn",
+      "CatalogTargets.EventQueueArn",
+      "CatalogTargets.Tables",
+      "DeltaTargets",
+      "DeltaTargets.ConnectionName",
+      "DeltaTargets.CreateNativeDeltaTable",
+      "DeltaTargets.DeltaTables",
+      "DeltaTargets.WriteManifest",
+      "DynamoDBTargets",
+      "DynamoDBTargets.Path",
+      "DynamoDBTargets.ScanAll",
+      "DynamoDBTargets.ScanRate",
+      "HudiTargets",
+      "HudiTargets.ConnectionName",
+      "HudiTargets.Exclusions",
+      "HudiTargets.MaximumTraversalDepth",
+      "HudiTargets.Paths",
+      "IcebergTargets",
+      "IcebergTargets.ConnectionName",
+      "IcebergTargets.Exclusions",
+      "IcebergTargets.MaximumTraversalDepth",
+      "IcebergTargets.Paths",
+      "JdbcTargets",
+      "JdbcTargets.ConnectionName",
+      "JdbcTargets.EnableAdditionalMetadata",
+      "JdbcTargets.Exclusions",
+      "JdbcTargets.Path",
+      "MongoDBTargets",
+      "MongoDBTargets.ConnectionName",
+      "MongoDBTargets.Path",
+      "S3Targets",
+      "S3Targets.ConnectionName",
+      "S3Targets.DlqEventQueueArn",
+      "S3Targets.EventQueueArn",
+      "S3Targets.Exclusions",
+      "S3Targets.Path",
+      "S3Targets.SampleSize"
+    ],
+    "LakeFormationConfiguration": [
+      "AccountId",
+      "UseLakeFormationCredentials"
+    ],
+    "Schedule": [
+      "ScheduleExpression"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Classifiers": "array",
+      "Description": "scalar",
+      "SchemaChangePolicy": "object",
+      "Configuration": "scalar",
+      "RecrawlPolicy": "object",
+      "DatabaseName": "scalar",
+      "Targets": "object",
+      "CrawlerSecurityConfiguration": "scalar",
+      "Name": "scalar",
+      "Role": "scalar",
+      "LakeFormationConfiguration": "object",
+      "Schedule": "object",
+      "TablePrefix": "scalar",
+      "Tags": "object"
+    },
+    "S3Target": {
+      "ConnectionName": "scalar",
+      "Path": "scalar",
+      "SampleSize": "scalar",
+      "Exclusions": "array",
+      "DlqEventQueueArn": "scalar",
+      "EventQueueArn": "scalar"
+    },
+    "LakeFormationConfiguration": {
+      "UseLakeFormationCredentials": "scalar",
+      "AccountId": "scalar"
+    },
+    "SchemaChangePolicy": {
+      "UpdateBehavior": "scalar",
+      "DeleteBehavior": "scalar"
+    },
+    "IcebergTarget": {
+      "ConnectionName": "scalar",
+      "Paths": "array",
+      "Exclusions": "array",
+      "MaximumTraversalDepth": "scalar"
+    },
+    "HudiTarget": {
+      "ConnectionName": "scalar",
+      "Paths": "array",
+      "Exclusions": "array",
+      "MaximumTraversalDepth": "scalar"
+    },
+    "Schedule": {
+      "ScheduleExpression": "scalar"
+    },
+    "RecrawlPolicy": {
+      "RecrawlBehavior": "scalar"
+    },
+    "MongoDBTarget": {
+      "ConnectionName": "scalar",
+      "Path": "scalar"
+    },
+    "DeltaTarget": {
+      "ConnectionName": "scalar",
+      "CreateNativeDeltaTable": "scalar",
+      "WriteManifest": "scalar",
+      "DeltaTables": "array"
+    },
+    "JdbcTarget": {
+      "ConnectionName": "scalar",
+      "Path": "scalar",
+      "Exclusions": "array",
+      "EnableAdditionalMetadata": "array"
+    },
+    "Targets": {
+      "S3Targets": "array",
+      "CatalogTargets": "array",
+      "DeltaTargets": "array",
+      "MongoDBTargets": "array",
+      "JdbcTargets": "array",
+      "DynamoDBTargets": "array",
+      "IcebergTargets": "array",
+      "HudiTargets": "array"
+    },
+    "DynamoDBTarget": {
+      "Path": "scalar",
+      "ScanAll": "scalar",
+      "ScanRate": "scalar"
+    },
+    "CatalogTarget": {
+      "ConnectionName": "scalar",
+      "DatabaseName": "scalar",
+      "DlqEventQueueArn": "scalar",
+      "Tables": "array",
+      "EventQueueArn": "scalar"
+    }
+  }
 }

@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Glue::Database",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "CatalogId",
     "DatabaseInput",
@@ -9,5 +9,78 @@
   "readOnlyProperties": [],
   "createOnlyProperties": [
     "DatabaseName"
-  ]
+  ],
+  "primaryIdentifier": [
+    "DatabaseName"
+  ],
+  "nestedProperties": {
+    "DatabaseInput": [
+      "CatalogId",
+      "ConnectionName",
+      "CreateTableDefaultPermissions",
+      "DataLakePrincipalIdentifier",
+      "DatabaseName",
+      "Description",
+      "FederatedDatabase",
+      "Identifier",
+      "LocationUri",
+      "Name",
+      "Parameters",
+      "Permissions",
+      "Principal",
+      "Region",
+      "TargetDatabase"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "DatabaseInput": [
+      "CreateTableDefaultPermissions",
+      "CreateTableDefaultPermissions.Permissions",
+      "CreateTableDefaultPermissions.Principal",
+      "CreateTableDefaultPermissions.Principal.DataLakePrincipalIdentifier",
+      "Description",
+      "FederatedDatabase",
+      "FederatedDatabase.ConnectionName",
+      "FederatedDatabase.Identifier",
+      "LocationUri",
+      "Name",
+      "Parameters",
+      "TargetDatabase",
+      "TargetDatabase.CatalogId",
+      "TargetDatabase.DatabaseName",
+      "TargetDatabase.Region"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "CatalogId": "scalar",
+      "DatabaseInput": "object",
+      "DatabaseName": "scalar"
+    },
+    "DatabaseIdentifier": {
+      "DatabaseName": "scalar",
+      "Region": "scalar",
+      "CatalogId": "scalar"
+    },
+    "PrincipalPrivileges": {
+      "Permissions": "array",
+      "Principal": "object"
+    },
+    "DataLakePrincipal": {
+      "DataLakePrincipalIdentifier": "scalar"
+    },
+    "FederatedDatabase": {
+      "ConnectionName": "scalar",
+      "Identifier": "scalar"
+    },
+    "DatabaseInput": {
+      "LocationUri": "scalar",
+      "CreateTableDefaultPermissions": "array",
+      "Description": "scalar",
+      "Parameters": "object",
+      "TargetDatabase": "object",
+      "FederatedDatabase": "object",
+      "Name": "scalar"
+    }
+  }
 }

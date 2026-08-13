@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 134,
-    "covered": 51,
-    "noArnAttr": 83,
+    "covered": 50,
+    "noArnAttr": 84,
     "gap": 0
   },
   "types": [
@@ -554,13 +554,8 @@
     },
     {
       "resourceType": "AWS::Events::Rule",
-      "bucket": "covered",
-      "arnAttributes": [
-        {
-          "name": "Arn",
-          "status": "cached"
-        }
-      ],
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
       "gaps": []
     },
     {

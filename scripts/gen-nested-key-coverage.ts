@@ -345,26 +345,135 @@
  *   AWS::AppSync::DataSource           10 /  27  10 /  27   10 /  27   10 /  27  OPTED IN (#1597) [all 10 FIXED in the provider, now 0/27]
  *   AWS::AppSync::Resolver              0 /   9   0 /   9    0 /   9    0 /   9  OPTED IN (#1597)
  *   AWS::Lambda::EventSourceMapping     0 /  37   0 /  37    0 /  37    0 /  37  key pass only (#1393 item 3)
+ *   AWS::Events::Rule                   0 /  76   0 /  76    0 /  76    0 /  76  key pass only (#1393 item 3)
+ *   AWS::Scheduler::Schedule            0 /  47   0 /  47    0 /  47    0 /  47  key pass only (#1393 item 3)
+ *   AWS::Glue::Crawler                  0 /  46   0 /  46    0 /  46    0 /  46  key pass only (#1393 item 3)
+ *   AWS::Glue::Table                   36 /  88  36 /  88   36 /  88   36 /  88  key pass only (#1393 item 3)
+ *   AWS::Glue::Connection               0 /  37   0 /  37    0 /  37    0 /  37  key pass only (#1393 item 3)
+ *   AWS::Glue::Trigger                  9 /  16   9 /  16    9 /  16    9 /  16  key pass only (#1393 item 3)
+ *   AWS::Glue::Database                11 /  15  11 /  15   11 /  15   11 /  15  key pass only (#1393 item 3)
+ *   AWS::Glue::SecurityConfiguration    2 /   9   2 /   9    2 /   9    2 /   9  key pass only (#1393 item 3)
+ *   AWS::Glue::Job                      0 /   7   0 /   7    0 /   7    0 /   7  key pass only (#1393 item 3)
  *                                     -------   -------    -------    -------
  *                                        410       290        260         81
  *
- * The `AWS::Lambda::EventSourceMapping` row (issue #1393 item 3) is flat for a
- * different reason, and it is NOT opted into the write-evidence pass — so its
- * denominator is the TOTAL audited path count (37), not the write-audited
- * subset the opted-in rows use. It is excluded from the stage totals for the
- * same reason the AppSync rows are: no stage moves it. The
- * provider forwards each config blob VERBATIM (`params.X = properties['X'] as
- * <SdkType>`) rather than hand-building an SDK object, so the top-level member
- * write already vouches for every path beneath it and the pass has nothing to
- * find — 0/37 even when forced on, which is the measurement the calibration
- * test pins. For a verbatim forwarder the KEY pass is the whole audit: a
- * CFn-side member the SDK spells differently rides the cast to AWS as an
- * unknown key with no code change to notice it.
+ * The TEN `key pass only` rows (issue #1393 item 3 —
+ * `AWS::Lambda::EventSourceMapping` plus the mixed-case-island slice:
+ * EventBridge / Scheduler / the seven auditable Glue types) are flat for a
+ * different reason from the AppSync ones, and none of them is opted into the
+ * write-evidence pass — so their denominator is the TOTAL audited path count,
+ * not the write-audited subset the opted-in rows use, and their numerator is
+ * what the pass WOULD report if forced on. They are excluded from the stage
+ * totals for the same reason the AppSync rows are: no stage moves them.
+ *
+ * These providers reach the SDK object by a MIX of shapes, and the mix is why
+ * the numerators must be read per type rather than as a group claim: verbatim
+ * forwarding for EventSourceMapping (`params.X = properties['X'] as
+ * <SdkType>`), spread-and-patch for the two ECS-target families
+ * (`{ ...target, EcsParameters: … }`) and the crawler target rename maps, and
+ * genuine FRESH-OBJECT builders for the Glue `*Input` family
+ * (`buildTableInput` / `buildStorageDescriptor` / `buildDatabaseInput` /
+ * `buildEncryptionConfiguration` each start from `const result: X = { Name }`
+ * and name members one at a time). For the forwarding and patch shapes the
+ * top-level write already vouches for the paths beneath it and a write floor
+ * would fence nothing. For a fresh-object builder it would NOT — which is
+ * exactly what the numerators had to be read one by one to establish:
+ *
+ *   - Glue `Table` 36, `Trigger` 9, `SecurityConfiguration` 2 are FALSE
+ *     positives (verified member by member at opt-in): the builders name their
+ *     full member set today, and the residuals are shapes the write-scope index
+ *     cannot resolve, not values that fail to reach AWS.
+ *   - Glue `Database` 11 is a REAL SILENT DROP and is NOT a reason the pass
+ *     stays off — it is the reason the type must eventually opt IN.
+ *     `buildDatabaseInput` names only `Name` / `Description` / `LocationUri` /
+ *     `Parameters`, while both CFn and the SDK's `DatabaseInput` also declare
+ *     `TargetDatabase`, `FederatedDatabase` and `CreateTableDefaultPermissions`
+ *     — none of which appears anywhere in `src/`, so a template setting any of
+ *     them is dropped on the floor today. The opt-in is deliberately deferred
+ *     to the PROVIDER FIX rather than shipped with 11 allow-list entries: an
+ *     allow entry would silence a CI-blocking bucket for a live drop, which is
+ *     the one thing this file's design refuses (see reason (A) below, where the
+ *     same call was made for the ECS `segmentRenames`). The 11 paths are
+ *     instead pinned BY NAME in the calibration test, so the drop is recorded
+ *     rather than inherited, and fixing the provider fails that test and forces
+ *     the `freshObjectMapper: true` opt-in in the same change.
+ *
+ * The calibration test pins all ten numbers so the decision is re-measured on
+ * every provider change rather than inherited.
+ *
+ * FOUR KNOWN BOUNDS on this group, all measured and all pinned by tests, so a
+ * reader does not over-trust a clean row:
+ *   (i)   the seven Glue targets SHARE one `providerFile`, so the file-global
+ *         literal rescue draws on a pool spanning eight classes and seven
+ *         resource types — a `provider-handled` verdict on one Glue type can
+ *         rest on another Glue type's literal. Pinned by two cross-type
+ *         injection tests plus a control (a `ScanRate` injected under
+ *         `::Job` is cleared by the CRAWLER class's literal; an
+ *         `IcebergTableInput` under `::Crawler` by the TABLE class's; a name
+ *         no class mentions still flags). Scoping the pool to the enclosing
+ *         CLASS is a change to {@link collectStringLiterals}, which every one
+ *         of the 24 targets consults — including the 14 opted-in ones whose
+ *         floors and all 22 allow-list entries were calibrated under file
+ *         scope — so it is a re-measurement of the whole table, not a rider on
+ *         a registration. It is also the un-scoped REMAINDER of issue #1393
+ *         item 2: PR #1574 scope-verified the rescue for write-evidence
+ *         targets and left the loose path as-is, and these ten key-pass-only
+ *         targets are the first to make that remainder load-bearing.
+ *   (ii)  the key pass matches SDK member names FLATLY, so a CFn key can be
+ *         cleared `same-spelling` by an unrelated interface's member. Live on
+ *         these targets: Crawler `Targets.DynamoDBTargets.ScanAll` (only
+ *         `MongoDBTarget` carries a PascalCase `ScanAll`) and Rule
+ *         `Targets.EcsParameters.PlacementConstraints.Type` /
+ *         `…PlacementStrategies.Type`. The SHAPE pass is the backstop and
+ *         catches all three — but see (iii).
+ *   (iii) the shape backstop is not total: a CFn definition with no
+ *         same-named SDK interface lands in `unmatchedDefinitions` and is
+ *         audited by NEITHER a sound key check nor the shape pass. Six on this
+ *         group (Crawler `Targets`, Database `PrincipalPrivileges`, Job
+ *         `DefaultArguments` / `NonOverridableArguments`, Table
+ *         `IcebergTableInput` / `SerdeInfo`). Non-blocking by design, counted
+ *         in the generated matrix, and pinned per type by the calibration test
+ *         so the set cannot grow silently. Closing it is #1393 item 5 /
+ *         the shape-aware v2 of #1378.
+ *   (iv)  THE CRITIC FENCES LITERAL PRESENCE, NOT CONVERSION CORRECTNESS, and
+ *         this is the widest of the four. `provider-handled` means "the
+ *         provider NAMES this CFn spelling somewhere the literal collector can
+ *         see"; nothing checks that what it does with the name is right.
+ *         MEASURED on the real tree: replacing
+ *         `EventBridgeRuleProvider.renameItemKeys`'s entire body with
+ *         `return item` — i.e. every ECS-target island stops being converted
+ *         while every call site keeps naming `'CapacityProvider'` / `'Weight'`
+ *         / `'Base'` / `'Type'` / `'Field'` / `'Expression'` — leaves the
+ *         shipped `--check` at exit 0, "0 divergences". The provider-side RED
+ *         probes therefore delete the CALL (or the whole rename map), not the
+ *         conversion body, and they are the shape a real regression takes only
+ *         when it removes the naming too.
+ *         The same bound explains a Glue subtlety worth stating once: deleting
+ *         only the FORWARD `ScanRate: 'scanRate'` entry leaves the CFn spelling
+ *         alive as a literal in the REVERSE map, and the rescue clears the key
+ *         on that alone. That is the reverse-map asymmetry of #1448 known-bound
+ *         item 2 — the WRITE-evidence pass excludes the `read*` / `*ToCfn`
+ *         reverse families via {@link REVERSE_MAP_FUNCTION_PREFIXES}, but the
+ *         LITERAL collector has no such exclusion — and it is NOT bound (i):
+ *         both maps are module-level consts in the same file, so class-scoping
+ *         the pool would not change it. Closing (iv) needs the shape-aware v2
+ *         (#1378), which reads what a conversion PRODUCES rather than what it
+ *         mentions.
+ *
+ * For a forwarder the KEY pass is the whole audit: a CFn-side member the SDK
+ * spells differently rides the forward to AWS as an unknown key, with no code
+ * change anywhere for a reviewer to notice. That is also why all ten declare
+ * `keyStyle: 'exact'` even though three of their clients (`client-eventbridge`,
+ * `client-scheduler`, `client-glue`) carry camelCase ISLANDS — the honest
+ * declaration is what routes each island to the near-miss bucket instead of
+ * lowercasing every PascalCase member past the test, which is the item-1 blind
+ * spot this slice exists to close.
  *
  * The three AppSync rows joined AFTER the four recognizer stages, so their
- * columns are flat (no stage moves them) and they — like the EventSourceMapping
- * row above, four excluded rows in total — are excluded from the stage totals
- * above. Flat does NOT mean zero, and the split is the point:
+ * columns are flat (no stage moves them) and they — like the ten
+ * `key pass only` rows above, thirteen excluded rows in total — are excluded
+ * from the stage totals above. Flat does NOT mean zero, and the split is the
+ * point:
  * `GraphQLApi` and `Resolver` measured 0 on their first run because the #609
  * backfill had already wired every member (31 of GraphQLApi's 33 paths are
  * same-spelling WITH scoped write evidence; its 2 `Tags.*` paths are
@@ -1085,6 +1194,88 @@ const APPSYNC_WRITE_FLOORS = {
 } as const;
 
 /**
+ * Shared by the SEVEN `AWS::Glue::*` key-pass targets registered by issue #1393
+ * item 3, for the same reason {@link APPSYNC_WRITE_FLOORS} is shared: every
+ * Glue provider class lives in the single `glue-provider.ts`, so a per-target
+ * spelling of the file and client would be seven copies of one fact drifting
+ * apart on the next refactor.
+ *
+ * Deliberately carries NO write floors, because none of the seven opts into the
+ * write-evidence pass — but no single sentence about "how these providers build
+ * their input" is the reason, and writing one here has now been wrong TWICE (a
+ * blanket "they forward whole blobs" in the first cut, then a narrower one that
+ * still mis-filed `AWS::Glue::Trigger`). The file mixes BOTH shapes:
+ *
+ *   - VERBATIM FORWARDS — the crawler `Targets` lists, and
+ *     `AWS::Glue::Trigger`'s `Predicate` / `Actions` /
+ *     `EventBatchingCondition`, each a bare
+ *     `properties['X'] as <SdkType>` cast with no member ever named. Trigger's
+ *     forced 9 is a forwarder's residual, NOT a builder naming its full set.
+ *   - FRESH-OBJECT BUILDERS — the `*Input` family (`buildTableInput` /
+ *     `buildStorageDescriptor` / `buildDatabaseInput` /
+ *     `buildEncryptionConfiguration`), each `const result: X = { Name }` plus
+ *     per-member assignments.
+ *
+ * Forced on, FOUR of the seven report `no-write-evidence`: `Table` 36 and
+ * `SecurityConfiguration` 2 (builders that DO name their full member set —
+ * verified false positives), `Trigger` 9 (a verbatim forwarder, so the write
+ * pass has nothing to ask), and **`Database` 11, which is a REAL silent drop**:
+ * `buildDatabaseInput` never names `TargetDatabase` / `FederatedDatabase` /
+ * `CreateTableDefaultPermissions`. See the header's per-type breakdown for why
+ * the `Database` opt-in is deferred to the provider fix instead of being
+ * shipped with allow-list entries, and {@link GLUE_DATABASE_DROPPED_PATHS} for
+ * the pinned path list.
+ *
+ * KNOWN BOUND on all seven: sharing one `providerFile` also shares the
+ * file-global literal pool the loose rescue draws on, so a `provider-handled`
+ * verdict on ANY of the seven can rest on a literal belonging to a DIFFERENT
+ * resource type's class in the same file. That is bound (i) in the header, and
+ * it is pinned by the two cross-type injection tests plus their control rather
+ * than by prose here — an earlier revision exported a descriptive string with
+ * measured pool sizes in it, which nothing read and which would have drifted
+ * silently the first time the file grew.
+ */
+const GLUE_KEY_PASS_TARGET = {
+  providerFile: 'glue-provider.ts',
+  sdkClientPackage: '@aws-sdk/client-glue',
+  keyStyle: 'exact',
+} as const;
+
+/**
+ * The ELEVEN `AWS::Glue::Database` nested paths that reach no AWS call today —
+ * a REAL silent drop, pinned by name so it is recorded rather than inherited.
+ *
+ * `GlueProvider.buildDatabaseInput` is a fresh-object builder
+ * (`const result: DatabaseInput = { Name }`) that names only `Description` /
+ * `LocationUri` / `Parameters`. Both the CFn schema and `@aws-sdk/client-glue`'s
+ * `DatabaseInput` also declare `TargetDatabase`, `FederatedDatabase` and
+ * `CreateTableDefaultPermissions`; none of those three spellings appears
+ * anywhere under `src/`, so a template setting any of them is dropped with no
+ * error and no diff for a reviewer to see.
+ *
+ * This list is NOT an allow-list and must never become one — an allow entry
+ * would silence a CI-blocking bucket for a live drop, the one exception this
+ * file's design refuses. It exists so the calibration test can assert the drop
+ * set EXACTLY: fixing the provider changes the set, fails that test, and forces
+ * `AWS::Glue::Database` to take `freshObjectMapper: true` in the same change —
+ * which is the acceptance criterion of the fix, since the type audits clean on
+ * the key pass and only the write pass can see this class.
+ */
+export const GLUE_DATABASE_DROPPED_PATHS: readonly string[] = [
+  'DatabaseInput.CreateTableDefaultPermissions',
+  'DatabaseInput.CreateTableDefaultPermissions.Permissions',
+  'DatabaseInput.CreateTableDefaultPermissions.Principal',
+  'DatabaseInput.CreateTableDefaultPermissions.Principal.DataLakePrincipalIdentifier',
+  'DatabaseInput.FederatedDatabase',
+  'DatabaseInput.FederatedDatabase.ConnectionName',
+  'DatabaseInput.FederatedDatabase.Identifier',
+  'DatabaseInput.TargetDatabase',
+  'DatabaseInput.TargetDatabase.CatalogId',
+  'DatabaseInput.TargetDatabase.DatabaseName',
+  'DatabaseInput.TargetDatabase.Region',
+];
+
+/**
  * The one intermediate-segment RENAME in the tree (issue #1464 review).
  *
  * `ECSProvider.convertProxyConfiguration` maps the CFn key
@@ -1706,6 +1897,181 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     keyStyle: 'exact',
     minNestedKeys: 30,
   },
+  {
+    // MIXED-CASE ISLAND slice of issue #1393 item 3 — the three clients item 1
+    // named as the motivating evidence (`client-eventbridge`, `client-scheduler`,
+    // `client-glue`: PascalCase models with camelCase ISLANDS). Fixture
+    // re-captured first with
+    // `node scripts/refresh-cfn-schemas.mjs AWS::Events::Rule`, per the
+    // EventSourceMapping entry's note.
+    //
+    // `keyStyle: 'exact'` is the honest declaration for a PascalCase model, and
+    // it is what makes the islands VISIBLE rather than hidden: each island key
+    // fails the exact test and reaches the case-insensitive near-miss bucket,
+    // where it is either rescued by the provider's own literal or reported. The
+    // alternative — declaring `lower-first` because a handful of members are
+    // camelCase — is the blind spot item 1 describes (it would silently pass
+    // every PascalCase member by lowercasing it first).
+    //
+    // Measured at opt-in: 76 audited paths, 68 same-spelling, 8 provider-handled,
+    // 0 blocking findings. All 8 are the #1381 ECS-target islands, each verified
+    // against `toSdkEcsParameters` in the provider rather than taken on the
+    // literal's word:
+    //   - `Targets.EcsParameters.NetworkConfiguration.AwsVpcConfiguration`
+    //     -> `awsvpcConfiguration`;
+    //   - `…CapacityProviderStrategy.{CapacityProvider,Weight,Base}`,
+    //     `…PlacementConstraints.Expression`, `…PlacementStrategies.Field`
+    //     -> first-letter lowercased per item by `lowerCaseItemKeys`;
+    //   - `…PlacementStrategies` -> renamed to the SDK's `PlacementStrategy`;
+    //   - `…TagList` -> renamed to the SDK's `Tags`.
+    //
+    // NOT a `freshObjectMapper`, same reasoning as EventSourceMapping and the
+    // other rows of this slice: the provider spreads the CFn target through
+    // (`{ ...target, EcsParameters: … }`) and patches only the divergent keys,
+    // so "does the provider write this SDK member" has no answer to give for
+    // the members it deliberately never names. Forced on, the pass measures 0
+    // `no-write-evidence` here (the divergent keys surface as
+    // case-divergence / no-sdk-member instead) — pinned by the calibration test.
+    resourceType: 'AWS::Events::Rule',
+    providerFile: 'eventbridge-rule-provider.ts',
+    sdkClientPackage: '@aws-sdk/client-eventbridge',
+    keyStyle: 'exact',
+    minNestedKeys: 60,
+  },
+  {
+    // Scheduler half of the same #1381 family — the SAME ECS-target islands
+    // reached through a DIFFERENT client, which is exactly why both are
+    // registered rather than one standing in for the other: the CFn spellings
+    // are not identical (`Target.EcsParameters.NetworkConfiguration.
+    // AwsvpcConfiguration` here vs EventBridge's `AwsVpcConfiguration`), so a
+    // fence on one type proves nothing about the other.
+    //
+    // Measured at opt-in: 47 audited paths, 39 same-spelling, 8 provider-handled
+    // (`AwsvpcConfiguration`, `CapacityProviderStrategy.{CapacityProvider,
+    // Weight,Base}`, `PlacementConstraints.{Type,Expression}`,
+    // `PlacementStrategy.{Type,Field}` — all verified against `toSdkTarget`),
+    // 0 blocking findings.
+    resourceType: 'AWS::Scheduler::Schedule',
+    providerFile: 'scheduler-schedule-provider.ts',
+    sdkClientPackage: '@aws-sdk/client-scheduler',
+    keyStyle: 'exact',
+    minNestedKeys: 38,
+  },
+  {
+    // Glue's camelCase island, and the third client item 1 named. `client-glue`
+    // is PascalCase everywhere EXCEPT `DynamoDBTarget.{scanAll,scanRate}`, which
+    // is the divergence #1393's sweep found dropped.
+    //
+    // Measured at opt-in: 46 audited paths, 45 same-spelling, 1 provider-handled
+    // (`Targets.DynamoDBTargets.ScanRate` -> `scanRate` via
+    // `CFN_TO_SDK_DYNAMODB_TARGET_KEYS`), 0 blocking findings.
+    //
+    // `Targets.DynamoDBTargets.ScanAll` deliberately does NOT appear in that
+    // list, and the reason is the v1 critic's known limit rather than an
+    // oversight: the SIBLING crawler-target shape `MongoDBTarget` carries its
+    // own PascalCase `ScanAll` (the provider's own note on
+    // `CFN_TO_SDK_DYNAMODB_TARGET_KEYS` says so), so the flat member index
+    // matches it and the key pass reports `same-spelling` — for the WRONG
+    // interface. The SHAPE pass (issue #1378) is
+    // the one that sees it — it reports `DynamoDBTarget has no ScanAll member`,
+    // rescued to `provider-handled` by the same rename map. That split is the
+    // designed division of labour between the two passes, recorded here because
+    // a reader checking "is ScanAll fenced?" against the key pass alone would
+    // wrongly conclude it is not.
+    ...GLUE_KEY_PASS_TARGET,
+    resourceType: 'AWS::Glue::Crawler',
+    minNestedKeys: 36,
+  },
+  {
+    // Measured at opt-in: 88 audited paths, 87 same-spelling, 1
+    // provider-handled, 0 blocking findings — the biggest Glue surface, and the
+    // one whose top-level blobs (`TableInput`, `OpenTableFormatInput`) are
+    // forwarded to `CreateTableCommand` as whole objects.
+    //
+    // The single provider-handled path is
+    // `OpenTableFormatInput.IcebergInput.IcebergTableInput`, and the handling is
+    // a REFUSAL, not a conversion: `enforceIcebergTableInputAbsent` rejects the
+    // key pre-flight because `UpdateTableCommand` carries a different,
+    // update-only shape CFn does not model. That still counts as handled by the
+    // bucket's own definition (the provider names the literal and acts on it),
+    // and refusing beats forwarding a value that would silently do nothing —
+    // but it is worth naming here so a future reader does not read
+    // "provider-handled" as "converted and delivered".
+    ...GLUE_KEY_PASS_TARGET,
+    resourceType: 'AWS::Glue::Table',
+    minNestedKeys: 70,
+  },
+  {
+    // Measured at opt-in: 37 audited paths, all same-spelling, 0 blocking
+    // findings. `client-glue`'s connection shapes are PascalCase throughout.
+    ...GLUE_KEY_PASS_TARGET,
+    resourceType: 'AWS::Glue::Connection',
+    minNestedKeys: 29,
+  },
+  {
+    // Measured at opt-in: 16 audited paths, all same-spelling, 0 blocking
+    // findings.
+    ...GLUE_KEY_PASS_TARGET,
+    resourceType: 'AWS::Glue::Trigger',
+    minNestedKeys: 12,
+  },
+  {
+    // Measured at opt-in: 15 audited paths, all same-spelling, 0 blocking
+    // findings ON THE KEY PASS — and that clean row is the point of the
+    // registration rather than a clean bill of health, because this type has a
+    // REAL SILENT DROP the key pass structurally cannot see.
+    //
+    // `buildDatabaseInput` is a FRESH-OBJECT builder
+    // (`const result: DatabaseInput = { Name }`) naming only `Description` /
+    // `LocationUri` / `Parameters`. CFn and the SDK's `DatabaseInput` both also
+    // declare `TargetDatabase`, `FederatedDatabase` and
+    // `CreateTableDefaultPermissions` — SAME spelling on both sides, so every
+    // path beneath them passes the key pass — yet none of the three appears
+    // anywhere in `src/`. A template setting any of them is dropped silently.
+    // That is the #1393 item-5 class, and the write-evidence pass IS the pass
+    // that sees it: forced on, it reports exactly the 11 paths pinned in
+    // {@link GLUE_DATABASE_DROPPED_PATHS}.
+    //
+    // So this entry is deliberately INCOMPLETE and says so: it should carry
+    // `freshObjectMapper: true`, and it does not YET, because turning it on
+    // today exits 1 on a live drop this lane may not fix (the provider file is
+    // owned elsewhere) and the only way to keep CI green would be 11 allow-list
+    // entries silencing a real divergence — which reason (A) below records as
+    // refused on principle. The drop is instead pinned BY NAME in the
+    // calibration test, so it is recorded rather than inherited: the provider
+    // fix changes that set, fails the test, and forces the opt-in to land in
+    // the same change. Do not "fix" the test by editing the pinned list.
+    ...GLUE_KEY_PASS_TARGET,
+    resourceType: 'AWS::Glue::Database',
+    minNestedKeys: 12,
+  },
+  {
+    // Measured at opt-in: 9 audited paths, 8 same-spelling, 1 provider-handled,
+    // 0 blocking findings. The handled one is the CFn-plural-to-SDK-singular
+    // rename `EncryptionConfiguration.S3Encryptions` -> `S3Encryption`, done by
+    // `buildEncryptionConfiguration`.
+    ...GLUE_KEY_PASS_TARGET,
+    resourceType: 'AWS::Glue::SecurityConfiguration',
+    minNestedKeys: 7,
+  },
+  {
+    // Measured at opt-in: 7 audited paths, all same-spelling, 0 blocking
+    // findings. Small, and registered anyway — the point of the fence is the
+    // NEXT member AWS publishes under `Command` / `Connections` /
+    // `ExecutionProperty` / `NotificationProperty`, not today's count.
+    ...GLUE_KEY_PASS_TARGET,
+    resourceType: 'AWS::Glue::Job',
+    minNestedKeys: 5,
+  },
+  // `AWS::Glue::Workflow` is the one registered Glue type deliberately LEFT
+  // OUT, and the reason is measured rather than judged: its schema has no
+  // nested property at all (its top-levels are scalars plus the two free-form
+  // string maps `DefaultRunProperties` / `Tags`, neither of which has modeled
+  // members), so its fixture carries no
+  // `nestedPropertyPaths` section and the target would audit 0 paths — a
+  // vacuously clean row whose `minNestedKeys` floor could only be 0, i.e. a
+  // fence that fences nothing. Register it if AWS ever gives the type a
+  // structured property.
 ];
 
 /**
@@ -5137,20 +5503,29 @@ export function classifyTarget(
       // from nothing would flag every key of a legitimately blob-forwarding
       // provider.
       //
-      // This path is LIVE, not a future-target fallback: since issue #1393
-      // item 3, `AWS::Lambda::EventSourceMapping` is a target that
-      // deliberately does not opt in (its blobs are verbatim casts, so the
-      // write pass measures 0/37 — see its entry in NESTED_KEY_TARGETS), and
-      // its ONE `provider-handled` verdict
-      // (`SelfManagedEventSource.Endpoints.KafkaBootstrapServers`) rests on
-      // exactly this rescue — under a FORCED opt-in the same key reports
-      // `no-sdk-member`. That is the intended reading for a #1384-class key
-      // (a map keyed by an enum value has no member to write), but it means
-      // the loose path's known weakness applies to that target: a future
-      // nested member sharing the name of any PascalCase literal already in
-      // the provider file would be rescued without per-key evidence. Scope it
-      // by opting the target in, or by a path-scoped allow-list entry, if
-      // that ever stops being acceptable.
+      // This path is LIVE, not a future-target fallback, and since issue #1393
+      // item 3 it carries TEN targets that deliberately do not opt in
+      // (`AWS::Lambda::EventSourceMapping` plus the mixed-case-island slice:
+      // `AWS::Events::Rule`, `AWS::Scheduler::Schedule` and the seven auditable
+      // `AWS::Glue::*` types — see the header table and their entries in
+      // NESTED_KEY_TARGETS for why the write pass has nothing to say about a
+      // blob forwarder). Every `provider-handled` verdict those ten produce
+      // rests on exactly this rescue; under a FORCED opt-in the same keys report
+      // `case-divergence` / `no-sdk-member`, which is how the calibration test
+      // measures the decision.
+      //
+      // Two readings that rescue is the RIGHT answer for, both live on those
+      // targets: a #1384-class key (`SelfManagedEventSource.Endpoints.
+      // KafkaBootstrapServers` — a map keyed by an enum value has no member to
+      // write) and a per-item rename applied inside a `.map()` callback
+      // (EventBridge's `awsvpcConfiguration`, Glue's `scanRate`), where the
+      // provider names the CFn spelling as the thing it converts AWAY from.
+      //
+      // The loose path's known weakness applies to all ten: a future nested
+      // member sharing the name of any PascalCase literal already in the
+      // provider file would be rescued without per-key evidence. Scope it by
+      // opting the target in, or by a path-scoped allow-list entry, if that
+      // ever stops being acceptable.
       const near = sdkLower.get(key.toLowerCase());
       const allowed = lookupAllowEntry(allowList, target.resourceType, path, key, 'key');
       let literalRescued: boolean;

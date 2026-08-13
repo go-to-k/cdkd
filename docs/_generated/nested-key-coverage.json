@@ -1,16 +1,16 @@
 {
   "summary": {
-    "targetCount": 15,
-    "nestedKeyCount": 874,
-    "sameSpelling": 801,
-    "providerHandled": 51,
+    "targetCount": 24,
+    "nestedKeyCount": 1215,
+    "sameSpelling": 1123,
+    "providerHandled": 70,
     "allowListed": 22,
     "caseDivergence": 0,
     "noSdkMember": 0,
     "noWriteEvidence": 0,
     "freshObjectTargets": 14,
-    "shapeClean": 98,
-    "shapeHandled": 36,
+    "shapeClean": 148,
+    "shapeHandled": 40,
     "shapeAllowListed": 7,
     "arrayVsWrapper": 0,
     "definitionMemberMissing": 0,
@@ -5000,6 +5000,2227 @@
       ]
     },
     {
+      "resourceType": "AWS::Events::Rule",
+      "providerFile": "eventbridge-rule-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-eventbridge",
+      "keyStyle": "exact",
+      "freshObjectMapper": false,
+      "nestedKeyCount": 76,
+      "entries": [
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Tags.Key",
+          "topLevelProperty": "Tags",
+          "terminalKey": "Key",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Tags.Value",
+          "topLevelProperty": "Tags",
+          "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.AppSyncParameters",
+          "topLevelProperty": "Targets",
+          "terminalKey": "AppSyncParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.AppSyncParameters.GraphQLOperation",
+          "topLevelProperty": "Targets",
+          "terminalKey": "GraphQLOperation",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.Arn",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Arn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.BatchParameters",
+          "topLevelProperty": "Targets",
+          "terminalKey": "BatchParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.BatchParameters.ArrayProperties",
+          "topLevelProperty": "Targets",
+          "terminalKey": "ArrayProperties",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.BatchParameters.ArrayProperties.Size",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Size",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.BatchParameters.JobDefinition",
+          "topLevelProperty": "Targets",
+          "terminalKey": "JobDefinition",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.BatchParameters.JobName",
+          "topLevelProperty": "Targets",
+          "terminalKey": "JobName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.BatchParameters.RetryStrategy",
+          "topLevelProperty": "Targets",
+          "terminalKey": "RetryStrategy",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.BatchParameters.RetryStrategy.Attempts",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Attempts",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.DeadLetterConfig",
+          "topLevelProperty": "Targets",
+          "terminalKey": "DeadLetterConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.DeadLetterConfig.Arn",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Arn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters",
+          "topLevelProperty": "Targets",
+          "terminalKey": "EcsParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.CapacityProviderStrategy",
+          "topLevelProperty": "Targets",
+          "terminalKey": "CapacityProviderStrategy",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.CapacityProviderStrategy.Base",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Base",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.CapacityProviderStrategy.CapacityProvider",
+          "topLevelProperty": "Targets",
+          "terminalKey": "CapacityProvider",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.CapacityProviderStrategy.Weight",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Weight",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.EnableECSManagedTags",
+          "topLevelProperty": "Targets",
+          "terminalKey": "EnableECSManagedTags",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.EnableExecuteCommand",
+          "topLevelProperty": "Targets",
+          "terminalKey": "EnableExecuteCommand",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.Group",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Group",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.LaunchType",
+          "topLevelProperty": "Targets",
+          "terminalKey": "LaunchType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.NetworkConfiguration",
+          "topLevelProperty": "Targets",
+          "terminalKey": "NetworkConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.NetworkConfiguration.AwsVpcConfiguration",
+          "topLevelProperty": "Targets",
+          "terminalKey": "AwsVpcConfiguration",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.NetworkConfiguration.AwsVpcConfiguration.AssignPublicIp",
+          "topLevelProperty": "Targets",
+          "terminalKey": "AssignPublicIp",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.NetworkConfiguration.AwsVpcConfiguration.SecurityGroups",
+          "topLevelProperty": "Targets",
+          "terminalKey": "SecurityGroups",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.NetworkConfiguration.AwsVpcConfiguration.Subnets",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Subnets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.PlacementConstraints",
+          "topLevelProperty": "Targets",
+          "terminalKey": "PlacementConstraints",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.PlacementConstraints.Expression",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Expression",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.PlacementConstraints.Type",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.PlacementStrategies",
+          "topLevelProperty": "Targets",
+          "terminalKey": "PlacementStrategies",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.PlacementStrategies.Field",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Field",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.PlacementStrategies.Type",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.PlatformVersion",
+          "topLevelProperty": "Targets",
+          "terminalKey": "PlatformVersion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.PropagateTags",
+          "topLevelProperty": "Targets",
+          "terminalKey": "PropagateTags",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.ReferenceId",
+          "topLevelProperty": "Targets",
+          "terminalKey": "ReferenceId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.TagList",
+          "topLevelProperty": "Targets",
+          "terminalKey": "TagList",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.TagList.Key",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Key",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.TagList.Value",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.TaskCount",
+          "topLevelProperty": "Targets",
+          "terminalKey": "TaskCount",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.EcsParameters.TaskDefinitionArn",
+          "topLevelProperty": "Targets",
+          "terminalKey": "TaskDefinitionArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.HttpParameters",
+          "topLevelProperty": "Targets",
+          "terminalKey": "HttpParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.HttpParameters.HeaderParameters",
+          "topLevelProperty": "Targets",
+          "terminalKey": "HeaderParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.HttpParameters.PathParameterValues",
+          "topLevelProperty": "Targets",
+          "terminalKey": "PathParameterValues",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.HttpParameters.QueryStringParameters",
+          "topLevelProperty": "Targets",
+          "terminalKey": "QueryStringParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.Id",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Id",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.Input",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Input",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.InputPath",
+          "topLevelProperty": "Targets",
+          "terminalKey": "InputPath",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.InputTransformer",
+          "topLevelProperty": "Targets",
+          "terminalKey": "InputTransformer",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.InputTransformer.InputPathsMap",
+          "topLevelProperty": "Targets",
+          "terminalKey": "InputPathsMap",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.InputTransformer.InputTemplate",
+          "topLevelProperty": "Targets",
+          "terminalKey": "InputTemplate",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.KinesisParameters",
+          "topLevelProperty": "Targets",
+          "terminalKey": "KinesisParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.KinesisParameters.PartitionKeyPath",
+          "topLevelProperty": "Targets",
+          "terminalKey": "PartitionKeyPath",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RedshiftDataParameters",
+          "topLevelProperty": "Targets",
+          "terminalKey": "RedshiftDataParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RedshiftDataParameters.Database",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Database",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RedshiftDataParameters.DbUser",
+          "topLevelProperty": "Targets",
+          "terminalKey": "DbUser",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RedshiftDataParameters.SecretManagerArn",
+          "topLevelProperty": "Targets",
+          "terminalKey": "SecretManagerArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RedshiftDataParameters.Sql",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Sql",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RedshiftDataParameters.Sqls",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Sqls",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RedshiftDataParameters.StatementName",
+          "topLevelProperty": "Targets",
+          "terminalKey": "StatementName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RedshiftDataParameters.WithEvent",
+          "topLevelProperty": "Targets",
+          "terminalKey": "WithEvent",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RetryPolicy",
+          "topLevelProperty": "Targets",
+          "terminalKey": "RetryPolicy",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RetryPolicy.MaximumEventAgeInSeconds",
+          "topLevelProperty": "Targets",
+          "terminalKey": "MaximumEventAgeInSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RetryPolicy.MaximumRetryAttempts",
+          "topLevelProperty": "Targets",
+          "terminalKey": "MaximumRetryAttempts",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RoleArn",
+          "topLevelProperty": "Targets",
+          "terminalKey": "RoleArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RunCommandParameters",
+          "topLevelProperty": "Targets",
+          "terminalKey": "RunCommandParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RunCommandParameters.RunCommandTargets",
+          "topLevelProperty": "Targets",
+          "terminalKey": "RunCommandTargets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RunCommandParameters.RunCommandTargets.Key",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Key",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.RunCommandParameters.RunCommandTargets.Values",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Values",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.SageMakerPipelineParameters",
+          "topLevelProperty": "Targets",
+          "terminalKey": "SageMakerPipelineParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.SageMakerPipelineParameters.PipelineParameterList",
+          "topLevelProperty": "Targets",
+          "terminalKey": "PipelineParameterList",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.SageMakerPipelineParameters.PipelineParameterList.Name",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.SageMakerPipelineParameters.PipelineParameterList.Value",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.SqsParameters",
+          "topLevelProperty": "Targets",
+          "terminalKey": "SqsParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Targets.SqsParameters.MessageGroupId",
+          "topLevelProperty": "Targets",
+          "terminalKey": "MessageGroupId",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "EventPattern",
+          "definition": "#top",
+          "pass": "wrapper",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Type",
+          "definition": "PlacementStrategy",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `PlacementStrategy` has no `Type` member"
+        },
+        {
+          "resourceType": "AWS::Events::Rule",
+          "nestedKey": "Type",
+          "definition": "PlacementConstraint",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `PlacementConstraint` has no `Type` member"
+        }
+      ],
+      "shapeCleanCount": 11,
+      "unmatchedDefinitions": [],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
+      "resourceType": "AWS::Glue::Connection",
+      "providerFile": "glue-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-glue",
+      "keyStyle": "exact",
+      "freshObjectMapper": false,
+      "nestedKeyCount": 37,
+      "entries": [
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AthenaProperties",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "AthenaProperties",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "AuthenticationConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.AuthenticationType",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "AuthenticationType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.BasicAuthenticationCredentials",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "BasicAuthenticationCredentials",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.BasicAuthenticationCredentials.Password",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "Password",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.BasicAuthenticationCredentials.Username",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "Username",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.CustomAuthenticationCredentials",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "CustomAuthenticationCredentials",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.KmsKeyArn",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "KmsKeyArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "OAuth2Properties",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.AuthorizationCodeProperties",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "AuthorizationCodeProperties",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.AuthorizationCodeProperties.AuthorizationCode",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "AuthorizationCode",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.AuthorizationCodeProperties.RedirectUri",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "RedirectUri",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.OAuth2ClientApplication",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "OAuth2ClientApplication",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.OAuth2ClientApplication.AWSManagedClientApplicationReference",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "AWSManagedClientApplicationReference",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.OAuth2ClientApplication.UserManagedClientApplicationClientId",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "UserManagedClientApplicationClientId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.OAuth2Credentials",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "OAuth2Credentials",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.OAuth2Credentials.AccessToken",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "AccessToken",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.OAuth2Credentials.JwtToken",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "JwtToken",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.OAuth2Credentials.RefreshToken",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "RefreshToken",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.OAuth2Credentials.UserManagedClientApplicationClientSecret",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "UserManagedClientApplicationClientSecret",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.OAuth2GrantType",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "OAuth2GrantType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.TokenUrl",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "TokenUrl",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.OAuth2Properties.TokenUrlParametersMap",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "TokenUrlParametersMap",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.AuthenticationConfiguration.SecretArn",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "SecretArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.ConnectionProperties",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "ConnectionProperties",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.ConnectionType",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "ConnectionType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.Description",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "Description",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.MatchCriteria",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "MatchCriteria",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.Name",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.PhysicalConnectionRequirements",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "PhysicalConnectionRequirements",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.PhysicalConnectionRequirements.AvailabilityZone",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "AvailabilityZone",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.PhysicalConnectionRequirements.SecurityGroupIdList",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "SecurityGroupIdList",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.PhysicalConnectionRequirements.SubnetId",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "SubnetId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.PythonProperties",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "PythonProperties",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.SparkProperties",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "SparkProperties",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.ValidateCredentials",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "ValidateCredentials",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Connection",
+          "nestedKey": "ConnectionInput.ValidateForComputeEnvironments",
+          "topLevelProperty": "ConnectionInput",
+          "terminalKey": "ValidateForComputeEnvironments",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 3,
+      "unmatchedDefinitions": [],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
+      "resourceType": "AWS::Glue::Crawler",
+      "providerFile": "glue-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-glue",
+      "keyStyle": "exact",
+      "freshObjectMapper": false,
+      "nestedKeyCount": 46,
+      "entries": [
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "LakeFormationConfiguration.AccountId",
+          "topLevelProperty": "LakeFormationConfiguration",
+          "terminalKey": "AccountId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "LakeFormationConfiguration.UseLakeFormationCredentials",
+          "topLevelProperty": "LakeFormationConfiguration",
+          "terminalKey": "UseLakeFormationCredentials",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "RecrawlPolicy.RecrawlBehavior",
+          "topLevelProperty": "RecrawlPolicy",
+          "terminalKey": "RecrawlBehavior",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Schedule.ScheduleExpression",
+          "topLevelProperty": "Schedule",
+          "terminalKey": "ScheduleExpression",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "SchemaChangePolicy.DeleteBehavior",
+          "topLevelProperty": "SchemaChangePolicy",
+          "terminalKey": "DeleteBehavior",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "SchemaChangePolicy.UpdateBehavior",
+          "topLevelProperty": "SchemaChangePolicy",
+          "terminalKey": "UpdateBehavior",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.CatalogTargets",
+          "topLevelProperty": "Targets",
+          "terminalKey": "CatalogTargets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.CatalogTargets.ConnectionName",
+          "topLevelProperty": "Targets",
+          "terminalKey": "ConnectionName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.CatalogTargets.DatabaseName",
+          "topLevelProperty": "Targets",
+          "terminalKey": "DatabaseName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.CatalogTargets.DlqEventQueueArn",
+          "topLevelProperty": "Targets",
+          "terminalKey": "DlqEventQueueArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.CatalogTargets.EventQueueArn",
+          "topLevelProperty": "Targets",
+          "terminalKey": "EventQueueArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.CatalogTargets.Tables",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Tables",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.DeltaTargets",
+          "topLevelProperty": "Targets",
+          "terminalKey": "DeltaTargets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.DeltaTargets.ConnectionName",
+          "topLevelProperty": "Targets",
+          "terminalKey": "ConnectionName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.DeltaTargets.CreateNativeDeltaTable",
+          "topLevelProperty": "Targets",
+          "terminalKey": "CreateNativeDeltaTable",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.DeltaTargets.DeltaTables",
+          "topLevelProperty": "Targets",
+          "terminalKey": "DeltaTables",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.DeltaTargets.WriteManifest",
+          "topLevelProperty": "Targets",
+          "terminalKey": "WriteManifest",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.DynamoDBTargets",
+          "topLevelProperty": "Targets",
+          "terminalKey": "DynamoDBTargets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.DynamoDBTargets.Path",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Path",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.DynamoDBTargets.ScanAll",
+          "topLevelProperty": "Targets",
+          "terminalKey": "ScanAll",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.DynamoDBTargets.ScanRate",
+          "topLevelProperty": "Targets",
+          "terminalKey": "ScanRate",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.HudiTargets",
+          "topLevelProperty": "Targets",
+          "terminalKey": "HudiTargets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.HudiTargets.ConnectionName",
+          "topLevelProperty": "Targets",
+          "terminalKey": "ConnectionName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.HudiTargets.Exclusions",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Exclusions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.HudiTargets.MaximumTraversalDepth",
+          "topLevelProperty": "Targets",
+          "terminalKey": "MaximumTraversalDepth",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.HudiTargets.Paths",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Paths",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.IcebergTargets",
+          "topLevelProperty": "Targets",
+          "terminalKey": "IcebergTargets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.IcebergTargets.ConnectionName",
+          "topLevelProperty": "Targets",
+          "terminalKey": "ConnectionName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.IcebergTargets.Exclusions",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Exclusions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.IcebergTargets.MaximumTraversalDepth",
+          "topLevelProperty": "Targets",
+          "terminalKey": "MaximumTraversalDepth",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.IcebergTargets.Paths",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Paths",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.JdbcTargets",
+          "topLevelProperty": "Targets",
+          "terminalKey": "JdbcTargets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.JdbcTargets.ConnectionName",
+          "topLevelProperty": "Targets",
+          "terminalKey": "ConnectionName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.JdbcTargets.EnableAdditionalMetadata",
+          "topLevelProperty": "Targets",
+          "terminalKey": "EnableAdditionalMetadata",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.JdbcTargets.Exclusions",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Exclusions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.JdbcTargets.Path",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Path",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.MongoDBTargets",
+          "topLevelProperty": "Targets",
+          "terminalKey": "MongoDBTargets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.MongoDBTargets.ConnectionName",
+          "topLevelProperty": "Targets",
+          "terminalKey": "ConnectionName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.MongoDBTargets.Path",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Path",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.S3Targets",
+          "topLevelProperty": "Targets",
+          "terminalKey": "S3Targets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.S3Targets.ConnectionName",
+          "topLevelProperty": "Targets",
+          "terminalKey": "ConnectionName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.S3Targets.DlqEventQueueArn",
+          "topLevelProperty": "Targets",
+          "terminalKey": "DlqEventQueueArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.S3Targets.EventQueueArn",
+          "topLevelProperty": "Targets",
+          "terminalKey": "EventQueueArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.S3Targets.Exclusions",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Exclusions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.S3Targets.Path",
+          "topLevelProperty": "Targets",
+          "terminalKey": "Path",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "Targets.S3Targets.SampleSize",
+          "topLevelProperty": "Targets",
+          "terminalKey": "SampleSize",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [
+        {
+          "resourceType": "AWS::Glue::Crawler",
+          "nestedKey": "ScanAll",
+          "definition": "DynamoDBTarget",
+          "pass": "definition",
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `DynamoDBTarget` has no `ScanAll` member"
+        }
+      ],
+      "shapeCleanCount": 14,
+      "unmatchedDefinitions": [
+        "Targets"
+      ],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
+      "resourceType": "AWS::Glue::Database",
+      "providerFile": "glue-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-glue",
+      "keyStyle": "exact",
+      "freshObjectMapper": false,
+      "nestedKeyCount": 15,
+      "entries": [
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.CreateTableDefaultPermissions",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "CreateTableDefaultPermissions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.CreateTableDefaultPermissions.Permissions",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "Permissions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.CreateTableDefaultPermissions.Principal",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "Principal",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.CreateTableDefaultPermissions.Principal.DataLakePrincipalIdentifier",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "DataLakePrincipalIdentifier",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.Description",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "Description",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.FederatedDatabase",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "FederatedDatabase",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.FederatedDatabase.ConnectionName",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "ConnectionName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.FederatedDatabase.Identifier",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "Identifier",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.LocationUri",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "LocationUri",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.Name",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.Parameters",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "Parameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.TargetDatabase",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "TargetDatabase",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.TargetDatabase.CatalogId",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "CatalogId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.TargetDatabase.DatabaseName",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "DatabaseName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Database",
+          "nestedKey": "DatabaseInput.TargetDatabase.Region",
+          "topLevelProperty": "DatabaseInput",
+          "terminalKey": "Region",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 2,
+      "unmatchedDefinitions": [
+        "PrincipalPrivileges"
+      ],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
+      "resourceType": "AWS::Glue::Job",
+      "providerFile": "glue-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-glue",
+      "keyStyle": "exact",
+      "freshObjectMapper": false,
+      "nestedKeyCount": 7,
+      "entries": [
+        {
+          "resourceType": "AWS::Glue::Job",
+          "nestedKey": "Command.Name",
+          "topLevelProperty": "Command",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Job",
+          "nestedKey": "Command.PythonVersion",
+          "topLevelProperty": "Command",
+          "terminalKey": "PythonVersion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Job",
+          "nestedKey": "Command.Runtime",
+          "topLevelProperty": "Command",
+          "terminalKey": "Runtime",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Job",
+          "nestedKey": "Command.ScriptLocation",
+          "topLevelProperty": "Command",
+          "terminalKey": "ScriptLocation",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Job",
+          "nestedKey": "Connections.Connections",
+          "topLevelProperty": "Connections",
+          "terminalKey": "Connections",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Job",
+          "nestedKey": "ExecutionProperty.MaxConcurrentRuns",
+          "topLevelProperty": "ExecutionProperty",
+          "terminalKey": "MaxConcurrentRuns",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Job",
+          "nestedKey": "NotificationProperty.NotifyDelayAfter",
+          "topLevelProperty": "NotificationProperty",
+          "terminalKey": "NotifyDelayAfter",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 1,
+      "unmatchedDefinitions": [
+        "DefaultArguments",
+        "NonOverridableArguments"
+      ],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
+      "resourceType": "AWS::Glue::SecurityConfiguration",
+      "providerFile": "glue-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-glue",
+      "keyStyle": "exact",
+      "freshObjectMapper": false,
+      "nestedKeyCount": 9,
+      "entries": [
+        {
+          "resourceType": "AWS::Glue::SecurityConfiguration",
+          "nestedKey": "EncryptionConfiguration.CloudWatchEncryption",
+          "topLevelProperty": "EncryptionConfiguration",
+          "terminalKey": "CloudWatchEncryption",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::SecurityConfiguration",
+          "nestedKey": "EncryptionConfiguration.CloudWatchEncryption.CloudWatchEncryptionMode",
+          "topLevelProperty": "EncryptionConfiguration",
+          "terminalKey": "CloudWatchEncryptionMode",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::SecurityConfiguration",
+          "nestedKey": "EncryptionConfiguration.CloudWatchEncryption.KmsKeyArn",
+          "topLevelProperty": "EncryptionConfiguration",
+          "terminalKey": "KmsKeyArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::SecurityConfiguration",
+          "nestedKey": "EncryptionConfiguration.JobBookmarksEncryption",
+          "topLevelProperty": "EncryptionConfiguration",
+          "terminalKey": "JobBookmarksEncryption",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::SecurityConfiguration",
+          "nestedKey": "EncryptionConfiguration.JobBookmarksEncryption.JobBookmarksEncryptionMode",
+          "topLevelProperty": "EncryptionConfiguration",
+          "terminalKey": "JobBookmarksEncryptionMode",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::SecurityConfiguration",
+          "nestedKey": "EncryptionConfiguration.JobBookmarksEncryption.KmsKeyArn",
+          "topLevelProperty": "EncryptionConfiguration",
+          "terminalKey": "KmsKeyArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::SecurityConfiguration",
+          "nestedKey": "EncryptionConfiguration.S3Encryptions",
+          "topLevelProperty": "EncryptionConfiguration",
+          "terminalKey": "S3Encryptions",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Glue::SecurityConfiguration",
+          "nestedKey": "EncryptionConfiguration.S3Encryptions.KmsKeyArn",
+          "topLevelProperty": "EncryptionConfiguration",
+          "terminalKey": "KmsKeyArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::SecurityConfiguration",
+          "nestedKey": "EncryptionConfiguration.S3Encryptions.S3EncryptionMode",
+          "topLevelProperty": "EncryptionConfiguration",
+          "terminalKey": "S3EncryptionMode",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 0,
+      "unmatchedDefinitions": [],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
+      "resourceType": "AWS::Glue::Table",
+      "providerFile": "glue-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-glue",
+      "keyStyle": "exact",
+      "freshObjectMapper": false,
+      "nestedKeyCount": 88,
+      "entries": [
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "IcebergInput",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "IcebergTableInput",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.Location",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Location",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.PartitionSpec",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "PartitionSpec",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.PartitionSpec.Fields",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Fields",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.PartitionSpec.Fields.FieldId",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "FieldId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.PartitionSpec.Fields.Name",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.PartitionSpec.Fields.SourceId",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "SourceId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.PartitionSpec.Fields.Transform",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Transform",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.PartitionSpec.SpecId",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "SpecId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.Properties",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Properties",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.Schema",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Schema",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.Schema.Fields",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Fields",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.Schema.Fields.Doc",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Doc",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.Schema.Fields.Id",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Id",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.Schema.Fields.Name",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.Schema.Fields.Required",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Required",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.Schema.Fields.Type",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.Schema.IdentifierFieldIds",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "IdentifierFieldIds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.Schema.SchemaId",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "SchemaId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.Schema.Type",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.WriteOrder",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "WriteOrder",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.WriteOrder.Fields",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Fields",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.WriteOrder.Fields.Direction",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Direction",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.WriteOrder.Fields.NullOrder",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "NullOrder",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.WriteOrder.Fields.SourceId",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "SourceId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.WriteOrder.Fields.Transform",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Transform",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.IcebergTableInput.WriteOrder.OrderId",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "OrderId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.MetadataOperation",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "MetadataOperation",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "OpenTableFormatInput.IcebergInput.Version",
+          "topLevelProperty": "OpenTableFormatInput",
+          "terminalKey": "Version",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.Description",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Description",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.Name",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.Owner",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Owner",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.Parameters",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Parameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.PartitionKeys",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "PartitionKeys",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.PartitionKeys.Comment",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Comment",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.PartitionKeys.Name",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.PartitionKeys.Type",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.Retention",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Retention",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "StorageDescriptor",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.BucketColumns",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "BucketColumns",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.Columns",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Columns",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.Columns.Comment",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Comment",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.Columns.Name",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.Columns.Type",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Type",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.Compressed",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Compressed",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.InputFormat",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "InputFormat",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.Location",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Location",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.NumberOfBuckets",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "NumberOfBuckets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.OutputFormat",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "OutputFormat",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.Parameters",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Parameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SchemaReference",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SchemaReference",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SchemaReference.SchemaId",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SchemaId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SchemaReference.SchemaId.RegistryName",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "RegistryName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SchemaReference.SchemaId.SchemaArn",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SchemaArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SchemaReference.SchemaId.SchemaName",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SchemaName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SchemaReference.SchemaVersionId",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SchemaVersionId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SchemaReference.SchemaVersionNumber",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SchemaVersionNumber",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SerdeInfo",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SerdeInfo",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SerdeInfo.Name",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SerdeInfo.Parameters",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Parameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SerdeInfo.SerializationLibrary",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SerializationLibrary",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SkewedInfo",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SkewedInfo",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SkewedInfo.SkewedColumnNames",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SkewedColumnNames",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SkewedInfo.SkewedColumnValueLocationMaps",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SkewedColumnValueLocationMaps",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SkewedInfo.SkewedColumnValues",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SkewedColumnValues",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SortColumns",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SortColumns",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SortColumns.Column",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Column",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.SortColumns.SortOrder",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SortOrder",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.StorageDescriptor.StoredAsSubDirectories",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "StoredAsSubDirectories",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.TableType",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "TableType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.TargetTable",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "TargetTable",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.TargetTable.CatalogId",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "CatalogId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.TargetTable.DatabaseName",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "DatabaseName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.TargetTable.Name",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.TargetTable.Region",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Region",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.ViewDefinition",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "ViewDefinition",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.ViewDefinition.Definer",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Definer",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.ViewDefinition.IsProtected",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "IsProtected",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.ViewDefinition.Representations",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Representations",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.ViewDefinition.Representations.Dialect",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "Dialect",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.ViewDefinition.Representations.DialectVersion",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "DialectVersion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.ViewDefinition.Representations.ValidationConnection",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "ValidationConnection",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.ViewDefinition.Representations.ViewExpandedText",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "ViewExpandedText",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.ViewDefinition.Representations.ViewOriginalText",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "ViewOriginalText",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.ViewDefinition.SubObjects",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "SubObjects",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.ViewExpandedText",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "ViewExpandedText",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Table",
+          "nestedKey": "TableInput.ViewOriginalText",
+          "topLevelProperty": "TableInput",
+          "terminalKey": "ViewOriginalText",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 10,
+      "unmatchedDefinitions": [
+        "IcebergTableInput",
+        "SerdeInfo"
+      ],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
+      "resourceType": "AWS::Glue::Trigger",
+      "providerFile": "glue-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-glue",
+      "keyStyle": "exact",
+      "freshObjectMapper": false,
+      "nestedKeyCount": 16,
+      "entries": [
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "Actions.Arguments",
+          "topLevelProperty": "Actions",
+          "terminalKey": "Arguments",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "Actions.CrawlerName",
+          "topLevelProperty": "Actions",
+          "terminalKey": "CrawlerName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "Actions.JobName",
+          "topLevelProperty": "Actions",
+          "terminalKey": "JobName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "Actions.NotificationProperty",
+          "topLevelProperty": "Actions",
+          "terminalKey": "NotificationProperty",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "Actions.NotificationProperty.NotifyDelayAfter",
+          "topLevelProperty": "Actions",
+          "terminalKey": "NotifyDelayAfter",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "Actions.SecurityConfiguration",
+          "topLevelProperty": "Actions",
+          "terminalKey": "SecurityConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "Actions.Timeout",
+          "topLevelProperty": "Actions",
+          "terminalKey": "Timeout",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "EventBatchingCondition.BatchSize",
+          "topLevelProperty": "EventBatchingCondition",
+          "terminalKey": "BatchSize",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "EventBatchingCondition.BatchWindow",
+          "topLevelProperty": "EventBatchingCondition",
+          "terminalKey": "BatchWindow",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "Predicate.Conditions",
+          "topLevelProperty": "Predicate",
+          "terminalKey": "Conditions",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "Predicate.Conditions.CrawlerName",
+          "topLevelProperty": "Predicate",
+          "terminalKey": "CrawlerName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "Predicate.Conditions.CrawlState",
+          "topLevelProperty": "Predicate",
+          "terminalKey": "CrawlState",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "Predicate.Conditions.JobName",
+          "topLevelProperty": "Predicate",
+          "terminalKey": "JobName",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "Predicate.Conditions.LogicalOperator",
+          "topLevelProperty": "Predicate",
+          "terminalKey": "LogicalOperator",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "Predicate.Conditions.State",
+          "topLevelProperty": "Predicate",
+          "terminalKey": "State",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Glue::Trigger",
+          "nestedKey": "Predicate.Logical",
+          "topLevelProperty": "Predicate",
+          "terminalKey": "Logical",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 2,
+      "unmatchedDefinitions": [],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
+    },
+    {
       "resourceType": "AWS::Lambda::EventSourceMapping",
       "providerFile": "lambda-eventsource-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-lambda",
@@ -6913,6 +9134,350 @@
         "WebsiteConfiguration.RoutingRules.RedirectRule",
         "WebsiteConfiguration.RoutingRules.RoutingRuleCondition"
       ]
+    },
+    {
+      "resourceType": "AWS::Scheduler::Schedule",
+      "providerFile": "scheduler-schedule-provider.ts",
+      "sdkClientPackage": "@aws-sdk/client-scheduler",
+      "keyStyle": "exact",
+      "freshObjectMapper": false,
+      "nestedKeyCount": 47,
+      "entries": [
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "FlexibleTimeWindow.MaximumWindowInMinutes",
+          "topLevelProperty": "FlexibleTimeWindow",
+          "terminalKey": "MaximumWindowInMinutes",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "FlexibleTimeWindow.Mode",
+          "topLevelProperty": "FlexibleTimeWindow",
+          "terminalKey": "Mode",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.Arn",
+          "topLevelProperty": "Target",
+          "terminalKey": "Arn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.DeadLetterConfig",
+          "topLevelProperty": "Target",
+          "terminalKey": "DeadLetterConfig",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.DeadLetterConfig.Arn",
+          "topLevelProperty": "Target",
+          "terminalKey": "Arn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters",
+          "topLevelProperty": "Target",
+          "terminalKey": "EcsParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.CapacityProviderStrategy",
+          "topLevelProperty": "Target",
+          "terminalKey": "CapacityProviderStrategy",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.CapacityProviderStrategy.Base",
+          "topLevelProperty": "Target",
+          "terminalKey": "Base",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.CapacityProviderStrategy.CapacityProvider",
+          "topLevelProperty": "Target",
+          "terminalKey": "CapacityProvider",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.CapacityProviderStrategy.Weight",
+          "topLevelProperty": "Target",
+          "terminalKey": "Weight",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.EnableECSManagedTags",
+          "topLevelProperty": "Target",
+          "terminalKey": "EnableECSManagedTags",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.EnableExecuteCommand",
+          "topLevelProperty": "Target",
+          "terminalKey": "EnableExecuteCommand",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.Group",
+          "topLevelProperty": "Target",
+          "terminalKey": "Group",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.LaunchType",
+          "topLevelProperty": "Target",
+          "terminalKey": "LaunchType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.NetworkConfiguration",
+          "topLevelProperty": "Target",
+          "terminalKey": "NetworkConfiguration",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration",
+          "topLevelProperty": "Target",
+          "terminalKey": "AwsvpcConfiguration",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIp",
+          "topLevelProperty": "Target",
+          "terminalKey": "AssignPublicIp",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration.SecurityGroups",
+          "topLevelProperty": "Target",
+          "terminalKey": "SecurityGroups",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration.Subnets",
+          "topLevelProperty": "Target",
+          "terminalKey": "Subnets",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.PlacementConstraints",
+          "topLevelProperty": "Target",
+          "terminalKey": "PlacementConstraints",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.PlacementConstraints.Expression",
+          "topLevelProperty": "Target",
+          "terminalKey": "Expression",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.PlacementConstraints.Type",
+          "topLevelProperty": "Target",
+          "terminalKey": "Type",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.PlacementStrategy",
+          "topLevelProperty": "Target",
+          "terminalKey": "PlacementStrategy",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.PlacementStrategy.Field",
+          "topLevelProperty": "Target",
+          "terminalKey": "Field",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.PlacementStrategy.Type",
+          "topLevelProperty": "Target",
+          "terminalKey": "Type",
+          "bucket": "provider-handled"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.PlatformVersion",
+          "topLevelProperty": "Target",
+          "terminalKey": "PlatformVersion",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.PropagateTags",
+          "topLevelProperty": "Target",
+          "terminalKey": "PropagateTags",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.ReferenceId",
+          "topLevelProperty": "Target",
+          "terminalKey": "ReferenceId",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.Tags",
+          "topLevelProperty": "Target",
+          "terminalKey": "Tags",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.TaskCount",
+          "topLevelProperty": "Target",
+          "terminalKey": "TaskCount",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EcsParameters.TaskDefinitionArn",
+          "topLevelProperty": "Target",
+          "terminalKey": "TaskDefinitionArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EventBridgeParameters",
+          "topLevelProperty": "Target",
+          "terminalKey": "EventBridgeParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EventBridgeParameters.DetailType",
+          "topLevelProperty": "Target",
+          "terminalKey": "DetailType",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.EventBridgeParameters.Source",
+          "topLevelProperty": "Target",
+          "terminalKey": "Source",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.Input",
+          "topLevelProperty": "Target",
+          "terminalKey": "Input",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.KinesisParameters",
+          "topLevelProperty": "Target",
+          "terminalKey": "KinesisParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.KinesisParameters.PartitionKey",
+          "topLevelProperty": "Target",
+          "terminalKey": "PartitionKey",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.RetryPolicy",
+          "topLevelProperty": "Target",
+          "terminalKey": "RetryPolicy",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.RetryPolicy.MaximumEventAgeInSeconds",
+          "topLevelProperty": "Target",
+          "terminalKey": "MaximumEventAgeInSeconds",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.RetryPolicy.MaximumRetryAttempts",
+          "topLevelProperty": "Target",
+          "terminalKey": "MaximumRetryAttempts",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.RoleArn",
+          "topLevelProperty": "Target",
+          "terminalKey": "RoleArn",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.SageMakerPipelineParameters",
+          "topLevelProperty": "Target",
+          "terminalKey": "SageMakerPipelineParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.SageMakerPipelineParameters.PipelineParameterList",
+          "topLevelProperty": "Target",
+          "terminalKey": "PipelineParameterList",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.SageMakerPipelineParameters.PipelineParameterList.Name",
+          "topLevelProperty": "Target",
+          "terminalKey": "Name",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.SageMakerPipelineParameters.PipelineParameterList.Value",
+          "topLevelProperty": "Target",
+          "terminalKey": "Value",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.SqsParameters",
+          "topLevelProperty": "Target",
+          "terminalKey": "SqsParameters",
+          "bucket": "same-spelling"
+        },
+        {
+          "resourceType": "AWS::Scheduler::Schedule",
+          "nestedKey": "Target.SqsParameters.MessageGroupId",
+          "topLevelProperty": "Target",
+          "terminalKey": "MessageGroupId",
+          "bucket": "same-spelling"
+        }
+      ],
+      "shapeEntries": [],
+      "shapeCleanCount": 7,
+      "unmatchedDefinitions": [],
+      "usedSegmentRenames": [],
+      "usedTerminalRenames": []
     }
   ]
 }

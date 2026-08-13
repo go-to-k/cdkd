@@ -1,15 +1,62 @@
 {
   "resourceType": "AWS::Glue::SecurityConfiguration",
-  "generatedAt": "2026-05-16",
+  "generatedAt": "2026-08-13",
   "properties": [
     "EncryptionConfiguration",
-    "Id",
     "Name"
   ],
-  "readOnlyProperties": [
-    "Id"
-  ],
+  "readOnlyProperties": [],
   "createOnlyProperties": [
     "Name"
-  ]
+  ],
+  "primaryIdentifier": [
+    "Name"
+  ],
+  "nestedProperties": {
+    "EncryptionConfiguration": [
+      "CloudWatchEncryption",
+      "CloudWatchEncryptionMode",
+      "JobBookmarksEncryption",
+      "JobBookmarksEncryptionMode",
+      "KmsKeyArn",
+      "S3EncryptionMode",
+      "S3Encryptions"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "EncryptionConfiguration": [
+      "CloudWatchEncryption",
+      "CloudWatchEncryption.CloudWatchEncryptionMode",
+      "CloudWatchEncryption.KmsKeyArn",
+      "JobBookmarksEncryption",
+      "JobBookmarksEncryption.JobBookmarksEncryptionMode",
+      "JobBookmarksEncryption.KmsKeyArn",
+      "S3Encryptions",
+      "S3Encryptions.KmsKeyArn",
+      "S3Encryptions.S3EncryptionMode"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "EncryptionConfiguration": "object",
+      "Name": "scalar"
+    },
+    "S3Encryption": {
+      "KmsKeyArn": "scalar",
+      "S3EncryptionMode": "scalar"
+    },
+    "EncryptionConfiguration": {
+      "S3Encryptions": "array",
+      "JobBookmarksEncryption": "object",
+      "CloudWatchEncryption": "object"
+    },
+    "CloudWatchEncryption": {
+      "KmsKeyArn": "scalar",
+      "CloudWatchEncryptionMode": "scalar"
+    },
+    "JobBookmarksEncryption": {
+      "KmsKeyArn": "scalar",
+      "JobBookmarksEncryptionMode": "scalar"
+    }
+  }
 }

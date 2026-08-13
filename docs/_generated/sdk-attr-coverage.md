@@ -8,8 +8,8 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 ## Summary
 
 - SDK-backed types classified: **134**
-- Covered (every Arn/Url readOnly resolvable): **51**
-- No Arn/Url readOnly attribute: **83**
+- Covered (every Arn/Url readOnly resolvable): **50**
+- No Arn/Url readOnly attribute: **84**
 - **Latent gaps (blocks CI): 0**
 
 ## Latent gaps
@@ -39,7 +39,6 @@ None. Every `Arn`/`Url` read-only attribute on a cached SDK-backed type is cache
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | covered | `LoadBalancerArn` (cached) |
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | covered | `TargetGroupArn` (cached) |
 | `AWS::Events::EventBus` | covered | `Arn` (cached) |
-| `AWS::Events::Rule` | covered | `Arn` (cached) |
 | `AWS::IAM::Group` | covered | `Arn` (cached) |
 | `AWS::IAM::InstanceProfile` | covered | `Arn` (cached) |
 | `AWS::IAM::ManagedPolicy` | covered | `PolicyArn` (cached) |
