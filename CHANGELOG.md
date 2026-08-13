@@ -1,3 +1,10 @@
+## [0.282.5](https://github.com/go-to-k/cdkd/compare/v0.282.4...v0.282.5) (2026-08-13)
+
+
+### Bug Fixes
+
+* **local:** canonicalize region and ECR host case across the local execution path ([#1818](https://github.com/go-to-k/cdkd/issues/1818)) ([55f67d0](https://github.com/go-to-k/cdkd/commit/55f67d08fe2d951ceab29a53769304f23d9a024a))
+
 ## [0.282.4](https://github.com/go-to-k/cdkd/compare/v0.282.3...v0.282.4) (2026-08-13)
 
 
