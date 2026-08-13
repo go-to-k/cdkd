@@ -1,3 +1,10 @@
+## [0.281.27](https://github.com/go-to-k/cdkd/compare/v0.281.26...v0.281.27) (2026-08-13)
+
+
+### Bug Fixes
+
+* **utils:** add aws-iso-e / aws-iso-f / aws-eusc to the partition table ([#1790](https://github.com/go-to-k/cdkd/issues/1790)) ([2187ccb](https://github.com/go-to-k/cdkd/commit/2187ccbfb3a6ac0ceaa81290bd015b6e51cd37a7))
+
 ## [0.281.26](https://github.com/go-to-k/cdkd/compare/v0.281.25...v0.281.26) (2026-08-13)
 
 
