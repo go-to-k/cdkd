@@ -78,17 +78,50 @@ assert_plan_identifier() {
   echo "[verify]   ${label} identifier resolved"
 }
 
+# assert_composite_id_plan <log-file>
+# The issue #1771 / #1691 identifier assertions, applied to whichever arm's
+# export log is passed in. Called by BOTH the `default` and `dry-run` variants:
+# `/run-integ export` runs the DEFAULT variant only, so keeping these in the
+# dry-run arm alone would leave the assertions that anchor the whole
+# composite-id correction unexecuted by the skill meant to gate it. The plan is
+# printed by `printPlan` on the shared path (before the dry-run branch), so both
+# arms carry the same lines.
+#
+# Each assertion pins the resolved identifier VALUE, so it fails on both ways a
+# splitter can be wrong: absent (no plan line at all, because a missing entry
+# aborts the whole command) and present-but-wrong (`AttachmentType=InternetGateway`,
+# which CFn rejects at changeset-create with `Invalid Attachment Type`).
+assert_composite_id_plan() {
+  local log="$1"
+  assert_plan_identifier "${log}" 'AWS::EC2::Route' \
+    '\(AWS::EC2::Route\).*RouteTableId=rtb-[0-9a-f]+, CidrBlock=0\.0\.0\.0/0'
+  assert_plan_identifier "${log}" 'AWS::EC2::EIP' \
+    '\(AWS::EC2::EIP\).*PublicIp=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+, AllocationId=eipalloc-[0-9a-f]+'
+  assert_plan_identifier "${log}" 'AWS::EC2::VPCGatewayAttachment' \
+    '\(AWS::EC2::VPCGatewayAttachment\).*AttachmentType=IGW, VpcId=vpc-[0-9a-f]+'
+  assert_plan_identifier "${log}" 'AWS::Lambda::EventInvokeConfig' \
+    '\(AWS::Lambda::EventInvokeConfig\).*FunctionName=cdkd-export-test-[a-z0-9]+, Qualifier=\$LATEST'
+}
+
 # assert_cfn_physical_id <logicalId> <glob>
 # CloudFormation's own recorded PhysicalResourceId after IMPORT — proves WHICH
 # AWS resource each identifier map adopted, not merely that the stack finished.
 assert_cfn_physical_id() {
   local logical="$1" pattern="$2" pid
-  # `|| return 1`: errexit does not propagate out of a command substitution, so
-  # a failed probe must be turned into a non-zero return explicitly — otherwise
-  # an empty `pid` reads as "no such resource" and accuses the splitter.
-  pid="$(aws cloudformation list-stack-resources --stack-name "${CFN_STACK}" --region "${REGION}" \
+  # Two distinct not-matching outcomes, kept distinguishable on purpose:
+  #   - the CLI FAILS (auth / throttle / stack gone). errexit does not propagate
+  #     out of a command substitution, so it is turned into an explicit failure
+  #     here — with its own message, because blaming the splitter for a probe
+  #     that never ran is the #1097 "undetermined result read as a verdict" trap.
+  #   - the CLI SUCCEEDS with empty output (the query matched no resource, i.e.
+  #     the logical id is absent from the stack). That IS a splitter/plan
+  #     verdict, so it falls through to the pattern check below and fails there.
+  if ! pid="$(aws cloudformation list-stack-resources --stack-name "${CFN_STACK}" --region "${REGION}" \
     --query "StackResourceSummaries[?LogicalResourceId=='${logical}'].PhysicalResourceId" \
-    --output text)" || return 1
+    --output text)"; then
+    echo "[verify] FAIL: could not read PhysicalResourceId for ${logical} (probe failed, result undetermined)"
+    exit 1
+  fi
   # shellcheck disable=SC2254  # unquoted on purpose: ${pattern} IS the glob
   case "${pid}" in
     ${pattern})
@@ -348,11 +381,23 @@ case "${VARIANT}" in
 
   default|"")
     echo "[verify] step 3: cdkd export --include-non-importable -y (expect exit 0)"
+    # tee'd so step 3a can assert the printed import plan. `printPlan` runs on
+    # the shared path (before the dry-run branch), so the default variant sees
+    # the same lines the dry-run variant does — which is what keeps the issue
+    # #1771 identifier assertions inside the variant `/run-integ export` runs.
     ${CLI} export "${STACK}" \
       --state-bucket "${STATE_BUCKET}" \
       --include-non-importable \
       -y \
-      --verbose
+      --verbose 2>&1 | tee /tmp/verify-export.log
+    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+      echo "[verify] FAIL: cdkd export exited non-zero"
+      exit 1
+    fi
+
+    echo "[verify] step 3a: composite-id identifiers resolved in the plan (issue #1771)"
+    assert_composite_id_plan /tmp/verify-export.log
+    echo "[verify] step 3a ok"
 
     echo "[verify] step 4: verify CFn stack exists"
     STATUS="$(aws cloudformation describe-stacks --stack-name "${CFN_STACK}" --region "${REGION}" \
@@ -417,6 +462,24 @@ case "${VARIANT}" in
     # composite-id resource. A splitter that produced a syntactically valid but
     # wrong identifier map would either fail the IMPORT outright (the
     # pre-#1691/#1771 VPCGatewayAttachment case) or adopt something else.
+    # Each glob below is the shape CloudFormation ITSELF reported for that
+    # logical id after a real IMPORT — measured us-east-1, 2026-08-13, by
+    # importing exactly these types and reading `list-stack-resources`:
+    #
+    #   DefaultRoute              rtb-071ff76572290e4b3|0.0.0.0/0
+    #   Eip                       52.2.164.223
+    #   IgwAttachment             vpc-0e95e6982a8cc3a74|IGW
+    #   HandlerEventInvokeConfig  <function-name>|$LATEST
+    #
+    # Do NOT "correct" these from the identifier maps in export.ts — a CFn
+    # PhysicalResourceId is a THIRD string, distinct from both the Cloud Control
+    # identifier and cdkd's own physicalId, and for the attachment the two even
+    # disagree on ORDER: CC's identifier is `IGW|vpc-…` (AttachmentType first,
+    # the primaryIdentifier order the splitter builds) while CFn reports
+    # `vpc-…|IGW` (VpcId first). The EIP is the other trap — CFn reports the
+    # bare public IP, not the `<publicIp>|<allocationId>` composite cdkd stores.
+    # `|` inside an EXPANDED case pattern is a literal glob character (bash
+    # parses alternation before expansion), so the order IS load-bearing here.
     echo "[verify] step 4b2: CFn adopted the right resource per composite id (issue #1771)"
     assert_cfn_physical_id 'DefaultRoute' 'rtb-*|0.0.0.0/0'
     assert_cfn_physical_id 'Eip' '[0-9]*.[0-9]*.[0-9]*.[0-9]*'

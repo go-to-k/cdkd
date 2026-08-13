@@ -444,8 +444,9 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // Cloud Control `GetResource` against a scratch route table carrying both
   // destination shapes, us-east-1, 2026-08-13:
   //
-  //   `rtb-…|0.0.0.0/0` -> {"CidrBlock":"0.0.0.0/0","DestinationCidrBlock":"0.0.0.0/0",…}
-  //   `rtb-…|::/0`      -> {"CidrBlock":"::/0","DestinationIpv6CidrBlock":"::/0",…}
+  //   `rtb-…|0.0.0.0/0`   -> {"CidrBlock":"0.0.0.0/0","DestinationCidrBlock":"0.0.0.0/0",…}
+  //   `rtb-…|::/0`        -> {"CidrBlock":"::/0","DestinationIpv6CidrBlock":"::/0",…}
+  //   `rtb-…|pl-63a5400a` -> {"CidrBlock":"pl-63a5400a","DestinationPrefixListId":"pl-63a5400a",…}
   //
   // — i.e. `CidrBlock` carries whichever destination the route declares, so the
   // physicalId's destination segment maps onto it verbatim and this splitter
@@ -498,9 +499,29 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
           `recovered from the other; re-deploy the resource to refresh state`
       );
     }
-    const [publicIp, allocationId] = parts as [string, string];
-    if (!publicIp || !allocationId) {
+    const [first, second] = parts as [string, string];
+    if (!first.trim() || !second.trim()) {
       throw new Error(`empty part in '<publicIp>|<allocationId>': '${physicalId}'`);
+    }
+    // Bind by SHAPE, not by position. `eipPhysicalId` writes publicIp first and
+    // every writer goes through it, but that ordering is the ONE thing here
+    // nobody has verified against a state record in the wild — and a positional
+    // bind turns a reversed record into `{PublicIp: 'eipalloc-…',
+    // AllocationId: '52.1.2.3'}`, which CFn answers with an opaque
+    // changeset-create failure instead of anything a user can act on. The two
+    // segment shapes are disjoint and unmistakable (an allocation id is
+    // `eipalloc-…`; a public IP is a dotted quad), so discriminating costs
+    // nothing and removes the dependency on the order entirely.
+    const allocationFirst = first.startsWith(EIP_ALLOCATION_ID_PREFIX);
+    const publicIp = allocationFirst ? second : first;
+    const allocationId = allocationFirst ? first : second;
+    if (!allocationId.startsWith(EIP_ALLOCATION_ID_PREFIX)) {
+      throw new Error(
+        `neither segment of '${physicalId}' is an allocation id ` +
+          `('${EIP_ALLOCATION_ID_PREFIX}…'); CloudFormation identifies an AWS::EC2::EIP by ` +
+          `[PublicIp, AllocationId] and both must be recoverable. State entry may be corrupt ` +
+          `or written by an older cdkd binary; re-deploy the resource to refresh state`
+      );
     }
     return {
       resourceIdentifier: { PublicIp: publicIp, AllocationId: allocationId },
@@ -656,6 +677,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // recorded rather than acted on because it is a behavior change for a type
   // this PR does not otherwise touch. Tracked in
   // [#1772](https://github.com/go-to-k/cdkd/issues/1772).
+
   // cdkd stores `<functionName>|<qualifier>` (lambda-event-invoke-config-
   // provider.ts's `buildPhysicalId`), split on the FIRST `|` — a Lambda function
   // name is `[a-zA-Z0-9-_]+` and a function ARN carries no `|`, which is the
@@ -682,7 +704,10 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     }
     const functionName = physicalId.slice(0, separator);
     const qualifier = physicalId.slice(separator + 1);
-    if (!functionName || !qualifier) {
+    // `.trim()`, not truthiness: `'  |  '` clears the whole-id blank guard above
+    // and would otherwise ship `FunctionName: '  '` into the changeset — the
+    // same reason the ApiGateway-family splitters trim.
+    if (!functionName.trim() || !qualifier.trim()) {
       throw new Error(`empty part in '<functionName>|<qualifier>': '${physicalId}'`);
     }
     return { resourceIdentifier: { FunctionName: functionName, Qualifier: qualifier } };
@@ -714,22 +739,38 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
 
 /**
  * The two values CFn's `AWS::EC2::VPCGatewayAttachment.AttachmentType` takes.
- * The field is `readOnlyProperties`, so cdkd never sends it — it only has to
- * be reproduced for the IMPORT identifier map.
+ * The field is `readOnlyProperties`, so cdkd never sends it — it only has to be
+ * reproduced for the IMPORT identifier map. See
+ * {@link GATEWAY_ATTACHMENT_TYPE_ALIASES} for how each is recognized on input
+ * and why the spelled-out forms are accepted but never produced.
  */
+/**
+ * The prefix every EC2 Elastic IP allocation id carries. Used to discriminate
+ * the two segments of an `AWS::EC2::EIP` physicalId by SHAPE rather than by
+ * position — see the splitter for why the order is not relied on.
+ */
+const EIP_ALLOCATION_ID_PREFIX = 'eipalloc-';
+
 const GATEWAY_ATTACHMENT_TYPE_IGW = 'IGW';
 const GATEWAY_ATTACHMENT_TYPE_VGW = 'VGW';
 
 /**
  * The values AWS actually uses for `AWS::EC2::VPCGatewayAttachment`'s
- * `AttachmentType`, plus the two this table produced before issue #1771.
+ * `AttachmentType`, plus the two spellings issue #1691 guessed.
  *
- * `InternetGateway` / `VPN` were the pre-#1771 outputs, and they are WRONG:
- * CloudFormation answers `Invalid request provided: Invalid Attachment Type
- * 'InternetGateway'` and the IMPORT changeset never reaches CREATE_COMPLETE.
- * They are still accepted as INPUT so a state record written by the Cloud
- * Control path of an older cdkd — which stores the primaryIdentifier verbatim —
- * is normalized rather than rejected.
+ * `IGW` / `VGW` are what every real writer produces: Cloud Control stores the
+ * primaryIdentifier verbatim, so a CC-written cdkd state record carries one of
+ * them as segment 0. `InternetGateway` / `VPN` were never written by anything —
+ * they were produced by THIS table on the way OUT, and CloudFormation rejects
+ * them (`Invalid request provided: Invalid Attachment Type 'InternetGateway'`;
+ * the IMPORT changeset never reaches CREATE_COMPLETE). They are kept purely as
+ * input compatibility, so a physicalId hand-written from the old comment, or
+ * supplied via `cdkd import --resource`, normalizes instead of falling through
+ * to the property-derivation arms. Nothing in cdkd can put them in state.
+ *
+ * `Object.hasOwn` at the lookup site, not a bare index: a bare index on an
+ * object literal answers for inherited members too, so a first segment of
+ * `constructor` would resolve to a function rather than missing.
  */
 const GATEWAY_ATTACHMENT_TYPE_ALIASES: Record<string, string> = {
   [GATEWAY_ATTACHMENT_TYPE_IGW]: GATEWAY_ATTACHMENT_TYPE_IGW,
@@ -768,9 +809,8 @@ function resolveGatewayAttachmentType(
   firstSegment: string,
   properties: Record<string, unknown>
 ): string {
-  const alias = GATEWAY_ATTACHMENT_TYPE_ALIASES[firstSegment];
-  if (alias !== undefined) {
-    return alias;
+  if (Object.hasOwn(GATEWAY_ATTACHMENT_TYPE_ALIASES, firstSegment)) {
+    return GATEWAY_ATTACHMENT_TYPE_ALIASES[firstSegment]!;
   }
   if (typeof properties['InternetGatewayId'] === 'string' && properties['InternetGatewayId']) {
     return GATEWAY_ATTACHMENT_TYPE_IGW;
@@ -813,20 +853,35 @@ const ROUTE_DESTINATION_KEYS = [
  * field holds, from cdkd's physicalId destination segment plus the recorded
  * properties.
  *
- * The SEGMENT is authoritative and is what this returns: it is the destination
- * cdkd actually sent to `CreateRoute` (SDK path) or the `CidrBlock` AWS itself
- * reported (Cloud Control path), and `CidrBlock` holds whichever destination
- * kind the route declares — measured live, see the splitter's comment.
+ * The SEGMENT is what this returns: it is the destination cdkd actually sent to
+ * `CreateRoute` (SDK path) or the `CidrBlock` AWS itself reported (Cloud Control
+ * path), and `CidrBlock` holds whichever destination kind the route declares —
+ * measured live, see the splitter's comment.
  *
  * The recorded properties are read to CROSS-CHECK it, the way
  * {@link resolveGatewayAttachmentType} reads them to recover a field cdkd never
- * stores. A divergence is reachable rather than theoretical: on the Cloud
- * Control path the id carries AWS's CANONICALIZED CIDR while the template
- * (hence state's properties) carries what the user wrote, and CFn documents
- * that it rewrites e.g. `100.68.0.18/18` to `100.68.0.0/18`. So this WARNS and
- * keeps the id's value rather than throwing — a throw would block the export of
- * a resource whose identifier is correct — but the warning is what turns an
- * otherwise opaque CFn IMPORT "resource not found" into something diagnosable.
+ * stores. Two very different things can make them disagree, and conflating them
+ * is why this is not a plain warn:
+ *
+ *  - **Benign.** On the Cloud Control path the id carries AWS's CANONICALIZED
+ *    CIDR while the template (hence state's properties) carries what the user
+ *    wrote; CFn documents rewriting e.g. `100.68.0.18/18` to `100.68.0.0/18`.
+ *    The identifier is CORRECT here, so refusing would block an export that
+ *    would have succeeded. {@link canonicalizeIpv4Cidr} recognizes this case and
+ *    passes it through silently.
+ *  - **Dangerous.** If state is merely stale, the id's destination can name a
+ *    DIFFERENT route that still exists in the same table. IMPORT then succeeds
+ *    against the wrong resource, and phase 2's UPDATE reconciles it to the
+ *    template — REPLACING, i.e. DELETING, a route the user never targeted.
+ *    Silently continuing here trades an opaque failure for data loss.
+ *
+ * So the outcome depends on whether the benign explanation is DECIDABLE. When
+ * every declared destination is a parseable IPv4 CIDR, canonicalization either
+ * explains the difference or it does not, and a non-match is refused. When some
+ * declared destination is an IPv6 CIDR or a prefix-list id — shapes whose
+ * AWS-side canonicalization this does not model — the divergence is reported as
+ * a WARNING naming the replace-the-wrong-route outcome, because refusing on an
+ * undecidable signal would block exports that are fine.
  *
  * Properties that declare NO destination at all are NOT treated as suspicious:
  * a partial / hand-edited state record must not become a refusal, and the id
@@ -837,15 +892,66 @@ function resolveRouteDestination(segment: string, properties: Record<string, unk
     (key) => typeof properties[key] === 'string' && properties[key] !== ''
   );
   if (declared.length === 0) return segment;
-  if (declared.some((key) => properties[key] === segment)) return segment;
+
+  const declaredValues = declared.map((key) => String(properties[key]));
+  // Exact match, or the id is the host-bit-cleared form of what the user wrote.
+  if (
+    declaredValues.some((value) => value === segment || canonicalizeIpv4Cidr(value) === segment)
+  ) {
+    return segment;
+  }
+
+  const recorded = declared.map((key) => `${key}='${String(properties[key])}'`).join(', ');
+  const shared =
+    `AWS::EC2::Route: cdkd state's recorded properties declare ${recorded}, but the physical ` +
+    `id's destination segment is '${segment}'. CloudFormation identifies the route by the ` +
+    `destination, so IMPORT would adopt whatever route currently sits at '${segment}' — and if ` +
+    `that is a DIFFERENT route than the template declares, phase 2 would then REPLACE (delete) ` +
+    `it. The state entry is stale; re-deploy the resource to refresh it`;
+
+  // Decidable: every declared destination is an IPv4 CIDR, so canonicalization
+  // is fully modelled here and its failure to explain the gap is conclusive.
+  if (declaredValues.every((value) => canonicalizeIpv4Cidr(value) !== undefined)) {
+    throw new Error(`${shared}.`);
+  }
+
   getLogger().warn(
-    `AWS::EC2::Route: cdkd state's recorded properties declare ` +
-      `${declared.map((key) => `${key}='${String(properties[key])}'`).join(', ')}, but the ` +
-      `physical id's destination segment is '${segment}'. Using the physical id — it is what ` +
-      `CloudFormation identifies the route by. If the IMPORT is rejected as not found, the ` +
-      `state entry is stale; re-deploy the resource to refresh it.`
+    `${shared}, or pass the resource through 'cdkd import --resource' with the correct id. ` +
+      `Continuing with the physical id because at least one recorded destination is an IPv6 ` +
+      `CIDR or a prefix-list id, whose AWS-side canonicalization cdkd does not model — so the ` +
+      `difference may be benign.`
   );
   return segment;
+}
+
+/**
+ * Return the host-bit-cleared form of an IPv4 CIDR (`100.68.0.18/18` ->
+ * `100.68.0.0/18`), or `undefined` when the input is not an IPv4 CIDR at all
+ * (an IPv6 CIDR, a `pl-…` prefix-list id, or anything malformed).
+ *
+ * This exists to recognize the ONE benign reason an `AWS::EC2::Route`'s stored
+ * destination can differ from its physicalId segment: AWS rewrites a
+ * non-canonical CIDR on `CreateRoute`, and the Cloud Control path records what
+ * AWS returned while the template kept what the user wrote. Returning
+ * `undefined` for the shapes it does not model is load-bearing — the caller
+ * uses it to decide whether a divergence is conclusive or merely unexplained.
+ */
+function canonicalizeIpv4Cidr(value: string): string | undefined {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(value);
+  if (!match) return undefined;
+  const octets = [match[1]!, match[2]!, match[3]!, match[4]!].map(Number);
+  const prefixLength = Number(match[5]!);
+  if (prefixLength > 32 || octets.some((octet) => octet > 255)) return undefined;
+  const address = ((octets[0]! << 24) | (octets[1]! << 16) | (octets[2]! << 8) | octets[3]!) >>> 0;
+  const mask = prefixLength === 0 ? 0 : (0xffffffff << (32 - prefixLength)) >>> 0;
+  const network = (address & mask) >>> 0;
+  const networkOctets = [
+    network >>> 24,
+    (network >>> 16) & 0xff,
+    (network >>> 8) & 0xff,
+    network & 0xff,
+  ];
+  return `${networkOctets.join('.')}/${prefixLength}`;
 }
 
 /**
