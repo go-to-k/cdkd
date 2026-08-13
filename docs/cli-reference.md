@@ -2700,8 +2700,8 @@ cdkd export                                       # auto-detect single-stack app
      through and let CFn match resources via
      `ResourcesToImport[].ResourceIdentifier` (the changeset API
      parameter) alone, except when the synth template carries a
-     *literal-string* value for the field that *differs* from
-     `ResourceIdentifier`. Three cases:
+     *literal* value for the field that *differs* from
+     `ResourceIdentifier`. Four cases:
      - **Absent** (auto-generated names — user did NOT declare a
        physical name in CDK code): `Properties[<NameField>]` stays
        absent. CFn accepts the IMPORT changeset using
@@ -2732,6 +2732,25 @@ cdkd export                                       # auto-detect single-stack app
        default `--no-prefix-user-supplied-names` flip are NOT in this
        case — `Properties.RoleName` matches the AWS name without
        override.
+     - **Unrepresentable** (a list carrying an intrinsic, a nested
+       list, or an empty list): the export REFUSES, naming the
+       resource, the property and the scalar to declare instead. Issue
+       [#1787](https://github.com/go-to-k/cdkd/issues/1787) widened
+       "literal" past `typeof === 'string'` for the three cases above,
+       because a field the template carries as an ARRAY is neither
+       absent nor an intrinsic and used to survive into the phase-1
+       template, where CFn answered with an opaque rejection — reachable
+       via `addPropertyOverride('Namespace', ['analytics'])` on
+       `AWS::S3Tables::Namespace`, which cdkd deploys because the
+       provider accepts both wire shapes. A plain literal (string,
+       number, boolean, or an array of those) is now OVERWRITTEN with
+       the scalar identifier, which is not a guess: the overlay value
+       comes from the cdkd-recorded physicalId, the authority on what
+       the resource IS. Only the shapes above are refused, because
+       preserving any of them reproduces the opaque rejection, while what
+       makes overwriting wrong differs per shape — only a list that
+       actually carries an object element has an intrinsic to discard, so
+       the message says which reason applies.
 
      Closes [issue #319]: pre-v0.95 cdkd unconditionally injected
      `ResourceIdentifier` values into `Properties` even when the synth

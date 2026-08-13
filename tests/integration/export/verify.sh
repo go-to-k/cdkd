@@ -493,6 +493,15 @@ case "${VARIANT}" in
     # `sg-…|tcp|443|443` composite, which an unanchored pattern would match
     # nothing of, and rejects an `sgr-…|…` hybrid, which it would.
     assert_cfn_physical_id 'SgIngress' '^sgr-[0-9a-f]+$'
+    # issue #1788: an AWS::EC2::VPCCidrBlock used to abort this whole command
+    # for want of a COMPOSITE_ID_SPLITTERS entry, so the fixture could not
+    # carry one at all. Reaching this assertion at all is the end-to-end proof
+    # that the splitter registered; the pattern additionally pins that CFn
+    # adopted the association id itself (not the VPC id - both start 'vpc-').
+    assert_cfn_physical_id 'Ipv6Cidr' '^vpc-cidr-assoc-[0-9a-f]+$'
+    # The IPv6 route arm the VPCCidrBlock unblocks: same splitter as its IPv4
+    # sibling above, second destination shape.
+    assert_cfn_physical_id 'DefaultRouteV6' '^rtb-[0-9a-f]+\|::/0$'
     echo "[verify] step 4b2 ok"
 
     # Regression guard: phase-2 UPDATE must NOT have caused silent

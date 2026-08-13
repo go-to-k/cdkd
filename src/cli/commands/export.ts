@@ -424,6 +424,83 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       propertiesOverlay: { VpcId: vpcId },
     };
   },
+  // No SDK provider registers `AWS::EC2::VPCCidrBlock`, so it is always
+  // Cloud-Control-routed and cdkd's physicalId is the CC primaryIdentifier
+  // joined with `|` in schema order: `<Id>|<VpcId>`. CFn primary identifier is
+  // [Id, VpcId] and `Id` is `readOnlyProperties` (live `DescribeType`,
+  // us-east-1, 2026-08-13), so the overlay narrows to `VpcId` — same
+  // narrowing, same reason, as the `AWS::EC2::VPCGatewayAttachment` entry
+  // above and the `AWS::EC2::Route` entry below.
+  //
+  // The two segments ARE discriminable by shape and this splitter binds them,
+  // the way the `AWS::EC2::EIP` entry below binds `eipalloc-` — the association
+  // id carries the distinct `vpc-cidr-assoc-` prefix while the VPC id does not.
+  // BOTH sides are checked, for the same reason the EIP entry gives: validating
+  // one side only is not a discriminator. A swapped pair would otherwise ship a
+  // `ResourceIdentifier` naming a different resource and fail opaquely at
+  // changeset-create.
+  //
+  // The BARE `<Id>` form is accepted too, and is not hypothetical: CloudFormation
+  // reports an `AWS::EC2::VPCCidrBlock`'s `PhysicalResourceId` as the association
+  // id alone, so a stack adopted via `cdkd import --migrate-from-cloudformation`
+  // carries that shape in state. `VpcId` is then recovered from the recorded
+  // properties, exactly as the `AWS::ApiGateway::Resource` entry above recovers
+  // `RestApiId`.
+  //
+  // Without this entry the type's mere PRESENCE aborted the whole
+  // `cdkd export` command — and any VPC carrying a secondary IPv4 CIDR or an
+  // Amazon-provided IPv6 CIDR declares one, including every CDK `Vpc`
+  // configured with `ipProtocol: IpProtocol.DUAL_STACK` (issue #1788).
+  'AWS::EC2::VPCCidrBlock': (physicalId, properties) => {
+    // `.trim()`, not truthiness — a blank segment is as unusable as an empty
+    // one and would otherwise ship `Id: ' '`. Same guard, same reason, as the
+    // `AWS::EC2::Route` and `AWS::ApiGateway::Resource` entries.
+    if (!physicalId.trim()) {
+      throw new Error('empty physical id for AWS::EC2::VPCCidrBlock (expected an association id)');
+    }
+    const parts = physicalId.split('|').map((p) => p.trim());
+    if (parts.length > 2) {
+      throw new Error(
+        `expected a bare '<Id>' or '<Id>|<VpcId>', got ${parts.length} parts: '${physicalId}'`
+      );
+    }
+    const id = parts[0]!;
+    if (!id) {
+      throw new Error(`empty part in '<Id>|<VpcId>': '${physicalId}'`);
+    }
+    if (!id.startsWith(VPC_CIDR_ASSOCIATION_ID_PREFIX)) {
+      throw new Error(
+        `'${physicalId}' does not start with an association id: CloudFormation identifies an ` +
+          `AWS::EC2::VPCCidrBlock by [Id, VpcId], so the first segment must be a ` +
+          `'${VPC_CIDR_ASSOCIATION_ID_PREFIX}…' id. State entry may be corrupt, or the segments ` +
+          `may be reversed; re-deploy the resource to refresh state`
+      );
+    }
+    let vpcId: string;
+    if (parts.length === 2) {
+      vpcId = parts[1]!;
+      // Only reachable on THIS branch — `readStringProperty` already refuses an
+      // empty / non-string recorded value on the bare-id branch below.
+      if (!vpcId) {
+        throw new Error(`empty part in '<Id>|<VpcId>': '${physicalId}'`);
+      }
+    } else {
+      vpcId = readStringProperty(properties, 'VpcId', 'AWS::EC2::VPCCidrBlock');
+    }
+    // The VPC id must NOT itself be an association id — `vpc-cidr-assoc-a|vpc-cidr-assoc-b`
+    // satisfies the first-segment guard above and then ships a `VpcId` naming
+    // nothing. Checking one side only is not a discriminator.
+    if (!VPC_ID_PATTERN.test(vpcId)) {
+      throw new Error(
+        `'${vpcId}' is not a VPC id (expected 'vpc-…', not an association id): ` +
+          `'${physicalId}' may have its segments reversed`
+      );
+    }
+    return {
+      resourceIdentifier: { Id: id, VpcId: vpcId },
+      propertiesOverlay: { VpcId: vpcId },
+    };
+  },
   // cdkd's SDK provider stores `<routeTableId>|<destination>` (ec2-provider.ts's
   // `createRoute`), where `destination` is whichever of `DestinationCidrBlock` /
   // `DestinationIpv6CidrBlock` / `DestinationPrefixListId` the route declares —
@@ -646,16 +723,14 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // (measured: it synthesizes `"Namespace": ["analytics"]`), and cdkd deploys
   // it because the provider accepts both. Such a template is not valid
   // CloudFormation — the registry types the property `string`, so CFn would
-  // reject it on a plain CREATE too — and `overlayResourceIdentifierOnProperties`
-  // only overwrites a field the template carries as a literal STRING, so the
-  // array survives into the phase-1 template and CFn answers with an opaque
-  // changeset-create rejection. The `resourceIdentifier` this splitter builds
-  // is correct either way (it comes from the physicalId, not the template).
-  // Not repaired here: the fix belongs in the overlay's literal-string rule,
-  // which is shared by every type. Tracked in
-  // [#1787](https://github.com/go-to-k/cdkd/issues/1787) (split out of #1771,
-  // which corrected the provider comment and registered the splitters it named
-  // but left this shared rule alone).
+  // reject it on a plain CREATE too. The `resourceIdentifier` this splitter
+  // builds is correct either way (it comes from the physicalId, not the
+  // template), and since issue #1787 the shared overlay rule handles the
+  // template side too: `overlayResourceIdentifierOnProperties` now overwrites
+  // any literal — `["analytics"]` included — with the scalar identifier, and
+  // refuses only a list carrying an intrinsic. So the array no longer survives
+  // into the phase-1 template, and CFn no longer answers with an opaque
+  // changeset-create rejection.
   'AWS::S3Tables::Namespace': (physicalId) => {
     const parts = physicalId.split('|');
     if (parts.length !== 2) {
@@ -764,6 +839,28 @@ const EIP_ALLOCATION_ID_PREFIX = 'eipalloc-';
  * validate an address AWS itself minted.
  */
 const EIP_PUBLIC_IP_PATTERN = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+
+/**
+ * The prefix every `AWS::EC2::VPCCidrBlock` association id carries. The same
+ * kind of shape discriminator as {@link EIP_ALLOCATION_ID_PREFIX}: a VPC id and
+ * an association id BOTH start with `vpc-`, so the longer prefix is what tells
+ * the two segments apart.
+ */
+const VPC_CIDR_ASSOCIATION_ID_PREFIX = 'vpc-cidr-assoc-';
+
+/**
+ * The other half of that discriminator. ANCHORED, so an association id
+ * (`vpc-cidr-assoc-…`, which also begins `vpc-`) does NOT match — a reversed
+ * pair is exactly what this exists to catch.
+ *
+ * The character class is `[0-9a-z]` rather than hex, and the LENGTH is not
+ * pinned. EC2 ids are hex today, but `cdkd export` is all-or-nothing, so a
+ * false REFUSAL here blocks an entire export — and the discrimination does not
+ * depend on the alphabet at all: it is the `-` in `cidr-assoc`, which no
+ * character class here admits. Widening the class therefore costs nothing and
+ * removes a false-refusal vector.
+ */
+const VPC_ID_PATTERN = /^vpc-[0-9a-z]+$/;
 
 const GATEWAY_ATTACHMENT_TYPE_IGW = 'IGW';
 const GATEWAY_ATTACHMENT_TYPE_VGW = 'VGW';
@@ -1898,11 +1995,12 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     // path forward.
     if (blocked.length > 0) {
       logger.error('The following resources block migration:');
-      for (const b of blocked) {
-        logger.error(`  - ${b.logicalId} (${b.resourceType}): ${b.reason}`);
+      for (const line of groupBlockedReasons(blocked)) {
+        logger.error(line);
       }
       throw new Error(
-        `${blocked.length} resource(s) block migration. Either destroy them first ` +
+        `${new Set(blocked.map((b) => b.logicalId)).size} resource(s) block migration. ` +
+          `Either destroy them first ` +
           `(cdkd destroy / cdkd state destroy cherry-picked), or remove them from the ` +
           `CDK app and re-synthesize.`
       );
@@ -3238,16 +3336,66 @@ export async function buildImportPlan(
       continue;
     }
 
+    const propertiesOverlay = resolved.propertiesOverlay ?? resolved.resourceIdentifier;
+
+    // Pre-flight the OVERLAY, not just the identifier (issue #1787). See
+    // `unrepresentableOverlayFields` for why this cannot live at the overlay
+    // site: `--dry-run` returns before any overlay call, and the nested path
+    // overlays inside the per-stack IMPORT loop, where a throw would abort with
+    // earlier stacks already migrated. Reported through `blocked` so every
+    // offender is named in ONE pass, like every other unfixable-resource
+    // verdict here.
+    const unrepresentable = unrepresentableOverlayFields(raw, propertiesOverlay);
+    if (unrepresentable.length > 0) {
+      for (const u of unrepresentable) {
+        blocked.push({
+          logicalId,
+          resourceType,
+          reason: unrepresentableOverlayMessage(
+            { logicalId, resourceType },
+            u.field,
+            u.current,
+            u.value
+          ),
+        });
+      }
+      continue;
+    }
+
     phase1Imports.push({
       logicalId,
       resourceType,
       physicalId: stateEntry.physicalId,
       resourceIdentifier: resolved.resourceIdentifier,
-      propertiesOverlay: resolved.propertiesOverlay ?? resolved.resourceIdentifier,
+      propertiesOverlay,
     });
   }
 
   return { phase1Imports, phase2Creates, recreateBeforePhase2, nestedStackRows, blocked };
+}
+
+/**
+ * Render the `blocked` list one bullet per RESOURCE, folding a resource's
+ * several reasons into it.
+ *
+ * The pre-flight pushes one entry per offending FIELD (issue #1787), so a
+ * multi-field overlay such as `AWS::S3Tables::Namespace` contributes two rows
+ * for one resource — which made the count ("1 resource(s)") disagree with the
+ * bullets printed under it. Grouping keeps the two consistent without losing a
+ * reason.
+ */
+export function groupBlockedReasons(blocked: readonly BlockedResource[]): string[] {
+  const byResource = new Map<string, { resourceType: string; reasons: string[] }>();
+  for (const b of blocked) {
+    const entry = byResource.get(b.logicalId) ?? { resourceType: b.resourceType, reasons: [] };
+    entry.reasons.push(b.reason);
+    byResource.set(b.logicalId, entry);
+  }
+  return [...byResource].map(([logicalId, { resourceType, reasons }]) =>
+    reasons.length === 1
+      ? `  - ${logicalId} (${resourceType}): ${reasons[0]}`
+      : `  - ${logicalId} (${resourceType}):\n${reasons.map((r) => `      - ${r}`).join('\n')}`
+  );
 }
 
 /**
@@ -3652,7 +3800,12 @@ export function injectDeletionPolicyForImport(template: Record<string, unknown>)
 
 export function filterTemplateForImport(
   template: Record<string, unknown>,
-  plan: ImportPlanEntry[]
+  plan: ImportPlanEntry[],
+  // Forwarded to `overlayResourceIdentifierOnProperties`. The nested path
+  // builds a phase-1 template TWICE over the same entries (1A then 1B), so the
+  // second pass must stay silent or every LIST->scalar rewrite is announced
+  // twice — the single-stack path has only one pass and keeps the default.
+  warnOnRewrite = true
 ): Record<string, unknown> {
   const allow = new Map(plan.map((p) => [p.logicalId, p] as const));
   const original = template['Resources'] as Record<string, unknown>;
@@ -3660,7 +3813,11 @@ export function filterTemplateForImport(
   for (const [logicalId, resource] of Object.entries(original)) {
     const entry = allow.get(logicalId);
     if (!entry) continue;
-    filteredResources[logicalId] = overlayResourceIdentifierOnProperties(resource, entry);
+    filteredResources[logicalId] = overlayResourceIdentifierOnProperties(
+      resource,
+      entry,
+      warnOnRewrite
+    );
   }
 
   const result: Record<string, unknown> = { ...template, Resources: filteredResources };
@@ -3694,8 +3851,10 @@ export function filterTemplateForImport(
  * migration" value proposition. Closes [#319].
  *
  * **Post-v0.95 behavior** (this function): override only when synth
- * already carries a *literal-string* value for the field AND it differs
- * from `ResourceIdentifier`. Three cases:
+ * already carries a *literal* value for the field AND it differs
+ * from `ResourceIdentifier`. Four cases (the fourth added by issue #1787,
+ * which also widened "literal" past `typeof === 'string'` — see
+ * {@link classifyOverlayCurrentValue} for the full classification):
  *
  * - **Absent** (auto-generated names — user did NOT declare a physical
  *   name in CDK code): `Properties[field]` stays absent. Matches
@@ -3732,12 +3891,26 @@ export function filterTemplateForImport(
  *   names` flip are no longer in this case — Properties.RoleName matches
  *   the AWS name without override.
  *
+ * - **Unrepresentable** (a list carrying an intrinsic / a nested list / an
+ *   empty list): REFUSED with a message naming the resource, the property and
+ *   the scalar to declare instead. Preserving ANY of the three reproduces the
+ *   opaque `CreateChangeSet` rejection; what makes OVERRIDING wrong differs per
+ *   shape, so {@link refusalReason} says which rather than asserting one cause
+ *   for all — only a list actually carrying an object element has an intrinsic
+ *   to discard. Either way the command stops before submitting anything
+ *   (issue #1787).
+ *
  * For literal-match (Properties already has the right value), the
- * override is a no-op, so the check is effectively
- * `Properties[field] !== overlayValue && typeof Properties[field] ===
- * 'string'`.
+ * override is a no-op.
  */
-function overlayResourceIdentifierOnProperties(resource: unknown, entry: ImportPlanEntry): unknown {
+function overlayResourceIdentifierOnProperties(
+  resource: unknown,
+  entry: ImportPlanEntry,
+  // The overlay runs TWICE per export (phase-1 filter + phase-2 UPDATE
+  // template) over the same entries, so an unconditional warn prints every
+  // rewrite twice. Phase 1 owns the message; phase 2 stays silent.
+  warnOnRewrite = true
+): unknown {
   if (!resource || typeof resource !== 'object' || Array.isArray(resource)) {
     return resource;
   }
@@ -3760,13 +3933,212 @@ function overlayResourceIdentifierOnProperties(resource: unknown, entry: ImportP
   const overlay = entry.propertiesOverlay ?? entry.resourceIdentifier;
   for (const [field, value] of Object.entries(overlay)) {
     const current = properties[field];
-    // Only override on literal-string mismatch. See docstring above for
-    // why absent / intrinsic / matching-literal are all left alone.
-    if (typeof current === 'string' && current !== value) {
+    // Only override on literal mismatch. See docstring above for why absent /
+    // intrinsic / matching-literal are all left alone, and
+    // `classifyOverlayCurrentValue` for why a non-string LITERAL is overridden
+    // rather than preserved.
+    const kind = classifyOverlayCurrentValue(current);
+    if (kind === 'intrinsic' || kind === 'absent') {
+      continue;
+    }
+    if (kind === 'unrepresentable') {
+      // Defense in depth. `buildImportPlan` runs the SAME classification and
+      // BLOCKS the resource before any AWS write, so reaching here means the
+      // pre-flight and this function disagreed — which is a cdkd bug, not a
+      // user-fixable template problem. Keeping the throw means the bad value
+      // still cannot reach CreateChangeSet.
+      throw new Error(unrepresentableOverlayMessage(entry, field, current, value));
+    }
+    if (current !== value) {
+      if (warnOnRewrite && typeof current !== 'string') {
+        // The three cases the pre-#1787 rule handled were all string-vs-string,
+        // so a rewrite was invisible by construction. Rewriting a LIST or a
+        // number is a shape change the user inherits in the CFn-managed
+        // template, and their next `cdk deploy` diffs against it — so say so
+        // rather than truncating silently.
+        getLogger().warn(
+          `${entry.logicalId} (${entry.resourceType}): rewriting the identifier property ` +
+            `'${field}' from ${describeOverlayValueShape(current)} to the scalar '${value}' ` +
+            `recorded in cdkd state. CloudFormation types this property as a string; the ` +
+            `exported template will carry the scalar.`
+        );
+      }
       properties[field] = value;
     }
   }
   return { ...r, Properties: properties };
+}
+
+/**
+ * Why a given `unrepresentable` value is refused rather than rewritten.
+ *
+ * THREE shapes reach `unrepresentable`, and they are refused for two different
+ * reasons — an earlier revision of this message asserted the intrinsic reason
+ * for all of them, which is false for two of the three. The distinction is not
+ * cosmetic: a message that names a cause the value does not have sends the user
+ * looking for an intrinsic that is not there.
+ */
+function refusalReason(current: unknown): string {
+  if (Array.isArray(current) && current.length === 0) {
+    return 'cdkd will not invent a scalar where the template declared no value';
+  }
+  // Only a list that actually CARRIES an object element has an intrinsic to
+  // protect. A nested list, or one holding `null`, has none — it is simply not
+  // representable as the scalar the schema declares.
+  const carriesIntrinsic =
+    Array.isArray(current) &&
+    current.some((e) => e !== null && typeof e === 'object' && !Array.isArray(e));
+  return carriesIntrinsic
+    ? 'cdkd will not rewrite it, because doing so would discard the intrinsic it carries'
+    : 'cdkd will not replace a value it cannot represent as the scalar the schema declares';
+}
+
+/**
+ * The shared message for a refused overlay value — used by the pre-flight in
+ * {@link buildImportPlan} (which BLOCKS the resource) and by
+ * {@link overlayResourceIdentifierOnProperties}'s defense-in-depth throw, so
+ * the two cannot drift into describing the same defect differently.
+ */
+function unrepresentableOverlayMessage(
+  entry: { logicalId: string; resourceType: string },
+  field: string,
+  current: unknown,
+  value: string
+): string {
+  return (
+    `${entry.logicalId} (${entry.resourceType}): the identifier property '${field}' is ` +
+    `${describeOverlayValueShape(current)}, but CloudFormation types it as a string. ` +
+    `${refusalReason(current)}. ` +
+    `Declare '${field}' as the scalar '${value}' (or drop the addPropertyOverride that ` +
+    `made it a list) and re-run 'cdkd export'.`
+  );
+}
+
+/**
+ * Every overlay field of `entry` whose value in `resource`'s `Properties` is
+ * {@link classifyOverlayCurrentValue}-`unrepresentable`.
+ *
+ * Exists so the refusal happens during PLANNING rather than during template
+ * preprocessing. `overlayResourceIdentifierOnProperties` is called from three
+ * places, and two of them are past the point of no return: `--dry-run` returns
+ * BEFORE any overlay call (so a dry run would report a clean plan for a
+ * template the real run aborts on), and the nested-stack path calls it inside
+ * the per-stack IMPORT loop — where a throw on stack N leaves stacks 1..N-1
+ * already imported, outside the loop's own "stacks imported so far" recovery
+ * handler. Running the same classification in `buildImportPlan` puts the
+ * verdict where every other unfixable-resource verdict already lives: reported
+ * for EVERY offender at once, before the lock, before dry-run's return, and
+ * before any AWS write.
+ */
+function unrepresentableOverlayFields(
+  resource: unknown,
+  overlay: Record<string, string>
+): { field: string; current: unknown; value: string }[] {
+  if (!resource || typeof resource !== 'object' || Array.isArray(resource)) return [];
+  const props = (resource as Record<string, unknown>)['Properties'];
+  if (!props || typeof props !== 'object' || Array.isArray(props)) return [];
+  const bag = props as Record<string, unknown>;
+  const out: { field: string; current: unknown; value: string }[] = [];
+  for (const [field, value] of Object.entries(overlay)) {
+    if (classifyOverlayCurrentValue(bag[field]) === 'unrepresentable') {
+      out.push({ field, current: bag[field], value });
+    }
+  }
+  return out;
+}
+
+/**
+ * Classify what the synth template currently carries at an identifier field,
+ * for {@link overlayResourceIdentifierOnProperties} (issue #1787).
+ *
+ * The pre-#1787 rule was `typeof current === 'string'`, which is correct for
+ * the two cases it was designed for (an absent key, and a `Ref` / `Fn::GetAtt`
+ * intrinsic that must be preserved — issue #319) and WRONG for a third,
+ * reachable case: a field the template carries as a non-string LITERAL. The
+ * measured instance is `AWS::S3Tables::Namespace`, whose CFn registry type is
+ * `{"type": "string"}` and whose CDK L1 emits a string, but
+ * `addPropertyOverride('Namespace', ['analytics'])` synthesizes
+ * `"Namespace": ["analytics"]` — which cdkd deploys, because
+ * `s3-tables-provider.ts` accepts both wire shapes. The array is not a literal
+ * string, so the overlay left it alone and it reached `CreateChangeSet`, where
+ * CFn answered with an opaque rejection.
+ *
+ * The classification, and why each arm is what it is:
+ *
+ * - `absent` (`undefined` only) — unchanged. An auto-generated name the user
+ *   never declared; CFn accepts the IMPORT on `ResourceIdentifier` alone. An
+ *   explicit `null` is deliberately NOT here: the key IS present, the shallow
+ *   Properties copy keeps it, and `"Namespace": null` then reaches
+ *   `CreateChangeSet` — the same opaque-rejection class as the array, through
+ *   the same `addPropertyOverride` hatch. It is a literal, and overwritten.
+ * - `intrinsic` (a non-array object) — unchanged. `{Ref: Parent}` /
+ *   `{Fn::GetAtt: [...]}` resolve during changeset processing to exactly this
+ *   resource's `ResourceIdentifier` value, so clobbering them would only make
+ *   the post-export `cdk diff` dirty (issue #319).
+ * - `literal` (string / number / boolean, or an array of those) — OVERRIDDEN
+ *   with the overlay value. This is not a guess: the overlay value comes from
+ *   the cdkd-recorded physicalId, which is the authority on what the resource
+ *   IS, while the template side is only what CDK happened to synthesize. So a
+ *   single-element `['analytics']` and a bare `analytics` both become the
+ *   scalar CFn's schema declares, exactly as the pre-existing prefixed-name
+ *   literal-mismatch case already does.
+ * - `unrepresentable` (an array containing an object / array / null, or an
+ *   EMPTY array) — REFUSED. Preserving any of them ships the same opaque CFn
+ *   rejection this change exists to remove; the reason OVERRIDING is wrong
+ *   differs by shape, and {@link refusalReason} splits it three ways rather
+ *   than asserting one cause:
+ *     - a list carrying an OBJECT element — overriding discards an intrinsic
+ *       the user wrote;
+ *     - a NESTED list, or one holding `null` — no intrinsic to protect, it is
+ *       simply not representable as the declared scalar;
+ *     - an EMPTY list — nothing to reconcile against the identifier, and
+ *       materializing a scalar where the template declared "no value" is the
+ *       invention this classification exists to avoid.
+ *   Saying "would discard an intrinsic" for all three was the defect the
+ *   #1787 review round removed; do not re-collapse it.
+ */
+function classifyOverlayCurrentValue(
+  current: unknown
+): 'absent' | 'intrinsic' | 'literal' | 'unrepresentable' {
+  if (current === undefined) {
+    return 'absent';
+  }
+  if (current === null) {
+    // Present-but-null. See the `absent` note above: skipping this would leave
+    // the key in the emitted template.
+    return 'literal';
+  }
+  if (Array.isArray(current)) {
+    if (current.length === 0) {
+      return 'unrepresentable';
+    }
+    return current.every(
+      (e) => typeof e === 'string' || typeof e === 'number' || typeof e === 'boolean'
+    )
+      ? 'literal'
+      : 'unrepresentable';
+  }
+  if (typeof current === 'object') {
+    return 'intrinsic';
+  }
+  return 'literal';
+}
+
+/**
+ * Human-readable shape of an overlay value, for the refusal error and the
+ * rewrite warning. Bounded: the value is user-supplied and lands in an error
+ * message that a failed export persists, so a large list is summarized rather
+ * than serialized whole.
+ */
+function describeOverlayValueShape(current: unknown): string {
+  if (Array.isArray(current)) {
+    if (current.length === 0) return 'an empty list';
+    const preview = JSON.stringify(current);
+    const shown = preview.length > 120 ? `${preview.slice(0, 120)}…` : preview;
+    return `a ${current.length}-element list (${shown})`;
+  }
+  if (current === null) return 'an explicit null';
+  return `a ${typeof current} (${JSON.stringify(current)})`;
 }
 
 /**
@@ -3810,7 +4182,7 @@ export function applyImportOverlayForPhase2(
   for (const entry of phase1Imports) {
     const r = resourcesMap[entry.logicalId];
     if (r !== undefined) {
-      resourcesMap[entry.logicalId] = overlayResourceIdentifierOnProperties(r, entry);
+      resourcesMap[entry.logicalId] = overlayResourceIdentifierOnProperties(r, entry, false);
     }
   }
   return result;
@@ -4892,9 +5264,10 @@ export async function runPerStackImportLoop(args: {
       }
     );
     if (plan.blocked.length > 0) {
-      const lines = plan.blocked.map((b) => `  - ${b.logicalId} (${b.resourceType}): ${b.reason}`);
+      const lines = groupBlockedReasons(plan.blocked);
       throw new Error(
-        `Stack '${meta.cdkdStackName}' has ${plan.blocked.length} resource(s) that block ` +
+        `Stack '${meta.cdkdStackName}' has ` +
+          `${new Set(plan.blocked.map((b) => b.logicalId)).size} resource(s) that block ` +
           `migration:\n${lines.join('\n')}`
       );
     }
@@ -5198,7 +5571,7 @@ export async function runPerStackImportLoop(args: {
           // nested-stack rows back with DeletionPolicy: Retain + rewritten
           // TemplateURL pointing at the child's AWS-side template (fetched
           // via GetTemplate(Processed)).
-          const phase1BTemplate = filterTemplateForImport(plan.template, plan.phase1Imports);
+          const phase1BTemplate = filterTemplateForImport(plan.template, plan.phase1Imports, false);
           injectDeletionPolicyForImport(phase1BTemplate);
           const phase1BResources: ResourceToImport[] = [];
 
