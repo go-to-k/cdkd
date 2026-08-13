@@ -890,8 +890,15 @@ describe('ResourceUpdateNotSupportedError is terminal by construction (issue #18
   it('stays terminal after the deploy engine wraps it', () => {
     // `deploy-engine.ts` / `drift.ts` can re-raise the refusal inside an
     // outer error; the marker walk follows `.cause`, so the wrap must not
-    // resurrect the backoff.
-    const wrapped = new Error(`Failed to update ${LOGICAL_ID}`, { cause: build() });
+    // resurrect the backoff. `ProvisioningError` is what actually wraps in
+    // the tree, so use it rather than a bare Error.
+    const wrapped = new ProvisioningError(
+      `Failed to update ${LOGICAL_ID}`,
+      'AWS::Lambda::LayerVersion',
+      LOGICAL_ID,
+      undefined,
+      build()
+    );
     expect(isRetryableTransientError(wrapped, wrapped.message)).toBe(false);
   });
 

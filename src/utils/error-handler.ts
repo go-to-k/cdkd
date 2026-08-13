@@ -341,11 +341,13 @@ export class ResourceUpdateNotSupportedError extends CdkdError {
     this.suggestion = suggestion;
     this.name = 'ResourceUpdateNotSupportedError';
     Object.setPrototypeOf(this, ResourceUpdateNotSupportedError.prototype);
-    // Terminal by construction — see the class JSDoc. Called AFTER
-    // `setPrototypeOf` so the marker lands on the instance that callers
-    // actually receive, and its return value is ignored on purpose: the
-    // helper marks in place and returns the same object for the inline
-    // `throw markNonRetryable(...)` spelling other call sites use.
+    // Terminal by construction — see the class JSDoc. Position relative to
+    // `setPrototypeOf` is immaterial (the marker is an OWN property and
+    // `setPrototypeOf` mutates in place, touching neither own properties nor
+    // extensibility); it sits last only for readability. The return value is
+    // ignored on purpose: the helper marks in place and returns the same
+    // object, for the inline `throw markNonRetryable(...)` spelling other
+    // call sites use.
     markNonRetryable(this);
   }
 }
