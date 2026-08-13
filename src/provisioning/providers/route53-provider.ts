@@ -2561,6 +2561,44 @@ export class Route53Provider implements ResourceProvider {
   }
 
   /**
+   * The attribute set for a hosted zone adopted through the NAME-lookup
+   * branch (issue #1875).
+   *
+   * Unlike the `knownPhysicalId` branch — whose verification call already
+   * carries the delegation set — this branch resolves the zone through
+   * `ListHostedZonesByName`, which does NOT return one, so the attributes
+   * cost one extra `GetHostedZone`.
+   *
+   * NEVER throws, matching the convention the neighbouring adoption paths
+   * already use (`AppSyncProvider.childImportAttributes`, issue #1728, and
+   * `importRecordSet`'s canonicalization, which adopts VERBATIM rather than
+   * declining): an import must not hard-fail because one optional attribute
+   * could not be read. `import.ts` only aborts when ZERO resources import, so
+   * under `--migrate-from-cloudformation` a throw here would cost the row at
+   * exactly the moment the CloudFormation stack is being retired — the
+   * resource would end up in NEITHER CloudFormation nor cdkd state. Adopting
+   * the zone is worth more than its bookkeeping attribute.
+   *
+   * It KEEPS WHAT IT CAN on failure — `Id` comes out of the resolved zone id
+   * and needs no AWS call — which is the same answer `childImportAttributes`
+   * gives for the account-independent half of its set, and is at worst the
+   * exact pre-#1875 behavior for the one key it could not read.
+   */
+  private async hostedZoneImportAttributes(zoneId: string): Promise<Record<string, unknown>> {
+    try {
+      const response = await this.getClient().send(new GetHostedZoneCommand({ Id: zoneId }));
+      return { Id: zoneId, NameServers: response.DelegationSet?.NameServers ?? [] };
+    } catch (error) {
+      this.logger.warn(
+        `Imported hosted zone ${zoneId} but could not read its NameServers: ` +
+          `${error instanceof Error ? error.message : String(error)}. ` +
+          `Fn::GetAtt on NameServers will fail until the zone's next deploy heals the record.`
+      );
+      return { Id: zoneId };
+    }
+  }
+
+  /**
    * Adopt an existing hosted zone (issue #1702).
    *
    * An explicit `--resource` id is ground truth and is only VERIFIED. With no
@@ -2582,12 +2620,43 @@ export class Route53Provider implements ResourceProvider {
    * (`skipped-not-found`, the next deploy creates the zone) while an
    * ambiguous name or a failed lookup throws, which `importOne` records as
    * `failed` for this row alone.
+   *
+   * BOTH branches record the same `{ Id, NameServers }` attribute set a
+   * `cdkd deploy` CREATE records (issue #1875). Recording `attributes: {}`
+   * left an adopted zone with no `NameServers` in state, and nothing else
+   * rescues it: `IntrinsicFunctionResolver.resolveGetAtt`'s flat-attribute
+   * branch misses (so PR #1868's legacy comma-string normalization, which
+   * lives in that branch, never runs either), `constructAttribute` has no
+   * `AWS::Route53::HostedZone` case, and resolution falls through to
+   * `guardedPhysicalIdFallback`, which hands back the zone id STRING — so a
+   * downstream `Fn::Join` threw `second argument must be a list` and the
+   * Output was silently dropped. `provider.getAttribute` does return the list
+   * but is only reached from the orphan-rewriter path, never from ordinary
+   * template resolution.
+   *
+   * The delegation set is normalized `?? []` — a LIST, never a comma string —
+   * exactly as `createHostedZone` / `updateHostedZone` / `getHostedZoneAttribute`
+   * do, so an imported zone and a deployed one resolve IDENTICALLY. A
+   * divergence here would be a phantom-drift hazard as well as a resolution
+   * one.
    */
   private async importHostedZone(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
       try {
-        await this.getClient().send(new GetHostedZoneCommand({ Id: input.knownPhysicalId }));
-        return { physicalId: input.knownPhysicalId, attributes: {} };
+        // The verification call is ALSO the attribute read — the delegation
+        // set rides the response cdkd already awaits, so this branch adds no
+        // AWS call and no new failure mode. A `NoSuchHostedZone` still means
+        // "not found" and anything else still propagates, unchanged.
+        const response = await this.getClient().send(
+          new GetHostedZoneCommand({ Id: input.knownPhysicalId })
+        );
+        return {
+          physicalId: input.knownPhysicalId,
+          attributes: {
+            Id: input.knownPhysicalId,
+            NameServers: response.DelegationSet?.NameServers ?? [],
+          },
+        };
       } catch (err) {
         if (err instanceof Error && err.name === 'NoSuchHostedZone') return null;
         throw err;
@@ -2618,7 +2687,7 @@ export class Route53Provider implements ResourceProvider {
           },
         }
       );
-      return { physicalId: zoneId, attributes: {} };
+      return { physicalId: zoneId, attributes: await this.hostedZoneImportAttributes(zoneId) };
     } catch (error) {
       // A SOUND negative is an ordinary not-found: `import.ts` reports
       // `skipped-not-found` and the next deploy CREATEs the zone, which is

@@ -1268,11 +1268,18 @@ describe('Route53Provider', () => {
     }
 
     it('explicit override (HostedZone): GetHostedZone verifies and returns id', async () => {
-      mockSend.mockResolvedValueOnce({ HostedZone: { Id: '/hostedzone/Z123' } });
+      mockSend.mockResolvedValueOnce({
+        HostedZone: { Id: '/hostedzone/Z123' },
+        DelegationSet: { NameServers: ['ns-1.example.com', 'ns-2.example.com'] },
+      });
 
       const result = await provider.import(makeInput({ knownPhysicalId: 'Z123' }));
 
-      expect(result).toEqual({ physicalId: 'Z123', attributes: {} });
+      // Issue #1875: the verification response IS the attribute read.
+      expect(result).toEqual({
+        physicalId: 'Z123',
+        attributes: { Id: 'Z123', NameServers: ['ns-1.example.com', 'ns-2.example.com'] },
+      });
       const call = mockSend.mock.calls[0][0];
       expect(call.constructor.name).toBe('GetHostedZoneCommand');
       expect(call.input).toEqual({ Id: 'Z123' });
@@ -1302,10 +1309,16 @@ describe('Route53Provider', () => {
         HostedZones: [zone('Z1PUBLIC', 'example.com.', false)],
         IsTruncated: false,
       });
+      // Issue #1875: the name-lookup branch pays one extra GetHostedZone for
+      // the delegation set (ListHostedZonesByName does not return one).
+      mockSend.mockResolvedValueOnce({ DelegationSet: { NameServers: ['ns-1.example.com'] } });
 
       const result = await provider.import(makeInput({ properties: { Name: 'example.com' } }));
 
-      expect(result).toEqual({ physicalId: 'Z1PUBLIC', attributes: {} });
+      expect(result).toEqual({
+        physicalId: 'Z1PUBLIC',
+        attributes: { Id: 'Z1PUBLIC', NameServers: ['ns-1.example.com'] },
+      });
       const call = mockSend.mock.calls[0][0];
       expect(call.constructor.name).toBe('ListHostedZonesByNameCommand');
       // Canonicalized to AWS's ordering key, not the template's spelling.
@@ -1320,6 +1333,7 @@ describe('Route53Provider', () => {
         ],
         IsTruncated: false,
       });
+      mockSend.mockResolvedValueOnce({ DelegationSet: { NameServers: ['ns-1.example.com'] } });
 
       const result = await provider.import(
         makeInput({
@@ -1332,7 +1346,7 @@ describe('Route53Provider', () => {
 
       // Without the visibility narrowing this is TWO matches and the
       // ambiguity guard declines the row.
-      expect(result).toEqual({ physicalId: 'Z2PRIVATE', attributes: {} });
+      expect(result?.physicalId).toBe('Z2PRIVATE');
     });
 
     it('picks the PUBLIC zone of a split-horizon pair when the template declares no VPCs', async () => {
@@ -1348,7 +1362,7 @@ describe('Route53Provider', () => {
 
       // Note the private zone is listed FIRST: a "take the first match" fix
       // would return it, so this pins the filter rather than the ordering.
-      expect(result).toEqual({ physicalId: 'Z1PUBLIC', attributes: {} });
+      expect(result?.physicalId).toBe('Z1PUBLIC');
     });
 
     // The two ways of failing are DISTINCT and must stay so: a proven absence
@@ -1412,7 +1426,7 @@ describe('Route53Provider', () => {
 
       const result = await provider.import(makeInput({ properties: { Name: 'example.com' } }));
 
-      expect(result).toEqual({ physicalId: 'ZNOCONFIG', attributes: {} });
+      expect(result?.physicalId).toBe('ZNOCONFIG');
     });
 
     it('REFUSES when every VPCs element is intrinsic-only (conditionally absent)', async () => {
@@ -1468,7 +1482,7 @@ describe('Route53Provider', () => {
         })
       );
 
-      expect(result).toEqual({ physicalId: 'Z2PRIVATE', attributes: {} });
+      expect(result?.physicalId).toBe('Z2PRIVATE');
     });
 
     it('does NOT treat a truncated page of other-side zones as a proven absence', async () => {
@@ -1580,13 +1594,16 @@ describe('Route53Provider', () => {
     });
 
     it('prefers an explicit --resource override over the Name lookup', async () => {
-      mockSend.mockResolvedValueOnce({ HostedZone: { Id: '/hostedzone/ZOVERRIDE' } });
+      mockSend.mockResolvedValueOnce({
+        HostedZone: { Id: '/hostedzone/ZOVERRIDE' },
+        DelegationSet: { NameServers: ['ns-1.example.com'] },
+      });
 
       const result = await provider.import(
         makeInput({ knownPhysicalId: 'ZOVERRIDE', properties: { Name: 'example.com' } })
       );
 
-      expect(result).toEqual({ physicalId: 'ZOVERRIDE', attributes: {} });
+      expect(result?.physicalId).toBe('ZOVERRIDE');
       expect(mockSend).toHaveBeenCalledTimes(1);
       expect(mockSend.mock.calls[0][0].constructor.name).toBe('GetHostedZoneCommand');
     });

@@ -409,7 +409,7 @@ Types with an `import()` that auto-resolves via the above:
 - AWS::ECR::Repository
 - AWS::ElasticLoadBalancingV2::LoadBalancer
 - AWS::ElasticLoadBalancingV2::TargetGroup
-- AWS::Route53::HostedZone (resolved from the template's `Name` via `ListHostedZonesByName`; when a public and a private zone share that name — split-horizon DNS — the template's own `VPCs` picks the side, and a name that is still ambiguous is REFUSED rather than guessed at — reported as a failed row naming `--resource <logicalId>=<hostedZoneId>`, not as not-found)
+- AWS::Route53::HostedZone (resolved from the template's `Name` via `ListHostedZonesByName`; when a public and a private zone share that name — split-horizon DNS — the template's own `VPCs` picks the side, and a name that is still ambiguous is REFUSED rather than guessed at — reported as a failed row naming `--resource <logicalId>=<hostedZoneId>`, not as not-found. The adopted row records the same `Id` / `NameServers` attributes a `cdkd deploy` CREATE records, so `Fn::GetAtt <Zone>.NameServers` — and the `Fn::Join` over it that CDK's `zone.hostedZoneNameServers` emits — resolves on an imported zone exactly as on a deployed one; a zone with no delegation set records the empty LIST. Reading the delegation set is best-effort: when `route53:GetHostedZone` is denied the zone is still adopted, with a warning, and the next deploy heals the record)
 - AWS::StepFunctions::StateMachine
 - AWS::Glue::Database
 - AWS::Glue::Table (stored and displayed as the composite `<databaseName>|<tableName>`; `--resource` also accepts CloudFormation's bare table name, paired with the template's `DatabaseName`)
