@@ -1510,9 +1510,17 @@ touched** — that stays `cdk gc`'s job.
 covered — including nested-stack children). References are collected from
 each resource's `properties` / `observedProperties` / `attributes` and the
 stack `outputs`, matching `{S3Bucket, S3Key}` pairs (Lambda `Code` etc.),
-`s3://` URIs, virtual-hosted and path-style `https://...amazonaws.com`
+`s3://` URIs, virtual-hosted and path-style `https://...<urlSuffix>`
 URLs (query strings stripped), and ECR image URIs by `:tag` and/or
-`@sha256:digest`.
+`@sha256:digest`. `<urlSuffix>` matches EVERY partition's suffix
+(`amazonaws.com` / `amazonaws.com.cn` / `c2s.ic.gov` / `sc2s.sgov.gov` /
+`cloud.adc-e.uk` / `csp.hci.ic.gov` / `amazonaws.eu`), not just the one
+the gc region uses — the scan reads state written by any cdkd binary for
+any region, and a suffix the matchers miss reads as UNREFERENCED and is
+DELETED (issue
+[#1781](https://github.com/go-to-k/cdkd/issues/1781)). ECR hosts
+additionally match the FIPS (`<acct>.dkr.ecr-fips.<region>.<urlSuffix>`)
+and short-form (`<acct>.dkr-ecr.<region>.on.aws`) endpoints.
 
 **Guards** (this command deletes data — every ambiguity is biased toward
 NOT deleting):
