@@ -411,6 +411,14 @@ anything non-obvious you learned in memory.
   just merged and cleaned up has lost exactly those things and is `next`. Close
   the run with the handoff line naming the literal next command, and say which
   `next` items are file-disjoint enough for one fresh run to take together.
+  **This flow is where the handoff line is most likely to be written
+  ambiguously**, because lanes merge at different times: while one lane is still
+  in flight the report is simultaneously "waiting on lane C" and "handing off
+  three issues", and a handoff line phrased as "next session, after lane C
+  merges" collapses the two into "this run continues into them once C lands".
+  Write the start command with NO condition attached, mark it as outside this
+  run, and keep the `next` items off the State line entirely — that line is only
+  for lanes this run is still driving to merge.
 - **This flow parks a LOT, so the State line carries most of its weight.** A
   fan-out run spends most of its wall-clock parked on something: a lane subagent
   still implementing, `gh pr checks --watch` on a lane's CI, a `/run-integ`
