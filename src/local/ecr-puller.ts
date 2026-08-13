@@ -51,7 +51,7 @@ import { getLogger } from '../utils/logger.js';
  * the shared helper knows is matched with no second literal to keep in sync
  * here.
  */
-const ECR_URI_REGEX = /^(\d{12})\.dkr\.ecr\.([^.]+)\.([^/]+)\/([^:]+):(.+)$/;
+const ECR_URI_HOST_REGEX = /^(\d{12})\.dkr\.ecr\.([^.]+)\.([^/]+)\//;
 
 export interface ParsedEcrUri {
   accountId: string;
@@ -66,19 +66,42 @@ export interface ParsedEcrUri {
  * images we don't try to authenticate against.
  */
 export function parseEcrUri(imageUri: string): ParsedEcrUri | undefined {
-  const m = ECR_URI_REGEX.exec(imageUri);
+  const host = parseEcrRegistryHost(imageUri);
+  if (!host) return undefined;
+  // The host carries no `/`, so the first one is the repository separator.
+  const m = /^([^:]+):(.+)$/.exec(imageUri.slice(imageUri.indexOf('/') + 1));
+  if (!m) return undefined;
+  return {
+    accountId: host.accountId,
+    region: host.region,
+    repository: m[1]!,
+    tag: m[2]!,
+  };
+}
+
+/**
+ * The HOST half of {@link parseEcrUri}: `<acct>.dkr.ecr.<region>.<urlSuffix>/`.
+ *
+ * Split out because two callers need to CLASSIFY a URI as ECR without requiring
+ * the `:<tag>` tail — `ecs-task-resolver.ts` decides `kind: 'ecr'` vs
+ * `kind: 'public'` for a container image, which may carry a digest or no tag at
+ * all. Both used to carry their own copy of the hardcoded commercial pattern,
+ * so `cdkd local run-task` kept the whole of issue #1758 after the pull path was
+ * fixed: outside the commercial partition the image classified as `public` and
+ * `ecs-task-runner` never ran the `docker login` branch, failing with an opaque
+ * anonymous-pull error. One definition, so the two cannot drift again.
+ */
+export function parseEcrRegistryHost(
+  imageUri: string
+): { accountId: string; region: string } | undefined {
+  const m = ECR_URI_HOST_REGEX.exec(imageUri);
   if (!m) return undefined;
   const region = m[2]!;
   // The captured suffix must be the one the region's partition actually uses.
   // Accepting ANY suffix would classify `<acct>.dkr.ecr.<region>.example.com`
   // as ECR and point a `docker login` at a registry cdkd does not own.
   if (m[3] !== derivePartitionAndUrlSuffix(region).urlSuffix) return undefined;
-  return {
-    accountId: m[1]!,
-    region,
-    repository: m[4]!,
-    tag: m[5]!,
-  };
+  return { accountId: m[1]!, region };
 }
 
 export interface EcrPullOptions {

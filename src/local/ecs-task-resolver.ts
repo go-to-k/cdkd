@@ -4,6 +4,7 @@ import { EcsTaskResolutionError } from 'cdk-local/internal';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
+import { parseEcrRegistryHost } from './ecr-puller.js';
 import { matchStacks } from '../cli/stack-matcher.js';
 import {
   substituteImagePlaceholders,
@@ -1206,10 +1207,15 @@ function parseContainerImage(
     );
   }
 
-  // Account-scoped ECR repo.
-  const ecrMatch = /^(\d{12})\.dkr\.ecr\.([^.]+)\.amazonaws\.com(?:\.cn)?\//.exec(substituted);
-  if (ecrMatch) {
-    return { kind: 'ecr', uri: substituted, account: ecrMatch[1]!, region: ecrMatch[2]! };
+  // Account-scoped ECR repo. The host suffix is DERIVED from the region via the
+  // shared helper (issue #1758) rather than matched against a hardcoded
+  // `amazonaws.com`: outside the commercial partition the old pattern missed,
+  // the image classified as `public`, and `ecs-task-runner`'s `case 'ecr'`
+  // never ran -- so `cdkd local run-task` attempted an anonymous `docker pull`
+  // with no `docker login`.
+  const ecrHost = parseEcrRegistryHost(substituted);
+  if (ecrHost) {
+    return { kind: 'ecr', uri: substituted, account: ecrHost.accountId, region: ecrHost.region };
   }
 
   return { kind: 'public', uri: substituted };
@@ -1251,9 +1257,10 @@ function classifyResolvedImage(uri: string, cdkAssetContainerRepo?: string): Res
     if (hashMatch) out.assetHash = hashMatch[1]!;
     return out;
   }
-  const ecrMatch = /^(\d{12})\.dkr\.ecr\.([^.]+)\.amazonaws\.com(?:\.cn)?\//.exec(uri);
-  if (ecrMatch) {
-    return { kind: 'ecr', uri, account: ecrMatch[1]!, region: ecrMatch[2]! };
+  // Same derivation as the sibling site above (issue #1758).
+  const ecrHost = parseEcrRegistryHost(uri);
+  if (ecrHost) {
+    return { kind: 'ecr', uri, account: ecrHost.accountId, region: ecrHost.region };
   }
   return { kind: 'public', uri };
 }
