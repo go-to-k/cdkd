@@ -1,3 +1,10 @@
+## [0.282.6](https://github.com/go-to-k/cdkd/compare/v0.282.5...v0.282.6) (2026-08-13)
+
+
+### Bug Fixes
+
+* **provisioning:** derive the DenyExternalAccess bucket policy partition from the caller's region ([#1822](https://github.com/go-to-k/cdkd/issues/1822)) ([b709859](https://github.com/go-to-k/cdkd/commit/b7098595a5ac468004804ffe2b71b9c983bcca6c))
+
 ## [0.282.5](https://github.com/go-to-k/cdkd/compare/v0.282.4...v0.282.5) (2026-08-13)
 
 
