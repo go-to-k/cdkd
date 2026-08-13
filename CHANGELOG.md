@@ -1,3 +1,10 @@
+## [0.283.7](https://github.com/go-to-k/cdkd/compare/v0.283.6...v0.283.7) (2026-08-13)
+
+
+### Bug Fixes
+
+* **provisioning:** terminate the onUnusable message and scope it to the READ ([#1864](https://github.com/go-to-k/cdkd/issues/1864)) ([798cb81](https://github.com/go-to-k/cdkd/commit/798cb81a294c030b132429bf7137c6ed800976f1))
+
 ## [0.283.6](https://github.com/go-to-k/cdkd/compare/v0.283.5...v0.283.6) (2026-08-13)
 
 
