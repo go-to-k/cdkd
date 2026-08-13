@@ -34,7 +34,6 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { DynamoDBGlobalTableProvider } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 import { canonicalizeUnorderedArraysAtPaths } from '../../../src/analyzer/drift-normalize.js';
-import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::GlobalTable';
 const TABLE_NAME = 'my-test-table-xxx';
@@ -112,195 +111,19 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
     });
   });
 
-  // ─── defect 2: WarmThroughput is AWS-computed ──────────────────────────
-
-  describe('GlobalSecondaryIndexes[].WarmThroughput', () => {
-    /** A live table AWS reports a computed WarmThroughput for — which, as of
-     *  the measured run, is EVERY index. */
-    const describeWithWarmThroughput = () => {
-      mockSend.mockResolvedValue({
-        Table: {
-          TableName: TABLE_NAME,
-          TableStatus: 'ACTIVE',
-          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
-          AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
-          BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
-          Replicas: [{ RegionName: 'us-east-1' }],
-          GlobalSecondaryIndexes: [
-            {
-              IndexName: 'gsi1',
-              KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
-              Projection: { ProjectionType: 'ALL' },
-              WarmThroughput: {
-                ReadUnitsPerSecond: 12000,
-                WriteUnitsPerSecond: 4000,
-                Status: 'ACTIVE',
-              },
-            },
-          ],
-        },
-      });
-    };
-
-    const readIndexes = async (
-      properties?: Record<string, unknown>
-    ): Promise<Record<string, unknown>[]> => {
-      const state = await provider.readCurrentState(
-        TABLE_NAME,
-        'MyTable',
-        RESOURCE_TYPE,
-        properties
-      );
-      return state?.['GlobalSecondaryIndexes'] as Record<string, unknown>[];
-    };
-
-    it('OMITS the computed value when the desired side declares none', async () => {
-      describeWithWarmThroughput();
-
-      // The desired side is a properties-only baseline that declares the index
-      // but never asked for a warm throughput. AWS reports a default the
-      // baseline can never carry, so emitting it is a one-sided difference
-      // forever.
-      const indexes = await readIndexes({
-        GlobalSecondaryIndexes: [
-          {
-            IndexName: 'gsi1',
-            KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
-            Projection: { ProjectionType: 'ALL' },
-          },
-        ],
-      });
-
-      expect(indexes[0]).toBeDefined();
-      expect('WarmThroughput' in indexes[0]!).toBe(false);
-      // The rest of the reverse map is untouched — the gate is per-KEY.
-      expect(indexes[0]!['IndexName']).toBe('gsi1');
-      expect(indexes[0]!['Projection']).toEqual({ ProjectionType: 'ALL' });
-    });
-
-    it('EMITS it when the desired side declares one, so a real change still drifts', async () => {
-      describeWithWarmThroughput();
-
-      // The CFn type does accept an explicit WarmThroughput, so an
-      // unconditional drop would hide a genuine difference for the users who
-      // set one. This is the assertion that keeps the gate from being a
-      // blanket removal.
-      const indexes = await readIndexes({
-        GlobalSecondaryIndexes: [
-          {
-            IndexName: 'gsi1',
-            KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
-            Projection: { ProjectionType: 'ALL' },
-            WarmThroughput: { ReadUnitsPerSecond: 500, WriteUnitsPerSecond: 100 },
-          },
-        ],
-      });
-
-      // Reverse-mapped to the CFn shape: AWS's `Status` member must NOT survive.
-      // The CFn type declares only the two unit members, so passing the
-      // description through would hand a user who DID declare `WarmThroughput`
-      // a difference their template can never match — the same permanent
-      // phantom drift this gate exists to remove, one key down.
-      expect(indexes[0]!['WarmThroughput']).toEqual({
-        ReadUnitsPerSecond: 12000,
-        WriteUnitsPerSecond: 4000,
-      });
-      expect('Status' in (indexes[0]!['WarmThroughput'] as Record<string, unknown>)).toBe(false);
-    });
-
-    it('treats an ABSENT desired bag as "not declared"', async () => {
-      describeWithWarmThroughput();
-
-      // Every production caller supplies the bag, so this is the defensive
-      // arm. It takes the direction that cannot manufacture drift.
-      const indexes = await readIndexes(undefined);
-
-      expect('WarmThroughput' in indexes[0]!).toBe(false);
-    });
-
-    it('reports the ONE-TIME transition against a stale observedProperties baseline', async () => {
-      describeWithWarmThroughput();
-
-      // The documented, deliberate cost of the gate, pinned so it is a known
-      // behavior rather than a surprise. The ordinary drift baseline is
-      // `observedProperties ?? properties`, and an observed bag captured by an
-      // EARLIER binary carries the computed member. Against the new readback,
-      // which omits it, the comparator reads the whole array as different.
-      const declaredSide = {
-        GlobalSecondaryIndexes: [
-          {
-            IndexName: 'gsi1',
-            KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
-            Projection: { ProjectionType: 'ALL' },
-          },
-        ],
-      };
-      const staleObserved = {
-        GlobalSecondaryIndexes: [
-          {
-            IndexName: 'gsi1',
-            KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
-            Projection: { ProjectionType: 'ALL' },
-            WarmThroughput: { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 },
-          },
-        ],
-      };
-      const aws = (await provider.readCurrentState(
-        TABLE_NAME,
-        'MyTable',
-        RESOURCE_TYPE,
-        declaredSide
-      ))!;
-
-      const unordered = provider.getDriftUnorderedPaths(RESOURCE_TYPE);
-      const stale = calculateResourceDrift(staleObserved, aws, { unorderedPaths: unordered });
-      expect(stale.map((d) => d.path)).toContain('GlobalSecondaryIndexes');
-
-      // ...and it CLEARS after one `cdkd drift --accept` / any deploy that
-      // re-captures, which is what makes it one-time rather than permanent.
-      // Without this half the test would not distinguish the transition from
-      // the permanent drift the gate exists to remove.
-      const refreshed = calculateResourceDrift(
-        { GlobalSecondaryIndexes: aws['GlobalSecondaryIndexes'] },
-        aws,
-        { unorderedPaths: unordered }
-      );
-      expect(refreshed).toEqual([]);
-    });
-
-    it('gates per INDEX, not per table', async () => {
-      mockSend.mockResolvedValue({
-        Table: {
-          TableName: TABLE_NAME,
-          TableStatus: 'ACTIVE',
-          KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
-          BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
-          Replicas: [{ RegionName: 'us-east-1' }],
-          GlobalSecondaryIndexes: [
-            {
-              IndexName: 'declared',
-              Projection: { ProjectionType: 'ALL' },
-              WarmThroughput: { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 },
-            },
-            {
-              IndexName: 'undeclared',
-              Projection: { ProjectionType: 'ALL' },
-              WarmThroughput: { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 },
-            },
-          ],
-        },
-      });
-
-      const indexes = await readIndexes({
-        GlobalSecondaryIndexes: [
-          { IndexName: 'declared', WarmThroughput: { ReadUnitsPerSecond: 500 } },
-          { IndexName: 'undeclared' },
-        ],
-      });
-
-      const byName = new Map(indexes.map((i) => [i['IndexName'] as string, i]));
-      expect('WarmThroughput' in byName.get('declared')!).toBe(true);
-      expect('WarmThroughput' in byName.get('undeclared')!).toBe(false);
-    });
-  });
+  // Defect 2 of the issue -- the AWS-computed
+  // `GlobalSecondaryIndexes[].WarmThroughput` -- is deliberately NOT fixed here
+  // and #1742 stays open for it. Gating the readback emission on the desired
+  // side (the obvious fix, and the one the sibling `AWS::DynamoDB::Table` issue
+  // #1760 prescribes) trades one population's phantom drift for another's: every
+  // `observedProperties` bag already in S3 was written by a binary that emitted
+  // the member, so the first `cdkd drift` after the upgrade reports the whole
+  // `GlobalSecondaryIndexes` array on every untouched table. The companion that
+  // closes the transition -- declaring the path in `getDriftUnknownPaths` -- is
+  // available for a TOP-LEVEL key but cannot express a PER-INDEX one, because an
+  // ignore-path never crosses an array (`drift-normalize.ts` documents that
+  // divergence). It needs a both-sides normalizer in the
+  // `drift-protocol-normalize.ts` mould, plus a live test seeded with a STALE
+  // observed baseline -- which a fresh-deploy fixture structurally cannot
+  // provide.
 });

@@ -3866,8 +3866,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string,
-    properties?: Record<string, unknown>
+    _resourceType: string
   ): Promise<Record<string, unknown> | undefined> {
     try {
       const resp = await this.dynamoDBClient.send(
@@ -4056,52 +4055,6 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // and the stopgap — which would have turned drift OFF for the entire
       // GSI subtree — is not taken.
       const localReplicaEntry = replicas.find((r) => r['Region'] === currentRegion);
-      // `WarmThroughput` is emitted only for an index whose DESIRED side
-      // declares it (issue #1742). AWS now reports a computed default
-      // (12000/4000, plus a `Status` member) for EVERY index, whether or not
-      // the template asked for one, so an unconditional emission is a
-      // permanent one-sided difference against a baseline that can never carry
-      // it — `cdkd drift` reports an untouched table forever and `--revert`
-      // re-issues calls for it. It is an AWS-COMPUTED value, so by the
-      // `observedProperties` rule it does not belong in the desired baseline
-      // at all; this has stayed invisible only because the ordinary path takes
-      // both sides from this same readback, and it surfaces on the
-      // `properties`-only baseline a reverse-replacement rollback leaves.
-      //
-      // The gate is on the DESIRED bag rather than a blanket drop because the
-      // CFn type does accept an explicit `WarmThroughput`, and dropping it
-      // unconditionally would hide a real change for the users who set one.
-      // Every caller supplies the bag (`drift.ts`, the deploy engine's
-      // observed capture, `import.ts`, `state.ts`); an absent bag is treated
-      // as "not declared", which is the direction that cannot manufacture
-      // drift. Known bound: a template that REMOVES a previously-declared
-      // `WarmThroughput` stops reporting the live value — acceptable because
-      // DynamoDB warm throughput is increase-only, so the removal is not an
-      // actionable difference in the first place.
-      //
-      // ONE-TIME TRANSITION, stated because it does NOT self-heal. The ordinary
-      // drift baseline is `observedProperties ?? properties`, and an observed
-      // bag captured by an EARLIER binary carries this computed member (AWS
-      // reports it for every index). Against the new readback, which omits it,
-      // the comparator reads the whole `GlobalSecondaryIndexes` array as
-      // different — so an already-deployed table with a GSI reports drift once,
-      // on a table nobody touched. It cannot fix itself: the observed capture
-      // runs only on CREATE / UPDATE, so a no-op deploy never re-captures. The
-      // remedy is one `cdkd drift --accept` (or any deploy that updates the
-      // table), and it is called out in the changelog entry for the same
-      // reason. Not doing this leaves the PERMANENT version of the same drift
-      // for every `properties`-baseline table, which is strictly worse.
-      const desiredWarmThroughputIndexes = new Set<string>();
-      const desiredGsis = properties?.['GlobalSecondaryIndexes'];
-      if (Array.isArray(desiredGsis)) {
-        for (const desired of desiredGsis) {
-          const record = asRecord(desired);
-          const indexName = record?.['IndexName'];
-          if (typeof indexName === 'string' && record?.['WarmThroughput'] !== undefined) {
-            desiredWarmThroughputIndexes.add(indexName);
-          }
-        }
-      }
       if (table.GlobalSecondaryIndexes && table.GlobalSecondaryIndexes.length > 0) {
         const cfnIndexes: Array<Record<string, unknown>> = [];
         const replicaIndexEntries: Array<Record<string, unknown>> = [];
@@ -4110,24 +4063,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           const entry: Record<string, unknown> = { IndexName: gsi.IndexName };
           if (gsi.KeySchema) entry['KeySchema'] = gsi.KeySchema;
           if (gsi.Projection) entry['Projection'] = gsi.Projection;
-          if (gsi.WarmThroughput && desiredWarmThroughputIndexes.has(gsi.IndexName)) {
-            // Reverse-mapped to the CFn shape, NOT passed through: the
-            // description carries a `Status` member the CFn type has no concept
-            // of (this file's own GSI-baseline note records the same fact), so
-            // emitting it verbatim would hand a user who DID declare
-            // `WarmThroughput` a difference their template can never match —
-            // the exact permanent phantom drift this gate exists to remove, one
-            // key down. Members are copied individually rather than by deleting
-            // `Status`, so a future AWS-side bookkeeping member cannot leak in.
-            const warm: Record<string, unknown> = {};
-            if (gsi.WarmThroughput.ReadUnitsPerSecond !== undefined) {
-              warm['ReadUnitsPerSecond'] = gsi.WarmThroughput.ReadUnitsPerSecond;
-            }
-            if (gsi.WarmThroughput.WriteUnitsPerSecond !== undefined) {
-              warm['WriteUnitsPerSecond'] = gsi.WarmThroughput.WriteUnitsPerSecond;
-            }
-            entry['WarmThroughput'] = warm;
-          }
+          if (gsi.WarmThroughput) entry['WarmThroughput'] = gsi.WarmThroughput;
 
           const replicaEntry: Record<string, unknown> = { IndexName: gsi.IndexName };
           if (billingMode === 'PROVISIONED') {
