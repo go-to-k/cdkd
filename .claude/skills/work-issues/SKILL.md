@@ -154,6 +154,16 @@ parallelized — bundle them into ONE lane (one worktree, one PR) or defer one.
 - Prefer surgical, deterministic, live-proven issues (a provider tweak + a
   regression test) for auto-merge; hold complex redesigns (new DAG mechanism,
   new intrinsic, schema bump) for a focused solo pass.
+- **Read the body's own `Session-fit:` line before shortlisting it.** The filer
+  may already have classified the issue, and a `Session-fit: next` line names the
+  cycle it needs — its own fixture arm, an integ run, a higher review tier, an
+  upstream answer. Such an issue is not off-limits forever, but taking one means
+  the claim comment (§4) states why the recorded classification no longer
+  applies: typically that THIS run was started for it, or that the lane it would
+  have been bundled into is already merged. Silently re-deciding from scratch is
+  exactly the re-litigation the classification exists to prevent (CLAUDE.md →
+  "Session-fit classification") — the call was made when the evidence for it was
+  still in hand, and that evidence is gone by the time you are triaging.
 
 Scale the count to the backlog and to how many cross-cutting files are free. 2–3
 clean lanes is typical; do not force a lane into a contested file just to raise the
@@ -183,6 +193,10 @@ gh api 'repos/{owner}/{repo}/issues?state=open&per_page=60' \
   --jq '.[] | select(.pull_request | not)
         | [.number, (.title | capture("^(?<type>[a-z]+)(\\((?<area>[^)]+)\\))?") | .type + "/" + (.area // "-")), .title]
         | @tsv'
+
+# the filer may already have classified it (§3) — this is a body read, so do it
+# on the shortlist rather than on all 60
+gh issue view <n> --json body -q .body | grep -i 'Session-fit:'
 ```
 
 - **Umbrella**: title or body says `umbrella`, `audit:`, `Backfill`, `N entries
@@ -196,6 +210,11 @@ gh api 'repos/{owner}/{repo}/issues?state=open&per_page=60' \
 - **Cross-cutting**: the body names any of `deploy-engine.ts`,
   `intrinsic-function-resolver.ts`, `dag-builder.ts`, `template-parser.ts`,
   `register-providers.ts`, `destroy-runner.ts`, `export.ts` (the §2 list).
+- **Session-fit**: the body's own `Session-fit:` line (§3). `next` names a cycle
+  this run has to be able to pay for before taking the issue. `now` on a still-OPEN
+  issue is the rarer signal and points the other way — some earlier session ended
+  with a commitment unfinished, so it is a candidate to take EARLY rather than a
+  reason to skip.
 
 **These are tiebreakers, not a scoring formula — do not average them.** Apply
 rule 1, then 2, then 3, and stop at the first that separates the candidates. And
@@ -402,6 +421,13 @@ anything non-obvious you learned in memory.
   its `gh pr create` — which is when it is writing hardest. `git for-each-ref
   --sort=-committerdate refs/remotes/origin` after a `git fetch` is the only probe
   that sees it (§2).
+- **The filer may already have classified the issue.** A body carrying
+  `Session-fit: next` names the cycle the issue needs; take it only if this run
+  can pay for that, and say why in the claim (§3). On 2026-08-13 #1791 passed
+  every §2 / §3 gate — `fix(export)`, unclaimed, disjoint from all eight live
+  lanes — was claimed, and had to be retracted after the deep read showed the
+  legacy-state fixture arm plus export integ its body had already named. The line
+  was in the body the whole time; nothing but a grep stood between the run and it.
 - **One lane per cross-cutting file.** `deploy-engine.ts` / `intrinsic-function-resolver.ts`
   / `dag-builder.ts` / `register-providers.ts` absorb most non-trivial fixes; you
   cannot parallelize two issues that both land there. Per-provider fixes ARE
