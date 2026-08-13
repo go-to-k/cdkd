@@ -6167,10 +6167,13 @@
             "AWS::DynamoDB::Table"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
+            "getDriftUnknownPaths",
+            "readCurrentState",
             "update"
           ]
         }

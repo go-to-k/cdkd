@@ -246,6 +246,53 @@ const TABLE_ACTIVE_WAIT_ATTEMPTS = 60;
  */
 const BILLING_FLIP_ACTIVE_WAIT_ATTEMPTS = 600;
 
+/**
+ * Is this `WarmThroughput` VALUE one cdkd will actually put on the wire
+ * (issue #1760)?
+ *
+ * The single definition of the send rule. `create()` and `update()` call it
+ * where they used to inline `if (properties['WarmThroughput'])`, and the
+ * bag-level {@link declaresWarmThroughput} below calls it too — so the drift
+ * side cannot answer "the template declared one" for a value the write side
+ * silently skips. That divergence is not hypothetical: with the two sites
+ * spelled independently, respelling either as `!== undefined` leaves every
+ * test green while the pair starts disagreeing on `WarmThroughput: null`, and
+ * the disagreement re-creates the exact phantom drift this issue removed —
+ * cdkd sends nothing, AWS still computes 12000/4000, the readback emits it as
+ * though the template had asked, and `--revert` can never clear it because the
+ * write gate skips the falsy value. Keep this the ONLY spelling of the rule.
+ *
+ * Deliberately TRUTHINESS, because that is what the wire has always done.
+ */
+function isSendableWarmThroughput(value: unknown): boolean {
+  return Boolean(value);
+}
+
+/**
+ * Does this desired-property bag DECLARE a table-level `WarmThroughput`?
+ *
+ * The drift-side question ("did cdkd send one for this resource"), answered by
+ * {@link isSendableWarmThroughput} so it cannot drift from the write path.
+ *
+ * An ABSENT or EMPTY bag answers TRUE: the caller supplied nothing to decide
+ * with, so both drift consumers keep the pre-#1760 behavior (emit it, compare
+ * it) rather than dropping a key on the strength of a bag that was never
+ * passed. That fallback is exactly why the write sites take the VALUE-level
+ * predicate instead of this one — handing `create()` an absent bag must send
+ * nothing, not send `undefined`.
+ *
+ * Note the empty-bag arm carries the same residual as the declared arm
+ * (issue #1768): a `properties: {}` record keeps the AWS-computed value in its
+ * snapshot, so a `--revert` on such a resource can re-send it. Left as-is
+ * rather than dropped, because a bag that was never populated is not evidence
+ * the template declared nothing — and a wrong DROP here is unrecoverable
+ * phantom drift, while the residual is a loud, per-resource revert failure.
+ */
+function declaresWarmThroughput(properties?: Record<string, unknown>): boolean {
+  if (properties === undefined || Object.keys(properties).length === 0) return true;
+  return isSendableWarmThroughput(properties['WarmThroughput']);
+}
+
 export class DynamoDBTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
   private logger = getLogger().child('DynamoDBTableProvider');
@@ -383,8 +430,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // OnDemandThroughput it rides directly on CreateTable (the
       // WarmThroughput input field), NOT a post-ACTIVE control-plane call.
       // Works with BOTH PROVISIONED and PAY_PER_REQUEST billing modes. Pass
-      // it through verbatim when present.
-      if (properties['WarmThroughput']) {
+      // it through verbatim when present. The send rule lives in
+      // `isSendableWarmThroughput` so the drift side cannot answer "declared"
+      // for a value this line skips (issue #1760).
+      if (isSendableWarmThroughput(properties['WarmThroughput'])) {
         createParams.WarmThroughput = properties['WarmThroughput'] as WarmThroughput;
       }
 
@@ -1204,12 +1253,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // update doesn't issue a redundant UpdateTable. A pure removal (new
       // absent, previous present) is a deliberate no-op — CFn has no clean
       // "drop warm throughput" mapping and AWS keeps the last-set value, so
-      // there is no spec to send.
+      // there is no spec to send. The send rule is shared with `create()` and
+      // with the drift side via `isSendableWarmThroughput` (issue #1760).
       if (
         JSON.stringify(properties['WarmThroughput']) !==
         JSON.stringify(previousProperties['WarmThroughput'])
       ) {
-        if (properties['WarmThroughput']) {
+        if (isSendableWarmThroughput(properties['WarmThroughput'])) {
           await this.dynamoDBClient.send(
             new UpdateTableCommand({
               TableName: physicalId,
@@ -2470,6 +2520,77 @@ export class DynamoDBTableProvider implements ResourceProvider {
   }
 
   /**
+   * `AttributeDefinitions` is a SET, keyed by `AttributeName`: CFn accepts the
+   * members in any order and `DescribeTable` returns them in an order matching
+   * neither the request nor the template. Measured live (us-east-1,
+   * 2026-08-13): a `CreateTable` whose input declared
+   * `[{pk,S}, {gsipk,S}]` read back as `[{gsipk,S}, {pk,S}]` on the create
+   * response AND on every later `DescribeTable`. The comparator compares
+   * arrays positionally, so without this declaration the reorder is permanent
+   * phantom drift on a table nobody touched — reachable whenever the drift
+   * baseline is the template `properties` rather than `observedProperties`
+   * (after a reverse-replacement rollback, which strips `observedProperties`,
+   * or on a resource deployed before observed-capture existed; on the ordinary
+   * path both sides come from the same readback and already agree, which is
+   * why routine runs never surfaced it). Issue #1760, the
+   * `AWS::DynamoDB::Table` twin of issue #1742's `AWS::DynamoDB::GlobalTable`
+   * finding.
+   *
+   * `KeySchema` is deliberately NOT declared, at the table level or the index
+   * level: it is order-SIGNIFICANT (HASH before RANGE), so sorting it would
+   * HIDE a real key change rather than remove a phantom one.
+   */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    if (resourceType !== 'AWS::DynamoDB::Table') return [];
+    return ['AttributeDefinitions'];
+  }
+
+  /**
+   * `WarmThroughput` is reported by AWS for EVERY table, whether or not the
+   * template ever asked for one. Measured live (us-east-1, 2026-08-13) on a
+   * `CreateTable` whose input declared NO `WarmThroughput`:
+   *
+   * ```
+   * "WarmThroughput": { "ReadUnitsPerSecond": 12000,
+   *                     "WriteUnitsPerSecond": 4000, "Status": "ACTIVE" }
+   * ```
+   *
+   * so `readCurrentState`'s emit-when-present guard could never do what its
+   * comment claimed ("only on tables that set warm throughput"). That value is
+   * AWS-computed and AWS-owned — it only ever increases as the table's traffic
+   * grows, and it cannot be lowered — so once it is frozen into an
+   * `observedProperties` baseline, a later AWS-side increase surfaces as drift
+   * on a property the user never declared and `--revert` would issue a
+   * decrease AWS rejects. `readCurrentState` therefore emits it only when the
+   * DESIRED bag declares it (the fix issue #1742 PROPOSES for the per-index
+   * sibling — still open and unlanded at the time of writing, so this is the
+   * first site to carry the shape), never as a blanket drop:
+   * `AWS::DynamoDB::Table` accepts an explicit `WarmThroughput` and a real
+   * change to one must stay visible. Known residual on that declared arm
+   * (issue #1768): AWS may GROW a declared value, which is reported as drift —
+   * correctly, cdkd holds a value AWS no longer has — but `--revert` then
+   * issues a decrease AWS rejects, surfacing as a per-resource revert failure
+   * rather than as a silent wrong answer.
+   *
+   * This declaration is the OTHER half: a state record written by an earlier
+   * binary already carries the computed value in `observedProperties`, so the
+   * gate alone would flip every such table to a one-sided `WarmThroughput`
+   * drift (baseline has it, the AWS side no longer emits it) until the next
+   * deploy refreshed the capture. Ignoring the path on BOTH sides when the
+   * template declares nothing covers the transition and the steady state
+   * alike; a table that DOES declare `WarmThroughput` is compared normally.
+   * Same per-resource scoping seam as `AWS::ApiGatewayV2::Integration`'s
+   * `TlsConfig` (issue #1602): an absent / empty bag falls back to the
+   * type-level answer of COMPARING, since hiding a real drift is the worse
+   * failure.
+   */
+  getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
+    if (resourceType !== 'AWS::DynamoDB::Table') return [];
+    if (declaresWarmThroughput(properties)) return [];
+    return ['WarmThroughput'];
+  }
+
+  /**
    * Read the AWS-current DynamoDB table configuration in CFn-property shape.
    *
    * `DescribeTable` returns every field cdkd manages in one call. AWS uses
@@ -2481,8 +2602,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *  - StreamSpecification's CFn shape includes only `StreamViewType`; the
    *    API response carries `StreamEnabled` too. We surface both since the
    *    drift comparator only descends into keys present in state.
-   *  - GSI / LSI in the API response include `IndexStatus`, `ItemCount` and
-   *    sizing fields that cdkd never sets; the comparator filters them.
+   *  - GSI / LSI in the API response include `IndexStatus`, `ItemCount`,
+   *    `IndexArn` and sizing fields cdkd never sets, and they are forwarded
+   *    VERBATIM. This used to claim "the comparator filters them" — it does
+   *    NOT, and issue #1767 quotes that sentence as the bug: the filter is
+   *    `calculateResourceDrift`'s state-keys-only walk, which only reaches an
+   *    absent TOP-LEVEL key. These are members of an array under a key the
+   *    baseline DOES carry, and arrays compare positionally, so every
+   *    AWS-managed member participates — `ItemCount` MOVES as data lands, so
+   *    an in-use table with an index drifts against its own
+   *    `observedProperties` on the ordinary path. Fixing it needs a full
+   *    reverse-mapper plus the same migration companion this issue's
+   *    `WarmThroughput` gate needed, hence a separate issue.
    *
    * Returns `undefined` when the table is gone (`ResourceNotFoundException`).
    *
@@ -2492,11 +2623,16 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * drift, and the result key is omitted entirely when AWS reports no user
    * tags (matches `create()`'s behavior of only sending Tags when the
    * template carries them).
+   *
+   * `properties` is the DESIRED bag (the state-recorded template intent every
+   * caller passes) and is consulted for exactly one field, `WarmThroughput` —
+   * see {@link getDriftUnknownPaths} for the measurement and the reasoning.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     try {
       const resp = await this.dynamoDBClient.send(
@@ -2542,13 +2678,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
       // WarmThroughput — DescribeTable returns it (as a
       // TableWarmThroughputDescription carrying ReadUnitsPerSecond /
-      // WriteUnitsPerSecond / Status) only on tables that set warm
-      // throughput. Emit-when-present (no default when absent) and surface
-      // ONLY the user-settable sub-fields — Status is AWS-managed — so a
-      // table that never configured warm throughput doesn't grow a
-      // placeholder that would round-trip through update() as a spurious
-      // UpdateTable.
-      if (table.WarmThroughput) {
+      // WriteUnitsPerSecond / Status) for EVERY table, not only for one that
+      // set warm throughput: measured us-east-1 2026-08-13, a CreateTable
+      // declaring none read back {ReadUnitsPerSecond: 12000,
+      // WriteUnitsPerSecond: 4000, Status: 'ACTIVE'} (issue #1760). So the
+      // emit is gated on the DESIRED bag declaring the property — a blanket
+      // drop would hide a real change for a template that sets one, and an
+      // ungated emit freezes an AWS-computed, AWS-owned value into the
+      // observedProperties baseline, which `drift --revert` then re-sends
+      // through update() as a spurious (and, once AWS has grown the value,
+      // rejected) UpdateTable. An absent / empty bag keeps the pre-#1760
+      // behavior, since the caller supplied nothing to decide with.
+      // Surface ONLY the user-settable sub-fields — Status is AWS-managed.
+      if (table.WarmThroughput && declaresWarmThroughput(properties)) {
         const wt: Record<string, unknown> = {};
         if (table.WarmThroughput.ReadUnitsPerSecond !== undefined) {
           wt['ReadUnitsPerSecond'] = table.WarmThroughput.ReadUnitsPerSecond;
