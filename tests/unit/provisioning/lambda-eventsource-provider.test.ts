@@ -528,6 +528,38 @@ describe('LambdaEventSourceMappingProvider', () => {
       expect(getUpdateInput()['FunctionResponseTypes']).toEqual([]);
     });
 
+    // Issue #1815: the UPDATE path reaches the classifier through
+    // `classifyEventSourceFromProperties`, a DIFFERENT entry point from
+    // `readCurrentState`'s. Pre-fix, a non-commercial ARN classified as
+    // `unknown` here, so `KINDS_WITH_FUNCTION_RESPONSE_TYPES` did not match and
+    // the removal-clear silently did NOT fire — the same defect as the readback
+    // half, one entry point over.
+    //
+    // This drives the real `update()` rather than calling the classifier: an
+    // earlier version of this coverage called `classifyEventSource` directly,
+    // which duplicated the service-table rows and would have stayed green with
+    // the adapter's key mapping broken. Asserting the EMITTED input is what
+    // makes the adapter path load-bearing.
+    it.each([
+      ['aws-us-gov', 'arn:aws-us-gov:sqs:us-gov-west-1:123456789012:my-queue'],
+      ['aws-cn', 'arn:aws-cn:sqs:cn-north-1:123456789012:my-queue'],
+      ['aws-iso', 'arn:aws-iso:sqs:us-iso-east-1:123456789012:my-queue'],
+    ])('clears FunctionResponseTypes for a %s SQS source (issue #1815)', async (_p, arn) => {
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: arn },
+        {
+          FunctionName: 'fn',
+          EventSourceArn: arn,
+          FunctionResponseTypes: ['ReportBatchItemFailures'],
+        }
+      );
+
+      expect(getUpdateInput()['FunctionResponseTypes']).toEqual([]);
+    });
+
     it('does NOT clear FunctionResponseTypes for a Kafka source (kind rejects [])', async () => {
       await provider.update(
         'L',

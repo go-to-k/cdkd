@@ -521,18 +521,5 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       ).toBe(expected);
     });
 
-    // The UPDATE path reaches the same classifier through
-    // `classifyEventSourceFromProperties`, which gates the
-    // `KINDS_WITH_STREAM_NUMERICS` / `KINDS_WITH_ZERO_BATCHING_WINDOW_DEFAULT`
-    // restores. The pre-fix bug broke those too — `unknown` in every
-    // non-commercial partition — so pinning only `readCurrentState` would
-    // leave half the reported defect uncovered.
-    it.each([
-      ['aws-us-gov', 'arn:aws-us-gov:kinesis:us-gov-west-1:123456789012:stream/s'],
-      ['aws-cn', 'arn:aws-cn:kinesis:cn-north-1:123456789012:stream/s'],
-      ['aws-iso', 'arn:aws-iso:kinesis:us-iso-east-1:123456789012:stream/s'],
-    ])('the property-bag adapter classifies a %s stream source too', (_partition, arn) => {
-      expect(classifyEventSource({ EventSourceArn: arn })).toBe('kinesis');
-    });
   });
 });

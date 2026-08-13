@@ -88,7 +88,7 @@ const ARN_SERVICE_TO_EVENT_SOURCE_KIND: Readonly<Record<string, EventSourceKind>
 };
 
 /**
- * EXPORTED for tests only (issue #1815). Every production consumer is a
+ * @internal EXPORTED for tests only (issue #1815). Every production consumer is a
  * `Set.has(kind)`, so the `Object.hasOwn` guard below is UNOBSERVABLE through
  * behavior — a prototype member and `'unknown'` both miss every set. That was
  * measured, not assumed: a behavior-level test for it passed with the guard
