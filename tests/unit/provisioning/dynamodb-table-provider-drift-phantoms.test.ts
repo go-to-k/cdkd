@@ -292,11 +292,16 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
       expect(provider.getDriftUnknownPaths(RESOURCE_TYPE, declared)).toEqual(['WarmThroughput']);
     });
 
-    it('keeps the emit gate and the ignore path in agreement for every bag shape', () => {
-      // The two consumers must never disagree: a bag the readback treats as
-      // DECLARED (emits) must be COMPARED, and one it treats as undeclared
-      // (omits) must be IGNORED — otherwise the pair manufactures exactly the
-      // one-sided difference it exists to remove.
+    it('keeps the emit gate and the ignore path in agreement for every bag shape', async () => {
+      // The two consumers must never disagree: a bag whose readback EMITS the
+      // key must have it COMPARED, and one whose readback OMITS it must have
+      // it IGNORED. Either mismatch manufactures the one-sided difference the
+      // pair exists to remove — an emitted-but-ignored key hides a real
+      // change, an omitted-but-compared key is the upgrade phantom.
+      //
+      // Both consumers are DRIVEN here rather than re-implemented: asserting
+      // one side against a local copy of the predicate would only prove two
+      // hand-written expressions agree with each other.
       const bags: Array<Record<string, unknown> | undefined> = [
         undefined,
         {},
@@ -306,12 +311,44 @@ describe('DynamoDBTableProvider drift phantoms (issue #1760)', () => {
         { TableName: TABLE_NAME, WarmThroughput: '' },
         { TableName: TABLE_NAME, WarmThroughput: { ReadUnitsPerSecond: 12000 } },
       ];
+      const observed: Array<{ bag: unknown; emitted: boolean; ignored: boolean }> = [];
       for (const bag of bags) {
-        const ignored = provider.getDriftUnknownPaths(RESOURCE_TYPE, bag).includes('WarmThroughput');
-        const declares = bag === undefined || Object.keys(bag).length === 0
-          ? true
-          : Boolean(bag['WarmThroughput']);
-        expect({ bag, ignored }).toEqual({ bag, ignored: !declares });
+        primeDescribeTable({
+          TableName: TABLE_NAME,
+          TableArn: TABLE_ARN,
+          WarmThroughput: AWS_COMPUTED_WARM_THROUGHPUT,
+        });
+        const result = await provider.readCurrentState(TABLE_NAME, 'L', RESOURCE_TYPE, bag);
+        observed.push({
+          bag,
+          emitted: result !== undefined && 'WarmThroughput' in result,
+          ignored: provider
+            .getDriftUnknownPaths(RESOURCE_TYPE, bag)
+            .includes('WarmThroughput'),
+        });
+      }
+
+      // Exact expected table, written out rather than derived, so a change to
+      // the rule has to be re-stated here instead of following along silently.
+      expect(observed).toEqual([
+        { bag: undefined, emitted: true, ignored: false },
+        { bag: {}, emitted: true, ignored: false },
+        { bag: { TableName: TABLE_NAME }, emitted: false, ignored: true },
+        { bag: { TableName: TABLE_NAME, WarmThroughput: null }, emitted: false, ignored: true },
+        { bag: { TableName: TABLE_NAME, WarmThroughput: undefined }, emitted: false, ignored: true },
+        { bag: { TableName: TABLE_NAME, WarmThroughput: '' }, emitted: false, ignored: true },
+        {
+          bag: { TableName: TABLE_NAME, WarmThroughput: { ReadUnitsPerSecond: 12000 } },
+          emitted: true,
+          ignored: false,
+        },
+      ]);
+      // And the invariant itself, stated once over the measured pairs.
+      for (const row of observed) {
+        expect({ bag: row.bag, agree: row.emitted === !row.ignored }).toEqual({
+          bag: row.bag,
+          agree: true,
+        });
       }
     });
 
