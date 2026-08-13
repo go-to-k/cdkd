@@ -1,3 +1,11 @@
+## [0.283.15](https://github.com/go-to-k/cdkd/compare/v0.283.14...v0.283.15) (2026-08-13)
+
+
+### Bug Fixes
+
+* **provisioning:** classify SNS / AWS-managed-policy / event-source ARNs in every partition ([#1886](https://github.com/go-to-k/cdkd/issues/1886)) ([3186b4d](https://github.com/go-to-k/cdkd/commit/3186b4d2e03a8d5be181228e28d154ec613df069))
+* **provisioning:** mark the nested-stack interrupted-child and context-wiring refusals non-retryable ([#1885](https://github.com/go-to-k/cdkd/issues/1885)) ([988e679](https://github.com/go-to-k/cdkd/commit/988e67978957734463c7d4b61b1fa510fb1c4608))
+
 ## [0.283.14](https://github.com/go-to-k/cdkd/compare/v0.283.13...v0.283.14) (2026-08-13)
 
 
