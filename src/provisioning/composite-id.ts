@@ -314,8 +314,10 @@ export function compositeIdFormatMessage(
     `IN PLACE. On 'cdkd destroy' / 'cdkd state destroy' the state record is KEPT ` +
     `and the run exits non-zero, so repair the id in state.json and re-run (or ` +
     `delete the resource by hand and drop the record with 'cdkd state orphan'). ` +
-    `NOTE this arm is ALSO reached from the deploy engine's replacement / rollback ` +
-    `deletes, which still DROP the record and report success ` +
+    `NOTE this arm is ALSO reached from cdkd deploy — the plain DELETE of a ` +
+    `resource removed from the template (the most common one), plus the ` +
+    `replacement and rollback deletes — all of which still DROP the record and ` +
+    `report success ` +
     `(https://github.com/go-to-k/cdkd/issues/1762) — there, delete it by hand.`
   );
 }

@@ -641,7 +641,7 @@ async function destroyCommand(
             })
         );
         totalErrors += result.errorCount;
-        totalSkipped += result.skippedCount ?? 0;
+        totalSkipped += result.skippedCount;
         if (result.interrupted) interrupted = true;
 
         // Map the per-stack runner outcome to a run-level result. A
@@ -662,7 +662,7 @@ async function destroyCommand(
             ...(result.errorCount > 0 && { failed: result.errorCount }),
             // Issue #1752: a skip-only run is recorded FAILED, so without this
             // the event says a run failed and names nothing that failed.
-            ...((result.skippedCount ?? 0) > 0 && { skipped: result.skippedCount }),
+            ...(result.skippedCount > 0 && { skipped: result.skippedCount }),
           },
         });
       } catch (destroyError) {
@@ -715,11 +715,21 @@ async function destroyCommand(
       // address. Exit 2 rather than 0 — this is the same "state preserved,
       // stack not destroyed" contract the two branches above carry, and
       // exiting 0 is exactly the mis-report this issue was filed for.
+      //
+      // Counted in ENTRIES, not resources, and deliberately so: a skipped
+      // nested-stack row contributes exactly 1 however many of the child's
+      // resources were actually skipped, so "N resource(s)" would state a
+      // number that is wrong precisely in the nested case. Summing the child
+      // count through would mean widening `ResourceDeleteResult` with a count
+      // field for the sake of one message; the accurate per-stack breakdown is
+      // already printed by each stack's own summary line just above.
       throw new PartialFailureError(
-        `Destroy skipped ${totalSkipped} resource(s) cdkd could not address — no delete was ` +
-          `issued, so they may still exist in AWS. State preserved (the records are kept). ` +
-          `Repair the physicalId in state.json and re-run 'cdkd destroy', or delete them by ` +
-          `hand and drop the records with 'cdkd state orphan <stack>'.`
+        `Destroy skipped ${totalSkipped} entr${totalSkipped === 1 ? 'y' : 'ies'} cdkd could not ` +
+          `address, so the underlying resources may still exist in AWS. A skipped nested stack ` +
+          `counts as ONE entry and may cover several of its own resources — the per-stack ` +
+          `summaries above give the exact breakdown. State preserved (the records are kept). ` +
+          `Repair the physicalId in state.json and re-run 'cdkd destroy', or delete the ` +
+          `resources by hand and drop the records with 'cdkd state orphan <stack>'.`
       );
     }
   } finally {

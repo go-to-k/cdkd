@@ -1320,7 +1320,7 @@ async function stateDestroyCommand(
             })
         );
         totalErrors += result.errorCount;
-        totalSkipped += result.skippedCount ?? 0;
+        totalSkipped += result.skippedCount;
         if (result.interrupted) interrupted = true;
         // Graceful interrupt (issue #816): stop iterating this stack's regions.
         if (interrupted) break;
@@ -1352,14 +1352,17 @@ async function stateDestroyCommand(
       );
     }
     if (totalSkipped > 0) {
-      // Issue #1752 — see the twin branch in destroy.ts. Nothing FAILED, but
-      // cdkd left resources it could not address and preserved their state
-      // records, so exiting 0 would report a destroy that did not happen.
+      // Issue #1752 — see the twin branch in destroy.ts, including why this
+      // counts ENTRIES rather than resources. Nothing FAILED, but cdkd left
+      // resources it could not address and preserved their state records, so
+      // exiting 0 would report a destroy that did not happen.
       throw new PartialFailureError(
-        `Destroy skipped ${totalSkipped} resource(s) cdkd could not address — no delete was ` +
-          `issued, so they may still exist in AWS. State preserved (the records are kept). ` +
-          `Repair the physicalId in state.json and re-run 'cdkd state destroy', or delete them ` +
-          `by hand and drop the records with 'cdkd state orphan <stack>'.`
+        `Destroy skipped ${totalSkipped} entr${totalSkipped === 1 ? 'y' : 'ies'} cdkd could not ` +
+          `address, so the underlying resources may still exist in AWS. A skipped nested stack ` +
+          `counts as ONE entry and may cover several of its own resources — the per-stack ` +
+          `summaries above give the exact breakdown. State preserved (the records are kept). ` +
+          `Repair the physicalId in state.json and re-run 'cdkd state destroy', or delete the ` +
+          `resources by hand and drop the records with 'cdkd state orphan <stack>'.`
       );
     }
   } finally {

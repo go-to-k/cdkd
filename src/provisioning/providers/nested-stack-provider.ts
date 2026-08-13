@@ -349,14 +349,31 @@ export class NestedStackProvider implements ResourceProvider {
     // resource nobody will ever look for again. Propagating the skip makes the
     // parent preserve its own state too, so the whole tree stays traceable.
     //
+    // `interrupted` (a graceful SIGINT mid-child, issue #816) is the SAME
+    // data-loss shape reached through a different field: the child stops early
+    // and preserves its own state.json listing resources that still exist,
+    // while the parent — with no signal — prints `✓ <Child> deleted`, drops the
+    // child's row, and exits 0. It is reported as a skip for the same reason:
+    // the child stack was NOT destroyed, so the parent's record of it must
+    // survive. Safe to do here where `errorCount` is not, because the run is
+    // already ending non-zero (the runner sets `interrupted` on the parent too,
+    // and both CLIs raise PartialFailureError for it) — so this changes what
+    // SURVIVES, not whether the command fails.
+    //
     // `errorCount` is deliberately NOT propagated here: that hole predates this
     // issue and its answer is a THROW (a failed child delete must fail the
     // parent's resource), which is a behavior change with its own blast radius.
-    // Tracked separately — see the issue linked from #1752.
-    if ((childResult.skippedCount ?? 0) > 0) {
+    // Tracked separately as issue
+    // [#1777](https://github.com/go-to-k/cdkd/issues/1777).
+    if (childResult.skippedCount > 0 || childResult.interrupted) {
+      const causes: string[] = [];
+      if (childResult.skippedCount > 0) {
+        causes.push(`skipped ${childResult.skippedCount} resource(s)`);
+      }
+      if (childResult.interrupted) causes.push('was interrupted');
       return {
         outcome: 'skipped',
-        reason: `nested stack ${childStackName} skipped ${childResult.skippedCount} resource(s)`,
+        reason: `nested stack ${childStackName} ${causes.join(' and ')}`,
       };
     }
   }

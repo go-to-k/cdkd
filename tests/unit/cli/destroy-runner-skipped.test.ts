@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { LockManager } from '../../../src/state/lock-manager.js';
@@ -330,6 +330,177 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
     expect(result.deletedCount).toBe(1);
     expect(result.skippedCount).toBe(0);
     expect(mockDeleteState).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries the skip REASON into the durable RESOURCE_SKIPPED event', async () => {
+    // The events store is the post-mortem a user reads days later; a bare
+    // `RESOURCE_SKIPPED` there cannot say why cdkd could not address the
+    // resource (issue #1752 review).
+    mockProviderDelete.mockResolvedValue({
+      outcome: 'skipped',
+      reason: 'malformed physicalId in state — no delete issued',
+    });
+
+    await runDestroyForStack('TestStack', makeState({ Table: res() }), makeCtx());
+
+    const skipped = recorded.find((e) => e.eventType === 'RESOURCE_SKIPPED')!;
+    expect(skipped.reason).toBe('malformed physicalId in state — no delete issued');
+  });
+
+  it('names the CHILD state file when the skipped row is a nested stack', async () => {
+    // The malformed record behind a nested-stack skip lives in
+    // `<parent>~<childLogicalId>`, NOT in the parent's state file, so a remedy
+    // naming `cdkd state show <parent>` sends the user to the wrong file.
+    mockProviderDelete.mockResolvedValue({
+      outcome: 'skipped',
+      reason: 'nested stack TestStack~Child skipped 2 resource(s)',
+    });
+
+    await runDestroyForStack(
+      'TestStack',
+      makeState({ Child: res({ resourceType: 'AWS::CloudFormation::Stack' }) }),
+      makeCtx()
+    );
+
+    const warn = allWarn();
+    expect(warn).toContain("'cdkd state show TestStack~Child'");
+    expect(warn).toContain("'cdkd state orphan TestStack~Child'");
+    // The parent's own file must NOT be the one named — that is the bug.
+    expect(warn).not.toContain("'cdkd state show TestStack'");
+  });
+
+  it('names THIS stack\'s file for an ordinary (non-nested) skip', async () => {
+    // The inverted control for the nested case above: without it, a target
+    // builder that treated EVERY skip as a nested stack (emitting
+    // `TestStack~Table`) passes the whole suite while sending the user to a
+    // state file that does not exist.
+    mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+
+    await runDestroyForStack('TestStack', makeState({ Table: res() }), makeCtx());
+
+    const warn = allWarn();
+    expect(warn).toContain("'cdkd state show TestStack'");
+    expect(warn).toContain("'cdkd state orphan TestStack'");
+    expect(warn).not.toContain('TestStack~');
+  });
+
+  it('composes the retained + skipped suffixes in one summary', async () => {
+    mockProviderDelete.mockImplementation((logicalId: string) =>
+      logicalId === 'Table'
+        ? Promise.resolve({ outcome: 'skipped', reason: 'bad id' })
+        : Promise.resolve()
+    );
+
+    const result = await runDestroyForStack(
+      'TestStack',
+      makeState({
+        Table: res(),
+        Bucket: res({ resourceType: 'AWS::S3::Bucket' }),
+        Kept: res({ resourceType: 'AWS::S3::Bucket', deletionPolicy: 'Retain' }),
+      }),
+      makeCtx()
+    );
+
+    expect(result.deletedCount).toBe(1);
+    expect(result.retainedCount).toBe(1);
+    expect(result.skippedCount).toBe(1);
+    // Both suffixes render, in declaration order, on the one line.
+    expect(allWarn()).toContain('1 deleted, 1 retained, 1 skipped, 0 errors');
+  });
+
+  it('a skipped resource is not double-counted as retained', async () => {
+    // Guards the ordering of the two early-return branches: `Retain` is
+    // checked BEFORE the delete is dispatched, so a retained resource must
+    // never reach the provider and never be counted as skipped.
+    mockProviderDelete.mockResolvedValue({ outcome: 'skipped', reason: 'bad id' });
+
+    const result = await runDestroyForStack(
+      'TestStack',
+      makeState({ Kept: res({ deletionPolicy: 'Retain' }) }),
+      makeCtx()
+    );
+
+    expect(result.retainedCount).toBe(1);
+    expect(result.skippedCount).toBe(0);
+    expect(mockProviderDelete).not.toHaveBeenCalled();
+  });
+
+  // interrupted + skipped takes the INTERRUPTED warn branch, which never names
+  // the skip count in its prose — while the summary line does render the
+  // `skipped` suffix. Both halves need pinning, and the combination was
+  // untested (issue #1752 review).
+  describe('interrupted + skipped', () => {
+    let capturedSigintHandlers: Array<() => void>;
+    let onSpy: ReturnType<typeof vi.spyOn>;
+    let removeListenerSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      capturedSigintHandlers = [];
+      const realOn = process.on.bind(process);
+      const realRemove = process.removeListener.bind(process);
+      onSpy = vi
+        .spyOn(process, 'on')
+        .mockImplementation((event: string | symbol, handler: () => void) => {
+          if (event === 'SIGINT') {
+            capturedSigintHandlers.push(handler);
+            return process;
+          }
+          return realOn(event as never, handler as never);
+        }) as never;
+      removeListenerSpy = vi
+        .spyOn(process, 'removeListener')
+        .mockImplementation((event: string | symbol, handler: () => void) => {
+          if (event === 'SIGINT') {
+            capturedSigintHandlers = capturedSigintHandlers.filter((h) => h !== handler);
+            return process;
+          }
+          return realRemove(event as never, handler as never);
+        }) as never;
+    });
+
+    afterEach(() => {
+      onSpy.mockRestore();
+      removeListenerSpy.mockRestore();
+    });
+
+    it('renders the skip count in the summary and keeps BOTH records', async () => {
+      // Two DAG levels: Child (skipped) is deleted first, then Parent's other
+      // resource. Fire SIGINT while the skip is in flight so the second level
+      // is never scheduled — leaving interrupted AND skipped both true.
+      mockProviderDelete.mockImplementation(async (logicalId: string) => {
+        if (logicalId === 'Table') {
+          capturedSigintHandlers.forEach((h) => h());
+          return { outcome: 'skipped', reason: 'bad id' };
+        }
+        return undefined;
+      });
+
+      const result = await runDestroyForStack(
+        'TestStack',
+        makeState({
+          Later: res({ resourceType: 'AWS::S3::Bucket' }),
+          Table: res({ dependencies: ['Later'] }),
+        }),
+        makeCtx()
+      );
+
+      expect(result.skippedCount).toBe(1);
+      expect(result.interrupted).toBe(true);
+      expect(result.errorCount).toBe(0);
+
+      const warn = allWarn();
+      // The interrupted branch owns the prose...
+      expect(warn).toContain('destroy interrupted');
+      expect(warn).toContain("re-run 'cdkd destroy'");
+      // ...but the counter line must still surface the skip, or an interrupted
+      // run silently hides that a resource is unaddressable.
+      expect(warn).toContain('1 skipped');
+
+      // Neither record may be dropped: the skipped one because cdkd could not
+      // address it, the not-yet-attempted one because it was never tried.
+      expect(mockDeleteState).not.toHaveBeenCalled();
+      expect(Object.keys(lastSavedState().resources).sort()).toEqual(['Later', 'Table']);
+    }, 30_000);
   });
 
   it('a skip on a RETRIED delete does not leak the previous attempt outcome', async () => {

@@ -51,12 +51,15 @@ export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  * - `RESOURCE_RETAINED` — destroy-side skip for `DeletionPolicy: Retain`.
  *   The AWS resource is kept ON PURPOSE and the state record is dropped.
  * - `RESOURCE_SKIPPED` — destroy-side skip where cdkd could NOT address the
- *   resource and issued no AWS call (issue
- *   [#1752](https://github.com/go-to-k/cdkd/issues/1752); today only a
- *   malformed composite physicalId). The opposite of `RESOURCE_RETAINED` in
- *   both halves: keeping the AWS resource is NOT intended, and the state
- *   record is KEPT so the orphan stays traceable. Distinct from
- *   `RESOURCE_FAILED` because nothing was attempted, hence no error metadata.
+ *   resource (issue [#1752](https://github.com/go-to-k/cdkd/issues/1752)).
+ *   Two producers today: a malformed composite physicalId, where no AWS call
+ *   is issued at all; and a nested stack whose own destroy skipped or was
+ *   interrupted, where the child's other resources WERE deleted first. So the
+ *   invariant is "the resource this row names was not destroyed", NOT "nothing
+ *   happened". The opposite of `RESOURCE_RETAINED` in both halves: keeping the
+ *   AWS resource is NOT intended, and the state record is KEPT so the orphan
+ *   stays traceable. Distinct from `RESOURCE_FAILED` because nothing FAILED —
+ *   hence no error metadata; the cause is in `reason`.
  * - `ROLLBACK_*` — deploy-failure rollback phase (started / per-resource
  *   outcome / finished).
  */
@@ -137,11 +140,22 @@ export interface DeploymentEvent {
      * Destroy-side resources cdkd could NOT address (issue
      * [#1752](https://github.com/go-to-k/cdkd/issues/1752)). Omitted when zero.
      * Without it a skip-only run records `result: 'FAILED'` with `deleted: N`
-     * and no `failed`, so `cdkd events` shows a failed run and nothing that
-     * failed.
+     * and no `failed`, so `cdkd events` would show a failed run naming nothing
+     * that failed. Rendered by `printRunEvents` as ` ⚠N` alongside the
+     * `+created/~updated/-deleted` triple, so the claim holds for the text
+     * surface and not only for `--json`.
      */
     skipped?: number;
   };
+  /**
+   * `RESOURCE_SKIPPED`: one line saying why cdkd could not address the
+   * resource (issue [#1752](https://github.com/go-to-k/cdkd/issues/1752)) —
+   * the same short text rendered inline on the destroy status line. The events
+   * store IS the durable post-mortem, so a bare `RESOURCE_SKIPPED` with no
+   * cause is close to useless there. Metadata only: it is provider-authored
+   * prose about the IDENTIFIER, never resource properties.
+   */
+  reason?: string;
   /** Failure events: extracted error metadata (never properties). */
   error?: DeploymentEventError;
 }

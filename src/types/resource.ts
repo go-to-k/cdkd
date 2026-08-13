@@ -147,10 +147,17 @@ export interface ResourceUpdateResult extends EffectivePropertiesResult {
  *   arms, `CustomResourceProvider`'s backing-Lambda-is-gone pre-check). Either
  *   way the resource is not there any more, so counting it as deleted is
  *   honest.
- * - `'skipped'` — cdkd could NOT address the resource and issued no AWS call
- *   (today: a state record whose composite physicalId does not decode). The
- *   AWS resource may still be ALIVE. The runner prints a distinct line, counts
- *   it separately, KEEPS the state record, and exits non-zero.
+ * - `'skipped'` — cdkd could NOT address the resource, so it may still be
+ *   ALIVE. The runner prints a distinct line, counts it separately, KEEPS the
+ *   state record, and exits non-zero.
+ *
+ *   The invariant is "the resource this result names was NOT destroyed" — it
+ *   is deliberately NOT "no AWS call was issued", and reading it that way is a
+ *   mistake a future caller could build on. Two producers today:
+ *   the malformed-composite-physicalId delete arms, which really do issue no
+ *   call; and `NestedStackProvider.delete`, which recursed into the child's
+ *   own destroy and so may have DELETED the child's other resources before
+ *   reporting that the child stack as a whole was not destroyed.
  *
  * The issue's sketch had a third value, `'already-absent'`, splitting the
  * idempotent arms out of `'deleted'`. It is deliberately NOT here: no call

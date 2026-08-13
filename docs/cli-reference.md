@@ -2409,12 +2409,18 @@ also switches glyphs:
 
 ### Skipped resources on destroy (issue #1752)
 
-A **skipped** resource is one cdkd could not ADDRESS: it issued no AWS
-call at all, so the resource may still exist and still be billing. Today
-the only cause is a state record whose composite `physicalId` does not
-decode (`AWS::Glue::Table`, `AWS::AppSync::{DataSource,Resolver,ApiKey}`,
-`AWS::EC2::NetworkAclEntry`); the per-resource warning names the expected
-format.
+A **skipped** resource is one cdkd could not ADDRESS, so it may still exist
+and still be billing. Two causes today:
+
+- a state record whose composite `physicalId` does not decode
+  (`AWS::Glue::Table`, `AWS::AppSync::{DataSource,Resolver,ApiKey}`,
+  `AWS::EC2::NetworkAclEntry`) — no AWS call is issued at all, and the
+  per-resource warning names the expected format;
+- a **nested stack** (`AWS::CloudFormation::Stack`) whose own destroy skipped
+  a resource or was interrupted. Here the child's *other* resources were
+  deleted first, so "skipped" means the child stack as a whole was not
+  destroyed — not that nothing happened. The record to repair lives in the
+  child's state file (`<parent>~<childLogicalId>`), which the summary names.
 
 It is deliberately distinct from the neighbouring outcomes:
 
@@ -2429,7 +2435,12 @@ The state record is kept on purpose: without it you would have neither
 the AWS resource deleted nor an id to go and delete it with. To finish
 the destroy, repair the `physicalId` in state (`cdkd state show <stack>`
 to inspect) and re-run, or delete the resource by hand and drop the
-record with `cdkd state orphan <stack>`.
+record with `cdkd state orphan <stack>`. The summary line names the exact
+state file(s) to open, which for a nested-stack skip is the child's.
+
+The run-level exit message counts **entries**, not resources: a skipped
+nested-stack row is one entry however many of the child's own resources it
+covers. The per-stack summary lines above it give the exact breakdown.
 
 If your bench / CI script previously treated any non-zero from `cdkd
 destroy` as a hard failure (because it never had a non-zero outcome
