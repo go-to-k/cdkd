@@ -6,6 +6,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -24,6 +25,7 @@ import {
   findGaps,
   findStaleAllowListEntries,
   loadBaseline,
+  ACCEPT_MISSING_BASELINE_FLAG,
   loadReport,
   shouldRefuseMissingBaseline,
   type AllowListEntry,
@@ -795,7 +797,10 @@ describe('real-repo coverage floors', () => {
   });
 
   it('floors the table-loop shape', () => {
-    // 47 properties across 7 classes today (Glue / SQS / RDS DBProxy / ...).
+    // 49 properties across 8 classes today (Glue / SQS / RDS DBProxy / ...).
+    // Counted from the committed matrix; it moved 43/5 -> 47/7 -> 49/8 as
+    // providers gained pass-through tables, which is why the assertion is a
+    // FLOOR and this line is dated rather than load-bearing.
     // Without this recognizer those would all be false-positive gaps, so a
     // regression here is loud in the other direction too — but the floor makes
     // it loud even if someone "fixes" the noise by weakening the check.
@@ -1360,9 +1365,14 @@ describe('the shipped --check command', () => {
   // which both hides which fence actually died and leaves the repo dirty.
   // Restoring after every case keeps a broken guard's blast radius inside the
   // one test that asserts the file is untouched.
-  const MATRIX = ['handled-property-wiring.json', 'handled-property-wiring.md'].map((n) =>
-    resolve(REPO_ROOT, 'docs/_generated', n)
-  );
+  const MATRIX_NAMES = ['handled-property-wiring.json', 'handled-property-wiring.md'];
+  const MATRIX = MATRIX_NAMES.map((n) => resolve(REPO_ROOT, 'docs/_generated', n));
+  // A broken guard does not only overwrite the matrix IN PLACE — a run whose
+  // output path resolves to the cwd drops the two files at the REPO ROOT as
+  // untracked strays. That happened during a probe here, and because the net did
+  // not cover it, the leftovers made the empty-value test fail on every LATER
+  // probe — a false RED that masked a different fence reporting nothing at all.
+  const STRAYS = MATRIX_NAMES.map((n) => resolve(REPO_ROOT, n));
   const pristine = new Map(
     MATRIX.map((f) => [f, { content: readFileSync(f, 'utf8'), stat: statSync(f) }] as const)
   );
@@ -1380,6 +1390,7 @@ describe('the shipped --check command', () => {
       writeFileSync(file, content);
       utimesSync(file, stat.atime, stat.mtime);
     }
+    for (const stray of STRAYS) rmSync(stray, { force: true });
   });
 
   const run = (args: readonly string[]): { status: number; stderr: string } => {
@@ -1616,19 +1627,50 @@ describe('the shipped --check command', () => {
     // Checking only that the flag is PRESENT let `--out-dir=docs/_generated`
     // satisfy the guard while still rendering the committed matrix from a
     // degraded tree against a nulled baseline — the flag became its own bypass.
+    //
+    // The last two spellings are the ones a STRING compare of `resolve()` output
+    // still let through, and both were measured writing the committed matrix at
+    // exit 0: a case variant (this checkout is on case-insensitive APFS, so
+    // `docs/_GENERATED` is the same directory under a different string) and a
+    // SYMLINK (a different path entirely, same directory). `realpathSync` does
+    // not settle the first; only `dev`+`ino` identity settles both.
     const dir = providersCopyWith('providers-fake-redirect', 'dynamodb-table-provider.ts', degradeWarmThroughput);
     const committed = resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json');
     const before = readFileSync(committed, 'utf8');
-    for (const outDir of ['docs/_generated', './docs/_generated/.', resolve(REPO_ROOT, 'docs/_generated')]) {
+    const link = join(scratch, 'link-to-generated');
+    rmSync(link, { force: true });
+    symlinkSync(resolve(REPO_ROOT, 'docs/_generated'), link);
+    const spellings = [
+      'docs/_generated',
+      './docs/_generated/.',
+      'docs/_generated/../_generated',
+      resolve(REPO_ROOT, 'docs/_generated'),
+      'docs/_GENERATED',
+      'DOCS/_GENERATED',
+      link,
+    ];
+    for (const outDir of spellings) {
       const { status, stderr } = run([
         `--providers-dir=${dir}`,
         `--out-dir=${outDir}`,
         '--baseline=/nonexistent-baseline.json',
       ]);
       expect(status, `--out-dir=${outDir} must be refused`).toBe(1);
-      expect(stderr).toContain('SOMEWHERE ELSE');
+      expect(stderr, `--out-dir=${outDir} must name the redirect guard`).toContain('SOMEWHERE ELSE');
     }
     expect(readFileSync(committed, 'utf8'), 'the committed matrix must be untouched').toBe(before);
+  }, SPAWN_TIMEOUT_MS);
+
+  it('refuses an EMPTY value for any path flag', () => {
+    // `resolve('')` is the cwd, so `--out-dir=` passed the redirect test and
+    // dropped handled-property-wiring.{json,md} at the REPO ROOT as two
+    // untracked files (measured). An empty value is a path, not "unset".
+    for (const flag of ['--out-dir=', '--baseline=', '--providers-dir=']) {
+      const { status, stderr } = run([flag]);
+      expect(status, `${flag} with no value must be refused`).toBe(1);
+      expect(stderr).toContain('needs a path; got an empty value');
+    }
+    expect(existsSync(resolve(REPO_ROOT, 'handled-property-wiring.json'))).toBe(false);
   }, SPAWN_TIMEOUT_MS);
 
   it('refuses --baseline= in WRITER mode unless the output is redirected too', () => {
@@ -1755,6 +1797,28 @@ describe('the shipped --check command', () => {
     expect(taskBlock).toContain(ACCEPT_LOSS_FLAG);
   }, SPAWN_TIMEOUT_MS);
 
+  it('--check REFUSES rather than reporting an unearned green when it graded against nothing', () => {
+    // Measured before the fix: with the matrix deleted, `--check` printed
+    // `OK - ... 0 gaps, 0 evidence losses` and exited 0 — success reported for a
+    // comparison never made, which is the verdict this critic exists to abolish.
+    // CI caught the deletion only because the `gen:` step runs first and now
+    // refuses; a checker must not borrow another step's ordering for its honesty.
+    const { status, stderr } = runCheck(undefined, ['--baseline=/nonexistent-baseline.json']);
+    expect(status).toBe(1);
+    expect(stderr).toContain('no readable baseline at');
+    expect(stderr).not.toContain('0 evidence losses');
+    expect(stderr).not.toContain('handled-property-wiring: OK');
+  }, SPAWN_TIMEOUT_MS);
+
+  it('--check refuses a TRUNCATED baseline the same way', () => {
+    const truncated = join(scratch, 'truncated-for-check.json');
+    writeFileSync(truncated, JSON.stringify({ schemaVersion: 1, classes: [{ className: 'P' }] }));
+    const { status, stderr } = runCheck(undefined, [`--baseline=${truncated}`]);
+    expect(status).toBe(1);
+    expect(stderr).toContain('no readable baseline at');
+    expect(stderr).not.toContain('handled-property-wiring: OK');
+  }, SPAWN_TIMEOUT_MS);
+
   it('the WRITER refuses to write with NO usable baseline, even redirected', () => {
     // Reachable without touching the repo, which is the point: an earlier draft
     // exempted redirected writes, leaving the rule testable only by deleting the
@@ -1763,7 +1827,7 @@ describe('the shipped --check command', () => {
     const outDir = join(scratch, 'out-no-baseline-refused');
     const { status, stderr } = run([`--out-dir=${outDir}`, '--baseline=/nonexistent-baseline.json']);
     expect(status).toBe(1);
-    expect(stderr).toContain('no readable baseline at the committed matrix path');
+    expect(stderr).toContain('no readable baseline at');
     expect(existsSync(join(outDir, 'handled-property-wiring.json'))).toBe(false);
   }, SPAWN_TIMEOUT_MS);
 
@@ -1777,7 +1841,7 @@ describe('the shipped --check command', () => {
       `--baseline=${truncated}`,
     ]);
     expect(status).toBe(1);
-    expect(stderr).toContain('no readable baseline at the committed matrix path');
+    expect(stderr).toContain('no readable baseline at');
   }, SPAWN_TIMEOUT_MS);
 
   it('an absent --baseline= on an un-redirected WRITE is refused by the seam guard', () => {
@@ -1790,18 +1854,56 @@ describe('the shipped --check command', () => {
     expect(stderr).toContain('may only accompany a WRITE when --out-dir=');
   }, SPAWN_TIMEOUT_MS);
 
-  it('the escape hatch waives the missing-baseline refusal, and SAYS it did', () => {
+  it('the MISSING-BASELINE waiver writes, and ANNOUNCES that it graded against nothing', () => {
     // The legitimate first-ever generation. It must not look like an ordinary
-    // write, because the file it produces was graded against nothing.
+    // write, because the file it produces was graded against nothing — and that
+    // announcement is the ONLY artifact this waiver leaves (there is no
+    // per-property enumeration to print), so it is asserted rather than assumed.
     const outDir = join(scratch, 'out-no-baseline');
+    const { status, stderr } = run([
+      `--out-dir=${outDir}`,
+      '--baseline=/nonexistent-baseline.json',
+      ACCEPT_MISSING_BASELINE_FLAG,
+    ]);
+    expect(status).toBe(0);
+    expect(stderr).toContain('ACCEPTED MISSING BASELINE');
+    expect(stderr).toContain('graded against NOTHING');
+    // It names the path it actually read, not "the committed matrix".
+    expect(stderr).toContain('/nonexistent-baseline.json');
+    expect(stderr).toContain('wrote handled-property-wiring');
+    expect(existsSync(join(outDir, 'handled-property-wiring.json'))).toBe(true);
+  }, SPAWN_TIMEOUT_MS);
+
+  it('the EVIDENCE-LOSS waiver does NOT waive a missing baseline', () => {
+    // The quiet tamper the split closes: one corrupted byte makes `loadBaseline`
+    // answer null exactly as a deletion does, so a single flag covering both let
+    // `--accept-evidence-loss` write an UNGRADED matrix at exit 0 — suppressing
+    // precisely the per-property enumeration that would have shown the loss.
+    const outDir = join(scratch, 'out-loss-flag-no-baseline');
     const { status, stderr } = run([
       `--out-dir=${outDir}`,
       '--baseline=/nonexistent-baseline.json',
       ACCEPT_LOSS_FLAG,
     ]);
-    expect(status).toBe(0);
-    expect(stderr).toContain('wrote handled-property-wiring');
-    expect(existsSync(join(outDir, 'handled-property-wiring.json'))).toBe(true);
+    expect(status).toBe(1);
+    expect(stderr).toContain('no readable baseline at');
+    expect(existsSync(join(outDir, 'handled-property-wiring.json'))).toBe(false);
+  }, SPAWN_TIMEOUT_MS);
+
+  it('a TRUNCATED baseline is refused even with the evidence-loss waiver', () => {
+    // Measured on the real matrix: truncating it and re-running with the loss
+    // waiver used to write an ungraded matrix AND overwrite the corruption,
+    // leaving zero trace.
+    const truncated = join(scratch, 'truncated-for-waiver.json');
+    writeFileSync(truncated, JSON.stringify({ schemaVersion: 1, classes: [{ className: 'P' }] }));
+    const { status, stderr } = run([
+      `--out-dir=${join(scratch, 'out-truncated-waiver')}`,
+      `--baseline=${truncated}`,
+      ACCEPT_LOSS_FLAG,
+    ]);
+    expect(status).toBe(1);
+    expect(stderr).toContain('no readable baseline at');
+    expect(stderr).toContain(truncated);
   }, SPAWN_TIMEOUT_MS);
 
   it('the WRITER is clean on the real tree and reproduces the COMMITTED matrix byte-for-byte', () => {
@@ -1820,17 +1922,15 @@ describe('the shipped --check command', () => {
 });
 
 describe('missing-baseline refusal predicate (#1842)', () => {
-  // Exhaustive over the three inputs, so the rule is pinned independently of
-  // whichever flag combination happens to reach it.
+  // Exhaustive over both inputs. The rule is deliberately mode-agnostic: an
+  // earlier draft exempted `--check`, which made a DELETED matrix print
+  // `OK - ... 0 evidence losses` and exit 0 - an unearned green, the verdict
+  // this critic exists to abolish.
   const cases: ReadonlyArray<[Parameters<typeof shouldRefuseMissingBaseline>[0], boolean, string]> = [
-    [{ checkMode: false, hasBaseline: false, acceptLoss: false }, true, 'the bypass'],
-    [{ checkMode: false, hasBaseline: true, acceptLoss: false }, false, 'ordinary write'],
-    [{ checkMode: false, hasBaseline: false, acceptLoss: true }, false, 'first-ever generation'],
-    [{ checkMode: false, hasBaseline: true, acceptLoss: true }, false, 'acknowledged write'],
-    [{ checkMode: true, hasBaseline: false, acceptLoss: false }, false, '--check writes nothing'],
-    [{ checkMode: true, hasBaseline: true, acceptLoss: false }, false, 'ordinary check'],
-    [{ checkMode: true, hasBaseline: false, acceptLoss: true }, false, 'check, acknowledged'],
-    [{ checkMode: true, hasBaseline: true, acceptLoss: true }, false, 'check with everything'],
+    [{ hasBaseline: false, acceptMissingBaseline: false }, true, 'nothing to grade against'],
+    [{ hasBaseline: true, acceptMissingBaseline: false }, false, 'ordinary run'],
+    [{ hasBaseline: false, acceptMissingBaseline: true }, false, 'first-ever generation'],
+    [{ hasBaseline: true, acceptMissingBaseline: true }, false, 'waiver with a baseline present'],
   ];
   for (const [opts, expected, why] of cases) {
     it(`${expected ? 'refuses' : 'allows'}: ${why}`, () => {
@@ -1838,17 +1938,24 @@ describe('missing-baseline refusal predicate (#1842)', () => {
     });
   }
 
-  it('refuses ONLY the all-three-conditions combination', () => {
-    // Guards against the predicate being widened into a nuisance later: exactly
-    // one of the eight input combinations may be a refusal.
+  it('refuses ONLY when there is no baseline and no waiver', () => {
     const bools = [false, true];
-    const refusals = bools.flatMap((checkMode) =>
-      bools.flatMap((hasBaseline) =>
-        bools
-          .map((acceptLoss) => ({ checkMode, hasBaseline, acceptLoss }))
-          .filter(shouldRefuseMissingBaseline)
-      )
+    const refusals = bools.flatMap((hasBaseline) =>
+      bools
+        .map((acceptMissingBaseline) => ({ hasBaseline, acceptMissingBaseline }))
+        .filter(shouldRefuseMissingBaseline)
     );
-    expect(refusals).toEqual([{ checkMode: false, hasBaseline: false, acceptLoss: false }]);
+    expect(refusals).toEqual([{ hasBaseline: false, acceptMissingBaseline: false }]);
+  });
+
+  it('takes exactly the two inputs it documents', () => {
+    // The two waivers are separate BECAUSE they suppress different artifacts: a
+    // loss is enumerated per (class, property), a missing baseline has nothing
+    // to enumerate. Conflating them made ONE corrupted byte enough to write an
+    // ungraded matrix at exit 0 with the enumeration suppressed. Re-adding an
+    // `acceptLoss` input here would be the first step back to that.
+    expect(shouldRefuseMissingBaseline.length).toBe(1);
+    const keys = Object.keys({ hasBaseline: false, acceptMissingBaseline: false });
+    expect(keys).toEqual(['hasBaseline', 'acceptMissingBaseline']);
   });
 });
