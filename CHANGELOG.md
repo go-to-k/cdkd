@@ -1,3 +1,10 @@
+## [0.281.20](https://github.com/go-to-k/cdkd/compare/v0.281.19...v0.281.20) (2026-08-13)
+
+
+### Bug Fixes
+
+* **dynamodb:** prune the GlobalTable omit's orphaned AttributeDefinitions, and fix the AttributeDefinitions ordering phantom drift ([#1773](https://github.com/go-to-k/cdkd/issues/1773)) ([c6357ee](https://github.com/go-to-k/cdkd/commit/c6357ee8df4bd5e4fd1940984c1f2c09d084660f))
+
 ## [0.281.19](https://github.com/go-to-k/cdkd/compare/v0.281.18...v0.281.19) (2026-08-13)
 
 
