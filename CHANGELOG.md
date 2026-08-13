@@ -1,3 +1,10 @@
+# [0.282.0](https://github.com/go-to-k/cdkd/compare/v0.281.28...v0.282.0) (2026-08-13)
+
+
+### Features
+
+* **drift:** add the two declaration seams a property path cannot express ([#1799](https://github.com/go-to-k/cdkd/issues/1799)) ([37f85aa](https://github.com/go-to-k/cdkd/commit/37f85aad8279453c0184c487dc243fa5eda063c3))
+
 ## [0.281.28](https://github.com/go-to-k/cdkd/compare/v0.281.27...v0.281.28) (2026-08-13)
 
 
