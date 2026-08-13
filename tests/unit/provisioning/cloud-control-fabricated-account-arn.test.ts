@@ -30,6 +30,11 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   // the region fix ship unpinned: reverting the call site to a bare
   // `getAccountInfo()` left every test green (PR review).
   getAccountInfo: (overrideRegion?: string) => {
+    // NOTE the enrichment path ALWAYS passes an override (the CC client's
+    // region), so `ccClientRegion` — not the `region:` field of the
+    // `mockAccountInfo.value` literals below — is the live knob for the region
+    // that reaches a built ARN. Those `region:` fields are kept only so the
+    // records read as realistic; changing one alone has no effect.
     getAccountInfoCalls.push(overrideRegion);
     return Promise.resolve({
       ...mockAccountInfo.value,
