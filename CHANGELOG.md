@@ -1,3 +1,10 @@
+## [0.283.12](https://github.com/go-to-k/cdkd/compare/v0.283.11...v0.283.12) (2026-08-13)
+
+
+### Bug Fixes
+
+* **provisioning:** preserve Route 53 NameServers as a list ([#1868](https://github.com/go-to-k/cdkd/issues/1868)) ([8d044b0](https://github.com/go-to-k/cdkd/commit/8d044b0b10225e762f91d31cdc14adca24870ef7))
+
 ## [0.283.11](https://github.com/go-to-k/cdkd/compare/v0.283.10...v0.283.11) (2026-08-13)
 
 
