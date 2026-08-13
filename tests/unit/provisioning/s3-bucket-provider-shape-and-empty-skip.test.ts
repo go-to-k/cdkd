@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   PutBucketInventoryConfigurationCommand,
   PutBucketLifecycleConfigurationCommand,
+  GetBucketLifecycleConfigurationCommand,
+  GetBucketCorsCommand,
   DeleteBucketLifecycleCommand,
   PutBucketCorsCommand,
   DeleteBucketCorsCommand,
@@ -51,9 +53,15 @@ import {
  *    equal to the desired bag — the engine gates on `??`, so absent is the
  *    contract and an implementation that always answers would rewrite the
  *    record on every deploy.
- * 5. **The DESIRED bag is asserted UNMUTATED**, since rewriting the caller's
- *    own property object is the `canonicalizeDesiredProperties` behavior this
- *    change deliberately does NOT have.
+ * 5. **The DESIRED bag is asserted UNMUTATED.** Since issue #1717 the provider
+ *    DOES canonicalize the desired side — but through a separate, pure
+ *    `canonicalizeDesiredProperties` call the diff makes, never by mutating the
+ *    bag `update()` / `create()` was handed.
+ *
+ * Two later siblings were appended at the bottom of this file rather than in a
+ * new one, because they need the same drift-comparator harness: issue #1718's
+ * CREATE-path empty-collection skip (the twin of #1671 above) and issue #1707's
+ * destination-SHAPE fold (the twin of #1686 above).
  */
 
 const { mockSend, childLogger } = vi.hoisted(() => ({
@@ -123,11 +131,14 @@ function at(value: unknown, ...path: Array<string | number>): unknown {
  * `Enabled` is declared explicitly rather than left to the applier's
  * `?? true` default, and that is deliberate: the Put always sends
  * `IsEnabled` and `inventorySdkToCfn` always reads it back as `Enabled`, so an
- * item that OMITS it records one fewer key than the readback produces. That
- * gap is real but pre-existing and orthogonal to #1686 (it is the #1670
- * defaulted-but-sent class, one property over — filed separately); declaring
- * the value keeps the convergence row below measuring THIS fix rather than
- * that one.
+ * item that OMITS it records one fewer key than the readback produces.
+ *
+ * That gap was real and orthogonal to #1686 (the #1670 defaulted-but-sent
+ * class, one property over); it is FIXED by issue #1718, which records the
+ * default. This fixture keeps declaring the value anyway, so the convergence
+ * rows below keep measuring THIS fix rather than that one — the #1718 rows live
+ * in `s3-bucket-provider-substituted-properties.test.ts`, on items that
+ * deliberately omit it.
  */
 const inventoryItem = (extra: Record<string, unknown>) => ({
   Id: 'i1',
@@ -623,5 +634,238 @@ describe('#1713 UPDATE: an empty BucketEncryption / OwnershipControls collection
     ).rejects.toThrow();
 
     expect(sentCommands(DeleteBucketEncryptionCommand)).toHaveLength(0);
+  });
+});
+
+/**
+ * Issue #1718 item 1 — the CREATE-path sibling of the #1671 skip above.
+ *
+ * `applyAllSubConfigsForCreate` carries the same `length > 0` guard the update
+ * path does and skipped in SILENCE, so a fresh bucket came up with a declared
+ * lifecycle / CORS configuration that was never applied and nothing said so.
+ *
+ * Rows are written so the obvious wrong implementations FAIL:
+ *
+ * 1. **No Put AND no Delete**, same as the #1671 rows: the live A/B recorded on
+ *    `emptyCollectionSkip` measured CloudFormation REFUSING the empty
+ *    collection rather than treating it as a removal, so a guard that falls
+ *    through to a Delete arm would diverge from CFn — and on a create there is
+ *    nothing to delete, so the wrong implementation is a stray API call.
+ * 2. **The warning is asserted by CONTENT, not by count.** A skip nobody can
+ *    read is the defect being fixed, so the message has to name the property.
+ * 3. **`effectiveProperties` is asserted ABSENT.** The rule's replay-CREATE line
+ *    ("DROP the key") is the tempting import and is wrong here: `readLifecycle`
+ *    / `readCors` ALWAYS emit the empty placeholder for an unconfigured bucket,
+ *    so the declared empty collection already IS what `readCurrentState`
+ *    returns. The convergence row proves that rather than asserting it.
+ * 4. **The non-empty polarity asserts the warning does NOT fire**, or the rows
+ *    above would pass against an implementation that warns unconditionally.
+ */
+describe('#1718 CREATE: an empty rules collection skips the Put and SAYS SO', () => {
+  const emptyLifecycleWarnings = () =>
+    childLogger.warn.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes('LifecycleConfiguration.Rules declares no rules'));
+  const emptyCorsWarnings = () =>
+    childLogger.warn.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes('CorsConfiguration.CorsRules declares no rules'));
+
+  it('lifecycle: no Put, no Delete, and a warning naming the property', async () => {
+    const properties = { BucketName: BUCKET, LifecycleConfiguration: { Rules: [] } };
+
+    const result = await provider.create('B', RESOURCE_TYPE, properties);
+
+    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+    expect(sentCommands(DeleteBucketLifecycleCommand)).toHaveLength(0);
+    expect(emptyLifecycleWarnings()).toHaveLength(1);
+    expect(emptyLifecycleWarnings()[0]).toMatch(/Creating the bucket WITHOUT the declared/);
+    // The declared empty collection IS the readback shape, so nothing is
+    // overridden — see the convergence row below.
+    expect(result.effectiveProperties).toBeUndefined();
+  });
+
+  it('CORS: no Put, no Delete, and a warning naming the property', async () => {
+    const properties = { BucketName: BUCKET, CorsConfiguration: { CorsRules: [] } };
+
+    const result = await provider.create('B', RESOURCE_TYPE, properties);
+
+    expect(sentCommands(PutBucketCorsCommand)).toHaveLength(0);
+    expect(sentCommands(DeleteBucketCorsCommand)).toHaveLength(0);
+    expect(emptyCorsWarnings()).toHaveLength(1);
+    expect(result.effectiveProperties).toBeUndefined();
+  });
+
+  it('converges: the record matches what the REAL readCurrentState emits', async () => {
+    // This row drives the actual `readCurrentState` rather than comparing the
+    // record against a hand-written literal. The earlier cut did the latter and
+    // was TAUTOLOGICAL (review of #1718): with `effectiveProperties` absent the
+    // recorded bag IS `properties`, and the "AWS side" was a byte-identical
+    // copy, so `calculateResourceDrift(x, copy-of-x)` returned `[]` under any
+    // implementation — including one that DROPPED the key. It therefore proved
+    // nothing about the claim it exists for, which is that `readLifecycle` /
+    // `readCors` emit the empty placeholder for an UNCONFIGURED bucket and so
+    // "record nothing" beats "drop the key".
+    const properties = {
+      BucketName: BUCKET,
+      LifecycleConfiguration: { Rules: [] },
+      CorsConfiguration: { CorsRules: [] },
+    };
+    const result = await provider.create('B', RESOURCE_TYPE, properties);
+    const recorded = result.effectiveProperties ?? properties;
+
+    // Now read the bucket back the way `cdkd drift` does, with S3 answering the
+    // two GETs exactly as it does for a bucket that has neither configuration.
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetBucketLifecycleConfigurationCommand) {
+        return Promise.reject(Object.assign(new Error('no lifecycle'), {
+          name: 'NoSuchLifecycleConfiguration',
+        }));
+      }
+      if (cmd instanceof GetBucketCorsCommand) {
+        return Promise.reject(Object.assign(new Error('no cors'), {
+          name: 'NoSuchCORSConfiguration',
+        }));
+      }
+      return Promise.resolve({});
+    });
+    const awsCurrent = await provider.readCurrentState(BUCKET, 'B', RESOURCE_TYPE);
+
+    // The claim, asserted against the mapper's real output rather than restated.
+    expect(awsCurrent?.['LifecycleConfiguration']).toEqual({ Rules: [] });
+    expect(awsCurrent?.['CorsConfiguration']).toEqual({ CorsRules: [] });
+    // ...so the record converges, and would NOT have if the key were dropped.
+    expect(
+      calculateResourceDrift(recorded, awsCurrent as Record<string, unknown>)
+    ).toEqual([]);
+    // The negative twin, and it deliberately does NOT go through
+    // `calculateResourceDrift` (review of #1718): that comparator walks STATE
+    // keys only, so a record missing the key yields `[]` too and the headline
+    // assertion above cannot tell "converges" from "not compared at all". The
+    // cost of dropping shows up on the DIFF instead — the template keeps
+    // declaring a key the record does not — so assert the record KEEPS both
+    // keys, per collection, which a partial drop also fails.
+    expect(recorded).toHaveProperty('LifecycleConfiguration');
+    expect(recorded).toHaveProperty('CorsConfiguration');
+    expect((recorded as Record<string, unknown>)['LifecycleConfiguration']).toEqual({ Rules: [] });
+    expect((recorded as Record<string, unknown>)['CorsConfiguration']).toEqual({ CorsRules: [] });
+    // And state it explicitly: the recorded value is byte-equal to what the
+    // readback just produced, which is the claim "record nothing" rests on.
+    expect((recorded as Record<string, unknown>)['LifecycleConfiguration']).toEqual(
+      awsCurrent?.['LifecycleConfiguration']
+    );
+    expect((recorded as Record<string, unknown>)['CorsConfiguration']).toEqual(
+      awsCurrent?.['CorsConfiguration']
+    );
+  });
+
+  it('control: a NON-empty collection applies and warns nothing', async () => {
+    const properties = {
+      BucketName: BUCKET,
+      LifecycleConfiguration: { Rules: [{ Id: 'r1', Status: 'Enabled', ExpirationInDays: 30 }] },
+      CorsConfiguration: {
+        CorsRules: [{ AllowedMethods: ['GET'], AllowedOrigins: ['*'] }],
+      },
+    };
+
+    await provider.create('B', RESOURCE_TYPE, properties);
+
+    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(1);
+    expect(sentCommands(PutBucketCorsCommand)).toHaveLength(1);
+    expect(emptyLifecycleWarnings()).toHaveLength(0);
+    expect(emptyCorsWarnings()).toHaveLength(0);
+  });
+
+  it('control: an ABSENT collection is the ordinary no-configuration path, not a skip', async () => {
+    // The guard fires on a DECLARED-but-empty block only. An omitted property
+    // must stay silent, or every bucket in the tree gains two warnings.
+    await provider.create('B', RESOURCE_TYPE, { BucketName: BUCKET });
+
+    expect(sentCommands(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+    expect(emptyLifecycleWarnings()).toHaveLength(0);
+    expect(emptyCorsWarnings()).toHaveLength(0);
+  });
+});
+
+/**
+ * Issue #1707 — the destination-SHAPE sibling of #1686's key fold, pinned end to
+ * end through the real drift comparator.
+ *
+ * The desired side accepts the nested SDK `S3BucketDestination` wrapper and a
+ * `Bucket` / `BucketArn` alias inside it; `inventorySdkToCfn` emits only the
+ * flattened CFn block with `BucketArn`. So a record written in either tolerated
+ * spelling could never match the readback — permanent phantom drift with NO
+ * warning anywhere, because nothing is malformed and nothing is substituted.
+ */
+describe('#1707 UPDATE: a tolerated destination spelling converges after normalization', () => {
+  it('the nested wrapper + Bucket alias record as the flattened CFn block', async () => {
+    const desired = {
+      Id: 'i1',
+      Enabled: true,
+      IncludedObjectVersions: 'All',
+      ScheduleFrequency: 'Weekly',
+      Destination: {
+        S3BucketDestination: { Bucket: DEST_ARN, Format: 'CSV', Prefix: 'live/' },
+      },
+    };
+    const { result } = await updateInventory(desired);
+
+    // The wire is unchanged — the SDK really does take the nested shape with a
+    // `Bucket` member, so this is a RECORDING fold, not a re-shaped request.
+    const sent = sentCommands(PutBucketInventoryConfigurationCommand);
+    expect(
+      at(sent[0]!.input, 'InventoryConfiguration', 'Destination', 'S3BucketDestination', 'Bucket')
+    ).toBe(DEST_ARN);
+
+    // ...and the record is the shape `inventorySdkToCfn` will produce.
+    const awsCurrent = {
+      BucketName: BUCKET,
+      InventoryConfigurations: [
+        {
+          Id: 'i1',
+          Enabled: true,
+          IncludedObjectVersions: 'All',
+          ScheduleFrequency: 'Weekly',
+          Destination: { BucketArn: DEST_ARN, Format: 'CSV', Prefix: 'live/' },
+        },
+      ],
+    };
+    expect(
+      calculateResourceDrift(result.effectiveProperties as Record<string, unknown>, awsCurrent)
+    ).toEqual([]);
+  });
+
+  it('the DECLARED spelling does NOT converge — the row above has teeth', async () => {
+    // Without the fold the record keeps the nested wrapper, which the readback
+    // can never emit. Driving the un-folded desired bag through the same
+    // comparator must report drift, or the row above would pass on any
+    // implementation.
+    const desired = {
+      Id: 'i1',
+      Enabled: true,
+      IncludedObjectVersions: 'All',
+      ScheduleFrequency: 'Weekly',
+      Destination: {
+        S3BucketDestination: { Bucket: DEST_ARN, Format: 'CSV', Prefix: 'live/' },
+      },
+    };
+    const awsCurrent = {
+      BucketName: BUCKET,
+      InventoryConfigurations: [
+        {
+          Id: 'i1',
+          Enabled: true,
+          IncludedObjectVersions: 'All',
+          ScheduleFrequency: 'Weekly',
+          Destination: { BucketArn: DEST_ARN, Format: 'CSV', Prefix: 'live/' },
+        },
+      ],
+    };
+
+    const drifts = calculateResourceDrift(
+      { BucketName: BUCKET, InventoryConfigurations: [desired] },
+      awsCurrent
+    );
+    expect(drifts).not.toEqual([]);
   });
 });

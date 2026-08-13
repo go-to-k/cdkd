@@ -129,6 +129,7 @@ ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 SOURCE_BUCKET="cdkd-ai-source-${ACCOUNT_ID}"
 REPORT_BUCKET="cdkd-ai-reports-${ACCOUNT_ID}"
 REPORT_ARN="arn:aws:s3:::${REPORT_BUCKET}"
+EMPTY_BUCKET="cdkd-ai-empty-${ACCOUNT_ID}"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt.
@@ -142,6 +143,7 @@ cleanup() {
   fi
   aws s3api delete-bucket --bucket "${SOURCE_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${REPORT_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws s3api delete-bucket --bucket "${EMPTY_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -173,8 +175,19 @@ cleanup
 
 # --- Phase 1: deploy baseline ----------------------------------------------
 echo "==> Phase 1: deploy source bucket with analytics + inventory configurations"
+# The deploy log is CAPTURED (and echoed) rather than streamed straight through:
+# phase 1b greps it for the create-path empty-collection warning (#1718 item 1),
+# which is emitted once, during this deploy, and is unobservable afterwards.
+DEPLOY_LOG="$(mktemp)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${DEPLOY_LOG}"
+# `tee` is the last stage of the pipeline, so its 0 exit would mask a failed
+# deploy. PIPESTATUS carries the real one.
+DEPLOY_RC="${PIPESTATUS[0]}"
+if [ "${DEPLOY_RC}" -ne 0 ]; then
+  echo "FAIL: phase 1 deploy exited ${DEPLOY_RC}" >&2
+  exit 1
+fi
 
 echo "==> Phase 1: assert the ANALYTICS destination reached AWS"
 ANALYTICS_P1="$(aws s3api get-bucket-analytics-configuration \
@@ -195,6 +208,53 @@ assert_eq "inventory destination format" "CSV" \
   "$(printf '%s' "${INVENTORY_P1}" | jq -r '.InventoryConfiguration.Destination.S3BucketDestination.Format')"
 assert_eq "inventory destination prefix" "inventory-v1/" \
   "$(printf '%s' "${INVENTORY_P1}" | jq -r '.InventoryConfiguration.Destination.S3BucketDestination.Prefix')"
+
+# --- Phase 1b: the CREATE-path empty-collection skip (issue #1718 item 1) ---
+echo "==> Phase 1b: the declared-but-EMPTY lifecycle / CORS collection must ANNOUNCE its skip"
+# `applyAllSubConfigsForCreate` carries the same `length > 0` guard the update
+# path does and skipped in SILENCE, so a fresh bucket came up without the
+# configuration its template declared and nothing said so. The warning is
+# emitted exactly once, during the phase-1 deploy, which is why that log is
+# captured rather than streamed.
+for COLLECTION in "LifecycleConfiguration.Rules" "CorsConfiguration.CorsRules"; do
+  if grep -q "AWS::S3::Bucket ${COLLECTION} declares no rules" "${DEPLOY_LOG}"; then
+    echo "  ok: the create-path skip of ${COLLECTION} was announced"
+  else
+    echo "FAIL: the create-path skip of ${COLLECTION} was SILENT (issue #1718 item 1)" >&2
+    echo "      deploy log:" >&2
+    cat "${DEPLOY_LOG}" >&2
+    exit 1
+  fi
+done
+
+# The skip must stay a SKIP, not become a removal or a stray call: AWS must
+# hold no configuration at all, and the two reads must fail with their own
+# not-found signatures rather than any other error.
+if ! gone_probe aws s3api get-bucket-lifecycle-configuration \
+  --bucket "${EMPTY_BUCKET}" --region "${REGION}"; then
+  echo "FAIL: ${EMPTY_BUCKET} has a lifecycle configuration; the empty collection was APPLIED" >&2
+  exit 1
+fi
+echo "  ok: no lifecycle configuration was applied"
+if ! gone_probe aws s3api get-bucket-cors --bucket "${EMPTY_BUCKET}" --region "${REGION}"; then
+  echo "FAIL: ${EMPTY_BUCKET} has a CORS configuration; the empty collection was APPLIED" >&2
+  exit 1
+fi
+echo "  ok: no CORS configuration was applied"
+
+# ...and the record must CONVERGE with the readback rather than being dropped:
+# `readLifecycle` / `readCors` emit the same empty placeholder for an
+# unconfigured bucket, so the declared empty collection already IS what
+# `readCurrentState` returns. A `cdkd drift` run is the honest check — it is the
+# command a dropped key would silently stop comparing.
+STATE_EMPTY="$(node "${LOCAL_DIST}" state show "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --json)"
+assert_eq "the empty lifecycle collection is RECORDED (not dropped)" "[]" \
+  "$(printf '%s' "${STATE_EMPTY}" \
+     | jq -c '.state.resources.EmptyCollectionBucket.properties.LifecycleConfiguration.Rules')"
+assert_eq "the empty CORS collection is RECORDED (not dropped)" "[]" \
+  "$(printf '%s' "${STATE_EMPTY}" \
+     | jq -c '.state.resources.EmptyCollectionBucket.properties.CorsConfiguration.CorsRules')"
 
 # --- Phase 2: the warn-and-SUBSTITUTE arms (issue #1670) --------------------
 echo "==> Phase 2: re-deploy with BLANK OutputSchemaVersion / Format values"
@@ -319,37 +379,152 @@ assert_no_diff_on_configs() { # usage: assert_no_diff_on_configs <run label>
 assert_no_diff_on_configs "run 1"
 assert_no_diff_on_configs "run 2"
 
-echo "==> Phase 3: NEGATIVE twin — the pre-fix NESTED destination must NOT converge"
-# Rewrites the RECORDED destination into the shape `analyticsSdkToCfn` used to
-# emit, without touching the provider. If a nested-shaped record compared equal
-# to the flattened template, the flattening assertions above would prove
-# nothing.
+echo "==> Phase 3b: a NESTED-spelled record must now CONVERGE (issue #1707)"
+# This block asserted the OPPOSITE until issue #1707, and the reversal is the
+# fix rather than a regression. It used to rewrite the RECORDED destination
+# into the SDK-nested shape and require `cdkd diff --fail` to report it, as
+# proof that the flattening assertions above were not vacuous.
+#
+# #1707 makes that spelling converge on purpose: `analyticsSdkToCfn` /
+# `inventorySdkToCfn` emit ONLY the flattened CFn block, so a record written in
+# the tolerated nested spelling could never match the readback —
+# permanent phantom drift with no warning anywhere, since nothing is malformed
+# and nothing is substituted. `canonicalizeDesiredProperties` folds BOTH
+# comparison sides, and folding both is precisely what HEALS a record written
+# by an older binary: an item whose value never changes is never re-Put, so the
+# recording side alone can never reach it. THIS block is that heal, live.
 STATE_FLAT="$(mktemp)"
 STATE_NESTED="$(mktemp)"
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${STATE_FLAT}"
 jq '(.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination)
       |= { S3BucketDestination: . }' "${STATE_FLAT}" > "${STATE_NESTED}"
+# Guard the seed, the way phase 3c does: a jq expression that silently produced
+# the ORIGINAL record would make the assertion below pass while proving nothing
+# (review of this PR flagged 3b and 3d as the two unguarded seeds).
+assert_eq "the seeded record is NESTED" "${REPORT_ARN}" \
+  "$(jq -r '.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination.S3BucketDestination.BucketArn' \
+     "${STATE_NESTED}")"
+assert_eq "the seeded record dropped the flattened spelling" "null" \
+  "$(jq -r '.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination.BucketArn' \
+     "${STATE_NESTED}")"
 aws s3 cp "${STATE_NESTED}" "s3://${STATE_BUCKET}/${STATE_KEY}"
-NESTED_DIFF=""
 if NESTED_DIFF="$(env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)"; then
-  echo "FAIL: the pre-fix NESTED destination shape compared EQUAL to the template — the" >&2
-  echo "      flattening assertions in phase 2 cannot distinguish the fix from the bug" >&2
+  echo "  ok: the pre-#1707 nested record now compares EQUAL to the flattened template"
+else
+  echo "FAIL: a nested-spelled record still reports a difference — #1707 does not heal" >&2
+  echo "      the already-deployed population" >&2
   printf '%s\n' "${NESTED_DIFF}" >&2
+  exit 1
+fi
+aws s3 cp "${STATE_FLAT}" "s3://${STATE_BUCKET}/${STATE_KEY}"
+rm -f "${STATE_NESTED}"
+
+echo "==> Phase 3c: the SDK Schedule spelling must converge too (issues #1686 / #1717)"
+# The #1686 recording fold shipped WITHOUT its `canonicalizeDesiredProperties`
+# twin, and the cost was measured here: state held `ScheduleFrequency` while the
+# template declared the SDK `Schedule: { Frequency }`, so an UNCHANGED template
+# redeployed as `1 to update` forever. #1717 shipped the twin.
+#
+# Seeded into STATE by hand rather than into the template, and that is a
+# constraint rather than a shortcut: the CFn schema declares no `Schedule`
+# member, and aws-cdk-lib's L1 renderer DROPS a member it does not declare, so
+# no CDK template can carry the second source at all.
+STATE_SDK_SCHEDULE="$(mktemp)"
+jq '(.resources.SourceBucket.properties.InventoryConfigurations[0])
+      |= (. + { Schedule: { Frequency: .ScheduleFrequency } } | del(.ScheduleFrequency))' \
+  "${STATE_FLAT}" > "${STATE_SDK_SCHEDULE}"
+# Guard the seed itself: a jq expression that silently produced the ORIGINAL
+# record would make the assertion below pass while proving nothing.
+assert_eq "the seeded record carries the SDK spelling" "Daily" \
+  "$(jq -r '.resources.SourceBucket.properties.InventoryConfigurations[0].Schedule.Frequency' \
+     "${STATE_SDK_SCHEDULE}")"
+assert_eq "the seeded record dropped the CFn spelling" "null" \
+  "$(jq -r '.resources.SourceBucket.properties.InventoryConfigurations[0].ScheduleFrequency' \
+     "${STATE_SDK_SCHEDULE}")"
+aws s3 cp "${STATE_SDK_SCHEDULE}" "s3://${STATE_BUCKET}/${STATE_KEY}"
+if SCHEDULE_DIFF="$(env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)"; then
+  echo "  ok: the SDK-spelled schedule compares EQUAL to the CFn-spelled template"
+else
+  echo "FAIL: the SDK Schedule spelling still reports a difference — the #1717 twin" >&2
+  echo "      is not folding both comparison sides" >&2
+  printf '%s\n' "${SCHEDULE_DIFF}" >&2
+  exit 1
+fi
+aws s3 cp "${STATE_FLAT}" "s3://${STATE_BUCKET}/${STATE_KEY}"
+rm -f "${STATE_SDK_SCHEDULE}"
+
+echo "==> Phase 3d: the twin must NOT blind the comparator to a real change"
+# The teeth the old negative twin provided, kept: canonicalizing both sides
+# makes two SPELLINGS of one value compare equal, and must not make two
+# different VALUES compare equal. Same nested seed as phase 3b, pointed at a
+# bucket the template does not name.
+STATE_WRONG="$(mktemp)"
+jq '(.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination)
+      |= { S3BucketDestination: (. + { BucketArn: "arn:aws:s3:::cdkd-ai-not-the-report-bucket" }) }' \
+  "${STATE_FLAT}" > "${STATE_WRONG}"
+# Same seed guard as 3b / 3c: without it a mistyped path leaves the record
+# UNCHANGED and the row below can still exit non-zero for an unrelated reason,
+# reporting "a real change is still reported" when nothing was changed at all.
+assert_eq "the seeded record names a DIFFERENT bucket" \
+  "arn:aws:s3:::cdkd-ai-not-the-report-bucket" \
+  "$(jq -r '.resources.SourceBucket.properties.AnalyticsConfigurations[0].StorageClassAnalysis.DataExport.Destination.S3BucketDestination.BucketArn' \
+     "${STATE_WRONG}")"
+aws s3 cp "${STATE_WRONG}" "s3://${STATE_BUCKET}/${STATE_KEY}"
+WRONG_DIFF=""
+if WRONG_DIFF="$(env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail 2>&1)"; then
+  echo "FAIL: a record naming a DIFFERENT destination bucket compared EQUAL — the" >&2
+  echo "      canonicalization is folding away real differences" >&2
+  printf '%s\n' "${WRONG_DIFF}" >&2
   exit 1
 fi
 # A non-zero exit alone is not enough: any diff-time error is also non-zero.
 # Require the report to NAME the property, so the twin fails for its own reason.
-case "${NESTED_DIFF}" in
-  *AnalyticsConfigurations*) echo "  ok: the nested shape is reported as a real difference" ;;
+case "${WRONG_DIFF}" in
+  *AnalyticsConfigurations*) echo "  ok: a real destination change is still reported" ;;
   *)
     echo "FAIL: diff exited non-zero but never named AnalyticsConfigurations:" >&2
-    printf '%s\n' "${NESTED_DIFF}" >&2
+    printf '%s\n' "${WRONG_DIFF}" >&2
     exit 1
     ;;
 esac
 aws s3 cp "${STATE_FLAT}" "s3://${STATE_BUCKET}/${STATE_KEY}"
-rm -f "${STATE_NESTED}"
+rm -f "${STATE_WRONG}"
+
+echo "==> Phase 3e: an UNCHANGED template must redeploy as a no-op (issue #1717)"
+# The honest half of the twin, and the measurement the issue reports: before it,
+# deploying the same template twice reported `1 to update` forever, because the
+# record held the folded spelling while the template declared the SDK one.
+# Everything above compares through `cdkd diff`; this runs the DEPLOY.
+REDEPLOY_LOG="$(env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+printf '%s\n' "${REDEPLOY_LOG}"
+# Match against cdkd DEPLOY's own wording, and strip ANSI first — the summary
+# counters are colorized (`Updated: \033[90m0\033[0m`), so a plain
+# `*"Updated: 0"*` glob never matches. The first cut of this assertion looked
+# for a `cdkd diff`-style "0 to create, 0 to update, 0 to delete" line that
+# `deploy` does not print at all, and FAILED against a run that was already a
+# perfect no-op.
+REDEPLOY_PLAIN="$(printf '%s' "${REDEPLOY_LOG}" | sed -E 's/\x1b\[[0-9;]*m//g')"
+# Both halves are asserted: the headline says nothing changed, and the counters
+# agree. Either alone would pass on a run that updated a resource while
+# reporting the other.
+case "${REDEPLOY_PLAIN}" in
+  *"No changes detected"*) ;;
+  *)
+    echo "FAIL: redeploying an unchanged template reported changes (issue #1717)" >&2
+    exit 1
+    ;;
+esac
+assert_eq "redeploy created nothing" "  Created: 0" \
+  "$(printf '%s' "${REDEPLOY_PLAIN}" | grep -E '^  Created: ' || true)"
+assert_eq "redeploy updated nothing" "  Updated: 0" \
+  "$(printf '%s' "${REDEPLOY_PLAIN}" | grep -E '^  Updated: ' || true)"
+assert_eq "redeploy deleted nothing" "  Deleted: 0" \
+  "$(printf '%s' "${REDEPLOY_PLAIN}" | grep -E '^  Deleted: ' || true)"
+echo "  ok: the identical template redeploys as a complete no-op"
 
 # --- Phase 4: a malformed PREVIOUS side must not wedge the stack (#1670) ----
 echo "==> Phase 4: hand-patch the state record malformed, then redeploy the valid template"
@@ -412,7 +587,9 @@ echo "==> Phase 6: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
-echo "==> Phase 6: assert both buckets are gone"
+echo "==> Phase 6: assert every bucket is gone"
+assert_gone_eventually "empty-collection bucket ${EMPTY_BUCKET} still exists after destroy" \
+  aws s3api head-bucket --bucket "${EMPTY_BUCKET}" --region "${REGION}"
 assert_gone_eventually "source bucket ${SOURCE_BUCKET} still exists after destroy" \
   aws s3api head-bucket --bucket "${SOURCE_BUCKET}" --region "${REGION}"
 assert_gone_eventually "report bucket ${REPORT_BUCKET} still exists after destroy" \

@@ -178,7 +178,36 @@ export class S3AnalyticsInventoryStack extends cdk.Stack {
     // configurations are PUT, or S3 rejects them.
     sourceBucket.addResourceDependency(reportPolicy);
 
+    // Issue #1718 item 1: a DECLARED-but-EMPTY lifecycle / CORS collection on
+    // the CREATE path. `applyAllSubConfigsForCreate` skips the Put for it — the
+    // same guard the update path has — and used to skip in SILENCE, so a fresh
+    // bucket came up without the configuration its template declared and
+    // nothing said so. This bucket is the live proof that the skip now
+    // ANNOUNCES itself, and that the record still converges with the readback
+    // (`readLifecycle` / `readCors` emit the same empty placeholder for an
+    // unconfigured bucket, which is why the right answer is to override
+    // nothing rather than to drop the key).
+    //
+    // Declared UNCONDITIONALLY, never under a `CDKD_TEST_UPDATE` token: a
+    // mode-gated resource disappears in every later step that omits the token
+    // (the #1543 trap), and this fixture deploys five more times after phase 1.
+    //
+    // The empty arrays survive synthesis — `CfnBucket` declares both members,
+    // so the L1 renderer emits them rather than dropping them the way it drops
+    // an UNdeclared one (which is why the nested destination spelling below has
+    // to be seeded into STATE instead of into the template).
+    const emptyCollectionBucketName = `cdkd-ai-empty-${account}`;
+    const emptyCollectionBucket = new s3.CfnBucket(this, 'EmptyCollectionBucket', {
+      bucketName: emptyCollectionBucketName,
+      lifecycleConfiguration: { rules: [] },
+      corsConfiguration: { corsRules: [] },
+    });
+    emptyCollectionBucket.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
     new cdk.CfnOutput(this, 'SourceBucketName', { value: sourceBucketName });
     new cdk.CfnOutput(this, 'ReportBucketName', { value: reportBucketName });
+    new cdk.CfnOutput(this, 'EmptyCollectionBucketName', {
+      value: emptyCollectionBucketName,
+    });
   }
 }
