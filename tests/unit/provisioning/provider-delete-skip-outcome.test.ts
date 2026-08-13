@@ -71,6 +71,7 @@ import {
 import {
   LambdaPermissionProvider,
   PERMISSION_FUNCTION_NAME_SKIP_REASON,
+  PERMISSION_STATEMENT_ID_SKIP_REASON,
 } from '../../../src/provisioning/providers/lambda-permission-provider.js';
 import {
   CustomResourceProvider,
@@ -80,6 +81,7 @@ import {
 import {
   IAMPolicyProvider,
   POLICY_NAME_SKIP_REASON,
+  POLICY_NO_TARGET_SKIP_REASON,
 } from '../../../src/provisioning/providers/iam-policy-provider.js';
 import {
   IAMUserGroupProvider,
@@ -133,15 +135,38 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
       name: 'AWS::Lambda::Permission — FunctionName absent from BOTH sources',
       reason: PERMISSION_FUNCTION_NAME_SKIP_REASON,
       warnContains: "LEFT IN PLACE on the function's resource policy",
-      // No FunctionName in properties AND a physicalId whose leading segment is
-      // not a function ARN — the only shape with no addressable route left.
+      // No FunctionName in properties AND an EMPTY leading physicalId segment.
+      // (A non-empty one is now used as a bare function name, so it would no
+      // longer skip — see the fallback suite below.)
       run: () =>
         new LambdaPermissionProvider().delete(
           'MyPerm',
-          'not-an-arn|AllowInvoke',
+          '|AllowInvoke',
           'AWS::Lambda::Permission',
           {}
         ),
+    },
+    {
+      name: 'AWS::Lambda::Permission — empty StatementId in a composite physicalId',
+      reason: PERMISSION_STATEMENT_ID_SKIP_REASON,
+      warnContains: 'has no StatementId in its physicalId',
+      // `"<arn>|"` used to reach RemovePermission with an empty HTTP label and
+      // hard-error; the function is well named, so this is its own reason.
+      run: () =>
+        new LambdaPermissionProvider().delete(
+          'MyPerm',
+          `${LAMBDA_ARN}|`,
+          'AWS::Lambda::Permission',
+          { FunctionName: 'my-handler' }
+        ),
+    },
+    {
+      name: 'AWS::IAM::Policy — no target principal in state',
+      reason: POLICY_NO_TARGET_SKIP_REASON,
+      warnContains: 'No Roles, Groups or Users in the state record',
+      // Pre-existing zero-AWS-call hole: every branch is skipped and delete()
+      // used to fall out returning `undefined`, i.e. DELETED.
+      run: () => new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy', 'AWS::IAM::Policy', {}),
     },
     {
       name: 'Custom::Thing — no properties in state',
@@ -242,26 +267,48 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
   // deleteUser remove exactly these memberships — so AWS ends clean while
   // cdkd keeps the record and exits 2 on every re-run. The warning has to say
   // so, and name the command that clears the record.
-  const parentQualifiedCases: Array<{ name: string; run: () => Promise<unknown> }> = [
+  // Each case names the ARM-SPECIFIC qualifier phrase, not just the generic
+  // `UNLESS` / `part of this stack`: a qualifier copy-pasted from the wrong arm
+  // would send the user to look at the wrong parent, and a shared substring
+  // would pass anyway — the same weakness `warnContains` above had.
+  const parentQualifiedCases: Array<{
+    name: string;
+    head: string;
+    qualifier: string;
+    run: () => Promise<unknown>;
+  }> = [
     {
       name: 'AWS::Lambda::Permission',
+      head: 'FunctionName not available for Lambda permission',
+      qualifier: 'UNLESS the function itself is part of this stack',
       run: () =>
         new LambdaPermissionProvider().delete(
           'MyPerm',
-          'not-an-arn|AllowInvoke',
+          '|AllowInvoke',
           'AWS::Lambda::Permission',
           {}
         ),
     },
     {
-      name: 'AWS::IAM::Policy',
+      name: 'AWS::IAM::Policy — no policy name',
+      head: "and no PolicyName in the state record's",
+      qualifier: 'UNLESS the role / group / user it is attached to is itself part of this stack',
       run: () =>
         new IAMPolicyProvider().delete('MyPolicy', ':my-role', 'AWS::IAM::Policy', {
           Roles: ['my-role'],
         }),
     },
     {
+      name: 'AWS::IAM::Policy — no target principal',
+      head: 'No Roles, Groups or Users in the state record',
+      qualifier: 'UNLESS the role / group / user it is attached to is itself part of this stack',
+      run: () =>
+        new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy', 'AWS::IAM::Policy', {}),
+    },
+    {
       name: 'AWS::IAM::UserToGroupAddition — no properties',
+      head: 'No properties for UserToGroupAddition',
+      qualifier: 'UNLESS the group or the users are themselves part of this stack',
       run: () =>
         new IAMUserGroupProvider().delete(
           'MyAddition',
@@ -271,6 +318,8 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
     },
     {
       name: 'AWS::IAM::UserToGroupAddition — missing fields',
+      head: 'Missing GroupName or Users',
+      qualifier: 'UNLESS the group or the users are themselves part of this stack',
       run: () =>
         new IAMUserGroupProvider().delete(
           'MyAddition',
@@ -282,13 +331,15 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
   ];
 
   it.each(parentQualifiedCases)(
-    '$name qualifies LEFT IN PLACE with the in-stack parent and names state orphan',
-    async ({ run }) => {
+    '$name qualifies LEFT IN PLACE with ITS OWN in-stack parent and names state orphan',
+    async ({ head, qualifier, run }) => {
       await run();
 
       const text = warnText();
-      expect(text).toContain('UNLESS');
-      expect(text).toContain('part of this stack');
+      // Head + qualifier together: the head pins WHICH arm produced the text,
+      // so a qualifier lifted from a sibling cannot satisfy both.
+      expect(text).toContain(head);
+      expect(text).toContain(qualifier);
       expect(text).toContain('cdkd state orphan');
     }
   );
@@ -321,6 +372,8 @@ describe('non-composite-id DELETE skip arms report outcome: skipped (issue #1770
       CR_NO_PROPERTIES_SKIP_REASON,
       CR_NO_SERVICE_TOKEN_SKIP_REASON,
       POLICY_NAME_SKIP_REASON,
+      POLICY_NO_TARGET_SKIP_REASON,
+      PERMISSION_STATEMENT_ID_SKIP_REASON,
       MEMBERSHIP_NO_PROPERTIES_SKIP_REASON,
       MEMBERSHIP_MISSING_FIELDS_SKIP_REASON,
     ];
@@ -606,4 +659,156 @@ describe('a second addressable source is exhausted before skipping (issue #1770 
       expect(send).not.toHaveBeenCalled();
     }
   );
+});
+
+/**
+ * Delta review of the round-2 fallbacks. Each of these fences a way the
+ * fallbacks could have made things WORSE than the skip they replaced.
+ */
+describe('the round-2 fallbacks do not create a false delete (issue #1770 delta review)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // A truthy NON-STRING FunctionName is the shape an emptiness check cannot
+  // see. `{ Ref: ... }` URI-encodes to `%5Bobject%20Object%5D`, comes back
+  // ResourceNotFoundException, and the idempotent arm then reports the
+  // statement DELETED. An array is worse: the encoder coerces it and the call
+  // can SUCCEED against a name nothing validated.
+  it.each([
+    { name: 'an unresolved intrinsic', functionName: { Ref: 'MyFn' } },
+    { name: 'an array', functionName: ['my-handler'] },
+    { name: 'a number', functionName: 42 },
+  ])(
+    'AWS::Lambda::Permission: $name FunctionName property never beats a good ARN',
+    async ({ functionName }) => {
+      send.mockResolvedValue({});
+
+      await expect(
+        new LambdaPermissionProvider().delete(
+          'MyPerm',
+          `${LAMBDA_ARN}|AllowInvoke`,
+          'AWS::Lambda::Permission',
+          { FunctionName: functionName }
+        )
+      ).resolves.toBeUndefined();
+
+      // The ARN was used, NOT the junk value.
+      expect(send).toHaveBeenCalledTimes(1);
+      const input = send.mock.calls[0]![0].input as Record<string, unknown>;
+      expect(input['FunctionName']).toBe(LAMBDA_ARN);
+    }
+  );
+
+  it('AWS::Lambda::Permission: a BARE function name in the physicalId is used', async () => {
+    // The CFn primary identifier is [FunctionName, Id] and FunctionName is
+    // often a bare name (src/cli/commands/export.ts). Refusing it would decline
+    // a genuine second source. Safe because StatementId forbids "|", so a "|"
+    // can only be the composite separator.
+    send.mockResolvedValue({});
+
+    await expect(
+      new LambdaPermissionProvider().delete(
+        'MyPerm',
+        'my-handler|AllowInvoke',
+        'AWS::Lambda::Permission',
+        {}
+      )
+    ).resolves.toBeUndefined();
+
+    expect(send).toHaveBeenCalledTimes(1);
+    const input = send.mock.calls[0]![0].input as Record<string, unknown>;
+    expect(input['FunctionName']).toBe('my-handler');
+    expect(input['StatementId']).toBe('AllowInvoke');
+  });
+
+  it('AWS::Lambda::Permission: a CROSS-REGION ARN is refused, not sent to the wrong region', async () => {
+    // The stub client is us-east-1. Sending a eu-west-1 ARN there would come
+    // back ResourceNotFoundException and be reported DELETED by the idempotent
+    // arm, while the real statement stayed live in eu-west-1.
+    const result = await new LambdaPermissionProvider().delete(
+      'MyPerm',
+      'arn:aws:lambda:eu-west-1:111122223333:function:my-handler|AllowInvoke',
+      'AWS::Lambda::Permission',
+      {}
+    );
+
+    expect(result).toEqual({
+      outcome: 'skipped',
+      reason: PERMISSION_FUNCTION_NAME_SKIP_REASON,
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('AWS::Lambda::Permission: a SAME-REGION ARN is still accepted', async () => {
+    // Inverted control for the region gate — it must not refuse everything.
+    send.mockResolvedValue({});
+
+    await expect(
+      new LambdaPermissionProvider().delete(
+        'MyPerm',
+        `${LAMBDA_ARN}|AllowInvoke`,
+        'AWS::Lambda::Permission',
+        {}
+      )
+    ).resolves.toBeUndefined();
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('AWS::IAM::Policy: the PolicyName fallback does NOT route a no-target record into a silent delete', async () => {
+    // The regression the fallback introduced: `physicalId: ''` with a
+    // PolicyName property used to fail the name guard and report `skipped`.
+    // With the name now resolvable, it reached a body where all three target
+    // lists are undefined and the legacy branch needs a ":" — zero AWS calls,
+    // returning `undefined` = DELETED.
+    const result = await new IAMPolicyProvider().delete('MyPolicy', '', 'AWS::IAM::Policy', {
+      PolicyName: 'MyPolicy',
+      PolicyDocument: { Statement: [] },
+    });
+
+    expect(result).toEqual({ outcome: 'skipped', reason: POLICY_NO_TARGET_SKIP_REASON });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('AWS::IAM::Policy: a PRESENT but EMPTY target list is still a delete, not a skip', async () => {
+    // `Roles: []` means nothing is attached, so there is genuinely nothing to
+    // remove — the same judgment as `Users: []` on UserToGroupAddition.
+    // Collapsing the two would turn a legitimate no-op destroy into exit 2.
+    await expect(
+      new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy', 'AWS::IAM::Policy', {
+        Roles: [],
+      })
+    ).resolves.toBeUndefined();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('AWS::IAM::Policy: a NULL target list is treated as absent, not as an empty one', async () => {
+    // `Roles: null` is what a hand-edited or pre-v7 state file can carry. A
+    // `=== undefined` guard would let it through into the zero-AWS-call path
+    // and report DELETED; the truthiness test the legacy branch and the
+    // removal loops already use catches it.
+    const result = await new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy', 'AWS::IAM::Policy', {
+      Roles: null,
+    });
+
+    expect(result).toEqual({ outcome: 'skipped', reason: POLICY_NO_TARGET_SKIP_REASON });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('AWS::IAM::Policy: the legacy "<policyName>:<roleName>" shape still deletes', async () => {
+    // The no-target guard must not swallow the legacy branch, whose role comes
+    // from the physicalId rather than from a target list.
+    send.mockResolvedValue({});
+
+    await expect(
+      new IAMPolicyProvider().delete('MyPolicy', 'MyPolicy:my-role', 'AWS::IAM::Policy', {})
+    ).resolves.toBeUndefined();
+
+    expect(send).toHaveBeenCalledTimes(1);
+    const input = send.mock.calls[0]![0].input as Record<string, unknown>;
+    expect(input['RoleName']).toBe('my-role');
+    expect(input['PolicyName']).toBe('MyPolicy');
+  });
 });

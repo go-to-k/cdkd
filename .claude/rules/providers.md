@@ -1209,6 +1209,50 @@ what was DEPLOYED, not by convenience: the physicalId wins over
 without a replacement having landed would otherwise send a `DeleteRolePolicy`
 for a name AWS never had.
 
+**A fallback is only as good as its VALIDATION, and adding one can make things
+WORSE than the skip it replaced** (the #1770 delta review — three ways the two
+fallbacks above nearly shipped a silent DELETED over a live resource).
+
+- **Apply the `typeof` guard to BOTH sources, not just the one you thought of.**
+  The IAM policy fallback got `typeof x === 'string'`; its Lambda sibling did
+  not, so a truthy NON-string (`{ Ref: 'MyFn' }`, `['my-fn']`) beat a perfectly
+  good ARN. The SDK URI-encodes it: `[object Object]` comes back
+  `ResourceNotFoundException` and the IDEMPOTENT arm then reports DELETED, while
+  an array coerces to a bare name nothing validated and the call can SUCCEED
+  against the wrong function. An emptiness test cannot see either — `''` is
+  falsy and the `||` chain rejects it anyway, so the shapes worth testing are a
+  number, an intrinsic object and an array.
+- **Check the fallback's REGION.** A provider holds ONE client, at the stack's
+  region, so an ARN from another region sends the call to the WRONG region,
+  comes back `ResourceNotFoundException`, and is reported DELETED by the
+  idempotent arm while the real resource stays live. cdkd has no client that
+  could reach it, so the skip is the honest answer. A bare NAME carries no
+  region and is resolved against this client, which is correct.
+- **Do not let the gate refuse a genuine second source.** The Lambda gate
+  required an `arn:` prefix, but the CFn primary identifier is
+  `[FunctionName, Id]` and `FunctionName` is often a BARE name — so the gate
+  declined a real id and put the arm back in the class this rule exists to
+  remove. It is safe to accept because `StatementId` forbids `|`, so a `|` can
+  only ever be the composite separator. The in-code justification for a gate
+  must be CHECKED against the service's own pattern rather than assumed; the
+  first version's stated reason ("a statementId that happens to contain `|`")
+  was impossible.
+
+**A guard that lets a record through must check that the path it opens actually
+DOES something.** The same review found the IAM `PolicyName` fallback converting
+an honest `skipped` into a silent `deleted`: with the name resolvable the guard
+passed, but an inline policy exists only as an ATTACHMENT, and a record naming
+no `Roles` / `Groups` / `Users` and no legacy role segment reaches a body where
+every branch is skipped — zero AWS calls, `return undefined`, i.e. DELETED. The
+zero-call hole pre-dated the fallback (`physicalId: 'MyPolicy'` with empty
+properties already reached it); the fallback merely ROUTED formerly-skipped
+records into it, which is what made it this change's problem. When adding a
+guard, trace the path it now admits all the way to an AWS call. And use the SAME
+truthiness spelling the branches downstream use — a `=== undefined` test would
+let a null-valued `Roles` (which a hand-edited or pre-v7 state file carries)
+fall through into the very hole being closed, while `!roles` matches the loops
+and keeps a PRESENT-but-empty `Roles: []` an honest `deleted`.
+
 **"LEFT IN PLACE" is FALSE when the resource's parent is in the same stack**
 (same review). After a skip the destroy keeps going, and for four of the eight
 arms the very next deletes remove the skipped resource anyway — `deleteGroup`

@@ -2433,9 +2433,12 @@ and still be billing. Three causes today:
   function's resource policy, i.e. an invoke grant outliving the stack); a
   Custom Resource with no properties or no `ServiceToken` (its handler never
   receives a `Delete` request, so whatever it manages elsewhere is untouched);
-  an `AWS::IAM::Policy` with neither a policy name in its physicalId nor a
-  `PolicyName` property (the inline policy stays ATTACHED to its roles /
-  groups / users); an `AWS::IAM::UserToGroupAddition` missing `GroupName` or
+  an `AWS::Lambda::Permission` whose physicalId carries no StatementId; an
+  `AWS::IAM::Policy` with neither a policy name in its physicalId nor a
+  `PolicyName` property, or one naming no `Roles` / `Groups` / `Users` at all
+  (an inline policy exists only as an attachment, so a record naming no
+  principal cannot be deleted — the policy stays ATTACHED wherever it is); an
+  `AWS::IAM::UserToGroupAddition` missing `GroupName` or
   `Users` (the users keep every permission the group grants). Each warning
   names what survived and how to repair it. Where the resource's PARENT is
   part of the same destroy — the Lambda function, the IAM role / group / user

@@ -30,6 +30,17 @@ export const PERMISSION_FUNCTION_NAME_SKIP_REASON =
   'FunctionName missing from state — no delete issued';
 
 /**
+ * The short `ResourceDeleteResult.reason` for a composite physicalId whose
+ * trailing StatementId segment is empty (`"<functionArn>|"`).
+ *
+ * Its own reason rather than {@link PERMISSION_FUNCTION_NAME_SKIP_REASON}: the
+ * function may be perfectly well named, and pointing the user at FunctionName
+ * would send them to the wrong half of the record.
+ */
+export const PERMISSION_STATEMENT_ID_SKIP_REASON =
+  'empty StatementId in state physicalId — no delete issued';
+
+/**
  * The deploy-side caveat the skip warning in this file carries (issue
  * [#1762](https://github.com/go-to-k/cdkd/issues/1762)).
  *
@@ -239,37 +250,84 @@ export class LambdaPermissionProvider implements ResourceProvider {
   ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting Lambda permission ${logicalId}: ${physicalId}`);
 
-    // physicalId may be in "functionArn|statementId" format (from CC API)
-    // Extract just the statementId part
+    // physicalId is either the bare statementId or the composite
+    // "<functionName-or-arn>|<statementId>" shape (CC-API records, and pre-v7
+    // records routed to this SDK provider). AWS's StatementId pattern is
+    // `[a-zA-Z0-9-_.]+`, which FORBIDS "|", so a "|" anywhere in the physicalId
+    // can only ever be the composite separator — never part of the id itself.
     const physicalIdSegments = physicalId.split('|');
-    let statementId = physicalId;
-    if (physicalIdSegments.length > 1) {
-      statementId = physicalIdSegments[physicalIdSegments.length - 1]!;
-    }
+    const isComposite = physicalIdSegments.length > 1;
+    const statementId = isComposite
+      ? physicalIdSegments[physicalIdSegments.length - 1]!
+      : physicalId;
 
     // Issue #1770: RemovePermission is addressed by FunctionName + StatementId.
     // Only when NEITHER source names a function is there a call cdkd cannot
     // make — and skipping is expensive now (it preserves the state record and
     // exits non-zero), so exhaust both sources before reporting one.
     //
-    // The second source is the physicalId itself: the composite
-    // "<functionArn>|<statementId>" shape above (CC-API records, and pre-v7
-    // records routed to this SDK provider) carries the function ARN in its
-    // leading segment, and Lambda's `FunctionName` parameter accepts a full
-    // ARN, so using it is a real delete rather than a guess. The `:function:`
-    // check keeps a non-Lambda ARN — or a statementId that merely happens to
-    // contain "|" — from being sent as a function name.
-    const leadingSegment = physicalIdSegments[0];
-    const functionArnFromPhysicalId =
-      physicalIdSegments.length > 1 &&
-      leadingSegment !== undefined &&
-      leadingSegment.startsWith('arn:') &&
-      leadingSegment.includes(':function:')
-        ? leadingSegment
-        : undefined;
+    // Source 1: the state record. The `typeof` check is load-bearing — a truthy
+    // NON-string (an unresolved `{ Ref: ... }`, or an array) would otherwise
+    // reach the SDK, which URI-encodes it into a garbage label: `[object
+    // Object]` comes back ResourceNotFoundException and the idempotent arm
+    // below then reports the statement DELETED, while `['my-fn']` coerces to a
+    // bare name nothing validated and can succeed against the WRONG function.
+    // Mirrors the same guard in iam-policy-provider.ts.
+    const functionNameFromProperties =
+      typeof properties?.['FunctionName'] === 'string' ? properties['FunctionName'] : undefined;
 
-    const functionName =
-      (properties?.['FunctionName'] as string | undefined) || functionArnFromPhysicalId;
+    // Source 2: the composite physicalId's leading segment. Since "|" can only
+    // be the separator (above), that segment IS the FunctionName half of the
+    // CFn primary identifier `[FunctionName, Id]` — which
+    // `src/cli/commands/export.ts` documents as often a BARE name, not only an
+    // ARN. Lambda's `FunctionName` parameter accepts either, so both are taken;
+    // refusing the bare form would decline a genuine second source and put this
+    // arm back in the class issue #1770 exists to remove.
+    //
+    // An ARN is additionally REGION-CHECKED. This provider holds ONE client, at
+    // the stack's region, so a cross-region ARN would send RemovePermission to
+    // the wrong region, come back ResourceNotFoundException, and be reported
+    // DELETED by the idempotent arm while the real statement stayed live. cdkd
+    // has no client that could reach it, so "could not address it" — a skip —
+    // is the honest answer. A bare name carries no region and is resolved
+    // against this client, which is exactly right.
+    let functionNameFromPhysicalId: string | undefined;
+    const leadingSegment = isComposite ? physicalIdSegments[0]! : '';
+    if (leadingSegment !== '') {
+      if (!leadingSegment.startsWith('arn:')) {
+        functionNameFromPhysicalId = leadingSegment;
+      } else if (leadingSegment.includes(':function:')) {
+        const arnRegion = leadingSegment.split(':')[3];
+        const clientRegion = await this.lambdaClient.config.region();
+        if (arnRegion === clientRegion) {
+          functionNameFromPhysicalId = leadingSegment;
+        } else {
+          this.logger.debug(
+            `Lambda permission ${logicalId}: physicalId ARN region ${arnRegion} does not match ` +
+              `the client region ${clientRegion}, so it cannot be used as a FunctionName`
+          );
+        }
+      }
+    }
+
+    // A composite physicalId with an EMPTY trailing segment ("<arn>|") names no
+    // statement, and RemovePermission would reject the empty HTTP label with a
+    // hard error rather than the honest skip this is. Checked before the
+    // FunctionName guard because it holds however the function was resolved.
+    if (statementId === '') {
+      this.logger.warn(
+        `Lambda permission ${logicalId} has no StatementId in its physicalId ` +
+          `("${physicalId}"), skipping deletion — no AWS call is issued, so the permission ` +
+          `statement is LEFT IN PLACE on the function's resource policy, UNLESS the function ` +
+          `itself is part of this stack (deleting it removes its whole resource policy, and ` +
+          `then only the cdkd record is stale — clear it with 'cdkd state orphan <stack>'). ` +
+          `Otherwise repair the physicalId in state.json and re-run, or remove the statement ` +
+          `by hand ('aws lambda remove-permission'). ${DEPLOY_SKIP_CAVEAT}`
+      );
+      return { outcome: 'skipped', reason: PERMISSION_STATEMENT_ID_SKIP_REASON };
+    }
+
+    const functionName = functionNameFromProperties || functionNameFromPhysicalId;
     if (!functionName) {
       this.logger.warn(
         `FunctionName not available for Lambda permission ${logicalId} (neither the state ` +

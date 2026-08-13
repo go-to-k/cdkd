@@ -1716,6 +1716,21 @@ the sources by what was DEPLOYED — the physicalId wins over the property, or a
 template edit that renamed the policy without a replacement having landed would
 send a delete for a name AWS never had.
 
+**Validate the fallback, or it is worse than the skip.** A truthy NON-string
+(an unresolved intrinsic, an array) must not beat a good second source — the SDK
+URI-encodes it into a garbage label that 404s, and the idempotent `*NotFound`
+arm then reports DELETED. Check the fallback's REGION too: a provider holds one
+client, so a cross-region ARN sends the call to the wrong region and is reported
+DELETED the same way. And do not let the gate refuse a genuine source — the CFn
+primary identifier `[FunctionName, Id]` carries a BARE name as often as an ARN.
+
+**A guard that admits a record must check the path it opens reaches AWS.** The
+IAM `PolicyName` fallback turned an honest skip into a silent `deleted`: with
+the name resolvable, a record naming no `Roles` / `Groups` / `Users` reached a
+body where every branch is skipped — zero AWS calls, returning `undefined`, i.e.
+DELETED. Trace the admitted path to an actual call, and use the same truthiness
+spelling the branches downstream use so a null-valued list cannot slip past.
+
 **"LEFT IN PLACE" is false when the parent is in the same stack.** The destroy
 keeps going after a skip, and `deleteGroup` / `deleteUser` remove exactly those
 memberships, a deleted Lambda function drops its whole resource policy, a
