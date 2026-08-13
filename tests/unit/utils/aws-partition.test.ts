@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
   PARTITION_TABLE,
+  canonicalizeRegion,
   derivePartitionAndUrlSuffix,
 } from '../../../src/utils/aws-partition.js';
 import { parseEcrRegistryHost } from '../../../src/utils/ecr-uri.js';
@@ -15,6 +16,28 @@ import { parseEcrRegistryHost } from '../../../src/utils/ecr-uri.js';
  * commercial counter-case asserting the UNCHANGED string, so a change that
  * widened the table by breaking the fallback cannot pass.
  */
+describe('canonicalizeRegion (issue #1795)', () => {
+  it('lower-cases a region and is a no-op on an already-canonical one', () => {
+    expect(canonicalizeRegion('CN-NORTH-1')).toBe('cn-north-1');
+    expect(canonicalizeRegion('Us-Gov-West-1')).toBe('us-gov-west-1');
+    expect(canonicalizeRegion('us-east-1')).toBe('us-east-1');
+  });
+
+  it('is idempotent, which is what makes folding at BOTH layers safe', () => {
+    // The helper folds inside `derivePartitionAndUrlSuffix` AND at each
+    // `cdkd local *` region-resolution point; double-folding must not differ.
+    expect(canonicalizeRegion(canonicalizeRegion('CN-NORTH-1'))).toBe(
+      canonicalizeRegion('CN-NORTH-1')
+    );
+  });
+
+  it('passes undefined through, so an unresolved region stays unresolved', () => {
+    // Every call site resolves through a `??` chain that can end undefined and
+    // then WARNS about it; coercing to a string would silence that warning.
+    expect(canonicalizeRegion(undefined)).toBeUndefined();
+  });
+});
+
 describe('derivePartitionAndUrlSuffix', () => {
   const COMMERCIAL = { partition: 'aws', urlSuffix: 'amazonaws.com' };
 

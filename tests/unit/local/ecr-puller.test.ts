@@ -199,6 +199,43 @@ describe('canonicalizeImageUriHost (issue #1801)', () => {
     // the whole string would rewrite the repository name.
     expect(canonicalizeImageUriHost('MyImage:Latest')).toBe('MyImage:Latest');
   });
+
+  it('leaves a DOMAIN-LESS first component alone (it is a repo path, not a host)', () => {
+    // Docker treats component 1 as a registry only when it contains a `.` or a
+    // `:` or equals `localhost`; `MyOrg/MyRepo:tag` means
+    // `docker.io/MyOrg/MyRepo:tag`, so folding `MyOrg` would name a DIFFERENT
+    // image. Inert behind the strict ECR host check today, but the exported
+    // contract has to be the real one.
+    expect(canonicalizeImageUriHost('MyOrg/MyRepo:tag')).toBe('MyOrg/MyRepo:tag');
+    expect(canonicalizeImageUriHost('Library/Node:20')).toBe('Library/Node:20');
+  });
+
+  it('DOES fold the three component shapes docker treats as a registry', () => {
+    // The counter-polarity of the guard above: a dot, a port, or the literal
+    // `localhost` all make component 1 a host, so all three must still fold.
+    expect(canonicalizeImageUriHost('Registry.Example.COM/My-Repo:tag')).toBe(
+      'registry.example.com/My-Repo:tag'
+    );
+    expect(canonicalizeImageUriHost('MyHost:5000/My-Repo:tag')).toBe('myhost:5000/My-Repo:tag');
+    expect(canonicalizeImageUriHost('LOCALHOST/My-Repo:tag')).toBe('LOCALHOST/My-Repo:tag');
+    expect(canonicalizeImageUriHost('localhost/My-Repo:tag')).toBe('localhost/My-Repo:tag');
+  });
+
+  it('preserves a :port, a digest pin, and a tag-less reference', () => {
+    // The host may carry a port (folded with the rest of the host); the tail
+    // may be a digest or absent entirely. None of those may be rewritten.
+    expect(canonicalizeImageUriHost('123456789012.dkr.ecr.US-EAST-1.amazonaws.com:443/R:t')).toBe(
+      '123456789012.dkr.ecr.us-east-1.amazonaws.com:443/R:t'
+    );
+    expect(
+      canonicalizeImageUriHost(
+        '123456789012.dkr.ecr.US-EAST-1.amazonaws.com/My-Repo@sha256:ABCDEF0123456789'
+      )
+    ).toBe('123456789012.dkr.ecr.us-east-1.amazonaws.com/My-Repo@sha256:ABCDEF0123456789');
+    expect(canonicalizeImageUriHost('123456789012.dkr.ecr.US-EAST-1.amazonaws.com/My-Repo')).toBe(
+      '123456789012.dkr.ecr.us-east-1.amazonaws.com/My-Repo'
+    );
+  });
 });
 
 describe('parseEcrUri host-case canonicalization (issue #1801)', () => {
@@ -837,6 +874,59 @@ describe('pullEcrImage', () => {
     expect(loginEndpointOf()).toBe('https://vpce-0abc-xyz.dkr.ecr.cn-north-1.vpce.amazonaws.com.cn');
   });
 
+  it('the STS caches are keyed on the CANONICAL region, so a case flip does not re-issue', async () => {
+    // Both module-level caches key on `callerRegion`. Before the fold,
+    // `--region US-EAST-1` and `--region us-east-1` were SEPARATE entries, so
+    // the same identity paid a duplicate GetCallerIdentity + AssumeRole —
+    // exactly the cost the caches exist to avoid. Two pulls, two spellings.
+    stsSendMock.mockResolvedValueOnce({ Account: '999999999999' }).mockResolvedValueOnce({
+      Credentials: {
+        AccessKeyId: 'ASIAONLYONE',
+        SecretAccessKey: 'onlysecret',
+        SessionToken: 'onlytoken',
+        Expiration: new Date(Date.now() + 60 * 60 * 1000),
+      },
+    });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://999999999999.dkr.ecr.us-east-1.amazonaws.com',
+        },
+      ],
+    });
+
+    const opts = { skipPull: false, ecrRoleArn: 'arn:aws:iam::999999999999:role/EcrPull' };
+    await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r1:t', {
+      ...opts,
+      region: 'US-EAST-1',
+    });
+    await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r2:t', {
+      ...opts,
+      region: 'us-east-1',
+    });
+
+    const kinds = stsSendMock.mock.calls.map((c) => c[0]._kind);
+    expect(kinds.filter((k) => k === 'GetCallerIdentity')).toHaveLength(1);
+    expect(kinds.filter((k) => k === 'AssumeRole')).toHaveLength(1);
+  });
+
+  it('the STS client is built for the CANONICAL region, not the raw --region', async () => {
+    // AWS SDK endpoint resolution is case-sensitive, so a raw `US-EAST-1`
+    // client resolves a hostname that does not exist.
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [{ authorizationToken: Buffer.from('AWS:dummypw').toString('base64') }],
+    });
+
+    await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: false,
+      region: 'US-EAST-1',
+    });
+
+    expect(stsConstructorMock).toHaveBeenCalledWith({ region: 'us-east-1' });
+  });
+
   // ---------- login host == pull host (issue #1801) ----------
   // Docker's credential store is keyed on the hostname VERBATIM. Measured
   // against a real daemon with auth for
@@ -880,6 +970,54 @@ describe('pullEcrImage', () => {
     // The ECR client is built for the canonical region, not `US-EAST-1`.
     const ecrConfig = ecrConstructorMock.mock.calls[0]![0] as { region?: string };
     expect(ecrConfig.region).toBe('us-east-1');
+  });
+
+  it('mixed-case host WITH an AWS-reported proxyEndpoint: login and pull still agree', async () => {
+    // Real ECR ALWAYS returns `proxyEndpoint`, so this is the production-
+    // dominant arm — the derived-fallback test above only fires when AWS
+    // reports none. AWS reports the endpoint lower-cased, so the fold on the
+    // pull side is what makes the two agree here.
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://111111111111.dkr.ecr.us-east-1.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+
+    const result = await pullEcrImage('111111111111.dkr.ecr.US-EAST-1.AMAZONAWS.COM/r:t', {
+      skipPull: false,
+    });
+
+    const pullRef = pullRefOf();
+    expect(hostOf(loginEndpointOf())).toBe(hostOf(pullRef));
+    expect(pullRef).toBe('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t');
+    expect(result).toBe(pullRef);
+  });
+
+  it('a VPC-endpoint proxyEndpoint still wins for a mixed-case input', async () => {
+    // The paired NON-agreement case, so the test above cannot be read as "the
+    // login host is always the pull host". AWS names the endpoint its own token
+    // authenticates; when that is a VPC endpoint it legitimately differs from
+    // the registry host, and cdkd must not rewrite it.
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://vpce-0abc-xyz.dkr.ecr.us-east-1.vpce.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+
+    await pullEcrImage('111111111111.dkr.ecr.US-EAST-1.amazonaws.com/r:t', { skipPull: false });
+
+    expect(loginEndpointOf()).toBe('https://vpce-0abc-xyz.dkr.ecr.us-east-1.vpce.amazonaws.com');
+    expect(pullRefOf()).toBe('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t');
   });
 
   it('all-lower-case host: login / pull / return are byte-identical to before', async () => {

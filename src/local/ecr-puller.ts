@@ -5,7 +5,7 @@ import {
   runDockerForeground,
   runDockerStreaming,
 } from '../utils/docker-cmd.js';
-import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
+import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { parseEcrRegistryHost } from '../utils/ecr-uri.js';
 
 /** The URL suffix an ECR registry host uses in `region`'s partition (issue #1758). */
@@ -62,8 +62,8 @@ export interface ParsedEcrUri {
 }
 
 /**
- * Lower-case the HOST portion of an image reference — everything up to the
- * first `/` — and leave the repository path and tag byte-identical.
+ * Lower-case the REGISTRY HOST of an image reference and leave the repository
+ * path and tag byte-identical.
  *
  * A registry host is a DNS name and therefore case-INSENSITIVE, but docker's
  * credential store is keyed on the hostname VERBATIM: measured against a real
@@ -77,11 +77,27 @@ export interface ParsedEcrUri {
  * The repository path and tag are deliberately NOT folded: only the domain is
  * case-insensitive, docker already requires the path to be lower case, and
  * rewriting it would change WHICH image is pulled.
+ *
+ * "Everything before the first `/`" is NOT the same thing as "the host", which
+ * is why the first component is tested rather than assumed. Docker treats it
+ * as a registry only when it contains a `.` or a `:` or is exactly
+ * `localhost`; otherwise it is the first segment of a Docker Hub repository
+ * PATH (`MyOrg/MyRepo:tag` is `docker.io/MyOrg/MyRepo:tag`). Folding that
+ * would name a DIFFERENT image. Today every caller is behind the strict ECR
+ * host check so the distinction is inert, but this is exported under a generic
+ * name and the contract has to be the real one.
  */
 export function canonicalizeImageUriHost(imageUri: string): string {
   const slash = imageUri.indexOf('/');
   if (slash < 0) return imageUri;
-  return imageUri.slice(0, slash).toLowerCase() + imageUri.slice(slash);
+  const host = imageUri.slice(0, slash);
+  if (!isRegistryHostComponent(host)) return imageUri;
+  return host.toLowerCase() + imageUri.slice(slash);
+}
+
+/** Docker's rule for "component 1 is a registry, not a repository segment". */
+function isRegistryHostComponent(component: string): boolean {
+  return component.includes('.') || component.includes(':') || component === 'localhost';
 }
 
 /**
@@ -107,7 +123,7 @@ export function parseEcrUri(imageUri: string): ParsedEcrUri | undefined {
     // was captured from, so this is a no-op today. It stays because the region
     // seeds the ECR client AND the `docker login` endpoint, and a raw-cased one
     // there is the exact login/pull mismatch this module was fixed for.
-    region: host.region.toLowerCase(),
+    region: canonicalizeRegion(host.region),
     repository: m[1]!,
     tag: m[2]!,
     canonicalUri,
@@ -207,11 +223,13 @@ function isCredentialFresh(creds: TempCredentials): boolean {
  *
  * Auto-detects cross-account from `STS:GetCallerIdentity` and assumes
  * the supplied role when set. Returns the image URI the caller should
- * pass to `docker run`: the input with its HOST lower-cased and its
- * repository path + tag untouched (issue #1801). That is the SAME
- * spelling `docker pull` / `docker image inspect` were handed here and
- * the same one `docker login` authenticated, so the caller's `docker
- * run` cannot land on a third host.
+ * pass to `docker run`: the input with its registry HOST lower-cased and
+ * its repository path + tag untouched (issue #1801). That is the SAME
+ * spelling `docker pull` / `docker image inspect` were handed here, and
+ * the same one the DERIVED `docker login` endpoint names — an
+ * AWS-reported `proxyEndpoint` still wins over that fallback (it can be
+ * a VPC-endpoint host), which is correct: AWS names the endpoint its own
+ * token authenticates, and it reports it lower-cased.
  */
 export async function pullEcrImage(imageUri: string, options: EcrPullOptions): Promise<string> {
   const logger = getLogger().child('ecr-puller');
@@ -228,8 +246,16 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // the raw input — see `canonicalizeImageUriHost` (issue #1801).
   const canonicalUri = parsed.canonicalUri;
 
-  const callerRegion =
-    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
+  // Canonicalized (issue #1795) for THREE reasons, and every one of them bit:
+  // the STS / AssumeRole clients below resolve their endpoint case-sensitively;
+  // both module-level caches are KEYED on this value, so `US-EAST-1` and
+  // `us-east-1` were separate entries paying a duplicate `GetCallerIdentity` /
+  // `AssumeRole` — exactly the cost the caches exist to avoid; and the
+  // cross-region comparison reads it. Folded HERE rather than trusting the
+  // caller because `pullEcrImage` is also reached from `ecs-task-runner`.
+  const callerRegion = canonicalizeRegion(
+    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']
+  );
 
   // `--no-pull` short-circuits before any AWS calls — verifying the local
   // cache needs no STS / ECR authentication. Hoisting this above the
@@ -265,12 +291,12 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   }
 
   const crossAccount = callerAccount !== parsed.accountId;
-  // Compare CANONICAL forms on both sides (issue #1801): `parsed.region` is
-  // lower-cased, so `--region US-EAST-1` against a lower-case host otherwise
-  // logged a spurious `Cross-region ECR pull` line. Log-only, but the line
-  // reads as a real misconfiguration.
-  const crossRegion =
-    callerRegion !== undefined && callerRegion.toLowerCase() !== parsed.region.toLowerCase();
+  // Both sides are already canonical — `callerRegion` above, `parsed.region`
+  // off the folded host — so this compares like with like (issue #1801).
+  // Previously `--region US-EAST-1` against a lower-case host logged a
+  // spurious `Cross-region ECR pull` line: log-only, but it reads as a real
+  // misconfiguration.
+  const crossRegion = callerRegion !== undefined && callerRegion !== parsed.region;
 
   // Optionally assume a role to gain credentials for the target account.
   // When `ecrRoleArn` is not set but the pull is cross-account, we
