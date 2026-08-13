@@ -234,7 +234,7 @@ replacement-immutable-name	2026-08-01T09:51:12Z	PASS	113	verify.sh	0801 regressi
 rollback-command	2026-08-10T04:45:42Z	PASS	117	verify.sh	0810 sweep b3; post-#1361 rollback-executor re-verify, destroy clean
 rollback-deletion-policy-snapshot	2026-08-08T16:34:46Z	PASS	107	verify.sh	P0 first run post-#1361/#1365/#1367/#1369 rollback rework; rolled-back CREATE snapshot-then-deleted, state clean, 0 orphans
 rollback-failure-injection	2026-08-08T17:42:23Z	PASS	389	verify.sh	issue #1375 re-run (background, dodging the 600s clamp); all 8 phases, 17 del/0 err, 0 orphans incl NAT/EIP/ENI
-rollback-replay-effective-props	2026-08-13T05:18:21Z	PASS	1180	verify.sh	1741/1742 fixes; de-workarounded fixture; 0 orphans
+rollback-replay-effective-props	2026-08-13T05:36:21Z	PASS	1150	verify.sh	1741 prune + 1742 ordering; 0 orphans
 rollback-sqs-cooldown	2026-08-10T04:45:42Z	PASS	152	verify.sh	0810 sweep b3; post-#1361 rollback-executor re-verify, destroy clean
 route53	2026-08-12T16:04:06Z	PASS	780	verify.sh	#1681 on the rebased base (with #1725 packers); Ref->record-name green, 8 del 0 err, orph clean
 s3-analytics-inventory	2026-08-13T00:49:56Z	PASS	135	verify.sh	1707/1717/1718 live after review round 3; 49 assertions, 0 orphans
