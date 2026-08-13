@@ -24,8 +24,8 @@ import {
   compositeIdFormatMessage,
   compositeIdSeparatorRefusal,
   packCompositeId,
+  type CompositeIdFormat,
 } from '../composite-id.js';
-import type { CompositeIdFormat } from '../composite-id.js';
 import { findSilentDropProperties } from '../property-coverage.js';
 import type {
   ResourceProvider,
@@ -1479,7 +1479,8 @@ export class S3TablesProvider implements ResourceProvider {
     }
     if (resolvedParts === 'unparseable') {
       throw new ProvisioningError(
-        `${compositeIdFormatMessage(S3_TABLES_TABLE_ID_FORMAT, logicalId, physicalId)}. ` +
+        `applyTableTagsDiff: ` +
+          `${compositeIdFormatMessage(S3_TABLES_TABLE_ID_FORMAT, logicalId, physicalId)}. ` +
           `Cannot derive the table ARN for the tag update, and refusing to silently drop it.`,
         resourceType,
         logicalId,

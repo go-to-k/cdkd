@@ -140,6 +140,28 @@ describe('composite-id decode messages, per site (issue #1657)', () => {
       );
       noSend();
     });
+
+    it('the applyTableTagsDiff arm — the 17th site, reached from update()', async () => {
+      // `resolveTableParts` answers 'unparseable' from pure string inspection
+      // for an id with no separator that is not an ARN, and `applyTableTagsDiff`
+      // is the first statement of the Table update — so this needs no priming.
+      // The trailing clause is unique to this site and would otherwise be the
+      // one message in the family that nothing pins.
+      await expect(
+        provider().update(
+          'MyTbl',
+          'not-an-id',
+          'AWS::S3Tables::Table',
+          { Tags: [{ Key: 'a', Value: '1' }] },
+          {}
+        )
+      ).rejects.toThrow(
+        'applyTableTagsDiff: Invalid physicalId format for S3 Tables Table MyTbl: ' +
+          'expected "<tableBucketARN>|<namespace>|<name>" or a table ARN, got "not-an-id". ' +
+          'Cannot derive the table ARN for the tag update'
+      );
+      noSend();
+    });
   });
 
   describe('ApiGatewayProvider', () => {
@@ -182,22 +204,5 @@ describe('composite-id decode messages, per site (issue #1657)', () => {
       );
       noSend();
     });
-  });
-
-  it('every message names a DISTINCT shape — a copy-pasted constant would collide here', () => {
-    // The mutation the reviewer proved undetectable was swapping one site's
-    // constant for a sibling's. Every expected shape asserted above is unique,
-    // so any such swap fails at least one of these assertions.
-    const shapes = [
-      '<internetGatewayId>|<vpcId>',
-      '<routeTableId>|<destination>',
-      '<groupId>|<ipProtocol>|<fromPort>|<toPort>',
-      '<networkAclId>|<ruleNumber>|<egress>',
-      '<tableBucketARN>|<namespace>',
-      '<tableBucketARN>|<namespace>|<name>',
-      '<restApiId>|<resourceId>|<httpMethod>',
-      '<databaseName>|<tableName>',
-    ];
-    expect(new Set(shapes).size).toBe(shapes.length);
   });
 });
