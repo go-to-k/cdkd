@@ -277,10 +277,14 @@ such an arm is therefore not the same as fixing it** — check the twin's
 feasibility before you record anything. #1682 named the
 GlobalTable as a consumer while the provider was still running its `replayWarn`
 substitution and returning WITHOUT the field — the provider-side half, which
-#1653 has since supplied, so the two halves now meet. What none of the four has
-yet is per-PROVIDER live coverage: the #1696 fixture proves the ENGINE path via
-`AWS::EC2::Route`, and whether each arm substitutes the value it claims and
-records it in the shape `readCurrentState` can match is tracked as issue #1706.
+#1653 has since supplied, so the two halves now meet. Per-PROVIDER live coverage now exists for TWO of them: the
+`rollback-replay-effective-props` fixture drives the GlobalTable `BillingMode`
+warn-and-SUBSTITUTE arm and the GSI warn-and-OMIT arm through a real
+reverse-replacement rollback (issues #1724 / #1726). The #1696 fixture proves the
+ENGINE path via `AWS::EC2::Route`. Still uncovered per-provider, and still
+tracked as issue #1706: the GlobalTable `StreamSpecification` substitution and
+the S3 bucket arm. Adding them is now cheap — the rollback-failure-injection
+phase they need already exists in that fixture.
 It now mirrors `recordAfterRollbackUpdate`: the bag handed to
 `create()` IS `previousState.properties`, so a returned `effectiveProperties`
 replaces the record's `properties` wholesale, and reporting none keeps the
@@ -411,6 +415,29 @@ skip-reporting S3 bucket appliers carry all three:
   ordinary template-path create of the same resource records. Which arm you
   are on is a property of the GUARD, not of the path: ask whether the call
   went out, not whether it was a create.
+  **A substitution that changes a MODE drops more than the one key, and BOTH
+  answers appear in the same bag** (issue #1726, the `BillingMode` sibling of
+  the arm above). Substituting `PAY_PER_REQUEST` for a malformed GlobalTable
+  `BillingMode` also skips `ProvisionedThroughput`, hands the SUBSTITUTED mode
+  to the GSI translator so every PROVISIONED-only per-index member is dropped
+  before the call, and skips auto-scaling registration — so the bag records the
+  substituted mode (it WAS sent) while STRIPPING the capacity blocks (they were
+  not). Recording only the mode leaves the same permanent phantom drift the arm
+  exists to remove, one key over. **Read the strip set off your own
+  `readCurrentState` under the NEW mode, per member** — that is the operational
+  form of #1643's "ask what the service will REPORT", and it is already written
+  down in the provider: every one of those emissions is type-discriminator-gated
+  on the mode, so the gate IS the answer (top-level
+  `WriteProvisionedThroughputSettings` emits `{}`, the per-replica / per-index /
+  per-replica-index blocks are omitted). Do NOT strip by name-shape: the
+  on-demand ceilings look like capacity and go on the wire under precisely this
+  mode, so a blanket sweep would record a loss that did not happen. And re-ask
+  the twin question rather than inheriting an answer — none is needed here
+  because the arm ALREADY records a mode differing from the declared one, so the
+  next deploy ALREADY classifies an UPDATE and the strip folds into it. The
+  UPDATE-side twin of the same property is NOT the same problem (the kept mode
+  can be either value and the resource already exists, so the retain-the-
+  PREVIOUS-value row above applies instead); it is tracked as issue #1738.
 - **per-item appliers** (a Put keyed by `Id`): the skip unit is one
   configuration ITEM, so the effective array substitutes the previous item of
   the same `Id` IN PLACE, or drops it when the skipped item was an ADD.

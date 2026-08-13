@@ -873,7 +873,8 @@
       "resourceType": "AWS::DynamoDB::GlobalTable",
       "integs": [
         "dynamodb-globaltable",
-        "lambda"
+        "lambda",
+        "rollback-replay-effective-props"
       ],
       "signals": {
         "dynamodb-globaltable": [
@@ -884,6 +885,9 @@
         "lambda": [
           "l2",
           "literal"
+        ],
+        "rollback-replay-effective-props": [
+          "l1"
         ]
       }
     },

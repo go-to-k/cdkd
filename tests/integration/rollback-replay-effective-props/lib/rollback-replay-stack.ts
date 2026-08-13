@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
@@ -67,6 +68,111 @@ export class RollbackReplayStack extends cdk.Stack {
     // attached to the VPC.
     route.addDependency(attachment);
 
+    // ── The per-PROVIDER replay-CREATE subjects: two GlobalTables ─────────
+    //
+    // Issues #1724 / #1726. The route above proves the ENGINE honours a
+    // returned `effectiveProperties` on the reverse-replacement create; these
+    // two tables prove the GlobalTable ARMS answer with the right bag, which is
+    // per-provider coverage the route cannot give (issue #1706). Both arms fire
+    // only under `CreateContext.replayingState`, i.e. only on this rollback
+    // path — which is why they had no live coverage and why the
+    // `dynamodb-globaltable` fixture (UPDATE-only) cannot reach them.
+    //
+    // TWO tables because the two arms need INCOMPATIBLE state: #1726 needs a
+    // real GSI carrying real per-index capacity, and #1724 needs the GSI blob
+    // replaced by a malformed string. One table cannot be both.
+    //
+    // `TableName` is create-only, so flipping it classifies each table as a
+    // REPLACEMENT — the same op class as the route, and the reason the failure
+    // below DependsOn both: the replacements must COMPLETE before the deploy
+    // fails, or rollback classifies plain CREATEs instead.
+    //
+    // ONE replica each, in the deploy region. A cross-region replica would make
+    // the rollback's delete-of-the-new-table a replica removal, which arms
+    // DynamoDB's 24h source-region delete lock — a fixture hazard with nothing
+    // to do with what this tests.
+    //
+    // Every replica declares the sub-specs `readCurrentState` ALWAYS emits
+    // (`Tags`, ContributorInsights, PITR). That is load-bearing, not
+    // decoration: `rollback-executor.ts` strips `observedProperties` on the
+    // replay, so `cdkd drift` falls back to the template-shaped `properties`
+    // baseline and compares `Replicas` as a whole array. A replica declaring
+    // only `Region` would drift against the enriched readback on every run —
+    // the fixture would fail phase 5 and its message would ACCUSE THE FIX.
+    const localReplica = (extra: Record<string, unknown> = {}) => ({
+      region: cdk.Aws.REGION,
+      tags: [],
+      contributorInsightsSpecification: { enabled: false },
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: false },
+      ...extra,
+    });
+
+    // #1726: the capacity-strip subject. It carries a REAL GSI so that the
+    // per-INDEX members of the strip have somewhere to live; the PROVISIONED-only
+    // capacity blocks themselves are INJECTED by verify.sh rather than declared
+    // here, and that is a decision rather than a shortcut.
+    //
+    // CFn's `WriteProvisionedThroughputSettings` accepts ONLY
+    // `WriteCapacityAutoScalingSettings` (checked against
+    // `CfnGlobalTable.WriteProvisionedThroughputSettingsProperty`), so a
+    // genuinely PROVISIONED template would drag Application Auto Scaling
+    // registration + deregistration into the reverse-replacement rollback —
+    // a large, slow, orthogonal surface that would make this fixture flaky for
+    // reasons that have nothing to do with the arms under test. Injection also
+    // matches the fixture's existing premise for the route: "a state record
+    // written by an older binary", which is exactly the population that carries
+    // the two legacy SDK-shaped spellings (`GlobalSecondaryIndexes[]
+    // .ProvisionedThroughput`, `Replicas[].ProvisionedThroughputOverride`) the
+    // strip must also remove.
+    const capacityTable = new dynamodb.CfnGlobalTable(this, 'GlobalTable', {
+      tableName: process.env['GT_TABLE_NAME'] || 'cdkd-rollback-replay-gt-v1',
+      billingMode: 'PAY_PER_REQUEST',
+      //
+      // NO global secondary index here, and that is a recorded COVERAGE BOUND
+      // rather than an oversight: a GSI on this table exposes two PRE-EXISTING
+      // phantom drifts that have nothing to do with the arms under test and
+      // would fail phase 5 while blaming this change (issue #1742) -- AWS returns
+      // `AttributeDefinitions` in an arbitrary order (compared positionally),
+      // and it reports a computed `GlobalSecondaryIndexes[].WarmThroughput` the
+      // template can never carry. Both are filed separately; both are visible
+      // here only because the rollback strips `observedProperties`, leaving the
+      // template-shaped bag as the drift baseline. So the integ proves the
+      // TOP-LEVEL and PER-REPLICA members of the strip live, and the per-INDEX
+      // members stay unit-covered until those two are fixed.
+      attributeDefinitions: [{ attributeName: 'pk', attributeType: 'S' }],
+      keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
+      replicas: [localReplica()],
+    });
+
+    // #1724: a table whose GSI is REAL in v1, so that after the replay's omit
+    // "the live table has 0 indexes" is an assertion that can actually fail.
+    // PAY_PER_REQUEST here because this arm has nothing to do with billing.
+    const gsiOmitTable = new dynamodb.CfnGlobalTable(this, 'GsiOmitTable', {
+      tableName: process.env['GT_OMIT_TABLE_NAME'] || 'cdkd-rollback-replay-gto-v1',
+      billingMode: 'PAY_PER_REQUEST',
+      // The index is keyed on the TABLE's own partition key, so
+      // `AttributeDefinitions` carries no attribute that exists solely for the
+      // index. That is load-bearing rather than incidental: when the replay
+      // OMITS the malformed index block, an attribute defined only for that
+      // index becomes unused and `CreateTable` rejects the whole call
+      // (`AttributeDefinitions ... does not match KeySchema`), so the
+      // reverse-replacement re-create fails and the arm under test never gets
+      // to record anything. Measured on run 3 of this fixture, which is what
+      // the first `gsipk`-keyed version did. The underlying sharp edge in the
+      // #1544 omit arm — it drops the indexes but not the attribute
+      // definitions that existed only for them — is issue #1741.
+      attributeDefinitions: [{ attributeName: 'pk', attributeType: 'S' }],
+      keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
+      globalSecondaryIndexes: [
+        {
+          indexName: 'gsi1',
+          keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
+          projection: { projectionType: 'KEYS_ONLY' },
+        },
+      ],
+      replicas: [localReplica()],
+    });
+
     if (process.env['ROLLBACK_INTEG_FAIL'] === 'true') {
       // MessageRetentionPeriod's ceiling is 1209600 (14 days); this is well
       // past it, so CreateQueue fails and the deploy rolls back.
@@ -74,6 +180,8 @@ export class RollbackReplayStack extends cdk.Stack {
         messageRetentionPeriod: 999999999,
       });
       failing.addDependency(route);
+      failing.addDependency(capacityTable);
+      failing.addDependency(gsiOmitTable);
     }
   }
 }
