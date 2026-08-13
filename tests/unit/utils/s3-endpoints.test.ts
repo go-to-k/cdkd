@@ -168,4 +168,51 @@ describe('S3 bucket endpoint construction (issue #1745)', () => {
       }
     });
   });
+  /**
+   * Issue #1850. `cdkd deploy --region US-EAST-1` is REACHABLE (DNS is
+   * case-insensitive, so the SDK endpoint resolves and the deploy SUCCEEDS),
+   * and this module has TWO callers that disagree on the spelling they pass:
+   * `IntrinsicFunctionResolver.constructAttribute` folds before calling, while
+   * `S3BucketProvider.buildAttributes` hands over a raw
+   * `client.config.region()`. Folding inside the helpers is what keeps the
+   * `Fn::GetAtt` answer equal to what `readCurrentState` reports (#1745).
+   *
+   * `WebsiteURL` is the row that matters most: the separator comes from a
+   * case-SENSITIVE Set lookup, so an upper-cased region does not merely record
+   * a differently-spelled host — it MISSES the legacy-dash set and picks the
+   * WRONG SEPARATOR. That is the one place in this module where the region
+   * flips a branch rather than a substring.
+   */
+  describe('region canonicalization (issue #1850)', () => {
+    it('WebsiteURL picks the legacy-dash separator for an upper-cased legacy region', () => {
+      // us-east-1 IS in the legacy-dash set, so the correct host uses `-`.
+      expect(s3BucketWebsiteUrl('b', 'US-EAST-1')).toBe('http://b.s3-website-us-east-1.amazonaws.com');
+    });
+
+    it('WebsiteURL keeps the dot separator for an upper-cased NON-legacy region', () => {
+      // eu-west-2 is NOT in the set — proving the fold does not simply force
+      // one separator, which a single-row test could not distinguish.
+      expect(s3BucketWebsiteUrl('b', 'EU-WEST-2')).toBe('http://b.s3-website.eu-west-2.amazonaws.com');
+    });
+
+    it.each([
+      ['us-east-1', 'US-EAST-1'],
+      ['eu-west-2', 'EU-WEST-2'],
+      ['cn-north-1', 'CN-NORTH-1'],
+    ])('an upper-cased %s yields the same values as the canonical spelling', (canonical, upper) => {
+      // BYTE-IDENTICAL to the canonical call is the assertion, so the fold
+      // cannot be satisfied by a test that only ever sees one spelling.
+      expect(s3BucketWebsiteUrl('b', upper)).toBe(s3BucketWebsiteUrl('b', canonical));
+      expect(s3BucketRegionalDomainName('b', upper)).toBe(s3BucketRegionalDomainName('b', canonical));
+      expect(s3BucketDualStackDomainName('b', upper)).toBe(s3BucketDualStackDomainName('b', canonical));
+      expect(s3BucketDomainName('b', upper)).toBe(s3BucketDomainName('b', canonical));
+      expect(s3BucketArn('b', upper)).toBe(s3BucketArn('b', canonical));
+    });
+
+    it('keeps the partition correct while folding (aws-cn regional host)', () => {
+      expect(s3BucketRegionalDomainName('b', 'CN-NORTH-1')).toBe(
+        'b.s3.cn-north-1.amazonaws.com.cn'
+      );
+    });
+  });
 });

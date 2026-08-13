@@ -18,7 +18,7 @@ import { getAwsClients } from '../utils/aws-clients.js';
 import { stringifyValue, stringifyAttributeForLog } from '../utils/stringify.js';
 import { assumeRoleForCrossAccountStateRead, parseIamRoleArn } from '../utils/role-arn.js';
 import { resolveCrossAccountStateBucket } from '../utils/aws-region-resolver.js';
-import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
+import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import {
   s3BucketArn,
   s3BucketDomainName,
@@ -1896,7 +1896,39 @@ export class IntrinsicFunctionResolver {
     accountInfo: AwsAccountInfo
   ): Promise<unknown> {
     const { resourceType, physicalId } = resource;
-    const { region, accountId, partition } = accountInfo;
+    // The region is FOLDED once, here, rather than at each of the ~40 ARN / URI
+    // constructions below (issue #1850). `accountInfo.region` is whatever
+    // spelling the caller supplied (`--region || AWS_REGION || 'us-east-1'`),
+    // folded nowhere, and `cdkd deploy --region US-EAST-1` is REACHABLE: DNS is
+    // case-insensitive so the SDK endpoint resolves and the deploy SUCCEEDS,
+    // after which every value built here — `arn:aws:sns:US-EAST-1:...`, a
+    // `<acct>.dkr.ecr.US-EAST-1.amazonaws.com/...` registry host — is one no IAM
+    // policy matches (policy matching IS case-sensitive) and every SDK call
+    // taking it rejects. Folding at the DESTRUCTURE rather than per site is what
+    // makes it exhaustive WITHIN THIS METHOD: a constructed attribute added
+    // later inherits it instead of having to remember. `partition` needs no
+    // fold — `derivePartitionAndUrlSuffix` canonicalizes its own input (issue
+    // #1795) — and double-folding is a no-op, so the two are safe side by side.
+    //
+    // "Exhaustive" is scoped to this METHOD on purpose, because the sibling
+    // sites are not covered and pretending otherwise is how the next reader
+    // stops looking: `resolvePseudoParameter`'s `AWS::StackId` folds
+    // SEPARATELY (a few hundred lines down), `AWS::Region` deliberately does
+    // NOT (issue #1882 — it is CloudFormation's own passthrough, so changing
+    // what a user reads back needs a live CFn A/B first), and six SDK
+    // providers build ARNs from `client.config.region()` rather than from
+    // `accountInfo.region` and so are unreachable from here at all (issue
+    // #1881).
+    //
+    // The five S3 branches below pass this region OUT to `s3-endpoints.ts`,
+    // which folds again on entry — deliberately, not redundantly. That module
+    // has a SECOND caller (`S3BucketProvider.buildAttributes`, what lands in
+    // state) that still hands it a raw `client.config.region()`, so folding
+    // only here would make the resolver's `Fn::GetAtt` answer disagree with
+    // `readCurrentState` — the exact phantom drift that module exists to
+    // prevent (#1745).
+    const { accountId, partition } = accountInfo;
+    const region = canonicalizeRegion(accountInfo.region);
 
     // DynamoDB Table / GlobalTable (CDK TableV2 synthesizes as AWS::DynamoDB::GlobalTable; ARN format is identical)
     if (resourceType === 'AWS::DynamoDB::Table' || resourceType === 'AWS::DynamoDB::GlobalTable') {
@@ -3865,8 +3897,13 @@ export class IntrinsicFunctionResolver {
         // The partition is derived, not hardcoded (issue #1730 review) — this
         // is the same defect class as `getAccountInfo`'s own field, one site
         // over, and `arn:aws:` is wrong in every non-commercial partition.
+        // The REGION segment is folded for the same reason (issue #1850). This
+        // site is in `resolvePseudoParameter` rather than `constructAttribute`,
+        // so it does NOT inherit that method's destructure-level fold — worth
+        // stating, because the fold's own comment calls itself exhaustive and
+        // that is true only WITHIN `constructAttribute`.
         const info = await getAccountInfo(this.resolverRegion);
-        return `arn:${info.partition}:cloudformation:${info.region}:${info.accountId}:stack/${context?.stackName ?? 'UnknownStack'}/cdkd`;
+        return `arn:${info.partition}:cloudformation:${canonicalizeRegion(info.region)}:${info.accountId}:stack/${context?.stackName ?? 'UnknownStack'}/cdkd`;
       }
 
       case 'AWS::URLSuffix':

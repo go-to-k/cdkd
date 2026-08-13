@@ -28,9 +28,24 @@
  * - `bucketRegionalDomainName`    -> `<bucket>.s3.<region>.<urlSuffix>`
  * - `bucketDualStackDomainName`   -> `<bucket>.s3.dualstack.<region>.<urlSuffix>`
  * - `bucketWebsiteUrl`            -> `http://<bucket>.<staticWebsiteEndpoint>`
+ *
+ * The REGION is canonicalized on entry by the three helpers whose output carries
+ * a region SEGMENT (issue [#1850](https://github.com/go-to-k/cdkd/issues/1850)).
+ * It belongs HERE rather than at either call site for the reason this module
+ * exists: `S3BucketProvider.buildAttributes` passes a raw
+ * `client.config.region()` while `IntrinsicFunctionResolver.constructAttribute`
+ * passes `accountInfo.region`, so folding at one caller alone re-creates exactly
+ * the divergence described above. `bucketArn` / `bucketDomainName` need no fold:
+ * neither embeds the region, and the URL suffix they DO derive goes through
+ * `derivePartitionAndUrlSuffix`, which canonicalizes its own input (#1795).
+ *
+ * For `WebsiteURL` the fold is not a spelling difference at all: the separator
+ * comes from a case-SENSITIVE Set lookup, so an upper-cased region misses the
+ * legacy-dash set and takes the wrong separator. It is folded BEFORE that
+ * lookup for that reason.
  */
 
-import { derivePartitionAndUrlSuffix } from './aws-partition.js';
+import { canonicalizeRegion, derivePartitionAndUrlSuffix } from './aws-partition.js';
 
 /**
  * The regions whose S3 static-website endpoint uses the LEGACY hyphen form
@@ -96,12 +111,14 @@ export function s3BucketDomainName(bucketName: string, region: string): string {
 
 /** `<bucket>.s3.<region>.<urlSuffix>` — the regional domain name. */
 export function s3BucketRegionalDomainName(bucketName: string, region: string): string {
-  return `${bucketName}.s3.${region}.${derivePartitionAndUrlSuffix(region).urlSuffix}`;
+  const folded = canonicalizeRegion(region);
+  return `${bucketName}.s3.${folded}.${derivePartitionAndUrlSuffix(folded).urlSuffix}`;
 }
 
 /** `<bucket>.s3.dualstack.<region>.<urlSuffix>` — the IPv6 dual-stack domain name. */
 export function s3BucketDualStackDomainName(bucketName: string, region: string): string {
-  return `${bucketName}.s3.dualstack.${region}.${derivePartitionAndUrlSuffix(region).urlSuffix}`;
+  const folded = canonicalizeRegion(region);
+  return `${bucketName}.s3.dualstack.${folded}.${derivePartitionAndUrlSuffix(folded).urlSuffix}`;
 }
 
 /**
@@ -112,7 +129,11 @@ export function s3BucketDualStackDomainName(bucketName: string, region: string):
  * cannot be derived from the partition.
  */
 export function s3BucketWebsiteUrl(bucketName: string, region: string): string {
-  const { urlSuffix } = derivePartitionAndUrlSuffix(region);
-  const separator = S3_WEBSITE_ENDPOINT_LEGACY_DASH_REGIONS.has(region) ? '-' : '.';
-  return `http://${bucketName}.s3-website${separator}${region}.${urlSuffix}`;
+  // Folded BEFORE the Set lookup, not after: the set holds canonical ids, so
+  // an upper-cased region would miss it and take the dot form for a region
+  // AWS serves on the hyphen one (issue #1850).
+  const folded = canonicalizeRegion(region);
+  const { urlSuffix } = derivePartitionAndUrlSuffix(folded);
+  const separator = S3_WEBSITE_ENDPOINT_LEGACY_DASH_REGIONS.has(folded) ? '-' : '.';
+  return `http://${bucketName}.s3-website${separator}${folded}.${urlSuffix}`;
 }
