@@ -121,9 +121,13 @@ strict, each differently):
   is crossed, and the bar itself is what reconciles it rather than a carve-out:
   NOTHING was sent, so the live mode IS what cdkd left AWS holding, and the only
   other candidate baseline is junk. Do not "tidy" that case into a drop
-  regardless: a dropped key reads as ABSENT next time, and the absent
-  branch does not consult AWS, so a corrected template can compare equal, issue
-  no call, and silently lose a real flip. The create-side arm of the SAME
+  regardless: a dropped key reads as ABSENT next time, and until issue #1733
+  the absent branch did not consult AWS, so a corrected template compared
+  equal, issued no call, and silently lost a real flip. #1733 closed that
+  route — the absent branch now seeds its baseline from the live read whenever
+  the desired side DECLARES a mode — but the drop still depends on that live
+  read succeeding, while recording the live reading here needs nothing later.
+  The create-side arm of the SAME
   property answers differently — it records the SUBSTITUTED mode — because there
   the table really was created on-demand; and because a DROP leaves an absence
   nothing announces, that arm warns on a replay whose record declares no mode.
@@ -166,7 +170,13 @@ holds AWS's live value (a `DescribeTable` at the top of `update()`), seed the
 comparison baseline from it whenever the state-recorded previous is
 present-but-unusable — otherwise the corrected template compares against junk,
 reads as a change, and issues a call AWS rejects on every deploy. An ABSENT
-previous is NOT unusable: seeding it turns a no-op into a spurious change.
+previous is NOT unusable: seeding it turns a no-op into a spurious change —
+still the rule for `AWS::DynamoDB::Table`. `GlobalTable` DIVERGED in issue
+#1733: an absent previous there resolved to the create-path default WITHOUT
+consulting AWS, so a corrected template compared equal and lost a real flip.
+It now seeds from the live read too, but ONLY when the desired side DECLARES a
+mode — a template that legitimately omits the property never consults AWS,
+which is what keeps the spurious-change hazard above closed.
 
 **Take IDENTITY from the live read unconditionally, VALUES only where the live
 value answers the SAME question as the desired one** (issue #1571, refining the
@@ -437,7 +447,14 @@ skip-reporting S3 bucket appliers carry all three:
   next deploy ALREADY classifies an UPDATE and the strip folds into it. The
   UPDATE-side twin of the same property is NOT the same problem (the kept mode
   can be either value and the resource already exists, so the retain-the-
-  PREVIOUS-value row above applies instead); it is tracked as issue #1738.
+  PREVIOUS-value row above applies instead); it is FIXED in issue #1738 by
+  `retainUnsendableCapacityMembers`, which splits every capacity member against
+  the KEPT mode — the members that mode cannot send RETAIN the previous value
+  (validated through the same `asRecord` predicate the wire reads apply, and
+  DROPPED when the previous side is unusable OR absent, since there is no value
+  cdkd can vouch for either way), while the members it CAN send keep the desired
+  one. A block the desired side REMOVED is retained too, so a later removal
+  stays derivable.
   **An OMIT can leave the call itself invalid, and that is a separate question
   from what to record** (issue #1741, the first LIVE exercise of these arms).
   The GlobalTable GSI omit sent `CreateTable` with no indexes but with the
