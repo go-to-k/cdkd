@@ -69,6 +69,7 @@ import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-help
 import { requireConfigArray } from '../config-shape.js';
 import {
   compositeIdFormatMessage,
+  compositeIdSkipResult,
   packCompositeId,
   type CompositeIdFormat,
 } from '../composite-id.js';
@@ -78,6 +79,7 @@ import type {
   CreateContext,
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -1237,7 +1239,7 @@ export class AppSyncProvider implements ResourceProvider {
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     switch (resourceType) {
       case 'AWS::AppSync::GraphQLApi':
         return this.deleteGraphQLApi(logicalId, physicalId, resourceType, context);
@@ -2622,7 +2624,7 @@ export class AppSyncProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting DataSource ${logicalId}: ${physicalId}`);
 
     const [apiId, name] = physicalId.split('|');
@@ -2632,7 +2634,9 @@ export class AppSyncProvider implements ResourceProvider {
           skipping: true,
         })
       );
-      return;
+      // Issue #1752: report the SKIP rather than returning void — a bare
+      // `return` was counted as a successful delete by the destroy summary.
+      return compositeIdSkipResult();
     }
 
     try {
@@ -2760,7 +2764,7 @@ export class AppSyncProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting Resolver ${logicalId}: ${physicalId}`);
 
     const parts = physicalId.split('|');
@@ -2770,7 +2774,9 @@ export class AppSyncProvider implements ResourceProvider {
           skipping: true,
         })
       );
-      return;
+      // Issue #1752: report the SKIP rather than returning void — a bare
+      // `return` was counted as a successful delete by the destroy summary.
+      return compositeIdSkipResult();
     }
     const [apiId, typeName, fieldName] = parts;
 
@@ -2897,7 +2903,7 @@ export class AppSyncProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting ApiKey ${logicalId}: ${physicalId}`);
 
     const [apiId, apiKeyId] = physicalId.split('|');
@@ -2907,7 +2913,9 @@ export class AppSyncProvider implements ResourceProvider {
           skipping: true,
         })
       );
-      return;
+      // Issue #1752: report the SKIP rather than returning void — a bare
+      // `return` was counted as a successful delete by the destroy summary.
+      return compositeIdSkipResult();
     }
 
     try {

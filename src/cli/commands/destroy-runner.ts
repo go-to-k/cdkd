@@ -24,6 +24,7 @@ import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
 import { shouldRetainResource, type ResourceState, type StackState } from '../../types/state.js';
+import type { ResourceDeleteResult } from '../../types/resource.js';
 import {
   extractDeploymentEventError,
   type DeploymentEventRecorder,
@@ -154,7 +155,8 @@ export interface DestroyRunnerContext {
   /**
    * Issue [#808] — best-effort structured deployment-event recorder.
    * When supplied, the runner emits one RESOURCE_STARTED /
-   * RESOURCE_SUCCEEDED / RESOURCE_FAILED / RESOURCE_RETAINED event per
+   * RESOURCE_SUCCEEDED / RESOURCE_FAILED / RESOURCE_RETAINED /
+   * RESOURCE_SKIPPED event per
    * resource it deletes (operation always DELETE). `record()` is
    * synchronous and never throws. The CALLER (`cdkd destroy` /
    * `cdkd state destroy`) owns the RUN_STARTED / RUN_FINISHED events and
@@ -197,6 +199,34 @@ export interface DestroyRunnerResult {
    * "delete succeeded".
    */
   retainedCount: number;
+  /**
+   * Number of resources whose provider reported `{ outcome: 'skipped' }` —
+   * cdkd could NOT address the resource, so it may still be ALIVE (issue
+   * [#1752](https://github.com/go-to-k/cdkd/issues/1752)). Two producers
+   * today: the malformed-composite-physicalId delete arms (which issue no AWS
+   * call at all), and `NestedStackProvider.delete` when the child stack's own
+   * destroy skipped or was interrupted (which may have deleted the child's
+   * other resources first). So this counts ROWS NOT DESTROYED, and a row can
+   * be a whole nested stack — see the note on the CLI's aggregate message.
+   *
+   * Distinct from every neighbouring counter:
+   * - `deletedCount` — cdkd addressed it (a delete was issued, or the
+   *   resource was already gone). Before #1752 a skip landed here, which is
+   *   the bug: the summary reported success over a resource nothing touched.
+   * - `retainedCount` — user INTENT (`DeletionPolicy: Retain`). Keeping the
+   *   AWS resource is the requested outcome, and the state record is dropped.
+   * - `errorCount` — a delete was attempted and FAILED. A skip never reached
+   *   AWS, so labelling it an error would misdescribe it (and would make the
+   *   summary print it as a failure).
+   *
+   * The state record is DELIBERATELY KEPT for a skipped resource (it stays in
+   * `remainingResources`, so the preserve-write below carries it), because
+   * dropping it is the second half of the data loss: the user would end up
+   * with neither the AWS resource deleted nor a cdkd record pointing at it.
+   * `> 0` therefore also forces state preservation and a non-zero exit, the
+   * same contract `errorCount > 0` / `interrupted` already carry.
+   */
+  skippedCount: number;
   /** Number of resources that failed to delete. State is preserved on >0 errors. */
   errorCount: number;
   /**
@@ -226,6 +256,13 @@ export interface DestroyRunnerResult {
  *
  * Exported for unit-test coverage of `countProtectedResources`.
  */
+/**
+ * The nested-stack resource type. A skipped row of this type means the CHILD
+ * stack was not destroyed, and the record a user must repair lives in the
+ * child's own state file (`<parent>~<logicalId>`) — see `skippedStateTargets`.
+ */
+const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
+
 export const PROTECTION_PROPERTY_BY_TYPE: Record<string, string> = {
   'AWS::Logs::LogGroup': 'DeletionProtectionEnabled',
   'AWS::RDS::DBInstance': 'DeletionProtection',
@@ -357,6 +394,7 @@ export async function runDestroyForStack(
     skippedEmpty: false,
     deletedCount: 0,
     retainedCount: 0,
+    skippedCount: 0,
     errorCount: 0,
     interrupted: false,
   };
@@ -625,6 +663,14 @@ export async function runDestroyForStack(
   // authoritative, and any stale snapshot is a superset of what still
   // exists, which a re-run resolves via the idempotent "not found" path.
   const remainingResources: Record<string, ResourceState> = { ...state.resources };
+
+  // Issue #1752 (G): the state file a user must repair is NOT always this
+  // stack's. A skipped nested-stack row's malformed record lives in the CHILD's
+  // state file (`<parent>~<childLogicalId>`), so a remedy naming
+  // `cdkd state show <parent>` sends the user to a file that does not contain
+  // the bad id. Collected during the loop so the summary can name the real
+  // target(s).
+  const skippedStateTargets = new Set<string>();
 
   // Build the partial-destroy snapshot persisted by both the incremental
   // writes and the final preserve-write (issue #804). `outputs` / `imports`
@@ -910,6 +956,11 @@ export async function runDestroyForStack(
             ctx.resourceTimeoutByType?.[resource.resourceType] ??
             Math.max(providerMinTimeoutMs, slowTypeMinTimeoutMs, globalTimeoutMs);
 
+          // Issue #1752: what the provider actually DID. `undefined` (the
+          // back-compat `void` return) means "deleted"; a `'skipped'` outcome
+          // means no AWS call was issued and the resource may still be alive.
+          let deleteResult: ResourceDeleteResult | undefined;
+
           // Wrap the entire retry loop in the per-resource deadline so a
           // genuinely-stuck delete (e.g. a hung Custom Resource handler or
           // a Cloud-Control polling loop that never terminates) aborts
@@ -924,7 +975,7 @@ export async function runDestroyForStack(
               let lastDeleteError: unknown;
               for (let attempt = 0; attempt <= maxAttempts; attempt++) {
                 try {
-                  await provider.delete(
+                  const outcome = await provider.delete(
                     logicalId,
                     resource.physicalId,
                     resource.resourceType,
@@ -935,6 +986,12 @@ export async function runDestroyForStack(
                       ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
                     }
                   );
+                  // Assign INSIDE the loop, not after it: the loop can
+                  // reach this line on a LATER attempt after an earlier one
+                  // threw, and the outcome must be that attempt's. (It can
+                  // never overwrite a previous non-throwing attempt — the
+                  // `break` below ends the loop on the first one.)
+                  deleteResult = outcome ?? undefined;
                   lastDeleteError = null;
                   break;
                 } catch (retryError) {
@@ -991,6 +1048,49 @@ export async function runDestroyForStack(
           );
 
           renderer.removeTask(logicalId);
+
+          // Issue #1752: a provider that could not ADDRESS the resource issued
+          // no AWS call, so the resource may still be alive. Print a distinct
+          // line, count it separately, and — critically — do NOT drop the
+          // state record: without it the user has neither the AWS resource
+          // deleted nor a cdkd record pointing at it, and no way to retry.
+          if (deleteResult?.outcome === 'skipped') {
+            // `reason` is REQUIRED by the discriminated union, so the line
+            // always names a cause — a bare `skipped` would be barely more
+            // useful than the `deleted` it replaced.
+            logger.info(
+              `  ${formatResourceLine(
+                'skipped',
+                logicalId,
+                resource.resourceType,
+                `skipped (${deleteResult.reason})`
+              )}`
+            );
+            result.skippedCount++;
+            skippedStateTargets.add(
+              resource.resourceType === NESTED_STACK_TYPE ? `${stackName}~${logicalId}` : stackName
+            );
+            ctx.eventRecorder?.record({
+              eventType: 'RESOURCE_SKIPPED',
+              stackName,
+              operation: 'DELETE',
+              logicalId,
+              resourceType: resource.resourceType,
+              ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+              ...(resource.physicalId && { physicalId: resource.physicalId }),
+              // The events store is the DURABLE post-mortem, and a bare
+              // `RESOURCE_SKIPPED` there cannot tell the user why cdkd could
+              // not address the resource. `reason` is required on the
+              // `'skipped'` arm, so this is always populated.
+              reason: deleteResult.reason,
+              durationMs: Date.now() - resourceStartedAt,
+            });
+            // Deliberately NO `delete remainingResources[logicalId]` and no
+            // persist call — the record must survive into the preserve-write
+            // at the end of the run.
+            return;
+          }
+
           logger.info(`  ${formatResourceLine('deleted', logicalId, resource.resourceType)}`);
           result.deletedCount++;
           ctx.eventRecorder?.record({
@@ -1091,9 +1191,12 @@ export async function runDestroyForStack(
     await saveChain;
 
     // Preserve state (rather than delete it) when there were delete errors OR
-    // the destroy was gracefully interrupted (issue #816). An interrupt leaves
-    // not-yet-deleted resources, so deleting the state file would orphan them.
-    const preserveState = result.errorCount > 0 || result.interrupted;
+    // the destroy was gracefully interrupted (issue #816) OR a resource was
+    // SKIPPED (issue #1752). An interrupt leaves not-yet-deleted resources, so
+    // deleting the state file would orphan them; a skip leaves a resource cdkd
+    // could not even address, so dropping its record orphans it permanently
+    // and with no id to go on.
+    const preserveState = result.errorCount > 0 || result.interrupted || result.skippedCount > 0;
     if (!preserveState) {
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.debug('State deleted');
@@ -1123,8 +1226,14 @@ export async function runDestroyForStack(
         logger.warn(
           `Destroy interrupted — ${Object.keys(remainingResources).length} resource(s) not deleted. State preserved.`
         );
-      } else {
+      } else if (result.errorCount > 0) {
         logger.warn(`${result.errorCount} resource(s) failed to delete. State preserved.`);
+      } else {
+        logger.warn(
+          `${result.skippedCount} resource(s) skipped — cdkd could not address them, so no ` +
+            `delete was issued and they may still exist in AWS. State preserved (the records ` +
+            `are kept so the resources stay traceable).`
+        );
       }
     }
 
@@ -1134,18 +1243,35 @@ export async function runDestroyForStack(
     // visual marker, a partial failure scrolls past in the same shape
     // as a successful destroy and gets missed in CI / bench output.
     const retainedSuffix = result.retainedCount > 0 ? `, ${result.retainedCount} retained` : '';
+    // Issue #1752: `skipped` is only rendered when non-zero, so every existing
+    // summary line (and the scripts / tests that grep it) is byte-identical on
+    // a run with no skips.
+    const skippedSuffix = result.skippedCount > 0 ? `, ${yellow(result.skippedCount)} skipped` : '';
     if (!preserveState) {
       logger.info(
         `\n${green('✓')} ${bold(`Stack ${stackName} destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}, ${result.errorCount} errors)`
       );
     } else if (result.interrupted && result.errorCount === 0) {
       logger.warn(
-        `\n${yellow('⚠')} ${bold(`Stack ${stackName} destroy interrupted`)} (${green(result.deletedCount)} deleted${retainedSuffix}, ${result.errorCount} errors). ` +
+        `\n${yellow('⚠')} ${bold(`Stack ${stackName} destroy interrupted`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}, ${result.errorCount} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to finish.`
+      );
+    } else if (result.errorCount === 0) {
+      // Skips only. Nothing FAILED, so "partially destroyed" with an error
+      // count would misdescribe the run — and the remedy is different too:
+      // there is nothing to retry until the state record is repaired.
+      const targets = [...skippedStateTargets];
+      const showHint = targets.map((t) => `'cdkd state show ${t}'`).join(' / ');
+      const orphanHint = targets.map((t) => `'cdkd state orphan ${t}'`).join(' / ');
+      logger.warn(
+        `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}, ${result.errorCount} errors). ` +
+          `cdkd could not address the skipped resource(s), so they may still exist in AWS. ` +
+          `Fix the physicalId in state.json (${showHint}) and ` +
+          `re-run, or delete them by hand and drop the records with ${orphanHint}.`
       );
     } else {
       logger.warn(
-        `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}, ${red(result.errorCount)} errors). ` +
+        `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}, ${red(result.errorCount)} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up. ` +
           `If the same resource keeps failing, 'cdkd state orphan ${stackName}' is the last resort: it removes the state record without deleting AWS resources.`
       );

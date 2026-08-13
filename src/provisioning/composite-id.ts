@@ -1,3 +1,4 @@
+import type { ResourceDeleteResult } from '../types/resource.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 
 /**
@@ -274,10 +275,23 @@ function formatShape(segments: readonly string[]): string {
  * ## The `skipping` variant
  *
  * On the DELETE path the established policy is warn-and-continue, so a
- * malformed record leaves the AWS resource ALIVE while `cdkd destroy` reports
- * success. That policy is not changed here — but the warning now says what the
- * skip costs, because an orphan the user is never told about is one they cannot
- * go and delete.
+ * malformed record leaves the AWS resource ALIVE. That policy is unchanged —
+ * the warning says what the skip costs, because an orphan the user is never
+ * told about is one they cannot go and delete.
+ *
+ * Since issue [#1752](https://github.com/go-to-k/cdkd/issues/1752) the ACCOUNTING
+ * around it is no longer a lie: an arm emitting this message must also return
+ * `{ outcome: 'skipped', reason: COMPOSITE_ID_SKIP_REASON }` so `cdkd destroy`
+ * prints a `⚠ … skipped` line instead of `✓ … deleted`, reports
+ * `N deleted, 1 skipped`, KEEPS the state record, and exits non-zero. The
+ * wording here changed accordingly — it used to promise unconditionally that
+ * cdkd "will report this delete as successful", which is no longer true on the
+ * destroy path. It is STILL true for the deploy engine's replacement / rollback
+ * deletes, which discard the return value (issue
+ * [#1762](https://github.com/go-to-k/cdkd/issues/1762)), so the message names
+ * both callers rather than describing only the fixed one — a remedy of
+ * "drop the record with 'cdkd state orphan'" is impossible on a path that has
+ * already dropped it.
  */
 export function compositeIdFormatMessage(
   format: CompositeIdFormat,
@@ -296,9 +310,41 @@ export function compositeIdFormatMessage(
   if (!options?.skipping) return head;
 
   return (
-    `${head}. Skipping the delete — the AWS resource is LEFT IN PLACE and cdkd will ` +
-    `report this delete as successful, so delete it by hand (or repair the id in ` +
-    `state.json and re-run) if it still exists. NOTE this arm is reached from ` +
-    `cdkd destroy AND from the deploy engine's replacement / rollback deletes.`
+    `${head}. Skipping the delete — no AWS call is issued, so the resource is LEFT ` +
+    `IN PLACE. On 'cdkd destroy' / 'cdkd state destroy' the state record is KEPT ` +
+    `and the run exits non-zero, so repair the id in state.json and re-run (or ` +
+    `delete the resource by hand and drop the record with 'cdkd state orphan'). ` +
+    `NOTE this arm is ALSO reached from cdkd deploy — the plain DELETE of a ` +
+    `resource removed from the template (the most common one), plus the ` +
+    `replacement and rollback deletes — all of which still DROP the record and ` +
+    `report success ` +
+    `(https://github.com/go-to-k/cdkd/issues/1762) — there, delete it by hand.`
   );
+}
+
+/**
+ * The short `ResourceDeleteResult.reason` every malformed-composite-id DELETE
+ * skip reports (issue [#1752](https://github.com/go-to-k/cdkd/issues/1752)).
+ *
+ * Deliberately short and IDENTICAL across the five arms: it is rendered inline
+ * on the per-resource status line (`⚠ MyTable (AWS::Glue::Table) skipped
+ * (malformed physicalId in state — no delete issued)`), where the full
+ * remediation sentence built by {@link compositeIdFormatMessage} would not fit.
+ * The full text is still emitted, as the `logger.warn` right beside it.
+ *
+ * A shared constant rather than five literals so the five arms cannot drift and
+ * a grep for the wording finds all of them.
+ */
+export const COMPOSITE_ID_SKIP_REASON = 'malformed physicalId in state — no delete issued';
+
+/**
+ * The `ResourceDeleteResult` a malformed-composite-id DELETE arm returns.
+ *
+ * Pairs with the `{ skipping: true }` warning: emit the warning, return this.
+ * Providers call it as `return compositeIdSkipResult();` so the arm reads as
+ * the deliberate skip it is rather than as the bare `return;` that made issue
+ * #1752's mis-accounting possible.
+ */
+export function compositeIdSkipResult(): ResourceDeleteResult {
+  return { outcome: 'skipped', reason: COMPOSITE_ID_SKIP_REASON };
 }

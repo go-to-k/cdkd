@@ -1137,6 +1137,49 @@ cdkd rollback MyStack --force # skip the confirmation prompt
 - See [docs/cli-reference.md](cli-reference.md#cdkd-rollback) for the full flag
   reference and known limitations.
 
+### Issue: destroy reports `N skipped` and exits 2
+
+```text
+⚠ MyGlueTable (AWS::Glue::Table) skipped (malformed physicalId in state — no delete issued)
+⚠ Stack MyStack partially destroyed (4 deleted, 1 skipped, 0 errors). cdkd could not address the skipped resource(s) ...
+```
+
+**Cause**: the state record's `physicalId` does not decode. A handful of
+resource types need more than one value to address the resource, so cdkd packs
+them into one string joined by `|` (`<databaseName>|<tableName>` for
+`AWS::Glue::Table`, `<apiId>|<typeName>|<fieldName>` for
+`AWS::AppSync::Resolver`, ...). If the recorded value has the wrong number of
+segments — a hand-edited `state.json`, or a record written by an older binary —
+cdkd cannot build the delete call. The per-resource warning names the exact
+shape it expected.
+
+**What cdkd did**: nothing. No AWS call was issued for that resource, so it may
+still exist and still be billing. cdkd deliberately does NOT count it as
+deleted and does NOT drop its state record — without the record you would have
+neither the resource deleted nor an id to go and delete it with (issue
+[#1752](https://github.com/go-to-k/cdkd/issues/1752)). `state.json` is
+preserved and the command exits `2`.
+
+**Fix**, either way round:
+
+```bash
+# 1. Inspect the bad record
+cdkd state show MyStack
+
+# 2a. Repair the physicalId to the shape the warning named, then re-run
+aws s3 cp s3://cdkd-state-{account}/cdkd/MyStack/{region}/state.json .
+#    ...edit "physicalId": "mydb|mytable"...
+aws s3 cp state.json s3://cdkd-state-{account}/cdkd/MyStack/{region}/state.json
+cdkd destroy MyStack
+
+# 2b. OR delete the AWS resource by hand and drop the state record
+aws glue delete-table --database-name mydb --name mytable
+cdkd state orphan MyStack   # removes state only, never AWS resources
+```
+
+Do not "fix" this by re-running with the record deleted — that is the orphan
+this behavior exists to prevent.
+
 ### Detecting Orphaned Resources
 
 If you suspect orphaned resources exist (e.g., due to a process crash before state could be saved), you can manually compare the state file against actual AWS resources:

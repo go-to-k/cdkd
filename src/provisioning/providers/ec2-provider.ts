@@ -89,6 +89,7 @@ import { replayWarn, requireConfigString } from '../config-shape.js';
 import {
   compositeIdFormatMessage,
   compositeIdSeparatorRefusal,
+  compositeIdSkipResult,
   packCompositeId,
   type CompositeIdFormat,
   type CompositeIdOptions,
@@ -104,6 +105,7 @@ import type {
   CreateContext,
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -701,7 +703,7 @@ export class EC2Provider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     switch (resourceType) {
       case 'AWS::EC2::VPC':
         return this.deleteVpc(logicalId, physicalId, resourceType, context);
@@ -4544,7 +4546,7 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting NetworkAclEntry ${logicalId}: ${physicalId}`);
 
     const parts = physicalId.split('|');
@@ -4554,7 +4556,9 @@ export class EC2Provider implements ResourceProvider {
           skipping: true,
         })
       );
-      return;
+      // Issue #1752: report the SKIP rather than returning void — a bare
+      // `return` was counted as a successful delete by the destroy summary.
+      return compositeIdSkipResult();
     }
     const networkAclId = parts[0]!;
     const ruleNumber = parseInt(parts[1]!, 10);

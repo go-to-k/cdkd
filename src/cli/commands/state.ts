@@ -1199,6 +1199,13 @@ async function stateDestroyCommand(
     logger.info(`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
 
     let totalErrors = 0;
+    // Issue #1752: resources whose provider reported `{ outcome: 'skipped' }`
+    // — cdkd could not address them, so NO delete was issued and they may
+    // still exist in AWS. Counted separately from `totalErrors` (nothing
+    // FAILED) but treated the same way for the exit code: the runner
+    // preserved state, so reporting success would tell CI the stack is gone
+    // when it is not.
+    let totalSkipped = 0;
     // Set true when a per-stack destroy was gracefully interrupted (issue
     // #816). Stops the multi-stack loop and surfaces a non-zero exit below.
     let interrupted = false;
@@ -1313,6 +1320,7 @@ async function stateDestroyCommand(
             })
         );
         totalErrors += result.errorCount;
+        totalSkipped += result.skippedCount;
         if (result.interrupted) interrupted = true;
         // Graceful interrupt (issue #816): stop iterating this stack's regions.
         if (interrupted) break;
@@ -1341,6 +1349,20 @@ async function stateDestroyCommand(
       // exit so scripts / CI see the destroy did not complete.
       throw new PartialFailureError(
         `Destroy interrupted by Ctrl-C. State preserved — re-run 'cdkd state destroy' to finish.`
+      );
+    }
+    if (totalSkipped > 0) {
+      // Issue #1752 — see the twin branch in destroy.ts, including why this
+      // counts ENTRIES rather than resources. Nothing FAILED, but cdkd left
+      // resources it could not address and preserved their state records, so
+      // exiting 0 would report a destroy that did not happen.
+      throw new PartialFailureError(
+        `Destroy skipped ${totalSkipped} entr${totalSkipped === 1 ? 'y' : 'ies'} cdkd could not ` +
+          `address, so the underlying resources may still exist in AWS. A skipped nested stack ` +
+          `counts as ONE entry and may cover several of its own resources — the per-stack ` +
+          `summaries above give the exact breakdown. State preserved (the records are kept). ` +
+          `Repair the physicalId in state.json and re-run 'cdkd state destroy', or delete the ` +
+          `resources by hand and drop the records with 'cdkd state orphan <stack>'.`
       );
     }
   } finally {

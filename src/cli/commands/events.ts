@@ -330,7 +330,12 @@ function printRunList(stackName: string, region: string, runs: DeploymentRunSumm
 }
 
 /** Human-readable single-run event stream (in recorded order). */
-function printRunEvents(
+/**
+ * Render one run's event stream. Exported for unit-test coverage — the
+ * `counts.skipped` / `reason` rendering is the whole value of those fields
+ * (issue #1752), so it needs a direct fence rather than only `--json` coverage.
+ */
+export function printRunEvents(
   stackName: string,
   region: string,
   runId: string,
@@ -360,11 +365,22 @@ function printRunEvents(
       parts.push(
         gray(
           `+${e.counts.created}/~${e.counts.updated}/-${e.counts.deleted}` +
-            (e.counts.failed ? ` !${e.counts.failed}` : '')
+            (e.counts.failed ? ` !${e.counts.failed}` : '') +
+            // Issue #1752: without this a skip-only destroy renders
+            // `RUN_FINISHED FAILED +0/~0/-2` — a failed run naming nothing that
+            // failed, which is the exact symptom `counts.skipped` exists to
+            // remove. `⚠` matches the glyph the destroy status line uses.
+            (e.counts.skipped ? ` ⚠${e.counts.skipped}` : '')
         )
       );
     }
     logger.info(`  ${parts.join('  ')}`);
+    // Issue #1752: a RESOURCE_SKIPPED event's whole value is WHY cdkd could not
+    // address the resource. Rendered on its own line, mirroring the error block
+    // below, because the reason is a sentence rather than a column.
+    if (e.reason) {
+      logger.info(`      ${yellow(e.reason)}`);
+    }
     if (e.error) {
       const code = e.error.awsErrorCode ? ` (${e.error.awsErrorCode})` : '';
       const reqId = e.error.requestId ? gray(` requestId=${e.error.requestId}`) : '';
@@ -373,10 +389,22 @@ function printRunEvents(
   }
 }
 
-/** Color the event-type token by its lifecycle phase. */
-function colorizeEventType(eventType: DeploymentEvent['eventType']): string {
+/**
+ * Color the event-type token by its lifecycle phase.
+ *
+ * Exported for unit-test coverage (matching `destroy-runner.ts`'s
+ * `PROTECTION_PROPERTY_BY_TYPE` convention) — it is pure, so testing it
+ * directly beats driving it through the renderer's log output.
+ */
+export function colorizeEventType(eventType: DeploymentEvent['eventType']): string {
   if (eventType.endsWith('FAILED')) return red(eventType);
   if (eventType.endsWith('SUCCEEDED') || eventType === 'RUN_FINISHED') return green(eventType);
+  // Issue #1752: a SKIPPED resource is one cdkd could not address, so it may
+  // still be alive — yellow, not the neutral cyan the default arm gives every
+  // informational token. Deliberately NOT extended to `RESOURCE_RETAINED`,
+  // which is the opposite case: keeping that resource is what the user ASKED
+  // for via `DeletionPolicy: Retain`, so it stays informational.
+  if (eventType === 'RESOURCE_SKIPPED') return yellow(eventType);
   if (eventType.startsWith('ROLLBACK')) return yellow(eventType);
   return cyan(eventType);
 }

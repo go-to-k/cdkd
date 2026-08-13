@@ -10,7 +10,7 @@ paths:
 interface ResourceProvider {
   create(logicalId: string, resourceType: string, properties: Record<string, unknown>, context?: CreateContext): Promise<ResourceCreateResult>;
   update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>, previousProperties: Record<string, unknown>): Promise<ResourceUpdateResult>;
-  delete(logicalId: string, physicalId: string, resourceType: string, properties?: Record<string, unknown>, context?: DeleteContext): Promise<void>;
+  delete(logicalId: string, physicalId: string, resourceType: string, properties?: Record<string, unknown>, context?: DeleteContext): Promise<void | ResourceDeleteResult>;
   getAttribute(physicalId: string, resourceType: string, attributeName: string): Promise<unknown>;
 }
 ```
@@ -957,6 +957,50 @@ the FAILED in-flight CREATE's delete under `cdkd rollback --revert-failed`
 refusals). When
 adding final-snapshot support for a new type, extend the sets there — never
 make a provider silently ignore the field.
+
+**A warn-and-continue DELETE arm must REPORT the skip** (issue
+[#1752](https://github.com/go-to-k/cdkd/issues/1752)). `delete` returning
+normally means "the resource is gone" — a delete call succeeded, or it was
+already absent (the `*NotFound` idempotent arms, `CustomResourceProvider`'s
+backing-Lambda-is-gone pre-check). Both are honest. An arm that issues NO AWS
+call is not: `cdkd destroy`'s only signal used to be "did not throw", so the
+five malformed-composite-physicalId arms printed `✓ <id> (<type>) deleted`,
+counted toward `N deleted`, DROPPED the state record and exited 0 over a
+resource that may still be alive. Such an arm returns
+`{ outcome: 'skipped', reason }` — in practice `compositeIdSkipResult()` from
+`composite-id.ts`, beside the existing `{ skipping: true }` warning. The runner
+then prints `⚠ … skipped (<reason>)`, counts a separate `skippedCount`, emits
+`RESOURCE_SKIPPED`, KEEPS the state record (dropping it is the second half of
+the loss — neither the resource deleted nor an id to delete it with), preserves
+`state.json`, and exits 2.
+
+**A provider that RECURSES into another destroy must propagate the child's
+skip.** `NestedStackProvider.delete` drives `runDestroyForStack` for the child
+stack; discarding that result re-creates the mis-report one level up — the
+parent prints `✓ <Child> (AWS::CloudFormation::Stack) deleted`, drops the
+child's row from parent state and exits 0, while the child's own `state.json`
+is sitting there preserved describing a live resource. It returns
+`{ outcome: 'skipped' }` when `childResult.skippedCount > 0`. The child's
+`errorCount` is swallowed by the same call and is deliberately NOT propagated
+here: its correct answer is a THROW (a failed child delete must fail the
+parent's resource), which is a behavior change with its own blast radius.
+
+Three things about it are decisions rather than accidents. The exit code is
+**not** a new policy: it is the same "state preserved, stack not destroyed"
+contract `errorCount > 0` and a graceful interrupt already carry, so a run that
+leaves a resource behind cannot report success. The outcome union is TWO values,
+not the three the issue sketched — `'already-absent'` had no producer and no
+consumer that would treat it differently from `'deleted'`, and the runner
+already has its own message-matched already-deleted branch. And the DEPLOY-side
+callers (`deploy-engine.ts`'s template-DELETE + replacement deletes,
+`rollback-executor.ts`'s rollback deletes) still discard the return value, so
+the same arms still mis-report there — tracked as issue
+[#1762](https://github.com/go-to-k/cdkd/issues/1762), and eight same-class arms
+OUTSIDE the composite-id family (Lambda layer / permission, Custom Resource, IAM
+policy / user-group) still return bare `void` — issue
+[#1770](https://github.com/go-to-k/cdkd/issues/1770). Do NOT reach for a skip
+when you know the resource is gone: it would preserve state and fail the destroy
+for no reason.
 
 Register Provider for each resource type in Provider Registry:
 

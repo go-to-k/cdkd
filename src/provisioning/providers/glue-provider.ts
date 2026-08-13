@@ -78,6 +78,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   compositeIdFormatMessage,
+  compositeIdSkipResult,
   packCompositeId,
   type CompositeIdFormat,
 } from '../composite-id.js';
@@ -86,6 +87,7 @@ import type {
   CreateContext,
   ResourceProvider,
   ResourceCreateResult,
+  ResourceDeleteResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
@@ -477,7 +479,7 @@ export class GlueProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     switch (resourceType) {
       case 'AWS::Glue::Database':
         return this.deleteDatabase(logicalId, physicalId, resourceType, properties, context);
@@ -949,7 +951,7 @@ export class GlueProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting Glue Table ${logicalId}: ${physicalId}`);
 
     // DECISION on issue #1675's "decide together with #1672" note: the
@@ -967,7 +969,10 @@ export class GlueProvider implements ResourceProvider {
       this.logger.warn(
         compositeIdFormatMessage(GLUE_TABLE_ID_FORMAT, logicalId, physicalId, { skipping: true })
       );
-      return;
+      // Issue #1752: report the SKIP rather than returning void. A bare
+      // `return` here is indistinguishable from a completed delete, so the
+      // destroy summary counted this table as deleted while it stayed alive.
+      return compositeIdSkipResult();
     }
 
     // `CatalogId` must be threaded here or the delete silently targets this

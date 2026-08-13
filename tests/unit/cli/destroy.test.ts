@@ -79,6 +79,22 @@ vi.mock('../../../src/cli/commands/destroy-runner.js', () => ({
   runDestroyForStack: mockRunDestroyForStack,
 }));
 
+// Issue #1752: capture the run-level events so the tests below can assert the
+// RUN_FINISHED result a skip-only run records. The real recorder writes JSONL
+// through the (mocked) state backend; a spy is both simpler and lets the
+// assertions read the decision directly.
+const recordedRunEvents = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
+  startRunRecorder: vi.fn(() => ({
+    record: (event: Record<string, unknown>) => {
+      recordedRunEvents.push(event);
+    },
+    finalize: vi.fn(async () => {}),
+  })),
+  recordRunFailed: vi.fn(),
+  recordRunSucceeded: vi.fn(),
+}));
+
 // Mock the synthesizer so we can return arbitrary StackInfo[] (including
 // with terminationProtection set on individual stacks).
 const mockSynthesize = vi.hoisted(() => vi.fn());
@@ -159,14 +175,21 @@ describe('cdkd destroy: terminationProtection guard', () => {
     mockVerifyBucketExists.mockReset();
     mockVerifyBucketExists.mockResolvedValue();
     mockRunDestroyForStack.mockReset();
+    // Complete, not partial: `DestroyRunnerResult` requires every counter, and
+    // a mock that omits them makes `totalSkipped` NaN at runtime while the
+    // types still say `number` (issue #1752 review).
     mockRunDestroyForStack.mockResolvedValue({
       stackName: '',
       cancelled: false,
       skippedEmpty: false,
       deletedCount: 1,
+      retainedCount: 0,
+      skippedCount: 0,
       errorCount: 0,
+      interrupted: false,
     });
     mockSynthesize.mockReset();
+    recordedRunEvents.length = 0;
     errorSpy.mockReset();
     infoSpy.mockReset();
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
@@ -231,6 +254,80 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(dispatched).toEqual(new Set(['Plain', 'Unguarded']));
     // No partial-failure exit on the happy path.
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('exits 2 when the runner SKIPPED a resource, even with zero errors (issue #1752)', async () => {
+    // A skip means cdkd left a resource it could not address and preserved
+    // state — the stack is NOT destroyed. Exiting 0 there is exactly the
+    // mis-report the issue was filed for.
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Skipper', 'us-east-1')],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Skipper', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({ state: makeStackState('Skipper'), etag: '"x"' });
+    mockRunDestroyForStack.mockResolvedValue({
+      stackName: 'Skipper',
+      cancelled: false,
+      skippedEmpty: false,
+      deletedCount: 2,
+      retainedCount: 0,
+      skippedCount: 1,
+      errorCount: 0,
+      interrupted: false,
+    });
+
+    await expect(runDestroy(['destroy', 'Skipper', '--yes'])).rejects.toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toContain('skipped 1 entry');
+    expect(message).toContain('may still exist in AWS');
+    // Counted in ENTRIES, not resources: a skipped nested-stack row is one
+    // entry however many of the child's resources it covers, so the old
+    // "N resource(s)" wording stated a number that was wrong in exactly the
+    // nested case (issue #1752 review).
+    expect(message).not.toContain('resource(s) cdkd could not address');
+    expect(message).toContain('counts as ONE entry');
+
+    // The run-level record must agree with the exit code — a skip-only run is
+    // FAILED, which is also what suppresses `--purge-events` (the post-mortem
+    // must survive a destroy that did not finish).
+    const finished = recordedRunEvents.find((e) => e['eventType'] === 'RUN_FINISHED')!;
+    expect(finished).toBeDefined();
+    expect(finished['result']).toBe('FAILED');
+    // ...and it must NAME the skip, or the event says a run failed while
+    // listing nothing that failed.
+    expect(finished['counts']).toMatchObject({ deleted: 2, skipped: 1 });
+    expect((finished['counts'] as Record<string, unknown>)['failed']).toBeUndefined();
+  });
+
+  it('still exits 0 when nothing was skipped (no behavior change, issue #1752)', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Clean', 'us-east-1')],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Clean', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({ state: makeStackState('Clean'), etag: '"x"' });
+    mockRunDestroyForStack.mockResolvedValue({
+      stackName: 'Clean',
+      cancelled: false,
+      skippedEmpty: false,
+      deletedCount: 2,
+      retainedCount: 0,
+      skippedCount: 0,
+      errorCount: 0,
+      interrupted: false,
+    });
+
+    await runDestroy(['destroy', 'Clean', '--yes']);
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const finished = recordedRunEvents.find((e) => e['eventType'] === 'RUN_FINISHED')!;
+    expect(finished['result']).toBe('SUCCEEDED');
+    // No `skipped` member is emitted on a zero-skip run.
+    expect((finished['counts'] as Record<string, unknown>)['skipped']).toBeUndefined();
   });
 
   it('--remove-protection bypasses terminationProtection guard with a WARN log and dispatches the runner', async () => {
@@ -350,12 +447,19 @@ describe('cdkd destroy: nested-stack child-only direct destroy refusal (#555 A2)
     mockGetState.mockReset();
     mockVerifyBucketExists.mockReset();
     mockVerifyBucketExists.mockResolvedValue();
+    // `recordedRunEvents` is module-level and shared with the describe above,
+    // which DOES assert on it — without this reset a RUN_FINISHED recorded
+    // there leaks into these tests (issue #1752 review).
+    recordedRunEvents.length = 0;
     mockRunDestroyForStack.mockReset();
     mockRunDestroyForStack.mockResolvedValue({
       stackName: '',
       cancelled: false,
       skippedEmpty: false,
       deletedCount: 1,
+      retainedCount: 0,
+      skippedCount: 0,
+      interrupted: false,
       errorCount: 0,
     });
     mockSynthesize.mockReset();

@@ -23,8 +23,26 @@ Each deploy / destroy run appends one **JSONL** line per lifecycle event:
 | --- | --- |
 | `RUN_STARTED` / `RUN_FINISHED` | Once per deploy / destroy / rollback run (carries command, region, cdkd version, terminal result, per-op counts). The `command` field is `deploy`, `destroy`, or `rollback` (issue #1183). |
 | `RESOURCE_STARTED` / `RESOURCE_SUCCEEDED` / `RESOURCE_FAILED` | Per per-resource CREATE / UPDATE / DELETE (carries logicalId, resourceType, `provisionedBy`, physicalId on success, duration, error metadata on failure). |
-| `RESOURCE_RETAINED` | Destroy-side skip for a `DeletionPolicy: Retain` resource. |
+| `RESOURCE_RETAINED` | Destroy-side skip for a `DeletionPolicy: Retain` resource — the AWS resource is kept **on purpose** and its state record is dropped. |
+| `RESOURCE_SKIPPED` | Destroy-side skip where cdkd could **not address** the resource, so it may still exist (issue #1752). Two producers: a malformed composite physicalId in state (no AWS call issued at all), and a nested stack whose own destroy skipped or was interrupted (the child's other resources *were* deleted first) — so the invariant is "this row was not destroyed", not "nothing happened". The opposite of `RESOURCE_RETAINED` in both halves: keeping the AWS resource is not intended, and the state record is **kept** so the orphan stays traceable. Carries no `error` (nothing failed); the cause is in `reason`. |
 | `ROLLBACK_STARTED` / `ROLLBACK_RESOURCE_SUCCEEDED` / `ROLLBACK_RESOURCE_FAILED` / `ROLLBACK_FINISHED` | Rollback phase — emitted both by the deploy-failure automatic rollback AND by a standalone `cdkd rollback` run (issue #1183), which records them under its own `runId` (with `command: rollback` in `index.json`). |
+
+A destroy `RUN_FINISHED` additionally carries `counts.skipped` when non-zero,
+and records `result: 'FAILED'` for a skip-only run — the stack was not
+destroyed, so `--purge-events` correctly leaves the history in place. `cdkd
+events` renders it as `⚠N` after the `+created/~updated/-deleted` triple:
+
+```text
+2026-08-13T05:15:35Z  RUN_FINISHED  destroy  us-east-1  FAILED  +0/~0/-1  ⚠1
+2026-08-13T05:15:35Z  RESOURCE_SKIPPED  MyTable (AWS::Glue::Table)  DELETE
+      malformed physicalId in state — no delete issued
+```
+
+`RESOURCE_SKIPPED` carries a **`reason`** — the same one-line cause shown on the
+destroy status line — rendered on its own line beneath the event. The events
+store is the durable post-mortem, so a skip recorded without a cause would be
+close to useless there. Like every other event field this is metadata only:
+provider-authored prose about the *identifier*, never resource properties.
 
 Failure events carry an `error` object: `{ name, message, awsErrorCode?,
 requestId? }`. The AWS error code + request id are extracted from the
