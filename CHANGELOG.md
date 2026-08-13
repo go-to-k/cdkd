@@ -1,3 +1,10 @@
+## [0.283.8](https://github.com/go-to-k/cdkd/compare/v0.283.7...v0.283.8) (2026-08-13)
+
+
+### Bug Fixes
+
+* **deploy:** consume the skipped delete outcome the five deploy-side call sites discarded ([#1863](https://github.com/go-to-k/cdkd/issues/1863)) ([7ab8419](https://github.com/go-to-k/cdkd/commit/7ab8419d557d278fe4f263a418eaa79a67365039))
+
 ## [0.283.7](https://github.com/go-to-k/cdkd/compare/v0.283.6...v0.283.7) (2026-08-13)
 
 
