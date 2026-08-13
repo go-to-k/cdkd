@@ -16,7 +16,10 @@ new SgCircularDependencyStack(app, 'CdkdSgCircularExample', {
 
 new SgIngressExportStack(app, 'CdkdSgIngressExportExample', {
   description:
-    'Export-arm companion for issue #1761 - the smallest stack that reaches an AWS::EC2::SecurityGroupIngress row in a `cdkd export` import plan (bare L1 VPC, no subnets / IGW / routes, plus the same SG-to-SG circular ingress pair). Proves cdkd records the sgr- rule id and that `cdkd export --dry-run` resolves the CloudFormation identifier from it. Also carries the issue #1791 healing arm - verify.sh strips attributes.Id off this stack state to reproduce a pre-#1761 write, then asserts the export path recovers the real sgr- id from AWS.',
+    // Keep under 512 CHARACTERS: aws-cdk-lib guards on `description.length > 512`
+    // while its error text claims "must be <= 1024 bytes", so a 537-char string
+    // fails synth with a limit the message misstates (measured 2026-08-13).
+    'Export-arm companion for issue #1761 - the smallest stack reaching an AWS::EC2::SecurityGroupIngress row in a `cdkd export` import plan (bare L1 VPC, no subnets / IGW / routes, plus the SG-to-SG circular ingress pair). Proves cdkd records the sgr- rule id and that `cdkd export --dry-run` resolves the identifier from it. Also carries the issue #1791 healing arm: verify.sh strips attributes.Id to reproduce a pre-#1761 write, then asserts export recovers the real sgr- id from AWS.',
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION,
