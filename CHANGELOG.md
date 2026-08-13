@@ -1,3 +1,10 @@
+## [0.281.18](https://github.com/go-to-k/cdkd/compare/v0.281.17...v0.281.18) (2026-08-13)
+
+
+### Bug Fixes
+
+* **deployment:** cache only the account, and derive every URL suffix from the region ([#1757](https://github.com/go-to-k/cdkd/issues/1757)) ([68ebdff](https://github.com/go-to-k/cdkd/commit/68ebdffc77e708e0a5c9956e8a1d7311f211036c))
+
 ## [0.281.17](https://github.com/go-to-k/cdkd/compare/v0.281.16...v0.281.17) (2026-08-13)
 
 
