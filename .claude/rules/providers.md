@@ -1136,7 +1136,20 @@ a reason carrying `does not exist` / `Rate exceeded` / `because it is in use`
 would burn the whole backoff schedule before a certain failure — log it
 instead, and interpolate nothing but the TEMPLATE logical id: the state-borne
 physical id is the worst candidate, since the only skip family a REPLACE path
-meets today is literally "malformed physicalId in state"), and point the
+meets today is literally "malformed physicalId in state"), and then
+`markNonRetryable` the error, because the message discipline alone cannot close
+the hole — the match is a SUBSTRING, so an ordinary composite logical id like
+`MyDependencyViolationSub` still carries a pattern (measured) and a message
+naming nothing is not diagnosable. The marker (a non-enumerable `Symbol.for`
+key in `retryable-errors.ts`, walked down the `.cause` chain) is consulted by
+`isRetryableTransientError` BEFORE any name or message heuristic, so a
+cdkd-authored refusal is terminal by DECLARATION for every caller classifying
+through it — today all three, via `withRetry`'s default. It does NOT reach
+`isNameCollisionError` (`AlreadyExists`) / `isNameCooldownError`
+(`QueueDeletedRecently`), which take only a message and whose spellings both
+match a bare logical id; neither is wired to an `update()` caller today, but
+`rollback-executor.ts` wires `isRecreateRetryableError` onto its CREATE arms,
+so a caller change would arm them. Also point the
 remediation at the STATE record as well as at AWS, since neither skip family
 shipping today (the state-borne composite-id arms, `NestedStackProvider`'s
 propagation) is repaired by deleting the AWS resource alone. All six sites are

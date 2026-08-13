@@ -65,6 +65,7 @@ import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-pr
 import { SNSSubscriptionProvider } from '../../../src/provisioning/providers/sns-subscription-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import {
+  isMarkedNonRetryable,
   isRetryableTransientError,
   isThrottlingError,
 } from '../../../src/deployment/retryable-errors.js';
@@ -343,6 +344,36 @@ describe('SNS subscription delete-then-create REPLACE aborts on a skipped delete
     expect(isRetryableTransientError(error, message)).toBe(false);
     // ...and the cause is still reported, on the log line.
     expect(warnings().some((m) => m.includes(reason))).toBe(true);
+  });
+
+  /**
+   * The message discipline narrows the substring surface; the MARKER closes
+   * it. `MyDependencyViolationSub` is an ordinary composite CDK logical id and
+   * carries `DependencyViolation`, a real entry in the retryable table — and
+   * the logical id is the one value the message deliberately keeps, so without
+   * `markNonRetryable` this exact abort classifies as transient.
+   */
+  it.each([
+    ['MyDependencyViolationSub', 'a composite logical id containing a pattern'],
+    ['DependencyViolation', 'a logical id that IS a pattern'],
+  ])('%s (%s) still classifies non-retryable', async (hostileLogicalId) => {
+    const provider = new SNSSubscriptionProvider();
+    vi.spyOn(provider, 'create').mockResolvedValue({ physicalId: NEW_ARN, attributes: {} });
+    vi.spyOn(provider, 'delete').mockResolvedValue({ outcome: 'skipped', reason: SKIP_REASON });
+
+    const error = await provider
+      .update(hostileLogicalId, OLD_ARN, 'AWS::SNS::Subscription', PROPS, PROPS)
+      .then(
+        () => undefined,
+        (err: unknown) => err
+      );
+
+    expect(error).toBeInstanceOf(ProvisioningError);
+    const message = (error as Error).message;
+    // The pattern IS in the message — the marker is what makes it terminal.
+    expect(message).toContain(hostileLogicalId);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(isRetryableTransientError(error, message)).toBe(false);
   });
 
   /**

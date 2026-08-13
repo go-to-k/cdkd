@@ -81,9 +81,9 @@ function resourceState(properties: Record<string, unknown>): ResourceState {
 }
 
 /** An in-place UPDATE op — same physicalId on both sides, so it classifies `revert`. */
-function updateOp(): CompletedOperation {
+function updateOp(logicalId = 'MySub'): CompletedOperation {
   return {
-    logicalId: 'MySub',
+    logicalId,
     changeType: 'UPDATE',
     resourceType: 'AWS::SNS::Subscription',
     physicalId: ARN,
@@ -153,6 +153,38 @@ describe("the SNS replacement abort surfaces ONCE through the rollback executor'
       expect(stateResources['MySub']?.properties).toEqual(NEW_PROPS);
     }
   );
+
+  /**
+   * The logical id is the one value the abort message deliberately keeps, and
+   * `MyDependencyViolationSub` — an ordinary composite CDK name — carries a
+   * real retryable pattern as a SUBSTRING. This is the end-to-end proof that
+   * `markNonRetryable` (not the message wording) is what makes the abort
+   * terminal: the pattern is present in the message and the real
+   * `updateWithRollbackRetry` still attempts exactly once.
+   */
+  it('a logical id containing a retryable pattern is still not retried', async () => {
+    const provider = new SNSSubscriptionProvider();
+    const updateSpy = vi.spyOn(provider, 'update');
+    vi.spyOn(provider, 'delete').mockResolvedValue({ outcome: 'skipped', reason: SKIP_REASON });
+
+    const logicalId = 'MyDependencyViolationSub';
+    const stateResources: Record<string, ResourceState> = {
+      [logicalId]: resourceState(NEW_PROPS),
+    };
+
+    const result = await replayRollback(
+      [updateOp(logicalId)],
+      stateResources,
+      'MyStack',
+      contextFor(provider)
+    );
+
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(result.failures).toBe(1);
+    const rollbackWarnings = rollbackLogger.warn.mock.calls.map((call) => String(call[0]));
+    // The pattern really is in the surfaced message — the marker is the fence.
+    expect(rollbackWarnings.some((m) => m.includes('DependencyViolation'))).toBe(true);
+  });
 
   it('INVERTED CONTROL — a successful delete lets the same revert complete', async () => {
     const provider = new SNSSubscriptionProvider();

@@ -9,6 +9,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
@@ -275,10 +276,26 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     // the `ProvisioningError`'s structured field. The `logicalId` stays in the
     // message because it is the only thing that identifies the resource in
     // `formatError`'s `name: message` output and is what the user greps the
-    // warn line by; it is template-borne and alphanumeric per CFn's own
-    // constraint. Accepted residual: a resource named EXACTLY after a
-    // single-token retryable pattern (`DependencyViolation`) still matches,
-    // costing one backoff schedule before the same certain failure.
+    // warn line by.
+    //
+    // Keeping those values out NARROWS the substring surface but cannot close
+    // it — the match is a SUBSTRING, not an equality, so an ordinary composite
+    // logical id like `MyDependencyViolationSub` carries a retryable pattern
+    // (measured), and a message with no identifiers at all is not diagnosable.
+    // So the refusal is `markNonRetryable`-marked instead: the classifier
+    // consults the marker BEFORE any wording, which makes the abort terminal
+    // by declaration for every caller that classifies via
+    // `isRetryableTransientError` — today all three (`withRetry`'s default).
+    //
+    // Known bound, deliberately not closed here: `isNameCollisionError`
+    // (`AlreadyExists`) and `isNameCooldownError` (`QueueDeletedRecently`) are
+    // MESSAGE-ONLY classifiers, so they cannot consult the marker, and both of
+    // those spellings match a bare logical id. Neither is reachable from an
+    // `update()` caller today — all three use the default classifier — but
+    // `rollback-executor.ts` already wires `isRecreateRetryableError` onto its
+    // CREATE arms, so a future caller change would arm it. Closing it means
+    // widening those signatures to take the error object, which touches call
+    // sites owned elsewhere.
     //
     // Latent today: the two pending-confirmation arms in `delete` are
     // deliberate CFn-parity delete-SUCCESS (see `logPendingConfirmationSkip`),
@@ -288,15 +305,17 @@ export class SNSSubscriptionProvider implements ResourceProvider {
         `Cannot replace SNS subscription ${logicalId}: the old subscription ${physicalId} was not deleted — ` +
           `${deleteResult.reason}`
       );
-      throw new ProvisioningError(
-        `Cannot replace SNS subscription ${logicalId}: cdkd could not delete the old subscription, and ` +
-          `creating the replacement would leave both subscribed to the topic and deliver every message ` +
-          `twice. See the warning naming ${logicalId} for the recorded physical id and the cause. ` +
-          `Repair the state record for ${logicalId}, or remove the old subscription in AWS if it is ` +
-          `still live, then re-run.`,
-        resourceType,
-        logicalId,
-        physicalId
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Cannot replace SNS subscription ${logicalId}: cdkd could not delete the old subscription, and ` +
+            `creating the replacement would leave both subscribed to the topic and deliver every message ` +
+            `twice. See the warning naming ${logicalId} for the recorded physical id and the cause. ` +
+            `Repair the state record for ${logicalId}, or remove the old subscription in AWS if it is ` +
+            `still live, then re-run.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
       );
     }
 

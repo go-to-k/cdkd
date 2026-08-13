@@ -1657,9 +1657,25 @@ Two mechanical details any such abort inherits:
   message but the TEMPLATE logical id. The state-borne physical id is the worst
   candidate of all — the only skip family a REPLACE path meets today is
   literally "malformed physicalId in state", and `cdkd import --resource
-  <id>=<anything>` puts an arbitrary string there. Known residual, accepted:
-  a logical id that IS a single-token pattern (`DependencyViolation`) still
-  matches, which costs one backoff schedule before the same certain failure.
+  <id>=<anything>` puts an arbitrary string there.
+- **...and then `markNonRetryable` the error, because keeping values out of the
+  message cannot close the hole.** The match is a SUBSTRING, not an equality, so
+  an ordinary composite logical id (`MyDependencyViolationSub`) still carries a
+  pattern — measured — and a message that names nothing is not diagnosable.
+  `markNonRetryable(new ProvisioningError(...))` (from
+  `src/deployment/retryable-errors.ts`) sets a non-enumerable `Symbol.for`
+  marker that `isRetryableTransientError` consults BEFORE any name or message
+  heuristic, so the refusal is terminal by DECLARATION and no wording can
+  overturn it. Reach for it only where the error means "this cannot succeed on
+  a retry" as a matter of cdkd's own logic — never for a relayed AWS failure,
+  whose retryability is the classifiers' business. Keep the message discipline
+  above as well: the marker covers callers that classify through
+  `isRetryableTransientError` (today every `update()` caller, via `withRetry`'s
+  default), while `isNameCollisionError` (`AlreadyExists`) and
+  `isNameCooldownError` (`QueueDeletedRecently`) take only a message and so
+  cannot consult it — both spellings match a bare logical id, and
+  `rollback-executor.ts` already wires `isRecreateRetryableError` onto its
+  CREATE arms, so a caller change would arm them.
 - **Point the remediation at the STATE record, not only at AWS.** Both skip
   families shipping today — the state-borne composite-id arms and
   `NestedStackProvider`'s propagation — describe a resource whose repair
