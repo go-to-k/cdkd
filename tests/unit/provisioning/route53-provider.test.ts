@@ -1346,7 +1346,10 @@ describe('Route53Provider', () => {
 
       // Without the visibility narrowing this is TWO matches and the
       // ambiguity guard declines the row.
-      expect(result?.physicalId).toBe('Z2PRIVATE');
+      expect(result).toEqual({
+        physicalId: 'Z2PRIVATE',
+        attributes: { Id: 'Z2PRIVATE', NameServers: ['ns-1.example.com'] },
+      });
     });
 
     it('picks the PUBLIC zone of a split-horizon pair when the template declares no VPCs', async () => {
@@ -1357,12 +1360,16 @@ describe('Route53Provider', () => {
         ],
         IsTruncated: false,
       });
+      mockSend.mockResolvedValueOnce({ DelegationSet: { NameServers: ['ns-1.example.com'] } });
 
       const result = await provider.import(makeInput({ properties: { Name: 'example.com' } }));
 
       // Note the private zone is listed FIRST: a "take the first match" fix
       // would return it, so this pins the filter rather than the ordering.
-      expect(result?.physicalId).toBe('Z1PUBLIC');
+      expect(result).toEqual({
+        physicalId: 'Z1PUBLIC',
+        attributes: { Id: 'Z1PUBLIC', NameServers: ['ns-1.example.com'] },
+      });
     });
 
     // The two ways of failing are DISTINCT and must stay so: a proven absence
@@ -1423,10 +1430,14 @@ describe('Route53Provider', () => {
         HostedZones: [{ Id: '/hostedzone/ZNOCONFIG', Name: 'example.com.' }],
         IsTruncated: false,
       });
+      mockSend.mockResolvedValueOnce({ DelegationSet: { NameServers: ['ns-1.example.com'] } });
 
       const result = await provider.import(makeInput({ properties: { Name: 'example.com' } }));
 
-      expect(result?.physicalId).toBe('ZNOCONFIG');
+      expect(result).toEqual({
+        physicalId: 'ZNOCONFIG',
+        attributes: { Id: 'ZNOCONFIG', NameServers: ['ns-1.example.com'] },
+      });
     });
 
     it('REFUSES when every VPCs element is intrinsic-only (conditionally absent)', async () => {
@@ -1473,6 +1484,7 @@ describe('Route53Provider', () => {
         ],
         IsTruncated: false,
       });
+      mockSend.mockResolvedValueOnce({ DelegationSet: { NameServers: ['ns-1.example.com'] } });
 
       // The ELEMENT is concrete even though the id inside it is not, so the
       // template does attach a VPC: private is decidable here.
@@ -1482,7 +1494,10 @@ describe('Route53Provider', () => {
         })
       );
 
-      expect(result?.physicalId).toBe('Z2PRIVATE');
+      expect(result).toEqual({
+        physicalId: 'Z2PRIVATE',
+        attributes: { Id: 'Z2PRIVATE', NameServers: ['ns-1.example.com'] },
+      });
     });
 
     it('does NOT treat a truncated page of other-side zones as a proven absence', async () => {
@@ -1603,7 +1618,10 @@ describe('Route53Provider', () => {
         makeInput({ knownPhysicalId: 'ZOVERRIDE', properties: { Name: 'example.com' } })
       );
 
-      expect(result?.physicalId).toBe('ZOVERRIDE');
+      expect(result).toEqual({
+        physicalId: 'ZOVERRIDE',
+        attributes: { Id: 'ZOVERRIDE', NameServers: ['ns-1.example.com'] },
+      });
       expect(mockSend).toHaveBeenCalledTimes(1);
       expect(mockSend.mock.calls[0][0].constructor.name).toBe('GetHostedZoneCommand');
     });

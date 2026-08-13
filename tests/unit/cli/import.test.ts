@@ -1699,6 +1699,101 @@ describe('cdkd import', () => {
       });
     });
 
+    // The two arms below pin the EMPTINESS GATE the carry-over rests on
+    // (`row.attributes && Object.keys(row.attributes).length > 0`). Both
+    // existing arms above hand back a fully-empty `{}`, so they are
+    // structurally blind to a PARTIAL map — which is exactly the shape a
+    // provider produces when its attribute read degrades (issue #1875:
+    // `Route53Provider`'s hosted-zone import returns `{}` rather than a
+    // partial `{ Id }` BECAUSE of this gate).
+    it('a DEGRADED import reporting an EMPTY map preserves the stored attributes', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({
+          MyBucket: {
+            physicalId: 'bucket-name',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {},
+            // A prior successful import / deploy read these.
+            attributes: { Id: 'bucket-name', NameServers: ['ns-1.example.com'] },
+            dependencies: [],
+          },
+        }),
+        etag: '"e"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      // The shape a best-effort attribute read degrades to when the follow-up
+      // AWS call fails.
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'bucket-name', attributes: {} })),
+      });
+
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--resource',
+        'MyBucket=bucket-name',
+        '--force',
+        '--yes',
+      ]);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { attributes: Record<string, unknown> }> },
+      ];
+      expect(state.resources['MyBucket']!.attributes).toEqual({
+        Id: 'bucket-name',
+        NameServers: ['ns-1.example.com'],
+      });
+    });
+
+    it('a PARTIAL map is non-empty, so it REPLACES the stored attributes wholesale', async () => {
+      // Not a bug in the gate — the gate cannot distinguish "the provider
+      // read everything and this type has one attribute" from "the provider
+      // kept what it could". It is the reason a degrade arm must report `{}`:
+      // a partial map silently DROPS every key it omits.
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({
+          MyBucket: {
+            physicalId: 'bucket-name',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {},
+            attributes: { Id: 'bucket-name', NameServers: ['ns-1.example.com'] },
+            dependencies: [],
+          },
+        }),
+        etag: '"e"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({
+          physicalId: 'bucket-name',
+          attributes: { Id: 'bucket-name' },
+        })),
+      });
+
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--resource',
+        'MyBucket=bucket-name',
+        '--force',
+        '--yes',
+      ]);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { attributes: Record<string, unknown> }> },
+      ];
+      expect(state.resources['MyBucket']!.attributes).toEqual({ Id: 'bucket-name' });
+      expect(state.resources['MyBucket']!.attributes['NameServers']).toBeUndefined();
+    });
+
     it('re-importing at a DIFFERENT physical id does NOT carry stale attributes over', async () => {
       mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
       mockGetState.mockResolvedValueOnce({

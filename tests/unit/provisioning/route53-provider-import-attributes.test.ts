@@ -16,7 +16,20 @@
  * The end-to-end block at the bottom drives that ACTUAL symptom rather than
  * only the provider's return value: an imported record's own attributes are
  * fed to the real resolver, with the pre-fix `{}` shape kept beside it as a
- * negative control so the test cannot pass for the wrong reason.
+ * negative control.
+ *
+ * **Which arm carries which guarantee**, because the two are not
+ * interchangeable and reading the e2e block as a superset overstates it:
+ *
+ * - The e2e arms cover the ABSENCE of `NameServers` — the `Fn::Join` symptom.
+ *   They are blind to the comma-STRING shape by construction, because
+ *   `resolveGetAtt`'s #1868 legacy normalization converts a comma string back
+ *   to a list at the read boundary, so both e2e arms stay GREEN under a
+ *   `.join(',')` mutation (measured).
+ * - The unit `toEqual`s are the ONLY thing that pins the LIST shape, and
+ *   therefore the only thing standing between an imported zone and a
+ *   deployed one recording divergent state. Do not weaken them into
+ *   `physicalId`-only assertions.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
@@ -139,6 +152,26 @@ describe('Route53Provider hosted-zone import attributes (issue #1875)', () => {
 
       await expect(provider.import(makeInput({ knownPhysicalId: 'ZGONE' }))).resolves.toBeNull();
     });
+
+    it('STRIPS the /hostedzone/ prefix from a prefixed override before recording Id', async () => {
+      // The prefixed form is reachable: the SDK's idNormalizerMiddleware
+      // removes it on the wire, so `--resource MyZone=/hostedzone/Z123`
+      // verifies fine. Recording it verbatim would persist an `Id` a deploy
+      // never produces, breaking the parity this method promises.
+      mockSend.mockResolvedValueOnce({
+        HostedZone: { Id: '/hostedzone/ZPREFIXED' },
+        DelegationSet: { NameServers: NS },
+      });
+
+      const result = await provider.import(
+        makeInput({ knownPhysicalId: '/hostedzone/ZPREFIXED' })
+      );
+
+      expect(result?.attributes?.['Id']).toBe('ZPREFIXED');
+      // physicalId is deliberately recorded as SUPPLIED — normalizing it is a
+      // separate decision about resource identity, not about this attribute.
+      expect(result?.physicalId).toBe('/hostedzone/ZPREFIXED');
+    });
   });
 
   // ─── the name-lookup branch ────────────────────────────────────────
@@ -171,7 +204,7 @@ describe('Route53Provider hosted-zone import attributes (issue #1875)', () => {
       expect(result?.attributes).toEqual({ Id: 'ZAUTOPRIV', NameServers: [] });
     });
 
-    it('ADOPTS the zone anyway when the extra GetHostedZone fails, keeping what it can', async () => {
+    it('ADOPTS the zone anyway when the extra GetHostedZone fails, reporting an EMPTY map', async () => {
       // An import must not hard-fail because one optional attribute could not
       // be read: `import.ts` only aborts when ZERO resources import, so under
       // `--migrate-from-cloudformation` a throw here would cost the row at the
@@ -182,9 +215,44 @@ describe('Route53Provider hosted-zone import attributes (issue #1875)', () => {
       const result = await provider.import(makeInput({ properties: { Name: 'example.com' } }));
 
       expect(result?.physicalId).toBe('ZDEGRADED');
-      // `Id` needs no AWS call, so it survives; only `NameServers` is lost.
-      expect(result?.attributes).toEqual({ Id: 'ZDEGRADED' });
+      // EMPTY, not a partial `{ Id }`. `import.ts`'s attribute carry-over is
+      // gated on the returned map being NON-empty, so a partial map would
+      // OVERWRITE a previously-recorded good `NameServers`. The `import.ts`
+      // block at the bottom of this file drives that end to end.
+      expect(result?.attributes).toEqual({});
+      expect(Object.keys(result?.attributes ?? {})).toHaveLength(0);
       expect(childLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('could not read its NameServers')
+      );
+    });
+
+    it('names a remedy that WORKS — re-import, not a plain deploy', async () => {
+      // `deploy-engine.ts` `continue`s on NO_CHANGE, so an unchanged zone
+      // never reaches update() and its attributes are never rewritten.
+      // Pointing the operator at `cdkd deploy` would be a silent no-op.
+      mockSend.mockResolvedValueOnce(listPage('ZREMEDY'));
+      mockSend.mockRejectedValueOnce(new Error('AccessDenied: route53:GetHostedZone'));
+
+      await provider.import(makeInput({ properties: { Name: 'example.com' } }));
+
+      const warning = childLogger.warn.mock.calls.at(-1)?.[0] as string;
+      expect(warning).toContain('cdkd import --resource Zone=ZREMEDY --force');
+      expect(warning).toContain('does NOT heal the record');
+    });
+
+    it('DECLINES the row when the zone vanished between the lookup and the read', async () => {
+      // Same condition the --resource branch answers with null /
+      // skipped-not-found. Adopting a zone AWS demonstrably no longer has is
+      // worse than declining it, and the two branches must not disagree.
+      const gone = new Error('no such hosted zone');
+      gone.name = 'NoSuchHostedZone';
+      mockSend.mockResolvedValueOnce(listPage('ZRACED'));
+      mockSend.mockRejectedValueOnce(gone);
+
+      const result = await provider.import(makeInput({ properties: { Name: 'example.com' } }));
+
+      expect(result).toBeNull();
+      expect(childLogger.warn).not.toHaveBeenCalledWith(
         expect.stringContaining('could not read its NameServers')
       );
     });
@@ -208,23 +276,43 @@ describe('Route53Provider hosted-zone import attributes (issue #1875)', () => {
 
   // ─── parity with the deploy-created zone ───────────────────────────
 
-  it('an IMPORTED zone and a DEPLOYED zone record the identical attribute set', async () => {
-    mockSend.mockResolvedValueOnce({
-      HostedZone: { Id: '/hostedzone/ZPARITY' },
-      DelegationSet: { NameServers: NS },
-    });
-    const imported = await provider.import(makeInput({ knownPhysicalId: 'ZPARITY' }));
+  describe('parity with the deploy-created zone', () => {
+    async function createdAttributes() {
+      mockSend.mockResolvedValueOnce({
+        HostedZone: { Id: '/hostedzone/ZPARITY' },
+        DelegationSet: { NameServers: NS },
+      });
+      const created = await provider.create('Zone', 'AWS::Route53::HostedZone', {
+        Name: 'example.com',
+      });
+      return created.attributes;
+    }
 
-    vi.clearAllMocks();
-    mockSend.mockResolvedValueOnce({
-      HostedZone: { Id: '/hostedzone/ZPARITY' },
-      DelegationSet: { NameServers: NS },
-    });
-    const created = await provider.create('Zone', 'AWS::Route53::HostedZone', {
-      Name: 'example.com',
+    // BOTH override spellings, because only the prefixed one can diverge —
+    // asserting the bare form alone would have passed with the Id recorded
+    // verbatim.
+    it.each([
+      ['a BARE override', 'ZPARITY'],
+      ['a /hostedzone/-PREFIXED override', '/hostedzone/ZPARITY'],
+    ])('an IMPORTED zone via %s records the identical attribute set', async (_label, known) => {
+      mockSend.mockResolvedValueOnce({
+        HostedZone: { Id: '/hostedzone/ZPARITY' },
+        DelegationSet: { NameServers: NS },
+      });
+      const imported = await provider.import(makeInput({ knownPhysicalId: known }));
+
+      vi.clearAllMocks();
+      expect(imported?.attributes).toEqual(await createdAttributes());
     });
 
-    expect(imported?.attributes).toEqual(created.attributes);
+    it('an AUTO-RESOLVED zone records the identical attribute set too', async () => {
+      mockSend.mockResolvedValueOnce(listPage('ZPARITY'));
+      mockSend.mockResolvedValueOnce({ DelegationSet: { NameServers: NS } });
+      const imported = await provider.import(makeInput({ properties: { Name: 'example.com' } }));
+
+      vi.clearAllMocks();
+      expect(imported?.attributes).toEqual(await createdAttributes());
+    });
   });
 
   // ─── the actual user symptom, end to end ───────────────────────────

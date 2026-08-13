@@ -2562,39 +2562,64 @@ export class Route53Provider implements ResourceProvider {
 
   /**
    * The attribute set for a hosted zone adopted through the NAME-lookup
-   * branch (issue #1875).
+   * branch (issue #1875). `null` means DECLINE the row.
    *
    * Unlike the `knownPhysicalId` branch — whose verification call already
    * carries the delegation set — this branch resolves the zone through
    * `ListHostedZonesByName`, which does NOT return one, so the attributes
    * cost one extra `GetHostedZone`.
    *
-   * NEVER throws, matching the convention the neighbouring adoption paths
-   * already use (`AppSyncProvider.childImportAttributes`, issue #1728, and
-   * `importRecordSet`'s canonicalization, which adopts VERBATIM rather than
-   * declining): an import must not hard-fail because one optional attribute
-   * could not be read. `import.ts` only aborts when ZERO resources import, so
-   * under `--migrate-from-cloudformation` a throw here would cost the row at
-   * exactly the moment the CloudFormation stack is being retired — the
-   * resource would end up in NEITHER CloudFormation nor cdkd state. Adopting
-   * the zone is worth more than its bookkeeping attribute.
+   * **A vanished zone DECLINES, it does not degrade.** `NoSuchHostedZone`
+   * between the list and this read is exactly the condition the
+   * `knownPhysicalId` branch answers with `null` / `skipped-not-found`, and
+   * adopting a zone that demonstrably no longer exists is worse than
+   * declining it — the next deploy would compare against a record for
+   * something AWS does not have. The two branches must agree; everything
+   * else degrades.
    *
-   * It KEEPS WHAT IT CAN on failure — `Id` comes out of the resolved zone id
-   * and needs no AWS call — which is the same answer `childImportAttributes`
-   * gives for the account-independent half of its set, and is at worst the
-   * exact pre-#1875 behavior for the one key it could not read.
+   * **The degraded answer is the EMPTY map, and that is load-bearing rather
+   * than tidy.** `import.ts`'s attribute carry-over is gated on the returned
+   * map being NON-empty (`row.attributes && Object.keys(...).length > 0 ?
+   * row.attributes : undefined`, then `?? priorAttributes ?? {}`) — a gate
+   * that exists precisely because almost every provider spells
+   * `attributes: {}` explicitly. So a partial `{ Id }` is NON-empty, takes
+   * the row branch, and OVERWRITES a previously-recorded good map: a zone
+   * imported successfully once and re-imported while `route53:GetHostedZone`
+   * is denied would LOSE its stored `NameServers`, leaving state strictly
+   * worse than before this fix. `{}` falls through and preserves it. Do NOT
+   * "improve" this into keeping what it can — that is the one change that
+   * makes the failure path destructive.
+   *
+   * NEVER throws otherwise, matching the convention the neighbouring
+   * adoption paths already use (`AppSyncProvider.childImportAttributes`,
+   * issue #1728, and `importRecordSet`'s canonicalization, which adopts
+   * VERBATIM rather than declining): an import must not hard-fail because
+   * one optional attribute could not be read. `import.ts` only aborts when
+   * ZERO resources import, so under `--migrate-from-cloudformation` a throw
+   * here would cost the row at exactly the moment the CloudFormation stack
+   * is being retired — the resource would end up in NEITHER CloudFormation
+   * nor cdkd state.
    */
-  private async hostedZoneImportAttributes(zoneId: string): Promise<Record<string, unknown>> {
+  private async hostedZoneImportAttributes(
+    zoneId: string,
+    logicalId: string
+  ): Promise<Record<string, unknown> | null> {
     try {
       const response = await this.getClient().send(new GetHostedZoneCommand({ Id: zoneId }));
       return { Id: zoneId, NameServers: response.DelegationSet?.NameServers ?? [] };
     } catch (error) {
+      if (error instanceof Error && error.name === 'NoSuchHostedZone') return null;
       this.logger.warn(
         `Imported hosted zone ${zoneId} but could not read its NameServers: ` +
           `${error instanceof Error ? error.message : String(error)}. ` +
-          `Fn::GetAtt on NameServers will fail until the zone's next deploy heals the record.`
+          `The zone is adopted without them (any attributes already in state for this ` +
+          `zone are kept). Re-run ` +
+          `\`cdkd import --resource ${logicalId}=${zoneId} --force\` once the permission ` +
+          `is granted, or make a template change that forces an UPDATE — a plain ` +
+          `\`cdkd deploy\` does NOT heal the record, because an unchanged zone is ` +
+          `NO_CHANGE and never calls update().`
       );
-      return { Id: zoneId };
+      return {};
     }
   }
 
@@ -2639,6 +2664,15 @@ export class Route53Provider implements ResourceProvider {
    * do, so an imported zone and a deployed one resolve IDENTICALLY. A
    * divergence here would be a phantom-drift hazard as well as a resolution
    * one.
+   *
+   * **A plain `cdkd deploy` does NOT rewrite these attributes**, so do not
+   * offer one as the remedy when a read fails. `deploy-engine.ts` `continue`s
+   * on `NO_CHANGE`, so an unchanged zone never reaches `update()` and its
+   * `attributes` are never rewritten; `kickOffAutoRefreshObservedProperties`
+   * refreshes `observedProperties`, a different field. What DOES rewrite the
+   * record is re-running the import for that row
+   * (`cdkd import --resource <logicalId>=<zoneId> --force`, which re-enters
+   * this method) or a template change that forces a real UPDATE.
    */
   private async importHostedZone(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.knownPhysicalId) {
@@ -2653,7 +2687,17 @@ export class Route53Provider implements ResourceProvider {
         return {
           physicalId: input.knownPhysicalId,
           attributes: {
-            Id: input.knownPhysicalId,
+            // STRIPPED with the same `replace` `createHostedZone` uses. The
+            // override is accepted in either spelling — the SDK's
+            // `idNormalizerMiddleware` removes the prefix on the wire, so
+            // `--resource MyZone=/hostedzone/Z123` verifies fine — and
+            // recording it verbatim would persist `Id: '/hostedzone/Z123'`
+            // where a deploy records `Z123`, i.e. the "identical attribute
+            // set" this method promises would be false for that form.
+            // `physicalId` is deliberately left as SUPPLIED: normalizing it
+            // changes the recorded identity of already-adopted zones, which
+            // is a separate decision from the attribute's shape.
+            Id: input.knownPhysicalId.replace('/hostedzone/', ''),
             NameServers: response.DelegationSet?.NameServers ?? [],
           },
         };
@@ -2687,7 +2731,12 @@ export class Route53Provider implements ResourceProvider {
           },
         }
       );
-      return { physicalId: zoneId, attributes: await this.hostedZoneImportAttributes(zoneId) };
+      const attributes = await this.hostedZoneImportAttributes(zoneId, input.logicalId);
+      // `null` = the zone vanished between the lookup and the read. Decline
+      // the row, exactly as the `knownPhysicalId` branch does for the same
+      // condition, rather than adopting a zone AWS no longer has.
+      if (attributes === null) return null;
+      return { physicalId: zoneId, attributes };
     } catch (error) {
       // A SOUND negative is an ordinary not-found: `import.ts` reports
       // `skipped-not-found` and the next deploy CREATEs the zone, which is
