@@ -63,6 +63,16 @@ export const RULE_ANCHOR = 'Cost is not a tiebreaker for verification depth';
 export const GOVERNED_SKILLS = ['review-pr', 'pick-integ', 'run-integ', 'verify-pr'] as const;
 
 /**
+ * `CLAUDE.md` is pattern-scanned too, not merely checked for the anchor. It is
+ * half the motivating regression (it carried "is overkill ... the cost exceeds
+ * the catch ... skip the reviewers"), and the first cut fenced only its anchor
+ * — so restoring that exact sentence produced ZERO violations while
+ * `anchorPresent` stayed true. It is also auto-loaded into every session, which
+ * makes it the highest-leverage place for the wording to come back.
+ */
+export const GOVERNED_ROOT_DOCS = ['CLAUDE.md'] as const;
+
+/**
  * Constructions whose only use is to justify LESS verification. Each is an
  * argument, not a topic word — `cost` / `expensive` alone are deliberately NOT
  * here, because both appear in arguments FOR spending elsewhere in the tree.
@@ -107,6 +117,19 @@ export interface DepthRuleReport {
 
 const ALLOW_RE = /<!--\s*allow-cost-downscale:\s*(\S.*?)\s*-->/;
 
+/**
+ * A banned construction inside a PROHIBITION is the rule being stated, not
+ * broken: the rule's own text says "Do not narrow an integ selection to save a
+ * run", which matches `to save a run` verbatim. Scoped to the text BEFORE the
+ * match so a trailing "... but never do X" cannot launder a real downscale
+ * earlier in the same line.
+ */
+const PROHIBITION_RE = /\b(?:do not|don't|never|must not|rather than|instead of|no longer)\b/i;
+
+function isProhibition(text: string, matchIndex: number): boolean {
+  return PROHIBITION_RE.test(text.slice(0, matchIndex));
+}
+
 /** True when `lines[i]` (or the line above it) carries a REASONED allow marker. */
 function isAllowed(lines: string[], i: number): boolean {
   for (const candidate of [lines[i], i > 0 ? lines[i - 1] : undefined]) {
@@ -128,8 +151,15 @@ export function checkVerificationDepthRule(repoRoot: string): DepthRuleReport {
   let scannedLines = 0;
   let patternScannedLines = 0;
 
-  for (const skill of GOVERNED_SKILLS) {
-    const rel = join('.claude', 'skills', skill, 'SKILL.md');
+  const targets: Array<{ name: string; rel: string }> = [
+    ...GOVERNED_SKILLS.map((skill) => ({
+      name: skill,
+      rel: join('.claude', 'skills', skill, 'SKILL.md'),
+    })),
+    ...GOVERNED_ROOT_DOCS.map((doc) => ({ name: doc, rel: doc })),
+  ];
+
+  for (const { name: skill, rel } of targets) {
     let body: string;
     try {
       body = readFileSync(join(repoRoot, rel), 'utf8');
@@ -149,10 +179,12 @@ export function checkVerificationDepthRule(repoRoot: string): DepthRuleReport {
 
     lines.forEach((text, i) => {
       for (const { pattern, why } of DOWNSCALE_PATTERNS) {
-        if (pattern.test(text) && !isAllowed(lines, i)) {
-          violations.push({ file: rel, line: i + 1, text: text.trim(), why });
-          return;
-        }
+        const m = pattern.exec(text);
+        if (!m) continue;
+        if (isProhibition(text, m.index)) continue;
+        if (isAllowed(lines, i)) continue;
+        violations.push({ file: rel, line: i + 1, text: text.trim(), why });
+        return;
       }
     });
   }

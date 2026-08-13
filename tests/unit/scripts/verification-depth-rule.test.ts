@@ -4,9 +4,26 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   checkVerificationDepthRule,
+  DOWNSCALE_PATTERNS,
+  GOVERNED_ROOT_DOCS,
   GOVERNED_SKILLS,
   RULE_ANCHOR,
 } from '../../../scripts/check-verification-depth-rule.ts';
+
+/**
+ * A LITERAL list, deliberately not derived from `GOVERNED_SKILLS`. Comparing
+ * the report against the checker's own exported constant is self-referential:
+ * dropping a skill from that constant shrinks both sides and the suite stays
+ * green. Measured before this pin: removing `run-integ` left 705 pattern-scanned
+ * lines, still over the aggregate floor.
+ */
+const EXPECTED_TARGETS = ['review-pr', 'pick-integ', 'run-integ', 'verify-pr', 'CLAUDE.md'];
+
+// No per-target line floor: the report exposes only an aggregate, and the
+// LITERAL EXPECTED_TARGETS pin above is the real fence for a target silently
+// dropping out — removing one from GOVERNED_SKILLS fails that equality
+// regardless of line counts. An averaged floor would have looked like a fence
+// while measuring nothing.
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..');
 
@@ -30,22 +47,11 @@ describe('verification-depth rule checker', () => {
 
   // ─── coverage floors: prove the checker SEES its input ────────────────
 
-  it('PATTERN-scans every governed skill, not merely reads it', () => {
+  it('PATTERN-scans every governed target, pinned against a LITERAL list', () => {
     const report = checkVerificationDepthRule(REPO_ROOT);
-    expect(report.scannedSkills).toEqual([...GOVERNED_SKILLS]);
-    // The load-bearing assertion is on the PATTERN-scanned set, not the read
-    // set. The first cut counted a file as scanned and then skipped the
-    // matching for it, so `scannedSkills` reported all four while two were
-    // never inspected — floors on the read counters cannot see that.
-    expect(report.patternScannedSkills).toEqual([...GOVERNED_SKILLS]);
-  });
-
-  it('actually matches against the skill bodies (floor on the PATTERN-scanned lines)', () => {
-    const report = checkVerificationDepthRule(REPO_ROOT);
-    expect(report.patternScannedLines).toBeGreaterThan(700);
-    // Read and pattern-scanned must agree: any gap means some file was read
-    // and then skipped, which is exactly the vacuity this floor exists for.
-    expect(report.patternScannedLines).toBe(report.scannedLines);
+    // Literal, not `[...GOVERNED_SKILLS]` — see EXPECTED_TARGETS.
+    expect(report.patternScannedSkills).toEqual(EXPECTED_TARGETS);
+    expect([...GOVERNED_SKILLS, ...GOVERNED_ROOT_DOCS]).toEqual(EXPECTED_TARGETS);
   });
 
   // ─── real-code probes: prove the checker FAILS ────────────────────────
@@ -152,6 +158,64 @@ describe('verification-depth rule checker', () => {
       writeFileSync(p, `${body}\n<!-- allow-cost-downscale: n -->\nRunning all 3 is overkill.\n`);
     });
     expect(token.violations.length).toBeGreaterThan(0);
+  });
+
+  it('exercises EVERY downscale pattern, one per line', () => {
+    // The matcher returns on the FIRST hit, so stacking phrases on one line
+    // means a deleted pattern still passes. Measured before this test: 9 of 11
+    // patterns were never exercised by any probe.
+    const probes: Record<string, string> = {
+      'is overkill': 'Running all 3 is overkill.',
+      'cost exceeds the catch': 'Here the cost exceeds the catch.',
+      'skip the reviewers': 'For a small diff, skip the reviewers.',
+      'too expensive to': 'That fixture is too expensive to run.',
+      'not worth': 'A second pass is not worth the run.',
+      'run the cheapest': 'Just run the cheapest fixture.',
+      'to save a run': 'Trim the list to save a run.',
+      'too costly': 'Regenerating is too costly.',
+      'for little gain': 'Three reviewers is effort for little gain.',
+      'narrow is enough': 'For this change one narrow fixture is enough.',
+      'drains attention': 'A full 3-axis pass drains attention.',
+    };
+    // Every pattern must be reachable by at least one probe...
+    for (const [label, sentence] of Object.entries(probes)) {
+      const report = withRepoCopy((root) => {
+        const p = join(root, '.claude', 'skills', 'run-integ', 'SKILL.md');
+        writeFileSync(p, `${readFileSync(p, 'utf8')}\n\n${sentence}\n`);
+      });
+      expect(report.violations.length, `pattern not flagged: ${label}`).toBeGreaterThan(0);
+    }
+    // ...and the probe set must cover the whole list, so adding a pattern
+    // without a probe fails here rather than shipping unexercised.
+    expect(Object.keys(probes)).toHaveLength(DOWNSCALE_PATTERNS.length);
+  });
+
+  it('does NOT flag a banned construction inside a PROHIBITION', () => {
+    // The rule's own text says "Do not narrow an integ selection to save a
+    // run", which matches `to save a run` verbatim. Stating the rule is not
+    // breaking it.
+    const report = withRepoCopy((root) => {
+      const p = join(root, '.claude', 'skills', 'run-integ', 'SKILL.md');
+      writeFileSync(
+        p,
+        `${readFileSync(p, 'utf8')}\n\nDo not narrow the plan to save a run; never skip the reviewers.\n`
+      );
+    });
+    expect(report.violations).toEqual([]);
+  });
+
+  it('flags banned wording in CLAUDE.md, not just a missing anchor', () => {
+    // CLAUDE.md carried half the motivating wording and is auto-loaded into
+    // every session. Fencing only its anchor left the higher-leverage half
+    // open: this exact sentence used to produce zero violations.
+    const report = withRepoCopy((root) => {
+      const p = join(root, 'CLAUDE.md');
+      writeFileSync(
+        p,
+        `${readFileSync(p, 'utf8')}\n\nA 3-axis review is overkill on a small change.\n`
+      );
+    });
+    expect(report.violations.some((v) => v.file === 'CLAUDE.md')).toBe(true);
   });
 
   it('does NOT flag an argument FOR spending', () => {
