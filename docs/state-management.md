@@ -425,20 +425,42 @@ stacks has been supported since #459.
 ### `version: 7` adds `provisionedBy` (v7+ writers)
 
 Schema `version: 7` adds an optional `provisionedBy` field to each
-`ResourceState`: `'sdk'` (cdkd's preferred fast path — direct synchronous AWS
-SDK calls) or `'cc-api'` (the Cloud Control API fallback), i.e. which
-provisioning layer owns the resource
-([#614](https://github.com/go-to-k/cdkd/issues/614)). Pre-#614 every resource
-was implicitly SDK-managed, so a v7 reader treats the absent field on a
-v6-and-earlier record as "legacy SDK" — which is what those records mean.
-v7+ writers always emit the field explicitly so the routing decision is
-durable across deploys.
+`ResourceState` ([#614](https://github.com/go-to-k/cdkd/issues/614)): `'sdk'`
+(cdkd's preferred fast path — direct synchronous AWS SDK calls) or `'cc-api'`
+(the Cloud Control API fallback), i.e. which provisioning layer owns the
+resource. A Custom Resource is recorded `'sdk'` too, so the field is always
+populated on a v7+ write; it has no SDK-vs-Cloud-Control dichotomy of its own,
+so read the value there as "not Cloud Control" rather than as a literal claim
+about synchronous SDK calls.
+
+Pre-#614 every resource was implicitly SDK-managed, so a v7 reader treats the
+absent field on a
+v6-and-earlier record as the legacy SDK default. Precisely, an absent field
+means the record is not PINNED: routing re-decides from scratch, so such a
+resource can still be auto-routed to Cloud Control by the #614 silent-drop
+check — the same decision it got before v7 existed. Only a recorded
+`'cc-api'` pins. v7+ writers (`cdkd deploy` and `cdkd import` alike) emit the
+field explicitly so the decision is durable across deploys.
 
 The field is **sticky**: once a resource is `'cc-api'`, a later SDK-provider
 backfill does NOT migrate it back, because that would mean physical-ID churn
-(destroy + recreate) on every backfill release. `cdkd destroy` reads it to pick
-the delete path, `cdkd drift` to pick `readCurrentState`, and `cdkd state show`
-displays it (`ProvisionedBy: sdk | cc-api | (sdk, legacy default)`).
+(destroy + recreate) on every backfill release. **The stickiness has a narrow
+exemption**, `STICKY_CC_MIGRATION_EXEMPT` in
+[`src/provisioning/provider-registry.ts`](../src/provisioning/provider-registry.ts) —
+consult the constant rather than a list here, since its membership changes.
+A type is admitted only when its Cloud Control routing is **broken** (not merely
+slower) AND the SDK provider addresses the resource by the SAME physicalId the
+CC path stored, so the re-route costs no churn and the record flips to
+`'sdk'` transparently on its next write. Without the exemption, pinning such a
+record to `cc-api` would keep the bug alive for every pre-existing resource.
+`AWS::Scheduler::Schedule` ([#961](https://github.com/go-to-k/cdkd/issues/961) —
+a schedule in a custom `ScheduleGroup` is unaddressable via Cloud Control) is
+the member today. So a `provisionedBy: 'cc-api'` record is NOT proof the
+resource will keep being managed through Cloud Control.
+
+`cdkd destroy` reads the field to pick the delete path, `cdkd drift` to pick
+`readCurrentState`, and `cdkd state show` displays it
+(`ProvisionedBy: sdk | cc-api | (sdk, legacy default)`).
 
 **v6 → v7 upgrade is fully transparent** — a v6 state file read by a v7 binary
 parses with the field undefined, and the next write persists `version: 7`
@@ -449,9 +471,17 @@ integ test proves the round-trip against real AWS.
 ### `version: 8` adds `outputReads` (current writers)
 
 Schema `version: 8` adds an optional stack-level `outputReads` array — one
-`StateOutputReadEntry` per successful **same-account** `Fn::GetStackOutput`
-resolution during the consumer stack's deploy
-([#668](https://github.com/go-to-k/cdkd/issues/668)). It is the sibling of v4's
+`StateOutputReadEntry` per `Fn::GetStackOutput` resolution that was served from
+a **cdkd state record** during the consumer stack's deploy
+([#668](https://github.com/go-to-k/cdkd/issues/668)). Two resolutions are
+deliberately NOT recorded, so the array is a subset of the references a
+template carries rather than an inventory of them: a **cross-account**
+(`RoleArn`) read (deferred to a future bump alongside a `sourceAccountId`
+field), and one served by the **CloudFormation fallback**
+([#1697](https://github.com/go-to-k/cdkd/issues/1697) — the producer is not
+cdkd-managed, so cdkd never recreates it and there is no warning to attach the
+consumer to). Same-account cross-REGION reads ARE recorded (`sourceRegion`
+carries the producer's region). It is the sibling of v4's
 `imports`, with one deliberate difference: `outputReads` is **informational
 only**. There is no destroy-time refusal for `Fn::GetStackOutput`, because that
 intrinsic is a weak reference by design — the producer stays deletable
@@ -459,12 +489,10 @@ independently of its consumers. The entries are consumed by
 `findDownstreamConsumers` to name affected downstream stacks in the
 `--recreate-via-cc-api` / `--recreate-via-sdk-provider` warn block.
 
-The field is omitted from the JSON when the resolved set is empty, so the
-on-the-wire shape is byte-identical to v7 for stacks that use no
-`Fn::GetStackOutput`. Cross-account (`RoleArn`-based) reads are deliberately
-NOT recorded in v8 — an unambiguous match key would need a `sourceAccountId`
-field, deferred to a future bump. Same-account cross-region reads ARE recorded
-(`sourceRegion` carries the producer's region).
+The field is omitted from the JSON when the recorded set is empty, so the
+on-the-wire shape is byte-identical to v7 for a stack whose references were all
+of the two unrecorded kinds above — and for one that uses no
+`Fn::GetStackOutput` at all.
 
 **v7 → v8 upgrade is fully transparent** — `outputReads === undefined` on a
 pre-v8 record reads as "no `Fn::GetStackOutput` consumers known" and the
