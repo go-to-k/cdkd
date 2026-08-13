@@ -282,7 +282,9 @@ export class ExportStack extends cdk.Stack {
     // fixture — its three ARN-shaped siblings (the two AppSync children and the
     // S3 Tables table) are still unit-tested only. Deliberately not spelled as
     // type literals: the integ coverage-matrix generator scans this file for
-    // `AWS::Service::Type` strings and would count them as covered here.
+    // fully-qualified CloudFormation type names and would count any it finds as
+    // covered here — including a placeholder written to explain the rule, which
+    // is how the previous wording landed itself in `unknownTypesInIntegs`.
     const ingressSg = new ec2.CfnSecurityGroup(this, 'IngressSg', {
       groupDescription: `cdkd-export-test-${suffix} sgr- identifier probe`,
       vpcId: vpc.ref,

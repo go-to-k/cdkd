@@ -195,13 +195,41 @@ const SG_INGRESS_IP_PROTOCOL_PATH = 'AWS::EC2::SecurityGroupIngress IpProtocol';
  * Page ceiling for {@link EC2Provider.lookupIngressRuleId}'s
  * `DescribeSecurityGroupRules` walk (issue #1761).
  *
- * `DescribeSecurityGroupRules` returns up to 1000 rules per page, so 20 pages
- * covers 20,000 rules on a single security group — far beyond any real one
- * (AWS's default quota is 60 rules per SG, 1000 at the maximum quota increase).
- * The bound exists only so a pathological / looping `NextToken` cannot hang a
- * deploy; reaching it records nothing rather than answering from a partial view.
+ * The walk asks for {@link SG_RULE_PAGE_SIZE} rules per page, so 20 pages cover
+ * 20,000 rules on a single security group — far beyond any real one (AWS's
+ * default quota is 60 rules per SG, 1000 at the maximum quota increase). That
+ * arithmetic only holds because the request pins `MaxResults`; without it AWS
+ * applies its own default page size and the bound would mean an unknown number
+ * of rules. The bound exists only so a pathological / looping `NextToken` cannot
+ * hang a deploy; reaching it records nothing rather than answering from a
+ * partial view.
  */
 const MAX_SG_RULE_PAGES = 20;
+
+/**
+ * `MaxResults` for that walk. `DescribeSecurityGroupRules` accepts 5-1000; the
+ * ceiling is what makes {@link MAX_SG_RULE_PAGES}'s "20,000 rules" true and
+ * keeps the common case (a group with a handful of rules) to ONE round trip.
+ */
+const SG_RULE_PAGE_SIZE = 1000;
+
+/**
+ * The `sgr-…` security-group rule id, anchored.
+ *
+ * The twin of `SG_RULE_ID_PATTERN` in `src/cli/commands/export.ts`, restated
+ * rather than imported for the same reason that file restates
+ * `ROUTE_DESTINATION_KEYS` instead of importing it from here: neither module may
+ * pull the other's graph (the export command would drag in this provider and its
+ * SDK client).
+ *
+ * Anchoring is what discriminates. `startsWith('sgr-')` also accepts
+ * `sgr-0abc|tcp|443|443` — a composite wearing the identifier's prefix — which
+ * on the import path reaches AWS as a malformed id and raises
+ * `InvalidSecurityGroupRuleId.Malformed`, an error `isNotFoundError` does not
+ * match, so `verifyExplicit` would THROW and abort the whole `cdkd import` run
+ * instead of declining that one row.
+ */
+const SG_RULE_ID_PATTERN = /^sgr-[0-9a-f]+$/;
 
 /**
  * Resolve the `IpProtocol` an `AWS::EC2::SecurityGroupIngress` rule actually
@@ -3126,8 +3154,8 @@ export class EC2Provider implements ResourceProvider {
       // `DescribeSecurityGroupRules`. Adding an `await` between the Authorize
       // above and the return below re-creates the issue #1710 orphan class: a
       // throw there leaves the rule live on AWS while the failed CREATE
-      // journals no physicalId, so nothing ever revokes it. `singleRuleId`
-      // is pure and cannot throw.
+      // journals no physicalId, so nothing ever revokes it.
+      // `singleSecurityGroupRuleId` is pure and cannot throw.
       const ruleId = singleSecurityGroupRuleId(response.SecurityGroupRules);
 
       this.logger.debug(`Successfully created SecurityGroupIngress ${logicalId}: ${physicalId}`);
@@ -3233,6 +3261,7 @@ export class EC2Provider implements ResourceProvider {
         const resp: DescribeSecurityGroupRulesResult = await this.ec2Client.send(
           new DescribeSecurityGroupRulesCommand({
             Filters: [{ Name: 'group-id', Values: [groupId] }],
+            MaxResults: SG_RULE_PAGE_SIZE,
             ...(nextToken && { NextToken: nextToken }),
           })
         );
@@ -6134,7 +6163,13 @@ export class EC2Provider implements ResourceProvider {
           // tuple can share with several rules). The composite is still what
           // gets RECORDED — the revoke path needs the tuple — alongside the
           // `Id` attribute `cdkd export` resolves from (issue #1761).
-          if (!physicalId.startsWith('sgr-')) return null;
+          //
+          // ANCHORED, not `startsWith('sgr-')`: the prefix test also admits
+          // `sgr-0abc|tcp|443|443`, which AWS rejects with
+          // `InvalidSecurityGroupRuleId.Malformed` — an error `isNotFoundError`
+          // does NOT match, so the throw escapes `verifyExplicit` and aborts the
+          // whole `cdkd import` run rather than declining this one row.
+          if (!SG_RULE_ID_PATTERN.test(physicalId)) return null;
           const resp = await this.ec2Client.send(
             new DescribeSecurityGroupRulesCommand({ SecurityGroupRuleIds: [physicalId] })
           );
@@ -6368,6 +6403,40 @@ function singleSecurityGroupRuleId(rules: SecurityGroupRule[] | undefined): stri
 }
 
 /**
+ * A CFn `FromPort` / `ToPort` in the NUMBER form `DescribeSecurityGroupRules`
+ * reports, for {@link securityGroupRuleMatchesCfnIngress}'s compare.
+ *
+ * An identity compare against `properties['FromPort'] as number` was wrong for
+ * the same reason issue #1513 documents one property over: a YAML / JSON
+ * template may spell a port as the STRING `"443"`, and `buildIpPermission`
+ * passes it through to AWS unchanged, so such a rule deploys fine and would
+ * then never match its own AWS-side row.
+ *
+ * Absent, `null`, and blank (INCLUDING whitespace-only) are AWS's `-1`, "all
+ * ports". Everything that is not a number or a numeric string is `NaN`, which
+ * compares unequal to everything — so the lookup records nothing rather than
+ * matching some unrelated rule.
+ *
+ * A bare `Number(value)` was NOT enough for that last sentence, which an earlier
+ * cut of this function claimed anyway: `Number` maps `' '` and `[]` to `0`,
+ * `true` to `1`, and `['443']` to `443`. A whitespace-only port would then have
+ * matched an ICMP **type-0** rule — a different rule, silently recorded — which
+ * is the exact outcome the claim promised it could not produce.
+ */
+function cfnIngressPortValue(value: unknown): number {
+  if (value === undefined || value === null) return -1;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : Number.NaN;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '') return -1;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : Number.NaN;
+  }
+  // Booleans, arrays, objects: not a port in any spelling AWS or CFn accepts.
+  return Number.NaN;
+}
+
+/**
  * Does a `DescribeSecurityGroupRules` rule describe the same ingress rule the
  * given CFn `AWS::EC2::SecurityGroupIngress` properties ask for?
  *
@@ -6379,29 +6448,16 @@ function singleSecurityGroupRuleId(rules: SecurityGroupRule[] | undefined): stri
  * protocol, port range, and whichever ONE source key it declares — is what
  * makes the comparison decidable from a partial template.
  *
+ * The protocol goes through {@link sgProtocolKey} on BOTH sides, not a raw
+ * compare: AWS substitutes the canonical NAME for the four protocols that have
+ * one, so a template declaring `IpProtocol: 6` (or `'6'`) is read back as
+ * `'tcp'` and would otherwise match nothing (the issue #1643 fold, one call site
+ * further along).
+ *
  * Ports are compared with AWS's own `-1` ("all") spelling on both sides, since
  * an omitted `FromPort` / `ToPort` reads back as `-1`, and the template side is
  * NUMERICALLY coerced — see {@link cfnIngressPortValue}.
  */
-/**
- * A CFn `FromPort` / `ToPort` in the NUMBER form `DescribeSecurityGroupRules`
- * reports, for {@link securityGroupRuleMatchesCfnIngress}'s compare.
- *
- * An identity compare against `properties['FromPort'] as number` was wrong for
- * the same reason issue #1513 documents one property over: a YAML / JSON
- * template may spell a port as the STRING `"443"`, and `buildIpPermission`
- * passes it through to AWS unchanged, so such a rule deploys fine and would
- * then never match its own AWS-side row.
- *
- * Absent / null / empty is AWS's `-1` ("all ports"). Anything that is not a
- * number at all becomes `NaN`, which compares unequal to everything — the
- * lookup fails safe (records nothing) rather than matching an all-ports rule.
- */
-function cfnIngressPortValue(value: unknown): number {
-  if (value === undefined || value === null || value === '') return -1;
-  return Number(value);
-}
-
 function securityGroupRuleMatchesCfnIngress(
   rule: SecurityGroupRule,
   properties: Record<string, unknown>

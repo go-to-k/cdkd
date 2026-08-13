@@ -20,14 +20,18 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  * the stack hides this assertion.
  *
  * That was originally a hard blocker: the circular-ref stack's `ec2.Vpc` emits
- * an `AWS::EC2::Route`, which had no composite-id splitter. Issue #1771 has
+ * a default route, whose type had no composite-id splitter. Issue #1771 has
  * since registered one, so the circular-ref stack probably exports cleanly
  * today — but "probably" is the point. Its `ec2.Vpc` will keep acquiring types
- * as CDK evolves (an IPv6 CIDR would pull in `AWS::EC2::VPCCidrBlock`, still
+ * as CDK evolves (an IPv6 CIDR pulls in a VPC-CIDR-block resource, still
  * unregistered — issue #1788), and each one can abort this assertion for
  * reasons that have nothing to do with the rule id. Narrowing that fixture's
  * VPC instead would quietly drop the IGW / route destroy ordering it already
  * covers.
+ *
+ * (Those two types are named descriptively rather than as fully-qualified
+ * CloudFormation type names on purpose: the integ coverage-matrix generator
+ * scans this file and would credit THIS stack with deploying them.)
  *
  * So this stack stays deliberately the SMALLEST shape that reaches the ingress
  * rows: an L1 VPC with no subnets, no internet gateway and no route table

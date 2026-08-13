@@ -65,6 +65,20 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
   const RESOURCE_TYPE = 'AWS::EC2::SecurityGroupIngress';
   const GROUP_ID = 'sg-123';
   const PHYSICAL_ID = `${GROUP_ID}|tcp|443|443`;
+  /**
+   * Real `sgr-` ids are lowercase hex, which is what `SG_RULE_ID_PATTERN`
+   * anchors on — so the import arm's fixtures have to BE that shape. An earlier
+   * cut used readable ids like `sgr-adopted`; the anchored guard correctly
+   * declined every one of them, which is the fixture being unrealistic rather
+   * than the guard being wrong. Shape taken from the live measurement
+   * (`sgr-02345615af6d2db0d`).
+   */
+  const IMPORTED_RULE_ID = 'sgr-0a1b2c3d4e5f60718';
+  const ALL_PROTOCOLS_RULE_ID = 'sgr-0abcdef012345678f';
+  const EGRESS_RULE_ID = 'sgr-0f1e2d3c4b5a69788';
+  const PARTIAL_RULE_ID = 'sgr-0deadbeefdeadbeef';
+  const MISSING_RULE_ID = 'sgr-00000000000000dad';
+
   const PROPS = Object.freeze({
     GroupId: GROUP_ID,
     IpProtocol: 'tcp',
@@ -206,7 +220,14 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
       const describe = sentCommands().find(
         (c) => c instanceof DescribeSecurityGroupRulesCommand
       ) as DescribeSecurityGroupRulesCommand | undefined;
-      expect(describe?.input).toEqual({ Filters: [{ Name: 'group-id', Values: [GROUP_ID] }] });
+      // `MaxResults` is pinned deliberately: MAX_SG_RULE_PAGES' "20 pages =
+      // 20,000 rules" bound is only true because the request fixes the page
+      // size. Without it AWS applies its own default and the ceiling means an
+      // unknown number of rules.
+      expect(describe?.input).toEqual({
+        Filters: [{ Name: 'group-id', Values: [GROUP_ID] }],
+        MaxResults: 1000,
+      });
     });
 
     it('matches a SG-to-SG rule via ReferencedGroupInfo', async () => {
@@ -356,6 +377,58 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
         expect(result.attributes).toEqual({ Id: 'sgr-all' });
       });
 
+      it('matches a NUMERIC protocol against the canonical name AWS reports (#1643)', async () => {
+        // The `sgProtocolKey` fold on BOTH sides, which every other row here
+        // leaves unfenced by spelling the protocol identically on each side.
+        // AWS substitutes the canonical NAME for the four protocols that have
+        // one (1/6/17/58 -> icmp/tcp/udp/icmpv6), so a template declaring
+        // `IpProtocol: 6` reads back as `'tcp'`. A raw compare records nothing
+        // here, silently, for every numeric-protocol rule.
+        withExistingRules([decoy({ SecurityGroupRuleId: 'sgr-numeric', IpProtocol: 'tcp' })]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+          GroupId: GROUP_ID,
+          IpProtocol: 6,
+          FromPort: 443,
+          ToPort: 443,
+          CidrIp: '10.0.0.0/16',
+        });
+
+        expect(result.attributes).toEqual({ Id: 'sgr-numeric' });
+      });
+
+      it('matches a STRINGIFIED numeric protocol too (the shape state records)', async () => {
+        // Post-#1633 a numeric template protocol is recorded as the STRING
+        // `'6'`, which is what the already-exists arm actually receives on a
+        // rollback replay — a different input from the number above.
+        withExistingRules([decoy({ SecurityGroupRuleId: 'sgr-numeric-str', IpProtocol: 'tcp' })]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+          GroupId: GROUP_ID,
+          IpProtocol: '6',
+          FromPort: 443,
+          ToPort: 443,
+          CidrIp: '10.0.0.0/16',
+        });
+
+        expect(result.attributes).toEqual({ Id: 'sgr-numeric-str' });
+      });
+
+      it('still rejects a numeric protocol naming a DIFFERENT one', async () => {
+        // The fold must not become a blanket "any protocol matches": 17 is udp.
+        withExistingRules([decoy({ IpProtocol: 'tcp' })]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+          GroupId: GROUP_ID,
+          IpProtocol: 17,
+          FromPort: 443,
+          ToPort: 443,
+          CidrIp: '10.0.0.0/16',
+        });
+
+        expect(result.attributes).toEqual({});
+      });
+
       it('matches a template that spells its ports as STRINGS', async () => {
         // A YAML / JSON template may write `FromPort: "443"`, and
         // `buildIpPermission` forwards it to AWS unchanged, so such a rule
@@ -371,6 +444,72 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
         });
 
         expect(result.attributes).toEqual({ Id: 'sgr-stringports' });
+      });
+
+      it('treats a whitespace-only port as ABSENT, not as ICMP type 0', async () => {
+        // `Number(' ')` is 0, so a bare numeric coercion matched an ICMP
+        // type-0 rule here and recorded its id — a DIFFERENT rule, silently.
+        // Trimming before the blank test makes it mean "all ports" (-1),
+        // which is what an omitted port means.
+        withExistingRules([
+          decoy({ SecurityGroupRuleId: 'sgr-icmp0', IpProtocol: 'icmp', FromPort: 0, ToPort: 0 }),
+        ]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+          GroupId: GROUP_ID,
+          IpProtocol: 'icmp',
+          FromPort: '  ',
+          ToPort: '  ',
+          CidrIp: '10.0.0.0/16',
+        });
+
+        expect(result.attributes).toEqual({});
+      });
+
+      it('treats an EMPTY-STRING port as absent — matching the all-ports rule', async () => {
+        // The other side of the same branch: `''` means "not specified", so it
+        // must line up with AWS's `-1`, not with port 0.
+        withExistingRules([
+          decoy({ SecurityGroupRuleId: 'sgr-allports', IpProtocol: '-1', FromPort: -1, ToPort: -1 }),
+        ]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+          GroupId: GROUP_ID,
+          IpProtocol: '-1',
+          FromPort: '',
+          ToPort: '',
+          CidrIp: '10.0.0.0/16',
+        });
+
+        expect(result.attributes).toEqual({ Id: 'sgr-allports' });
+      });
+
+      it.each([
+        ['a boolean', true],
+        ['an array', []],
+        ['a single-element array', ['443']],
+        ['an object', {}],
+        ['a non-numeric string', 'https'],
+      ])('records nothing when the port is %s (NaN, never a coincidental match)', async (_w, p) => {
+        // `Number` maps `true` to 1, `[]` to 0 and `['443']` to 443, so a bare
+        // coercion would have matched a port-1 / port-0 / port-443 rule for
+        // each of these. NaN compares unequal to everything, so the lookup
+        // records nothing instead.
+        withExistingRules([
+          decoy({ SecurityGroupRuleId: 'sgr-p443' }),
+          decoy({ SecurityGroupRuleId: 'sgr-p1', FromPort: 1, ToPort: 1 }),
+          decoy({ SecurityGroupRuleId: 'sgr-p0', FromPort: 0, ToPort: 0 }),
+        ]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+          GroupId: GROUP_ID,
+          IpProtocol: 'tcp',
+          FromPort: p,
+          ToPort: p,
+          CidrIp: '10.0.0.0/16',
+        });
+
+        expect(result.attributes).toEqual({});
       });
 
       it('matches on CidrIpv6', async () => {
@@ -590,7 +729,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
       mockSend.mockResolvedValue({
         SecurityGroupRules: [
           {
-            SecurityGroupRuleId: 'sgr-adopted',
+            SecurityGroupRuleId: IMPORTED_RULE_ID,
             GroupId: GROUP_ID,
             IsEgress: false,
             IpProtocol: 'tcp',
@@ -604,7 +743,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
       const result = await provider.import({
         logicalId: 'Ingress',
         resourceType: RESOURCE_TYPE,
-        knownPhysicalId: 'sgr-adopted',
+        knownPhysicalId: IMPORTED_RULE_ID,
         stackName: 'Stack',
         region: 'us-east-1',
         properties: {},
@@ -612,7 +751,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
 
       expect(result).toEqual({
         physicalId: PHYSICAL_ID,
-        attributes: { Id: 'sgr-adopted' },
+        attributes: { Id: IMPORTED_RULE_ID },
       });
     });
 
@@ -620,7 +759,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
       mockSend.mockResolvedValue({
         SecurityGroupRules: [
           {
-            SecurityGroupRuleId: 'sgr-all',
+            SecurityGroupRuleId: ALL_PROTOCOLS_RULE_ID,
             GroupId: GROUP_ID,
             IsEgress: false,
             IpProtocol: '-1',
@@ -632,7 +771,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
       const result = await provider.import({
         logicalId: 'Ingress',
         resourceType: RESOURCE_TYPE,
-        knownPhysicalId: 'sgr-all',
+        knownPhysicalId: ALL_PROTOCOLS_RULE_ID,
         stackName: 'Stack',
         region: 'us-east-1',
         properties: {},
@@ -645,7 +784,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
       mockSend.mockResolvedValue({
         SecurityGroupRules: [
           {
-            SecurityGroupRuleId: 'sgr-egress',
+            SecurityGroupRuleId: EGRESS_RULE_ID,
             GroupId: GROUP_ID,
             IsEgress: true,
             IpProtocol: 'tcp',
@@ -658,7 +797,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
       const result = await provider.import({
         logicalId: 'Ingress',
         resourceType: RESOURCE_TYPE,
-        knownPhysicalId: 'sgr-egress',
+        knownPhysicalId: EGRESS_RULE_ID,
         stackName: 'Stack',
         region: 'us-east-1',
         properties: {},
@@ -667,11 +806,22 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
       expect(result).toBeNull();
     });
 
-    it('declines a non-sgr id without calling AWS', async () => {
+    it.each([
+      ['cdkd’s composite', PHYSICAL_ID],
+      ['an sgr- id with composite segments appended', `${'sgr-0123456789abcdef0'}|tcp|443|443`],
+      ['a bare group id', 'sg-0abc0def0'],
+      ['an uppercase / non-hex body', 'sgr-NOTHEXAT4LL'],
+      ['a padded rule id', ' sgr-0123456789abcdef0 '],
+    ])('declines %s without calling AWS', async (_why, knownPhysicalId) => {
+      // ANCHORED, not `startsWith('sgr-')`. The second row is the one that
+      // matters: the prefix test admits it, AWS then answers
+      // `InvalidSecurityGroupRuleId.Malformed`, and `isNotFoundError` does NOT
+      // match that — so the throw escapes `verifyExplicit` and aborts the whole
+      // `cdkd import` run rather than declining this single row.
       const result = await provider.import({
         logicalId: 'Ingress',
         resourceType: RESOURCE_TYPE,
-        knownPhysicalId: PHYSICAL_ID,
+        knownPhysicalId,
         stackName: 'Stack',
         region: 'us-east-1',
         properties: {},
@@ -691,7 +841,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
       mockSend.mockResolvedValue({
         SecurityGroupRules: [
           {
-            SecurityGroupRuleId: 'sgr-partial',
+            SecurityGroupRuleId: PARTIAL_RULE_ID,
             GroupId: GROUP_ID,
             IsEgress: false,
             IpProtocol: 'tcp',
@@ -705,7 +855,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
       const result = await provider.import({
         logicalId: 'Ingress',
         resourceType: RESOURCE_TYPE,
-        knownPhysicalId: 'sgr-partial',
+        knownPhysicalId: PARTIAL_RULE_ID,
         stackName: 'Stack',
         region: 'us-east-1',
         properties: {},
@@ -720,7 +870,7 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
       const result = await provider.import({
         logicalId: 'Ingress',
         resourceType: RESOURCE_TYPE,
-        knownPhysicalId: 'sgr-missing',
+        knownPhysicalId: MISSING_RULE_ID,
         stackName: 'Stack',
         region: 'us-east-1',
         properties: {},

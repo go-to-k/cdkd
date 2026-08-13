@@ -1328,12 +1328,18 @@ function recordedRuleIdIdentifier(): CompositePhysicalIdIdentifier {
         `cdkd's physical id for AWS::EC2::SecurityGroupIngress is the composite ` +
           `'<groupId>|<ipProtocol>|<fromPort>|<toPort>', but CloudFormation IMPORT identifies ` +
           `the rule by the 'sgr-...' security-group rule id AWS assigns, which cdkd state does ` +
-          `not record usably for '${logicalId}' (${recordedNote}). cdkd records it since ` +
-          `https://github.com/go-to-k/cdkd/issues/1761, so this rule was deployed by an older ` +
-          `binary. AWS returns the rule id only from AuthorizeSecurityGroupIngress itself, so a ` +
-          `no-op re-deploy will NOT heal the record: change any property of the rule (cdkd ` +
-          `revokes and re-authorizes, minting a fresh id, with a momentary traffic interruption) ` +
-          `or destroy and re-deploy it, then re-run cdkd export. Alternatively remove ` +
+          `not record usably for '${logicalId}' (${recordedNote}). Two causes, with different ` +
+          `remedies. (1) The rule declares MORE THAN ONE source — e.g. both CidrIp and CidrIpv6 ` +
+          `on the same resource — so AWS minted one rule per source and cdkd deliberately ` +
+          `recorded neither id, because neither is 'the' identifier for this resource. ` +
+          `Re-deploying does not help; split it into one AWS::EC2::SecurityGroupIngress ` +
+          `resource per source, which is also the shape CloudFormation will manage after the ` +
+          `export. (2) Otherwise the rule was deployed by a cdkd older than ` +
+          `https://github.com/go-to-k/cdkd/issues/1761, which did not record the id at all. AWS ` +
+          `returns it only from AuthorizeSecurityGroupIngress itself, so a no-op re-deploy will ` +
+          `NOT heal the record either: change any property of the rule (cdkd revokes and ` +
+          `re-authorizes, minting a fresh id, with a momentary traffic interruption) or destroy ` +
+          `and re-deploy it, then re-run cdkd export. In both cases you can instead remove ` +
           `'${logicalId}' from the stack before exporting — the rule stays in AWS and can be ` +
           `re-declared in CloudFormation afterwards.`
       );

@@ -174,6 +174,18 @@ describe('resolveCompositePhysicalIdIdentifier (issue #1659)', () => {
     ).toBe(SG_RULE_ID);
   });
 
+  it('trims a padded FALLBACK physicalId too — the other return path', () => {
+    // Its own case: the attribute arm's `.trim()` and the physicalId arm's are
+    // separate returns, so a test that only pads the attribute leaves the
+    // second one unfenced (dropping `.trim()` there alone stays green).
+    expect(
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::EC2::SecurityGroupIngress',
+        ctx({ physicalId: `  ${SG_RULE_ID}\n`, attributes: {} })
+      ).value
+    ).toBe(SG_RULE_ID);
+  });
+
   it('refuses a composite physicalId with no recorded rule id, naming the real remedy', () => {
     // The remedy differs from the ARN family's plain "re-deploy the stack":
     // AWS returns the rule id only from `AuthorizeSecurityGroupIngress`, so a
@@ -186,6 +198,20 @@ describe('resolveCompositePhysicalIdIdentifier (issue #1659)', () => {
     ).toThrow(
       /'SshIn'.*attributes\.Id is missing or empty.*no-op re-deploy will NOT heal the record/s
     );
+  });
+
+  it('names the MULTI-SOURCE cause too — re-deploying does not heal that one', () => {
+    // `buildIpPermission` emits both `IpRanges` and `Ipv6Ranges` when one
+    // ingress resource sets `CidrIp` AND `CidrIpv6`; AWS mints a rule per
+    // source and `singleSecurityGroupRuleId` deliberately records neither. A
+    // message offering only "re-deploy" as the remedy sends that user round a
+    // loop that can never terminate, so both causes are named.
+    expect(() =>
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::EC2::SecurityGroupIngress',
+        ctx({ physicalId: SG_INGRESS_COMPOSITE, attributes: {} })
+      )
+    ).toThrow(/MORE THAN ONE source.*Re-deploying does not help.*one .* resource per source/s);
   });
 
   it.each([

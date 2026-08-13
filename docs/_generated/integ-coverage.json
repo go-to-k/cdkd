@@ -1642,8 +1642,7 @@
           "literal"
         ],
         "sg-circular-dependency": [
-          "l2",
-          "literal"
+          "l2"
         ],
         "vpc-lambda": [
           "l2"
@@ -5992,7 +5991,6 @@
     "AWS::SSM::Document",
     "AWS::SecretsManager::RotationSchedule",
     "AWS::Serverless::Function",
-    "AWS::Service::Type",
     "AWS::Signer::SigningProfile",
     "AWS::VerifiedPermissions::PolicyStore",
     "AWS::WAFv2::IPSet",
