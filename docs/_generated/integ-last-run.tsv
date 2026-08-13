@@ -182,6 +182,7 @@ local-invoke-provided	2026-07-26T20:29:11Z	PASS	32	verify.sh	0727b sweep-L4 stal
 local-invoke-python	2026-07-26T20:22:00Z	PASS	23	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
 local-invoke-ruby	2026-07-26T20:22:00Z	PASS	33	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
 local-run-task	2026-08-13T10:02:43Z	PASS	13	verify.sh	#1795/#1801 region+ECR host case fold; detach+curl 200, 0 docker orphans
+local-run-task	2026-08-13T08:33:53Z	PASS	30	verify.sh	rc 0, HTTP 200, docker sweep clean
 local-run-task-awsvpc	2026-07-26T20:22:00Z	PASS	10	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
 local-run-task-cdkd-assets	2026-07-31T06:38:30Z	PASS	13	verify.sh	TTL-refresh sweep re-run; custom-qualifier asset classify+build+run ok, docker sweep clean
 local-run-task-from-state	2026-07-26T20:22:00Z	PASS	105	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
