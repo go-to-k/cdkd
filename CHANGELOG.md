@@ -1,3 +1,10 @@
+## [0.281.16](https://github.com/go-to-k/cdkd/compare/v0.281.15...v0.281.16) (2026-08-13)
+
+
+### Bug Fixes
+
+* **provisioning:** state the expected format at every composite-id decode site ([#1753](https://github.com/go-to-k/cdkd/issues/1753)) ([5f2fc73](https://github.com/go-to-k/cdkd/commit/5f2fc73ef559ec1821a360aab84e3abdb0af0d71))
+
 ## [0.281.15](https://github.com/go-to-k/cdkd/compare/v0.281.14...v0.281.15) (2026-08-13)
 
 
