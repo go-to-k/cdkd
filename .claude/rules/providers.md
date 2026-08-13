@@ -277,10 +277,14 @@ such an arm is therefore not the same as fixing it** — check the twin's
 feasibility before you record anything. #1682 named the
 GlobalTable as a consumer while the provider was still running its `replayWarn`
 substitution and returning WITHOUT the field — the provider-side half, which
-#1653 has since supplied, so the two halves now meet. What none of the four has
-yet is per-PROVIDER live coverage: the #1696 fixture proves the ENGINE path via
-`AWS::EC2::Route`, and whether each arm substitutes the value it claims and
-records it in the shape `readCurrentState` can match is tracked as issue #1706.
+#1653 has since supplied, so the two halves now meet. Per-PROVIDER live coverage now exists for TWO of them: the
+`rollback-replay-effective-props` fixture drives the GlobalTable `BillingMode`
+warn-and-SUBSTITUTE arm and the GSI warn-and-OMIT arm through a real
+reverse-replacement rollback (issues #1724 / #1726). The #1696 fixture proves the
+ENGINE path via `AWS::EC2::Route`. Still uncovered per-provider, and still
+tracked as issue #1706: the GlobalTable `StreamSpecification` substitution and
+the S3 bucket arm. Adding them is now cheap — the rollback-failure-injection
+phase they need already exists in that fixture.
 It now mirrors `recordAfterRollbackUpdate`: the bag handed to
 `create()` IS `previousState.properties`, so a returned `effectiveProperties`
 replaces the record's `properties` wholesale, and reporting none keeps the

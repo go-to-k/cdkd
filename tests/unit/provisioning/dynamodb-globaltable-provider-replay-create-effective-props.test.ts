@@ -410,6 +410,37 @@ describe('stripProvisionedCapacityKeys (issue #1726)', () => {
     expect(out['Replicas']).toEqual([null, 42]);
   });
 
+  it('KEEPS a replica index entry that still has members beyond IndexName', () => {
+    // The husk filter's KEEP arm. Every other row leaves the entry as a bare
+    // `IndexName` husk, so `kept.length > 0` was never executed — a filter
+    // mutated to drop NON-husk entries (the "deletes real data" direction)
+    // left the whole suite green. `ReadOnDemandThroughputSettings` is the
+    // realistic survivor: the strip deliberately keeps on-demand members.
+    const out = stripProvisionedCapacityKeys({
+      Replicas: [
+        {
+          Region: 'us-east-1',
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 'gsi1',
+              ReadProvisionedThroughputSettings: { ReadCapacityUnits: 5 },
+              ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 50 },
+            },
+            { IndexName: 'gsi2', ReadProvisionedThroughputSettings: { ReadCapacityUnits: 5 } },
+          ],
+        },
+      ],
+    });
+
+    const replica = (out['Replicas'] as Record<string, unknown>[])[0]!;
+    const indexes = replica['GlobalSecondaryIndexes'] as Record<string, unknown>[];
+    // gsi1 survives (its on-demand member is real, and WAS sent); gsi2 was a
+    // husk once its only member was stripped.
+    expect(indexes).toEqual([
+      { IndexName: 'gsi1', ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 50 } },
+    ]);
+  });
+
   it('passes NON-ARRAY containers through untouched', () => {
     // A state record written by an older binary can carry an unresolved
     // intrinsic here; rewriting it into `{}` would be the silent-drop class

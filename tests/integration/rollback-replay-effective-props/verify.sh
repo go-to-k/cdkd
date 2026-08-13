@@ -364,7 +364,14 @@ jq --arg id "${ROUTE_LOGICAL_ID}" --arg ipv6 "${BAD_IPV6_DEST}" \
      ]
    | .resources[$gt].properties.WriteOnDemandThroughputSettings = {MaxWriteRequestUnits: $mw}
    | .resources[$gt].properties.Replicas[0].ReadOnDemandThroughputSettings = {MaxReadRequestUnits: $mr}
-   | .resources[$gto].properties.GlobalSecondaryIndexes = $gsi' \
+   | .resources[$gto].properties.GlobalSecondaryIndexes = $gsi
+   # ...and a LOCAL replica index block on the omit table. Without this the
+   # phase-4 "local replica block was dropped" assertion is unfalsifiable: the
+   # key would be absent for every implementation because nothing ever put it
+   # there.
+   | .resources[$gto].properties.Replicas[0].GlobalSecondaryIndexes = [
+       {IndexName: "gsi1", ReadProvisionedThroughputSettings: {ReadCapacityUnits: $wcu}}
+     ]' \
   "${WORK_DIR}/state-v1.json" > "${WORK_DIR}/state-doctored.json"
 
 # Fail loudly if any injection did not take -- a silently unchanged record makes
@@ -380,7 +387,8 @@ for expr in \
   '.resources[$gt].properties.Replicas[0].GlobalSecondaryIndexes[0].ProvisionedThroughputOverride.ReadCapacityUnits' \
   '.resources[$gt].properties.WriteOnDemandThroughputSettings.MaxWriteRequestUnits' \
   '.resources[$gt].properties.Replicas[0].ReadOnDemandThroughputSettings.MaxReadRequestUnits' \
-  '.resources[$gto].properties.GlobalSecondaryIndexes'
+  '.resources[$gto].properties.GlobalSecondaryIndexes' \
+  '.resources[$gto].properties.Replicas[0].GlobalSecondaryIndexes[0].IndexName'
 do
   got="$(jq -r --arg gt "${GT_LOGICAL_ID}" --arg gto "${GTO_LOGICAL_ID}" \
     "if (${expr}) == null then \"MISSING\" else \"present\" end" \
@@ -443,7 +451,11 @@ echo "[verify] phase 3: deploy failed as expected (rc=${DEPLOY_RC})"
 # already-shipped update-side `recordAfterRollbackUpdate` (issue #1644). The
 # fixture would then pass while never exercising #1682 at all. So assert the
 # arm's OWN line, which only the reverse-replacement path emits.
-if ! grep -qF 'replacement reversed (old resource re-created as' "${WORK_DIR}/deploy-v2.log"; then
+# Per-RESOURCE, not the generic line: the ROUTE alone satisfies a bare grep, so
+# a run where neither table took the reverse-replacement arm would pass it.
+if ! grep -qF "${GT_LOGICAL_ID} replacement reversed" "${WORK_DIR}/deploy-v2.log" ||
+   ! grep -qF "${GTO_LOGICAL_ID} replacement reversed" "${WORK_DIR}/deploy-v2.log" ||
+   ! grep -qF 'replacement reversed (old resource re-created as' "${WORK_DIR}/deploy-v2.log"; then
   echo "FAIL: phase 3: the rollback did not take the REVERSE-REPLACEMENT arm," >&2
   echo "      so this run does not exercise #1682 (a 'revert' UPDATE would pass" >&2
   echo "      phase 4 through the #1644 update-side wiring instead). Log tail:" >&2

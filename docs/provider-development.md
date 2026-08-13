@@ -137,8 +137,10 @@ declared one, not only the arms that log.
 
 `DynamoDBGlobalTableProvider` is the third, and it shows both halves of the
 question (issue [#1683](https://github.com/go-to-k/cdkd/issues/1683)). Every one
-of its ordinary guard downgrades is now answered, and they do NOT all answer the
-same way — a `BillingMode` warn-and-SUBSTITUTE on the replay-CREATE path records
+of its ordinary CREATE-path guard downgrades is now answered (the UPDATE-side
+capacity residual is open as issue
+[#1738](https://github.com/go-to-k/cdkd/issues/1738)), and they do NOT all answer
+the same way — a `BillingMode` warn-and-SUBSTITUTE on the replay-CREATE path records
 the substituted mode, the same property's UPDATE-side guard suppresses the flip
 and so records the mode it compared against — DROPPING the key instead when the
 record declared none, since recording anything there would invent one — a

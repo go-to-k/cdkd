@@ -539,14 +539,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // arm rebuilt the record from `prev.properties` and every provider's
       // replay-CREATE substitution was announced into a void.
       //
-      // Not live-tested per PROVIDER yet — issue #1706. The #1696 fixture
-      // (`tests/integration/rollback-replay-effective-props`) proves the
-      // ENGINE path via `AWS::EC2::Route`; what is uncovered is whether THIS
-      // arm substitutes the value it claims and records it in the shape
-      // `readCurrentState` can match. Covering it needs a
-      // rollback-failure-injection phase of its own, which is why the
-      // `dynamodb-globaltable` fixture deliberately exercises only the UPDATE
-      // arm.
+      // Not live-tested per PROVIDER yet — issue #1706, and it is now CHEAP.
+      // `tests/integration/rollback-replay-effective-props` gained a
+      // rollback-failure-injection phase for the sibling `BillingMode` and GSI
+      // arms (issues #1724 / #1726), so covering this one means adding a
+      // malformed `StreamSpecification` to a table already in that fixture
+      // rather than building the phase. Do not read this note as "no such
+      // fixture exists" — that was true only before those two arms landed.
       let streamSpecSubstituted = false;
       try {
         // `replayWarn` (issue #1544): a state record written by an older

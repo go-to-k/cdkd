@@ -131,7 +131,7 @@ export class RollbackReplayStack extends cdk.Stack {
       // NO global secondary index here, and that is a recorded COVERAGE BOUND
       // rather than an oversight: a GSI on this table exposes two PRE-EXISTING
       // phantom drifts that have nothing to do with the arms under test and
-      // would fail phase 5 while blaming this change -- AWS returns
+      // would fail phase 5 while blaming this change (issue #1742) -- AWS returns
       // `AttributeDefinitions` in an arbitrary order (compared positionally),
       // and it reports a computed `GlobalSecondaryIndexes[].WarmThroughput` the
       // template can never carry. Both are filed separately; both are visible
@@ -160,7 +160,7 @@ export class RollbackReplayStack extends cdk.Stack {
       // to record anything. Measured on run 3 of this fixture, which is what
       // the first `gsipk`-keyed version did. The underlying sharp edge in the
       // #1544 omit arm — it drops the indexes but not the attribute
-      // definitions that existed only for them — is filed separately.
+      // definitions that existed only for them — is issue #1741.
       attributeDefinitions: [{ attributeName: 'pk', attributeType: 'S' }],
       keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
       globalSecondaryIndexes: [
