@@ -2829,12 +2829,19 @@ cdkd export                                       # auto-detect single-stack app
    carries the composite's `(protocol, port range)` tuple. Zero matches
    or more than one is REFUSED, naming the row and the candidates —
    two rules sharing that tuple are two rules cdkd's own physical id
-   cannot tell apart either, and the multi-source case above is exactly
-   what "more than one" looks like from the live read. The lookup needs
+   cannot tell apart either. Matching rules are counted BEFORE any is
+   set aside, so a rule AWS reports without a usable `sgr-…` id refuses
+   too rather than letting its sibling pass as "exactly one". "More
+   than one" has two causes: the multi-source rule above (split the
+   resource), and two DISTINCT ingress resources differing only by
+   SOURCE, which the composite carries none of — those are already one
+   resource per source, so repair the row's `attributes.Id` or remove
+   the row before exporting. The lookup needs
    `ec2:DescribeSecurityGroupRules`; without that permission the row is
-   blocked with a message saying so. A row whose state already records
-   the `Id` — everything a current cdkd deploys — issues no live read
-   at all.
+   blocked with a message saying so, while a THROTTLED lookup is
+   retried with backoff and reported as a throttle, not as a missing
+   permission. A row whose state already records the `Id` — everything
+   a current cdkd deploys — issues no live read at all.
 
    **Types CloudFormation cannot IMPORT at all are refused up front.**
    A type whose registry schema declares no `read` handler AND reports

@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vite-plus/test';
-import { buildImportPlan } from '../../../src/cli/commands/export.js';
+import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
+import {
+  buildImportPlan,
+  securityGroupRuleLookupRetryDelays,
+} from '../../../src/cli/commands/export.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
 
@@ -61,9 +64,20 @@ interface DescribeCall {
 
 /** Every `DescribeSecurityGroupRules` request the plan builder issued. */
 let describeCalls: DescribeCall[] = [];
+/** Every backoff the throttle retry asked for, in milliseconds. */
+let sleeps: number[] = [];
 
 beforeEach(() => {
   describeCalls = [];
+  sleeps = [];
+  // Drive the throttle backoff without burning its real ~15s schedule.
+  securityGroupRuleLookupRetryDelays.sleep = async (ms: number) => {
+    sleeps.push(ms);
+  };
+});
+
+afterEach(() => {
+  delete securityGroupRuleLookupRetryDelays.sleep;
 });
 
 /**
@@ -97,14 +111,61 @@ function endlesslyPaginatingEc2Client(): AwsClients['ec2'] {
   } as unknown as AwsClients['ec2'];
 }
 
-function failingEc2Client(message: string): AwsClients['ec2'] {
+function failingEc2Client(message: string, name?: string): AwsClients['ec2'] {
   return {
     async send(cmd: { input?: DescribeCall }) {
       describeCalls.push(cmd.input ?? {});
-      throw new Error(message);
+      const err = new Error(message);
+      if (name) err.name = name;
+      throw err;
     },
   } as unknown as AwsClients['ec2'];
 }
+
+/**
+ * An EC2 stub that throttles its first `failures` calls and then answers from
+ * `pages`. `RequestLimitExceeded` is THE common EC2 Describe failure, and it is
+ * detected by error NAME (most AWS throttles are HTTP 400, not 429).
+ */
+function throttlingThenAnsweringEc2Client(
+  failures: number,
+  pages: StubRule[][]
+): AwsClients['ec2'] {
+  let thrown = 0;
+  const inner = ec2ClientFor(pages) as unknown as { send: (cmd: unknown) => Promise<unknown> };
+  return {
+    async send(cmd: { input?: DescribeCall }) {
+      if (thrown < failures) {
+        thrown += 1;
+        describeCalls.push(cmd.input ?? {});
+        const err = new Error('Request limit exceeded.');
+        err.name = 'RequestLimitExceeded';
+        throw err;
+      }
+      return inner.send(cmd);
+    },
+  } as unknown as AwsClients['ec2'];
+}
+
+/** Two ingress rows on ONE security group, differing only by port range. */
+function stateWithTwoIngressRowsOnOneGroup(): StackState {
+  const state = stateWithIngress(`${GROUP_ID}|tcp|443|443`);
+  state.resources['OtherIn'] = {
+    physicalId: `${GROUP_ID}|tcp|22|22`,
+    resourceType: 'AWS::EC2::SecurityGroupIngress',
+    properties: {},
+    attributes: {},
+    dependencies: [],
+  };
+  return state;
+}
+
+const TWO_ROW_TEMPLATE = {
+  Resources: {
+    SshIn: { Type: 'AWS::EC2::SecurityGroupIngress', Properties: {} },
+    OtherIn: { Type: 'AWS::EC2::SecurityGroupIngress', Properties: {} },
+  },
+};
 
 function stateWithIngress(physicalId: string, attributes: Record<string, unknown> = {}): StackState {
   return {
@@ -308,10 +369,14 @@ describe('cdkd export — SecurityGroupIngress rule-id backfill (issue #1791)', 
     expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ Id: SG_RULE_ID });
   });
 
-  it('ignores a matching rule whose reported id is not an sgr- value', async () => {
-    // The same anchored predicate the recorded-attribute arm applies. A rule
-    // AWS reports without a usable id cannot be handed to CFn IMPORT, so it
-    // must not be counted as the match either.
+  it('refuses a MATCHING rule whose reported id is unusable — not "found NO rule"', async () => {
+    // This test pinned the OPPOSITE behavior until the #1791 review: the
+    // unusable ids were filtered out BEFORE the count, so two matching rules
+    // became `ids.length === 0` and the refusal said cdkd "found NO ingress
+    // rule matching <tuple>" — a false statement, since two rules did match.
+    // A rule AWS reports without a usable id still cannot be handed to CFn
+    // IMPORT, so the answer is a refusal either way; what changed is that it
+    // now says what actually happened.
     const plan = await planWith(
       stateWithIngress(`${GROUP_ID}|tcp|443|443`),
       ec2ClientFor([
@@ -322,8 +387,39 @@ describe('cdkd export — SecurityGroupIngress rule-id backfill (issue #1791)', 
       ])
     );
 
+    expect(plan.phase1Imports).toEqual([]);
     expect(plan.blocked).toHaveLength(1);
-    expect(plan.blocked[0]!.reason).toMatch(/found NO ingress rule matching/);
+    expect(plan.blocked[0]!.reason).toMatch(
+      /found 2 ingress rule\(s\) matching protocol 'tcp', ports 443 on security group 'sg-0abc0def0', but 2 of them carry no usable 'sgr-\.\.\.' rule id/
+    );
+    // The raw values, so the user can see WHAT AWS reported.
+    expect(plan.blocked[0]!.reason).toMatch(/AWS reported '', <absent>/);
+    expect(plan.blocked[0]!.reason).not.toMatch(/found NO ingress rule matching/);
+  });
+
+  it('refuses a 2-match whose OTHER candidate has no id — never adopts the survivor', async () => {
+    // The defect the count-before-filter ordering exists to prevent (issue
+    // #1791 review, F1). AWS holds TWO rules with this tuple; one is reported
+    // without an id. Filtering first collapses that to a single surviving id
+    // and ADOPTS it — recording an identifier cdkd has not proven names this
+    // row, which is exactly what the exactly-one discipline forbids.
+    const plan = await planWith(
+      stateWithIngress(`${GROUP_ID}|tcp|443|443`),
+      ec2ClientFor([
+        [
+          { SecurityGroupRuleId: SG_RULE_ID, IpProtocol: 'tcp', FromPort: 443, ToPort: 443 },
+          { IpProtocol: 'tcp', FromPort: 443, ToPort: 443 },
+        ],
+      ])
+    );
+
+    expect(plan.phase1Imports).toEqual([]);
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.reason).toMatch(
+      /found 2 ingress rule\(s\) matching.*but 1 of them carry no usable 'sgr-\.\.\.' rule id/s
+    );
+    // The count is a count of MATCHING RULES, and the message says so.
+    expect(plan.blocked[0]!.reason).toMatch(/count of MATCHING RULES/);
   });
 
   it('refuses a physical id that is not cdkd composite, WITHOUT calling AWS', async () => {
@@ -412,5 +508,212 @@ describe('cdkd export — SecurityGroupIngress rule-id backfill (issue #1791)', 
     expect(plan.blocked.map((b) => b.logicalId)).toEqual(['SshIn']);
     expect(plan.phase1Imports.map((p) => p.logicalId)).toEqual(['OtherIn']);
     expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ Id: OTHER_RULE_ID });
+  });
+
+  it('names BOTH causes of an ambiguity, since only one of them is splittable', async () => {
+    // The multi-source cause is not the only one: cdkd's composite carries no
+    // SOURCE, so two DISTINCT resources (443 from a CIDR, 443 from a peer SG)
+    // have byte-identical physical ids too — and those are already one
+    // resource per source, so "split it" is not a remedy they can act on.
+    const plan = await planWith(
+      stateWithIngress(`${GROUP_ID}|tcp|443|443`),
+      ec2ClientFor([
+        [
+          { SecurityGroupRuleId: SG_RULE_ID, IpProtocol: 'tcp', FromPort: 443, ToPort: 443 },
+          { SecurityGroupRuleId: OTHER_RULE_ID, IpProtocol: 'tcp', FromPort: 443, ToPort: 443 },
+        ],
+      ])
+    );
+
+    const reason = plan.blocked[0]!.reason;
+    expect(reason).toMatch(/MORE THAN ONE source.*one AWS::EC2::SecurityGroupIngress resource per source/s);
+    expect(reason).toMatch(/TWO DISTINCT AWS::EC2::SecurityGroupIngress resources that differ only by SOURCE/);
+    expect(reason).toMatch(/splitting is not their remedy/);
+    expect(reason).toMatch(/set the row's attributes\.Id to the 'sgr-\.\.\.' id that belongs to it/);
+  });
+
+  // --- the composite parse guards (issue #1791 review, F2 / T2) -------------
+
+  it('refuses a BLANK port segment instead of reading it as port 0', async () => {
+    // `Number(''.trim())` is 0, not NaN — so this id used to parse to
+    // `fromPort: 0` and go looking up a REAL tuple (ICMP type 0 is echo
+    // reply), which could adopt an id for a rule the record does not name.
+    // `EC2Provider.cfnIngressPortValue` reads the same blank as -1 (all
+    // ports), so the two layers did not even agree on what it meant.
+    const plan = await planWith(
+      stateWithIngress(`${GROUP_ID}|tcp||443`),
+      ec2ClientFor([[{ SecurityGroupRuleId: SG_RULE_ID, IpProtocol: 'tcp', FromPort: 0, ToPort: 443 }]])
+    );
+
+    expect(describeCalls).toEqual([]);
+    expect(plan.phase1Imports).toEqual([]);
+    expect(plan.blocked[0]!.reason).toMatch(
+      /is not cdkd's '<groupId>\|<ipProtocol>\|<fromPort>\|<toPort>' composite/
+    );
+  });
+
+  it('refuses a blank GROUP or PROTOCOL segment, WITHOUT calling AWS', async () => {
+    for (const physicalId of [`|tcp|443|443`, `${GROUP_ID}| |443|443`]) {
+      describeCalls = [];
+      const plan = await planWith(
+        stateWithIngress(physicalId),
+        ec2ClientFor([[{ SecurityGroupRuleId: SG_RULE_ID, IpProtocol: 'tcp', FromPort: 443, ToPort: 443 }]])
+      );
+
+      expect(describeCalls).toEqual([]);
+      expect(plan.blocked[0]!.reason).toMatch(
+        /is not cdkd's '<groupId>\|<ipProtocol>\|<fromPort>\|<toPort>' composite/
+      );
+    }
+  });
+
+  it('refuses a NON-NUMERIC port segment, WITHOUT calling AWS', async () => {
+    const plan = await planWith(
+      stateWithIngress(`${GROUP_ID}|tcp|https|443`),
+      ec2ClientFor([[{ SecurityGroupRuleId: SG_RULE_ID, IpProtocol: 'tcp', FromPort: 443, ToPort: 443 }]])
+    );
+
+    expect(describeCalls).toEqual([]);
+    expect(plan.blocked[0]!.reason).toMatch(
+      /is not cdkd's '<groupId>\|<ipProtocol>\|<fromPort>\|<toPort>' composite/
+    );
+  });
+
+  // --- throttling (issue #1791 review, F3) ----------------------------------
+
+  it('RETRIES a throttled lookup rather than aborting the whole export', async () => {
+    // `RequestLimitExceeded` is the common EC2 Describe failure, and export is
+    // all-or-nothing — so one un-retried throttle costs the entire run.
+    const plan = await planWith(
+      stateWithIngress(`${GROUP_ID}|tcp|443|443`),
+      throttlingThenAnsweringEc2Client(2, [
+        [{ SecurityGroupRuleId: SG_RULE_ID, IpProtocol: 'tcp', FromPort: 443, ToPort: 443 }],
+      ])
+    );
+
+    expect(plan.blocked).toEqual([]);
+    expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ Id: SG_RULE_ID });
+    // Two throttles backed off on the doubling schedule (1s then 2s) before
+    // the answer. Summed, because `withRetry` sleeps in 1s slices so it can
+    // check for an interrupt once a second.
+    expect(sleeps.reduce((a, b) => a + b, 0)).toBe(3000);
+  });
+
+  it('reports a persistent throttle AS a throttle — never as a missing permission', async () => {
+    const plan = await planWith(
+      stateWithIngress(`${GROUP_ID}|tcp|443|443`),
+      failingEc2Client('Request limit exceeded.', 'RequestLimitExceeded')
+    );
+
+    expect(plan.blocked).toHaveLength(1);
+    const reason = plan.blocked[0]!.reason;
+    expect(reason).toMatch(/AWS throttled the lookup and cdkd retried it 4 times/);
+    expect(reason).toMatch(/no permission is missing/);
+    // The wrong advice this arm exists to stop: auditing a policy that was
+    // correct all along, while "re-run it" goes unsaid.
+    expect(reason).not.toMatch(/Grant ec2:DescribeSecurityGroupRules/);
+    // 1 initial attempt + 4 retries, and the retries actually backed off
+    // (1s + 2s + 4s + 8s = the ~15s budget the constant documents).
+    expect(describeCalls).toHaveLength(5);
+    expect(sleeps.reduce((a, b) => a + b, 0)).toBe(15000);
+  });
+
+  it('does not prescribe the permission for a failure that is not about permissions', async () => {
+    const plan = await planWith(
+      stateWithIngress(`${GROUP_ID}|tcp|443|443`),
+      failingEc2Client('The security group sg-0abc0def0 does not exist', 'InvalidGroup.NotFound')
+    );
+
+    const reason = plan.blocked[0]!.reason;
+    expect(reason).toMatch(/lookup that would have recovered it failed.*does not exist/s);
+    expect(reason).toMatch(/Re-run cdkd export once that cause is resolved/);
+    expect(reason).not.toMatch(/Grant ec2:DescribeSecurityGroupRules/);
+    // A non-throttle failure cannot heal by waiting, so it is surfaced at once.
+    expect(describeCalls).toHaveLength(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  // --- per-group memoization (issue #1791 review, F5) ------------------------
+
+  it('walks a security group ONCE for the many rows sitting on it', async () => {
+    // N rows on one SG used to cost N paginated walks — N times the latency
+    // and N chances to be throttled.
+    const plan = await buildImportPlan(
+      stateWithTwoIngressRowsOnOneGroup(),
+      TWO_ROW_TEMPLATE,
+      cfnClient(),
+      'MyStack',
+      {
+        recreateImportUnsupported: true,
+        ec2Client: ec2ClientFor([
+          [
+            { SecurityGroupRuleId: SG_RULE_ID, IpProtocol: 'tcp', FromPort: 443, ToPort: 443 },
+            { SecurityGroupRuleId: OTHER_RULE_ID, IpProtocol: 'tcp', FromPort: 22, ToPort: 22 },
+          ],
+        ]),
+      }
+    );
+
+    expect(plan.blocked).toEqual([]);
+    expect(plan.phase1Imports.map((p) => p.resourceIdentifier)).toEqual([
+      { Id: SG_RULE_ID },
+      { Id: OTHER_RULE_ID },
+    ]);
+    expect(describeCalls).toHaveLength(1);
+  });
+
+  it('walks each DISTINCT group, and starts a fresh memo per buildImportPlan call', async () => {
+    // The memo is scoped to ONE call by construction: module-global state
+    // would be shared across the stacks a concurrent run exports in parallel,
+    // and the walk's answer is per-account / per-region.
+    const state = stateWithTwoIngressRowsOnOneGroup();
+    state.resources['OtherIn']!.physicalId = `sg-0fff1111|tcp|22|22`;
+    const rulesFor = (): AwsClients['ec2'] =>
+      ec2ClientFor([
+        [
+          { SecurityGroupRuleId: SG_RULE_ID, IpProtocol: 'tcp', FromPort: 443, ToPort: 443 },
+          { SecurityGroupRuleId: OTHER_RULE_ID, IpProtocol: 'tcp', FromPort: 22, ToPort: 22 },
+        ],
+      ]);
+
+    const opts = { recreateImportUnsupported: true, ec2Client: rulesFor() };
+    const first = await buildImportPlan(state, TWO_ROW_TEMPLATE, cfnClient(), 'MyStack', opts);
+    expect(first.blocked).toEqual([]);
+    // One walk per GROUP, not one per row.
+    expect(describeCalls.map((c) => c.Filters?.[0]?.Values?.[0])).toEqual([
+      GROUP_ID,
+      'sg-0fff1111',
+    ]);
+
+    describeCalls = [];
+    await buildImportPlan(state, TWO_ROW_TEMPLATE, cfnClient(), 'MyStack', {
+      recreateImportUnsupported: true,
+      ec2Client: rulesFor(),
+    });
+    // A second call re-reads AWS: nothing survives from the first one.
+    expect(describeCalls).toHaveLength(2);
+  });
+
+  it('names EACH row when one shared failed lookup blocks several of them', async () => {
+    // What the memo caches is the OUTCOME, not an Error — a cached Error would
+    // refuse the second row in the FIRST row's name.
+    const plan = await buildImportPlan(
+      stateWithTwoIngressRowsOnOneGroup(),
+      TWO_ROW_TEMPLATE,
+      cfnClient(),
+      'MyStack',
+      {
+        recreateImportUnsupported: true,
+        ec2Client: failingEc2Client(
+          'User is not authorized to perform: ec2:DescribeSecurityGroupRules'
+        ),
+      }
+    );
+
+    expect(plan.blocked.map((b) => b.logicalId)).toEqual(['SshIn', 'OtherIn']);
+    expect(plan.blocked[0]!.reason).toMatch(/rule id for 'SshIn'/);
+    expect(plan.blocked[1]!.reason).toMatch(/rule id for 'OtherIn'/);
+    // And the failure was paid ONCE, not once per row.
+    expect(describeCalls).toHaveLength(1);
   });
 });

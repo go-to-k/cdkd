@@ -252,6 +252,9 @@ function buildCfnClient(overrides?: {
           'AWS::S3::Bucket': '"BucketName"',
           'AWS::SSM::Parameter': '"Name"',
           'AWS::CloudFormation::Stack': '"StackId"',
+          // The `sgr-...` rule id, which cdkd resolves from state and — since
+          // issue #1791 — backfills from AWS when state does not carry it.
+          'AWS::EC2::SecurityGroupIngress': '"Id"',
         };
         const idField = schemaMap[t];
         if (!idField) {
@@ -1951,5 +1954,166 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
     expect(deleted).toEqual([]);
     expect(acquired).toEqual([]);
     expect(readlineQuestion).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The `deps.ec2Client` hand-off (issue
+ * [#1791](https://github.com/go-to-k/cdkd/issues/1791) review, T1).
+ *
+ * `runPerStackImportLoop` is the NESTED-tree export path, and it reaches
+ * `buildImportPlan` through its own options object — so the live-read seam has
+ * to be threaded explicitly. It was untested: deleting the spread that passes
+ * it left the whole suite green, i.e. a nested export could silently lose the
+ * backfill and every pre-#1761 ingress row in a child stack would go back to
+ * aborting the run.
+ *
+ * Both polarities are pinned. The positive arm proves the client ARRIVES (the
+ * plan carries the id only a live read could produce); the negative arm proves
+ * the same row without it still takes the state-only refusal, so the positive
+ * arm cannot pass for some reason other than the hand-off.
+ */
+describe('runPerStackImportLoop (issue #1791) — deps.ec2Client hand-off', () => {
+  /** Measured live (us-east-1, 2026-08-14) as a standalone rule's CFn `PhysicalResourceId`. */
+  const RULE_ID = 'sgr-02345615af6d2db0d';
+  const GROUP_ID = 'sg-0abc0def0';
+
+  const INGRESS_TEMPLATE = {
+    Resources: { SshIn: { Type: 'AWS::EC2::SecurityGroupIngress', Properties: {} } },
+  };
+
+  /** A root-only tree whose single ingress row carries NO recorded rule id. */
+  function buildPreheal(): {
+    tree: CdkdStateStackTree;
+    stateBackend: S3StateBackend;
+    cfnClient: AwsClients['cloudFormation'];
+    calls: SendCall[];
+    lockManager: LockManager;
+  } {
+    const root = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: {
+        SshIn: {
+          resourceType: 'AWS::EC2::SecurityGroupIngress',
+          physicalId: `${GROUP_ID}|tcp|443|443`,
+        },
+      },
+    });
+    const { backend: stateBackend } = buildStateBackend({ 'Root|us-east-1': root });
+    const { manager: lockManager } = buildLockManager();
+    const { client: cfnClient, calls } = buildCfnClient();
+    return {
+      tree: { stackName: 'Root', region: 'us-east-1', state: root, nestedChildren: new Map() },
+      stateBackend,
+      cfnClient,
+      calls,
+      lockManager,
+    };
+  }
+
+  /** Answers the backfill's `DescribeSecurityGroupRules` with one matching rule. */
+  let ec2Calls: number;
+  function ec2Client(): AwsClients['ec2'] {
+    return {
+      async send() {
+        ec2Calls += 1;
+        return {
+          SecurityGroupRules: [
+            { SecurityGroupRuleId: RULE_ID, IpProtocol: 'tcp', FromPort: 443, ToPort: 443 },
+          ],
+        };
+      },
+    } as unknown as AwsClients['ec2'];
+  }
+
+  beforeEach(() => {
+    ec2Calls = 0;
+    infoSpy.mockReset();
+    warnSpy.mockReset();
+    errorSpy.mockReset();
+    uploadCfnTemplateMock.mockClear();
+    waitChangeSetCreate.mockReset();
+    waitChangeSetCreate.mockResolvedValue(undefined);
+    waitStackImport.mockReset();
+    waitStackImport.mockResolvedValue(undefined);
+    waitStackUpdate.mockReset();
+    waitStackUpdate.mockResolvedValue(undefined);
+  });
+
+  it('threads deps.ec2Client through, so a pre-#1761 ingress row heals', async () => {
+    const { tree, stateBackend, cfnClient, calls, lockManager } = buildPreheal();
+
+    const result = await runPerStackImportLoop({
+      rootStackName: 'Root',
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: {},
+      rootTemplateFormat: 'json',
+      tree,
+      rootTemplate: INGRESS_TEMPLATE,
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: [],
+      deps: {
+        cfnClient,
+        ec2Client: ec2Client(),
+        stateBackend,
+        lockManager,
+        uploadOpts: { stateBucket: STATE_BUCKET },
+        lockOwner: 'tester@host:1234',
+      },
+      options: {
+        dryRun: false,
+        yes: true,
+        includeNonImportable: false,
+        recreateImportUnsupported: true,
+      },
+    });
+
+    expect(result.outcome).toBe('success');
+    expect(ec2Calls).toBe(1);
+    const createCalls = calls.filter((c) => c.name === 'CreateChangeSet');
+    expect(createCalls).toHaveLength(1);
+    // The id is in the submitted changeset, and it exists NOWHERE in cdkd
+    // state — only the live read can have produced it.
+    expect(createCalls[0]!.input['ResourcesToImport']).toEqual([
+      {
+        ResourceType: 'AWS::EC2::SecurityGroupIngress',
+        LogicalResourceId: 'SshIn',
+        ResourceIdentifier: { Id: RULE_ID },
+      },
+    ]);
+  });
+
+  it('without deps.ec2Client the same row BLOCKS the run — the state-only refusal', async () => {
+    const { tree, stateBackend, cfnClient, calls, lockManager } = buildPreheal();
+
+    await expect(
+      runPerStackImportLoop({
+        rootStackName: 'Root',
+        rootRegion: 'us-east-1',
+        rootStackInfoNestedTemplates: {},
+        rootTemplateFormat: 'json',
+        tree,
+        rootTemplate: INGRESS_TEMPLATE,
+        cfnStackNameOverrides: { childMap: new Map() },
+        rootParameters: [],
+        deps: {
+          cfnClient,
+          stateBackend,
+          lockManager,
+          uploadOpts: { stateBucket: STATE_BUCKET },
+          lockOwner: 'tester@host:1234',
+        },
+        options: {
+          dryRun: false,
+          yes: true,
+          includeNonImportable: false,
+          recreateImportUnsupported: true,
+        },
+      })
+    ).rejects.toThrow(/SshIn.*attributes\.Id is missing or empty/s);
+
+    expect(ec2Calls).toBe(0);
+    expect(calls.filter((c) => c.name === 'CreateChangeSet')).toEqual([]);
   });
 });
