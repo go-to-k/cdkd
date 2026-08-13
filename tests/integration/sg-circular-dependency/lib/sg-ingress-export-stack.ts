@@ -16,21 +16,34 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  *
  * `cdkd export` is all-or-nothing: `buildImportPlan` collects every resource it
  * cannot resolve into `blocked` and aborts the whole run before it prints the
- * plan — under `--dry-run` too. The circular-ref stack's `ec2.Vpc` emits an
- * `AWS::EC2::Route`, whose CFn `primaryIdentifier` is the two-field
- * `[RouteTableId, CidrBlock]` with no composite-id splitter registered in
- * `src/cli/commands/export.ts` — the gap issue #1771 tracks — so the export
- * there aborts on the ROUTE and the ingress rows are never reached. Narrowing
- * that fixture's VPC to dodge the route would quietly drop the IGW / route
- * destroy ordering it already covers.
+ * plan — under `--dry-run` too. So ONE unrelated unresolvable type anywhere in
+ * the stack hides this assertion.
  *
- * So this stack is deliberately the SMALLEST shape that reaches the ingress
+ * That was originally a hard blocker: the circular-ref stack's `ec2.Vpc` emits
+ * an `AWS::EC2::Route`, which had no composite-id splitter. Issue #1771 has
+ * since registered one, so the circular-ref stack probably exports cleanly
+ * today — but "probably" is the point. Its `ec2.Vpc` will keep acquiring types
+ * as CDK evolves (an IPv6 CIDR would pull in `AWS::EC2::VPCCidrBlock`, still
+ * unregistered — issue #1788), and each one can abort this assertion for
+ * reasons that have nothing to do with the rule id. Narrowing that fixture's
+ * VPC instead would quietly drop the IGW / route destroy ordering it already
+ * covers.
+ *
+ * So this stack stays deliberately the SMALLEST shape that reaches the ingress
  * rows: an L1 VPC with no subnets, no internet gateway and no route table
  * entries, plus the same SG-to-SG circular pair. Every type in it resolves to a
  * single-field CFn identifier that cdkd's physical id already IS
  * (`AWS::EC2::VPC` -> `VpcId`, `AWS::EC2::SecurityGroup` -> `Id`), leaving
  * `AWS::EC2::SecurityGroupIngress` as the only row whose identifier has to come
  * from the recorded attribute.
+ *
+ * ## What this does NOT prove
+ *
+ * `--dry-run` prints the plan and stops, so this arm proves cdkd RESOLVES the
+ * identifier — not that CloudFormation ACCEPTS it. That second half is covered
+ * by `tests/integration/export`, whose fixture gained a standalone ingress rule
+ * and executes a real IMPORT changeset, then asserts CFn's own
+ * `PhysicalResourceId` for it (`^sgr-[0-9a-f]+$`).
  */
 export class SgIngressExportStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

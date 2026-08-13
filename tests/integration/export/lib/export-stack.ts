@@ -269,6 +269,33 @@ export class ExportStack extends cdk.Stack {
       tags: [{ key: 'Name', value: `cdkd-export-test-${suffix}` }],
     });
 
+    // ── Standalone security-group ingress (COMPOSITE_PHYSICAL_ID_IDENTIFIERS, #1761) ──
+    // A different family from the four above: cdkd's physicalId is the
+    // composite `<groupId>|<ipProtocol>|<fromPort>|<toPort>` its own revoke call
+    // needs, while CFn's primaryIdentifier is the SINGLE read-only field `Id`
+    // holding the `sgr-…` rule id AWS mints — which is not any segment of that
+    // composite. So the identifier cannot be SPLIT out of the physical id; it is
+    // resolved from the `Id` attribute `EC2Provider` records (issue #1761), and
+    // only a real IMPORT changeset proves CFn accepts it.
+    //
+    // This is the first member of `COMPOSITE_PHYSICAL_ID_IDENTIFIERS` in this
+    // fixture — its three ARN-shaped siblings (the two AppSync children and the
+    // S3 Tables table) are still unit-tested only. Deliberately not spelled as
+    // type literals: the integ coverage-matrix generator scans this file for
+    // `AWS::Service::Type` strings and would count them as covered here.
+    const ingressSg = new ec2.CfnSecurityGroup(this, 'IngressSg', {
+      groupDescription: `cdkd-export-test-${suffix} sgr- identifier probe`,
+      vpcId: vpc.ref,
+    });
+    new ec2.CfnSecurityGroupIngress(this, 'SgIngress', {
+      groupId: ingressSg.attrGroupId,
+      ipProtocol: 'tcp',
+      fromPort: 443,
+      toPort: 443,
+      cidrIp: '10.199.0.0/16',
+      description: 'HTTPS from within the fixture VPC',
+    });
+
     // ── Lambda async-invoke config (composite-id splitter, #1771) ───
     // cdkd stores `<functionName>|<qualifier>`; CFn identifies it by
     // [FunctionName, Qualifier] with NO read-only fields, so unlike the two

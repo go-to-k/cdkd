@@ -101,6 +101,14 @@ assert_composite_id_plan() {
     '\(AWS::EC2::VPCGatewayAttachment\).*AttachmentType=IGW, VpcId=vpc-[0-9a-f]+'
   assert_plan_identifier "${log}" 'AWS::Lambda::EventInvokeConfig' \
     '\(AWS::Lambda::EventInvokeConfig\).*FunctionName=cdkd-export-test-[a-z0-9]+, Qualifier=\$LATEST'
+  # Issue #1761 — a DIFFERENT family from the four above: not a splitter but a
+  # COMPOSITE_PHYSICAL_ID_IDENTIFIERS resolution, whose value comes from the
+  # recorded `Id` attribute rather than from any segment of cdkd's physical id.
+  # `Id=sgr-…` is therefore the whole point: a plan line reading
+  # `Id=sg-…|tcp|443|443` is the pre-#1659 defect, and no plan line at all is
+  # the pre-#1761 refusal.
+  assert_plan_identifier "${log}" 'AWS::EC2::SecurityGroupIngress' \
+    '\(AWS::EC2::SecurityGroupIngress\).*Id=sgr-[0-9a-f]+'
 }
 
 # assert_cfn_physical_id <logicalId> <anchored-ERE>
@@ -476,6 +484,15 @@ case "${VARIANT}" in
     assert_cfn_physical_id 'Eip' '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
     assert_cfn_physical_id 'IgwAttachment' '^vpc-[0-9a-f]+\|IGW$'
     assert_cfn_physical_id 'HandlerEventInvokeConfig' '^cdkd-export-test-[a-z0-9]+\|\$LATEST$'
+    # Issue #1761. Measured the same way as the four above rather than derived:
+    # a throwaway CloudFormation stack carrying a standalone ingress rule
+    # (us-east-1, 2026-08-14) reported PhysicalResourceId `sgr-02345615af6d2db0d`
+    # — the BARE rule id, with `Ref` and `Fn::GetAtt .Id` returning that same
+    # value. So this is the one type in this block where CFn's third string
+    # agrees with the identifier. Anchored all the same: `^…$` rejects cdkd's
+    # `sg-…|tcp|443|443` composite, which an unanchored pattern would match
+    # nothing of, and rejects an `sgr-…|…` hybrid, which it would.
+    assert_cfn_physical_id 'SgIngress' '^sgr-[0-9a-f]+$'
     echo "[verify] step 4b2 ok"
 
     # Regression guard: phase-2 UPDATE must NOT have caused silent

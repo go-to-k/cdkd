@@ -640,34 +640,26 @@ field holding a value that is not any segment of cdkd's composite:
 | `AWS::AppSync::DataSource` | `DataSourceArn` | the recorded `DataSourceArn` attribute |
 | `AWS::AppSync::Resolver` | `ResolverArn` | the recorded `ResolverArn` attribute |
 | `AWS::S3Tables::Table` | `TableARN` | the recorded `TableARN` attribute |
-| `AWS::EC2::SecurityGroupIngress` | `Id` (the `sgr-…` rule id) | not yet — the export is refused |
+| `AWS::EC2::SecurityGroupIngress` | `Id` (the `sgr-…` rule id) | the recorded `Id` attribute |
 
-You do not need to do anything for the first three: a fresh deploy and
-`cdkd import` both record the attribute. A record that lacks it — the
-degraded cases listed above — makes `cdkd export` block that resource
-with a message naming the attribute; re-deploy the stack once to heal
-the record, then re-run the export.
+You do not need to do anything for any of them on a stack deployed by a
+current cdkd: a fresh deploy and `cdkd import` both record the
+attribute. A record that lacks it — the degraded cases listed above —
+makes `cdkd export` block that resource with a message naming the
+attribute; re-deploy the stack once to heal the record, then re-run the
+export.
 
-`AWS::EC2::SecurityGroupIngress` is the fourth member and is still
-REFUSED by `cdkd export`, with a message pointing at
-[#1659](https://github.com/go-to-k/cdkd/issues/1659) — see
-[cli-reference.md](cli-reference.md#cdkd-export-hand-a-stack-over-to-cloudformation).
-What changed with [#1761](https://github.com/go-to-k/cdkd/issues/1761)
-is the STATE side: cdkd now records the `sgr-…` rule id as the rule's
-`Id` attribute, so the value the export needs is finally there and
-turning that refusal into a resolution is a change to `cdkd export`
-alone. Two consequences worth knowing before it lands:
-
-- A rule deployed by a cdkd older than #1761 carries no `Id`, and will
-  be blocked with the same re-deploy-to-heal message the three types
-  above use.
-- `AuthorizeSecurityGroupIngress` returns the `sgr-…` id in its own
-  response, so a healing re-deploy has to be one that actually
-  re-creates the rule — a plain no-op deploy issues no call and records
-  nothing. cdkd updates this type by revoking and re-authorizing, so
-  changing ANY property of the rule mints a fresh id (as does
-  destroying and re-deploying it); the rule's traffic is interrupted
-  for the moment between the revoke and the re-authorize.
+`AWS::EC2::SecurityGroupIngress` records its `Id` only since
+[#1761](https://github.com/go-to-k/cdkd/issues/1761), and **its healing
+step is the one exception to "re-deploy once"**: AWS returns the `sgr-…`
+id only from `AuthorizeSecurityGroupIngress` itself, so a no-op deploy
+issues no call and records nothing. cdkd updates this type by revoking
+and re-authorizing, so changing ANY property of the rule mints a fresh
+id — as does destroying and re-deploying it. Either way the rule's
+traffic is interrupted for the moment between the revoke and the
+re-authorize, so pick the window. If that is unacceptable, remove the
+rule from the stack before exporting: it stays in AWS and can be
+re-declared in CloudFormation afterwards.
 
 Some composite types cannot be exported at all, for an unrelated reason:
 CloudFormation itself refuses `AWS::Glue::Table`,

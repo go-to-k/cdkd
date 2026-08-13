@@ -1642,7 +1642,8 @@
           "literal"
         ],
         "sg-circular-dependency": [
-          "l2"
+          "l2",
+          "literal"
         ],
         "vpc-lambda": [
           "l2"
@@ -1872,6 +1873,7 @@
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
+        "export",
         "fsx-lustre",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -1946,6 +1948,9 @@
           "l2",
           "literal"
         ],
+        "export": [
+          "l1"
+        ],
         "fsx-lustre": [
           "literal"
         ],
@@ -1981,6 +1986,7 @@
           "l2"
         ],
         "sg-circular-dependency": [
+          "l1",
           "l2",
           "literal"
         ],
@@ -2001,6 +2007,7 @@
       "integs": [
         "alb",
         "drift-revert-arrays",
+        "export",
         "sg-circular-dependency"
       ],
       "signals": {
@@ -2010,7 +2017,11 @@
         "drift-revert-arrays": [
           "l1"
         ],
+        "export": [
+          "l1"
+        ],
         "sg-circular-dependency": [
+          "l1",
           "literal"
         ]
       }
@@ -2593,7 +2604,9 @@
           "l1"
         ],
         "sg-circular-dependency": [
-          "l2"
+          "l1",
+          "l2",
+          "literal"
         ],
         "vpc-lambda": [
           "l2"
@@ -5979,6 +5992,7 @@
     "AWS::SSM::Document",
     "AWS::SecretsManager::RotationSchedule",
     "AWS::Serverless::Function",
+    "AWS::Service::Type",
     "AWS::Signer::SigningProfile",
     "AWS::VerifiedPermissions::PolicyStore",
     "AWS::WAFv2::IPSet",

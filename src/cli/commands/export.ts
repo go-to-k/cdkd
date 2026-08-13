@@ -1182,7 +1182,7 @@ interface CompositePhysicalIdIdentifier {
  * entry reads the value cdkd recorded in state (`attributes`), and refuses when
  * it is absent rather than guessing.
  *
- * ## Live measurement (us-east-1, 2026-08-13)
+ * ## Live measurement (us-east-1, 2026-08-13; the SG-ingress row 2026-08-14)
  *
  * Every field below is BOTH the type's single-field `primaryIdentifier` AND
  * `readOnlyProperties`, which is why each resolution returns an EMPTY
@@ -1194,7 +1194,19 @@ interface CompositePhysicalIdIdentifier {
  * | `AWS::AppSync::DataSource` | `DataSourceArn` | `attributes.DataSourceArn` |
  * | `AWS::AppSync::Resolver` | `ResolverArn` | `attributes.ResolverArn` |
  * | `AWS::S3Tables::Table` | `TableARN` | `attributes.TableARN` |
- * | `AWS::EC2::SecurityGroupIngress` | `Id` | NOTHING (issue #1761) |
+ * | `AWS::EC2::SecurityGroupIngress` | `Id` | `attributes.Id` (issue #1761) |
+ *
+ * The SG-ingress row is measured the same way as the rest, and separately
+ * against a real CloudFormation stack because the three strings that name one
+ * resource can disagree (issue #1771 found CFn reporting an EIP as the bare
+ * public IP while Cloud Control reports the composite, and the two disagreeing
+ * on field ORDER for `AWS::EC2::VPCGatewayAttachment`). For this type they all
+ * AGREE: `describe-type` says `primaryIdentifier` / `readOnlyProperties` are
+ * both exactly `["/properties/Id"]` with a full `create`/`delete`/`list`/
+ * `read`/`update` handler set and `ProvisioningType: FULLY_MUTABLE`, and a live
+ * stack carrying a standalone ingress rule reports `PhysicalResourceId`
+ * `sgr-02345615af6d2db0d`, with `Ref` and `Fn::GetAtt .Id` both returning that
+ * same value.
  *
  * All four declare a `read` handler, so CFn genuinely does accept them for
  * IMPORT — unlike `AWS::Glue::Table`, the type issue #1659's title names, which
@@ -1231,26 +1243,103 @@ const COMPOSITE_PHYSICAL_ID_IDENTIFIERS: Record<string, CompositePhysicalIdIdent
   }),
   // cdkd stores `<groupId>|<ipProtocol>|<fromPort>|<toPort>` (ec2-provider.ts's
   // `createSecurityGroupIngress`) — the tuple its own revoke call needs. CFn
-  // identifies the rule by the `sgr-...` id AWS mints, and cdkd records NOTHING
-  // that carries it (`attributes: {}` on both the success and the
-  // already-exists arm), so there is no value to resolve. Refuse with a pointer
-  // rather than send the composite: issue #1761 tracks recording the rule id,
-  // after which this entry becomes a `recordedArnIdentifier`-shaped resolution.
-  'AWS::EC2::SecurityGroupIngress': {
+  // identifies the rule by the `sgr-...` id AWS mints, which `EC2Provider`
+  // records as the `Id` attribute since issue #1761 (read off
+  // `AuthorizeSecurityGroupIngress`'s own response on the create path, off a
+  // `DescribeSecurityGroupRules` lookup on the idempotent already-exists arm,
+  // and off the adopted rule on the `--resource <logicalId>=sgr-…` import path).
+  // Until then this entry was a pure REFUSAL, because there was no value in
+  // state to resolve.
+  'AWS::EC2::SecurityGroupIngress': recordedRuleIdIdentifier(),
+};
+
+/**
+ * The `sgr-…` shape, anchored. Shape-only — the hex body's LENGTH is not
+ * pinned, because this exists to tell the identifier apart from the two other
+ * strings that can sit in the same state row, not to validate an id AWS itself
+ * minted:
+ *
+ *  - cdkd's own composite physicalId, which starts `sg-` (the parent group) and
+ *    carries `|` separators; and
+ *  - a bare `sg-…` group id, which a hand-edited row could put under
+ *    `attributes.Id`.
+ *
+ * Anchoring is what does the discriminating: `^sgr-[0-9a-f]+$` cannot match
+ * either, because `|` and the composite's trailing segments have nowhere to go.
+ * A bare `startsWith('sgr-')` would accept `sgr-abc|tcp|443|443`.
+ *
+ * Measured live (us-east-1, 2026-08-14) from a CloudFormation stack carrying a
+ * standalone ingress rule: `PhysicalResourceId` = `sgr-02345615af6d2db0d`, and
+ * both `Ref` and `Fn::GetAtt .Id` return that same value.
+ */
+const SG_RULE_ID_PATTERN = /^sgr-[0-9a-f]+$/;
+
+/**
+ * The {@link CompositePhysicalIdIdentifier} for `AWS::EC2::SecurityGroupIngress`.
+ *
+ * The `recordedArnIdentifier` sibling of the family, differing only in that the
+ * identifier is an `sgr-` rule id rather than an ARN — so it gets its own
+ * builder rather than an `isUsable` callback threaded through that one, which
+ * would make the ARN family's every message ("which is not a <service> ARN",
+ * "so cdkd records <field>") conditional on a shape it no longer owns.
+ *
+ * Two accepted sources, validated by the SAME predicate — the point #1771
+ * made about the EIP splitter's segment binding applies here verbatim:
+ * validating one side is not a discriminator.
+ *
+ * 1. `attributes.Id`, which every writer produces today — a fresh deploy, a
+ *    `cdkd import --resource <logicalId>=sgr-…`, and the recursive
+ *    `--migrate-from-cloudformation` walk (which hands CFn's
+ *    `PhysicalResourceId` to `EC2Provider.import` as `knownPhysicalId`, and
+ *    that value IS the `sgr-` id — measured above).
+ * 2. A physicalId that is ALREADY the bare rule id. **No cdkd path writes this
+ *    shape today** — unlike `AWS::S3Tables::Table`, whose Cloud-Control import
+ *    genuinely records the bare ARN — so it is accepted defensively rather than
+ *    because it is live: CFn's `PhysicalResourceId` for the type is exactly
+ *    this string, so a row hand-repaired from a CFn console listing, or written
+ *    by some future Cloud-Control routing of the type, carries an unambiguous
+ *    identifier that it would be perverse to refuse. Such a row is separately
+ *    BROKEN for `cdkd destroy` (`deleteSecurityGroupIngress` needs the 4-part
+ *    tuple), which is another reason to let the export hand it to CFn rather
+ *    than strand it.
+ */
+function recordedRuleIdIdentifier(): CompositePhysicalIdIdentifier {
+  const isUsableIdentifier = (value: string): boolean => SG_RULE_ID_PATTERN.test(value.trim());
+
+  return {
     field: 'Id',
-    resolve: ({ logicalId }) => {
+    resolve: ({ logicalId, physicalId, attributes }) => {
+      // Trimmed on RETURN as well as in the guard, matching the ARN family: a
+      // padded value is otherwise shipped with the whitespace and CFn rejects
+      // the identifier verbatim.
+      const recorded = attributes['Id'];
+      if (typeof recorded === 'string' && isUsableIdentifier(recorded)) {
+        return recorded.trim();
+      }
+      if (isUsableIdentifier(physicalId)) {
+        return physicalId.trim();
+      }
+      const recordedNote =
+        typeof recorded === 'string' && recorded.trim()
+          ? `attributes.Id is recorded as '${recorded.trim()}', which is not an 'sgr-…' ` +
+            `security-group rule id`
+          : `attributes.Id is missing or empty`;
       throw new Error(
         `cdkd's physical id for AWS::EC2::SecurityGroupIngress is the composite ` +
           `'<groupId>|<ipProtocol>|<fromPort>|<toPort>', but CloudFormation IMPORT identifies ` +
-          `the rule by the 'sgr-...' security-group rule id AWS assigns, which cdkd does not ` +
-          `record in state (tracked in https://github.com/go-to-k/cdkd/issues/1761). ` +
-          `Remove '${logicalId}' from the stack before exporting (the rule stays in AWS and can ` +
-          `be re-declared in CloudFormation afterwards), or destroy it first and let ` +
-          `CloudFormation create it fresh.`
+          `the rule by the 'sgr-...' security-group rule id AWS assigns, which cdkd state does ` +
+          `not record usably for '${logicalId}' (${recordedNote}). cdkd records it since ` +
+          `https://github.com/go-to-k/cdkd/issues/1761, so this rule was deployed by an older ` +
+          `binary. AWS returns the rule id only from AuthorizeSecurityGroupIngress itself, so a ` +
+          `no-op re-deploy will NOT heal the record: change any property of the rule (cdkd ` +
+          `revokes and re-authorizes, minting a fresh id, with a momentary traffic interruption) ` +
+          `or destroy and re-deploy it, then re-run cdkd export. Alternatively remove ` +
+          `'${logicalId}' from the stack before exporting — the rule stays in AWS and can be ` +
+          `re-declared in CloudFormation afterwards.`
       );
     },
-  },
-};
+  };
+}
 
 /**
  * Build the {@link CompositePhysicalIdIdentifier} for a type whose CFn

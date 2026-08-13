@@ -28,10 +28,14 @@
 #      The export arm runs against a SECOND stack, `CdkdSgIngressExportExample`
 #      — see `lib/sg-ingress-export-stack.ts` for why. Short version: `cdkd
 #      export` aborts the whole run on the first resource it cannot resolve
-#      (under `--dry-run` too), and this fixture's `ec2.Vpc` emits an
-#      `AWS::EC2::Route`, whose two-field CFn identifier has no composite-id
-#      splitter registered (issue #1771) — so the export would abort before ever
-#      reaching an ingress row.
+#      (under `--dry-run` too), so one unrelated unregistered type anywhere in
+#      this fixture's `ec2.Vpc` would hide the assertion. That minimal stack is
+#      insulated from it.
+#
+#      `--dry-run` proves cdkd RESOLVES the identifier, not that CloudFormation
+#      ACCEPTS it. The second half lives in `tests/integration/export`, whose
+#      fixture gained a standalone ingress rule, runs a real IMPORT changeset,
+#      and asserts CFn's own PhysicalResourceId for it.
 #
 # Asserts post-deploy: both SGs exist, each carries the cross-referencing
 # ingress rule (UserIdGroupPairs points at the OTHER SG). Asserts post-destroy:
@@ -403,7 +407,9 @@ assert_recorded_rule_ids "${EXPORT_STATE}" "${EXPORT_STACK}"
 # `blocked`, and aborts the whole run before the plan is ever printed — so the
 # `Id=sgr-...` line the loop below greps for does not exist. It also fails on
 # the PRE-#1659 behavior, which shipped the composite (`Id=sg-0abc|tcp|443|443`)
-# and does not match the `sgr-` shape either.
+# and does not match the `sgr-` shape either. Both halves of the claim are
+# checked: the state assertion above proves the PROVIDER recorded the id, this
+# one proves the EXPORT resolved that same recorded value.
 echo "==> Phase 1b: cdkd export --dry-run must resolve Id=sgr-... for every ingress row"
 # Assignment inside the `if` condition, not a bare `VAR=$(...)`: under `set -e`
 # a failing command substitution in a standalone assignment aborts the script
@@ -420,7 +426,7 @@ fi
 EXPORT_PLAN=$(printf '%s' "${EXPORT_PLAN_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
 
 if [ "${EXPORT_PLAN_EXIT}" -ne 0 ]; then
-  echo "FAIL: cdkd export --dry-run exited ${EXPORT_PLAN_EXIT} for ${EXPORT_STACK}. If the failure names AWS::EC2::SecurityGroupIngress, cdkd could not resolve the rule's CloudFormation identifier — check the state assertion above first: an sgr- shaped attributes.Id there means the PROVIDER side is fine and the gap is COMPOSITE_PHYSICAL_ID_IDENTIFIERS in src/cli/commands/export.ts still refusing the type (issue #1761 / #1659); a missing or non-sgr Id means the provider did not record it. Full output:" >&2
+  echo "FAIL: cdkd export --dry-run exited ${EXPORT_PLAN_EXIT} for ${EXPORT_STACK}. If the failure names AWS::EC2::SecurityGroupIngress, cdkd could not resolve the rule's CloudFormation identifier — the state assertion above discriminates: an sgr- shaped attributes.Id there means the PROVIDER recorded it and the gap is the COMPOSITE_PHYSICAL_ID_IDENTIFIERS resolution in src/cli/commands/export.ts; a missing or non-sgr Id means the provider did not record it (issue #1761). If the failure names some OTHER type, an unregistered composite identifier is aborting the whole plan before the ingress rows are reached — that is not a #1761 regression. Full output:" >&2
   printf '%s\n' "${EXPORT_PLAN}" >&2
   exit 1
 fi
