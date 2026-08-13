@@ -101,6 +101,20 @@ describe('parseEcrRegistryHost / looksLikeEcrHostWithForeignSuffix', () => {
       expect(parseEcrRegistryHost(uri('US-ISO-EAST-1', 'amazonaws.com'))).toBeUndefined();
       expect(parseEcrRegistryHost(uri('Us-IsO-eAsT-1', 'amazonaws.com'))).toBeUndefined();
     });
+
+    it('the GENUINE arms are actually ACCEPTED, not merely equal', () => {
+      // The mirror of the guard above. Without it, the two genuine-host casing
+      // assertions compare a verdict against a baseline in ANOTHER describe
+      // block, so a regression that rejected BOTH sides would satisfy them.
+      expect(parseEcrRegistryHost(uri('US-ISO-EAST-1', 'c2s.ic.gov'))).toEqual({
+        accountId: '123456789012',
+        region: 'us-iso-east-1',
+      });
+      expect(parseEcrRegistryHost(uri('Us-IsO-eAsT-1', 'c2s.ic.gov'))).toEqual({
+        accountId: '123456789012',
+        region: 'us-iso-east-1',
+      });
+    });
   });
 
   // The issue names the host SUFFIX as case-sensitive too, not just the region.
@@ -145,6 +159,58 @@ describe('parseEcrRegistryHost / looksLikeEcrHostWithForeignSuffix', () => {
 
     it('lower-cases a mixed-case region on a genuine host', () => {
       expect(parseEcrRegistryHost(uri('Us-EaSt-1', 'amazonaws.com'))?.region).toBe('us-east-1');
+    });
+  });
+
+  // A region id is `[a-z0-9-]`. Case was only ONE way to defeat the
+  // `startsWith` partition classification; the captured segment then becomes an
+  // `ECRClient({region})` and is interpolated into the fallback login endpoint,
+  // so anything that is not a region id is refused outright.
+  describe('a malformed region segment is refused (issue #1786 review)', () => {
+    it.each([
+      ['leading space', ' us-iso-east-1'],
+      ['trailing space', 'us-iso-east-1 '],
+      ['combining mark (not ASCII case-folding)', 'us-İso-east-1'],
+      ['underscore', 'us_east_1'],
+      ['leading hyphen', '-us-east-1'],
+      ['empty-ish', '-'],
+    ])('%s', (_label, region) => {
+      // Refused on a GENUINE-looking suffix too — the point is that cdkd cannot
+      // vouch for the classification, not that the suffix happened to mismatch.
+      expect(verdict(uri(region, 'amazonaws.com'))).toEqual({
+        parse: undefined,
+        foreignSuffix: false,
+      });
+    });
+
+    it.each([
+      // The inverted control: the guard must not narrow the accepted set. Each
+      // region is paired with the suffix its OWN partition uses — pairing them
+      // all with `amazonaws.com` makes `cn-north-1` a look-alike, so the arm
+      // would be rejected for a reason that has nothing to do with the guard.
+      ['commercial', 'us-east-1', 'amazonaws.com'],
+      ['china', 'cn-north-1', 'amazonaws.com.cn'],
+      ['govcloud', 'us-gov-west-1', 'amazonaws.com'],
+      ['a 2-digit-suffixed region', 'ap-southeast-4', 'amazonaws.com'],
+    ])('still accepts a real region id: %s', (_label, region, suffix) => {
+      expect(parseEcrRegistryHost(uri(region, suffix))).toEqual({
+        accountId: '123456789012',
+        region,
+      });
+    });
+  });
+
+  // Pins the bound the #1786 fix deliberately did NOT widen, so a future change
+  // to ECR_URI_HOST_REGEX cannot silently expand what cdkd `docker login`s to.
+  describe('the `dkr.ecr` LABELS stay case-sensitive (known bound, issue #1792)', () => {
+    it.each([
+      ['upper-cased labels', '123456789012.DKR.ECR.us-east-1.amazonaws.com/r:t'],
+      ['mixed-case labels', '123456789012.Dkr.Ecr.us-east-1.amazonaws.com/r:t'],
+    ])('%s is inert at BOTH entry points', (_label, imageUri) => {
+      // Not merely rejected by the suffix check — it does not match the host
+      // SHAPE at all, so it classifies as an ordinary public image and no
+      // diagnostic fires. That is the documented, safe failure direction.
+      expect(verdict(imageUri)).toEqual({ parse: undefined, foreignSuffix: false });
     });
   });
 
