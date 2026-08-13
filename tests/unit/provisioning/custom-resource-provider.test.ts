@@ -533,8 +533,20 @@ describe('CustomResourceProvider', () => {
     // the `!isSnsServiceToken` short-circuit must skip the GetFunction
     // pre-check entirely (issuing one against an SNS ARN would error
     // spuriously / waste a call). Regression guard for that short-circuit.
-    it('does NOT issue a GetFunction pre-check for an SNS ServiceToken', async () => {
-      const snsTopicArn = 'arn:aws:sns:us-east-1:123456789012:my-topic';
+    //
+    // Parametrized across partitions by issue #1815: this is the SECOND of the
+    // three call sites the SNS-vs-Lambda predicate gates, and it was pinned
+    // commercial-only. Pre-fix, a `aws-cn` / `aws-us-gov` SNS ServiceToken
+    // classified Lambda-backed here, so the delete issued a GetFunction
+    // pre-check against a TOPIC ARN — the predicate-level tests cannot see
+    // that, because they never reach this branch.
+    it.each([
+      ['aws', 'arn:aws:sns:us-east-1:123456789012:my-topic'],
+      ['aws-cn', 'arn:aws-cn:sns:cn-north-1:123456789012:my-topic'],
+      ['aws-us-gov', 'arn:aws-us-gov:sns:us-gov-west-1:123456789012:my-topic'],
+      ['aws-iso', 'arn:aws-iso:sns:us-iso-east-1:123456789012:my-topic'],
+    ])('does NOT issue a GetFunction pre-check for a %s SNS ServiceToken', async (_p, arn) => {
+      const snsTopicArn = arn;
 
       // S3 PutObject for placeholder
       mockS3Send.mockResolvedValueOnce({});

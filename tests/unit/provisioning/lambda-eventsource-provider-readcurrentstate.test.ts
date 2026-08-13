@@ -32,7 +32,10 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
-import { LambdaEventSourceMappingProvider } from '../../../src/provisioning/providers/lambda-eventsource-provider.js';
+import {
+  classifyEventSource,
+  LambdaEventSourceMappingProvider,
+} from '../../../src/provisioning/providers/lambda-eventsource-provider.js';
 
 describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
   let provider: LambdaEventSourceMappingProvider;
@@ -463,6 +466,73 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       const r = await readWithSource(arn);
       expect('FunctionResponseTypes' in r).toBe(false);
       expect('SourceAccessConfigurations' in r).toBe(false);
+    });
+
+    // The rewrite replaced a `startsWith` chain with a TABLE LOOKUP, and the
+    // service segment is user-controlled (it comes from the template's
+    // `EventSourceArn`). A bare `TABLE[service] ?? 'unknown'` reaches
+    // `Object.prototype`, so these names return a FUNCTION — which `??` never
+    // replaces, making `classifyEventSource` hand back a function typed as
+    // `EventSourceKind`. The `startsWith` chain being replaced had no such
+    // reach, so this is what keeps the rewrite behavior-preserving rather
+    // than merely equivalent on the happy path.
+    //
+    // Asserted on the classifier's RETURN VALUE, not through `readCurrentState`.
+    // That is deliberate and was measured: every production consumer is a
+    // `Set.has(kind)`, and a prototype member misses every set exactly as
+    // `'unknown'` does — so a behavior-level version of this row passed with
+    // the guard fully reverted. A test that cannot fail is worse than none,
+    // because it reads as coverage.
+    it.each([['constructor'], ['toString'], ['hasOwnProperty'], ['valueOf'], ['isPrototypeOf']])(
+      'classifies the Object.prototype key %s as unknown, not as a prototype member',
+      (service) => {
+        const kind = classifyEventSource({
+          EventSourceArn: `arn:aws:${service}:us-east-1:123:thing`,
+        });
+        expect(kind).toBe('unknown');
+        expect(typeof kind).toBe('string');
+      }
+    );
+
+    // The real services must still resolve — otherwise the row above could be
+    // satisfied by a lookup that returns 'unknown' for everything.
+    // Both partitions per row, per the #1745 convention: the commercial
+    // spelling is the counter-case proving the widening did not REPLACE the
+    // old behavior. `mq` and `rds`->`documentdb` had no commercial assertion
+    // anywhere before this, and the two placeholder sets cannot tell
+    // within-set kinds apart (sqs/kinesis/dynamodb, kafka/mq/documentdb), so
+    // a table typo between them was invisible to every behavior-level test.
+    it.each([
+      ['sqs', 'sqs'],
+      ['kinesis', 'kinesis'],
+      ['dynamodb', 'dynamodb'],
+      ['kafka', 'kafka'],
+      ['mq', 'mq'],
+      ['rds', 'documentdb'],
+    ])('classifies the %s service segment as %s in every partition', (service, expected) => {
+      expect(classifyEventSource({ EventSourceArn: `arn:aws:${service}:us-east-1:123:x` })).toBe(
+        expected
+      );
+      expect(
+        classifyEventSource({ EventSourceArn: `arn:aws-us-gov:${service}:us-gov-west-1:123:x` })
+      ).toBe(expected);
+      expect(
+        classifyEventSource({ EventSourceArn: `arn:aws-cn:${service}:cn-north-1:123:x` })
+      ).toBe(expected);
+    });
+
+    // The UPDATE path reaches the same classifier through
+    // `classifyEventSourceFromProperties`, which gates the
+    // `KINDS_WITH_STREAM_NUMERICS` / `KINDS_WITH_ZERO_BATCHING_WINDOW_DEFAULT`
+    // restores. The pre-fix bug broke those too — `unknown` in every
+    // non-commercial partition — so pinning only `readCurrentState` would
+    // leave half the reported defect uncovered.
+    it.each([
+      ['aws-us-gov', 'arn:aws-us-gov:kinesis:us-gov-west-1:123456789012:stream/s'],
+      ['aws-cn', 'arn:aws-cn:kinesis:cn-north-1:123456789012:stream/s'],
+      ['aws-iso', 'arn:aws-iso:kinesis:us-iso-east-1:123456789012:stream/s'],
+    ])('the property-bag adapter classifies a %s stream source too', (_partition, arn) => {
+      expect(classifyEventSource({ EventSourceArn: arn })).toBe('kinesis');
     });
   });
 });

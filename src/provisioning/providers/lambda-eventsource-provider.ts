@@ -87,7 +87,16 @@ const ARN_SERVICE_TO_EVENT_SOURCE_KIND: Readonly<Record<string, EventSourceKind>
   rds: 'documentdb',
 };
 
-function classifyEventSource(resp: {
+/**
+ * EXPORTED for tests only (issue #1815). Every production consumer is a
+ * `Set.has(kind)`, so the `Object.hasOwn` guard below is UNOBSERVABLE through
+ * behavior — a prototype member and `'unknown'` both miss every set. That was
+ * measured, not assumed: a behavior-level test for it passed with the guard
+ * reverted. Rather than ship an unverifiable guard or a test that only looks
+ * like one, the classifier's RETURN VALUE is asserted directly. Do not read the
+ * export as an invitation to call this from outside the provider.
+ */
+export function classifyEventSource(resp: {
   EventSourceArn?: string | undefined;
   SelfManagedEventSource?: unknown;
   AmazonManagedKafkaEventSourceConfig?: unknown;
@@ -104,7 +113,18 @@ function classifyEventSource(resp: {
   if (!arn) return 'unknown';
   const service = ARN_SERVICE_RE.exec(arn)?.[1];
   if (!service) return 'unknown';
-  return ARN_SERVICE_TO_EVENT_SOURCE_KIND[service] ?? 'unknown';
+  // `Object.hasOwn`, not a bare index + `??`: the service segment is
+  // user-controlled (it comes from the template's `EventSourceArn`), so
+  // `arn:aws:constructor:...` / `:toString:` / `:hasOwnProperty:` would reach
+  // `Object.prototype` and the lookup would return a FUNCTION — which `??`
+  // never replaces, so `classifyEventSource` would return a function typed as
+  // `EventSourceKind`. Harmless with today's four `Set.has()` consumers, which
+  // is precisely why it would go unnoticed until a `switch (kind)` or a logged
+  // kind met it. The `startsWith` chain this replaced had no such reach, so
+  // this guard is what keeps the rewrite behavior-preserving.
+  return Object.hasOwn(ARN_SERVICE_TO_EVENT_SOURCE_KIND, service)
+    ? ARN_SERVICE_TO_EVENT_SOURCE_KIND[service]!
+    : 'unknown';
 }
 
 /**

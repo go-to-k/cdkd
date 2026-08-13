@@ -544,6 +544,20 @@ describe('IAMManagedPolicyProvider', () => {
       }
     );
 
+    // The other two #1815 sites carry an `arn:notaws:` row; this one did not.
+    // `aws[a-z0-9-]*` is deliberately loose, so the segment that must remain
+    // load-bearing is the ACCOUNT (`:iam::aws:`) — a partition-shaped
+    // impostor with a 12-digit account is still a customer-managed policy and
+    // must be adopted, not refused.
+    it.each([
+      ['a non-AWS partition spelling', 'arn:notaws:iam::aws:policy/AdministratorAccess'],
+      ['an aws-prefixed impostor with a real account', 'arn:awsfoo:iam::123456789012:policy/Mine'],
+    ])('does not refuse %s', async (_label, arn) => {
+      mockSend.mockResolvedValueOnce({ Policy: { Arn: arn } });
+      const result = await provider.import!(makeInput({ knownPhysicalId: arn }));
+      expect(result).toEqual({ physicalId: arn, attributes: { PolicyArn: arn } });
+    });
+
     it('returns null when an ARN override does not exist on AWS', async () => {
       mockSend.mockRejectedValueOnce(
         new NoSuchEntityException({ $metadata: {}, message: 'gone' })

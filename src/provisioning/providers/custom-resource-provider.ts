@@ -266,6 +266,9 @@ const CR_LOG_TAIL_WARN_MAX_CHARS = 2000;
  * The trailing space is load-bearing: a handler's `print("REPORT: no bucket")`
  * emits `REPORT:` and must NOT be classified as boilerplate.
  */
+const CR_LOG_TAIL_BOILERPLATE =
+  /^(START|END|REPORT|XRAY|INIT_START|INIT_REPORT|RESTORE_START|RESTORE_REPORT|EXTENSION) /;
+
 /**
  * Matches an SNS topic ARN in ANY AWS partition (issue #1815).
  *
@@ -308,9 +311,6 @@ const SNS_SERVICE_TOKEN_ARN_RE = /^arn:aws[a-z0-9-]*:sns:/;
 function syntheticStackId(logicalId: string): string {
   return `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`;
 }
-
-const CR_LOG_TAIL_BOILERPLATE =
-  /^(START|END|REPORT|XRAY|INIT_START|INIT_REPORT|RESTORE_START|RESTORE_REPORT|EXTENSION) /;
 
 /**
  * `true` when the tail contains at least one line the HANDLER produced.

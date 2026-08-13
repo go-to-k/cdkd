@@ -36,22 +36,6 @@ import type {
 } from '../../types/resource.js';
 
 /**
- * AWS IAM Managed Policy Provider
- *
- * Implements resource provisioning for AWS::IAM::ManagedPolicy using the IAM SDK.
- * Cloud Control API does support this type, but a dedicated SDK provider wins
- * via Tier 1 of the provider registry and gives cdkd direct control over:
- *   - PolicyDocument updates (via CreatePolicyVersion + SetDefaultPolicyVersion +
- *     prune oldest non-default when at the 5-version limit)
- *   - Attachment fan-out (Groups / Roles / Users) on create + update
- *   - Detach-before-delete cleanup (a ManagedPolicy with attached principals
- *     or with non-default versions cannot be deleted directly)
- *
- * Physical id is the policy ARN (`arn:<partition>:iam::<account>:policy/<path><name>`)
- * since path is part of the identity — two policies with the same name in
- * different paths are distinct.
- */
-/**
  * Matches an AWS-managed IAM policy ARN in ANY AWS partition (issue #1815).
  *
  * AWS-managed policies are the ones whose ACCOUNT segment is the literal
@@ -74,6 +58,22 @@ import type {
  */
 const AWS_MANAGED_POLICY_ARN_RE = /^arn:aws[a-z0-9-]*:iam::aws:/;
 
+/**
+ * AWS IAM Managed Policy Provider
+ *
+ * Implements resource provisioning for AWS::IAM::ManagedPolicy using the IAM SDK.
+ * Cloud Control API does support this type, but a dedicated SDK provider wins
+ * via Tier 1 of the provider registry and gives cdkd direct control over:
+ *   - PolicyDocument updates (via CreatePolicyVersion + SetDefaultPolicyVersion +
+ *     prune oldest non-default when at the 5-version limit)
+ *   - Attachment fan-out (Groups / Roles / Users) on create + update
+ *   - Detach-before-delete cleanup (a ManagedPolicy with attached principals
+ *     or with non-default versions cannot be deleted directly)
+ *
+ * Physical id is the policy ARN (`arn:<partition>:iam::<account>:policy/<path><name>`)
+ * since path is part of the identity — two policies with the same name in
+ * different paths are distinct.
+ */
 export class IAMManagedPolicyProvider implements ResourceProvider {
   private iamClient: IAMClient;
   private logger = getLogger().child('IAMManagedPolicyProvider');
