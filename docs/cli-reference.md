@@ -2469,6 +2469,18 @@ own `state.json` sat preserved describing live, billing resources that nothing
 named any more. If you scripted around the old exit code, note that this
 destroy now exits 2.
 
+**`cdkd deploy` is affected too.** Removing an `AWS::CloudFormation::Stack`
+from your template routes that row through the deploy engine's DELETE path, so
+a child that fails to destroy now **fails the deploy** (and its siblings roll
+back) where it previously recorded the row as deleted and carried on. Same
+correctness argument, wider blast radius: verify a nested stack destroys
+cleanly before removing it from the template.
+
+The remedy the summary prints names the CHILD's state file
+(`cdkd state orphan <parent>~<child>`), not the parent's — the resource that
+failed lives in the child, and orphaning the parent would drop the very row
+that keeps the child reachable.
+
 The run-level exit message counts **entries**, not resources: a skipped
 nested-stack row is one entry however many of the child's own resources it
 covers. The per-stack summary lines above it give the exact breakdown.

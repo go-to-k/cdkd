@@ -1033,14 +1033,29 @@ than a dangling pointer: with the parent's own `errorCount` still 0 its
 `preserveState` evaluated to FALSE, so the parent deleted its `state.json` AND
 the exports index and exited 0, leaving the child's preserved `state.json`
 describing live resources with nothing naming it. This was a deliberate
-BEHAVIOR CHANGE — a nested-stack delete that previously reported success now
-fails the parent's destroy. Two details generalize to any provider that
-recurses: the throw's wording must avoid `not found` / `does not exist`, since
-the destroy runner's catch reads those as an idempotent already-deleted success
-and DROPS the row (the very outcome the throw exists to prevent); and the split
-between the three fields is decided by what was ATTEMPTED, not by whether the
-run was clean — so do not collapse them into one "anything non-clean throws"
-rule.
+BEHAVIOR CHANGE, and it reaches BOTH callers of `delete()`: `cdkd destroy` /
+`cdkd state destroy` (the parent's row fails, exit 2) AND `cdkd deploy`, where
+REMOVING a nested stack from the template routes the row through the deploy
+engine's DELETE path — so a failing child now fails the DEPLOY and triggers its
+rollback. That asymmetry is worth internalizing before adding a throw anywhere:
+a `{ outcome: 'skipped' }` return value IS still discarded by the deploy-side
+delete call sites (issue #1762), but a throw cannot be ignored by any of them.
+
+Three more details generalize to any provider that recurses:
+
+- the throw's wording must avoid `not found` / `does not exist` / `No policy
+  found` / `NoSuchEntity` / `NotFoundException` (plus the deploy engine's
+  `was not found` / `ResourceNotFoundException`), since both callers' catch
+  blocks read those as an idempotent already-deleted success and DROP the state
+  row — the very outcome the throw exists to prevent;
+- the split between the three fields is decided by what was ATTEMPTED, not by
+  whether the run was clean, so do not collapse them into one "anything
+  non-clean throws" rule; and
+- a REMEDY printed for a failed nested-stack row must name the CHILD's state
+  file. `destroy-runner.ts` collects `failedStateTargets` alongside #1752's
+  `skippedStateTargets` for exactly this: its last-resort
+  `cdkd state orphan <target>` hint used to name the parent, which would drop
+  the `Child` row the throw just preserved.
 
 Three things about it are decisions rather than accidents. The exit code is
 **not** a new policy: it is the same "state preserved, stack not destroyed"

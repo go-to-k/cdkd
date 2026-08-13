@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Integration test for NestedStackProvider.delete's child-result propagation.
 #
-# Issue https://github.com/go-to-k/cdkd/issues/1777 (the errorCount half) plus
-# the #1752 / #1774 negative control this fixture already carried ("a clean
-# child still reports deleted").
+# Issue https://github.com/go-to-k/cdkd/issues/1777 (the errorCount half).
+#
+# PROVENANCE: this fixture had NO verify.sh before this change — the integ
+# ledger records it as mode `standard`, i.e. /run-integ drove it with the plain
+# synth -> deploy -> destroy flow, and "a clean child still reports deleted" was
+# only ever an IMPLICIT consequence of that flow exiting 0. Phase C below makes
+# it an explicit assertion. From now on the ledger's mode column reads
+# `verify.sh` for this test, because /run-integ dispatches to a fixture's
+# verify.sh when one exists.
 #
 # The defect: `NestedStackProvider.delete` runs the child stack's destroy
 # through a nested DestroyRunner and used to inspect only `skippedCount`. When a
@@ -84,6 +90,11 @@ PROBE_KEY="cdkd-1777-probe.txt"
 # Set once the child bucket name is known, so cleanup can empty it.
 CHILD_BUCKET=""
 
+# Per-run scratch dir: two concurrent runs of this fixture (parallel lanes, a
+# re-run started before the first finished) would clobber each other's captured
+# destroy output on fixed /tmp paths, and the assertions read those files.
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cdkd-1777-XXXXXX")"
+
 echo "=== Nested-stack child-result propagation integ (issue #1777) ==="
 echo "Stack:        ${STACK}"
 echo "Child stack:  ${CHILD_STACK}"
@@ -109,6 +120,7 @@ cleanup() {
       --state-bucket "${BUCKET:-}" --region "${REGION}" --yes
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --state-bucket "${BUCKET:-}" --region "${REGION}" --yes
+    rm -rf "${WORK_DIR:-}"
   )
 }
 trap cleanup EXIT
@@ -144,19 +156,19 @@ echo "PASS: child bucket resolved from child state: ${CHILD_BUCKET}"
 # Phase B: make the child's bucket delete FAIL, then destroy the parent.
 # ---------------------------------------------------------------------------
 echo "=== Phase B: seeding an object so the child's bucket delete fails ==="
-printf 'cdkd issue 1777 probe object\n' > /tmp/cdkd-1777-probe.txt
+printf 'cdkd issue 1777 probe object\n' > "${WORK_DIR}/probe.txt"
 aws s3api put-object \
   --bucket "${CHILD_BUCKET}" --key "${PROBE_KEY}" \
-  --body /tmp/cdkd-1777-probe.txt --region "${REGION}" >/dev/null
+  --body "${WORK_DIR}/probe.txt" --region "${REGION}" >/dev/null
 echo "PASS: probe object PUT into ${CHILD_BUCKET}"
 
 echo "=== Phase B: destroying ${STACK} (expected to FAIL) ==="
 rc=0
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --region "${REGION}" --state-bucket "${BUCKET}" --force \
-  > /tmp/cdkd-1777-destroy-fail.log 2>&1 || rc=$?
-strip_ansi < /tmp/cdkd-1777-destroy-fail.log > /tmp/cdkd-1777-destroy-fail.txt
-cat /tmp/cdkd-1777-destroy-fail.txt
+  > "${WORK_DIR}/destroy-fail.log" 2>&1 || rc=$?
+strip_ansi < "${WORK_DIR}/destroy-fail.log" > "${WORK_DIR}/destroy-fail.txt"
+cat "${WORK_DIR}/destroy-fail.txt"
 
 # Exit code 2 is cdkd's "state preserved, stack not destroyed" contract
 # (PartialFailureError). Pre-fix this run exited 0.
@@ -167,13 +179,13 @@ fi
 echo "PASS: failing destroy exited 2 (PartialFailureError)"
 
 # The line the issue is about: the parent must NOT assert the child is gone.
-if grep -qE '✓ Child \(AWS::CloudFormation::Stack\) deleted' /tmp/cdkd-1777-destroy-fail.txt; then
+if grep -qE '✓ Child \(AWS::CloudFormation::Stack\) deleted' "${WORK_DIR}/destroy-fail.txt"; then
   echo "FAIL: parent reported the nested stack DELETED while the child failed" >&2
   exit 1
 fi
 echo "PASS: no '✓ Child (AWS::CloudFormation::Stack) deleted' line on the failing run"
 
-if ! grep -q "Nested stack ${CHILD_STACK} failed to destroy" /tmp/cdkd-1777-destroy-fail.txt; then
+if ! grep -q "Nested stack ${CHILD_STACK} failed to destroy" "${WORK_DIR}/destroy-fail.txt"; then
   echo "FAIL: the parent's failure did not name the child stack's destroy failure" >&2
   exit 1
 fi
@@ -181,8 +193,16 @@ echo "PASS: the failure names the child stack"
 
 # The three things the pre-fix path destroyed: the parent state file, the
 # parent's row pointing at the child, and the child's own state file.
-aws s3api head-object --bucket "${BUCKET}" --key "${PARENT_KEY}" --region "${REGION}" >/dev/null
-aws s3api head-object --bucket "${BUCKET}" --key "${CHILD_KEY}" --region "${REGION}" >/dev/null
+# Wrapped rather than left bare: an unwrapped head-object aborts via `set -e`
+# with a raw AWS error, and every other check here reports `FAIL: ...`.
+if ! aws s3api head-object --bucket "${BUCKET}" --key "${PARENT_KEY}" --region "${REGION}" >/dev/null; then
+  echo "FAIL: the parent state.json was DELETED by the failing destroy" >&2
+  exit 1
+fi
+if ! aws s3api head-object --bucket "${BUCKET}" --key "${CHILD_KEY}" --region "${REGION}" >/dev/null; then
+  echo "FAIL: the child state.json was DELETED by the failing destroy" >&2
+  exit 1
+fi
 echo "PASS: parent AND child state files both survived the failed destroy"
 
 parent_state="$(aws s3 cp "s3://${BUCKET}/${PARENT_KEY}" - --region "${REGION}")"
@@ -198,6 +218,25 @@ if [ "${has_child_row}" != "yes" ]; then
 fi
 echo "PASS: the parent's pointer to the child stack is preserved"
 
+# The child state file EXISTING is not discriminating on its own — the child
+# runner preserved it pre-fix too (its own errorCount was non-zero). What the
+# fix has to buy is that the still-live BUCKET is still listed in it, so the
+# user has an id to go and delete.
+child_state_after="$(aws s3 cp "s3://${BUCKET}/${CHILD_KEY}" - --region "${REGION}")"
+child_bucket_row="$(printf '%s' "${child_state_after}" | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+for v in s["resources"].values():
+    if v["resourceType"] == "AWS::S3::Bucket":
+        print(v["physicalId"])
+        break
+')"
+if [ "${child_bucket_row}" != "${CHILD_BUCKET}" ]; then
+  echo "FAIL: the child state no longer lists the un-deleted bucket (got '${child_bucket_row}', want '${CHILD_BUCKET}')" >&2
+  exit 1
+fi
+echo "PASS: the child state still lists the un-deleted bucket ${CHILD_BUCKET}"
+
 # ---------------------------------------------------------------------------
 # Phase C: negative control — with the blocker removed, the destroy is clean.
 # ---------------------------------------------------------------------------
@@ -207,14 +246,14 @@ aws s3api delete-object \
 
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --region "${REGION}" --state-bucket "${BUCKET}" --force \
-  > /tmp/cdkd-1777-destroy-ok.log 2>&1
-strip_ansi < /tmp/cdkd-1777-destroy-ok.log > /tmp/cdkd-1777-destroy-ok.txt
-cat /tmp/cdkd-1777-destroy-ok.txt
+  > "${WORK_DIR}/destroy-ok.log" 2>&1
+strip_ansi < "${WORK_DIR}/destroy-ok.log" > "${WORK_DIR}/destroy-ok.txt"
+cat "${WORK_DIR}/destroy-ok.txt"
 
 # The negative control this fixture has always carried: a CLEAN child still
 # reports deleted. Without it, "never report a nested stack deleted" would pass
 # every Phase B assertion while breaking every ordinary nested-stack destroy.
-if ! grep -qE '✓ Child \(AWS::CloudFormation::Stack\) deleted' /tmp/cdkd-1777-destroy-ok.txt; then
+if ! grep -qE '✓ Child \(AWS::CloudFormation::Stack\) deleted' "${WORK_DIR}/destroy-ok.txt"; then
   echo "FAIL: a clean child destroy no longer reports the nested stack deleted" >&2
   exit 1
 fi
@@ -230,5 +269,5 @@ echo "PASS: both state files and the child bucket are gone after the clean destr
 
 CHILD_BUCKET=""
 trap - EXIT INT TERM
-rm -f /tmp/cdkd-1777-probe.txt /tmp/cdkd-1777-destroy-*.log /tmp/cdkd-1777-destroy-*.txt
+rm -rf "${WORK_DIR}"
 echo "=== nested-stack (issue #1777) integ PASSED ==="

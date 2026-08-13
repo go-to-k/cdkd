@@ -35,6 +35,43 @@ export function isAbsoluteCrossPlatform(p: string): boolean {
 }
 
 /**
+ * The message `NestedStackProvider.delete` throws when the child stack's own
+ * destroy reported `errorCount > 0` (issue
+ * [#1777](https://github.com/go-to-k/cdkd/issues/1777)).
+ *
+ * Exported as a builder — rather than being inlined at the throw site — so a
+ * test that needs the exact string cannot drift onto a stale hand-written
+ * literal. `tests/unit/cli/destroy-runner-nested-child-failure.test.ts` drives
+ * the PARENT-side runner with a fake provider and needs the real wording,
+ * because the runner's catch classifies a delete failure by MESSAGE: an
+ * already-deleted-shaped phrase (`not found` / `does not exist` / …) is read as
+ * idempotent success and DROPS the state row, which is the exact outcome this
+ * throw exists to prevent. `tests/unit/provisioning/nested-stack-provider.test.ts`
+ * pins that property against both callers' phrase sets.
+ */
+export function nestedStackChildFailureMessage(
+  childStackName: string,
+  errorCount: number,
+  alsoSkippedCount: number,
+  alsoInterrupted: boolean
+): string {
+  const extra: string[] = [];
+  if (alsoSkippedCount > 0) extra.push(`${alsoSkippedCount} resource(s) were also skipped`);
+  if (alsoInterrupted) extra.push('the child destroy was also interrupted');
+  return (
+    `Nested stack ${childStackName} failed to destroy: ${errorCount} resource(s) ` +
+    `failed to delete` +
+    // Empty parens would read as a dropped clause; the suffix appears only when
+    // there is something to say. Fenced by a test asserting no `()` in the
+    // no-extra case.
+    (extra.length > 0 ? ` (${extra.join('; ')})` : '') +
+    `. The child's state is PRESERVED and still lists them — inspect it with ` +
+    `'cdkd state show ${childStackName}', resolve the failure, and re-run the destroy. ` +
+    `The parent's record of this nested stack is kept so the child stays reachable.`
+  );
+}
+
+/**
  * Provider for `AWS::CloudFormation::Stack` — cdkd's recursive nested-stack
  * adapter. Issue [#459](https://github.com/go-to-k/cdkd/issues/459); see
  * [docs/design/459-nested-stacks.md](../../../docs/design/459-nested-stacks.md)
@@ -373,22 +410,28 @@ export class NestedStackProvider implements ResourceProvider {
     // `errorCount` still 0 — deleted the parent's `state.json` and the exports
     // index outright, exiting 0 over a child whose preserved state.json
     // describes live resources. Throwing keeps the row, preserves the parent's
-    // state, and surfaces a non-zero exit. This is deliberately a BEHAVIOR
-    // CHANGE: a nested-stack delete that previously reported success now fails
-    // the parent's destroy.
+    // state, and surfaces a non-zero exit.
+    //
+    // This is deliberately a BEHAVIOR CHANGE, and it reaches BOTH callers of
+    // `delete` — unlike a `{ outcome: 'skipped' }` return value, which the
+    // deploy-side sites still discard (issue #1762), a throw cannot be ignored:
+    //   - `cdkd destroy` / `cdkd state destroy` — the parent's nested-stack row
+    //     now fails (exit 2) where it previously reported the child deleted;
+    //   - `cdkd deploy` — REMOVING a nested stack from the template routes the
+    //     row through the deploy engine's DELETE path, so a child that fails to
+    //     destroy now fails the DEPLOY (and triggers its rollback) where it
+    //     previously recorded the row as deleted and carried on.
+    // The deploy-side reach is the wider half of the blast radius; it is the
+    // same correctness argument, but it turns a silent success into a failed
+    // deploy rather than a failed destroy.
     if (childResult.errorCount > 0) {
-      const extra: string[] = [];
-      if (childResult.skippedCount > 0) {
-        extra.push(`${childResult.skippedCount} resource(s) were also skipped`);
-      }
-      if (childResult.interrupted) extra.push('the child destroy was also interrupted');
       throw new Error(
-        `Nested stack ${childStackName} failed to destroy: ${childResult.errorCount} resource(s) ` +
-          `failed to delete` +
-          (extra.length > 0 ? ` (${extra.join('; ')})` : '') +
-          `. The child's state is PRESERVED and still lists them — inspect it with ` +
-          `'cdkd state show ${childStackName}', resolve the failure, and re-run the destroy. ` +
-          `The parent's record of this nested stack is kept so the child stays reachable.`
+        nestedStackChildFailureMessage(
+          childStackName,
+          childResult.errorCount,
+          childResult.skippedCount,
+          childResult.interrupted
+        )
       );
     }
 

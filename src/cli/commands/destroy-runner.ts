@@ -670,7 +670,16 @@ export async function runDestroyForStack(
   // `cdkd state show <parent>` sends the user to a file that does not contain
   // the bad id. Collected during the loop so the summary can name the real
   // target(s).
+  const stateTargetFor = (logicalId: string, resourceType: string): string =>
+    resourceType === NESTED_STACK_TYPE ? `${stackName}~${logicalId}` : stackName;
   const skippedStateTargets = new Set<string>();
+  // Issue #1777: the same is true of a FAILED row, and reaching it is new —
+  // `NestedStackProvider.delete` only started throwing (rather than reporting
+  // the child deleted) in that issue, so a nested-stack row can now land in the
+  // error arm. Its failing resource lives in the CHILD's state file, so the
+  // error arm's `cdkd state orphan <parent>` last-resort hint would drop the
+  // parent's `Child` row — the exact pointer the throw exists to preserve.
+  const failedStateTargets = new Set<string>();
 
   // Build the partial-destroy snapshot persisted by both the incremental
   // writes and the final preserve-write (issue #804). `outputs` / `imports`
@@ -1067,9 +1076,7 @@ export async function runDestroyForStack(
               )}`
             );
             result.skippedCount++;
-            skippedStateTargets.add(
-              resource.resourceType === NESTED_STACK_TYPE ? `${stackName}~${logicalId}` : stackName
-            );
+            skippedStateTargets.add(stateTargetFor(logicalId, resource.resourceType));
             ctx.eventRecorder?.record({
               eventType: 'RESOURCE_SKIPPED',
               stackName,
@@ -1148,6 +1155,7 @@ export async function runDestroyForStack(
             );
             logger.error(`  ✗ Failed to delete ${logicalId}:`, wrapped.message);
             result.errorCount++;
+            failedStateTargets.add(stateTargetFor(logicalId, resource.resourceType));
             ctx.eventRecorder?.record({
               eventType: 'RESOURCE_FAILED',
               stackName,
@@ -1161,6 +1169,7 @@ export async function runDestroyForStack(
           } else {
             logger.error(`  ✗ Failed to delete ${logicalId}:`, String(error));
             result.errorCount++;
+            failedStateTargets.add(stateTargetFor(logicalId, resource.resourceType));
             ctx.eventRecorder?.record({
               eventType: 'RESOURCE_FAILED',
               stackName,
@@ -1270,10 +1279,20 @@ export async function runDestroyForStack(
           `re-run, or delete them by hand and drop the records with ${orphanHint}.`
       );
     } else {
+      // Issue #1777: the failing row can be a nested stack, and then the
+      // resource that actually failed lives in the CHILD's state file. Naming
+      // the parent here would tell the user to `cdkd state orphan <parent>`,
+      // which drops the parent's `Child` row — the very pointer the throw was
+      // added to preserve, and the user would be left with the child's state
+      // file live but unreachable. Same targets-set treatment #1752 gave the
+      // skip arm. The `stackName` fallback keeps the hint non-empty if a future
+      // path ever increments `errorCount` without recording a target.
+      const failedTargets = failedStateTargets.size > 0 ? [...failedStateTargets] : [stackName];
+      const orphanHint = failedTargets.map((t) => `'cdkd state orphan ${t}'`).join(' / ');
       logger.warn(
         `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}, ${red(result.errorCount)} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up. ` +
-          `If the same resource keeps failing, 'cdkd state orphan ${stackName}' is the last resort: it removes the state record without deleting AWS resources.`
+          `If the same resource keeps failing, ${orphanHint} is the last resort: it removes the state record without deleting AWS resources.`
       );
     }
   } finally {

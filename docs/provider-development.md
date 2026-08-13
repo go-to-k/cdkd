@@ -1590,9 +1590,15 @@ not-gone signal, `errorCount > 0`, is a **THROW** rather than a skip (issue
 [#1777](https://github.com/go-to-k/cdkd/issues/1777)): a resource was attempted
 and FAILED, so the parent's row must fail too, and calling it a skip would
 assert the opposite of what happened (a skip means no AWS call was issued).
-Word such a throw so it contains neither `not found` nor `does not exist` — the
-destroy runner's catch reads those as an idempotent already-deleted success and
-DROPS the state record, which is the outcome the throw exists to prevent.
+Word such a throw so it contains none of `not found` / `does not exist` /
+`No policy found` / `NoSuchEntity` / `NotFoundException` (and the deploy
+engine's `was not found` / `ResourceNotFoundException`) — both callers' catch
+blocks read those as an idempotent already-deleted success and DROP the state
+record, which is the outcome the throw exists to prevent. Note the asymmetry
+between the two return channels: a `{ outcome: 'skipped' }` value is still
+DISCARDED by the deploy-side delete call sites (issue #1762), while a throw
+reaches every caller — so converting a skip into a throw also changes
+`cdkd deploy`'s behavior when the resource is removed from the template.
 
 Producers today: the malformed-composite-physicalId family
 (`src/provisioning/composite-id.ts`, five arms) plus the nested-stack

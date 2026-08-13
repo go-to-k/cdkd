@@ -32,6 +32,15 @@ class ChildNestedStack extends cdk.NestedStack {
     // `feedback_cdk_nested_stack_overridelogical_id.md` + issue #575.
     (this.nestedStackResource as cdk.CfnResource).overrideLogicalId('Child');
 
+    // DO NOT add `autoDeleteObjects: true` here. Its ABSENCE is load-bearing
+    // for `verify.sh` Phase B (issue #1777): without the CDK
+    // `aws-cdk:auto-delete-objects` tag, cdkd's CloudFormation-parity data
+    // guard (issue #1340) REFUSES to delete this bucket while it holds an
+    // object — which is how the fixture provokes a genuinely failing CHILD
+    // delete and asserts the parent's nested-stack row fails instead of
+    // reporting the live child stack as deleted. Adding it would silently turn
+    // Phase B into a clean destroy, and its assertions would stop testing
+    // anything while still passing.
     this.bucket = new s3.Bucket(this, 'Bucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
