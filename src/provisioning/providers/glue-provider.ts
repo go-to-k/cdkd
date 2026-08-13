@@ -76,8 +76,11 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { compositeIdFormatMessage, packCompositeId } from '../composite-id.js';
-import type { CompositeIdFormat } from '../composite-id.js';
+import {
+  compositeIdFormatMessage,
+  packCompositeId,
+  type CompositeIdFormat,
+} from '../composite-id.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   CreateContext,
@@ -87,6 +90,12 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/** Shape of an `AWS::Glue::Table` physicalId, for every decode site (issue #1657). */
+const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
+  label: 'Glue Table',
+  segments: ['databaseName', 'tableName'],
+};
 
 /**
  * Read a template-borne value that is about to be forwarded to a Glue read
@@ -386,12 +395,6 @@ function resolveTableIdentity(input: {
  * Glue CreateDatabase/CreateTable are synchronous - the CC API adds unnecessary
  * polling overhead for operations that complete immediately.
  */
-/** Shape of an `AWS::Glue::Table` physicalId, for every decode site (issue #1657). */
-const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
-  label: 'Glue Table',
-  segments: ['databaseName', 'tableName'],
-};
-
 export class GlueProvider implements ResourceProvider {
   private client: GlueClient | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];

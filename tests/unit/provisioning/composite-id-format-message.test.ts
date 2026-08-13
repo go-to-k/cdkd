@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   compositeIdFormatMessage,
-  COMPOSITE_ID_SEPARATOR,
   type CompositeIdFormat,
 } from '../../../src/provisioning/composite-id.js';
 
@@ -25,21 +24,6 @@ describe('compositeIdFormatMessage (issue #1657)', () => {
     );
   });
 
-  it('renders a LITERAL segment verbatim — telling the user to substitute a fixed token would be wrong', () => {
-    const msg = compositeIdFormatMessage(
-      { label: 'VPCGatewayAttachment', segments: [{ literal: 'IGW' }, 'vpcId'] },
-      'MyAttachment',
-      'bad'
-    );
-    expect(msg).toContain('expected "IGW|<vpcId>"');
-    expect(msg).not.toContain('<IGW>');
-  });
-
-  it('joins with the module’s own separator constant, not a hardcoded pipe', () => {
-    const msg = compositeIdFormatMessage(TWO, 'MyTable', 'oops');
-    expect(msg).toContain(`<databaseName>${COMPOSITE_ID_SEPARATOR}<tableName>`);
-  });
-
   it('carries a second accepted form when the type has one', () => {
     const msg = compositeIdFormatMessage(
       {
@@ -55,11 +39,24 @@ describe('compositeIdFormatMessage (issue #1657)', () => {
     );
   });
 
+  it('renders every segment as a placeholder — a message must never name a token no packer emits', () => {
+    // The pre-review cut had a `{ literal }` segment arm, used at exactly one
+    // site to render `IGW|<vpcId>` on the belief that `IGW` was a fixed token
+    // cdkd packs. It is not, so the arm was deleted rather than corrected.
+    const msg = compositeIdFormatMessage(
+      { label: 'VPCGatewayAttachment', segments: ['internetGatewayId', 'vpcId'] },
+      'MyAttachment',
+      'bad'
+    );
+    expect(msg).toContain('expected "<internetGatewayId>|<vpcId>"');
+  });
+
   it('under `skipping` says the AWS resource survives and the destroy still reports success', () => {
     const msg = compositeIdFormatMessage(TWO, 'MyTable', 'oops', { skipping: true });
     expect(msg).toContain('expected "<databaseName>|<tableName>"');
     expect(msg).toContain('LEFT IN PLACE');
     expect(msg).toContain('successful');
+    expect(msg).toContain("replacement / rollback deletes");
   });
 
   it('the default (throw) variant carries NO skip clause', () => {

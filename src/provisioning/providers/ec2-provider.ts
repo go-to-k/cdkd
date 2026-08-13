@@ -109,6 +109,34 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 
+/** Shapes of the four `AWS::EC2::*` composite physicalIds (issue #1657). */
+const EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT: CompositeIdFormat = {
+  label: 'VPCGatewayAttachment',
+  // Matches `createVpcGatewayAttachment`'s packer, which emits the REAL
+  // `internetGatewayId`. The pre-#1657 text said `IGW|VpcId`; `IGW` is a token
+  // no code path produces, and a user repairing state.json as instructed would
+  // have called `DetachInternetGateway(InternetGatewayId: "IGW")`. A
+  // Cloud-Control-written record can carry an attachment TYPE here instead
+  // (`InternetGateway` / `VPN` — see `export.ts`), which the message does not
+  // try to express: the shape it names is the one cdkd's own packer writes.
+  segments: ['internetGatewayId', 'vpcId'],
+};
+
+const EC2_ROUTE_ID_FORMAT: CompositeIdFormat = {
+  label: 'Route',
+  segments: ['routeTableId', 'destination'],
+};
+
+const EC2_SG_INGRESS_ID_FORMAT: CompositeIdFormat = {
+  label: 'SecurityGroupIngress',
+  segments: ['groupId', 'ipProtocol', 'fromPort', 'toPort'],
+};
+
+const EC2_NETWORK_ACL_ENTRY_ID_FORMAT: CompositeIdFormat = {
+  label: 'NetworkAclEntry',
+  segments: ['networkAclId', 'ruleNumber', 'egress'],
+};
+
 /**
  * The `AWS::EC2::Route` destination keys, in CloudFormation's own precedence
  * order — which is also the order `createRoute`'s
@@ -275,29 +303,6 @@ function canonicalizeSgInlineRuleProtocols(
  * - AWS::EC2::SecurityGroupIngress
  * - AWS::EC2::Instance
  */
-/** Shapes of the four `AWS::EC2::*` composite physicalIds (issue #1657). */
-const EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT: CompositeIdFormat = {
-  label: 'VPCGatewayAttachment',
-  // `IGW` is a fixed token cdkd packs, not a value the user substitutes — which
-  // is why `CompositeIdShapeSegment` has a literal form at all.
-  segments: [{ literal: 'IGW' }, 'vpcId'],
-};
-
-const EC2_ROUTE_ID_FORMAT: CompositeIdFormat = {
-  label: 'Route',
-  segments: ['routeTableId', 'destination'],
-};
-
-const EC2_SG_INGRESS_ID_FORMAT: CompositeIdFormat = {
-  label: 'SecurityGroupIngress',
-  segments: ['groupId', 'protocol', 'fromPort', 'toPort'],
-};
-
-const EC2_NETWORK_ACL_ENTRY_ID_FORMAT: CompositeIdFormat = {
-  label: 'NetworkAclEntry',
-  segments: ['networkAclId', 'ruleNumber', 'egress'],
-};
-
 export class EC2Provider implements ResourceProvider {
   private ec2Client: EC2Client;
   private logger = getLogger().child('EC2Provider');
@@ -5001,7 +5006,7 @@ export class EC2Provider implements ResourceProvider {
    * Skipped (return `undefined`, falls through to the comparator's
    * "unsupported" outcome):
    *  - **AWS::EC2::VPCGatewayAttachment**: physical id is
-   *    `IGW|VpcId`. The two ids are immutable inputs to the SDK call;
+   *    `<internetGatewayId>|<vpcId>`. The two ids are immutable inputs to the SDK call;
    *    drift detection on this resource has no useful signal beyond
    *    existence verification (which the user can do via the parent IGW
    *    / VPC drift report).

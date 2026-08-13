@@ -214,17 +214,6 @@ export function packCompositeId(
 }
 
 /**
- * One position of a composite id's EXPECTED shape (issue
- * [#1657](https://github.com/go-to-k/cdkd/issues/1657)).
- *
- * A plain string is a PLACEHOLDER and renders `<name>`; `{ literal }` renders
- * verbatim. The distinction is not cosmetic — `AWS::EC2::VPCGatewayAttachment`
- * packs the fixed token `IGW` as its first segment, so rendering it `<IGW>`
- * would tell the user to substitute something there.
- */
-export type CompositeIdShapeSegment = string | { readonly literal: string };
-
-/**
  * The expected shape of a type's composite physicalId, for the DECODE sites.
  *
  * The sibling of {@link CompositeIdSegment}, which describes a pack. This one
@@ -238,8 +227,19 @@ export interface CompositeIdFormat {
    * `ProvisioningError`, and the prose reads better without it.
    */
   readonly label: string;
-  /** Segment positions in order. */
-  readonly segments: readonly CompositeIdShapeSegment[];
+  /**
+   * Segment names in order, each rendered `<name>`.
+   *
+   * Keep these in step with the type's `packCompositeId` segment names — the
+   * pack side is what actually produces the id, so a message naming anything
+   * else instructs the user to write a value no code path emits. An earlier
+   * cut of this change rendered `AWS::EC2::VPCGatewayAttachment` as
+   * `IGW|<vpcId>` on the belief that `IGW` was a fixed token cdkd packs; it is
+   * not (the packer emits the real `internetGatewayId`), and a user repairing
+   * state.json as instructed would have produced
+   * `DetachInternetGateway(InternetGatewayId: "IGW")`.
+   */
+  readonly segments: readonly string[];
   /**
    * A second accepted form, appended as `or <text>`. Only `AWS::S3Tables::Table`
    * has one today (a bare table ARN alongside the composite).
@@ -248,10 +248,8 @@ export interface CompositeIdFormat {
 }
 
 /** Render the expected id shape, e.g. `<databaseName>|<tableName>`. */
-function formatShape(segments: readonly CompositeIdShapeSegment[]): string {
-  return segments
-    .map((segment) => (typeof segment === 'string' ? `<${segment}>` : segment.literal))
-    .join(COMPOSITE_ID_SEPARATOR);
+function formatShape(segments: readonly string[]): string {
+  return segments.map((segment) => `<${segment}>`).join(COMPOSITE_ID_SEPARATOR);
 }
 
 /**
@@ -299,7 +297,8 @@ export function compositeIdFormatMessage(
 
   return (
     `${head}. Skipping the delete — the AWS resource is LEFT IN PLACE and cdkd will ` +
-    `report this destroy as successful, so delete it by hand (or repair the id in ` +
-    `state.json and re-run) if it still exists.`
+    `report this delete as successful, so delete it by hand (or repair the id in ` +
+    `state.json and re-run) if it still exists. NOTE this arm is reached from ` +
+    `cdkd destroy AND from the deploy engine's replacement / rollback deletes.`
   );
 }

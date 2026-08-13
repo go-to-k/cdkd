@@ -201,7 +201,11 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
     it('still refuses a genuinely unparseable id', async () => {
       await expect(
         provider.delete('MyTable', 'not-an-id', 'AWS::S3Tables::Table', {})
-      ).rejects.toThrow(/Invalid physicalId format/);
+      // The bare prefix matches EVERY constant, so it could not tell one site's
+      // format from another's — pin the shape (issue #1657 PR review).
+      ).rejects.toThrow(
+        'expected "<tableBucketARN>|<namespace>|<name>" or a table ARN'
+      );
     });
 
     it('still deletes a table recorded as the composite (no extra lookup)', async () => {

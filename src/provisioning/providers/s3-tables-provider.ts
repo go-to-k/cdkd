@@ -36,6 +36,18 @@ import type {
   CreateContext,
 } from '../../types/resource.js';
 
+/** Shapes of the two `AWS::S3Tables::*` composite physicalIds (issue #1657). */
+const S3_TABLES_NAMESPACE_ID_FORMAT: CompositeIdFormat = {
+  label: 'S3 Tables Namespace',
+  segments: ['tableBucketARN', 'namespace'],
+};
+
+const S3_TABLES_TABLE_ID_FORMAT: CompositeIdFormat = {
+  label: 'S3 Tables Table',
+  segments: ['tableBucketARN', 'namespace', 'name'],
+  alsoAccepts: 'a table ARN',
+};
+
 /**
  * Parse cdkd's composite namespace physicalId `<tableBucketARN>|<namespace>`.
  *
@@ -124,18 +136,6 @@ function tableIdentityFromGetTable(
  * S3 Tables API calls are synchronous - the CC API adds unnecessary
  * polling overhead for operations that complete immediately.
  */
-/** Shapes of the two `AWS::S3Tables::*` composite physicalIds (issue #1657). */
-const S3_TABLES_NAMESPACE_ID_FORMAT: CompositeIdFormat = {
-  label: 'S3 Tables Namespace',
-  segments: ['tableBucketARN', 'namespaceName'],
-};
-
-const S3_TABLES_TABLE_ID_FORMAT: CompositeIdFormat = {
-  label: 'S3 Tables Table',
-  segments: ['tableBucketARN', 'namespace', 'name'],
-  alsoAccepts: 'a table ARN',
-};
-
 export class S3TablesProvider implements ResourceProvider {
   private client: S3TablesClient | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
@@ -1479,9 +1479,8 @@ export class S3TablesProvider implements ResourceProvider {
     }
     if (resolvedParts === 'unparseable') {
       throw new ProvisioningError(
-        `applyTableTagsDiff: cannot derive table ARN from physicalId '${physicalId}' ` +
-          `(expected '<bucketArn>|<namespace>|<name>' or a table ARN) — refusing to silently ` +
-          `drop the tag update`,
+        `${compositeIdFormatMessage(S3_TABLES_TABLE_ID_FORMAT, logicalId, physicalId)}. ` +
+          `Cannot derive the table ARN for the tag update, and refusing to silently drop it.`,
         resourceType,
         logicalId,
         physicalId

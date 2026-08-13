@@ -67,8 +67,11 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { requireConfigArray } from '../config-shape.js';
-import { compositeIdFormatMessage, packCompositeId } from '../composite-id.js';
-import type { CompositeIdFormat } from '../composite-id.js';
+import {
+  compositeIdFormatMessage,
+  packCompositeId,
+  type CompositeIdFormat,
+} from '../composite-id.js';
 import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import type {
@@ -79,6 +82,22 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/** Shapes of the three `AWS::AppSync::*` child composite physicalIds (issue #1657). */
+const APPSYNC_DATASOURCE_ID_FORMAT: CompositeIdFormat = {
+  label: 'AppSync DataSource',
+  segments: ['apiId', 'name'],
+};
+
+const APPSYNC_RESOLVER_ID_FORMAT: CompositeIdFormat = {
+  label: 'AppSync Resolver',
+  segments: ['apiId', 'typeName', 'fieldName'],
+};
+
+const APPSYNC_APIKEY_ID_FORMAT: CompositeIdFormat = {
+  label: 'AppSync ApiKey',
+  segments: ['apiId', 'apiKeyId'],
+};
 
 /**
  * `AWS::AppSync::GraphQLApi` properties that map to a member of
@@ -133,22 +152,6 @@ const MUTABLE_GRAPHQL_API_CONFIG_PROPERTIES = [
  * - AWS::AppSync::Resolver
  * - AWS::AppSync::ApiKey
  */
-/** Shapes of the three `AWS::AppSync::*` child composite physicalIds (issue #1657). */
-const APPSYNC_DATASOURCE_ID_FORMAT: CompositeIdFormat = {
-  label: 'AppSync DataSource',
-  segments: ['apiId', 'name'],
-};
-
-const APPSYNC_RESOLVER_ID_FORMAT: CompositeIdFormat = {
-  label: 'AppSync Resolver',
-  segments: ['apiId', 'typeName', 'fieldName'],
-};
-
-const APPSYNC_APIKEY_ID_FORMAT: CompositeIdFormat = {
-  label: 'AppSync ApiKey',
-  segments: ['apiId', 'apiKeyId'],
-};
-
 export class AppSyncProvider implements ResourceProvider {
   private client: AppSyncClient | undefined;
   private s3Client: S3Client | undefined;

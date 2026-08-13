@@ -34,8 +34,11 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
-import { compositeIdFormatMessage, packCompositeId } from '../composite-id.js';
-import type { CompositeIdFormat } from '../composite-id.js';
+import {
+  compositeIdFormatMessage,
+  packCompositeId,
+  type CompositeIdFormat,
+} from '../composite-id.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -44,6 +47,12 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/** Shape of an `AWS::ApiGateway::Method` physicalId (issue #1657). */
+const APIGW_METHOD_ID_FORMAT: CompositeIdFormat = {
+  label: 'API Gateway Method',
+  segments: ['restApiId', 'resourceId', 'httpMethod'],
+};
 
 /**
  * AWS API Gateway Provider
@@ -62,12 +71,6 @@ import type {
  * - Deployment: Needs RestApiId from Ref resolution
  * - Stage: Needs RestApiId, StageName, DeploymentId from properties
  */
-/** Shape of an `AWS::ApiGateway::Method` physicalId (issue #1657). */
-const APIGW_METHOD_ID_FORMAT: CompositeIdFormat = {
-  label: 'API Gateway Method',
-  segments: ['restApiId', 'resourceId', 'httpMethod'],
-};
-
 export class ApiGatewayProvider implements ResourceProvider {
   private apiGatewayClient: APIGatewayClient;
   private logger = getLogger().child('ApiGatewayProvider');

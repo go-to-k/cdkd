@@ -127,5 +127,11 @@ describe('AppSync composite-id decode messages state the expected format (issue 
     mockSend.mockResolvedValue({});
     await provider.delete('MyResolver', 'abc|Query|field', 'AWS::AppSync::Resolver');
     expect(mockSend).toHaveBeenCalled();
+    // Without this the counter-case only proves the call happened, not that the
+    // guard stayed silent — a guard that warns AND proceeds would still pass.
+    expect(warnSpy).not.toHaveBeenCalled();
+    // `mockResolvedValue` is not drained by `clearAllMocks`; reset it so a case
+    // appended after this one does not inherit a primed response.
+    mockSend.mockReset();
   });
 });
