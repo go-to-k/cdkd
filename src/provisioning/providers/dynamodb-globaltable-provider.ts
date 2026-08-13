@@ -56,6 +56,13 @@ import {
   replayWarn,
   requireConfigString,
 } from '../config-shape.js';
+import {
+  WARM_THROUGHPUT_MEMBERS,
+  coerceWarmThroughput,
+  isWarmThroughputDecrease,
+  type WarmThroughputCoercion,
+  type WarmThroughputSpec,
+} from '../dynamodb-warm-throughput.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import type {
@@ -1150,6 +1157,54 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * The `WarmThroughput` block to put on ONE `GlobalSecondaryIndexUpdate`, or
+   * `undefined` when it must not be sent (issue #1857).
+   *
+   * ONE helper for all three `UpdateTable` send sites — the billing-flip
+   * ride-along, the `added` loop's `Create`, and the `modified` loop's
+   * `Update` — because three copies of a decrease guard is three chances to
+   * word one differently, and the whole point of {@link isWarmThroughputDecrease}
+   * is that the answer does not depend on which site asked.
+   *
+   * The `desired` argument is already COERCED (`toSdkGlobalSecondaryIndexes`
+   * did it), so an unusable block never reaches here at all: it was refused
+   * and reported during translation, and arrives as `undefined`. What is left
+   * for this helper is the one question translation cannot answer, because it
+   * needs live AWS state: would this call LOWER what AWS reports?
+   *
+   * The refusal is a WARN and a dropped member, not a throw. A decrease is a
+   * template that has fallen behind a value AWS grew on its own; failing the
+   * deploy over it would block every unrelated change to the same table, and
+   * there is no template edit that "fixes" it other than raising a number the
+   * user never chose.
+   */
+  private warmThroughputForSend(
+    indexName: string,
+    desired: WarmThroughputSpec | undefined,
+    liveWarmByIndexName: ReadonlyMap<string, WarmThroughputSpec>,
+    logicalId: string,
+    physicalId: string
+  ): WarmThroughputSpec | undefined {
+    if (!desired) return undefined;
+    const live = liveWarmByIndexName.get(indexName);
+    if (!isWarmThroughputDecrease(desired, live)) return desired;
+    const format = (spec: WarmThroughputSpec | undefined): string =>
+      WARM_THROUGHPUT_MEMBERS.filter((m) => spec?.[m] !== undefined)
+        .map((m) => `${m}=${spec?.[m]}`)
+        .join(', ') || '(none)';
+    this.logger.warn(
+      `DynamoDB GlobalTable ${logicalId}: GSI '${indexName}' on ${physicalId}: ` +
+        `WarmThroughput was NOT sent — the template asks for ${format(desired)} while AWS ` +
+        `reports ${format(live)}, and DynamoDB rejects a decrease ` +
+        `("decreasing WarmThroughput is not supported"). Warm throughput only rises with a ` +
+        `table's traffic, so a template below the live value can never be applied; raise it ` +
+        `to at least the live value, or remove it. Every other change to this index is ` +
+        `applied normally.`
+    );
+    return undefined;
+  }
+
+  /**
    * Add a single replica region. Issues one `UpdateTableCommand` with
    * `ReplicaUpdates: [{ Create: { RegionName, ... } }]` and polls
    * `DescribeTable` until the replica's `ReplicaStatus` flips to ACTIVE.
@@ -1382,6 +1437,28 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           extractLocalTags(previousProperties),
           extractLocalTags(properties)
         );
+      }
+
+      // LIVE per-index warm throughput, for the decrease guard the three
+      // `UpdateTable` send sites below share (issue #1857). Read off the
+      // describe this method already made rather than a second call, and built
+      // ONCE so the three sites cannot end up comparing against differently
+      // aged snapshots of the same table. `Status` is deliberately not carried:
+      // the guard compares NUMBERS, and a `WarmThroughput` still `UPDATING`
+      // reports the value it is moving to, which is the right thing to be at-
+      // or-below.
+      const liveWarmByIndexName = new Map<string, WarmThroughputSpec>();
+      for (const liveGsi of describeResp.Table?.GlobalSecondaryIndexes ?? []) {
+        const name = liveGsi.IndexName;
+        const warm = liveGsi.WarmThroughput;
+        if (typeof name !== 'string' || !warm) continue;
+        const spec: WarmThroughputSpec = {};
+        if (warm.ReadUnitsPerSecond !== undefined)
+          spec.ReadUnitsPerSecond = warm.ReadUnitsPerSecond;
+        if (warm.WriteUnitsPerSecond !== undefined) {
+          spec.WriteUnitsPerSecond = warm.WriteUnitsPerSecond;
+        }
+        if (Object.keys(spec).length > 0) liveWarmByIndexName.set(name, spec);
       }
 
       // Resolved BEFORE the flat-field block below (step 4 re-reads them for
@@ -2244,11 +2321,24 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             const previousWarm = previousByIndexName.get(indexName)?.WarmThroughput;
             const warmChanged =
               gsi.WarmThroughput !== undefined && !deepEqual(gsi.WarmThroughput, previousWarm);
+            // Issue #1857: a change is not automatically a SENDABLE change.
+            // AWS rejects a decrease, and this ride-along rides on a flip the
+            // user does want — forwarding a doomed member would fail the whole
+            // flip over a property that is not what they were changing.
+            const warmToSend = warmChanged
+              ? this.warmThroughputForSend(
+                  indexName,
+                  gsi.WarmThroughput,
+                  liveWarmByIndexName,
+                  logicalId,
+                  physicalId
+                )
+              : undefined;
             indexUpdates.push({
               Update: {
                 IndexName: indexName,
                 ProvisionedThroughput: gsi.ProvisionedThroughput,
-                ...(warmChanged && { WarmThroughput: gsi.WarmThroughput }),
+                ...(warmToSend && { WarmThroughput: warmToSend }),
               },
             });
             // Only a SURVIVING index is "handled" — step 6's `modified` loop
@@ -2720,6 +2810,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
       for (const gsi of gsiDiff.added) {
         if (!gsi.IndexName || !gsi.KeySchema || !gsi.Projection) continue;
+        const addedWarmToSend = this.warmThroughputForSend(
+          gsi.IndexName,
+          gsi.WarmThroughput,
+          liveWarmByIndexName,
+          logicalId,
+          physicalId
+        );
         const gsiUpdate: GlobalSecondaryIndexUpdate = {
           Create: {
             IndexName: gsi.IndexName,
@@ -2733,7 +2830,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             // GSI ADDED by a later update must carry it too — otherwise the
             // same template yields a different index depending on whether it
             // was in the first deploy or a subsequent one.
-            ...(gsi.WarmThroughput && { WarmThroughput: gsi.WarmThroughput }),
+            //
+            // Routed through the same guard as the other two sites (issue
+            // #1857) even though an index being CREATED has no live value to
+            // decrease from — so the guard passes it through here by
+            // construction. That is the point: one predicate answering for all
+            // three sites is what keeps them from diverging, and an `added`
+            // entry that turns out to exist live (the #1571 recovery baseline
+            // reaches this loop from a junk state record) then gets the same
+            // answer as everywhere else instead of an unguarded send.
+            ...(addedWarmToSend && { WarmThroughput: addedWarmToSend }),
           },
         };
         await this.dynamoDBClient.send(
@@ -2849,11 +2955,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // needless AWS-side risk, and the extra UpdateTable would also cost a
         // wait-for-ACTIVE.
         const previousSdk = previousSdkByName.get(gsi.IndexName);
+        let warmDecreaseRefused = false;
         if (
           gsi.WarmThroughput !== undefined &&
           !deepEqual(gsi.WarmThroughput, previousSdk?.WarmThroughput)
         ) {
-          update.WarmThroughput = gsi.WarmThroughput;
+          // Issue #1857: AWS rejects a decrease, so a template that has fallen
+          // behind a value AWS grew on its own would fail this index's whole
+          // UpdateTable — including the capacity edit the user actually made.
+          const warmToSend = this.warmThroughputForSend(
+            gsi.IndexName,
+            gsi.WarmThroughput,
+            liveWarmByIndexName,
+            logicalId,
+            physicalId
+          );
+          if (warmToSend) update.WarmThroughput = warmToSend;
+          else warmDecreaseRefused = true;
         }
         // A GSI whose only change is KeySchema / Projection produces no
         // throughput fields; AWS rejects an `Update` action with nothing
@@ -2865,7 +2983,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // which is wrong advice for an unresolved intrinsic and contradicts
           // the warning just emitted — the user would get two messages, one of
           // them misleading.
-          if (!billingFlipped && unresolvedMembers.length === 0) {
+          //
+          // `warmDecreaseRefused` is the same shape one issue later (#1857): a
+          // GSI whose ONLY change is a WarmThroughput decrease empties this
+          // update because cdkd DECLINED to send the member, and it has just
+          // said so in a message that names the property and the remedy.
+          // Adding "KeySchema / Projection are immutable, recreate the index"
+          // on top would be flatly wrong — nothing immutable changed, and
+          // recreating the index would not raise a warm throughput AWS itself
+          // grew.
+          if (!billingFlipped && unresolvedMembers.length === 0 && !warmDecreaseRefused) {
             this.logger.warn(
               `GSI '${gsi.IndexName}' on ${physicalId} changed in a way DynamoDB's ` +
                 `UpdateTable cannot express (KeySchema / Projection are immutable on an ` +
@@ -3868,7 +3995,49 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
         await this.waitForIndexesActive(physicalId, logicalId);
       }
-      await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
+      // ...and retry when AWS refuses ANYWAY (issue #1830). The gate above is
+      // necessary but not sufficient: it reads the PRE-DELETE describe, which
+      // is taken before the auto-scaling teardown loop above, and that loop
+      // issues a long sequence of application-autoscaling calls. An index can
+      // enter `UPDATING` inside that window — application auto-scaling can
+      // start a capacity change on an autoscaled index at any moment — so a
+      // table that was settled when we looked is not necessarily settled when
+      // `DeleteTable` lands. Measured on a real `dynamodb-globaltable` destroy
+      // (us-east-1, 2026-08-13): the delete failed, the very next `cdkd
+      // destroy` succeeded with no other change. Surfacing that as a hard
+      // `PartialFailureError` with state preserved makes the user re-run a
+      // destroy for a condition that clears itself in seconds.
+      //
+      // Retried provider-locally rather than by widening the shared
+      // `RETRYABLE_ERROR_MESSAGE_PATTERNS`: the same `ResourceInUseException`
+      // text also surfaces on CREATE / UPDATE paths where it is NOT
+      // self-clearing, and this is the one call site that can legitimately
+      // wait it out. Same scoping rationale as `isNameCooldownError` /
+      // `isRecreateRetryableError`.
+      let deleteAttempts = 0;
+      await withRetry(
+        async () => {
+          // Attempt 2+ can only be reached through the index-busy refusal
+          // below, so re-arm on the CONDITION rather than on the clock: an
+          // index backfill outlasts any fixed backoff grid, while this poll
+          // returns on its first `DescribeTable` once the index has settled.
+          if (deleteAttempts++ > 0) {
+            await this.waitForIndexesActive(physicalId, logicalId);
+          }
+          await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
+        },
+        logicalId,
+        {
+          maxRetries: DELETE_INDEX_BUSY_MAX_RETRIES,
+          // `isRetryable` is invoked as `(message, error)`; this classifier is
+          // message-only on purpose — AWS wraps the condition in a generic
+          // `ResourceInUseException`, whose NAME is shared with genuinely
+          // terminal conflicts, so the message is the only discriminator.
+          isRetryable: (message) => isIndexBusyDeleteError(message),
+          logger: this.logger,
+          ...(deleteTableRetryDelays.sleep ? { sleep: deleteTableRetryDelays.sleep } : {}),
+        }
+      );
       // DeleteTable is async; wait until DescribeTable returns
       // ResourceNotFoundException so siblings / verify steps observing
       // the table after destroy see it actually gone.
@@ -5230,6 +5399,15 @@ export function autoScalingResourceId(tableName: string, indexName?: string): st
 export const autoScalingRetryDelays: { sleep?: (ms: number) => Promise<void> } = {};
 
 /**
+ * Test seam for the index-busy `DeleteTable` retry's backoff (issue #1830),
+ * mirroring {@link autoScalingRetryDelays}. Production leaves `sleep`
+ * undefined so `withRetry`'s real schedule applies; a test injects a no-op so
+ * the ~47s budget does not have to be waited out. Kept SEPARATE from the
+ * auto-scaling seam so a test can slow one path without silencing the other.
+ */
+export const deleteTableRetryDelays: { sleep?: (ms: number) => Promise<void> } = {};
+
+/**
  * Resource ids per `DescribeScalableTargets` request. Kept at the API's
  * documented per-page ceiling rather than a larger guess — the request is
  * paginated anyway, and over-asking risks a `ValidationException` that would
@@ -5429,6 +5607,45 @@ function hasTransitionalIndex(
   return (indexes ?? []).some((gsi) => INDEX_TRANSITIONAL_STATUSES.has(gsi.IndexStatus ?? ''));
 }
 
+/**
+ * AWS's refusal when `DeleteTable` lands while one of the table's GSIs is
+ * mid-transition (issue #1830). Observed verbatim on a real destroy:
+ *
+ *   Attempt to change a resource which is still in use: Cannot delete table
+ *   while indexes are being created, updated, or deleted.
+ *
+ * Matched on the leading clause rather than on the whole sentence: the
+ * trailing status list is AWS wording that can gain a state without changing
+ * what the message MEANS, and the leading clause is already specific enough
+ * that nothing else in the DynamoDB surface produces it. Case-insensitive
+ * because the text arrives inside a wrapper prefix whose casing is not ours.
+ *
+ * Deliberately NOT keyed on the exception NAME: AWS reports this as a plain
+ * `ResourceInUseException`, which is the same name it uses for genuinely
+ * terminal conflicts (deleting a table that is `CREATING`, creating one that
+ * already exists). Retrying on the name would turn those into a 47s stall
+ * before the same failure.
+ */
+const INDEX_BUSY_DELETE_MESSAGE = /cannot delete table while indexes are being/i;
+
+function isIndexBusyDeleteError(message: string): boolean {
+  return INDEX_BUSY_DELETE_MESSAGE.test(message);
+}
+
+/**
+ * Retry budget for the index-busy `DeleteTable` refusal (issue #1830).
+ *
+ * Left at `withRetry`'s own default of 8 rather than raised: the WALL CLOCK
+ * here is set by {@link DynamoDBGlobalTableProvider['waitForIndexesActive']},
+ * which every retry re-runs and which polls for up to 15 minutes on its own,
+ * so the count bounds how many times AWS is allowed to disagree with that
+ * poll — not how long cdkd waits. Named rather than inlined because passing
+ * it at all is what opts this call out of `withRetry`'s dense
+ * IAM-propagation schedule, which would be wrong for a condition measured in
+ * seconds-to-minutes rather than sub-second.
+ */
+const DELETE_INDEX_BUSY_MAX_RETRIES = 8;
+
 /** Coerce a CFn numeric (CFn is stringly-typed) to a finite number. */
 function toFiniteNumber(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -5436,6 +5653,69 @@ function toFiniteNumber(value: unknown): number | undefined {
   const n = Number(value);
   return Number.isFinite(n) ? n : undefined;
 }
+
+// `WARM_THROUGHPUT_MEMBERS` / `WarmThroughputSpec` / `WarmThroughputCoercion` /
+// `coerceWarmThroughput` moved to `../dynamodb-warm-throughput.ts` — the same
+// stringly-typed-CFn coercion `AWS::DynamoDB::Table` needs (issue #1808), so
+// one type cannot start accepting a shape the other refuses. The one input the
+// two independent spellings had disagreed on was a whitespace-only string,
+// where a bare `Number('   ')` is 0 rather than NaN; the shared rule takes the
+// REFUSING answer, since that is not a capacity anyone declared.
+
+/**
+ * Build the {@link ThroughputDiagnostic} for a `WarmThroughput` block that did
+ * not survive coercion intact, or `undefined` when it did.
+ *
+ * Two distinct outcomes, worded differently because the remedy differs:
+ *  - PARTIAL — one member dropped, the other still sent. The call goes ahead;
+ *    the user needs to know which half silently did not.
+ *  - REFUSED — nothing sendable. No call is made for the property at all,
+ *    which is the point (issue #1857 defect 3): forwarding the malformed block
+ *    would surface as an AWS validation error that names neither cdkd nor the
+ *    property.
+ */
+function warmThroughputDiagnostic(
+  raw: unknown,
+  coercion: WarmThroughputCoercion,
+  indexName: string | undefined
+): ThroughputDiagnostic | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const scope = { kind: 'unresolved-member' as const, member: 'WarmThroughput' };
+  const dropped = coercion.droppedMembers.join(' / ');
+  if (coercion.spec) {
+    if (coercion.droppedMembers.length === 0) return undefined;
+    const kept = WARM_THROUGHPUT_MEMBERS.filter((m) => coercion.spec?.[m] !== undefined).join(
+      ' / '
+    );
+    return {
+      ...scope,
+      ...(indexName !== undefined && { indexName }),
+      message:
+        `WarmThroughput.${dropped} did not resolve to a number and was DROPPED; ` +
+        `${kept} is still sent. AWS types these as numbers, so a quoted "12000" is ` +
+        `fine but an unresolved intrinsic or an object is not. The dropped member ` +
+        `keeps its current AWS value until the template supplies a usable one.`,
+    };
+  }
+  return {
+    ...scope,
+    ...(indexName !== undefined && { indexName }),
+    message:
+      `WarmThroughput is declared but no member resolved to a number` +
+      `${dropped ? ` (${dropped})` : ''}, so the whole block is REFUSED and not sent. ` +
+      `Forwarding it would fail as an opaque AWS validation error naming neither cdkd ` +
+      `nor the property. Set WarmThroughput.ReadUnitsPerSecond / WriteUnitsPerSecond to ` +
+      `numbers, or remove the block. Nothing else about the index is affected.`,
+  };
+}
+
+// `isWarmThroughputDecrease` — the decrease guard issue #1857 asked for —
+// moved to `../dynamodb-warm-throughput.ts` alongside the coercion. It is the
+// SAME rule `AWS::DynamoDB::Table` shipped for issue #1768: the two
+// independent spellings were compared over every declared / mixed / equal /
+// above / absent-live / unusable-live / empty-spec combination and agreed on
+// all of them, so keeping two was pure drift risk on a three-clause fail-open
+// rule whose measured AWS evidence lives in the shared header.
 
 /**
  * What went wrong with ONE throughput member, reported by the module-level
@@ -5896,9 +6176,23 @@ export function toSdkGlobalSecondaryIndexes(
       KeySchema: gsi['KeySchema'] as GlobalSecondaryIndex['KeySchema'],
       Projection: gsi['Projection'] as GlobalSecondaryIndex['Projection'],
     };
-    if (gsi['WarmThroughput'] !== undefined) {
-      sdk.WarmThroughput = gsi['WarmThroughput'] as GlobalSecondaryIndex['WarmThroughput'];
+    // `WarmThroughput` is coerced HERE, in the one translation every send site
+    // reads from (issue #1857). Doing it at the three `UpdateTable` sites
+    // instead would leave `create()` forwarding the raw bag, and would let the
+    // "did it change?" comparisons at two of those sites run on a raw previous
+    // side against a coerced desired one — where a state-recorded `12000` and
+    // a template's `'12000'` read as a change and re-issue a pointless call.
+    // Translating once makes both sides numbers and the wire shape identical.
+    const warmCoercion = coerceWarmThroughput(gsi['WarmThroughput']);
+    if (warmCoercion.spec) {
+      sdk.WarmThroughput = warmCoercion.spec;
     }
+    const warmDiagnostic = warmThroughputDiagnostic(
+      gsi['WarmThroughput'],
+      warmCoercion,
+      typeof indexName === 'string' ? indexName : undefined
+    );
+    if (warmDiagnostic) diagnostics?.push(warmDiagnostic);
 
     // An explicit already-SDK-shaped block is MERGED over the derived one, per
     // member, after coercion, and only on the side the billing mode allows
