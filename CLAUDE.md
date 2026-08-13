@@ -257,11 +257,25 @@ high.
 
   **Session close** — a one-line verdict: **CLOSEABLE** or **NOT CLOSEABLE (waiting on: ...)** naming the blocker. CLOSEABLE requires ALL of: working tree clean and not on a feature branch left dangling; no open PRs owned by this session; no running background tasks / integs / subagents; no AWS resources pending cleanup; every TODO filed as an issue; and **zero `Session-fit: now` TODOs left open**.
 
-  When `next` TODOs exist, close the report with a **handoff line** — the literal command that starts a fresh session, so resuming costs no thought: e.g. `Handoff (NOT this session): /work-issues` or `Handoff (NOT this session): fix issue #1791 (Effort: M)`. Group the `next` items by whether one fresh session could take them together (file-disjoint lanes) or whether they must be serialized, and say which.
+  When `next` TODOs exist, close the report with a **not-this-session line** — the decision first, then the literal command that starts a fresh session, so resuming costs no thought:
 
-  **The handoff line must be unmistakably OUTSIDE this session's plan, and that is easy to get wrong while the session is still running.** `next` means this session ends without those items — it is a decision, not a queue position, and it holds however long the session continues for other reasons. Two failure modes to avoid, both of which turn the handoff line back into the hesitation it exists to remove:
-  - **Never condition the handoff line on this session's pending work.** "Next session (after lane C merges): /work-issues" reads as *this* session continuing into those items once lane C lands. Write the start command standalone, with no "after X" clause; if the reader has to work out whether the condition is about this session or the next one, the line has failed.
+  ```text
+  Not this session — start a fresh session with: /work-issues
+  Not this session — start a fresh session with: fix issue #1791 (Effort: M)
+  ```
+
+  Group the `next` items by whether one fresh session could take them together (file-disjoint lanes) or whether they must be serialized, and say which. **Label it with the decision, not the mechanism.** Words like "Handoff" or "Next steps" name how the work moves, not whether THIS session will do it, so the reader is left making exactly the call this classification exists to have already made. Lead with "Not this session".
+
+  **The not-this-session line must be unmistakably OUTSIDE this session's plan, and that is easy to get wrong while the session is still running.** `next` means this session ends without those items — it is a decision, not a queue position, and it holds however long the session continues for other reasons. Two failure modes to avoid, both of which turn the line back into the hesitation it exists to remove:
+  - **Never condition it on this session's pending work.** "Next session (after lane C merges): /work-issues" reads as *this* session continuing into those items once lane C lands. Write the start command standalone, with no "after X" clause; if the reader has to work out whether the condition is about this session or the next one, the line has failed.
   - **Never let a `next` item appear on the State line.** WAITING enumerates only what THIS session will still do on its own (a CI run, an integ, a subagent, a merge). A `next` TODO is by definition not one of those. If a `next` item is in the WAITING list, either it was misclassified and belongs in `now`, or the list is wrong.
+
+  **What the report looks like when a `now` item exists.** A `now` TODO is a commitment that this session finishes it, so it changes all three parts of the report together — and the common failure is listing one while still writing CLOSEABLE:
+  - **Remaining work** — list it with its classification and, unlike a `next` item, **what you are about to do about it**: `TODO (issue #N) — <what>. Session-fit: now / Effort: S — <why now>. Doing this next.`
+  - **State** — never STOPPED. Either WAITING (something must finish first, and the line says the `now` item follows it) or you simply keep working and do not end the turn at all. Ending a turn STOPPED with an open `now` is the "stopped with work left undone" failure.
+  - **Session close** — always **NOT CLOSEABLE**, naming the `now` item as the blocker.
+
+  So in a genuinely final report, the Remaining-work section contains only `next` items and won't-dos: an open `now` and a CLOSEABLE verdict cannot both be true. If you reach the end of the work and discover a `now` item, the honest move is to **do it**, not to report it — or to re-classify it to `next` and say why the criteria that made it `now` no longer apply.
 
   Promoting a `next` to `now` mid-session is allowed — that is the "the session ended up touching those files anyway" case — but it is an explicit re-classification that must be stated as one ("promoting #N to `now`: this lane reopened that file"). It must never happen by drift, i.e. by the agent simply carrying on into a `next` item because the session happened to still be open.
 
