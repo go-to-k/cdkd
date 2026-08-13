@@ -409,16 +409,24 @@ anything non-obvious you learned in memory.
   (the worktree, the deps and the markers are already paid for, and removing it
   and re-creating it later is most of the cost), while a residual in a lane you
   just merged and cleaned up has lost exactly those things and is `next`. Close
-  the run with the handoff line naming the literal next command, and say which
-  `next` items are file-disjoint enough for one fresh run to take together.
-  **This flow is where the handoff line is most likely to be written
-  ambiguously**, because lanes merge at different times: while one lane is still
-  in flight the report is simultaneously "waiting on lane C" and "handing off
-  three issues", and a handoff line phrased as "next session, after lane C
-  merges" collapses the two into "this run continues into them once C lands".
-  Write the start command with NO condition attached, mark it as outside this
-  run, and keep the `next` items off the State line entirely — that line is only
-  for lanes this run is still driving to merge.
+  the run with the **not-this-session line** — the decision first, then the
+  literal command (`Not this session — start a fresh session with: /work-issues`)
+  — and say which `next` items are file-disjoint enough for one fresh run to
+  take together. Do NOT label it "Handoff" or "Next steps": those name how the
+  work moves, not whether this run will do it, which is the one thing the reader
+  needs.
+  **This flow is where that line is most likely to be written ambiguously**,
+  because lanes merge at different times: while one lane is still in flight the
+  report is simultaneously "waiting on lane C" and "handing off three issues",
+  and a line phrased as "next session, after lane C merges" collapses the two
+  into "this run continues into them once C lands". Write the start command with
+  NO condition attached, and keep the `next` items off the State line entirely —
+  that line is only for lanes this run is still driving to merge.
+  Conversely, a `now` item found mid-run (a residual landing in a lane whose
+  worktree is still open) is a commitment this run finishes it: it goes in
+  Remaining work WITH what you are about to do about it, the State line is never
+  STOPPED while it is open, and the verdict is NOT CLOSEABLE naming it. A final
+  report can therefore only ever list `next` items and won't-dos.
 - **This flow parks a LOT, so the State line carries most of its weight.** A
   fan-out run spends most of its wall-clock parked on something: a lane subagent
   still implementing, `gh pr checks --watch` on a lane's CI, a `/run-integ`
