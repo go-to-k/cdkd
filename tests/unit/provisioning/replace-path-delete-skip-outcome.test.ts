@@ -13,9 +13,9 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
  *   new resource already exists, so the replacement cannot be aborted. The
  *   requirement is that the user is TOLD, in the same orphan wording the
  *   failure arm uses.
- * - delete-then-create (SNS subscription): nothing has been issued yet, so the
- *   replacement is ABORTED rather than creating a second live subscription
- *   that duplicates every delivery.
+ * - delete-then-create (SNS subscription): the old subscription was NOT
+ *   destroyed, so the replacement is ABORTED rather than creating a second
+ *   live subscription that duplicates every delivery.
  *
  * Every case has an INVERTED CONTROL in which the inner delete succeeds and
  * the replacement completes normally, so a test that passes because the
@@ -64,6 +64,10 @@ import { IAMManagedPolicyProvider } from '../../../src/provisioning/providers/ia
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
 import { SNSSubscriptionProvider } from '../../../src/provisioning/providers/sns-subscription-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import {
+  isRetryableTransientError,
+  isThrottlingError,
+} from '../../../src/deployment/retryable-errors.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 
 const SKIP_REASON = 'malformed physicalId in state — no delete issued';
@@ -177,9 +181,9 @@ describe('create-then-delete REPLACE paths announce a skipped delete (issue #177
     it(`${c.name}: an explicit 'deleted' outcome is not mistaken for a skip`, async () => {
       const provider = c.build();
       stubCreate(provider, c.newPhysicalId);
-      vi.spyOn(provider, 'delete').mockResolvedValue({ outcome: 'deleted' });
+      const deleteSpy = vi.spyOn(provider, 'delete').mockResolvedValue({ outcome: 'deleted' });
 
-      await provider.update(
+      const result = await provider.update(
         'MyResource',
         c.oldPhysicalId,
         c.resourceType,
@@ -187,6 +191,10 @@ describe('create-then-delete REPLACE paths announce a skipped delete (issue #177
         c.previousProperties
       );
 
+      // Parity with the siblings: prove the replacement branch was ENTERED,
+      // so the zero-warning assertion cannot pass vacuously.
+      expect(result.wasReplaced).toBe(true);
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
       expect(warnings().filter((m) => m.includes(c.orphanWording))).toHaveLength(0);
     });
   }
@@ -209,16 +217,20 @@ describe('SNS subscription delete-then-create REPLACE aborts on a skipped delete
     const createSpy = vi.spyOn(provider, 'create');
     vi.spyOn(provider, 'delete').mockResolvedValue({ outcome: 'skipped', reason: SKIP_REASON });
 
+    // Matched on the MESSAGE, not only the class: `createSpy` calls through,
+    // so a mutation that let the create run would reject with the same
+    // `ProvisioningError` class from the real `create()` and pass a
+    // class-only assertion for the wrong reason.
     await expect(
       provider.update('MySub', OLD_ARN, 'AWS::SNS::Subscription', PROPS, PROPS)
-    ).rejects.toThrow(ProvisioningError);
+    ).rejects.toThrow(/deliver every message twice/);
 
     // The abort is what prevents the duplicate: no create was issued.
     expect(createSpy).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
   });
 
-  it("the error names the old subscription, the cause, and the duplicate-delivery consequence", async () => {
+  it('the error names the old subscription and the duplicate-delivery consequence, and points at both repairs', async () => {
     const provider = new SNSSubscriptionProvider();
     vi.spyOn(provider, 'create').mockResolvedValue({ physicalId: NEW_ARN, attributes: {} });
     vi.spyOn(provider, 'delete').mockResolvedValue({ outcome: 'skipped', reason: SKIP_REASON });
@@ -233,8 +245,17 @@ describe('SNS subscription delete-then-create REPLACE aborts on a skipped delete
     expect(error).toBeInstanceOf(ProvisioningError);
     const message = (error as Error).message;
     expect(message).toContain(OLD_ARN);
-    expect(message).toContain(SKIP_REASON);
     expect(message).toContain('deliver every message twice');
+    // The skip family shipping today is STATE-borne (a malformed composite
+    // physicalId), so deleting the AWS resource repairs nothing on its own —
+    // both repairs have to be named.
+    expect(message).toContain('state record');
+    expect(message).toContain('remove the old subscription in AWS');
+
+    // The provider-supplied reason is REPORTED, but as a log line rather than
+    // inside the thrown message — see the retryable-classification suite below.
+    expect(message).not.toContain(SKIP_REASON);
+    expect(warnings().some((m) => m.includes(SKIP_REASON) && m.includes(OLD_ARN))).toBe(true);
   });
 
   it('INVERTED CONTROL — a successful delete replaces the subscription normally', async () => {
@@ -254,6 +275,40 @@ describe('SNS subscription delete-then-create REPLACE aborts on a skipped delete
 
     expect(result).toEqual({ physicalId: NEW_ARN, wasReplaced: true, attributes: {} });
     expect(createSpy).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The rollback executor wraps `update()` in `withRetry`, whose default
+   * `isRetryable` is `isRetryableTransientError` — a SUBSTRING match against
+   * `RETRYABLE_ERROR_MESSAGE_PATTERNS`. A deterministic abort classified
+   * retryable there burns the whole backoff schedule (~47s) before a certain
+   * failure, so the provider-supplied `reason` must never reach the thrown
+   * message. These probes feed reasons built from real patterns in that table.
+   */
+  it.each([
+    ['does not exist', 'the recorded subscription does not exist in state'],
+    ['Rate exceeded', 'Rate exceeded while decoding the recorded physicalId'],
+    ['because it is in use', 'not deleted because it is in use by another record'],
+    ['DependencyViolation', 'DependencyViolation on the recorded physicalId'],
+  ])('a hostile %s reason does not make the abort look retryable', async (_pattern, reason) => {
+    const provider = new SNSSubscriptionProvider();
+    vi.spyOn(provider, 'create').mockResolvedValue({ physicalId: NEW_ARN, attributes: {} });
+    vi.spyOn(provider, 'delete').mockResolvedValue({ outcome: 'skipped', reason });
+
+    const error = await provider
+      .update('MySub', OLD_ARN, 'AWS::SNS::Subscription', PROPS, PROPS)
+      .then(
+        () => undefined,
+        (err: unknown) => err
+      );
+
+    expect(error).toBeInstanceOf(ProvisioningError);
+    const message = (error as Error).message;
+    expect(message).not.toContain(reason);
+    expect(isThrottlingError(error)).toBe(false);
+    expect(isRetryableTransientError(error, message)).toBe(false);
+    // ...and the cause is still reported, on the log line.
+    expect(warnings().some((m) => m.includes(reason))).toBe(true);
   });
 
   it('a FAILED delete still converges (pre-existing warn-and-continue is unchanged)', async () => {

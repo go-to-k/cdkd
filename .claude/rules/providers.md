@@ -1121,13 +1121,26 @@ policy, IAM role) cannot abort — the new resource exists and
 `ResourceUpdateResult` has no skip channel — so it WARNS in the same orphan
 wording the failure arm uses; **delete-then-create** (SNS subscription) ABORTS
 with a `ProvisioningError` before creating the replacement, since continuing
-would leave two subscriptions delivering every message twice while a skip has
-issued no AWS call at all, so the throw leaves the world unchanged. An abort
-added to an `update()` path has to be right for EVERY caller — `deploy`,
-`drift --revert`, and the rollback executor's revert arms — per the
-update-path rule above; downgrade to a warning where it is not. All six sites
-are LATENT (none of these providers has a skip arm yet), which is what makes
-them worth fixing BEFORE #1770 adds the arms.
+would leave two subscriptions delivering every message twice and that duplicate
+is exactly what the CREATE would add. State the premise as **"the resource was
+not destroyed"**, never as "no AWS call was issued" — `ResourceDeleteResult`'s
+contract warns against the second reading, since `NestedStackProvider` reports
+`skipped` after a recursion that may already have deleted things; the abort is
+right under the weaker premise anyway. An abort added to an `update()` path has
+to be right for EVERY caller — `deploy`, `drift --revert`, and the rollback
+executor's revert arms — per the update-path rule above; downgrade to a warning
+where it is not. Two mechanical details it inherits: do NOT interpolate the
+provider-supplied `reason` into the thrown message (the rollback arms wrap
+`update()` in `withRetry` and `retryable-errors.ts` classifies by SUBSTRING, so
+a reason carrying `does not exist` / `Rate exceeded` / `because it is in use`
+would burn the whole backoff schedule before a certain failure — log it
+instead), and point the remediation at the STATE record as well as at AWS,
+since today's only skip family is state-borne. All six sites are LATENT (none
+of these providers has a skip arm yet), which is what makes them worth fixing
+BEFORE #1770 adds the arms — and the SNS abort is why
+`logPendingConfirmationSkip`'s two CFn-parity delete-SUCCESS arms carry an
+in-code note NOT to convert them: a skip there would abort every deploy of a
+`PendingConfirmation`-adopted subscription, with no flag to force it.
 
 Three things about it are decisions rather than accidents. The exit code is
 **not** a new policy: it is the same "state preserved, stack not destroyed"

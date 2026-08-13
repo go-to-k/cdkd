@@ -1627,20 +1627,42 @@ the same for all of them:
   so the replacement cannot be aborted. WARN, in the same orphan wording the
   failure arm uses (`The old role may be orphaned and require manual
   cleanup.`), naming the skip's `reason`.
-- **delete-then-create** (SNS subscription): the skip issues no AWS call, so
-  ABORT with a `ProvisioningError` BEFORE creating the replacement. Continuing
-  would leave two subscriptions on the topic and deliver every message twice;
-  throwing leaves the world exactly as it was.
+- **delete-then-create** (SNS subscription): ABORT with a `ProvisioningError`
+  BEFORE creating the replacement. Continuing would leave two subscriptions on
+  the topic and deliver every message twice, and that duplicate is precisely
+  what the CREATE would add — so not making it is the whole remedy.
+
+State the premise as **"the resource was not destroyed"**, never as "no AWS
+call was issued". `ResourceDeleteResult`'s own contract says so, and its
+warning is not academic: `NestedStackProvider` reports `skipped` after
+recursing into a child destroy that may already have deleted the child's other
+resources. The abort is right under the weaker premise anyway — whatever the
+skipping delete did, adding a second live resource on top of it is not an
+improvement.
 
 An abort on an `update()` path must be right for EVERY caller, not only the
 template-driven one — `cdkd drift --revert` and the rollback executor's revert
 arms call `update()` with a state-borne desired bag (see §1a). The SNS abort
 clears that bar because a second live subscription serves none of the three;
 where a refusal would not, downgrade it to a warning instead.
+
+Two mechanical details any such abort inherits:
+
+- **Do not interpolate the provider-supplied `reason` into the thrown
+  message.** The rollback executor wraps `update()` in `withRetry`, and
+  `retryable-errors.ts` classifies by SUBSTRING — so a reason carrying
+  `does not exist`, `Rate exceeded`, or `because it is in use` would flip a
+  deterministic abort to "retryable" and burn the whole backoff schedule
+  before a certain failure. Log the reason; throw a message cdkd fully
+  authors.
+- **Point the remediation at the STATE record, not only at AWS.** The skip
+  family shipping today is state-borne (a malformed composite physicalId), so
+  "remove the old resource" repairs nothing on its own — name both repairs.
+
 Note this is deliberately NOT symmetric with a THROWN delete, which those
 providers still warn-and-continue past: a throw may mean the delete partially
-landed or was transient, while a skip is a positive statement that nothing was
-touched.
+landed or was transient, while a skip is a positive statement that the resource
+was not destroyed.
 
 Producers today: the malformed-composite-physicalId family
 (`src/provisioning/composite-id.ts`, five arms) plus the nested-stack
