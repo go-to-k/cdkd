@@ -64,13 +64,55 @@ describe('Route53Provider', () => {
         expect(result.physicalId).toBe('Z1234567890');
         expect(result.attributes).toEqual({
           Id: 'Z1234567890',
-          NameServers: 'ns-1.example.com,ns-2.example.com',
+          NameServers: ['ns-1.example.com', 'ns-2.example.com'],
         });
         expect(mockSend).toHaveBeenCalledTimes(1);
 
         const createCall = mockSend.mock.calls[0][0];
         expect(createCall.constructor.name).toBe('CreateHostedZoneCommand');
         expect(createCall.input.Name).toBe('example.com');
+      });
+    });
+
+    describe('getAttribute', () => {
+      it('returns NameServers using the CloudFormation list shape', async () => {
+        mockSend.mockResolvedValueOnce({
+          DelegationSet: {
+            NameServers: ['ns-1.example.com', 'ns-2.example.com'],
+          },
+        });
+
+        const result = await provider.getAttribute(
+          'Z1234567890',
+          'AWS::Route53::HostedZone',
+          'NameServers'
+        );
+
+        expect(result).toEqual(['ns-1.example.com', 'ns-2.example.com']);
+      });
+    });
+
+    describe('update', () => {
+      it('returns NameServers using the CloudFormation list shape', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateHostedZoneComment
+        mockSend.mockResolvedValueOnce({
+          DelegationSet: {
+            NameServers: ['ns-1.example.com', 'ns-2.example.com'],
+          },
+        });
+
+        const result = await provider.update(
+          'MyZone',
+          'Z1234567890',
+          'AWS::Route53::HostedZone',
+          { Name: 'example.com' },
+          { Name: 'example.com' }
+        );
+
+        expect(result.attributes).toEqual({
+          Id: 'Z1234567890',
+          NameServers: ['ns-1.example.com', 'ns-2.example.com'],
+        });
       });
     });
 

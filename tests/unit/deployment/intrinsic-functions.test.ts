@@ -2193,6 +2193,54 @@ describe('IntrinsicFunctionResolver - Fn::Join over a list-returning intrinsic',
     expect(result).toBe('subnet-aaa,subnet-bbb,subnet-ccc');
   });
 
+  it('joins a Route 53 HostedZone NameServers attribute stored as a list', async () => {
+    const context: ResolverContext = {
+      template: {} as CloudFormationTemplate,
+      resources: {
+        HostedZone: {
+          physicalId: 'Z1234567890',
+          resourceType: 'AWS::Route53::HostedZone',
+          properties: { Name: 'example.com' },
+          attributes: {
+            NameServers: ['ns-1.example.com', 'ns-2.example.com'],
+          },
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::Join': [',', { 'Fn::GetAtt': ['HostedZone', 'NameServers'] }] },
+      context
+    );
+
+    expect(result).toBe('ns-1.example.com,ns-2.example.com');
+  });
+
+  it('normalizes the legacy comma-delimited HostedZone NameServers state before joining', async () => {
+    const context: ResolverContext = {
+      template: {} as CloudFormationTemplate,
+      resources: {
+        HostedZone: {
+          physicalId: 'Z1234567890',
+          resourceType: 'AWS::Route53::HostedZone',
+          properties: { Name: 'example.com' },
+          attributes: {
+            NameServers: 'ns-1.example.com,ns-2.example.com',
+          },
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::Join': [',', { 'Fn::GetAtt': ['HostedZone', 'NameServers'] }] },
+      context
+    );
+
+    expect(result).toBe('ns-1.example.com,ns-2.example.com');
+  });
+
   it('should still resolve Fn::Join whose second arg is a literal array (regression)', async () => {
     const context: ResolverContext = {
       resources: {},

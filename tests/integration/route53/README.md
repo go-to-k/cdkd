@@ -15,6 +15,7 @@ Note: Creates a real hosted zone ($0.50/month if left running). Always destroy a
 - DNS A record management (RecordSet)
 - Resource dependencies (RecordSet depends on HostedZone)
 - `Fn::GetAtt` for outputs (HostedZoneId)
+- `Fn::Join` over the list-valued HostedZone `NameServers` attribute
 
 ## Deploy
 

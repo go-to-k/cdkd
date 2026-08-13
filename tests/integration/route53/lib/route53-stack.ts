@@ -13,7 +13,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  * - AWS::Route53::RecordSet with GeoProximityLocation (#609 backfill)
  * - AWS::Route53::CidrCollection (CC-API) + RecordSet with CidrRoutingConfig (#609 backfill)
  * - Resource dependencies (RecordSet depends on HostedZone)
- * - Fn::GetAtt for outputs (HostedZoneId, HealthCheckId)
+ * - Fn::GetAtt for outputs (HostedZoneId, HostedZone NameServers, HealthCheckId)
  * - HostedZoneTags + QueryLoggingConfig REMOVAL resets (#1160 route53 batch)
  *
  * The REMOVAL phase (gated on CDKD_TEST_REMOVAL, issue #1160 route53 batch)
@@ -163,6 +163,13 @@ export class Route53Stack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'ZoneName', {
       value: zone.zoneName,
+    });
+
+    // Route 53 HostedZone NameServers is a list-valued CloudFormation
+    // attribute. Joining it exercises the complete Output resolution path:
+    // provider attribute capture -> Fn::GetAtt -> Fn::Join -> state output.
+    new cdk.CfnOutput(this, 'HostedZoneNameServers', {
+      value: cdk.Fn.join(',', zone.hostedZoneNameServers ?? []),
     });
 
     new cdk.CfnOutput(this, 'HealthCheckId', {
