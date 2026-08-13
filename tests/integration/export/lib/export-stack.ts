@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigwv2_integ from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -211,6 +212,72 @@ export class ExportStack extends cdk.Stack {
       path: '/echo',
       methods: [apigwv2.HttpMethod.GET],
       integration: new apigwv2_integ.HttpLambdaIntegration('EchoIntegration', handler),
+    });
+
+    // ── EC2 networking (composite-id splitters, issue #1771) ───────
+    // A VPC + Internet Gateway + attachment + route table + default route is
+    // the shape essentially every real public-subnet stack has, and it is
+    // exactly what `cdkd export` could not migrate: `AWS::EC2::Route` had no
+    // COMPOSITE_ID_SPLITTERS entry, and `cdkd export` is all-or-nothing, so ONE
+    // unregistered composite type aborted the WHOLE command.
+    //
+    // It also gives `AWS::EC2::VPCGatewayAttachment` its first live coverage.
+    // That entry shipped in #1691 with a guessed `AttachmentType` value
+    // (`InternetGateway`), which CloudFormation rejects at changeset-create with
+    // `Invalid Attachment Type 'InternetGateway'` — the real value is `IGW`. A
+    // splitter's output is only verifiable against real CFn, which is why these
+    // resources live here and not only in unit tests.
+    //
+    // L1 constructs throughout: their template default is `DeletionPolicy:
+    // Delete`, so the CFn DeleteStack at the end of verify.sh tears everything
+    // down. A private CIDR far from the default VPC's 172.31/16 keeps the run
+    // from colliding with anything in the test account.
+    const vpc = new ec2.CfnVPC(this, 'Vpc', {
+      cidrBlock: '10.199.0.0/16',
+      tags: [{ key: 'Name', value: `cdkd-export-test-${suffix}` }],
+    });
+    const igw = new ec2.CfnInternetGateway(this, 'Igw', {
+      tags: [{ key: 'Name', value: `cdkd-export-test-${suffix}` }],
+    });
+    const igwAttachment = new ec2.CfnVPCGatewayAttachment(this, 'IgwAttachment', {
+      vpcId: vpc.ref,
+      internetGatewayId: igw.ref,
+    });
+    const routeTable = new ec2.CfnRouteTable(this, 'RouteTable', { vpcId: vpc.ref });
+    // cdkd stores `<routeTableId>|<destination>`; CFn identifies the route by
+    // [RouteTableId, CidrBlock], where `CidrBlock` carries whichever destination
+    // the route declares. Only the IPv4 arm is covered here: an
+    // `AWS::EC2::Route` with a `DestinationIpv6CidrBlock` needs the VPC to carry
+    // an IPv6 CIDR, which needs an `AWS::EC2::VPCCidrBlock` — itself an
+    // unregistered composite type that would abort this very export
+    // ([#1788](https://github.com/go-to-k/cdkd/issues/1788)). The splitter has
+    // no per-destination branch (the segment maps onto `CidrBlock` verbatim,
+    // measured live), so the other two destination shapes are pinned by unit
+    // tests instead.
+    const defaultRoute = new ec2.CfnRoute(this, 'DefaultRoute', {
+      routeTableId: routeTable.ref,
+      destinationCidrBlock: '0.0.0.0/0',
+      gatewayId: igw.ref,
+    });
+    defaultRoute.addDependency(igwAttachment);
+
+    // cdkd stores `<publicIp>|<allocationId>`; CFn identifies the EIP by
+    // [PublicIp, AllocationId] and BOTH are read-only, so its splitter is the
+    // one that must overlay NOTHING onto the template's Properties.
+    new ec2.CfnEIP(this, 'Eip', {
+      domain: 'vpc',
+      tags: [{ key: 'Name', value: `cdkd-export-test-${suffix}` }],
+    });
+
+    // ── Lambda async-invoke config (composite-id splitter, #1771) ───
+    // cdkd stores `<functionName>|<qualifier>`; CFn identifies it by
+    // [FunctionName, Qualifier] with NO read-only fields, so unlike the two
+    // above it keeps the default whole-map overlay — which is what has to keep
+    // CFn's identifier-match check satisfied on the `$LATEST` qualifier.
+    new lambda.CfnEventInvokeConfig(this, 'HandlerEventInvokeConfig', {
+      functionName: handler.functionName,
+      qualifier: '$LATEST',
+      maximumRetryAttempts: 1,
     });
 
     // Outputs exercise the cross-stack-consumer scanner in PR5 (no

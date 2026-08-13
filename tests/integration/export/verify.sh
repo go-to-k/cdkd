@@ -54,6 +54,55 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 
+# --- issue #1771: composite-id identifier assertions ------------------------
+# A splitter regression must fail on the RESOLVED IDENTIFIER, not on the exit
+# code. The pre-fix binary aborts the whole command ("resource type uses a
+# composite primary identifier ... add an entry to COMPOSITE_ID_SPLITTERS"), so
+# a check that only greps for an error string would also pass against a binary
+# that resolved the identifier to something CloudFormation rejects — which is
+# exactly what the pre-#1771 `AWS::EC2::VPCGatewayAttachment` entry did
+# (`AttachmentType=InternetGateway`; CFn answers `Invalid Attachment Type`).
+
+# assert_plan_identifier <log-file> <label> <extended-regex>
+# Matches a line of `cdkd export`'s printed import plan, whose shape is
+# `  <logicalId> (<Type>) <- <Field>=<value>, <Field>=<value>`.
+assert_plan_identifier() {
+  local log="$1" label="$2" pattern="$3"
+  if ! grep -qE "${pattern}" "${log}"; then
+    echo "[verify] FAIL: import plan did not resolve the ${label} identifier"
+    echo "[verify] (expected a plan line matching /${pattern}/ in ${log})"
+    echo "[verify] plan lines seen:"
+    grep -F '(AWS::' "${log}" | sed 's/^/  /'
+    exit 1
+  fi
+  echo "[verify]   ${label} identifier resolved"
+}
+
+# assert_cfn_physical_id <logicalId> <glob>
+# CloudFormation's own recorded PhysicalResourceId after IMPORT — proves WHICH
+# AWS resource each identifier map adopted, not merely that the stack finished.
+assert_cfn_physical_id() {
+  local logical="$1" pattern="$2" pid
+  # `|| return 1`: errexit does not propagate out of a command substitution, so
+  # a failed probe must be turned into a non-zero return explicitly — otherwise
+  # an empty `pid` reads as "no such resource" and accuses the splitter.
+  pid="$(aws cloudformation list-stack-resources --stack-name "${CFN_STACK}" --region "${REGION}" \
+    --query "StackResourceSummaries[?LogicalResourceId=='${logical}'].PhysicalResourceId" \
+    --output text)" || return 1
+  # shellcheck disable=SC2254  # unquoted on purpose: ${pattern} IS the glob
+  case "${pid}" in
+    ${pattern})
+      echo "[verify]   ${logical} -> ${pid}"
+      ;;
+    *)
+      echo "[verify] FAIL: ${logical} PhysicalResourceId '${pid}' does not match '${pattern}'"
+      echo "[verify] (the composite-id splitter adopted the wrong resource, or none)"
+      exit 1
+      ;;
+  esac
+}
+# ---------------------------------------------------------------------------
+
 VARIANT="${VARIANT:-default}"
 
 REGION="${AWS_REGION:-us-east-1}"
@@ -144,6 +193,25 @@ case "${VARIANT}" in
       echo "[verify] (composite-id splitters in src/cli/commands/export.ts are missing entries)"
       exit 1
     fi
+    # Issue #1771: the three types whose MISSING splitter entry aborted the
+    # whole command (`AWS::EC2::Route` is the widest blast radius — essentially
+    # every public-subnet VPC declares one), plus `AWS::EC2::VPCGatewayAttachment`
+    # whose entry shipped with a GUESSED AttachmentType value. Each assertion
+    # pins the resolved identifier VALUE, so it fails both ways a splitter can
+    # be wrong: absent (no plan line at all, because the command aborted) and
+    # present-but-wrong (`AttachmentType=InternetGateway`, which CFn rejects at
+    # changeset-create with `Invalid Attachment Type`).
+    echo "[verify] step 3a: composite-id identifiers resolved in the plan (issue #1771)"
+    assert_plan_identifier /tmp/verify-dry-run.log 'AWS::EC2::Route' \
+      '\(AWS::EC2::Route\).*RouteTableId=rtb-[0-9a-f]+, CidrBlock=0\.0\.0\.0/0'
+    assert_plan_identifier /tmp/verify-dry-run.log 'AWS::EC2::EIP' \
+      '\(AWS::EC2::EIP\).*PublicIp=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+, AllocationId=eipalloc-[0-9a-f]+'
+    assert_plan_identifier /tmp/verify-dry-run.log 'AWS::EC2::VPCGatewayAttachment' \
+      '\(AWS::EC2::VPCGatewayAttachment\).*AttachmentType=IGW, VpcId=vpc-[0-9a-f]+'
+    assert_plan_identifier /tmp/verify-dry-run.log 'AWS::Lambda::EventInvokeConfig' \
+      '\(AWS::Lambda::EventInvokeConfig\).*FunctionName=cdkd-export-test-[a-z0-9]+, Qualifier=\$LATEST'
+    echo "[verify] step 3a ok"
+
     # Assert the dry-run plan announces the Stage pre-delete + re-CREATE
     # path. Without this output, the plan-printer integration for
     # recreateBeforePhase2 silently regressed.
@@ -299,8 +367,11 @@ case "${VARIANT}" in
     RESOURCES="$(aws cloudformation list-stack-resources --stack-name "${CFN_STACK}" --region "${REGION}" \
       --query 'StackResourceSummaries[].ResourceType' --output text)"
     echo "[verify] CFn resources: ${RESOURCES}"
-    # Single-key imports (phase 1)
-    for needed in 'AWS::S3::Bucket' 'AWS::SNS::Topic' 'AWS::Lambda::Function' 'AWS::IAM::Role'; do
+    # Single-key imports (phase 1). The EC2 networking trio rides in with the
+    # AWS::EC2::Route the #1771 splitter unblocked — a route needs a route table
+    # and a gateway to point at.
+    for needed in 'AWS::S3::Bucket' 'AWS::SNS::Topic' 'AWS::Lambda::Function' 'AWS::IAM::Role' \
+                  'AWS::EC2::VPC' 'AWS::EC2::InternetGateway' 'AWS::EC2::RouteTable'; do
       if ! echo "${RESOURCES}" | grep -q "${needed}"; then
         echo "[verify] FAIL: ${needed} not found in CFn stack"
         exit 1
@@ -308,7 +379,9 @@ case "${VARIANT}" in
     done
     # Composite-id imports (phase 1) — covers ApiGwV2 Api + Integration + Route
     # + Lambda::Permission, exercising COMPOSITE_ID_SPLITTERS end-to-end.
-    for needed in 'AWS::ApiGatewayV2::Api' 'AWS::ApiGatewayV2::Integration' 'AWS::ApiGatewayV2::Route' 'AWS::Lambda::Permission'; do
+    # + the four issue #1771 / #1691 EC2 & Lambda composite types.
+    for needed in 'AWS::ApiGatewayV2::Api' 'AWS::ApiGatewayV2::Integration' 'AWS::ApiGatewayV2::Route' 'AWS::Lambda::Permission' \
+                  'AWS::EC2::Route' 'AWS::EC2::EIP' 'AWS::EC2::VPCGatewayAttachment' 'AWS::Lambda::EventInvokeConfig'; do
       if ! echo "${RESOURCES}" | grep -q "${needed}"; then
         echo "[verify] FAIL: ${needed} not found in CFn stack (composite-id splitter regression)"
         exit 1
@@ -337,6 +410,19 @@ case "${VARIANT}" in
       exit 1
     fi
     echo "[verify] step 4b ok"
+
+    # Issue #1771: presence of the TYPE only proves the row reached the plan.
+    # These assert WHICH AWS resource CloudFormation actually adopted, by
+    # reading back the PhysicalResourceId CFn recorded for each imported
+    # composite-id resource. A splitter that produced a syntactically valid but
+    # wrong identifier map would either fail the IMPORT outright (the
+    # pre-#1691/#1771 VPCGatewayAttachment case) or adopt something else.
+    echo "[verify] step 4b2: CFn adopted the right resource per composite id (issue #1771)"
+    assert_cfn_physical_id 'DefaultRoute' 'rtb-*|0.0.0.0/0'
+    assert_cfn_physical_id 'Eip' '[0-9]*.[0-9]*.[0-9]*.[0-9]*'
+    assert_cfn_physical_id 'IgwAttachment' 'vpc-*|IGW'
+    assert_cfn_physical_id 'HandlerEventInvokeConfig' 'cdkd-export-test-*|$LATEST'
+    echo "[verify] step 4b2 ok"
 
     # Regression guard: phase-2 UPDATE must NOT have caused silent
     # REPLACEMENT of any phase-1-imported resource. The bug discovered

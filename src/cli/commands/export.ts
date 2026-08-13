@@ -424,6 +424,89 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       propertiesOverlay: { VpcId: vpcId },
     };
   },
+  // cdkd's SDK provider stores `<routeTableId>|<destination>` (ec2-provider.ts's
+  // `createRoute`), where `destination` is whichever of `DestinationCidrBlock` /
+  // `DestinationIpv6CidrBlock` / `DestinationPrefixListId` the route declares —
+  // `narrowRouteDestinations` resolves them in that precedence order. The Cloud
+  // Control path (reached when the template trips the #614 silent-drop rule)
+  // stores the CFn primaryIdentifier joined, which is the SAME
+  // `<RouteTableId>|<CidrBlock>` string, so both shapes coincide here and no
+  // second form has to be accepted.
+  //
+  // CFn primary identifier is [RouteTableId, CidrBlock] with `CidrBlock`
+  // `readOnlyProperties` (live `DescribeType`, us-east-1, 2026-08-13), so the
+  // overlay narrows to `RouteTableId` — same narrowing, same reason, as the
+  // `AWS::EC2::VPCGatewayAttachment` entry above.
+  //
+  // The one subtlety is what `CidrBlock` HOLDS. It is a single read-only field
+  // and the schema gives it an empty description, so "the identifier is the
+  // IPv4 CIDR" is the natural (and wrong) reading. Measured live instead —
+  // Cloud Control `GetResource` against a scratch route table carrying both
+  // destination shapes, us-east-1, 2026-08-13:
+  //
+  //   `rtb-…|0.0.0.0/0` -> {"CidrBlock":"0.0.0.0/0","DestinationCidrBlock":"0.0.0.0/0",…}
+  //   `rtb-…|::/0`      -> {"CidrBlock":"::/0","DestinationIpv6CidrBlock":"::/0",…}
+  //
+  // — i.e. `CidrBlock` carries whichever destination the route declares, so the
+  // physicalId's destination segment maps onto it verbatim and this splitter
+  // needs no per-destination-key branch. The recorded properties are still read
+  // (see {@link resolveRouteDestination}) because the id and the properties can
+  // legitimately diverge on the Cloud Control path, and surfacing that beats an
+  // opaque CFn IMPORT rejection (issue #1771).
+  'AWS::EC2::Route': (physicalId, properties) => {
+    const parts = physicalId.split('|');
+    if (parts.length !== 2) {
+      throw new Error(
+        `expected 2 parts ('<routeTableId>|<destination>'), got ${parts.length}: '${physicalId}'`
+      );
+    }
+    const [routeTableId, destination] = parts as [string, string];
+    if (!routeTableId || !destination) {
+      throw new Error(`empty part in '<routeTableId>|<destination>': '${physicalId}'`);
+    }
+    return {
+      resourceIdentifier: {
+        RouteTableId: routeTableId,
+        CidrBlock: resolveRouteDestination(destination, properties),
+      },
+      propertiesOverlay: { RouteTableId: routeTableId },
+    };
+  },
+  // cdkd's SDK provider stores `<publicIp>|<allocationId>` (ec2-provider.ts's
+  // `eipPhysicalId`), deliberately the same shape the Cloud Control fallback
+  // produced — and `verifyExplicit` normalizes an imported EIP to it too, so
+  // every state record written by a create OR an import carries both segments.
+  //
+  // CFn primary identifier is [PublicIp, AllocationId] — same order — and BOTH
+  // fields are `readOnlyProperties` (live `DescribeType`, us-east-1,
+  // 2026-08-13; the type declares no `required` properties at all). So nothing
+  // may be overlaid onto the synth template's `Properties`: the overlay is an
+  // explicit empty map, exactly as `COMPOSITE_PHYSICAL_ID_IDENTIFIERS`'
+  // all-read-only entries do, rather than relying on the overlay site's
+  // "only writes a field the template already carries" conditional.
+  //
+  // A bare segment (`eipalloc-…` or a lone public IP) is tolerated by the
+  // provider's own `parseEipPhysicalId`, but it cannot produce BOTH identifier
+  // fields, so it is refused here with a re-deploy hint rather than sent to CFn
+  // half-filled (CFn rejects a partial identifier).
+  'AWS::EC2::EIP': (physicalId) => {
+    const parts = physicalId.split('|');
+    if (parts.length !== 2) {
+      throw new Error(
+        `expected 2 parts ('<publicIp>|<allocationId>'), got ${parts.length}: '${physicalId}'. ` +
+          `CloudFormation identifies an AWS::EC2::EIP by BOTH fields, and neither can be ` +
+          `recovered from the other; re-deploy the resource to refresh state`
+      );
+    }
+    const [publicIp, allocationId] = parts as [string, string];
+    if (!publicIp || !allocationId) {
+      throw new Error(`empty part in '<publicIp>|<allocationId>': '${physicalId}'`);
+    }
+    return {
+      resourceIdentifier: { PublicIp: publicIp, AllocationId: allocationId },
+      propertiesOverlay: {},
+    };
+  },
   // cdkd's SDK provider stores the BARE `deploymentId` (apigateway-provider.ts's
   // `createDeployment`); the Cloud Control path stores `deploymentId|restApiId`.
   // CFn primary identifier is [DeploymentId, RestApiId] with `DeploymentId`
@@ -518,13 +601,14 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // practice — a table cannot be exported without its namespace in the plan.
   //
   // `Namespace` is a STRING on both sides — measured 2026-08-13, because
-  // `s3-tables-provider.ts` carries a comment claiming the CFn schema types it
-  // `List<String>` and that provider tolerates both wire shapes:
+  // `s3-tables-provider.ts` carried a comment claiming the CFn schema types it
+  // `List<String>` (corrected in the same change as this note, issue #1771)
+  // while that provider tolerates both wire shapes:
   //   - live `DescribeType`: `definitions.Namespace = {"type": "string"}`;
   //   - `aws-cdk-lib` 2.244.0 `CfnNamespaceProps.namespace: string`, and a
   //     synth of the typed prop emits `"Namespace": "analytics"`.
-  // So the provider's comment is stale and the whole-map overlay below is
-  // right for every template CDK's typed API can produce.
+  // So the whole-map overlay below is right for every template CDK's typed API
+  // can produce.
   //
   // An ARRAY is still REACHABLE, via `addPropertyOverride('Namespace', [...])`
   // (measured: it synthesizes `"Namespace": ["analytics"]`), and cdkd deploys
@@ -537,8 +621,9 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // is correct either way (it comes from the physicalId, not the template).
   // Not repaired here: the fix belongs in the overlay's literal-string rule,
   // which is shared by every type. Tracked in
-  // [#1771](https://github.com/go-to-k/cdkd/issues/1771) alongside the stale
-  // provider comment.
+  // [#1787](https://github.com/go-to-k/cdkd/issues/1787) (split out of #1771,
+  // which corrected the provider comment and registered the splitters it named
+  // but left this shared rule alone).
   'AWS::S3Tables::Namespace': (physicalId) => {
     const parts = physicalId.split('|');
     if (parts.length !== 2) {
@@ -571,6 +656,37 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // recorded rather than acted on because it is a behavior change for a type
   // this PR does not otherwise touch. Tracked in
   // [#1772](https://github.com/go-to-k/cdkd/issues/1772).
+  // cdkd stores `<functionName>|<qualifier>` (lambda-event-invoke-config-
+  // provider.ts's `buildPhysicalId`), split on the FIRST `|` — a Lambda function
+  // name is `[a-zA-Z0-9-_]+` and a function ARN carries no `|`, which is the
+  // premise `parsePhysicalId` documents and `packCompositeId` enforces. A BARE
+  // function name is accepted and read as qualifier `$LATEST`, mirroring that
+  // same `parsePhysicalId` (and CFn's own default for the unqualified config).
+  //
+  // CFn primary identifier is [FunctionName, Qualifier] — same order — and the
+  // type declares NO `readOnlyProperties` at all (live `DescribeType`,
+  // us-east-1, 2026-08-13; both fields are `required` + `createOnlyProperties`),
+  // so the default whole-map overlay is correct: both are writable Properties
+  // the synth template already carries, and writing them is what keeps CFn's
+  // identifier-match check satisfied (issue #1771).
+  'AWS::Lambda::EventInvokeConfig': (physicalId) => {
+    if (!physicalId.trim()) {
+      throw new Error(
+        'empty physical id for AWS::Lambda::EventInvokeConfig ' +
+          "(expected '<functionName>|<qualifier>' or a bare function name)"
+      );
+    }
+    const separator = physicalId.indexOf('|');
+    if (separator === -1) {
+      return { resourceIdentifier: { FunctionName: physicalId, Qualifier: '$LATEST' } };
+    }
+    const functionName = physicalId.slice(0, separator);
+    const qualifier = physicalId.slice(separator + 1);
+    if (!functionName || !qualifier) {
+      throw new Error(`empty part in '<functionName>|<qualifier>': '${physicalId}'`);
+    }
+    return { resourceIdentifier: { FunctionName: functionName, Qualifier: qualifier } };
+  },
   // cdkd stores `StatementId` (lambda-permission-provider.ts:124); for state
   // entries written by the older CC-API path (pre-SDK-provider), physicalId
   // may instead be the legacy `<functionArn>|<statementId>` shape — the
@@ -601,7 +717,26 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
  * The field is `readOnlyProperties`, so cdkd never sends it — it only has to
  * be reproduced for the IMPORT identifier map.
  */
-const GATEWAY_ATTACHMENT_TYPES = ['InternetGateway', 'VPN'] as const;
+const GATEWAY_ATTACHMENT_TYPE_IGW = 'IGW';
+const GATEWAY_ATTACHMENT_TYPE_VGW = 'VGW';
+
+/**
+ * The values AWS actually uses for `AWS::EC2::VPCGatewayAttachment`'s
+ * `AttachmentType`, plus the two this table produced before issue #1771.
+ *
+ * `InternetGateway` / `VPN` were the pre-#1771 outputs, and they are WRONG:
+ * CloudFormation answers `Invalid request provided: Invalid Attachment Type
+ * 'InternetGateway'` and the IMPORT changeset never reaches CREATE_COMPLETE.
+ * They are still accepted as INPUT so a state record written by the Cloud
+ * Control path of an older cdkd — which stores the primaryIdentifier verbatim —
+ * is normalized rather than rejected.
+ */
+const GATEWAY_ATTACHMENT_TYPE_ALIASES: Record<string, string> = {
+  [GATEWAY_ATTACHMENT_TYPE_IGW]: GATEWAY_ATTACHMENT_TYPE_IGW,
+  [GATEWAY_ATTACHMENT_TYPE_VGW]: GATEWAY_ATTACHMENT_TYPE_VGW,
+  InternetGateway: GATEWAY_ATTACHMENT_TYPE_IGW,
+  VPN: GATEWAY_ATTACHMENT_TYPE_VGW,
+};
 
 /**
  * Resolve `AttachmentType` for an `AWS::EC2::VPCGatewayAttachment` from the
@@ -610,29 +745,45 @@ const GATEWAY_ATTACHMENT_TYPES = ['InternetGateway', 'VPN'] as const;
  * The Cloud-Control-written shape already carries the attachment type verbatim
  * (it is the CFn primaryIdentifier's first field). The SDK-written shape
  * carries the gateway id instead, so the type is derived from WHICH gateway
- * property cdkd recorded — never hardcoded to `InternetGateway`, which would
- * ship a wrong identifier for a VPN attachment and make CFn's identifier-match
- * reject the import.
+ * property cdkd recorded — never hardcoded to the internet-gateway value, which
+ * would ship a wrong identifier for a VPN attachment and make CFn's
+ * identifier-match reject the import.
+ *
+ * The VALUES are `IGW` / `VGW`, measured live (Cloud Control `ListResources`,
+ * us-east-1, 2026-08-13) against a VPC carrying both an internet-gateway and a
+ * virtual-private-gateway attachment:
+ *
+ *   `IGW|vpc-…` -> {"AttachmentType":"IGW","VpcId":"vpc-…"}
+ *   `VGW|vpc-…` -> {"AttachmentType":"VGW","VpcId":"vpc-…"}
+ *
+ * The registry schema does not enumerate them (`AttachmentType` is a bare
+ * `{"type": "string"}` whose description only says it distinguishes the two
+ * kinds), which is how the spelled-out `InternetGateway` / `VPN` guesses this
+ * function shipped with in issue #1691 went unnoticed: they are plausible, they
+ * satisfy every unit test written against them, and CFn only rejects them at
+ * changeset-create time — measured 2026-08-13 as `Invalid request provided:
+ * Invalid Attachment Type 'InternetGateway'` (issue #1771).
  */
 function resolveGatewayAttachmentType(
   firstSegment: string,
   properties: Record<string, unknown>
 ): string {
-  if ((GATEWAY_ATTACHMENT_TYPES as readonly string[]).includes(firstSegment)) {
-    return firstSegment;
+  const alias = GATEWAY_ATTACHMENT_TYPE_ALIASES[firstSegment];
+  if (alias !== undefined) {
+    return alias;
   }
   if (typeof properties['InternetGatewayId'] === 'string' && properties['InternetGatewayId']) {
-    return 'InternetGateway';
+    return GATEWAY_ATTACHMENT_TYPE_IGW;
   }
   if (typeof properties['VpnGatewayId'] === 'string' && properties['VpnGatewayId']) {
-    return 'VPN';
+    return GATEWAY_ATTACHMENT_TYPE_VGW;
   }
   // Last resort: the gateway id itself names the kind (`igw-…` / `vgw-…`).
   if (firstSegment.startsWith('igw-')) {
-    return 'InternetGateway';
+    return GATEWAY_ATTACHMENT_TYPE_IGW;
   }
   if (firstSegment.startsWith('vgw-')) {
-    return 'VPN';
+    return GATEWAY_ATTACHMENT_TYPE_VGW;
   }
   throw new Error(
     `cannot determine AttachmentType for AWS::EC2::VPCGatewayAttachment: cdkd state's ` +
@@ -640,6 +791,61 @@ function resolveGatewayAttachmentType(
       `segment '${firstSegment}' is not a recognized gateway id. State entry may be corrupt ` +
       `or written by an older cdkd binary; re-deploy the resource to refresh state.`
   );
+}
+
+/**
+ * The `AWS::EC2::Route` destination keys, in CloudFormation's own precedence
+ * order — the same order (and the same list) `narrowRouteDestinations` in
+ * `src/provisioning/providers/ec2-provider.ts` resolves them in when it decides
+ * which one `createRoute` actually sends, i.e. which one ends up in the
+ * physicalId's destination segment. Restated here rather than imported so this
+ * command does not pull the EC2 provider (and its SDK client) into the export
+ * module graph.
+ */
+const ROUTE_DESTINATION_KEYS = [
+  'DestinationCidrBlock',
+  'DestinationIpv6CidrBlock',
+  'DestinationPrefixListId',
+] as const;
+
+/**
+ * Resolve the value CFn's read-only `AWS::EC2::Route.CidrBlock` identifier
+ * field holds, from cdkd's physicalId destination segment plus the recorded
+ * properties.
+ *
+ * The SEGMENT is authoritative and is what this returns: it is the destination
+ * cdkd actually sent to `CreateRoute` (SDK path) or the `CidrBlock` AWS itself
+ * reported (Cloud Control path), and `CidrBlock` holds whichever destination
+ * kind the route declares — measured live, see the splitter's comment.
+ *
+ * The recorded properties are read to CROSS-CHECK it, the way
+ * {@link resolveGatewayAttachmentType} reads them to recover a field cdkd never
+ * stores. A divergence is reachable rather than theoretical: on the Cloud
+ * Control path the id carries AWS's CANONICALIZED CIDR while the template
+ * (hence state's properties) carries what the user wrote, and CFn documents
+ * that it rewrites e.g. `100.68.0.18/18` to `100.68.0.0/18`. So this WARNS and
+ * keeps the id's value rather than throwing — a throw would block the export of
+ * a resource whose identifier is correct — but the warning is what turns an
+ * otherwise opaque CFn IMPORT "resource not found" into something diagnosable.
+ *
+ * Properties that declare NO destination at all are NOT treated as suspicious:
+ * a partial / hand-edited state record must not become a refusal, and the id
+ * alone is enough to build the identifier.
+ */
+function resolveRouteDestination(segment: string, properties: Record<string, unknown>): string {
+  const declared = ROUTE_DESTINATION_KEYS.filter(
+    (key) => typeof properties[key] === 'string' && properties[key] !== ''
+  );
+  if (declared.length === 0) return segment;
+  if (declared.some((key) => properties[key] === segment)) return segment;
+  getLogger().warn(
+    `AWS::EC2::Route: cdkd state's recorded properties declare ` +
+      `${declared.map((key) => `${key}='${String(properties[key])}'`).join(', ')}, but the ` +
+      `physical id's destination segment is '${segment}'. Using the physical id — it is what ` +
+      `CloudFormation identifies the route by. If the IMPORT is rejected as not found, the ` +
+      `state entry is stale; re-deploy the resource to refresh it.`
+  );
+  return segment;
 }
 
 /**
