@@ -1,3 +1,10 @@
+## [0.281.24](https://github.com/go-to-k/cdkd/compare/v0.281.23...v0.281.24) (2026-08-13)
+
+
+### Bug Fixes
+
+* **export:** resolve the CFn identifier from state for composite-physicalId types, and refuse non-importable types up front ([#1775](https://github.com/go-to-k/cdkd/issues/1775)) ([5afd85d](https://github.com/go-to-k/cdkd/commit/5afd85d22af85f6a63657d07e83ade7a2c6a77c7))
+
 ## [0.281.23](https://github.com/go-to-k/cdkd/compare/v0.281.22...v0.281.23) (2026-08-13)
 
 
