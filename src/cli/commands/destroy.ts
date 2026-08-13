@@ -355,6 +355,13 @@ async function destroyCommand(
     // Hoisted out of the per-stack loop so the upfront nested-child-by-name
     // refusal (after the empty-match gate below) can use the same accumulator.
     let totalErrors = 0;
+    // Issue #1752: resources whose provider reported `{ outcome: 'skipped' }`
+    // — cdkd could not address them, so NO delete was issued and they may
+    // still exist in AWS. Counted separately from `totalErrors` (nothing
+    // FAILED) but treated the same way for the exit code: the runner
+    // preserved state, so reporting success would tell CI the stack is gone
+    // when it is not.
+    let totalSkipped = 0;
     // Set true when a per-stack destroy was gracefully interrupted (issue
     // #816). Stops the multi-stack loop and surfaces a non-zero exit below.
     let interrupted = false;
@@ -634,13 +641,16 @@ async function destroyCommand(
             })
         );
         totalErrors += result.errorCount;
+        totalSkipped += result.skippedCount;
         if (result.interrupted) interrupted = true;
 
         // Map the per-stack runner outcome to a run-level result. A
-        // partial-failure (errorCount > 0) is a FAILED run; cancelled /
-        // empty-skip / clean destroy are all SUCCEEDED (no resource
-        // failed). The RUN_FINISHED event mirrors deploy's shape.
-        destroyRunResult = result.errorCount > 0 ? 'FAILED' : 'SUCCEEDED';
+        // partial-failure (errorCount > 0) is a FAILED run, and so is a run
+        // that SKIPPED a resource (issue #1752 — the stack is not destroyed
+        // and state was preserved); cancelled / empty-skip / clean destroy
+        // are all SUCCEEDED. The RUN_FINISHED event mirrors deploy's shape.
+        destroyRunResult =
+          result.errorCount > 0 || result.skippedCount > 0 ? 'FAILED' : 'SUCCEEDED';
         eventRecorder.record({
           eventType: 'RUN_FINISHED',
           stackName,
@@ -695,6 +705,18 @@ async function destroyCommand(
       // exit so scripts / CI see the destroy did not complete.
       throw new PartialFailureError(
         `Destroy interrupted by Ctrl-C. State preserved — re-run 'cdkd destroy' to finish.`
+      );
+    }
+    if (totalSkipped > 0) {
+      // Issue #1752: nothing FAILED, but cdkd left resources it could not
+      // address. Exit 2 rather than 0 — this is the same "state preserved,
+      // stack not destroyed" contract the two branches above carry, and
+      // exiting 0 is exactly the mis-report this issue was filed for.
+      throw new PartialFailureError(
+        `Destroy skipped ${totalSkipped} resource(s) cdkd could not address — no delete was ` +
+          `issued, so they may still exist in AWS. State preserved (the records are kept). ` +
+          `Repair the physicalId in state.json and re-run 'cdkd destroy', or delete them by ` +
+          `hand and drop the records with 'cdkd state orphan <stack>'.`
       );
     }
   } finally {

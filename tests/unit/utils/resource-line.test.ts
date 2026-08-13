@@ -44,4 +44,28 @@ describe('formatResourceLine', () => {
     expect(line).toContain(id);
     expect(line).toContain(`(${type})`);
   });
+
+  // Issue #1752: `skipped` is the one op that is NEITHER success nor failure.
+  describe('skipped (issue #1752)', () => {
+    it('renders a yellow warning glyph — not a check and not a cross', () => {
+      expect(formatResourceLine('skipped', id, type)).toBe(
+        `${yellow('⚠')} ${body} ${yellow('skipped')}`
+      );
+    });
+
+    it('never renders as a successful op', () => {
+      // The whole point: a skip must not be readable as `✓ … deleted`, which
+      // is what the destroy runner printed before the fix.
+      const line = formatResourceLine('skipped', id, type);
+      expect(line).not.toContain('✓');
+      expect(line).not.toContain('✗');
+      expect(line).not.toContain('deleted');
+    });
+
+    it('carries the skip reason through verbOverride', () => {
+      expect(
+        formatResourceLine('skipped', id, type, 'skipped (malformed physicalId in state)')
+      ).toBe(`${yellow('⚠')} ${body} ${yellow('skipped (malformed physicalId in state)')}`);
+    });
+  });
 });

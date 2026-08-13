@@ -51,12 +51,18 @@ describe('compositeIdFormatMessage (issue #1657)', () => {
     expect(msg).toContain('expected "<internetGatewayId>|<vpcId>"');
   });
 
-  it('under `skipping` says the AWS resource survives and the destroy still reports success', () => {
+  it('under `skipping` says the AWS resource survives and names the remedy', () => {
     const msg = compositeIdFormatMessage(TWO, 'MyTable', 'oops', { skipping: true });
     expect(msg).toContain('expected "<databaseName>|<tableName>"');
     expect(msg).toContain('LEFT IN PLACE');
-    expect(msg).toContain('successful');
-    expect(msg).toContain("replacement / rollback deletes");
+    expect(msg).toContain('no AWS call is issued');
+    expect(msg).toContain('state.json');
+    expect(msg).toContain('replacement / rollback deletes');
+    // Issue #1752 REVERSED the old promise: this message used to say cdkd
+    // "will report this delete as successful", which was the mis-accounting
+    // that issue fixed. `cdkd destroy` now reports the skip and exits 2, so
+    // the sentence must NOT come back.
+    expect(msg).not.toContain('successful');
   });
 
   it('the default (throw) variant carries NO skip clause', () => {

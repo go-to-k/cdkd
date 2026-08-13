@@ -324,6 +324,32 @@ describe('cdkd state destroy', () => {
     expect(message).toMatch(/2 resource error\(s\).*State preserved/);
   });
 
+  it('exits 2 when the runner SKIPPED a resource, even with zero errors (issue #1752)', async () => {
+    // Twin of the destroy.ts branch: nothing FAILED, but cdkd left resources
+    // it could not address and preserved their state records.
+    mockListStacks.mockResolvedValue([{ stackName: 'Skipper', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({
+      state: makeStackState('Skipper', 'us-east-1'),
+      etag: '"x"',
+    });
+    mockRunDestroyForStack.mockResolvedValueOnce({
+      stackName: 'Skipper',
+      cancelled: false,
+      skippedEmpty: false,
+      deletedCount: 2,
+      retainedCount: 0,
+      skippedCount: 1,
+      errorCount: 0,
+      interrupted: false,
+    });
+
+    await expect(runStateDestroy(['destroy', 'Skipper', '--yes'])).rejects.toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toContain('skipped 1 resource(s)');
+    expect(message).toContain('may still exist in AWS');
+  });
+
   it('iterates over multiple positional stack names in order', async () => {
     mockListStacks.mockResolvedValue([
       { stackName: 'A', region: 'us-east-1' },

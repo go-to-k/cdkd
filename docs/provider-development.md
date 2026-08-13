@@ -59,6 +59,9 @@ export interface ResourceProvider {
    *   `context.expectedRegion` before treating a `*NotFound` error as
    *   idempotent delete success — see the "DELETE idempotency" section
    *   below.
+   * @returns Nothing (means "deleted"), or `{ outcome: 'skipped', reason }`
+   *   when the provider issued NO AWS call and the resource may still be
+   *   alive — see "2b. Reporting a SKIPPED delete" below.
    */
   delete(
     logicalId: string,
@@ -66,7 +69,7 @@ export interface ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void>;
+  ): Promise<void | ResourceDeleteResult>;
 
   /**
    * Adopt an existing AWS resource into cdkd state.
@@ -1523,6 +1526,54 @@ preserving the existing idempotent semantics for callers that have not
 been threaded with state region. When set, a region mismatch throws a
 `ProvisioningError` that surfaces both regions and a hint to rerun with
 the correct `--region`.
+
+### 2b. Reporting a SKIPPED delete (issue #1752)
+
+`delete()` returning normally means **"the resource is gone"** — a delete
+call succeeded, or the resource was already absent (the `*NotFound`
+idempotent arm above, `CustomResourceProvider`'s backing-Lambda-is-gone
+pre-check). Both are honest, so both count toward `N deleted`.
+
+A **warn-and-continue** arm that issues no AWS call at all is different, and
+returning `void` from one is a bug. `cdkd destroy`'s only signal used to be
+"did not throw", so such an arm printed `✓ <id> (<type>) deleted`, counted
+toward `N deleted`, **dropped the state record**, and exited 0 — over a
+resource that may still be alive and billing. Report the skip instead:
+
+```typescript
+const [databaseName, tableName] = physicalId.split('|');
+if (!databaseName || !tableName) {
+  this.logger.warn(
+    compositeIdFormatMessage(GLUE_TABLE_ID_FORMAT, logicalId, physicalId, { skipping: true })
+  );
+  return compositeIdSkipResult(); // { outcome: 'skipped', reason }
+}
+```
+
+What the destroy runner then does, and why each half matters:
+
+- prints `⚠ <id> (<type>) skipped (<reason>)` — a yellow warning glyph, so it
+  can be read as neither the `✓ … deleted` success line nor the
+  `✗ Failed to delete` failure line;
+- counts it in a separate `skipped` column
+  (`2 deleted, 1 skipped, 0 errors`) rather than as an error — nothing was
+  attempted, so nothing failed;
+- **KEEPS the state record.** This is the half that is easy to miss: dropping
+  it leaves the user with neither the AWS resource deleted nor an id to go and
+  delete it with;
+- preserves `state.json` and exits **2** (`PartialFailureError`), the same
+  contract a partial / interrupted destroy already carries. Exiting 0 while
+  leaving a resource behind is the mis-report this mechanism exists to
+  prevent;
+- emits a `RESOURCE_SKIPPED` deployment event (no `error` field).
+
+Reach for this ONLY when cdkd genuinely cannot address the resource. If you
+know the resource is gone, return `void` — reporting a skip there would
+preserve state and fail the destroy for no reason. The one producer today is
+the malformed-composite-physicalId family
+(`src/provisioning/composite-id.ts`); the `--purge-events` flag and the
+run-level `RUN_FINISHED` result both treat a skip as a failed run, so a new
+producer changes user-visible exit behavior — decide deliberately.
 
 ### 2a. UPDATE removal semantics — clear-on-removal (issue #1155)
 

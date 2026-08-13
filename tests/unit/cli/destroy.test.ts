@@ -233,6 +233,59 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
+  it('exits 2 when the runner SKIPPED a resource, even with zero errors (issue #1752)', async () => {
+    // A skip means cdkd left a resource it could not address and preserved
+    // state — the stack is NOT destroyed. Exiting 0 there is exactly the
+    // mis-report the issue was filed for.
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Skipper', 'us-east-1')],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Skipper', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({ state: makeStackState('Skipper'), etag: '"x"' });
+    mockRunDestroyForStack.mockResolvedValue({
+      stackName: 'Skipper',
+      cancelled: false,
+      skippedEmpty: false,
+      deletedCount: 2,
+      retainedCount: 0,
+      skippedCount: 1,
+      errorCount: 0,
+      interrupted: false,
+    });
+
+    await expect(runDestroy(['destroy', 'Skipper', '--yes'])).rejects.toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toContain('skipped 1 resource(s)');
+    expect(message).toContain('may still exist in AWS');
+  });
+
+  it('still exits 0 when nothing was skipped (no behavior change, issue #1752)', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Clean', 'us-east-1')],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Clean', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({ state: makeStackState('Clean'), etag: '"x"' });
+    mockRunDestroyForStack.mockResolvedValue({
+      stackName: 'Clean',
+      cancelled: false,
+      skippedEmpty: false,
+      deletedCount: 2,
+      retainedCount: 0,
+      skippedCount: 0,
+      errorCount: 0,
+      interrupted: false,
+    });
+
+    await runDestroy(['destroy', 'Clean', '--yes']);
+
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
   it('--remove-protection bypasses terminationProtection guard with a WARN log and dispatches the runner', async () => {
     const warnSpy = vi.fn();
     // The destroy command logs the bypass at WARN level via the shared

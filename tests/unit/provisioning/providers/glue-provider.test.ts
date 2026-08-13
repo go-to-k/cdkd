@@ -835,9 +835,16 @@ describe('deleteTable malformed-physicalId skip arm (issue #1675)', () => {
     ['an empty database segment', '|my_table'],
     ['an empty id', ''],
   ])('warns and issues NO Glue call for %s', async (_label, physicalId) => {
+    // Issue #1752: this used to resolve to `undefined`, which the destroy
+    // runner could not tell apart from a completed delete — so the table was
+    // printed and counted as `deleted` and its state record dropped. The arm
+    // now REPORTS the skip.
     await expect(
       provider.delete('MyTable', physicalId, 'AWS::Glue::Table', { DatabaseName: 'mydb' })
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({
+      outcome: 'skipped',
+      reason: 'malformed physicalId in state — no delete issued',
+    });
 
     expect(mockGlueSend).not.toHaveBeenCalled();
     expect(mockLoggerWarn).toHaveBeenCalledTimes(1);

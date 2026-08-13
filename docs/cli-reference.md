@@ -2390,7 +2390,7 @@ CI / bench scripts can react without grepping log output:
 | --- | --- | --- |
 | `0` | Success — command completed and no resources are in an error state | All commands |
 | `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception. **`cdkd drift` also exits `1` when drift is detected**, and **`cdkd diff --fail` exits `1` when any change is detected** (the operative meaning is "non-zero outcome", not "command crashed") | All commands (default for any thrown error) |
-| `2` | **Partial failure** — work completed but one or more resources failed; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (per-resource delete failures), `cdkd publish-assets` (per-stack asset publish failures), `cdkd rollback` (per-op failures / skipped-with-warning ops; the journal is kept for re-run) |
+| `2` | **Partial failure** — work completed but one or more resources failed OR was SKIPPED; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (per-resource delete failures, and per-resource **skips** — issue #1752), `cdkd publish-assets` (per-stack asset publish failures), `cdkd rollback` (per-op failures / skipped-with-warning ops; the journal is kept for re-run) |
 
 The implementation hangs off a `PartialFailureError` class in
 `src/utils/error-handler.ts`. `handleError` reads the error's
@@ -2404,7 +2404,32 @@ also switches glyphs:
 ```text
 ✓ Stack X destroyed (N deleted, 0 errors)                       # exit 0
 ⚠ Stack X partially destroyed (N deleted, M errors). State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up.   # exit 2
+⚠ Stack X partially destroyed (N deleted, S skipped, 0 errors). cdkd could not address the skipped resource(s) ...   # exit 2
 ```
+
+### Skipped resources on destroy (issue #1752)
+
+A **skipped** resource is one cdkd could not ADDRESS: it issued no AWS
+call at all, so the resource may still exist and still be billing. Today
+the only cause is a state record whose composite `physicalId` does not
+decode (`AWS::Glue::Table`, `AWS::AppSync::{DataSource,Resolver,ApiKey}`,
+`AWS::EC2::NetworkAclEntry`); the per-resource warning names the expected
+format.
+
+It is deliberately distinct from the neighbouring outcomes:
+
+| | AWS resource | cdkd state record | Counts as |
+| --- | --- | --- | --- |
+| deleted | gone | dropped | `N deleted` |
+| retained (`DeletionPolicy: Retain`) | kept **on purpose** | dropped | `N retained` |
+| **skipped** | **may still exist** | **KEPT** | `N skipped`, exit `2` |
+| failed | may still exist | kept | `N errors`, exit `2` |
+
+The state record is kept on purpose: without it you would have neither
+the AWS resource deleted nor an id to go and delete it with. To finish
+the destroy, repair the `physicalId` in state (`cdkd state show <stack>`
+to inspect) and re-run, or delete the resource by hand and drop the
+record with `cdkd state orphan <stack>`.
 
 If your bench / CI script previously treated any non-zero from `cdkd
 destroy` as a hard failure (because it never had a non-zero outcome

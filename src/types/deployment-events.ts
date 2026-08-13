@@ -49,6 +49,14 @@ export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  * - `RESOURCE_STARTED` / `RESOURCE_SUCCEEDED` / `RESOURCE_FAILED` — one
  *   pair (or started+failed) per per-resource CREATE / UPDATE / DELETE.
  * - `RESOURCE_RETAINED` — destroy-side skip for `DeletionPolicy: Retain`.
+ *   The AWS resource is kept ON PURPOSE and the state record is dropped.
+ * - `RESOURCE_SKIPPED` — destroy-side skip where cdkd could NOT address the
+ *   resource and issued no AWS call (issue
+ *   [#1752](https://github.com/go-to-k/cdkd/issues/1752); today only a
+ *   malformed composite physicalId). The opposite of `RESOURCE_RETAINED` in
+ *   both halves: keeping the AWS resource is NOT intended, and the state
+ *   record is KEPT so the orphan stays traceable. Distinct from
+ *   `RESOURCE_FAILED` because nothing was attempted, hence no error metadata.
  * - `ROLLBACK_*` — deploy-failure rollback phase (started / per-resource
  *   outcome / finished).
  */
@@ -59,6 +67,7 @@ export type DeploymentEventType =
   | 'RESOURCE_SUCCEEDED'
   | 'RESOURCE_FAILED'
   | 'RESOURCE_RETAINED'
+  | 'RESOURCE_SKIPPED'
   | 'ROLLBACK_STARTED'
   | 'ROLLBACK_RESOURCE_SUCCEEDED'
   | 'ROLLBACK_RESOURCE_FAILED'

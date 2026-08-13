@@ -133,6 +133,48 @@ export interface ResourceUpdateResult extends EffectivePropertiesResult {
 }
 
 /**
+ * What a provider's `delete` actually DID (issue
+ * [#1752](https://github.com/go-to-k/cdkd/issues/1752)).
+ *
+ * Before this existed, `delete` returned `Promise<void>` and the destroy
+ * runner's only signal was "did not throw" — so a warn-and-continue arm that
+ * issued NO AWS call at all was printed as `✓ <id> (<type>) deleted` and
+ * counted toward `N deleted`, while the AWS resource stayed alive. Reporting
+ * an outcome lets the runner tell the two apart.
+ *
+ * - `'deleted'` — cdkd addressed the resource: an AWS delete call was issued
+ *   and succeeded, OR the resource was already gone (`*NotFound` idempotent
+ *   arms, `CustomResourceProvider`'s backing-Lambda-is-gone pre-check). Either
+ *   way the resource is not there any more, so counting it as deleted is
+ *   honest.
+ * - `'skipped'` — cdkd could NOT address the resource and issued no AWS call
+ *   (today: a state record whose composite physicalId does not decode). The
+ *   AWS resource may still be ALIVE. The runner prints a distinct line, counts
+ *   it separately, KEEPS the state record, and exits non-zero.
+ *
+ * The issue's sketch had a third value, `'already-absent'`, splitting the
+ * idempotent arms out of `'deleted'`. It is deliberately NOT here: no call
+ * site produces it and no consumer would treat it differently from
+ * `'deleted'` (the runner already has its own message-matched
+ * "already deleted" branch), so it would be an unreachable enum member
+ * inviting mis-wiring. Widening the union later is a one-line change.
+ *
+ * Returning nothing (`undefined`) means `'deleted'`, so the ~80 providers
+ * that already return `void` need no change.
+ */
+export interface ResourceDeleteResult {
+  /** What happened. See the type docs for the exact meaning of each value. */
+  readonly outcome: 'deleted' | 'skipped';
+  /**
+   * REQUIRED on `'skipped'`: one line saying why cdkd could not address the
+   * resource, rendered on the per-resource status line and carried into the
+   * `RESOURCE_SKIPPED` deployment event. Providers normally also `logger.warn`
+   * the full remediation text; this is the short form.
+   */
+  readonly reason?: string;
+}
+
+/**
  * Input passed to a provider's `import` method.
  *
  * Carries everything a provider needs to find an existing AWS resource that
@@ -520,6 +562,13 @@ export interface ResourceProvider {
    *   `NotFound` as idempotent success when the AWS client's region does not
    *   match the region the resource was deployed to. See
    *   `src/provisioning/region-check.ts` for the shared verification helper.
+   * @returns Nothing (back-compat: means the resource was deleted), or a
+   *   {@link ResourceDeleteResult} when the provider needs to say it did NOT
+   *   address the resource. A warn-and-continue arm that issues no AWS call
+   *   MUST report `{ outcome: 'skipped', reason }` — returning `void` from
+   *   such an arm is what issue
+   *   [#1752](https://github.com/go-to-k/cdkd/issues/1752) fixed: the destroy
+   *   summary counted it as deleted while the AWS resource stayed alive.
    */
   delete(
     logicalId: string,
@@ -527,7 +576,7 @@ export interface ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void>;
+  ): Promise<void | ResourceDeleteResult>;
 
   /**
    * Get resource attributes (for Fn::GetAtt resolution)
