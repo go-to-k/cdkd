@@ -32,7 +32,10 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
-import { LambdaEventSourceMappingProvider } from '../../../src/provisioning/providers/lambda-eventsource-provider.js';
+import {
+  classifyEventSource,
+  LambdaEventSourceMappingProvider,
+} from '../../../src/provisioning/providers/lambda-eventsource-provider.js';
 
 describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
   let provider: LambdaEventSourceMappingProvider;
@@ -381,5 +384,142 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
         expect(k in r).toBe(false);
       }
     });
+  });
+
+  // Issue #1815: `classifyEventSource` hand-enumerated `arn:aws:` and
+  // `arn:aws-cn:` per service, so an event source in ANY other partition —
+  // GovCloud, the four iso partitions, `aws-eusc` — classified as `unknown`.
+  // `unknown` is in neither `KINDS_WITH_FUNCTION_RESPONSE_TYPES` nor
+  // `KINDS_WITH_SOURCE_ACCESS_CONFIGURATIONS`, so the type-discriminator
+  // placeholders silently stopped being emitted and the drift comparator saw a
+  // one-sided difference on every clean run. The classifier is module-private,
+  // so it is pinned through the emission it gates — which is also the behavior
+  // that actually matters.
+  describe('issue #1815: partition-independent event-source classification', () => {
+    async function readWithSource(eventSourceArn: string): Promise<Record<string, unknown>> {
+      mockSend.mockResolvedValueOnce({
+        UUID: 'abc-123',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn',
+        EventSourceArn: eventSourceArn,
+        EventSourceMappingArn: 'arn:aws:lambda:us-east-1:123:event-source-mapping:abc-123',
+        State: 'Enabled',
+      });
+      mockSend.mockResolvedValueOnce({ Tags: {} });
+      const result = await provider.readCurrentState(
+        'abc-123',
+        'L',
+        'AWS::Lambda::EventSourceMapping'
+      );
+      return result ?? {};
+    }
+
+    // SQS / Kinesis / DynamoDB gate `FunctionResponseTypes`.
+    it.each([
+      ['aws-us-gov', 'arn:aws-us-gov:sqs:us-gov-west-1:123:my-queue'],
+      ['aws-iso', 'arn:aws-iso:sqs:us-iso-east-1:123:my-queue'],
+      ['aws-iso-b', 'arn:aws-iso-b:kinesis:us-isob-east-1:123:stream/my-stream'],
+      ['aws-iso-f', 'arn:aws-iso-f:dynamodb:us-isof-south-1:123:table/t/stream/2024'],
+      ['aws-eusc', 'arn:aws-eusc:sqs:eusc-de-east-1:123:my-queue'],
+    ])(
+      'emits the FunctionResponseTypes placeholder for a %s event source',
+      async (_partition, arn) => {
+        const r = await readWithSource(arn);
+        // Pre-fix this partition classified `unknown`, so the key was absent.
+        expect(r['FunctionResponseTypes']).toEqual([]);
+        expect('SourceAccessConfigurations' in r).toBe(false);
+      }
+    );
+
+    // Kafka / MQ / DocumentDB gate `SourceAccessConfigurations` instead.
+    it.each([
+      ['aws-us-gov', 'arn:aws-us-gov:kafka:us-gov-west-1:123:cluster/c/uuid-1'],
+      ['aws-iso', 'arn:aws-iso:mq:us-iso-east-1:123:broker:b:b-uuid'],
+      ['aws-eusc', 'arn:aws-eusc:rds:eusc-de-east-1:123:cluster:docdb-1'],
+    ])(
+      'emits the SourceAccessConfigurations placeholder for a %s event source',
+      async (_partition, arn) => {
+        const r = await readWithSource(arn);
+        expect(r['SourceAccessConfigurations']).toEqual([]);
+        expect('FunctionResponseTypes' in r).toBe(false);
+      }
+    );
+
+    // Commercial / China counter-cases: the two partitions the pre-fix
+    // enumeration DID handle must keep behaving byte-identically.
+    it.each([
+      ['aws', 'arn:aws:sqs:us-east-1:123:my-queue'],
+      ['aws-cn', 'arn:aws-cn:sqs:cn-north-1:123:my-queue'],
+    ])('is unchanged for a %s event source', async (_partition, arn) => {
+      const r = await readWithSource(arn);
+      expect(r['FunctionResponseTypes']).toEqual([]);
+      expect('SourceAccessConfigurations' in r).toBe(false);
+    });
+
+    // Widening the partition segment must not start classifying things that
+    // are not event sources. An unrelated service and a non-ARN both stay
+    // `unknown`, so NEITHER placeholder is emitted.
+    it.each([
+      ['an unrelated service ARN', 'arn:aws-us-gov:s3:::my-bucket'],
+      ['a non-AWS ARN-shaped string', 'arn:notaws:sqs:us-gov-west-1:123:my-queue'],
+      ['a bare non-ARN string', 'my-queue'],
+    ])('classifies %s as unknown (neither placeholder emitted)', async (_label, arn) => {
+      const r = await readWithSource(arn);
+      expect('FunctionResponseTypes' in r).toBe(false);
+      expect('SourceAccessConfigurations' in r).toBe(false);
+    });
+
+    // The rewrite replaced a `startsWith` chain with a TABLE LOOKUP, and the
+    // service segment is user-controlled (it comes from the template's
+    // `EventSourceArn`). A bare `TABLE[service] ?? 'unknown'` reaches
+    // `Object.prototype`, so these names return a FUNCTION — which `??` never
+    // replaces, making `classifyEventSource` hand back a function typed as
+    // `EventSourceKind`. The `startsWith` chain being replaced had no such
+    // reach, so this is what keeps the rewrite behavior-preserving rather
+    // than merely equivalent on the happy path.
+    //
+    // Asserted on the classifier's RETURN VALUE, not through `readCurrentState`.
+    // That is deliberate and was measured: every production consumer is a
+    // `Set.has(kind)`, and a prototype member misses every set exactly as
+    // `'unknown'` does — so a behavior-level version of this row passed with
+    // the guard fully reverted. A test that cannot fail is worse than none,
+    // because it reads as coverage.
+    it.each([['constructor'], ['toString'], ['hasOwnProperty'], ['valueOf'], ['isPrototypeOf']])(
+      'classifies the Object.prototype key %s as unknown, not as a prototype member',
+      (service) => {
+        const kind = classifyEventSource({
+          EventSourceArn: `arn:aws:${service}:us-east-1:123:thing`,
+        });
+        expect(kind).toBe('unknown');
+        expect(typeof kind).toBe('string');
+      }
+    );
+
+    // The real services must still resolve — otherwise the row above could be
+    // satisfied by a lookup that returns 'unknown' for everything.
+    // Both partitions per row, per the #1745 convention: the commercial
+    // spelling is the counter-case proving the widening did not REPLACE the
+    // old behavior. `mq` and `rds`->`documentdb` had no commercial assertion
+    // anywhere before this, and the two placeholder sets cannot tell
+    // within-set kinds apart (sqs/kinesis/dynamodb, kafka/mq/documentdb), so
+    // a table typo between them was invisible to every behavior-level test.
+    it.each([
+      ['sqs', 'sqs'],
+      ['kinesis', 'kinesis'],
+      ['dynamodb', 'dynamodb'],
+      ['kafka', 'kafka'],
+      ['mq', 'mq'],
+      ['rds', 'documentdb'],
+    ])('classifies the %s service segment as %s in every partition', (service, expected) => {
+      expect(classifyEventSource({ EventSourceArn: `arn:aws:${service}:us-east-1:123:x` })).toBe(
+        expected
+      );
+      expect(
+        classifyEventSource({ EventSourceArn: `arn:aws-us-gov:${service}:us-gov-west-1:123:x` })
+      ).toBe(expected);
+      expect(
+        classifyEventSource({ EventSourceArn: `arn:aws-cn:${service}:cn-north-1:123:x` })
+      ).toBe(expected);
+    });
+
   });
 });

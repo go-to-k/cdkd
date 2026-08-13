@@ -501,6 +501,63 @@ describe('IAMManagedPolicyProvider', () => {
       expect(callsOfType(GetPolicyCommand)).toHaveLength(0);
     });
 
+    // Issue #1815: the refusal predicate was pinned to `arn:aws:iam::aws:`, so
+    // an AWS-managed policy in any OTHER partition fell through and was
+    // ADOPTED as if customer-managed — destroy would then detach it from every
+    // principal in the account before `DeletePolicy` was (always) rejected.
+    // AWS-managed policies exist under every partition
+    // (`arn:aws-us-gov:iam::aws:policy/AdministratorAccess` is real), so a
+    // commercial-only test cannot detect this. The commercial case above is
+    // the byte-identical counter-case.
+    it.each([
+      ['aws-cn', 'arn:aws-cn:iam::aws:policy/AdministratorAccess'],
+      ['aws-us-gov', 'arn:aws-us-gov:iam::aws:policy/AdministratorAccess'],
+      ['aws-iso', 'arn:aws-iso:iam::aws:policy/AdministratorAccess'],
+      ['aws-iso-b', 'arn:aws-iso-b:iam::aws:policy/ReadOnlyAccess'],
+      ['aws-eusc', 'arn:aws-eusc:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'],
+    ])(
+      'refuses to adopt an AWS-managed policy in the %s partition (issue #1815)',
+      async (_partition, arn) => {
+        await expect(provider.import!(makeInput({ knownPhysicalId: arn }))).rejects.toThrow(
+          /AWS-managed policy/
+        );
+        // The refusal happens BEFORE any AWS call — that ordering is what
+        // keeps `detachAllPrincipals` from ever seeing the policy.
+        expect(callsOfType(GetPolicyCommand)).toHaveLength(0);
+      }
+    );
+
+    // Counter-case: widening the partition segment must NOT start refusing
+    // customer-managed policies, whose account segment is a 12-digit id. If it
+    // did, import would break for every non-commercial user in the opposite
+    // direction.
+    it.each([
+      ['aws-cn', 'arn:aws-cn:iam::123456789012:policy/MyManagedPolicy'],
+      ['aws-us-gov', 'arn:aws-us-gov:iam::123456789012:policy/MyManagedPolicy'],
+    ])(
+      'still adopts a customer-managed policy in the %s partition (issue #1815)',
+      async (_partition, arn) => {
+        mockSend.mockResolvedValueOnce({ Policy: { Arn: arn } });
+        const result = await provider.import!(makeInput({ knownPhysicalId: arn }));
+        expect(result).toEqual({ physicalId: arn, attributes: { PolicyArn: arn } });
+        expect(callsOfType(GetPolicyCommand)).toHaveLength(1);
+      }
+    );
+
+    // The other two #1815 sites carry an `arn:notaws:` row; this one did not.
+    // `aws[a-z0-9-]*` is deliberately loose, so the segment that must remain
+    // load-bearing is the ACCOUNT (`:iam::aws:`) — a partition-shaped
+    // impostor with a 12-digit account is still a customer-managed policy and
+    // must be adopted, not refused.
+    it.each([
+      ['a non-AWS partition spelling', 'arn:notaws:iam::aws:policy/AdministratorAccess'],
+      ['an aws-prefixed impostor with a real account', 'arn:awsfoo:iam::123456789012:policy/Mine'],
+    ])('does not refuse %s', async (_label, arn) => {
+      mockSend.mockResolvedValueOnce({ Policy: { Arn: arn } });
+      const result = await provider.import!(makeInput({ knownPhysicalId: arn }));
+      expect(result).toEqual({ physicalId: arn, attributes: { PolicyArn: arn } });
+    });
+
     it('returns null when an ARN override does not exist on AWS', async () => {
       mockSend.mockRejectedValueOnce(
         new NoSuchEntityException({ $metadata: {}, message: 'gone' })
