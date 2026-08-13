@@ -369,12 +369,8 @@ jq --arg id "${ROUTE_LOGICAL_ID}" --arg ipv6 "${BAD_IPV6_DEST}" \
    | .resources[$gt].properties.WriteProvisionedThroughputSettings = {WriteCapacityUnits: $wcu}
    | .resources[$gt].properties.Replicas[0].ReadProvisionedThroughputSettings = {ReadCapacityUnits: $wcu}
    | .resources[$gt].properties.Replicas[0].ProvisionedThroughputOverride = {ReadCapacityUnits: $wcu}
-   # Named for the REAL index on the capacity table (capgsi1), not an invented
-   # one: that table carries a genuine GSI again now that the two #1742 phantoms
-   # are fixed, so the per-INDEX members of the strip are exercised against an
-   # entry that actually exists rather than a synthetic husk.
    | .resources[$gt].properties.Replicas[0].GlobalSecondaryIndexes = [
-       {IndexName: "capgsi1",
+       {IndexName: "gsi1",
         ReadProvisionedThroughputSettings: {ReadCapacityUnits: $wcu},
         ProvisionedThroughputOverride: {ReadCapacityUnits: $wcu}}
      ]

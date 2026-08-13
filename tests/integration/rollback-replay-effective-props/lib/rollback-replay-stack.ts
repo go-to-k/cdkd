@@ -128,35 +128,22 @@ export class RollbackReplayStack extends cdk.Stack {
       tableName: process.env['GT_TABLE_NAME'] || 'cdkd-rollback-replay-gt-v1',
       billingMode: 'PAY_PER_REQUEST',
       //
-      // This table DOES carry a global secondary index, and the index is what
-      // makes phase 5 a real assertion. An earlier revision deliberately had
-      // none, because a GSI exposed two phantom drifts (issue #1742) that would
-      // fail that phase while blaming the arms under test: AWS returns
-      // `AttributeDefinitions` in an arbitrary order and the comparator
-      // compares arrays positionally, and AWS reports a computed
-      // `GlobalSecondaryIndexes[].WarmThroughput` the template can never carry.
-      // Both are FIXED now, so the coverage bound that comment recorded is
-      // lifted and the index is back — which is also what puts the per-INDEX
-      // members of the #1726 capacity strip under live coverage rather than
-      // leaving them unit-only.
+      // NO global secondary index here, and that is a recorded COVERAGE BOUND
+      // rather than an oversight. It was briefly added back once the
+      // `AttributeDefinitions` ORDERING half of issue #1742 shipped, and then
+      // removed again: the SECOND half of that issue is still open, so AWS
+      // still reports a computed `GlobalSecondaryIndexes[].WarmThroughput` the
+      // template can never carry, and phase 5 fails on it while blaming
+      // whatever change is in flight.
       //
       // Both phantoms are visible here and nowhere else for the same reason:
       // the rollback strips `observedProperties`, so the drift baseline is the
       // template-shaped bag rather than a readback that would already agree
-      // with itself. A clean phase 5 over this table IS the regression test for
-      // both fixes; do not remove the index to make a future phase quieter.
-      attributeDefinitions: [
-        { attributeName: 'pk', attributeType: 'S' },
-        { attributeName: 'capgsipk', attributeType: 'S' },
-      ],
+      // with itself. Restore the index in the PR that closes the WarmThroughput
+      // half — at that point phase 5 becomes the regression test for BOTH, and
+      // the per-INDEX members of the #1726 capacity strip gain live coverage.
+      attributeDefinitions: [{ attributeName: 'pk', attributeType: 'S' }],
       keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
-      globalSecondaryIndexes: [
-        {
-          indexName: 'capgsi1',
-          keySchema: [{ attributeName: 'capgsipk', keyType: 'HASH' }],
-          projection: { projectionType: 'KEYS_ONLY' },
-        },
-      ],
       replicas: [localReplica()],
     });
 
