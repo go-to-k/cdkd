@@ -130,6 +130,21 @@ describe('AppSyncProvider folds the ARN region segment (issue #1850)', () => {
     expect(mockGetAccountInfo).toHaveBeenCalledWith(supplied);
   });
 
+  // The `appsyncArn` helper above derives the partition with the PRODUCTION
+  // `derivePartitionAndUrlSuffix`, so the `CN-NORTH-1` row cannot catch a
+  // partition that is wrong-but-consistent — the expectation would move with
+  // the bug. One fully literal expectation closes that: nothing here is
+  // computed by the code under test.
+  it('records a literal aws-cn ARN for an upper-cased China region', async () => {
+    const result = await new AppSyncProvider().import(
+      importInput('AWS::AppSync::DataSource', 'abcd1234|myDataSource', 'CN-NORTH-1')
+    );
+
+    expect(result?.attributes?.['DataSourceArn']).toBe(
+      'arn:aws-cn:appsync:cn-north-1:123456789012:apis/abcd1234/datasources/myDataSource'
+    );
+  });
+
   // ...and the two spellings must produce the SAME string, not merely two
   // strings that each satisfy their own expectation.
   it('an upper-cased region yields a byte-identical ARN to the canonical one', async () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   IntrinsicFunctionResolver,
   type ResolverContext,
@@ -48,9 +48,18 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
  * satisfied by a test that only ever sees one spelling.
  */
 describe('IntrinsicFunctionResolver - constructed-attribute region fold (issue #1850)', () => {
+  const savedAwsRegion = process.env['AWS_REGION'];
+
   beforeEach(() => {
     resetAccountInfoCache();
     delete process.env['AWS_REGION'];
+  });
+
+  // Vitest reuses workers across FILES, so an un-restored env var leaks into
+  // whatever runs next in the same worker.
+  afterEach(() => {
+    if (savedAwsRegion === undefined) delete process.env['AWS_REGION'];
+    else process.env['AWS_REGION'] = savedAwsRegion;
   });
 
   const mkContext = (resourceType: string, physicalId: string): ResolverContext => {
@@ -177,5 +186,60 @@ describe('IntrinsicFunctionResolver - constructed-attribute region fold (issue #
       'RepositoryUri'
     );
     expect(result).toBe('123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn/my-repo');
+  });
+  /**
+   * The S3 branches are the ONLY ones that hand the folded region OUT to
+   * another module (`src/utils/s3-endpoints.ts`), and `WebsiteURL` is the only
+   * value in the whole resolver where the region flips a BRANCH rather than a
+   * substring: the separator comes from a case-sensitive Set lookup, so an
+   * upper-cased region misses the legacy-dash set entirely.
+   *
+   * That module folds on entry too, so this row would pass even with the
+   * destructure fold reverted — it is here to pin the END-TO-END answer
+   * through the cross-module hop, not to discriminate the local fold. The
+   * discriminating test for the helpers themselves lives in
+   * `tests/unit/utils/s3-endpoints.test.ts`.
+   */
+  it('resolves an S3 WebsiteURL through the legacy-dash branch for an upper-cased region', async () => {
+    const result = await resolveAttr('US-EAST-1', 'AWS::S3::Bucket', 'my-bucket', 'WebsiteURL');
+    expect(result).toBe('http://my-bucket.s3-website-us-east-1.amazonaws.com');
+  });
+
+  it('resolves an S3 RegionalDomainName with the canonical region for an upper-cased region', async () => {
+    const result = await resolveAttr(
+      'US-EAST-1',
+      'AWS::S3::Bucket',
+      'my-bucket',
+      'RegionalDomainName'
+    );
+    expect(result).toBe('my-bucket.s3.us-east-1.amazonaws.com');
+  });
+  /**
+   * `AWS::StackId` is built in `resolvePseudoParameter`, NOT in
+   * `constructAttribute`, so it does not inherit the destructure fold and needs
+   * its own. The row exists because the fold's comment calls itself exhaustive
+   * and that is only true within the one method — this is the sibling that
+   * proves the scoping is real rather than assumed.
+   *
+   * Its neighbour `AWS::Region` is deliberately NOT folded (issue #1882): it is
+   * CloudFormation's own passthrough, so changing what a user reads back needs
+   * a live CFn A/B first. Pinned here so the divergence is a recorded decision
+   * rather than an oversight the next reader has to re-derive.
+   */
+  it('folds the region in the synthetic AWS::StackId', async () => {
+    resetAccountInfoCache();
+    const resolver = new IntrinsicFunctionResolver('US-EAST-1');
+    const ctx = { ...mkContext('AWS::SNS::Topic', 'my-topic'), stackName: 'MyStack' };
+    const result = await resolver.resolve({ Ref: 'AWS::StackId' }, ctx);
+    expect(result).toBe(
+      'arn:aws:cloudformation:us-east-1:123456789012:stack/MyStack/cdkd'
+    );
+  });
+
+  it('leaves AWS::Region as the raw spelling (issue #1882, deliberate)', async () => {
+    resetAccountInfoCache();
+    const resolver = new IntrinsicFunctionResolver('US-EAST-1');
+    const ctx = mkContext('AWS::SNS::Topic', 'my-topic');
+    expect(await resolver.resolve({ Ref: 'AWS::Region' }, ctx)).toBe('US-EAST-1');
   });
 });

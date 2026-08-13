@@ -224,8 +224,18 @@ describe('CloudControlProvider folds the region in synthesized ARNs (issue #1850
     expect(upperKinesis['Arn']).toBe(lowerKinesis['Arn']);
   });
 
-  // Whole-class fence over every synthesized value, so a NEW enrichment branch
-  // that interpolates a raw region is caught here rather than in the field.
+  // Covers the THREE enrichment types this PR touched, in one sweep rather
+  // than per-type.
+  //
+  // It is deliberately NOT described as a whole-class fence — an earlier
+  // version of this comment claimed a NEW enrichment branch would be "caught
+  // here", and that is false: the list below is hardcoded, so a branch added
+  // later is invisible to it. Making it a real fence means enumerating the
+  // `enrichResourceAttributes` switch (the `gen-enrichment-coverage.ts` parser
+  // already extracts those cases), which belongs with that critic rather than
+  // here. Stating the weaker truth is the point: a comment that overstates a
+  // test's reach is worse than no comment, because it stops the next reader
+  // from adding the fence.
   it('no synthesized identifier carries an upper-cased region', async () => {
     ccClientRegion.value = 'US-EAST-1';
 
