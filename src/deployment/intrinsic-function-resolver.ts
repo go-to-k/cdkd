@@ -27,6 +27,7 @@ import {
   s3BucketWebsiteUrl,
 } from '../utils/s3-endpoints.js';
 import { IntrinsicResolutionRefusalError } from '../utils/error-handler.js';
+import { markNonRetryable } from './retryable-errors.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState, StateImportEntry, StateOutputReadEntry } from '../types/state.js';
 import { S3StateBackend } from '../state/s3-state-backend.js';
@@ -1802,13 +1803,22 @@ export class IntrinsicFunctionResolver {
     const arnAttributeKeys = REF_RETURNS_ARN_FROM_STATE.get(resource.resourceType);
     if (!arnAttributeKeys?.includes(attributeName)) return;
     if (typeof value !== 'string' || !isPlaceholderArn(value)) return;
-    throw new IntrinsicResolutionRefusalError(
-      `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ` +
-        `${resource.resourceType}: the recorded value "${value}" is a placeholder ` +
-        `written by a cdkd version older than issue #1681 — its region and account ` +
-        `fields are literal wildcards, so it is not a usable ARN. Deploy the stack ` +
-        `again so the resource's next update heals the record (cdkd now records the ` +
-        `real ARN), or re-import the resource.`
+    // Terminal (issue #1838 / #1874 review): the verdict is read off the
+    // PERSISTED state record, which no retry of this deploy rewrites — the
+    // placeholder only heals on the resource's next in-place update, i.e. a
+    // LATER deploy. Marked because the message interpolates `logicalId`, and
+    // the retry classifiers match by substring, so an ordinary composite CDK
+    // id can otherwise make a deterministic refusal look transient. See
+    // `resolveSplit` for the nested-stack chain that makes this reachable.
+    throw markNonRetryable(
+      new IntrinsicResolutionRefusalError(
+        `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ` +
+          `${resource.resourceType}: the recorded value "${value}" is a placeholder ` +
+          `written by a cdkd version older than issue #1681 — its region and account ` +
+          `fields are literal wildcards, so it is not a usable ARN. Deploy the stack ` +
+          `again so the resource's next update heals the record (cdkd now records the ` +
+          `real ARN), or re-import the resource.`
+      )
     );
   }
 
@@ -2630,25 +2640,37 @@ export class IntrinsicFunctionResolver {
     const expectsUrlShape = attributeName.endsWith('Url') && !/^https?:\/\//.test(physicalId);
     if (expectsArnShape || expectsUrlShape) {
       const expectedShape = expectsArnShape ? 'an ARN (arn:...)' : 'a URL (http(s)://...)';
-      throw new IntrinsicResolutionRefusalError(
-        `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ${resourceType}: ` +
-          `attributes are not enriched for this resource type, and the physical ID ` +
-          `fallback "${physicalId}" is not ${expectedShape}. CloudFormation would return ` +
-          `a different value here, so falling back to the physical ID would silently ` +
-          `produce a wrong value (e.g. in stack Outputs). Avoid this Fn::GetAtt, or ` +
-          `file an issue at https://github.com/go-to-k/cdkd/issues so cdkd can enrich ` +
-          `${resourceType}.${attributeName}.`
+      // Terminal (issue #1838 / #1874 review): the verdict is a function of the
+      // ATTRIBUTE NAME's suffix, the already-created resource's physical id, and
+      // the static "this type is not enriched" fact — none of which a retry
+      // changes. Marked because the message interpolates `logicalId`; see
+      // `rejectPlaceholderArnAttribute` for the full reasoning.
+      throw markNonRetryable(
+        new IntrinsicResolutionRefusalError(
+          `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ${resourceType}: ` +
+            `attributes are not enriched for this resource type, and the physical ID ` +
+            `fallback "${physicalId}" is not ${expectedShape}. CloudFormation would return ` +
+            `a different value here, so falling back to the physical ID would silently ` +
+            `produce a wrong value (e.g. in stack Outputs). Avoid this Fn::GetAtt, or ` +
+            `file an issue at https://github.com/go-to-k/cdkd/issues so cdkd can enrich ` +
+            `${resourceType}.${attributeName}.`
+        )
       );
     }
     if (this.strictGetAtt) {
-      throw new IntrinsicResolutionRefusalError(
-        `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ${resourceType}: ` +
-          `attributes are not enriched for this resource type, and --strict-getatt ` +
-          `rejects the physical ID fallback "${physicalId}" (which may not be the value ` +
-          `CloudFormation would return). Drop --strict-getatt to fall back with a ` +
-          `warning, avoid this Fn::GetAtt, or file an issue at ` +
-          `https://github.com/go-to-k/cdkd/issues so cdkd can enrich ` +
-          `${resourceType}.${attributeName}.`
+      // Terminal (issue #1838 / #1874 review): the verdict is a CLI FLAG plus
+      // the same static enrichment fact. A flag cannot change mid-deploy, so no
+      // retry of this resolution can ever take a different branch.
+      throw markNonRetryable(
+        new IntrinsicResolutionRefusalError(
+          `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}] for ${resourceType}: ` +
+            `attributes are not enriched for this resource type, and --strict-getatt ` +
+            `rejects the physical ID fallback "${physicalId}" (which may not be the value ` +
+            `CloudFormation would return). Drop --strict-getatt to fall back with a ` +
+            `warning, avoid this Fn::GetAtt, or file an issue at ` +
+            `https://github.com/go-to-k/cdkd/issues so cdkd can enrich ` +
+            `${resourceType}.${attributeName}.`
+        )
       );
     }
     this.physicalIdFallbackCount++;
@@ -2872,10 +2894,150 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Render ONE `Fn::GetAtt` argument for {@link describeSplitValueSource}'s
+   * label. A string is emitted verbatim; anything else is named by its
+   * intrinsic key (`<Fn::Sub>`) or, failing that, as `<intrinsic>` — never by
+   * default stringification, whose answer for an object is `[object Object]`.
+   */
+  private renderGetAttArg(arg: unknown): string {
+    if (typeof arg === 'string') return arg;
+    if (typeof arg === 'object' && arg !== null && !Array.isArray(arg)) {
+      const keys = Object.keys(arg as Record<string, unknown>);
+      const key = keys.length === 1 ? keys[0] : undefined;
+      if (key !== undefined && (key === 'Ref' || key.startsWith('Fn::'))) return `<${key}>`;
+    }
+    return '<intrinsic>';
+  }
+
+  /**
+   * Name the UNRESOLVED value argument of an `Fn::Split` for its refusal
+   * message (issue [#1874](https://github.com/go-to-k/cdkd/issues/1874)).
+   *
+   * `ResolverContext` carries no referencing logical id / attribute, and
+   * threading one through this cross-cutting file for a message would be a
+   * plumbing change out of proportion to the win. The value EXPRESSION is
+   * already in hand, though, and for the shapes that actually reach the
+   * refusal it is exactly what the user needs to find the site:
+   *
+   * - a list-valued `Fn::GetAtt` renders as `Fn::GetAtt [Zone, NameServers]`,
+   *   naming both the resource and the attribute;
+   * - a `Ref` to a `CommaDelimitedList` / `List<Number>` parameter — the
+   *   SECOND genuinely reachable array source, via `coerceParameterValue` —
+   *   renders as `Ref MyListParam`, naming the parameter.
+   *
+   * Anything else degrades to its bare intrinsic key, or to `undefined` for a
+   * literal (which the message then simply omits).
+   *
+   * `kind` is not decoration: the caller uses it to pick the remedy, since the
+   * `Fn::GetAtt` remedy (drop the `Fn::Split`, and the #1868 note for the
+   * reader whose `Fn::Split` was that bug's workaround) is irrelevant and
+   * confusing for a parameter reference or a hand-written literal.
+   */
+  private describeSplitValueSource(
+    value: unknown
+  ): { label: string; kind: 'getatt' | 'ref' | 'other' } | undefined {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+    const keys = Object.keys(value as Record<string, unknown>);
+    if (keys.length !== 1) return undefined;
+    const key = keys[0] as string;
+    const args = (value as Record<string, unknown>)[key];
+
+    if (key === 'Ref') {
+      return typeof args === 'string'
+        ? { label: `Ref ${args}`, kind: 'ref' }
+        : { label: 'Ref', kind: 'ref' };
+    }
+    if (key !== 'Fn::GetAtt') {
+      return key.startsWith('Fn::') ? { label: key, kind: 'other' } : undefined;
+    }
+    // Both CFn spellings: the `[logicalId, attribute]` list and the
+    // `"logicalId.attribute"` string the shorthand YAML `!GetAtt` produces.
+    if (Array.isArray(args)) {
+      // The attribute name (arg 2) may itself be an intrinsic — CloudFormation
+      // allows any string-valued expression there, and `resolveGetAtt` resolves
+      // it — so an all-strings guard would drop the WHOLE label back to a bare
+      // `Fn::GetAtt`, losing the logical id, which is the one piece of site
+      // information the message has. Render each element instead, and never
+      // interpolate an object directly: the default `String(...)` of one is
+      // `[object Object]`, which names nothing.
+      return {
+        label: `Fn::GetAtt [${args.map((a) => this.renderGetAttArg(a)).join(', ')}]`,
+        kind: 'getatt',
+      };
+    }
+    if (typeof args === 'string') {
+      // Split on the FIRST dot only. An attribute name may itself contain dots
+      // (`Child.Outputs.Key` on a nested stack), and CloudFormation parses that
+      // as `[Child, Outputs.Key]` — a naive split-on-every-dot renders a
+      // three-element GetAtt that does not exist, which is worse than useless
+      // in a message whose whole job is to name the site.
+      //
+      // This branch is deliberately UNFENCED end to end and that is expected,
+      // not an oversight: the only input that discriminates it is a 3+-segment
+      // dotted spelling, which `resolveGetAtt` rejects at `parts.length !== 2`
+      // before `resolveSplit` can classify anything. The unit test pins that
+      // unreachability instead, so it reds — and this rendering is found
+      // already correct — the day nested-path `Fn::GetAtt` lands.
+      const dot = args.indexOf('.');
+      const rendered = dot === -1 ? args : `${args.slice(0, dot)}, ${args.slice(dot + 1)}`;
+      return { label: `Fn::GetAtt [${rendered}]`, kind: 'getatt' };
+    }
+    return { label: 'Fn::GetAtt', kind: 'getatt' };
+  }
+
+  /**
    * Resolve Fn::Split intrinsic function
    *
    * Fn::Split: [delimiter, string]
    * Splits a string into a list of strings using the specified delimiter
+   *
+   * A non-string value is REFUSED, and an ARRAY is refused with its own
+   * message (issue [#1874](https://github.com/go-to-k/cdkd/issues/1874)).
+   * Passing an array through unchanged was considered and rejected: real
+   * CloudFormation rejects `Fn::Split` over a list too, so a template written
+   * that way was never valid CFn. It only ever worked because cdkd resolved
+   * `AWS::Route53::HostedZone.NameServers` to a comma-delimited STRING, which
+   * was the defect PR #1868 fixed — so the post-upgrade failure is a correct
+   * rejection of an invalid template, not a regression. Accepting the array
+   * would let cdkd deploy templates that `cdkd export` /
+   * `cdkd import --migrate-from-cloudformation` then cannot hand back to
+   * CloudFormation, breaking the bidirectional-migration guarantee. What WAS
+   * genuinely wrong is the message: `value must be a string, got object` names
+   * neither the situation nor the remedy.
+   *
+   * Both refusals throw {@link IntrinsicResolutionRefusalError} rather than a
+   * bare `Error`, matching the deliberate refusals already in this file. The
+   * #1740 laundering path this class exists for is NOT reachable from here
+   * today: `Fn::Sub`'s `${LogicalId.Attribute}` form cannot syntactically
+   * contain an `Fn::Split`, and its 2-arg variable-map form resolves each
+   * value through `resolveValue` OUTSIDE any catch, so either class would
+   * propagate identically there. Using the class anyway keeps "deliberate
+   * refusal" a property of the THROW rather than of the one catch that
+   * happens to inspect it. It does NOT make the refusal un-launderable: this
+   * file's own `evaluateConditions` catches everything per condition, warns,
+   * and downgrades that condition to `false`, so an `Fn::Split`-over-a-list
+   * inside a `Conditions` entry IS silently absorbed today — by both classes
+   * alike, so the choice regresses nothing, but the class is not a guarantee
+   * against a class-agnostic catch.
+   *
+   * Both are additionally `markNonRetryable` (issue #1838). The test is "can
+   * this ever succeed on a retry" — an `Fn::Split` over an array never can —
+   * NOT "does today's wording collide with a pattern", which is exactly the
+   * criterion `retryable-errors.ts` documents as insufficient: the classifiers
+   * match by SUBSTRING, and `sourceClause` interpolates template-controlled
+   * text, so a logical id like `MyDependencyViolationHandler` puts
+   * `DependencyViolation` (the table's only whitespace-free entry) into the
+   * message. Reachability is real even though resolution runs outside
+   * `withRetry` on the flat path: `NestedStackProvider.create` runs a child
+   * `DeployEngine.deploy()` and re-throws, and the parent wraps `create()` in
+   * `withRetry` — so inside a nested stack each retry re-runs a full child
+   * deploy plus rollback, up to the ~47s schedule, on a path that cannot
+   * succeed. Marked at the THROW rather than in the constructor because the
+   * class is retryable in general: its fabricated-account arm (see
+   * `constructGuardedAttribute`) IS genuinely time-dependent
+   * (`getAccountInfo` caches a fabricated answer for only 10s precisely so a
+   * later attempt can heal), so a constructor-level marker would wrongly make
+   * that one terminal too.
    */
   private async resolveSplit(
     splitArgs: [string, unknown],
@@ -2887,7 +3049,51 @@ export class IntrinsicFunctionResolver {
     const resolvedValue = await this.resolveValue(value, context);
 
     if (typeof resolvedValue !== 'string') {
-      throw new Error(`Fn::Split: value must be a string, got ${typeof resolvedValue}`);
+      const source = this.describeSplitValueSource(value);
+      const sourceClause = source ? ` (from ${source.label})` : '';
+      if (Array.isArray(resolvedValue)) {
+        // The remedy is per-source, and the DEFAULT is the neutral one. Only a
+        // value that IS an Fn::GetAtt gets the Route 53 example and the #1868
+        // note — that note is addressed to the reader whose Fn::Split was a
+        // workaround for THAT attribute bug, so emitting it at a `Ref` to a
+        // CommaDelimitedList parameter, or at a literal array the user wrote
+        // out by hand, only misdirects. A literal names nothing about itself,
+        // so it takes the neutral text rather than the Fn::GetAtt one.
+        const remedy =
+          source?.kind === 'ref'
+            ? `A CommaDelimitedList / List<Number> parameter is already a list.`
+            : source?.kind === 'getatt'
+              ? `A list-valued Fn::GetAtt (for example ` +
+                `AWS::Route53::HostedZone.NameServers or AWS::EC2::VPC.Ipv6CidrBlocks) ` +
+                `already returns a list. If you wrote the Fn::Split as a workaround for ` +
+                `cdkd resolving that attribute to a comma-delimited string, that bug is ` +
+                `fixed (PR #1868) and the workaround is no longer needed.`
+              : // Not an exhaustive list on purpose: the source clause above
+                // already names the actual intrinsic, and several others reach
+                // this arm (Fn::GetAZs, Fn::Cidr, a nested Fn::Split, an
+                // Fn::If / Fn::FindInMap selecting a list).
+                `Several intrinsics already return a list — among them a ` +
+                `list-valued Fn::GetAtt, a Ref to a CommaDelimitedList / ` +
+                `List<Number> parameter, Fn::GetAZs, Fn::Cidr, and Fn::Split ` +
+                `itself.`;
+        throw markNonRetryable(
+          new IntrinsicResolutionRefusalError(
+            `Fn::Split: the value to split${sourceClause} is ALREADY a list ` +
+              `(an array of ${resolvedValue.length} item${resolvedValue.length === 1 ? '' : 's'}), ` +
+              `not a string. CloudFormation rejects Fn::Split over a list too, so this ` +
+              `template is not valid CloudFormation either. Remove the Fn::Split and use ` +
+              `the value directly. ${remedy}`
+          )
+        );
+      }
+      const got = resolvedValue === null ? 'null' : typeof resolvedValue;
+      throw markNonRetryable(
+        new IntrinsicResolutionRefusalError(
+          `Fn::Split: the value to split${sourceClause} must be a string, got ${got}. ` +
+            `Fn::Split accepts only a string; check the value or the intrinsic that ` +
+            `produced it.`
+        )
+      );
     }
 
     const result = resolvedValue.split(delimiter);
