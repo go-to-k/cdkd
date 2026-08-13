@@ -16,6 +16,7 @@ import {
   type BootstrapMarker,
 } from '../../assets/asset-storage.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
+import { PARTITION_TABLE } from '../../utils/aws-partition.js';
 import {
   listAllStateKeys,
   listAllLockKeys,
@@ -116,6 +117,25 @@ function escapeRegExp(value: string): string {
 const KEY_TERMINATORS = '[^\\s"\'?]';
 
 /**
+ * URL suffixes gc must match that {@link PARTITION_TABLE} does NOT carry.
+ *
+ * Empty today, and deliberately kept as a declared seam rather than dropped:
+ * it is what makes gc able to LEAD the derive table (issue #1785) now that
+ * {@link AWS_URL_SUFFIXES} is built from it. Two directions need it:
+ *
+ * - A partition cdkd has recorded state for but whose region prefix is not in
+ *   the derive table yet. Adding it here is a one-line, reviewable change that
+ *   does not have to wait on the partition-table row.
+ * - A suffix RETIRED from the derive table. Coupling propagates additions, but
+ *   a row EDITED or removed there would silently stop gc matching state files
+ *   already written with the old suffix — the irreversible direction. Such a
+ *   suffix moves here rather than disappearing. `tests/unit/cli/gc.test.ts`
+ *   fences that with a hand-written floor of the suffixes known today, so a
+ *   removal reds until it is carried over deliberately.
+ */
+const GC_EXTRA_URL_SUFFIXES: readonly string[] = [];
+
+/**
  * Every AWS partition's URL suffix. The asset-reference matchers match the
  * suffix against this CLOSED SET instead of hardcoding one literal
  * (issue #1781).
@@ -153,10 +173,17 @@ const KEY_TERMINATORS = '[^\\s"\'?]';
  *   binary for any region, so it must match every partition at once; a single
  *   derived literal would still delete a `cn-north-1` stack's images during a
  *   `us-east-1` gc run.
- * - It is deliberately a SUPERSET of the arms
- *   {@link derivePartitionAndUrlSuffix} currently knows (issue #1764). A
- *   suffix missing HERE deletes live assets, which is the irreversible
- *   direction, so this list must lead that table rather than follow it.
+ * - It is a SUPERSET of the arms {@link derivePartitionAndUrlSuffix} knows
+ *   (issue #1764). A suffix missing HERE deletes live assets, which is the
+ *   irreversible direction, so this list must lead that table rather than
+ *   follow it.
+ *
+ * The superset property is now MECHANICAL rather than hand-maintained (issue
+ * #1785): the list is built FROM {@link PARTITION_TABLE} plus
+ * {@link GC_EXTRA_URL_SUFFIXES}, so a partition arm added to that table
+ * propagates here in the same commit instead of silently outrunning gc. It
+ * used to be a hand-written literal, and the test meant to fence it iterated a
+ * hand-written region list — so a new arm in the derive table redded nothing.
  *
  * It is a closed SET rather than a `[^/\s]+` wildcard so a look-alike host
  * (`https://<assetBucket>.s3.<region>.example.com/<key>`) is not treated as a
@@ -172,13 +199,7 @@ const KEY_TERMINATORS = '[^\\s"\'?]';
  * arms on the irreversible side.
  */
 const AWS_URL_SUFFIXES = [
-  'amazonaws.com', // aws, aws-us-gov
-  'amazonaws.com.cn', // aws-cn
-  'amazonaws.eu', // aws-eusc (eusc-de-*)
-  'c2s.ic.gov', // aws-iso (us-iso-*)
-  'sc2s.sgov.gov', // aws-iso-b (us-isob-*)
-  'cloud.adc-e.uk', // aws-iso-e (eu-isoe-*)
-  'csp.hci.ic.gov', // aws-iso-f (us-isof-*)
+  ...new Set([...PARTITION_TABLE.map((row) => row.urlSuffix), ...GC_EXTRA_URL_SUFFIXES]),
 ];
 
 /**
@@ -214,9 +235,10 @@ const URL_SUFFIX_ALTERNATION = `(?:${[...AWS_URL_SUFFIXES]
  * Account and region are matched loosely on purpose (see the extractor doc):
  * collecting a reference from another account's or region's URI can only KEEP
  * more, never delete more — which is also why the two extra forms are worth
- * carrying even though cdkd's own publisher writes the plain one. Issue #1785
+ * carrying even though cdkd's own publisher writes the plain one. Issue #1793
  * tracks deriving these host forms from ONE place shared with
- * `src/utils/ecr-uri.ts` instead of two hand-kept copies.
+ * `src/utils/ecr-uri.ts` instead of two hand-kept copies — that module matches
+ * only the plain `dkr.ecr` form today, so the two already disagree.
  *
  * Every group is non-capturing, for the {@link URL_SUFFIX_ALTERNATION} reason.
  */
