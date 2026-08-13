@@ -52,8 +52,11 @@ export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  *   The AWS resource is kept ON PURPOSE and the state record is dropped.
  * - `RESOURCE_SKIPPED` — destroy-side skip where cdkd could NOT address the
  *   resource (issue [#1752](https://github.com/go-to-k/cdkd/issues/1752)).
- *   Two producers today: a malformed composite physicalId, where no AWS call
- *   is issued at all; and a nested stack whose own destroy skipped or was
+ *   Three producers today: a malformed composite physicalId; a state record
+ *   missing the id or the property the delete is addressed BY — Lambda layer /
+ *   permission, Custom Resource, IAM policy / user-group (issue
+ *   [#1770](https://github.com/go-to-k/cdkd/issues/1770)) — both of which issue
+ *   no AWS call at all; and a nested stack whose own destroy skipped or was
  *   interrupted, where the child's other resources WERE deleted first. So the
  *   invariant is "the resource this row names was not destroyed", NOT "nothing
  *   happened". The opposite of `RESOURCE_RETAINED` in both halves: keeping the

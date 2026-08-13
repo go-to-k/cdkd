@@ -24,9 +24,27 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceDeleteResult,
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * The short `ResourceDeleteResult.reason` the no-properties DELETE arm reports
+ * (issue [#1770](https://github.com/go-to-k/cdkd/issues/1770)).
+ *
+ * Rendered inline on the destroy status line, so it is the SHORT form; the full
+ * remediation sentence goes out as the `logger.warn` beside it.
+ */
+export const CR_NO_PROPERTIES_SKIP_REASON = 'no properties in state — Delete handler not invoked';
+
+/**
+ * Sibling of {@link CR_NO_PROPERTIES_SKIP_REASON} for the arm where properties
+ * exist but carry no `ServiceToken`. Distinct because the repair differs: one
+ * record lost everything, the other lost the one field that names the handler.
+ */
+export const CR_NO_SERVICE_TOKEN_SKIP_REASON =
+  'no ServiceToken in state — Delete handler not invoked';
 
 /**
  * CloudFormation Custom Resource Response format
@@ -640,7 +658,7 @@ export class CustomResourceProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     _context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     // Custom resources delegate deletion to a user-provided Lambda handler.
     // The Lambda invocation itself does not surface a `*NotFound` for the
     // managed resource, so the region-mismatch check has no signal to act on
@@ -649,18 +667,34 @@ export class CustomResourceProvider implements ResourceProvider {
     // region. The context parameter is accepted for interface conformity.
     this.logger.debug(`Deleting custom resource ${logicalId}: ${physicalId} (${resourceType})`);
 
+    // Issue #1770: the two arms below are SKIPS, not deletes. A custom
+    // resource's teardown lives entirely in the user's handler, and the only
+    // way to reach it is `ServiceToken`. Without it the handler never sees a
+    // `Delete` request, so whatever the resource manages (records in a
+    // third-party API, objects in another account, a DNS entry) is untouched.
+    // Contrast the backing-Lambda-is-gone pre-check further down, which stays
+    // a `deleted`: there the handler CANNOT run ever again, so the record is
+    // dead weight rather than a live resource.
     if (!properties) {
       this.logger.warn(
-        `No properties available for custom resource ${logicalId}, skipping deletion`
+        `No properties available for custom resource ${logicalId}, skipping deletion — the ` +
+          `handler is never invoked, so anything this custom resource manages is LEFT IN ` +
+          `PLACE. Restore the record's properties in state.json and re-run, or tear the ` +
+          `resource down by hand.`
       );
-      return;
+      return { outcome: 'skipped', reason: CR_NO_PROPERTIES_SKIP_REASON };
     }
 
     const serviceToken = properties['ServiceToken'];
 
     if (!serviceToken) {
-      this.logger.warn(`No ServiceToken found for custom resource ${logicalId}, skipping deletion`);
-      return;
+      this.logger.warn(
+        `No ServiceToken found for custom resource ${logicalId}, skipping deletion — there is ` +
+          `no handler to send the Delete request to, so anything this custom resource manages ` +
+          `is LEFT IN PLACE. Restore ServiceToken in state.json and re-run, or tear the ` +
+          `resource down by hand.`
+      );
+      return { outcome: 'skipped', reason: CR_NO_SERVICE_TOKEN_SKIP_REASON };
     }
 
     if (typeof serviceToken !== 'string') {

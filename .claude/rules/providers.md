@@ -1176,12 +1176,29 @@ already has its own message-matched already-deleted branch. And the DEPLOY-side
 callers (`deploy-engine.ts`'s template-DELETE + replacement deletes,
 `rollback-executor.ts`'s rollback deletes) still discard the return value, so
 the same arms still mis-report there — tracked as issue
-[#1762](https://github.com/go-to-k/cdkd/issues/1762), and eight same-class arms
-OUTSIDE the composite-id family (Lambda layer / permission, Custom Resource, IAM
-policy / user-group) still return bare `void` — issue
-[#1770](https://github.com/go-to-k/cdkd/issues/1770). Do NOT reach for a skip
-when you know the resource is gone: it would preserve state and fail the destroy
-for no reason.
+[#1762](https://github.com/go-to-k/cdkd/issues/1762). The eight same-class arms
+OUTSIDE the composite-id family were converted by issue
+[#1770](https://github.com/go-to-k/cdkd/issues/1770): both malformed
+`LayerVersionArn` arms, the missing-`FunctionName` Lambda-permission arm, the
+Custom Resource no-properties / no-`ServiceToken` pair, the empty-policy-name
+IAM arm, and both `AWS::IAM::UserToGroupAddition` arms. Each exports its
+`reason` as a named constant beside the provider (there is no shared literal —
+the destroy line must be able to say WHICH half of the record is broken), and
+the wording is pinned by a test. Do NOT reach for a skip when you know the
+resource is gone: it would preserve state and fail the destroy for no reason.
+
+**A DEBUG level is not evidence that an arm is routine** (the #1770 judgment
+call, worth re-running rather than inheriting). The two `UserToGroupAddition`
+arms logged at DEBUG, which reads as "nothing to do" — but `GroupName` and
+`Users` are BOTH required by the CloudFormation schema, so a record missing
+either is CORRUPT, not empty, and `AddUserToGroup` really did put users in the
+group, so those memberships survive the destroy with every permission the group
+grants. They are skips, and the level is now WARN: a skip preserves state and
+exits non-zero, so a normal-verbosity run has to say why. The genuinely routine
+neighbour is an EMPTY `Users: []` — an array is truthy, so it falls through to
+the removal loop, does nothing, and correctly reports `deleted`. Ask what the
+CFn schema makes REQUIRED and what the create path actually did, not what level
+the author picked.
 
 Register Provider for each resource type in Provider Registry:
 

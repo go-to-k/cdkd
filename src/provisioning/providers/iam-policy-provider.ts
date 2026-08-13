@@ -20,9 +20,19 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceDeleteResult,
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * The short `ResourceDeleteResult.reason` the empty-policy-name DELETE arm
+ * reports (issue [#1770](https://github.com/go-to-k/cdkd/issues/1770)).
+ *
+ * Rendered inline on the destroy status line, so it is the SHORT form; the full
+ * remediation sentence goes out as the `logger.warn` beside it.
+ */
+export const POLICY_NAME_SKIP_REASON = 'empty policy name in physicalId — no delete issued';
 
 /**
  * AWS IAM Policy Provider
@@ -345,15 +355,23 @@ export class IAMPolicyProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting IAM policy ${logicalId}: ${physicalId}`);
 
     // Physical ID is the policy name (new format) or "policyName:roleName" (old format)
     const policyName = physicalId.includes(':') ? physicalId.split(':')[0] : physicalId;
 
+    // Issue #1770: every Delete*Policy call below is addressed by PolicyName.
+    // An empty one (physicalId `''` or leading `:`) leaves nothing to send, and
+    // the inline policy stays attached to its roles / groups / users — live
+    // permissions outliving the stack. That is a SKIP, not a delete.
     if (!policyName) {
-      this.logger.warn(`Invalid physical ID format: ${physicalId}, skipping deletion`);
-      return;
+      this.logger.warn(
+        `Invalid physical ID format: ${physicalId}, skipping deletion — no AWS call is issued, ` +
+          `so the inline policy is LEFT ATTACHED to its roles / groups / users. Repair the ` +
+          `physicalId in state.json and re-run, or delete the inline policy by hand.`
+      );
+      return { outcome: 'skipped', reason: POLICY_NAME_SKIP_REASON };
     }
 
     // Each per-target loop swallows NoSuchEntityException as idempotent

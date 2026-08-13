@@ -2418,12 +2418,24 @@ also switches glyphs:
 ### Skipped resources on destroy (issue #1752)
 
 A **skipped** resource is one cdkd could not ADDRESS, so it may still exist
-and still be billing. Two causes today:
+and still be billing. Three causes today:
 
 - a state record whose composite `physicalId` does not decode
   (`AWS::Glue::Table`, `AWS::AppSync::{DataSource,Resolver,ApiKey}`,
   `AWS::EC2::NetworkAclEntry`) — no AWS call is issued at all, and the
   per-resource warning names the expected format;
+- a state record missing the id or the property the delete call is addressed
+  BY (issue [#1770](https://github.com/go-to-k/cdkd/issues/1770)) — also no AWS
+  call at all. A malformed `AWS::Lambda::LayerVersion` version ARN (the layer
+  version stays published); an `AWS::Lambda::Permission` with no
+  `FunctionName` (the statement stays on the function's resource policy, i.e.
+  an invoke grant outliving the stack); a Custom Resource with no properties or
+  no `ServiceToken` (its handler never receives a `Delete` request, so whatever
+  it manages elsewhere is untouched); an `AWS::IAM::Policy` whose physicalId
+  carries no policy name (the inline policy stays ATTACHED to its roles /
+  groups / users); an `AWS::IAM::UserToGroupAddition` missing `GroupName` or
+  `Users` (the users keep every permission the group grants). Each warning
+  names what survived and how to repair it;
 - a **nested stack** (`AWS::CloudFormation::Stack`) whose own destroy skipped
   a resource or was interrupted. Here the child's *other* resources were
   deleted first, so "skipped" means the child stack as a whole was not
@@ -2441,9 +2453,11 @@ It is deliberately distinct from the neighbouring outcomes:
 
 The state record is kept on purpose: without it you would have neither
 the AWS resource deleted nor an id to go and delete it with. To finish
-the destroy, repair the `physicalId` in state (`cdkd state show <stack>`
-to inspect) and re-run, or delete the resource by hand and drop the
-record with `cdkd state orphan <stack>`. The summary line names the exact
+the destroy, repair whatever the per-resource warning names — the
+`physicalId` for the decode failures, the missing property (`FunctionName`,
+`ServiceToken`, `GroupName` / `Users`) for the #1770 causes — in state
+(`cdkd state show <stack>` to inspect) and re-run, or delete the resource by
+hand and drop the record with `cdkd state orphan <stack>`. The summary line names the exact
 state file(s) to open, which for a nested-stack skip is the child's.
 
 #### A nested stack whose child FAILED is an error, not a skip (issue #1777)

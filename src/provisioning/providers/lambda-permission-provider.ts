@@ -14,9 +14,20 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceDeleteResult,
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * The short `ResourceDeleteResult.reason` the missing-`FunctionName` DELETE arm
+ * reports (issue [#1770](https://github.com/go-to-k/cdkd/issues/1770)).
+ *
+ * Rendered inline on the destroy status line, so it is the SHORT form; the full
+ * remediation sentence goes out as the `logger.warn` beside it.
+ */
+export const PERMISSION_FUNCTION_NAME_SKIP_REASON =
+  'FunctionName missing from state — no delete issued';
 
 /**
  * AWS Lambda Permission Provider
@@ -208,15 +219,22 @@ export class LambdaPermissionProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting Lambda permission ${logicalId}: ${physicalId}`);
 
+    // Issue #1770: RemovePermission is addressed by FunctionName + StatementId.
+    // Without the function name there is no call to make, and the permission
+    // statement stays on the function's resource policy — an invoke grant that
+    // outlives the stack. That is a SKIP, not a delete.
     const functionName = properties?.['FunctionName'] as string | undefined;
     if (!functionName) {
       this.logger.warn(
-        `FunctionName not available for Lambda permission ${logicalId}, skipping deletion`
+        `FunctionName not available for Lambda permission ${logicalId}, skipping deletion — no ` +
+          `AWS call is issued, so the permission statement is LEFT IN PLACE on the function's ` +
+          `resource policy. Repair the record's FunctionName in state.json and re-run, or ` +
+          `remove the statement by hand ('aws lambda remove-permission').`
       );
-      return;
+      return { outcome: 'skipped', reason: PERMISSION_FUNCTION_NAME_SKIP_REASON };
     }
 
     // physicalId may be in "functionArn|statementId" format (from CC API)

@@ -17,9 +17,31 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceDeleteResult,
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * The short `ResourceDeleteResult.reason` the two malformed-`LayerVersionArn`
+ * DELETE arms report (issue
+ * [#1770](https://github.com/go-to-k/cdkd/issues/1770)).
+ *
+ * Rendered inline on the destroy status line
+ * (`⚠ MyLayer (AWS::Lambda::LayerVersion) skipped (<reason>)`), so it is the
+ * SHORT form — the full remediation sentence goes out as the `logger.warn`
+ * beside it. Exported so the wording is pinned by a test rather than retyped.
+ */
+export const LAYER_ARN_SKIP_REASON = 'malformed LayerVersionArn in state — no delete issued';
+
+/**
+ * Sibling of {@link LAYER_ARN_SKIP_REASON} for the arm where the ARN has the
+ * right shape but its trailing version segment is not a number. Kept distinct
+ * because the two point at different halves of the id, and the destroy line is
+ * all the user sees.
+ */
+export const LAYER_VERSION_SKIP_REASON =
+  'unparsable version in state LayerVersionArn — no delete issued';
 
 /**
  * AWS Lambda LayerVersion Provider
@@ -168,22 +190,35 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting Lambda layer version ${logicalId}: ${physicalId}`);
 
     // Extract layer name and version number from the ARN
     // ARN format: arn:aws:lambda:region:account:layer:name:version
+    //
+    // Issue #1770: both malformed-ARN arms below report `outcome: 'skipped'`.
+    // Neither means the layer version is GONE — cdkd simply cannot name it in
+    // a DeleteLayerVersion call, so the version stays published in AWS. The
+    // repair is in state.json (or a re-import), which is what the reason says.
     const arnParts = physicalId.split(':');
     if (arnParts.length < 8) {
-      this.logger.warn(`Invalid LayerVersionArn format: ${physicalId}, skipping deletion`);
-      return;
+      this.logger.warn(
+        `Invalid LayerVersionArn format: ${physicalId}, skipping deletion — no AWS call is ` +
+          `issued, so the layer version is LEFT IN PLACE. Repair the physicalId in state.json ` +
+          `and re-run, or delete the layer version by hand.`
+      );
+      return { outcome: 'skipped', reason: LAYER_ARN_SKIP_REASON };
     }
     const layerName = arnParts[6]!;
     const versionNumber = parseInt(arnParts[7]!, 10);
 
     if (isNaN(versionNumber)) {
-      this.logger.warn(`Could not parse version number from ARN: ${physicalId}, skipping deletion`);
-      return;
+      this.logger.warn(
+        `Could not parse version number from ARN: ${physicalId}, skipping deletion — no AWS ` +
+          `call is issued, so the layer version is LEFT IN PLACE. Repair the physicalId in ` +
+          `state.json and re-run, or delete the layer version by hand.`
+      );
+      return { outcome: 'skipped', reason: LAYER_VERSION_SKIP_REASON };
     }
 
     try {
