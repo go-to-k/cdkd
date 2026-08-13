@@ -284,7 +284,8 @@ What to record differs per path, and neither answer generalizes:
 Report the skip EXPLICITLY from the applier — a `Promise<boolean>` "applied"
 return, or a list of skipped item indexes — rather than inferring it by wrapping
 `onUnusable`. That callback is shared by two guard classes: SKIP-class guards
-(`configStringRefusal`, `requireConfigObject`, `requireConfigArray`) and
+(`configStringRefusal`, `configBooleanRefusal`, `requireConfigObject`,
+`requireConfigArray`) and
 warn-and-DEFAULT reads (`readConfigString` with the options bag), where the
 applier proceeds WITH a substituted default. A wrapper cannot tell them apart, so
 a defaulted-but-APPLIED configuration would be recorded as skipped and the

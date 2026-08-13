@@ -1559,58 +1559,147 @@ describe('the fold declines where the WIRE declines', () => {
 });
 
 /**
- * CHARACTERIZATION of the one known remaining divergence, tracked as issue 1751
- * and deliberately NOT fixed here (it is pre-existing, and two reviewers
- * proposed opposite fixes).
+ * Issue #1751: the inventory `Enabled` member, which used to be the one read on
+ * this item that coerced SILENTLY.
  *
- * This row asserts the CURRENT behavior rather than the desired one, so that
- * whichever direction 1751 takes, the change is forced to come past this test
- * and state its answer. Without it the divergence is invisible to the suite.
+ * This block replaces the CHARACTERIZATION rows that pinned the pre-fix
+ * behavior (`Enabled: null` SENT as `true`, recorded as `null`, nothing
+ * warning). The direction taken is the issue's option 2 — guard the WIRE —
+ * because defaulting a malformed `Enabled` to `true` on a LIVE inventory
+ * ENABLES a report the template may have been disabling, the destructive-default
+ * class #1595 refuses. So the rows below are the same two questions asked of the
+ * new behavior:
+ *
+ * 1. A declared-but-unusable value is REFUSED, per path: SKIP with a warning on
+ *    the replay-reachable update path (the unit is one configuration item, since
+ *    the Put is per-`Id`), THROW on a template-path create.
+ * 2. A CFn STRING boolean is NOT malformed — CloudFormation is stringly typed —
+ *    so it is sent COERCED and recorded coerced, which is what `inventorySdkToCfn`
+ *    reads back.
+ *
+ * The nullish spelling is the one that has to be probed rather than assumed: it
+ * is the only malformed shape `??` treated as absent, so every blank-string /
+ * array / unresolved-intrinsic row written elsewhere in this file passed against
+ * the bug.
  */
-describe('KNOWN DIVERGENCE (issue 1751): a declared Enabled: null', () => {
-  it('is SENT as true but recorded as null, and nothing warns', async () => {
-    const properties = {
-      BucketName: BUCKET,
-      InventoryConfigurations: [
-        {
-          Id: 'i1',
-          Enabled: null,
-          IncludedObjectVersions: 'All',
-          ScheduleFrequency: 'Daily',
-          Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
-        },
-      ],
-    };
+describe('issue #1751: a declared but unusable inventory Enabled', () => {
+  const inventoryWithEnabled = (enabled: unknown) => ({
+    Id: 'i1',
+    Enabled: enabled,
+    IncludedObjectVersions: 'All',
+    ScheduleFrequency: 'Daily',
+    Destination: { BucketArn: DEST_ARN, Format: 'CSV' },
+  });
 
-    const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
-      BucketName: BUCKET,
-      InventoryConfigurations: [LIVE_INVENTORY],
+  // Every shape `coerceCfnBoolean` cannot read. `null` leads deliberately: it is
+  // the one the old `??` read treated as ABSENT.
+  for (const value of [null, '', '   ', 'yes', 1, [], {}]) {
+    it(`skips the item and warns on UPDATE (${JSON.stringify(value)})`, async () => {
+      const properties = {
+        BucketName: BUCKET,
+        InventoryConfigurations: [inventoryWithEnabled(value)],
+      };
+
+      const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+        BucketName: BUCKET,
+        InventoryConfigurations: [LIVE_INVENTORY],
+      });
+
+      // Nothing went on the wire for this item...
+      expect(sentCommands(PutBucketInventoryConfigurationCommand)).toHaveLength(0);
+      // ...so the effective value is the PREVIOUSLY-APPLIED item, which is what
+      // AWS still holds — not the desired one, and not a dropped key.
+      expect(at(result.effectiveProperties, 'InventoryConfigurations')).toEqual([LIVE_INVENTORY]);
+      // And the skip is ANNOUNCED, naming both the member and the consequence
+      // the guard exists to prevent.
+      const warnings = childLogger.warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes('Enabled'));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('must be a boolean');
+      expect(warnings[0]).toContain('Skipping this inventory configuration');
     });
 
-    // The wire coerces silently — `IsEnabled: (config['Enabled']) ?? true`.
-    expect(
-      at(sentCommands(PutBucketInventoryConfigurationCommand)[0]!.input, 'InventoryConfiguration', 'IsEnabled')
-    ).toBe(true);
-    // ...but the fold's presence test leaves the declared null alone, so it
-    // identity-returns, `effectiveProperties` is ABSENT, and the engine records
-    // the desired bag VERBATIM — `Enabled: null`. `inventorySdkToCfn` emits
-    // `Enabled: true` from the readback, so `cdkd drift` reports this forever.
-    expect(result.effectiveProperties).toBeUndefined();
-    const recorded = at(properties['InventoryConfigurations'], 0) as Record<string, unknown>;
-    expect(recorded['Enabled']).toBeNull();
-    // The twin folds the template side the same way, so `cdkd diff` stays
-    // clean — which is precisely why nothing surfaces this to the user.
+    it(`REFUSES on a template-path create (${JSON.stringify(value)})`, async () => {
+      await expect(
+        provider.create('B', RESOURCE_TYPE, {
+          BucketName: BUCKET,
+          InventoryConfigurations: [inventoryWithEnabled(value)],
+        })
+      ).rejects.toThrow(/InventoryConfigurations\[\]\.Enabled must be a boolean/);
+    });
+  }
+
+  // The counter-case, and the reason the guard runs `coerceCfnBoolean` rather
+  // than a `typeof value === 'boolean'` twin: a hand-written or imported
+  // template legitimately spells the boolean as a string, and refusing it would
+  // break a template that deploys today.
+  for (const [declared, sent] of [
+    ['false', false],
+    ['False', false],
+    ['true', true],
+    [false, false],
+    [true, true],
+  ] as const) {
+    it(`sends and records the COERCED value for ${JSON.stringify(declared)}`, async () => {
+      const properties = {
+        BucketName: BUCKET,
+        InventoryConfigurations: [inventoryWithEnabled(declared)],
+      };
+
+      const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
+        BucketName: BUCKET,
+        InventoryConfigurations: [LIVE_INVENTORY],
+      });
+
+      expect(
+        at(
+          sentCommands(PutBucketInventoryConfigurationCommand)[0]!.input,
+          'InventoryConfiguration',
+          'IsEnabled'
+        )
+      ).toBe(sent);
+      // Recorded == sent. A declared BOOLEAN needs no fold at all, so the
+      // effective bag only appears for the string spellings.
+      const recordedEnabled = at(
+        result.effectiveProperties ?? properties,
+        'InventoryConfigurations',
+        0,
+        'Enabled'
+      );
+      expect(recordedEnabled).toBe(sent);
+      // The twin folds the template side identically, or the next deploy would
+      // read the coercion as a user-made change forever.
+      expect(
+        at(
+          provider.canonicalizeDesiredProperties(RESOURCE_TYPE, properties),
+          'InventoryConfigurations',
+          0,
+          'Enabled'
+        )
+      ).toBe(sent);
+      // The caller's own bag is never mutated.
+      expect(at(properties['InventoryConfigurations'], 0, 'Enabled')).toBe(declared);
+      expect(
+        childLogger.warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('Enabled'))
+      ).toHaveLength(0);
+    });
+  }
+
+  // An unusable value is left ALONE by the fold rather than normalized: nothing
+  // was sent for that item, so there is no effective value to record, and
+  // leaving it visible is what keeps `cdkd diff` reporting the fault until the
+  // template is corrected.
+  it('the twin leaves an unusable value untouched', () => {
     expect(
       at(
-        provider.canonicalizeDesiredProperties(RESOURCE_TYPE, properties),
+        provider.canonicalizeDesiredProperties(RESOURCE_TYPE, {
+          InventoryConfigurations: [inventoryWithEnabled(null)],
+        }),
         'InventoryConfigurations',
         0,
         'Enabled'
       )
     ).toBeNull();
-    // And no guard announces it — unlike every sibling member of this item.
-    expect(
-      childLogger.warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('Enabled'))
-    ).toHaveLength(0);
   });
 });

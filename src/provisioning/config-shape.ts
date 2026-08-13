@@ -465,6 +465,72 @@ export function configStringRefusal(
   return configValueRefusal(container[key], fallback, `${containerPath}.${key}`, options);
 }
 
+/**
+ * Coerce a CFn boolean, which may arrive as the string `"true"` / `"false"`.
+ *
+ * CloudFormation is stringly typed and cdkd is not, so a hand-written or
+ * imported template legitimately spells a boolean as a string. Case-insensitive
+ * on purpose: CDK renders lowercase, but this also feeds
+ * `AWS::S3::Bucket NotificationConfiguration.EventBridgeConfiguration` (issue
+ * #1430), where "not false" means "enable" — so a `'False'` that fell through to
+ * `undefined` would silently ENABLE EventBridge delivery, the exact inversion
+ * #1430 fixed.
+ *
+ * Lives here rather than in the one provider that used to own it because
+ * {@link configBooleanRefusal} must run the SAME primitive the wire read runs;
+ * a second hand-written test would disagree with it on exactly the interesting
+ * values, which is the guard-mismatch shape this module exists to stop.
+ *
+ * @returns the boolean, or `undefined` when the value is not one.
+ */
+export function coerceCfnBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const lowered = value.toLowerCase();
+    if (lowered === 'true') return true;
+    if (lowered === 'false') return false;
+  }
+  return undefined;
+}
+
+/**
+ * The BOOLEAN twin of {@link configStringRefusal} — the refusal SENTENCE for a
+ * config member that is read as a boolean, with no action clause attached.
+ *
+ * Same two halves in the same order (CONTAINER, then FIELD) and the same
+ * shared detail clause, so a boolean guard and a string guard on sibling
+ * members of one block cannot word the same fault differently. The FIELD half
+ * is `coerceCfnBoolean`, i.e. literally the function the wire read calls, per
+ * this module's "share the predicate, never restate it" rule.
+ *
+ * It exists because a boolean member read as `x ?? <default>` is the one shape
+ * neither string guard can see: `??` treats a DECLARED `null` as absent and
+ * substitutes the default, which for `AWS::S3::Bucket
+ * InventoryConfigurations[].Enabled` meant a declared `Enabled: null` went on
+ * the wire as `true` — a report the template may have been disabling, ENABLED
+ * with no warning anywhere (issue #1751). Its string siblings on the same item
+ * are SKIP-guarded (#1595) or warn-and-substitute (#1670); this was the one
+ * member that silently coerced.
+ *
+ * @returns The refusal sentence (`<path> must be …`), or `undefined` when the
+ *   value is usable — including the ABSENT container / ABSENT key cases, which
+ *   legitimately take the caller's default.
+ */
+export function configBooleanRefusal(
+  container: unknown,
+  key: string,
+  containerPath: string
+): string | undefined {
+  if (container === undefined || container === null) return undefined;
+  if (!isPlainObject(container)) {
+    return `${containerPath} must be an object ${malformedShapeDetail(container)}`;
+  }
+  const value = container[key];
+  if (value === undefined) return undefined;
+  if (coerceCfnBoolean(value) !== undefined) return undefined;
+  return `${containerPath}.${key} must be a boolean ${malformedShapeDetail(value)}`;
+}
+
 /** The FIELD half of {@link configStringRefusal}, shared with {@link requireConfigString}. */
 function configValueRefusal(
   value: unknown,

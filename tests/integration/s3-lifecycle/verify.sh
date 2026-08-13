@@ -91,6 +91,10 @@ LEGACY_BUCKET="cdkd-lifecycle-legacy-${ACCOUNT_ID}"
 # The EventBridgeEnabled: true half of the issue #1430 pair (the `false` half
 # rides on LEGACY_BUCKET).
 EB_TRUE_BUCKET="cdkd-lifecycle-ebtrue-${ACCOUNT_ID}"
+# Issue #1748: the bucket carrying the TOLERATED key spellings (notification
+# `TopicArn` + the scalar `Event`, lifecycle `Days` / `NoncurrentDays`).
+ALIAS_BUCKET="cdkd-lifecycle-alias-${ACCOUNT_ID}"
+NOTIFY_TOPIC_ARN="arn:aws:sns:${REGION}:${ACCOUNT_ID}:cdkd-lifecycle-notify-${ACCOUNT_ID}"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -106,6 +110,8 @@ cleanup() {
   aws s3api delete-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${LEGACY_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${EB_TRUE_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws s3api delete-bucket --bucket "${ALIAS_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws sns delete-topic --topic-arn "${NOTIFY_TOPIC_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -282,8 +288,145 @@ assert_no_drift() { # $1 = phase label
   echo "    [${phase}] no drift on a clean stack (#1430 read side)"
 }
 
+# --- issue #1748: the never-emitted key spellings ---------------------------
+# cdkd accepts more than one spelling on the DESIRED side while
+# `readCurrentState` emits only ONE, so a record written in the tolerated
+# spelling can never match the readback. Two halves in one bucket:
+#   - notification: the applier reads `t['Topic'] ?? t['TopicArn']` and CFn
+#     declares the event as the SCALAR `Event` where the SDK member is the LIST
+#     `Events`;
+#   - lifecycle: `t['TransitionInDays'] ?? t['Days']` and
+#     `nvt['TransitionInDays'] ?? nvt['NoncurrentDays']`.
+#
+# Three sides are asserted, and all three are needed: the WIRE (the tolerance
+# must still reach AWS — a fix that stopped accepting the spelling would break
+# templates that deploy today), the RECORD (`properties`, which must now hold
+# the emitted spelling and must NOT hold the tolerated one), and the READBACK
+# (`observedProperties`, which is where the `Events` -> `Event` change lands).
+# Asserting only the record would pass just as happily if cdkd had stopped
+# applying the configuration altogether.
+state_json() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" 2>/dev/null
+}
+# The alias bucket's state entry, looked up by PHYSICAL id rather than by a
+# guessed logical id.
+#
+# `jq -r`, deliberately NOT `jq -e`: `-e` exits NON-ZERO when the last output is
+# `false` or `null`, so every filter that legitimately answers `false` — which is
+# half the `has(...)` probes below — would look like a failed read and take the
+# caller's fallback. The first run of this assertion did exactly that and
+# reported `Events=<missing>` for a correct `false`. Emptiness is the real
+# read-failure signal and is checked by the caller.
+alias_state() { # $1 = jq filter applied to the resource entry
+  state_json | jq -r --arg b "${ALIAS_BUCKET}" \
+    '(.resources | to_entries[] | select(.value.physicalId == $b) | .value) | '"$1"
+}
+assert_alias_spellings() { # $1 = phase label, $2 = expected transition Days
+  local phase="$1" expect_days="$2"
+
+  # --- the WIRE: the tolerated spellings still reach AWS unchanged ---
+  local wire_days wire_nvt wire_topic wire_events
+  wire_days="$(LC "${ALIAS_BUCKET}" "Rules[?ID=='alias-transitions'].Transitions[0].Days | [0]")"
+  wire_nvt="$(LC "${ALIAS_BUCKET}" "Rules[?ID=='alias-transitions'].NoncurrentVersionTransitions[0].NoncurrentDays | [0]")"
+  if [ "${wire_days}" != "${expect_days}" ] || [ "${wire_nvt}" != "15" ]; then
+    echo "FAIL [${phase}]: alias bucket wire Days=${wire_days} (want ${expect_days}) NoncurrentDays=${wire_nvt} (want 15)" >&2
+    exit 1
+  fi
+  # `|| return 1` on every intermediate capture: errexit is CLEARED inside
+  # `$( )`, so without it a failed probe (throttle, auth) would fall through to
+  # the compare and read as a wrong VALUE rather than a failed read.
+  wire_topic="$(aws s3api get-bucket-notification-configuration --bucket "${ALIAS_BUCKET}" --region "${REGION}" \
+    --query 'TopicConfigurations[0].TopicArn' --output text)" || return 1
+  wire_events="$(aws s3api get-bucket-notification-configuration --bucket "${ALIAS_BUCKET}" --region "${REGION}" \
+    --query "join(',', TopicConfigurations[0].Events)" --output text)" || return 1
+  if [ "${wire_topic}" != "${NOTIFY_TOPIC_ARN}" ] || [ "${wire_events}" != "s3:ObjectCreated:*" ]; then
+    echo "FAIL [${phase}]: alias bucket notification wire topic=${wire_topic} events=${wire_events}" >&2
+    exit 1
+  fi
+
+  # --- the RECORD: `properties` must hold the EMITTED spelling only ---
+  # `has(...)` on purpose, not a value compare: the tolerated key must be
+  # REMOVED, and a key left present-but-null still makes the drift walk see two
+  # different key sets.
+  local rec
+  rec="$(alias_state '{
+    topic: (.properties.NotificationConfiguration.TopicConfigurations[0] | has("Topic")),
+    topicArn: (.properties.NotificationConfiguration.TopicConfigurations[0] | has("TopicArn")),
+    event: (.properties.NotificationConfiguration.TopicConfigurations[0] | has("Event")),
+    events: (.properties.NotificationConfiguration.TopicConfigurations[0] | has("Events")),
+    tid: (.properties.LifecycleConfiguration.Rules[0].Transitions[0] | has("TransitionInDays")),
+    days: (.properties.LifecycleConfiguration.Rules[0].Transitions[0] | has("Days")),
+    nvtid: (.properties.LifecycleConfiguration.Rules[0].NoncurrentVersionTransitions[0] | has("TransitionInDays")),
+    ncd: (.properties.LifecycleConfiguration.Rules[0].NoncurrentVersionTransitions[0] | has("NoncurrentDays")),
+    tidValue: .properties.LifecycleConfiguration.Rules[0].Transitions[0].TransitionInDays
+  } | tojson')"
+  # Emptiness, not the exit code, is the read-failure signal (see `alias_state`).
+  [ -n "${rec}" ] || { echo "FAIL [${phase}]: could not read the alias bucket state entry" >&2; exit 1; }
+  local want="{\"topic\":true,\"topicArn\":false,\"event\":true,\"events\":false,\"tid\":true,\"days\":false,\"nvtid\":true,\"ncd\":false,\"tidValue\":${expect_days}}"
+  if [ "${rec}" != "${want}" ]; then
+    echo "FAIL [${phase}]: recorded spellings ${rec}" >&2
+    echo "      expected                  ${want}" >&2
+    echo "      (issue #1748: the record must carry the spelling readCurrentState emits, with the tolerated key REMOVED)" >&2
+    exit 1
+  fi
+
+  # --- the READBACK: observedProperties carries the CFn scalar `Event` ---
+  # `readNotification` emitted the SDK LIST `Events` for every bucket, which is
+  # a spelling no CFn template can declare.
+  local obs_event obs_events
+  obs_event="$(alias_state '.observedProperties.NotificationConfiguration.TopicConfigurations[0] | has("Event") | tojson')"
+  obs_events="$(alias_state '.observedProperties.NotificationConfiguration.TopicConfigurations[0] | has("Events") | tojson')"
+  if [ "${obs_event}" != "true" ] || [ "${obs_events}" != "false" ]; then
+    echo "FAIL [${phase}]: readback emitted Event=${obs_event} Events=${obs_events}, expected true/false" >&2
+    exit 1
+  fi
+  # --- issue #1751: the CFn STRING boolean `Enabled: 'false'` ---
+  # The wire read used to be `(config['Enabled'] as boolean) ?? true`, so it
+  # forwarded the STRING and defaulted a declared `null` to `true`. It now runs
+  # `coerceCfnBoolean` behind a refusal guard, so `'false'` reaches AWS as the
+  # boolean `false` and the record holds the coerced value — a string in state
+  # could never match the boolean `inventorySdkToCfn` reads back.
+  local wire_enabled rec_enabled
+  wire_enabled="$(aws s3api get-bucket-inventory-configuration --bucket "${ALIAS_BUCKET}" \
+    --id alias-inventory --region "${REGION}" --query 'InventoryConfiguration.IsEnabled' --output text)" || return 1
+  if [ "${wire_enabled}" != "False" ]; then
+    echo "FAIL [${phase}]: inventory IsEnabled=${wire_enabled} on the wire, expected False" >&2
+    echo "      (issue #1751: a declared 'false' must not be defaulted or forwarded as a string)" >&2
+    exit 1
+  fi
+  rec_enabled="$(alias_state '.properties.InventoryConfigurations[0].Enabled | tojson')"
+  [ -n "${rec_enabled}" ] || { echo "FAIL [${phase}]: could not read the recorded inventory Enabled" >&2; exit 1; }
+  if [ "${rec_enabled}" != "false" ]; then
+    echo "FAIL [${phase}]: recorded inventory Enabled=${rec_enabled}, expected the coerced boolean false" >&2
+    exit 1
+  fi
+
+  echo "    [${phase}] #1748: tolerated spellings reach the wire, the record + readback carry the emitted ones"
+  echo "    [${phase}] #1751: a CFn string 'false' is sent coerced and recorded coerced"
+}
+
 assert_eventbridge_pair "phase 1" "${EB_TRUE_BUCKET}" "${LEGACY_BUCKET}"
+assert_alias_spellings "phase 1" "90"
 assert_no_drift "phase 1"
+
+# --- Phase 1b: the `canonicalizeDesiredProperties` TWIN ---------------------
+# The fold alone BREAKS the next deploy: state holds the emitted spelling while
+# the template still declares the tolerated one, so an UNCHANGED template reads
+# as a change and re-issues the same Put forever (issue #1717 measured exactly
+# that on the sibling fold). Re-deploying the IDENTICAL template is the only
+# assertion that can see it — a clean `cdkd drift` cannot, because it compares
+# state to AWS rather than template to state.
+echo "==> Phase 1b: re-deploy the IDENTICAL template — must be a no-op (issue #1748 twin)"
+REDEPLOY_OUT="$(env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+# Strip ANSI: `cdkd deploy` colorizes the no-op line, so a plain grep for the
+# sentence misses it.
+if ! printf '%s' "${REDEPLOY_OUT}" | sed 's/\x1b\[[0-9;]*m//g' | grep -q 'No changes detected'; then
+  echo "FAIL: re-deploying the identical template was NOT a no-op" >&2
+  printf '%s\n' "${REDEPLOY_OUT}" | tail -30 >&2
+  exit 1
+fi
+echo "    identical re-deploy is a no-op — the fold and its twin agree"
 
 CREATION_P1="$(aws s3api list-buckets \
   --query "Buckets[?Name=='${BUCKET_NAME}'].CreationDate | [0]" --output text)"
@@ -319,6 +462,9 @@ echo "    bucket identity preserved (CreationDate unchanged) — no replacement"
 # applyNotificationConfiguration, in BOTH directions at once. A same-value
 # re-deploy would short-circuit on JSON equality and prove nothing.
 assert_eventbridge_pair "phase 2" "${LEGACY_BUCKET}" "${EB_TRUE_BUCKET}"
+# The alias transition day count CHANGES in UPDATE mode (90 -> 60), so this
+# really drives the update-path fold rather than re-reading the phase-1 record.
+assert_alias_spellings "phase 2" "60"
 assert_no_drift "phase 2"
 
 # --- Phase 3: destroy --------------------------------------------------
@@ -330,7 +476,9 @@ echo "    bucket deleted"
 
 assert_gone_eventually "legacy bucket ${LEGACY_BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${LEGACY_BUCKET}" --region "${REGION}"
 assert_gone_eventually "EventBridge bucket ${EB_TRUE_BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${EB_TRUE_BUCKET}" --region "${REGION}"
-echo "    legacy + EventBridge buckets deleted"
+assert_gone_eventually "alias-spelling bucket ${ALIAS_BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${ALIAS_BUCKET}" --region "${REGION}"
+assert_gone "notification topic ${NOTIFY_TOPIC_ARN} still exists after destroy" aws sns get-topic-attributes --topic-arn "${NOTIFY_TOPIC_ARN}" --region "${REGION}"
+echo "    legacy + EventBridge + alias buckets and the notification topic deleted"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
