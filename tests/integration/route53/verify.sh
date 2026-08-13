@@ -168,14 +168,65 @@ fi
 
 JOINED_NAME_SERVERS_SORTED=$(printf '%s' "${JOINED_NAME_SERVERS}" \
   | jq -Rr 'split(",") | sort | join(",")')
-LIVE_NAME_SERVERS=$(aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGION}" \
-  --query 'DelegationSet.NameServers' --output json 2>/dev/null)
+
+# The live read is a POSITIVE probe (the zone must exist here), so it follows
+# this file's header rule the same way the gone-probes do: capture combined
+# output, branch on the exit status, and report the canonical not-found case
+# separately from an undetermined failure (throttle / auth / network). The old
+# `$(aws ... 2>/dev/null)` form aborted the whole script at the assignment
+# under `set -euo pipefail` with the AWS error discarded, so an expired token
+# and a deleted zone were indistinguishable -- and both looked like the
+# NameServers assertion itself had blown up.
+if ! LIVE_NAME_SERVERS=$(aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGION}" \
+  --query 'DelegationSet.NameServers' --output json 2>&1); then
+  if printf '%s' "${LIVE_NAME_SERVERS}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: hosted zone ${ZONE_ID} does not exist while asserting its NameServers" >&2
+  else
+    echo "FAIL: get-hosted-zone probe undetermined for ${ZONE_ID}" >&2
+  fi
+  echo "  aws said: ${LIVE_NAME_SERVERS}" >&2
+  exit 1
+fi
+# An absent delegation set serializes as the JSON literal `null`, on which the
+# `sort` below exits 5 -- a jq error where an assertion failure is meant.
+if [ -z "${LIVE_NAME_SERVERS}" ] || [ "${LIVE_NAME_SERVERS}" = "null" ]; then
+  echo "FAIL: hosted zone ${ZONE_ID} reports no DelegationSet.NameServers on AWS" >&2
+  exit 1
+fi
 LIVE_NAME_SERVERS_SORTED=$(printf '%s' "${LIVE_NAME_SERVERS}" \
   | jq -r 'sort | join(",")')
+
+# Both sides are SORTED deliberately, and the trade-off is recorded here
+# because it is a judgement call (issue #1873): Route 53 does not guarantee
+# that GetHostedZone returns the delegation set in the same order that
+# CreateHostedZone did, and the two sides of this comparison come from those
+# two different calls (the Output was resolved from the create-time attribute
+# in state). An unsorted compare would therefore be flaky, and per the repo's
+# "list readbacks must be order-insensitive" rule its failure message would
+# accuse the very fix it is guarding.
+#
+# What sorting gives up is an order-SCRAMBLING regression inside cdkd. That
+# half is fenced deterministically at the unit level instead -- the bare
+# Fn::GetAtt assertions in tests/unit/deployment/intrinsic-functions.test.ts
+# and tests/unit/deployment/deploy-engine-outputs-nameservers-list.test.ts pin
+# the exact element ORDER the resolver produces from a fixed input, which a
+# live AWS readback cannot do.
+#
+# Note what this comparison can NOT see either way, sorted or not: the
+# pre-#1868 single-element collapse. The Output under test is already
+# `Fn::Join`ed with ',', so `['a','b']` and `['a,b']` render the identical
+# string and no post-join check can tell them apart (measured with a stubbed
+# aws, 2026-08-14 -- it passes). Pre-#1868 that shape surfaced here only
+# because Fn::Join THREW on a string operand and the Output went missing from
+# state, which is what the `-z "${JOINED_NAME_SERVERS}"` guard above catches.
+# The element COUNT itself is fenced by the same two unit tests.
 if [ "${JOINED_NAME_SERVERS_SORTED}" != "${LIVE_NAME_SERVERS_SORTED}" ]; then
   echo "FAIL: HostedZoneNameServers output does not match Route 53" >&2
-  echo "  got:      ${JOINED_NAME_SERVERS}" >&2
+  # Print the SORTED form on both lines -- printing the raw output against a
+  # sorted expectation made the two lines differ even on a spurious mismatch.
+  echo "  got:      ${JOINED_NAME_SERVERS_SORTED}" >&2
   echo "  expected: ${LIVE_NAME_SERVERS_SORTED}" >&2
+  echo "  (raw output value: ${JOINED_NAME_SERVERS})" >&2
   exit 1
 fi
 echo "    OK: Fn::Join resolved the HostedZone NameServers list (${JOINED_NAME_SERVERS})"

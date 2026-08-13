@@ -90,6 +90,20 @@ describe('Route53Provider', () => {
 
         expect(result).toEqual(['ns-1.example.com', 'ns-2.example.com']);
       });
+
+      it('returns an empty LIST when the zone has no delegation set (issue #1873)', async () => {
+        // The `?? []` fallback: GetHostedZone answers without a DelegationSet.
+        mockSend.mockResolvedValueOnce({});
+
+        const result = await provider.getAttribute(
+          'Z1234567890',
+          'AWS::Route53::HostedZone',
+          'NameServers'
+        );
+
+        expect(result).toEqual([]);
+        expect(Array.isArray(result)).toBe(true);
+      });
     });
 
     describe('update', () => {
@@ -113,6 +127,22 @@ describe('Route53Provider', () => {
           Id: 'Z1234567890',
           NameServers: ['ns-1.example.com', 'ns-2.example.com'],
         });
+      });
+
+      it('returns an empty LIST when the post-update read has no delegation set (issue #1873)', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateHostedZoneComment
+        mockSend.mockResolvedValueOnce({}); // GetHostedZone, no DelegationSet
+
+        const result = await provider.update(
+          'MyZone',
+          'Z1234567890',
+          'AWS::Route53::HostedZone',
+          { Name: 'example.com' },
+          { Name: 'example.com' }
+        );
+
+        expect(result.attributes).toEqual({ Id: 'Z1234567890', NameServers: [] });
+        expect(Array.isArray(result.attributes?.['NameServers'])).toBe(true);
       });
     });
 
@@ -148,12 +178,34 @@ describe('Route53Provider', () => {
           DelegationSet: { NameServers: [] },
         });
 
-        await provider.create('MyZone', 'AWS::Route53::HostedZone', {
+        const result = await provider.create('MyZone', 'AWS::Route53::HostedZone', {
           Name: 'example.com',
         });
 
+        // An EMPTY delegation set stays an empty LIST (issue #1873). Pre-#1868
+        // the provider flattened NameServers to a comma-joined string, so this
+        // case produced `''`; a downstream Fn::Join / Fn::Select over the
+        // attribute needs the list shape even when there is nothing in it.
+        expect(result.attributes).toEqual({ Id: 'Z1234567890', NameServers: [] });
+
         expect(mockSend).toHaveBeenCalledTimes(1);
         expect(mockSend.mock.calls[0][0].constructor.name).toBe('CreateHostedZoneCommand');
+      });
+
+      it('create: an ABSENT DelegationSet still yields an empty NameServers LIST', async () => {
+        // Pins the `?? []` default itself: the response carries no
+        // DelegationSet at all, so the fallback — not the AWS payload — is
+        // what decides the attribute shape.
+        mockSend.mockResolvedValueOnce({
+          HostedZone: { Id: '/hostedzone/Z1234567890' },
+        });
+
+        const result = await provider.create('MyZone', 'AWS::Route53::HostedZone', {
+          Name: 'example.com',
+        });
+
+        expect(result.attributes).toEqual({ Id: 'Z1234567890', NameServers: [] });
+        expect(Array.isArray(result.attributes?.['NameServers'])).toBe(true);
       });
 
       it('create: omits UpdateHostedZoneFeatures when AcceleratedRecoveryStatus=DISABLED (matches AWS default)', async () => {
@@ -162,10 +214,12 @@ describe('Route53Provider', () => {
           DelegationSet: { NameServers: [] },
         });
 
-        await provider.create('MyZone', 'AWS::Route53::HostedZone', {
+        const result = await provider.create('MyZone', 'AWS::Route53::HostedZone', {
           Name: 'example.com',
           HostedZoneFeatures: { AcceleratedRecoveryStatus: 'DISABLED' },
         });
+
+        expect(result.attributes).toEqual({ Id: 'Z1234567890', NameServers: [] });
 
         // Only CreateHostedZone fires — DISABLED is the AWS default so we skip
         // the explicit toggle call.
