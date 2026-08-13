@@ -1284,7 +1284,13 @@ describe('REAL-CODE evidence-loss probes (#1842)', () => {
   // The single delegated read behind `WarmThroughput`'s extra evidence: the
   // file-local `declaresWarmThroughput()` is what `getDriftUnknownPaths()` and
   // `readCurrentState()` reach the bag through.
-  const DELEGATED_READ = "  return isSendableWarmThroughput(properties['WarmThroughput']);";
+  // The delegated read `getDriftUnknownPaths()` / `readCurrentState()` reach the
+  // bag through. PR #1808 rewrote this line into the `properties !== undefined
+  // && ...` spelling BECAUSE the `!` form was invisible to this critic (its own
+  // in-code comment says so) — which is issue #1842 in one line, and why the
+  // anchor is asserted unique rather than assumed.
+  const DELEGATED_READ =
+    "  return properties !== undefined && isSendableWarmThroughput(properties['WarmThroughput']);";
 
   it('the fixture still discriminates: the real read carries delegated evidence', () => {
     // Without this the two probes below could both pass vacuously — a property
@@ -1316,7 +1322,7 @@ describe('REAL-CODE evidence-loss probes (#1842)', () => {
     // unfollowable spelling (a computed key with no literal table behind it).
     const degraded = realDdb.replace(
       DELEGATED_READ,
-      "  const k = 'Warm' + 'Throughput';\n  return isSendableWarmThroughput(properties[k]);"
+      "  const k = 'Warm' + 'Throughput';\n  return properties !== undefined && isSendableWarmThroughput(properties[k]);"
     );
     expect(degraded).not.toBe(realDdb);
     const losses = findEvidenceLosses(analyze(realDdb), analyze(degraded));
@@ -1408,12 +1414,18 @@ describe('the shipped --check command', () => {
 
   // The one delegated read behind `WarmThroughput`'s extra evidence (see the
   // REAL-CODE probes above).
-  const DELEGATED_READ = "  return isSendableWarmThroughput(properties['WarmThroughput']);";
+  // The delegated read `getDriftUnknownPaths()` / `readCurrentState()` reach the
+  // bag through. PR #1808 rewrote this line into the `properties !== undefined
+  // && ...` spelling BECAUSE the `!` form was invisible to this critic (its own
+  // in-code comment says so) — which is issue #1842 in one line, and why the
+  // anchor is asserted unique rather than assumed.
+  const DELEGATED_READ =
+    "  return properties !== undefined && isSendableWarmThroughput(properties['WarmThroughput']);";
   const degradeWarmThroughput = (src: string): string => {
     expect(src.split(DELEGATED_READ).length - 1, 'probe anchor must be unique').toBe(1);
     return src.replace(
       DELEGATED_READ,
-      "  const k = 'Warm' + 'Throughput';\n  return isSendableWarmThroughput(properties[k]);"
+      "  const k = 'Warm' + 'Throughput';\n  return properties !== undefined && isSendableWarmThroughput(properties[k]);"
     );
   };
 

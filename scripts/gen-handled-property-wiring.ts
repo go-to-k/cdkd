@@ -174,21 +174,30 @@
  * from `delegated` + `element-read` proven across four seeding members down to
  * a single weak seed and still print `OK — ... 0 gaps` byte-identically.
  *
- * TWO MEASURED cases on the real `dynamodb-table-provider.ts`, both of which
- * left the pre-fix `--check` output byte-identical to its clean-tree line:
- *   - respelling ALL SEVEN `properties['GlobalSecondaryIndexes']` reads drops
- *     the `update` SEED (the property keeps `element-read` from `create`);
- *   - respelling the ONE delegated read inside `declaresWarmThroughput()` drops
- *     `WarmThroughput`'s `delegated` evidence AND its `getDriftUnknownPaths` /
- *     `readCurrentState` seeds.
- * Stated per-site because the breadth matters: respelling EVERY
+ * MEASURED on the real `dynamodb-table-provider.ts`: respelling the ONE
+ * delegated read inside `declaresWarmThroughput()` drops `WarmThroughput`'s
+ * `delegated` evidence AND its `getDriftUnknownPaths` / `readCurrentState`
+ * seeds, while the pre-fix `--check` output stays byte-identical to its
+ * clean-tree line. PR #1808 rewrote that very read into the
+ * `properties !== undefined && ...` spelling FOR THIS REASON — its own in-code
+ * comment records that the `!` form was "INVISIBLE to that critic and silently
+ * dropped `WarmThroughput`'s `getDriftUnknownPaths` / `readCurrentState`
+ * evidence from the checked-in matrix" — which is this issue in one line, and
+ * an independent confirmation of the measurement.
+ *
+ * Stated PER SITE because the breadth matters: respelling EVERY
  * `WarmThroughput` read instead removes the last evidence and is caught as an
- * ordinary `gap`, which proves nothing about this verdict. (The issue's own
- * summary also named `table-loop` evidence and `LocalSecondaryIndexes`;
- * measured against the tree, NO property of this provider carries `table-loop`
- * and `LocalSecondaryIndexes` has a single `create` seed, so neither is part of
- * the real case.) The loss is visible only as a regenerated file diff that the
- * SAME commit can carry. Green pipeline, weakened matrix.
+ * ordinary `gap`, which proves nothing about this verdict.
+ *
+ * The issue's summary also named `table-loop` evidence on
+ * `GlobalSecondaryIndexes` / `LocalSecondaryIndexes`. That was NOT true of the
+ * tree when this fix was written and IS true now: #1808 introduced the table
+ * loop, so both properties carry `element-read` + `table-loop` today. The claim
+ * was re-measured rather than inherited in either direction — which is the
+ * point, since a rationale that cites a tree state ages with the tree.
+ *
+ * The loss is visible only as a regenerated file diff that the SAME commit can
+ * carry. Green pipeline, weakened matrix.
  *
  * So {@link findEvidenceLosses} compares the fresh analysis against the
  * COMMITTED matrix per (class, property) and fails when the evidence set or the
