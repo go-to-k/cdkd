@@ -57,10 +57,20 @@
  *     properties[cdkKey]`. Recognizing the shape is strictly better than
  *     allow-listing those 29 properties: the names come from the table, so
  *     ADDING a declared property without adding it to the table still fails.
- *     43 declared properties across 5 classes carry a `table-loop` tag today;
- *     29 of them have it as their ONLY evidence (GlueJobProvider 16,
- *     SQSQueueProvider 13), which is what makes the delivery requirement below
- *     load-bearing rather than cosmetic.
+ *     49 declared properties across 8 classes carry a `table-loop` tag today;
+ *     29 of them would flip straight to `gap` if the recognizer died
+ *     (GlueJobProvider 16, SQSQueueProvider 13), which is what makes the
+ *     delivery requirement below load-bearing rather than cosmetic. "Would flip
+ *     to gap" rather than "has table-loop as its only evidence", because the two
+ *     readings differ and review split on them: only 13 have an evidence array
+ *     of EXACTLY `['table-loop']` (all SQS), while Glue's 16 read
+ *     `['delegated', 'table-loop']`. Both flip, because `delegated` is a tag
+ *     added INSIDE `record()` and never stands alone — measured, zero properties
+ *     carry it by itself — so losing the only recording shape leaves no
+ *     evidence at all. (The totals move whenever a provider
+ *     adds or drops a pass-through table — they were 43 across 5 at #1414 and
+ *     47 across 7 before #1808 — so treat them as a snapshot, not an invariant;
+ *     the enforced floors live in the unit suite.)
  *
  * TABLE LOOPS MUST DELIVER, NOT MERELY COMPARE
  * --------------------------------------------
@@ -132,12 +142,12 @@
  * silenced the very #1392 property this critic exists to catch. Checking the
  * whole tree, EVERY whole-bag site today is a diff / comparison loop
  * (`Object.keys({ ...properties, ...previousProperties })`,
- * `JSON.stringify(properties[k]) !== ...`), never a delivery, and 1059/1063
+ * `JSON.stringify(properties[k]) !== ...`), never a delivery, and 1136/1138
  * declared properties have direct read evidence — so the excuse rescued
  * exactly ZERO properties while creating a general-purpose mute button.
  * The sanctioned escape hatch for a genuinely un-followable shape is a
  * rationale'd {@link HANDLED_WIRING_ALLOW_LIST} entry (or, better, teaching the
- * walk the shape, as the table-driven rule above does for 43 properties).
+ * walk the shape, as the table-driven rule above does for 49 properties).
  *
  * An UNRESOLVABLE whole-bag call whose RESULT is only compared or measured is
  * not a forward at all and is not even recorded: `JSON.stringify(properties) ===
@@ -167,14 +177,112 @@
  *   - allow-listed — every remaining offender has a rationale'd allow-list
  *                    entry; stays VISIBLE in the matrix, does not block.
  *
+ * `wired` IS A FLOOR OF ONE — SO EVIDENCE LOSS IS ITS OWN VERDICT
+ * ---------------------------------------------------------------
+ * The three buckets above only ask whether SOME read survives, and that made
+ * the verdict insensitive to degradation (issue #1842). A property can fall
+ * from `delegated` + `element-read` proven across four seeding members down to
+ * a single weak seed and still print `OK — ... 0 gaps` byte-identically.
+ *
+ * MEASURED on the real `dynamodb-table-provider.ts`: respelling the ONE
+ * delegated read inside `declaresWarmThroughput()` drops `WarmThroughput`'s
+ * `delegated` evidence AND its `getDriftUnknownPaths` / `readCurrentState`
+ * seeds, while the pre-fix `--check` output stays byte-identical to its
+ * clean-tree line. PR #1808 rewrote that very read into the
+ * `properties !== undefined && ...` spelling FOR THIS REASON — its own in-code
+ * comment records that the `!` form was "INVISIBLE to that critic and silently
+ * dropped `WarmThroughput`'s `getDriftUnknownPaths` / `readCurrentState`
+ * evidence from the checked-in matrix" — which is this issue in one line, and
+ * an independent confirmation of the measurement.
+ *
+ * Stated PER SITE because the breadth matters: respelling EVERY
+ * `WarmThroughput` read instead removes the last evidence and is caught as an
+ * ordinary `gap`, which proves nothing about this verdict.
+ *
+ * The issue's summary also named `table-loop` evidence on
+ * `GlobalSecondaryIndexes` / `LocalSecondaryIndexes`. That was NOT true of the
+ * tree when this fix was written and IS true now: #1808 introduced the table
+ * loop, so both properties carry `element-read` + `table-loop` today. The claim
+ * was re-measured rather than inherited in either direction — which is the
+ * point, since a rationale that cites a tree state ages with the tree.
+ *
+ * The loss is visible only as a regenerated file diff that the SAME commit can
+ * carry. Green pipeline, weakened matrix.
+ *
+ * So {@link findEvidenceLosses} compares the fresh analysis against the
+ * COMMITTED matrix per (class, property) and fails when the evidence set or the
+ * seeding-member set shrank. The direction is deliberate: this critic exists to
+ * make a FALSE `handledProperties` claim reachable, so a REAL claim silently
+ * becoming unprovable is the dangerous failure, and a strengthening is free.
+ *
+ * The check is enforced on BOTH paths, which is what keeps it reachable:
+ *   - the WRITER refuses to overwrite the matrix with weaker evidence. This is
+ *     the half CI actually exercises: the workflow runs the writer FIRST and
+ *     then `git diff --quiet`, so by the time `--check` runs, the baseline on
+ *     disk is the file the writer just produced and its loss arm can no longer
+ *     fire. It is also the half that closes the hole, because regenerating is
+ *     what moves the baseline underneath the comparison — exactly how the
+ *     #1808 degradation shipped green.
+ *   - `--check` fails on any loss for every OTHER caller: a local run, a
+ *     reviewer grading a branch, or any pipeline that checks before it writes.
+ *
+ * A VERDICT REQUIRES A BASELINE THAT COULD HAVE FAILED
+ * ----------------------------------------------------
+ * Grading against a file invites making the file stop being able to fail.
+ * Review found FIVE spellings of that, one per round, each slipping the previous
+ * round's guard — DELETED (staged, so `git diff --quiet` stayed green),
+ * TRUNCATED (parses, well-formed header), EMPTY (`classes: []`, passing every
+ * structural check), SHRUNKEN (cut to one pair, which OVERLAPS so non-vacuity
+ * waved it through) and STRIPPED (`evidence` / `seededBy` blanked while every
+ * count stays intact). Each landed the same way: both modes report success at
+ * exit 0 and the tamper is overwritten without trace. STRIPPED is the worst,
+ * because the mitigation then announces `graded 1138/1138` having graded nothing.
+ *
+ * The pattern behind all five is one bug: rounds 1-4 each constrained something
+ * ADJACENT to the comparison — a pair count, then two summary counts — and never
+ * the fields the comparison READS. So the rule is not "reject these five
+ * shapes"; it is that an integrity check must constrain exactly what the
+ * consumer consumes. {@link assessBaseline} states that as three positive
+ * conditions (self-consistent over the WHOLE summary, evidence-bearing on every
+ * `wired` property, non-vacuous against the tree being graded), and the five
+ * spellings fall out of it rather than being enumerated.
+ *
+ * Partial coverage is handled by visibility rather than by a threshold nobody
+ * could defend: EVERY run — writer included — prints `graded N/M pairs`. The
+ * residual bound is stated on {@link assessBaseline}: what conditions 1-3 admit
+ * is a baseline that agrees with itself AND overlaps this tree — so a
+ * self-consistent SUBSET is usable and grades only what it covers.
+ *
+ * TWO ESCAPE HATCHES, deliberately SEPARATE, both WRITER-ONLY:
+ *   - `--accept-evidence-loss` acknowledges a measured reduction, and prints
+ *     every lost (class, property) with its shapes and seeds before writing.
+ *   - `--accept-missing-baseline` acknowledges having no comparison at all — a
+ *     first-ever generation. There is nothing to enumerate, which is exactly why
+ *     it is its own flag: while ONE flag covered both, the quietest tamper was
+ *     not `git rm` but a single corrupted byte, because the loss waiver then
+ *     also waived the absence and suppressed the enumeration.
+ * Both are REJECTED under `--check`, so the verdict can never be told to look
+ * away. (`--baseline=` is a different thing — a TEST SEAM that selects WHAT is
+ * compared. It can only make the loss comparison weaker, never suppress the gap
+ * or stale-allow-list verdicts, and CI never passes it.)
+ *
  * Usage:
- *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts          # write the matrix
- *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts --check  # fail on a gap
+ *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts
+ *     # write the matrix; refuses on an unacknowledged evidence loss OR an
+ *     # unusable baseline
+ *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts --check
+ *     # fail on a gap, a stale allow-list entry, an evidence loss, or a baseline
+ *     # that could not have failed
+ *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts --accept-evidence-loss
+ *     # write the matrix, acknowledging (and printing) the reduction
+ *   node --experimental-strip-types scripts/gen-handled-property-wiring.ts --accept-missing-baseline
+ *     # write the matrix with no comparison at all (first-ever generation)
  *
  * CI runs the writer then `git diff --quiet` on the output AND the `--check`
- * critic, mirroring the sdk-attr / update-wrap / nested-key guards.
+ * critic, mirroring the sdk-attr / update-wrap / nested-key guards. Neither CI
+ * invocation passes either waiver flag.
  */
-import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // `typescript-v6` is an npm alias of typescript@6 — TS7 no longer ships the
@@ -186,7 +294,6 @@ const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, '..');
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
 const OUT_JSON = resolve(repoRoot, 'docs/_generated/handled-property-wiring.json');
-const OUT_MD = resolve(repoRoot, 'docs/_generated/handled-property-wiring.md');
 
 /**
  * Parameter names that hold the DESIRED-state CFn property bag — the one whose
@@ -232,7 +339,7 @@ export const PROPERTY_BAG_PARAM_NAMES: ReadonlySet<string> = new Set([
  * No such shape exists in the tree today; if one appears, the fix is an
  * allow-list entry naming it, not re-admitting the previous bag wholesale.
  *
- * Measured: excluding these names moves ZERO of the 1063 declared properties
+ * Measured: excluding these names moves ZERO of the 1138 declared properties
  * out of `wired`, so the strictness costs nothing today.
  */
 export const PREVIOUS_PROPERTY_BAG_PARAM_NAMES: ReadonlySet<string> = new Set([
@@ -395,10 +502,49 @@ export function collectFileFunctions(sf: ts.SourceFile): Map<string, Callable> {
 /** A CFn property name: PascalCase, letters/digits only. */
 const isCfnPropertyName = (name: string): boolean => /^[A-Z][A-Za-z0-9]*$/.test(name);
 
-/** Strip `as T` / `satisfies T` / parentheses so the underlying node is visible. */
+/**
+ * Wrappers that hand their operand through UNCHANGED at runtime, so a read
+ * spelled through one is the same read. Each erases to nothing (four are
+ * type-only syntax; parentheses are grouping), which is the ONLY admission
+ * criterion — a node that can change the value, short-circuit, or defer it
+ * (`await`, `x ?? y`, a tagged template) must never be listed here, because
+ * peeling it would credit a read the runtime may never perform. Optional
+ * chaining is NOT in that group and is deliberately not excluded:
+ * `properties?.['X']` parses as an element access whose own `.expression` is the
+ * bag, so the walk credits it — correctly, because when the bag exists the read
+ * happens. (An earlier revision listed `?.` here as "excluded and pinned by a
+ * test"; neither half was true, and the behavior it described would have been
+ * wrong. The real behavior is pinned below instead.) The
+ * list is not claimed exhaustive over erase-to-nothing syntax —
+ * `ExpressionWithTypeArguments` (an instantiation expression) qualifies and is
+ * absent; omitting one only fails CLOSED (a read goes unseen), which is the
+ * safe direction, while admitting a non-transparent one fails OPEN.
+ *
+ * {@link unwrap} peels these DOWNWARD from a wrapper to its operand;
+ * {@link climb} walks the same set UPWARD from an operand to its outermost
+ * wrapper. The two must agree: `NonNullExpression` was in `climb` but missing
+ * from `unwrap`, so `properties!['X']` — the `!`-asserted spelling of a read
+ * this walk otherwise recognizes — contributed NO evidence while the
+ * runtime-identical `properties['X']` contributed the full set (issue #1842).
+ */
+const isTransparentWrapper = (
+  n: ts.Node
+): n is
+  | ts.AsExpression
+  | ts.ParenthesizedExpression
+  | ts.SatisfiesExpression
+  | ts.NonNullExpression
+  | ts.TypeAssertion =>
+  ts.isAsExpression(n) ||
+  ts.isParenthesizedExpression(n) ||
+  ts.isSatisfiesExpression(n) ||
+  ts.isNonNullExpression(n) ||
+  ts.isTypeAssertionExpression(n);
+
+/** Strip `as T` / `satisfies T` / `<T>x` / `x!` / parentheses so the underlying node is visible. */
 function unwrap(node: ts.Expression): ts.Expression {
   let n = node;
-  while (ts.isAsExpression(n) || ts.isParenthesizedExpression(n) || ts.isSatisfiesExpression(n)) {
+  while (isTransparentWrapper(n)) {
     n = n.expression;
   }
   return n;
@@ -536,16 +682,14 @@ const COMPARISON_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.LessThanEqualsToken,
 ]);
 
-/** Climb the wrappers that pass a value through unchanged (`as T`, parens, `!`-assertions). */
+/**
+ * Climb the wrappers that pass a value through unchanged — the UPWARD twin of
+ * {@link unwrap}, over the same {@link isTransparentWrapper} set so the two
+ * cannot drift apart again (issue #1842).
+ */
 function climb(node: ts.Node): ts.Node {
   let n = node;
-  while (
-    n.parent &&
-    (ts.isParenthesizedExpression(n.parent) ||
-      ts.isAsExpression(n.parent) ||
-      ts.isSatisfiesExpression(n.parent) ||
-      ts.isNonNullExpression(n.parent))
-  ) {
+  while (n.parent && isTransparentWrapper(n.parent)) {
     n = n.parent;
   }
   return n;
@@ -725,7 +869,7 @@ export function loopDeliversKeyedReads(
 /**
  * How a property earned its evidence. Recorded per property so the matrix (and
  * the unit tests' per-SHAPE real-repo floors) can tell a live recognizer from a
- * dead one — an aggregate "1059 wired" would let a whole shape stop working
+ * dead one — an aggregate "1136 wired" would let a whole shape stop working
  * while the total absorbed the loss.
  *
  * `delegated` is orthogonal to the other four: it rides along when the read
@@ -977,6 +1121,9 @@ export function parseHandledProperties(cls: ts.ClassDeclaration): Map<string, Se
 /** The verdict vocabulary, shared by a class's bucket and a single property's status. */
 export type Bucket = 'wired' | 'gap' | 'allow-listed';
 
+/** The runtime twin of {@link Bucket}, for validating a baseline's labels. */
+export const BUCKETS: ReadonlySet<string> = new Set<Bucket>(['wired', 'gap', 'allow-listed']);
+
 export interface PropertyClassification {
   readonly name: string;
   readonly status: Bucket;
@@ -1151,6 +1298,426 @@ export function findStaleAllowListEntries(
   return [...allowList.keys()].filter((k) => !live.has(k)).sort((a, b) => a.localeCompare(b));
 }
 
+/**
+ * One declared property whose PROVEN evidence is weaker than the committed
+ * matrix records. Reported per (class, property) with the exact shapes and
+ * seeding members that disappeared, because "wired" is a floor the aggregate
+ * counters cannot see through: a property can fall from
+ * `delegated` + `element-read` across three seeds down to a single weak seed
+ * and still be `wired`, keeping `0 gaps` byte-identical.
+ */
+export interface EvidenceLoss {
+  readonly className: string;
+  readonly property: string;
+  /** Evidence shapes the baseline proved and this run no longer does. */
+  readonly lostShapes: readonly EvidenceShape[];
+  /** Seeding members the baseline recorded and this run no longer reaches. */
+  readonly lostSeeds: readonly string[];
+}
+
+/** Render one loss as the single line both failure paths print. */
+const formatEvidenceLoss = (l: EvidenceLoss): string => {
+  const parts: string[] = [];
+  if (l.lostShapes.length > 0) parts.push(`evidence [${l.lostShapes.join(', ')}]`);
+  if (l.lostSeeds.length > 0) parts.push(`seeded-by [${l.lostSeeds.join(', ')}]`);
+  return `  ${l.className}#${l.property} — lost ${parts.join(' and ')}`;
+};
+
+/**
+ * Declared properties whose evidence SET shrank relative to the committed
+ * matrix (issue #1842).
+ *
+ * WHY A SET COMPARISON AND NOT A COUNT. The `--check` verdict before this was
+ * `gap`-only, and `gap` is a floor of ONE surviving read, so a property that
+ * still has one read is indistinguishable from one that has four. MEASURED on
+ * the real `dynamodb-table-provider.ts`: respelling the single delegated read
+ * inside `declaresWarmThroughput()` as `properties!['WarmThroughput']` dropped
+ * `WarmThroughput`'s `delegated` evidence and its `getDriftUnknownPaths` /
+ * `readCurrentState` seeds, and respelling all seven
+ * `properties['GlobalSecondaryIndexes']` reads dropped that property's `update`
+ * seed — while `--check` printed its clean-tree `OK — ... 0 gaps` line
+ * BYTE-IDENTICALLY in both cases. The loss was visible only as a
+ * regenerated-file diff, which the same commit can carry. The direction that
+ * matters is exactly this one: the critic exists to make a FALSE
+ * `handledProperties` claim reachable, so a REAL claim quietly becoming
+ * unprovable — while still reporting zero gaps — is the dangerous failure, not
+ * the loud one.
+ *
+ * WHAT IS AND IS NOT COMPARED. Only (class, property) pairs present on BOTH
+ * sides. A property missing from this run is no longer a wiring CLAIM at all
+ * (moved to `unhandledByDesign`, deleted, or its class renamed), and
+ * `gen-property-coverage.ts` owns that transition — treating it as a loss here
+ * would make every legitimate removal a false failure. A renamed CLASS
+ * therefore drops out of the comparison wholesale; that is a knowingly accepted
+ * hole, and a visible one, since the rename is in the same diff.
+ *
+ * Seeds are compared alongside shapes because they are half of what a
+ * degradation costs: `WarmThroughput` losing its `getDriftUnknownPaths` and
+ * `readCurrentState` seeds is the same event as it losing `delegated`. A
+ * deliberate method rename does trip this, and that is intended — the escape
+ * hatch below is one command.
+ *
+ * A null baseline yields no losses HERE — this function grades a change against
+ * a recorded state and cannot invent one — but that is not a permission to
+ * proceed. Whether a baseline may be graded against at all is
+ * {@link assessBaseline}'s question, and {@link main} refuses an unusable one in
+ * BOTH modes before ever calling this. See {@link shouldRefuseUnusableBaseline}
+ * for why `--check` is not exempt, and {@link unusableBaselineFailure} before
+ * trusting any claim about what `git diff --quiet` does or does not catch.
+ */
+export function findEvidenceLosses(
+  baseline: HandledPropertyWiringReport | null,
+  current: HandledPropertyWiringReport
+): readonly EvidenceLoss[] {
+  if (!baseline) return [];
+  // Keyed by CLASS NAME, not by file+class, matching {@link allowKey} and the
+  // allow-list. Measured: all 84 classified class names are distinct today, so
+  // nothing collides; and the class name survives a file RENAME, which the
+  // file-qualified key would silently turn into "both sides absent" (no
+  // comparison at all). A future same-name-in-two-files pair would mis-pair
+  // here, but it would equally break the allow-list and the stale-entry check,
+  // so the fix belongs to the shared key rather than to this function.
+  const previous = new Map<string, PropertyClassification>();
+  for (const c of baseline.classes) {
+    for (const p of c.properties) previous.set(allowKey(c.className, p.name), p);
+  }
+
+  const losses: EvidenceLoss[] = [];
+  for (const c of current.classes) {
+    for (const p of c.properties) {
+      const before = previous.get(allowKey(c.className, p.name));
+      if (!before) continue;
+      const shapes = new Set<string>(p.evidence);
+      const seeds = new Set<string>(p.seededBy);
+      const lostShapes = before.evidence.filter((s) => !shapes.has(s));
+      const lostSeeds = before.seededBy.filter((s) => !seeds.has(s));
+      if (lostShapes.length > 0 || lostSeeds.length > 0) {
+        losses.push({
+          className: c.className,
+          property: p.name,
+          lostShapes: lostShapes.sort((a, b) => a.localeCompare(b)),
+          lostSeeds: lostSeeds.sort((a, b) => a.localeCompare(b)),
+        });
+      }
+    }
+  }
+  return losses.sort(
+    (a, b) => a.className.localeCompare(b.className) || a.property.localeCompare(b.property)
+  );
+}
+
+/**
+ * Parse the committed matrix. STRUCTURAL validity only — whether it is USABLE as
+ * a baseline is {@link assessBaseline}'s question, because that depends on the
+ * report being graded and this function has not seen it.
+ *
+ * Returns null rather than throwing so an unreadable file is a verdict, not a
+ * crash.
+ */
+export function loadBaseline(path: string = OUT_JSON): HandledPropertyWiringReport | null {
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<HandledPropertyWiringReport>;
+    // `!Array.isArray(parsed.classes)` has the same defence-in-depth character as
+    // the `properties` clause below — the walks past it would throw and the outer
+    // catch would convert that to null, so the shipped command's stderr is
+    // byte-identical with and without it. Both are kept for the same reason:
+    // they stop being redundant the moment that catch is narrowed.
+    if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.classes)) return null;
+    // Defence in depth, and honestly labelled as such: the element walk below
+    // would also throw on a non-array and the outer catch would convert that to
+    // null, so no test can tell this clause from its absence. It is kept because
+    // a future refactor removing that catch would otherwise turn this into a
+    // crash, not because it changes today's verdict.
+    if (parsed.classes.some((c) => !Array.isArray(c?.properties))) return null;
+    // Element shape too, not just the array: `properties: [null]` cleared the
+    // `Array.isArray` check and then died in the comparison walk with a bare
+    // `Cannot read properties of null (reading 'name')`. It failed CLOSED, so it
+    // was never a bypass — but it skipped the structured refusal, and a verdict
+    // this critic can only deliver as a stack trace is a verdict nobody reads.
+    // Constrain exactly the fields the comparison CONSUMES —
+    // `className` / `name` / `evidence` / `seededBy`. An unconstrained one does
+    // not fail safe: `"evidence": "element-read"` (a string, not an array) died
+    // in the walk as `(before.evidence ?? []).filter is not a function`, the
+    // raw-TypeError shape a structured refusal exists to replace.
+    // Class-level shape too: {@link assessBaseline} recomputes the summary via
+    // `buildReport`, which reads `gaps` / `blindSpots` / `bucket` / `file` — so
+    // those are CONSUMED and must be constrained. Leaving them unchecked crashed
+    // on `{"classes":[{"className":"P","properties":[]}]}` with a bare
+    // `Cannot read properties of undefined (reading 'length')`.
+    if (
+      parsed.classes.some(
+        (c) =>
+          typeof c?.className !== 'string' ||
+          typeof c.file !== 'string' ||
+          !BUCKETS.has(c.bucket) ||
+          !Array.isArray(c.gaps) ||
+          !Array.isArray(c.blindSpots) ||
+          c.properties.some(
+            (x: PropertyClassification | null) =>
+              typeof x?.name !== 'string' ||
+              // `status` is a LABEL the usability rules key on, so an
+              // unconstrained one disarms them: a single property relabelled
+              // `"totally-bogus-status"` — a value not even in the union — took
+              // it out of the evidence requirement and hid the very loss being
+              // committed.
+              !BUCKETS.has(x.status) ||
+              !Array.isArray(x.evidence) ||
+              !Array.isArray(x.seededBy)
+          )
+      )
+    ) {
+      return null;
+    }
+    return parsed as HandledPropertyWiringReport;
+  } catch {
+    return null;
+  }
+}
+
+/** Why a baseline is not usable, when it is not. */
+export type BaselineDefect = 'absent' | 'self-inconsistent' | 'evidence-stripped' | 'no-overlap';
+
+/** What a baseline can actually prove about the report it is grading. */
+export interface BaselineAssessment {
+  /** May this run proceed on the strength of this baseline? */
+  readonly usable: boolean;
+  /** (class, property) pairs the comparison actually covers. */
+  readonly gradedPairs: number;
+  /** (class, property) pairs the current report declares. */
+  readonly currentPairs: number;
+  /**
+   * Total evidence ENTRIES (`evidence` + `seededBy` items) the baseline holds
+   * for the pairs it grades. Pair counting is binary per pair and so cannot see
+   * a record being thinned; this can.
+   */
+  readonly gradedDepth: number;
+  /** DISTINCT `Class#Property` keys the baseline holds. */
+  readonly baselinePairs: number;
+  /** What the baseline's own `summary` claims it holds. */
+  readonly baselineClaimedPairs: number | null;
+  readonly defect?: BaselineDefect;
+  /** Human-readable specifics for {@link unusableBaselineFailure}. */
+  readonly detail?: string;
+}
+
+/**
+ * Is this baseline usable — stated POSITIVELY, which is the whole point.
+ *
+ * THREE conditions, and the ORDER OF DISCOVERY is the lesson worth keeping:
+ *
+ *  1. SELF-CONSISTENT — its ENTIRE `summary` must equal the summary recomputed
+ *     from its own `classes`. Not two hand-picked count fields: the whole
+ *     record, so a field added later is constrained automatically.
+ *  2. EVIDENCE-BEARING — every `wired` property must actually carry `evidence`
+ *     and `seededBy`. These are the fields {@link findEvidenceLosses} CONSUMES.
+ *  3. NON-VACUOUS — the comparison must cover at least one (class, property)
+ *     pair of the report being graded, i.e. it must be able to FAIL at all.
+ *
+ * WHY THE LIST GREW, AND WHY IT SHOULD NOW STOP. Five review rounds closed five
+ * spellings of one tamper, each slipping the previous round's guard:
+ *   - MISSING (deleted; staged, so `git diff --quiet` stayed green),
+ *   - TRUNCATED (parses, well-formed header),
+ *   - EMPTY (`classes: []`, passing every structural check),
+ *   - SHRUNKEN (cut to one pair — it OVERLAPS, so non-vacuity waved it through),
+ *   - STRIPPED (`evidence` / `seededBy` blanked on every property while every
+ *     count stays intact — strictly the worst, because the mitigation then
+ *     announces `graded 1138/1138` while grading nothing).
+ *
+ * Rounds 1-4 each constrained something ADJACENT to the comparison — a pair
+ * count, then summary counts — and never the fields the comparison reads. That
+ * is the actual bug behind all five: an integrity check must constrain exactly
+ * what the consumer CONSUMES. Condition 2 is that, stated directly, and it is
+ * free — all 1136 wired properties in the committed matrix carry both fields.
+ * Condition 1 is likewise widened from two fields to the whole summary so the
+ * next field cannot be the sixth spelling.
+ *
+ * WHY NOT A COVERAGE RATIO. Any threshold is a magic constant needing its own
+ * defence, and legitimate drift (a PR adding a provider class) must not trip it.
+ *
+ * THE RESIDUAL BOUND, stated as exactly what conditions 1-3 ADMIT rather than as
+ * a claim about intent. They admit a baseline that (1) agrees with its own
+ * summary, (2) whose labels match its evidence, and (3) that overlaps this tree
+ * — nothing weaker. So NOT "whatever tree it describes": a disjoint one is
+ * refused by 3, and a blanked one by 2. What IS admitted, and is the bound:
+ *   - a self-consistent SUBSET — the committed matrix minus one pair with
+ *     `declaredProperties` decremented is accepted, and announces one pair below
+ *     the 1136/1138 ceiling (1136 rather than 1138 because the two allow-listed
+ *     properties carry no evidence to grade);
+ *   - an OLDER committed matrix restored by a merge or checkout, which is
+ *     self-consistent by construction. Accepting that is CORRECT: it is a real
+ *     baseline describing a real tree and it reports real losses;
+ *   - a property relabelled to a DIFFERENT VALID status with its evidence
+ *     blanked and the summary recomputed — a deliberate, hand-made edit that
+ *     hides exactly one loss.
+ * A FOURTH, and the minimal one: any baseline entry may be weakened to a
+ * non-empty SUBSET of what the current tree proves — trimming one `seededBy`
+ * hides a real loss and moves no pair count at all. That is why the announced
+ * metric carries DEPTH (`evidence` + `seededBy` entries) as well as pairs: the
+ * pair count is binary per pair and cannot see a record being thinned, while
+ * the depth falls by EXACTLY THE NUMBER OF ENTRIES REMOVED. Stated as that
+ * formula rather than as a constant, because three correct measurements
+ * disagree until the probe is named: from the 5384 baseline, dropping two of
+ * `ApiGatewayProvider#CloudWatchRoleArn`'s four seeds gives 5382; trimming
+ * `ACMCertificateProvider#CertificateAuthorityArn`'s two seeds to one gives
+ * 5383; hiding `DynamoDBTableProvider#WarmThroughput` entirely gives 5378.
+ * None of the four shapes is REFUSED — they are self-consistent baselines
+ * describing real trees — but each costs a visible number on every exit-0 path.
+ *
+ * THE BOUND ON THAT GUARANTEE, since depth is a global SUM and therefore
+ * COMPENSABLE: a tree that loses one seed while genuinely gaining another,
+ * with the baseline hand-edited at BOTH sites (adding only entries the current
+ * tree proves, so no false loss is reported), produces stderr byte-identical to
+ * a clean run. Closing that needs a per-PAIR comparison of depth, which is a
+ * different critic — this one defends against the ACCIDENTAL shapes, and a
+ * two-site compensating hand-edit is not one. Documented, deliberately not
+ * chased.
+ */
+export function assessBaseline(
+  baseline: HandledPropertyWiringReport | null,
+  current: HandledPropertyWiringReport
+): BaselineAssessment {
+  const currentPairs = current.classes.reduce((n, c) => n + c.properties.length, 0);
+  if (!baseline) {
+    return {
+      usable: false,
+      gradedPairs: 0,
+      currentPairs,
+      gradedDepth: 0,
+      baselinePairs: 0,
+      baselineClaimedPairs: null,
+      defect: 'absent',
+    };
+  }
+
+  // DISTINCT keys: a baseline that replicates one property to preserve `length`
+  // satisfies a naive count while holding a single real pair.
+  const known = new Set<string>();
+  // ...and separately, the keys that can actually FAIL. A baseline entry with no
+  // evidence and no seeds cannot lose any, so counting it as "graded" made the
+  // announced number a claim about key presence rather than about provable
+  // content: a wholesale blanking still printed `graded 1138/1138`.
+  const provable = new Map<string, number>();
+  for (const c of baseline.classes) {
+    for (const p of c.properties) {
+      const key = allowKey(c.className, p.name);
+      known.add(key);
+      // `||`, not `&&`: a ONE-SIDED entry can still produce a loss, so narrowing
+      // would undercount the pairs this baseline can fail on.
+      //
+      // An earlier revision said this was unfenceable "because no input can
+      // distinguish them downstream of condition 2". That was FALSE twice over,
+      // and is the shape `absence_rationale_goes_stale_silently` warns about —
+      // nobody re-tests a claim that says testing is impossible. `provable` is
+      // computed UPSTREAM of condition 2, and `base` (carrying these counts) is
+      // returned on every failure path, so a stripped baseline reaches the
+      // caller and PRINTS them; `--accept-missing-baseline` even writes on it.
+      // Measured with the existing one-sided fixture: 1136 pairs under `||`,
+      // 1135 under `&&`. Fenced.
+      if (p.evidence.length > 0 || p.seededBy.length > 0) {
+        provable.set(key, p.evidence.length + p.seededBy.length);
+      }
+    }
+  }
+  const baselinePairs = known.size;
+  const claimedPairs =
+    typeof baseline.summary?.declaredProperties === 'number'
+      ? baseline.summary.declaredProperties
+      : null;
+
+  let gradedPairs = 0;
+  let gradedDepth = 0;
+  for (const c of current.classes) {
+    for (const p of c.properties) {
+      const depth = provable.get(allowKey(c.className, p.name));
+      if (depth !== undefined) {
+        gradedPairs += 1;
+        gradedDepth += depth;
+      }
+    }
+  }
+  const base = {
+    gradedPairs,
+    currentPairs,
+    gradedDepth,
+    baselinePairs,
+    baselineClaimedPairs: claimedPairs,
+  };
+
+  // 1. The WHOLE summary, recomputed from the baseline's own classes. The
+  //    generator writes them in agreement by construction, so any disagreement
+  //    means the file was edited or partially written afterwards.
+  const recomputed = buildReport(baseline.classes).summary;
+  const mismatched = (Object.keys(recomputed) as Array<keyof typeof recomputed>).filter(
+    (k) => baseline.summary?.[k] !== recomputed[k]
+  );
+  if (!baseline.summary || mismatched.length > 0) {
+    return {
+      ...base,
+      usable: false,
+      defect: 'self-inconsistent',
+      detail: !baseline.summary
+        ? 'it carries no summary at all'
+        : mismatched
+            .map((k) => `${k}: claims ${String(baseline.summary[k])}, holds ${String(recomputed[k])}`)
+            .join('; '),
+    };
+  }
+
+  // 2. The labels must be TRUTHFUL about the content — a BICONDITIONAL, not a
+  //    one-way check. `status === 'wired'` must mean the entry carries evidence,
+  //    AND carrying evidence must mean it is labelled wired. A one-way check
+  //    keyed on `status` is disarmed by editing `status`, which is exactly what
+  //    happened: the recomputed `wiredProperties` then agrees with the new
+  //    labels, so condition 1 is satisfied BY CONSTRUCTION. "Self-consistent"
+  //    means the summary agrees with the LABELS, never that the labels describe
+  //    real output.
+  //
+  //    Each direction is reported separately because each is independently live
+  //    (see the per-half fixtures): a fixture tripping both at once fences
+  //    neither, which is the defect this very condition was added to fix, one
+  //    level up.
+  const wiredWithoutEvidence: string[] = [];
+  const wiredWithoutSeeds: string[] = [];
+  const unwiredWithEvidence: string[] = [];
+  for (const c of baseline.classes) {
+    for (const p of c.properties) {
+      const key = allowKey(c.className, p.name);
+      if (p.status === 'wired') {
+        if (p.evidence.length === 0) wiredWithoutEvidence.push(key);
+        if (p.seededBy.length === 0) wiredWithoutSeeds.push(key);
+      } else if (p.evidence.length > 0 || p.seededBy.length > 0) {
+        unwiredWithEvidence.push(key);
+      }
+    }
+  }
+  const labelDefects = [
+    ['wired with no evidence', wiredWithoutEvidence],
+    ['wired with no seeding member', wiredWithoutSeeds],
+    ['not wired yet carrying evidence', unwiredWithEvidence],
+  ] as const;
+  const brokenLabels = labelDefects.filter(([, keys]) => keys.length > 0);
+  if (brokenLabels.length > 0) {
+    return {
+      ...base,
+      usable: false,
+      defect: 'evidence-stripped',
+      detail: brokenLabels
+        .map(([why, keys]) => `${keys.length} ${why} (e.g. ${keys.slice(0, 2).join(', ')})`)
+        .join('; '),
+    };
+  }
+
+  // 3. Can this comparison fail at all?
+  if (gradedPairs === 0) return { ...base, usable: false, defect: 'no-overlap' };
+  return { ...base, usable: true };
+}
+
 function renderMarkdown(report: HandledPropertyWiringReport): string {
   const lines: string[] = [];
   lines.push('# `handledProperties` wiring-evidence matrix');
@@ -1306,14 +1873,299 @@ const STALE_FAILURE =
   'These no longer match an un-wired declaration (the property is now wired,\n' +
   'renamed, or removed). Delete them so the critic verifies the fix:\n\n';
 
+/** The escape hatch, spelled out wherever an evidence loss is reported. */
+export const ACCEPT_LOSS_FLAG = '--accept-evidence-loss';
+
+/**
+ * The SECOND waiver, deliberately separate from {@link ACCEPT_LOSS_FLAG}.
+ *
+ * They waive different things and the difference is the audit artifact. An
+ * evidence LOSS is measured and ENUMERATED — every lost (class, property) with
+ * its shapes and seeds is printed before the write. A missing baseline has
+ * nothing to enumerate, because the run compared against nothing at all.
+ *
+ * One flag for both meant the quietest tamper was not `git rm` but a single
+ * corrupted byte: `loadBaseline` answers null for an unparseable file exactly as
+ * for an absent one, so truncating the matrix and re-running with the loss
+ * waiver wrote an UNGRADED matrix at exit 0 — and the regeneration overwrote the
+ * corruption, leaving no trace. The widened waiver suppressed precisely the
+ * enumeration that would have shown the reduction.
+ */
+export const ACCEPT_MISSING_BASELINE_FLAG = '--accept-missing-baseline';
+
+const LOSS_PREAMBLE =
+  'handled-property-wiring: FAIL — declared properties LOST wiring evidence.\n' +
+  'Each property below is still counted `wired`, so the gap verdict stays silent,\n' +
+  'but this run can prove strictly LESS about it than the committed matrix records\n' +
+  '(issue #1842). The usual cause is a source edit that moved a read out of the\n' +
+  "walk's sight — a `properties!['X']`-style spelling, a delegation replaced by an\n" +
+  'unresolvable call, a delivery loop turned into a comparison — leaving a real\n' +
+  'claim quietly unprovable while `0 gaps` stays byte-identical.\n\n';
+
+const LOSS_ESCAPE_HATCH =
+  '\nIf the reduction is INTENDED (the property genuinely lost that seam), accept it\n' +
+  `deliberately by regenerating with the loss acknowledged:\n\n` +
+  `  node --experimental-strip-types scripts/gen-handled-property-wiring.ts ${ACCEPT_LOSS_FLAG}\n` +
+  '  (or: vp run gen:handled-property-wiring:accept-loss)\n\n' +
+  'That rewrites the baseline, so the reduced evidence is what the matrix then\n' +
+  'records — state WHY in the PR body, because the JSON diff is the only trace.\n';
+
+/**
+ * The refusal — in BOTH modes — when there is no readable baseline to grade
+ * against.
+ *
+ * Deleting the matrix is the obvious way to defeat a check that grades against
+ * it: `loadBaseline` answers null, {@link findEvidenceLosses} reads that as
+ * "nothing to compare", so the writer would rewrite the file with whatever the
+ * current tree can prove and `--check` would report `0 evidence losses` — both
+ * silently, both exit 0.
+ *
+ * An earlier revision of this file asserted that CI's `git diff --quiet` step
+ * caught that anyway. MEASURED, and it depends entirely on whether the deletion
+ * is STAGED, which is why the claim was wrong as stated:
+ *   - a bare `rm` leaves the path tracked in the index, so the re-created file
+ *     reads as ` M <path>` and `git diff --quiet -- <path>` exits 1 -> CI red;
+ *   - a STAGED deletion (`git rm` / `git rm --cached`) drops the index entry, so
+ *     the re-created file is UNTRACKED, and `git diff --quiet -- <path>` exits
+ *     0 -> CI green, with no trace of the reduction anywhere.
+ * So the diff guard covers one spelling of the bypass and not the other, and
+ * relying on it left a one-command hole. This refusal closes both spellings at
+ * the point where they would take effect, without the script needing to shell
+ * out to git.
+ *
+ * Applies to EVERY path — both modes, redirected or not. Earlier drafts scoped
+ * it to the default output path and to the writer; both scopings were wrong, and
+ * in the same direction. See {@link shouldRefuseUnusableBaseline}.
+ */
+const BASELINE_DEFECT_LINE: Record<BaselineDefect, (a: BaselineAssessment) => string> = {
+  absent: () => 'It is absent, or not a readable v1 matrix, so there is nothing to compare against.',
+  'self-inconsistent': (a) =>
+    `Its own summary disagrees with the classes it holds (${a.detail ?? 'mismatch'}), so it was ` +
+    'edited or partially written after generation and cannot be trusted to describe the tree it ' +
+    'was generated from.',
+  'evidence-stripped': (a) =>
+    `Its counts are intact but the fields the comparison READS are not: ${a.detail ?? 'blank'}. ` +
+    'A baseline recording no evidence cannot report a loss, however complete it looks.',
+  'no-overlap': (a) =>
+    `It grades ${a.gradedPairs} of this tree's ${a.currentPairs} declared (class, property) ` +
+    'pairs, so no regression in this tree could make it fail.',
+};
+
+const unusableBaselineFailure = (path: string, a: BaselineAssessment): string =>
+  `handled-property-wiring: FAIL — unusable baseline at ${path}\n` +
+  `${BASELINE_DEFECT_LINE[a.defect ?? 'absent'](a)}\n` +
+  `Graded ${a.gradedPairs}/${a.currentPairs} pairs (${a.gradedDepth} evidence entries).\n\n` +
+  'The evidence-loss check (issue #1842) grades this run against that matrix, so reporting a\n' +
+  'green verdict here, or rewriting the file from here, would install whatever the current\n' +
+  'tree happens to support as the new baseline, unreviewed.\n\n' +
+  `Restore it and re-run:\n\n  git checkout -- ${path}\n\n` +
+  'If the matrix genuinely does not exist yet (a first-ever generation), pass\n' +
+  `${ACCEPT_MISSING_BASELINE_FLAG} to write it without a comparison.\n`;
+
+export function shouldRefuseUnusableBaseline(opts: {
+  readonly usable: boolean;
+  readonly acceptMissingBaseline: boolean;
+}): boolean {
+  return !opts.usable && !opts.acceptMissingBaseline;
+}
+
+const USAGE =
+  'Usage: node scripts/gen-handled-property-wiring.ts [--check] [--accept-evidence-loss]\n' +
+  '                                                   [--accept-missing-baseline]\n' +
+  '                                                   [--providers-dir=<p>] [--baseline=<p>] [--out-dir=<p>]\n' +
+  '  --check                     fail on a gap, a stale allow-list entry, an evidence loss,\n' +
+  '                              or a baseline that could not have failed\n' +
+  '  --accept-evidence-loss      WRITER only: acknowledge (and print) a reduction in the\n' +
+  '                              per-property evidence set, then write the weaker matrix\n' +
+  '  --accept-missing-baseline   WRITER only: proceed with NO comparison at all (a\n' +
+  '                              first-ever generation). Separate from the flag above\n' +
+  '                              because there is nothing to enumerate\n' +
+  '  --providers-dir=<p>         TEST SEAM: walk a scratch copy of the providers tree\n' +
+  '                              (writer mode additionally requires --out-dir=)\n' +
+  '  --baseline=<p>              TEST SEAM: grade against a scratch matrix\n' +
+  '  --out-dir=<p>               TEST SEAM: write the matrix somewhere other than docs/_generated\n';
+
+const KNOWN_VALUE_FLAGS = ['--providers-dir=', '--baseline=', '--out-dir='];
+
 function main(argv: readonly string[] = process.argv.slice(2)): void {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(USAGE);
+    return;
+  }
+  // An unrecognized flag must NOT fall through to the WRITER path: `--chekc`
+  // would rewrite the committed matrix and exit 0, and the SPACE form
+  // `--providers-dir /tmp` would slip past the `=`-prefix tests below. Same
+  // guard shape (and same reason) as gen-nested-key-coverage.ts.
+  const unknown = argv.filter(
+    (a) =>
+      a.startsWith('-') &&
+      a !== '--check' &&
+      a !== ACCEPT_LOSS_FLAG &&
+      a !== ACCEPT_MISSING_BASELINE_FLAG &&
+      !KNOWN_VALUE_FLAGS.some((f) => a.startsWith(f))
+  );
+  if (unknown.length > 0) {
+    process.stderr.write(`Unknown flag(s): ${unknown.join(', ')}\n${USAGE}`);
+    process.exit(1);
+  }
+  const stray = argv.filter((a) => !a.startsWith('-'));
+  if (stray.length > 0) {
+    process.stderr.write(`Unexpected argument(s): ${stray.join(', ')}\n${USAGE}`);
+    process.exit(1);
+  }
+
   const checkMode = argv.includes('--check');
+  const acceptLoss = argv.includes(ACCEPT_LOSS_FLAG);
+  const acceptMissingBaseline = argv.includes(ACCEPT_MISSING_BASELINE_FLAG);
+
+  // Both waivers belong to the WRITER only. `--check` is a verdict and must not
+  // be silenceable by a flag on its own command line: the sanctioned way past a
+  // loss is to regenerate the baseline (a visible file diff), never to tell the
+  // checker to look away. Decided HERE, with the other argv guards, rather than
+  // after `loadReport()` — the answer does not depend on the report, and running
+  // an 84-file AST walk before refusing is work done to no purpose.
+  //
+  // `--baseline=` is deliberately NOT in this list, and the asymmetry is real
+  // rather than an oversight: it is a TEST SEAM selecting WHAT to compare, so
+  // `--check --baseline=<a weaker matrix>` legitimately reports no loss — there
+  // is none relative to that baseline. It cannot manufacture a false PASS of the
+  // gap or stale-allow-list verdicts, an unusable baseline is refused outright,
+  // and CI never passes it.
+  const waiverOnCheck = [ACCEPT_LOSS_FLAG, ACCEPT_MISSING_BASELINE_FLAG].find(
+    (f) => checkMode && argv.includes(f)
+  );
+  if (waiverOnCheck !== undefined) {
+    process.stderr.write(
+      `handled-property-wiring: FAIL — ${waiverOnCheck} is a WRITER escape hatch and has no\n` +
+        'meaning with --check. Regenerate the matrix with it instead, then re-run --check.\n'
+    );
+    process.exit(1);
+  }
+
   // Test seam: point the walk at a scratch copy of the providers tree so the
   // shipped `--check` exit path can be exercised against a REAL provider file
   // carrying an injected gap, without ever mutating `src/` on disk.
   const dirFlag = argv.find((a) => a.startsWith('--providers-dir='));
+  // Test seam: grade against a scratch baseline instead of the committed matrix.
+  const baselineFlag = argv.find((a) => a.startsWith('--baseline='));
+  // Test seam: write the matrix somewhere other than docs/_generated, so the
+  // WRITER's refusal path can be exercised end-to-end without a broken refusal
+  // being able to overwrite the committed matrix with the probe's degradation.
+  const outDirFlag = argv.find((a) => a.startsWith('--out-dir='));
+
+  // A value flag given TWICE would silently take the first and ignore the rest,
+  // so `--baseline=<real> --baseline=/nope` would read as the real one while the
+  // author believed the opposite (or vice versa). Any seam that decides what the
+  // loss check grades against must not have a silent precedence rule.
+  for (const flag of KNOWN_VALUE_FLAGS) {
+    const given = argv.filter((a) => a.startsWith(flag));
+    if (given.length > 1) {
+      process.stderr.write(
+        `handled-property-wiring: FAIL — ${flag} given ${given.length} times ` +
+          `(${given.join(' ')}).\nPass it at most once.\n${USAGE}`
+      );
+      process.exit(1);
+    }
+    // An EMPTY value is not "unset", it is a path: `resolve('')` is the cwd, so
+    // `--out-dir=` dropped the matrix at the repo root as two untracked files
+    // (measured). Every one of these flags names a path; none has a meaningful
+    // empty value.
+    if (given[0] !== undefined && given[0].slice(flag.length).trim() === '') {
+      process.stderr.write(
+        `handled-property-wiring: FAIL — ${flag} needs a path; got an empty value.\n${USAGE}`
+      );
+      process.exit(1);
+    }
+  }
+
+  // `--out-dir=` only means anything to the WRITER. Accepting-and-ignoring it on
+  // the check path invites "I redirected the output, so this run was harmless".
+  if (checkMode && outDirFlag !== undefined) {
+    process.stderr.write(
+      'handled-property-wiring: FAIL — --out-dir= is a WRITER flag; --check writes nothing.\n' +
+        `Drop it, or drop --check.\n${USAGE}`
+    );
+    process.exit(1);
+  }
+
+  const defaultOutDir = dirname(OUT_JSON);
+  const outDir = outDirFlag ? resolve(outDirFlag.slice('--out-dir='.length)) : defaultOutDir;
+  // The redirect must be a REAL redirect, decided by directory IDENTITY rather
+  // than by string equality.
+  //
+  // Two rounds of this guard were bypassable. First it checked only that
+  // `--out-dir=` was PRESENT, so `--out-dir=docs/_generated` satisfied it.
+  // Comparing `resolve()` output fixed the pure-path spellings (`./x/.`,
+  // `../_generated`, the absolute form) but NOT the two that do not differ as
+  // paths at all: on a case-insensitive filesystem `docs/_GENERATED` is the same
+  // directory under a different string, and a SYMLINK to `docs/_generated` is
+  // the same directory under a different path entirely. Both were measured
+  // writing the committed matrix from a degraded tree at exit 0.
+  //
+  // `realpathSync` alone does not settle it either — it resolves the symlink but
+  // returns the case spelling it was given. `dev`+`ino` is the filesystem's own
+  // answer to "same directory?", so it is immune to both. It needs the directory
+  // to EXIST, which a legitimate fresh `--out-dir=` may not; that case falls
+  // back to the path compare, and is safe because a directory that does not yet
+  // exist cannot be the committed one (which does).
+  const sameDir = (a: string, b: string): boolean => {
+    try {
+      const x = statSync(a);
+      const y = statSync(b);
+      return x.dev === y.dev && x.ino === y.ino;
+    } catch {
+      return resolve(a) === resolve(b);
+    }
+  };
+  const redirected = outDirFlag !== undefined && !sameDir(outDir, defaultOutDir);
+
+  // BOTH grading seams are refused on the WRITER path unless the output is
+  // redirected too. `--providers-dir=` would render the COMMITTED matrix from a
+  // tree that is not `src/`; `--baseline=` is subtler and strictly worse —
+  // pointing it anywhere unreadable makes `loadBaseline` answer null, which the
+  // loss check reads as "nothing to compare", so the writer would overwrite
+  // docs/_generated with WEAKER evidence, exit 0, and print nothing. That is the
+  // silent default this whole verdict exists to remove, reachable by one flag.
+  // Allowed together with a real `--out-dir=`, which is what the probes do.
+  for (const [flag, present] of [
+    ['--providers-dir=', dirFlag !== undefined],
+    ['--baseline=', baselineFlag !== undefined],
+  ] as const) {
+    if (present && !checkMode && !redirected) {
+      process.stderr.write(
+        `handled-property-wiring: FAIL — ${flag} may only accompany a WRITE when --out-dir= also\n` +
+          'redirects the output SOMEWHERE ELSE. Refusing to render docs/_generated from a tree\n' +
+          `or a baseline that is not the committed one.\n${USAGE}`
+      );
+      process.exit(1);
+    }
+  }
+
+  const outJson = join(outDir, 'handled-property-wiring.json');
+  const outMd = join(outDir, 'handled-property-wiring.md');
   const report = loadReport(dirFlag ? resolve(dirFlag.slice('--providers-dir='.length)) : undefined);
   const stale = findStaleAllowListEntries(report);
+  const baselinePath = baselineFlag
+    ? resolve(baselineFlag.slice('--baseline='.length))
+    : OUT_JSON;
+  const baseline = loadBaseline(baselinePath);
+  const assessment = assessBaseline(baseline, report);
+
+  // Defeating a check that grades against a file is a matter of making the file
+  // stop being able to fail — by deleting it, truncating it, emptying it, or
+  // writing it for other classes. One predicate covers all of them (see
+  // {@link assessBaseline}), in BOTH modes and redirected or not: a `--check`
+  // reporting `0 evidence losses` after comparing against nothing is an unearned
+  // green, the verdict this critic exists to abolish. See
+  // {@link unusableBaselineFailure} for why CI's `git diff --quiet` step does not
+  // cover this on its own, and why CI's step ORDERING must not be what makes the
+  // checker honest.
+  if (shouldRefuseUnusableBaseline({ usable: assessment.usable, acceptMissingBaseline })) {
+    process.stderr.write(unusableBaselineFailure(baselinePath, assessment));
+    process.exit(1);
+  }
+
+  const losses = findEvidenceLosses(baseline, report);
 
   if (checkMode) {
     // BOTH verdicts are reported before exiting: an earlier revision returned
@@ -1341,12 +2193,21 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
       for (const c of gaps) {
         for (const g of c.gaps) process.stderr.write(`  ${c.className}#${g} (${c.file})\n`);
       }
+      if (losses.length > 0) process.stderr.write('\n');
     }
-    if (stale.length > 0 || gaps.length > 0) process.exit(1);
+    if (losses.length > 0) {
+      process.stderr.write(LOSS_PREAMBLE);
+      for (const l of losses) process.stderr.write(`${formatEvidenceLoss(l)}\n`);
+      process.stderr.write(LOSS_ESCAPE_HATCH);
+    }
+    if (stale.length > 0 || gaps.length > 0 || losses.length > 0) process.exit(1);
     process.stderr.write(
       `handled-property-wiring: OK — ${report.summary.classifiedCount} provider classes, ` +
         `${report.summary.wiredProperties}/${report.summary.declaredProperties} declared ` +
-        `properties with read evidence, 0 gaps (${report.summary.wired} wired, ` +
+        `properties with read evidence, 0 gaps, 0 evidence losses ` +
+        `(graded ${assessment.gradedPairs}/${assessment.currentPairs} pairs, ` +
+        `${assessment.gradedDepth} evidence entries, against the baseline; ` +
+        `${report.summary.wired} wired, ` +
         `${report.summary.allowListed} allow-listed, ` +
         `${report.summary.classesWithBlindSpots} with a recorded blind spot).\n`
     );
@@ -1359,9 +2220,51 @@ function main(argv: readonly string[] = process.argv.slice(2)): void {
     process.exit(1);
   }
 
-  mkdirSync(dirname(OUT_JSON), { recursive: true });
-  atomicWrite(OUT_JSON, JSON.stringify(report, null, 2) + '\n');
-  atomicWrite(OUT_MD, renderMarkdown(report) + '\n');
+  // The WRITER refuses to overwrite the baseline with weaker evidence unless the
+  // loss is acknowledged. This is the half that makes the verdict reachable at
+  // all: `--check` alone still passes for the author who edits the source AND
+  // regenerates in the same commit, because regenerating moves the baseline
+  // underneath the comparison. Refusing here turns that silent default into a
+  // message naming exactly what was lost, which the author must then dismiss on
+  // purpose.
+  if (losses.length > 0 && !acceptLoss) {
+    process.stderr.write(LOSS_PREAMBLE);
+    for (const l of losses) process.stderr.write(`${formatEvidenceLoss(l)}\n`);
+    process.stderr.write(LOSS_ESCAPE_HATCH);
+    process.exit(1);
+  }
+  if (losses.length > 0) {
+    process.stderr.write(
+      `handled-property-wiring: ACCEPTED EVIDENCE LOSS (${ACCEPT_LOSS_FLAG}) — the matrix below\n` +
+        'records STRICTLY WEAKER evidence than before for:\n'
+    );
+    for (const l of losses) process.stderr.write(`${formatEvidenceLoss(l)}\n`);
+  }
+  // Independent `if`, not an `else if` chained to the loss notice: with BOTH
+  // waivers on an unusable baseline the run printed only the loss acceptance and
+  // never said it had graded against nothing — contradicting this notice's own
+  // claim to be the ONLY output the missing-baseline waiver produces.
+  if (!assessment.usable) {
+    // Say it, or the run looks like an ordinary write while it is in fact
+    // installing an UNGRADED matrix. This is the ONLY output the missing-baseline
+    // waiver produces — there is no per-property enumeration to print, which is
+    // exactly why it is a separate flag from the loss waiver.
+    process.stderr.write(
+      `handled-property-wiring: ACCEPTED MISSING BASELINE (${ACCEPT_MISSING_BASELINE_FLAG}) — the\n` +
+        `baseline at ${baselinePath} was REFUSED as unusable and the waiver overrode that, so\n` +
+        'this run was not graded against a trustworthy baseline and the file below becomes the\n' +
+        `new baseline unreviewed. What it did reach: ${assessment.gradedPairs}/${assessment.currentPairs} pairs\n` +
+        `(${assessment.gradedDepth} evidence entries). Legitimate only for a first-ever generation.\n`
+    );
+  }
+
+  mkdirSync(outDir, { recursive: true });
+  atomicWrite(outJson, JSON.stringify(report, null, 2) + '\n');
+  atomicWrite(outMd, renderMarkdown(report) + '\n');
+  process.stderr.write(
+    `handled-property-wiring: graded ${assessment.gradedPairs}/${assessment.currentPairs} pairs ` +
+      `(${assessment.gradedDepth} evidence entries) against the baseline at ${baselinePath}.\n`
+  );
   process.stderr.write(
     `handled-property-wiring: wrote handled-property-wiring.{json,md} — ` +
       `${report.summary.classifiedCount} classes, ${report.summary.declaredProperties} declared ` +
