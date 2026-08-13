@@ -1,6 +1,8 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as iam from 'aws-cdk-lib/aws-iam';
 
 /**
  * An S3 bucket with lifecycle rules — a daily pattern. The fixture mixes a
@@ -166,5 +168,93 @@ export class S3LifecycleStack extends cdk.Stack {
       bucketName: `cdkd-lifecycle-ebtrue-${cdk.Stack.of(this).account}`,
       notificationConfiguration: { eventBridgeConfiguration: { eventBridgeEnabled: !update } },
     });
+
+    // Issue #1748: the TOLERATED key spellings, which no L2 and no typed L1
+    // prop can emit — cdkd accepts them on the desired side while
+    // `readCurrentState` emits only the CFn one, so a record written in the
+    // tolerated spelling can never match the readback.
+    //
+    // Raw `addPropertyOverride` on purpose (the memory rule an L1 validator
+    // refuses the shape): `CfnBucket`'s typed props declare `topicArn` nowhere
+    // and `transitionInDays` only, so the tolerated spellings are unreachable
+    // through the construct API and this is the only way a fixture can carry
+    // the population the fix exists for. A hand-written / imported /
+    // `cdkd import --migrate-from-cloudformation` template carries them.
+    const topic = new sns.Topic(this, 'NotifyTopic', {
+      topicName: `cdkd-lifecycle-notify-${cdk.Stack.of(this).account}`,
+    });
+    // S3 VALIDATES the destination when the notification configuration is PUT
+    // (it publishes a test event), so the topic policy has to exist FIRST —
+    // hence an explicit TopicPolicy plus a DependsOn below rather than
+    // `addToResourcePolicy`, whose policy resource the bucket does not
+    // reference and which cdkd's DAG therefore has no edge to order against.
+    const topicPolicy = new sns.TopicPolicy(this, 'NotifyTopicPolicy', {
+      topics: [topic],
+      policyDocument: new iam.PolicyDocument({
+        statements: [
+          new iam.PolicyStatement({
+            principals: [new iam.ServicePrincipal('s3.amazonaws.com')],
+            actions: ['sns:Publish'],
+            resources: [topic.topicArn],
+            conditions: {
+              StringEquals: { 'aws:SourceAccount': cdk.Stack.of(this).account },
+            },
+          }),
+        ],
+      }),
+    });
+
+    const aliasBucket = new s3.CfnBucket(this, 'AliasSpellingBucket', {
+      bucketName: `cdkd-lifecycle-alias-${cdk.Stack.of(this).account}`,
+      // NoncurrentVersionTransitions require a versioned bucket.
+      versioningConfiguration: { status: 'Enabled' },
+    });
+    aliasBucket.node.addDependency(topicPolicy);
+    // `TopicArn` + `Event`: the applier reads `t['Topic'] ?? t['TopicArn']`
+    // while `readNotification` emits `Topic`, and CFn declares the event as the
+    // SCALAR `Event` while the SDK member is the LIST `Events`. Both halves are
+    // in this one item.
+    aliasBucket.addPropertyOverride('NotificationConfiguration.TopicConfigurations', [
+      { Id: 'alias-topic', TopicArn: topic.topicArn, Event: 's3:ObjectCreated:*' },
+    ]);
+    // `Days` / `NoncurrentDays`: the applier reads
+    // `t['TransitionInDays'] ?? t['Days']` and
+    // `nvt['TransitionInDays'] ?? nvt['NoncurrentDays']`, while `readLifecycle`
+    // emits `TransitionInDays` for both. The day count CHANGES in UPDATE mode
+    // so phase 2 exercises the update-path fold rather than re-reading a
+    // persisted phase-1 value.
+    // Issue #1751: a CFn STRING boolean. CloudFormation is stringly typed and
+    // cdkd is not, so `Enabled: 'false'` is a legitimate hand-written /
+    // imported declaration — the wire must send the COERCED boolean and the
+    // record must hold the coerced value, since `inventorySdkToCfn` reads
+    // `IsEnabled` back as a boolean. Unreachable through the typed L1 prop
+    // (`enabled` is `boolean | IResolvable`), hence the override.
+    //
+    // Disabled on purpose: an ENABLED inventory writes a daily report into the
+    // destination, and this fixture is torn down long before one is generated —
+    // but `false` is also the value the #1751 guard exists to protect, since
+    // the pre-fix `?? true` default would have flipped exactly this to ON.
+    aliasBucket.addPropertyOverride('InventoryConfigurations', [
+      {
+        Id: 'alias-inventory',
+        Enabled: 'false',
+        IncludedObjectVersions: 'All',
+        ScheduleFrequency: 'Daily',
+        Destination: {
+          BucketArn: `arn:aws:s3:::cdkd-lifecycle-alias-${cdk.Stack.of(this).account}`,
+          Format: 'CSV',
+          Prefix: 'inv/',
+        },
+      },
+    ]);
+    aliasBucket.addPropertyOverride('LifecycleConfiguration.Rules', [
+      {
+        Id: 'alias-transitions',
+        Status: 'Enabled',
+        Prefix: 'alias/',
+        Transitions: [{ Days: update ? 60 : 90, StorageClass: 'GLACIER' }],
+        NoncurrentVersionTransitions: [{ NoncurrentDays: 15, StorageClass: 'GLACIER' }],
+      },
+    ]);
   }
 }

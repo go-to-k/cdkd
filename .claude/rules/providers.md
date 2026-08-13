@@ -584,9 +584,49 @@ alias, the notification `TopicArn` / `QueueArn` / `LambdaFunctionArn` reads
 (`readNotification` emits only `Topic` / `Queue` / `Function`), and the
 lifecycle `Date` alias (`readLifecycle` emits only `TransitionDate`) — all left
 as issue #1707, whose PR fixed the DESTINATION half only; the notification and
-lifecycle families are tracked as issue #1748. `IsEnabled` and `AccountId` look
-like members of the class and are NOT: they are legitimate SDK spellings read on
-the RESPONSE side.
+lifecycle families are FIXED by issue #1748 (`effectiveNotificationConfiguration`
+/ `effectiveLifecycleConfiguration`, both with the twin). `IsEnabled` and
+`AccountId` look like members of the class and are NOT: they are legitimate SDK
+spellings read on the RESPONSE side.
+
+**Re-run the audit rather than fixing the names the issue lists**, which is what
+#1748 measured the value of twice over. Matching the `(a['X'] ?? a['Y'])` ALIAS
+form found THREE lifecycle aliases in the two transition item shapes where the
+issue named one (`TransitionInDays ?? Days` and `TransitionDate ?? Date` on
+`Transitions[]`, `TransitionInDays ?? NoncurrentDays` on
+`NoncurrentVersionTransitions[]`), so fixing the reported key alone would have
+left its siblings broken. And the ROUND-TRIP fence — assert the recorded bag
+against what `readCurrentState` ACTUALLY EMITS for the configuration just sent,
+never against a hand-written literal — immediately failed on a divergence
+neither the issue nor the audit had named: `readNotification` emitted the SDK's
+LIST `Events` while every template carries the CFn scalar `Event` (the registry
+schema declares no `Events` member), so the record and the readback disagreed on
+EVERY notification-configured bucket rather than only on the rare
+`TopicArn`-spelled one. That one is fixed on the READBACK side, by arity — a
+single-element list is the CFn `Event`, a longer one has no CFn spelling and
+stays `Events` — mirroring what `readLifecycle` already does for
+`TransitionInDays`. Two literal-based fences would both have passed; the
+round-trip one is what caught it. It also measured what is still open on the same
+rule (issues #1754 / #1755), so "the aliases converge" is not mistaken for "the
+block converges".
+
+**A DIFF-side fold must not name its member in a spread-and-patch literal.**
+`canonicalizeDesiredProperties` is pure and never reaches AWS, but
+`gen-nested-key-coverage`'s write-evidence walk cannot tell that: it recognizes
+`{ ...out, LifecycleConfiguration: folded }` as the #1475 whole-blob HAND-OFF
+and wildcard-credits everything beneath the named path as DELIVERED. Written
+that way, #1748's twin retired three reviewed `AWS::S3::Bucket` allow-list
+entries (`LifecycleConfiguration.TransitionDefaultMinimumObjectSize`,
+`…Rules.TagFilters.Key` / `.Value`) — i.e. it silently switched the write pass
+off for that whole subtree, and the critic's only visible complaint was that
+those entries were now "stale", which reads like tidy-up rather than like lost
+coverage. Use a COMPUTED key (`{ ...properties, [key]: folded }`), which is why
+the pre-existing folds in that file are spelled that way; `canonicalizeBlock` /
+`canonicalizeItemList` in `s3-bucket-provider.ts` are the two helpers. Measured
+both ways through the critic's `--providers-dir=` seam. The general form: when a
+critic reports an allow-list entry stale, first ask what NEW evidence made it
+resolve — a stale entry and a newly-blinded pass look identical from the
+message.
 The analytics / inventory `Destination` half of that list is FIXED: the recorded
 block is now normalized wholesale to the flattened CFn spelling
 (`effectiveS3BucketDestination`), mapping `BucketArn ?? Bucket` to `BucketArn`
@@ -654,8 +694,25 @@ whose wire read SILENTLY COERCES (`x ?? default`, no warn arm — the S3 invento
 `Enabled`) must fold that same coercion, or the record keeps a value AWS does not
 hold. Presence is right only for the members whose wire read REFUSES and WARNS.
 Ask, per member, what the wire does with the malformed value; do not apply one
-spelling rule across the item. (Issue #1751 tracks the `Enabled` half, which is
-pre-existing and needs its own decision.)
+spelling rule across the item.
+
+**But the fold is the second question — first ask whether the WIRE should be
+coercing at all.** Issue #1751 settled the `Enabled` half above, and NOT by
+folding the coercion: it guarded the wire instead, so the fold's presence test
+became correct rather than being made to mirror a bad read. The deciding
+question is what the default DOES, not which side is cheaper to change. A
+declared `Enabled: null` was going out as `true` — ENABLING an inventory report
+the template may have been disabling — which is the destructive-default class
+#1595 already refuses at that item's string members, so the boolean member had
+to answer the same way: SKIP the configuration item on the replay-reachable
+update path, THROW on a template-path create. `configBooleanRefusal` in
+`config-shape.ts` is the predicate, and it runs `coerceCfnBoolean` — literally
+the function the wire read calls — for the same reason its string sibling
+exports `configStringRefusal` rather than letting callers hand-roll a `typeof`
+twin. What the fold still owes after that is the lossless COERCION (a CFn
+`'false'` is a legitimate declaration and AWS reports the boolean back), not the
+substitution. Read the "mirror the wire" rule as MIRROR A WIRE WORTH
+MIRRORING.
 
 **And do not HAND-ROLL the mirror — run the wire's own predicate.**
 `configStringRefusal` is PURE and importable, so a fold can call the very

@@ -5107,6 +5107,7 @@
         "monitoring",
         "nested-stack-3level",
         "replacement-fanout",
+        "s3-lifecycle",
         "scheduled-task",
         "serverless-api",
         "sns-event-source",
@@ -5191,6 +5192,9 @@
           "l2",
           "literal"
         ],
+        "s3-lifecycle": [
+          "l2"
+        ],
         "scheduled-task": [
           "l2"
         ],
@@ -5235,6 +5239,7 @@
         "iam-propagation-stress",
         "migrate-from-cfn",
         "replacement-fanout",
+        "s3-lifecycle",
         "sns-sqs-event"
       ],
       "signals": {
@@ -5250,6 +5255,9 @@
         "replacement-fanout": [
           "l2",
           "literal"
+        ],
+        "s3-lifecycle": [
+          "l2"
         ],
         "sns-sqs-event": [
           "l2"

@@ -63,6 +63,8 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
 import {
+  coerceCfnBoolean,
+  configBooleanRefusal,
   configStringRefusal,
   readConfigString,
   replayWarn,
@@ -334,13 +336,32 @@ function effectiveInventoryItem(
   sent?: { frequency?: unknown; format?: unknown }
 ): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
-  // KNOWN DIVERGENCE, tracked as issue #1751: this is the one member whose WIRE
-  // read coerces SILENTLY (`IsEnabled: … ?? true`, no guard, no warning), so the
-  // presence test below does NOT mirror it — a declared `Enabled: null` is sent
-  // as `true` and recorded as `null`. Pre-existing and unchanged here; the two
-  // candidate fixes conflict, so it gets its own decision. Characterized by a
-  // test so whichever direction #1751 takes has to come past it.
-  if (item['Enabled'] === undefined) patch['Enabled'] = INVENTORY_DEFAULT_ENABLED;
+  // `Enabled` used to be the one member whose WIRE read coerced SILENTLY
+  // (`IsEnabled: … ?? true`, no guard, no warning), so this presence test did
+  // NOT mirror it and a declared `Enabled: null` was sent as `true` while the
+  // record kept `null`. Issue #1751 settled it on the WIRE instead: the applier
+  // now REFUSES a declared-but-unusable value (skip on a replay, throw on a
+  // template-path create), which is what makes presence the correct fold here —
+  // the only way to reach the default now is an ABSENT key, exactly the case
+  // the rule scopes it to. A declared-but-unusable value is deliberately left
+  // ALONE: nothing was sent for that item, so there is no effective value to
+  // record, and leaving it visible is what keeps `cdkd diff` reporting the
+  // fault until the template is corrected.
+  //
+  // The COERCION is folded because it is one (issue #1633's lossless-coercion
+  // arm, and it meets the #1643 bar): CFn is stringly typed, so `Enabled:
+  // 'false'` is a legitimate declaration, the wire sends the coerced BOOLEAN,
+  // and `inventorySdkToCfn` reads `IsEnabled` back as a boolean — so recording
+  // the declared string would be a value `readCurrentState` can never match.
+  const declaredEnabled = item['Enabled'];
+  if (declaredEnabled === undefined) {
+    patch['Enabled'] = INVENTORY_DEFAULT_ENABLED;
+  } else {
+    const coercedEnabled = coerceCfnBoolean(declaredEnabled);
+    if (coercedEnabled !== undefined && !Object.is(declaredEnabled, coercedEnabled)) {
+      patch['Enabled'] = coercedEnabled;
+    }
+  }
   if (item['IncludedObjectVersions'] === undefined) {
     patch['IncludedObjectVersions'] = INVENTORY_DEFAULT_INCLUDED_OBJECT_VERSIONS;
   }
@@ -500,9 +521,217 @@ function effectiveIntelligentTieringItem(item: Record<string, unknown>): Record<
 }
 
 /**
- * Apply a per-ITEM fold to one of the `Id`-keyed array properties on BOTH sides
- * of a diff — the `canonicalizeDesiredProperties` plumbing shared by the
- * inventory and analytics folds.
+ * Normalize a bag's TOLERATED key spellings onto the ONE spelling the readback
+ * emits — the shared core of the two #1748 folds.
+ *
+ * Each entry is `[emitted, tolerated]`: where the applier reads
+ * `(bag['emitted'] ?? bag['tolerated'])`, this writes the SAME value under
+ * `emitted` and REMOVES `tolerated`. The `??` is the licensed ALIAS form (the
+ * one {@link declaredOrDefault} carves out): it supplies no DEFAULT, it picks
+ * between two spellings of one declared value exactly as the applier's own read
+ * does, so a nullish first spelling falls through to the second here for the
+ * same reason it does on the wire.
+ *
+ * Keyed off the DECLARED shape, never off a refusal — the population that
+ * matters carries no malformed value at all, so a condition riding a
+ * substitution arm would miss it (issue #1686's first generalization).
+ *
+ * The tolerated key is REMOVED rather than set to `undefined`: `JSON.stringify`
+ * drops an `undefined` member but the state record is written from this object
+ * and a present-but-`undefined` key survives a `structuredClone`, so a consumer
+ * walking `Object.keys` — the `unionWalkObjects` drift path does — would still
+ * see two different key sets.
+ *
+ * @returns `bag` BY IDENTITY when no tolerated spelling is declared, so an
+ *   ordinary CFn-spelled template records and diffs byte-for-byte as before.
+ */
+function foldToleratedAliases(
+  bag: Record<string, unknown>,
+  aliases: ReadonlyArray<readonly [emitted: string, tolerated: string]>
+): Record<string, unknown> {
+  let out: Record<string, unknown> | undefined;
+  for (const [emitted, tolerated] of aliases) {
+    if (bag[tolerated] === undefined) continue;
+    out ??= { ...bag };
+    out[emitted] = bag[emitted] ?? bag[tolerated];
+    delete out[tolerated];
+  }
+  return out ?? bag;
+}
+
+/** The lifecycle `Transitions[]` aliases the applier accepts (issue #1748). */
+const TRANSITION_ALIASES = [
+  ['TransitionInDays', 'Days'],
+  ['TransitionDate', 'Date'],
+] as const;
+
+/** The lifecycle `NoncurrentVersionTransitions[]` alias (issue #1748). */
+const NONCURRENT_VERSION_TRANSITION_ALIASES = [['TransitionInDays', 'NoncurrentDays']] as const;
+
+/** The `NotificationConfiguration` ARN aliases, per family (issue #1748). */
+const NOTIFICATION_ARN_ALIASES: ReadonlyArray<
+  readonly [listKey: string, aliases: ReadonlyArray<readonly [string, string]>]
+> = [
+  ['TopicConfigurations', [['Topic', 'TopicArn']]],
+  ['QueueConfigurations', [['Queue', 'QueueArn']]],
+  ['LambdaConfigurations', [['Function', 'LambdaFunctionArn']]],
+];
+
+/**
+ * The `Event` / `Events` half of the same item (issue #1748).
+ *
+ * The ARN alias is not the only never-emitted spelling on a notification item,
+ * and this one is the WIDER of the two: `TopicArn` is a cdkd-only tolerance
+ * almost no template uses, while `Event` is the member the CFn registry schema
+ * declares (`TopicConfiguration` is `{Event, Filter, Topic}` — there is no
+ * `Events`) and therefore the one EVERY template carries. The applier accepts
+ * both (`t['Event'] !== undefined ? [t['Event']] : t['Events']`).
+ *
+ * Unlike the ARN pair this is not a pure rename — the SDK member is a LIST — so
+ * it folds by ARITY: a single-element list is the CFn `Event`, and a longer one
+ * has no CFn spelling at all and is left as `Events`, which is what the readback
+ * emits for it. That asymmetry is why it is a separate step rather than another
+ * {@link foldToleratedAliases} entry.
+ *
+ * `readNotification` was emitting `Events` unconditionally, so the record and
+ * the readback disagreed on every notification-configured bucket; it now
+ * reverse-maps to the CFn spelling on the same arity rule, exactly as
+ * `readLifecycle` already does for `TransitionInDays`. One-time drift on upgrade
+ * for an already-deployed bucket, the same accepted cost the sibling reverse-map
+ * changes in this file document, and it clears on the next deploy.
+ */
+function foldNotificationEvents(item: Record<string, unknown>): Record<string, unknown> {
+  const events = item['Events'];
+  if (events === undefined) return item;
+  const out = { ...item };
+  // A declared `Event` WINS, because the wire's own read prefers it.
+  if (item['Event'] === undefined) {
+    if (!Array.isArray(events) || events.length !== 1) return item;
+    out['Event'] = events[0];
+  }
+  delete out['Events'];
+  return out;
+}
+
+/**
+ * The `NotificationConfiguration` cdkd ACTUALLY SENDS, in the spelling
+ * `readNotification` emits (issue #1748) — the never-emitted-KEY class of issue
+ * #1686 reached through the SHAPE rather than through a value.
+ *
+ * `applyNotificationConfiguration` accepts the SDK spelling of each destination
+ * ARN alongside the CFn one (`t['Topic'] ?? t['TopicArn']`, and the two
+ * siblings), while `readNotification` emits only `Topic` / `Queue` /
+ * `Function` — the spellings the live CFn registry schema declares
+ * (`TopicConfiguration` is `{Event, Filter, Topic}`, with no `TopicArn`
+ * member at all, so the SDK spellings are cdkd-only tolerances). A record
+ * written in the tolerated spelling therefore can never match the readback:
+ * `cdkd drift` re-reports it forever and `--revert` re-issues the same Put,
+ * with NO warning anywhere, because nothing is malformed and nothing is
+ * substituted.
+ *
+ * This NORMALIZES rather than retracting the tolerance, per #1686's third
+ * generalization: refusing the SDK spelling would break templates that deploy
+ * today, and buys nothing the normalization does not.
+ *
+ * The Put is a FULL REPLACE with no skip arm, so there is no
+ * previous-value-retained case to distinguish — whenever it succeeds, this is
+ * what AWS holds.
+ *
+ * @returns `config` BY IDENTITY when no tolerated spelling is declared, or when
+ *   it is not a shape this can fold at all (left for the applier's own
+ *   handling).
+ */
+function effectiveNotificationConfiguration(config: unknown): unknown {
+  if (!isPlainObject(config)) return config;
+  let out = config;
+  for (const [listKey, aliases] of NOTIFICATION_ARN_ALIASES) {
+    out = canonicalizeItemList(out, listKey, (item) =>
+      foldNotificationEvents(foldToleratedAliases(item, aliases))
+    );
+  }
+  return out;
+}
+
+/**
+ * The `LifecycleConfiguration` cdkd ACTUALLY SENDS, in the spelling
+ * `readLifecycle` emits (issue #1748) — the lifecycle half of the same class.
+ *
+ * `applyLifecycleConfiguration` accepts the SDK day/date spellings alongside the
+ * CFn ones on both transition families (`t['TransitionInDays'] ?? t['Days']`,
+ * `t['TransitionDate'] ?? t['Date']`, `nvt['TransitionInDays'] ??
+ * nvt['NoncurrentDays']`) while `readLifecycle` emits only `TransitionInDays` /
+ * `TransitionDate` — again the only spellings the registry schema declares
+ * (`Transition` is `{StorageClass, TransitionDate, TransitionInDays}`,
+ * `NoncurrentVersionTransition` is `{StorageClass, TransitionInDays,
+ * NewerNoncurrentVersions}`).
+ *
+ * The issue named the `Date` alias; the mechanical audit it asks for (match the
+ * `(a['X'] ?? a['Y'])` ALIAS form, not a plain bracket read) found all THREE in
+ * the same two item shapes, so fixing only the reported one would have left its
+ * siblings broken — the "diff the WHOLE blob, not the reported key" rule.
+ *
+ * Two things deliberately NOT folded here, tracked rather than left unstated:
+ * the legacy SINGULAR `Transition` / `NoncurrentVersionTransition` objects,
+ * which `mergeLegacySingular` folds into the plural on the wire so the readback
+ * can never emit them either — a MERGE with a collision arm that WARNS, not an
+ * alias rename, so it needs its own decision (issue #1754); and the RULE-level
+ * divergences the round-trip fence measured beside these
+ * (`ExpirationInDays` / `NoncurrentVersionExpirationInDays` recorded against an
+ * `Expiration` / `NoncurrentVersionExpiration` readback, and the sent-but-
+ * unrecorded `Filter: {Prefix: ''}`), which are reshapes belonging on the
+ * READBACK side and are wider than this class (issue #1755). So a rule using
+ * these aliases converges on the aliases and still differs on those keys until
+ * #1755 lands — which is the honest state, not a claim this makes lifecycle
+ * whole.
+ *
+ * @returns `config` BY IDENTITY when no tolerated spelling is declared.
+ */
+function effectiveLifecycleConfiguration(config: unknown): unknown {
+  if (!isPlainObject(config)) return config;
+  return canonicalizeItemList(config, 'Rules', (rule) => {
+    let out = canonicalizeItemList(rule, 'Transitions', (t) =>
+      foldToleratedAliases(t, TRANSITION_ALIASES)
+    );
+    out = canonicalizeItemList(out, 'NoncurrentVersionTransitions', (nvt) =>
+      foldToleratedAliases(nvt, NONCURRENT_VERSION_TRANSITION_ALIASES)
+    );
+    return out;
+  });
+}
+
+/**
+ * Apply a WHOLE-BLOCK fold to one top-level property on BOTH sides of a diff —
+ * the {@link canonicalizeItemList} sibling for the two #1748 folds, whose unit
+ * is the block rather than an item of a list.
+ *
+ * The COMPUTED `[key]:` write is load-bearing and must not be "tidied" into a
+ * named-member spread (`{ ...out, LifecycleConfiguration: folded }`), which is
+ * how this was first written. `gen-nested-key-coverage`'s write-evidence walk
+ * recognizes a bag-derived spread-and-patch literal as a whole-blob HAND-OFF
+ * (its #1475 recognizer) and credits everything beneath the named path as
+ * delivered — so naming the member here made a DIFF-side pure function vouch for
+ * the forward mapper and retired three reviewed `AWS::S3::Bucket` allow-list
+ * entries (`LifecycleConfiguration.TransitionDefaultMinimumObjectSize`,
+ * `…Rules.TagFilters.Key` / `.Value`), i.e. it silently switched the write pass
+ * off for that whole subtree. Measured both ways via the critic's
+ * `--providers-dir=` seam. A computed key names no member, which is exactly why
+ * the pre-existing folds in this file are spelled that way.
+ */
+function canonicalizeBlock(
+  properties: Record<string, unknown>,
+  key: string,
+  fold: (block: unknown) => unknown
+): Record<string, unknown> {
+  const folded = fold(properties[key]);
+  return folded === properties[key] ? properties : { ...properties, [key]: folded };
+}
+
+/**
+ * Apply a per-ITEM fold to an array-valued member on BOTH sides of a diff — the
+ * `canonicalizeDesiredProperties` plumbing every fold in this file shares, from
+ * the top-level `Id`-keyed properties down to the nested `Rules[].Transitions[]`
+ * list (the bag is the containing OBJECT, which at the top level is the property
+ * bag and one level down is the rule).
  *
  * Identity-returns at every level (untouched item -> untouched array ->
  * untouched bag), and leaves a non-array property or a non-object element ALONE
@@ -601,22 +830,6 @@ function mergeLegacySingular(
     return out;
   }
   return [...out, singular];
-}
-
-/** Coerce a CFn boolean, which may arrive as the string `"true"` / `"false"`. */
-function coerceCfnBoolean(value: unknown): boolean | undefined {
-  if (typeof value === 'boolean') return value;
-  // Case-insensitive on purpose. CDK renders lowercase, but this also feeds
-  // `NotificationConfiguration.EventBridgeConfiguration` (issue #1430), where
-  // "not false" means "enable" — so a hand-written / imported `'False'` that
-  // fell through to `undefined` would silently ENABLE EventBridge delivery,
-  // the exact inversion #1430 fixed.
-  if (typeof value === 'string') {
-    const lowered = value.toLowerCase();
-    if (lowered === 'true') return true;
-    if (lowered === 'false') return false;
-  }
-  return undefined;
 }
 
 /**
@@ -2393,6 +2606,51 @@ export class S3BucketProvider implements ResourceProvider {
         skipped.push(index);
         continue;
       }
+      // `Enabled` (issue #1751). The BOOLEAN sibling of the string guard above,
+      // and the one member of this item that used to coerce SILENTLY: the wire
+      // read was `(config['Enabled'] as boolean) ?? true`, so a declared
+      // `Enabled: null` went out as `true` with no guard and no warning — while
+      // the record kept `null`, which `readCurrentState` can never match.
+      //
+      // The direction is the one the file's siblings already take, not the
+      // cheaper recording-side one the issue offered as its alternative:
+      // defaulting a malformed `Enabled` to `true` on a LIVE inventory ENABLES
+      // a report the template may have been trying to disable, which is exactly
+      // the destructive-default class #1595 refuses. So the SKIP unit is taken
+      // from the guard immediately above (this Put is per-`Id`) rather than
+      // invented, and the CREATE path throws, matching every other member here.
+      //
+      // A CFn string boolean (`'false'`) is NOT malformed — CloudFormation is
+      // stringly typed and cdkd is not — so the predicate is
+      // `configBooleanRefusal`, which runs `coerceCfnBoolean`, i.e. literally
+      // the function the wire read below calls.
+      //
+      // A NUMBER is refused, and that is a decision rather than an oversight —
+      // the string sibling records its own `coerceNumber` relaxation the same
+      // way. `requireConfigString` accepts a number at the sites where CFn's
+      // scalar coercion makes one legitimate (an unquoted YAML `IpProtocol: -1`
+      // deploys today); there is no such shape for `Enabled`, whose CFn type is
+      // `boolean`, so a `1` here is a template bug and forwarding it — which is
+      // what the pre-#1751 read did — put a non-boolean on the wire.
+      const enabledRefusal = configBooleanRefusal(
+        config,
+        'Enabled',
+        'AWS::S3::Bucket InventoryConfigurations[]'
+      );
+      if (enabledRefusal !== undefined) {
+        if (!onUnusable) {
+          throw new Error(
+            `${enabledRefusal}. Omit the field entirely to use the default (${INVENTORY_DEFAULT_ENABLED})`
+          );
+        }
+        onUnusable(
+          `${enabledRefusal}. Skipping this inventory configuration: defaulting to ` +
+            `${INVENTORY_DEFAULT_ENABLED} would ENABLE an inventory report the template may have ` +
+            `been disabling; the same value is REFUSED on a template-path create`
+        );
+        skipped.push(index);
+        continue;
+      }
       const inventoryDestPath = 'AWS::S3::Bucket InventoryConfigurations[].Destination';
       const rawDest = config['Destination'];
       const s3Dest = this.resolveS3BucketDestination(rawDest, inventoryDestPath, onUnusable);
@@ -2520,7 +2778,13 @@ export class S3BucketProvider implements ResourceProvider {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const inventoryConfig: any = {
         Id: id,
-        IsEnabled: (config['Enabled'] as boolean) ?? INVENTORY_DEFAULT_ENABLED,
+        // The `??` is safe HERE and only here (issue #1751): the guard at the
+        // top of the loop has already refused every declared-but-unusable
+        // value, so the one way to reach the fallback is an ABSENT key — which
+        // is the case a default belongs to. `coerceCfnBoolean`, not a cast: a
+        // CFn `'false'` must reach AWS as `false`, and it is the same primitive
+        // the guard ran.
+        IsEnabled: coerceCfnBoolean(config['Enabled']) ?? INVENTORY_DEFAULT_ENABLED,
         IncludedObjectVersions: readConfigString(
           config,
           'IncludedObjectVersions',
@@ -3467,6 +3731,17 @@ export class S3BucketProvider implements ResourceProvider {
       overrides.set(key, previousProperties[key]);
     };
     /**
+     * Record a WHOLE-BLOCK fold: the effective value is what was SENT.
+     *
+     * Identity means the declared bag IS what went on the wire, so no override
+     * is set at all and the engine records the desired properties unchanged —
+     * which is what keeps an ordinary CFn-spelled template byte-for-byte
+     * unaffected by the #1748 folds.
+     */
+    const recordEffectiveFold = (key: string, sent: unknown): void => {
+      if (sent !== properties[key]) overrides.set(key, sent);
+    };
+    /**
      * Per-property accumulator for one of the four `Id`-keyed appliers.
      *
      * Keyed by `Id` rather than by index because on THIS path the diff loop
@@ -3770,6 +4045,12 @@ export class S3BucketProvider implements ResourceProvider {
           this.logger.warn(m)
         );
         if (!applied) retainPrevious('LifecycleConfiguration');
+        // Recorded only once the Put has SUCCEEDED, and only when the Put
+        // actually RAN (issue #1748): a skipped Put leaves AWS holding the
+        // previous configuration, which `retainPrevious` above already records —
+        // overwriting that with a fold of the DESIRED bag would describe a call
+        // that never went out.
+        else recordEffectiveFold('LifecycleConfiguration', effectiveLifecycleConfiguration(cfg));
       },
       async () => {
         await this.s3Client.send(new DeleteBucketLifecycleCommand({ Bucket: bucketName }));
@@ -3852,7 +4133,14 @@ export class S3BucketProvider implements ResourceProvider {
       bucketName,
       previousProperties['NotificationConfiguration'] as Record<string, unknown> | undefined,
       properties['NotificationConfiguration'] as Record<string, unknown> | undefined,
-      async (cfg) => this.applyNotificationConfiguration(bucketName, cfg),
+      async (cfg) => {
+        await this.applyNotificationConfiguration(bucketName, cfg);
+        // Issue #1748. This applier is a FULL REPLACE with no skip arm, so a
+        // returning call means AWS holds exactly what was sent.
+        recordEffectiveFold('NotificationConfiguration', effectiveNotificationConfiguration(cfg));
+      },
+      // The CLEAR arm sends an empty configuration and has no declared bag to
+      // fold, so it needs no override.
       async () => this.applyNotificationConfiguration(bucketName, undefined)
     );
 
@@ -4072,6 +4360,15 @@ export class S3BucketProvider implements ResourceProvider {
   ): Promise<Map<string, unknown>> {
     const overrides = new Map<string, unknown>();
     /**
+     * Record a WHOLE-BLOCK fold: the effective value is what was SENT (issue
+     * #1748). The create-path twin of `applySubConfigDiffs`'s helper of the same
+     * name; identity sets no override, so an ordinary CFn-spelled template is
+     * byte-for-byte unaffected.
+     */
+    const recordEffectiveFold = (key: string, sent: unknown): void => {
+      if (sent !== properties[key]) overrides.set(key, sent);
+    };
+    /**
      * Record a per-ITEM applier outcome.
      *
      * A SKIPPED item is DROPPED — there is no previously-applied item to
@@ -4112,6 +4409,14 @@ export class S3BucketProvider implements ResourceProvider {
       | undefined;
     if (notifConfig) {
       await this.applyNotificationConfiguration(bucketName, notifConfig);
+      // Issue #1748, the create-path twin of the update arm. Same rule, and it
+      // is NOT the replay-only case the rest of this method handles: a
+      // never-emitted SPELLING carries no malformed value and no downgrade, so
+      // an ORDINARY template-path create reaches it.
+      recordEffectiveFold(
+        'NotificationConfiguration',
+        effectiveNotificationConfiguration(notifConfig)
+      );
     }
 
     // CORS — skip empty-rules placeholder
@@ -4142,7 +4447,14 @@ export class S3BucketProvider implements ResourceProvider {
         lifecycleConfig,
         replayOnUnusable
       );
+      // A SKIP drops the key (there is no previous value on a fresh bucket);
+      // otherwise record what was SENT (issue #1748).
       if (!applied) overrides.set('LifecycleConfiguration', undefined);
+      else
+        recordEffectiveFold(
+          'LifecycleConfiguration',
+          effectiveLifecycleConfiguration(lifecycleConfig)
+        );
     } else if (lifecycleConfig != null) {
       this.announceCreateEmptyCollectionSkip(
         'LifecycleConfiguration',
@@ -4627,6 +4939,17 @@ export class S3BucketProvider implements ResourceProvider {
       'IntelligentTieringConfigurations',
       effectiveIntelligentTieringItem
     );
+    // The #1748 folds. Same shared-helper rule as the three above — the recording
+    // side calls the very same function — and the twin is what keeps the fold
+    // from BREAKING the next deploy: without it state holds the emitted spelling
+    // while the template still declares the tolerated one, so an unchanged
+    // template redeploys as `1 to update` forever (issue #1717 measured exactly
+    // that on the sibling fold). Folding both sides is also what HEALS the
+    // already-deployed population: a bucket whose notification / lifecycle
+    // configuration never changes is never re-Put, so the recording side alone
+    // could never reach a record written before the fold.
+    out = canonicalizeBlock(out, 'NotificationConfiguration', effectiveNotificationConfiguration);
+    out = canonicalizeBlock(out, 'LifecycleConfiguration', effectiveLifecycleConfiguration);
     return out;
   }
 
@@ -5082,6 +5405,28 @@ export class S3BucketProvider implements ResourceProvider {
     return out;
   }
 
+  /**
+   * Emit a notification item's event list in the CFn spelling (issue #1748).
+   *
+   * The SDK member is the LIST `Events`; CFn declares only the scalar `Event`
+   * (`TopicConfiguration` is `{Event, Filter, Topic}`), which is what every
+   * template — and therefore every state record written from one — carries. So
+   * emitting `Events` unconditionally made the record and the readback disagree
+   * on EVERY notification-configured bucket: `cdkd drift` re-reported it forever
+   * and `--revert` re-issued the same Put, with nothing malformed to warn about.
+   *
+   * Reverse-mapping to the CFn spelling is the same answer the `Transitions`
+   * sibling in `readLifecycle` already takes for `TransitionInDays`. The arity
+   * rule is what keeps it lossless: a longer list has no CFn spelling, so it
+   * stays `Events` — which is also what {@link foldNotificationEvents} leaves on
+   * the desired side, so the two still meet.
+   */
+  private emitNotificationEvents(target: Record<string, unknown>, events?: string[]): void {
+    if (events === undefined) return;
+    if (events.length === 1) target['Event'] = events[0];
+    else target['Events'] = events;
+  }
+
   private async readNotification(bucket: string): Promise<Record<string, unknown>> {
     const resp = await this.s3Client.send(
       new GetBucketNotificationConfigurationCommand({ Bucket: bucket })
@@ -5092,7 +5437,7 @@ export class S3BucketProvider implements ResourceProvider {
         const e: Record<string, unknown> = {};
         if (t.Id !== undefined) e['Id'] = t.Id;
         if (t.TopicArn !== undefined) e['Topic'] = t.TopicArn;
-        if (t.Events !== undefined) e['Events'] = t.Events;
+        this.emitNotificationEvents(e, t.Events);
         if (t.Filter) e['Filter'] = this.sdkNotifFilterToCfn(t.Filter);
         return e;
       });
@@ -5102,7 +5447,7 @@ export class S3BucketProvider implements ResourceProvider {
         const e: Record<string, unknown> = {};
         if (q.Id !== undefined) e['Id'] = q.Id;
         if (q.QueueArn !== undefined) e['Queue'] = q.QueueArn;
-        if (q.Events !== undefined) e['Events'] = q.Events;
+        this.emitNotificationEvents(e, q.Events);
         if (q.Filter) e['Filter'] = this.sdkNotifFilterToCfn(q.Filter);
         return e;
       });
@@ -5112,7 +5457,7 @@ export class S3BucketProvider implements ResourceProvider {
         const e: Record<string, unknown> = {};
         if (l.Id !== undefined) e['Id'] = l.Id;
         if (l.LambdaFunctionArn !== undefined) e['Function'] = l.LambdaFunctionArn;
-        if (l.Events !== undefined) e['Events'] = l.Events;
+        this.emitNotificationEvents(e, l.Events);
         if (l.Filter) e['Filter'] = this.sdkNotifFilterToCfn(l.Filter);
         return e;
       });
