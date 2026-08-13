@@ -2598,16 +2598,26 @@ cdkd export                                       # auto-detect single-stack app
    `AWS::AppSync::ApiKey`, `AWS::EC2::NetworkAclEntry`,
    `AWS::SQS::QueuePolicy` and `AWS::SNS::TopicPolicy` are all in this
    class (measured live, us-east-1, 2026-08-13). cdkd surfaces them
-   from the schema it already fetches for the identifier, before
-   acquiring the lock or preprocessing the template, and names EVERY
-   offending resource in one message — AWS's own error is not
+   from the schema it already fetches for the identifier and names
+   EVERY offending resource in one message — AWS's own error is not
    exhaustive (a probe carrying three unsupported types named two of
    them). Both signals must agree before cdkd refuses, so a partial or
    unusual `DescribeType` response falls back to letting AWS answer.
-   There is no flag to bypass this: the export cannot succeed either
-   way. Remove the resource from the stack before exporting (it stays
-   in AWS and can be re-declared in CloudFormation afterwards), or
-   destroy it first and let CloudFormation create it fresh.
+
+   The whole plan — this refusal and every other `blocked` reason — is
+   built BEFORE the stack lock is acquired, so a stack that cannot be
+   exported says so without first locking out concurrent `cdkd deploy`
+   / `cdkd destroy`. Planning issues no AWS write (it reads cdkd state
+   and `DescribeType`), and the nested-stack path has always planned
+   before locking.
+
+   Remove the resource from the stack before exporting (it stays in AWS
+   and can be re-declared in CloudFormation afterwards), or destroy it
+   first and let CloudFormation create it fresh. The verdict is a
+   registry HEURISTIC rather than AWS's published supported-for-import
+   list, so `--skip-import-support-preflight` is the escape hatch if
+   AWS has since made the type importable — the changeset is then
+   submitted and CloudFormation answers for itself.
 5. Acquire the stack lock so concurrent `cdkd deploy` cannot race.
 6. Confirm with the user (skipped with `-y` / `--yes`).
 7. **Preprocess the phase-1 template** (automatic; required by CFn IMPORT

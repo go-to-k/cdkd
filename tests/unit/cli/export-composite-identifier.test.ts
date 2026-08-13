@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   buildImportPlan,
+  COMPOSITE_PHYSICAL_ID_IDENTIFIER_TYPES,
   hasCompositePhysicalIdIdentifier,
   resolveCompositePhysicalIdIdentifier,
   splitCompositePhysicalId,
@@ -26,13 +27,11 @@ const TABLE_COMPOSITE = `${TABLE_BUCKET_ARN}|analytics|events`;
 function ctx(overrides: {
   logicalId?: string;
   physicalId: string;
-  properties?: Record<string, unknown>;
   attributes?: Record<string, unknown>;
 }) {
   return {
     logicalId: overrides.logicalId ?? 'MyResource',
     physicalId: overrides.physicalId,
-    properties: overrides.properties ?? {},
     attributes: overrides.attributes ?? {},
   };
 }
@@ -147,6 +146,15 @@ describe('resolveCompositePhysicalIdIdentifier (issue #1659)', () => {
   });
 
   it('hasCompositePhysicalIdIdentifier covers exactly the four measured types', () => {
+    // Size-asserted, not just membership: a fifth entry added later without a
+    // measurement row in the table's doc comment would otherwise pass here.
+    expect(COMPOSITE_PHYSICAL_ID_IDENTIFIER_TYPES).toHaveLength(4);
+    expect([...COMPOSITE_PHYSICAL_ID_IDENTIFIER_TYPES].sort()).toEqual([
+      'AWS::AppSync::DataSource',
+      'AWS::AppSync::Resolver',
+      'AWS::EC2::SecurityGroupIngress',
+      'AWS::S3Tables::Table',
+    ]);
     for (const t of [
       'AWS::AppSync::DataSource',
       'AWS::AppSync::Resolver',
@@ -206,6 +214,60 @@ describe('resolveCompositePhysicalIdIdentifier (issue #1659)', () => {
         ctx({ physicalId: arn, attributes: {} })
       ).value
     ).toBe(arn);
+  });
+
+  it('refuses a recorded attribute holding cdkd COMPOSITE id (the arm that actually fires)', () => {
+    // The composite starts with `arn:` AND carries `:s3tables:` (it is built
+    // FROM the bucket ARN), so only the `|` test tells the two apart. An older
+    // binary or a hand-edited row can put it under the attribute name, and
+    // shipping it would adopt the wrong resource — the defect this whole table
+    // exists to prevent, on the path that runs for essentially every export.
+    expect(() =>
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::S3Tables::Table',
+        ctx({ physicalId: TABLE_COMPOSITE, attributes: { TableARN: TABLE_COMPOSITE } })
+      )
+    ).toThrow(/not a s3tables ARN/);
+  });
+
+  it('refuses a recorded attribute holding ANOTHER service ARN', () => {
+    expect(() =>
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::S3Tables::Table',
+        ctx({ physicalId: TABLE_COMPOSITE, attributes: { TableARN: 'arn:aws:s3:::my-bucket' } })
+      )
+    ).toThrow(/recorded as 'arn:aws:s3:::my-bucket', which is not a s3tables ARN/);
+  });
+
+  it('refuses a non-ARN value that merely contains the service segment', () => {
+    // Fences the `arn:` prefix test on its own: every other non-ARN fixture
+    // ALSO fails the service-segment test, so the two coincide and neither is
+    // fenced (the coinciding-disjunct trap, twice over in this file already).
+    const notAnArn = `s3tables:${TABLE_ARN.slice('arn:aws:s3tables:'.length)}`;
+    expect(notAnArn.includes(':s3tables:')).toBe(false);
+    for (const value of ['x:s3tables:y', notAnArn]) {
+      expect(() =>
+        resolveCompositePhysicalIdIdentifier(
+          'AWS::S3Tables::Table',
+          ctx({ physicalId: value, attributes: {} })
+        )
+      ).toThrow(/is missing or empty/);
+      expect(() =>
+        resolveCompositePhysicalIdIdentifier(
+          'AWS::S3Tables::Table',
+          ctx({ physicalId: TABLE_COMPOSITE, attributes: { TableARN: value } })
+        )
+      ).toThrow(/not a s3tables ARN/);
+    }
+  });
+
+  it('trims a padded bare-ARN physicalId too (arm 2 symmetry with arm 1)', () => {
+    expect(
+      resolveCompositePhysicalIdIdentifier(
+        'AWS::S3Tables::Table',
+        ctx({ physicalId: `  ${TABLE_ARN}\n`, attributes: {} })
+      ).value
+    ).toBe(TABLE_ARN);
   });
 
   it('refuses a recorded attribute that is not a string', () => {
@@ -513,6 +575,26 @@ describe('buildImportPlan — composite physicalId identifier (issue #1659)', ()
     });
   });
 
+  it('resolves an AWS::AppSync::DataSource through the plan builder too', async () => {
+    // The second (a)-class family, exercised end-to-end rather than only at
+    // the helper: same single-field identifier, different service segment.
+    const arn = 'arn:aws:appsync:us-east-1:123456789012:apis/abc123/datasources/MyDs';
+    const state = stateWith({
+      Ds: {
+        resourceType: 'AWS::AppSync::DataSource',
+        physicalId: 'abc123|MyDs',
+        attributes: { DataSourceArn: arn, Name: 'MyDs' },
+      },
+    });
+    const template = {
+      Resources: { Ds: { Type: 'AWS::AppSync::DataSource', Properties: { Name: 'MyDs' } } },
+    };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack');
+    expect(plan.blocked).toEqual([]);
+    expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ DataSourceArn: arn });
+    expect(plan.phase1Imports[0]!.propertiesOverlay).toEqual({});
+  });
+
   it('leaves an ordinary single-key type resolving from its physical id', async () => {
     const state = stateWith({
       Bucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'mystack-bucket-123' },
@@ -718,6 +800,30 @@ describe('buildImportPlan — IMPORT read-handler pre-flight (issue #1659)', () 
     expect(describeTypeCalls).toEqual(['AWS::S3::Bucket', 'AWS::S3Tables::Table']);
   });
 
+  it('treats a `handlers: null` schema as no read handler', async () => {
+    // Fences the null-guard in `fetchPrimaryIdentifier`'s handler probe on its
+    // own: `hasOwnProperty` on `null` THROWS, so without the guard this is a
+    // crash rather than a verdict.
+    const state = stateWith({
+      Thing: { resourceType: 'AWS::Some::Thing', physicalId: 'thing-1' },
+    });
+    const template = { Resources: { Thing: { Type: 'AWS::Some::Thing', Properties: {} } } };
+    const plan = await buildImportPlan(
+      state,
+      template,
+      cfnClientFor({
+        'AWS::Some::Thing': {
+          primaryIdentifier: ['/properties/Id'],
+          handlers: null as unknown as Record<string, unknown>,
+          provisioningType: 'NON_PROVISIONABLE',
+        },
+      }),
+      'MyStack'
+    );
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.blocked[0]!.reason).toMatch(/no 'read' handler/);
+  });
+
   it('treats a `handlers: []` array (the legacy render) as no read handler', async () => {
     // Real registry entries render an EMPTY handlers block as an array — see
     // the AWS::ApiGatewayV2::Stage note in export.ts. `hasOwnProperty` on an
@@ -740,6 +846,37 @@ describe('buildImportPlan — IMPORT read-handler pre-flight (issue #1659)', () 
     );
     expect(plan.blocked).toHaveLength(1);
     expect(plan.blocked[0]!.reason).toMatch(/no 'read' handler/);
+  });
+
+  it('--skip-import-support-preflight lets the type through to CloudFormation', async () => {
+    // The verdict is a registry HEURISTIC, not AWS's supported-for-import
+    // list, and `blocked` aborts the whole export — so a type AWS has since
+    // made importable must have an escape hatch, like its neighbour
+    // IMPORT_UNSUPPORTED_RECREATABLE_TYPES has --no-recreate-import-unsupported.
+    const state = stateWith({
+      GlueTable: { resourceType: 'AWS::Glue::Table', physicalId: 'mydb|my_table' },
+    });
+    const template = { Resources: { GlueTable: { Type: 'AWS::Glue::Table', Properties: {} } } };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack', {
+      recreateImportUnsupported: true,
+      skipImportSupportPreflight: true,
+    });
+    expect(plan.blocked).toEqual([]);
+    // Resolution continues as it did before the pre-flight existed.
+    expect(plan.phase1Imports[0]!.resourceIdentifier).toEqual({ Id: 'mydb|my_table' });
+  });
+
+  it('still blocks with the flag OFF (the same fixture, opposite arm)', async () => {
+    const state = stateWith({
+      GlueTable: { resourceType: 'AWS::Glue::Table', physicalId: 'mydb|my_table' },
+    });
+    const template = { Resources: { GlueTable: { Type: 'AWS::Glue::Table', Properties: {} } } };
+    const plan = await buildImportPlan(state, template, cfnClientFor(), 'MyStack', {
+      recreateImportUnsupported: true,
+      skipImportSupportPreflight: false,
+    });
+    expect(plan.blocked).toHaveLength(1);
+    expect(plan.phase1Imports).toEqual([]);
   });
 
   it('leaves the recreate-before-phase-2 types on their own path (ordering fence)', async () => {
