@@ -159,6 +159,60 @@ Scale the count to the backlog and to how many cross-cutting files are free. 2�
 clean lanes is typical; do not force a lane into a contested file just to raise the
 count — report the deferred ones instead.
 
+### 3-a. Ranking the eligible issues
+
+File-disjointness (§2) is a **hard gate, not a ranking factor** — an issue that
+collides with a live lane is not a low-priority candidate, it is not a candidate.
+Rank only what survives that gate, by applying these in order and moving to the
+next only to break a tie:
+
+| # | Rule | Why |
+|---|---|---|
+| 1 | **Umbrella issues sort LAST**, whatever else they score | They cannot be finished in one lane, so a lane leaves the issue open with ambiguous residue, and their many sites collide with everything |
+| 2 | **`fix:` outranks everything else** (`feat:` / `test:` / `docs:` / `audit:` / `chore:`) | A `fix:` is a defect in shipped behavior a user can hit today; the rest are improvements to behavior that is not wrong |
+| 3 | **Area: `deploy` > `diff` = `destroy` > everything else** | Deploy is the tool's primary function — it is what cdkd exists to do, so a deploy defect costs more than an equally-sized defect elsewhere. `diff` and `destroy` rank equally behind it |
+| 4 | **Prefer issues landing in ONE isolated file** over cross-cutting ones | Not just collision-avoidance for this run: a cross-cutting file admits only one lane at a time, so taking it blocks the widest set of future parallel work. Among equals, spend the contested files last |
+| 5 | **Newer first** (higher issue number / `created_at`) | Not novelty — **accuracy**. A freshly filed issue was written against current code, so its file:line tables and reproduction still hold. Older ones rot: on 2026-08-13 two of the enumerated sites in a one-day-old issue were already fixed or deleted. An older issue is likelier to be partly done, superseded, or wrong |
+
+**Detecting each signal** — from the same REST listing §1 already fetched, plus
+the body when needed:
+
+```bash
+# type + area come from the conventional-commit title prefix: fix(deploy): ...
+gh api 'repos/{owner}/{repo}/issues?state=open&per_page=60' \
+  --jq '.[] | select(.pull_request | not)
+        | [.number, (.title | capture("^(?<type>[a-z]+)(\\((?<area>[^)]+)\\))?") | .type + "/" + (.area // "-")), .title]
+        | @tsv'
+```
+
+- **Umbrella**: title or body says `umbrella`, `audit:`, `Backfill`, `N entries
+  across M types`, or the body carries a TABLE of sites rather than one defect.
+  A "residual of #N" issue naming two or three concrete sites is NOT an umbrella —
+  it is a normal issue; the test is whether one lane can close it completely.
+- **Area**: the title's scope (`fix(deploy)`, `fix(destroy)`, `fix(export)`), and
+  when the scope is generic (`fix(provisioning)`), the files the body names.
+  Judge by the command the user runs, not by which directory the code lives in:
+  a provider bug that only manifests during `cdkd deploy` is a deploy issue.
+- **Cross-cutting**: the body names any of `deploy-engine.ts`,
+  `intrinsic-function-resolver.ts`, `dag-builder.ts`, `template-parser.ts`,
+  `register-providers.ts`, `destroy-runner.ts`, `export.ts` (the §2 list).
+
+**These are tiebreakers, not a scoring formula — do not average them.** Apply
+rule 1, then 2, then 3, and stop at the first that separates the candidates. And
+they rank *what to take first*; they never justify taking an issue that fails the
+disjointness gate, nor skipping the §0 safety screen.
+
+Two overrides worth stating, because both have been talked into by a ranking
+before:
+
+- **A user-reported breakage outranks the table.** If an issue reports a
+  currently-broken user-facing path, take it first regardless of type, area or
+  age. The ranking exists to order a backlog of self-filed findings, not to make
+  someone wait behind a `fix(deploy)` because their bug is filed as `fix(state)`.
+- **Ranking never lowers verification depth.** A rank-1 issue and a rank-9 issue
+  get the same review tier, the same integs and the same live test — priority
+  decides ORDER, never rigor (see CLAUDE.md → "Cost is not a tiebreaker").
+
 ## 4. CLAIM the chosen issues BEFORE editing
 
 For EACH issue you will start:
