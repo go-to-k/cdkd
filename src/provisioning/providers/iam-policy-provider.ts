@@ -20,9 +20,48 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceDeleteResult,
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * The short `ResourceDeleteResult.reason` the no-policy-name DELETE arm
+ * reports (issue [#1770](https://github.com/go-to-k/cdkd/issues/1770)).
+ *
+ * Rendered inline on the destroy status line, so it is the SHORT form; the full
+ * remediation sentence goes out as the `logger.warn` beside it. It says "in
+ * state" rather than "in physicalId" because the arm is only reached once BOTH
+ * sources have been exhausted — the physicalId and `properties['PolicyName']`.
+ */
+export const POLICY_NAME_SKIP_REASON = 'no policy name in state — no delete issued';
+
+/**
+ * The short `ResourceDeleteResult.reason` for a record that names no principal
+ * to detach the inline policy from (issue
+ * [#1770](https://github.com/go-to-k/cdkd/issues/1770) review).
+ *
+ * Distinct from {@link POLICY_NAME_SKIP_REASON}: the policy may be perfectly
+ * well named and it is the ATTACHMENT that is unknown, so pointing the user at
+ * the physicalId would send them to the wrong half of the record.
+ */
+export const POLICY_NO_TARGET_SKIP_REASON = 'no Roles/Groups/Users in state — no delete issued';
+
+/**
+ * The deploy-side caveat the skip warning in this file carries (issue
+ * [#1762](https://github.com/go-to-k/cdkd/issues/1762)).
+ *
+ * "Repair state.json and re-run" is only true on DESTROY, where the skip KEEPS
+ * the record. The same arm is ALSO reached from `deploy-engine.ts` and
+ * `rollback-executor.ts`, which discard the delete result and DROP the record —
+ * there the id is gone, so re-running cannot help and the resource has to be
+ * removed by hand. Mirrors the caveat `compositeIdFormatMessage` already
+ * carries for the composite-id family.
+ */
+const DEPLOY_SKIP_CAVEAT =
+  `NOTE this arm is ALSO reached from cdkd deploy (the DELETE of a resource removed from the ` +
+  `template, plus the replacement / rollback deletes), which DROP the state record and report ` +
+  `success (https://github.com/go-to-k/cdkd/issues/1762) — there, remove the resource by hand.`;
 
 /**
  * AWS IAM Policy Provider
@@ -345,15 +384,89 @@ export class IAMPolicyProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     this.logger.debug(`Deleting IAM policy ${logicalId}: ${physicalId}`);
 
     // Physical ID is the policy name (new format) or "policyName:roleName" (old format)
-    const policyName = physicalId.includes(':') ? physicalId.split(':')[0] : physicalId;
+    const policyNameFromPhysicalId = physicalId.includes(':')
+      ? physicalId.split(':')[0]
+      : physicalId;
+
+    // Issue #1770: every Delete*Policy call below is addressed by PolicyName,
+    // and an empty one (physicalId `''` or a leading `:`) leaves nothing to
+    // send. But the physicalId is not the only source — `PolicyName` is in
+    // `handledProperties`, and `create()` uses `properties['PolicyName']`
+    // verbatim as the real AWS name when the template sets it, so a record
+    // whose physicalId lost the name may still carry it. The physicalId stays
+    // FIRST (it is what was actually deployed, and it is the only source in the
+    // generated-name case where the template set no PolicyName); properties are
+    // the fallback. Skipping is expensive now — it preserves the record and
+    // exits non-zero — so both sources are exhausted before reporting one.
+    //
+    // The `typeof` check is load-bearing and the emptiness check is NOT: a
+    // non-string `PolicyName` (a number, an unresolved intrinsic object) would
+    // otherwise be handed to `DeleteRolePolicy` as-is, while an empty string is
+    // already falsy and falls through the `||` to the skip below.
+    const policyNameFromProperties =
+      typeof properties?.['PolicyName'] === 'string' ? properties['PolicyName'] : undefined;
+    const policyName = policyNameFromPhysicalId || policyNameFromProperties;
+
+    // Target lists, hoisted out of the try below so the no-target guard can see
+    // them. `legacyRoleFromPhysicalId` reproduces the legacy
+    // "<policyName>:<roleName>" branch's own condition exactly, so the two
+    // cannot drift.
+    const roles = properties?.['Roles'] as string[] | undefined;
+    const groups = properties?.['Groups'] as string[] | undefined;
+    const users = properties?.['Users'] as string[] | undefined;
+    const legacyRoleFromPhysicalId =
+      !roles && !groups && !users && physicalId.includes(':')
+        ? physicalId.split(':')[1]
+        : undefined;
 
     if (!policyName) {
-      this.logger.warn(`Invalid physical ID format: ${physicalId}, skipping deletion`);
-      return;
+      this.logger.warn(
+        `Invalid physical ID format: ${physicalId}, and no PolicyName in the state record's ` +
+          `properties — skipping deletion. No AWS call is issued, so the inline policy is LEFT ` +
+          `ATTACHED to its roles / groups / users, UNLESS the role / group / user it is attached ` +
+          `to is itself part of this stack (deleting that principal removes its inline policies, ` +
+          `and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack>'). ` +
+          `Otherwise repair the physicalId in state.json and re-run, or delete the inline policy ` +
+          `by hand. ${DEPLOY_SKIP_CAVEAT}`
+      );
+      return { outcome: 'skipped', reason: POLICY_NAME_SKIP_REASON };
+    }
+
+    // Issue #1770 review: an inline policy exists ONLY as an attachment, so a
+    // record that names no principal cannot be deleted. Without any target list
+    // and without the legacy role segment, every branch in the try below is
+    // skipped, delete() falls out having issued ZERO AWS calls, and returns
+    // `undefined` — i.e. DELETED — over a policy that may still be attached and
+    // still granting. That hole predates the PolicyName fallback above
+    // (`physicalId: 'MyPolicy'` with empty properties already reached it), but
+    // the fallback newly ROUTES formerly-skipped records into it, so it is
+    // closed here rather than left to be inherited.
+    //
+    // A PRESENT but empty list (`Roles: []`) is deliberately NOT a skip: an
+    // empty attachment set means nothing is attached, so there is genuinely
+    // nothing to remove — the same judgment as `Users: []` on
+    // AWS::IAM::UserToGroupAddition. An array is truthy, so `!roles` already
+    // distinguishes that from absence, and using the SAME truthiness test the
+    // legacy branch and the loops below use is what keeps the three in step:
+    // a `=== undefined` spelling would let a null-valued `Roles` (which a
+    // hand-edited or pre-v7 state file can carry) fall through the guard into
+    // the very zero-AWS-call path it exists to close.
+    if (!roles && !groups && !users && !legacyRoleFromPhysicalId) {
+      this.logger.warn(
+        `No Roles, Groups or Users in the state record for IAM policy ${logicalId} ` +
+          `(physicalId "${physicalId}"), skipping deletion — an inline policy exists only as an ` +
+          `attachment, so with no principal named there is no delete to issue and the policy is ` +
+          `LEFT ATTACHED wherever it is, UNLESS the role / group / user it is attached to is ` +
+          `itself part of this stack (deleting that principal removes its inline policies, and ` +
+          `then only the cdkd record is stale — clear it with 'cdkd state orphan <stack>'). ` +
+          `Otherwise restore Roles / Groups / Users in state.json and re-run, or delete the ` +
+          `inline policy by hand. ${DEPLOY_SKIP_CAVEAT}`
+      );
+      return { outcome: 'skipped', reason: POLICY_NO_TARGET_SKIP_REASON };
     }
 
     // Each per-target loop swallows NoSuchEntityException as idempotent
@@ -375,29 +488,24 @@ export class IAMPolicyProvider implements ResourceProvider {
     };
 
     try {
-      // Get target lists from properties (state stores these)
-      const roles = properties?.['Roles'] as string[] | undefined;
-      const groups = properties?.['Groups'] as string[] | undefined;
-      const users = properties?.['Users'] as string[] | undefined;
-
-      // If no properties available, try legacy format (physicalId = "policyName:roleName")
-      if (!roles && !groups && !users && physicalId.includes(':')) {
-        const firstRole = physicalId.split(':')[1];
-        if (firstRole) {
-          try {
-            await this.iamClient.send(
-              new DeleteRolePolicyCommand({
-                RoleName: firstRole,
-                PolicyName: policyName,
-              })
-            );
-            this.logger.debug(`Deleted inline policy ${policyName} from role ${firstRole}`);
-          } catch (error) {
-            if (error instanceof NoSuchEntityException) {
-              await onNotFound(`role ${firstRole}`);
-            } else {
-              throw error;
-            }
+      // If no properties available, try legacy format (physicalId = "policyName:roleName").
+      // The target lists and this role segment are computed above, so the
+      // no-target guard sees exactly what this branch does.
+      if (legacyRoleFromPhysicalId) {
+        const firstRole = legacyRoleFromPhysicalId;
+        try {
+          await this.iamClient.send(
+            new DeleteRolePolicyCommand({
+              RoleName: firstRole,
+              PolicyName: policyName,
+            })
+          );
+          this.logger.debug(`Deleted inline policy ${policyName} from role ${firstRole}`);
+        } catch (error) {
+          if (error instanceof NoSuchEntityException) {
+            await onNotFound(`role ${firstRole}`);
+          } else {
+            throw error;
           }
         }
       }

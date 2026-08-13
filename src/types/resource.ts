@@ -153,11 +153,16 @@ export interface ResourceUpdateResult extends EffectivePropertiesResult {
  *
  *   The invariant is "the resource this result names was NOT destroyed" — it
  *   is deliberately NOT "no AWS call was issued", and reading it that way is a
- *   mistake a future caller could build on. Two producers today:
- *   the malformed-composite-physicalId delete arms, which really do issue no
- *   call; and `NestedStackProvider.delete`, which recursed into the child's
- *   own destroy and so may have DELETED the child's other resources before
- *   reporting that the child stack as a whole was not destroyed.
+ *   mistake a future caller could build on. Most producers DO issue no call —
+ *   the malformed-composite-physicalId delete arms, plus the eight arms issue
+ *   [#1770](https://github.com/go-to-k/cdkd/issues/1770) converted, where the
+ *   state record is missing the id or the property the delete is addressed BY
+ *   (Lambda layer / permission, Custom Resource, IAM policy / user-group).
+ *   `NestedStackProvider.delete` is the one that does not: it recursed into the
+ *   child's own destroy and so may have DELETED the child's other resources
+ *   before reporting that the child stack as a whole was not destroyed. That
+ *   single exception is why the invariant is worded about the ROW rather than
+ *   about the call.
  *
  * The issue's sketch had a third value, `'already-absent'`, splitting the
  * idempotent arms out of `'deleted'`. It is deliberately NOT here: no call
@@ -175,7 +180,15 @@ export type ResourceDeleteResult =
       readonly outcome: 'deleted';
     }
   | {
-      /** cdkd could NOT address the resource; no AWS call was issued. */
+      /**
+       * cdkd could NOT address the resource this result names, so it was NOT
+       * destroyed and may still be ALIVE.
+       *
+       * Deliberately NOT "no AWS call was issued" — see the invariant in the
+       * block comment above. Most producers do issue no call, but
+       * `NestedStackProvider.delete` reports `'skipped'` after its recursion
+       * has already DELETED the child's other resources.
+       */
       readonly outcome: 'skipped';
       /**
        * One line saying why, rendered inline on the per-resource status line

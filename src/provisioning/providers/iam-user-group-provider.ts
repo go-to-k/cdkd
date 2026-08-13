@@ -45,9 +45,48 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceDeleteResult,
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * The short `ResourceDeleteResult.reason` the no-properties
+ * `AWS::IAM::UserToGroupAddition` DELETE arm reports (issue
+ * [#1770](https://github.com/go-to-k/cdkd/issues/1770)).
+ *
+ * Rendered inline on the destroy status line, so it is the SHORT form; the full
+ * remediation sentence goes out as the `logger.warn` beside it. It names the
+ * MEMBERSHIP rather than the resource because that is what survives — the
+ * resource itself is metadata, the users staying in the group is the residue.
+ */
+export const MEMBERSHIP_NO_PROPERTIES_SKIP_REASON =
+  'no properties in state — group membership not removed';
+
+/**
+ * Sibling of {@link MEMBERSHIP_NO_PROPERTIES_SKIP_REASON} for the arm where the
+ * record has properties but is missing `GroupName` or `Users` — both REQUIRED
+ * by the CloudFormation schema, so their absence is corruption, not an
+ * empty-but-valid membership list.
+ */
+export const MEMBERSHIP_MISSING_FIELDS_SKIP_REASON =
+  'GroupName/Users missing from state — membership not removed';
+
+/**
+ * The deploy-side caveat both `UserToGroupAddition` skip warnings carry (issue
+ * [#1762](https://github.com/go-to-k/cdkd/issues/1762)).
+ *
+ * "Repair state.json and re-run" is only true on DESTROY, where the skip KEEPS
+ * the record. The same arms are ALSO reached from `deploy-engine.ts` and
+ * `rollback-executor.ts`, which discard the delete result and DROP the record —
+ * there the id is gone, so re-running cannot help and the memberships have to
+ * be removed by hand. Mirrors the caveat `compositeIdFormatMessage` already
+ * carries for the composite-id family.
+ */
+const DEPLOY_SKIP_CAVEAT =
+  `NOTE this arm is ALSO reached from cdkd deploy (the DELETE of a resource removed from the ` +
+  `template, plus the replacement / rollback deletes), which DROP the state record and report ` +
+  `success (https://github.com/go-to-k/cdkd/issues/1762) — there, remove the memberships by hand.`;
 
 /**
  * AWS IAM User / Group / UserToGroupAddition Provider
@@ -151,7 +190,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     switch (resourceType) {
       case 'AWS::IAM::User':
         return this.deleteUser(logicalId, physicalId, resourceType, context);
@@ -1357,25 +1396,63 @@ export class IAMUserGroupProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>,
     _context?: DeleteContext
-  ): Promise<void> {
+  ): Promise<void | ResourceDeleteResult> {
     // UserToGroupAddition is metadata-only (RemoveUserFromGroup); the
     // "skipping" returns below trigger when input properties are missing,
     // not when AWS reports the user/group missing, so the region check
     // does not apply here. The context is accepted for interface
     // consistency.
+    //
+    // Issue #1770 re-judged both arms and CONVERTED them to `'skipped'`. They
+    // logged at DEBUG, which reads as "routine, nothing to do" — but it is not:
+    // `GroupName` and `Users` are both REQUIRED by the CloudFormation schema
+    // for AWS::IAM::UserToGroupAddition, and `createUserToGroupAddition` above
+    // THROWS on either being absent, so a record missing one cannot have come
+    // from a successful create — it is CORRUPT, not empty. The memberships its
+    // AddUserToGroup calls made therefore survive the destroy, and the users
+    // keep every permission the group grants. That is exactly "cdkd could not
+    // address it", and it is why the level is now WARN — a skip preserves state
+    // and exits non-zero, and the user needs to see why at normal verbosity.
+    //
+    // An empty `Users: []` is a genuinely different shape and stays a
+    // `deleted`: an array is truthy, so it falls through to the loop below and
+    // correctly does nothing. Its producer is UPDATE, not create —
+    // `updateUserToGroupAddition` reads `(properties['Users'] as string[]) || []`,
+    // removes every old user when the new list is empty, and records `[]`.
+    // (Create cannot produce it: it rejects `users.length === 0`.)
     this.logger.debug(`Deleting IAM UserToGroupAddition ${logicalId}`);
 
+    // Neither arm has a second source to fall back on, unlike the
+    // Lambda-permission / IAM-policy arms: `RemoveUserFromGroup` is addressed
+    // by GroupName + UserName, and this resource's physicalId is just the
+    // logicalId (see `createUserToGroupAddition`), so it names neither.
     if (!properties) {
-      this.logger.debug(`No properties for UserToGroupAddition ${logicalId}, skipping deletion`);
-      return;
+      this.logger.warn(
+        `No properties for UserToGroupAddition ${logicalId}, skipping deletion — GroupName and ` +
+          `Users are both required to call RemoveUserFromGroup, so no AWS call is issued and ` +
+          `the group memberships are LEFT IN PLACE, UNLESS the group or the users are ` +
+          `themselves part of this stack (their own deletes remove exactly these memberships, ` +
+          `and then only the cdkd record is stale — clear it with 'cdkd state orphan <stack>'). ` +
+          `Otherwise restore the record's properties in state.json and re-run, or remove the ` +
+          `users from the group by hand. ${DEPLOY_SKIP_CAVEAT}`
+      );
+      return { outcome: 'skipped', reason: MEMBERSHIP_NO_PROPERTIES_SKIP_REASON };
     }
 
     const groupName = properties['GroupName'] as string;
     const users = properties['Users'] as string[];
 
     if (!groupName || !users) {
-      this.logger.debug(`Missing GroupName or Users for ${logicalId}, skipping deletion`);
-      return;
+      this.logger.warn(
+        `Missing GroupName or Users for ${logicalId}, skipping deletion — both are required to ` +
+          `call RemoveUserFromGroup, so no AWS call is issued and the group memberships are ` +
+          `LEFT IN PLACE, UNLESS the group or the users are themselves part of this stack ` +
+          `(their own deletes remove exactly these memberships, and then only the cdkd record ` +
+          `is stale — clear it with 'cdkd state orphan <stack>'). Otherwise restore them in ` +
+          `state.json and re-run, or remove the users from the group by hand. ` +
+          `${DEPLOY_SKIP_CAVEAT}`
+      );
+      return { outcome: 'skipped', reason: MEMBERSHIP_MISSING_FIELDS_SKIP_REASON };
     }
 
     try {

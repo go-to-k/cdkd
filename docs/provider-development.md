@@ -1692,12 +1692,72 @@ landed or was transient, while a skip is a positive statement that the resource
 was not destroyed.
 
 Producers today: the malformed-composite-physicalId family
-(`src/provisioning/composite-id.ts`, five arms) plus the nested-stack
-propagation above. Same-class arms elsewhere in the tree (Lambda layer /
-permission, Custom Resource, IAM policy / user-group) have NOT been converted
-yet — issue [#1770](https://github.com/go-to-k/cdkd/issues/1770) — and neither
-have the deploy-engine / rollback-executor callers, which discard the return
-value entirely (issue
+(`src/provisioning/composite-id.ts`, five arms), the nested-stack propagation
+above, and — since issue [#1770](https://github.com/go-to-k/cdkd/issues/1770) —
+eight same-class arms outside the composite-id family: both malformed
+`LayerVersionArn` arms in `lambda-layer-provider.ts`, the missing-`FunctionName`
+arm in `lambda-permission-provider.ts`, the no-properties / no-`ServiceToken`
+arms in `custom-resource-provider.ts`, the empty-policy-name arm in
+`iam-policy-provider.ts`, and both `AWS::IAM::UserToGroupAddition` arms in
+`iam-user-group-provider.ts`. Each exports its `reason` as a named constant
+beside the provider, so the wording is pinned by a test instead of retyped.
+
+Three lessons from that issue's code review are worth reusing before you add a
+skip arm of your own.
+
+**Exhaust every addressable source first.** A skip is not a free "safe"
+default: it preserves the record, warns, and exits 2 — on every re-run, so the
+destroy can never go green. Two of the eight arms were skipping although a
+second source held the value. `RemovePermission` accepts a full ARN as
+`FunctionName`, and the physicalId's documented
+`<functionArn>|<statementId>` shape carries one; `PolicyName` is in
+`handledProperties` and `create()` uses it verbatim as the real AWS name. Order
+the sources by what was DEPLOYED — the physicalId wins over the property, or a
+template edit that renamed the policy without a replacement having landed would
+send a delete for a name AWS never had.
+
+**Validate the fallback, or it is worse than the skip.** A truthy NON-string
+(an unresolved intrinsic, an array) must not beat a good second source — the SDK
+URI-encodes it into a garbage label that 404s, and the idempotent `*NotFound`
+arm then reports DELETED. Check the fallback's REGION too: a provider holds one
+client, so a cross-region ARN sends the call to the wrong region and is reported
+DELETED the same way. And do not let the gate refuse a genuine source — the CFn
+primary identifier `[FunctionName, Id]` carries a BARE name as often as an ARN.
+
+**A guard that admits a record must check the path it opens reaches AWS.** The
+IAM `PolicyName` fallback turned an honest skip into a silent `deleted`: with
+the name resolvable, a record naming no `Roles` / `Groups` / `Users` reached a
+body where every branch is skipped — zero AWS calls, returning `undefined`, i.e.
+DELETED. Trace the admitted path to an actual call, and use the same truthiness
+spelling the branches downstream use so a null-valued list cannot slip past.
+
+**"LEFT IN PLACE" is false when the parent is in the same stack.** The destroy
+keeps going after a skip, and `deleteGroup` / `deleteUser` remove exactly those
+memberships, a deleted Lambda function drops its whole resource policy, a
+deleted IAM role drops its inline policies. Qualify the wording and name
+`cdkd state orphan <stack>`; do not copy the qualifier onto an arm where it is
+false (a layer version and a Custom Resource's external side effects are undone
+by nothing).
+
+**"Repair state.json and re-run" is only true on destroy** — the deploy engine
+and rollback executor DROP the record (issue
+[#1762](https://github.com/go-to-k/cdkd/issues/1762)), so every skip warning
+carries the same caveat `compositeIdFormatMessage` does.
+
+Two judgment calls from that issue are worth reusing. The
+`UserToGroupAddition` arms logged at DEBUG, which read as "routine, nothing to
+do" — but `GroupName` and `Users` are both REQUIRED by the CloudFormation
+schema, so a record missing either is CORRUPT rather than empty, and the
+memberships `AddUserToGroup` created survive the destroy; they are skips, and
+the level was raised to WARN to match (a skip preserves state and exits
+non-zero, so the user needs the explanation at normal verbosity). An EMPTY
+`Users: []` is the opposite case and stays a `deleted`: an array is truthy, so
+it falls through to the removal loop and correctly does nothing.
+
+The `*NotFound` idempotent arms in those same files are deliberately
+untouched, as is `CustomResourceProvider`'s backing-Lambda-is-gone pre-check —
+those mean the resource IS gone. The deploy-engine / rollback-executor callers
+still discard the return value entirely (issue
 [#1762](https://github.com/go-to-k/cdkd/issues/1762)).
 
 ### 2a. UPDATE removal semantics — clear-on-removal (issue #1155)
