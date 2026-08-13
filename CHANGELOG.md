@@ -1,3 +1,10 @@
+## [0.281.22](https://github.com/go-to-k/cdkd/compare/v0.281.21...v0.281.22) (2026-08-13)
+
+
+### Bug Fixes
+
+* **local:** derive the ECR / template-upload URL suffix from the region ([#1779](https://github.com/go-to-k/cdkd/issues/1779)) ([6fb04fb](https://github.com/go-to-k/cdkd/commit/6fb04fb52b606ae3c768774361af8eadc23e6098))
+
 ## [0.281.21](https://github.com/go-to-k/cdkd/compare/v0.281.20...v0.281.21) (2026-08-13)
 
 
