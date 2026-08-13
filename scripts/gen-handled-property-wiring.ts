@@ -1280,6 +1280,13 @@ export function findEvidenceLosses(
   current: HandledPropertyWiringReport
 ): readonly EvidenceLoss[] {
   if (!baseline) return [];
+  // Keyed by CLASS NAME, not by file+class, matching {@link allowKey} and the
+  // allow-list. Measured: all 84 classified class names are distinct today, so
+  // nothing collides; and the class name survives a file RENAME, which the
+  // file-qualified key would silently turn into "both sides absent" (no
+  // comparison at all). A future same-name-in-two-files pair would mis-pair
+  // here, but it would equally break the allow-list and the stale-entry check,
+  // so the fix belongs to the shared key rather than to this function.
   const previous = new Map<string, PropertyClassification>();
   for (const c of baseline.classes) {
     for (const p of c.properties) previous.set(allowKey(c.className, p.name), p);

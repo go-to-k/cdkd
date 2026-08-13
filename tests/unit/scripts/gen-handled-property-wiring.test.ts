@@ -1169,6 +1169,15 @@ describe('evidence-loss verdict (#1842)', () => {
     expect(findEvidenceLosses(before, after).map((l) => l.property)).toEqual(['Alpha', 'Zeta']);
   });
 
+  it('every classified class name is DISTINCT, which is what the class-only key relies on', () => {
+    // The loss comparison keys by class name (matching `allowKey` and the
+    // allow-list), so a same-name class in two provider files would mis-pair.
+    // 84/84 distinct today; this makes a future collision loud rather than a
+    // silent wrong comparison.
+    const names = loadReport(PROVIDERS_DIR).classes.map((c) => c.className);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
   it('loads the committed matrix as a baseline, and returns null for a non-baseline', () => {
     const baseline = loadBaseline(resolve(REPO_ROOT, 'docs/_generated/handled-property-wiring.json'));
     expect(baseline?.schemaVersion).toBe(1);
