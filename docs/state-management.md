@@ -613,6 +613,39 @@ Each of the import cases names itself in a warning at import time.
 Re-deploy the stack once in either case: the resource's next in-place update
 records the corrected attribute.
 
+### …and it is not what `cdkd export` sends CloudFormation either
+
+`cdkd export` hands a stack to CloudFormation via an IMPORT changeset,
+which addresses each resource by its CFn `primaryIdentifier`. For most
+composite types that identifier is multi-field and cdkd splits the id
+into it. Four types are different — their CFn identifier is a SINGLE
+field holding a value that is not any segment of cdkd's composite:
+
+| Resource Type | CloudFormation IMPORT identifies it by | cdkd resolves it from |
+|---------------|----------------------------------------|-----------------------|
+| `AWS::AppSync::DataSource` | `DataSourceArn` | the recorded `DataSourceArn` attribute |
+| `AWS::AppSync::Resolver` | `ResolverArn` | the recorded `ResolverArn` attribute |
+| `AWS::S3Tables::Table` | `TableARN` | the recorded `TableARN` attribute |
+| `AWS::EC2::SecurityGroupIngress` | `Id` (the `sgr-…` rule id) | nothing — export refuses this type |
+
+You do not need to do anything for the first three: a fresh deploy and
+`cdkd import` both record the attribute. A record that lacks it — the
+degraded cases listed above — makes `cdkd export` block that resource
+with a message naming the attribute; re-deploy the stack once to heal
+the record, then re-run the export. For
+`AWS::EC2::SecurityGroupIngress` cdkd records no `sgr-` rule id at all,
+so the export is refused with a pointer at
+[#1761](https://github.com/go-to-k/cdkd/issues/1761); remove the rule
+from the stack before exporting (it stays in AWS) or destroy it first
+and let CloudFormation create it fresh.
+
+Some composite types cannot be exported at all, for an unrelated reason:
+CloudFormation itself refuses `AWS::Glue::Table`,
+`AWS::Route53::RecordSet`, `AWS::AppSync::ApiKey` and
+`AWS::EC2::NetworkAclEntry` in IMPORT changesets. `cdkd export` detects
+that up front and names every affected resource — see
+[cli-reference.md](cli-reference.md#cdkd-export-hand-a-stack-over-to-cloudformation).
+
 Two more types **accept** a composite id without producing one:
 
 - `AWS::ECS::Service` — cdkd stores the service ARN, but

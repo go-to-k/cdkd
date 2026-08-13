@@ -950,7 +950,12 @@ permission is missing, cdkd logs a warning and gracefully falls back to a
 minimal patch (the pre-existing behavior), so deploys still work — but
 write-only properties may be dropped on update for affected resource
 types. `cdkd export` also uses `cloudformation:DescribeType` to resolve
-primary identifiers (with a hardcoded fallback table).
+primary identifiers (with a hardcoded fallback table) and, from the same
+response, to pre-flight resource types CloudFormation cannot IMPORT at
+all. Without the permission the export still runs off the fallback
+table, but the pre-flight cannot fire — a non-importable type then
+surfaces later as `ResourceTypes [<T>] are not supported for Import`
+from `CreateChangeSet`, naming only some of the offenders.
 
 **2. CloudFormation PassRole permission**
 

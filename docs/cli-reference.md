@@ -2525,8 +2525,12 @@ cdkd export                                       # auto-detect single-stack app
    ~30 single-key types). **Composite primary identifiers**
    (`primaryIdentifier.length > 1`) are supported for
    `AWS::ApiGateway::Method`, `AWS::ApiGateway::Resource`,
+   `AWS::ApiGateway::Deployment`, `AWS::ApiGateway::Stage`,
+   `AWS::ApiGateway::Authorizer`, `AWS::ApiGateway::Model`,
+   `AWS::ApiGateway::RequestValidator`,
    `AWS::EC2::VPCGatewayAttachment`, `AWS::ApiGatewayV2::Integration`,
-   `AWS::ApiGatewayV2::Route`, and `AWS::Lambda::Permission` via a
+   `AWS::ApiGatewayV2::Route`, `AWS::S3Tables::Namespace`, and
+   `AWS::Lambda::Permission` via a
    per-type splitter that maps cdkd's `physicalId` (plus the resource's
    recorded `properties` for sub-resource types where the parent
    identifier — `ApiId` / `FunctionName` — lives in `properties`, not
@@ -2563,6 +2567,57 @@ cdkd export                                       # auto-detect single-stack app
    Pass `--no-recreate-import-unsupported` to block instead of
    auto-handling. Per-type config lives in `IMPORT_UNSUPPORTED_RECREATABLE_TYPES`
    and `PRE_DELETE_HANDLERS` in `src/cli/commands/export.ts`.
+
+   **Types whose cdkd physical id is composite while the CFn identifier
+   is a single field** are resolved from the value cdkd RECORDED, not
+   from the id (issue
+   [#1659](https://github.com/go-to-k/cdkd/issues/1659)). CFn identifies
+   an `AWS::S3Tables::Table` by its `TableARN` and an
+   `AWS::AppSync::DataSource` / `::Resolver` by its `DataSourceArn` /
+   `ResolverArn`, while cdkd's physical id for each is the
+   pipe-joined tuple its provider needs
+   (`<tableBucketARN>|<namespace>|<name>`, `<apiId>|<name>`,
+   `<apiId>|<typeName>|<fieldName>`) — and the correct identifier is
+   not a segment of that tuple, so the composite-id splitters above
+   cannot produce it. cdkd reads the ARN from the resource's recorded
+   `attributes` instead, and blocks the resource with an actionable
+   message when state does not carry it (a record written before cdkd
+   started recording the ARN — re-deploy the stack once to heal it, as
+   [state-management.md](state-management.md#the-composite-id-is-not-what-ref-returns)
+   describes). `AWS::EC2::SecurityGroupIngress` is refused outright:
+   CFn identifies a rule by the `sgr-...` id AWS mints and cdkd records
+   nothing that carries it (tracked in
+   [#1761](https://github.com/go-to-k/cdkd/issues/1761)).
+
+   **Types CloudFormation cannot IMPORT at all are refused up front.**
+   A type whose registry schema declares no `read` handler AND reports
+   `ProvisioningType: NON_PROVISIONABLE` is rejected by
+   `CreateChangeSet` with
+   `ResourceTypes [<T>] are not supported for Import` — `AWS::Glue::Table`,
+   `AWS::Route53::RecordSet`, `AWS::Route53::RecordSetGroup`,
+   `AWS::AppSync::ApiKey`, `AWS::EC2::NetworkAclEntry`,
+   `AWS::SQS::QueuePolicy` and `AWS::SNS::TopicPolicy` are all in this
+   class (measured live, us-east-1, 2026-08-13). cdkd surfaces them
+   from the schema it already fetches for the identifier and names
+   EVERY offending resource in one message — AWS's own error is not
+   exhaustive (a probe carrying three unsupported types named two of
+   them). Both signals must agree before cdkd refuses, so a partial or
+   unusual `DescribeType` response falls back to letting AWS answer.
+
+   The whole plan — this refusal and every other `blocked` reason — is
+   built BEFORE the stack lock is acquired, so a stack that cannot be
+   exported says so without first locking out concurrent `cdkd deploy`
+   / `cdkd destroy`. Planning issues no AWS write (it reads cdkd state
+   and `DescribeType`), and the nested-stack path has always planned
+   before locking.
+
+   Remove the resource from the stack before exporting (it stays in AWS
+   and can be re-declared in CloudFormation afterwards), or destroy it
+   first and let CloudFormation create it fresh. The verdict is a
+   registry HEURISTIC rather than AWS's published supported-for-import
+   list, so `--skip-import-support-preflight` is the escape hatch if
+   AWS has since made the type importable — the changeset is then
+   submitted and CloudFormation answers for itself.
 5. Acquire the stack lock so concurrent `cdkd deploy` cannot race.
 6. Confirm with the user (skipped with `-y` / `--yes`).
 7. **Preprocess the phase-1 template** (automatic; required by CFn IMPORT

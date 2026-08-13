@@ -135,6 +135,21 @@ interface ExportOptions {
    * it `true`. See cdkd issue #307 for the design discussion.
    */
   recreateImportUnsupported: boolean;
+  /**
+   * Skip the registry-derived IMPORT-support pre-flight (issue
+   * [#1659](https://github.com/go-to-k/cdkd/issues/1659)).
+   *
+   * The pre-flight refuses a type whose schema declares no `read` handler AND
+   * reports `ProvisioningType: NON_PROVISIONABLE`. That is a HEURISTIC over the
+   * registry, not AWS's actual supported-for-import list — it matched every
+   * type measured (2026-08-13), but a type AWS later makes importable would be
+   * hard-blocked by cdkd on an export that CloudFormation would accept, with
+   * `blocked` aborting the whole run. The sibling
+   * `IMPORT_UNSUPPORTED_RECREATABLE_TYPES` refusal has
+   * `--no-recreate-import-unsupported`; this is its counterpart, so a wrong
+   * heuristic costs a flag rather than a cdkd release.
+   */
+  skipImportSupportPreflight: boolean;
 }
 
 /**
@@ -160,9 +175,17 @@ interface ExportOptions {
  * PR B2 — until that lands, the orchestrator hard-errors at submission
  * time with a clear pointer.
  *
- * The list is intentionally narrow. Other resource types CFn may not yet
- * support for import are surfaced as errors by the CreateChangeSet call
- * itself; we do not try to maintain a closed allowlist here.
+ * The list is intentionally narrow, and stays hand-written because each member
+ * is a cdkd / CDK construct rather than something the registry describes.
+ *
+ * It is NOT the only refusal, though — the "defer to the CreateChangeSet
+ * error" note this comment used to end on was revisited in issue
+ * [#1659](https://github.com/go-to-k/cdkd/issues/1659). Types AWS refuses for
+ * IMPORT because their registry schema declares no `read` handler are now
+ * caught by {@link buildImportPlan}'s pre-flight instead, which needs no
+ * hand-maintained list (the signal is derived from the schema cdkd already
+ * fetches for the identifier) and names every offender in one pass — AWS's own
+ * error names only some of them.
  */
 const NEVER_IMPORTABLE_TYPES = new Set<string>(['AWS::CDK::Metadata']);
 
@@ -479,16 +502,75 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       propertiesOverlay: { ApiId: apiId },
     };
   },
-  // NOTE: `AWS::ApiGatewayV2::Stage` is intentionally NOT in this map.
-  // (1) AWS reports its primaryIdentifier as `['/properties/Id']` (single-key),
-  //     so cdkd's single-key resolution path handles it without a splitter.
-  // (2) But AWS CloudFormation does NOT support `AWS::ApiGatewayV2::Stage` in
-  //     IMPORT changesets (CreateChangeSet rejects with "ResourceTypes
-  //     [AWS::ApiGatewayV2::Stage] are not supported for Import"). This means
-  //     `cdkd export` cannot complete on any stack that includes an HttpApi
-  //     (CDK auto-creates a `$default` Stage). Tracked in a follow-up issue
-  //     (link in PR description); the workaround design is open
-  //     (pre-delete + phase-2-CREATE vs hard-block-with-clear-error).
+  // cdkd stores `<tableBucketARN>|<namespaceName>` (s3-tables-provider.ts's
+  // `createNamespace`); CFn primary identifier is [TableBucketARN, Namespace] —
+  // same order. Both fields are writable Properties the synth template already
+  // carries (live `DescribeType`, us-east-1, 2026-08-13:
+  // `readOnlyProperties` absent entirely, both fields `createOnlyProperties`
+  // and `required`, both plain strings), so the default whole-map overlay is
+  // correct and no narrowing is needed.
+  //
+  // Registered while live-testing issue #1659: without it, `cdkd export` aborts
+  // on EVERY S3 Tables stack with "composite primary identifier (2 fields:
+  // TableBucketARN, Namespace)", because CDK's `CfnTable` requires a namespace
+  // and the namespace is its own resource. That made the sibling
+  // `AWS::S3Tables::Table` identifier fix in this same change unreachable in
+  // practice — a table cannot be exported without its namespace in the plan.
+  //
+  // `Namespace` is a STRING on both sides — measured 2026-08-13, because
+  // `s3-tables-provider.ts` carries a comment claiming the CFn schema types it
+  // `List<String>` and that provider tolerates both wire shapes:
+  //   - live `DescribeType`: `definitions.Namespace = {"type": "string"}`;
+  //   - `aws-cdk-lib` 2.244.0 `CfnNamespaceProps.namespace: string`, and a
+  //     synth of the typed prop emits `"Namespace": "analytics"`.
+  // So the provider's comment is stale and the whole-map overlay below is
+  // right for every template CDK's typed API can produce.
+  //
+  // An ARRAY is still REACHABLE, via `addPropertyOverride('Namespace', [...])`
+  // (measured: it synthesizes `"Namespace": ["analytics"]`), and cdkd deploys
+  // it because the provider accepts both. Such a template is not valid
+  // CloudFormation — the registry types the property `string`, so CFn would
+  // reject it on a plain CREATE too — and `overlayResourceIdentifierOnProperties`
+  // only overwrites a field the template carries as a literal STRING, so the
+  // array survives into the phase-1 template and CFn answers with an opaque
+  // changeset-create rejection. The `resourceIdentifier` this splitter builds
+  // is correct either way (it comes from the physicalId, not the template).
+  // Not repaired here: the fix belongs in the overlay's literal-string rule,
+  // which is shared by every type. Tracked in
+  // [#1771](https://github.com/go-to-k/cdkd/issues/1771) alongside the stale
+  // provider comment.
+  'AWS::S3Tables::Namespace': (physicalId) => {
+    const parts = physicalId.split('|');
+    if (parts.length !== 2) {
+      throw new Error(
+        `expected 2 parts ('<tableBucketARN>|<namespaceName>'), got ${parts.length}: '${physicalId}'`
+      );
+    }
+    const [tableBucketARN, namespace] = parts as [string, string];
+    if (!tableBucketARN || !namespace) {
+      throw new Error(`empty part in '<tableBucketARN>|<namespaceName>': '${physicalId}'`);
+    }
+    return { resourceIdentifier: { TableBucketARN: tableBucketARN, Namespace: namespace } };
+  },
+  // NOTE: `AWS::ApiGatewayV2::Stage` is intentionally NOT in this map — it is
+  // handled by IMPORT_UNSUPPORTED_RECREATABLE_TYPES (pre-delete + phase-2
+  // CREATE) instead, because AWS CloudFormation rejected it from IMPORT
+  // changesets ("ResourceTypes [AWS::ApiGatewayV2::Stage] are not supported
+  // for Import"), which blocked `cdkd export` on any stack with an HttpApi
+  // (CDK auto-creates a `$default` Stage).
+  //
+  // BOTH facts this note used to assert are now stale, measured live
+  // us-east-1 2026-08-13: the type reports `primaryIdentifier`
+  // `[ApiId, StageName]` (not the single-key `['/properties/Id']` recorded
+  // here) and `ProvisioningType: FULLY_MUTABLE` with a full handler set
+  // INCLUDING `read` (not `handlers: []`). So the registry no longer says the
+  // type is un-importable. Nothing is changed on that basis here — the
+  // recreatable branch runs before any identifier resolution, so the arity
+  // never reaches this map — but a re-test of whether the pre-delete dance
+  // (and its ~10s unavailability window) is still needed is worth doing;
+  // recorded rather than acted on because it is a behavior change for a type
+  // this PR does not otherwise touch. Tracked in
+  // [#1772](https://github.com/go-to-k/cdkd/issues/1772).
   // cdkd stores `StatementId` (lambda-permission-provider.ts:124); for state
   // entries written by the older CC-API path (pre-SDK-provider), physicalId
   // may instead be the legacy `<functionArn>|<statementId>` shape — the
@@ -663,6 +745,257 @@ export function splitCompositePhysicalId(
     throw new Error(`no composite-id splitter registered for ${resourceType}`);
   }
   return splitter(physicalId, properties);
+}
+
+/**
+ * The cdkd state a {@link CompositePhysicalIdIdentifier} reads to recover the
+ * value CloudFormation IMPORT wants.
+ *
+ * Deliberately NOT carrying the resource's `properties`: no entry needs it (an
+ * identifier here is a value AWS minted, not one the template declares), and
+ * the splitter family — which does need it, for a parent id like `ApiId` —
+ * takes it as its own second argument. Add it back the day an entry has a use
+ * for it, rather than passing a bag every resolve ignores.
+ */
+export interface CompositePhysicalIdContext {
+  readonly logicalId: string;
+  readonly physicalId: string;
+  readonly attributes: Record<string, unknown>;
+}
+
+interface CompositePhysicalIdIdentifier {
+  /**
+   * The type's CFn `primaryIdentifier` field name. Cross-checked against the
+   * live registry schema before {@link resolve} runs, so a schema change under
+   * cdkd surfaces as an explicit error rather than a wrong identifier.
+   */
+  readonly field: string;
+  /**
+   * Recover the identifier VALUE from cdkd state. Throws with an actionable
+   * message when state does not carry it — the export is then blocked for that
+   * resource instead of sending CFn something wrong.
+   */
+  readonly resolve: (ctx: CompositePhysicalIdContext) => string;
+}
+
+/**
+ * Types whose cdkd physicalId is a COMPOSITE (`|`-joined) string while
+ * CloudFormation's `primaryIdentifier` is a SINGLE field — so the physicalId is
+ * NOT the identifier value, and it is not a SPLIT of the composite either
+ * (issue [#1659](https://github.com/go-to-k/cdkd/issues/1659)).
+ *
+ * ## Why this table exists next to `COMPOSITE_ID_SPLITTERS`
+ *
+ * `resolveResourceIdentifier` used to conflate two independent questions: the
+ * ARITY of the CFn identifier, and the FORMAT of cdkd's physical id. The
+ * single-field branch assumed "the physicalId IS the identifier value", which
+ * holds for every type whose id is a scalar and silently produces a wrong value
+ * for a composite-id type whose CFn identifier happens to be single-field —
+ * `{ TableARN: 'arn:aws:s3tables:...|analytics|events' }` for an
+ * `AWS::S3Tables::Table`. `COMPOSITE_ID_SPLITTERS` cannot fix that: it is only
+ * consulted on the multi-field branch, so registering a type there would add an
+ * entry no code path reaches.
+ *
+ * This table is consulted BEFORE the arity branch, so the two concerns are
+ * separated: a registered type never takes the "physicalId is the identifier"
+ * assumption regardless of what the schema's field count says.
+ *
+ * ## Why a RESOLVE and not a split
+ *
+ * The correct identifier for each member is a different value entirely, not a
+ * segment of the composite — an ARN AWS minted, or an `sgr-` rule id. So each
+ * entry reads the value cdkd recorded in state (`attributes`), and refuses when
+ * it is absent rather than guessing.
+ *
+ * ## Live measurement (us-east-1, 2026-08-13)
+ *
+ * Every field below is BOTH the type's single-field `primaryIdentifier` AND
+ * `readOnlyProperties`, which is why each resolution returns an EMPTY
+ * `propertiesOverlay`: writing a read-only property into the synth template's
+ * `Properties` block is rejected by CFn at changeset-create.
+ *
+ * | Type | `primaryIdentifier` | recorded as |
+ * |---|---|---|
+ * | `AWS::AppSync::DataSource` | `DataSourceArn` | `attributes.DataSourceArn` |
+ * | `AWS::AppSync::Resolver` | `ResolverArn` | `attributes.ResolverArn` |
+ * | `AWS::S3Tables::Table` | `TableARN` | `attributes.TableARN` |
+ * | `AWS::EC2::SecurityGroupIngress` | `Id` | NOTHING (issue #1761) |
+ *
+ * All four declare a `read` handler, so CFn genuinely does accept them for
+ * IMPORT — unlike `AWS::Glue::Table`, the type issue #1659's title names, which
+ * CFn rejects outright (see {@link typeIsImportUnsupported}).
+ */
+const COMPOSITE_PHYSICAL_ID_IDENTIFIERS: Record<string, CompositePhysicalIdIdentifier> = {
+  // cdkd stores `<apiId>|<name>` (appsync-provider.ts's `createDataSource`);
+  // the ARN is recorded as an attribute since issue #1681.
+  'AWS::AppSync::DataSource': recordedArnIdentifier({
+    resourceType: 'AWS::AppSync::DataSource',
+    field: 'DataSourceArn',
+    physicalIdShape: '<apiId>|<name>',
+    arnServiceSegment: 'appsync',
+  }),
+  // cdkd stores `<apiId>|<typeName>|<fieldName>` (appsync-provider.ts's
+  // `createResolver`); the ARN is recorded as an attribute since issue #1681.
+  'AWS::AppSync::Resolver': recordedArnIdentifier({
+    resourceType: 'AWS::AppSync::Resolver',
+    field: 'ResolverArn',
+    physicalIdShape: '<apiId>|<typeName>|<fieldName>',
+    arnServiceSegment: 'appsync',
+  }),
+  // cdkd stores `<tableBucketARN>|<namespace>|<name>` (s3-tables-provider.ts's
+  // `createTable`), and records the real `TableARN` AWS returns — the ARN's
+  // format is NOT derivable from the composite's parts. A Cloud-Control-routed
+  // import records the bare ARN as the physicalId instead (see
+  // `importTable`), which is why the bare-ARN fallback below is LIVE for this
+  // type rather than defensive.
+  'AWS::S3Tables::Table': recordedArnIdentifier({
+    resourceType: 'AWS::S3Tables::Table',
+    field: 'TableARN',
+    physicalIdShape: '<tableBucketARN>|<namespace>|<name>',
+    arnServiceSegment: 's3tables',
+  }),
+  // cdkd stores `<groupId>|<ipProtocol>|<fromPort>|<toPort>` (ec2-provider.ts's
+  // `createSecurityGroupIngress`) — the tuple its own revoke call needs. CFn
+  // identifies the rule by the `sgr-...` id AWS mints, and cdkd records NOTHING
+  // that carries it (`attributes: {}` on both the success and the
+  // already-exists arm), so there is no value to resolve. Refuse with a pointer
+  // rather than send the composite: issue #1761 tracks recording the rule id,
+  // after which this entry becomes a `recordedArnIdentifier`-shaped resolution.
+  'AWS::EC2::SecurityGroupIngress': {
+    field: 'Id',
+    resolve: ({ logicalId }) => {
+      throw new Error(
+        `cdkd's physical id for AWS::EC2::SecurityGroupIngress is the composite ` +
+          `'<groupId>|<ipProtocol>|<fromPort>|<toPort>', but CloudFormation IMPORT identifies ` +
+          `the rule by the 'sgr-...' security-group rule id AWS assigns, which cdkd does not ` +
+          `record in state (tracked in https://github.com/go-to-k/cdkd/issues/1761). ` +
+          `Remove '${logicalId}' from the stack before exporting (the rule stays in AWS and can ` +
+          `be re-declared in CloudFormation afterwards), or destroy it first and let ` +
+          `CloudFormation create it fresh.`
+      );
+    },
+  },
+};
+
+/**
+ * Build the {@link CompositePhysicalIdIdentifier} for a type whose CFn
+ * identifier is an ARN cdkd records in `attributes` under the SAME name as the
+ * `primaryIdentifier` field.
+ *
+ * Two accepted sources, mirroring the splitter family's "both shapes exist in
+ * state in the wild" contract:
+ *
+ * 1. the recorded attribute, which is what a fresh deploy and a cdkd `import`
+ *    both write; and
+ * 2. a physicalId that is ALREADY the bare ARN. Two live producers:
+ *    `S3TablesProvider.importTable` records it for a Cloud-Control-routed
+ *    table (CC's identifier for the type IS the ARN), and an AppSync child
+ *    adopted through `cdkd import --migrate-from-cloudformation` records
+ *    CloudFormation's `PhysicalResourceId` verbatim, which is likewise the
+ *    ARN.
+ *
+ * **Both sources are validated by the SAME predicate.** An earlier cut checked
+ * the ARN's shape only on source 2 — the rare one — while source 1, which
+ * fires on essentially every export, accepted any non-blank string verbatim.
+ * That is the wrong way round: a hand-edited state row, a row written by an
+ * older binary that recorded the composite under the attribute name, or an ARN
+ * for a different service sitting under `attributes.<field>` would each have
+ * been shipped as the IMPORT identifier and silently adopted the WRONG
+ * resource, which is precisely what this table exists to prevent.
+ *
+ * Anything failing both sources is refused. That covers the degraded record
+ * `docs/state-management.md` describes — written by a cdkd older than the fix
+ * that started recording the ARN, or by an import that could not reach STS —
+ * and the remedy is the one that doc already gives.
+ */
+function recordedArnIdentifier(options: {
+  resourceType: string;
+  field: string;
+  physicalIdShape: string;
+  arnServiceSegment: string;
+}): CompositePhysicalIdIdentifier {
+  const { resourceType, field, physicalIdShape, arnServiceSegment } = options;
+
+  /**
+   * Is this value usable AS the type's CFn identifier?
+   *
+   * - `arn:` prefix and the type's own SERVICE segment: an ARN naming another
+   *   service is a different value entirely. Partition-agnostic by
+   *   construction, so `arn:aws-cn:s3tables:...` matches.
+   * - no `|`: cdkd's composite for `AWS::S3Tables::Table` is built FROM the
+   *   bucket ARN, so it satisfies both checks above — the separator test is
+   *   what distinguishes the composite from the identifier, on BOTH sources.
+   */
+  const isUsableIdentifier = (value: string): boolean => {
+    const trimmed = value.trim();
+    return (
+      trimmed.startsWith('arn:') &&
+      trimmed.includes(`:${arnServiceSegment}:`) &&
+      !trimmed.includes('|')
+    );
+  };
+
+  return {
+    field,
+    resolve: ({ logicalId, physicalId, attributes }) => {
+      // Trimmed on RETURN as well as in the guard — a padded / newline-suffixed
+      // ARN is otherwise shipped with the whitespace and CFn rejects the
+      // identifier verbatim.
+      const recorded = attributes[field];
+      if (typeof recorded === 'string' && isUsableIdentifier(recorded)) {
+        return recorded.trim();
+      }
+      if (isUsableIdentifier(physicalId)) {
+        return physicalId.trim();
+      }
+      const recordedNote =
+        typeof recorded === 'string' && recorded.trim()
+          ? `attributes.${field} is recorded as '${recorded.trim()}', which is not a ` +
+            `${arnServiceSegment} ARN`
+          : `attributes.${field} is missing or empty`;
+      throw new Error(
+        `cdkd's physical id for ${resourceType} is the composite '${physicalIdShape}', but ` +
+          `CloudFormation IMPORT identifies the resource by its ${field}, which cdkd state does ` +
+          `not record usably for '${logicalId}' (${recordedNote}). Re-deploy the stack once so ` +
+          `cdkd records ${field}, then re-run cdkd export.`
+      );
+    },
+  };
+}
+
+/**
+ * Every type registered in {@link COMPOSITE_PHYSICAL_ID_IDENTIFIERS}. Exported
+ * so a test can assert the table's SIZE, not just membership — a new entry
+ * needs a measurement row in the table's doc comment, and a size-blind test
+ * would let one land silently.
+ */
+export const COMPOSITE_PHYSICAL_ID_IDENTIFIER_TYPES: readonly string[] = Object.keys(
+  COMPOSITE_PHYSICAL_ID_IDENTIFIERS
+);
+
+/**
+ * Returns true if cdkd resolves the type's CFn identifier from recorded state
+ * rather than from its physical id. Exported for unit tests and for ad-hoc
+ * inspection alongside {@link hasCompositeIdSplitter}.
+ */
+export function hasCompositePhysicalIdIdentifier(resourceType: string): boolean {
+  return Object.prototype.hasOwnProperty.call(COMPOSITE_PHYSICAL_ID_IDENTIFIERS, resourceType);
+}
+
+/**
+ * Exported for unit tests — resolve the CFn identifier value for a registered
+ * composite-physicalId type from the given cdkd state. Throws when no entry is
+ * registered (same shape as `splitCompositePhysicalId`'s no-splitter error).
+ */
+export function resolveCompositePhysicalIdIdentifier(
+  resourceType: string,
+  ctx: CompositePhysicalIdContext
+): { field: string; value: string } {
+  const entry = COMPOSITE_PHYSICAL_ID_IDENTIFIERS[resourceType];
+  if (!entry) {
+    throw new Error(`no composite-physicalId identifier registered for ${resourceType}`);
+  }
+  return { field: entry.field, value: entry.resolve(ctx) };
 }
 
 export interface ImportPlanEntry {
@@ -1063,6 +1396,42 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       }
     }
 
+    // Build the import plan BEFORE acquiring the lock: cdkd state × template
+    // resources, classified into phase1 (importable) / phase2 (Custom::* CFn
+    // will CREATE) / recreateBeforePhase2 (IMPORT-unsupported, pre-delete +
+    // CFn CREATE in phase 2) / nestedStackRows (AWS::CloudFormation::Stack —
+    // PR B1 detects, PR B2 submits) / blocked (anything else — aborts).
+    //
+    // Ordering (issue #1659): planning performs NO AWS write — it reads the
+    // already-loaded state object plus `DescribeType` — so nothing here needs
+    // the lock, and a stack that cannot be exported at all now says so without
+    // first taking a lock that blocks concurrent `cdkd deploy` / `destroy`.
+    // The nested-stack path has always planned before locking
+    // (`runPerStackImportLoop` acquires per-child locks after its own
+    // `buildImportPlan`); this makes the single-stack path agree.
+    const { phase1Imports, phase2Creates, recreateBeforePhase2, nestedStackRows, blocked } =
+      await buildImportPlan(state, template, awsClients.cloudFormation, resolvedStackName, {
+        recreateImportUnsupported: options.recreateImportUnsupported,
+        skipImportSupportPreflight: options.skipImportSupportPreflight,
+      });
+
+    // `blocked` resources are genuinely unfixable (missing state, unknown
+    // never-importable types, a type CFn refuses for IMPORT, etc.) — nothing
+    // the user can do at runtime resolves them. Hard-fail in both dry-run and
+    // real-run paths; printing the plan here is unhelpful because there is no
+    // path forward.
+    if (blocked.length > 0) {
+      logger.error('The following resources block migration:');
+      for (const b of blocked) {
+        logger.error(`  - ${b.logicalId} (${b.resourceType}): ${b.reason}`);
+      }
+      throw new Error(
+        `${blocked.length} resource(s) block migration. Either destroy them first ` +
+          `(cdkd destroy / cdkd state destroy cherry-picked), or remove them from the ` +
+          `CDK app and re-synthesize.`
+      );
+    }
+
     // Acquire the lock before any AWS write. Dry-run skips the lock so it
     // is a pure read.
     //
@@ -1090,33 +1459,6 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     }
 
     try {
-      // Build the import plan: cdkd state × template resources, classified
-      // into phase1 (importable) / phase2 (Custom::* CFn will CREATE) /
-      // recreateBeforePhase2 (Stage — IMPORT-unsupported, pre-delete + CFn
-      // CREATE in phase 2) / nestedStackRows (AWS::CloudFormation::Stack —
-      // PR B1 detects; PR B2 will submit via --include-nested-stacks) /
-      // blocked (anything else — aborts the run).
-      const { phase1Imports, phase2Creates, recreateBeforePhase2, nestedStackRows, blocked } =
-        await buildImportPlan(state, template, awsClients.cloudFormation, resolvedStackName, {
-          recreateImportUnsupported: options.recreateImportUnsupported,
-        });
-
-      // `blocked` resources are genuinely unfixable (missing state, unknown
-      // never-importable types, etc.) — nothing the user can do at runtime
-      // resolves them. Hard-fail in both dry-run and real-run paths; printing
-      // the plan here is unhelpful because there is no path forward.
-      if (blocked.length > 0) {
-        logger.error('The following resources block migration:');
-        for (const b of blocked) {
-          logger.error(`  - ${b.logicalId} (${b.resourceType}): ${b.reason}`);
-        }
-        throw new Error(
-          `${blocked.length} resource(s) block migration. Either destroy them first ` +
-            `(cdkd destroy / cdkd state destroy cherry-picked), or remove them from the ` +
-            `CDK app and re-synthesize.`
-        );
-      }
-
       // Nested-stack rows (issue #464 PR B2): full per-stack IMPORT loop.
       // The orchestrator handles the entire cdkd → CFn migration for the
       // whole tree: leaf-first IMPORT changesets, child-ARN adoption via
@@ -1213,6 +1555,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             yes: options.yes,
             includeNonImportable: options.includeNonImportable,
             recreateImportUnsupported: options.recreateImportUnsupported,
+            skipImportSupportPreflight: options.skipImportSupportPreflight,
           },
         });
 
@@ -2239,7 +2582,9 @@ export async function buildImportPlan(
   template: Record<string, unknown>,
   cfnClient: AwsClients['cloudFormation'],
   parentStackName: string,
-  options: { recreateImportUnsupported: boolean } = { recreateImportUnsupported: true }
+  options: { recreateImportUnsupported: boolean; skipImportSupportPreflight?: boolean } = {
+    recreateImportUnsupported: true,
+  }
 ): Promise<{
   phase1Imports: ImportPlanEntry[];
   phase2Creates: Phase2CreateEntry[];
@@ -2355,14 +2700,56 @@ export async function buildImportPlan(
       continue;
     }
 
+    // Pre-flight: CloudFormation refuses the whole IMPORT changeset for a type
+    // with no `read` handler, so surface it here — before the phase-1 template
+    // preprocessing and the user confirmation, and naming EVERY offender at
+    // once. AWS's own error is not exhaustive: a probe carrying three
+    // unsupported types named two of them, and a two-type probe named one
+    // (measured us-east-1, 2026-08-13), so deferring to CreateChangeSet hands
+    // the user a fix-one-rerun loop.
+    //
+    // Deliberately AFTER the IMPORT_UNSUPPORTED_RECREATABLE_TYPES branch
+    // above, because cdkd has a real answer (pre-delete + phase-2 CREATE) for
+    // the types on that list and must not steal them. `AWS::IAM::Policy` would
+    // otherwise land here: it is NON_PROVISIONABLE with no `read` handler.
+    // `AWS::ApiGatewayV2::Stage` would NOT — measured live us-east-1
+    // 2026-08-13 it is now FULLY_MUTABLE with a full handler set including
+    // `read`, so the registry no longer agrees with the reason that type was
+    // put on the recreatable list. Whether its pre-delete + re-CREATE dance
+    // (and its unavailability window) is still necessary is tracked separately;
+    // this ordering keeps today's behavior either way (issue
+    // [#1772](https://github.com/go-to-k/cdkd/issues/1772)).
     let resolved: CompositeIdResult;
     try {
-      resolved = await resolveResourceIdentifier(
+      // ONE `DescribeType` per type answers both questions — the pre-flight
+      // above and the identifier resolution below share `identifierCache`, and
+      // `resolveResourceIdentifier` takes the entry rather than re-fetching it.
+      // A failure here means no usable schema AND no fallback entry, which the
+      // catch reports with `fetchPrimaryIdentifier`'s own remediation message.
+      const schemaInfo = await cachedTypeSchemaInfo(resourceType, cfnClient, identifierCache);
+      if (!options.skipImportSupportPreflight && typeIsImportUnsupported(schemaInfo)) {
+        blocked.push({
+          logicalId,
+          resourceType,
+          reason:
+            `AWS CloudFormation does not support ${resourceType} in IMPORT changesets: its ` +
+            `CloudFormation registry schema declares no 'read' handler (and reports the type as ` +
+            `NON_PROVISIONABLE), and IMPORT needs that handler to look the resource up by ` +
+            `identifier. CreateChangeSet would reject the whole export ` +
+            `with "ResourceTypes [${resourceType}] are not supported for Import". Remove the ` +
+            `resource from the stack before exporting (it stays in AWS and can be re-declared in ` +
+            `CloudFormation afterwards), or destroy it first and let CloudFormation create it ` +
+            `fresh. If AWS has since added IMPORT support for this type, please open a cdkd issue.`,
+        });
+        continue;
+      }
+      resolved = resolveResourceIdentifier(
         resourceType,
+        logicalId,
         stateEntry.physicalId,
         stateEntry.properties ?? {},
-        cfnClient,
-        identifierCache
+        stateEntry.attributes ?? {},
+        schemaInfo
       );
     } catch (err) {
       blocked.push({
@@ -2388,17 +2775,38 @@ export async function buildImportPlan(
 }
 
 /**
- * Per-type cached `primaryIdentifier` field names from
- * `cloudformation:DescribeType`. The cache key is the resource type;
- * the value is the field-name list (length 1 for single-key types,
- * length > 1 for composites).
+ * Per-type cached registry-schema facts from `cloudformation:DescribeType`.
+ * The cache key is the resource type.
+ *
+ * `fields` is the `primaryIdentifier` field-name list (length 1 for single-key
+ * types, length > 1 for composites).
+ *
+ * `importSupport` records what `DescribeType` says about the type's
+ * eligibility for a CFn IMPORT changeset (see {@link typeIsImportUnsupported}):
+ * - `importable` — the schema declares a `read` handler, which IMPORT needs.
+ * - `unsupported` — no `read` handler AND `ProvisioningType:
+ *   NON_PROVISIONABLE`. Two independent fields must positively agree before
+ *   cdkd refuses.
+ * - `unknown` — anything else, including the `PRIMARY_IDENTIFIER_FALLBACK`
+ *   path when DescribeType is unusable. Never blocks: a permissions gap, a
+ *   throttle, or a partial response must not be read as "AWS cannot import
+ *   this" — those keep the pre-existing behavior of letting CreateChangeSet
+ *   answer.
  */
-type PrimaryIdentifierCacheEntry = { fields: string[] };
+type PrimaryIdentifierCacheEntry = {
+  fields: string[];
+  importSupport: 'importable' | 'unsupported' | 'unknown';
+};
 
 /**
  * Build the `ResourceIdentifier` map CloudFormation IMPORT expects in
  * `ResourcesToImport[].ResourceIdentifier` for the given resource type
  * and cdkd state's physical ID.
+ *
+ * Types whose cdkd physicalId is COMPOSITE while the CFn identifier is a
+ * single field (`COMPOSITE_PHYSICAL_ID_IDENTIFIERS`): resolved from cdkd
+ * state's recorded attributes, BEFORE the field-count branch below — the
+ * physicalId is neither the identifier nor a source to split (issue #1659).
  *
  * Single-key types: the map has a single entry keyed by the schema's
  * primaryIdentifier field name (e.g. `{ BucketName: 'my-bucket' }`).
@@ -2409,22 +2817,47 @@ type PrimaryIdentifierCacheEntry = { fields: string[] };
  * into one entry per field. Composite types without a registered
  * splitter surface a clear error pointing at where to add one.
  *
- * Prefers `DescribeType` (the authoritative AWS-internal registry) and
- * falls back to a hardcoded single-key table when DescribeType fails
- * (insufficient permissions, throttling, obscure type without a registry
- * entry).
+ * `entry` is the caller's already-resolved registry-schema info — see
+ * {@link cachedTypeSchemaInfo}, which prefers `DescribeType` (the authoritative
+ * AWS-internal registry) and falls back to a hardcoded single-key table when
+ * DescribeType fails (insufficient permissions, throttling, obscure type
+ * without a registry entry). Taking it as a parameter rather than fetching is
+ * what keeps `buildImportPlan` to ONE DescribeType per type across both the
+ * IMPORT pre-flight and this resolution.
  */
-async function resolveResourceIdentifier(
+function resolveResourceIdentifier(
   resourceType: string,
+  logicalId: string,
   physicalId: string,
   properties: Record<string, unknown>,
-  cfnClient: AwsClients['cloudFormation'],
-  cache: Map<string, PrimaryIdentifierCacheEntry>
-): Promise<CompositeIdResult> {
-  let entry = cache.get(resourceType);
-  if (entry === undefined) {
-    entry = await fetchPrimaryIdentifier(resourceType, cfnClient);
-    cache.set(resourceType, entry);
+  attributes: Record<string, unknown>,
+  entry: PrimaryIdentifierCacheEntry
+): CompositeIdResult {
+  // Consulted on BOTH branches (i.e. before either can run): "cdkd's id is
+  // composite" and "the CFn identifier is multi-field" are independent facts,
+  // and conflating them is the #1659 defect.
+  const compositeIdentifier = COMPOSITE_PHYSICAL_ID_IDENTIFIERS[resourceType];
+  if (compositeIdentifier) {
+    if (entry.fields.length !== 1 || entry.fields[0] !== compositeIdentifier.field) {
+      throw new Error(
+        `${resourceType} is registered in COMPOSITE_PHYSICAL_ID_IDENTIFIERS as identified by ` +
+          `'${compositeIdentifier.field}', but CloudFormation now reports primaryIdentifier ` +
+          `[${entry.fields.join(', ')}]. The registry schema changed under cdkd — update the ` +
+          `entry in src/cli/commands/export.ts (or move the type to COMPOSITE_ID_SPLITTERS if ` +
+          `its identifier is now composite too)`
+      );
+    }
+    const value = compositeIdentifier.resolve({ logicalId, physicalId, attributes });
+    return {
+      resourceIdentifier: { [compositeIdentifier.field]: value },
+      // Every registered field is `readOnlyProperties` (live DescribeType,
+      // us-east-1, 2026-08-13), so NOTHING may be overlaid onto the synth
+      // template's Properties — CFn rejects a read-only property write at
+      // changeset-create. An explicit empty map instead of relying on the
+      // overlay site's "only writes a field the template already carries"
+      // conditional, same as the splitter family's narrowing.
+      propertiesOverlay: {},
+    };
   }
 
   if (entry.fields.length === 1) {
@@ -2467,6 +2900,59 @@ async function resolveResourceIdentifier(
 }
 
 /**
+ * Cache-consulting wrapper around {@link fetchPrimaryIdentifier}. Shared by
+ * `resolveResourceIdentifier` and `buildImportPlan`'s pre-flight so one
+ * DescribeType per type answers both questions.
+ */
+async function cachedTypeSchemaInfo(
+  resourceType: string,
+  cfnClient: AwsClients['cloudFormation'],
+  cache: Map<string, PrimaryIdentifierCacheEntry>
+): Promise<PrimaryIdentifierCacheEntry> {
+  const cached = cache.get(resourceType);
+  if (cached !== undefined) return cached;
+  const entry = await fetchPrimaryIdentifier(resourceType, cfnClient);
+  cache.set(resourceType, entry);
+  return entry;
+}
+
+/**
+ * True when the registry schema says CloudFormation will refuse the type in an
+ * IMPORT changeset (`ValidationError: ResourceTypes [<T>] are not supported
+ * for Import`) — IMPORT looks the resource up by identifier through the type's
+ * `read` handler, so a type without one cannot be adopted.
+ *
+ * Live-measured (us-east-1, 2026-08-13) against `CreateChangeSet
+ * --change-set-type IMPORT`: `AWS::Glue::Table` / `AWS::Route53::RecordSet` /
+ * `AWS::AppSync::ApiKey` / `AWS::EC2::NetworkAclEntry` /
+ * `AWS::Route53::RecordSetGroup` / `AWS::SQS::QueuePolicy` /
+ * `AWS::SNS::TopicPolicy` all lack a `read` handler, are all
+ * `NON_PROVISIONABLE`, and were all rejected; `AWS::S3::Bucket`
+ * (`FULLY_MUTABLE`, read handler present) passed the type check. Both shapes
+ * of "no read handler" occur and both count: NO `handlers` block at all (the
+ * legacy types) and a `handlers` block whose keys are only create / update /
+ * delete (`AWS::EC2::NetworkAclEntry`).
+ *
+ * **Why the verdict needs TWO agreeing fields.** Reading "the `handlers` key is
+ * missing" as a refusal on its own makes any partial or unusual response block
+ * an export that works today — the one regression this pre-flight could cause,
+ * and strictly worse than the status quo of letting AWS answer. So the refusal
+ * also requires `ProvisioningType: NON_PROVISIONABLE`; a response satisfying
+ * only one of the two resolves to `unknown` and is left to CreateChangeSet.
+ *
+ * The two were perfectly CORRELATED across the 21 types sampled on 2026-08-13
+ * (every no-read-handler type was NON_PROVISIONABLE and vice versa), so on
+ * today's registry the conjunction's real work is requiring a COMPLETE
+ * DescribeType response before refusing. The `read` handler stays the primary
+ * signal because it is the mechanistic reason CFn accepts a type for IMPORT —
+ * refusing on `ProvisioningType` alone would reject a NON_PROVISIONABLE type
+ * that does declare one, should AWS ever publish that combination.
+ */
+function typeIsImportUnsupported(entry: PrimaryIdentifierCacheEntry): boolean {
+  return entry.importSupport === 'unsupported';
+}
+
+/**
  * Fetch the primary identifier field names for a resource type, with a
  * hardcoded single-key fallback when DescribeType is unavailable.
  */
@@ -2481,7 +2967,10 @@ async function fetchPrimaryIdentifier(
     // on a transient throttle.
     const resp = await describeTypeWithThrottleRetry(resourceType, cfnClient);
     if (resp.Schema) {
-      const parsed = JSON.parse(resp.Schema) as { primaryIdentifier?: unknown };
+      const parsed = JSON.parse(resp.Schema) as {
+        primaryIdentifier?: unknown;
+        handlers?: unknown;
+      };
       const primary = parsed.primaryIdentifier;
       if (
         Array.isArray(primary) &&
@@ -2491,7 +2980,27 @@ async function fetchPrimaryIdentifier(
         // Schema entries look like "/properties/BucketName" — strip the
         // JSON-pointer prefix to get the property name.
         const fields = primary.map((p) => p.replace(/^\/properties\//, ''));
-        return { fields };
+        // A missing `handlers` block is how the legacy types (Glue::Table,
+        // Route53::RecordSet, AppSync::ApiKey) render, so its absence is
+        // meaningful — but only in combination with NON_PROVISIONABLE, per
+        // `typeIsImportUnsupported`'s two-agreeing-fields rule.
+        // The `!== null` is load-bearing (`hasOwnProperty.call(null, …)`
+        // throws, and `typeof null === 'object'`). An `Array.isArray` clause
+        // was removed as dead: a JSON-parsed array carries only index keys, so
+        // `hasOwnProperty(…, 'read')` already answers false for the `handlers:
+        // []` legacy render — a mutation probe confirmed no fixture could
+        // distinguish it, and both shapes are covered by tests.
+        const handlers = parsed.handlers;
+        const hasRead =
+          typeof handlers === 'object' &&
+          handlers !== null &&
+          Object.prototype.hasOwnProperty.call(handlers, 'read');
+        const importSupport = hasRead
+          ? 'importable'
+          : resp.ProvisioningType === 'NON_PROVISIONABLE'
+            ? 'unsupported'
+            : 'unknown';
+        return { fields, importSupport };
       }
     }
   } catch (err) {
@@ -2501,7 +3010,9 @@ async function fetchPrimaryIdentifier(
 
   const fallback = PRIMARY_IDENTIFIER_FALLBACK[resourceType];
   if (fallback) {
-    return { fields: [fallback] };
+    // The fallback table carries identifier names only — nothing is known
+    // about handlers here, so the IMPORT pre-flight must not fire.
+    return { fields: [fallback], importSupport: 'unknown' };
   }
   throw new Error(
     `primary identifier unknown (DescribeType returned no usable schema and no fallback ` +
@@ -3749,6 +4260,8 @@ export interface RunPerStackImportLoopOptions {
   yes: boolean;
   includeNonImportable: boolean;
   recreateImportUnsupported: boolean;
+  /** See {@link ExportOptions.skipImportSupportPreflight}. Applies to every stack in the tree. */
+  skipImportSupportPreflight?: boolean;
 }
 
 /**
@@ -3890,7 +4403,13 @@ export async function runPerStackImportLoop(args: {
       meta.template,
       deps.cfnClient,
       meta.cdkdStackName,
-      { recreateImportUnsupported: options.recreateImportUnsupported }
+      {
+        recreateImportUnsupported: options.recreateImportUnsupported,
+        // `=== true` not a spread: `RunPerStackImportLoopOptions` declares the
+        // field optional, and `exactOptionalPropertyTypes` rejects an explicit
+        // `undefined` for an optional target property.
+        skipImportSupportPreflight: options.skipImportSupportPreflight === true,
+      }
     );
     if (plan.blocked.length > 0) {
       const lines = plan.blocked.map((b) => `  - ${b.logicalId} (${b.resourceType}): ${b.reason}`);
@@ -4834,6 +5353,16 @@ export function createExportCommand(): Command {
         'exporting stack via Fn::GetStackOutput. Without the flag, cdkd warns and ' +
         'proceeds — the consumers keep resolving via the CloudFormation fallback ' +
         '(weak reference) unless they deploy with --no-cfn-fallback.',
+      false
+    )
+    .option(
+      '--skip-import-support-preflight',
+      'Skip the pre-flight that refuses resource types whose CloudFormation registry ' +
+        'schema says CFn cannot IMPORT them (no read handler AND NON_PROVISIONABLE), and ' +
+        'let CreateChangeSet answer instead. The pre-flight is a registry HEURISTIC, not ' +
+        "AWS's supported-for-import list, so this is the escape hatch for a type AWS has " +
+        'since made importable. Expect the changeset to be rejected if the heuristic was ' +
+        'right.',
       false
     )
     .option(
