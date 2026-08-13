@@ -376,9 +376,11 @@ describe('DynamoDBGlobalTableProvider sibling effectiveProperties arms (issue #1
   });
 
   it('DROPS the key when the recorded previous is ABSENT', async () => {
-    // Recording anything here would INVENT a key the record never had — and
-    // `oldBilling` for this shape is the create-path default, on a table the
-    // mock reports as PROVISIONED, so the invented value would also be wrong.
+    // The record never carried the key, so it is left exactly as it was. Since
+    // issue #1733 `oldBilling` for this shape is the LIVE reading rather than a
+    // blind create-path default, which is what makes the drop safe rather than
+    // a lost flip: the key stays absent, so the NEXT deploy re-reads AWS
+    // instead of comparing against a snapshot this arm would have frozen in.
     mockSend.mockReset();
     mockSend.mockResolvedValue(provisionedTableResponse());
     const previous: Record<string, unknown> = { ...baseProps };

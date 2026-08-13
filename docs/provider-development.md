@@ -141,12 +141,15 @@ declared one, not only the arms that log.
 `DynamoDBGlobalTableProvider` is the third, and it shows both halves of the
 question (issue [#1683](https://github.com/go-to-k/cdkd/issues/1683)). Every one
 of its ordinary CREATE-path guard downgrades is now answered (the UPDATE-side
-capacity residual is open as issue
+capacity residual was closed by issue
 [#1738](https://github.com/go-to-k/cdkd/issues/1738)), and they do NOT all answer
 the same way — a `BillingMode` warn-and-SUBSTITUTE on the replay-CREATE path records
 the substituted mode, the same property's UPDATE-side guard suppresses the flip
 and so records the mode it compared against — DROPPING the key instead when the
-record declared none, since recording anything there would invent one — a
+record declared none, so the key stays absent and every later deploy re-reads
+AWS rather than comparing against a snapshot this arm would have frozen in
+(issue [#1733](https://github.com/go-to-k/cdkd/issues/1733) is what makes that
+re-read happen, and what makes the drop safe rather than a lost flip) — a
 `GlobalSecondaryIndexes` warn-and-SKIP on update retains the previous list, and
 the same property's replay-CREATE OMIT drops the key outright (issue
 [#1724](https://github.com/go-to-k/cdkd/issues/1724)), because there the block

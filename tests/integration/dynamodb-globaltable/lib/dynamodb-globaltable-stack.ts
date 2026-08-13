@@ -704,6 +704,19 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
           targetTrackingScalingPolicyConfiguration: { targetValue: 70 },
         },
       },
+      // Issue #1738, kept-mode-PROVISIONED arm. A PROVISIONED GlobalTable may
+      // legally DECLARE an on-demand ceiling (the CFn schema allows it, and
+      // hand-authored L1 / pre-#1436 state carry it), and cdkd never SENDS it
+      // under this mode. The value CHANGES on the junk deploy — the same deploy
+      // whose unusable BillingMode keeps the table PROVISIONED — so nothing
+      // reaches AWS and state must record the PREVIOUS ceiling, not the newly
+      // declared one. Without the fix the bag records 200 while AWS holds
+      // nothing, which is the phantom-drift class the arm exists to close.
+      //
+      // A scalar VALUE gate, never a presence gate: the block is declared on
+      // every mode, so no later step can delete it (and nothing is sent under
+      // PROVISIONED either way, so no live re-price is possible here).
+      writeOnDemandThroughputSettings: { maxWriteRequestUnits: gsiJunkState ? 200 : 100 },
       globalSecondaryIndexes: gsiJunkState
         ? // Same synth-survives / deploy-time-string trick as the recovery
           // table above ('y' suffix so the two junk strings differ in logs).
@@ -760,6 +773,63 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
       // arm retains it, i.e. a no-op rather than a re-price.
       gsiProvRecoveryTable.addPropertyOverride('BillingMode', { Unusable: 'not-a-string' });
     }
+
+    // ─── Issues #1733 / #1738: the ABSENT-recorded-BillingMode live-read seed,
+    //     and the kept-mode-PAY_PER_REQUEST half of the capacity retention ───
+    //
+    // The sibling arms above only ever keep PROVISIONED (`GsiProvRecoveryTable`
+    // is provisioned and its BillingMode override suppresses the flip), so
+    // without this table the PAY_PER_REQUEST side of the per-member split is
+    // never exercised against real AWS — and neither is the seed, since every
+    // other table's record carries a BillingMode.
+    //
+    // Deliberately small: no GSIs, no cross-region replica, and the only
+    // autoscaling is the table-level write target a PROVISIONED GlobalTable
+    // cannot be declared without (the CFn schema offers no fixed
+    // `WriteCapacityUnits` at table level). The replica-level READ capacity is
+    // therefore what carries the retention assertion — a plain number, dropped
+    // by `toSdkReplicaThroughputOverrides` under PAY_PER_REQUEST.
+    const billingSeedFlip = updateMode.includes('billing-seed-flip');
+    const billingSeedUnusable = updateMode.includes('billing-seed-unusable');
+    const billingSeedTable = new ddb.CfnGlobalTable(this, 'BillingSeedTable', {
+      keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
+      attributeDefinitions: [{ attributeName: 'pk', attributeType: 'S' }],
+      // Scalar VALUE gate, never a presence gate. Both arms declare a mode
+      // EXPLICITLY, so this table never exercises the template-omits-the-
+      // property path — where #1733 deliberately does NOT consult AWS.
+      billingMode: billingSeedFlip || billingSeedUnusable ? 'PAY_PER_REQUEST' : 'PROVISIONED',
+      writeProvisionedThroughputSettings: {
+        writeCapacityAutoScalingSettings: {
+          minCapacity: 1,
+          maxCapacity: 5,
+          targetTrackingScalingPolicyConfiguration: { targetValue: 70 },
+        },
+      },
+      replicas: [
+        {
+          region: this.region,
+          // The unsendable member once the kept mode is PAY_PER_REQUEST. Its
+          // value changes ONLY on the unusable-BillingMode deploy, so nothing
+          // reaches AWS and state must record the PREVIOUS capacity (3) rather
+          // than the newly declared one (9). Without issue #1738 the bag
+          // records 9 — capacity AWS never received.
+          readProvisionedThroughputSettings: { readCapacityUnits: billingSeedUnusable ? 9 : 3 },
+        },
+      ],
+    });
+    billingSeedTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    if (billingSeedUnusable) {
+      // A non-string is what `requireConfigString` refuses; a resolvable
+      // intrinsic would produce a usable string and reach AWS as a bogus mode.
+      // `addPropertyOverride` because the L1 prop is typed `string`.
+      billingSeedTable.addPropertyOverride('BillingMode', { Unusable: 'not-a-string' });
+    }
+
+    new cdk.CfnOutput(this, 'BillingSeedTableName', {
+      value: billingSeedTable.ref,
+      description:
+        'PROVISIONED GlobalTable used by the issues #1733 / #1738 seed + capacity-retention sequence',
+    });
 
     new cdk.CfnOutput(this, 'GsiProvRecoveryTableName', {
       value: gsiProvRecoveryTable.ref,
