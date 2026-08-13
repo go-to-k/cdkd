@@ -201,6 +201,7 @@ loggroup-class-guard	2026-08-13T13:37:55Z	PASS	62	verify.sh	4 phases ok, destroy
 loggroup-kms-associate	2026-08-10T11:50:46Z	PASS	45	verify.sh	0810 P0/P1 sweep b3; KMS associate+disassociate, 4 phases; key PendingDeletion is AWS-mandated
 macro-expansion	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; diff-expands + destroy-no-expand asserts, 0 orph
 microservices	2026-08-13T14:05:05Z	PASS	81	standard	Cross-cutting intrinsic resolver check; 19 created / 19 deleted, 0 errors, 0 orphans
+microservices	2026-08-13T17:02:41Z	PASS	35	standard	#1850 BROAD gate; resolver-constructed SNS/SQS/SSM ARNs canonical; 19 created / 19 deleted 0 err, 0 orph
 migrate-from-bare-cfn	2026-08-10T06:01:30Z	PASS	90	verify.sh	0810 P2 sweep b11; bare-CFn migrate + destroy clean
 migrate-from-bare-cfn-codegen-only	2026-07-26T18:57:55Z	PASS	17	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
 migrate-from-cfn	2026-08-10T06:32:58Z	PASS	338	run.sh	0810 P2 sweep b11r; run.sh flow (NOT verify.sh) - import+migrate+destroy, 2 del 0 err, state cleaned
@@ -208,6 +209,7 @@ monitoring	2026-08-10T05:19:05Z	PASS	43	standard	0810 P2 sweep b6; 7 del 0 err, 
 multi-asset	2026-08-10T05:38:11Z	PASS	68	verify.sh	0810 P2 sweep b9; rc ok, ECR swept, 0 orph
 multi-region-same-stack	2026-07-26T18:04:53Z	PASS	22	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 multi-resource	2026-08-13T14:21:24Z	PASS	250	standard	#1762 BROAD gate final run AFTER the rebase onto main (which pulled in provider changes from #1840); 17 created / 17 deleted 0 err; 2 auto-created lambda log groups swept, then 0 orphans
+multi-resource	2026-08-13T17:02:41Z	PASS	67	standard	#1850 BROAD gate; resolver-constructed DynamoDB/SQS/Lambda ARNs canonical; 17 created / 17 deleted 0 err; 2 auto-created log groups swept, 0 orph
 multi-stack-deps	2026-08-12T10:36:46Z	PASS	300	standard	broad gate re-run post-rebase for #1697; 3 stacks clean, 0 orphans
 nested-stack	2026-08-13T16:47:50Z	PASS	47	verify.sh	#1849 non-retryable marks; failing-child destroy exits 2 with both state files + remedy naming the CHILD, clean path unchanged; 0 err 0 orph
 nested-stack-3level	2026-08-10T04:45:42Z	PASS	78	verify.sh	0810 sweep b3; nested-stack-provider re-verify, 0 err, 0 orph
