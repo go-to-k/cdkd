@@ -194,6 +194,25 @@ if ! grep -q "would make the URL public" "${JUNK_LOG}"; then
   echo "FAIL: issue #1654 — the warning did not name the consequence it is avoiding" >&2
   exit 1
 fi
+# Issue #1735: the two halves above are emitted by DIFFERENT layers and are
+# COMPOSED as `${message} <caller clause>` — the shared config-shape guard
+# writes the first, LambdaUrlProvider appends the second. Both greps above
+# pass on the composed string whether or not the seam is well-formed, which
+# is exactly why the defect survived: every unit assertion in that family is
+# a substring match too. Assert the SEAM itself, on the real rendered line.
+if ! grep -q "template-path create\. The function URL's existing auth type" "${JUNK_LOG}"; then
+  echo "FAIL: issue #1735 — the helper message and the caller's clause do not compose as two sentences" >&2
+  grep -o "template-path create.\{0,60\}" "${JUNK_LOG}" >&2 || echo "  (the composed line was not found at all)" >&2
+  exit 1
+fi
+# ...and the helper must describe its own READ rather than claiming an OUTCOME
+# the caller's clause overrides (the second half of #1735). The pre-fix text
+# asserted the default was "used" while the clause says the previous value is
+# kept — the user could not tell which value reached AWS.
+if grep -q "Ignoring it and using the default" "${JUNK_LOG}"; then
+  echo "FAIL: issue #1735 — the helper still claims an outcome the caller's clause contradicts" >&2
+  exit 1
+fi
 rm -f "${JUNK_LOG}"
 
 # What was RECORDED: the PREVIOUS value, which is literally what went on the
