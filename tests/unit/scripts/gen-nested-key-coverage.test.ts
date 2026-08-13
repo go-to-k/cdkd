@@ -55,7 +55,7 @@ import { parseProviderSource } from '../../../scripts/gen-property-coverage.ts';
 // Vitest's 5s default does not fit this file. 26 of its tests parse the WHOLE
 // real `src/provisioning/providers` tree through the TypeScript compiler API,
 // or spawn the shipped `--check` against a scratch copy of it — inherently
-// 1-2s each locally and ~3x that on CI. Two of them (the opt-in-table and S3
+// SECONDS each locally and ~3x that on CI. Two of them (the opt-in-table and S3
 // reason-(C) fences, 1.6s / 2.2s locally) timed out on CI at 5s while passing
 // locally three runs in a row, which is exactly the boundary this raises off.
 //
@@ -63,7 +63,20 @@ import { parseProviderSource } from '../../../scripts/gen-property-coverage.ts';
 // it was a heavyweight test added WITHOUT a timeout argument, and the repo's
 // per-test convention (`}, 15_000)`) guarantees that recurs every time this
 // file grows. Slowness here is a property of the file, not of individual tests.
-vi.setConfig({ testTimeout: 15_000 });
+//
+// RAISED 15s -> 60s (issues #1754 / #1755 / #1759), and the reason is the
+// growth this comment predicted rather than a new slow test: that PR grew
+// `s3-bucket-provider.ts` by ~17%, and every one of these tests parses it. The
+// cost is not evenly spread — RE-MEASURED locally, the slowest test is 15.2s (`a
+// WALK-DEPENDENT opt-in must declare minHandoffPoints`), i.e. already AT the old
+// cap, with the two that actually failed CI at 5.3s and 5.0s locally. So the old
+// figure of "1-2s each" was stale by an order of magnitude on the tail, and 15s
+// left no headroom at all for the ~3x CI factor this file's own note records.
+// 60s restores it. A number this large is only defensible because the file is
+// pure offline static analysis with no network and no AWS: the only thing a
+// generous cap can hide here is a genuine performance regression in the critic,
+// which the per-test durations above make visible on any verbose run.
+vi.setConfig({ testTimeout: 60_000 });
 
 const repoRoot = process.cwd();
 const SCRIPT = resolve(repoRoot, 'scripts/gen-nested-key-coverage.ts');
