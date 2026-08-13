@@ -272,6 +272,255 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
 
       expect(result.attributes).toEqual({});
     });
+
+    it('ignores a matching rule whose own SecurityGroupRuleId is blank', async () => {
+      // Distinct code site from the response-side filter above: this one is in
+      // `lookupIngressRuleId`, and an empty-string id would otherwise be
+      // recorded as the CFn identifier.
+      withExistingRules([
+        {
+          SecurityGroupRuleId: '   ',
+          IsEgress: false,
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          ToPort: 443,
+          CidrIpv4: '10.0.0.0/16',
+        },
+      ]);
+
+      const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+
+      expect(result.attributes).toEqual({});
+    });
+
+    describe('the (protocol, ports, source) match itself', () => {
+      // Each row below leaves EXACTLY ONE decoy on the group, differing from the
+      // requested rule in exactly ONE field. Without the corresponding guard the
+      // decoy is the single match and its id is recorded — the #1658 wrong-object
+      // class this lookup exists to prevent.
+      const decoy = (overrides: Record<string, unknown>) => ({
+        SecurityGroupRuleId: 'sgr-decoy',
+        IsEgress: false,
+        IpProtocol: 'tcp',
+        FromPort: 443,
+        ToPort: 443,
+        CidrIpv4: '10.0.0.0/16',
+        ...overrides,
+      });
+
+      it('rejects a rule differing ONLY by protocol', async () => {
+        withExistingRules([decoy({ IpProtocol: 'udp' })]);
+        const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+        expect(result.attributes).toEqual({});
+      });
+
+      it('rejects a rule differing ONLY by FromPort', async () => {
+        withExistingRules([decoy({ FromPort: 80 })]);
+        const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+        expect(result.attributes).toEqual({});
+      });
+
+      it('rejects a rule differing ONLY by ToPort', async () => {
+        withExistingRules([decoy({ ToPort: 8443 })]);
+        const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+        expect(result.attributes).toEqual({});
+      });
+
+      it('rejects an all-ports rule when the template pins a port range', async () => {
+        // The `?? -1` default on the AWS side: a rule AWS reports with no ports
+        // is "all ports", which is NOT the tcp/443 rule the template asked for.
+        withExistingRules([decoy({ FromPort: undefined, ToPort: undefined })]);
+        const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+        expect(result.attributes).toEqual({});
+      });
+
+      it('matches an all-ports rule when the template pins no ports either', async () => {
+        // The other half of the `-1` default — without it the omitted template
+        // ports would never line up with AWS's `-1` and this arm would silently
+        // stop recording for every all-protocols rule.
+        withExistingRules([
+          decoy({
+            SecurityGroupRuleId: 'sgr-all',
+            IpProtocol: '-1',
+            FromPort: -1,
+            ToPort: -1,
+          }),
+        ]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+          GroupId: GROUP_ID,
+          IpProtocol: '-1',
+          CidrIp: '10.0.0.0/16',
+        });
+
+        expect(result.attributes).toEqual({ Id: 'sgr-all' });
+      });
+
+      it('matches a template that spells its ports as STRINGS', async () => {
+        // A YAML / JSON template may write `FromPort: "443"`, and
+        // `buildIpPermission` forwards it to AWS unchanged, so such a rule
+        // deploys fine. An identity compare against a number never matched it.
+        withExistingRules([decoy({ SecurityGroupRuleId: 'sgr-stringports' })]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+          GroupId: GROUP_ID,
+          IpProtocol: 'tcp',
+          FromPort: '443',
+          ToPort: '443',
+          CidrIp: '10.0.0.0/16',
+        });
+
+        expect(result.attributes).toEqual({ Id: 'sgr-stringports' });
+      });
+
+      it('matches on CidrIpv6', async () => {
+        withExistingRules([
+          decoy({
+            SecurityGroupRuleId: 'sgr-v6',
+            CidrIpv4: undefined,
+            CidrIpv6: '2001:db8::/32',
+          }),
+        ]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+          GroupId: GROUP_ID,
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          ToPort: 443,
+          CidrIpv6: '2001:db8::/32',
+        });
+
+        expect(result.attributes).toEqual({ Id: 'sgr-v6' });
+      });
+
+      it('rejects a CidrIpv6 rule for a DIFFERENT range', async () => {
+        withExistingRules([
+          decoy({ CidrIpv4: undefined, CidrIpv6: '2001:db8:dead::/48' }),
+        ]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+          GroupId: GROUP_ID,
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          ToPort: 443,
+          CidrIpv6: '2001:db8::/32',
+        });
+
+        expect(result.attributes).toEqual({});
+      });
+
+      it('matches on SourcePrefixListId', async () => {
+        withExistingRules([
+          decoy({
+            SecurityGroupRuleId: 'sgr-pl',
+            CidrIpv4: undefined,
+            PrefixListId: 'pl-0abc',
+          }),
+        ]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+          GroupId: GROUP_ID,
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          ToPort: 443,
+          SourcePrefixListId: 'pl-0abc',
+        });
+
+        expect(result.attributes).toEqual({ Id: 'sgr-pl' });
+      });
+
+      it('rejects a prefix-list rule for a DIFFERENT list', async () => {
+        withExistingRules([
+          decoy({ CidrIpv4: undefined, PrefixListId: 'pl-9999' }),
+        ]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, {
+          GroupId: GROUP_ID,
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          ToPort: 443,
+          SourcePrefixListId: 'pl-0abc',
+        });
+
+        expect(result.attributes).toEqual({});
+      });
+    });
+
+    describe('pagination', () => {
+      // The "exactly one match" verdict is a statement about the WHOLE group, so
+      // reading only the first page turns a genuine 2-match into a false
+      // "exactly one" and records the WRONG id — defeating the ambiguity fence.
+      const withExistingPages = (pages: Array<{ rules: unknown[]; next?: string }>) => {
+        let call = 0;
+        mockSend.mockImplementation((command: unknown) => {
+          if (command instanceof AuthorizeSecurityGroupIngressCommand) {
+            return Promise.reject(alreadyExists);
+          }
+          if (command instanceof DescribeSecurityGroupRulesCommand) {
+            const page = pages[Math.min(call, pages.length - 1)]!;
+            call += 1;
+            return Promise.resolve({
+              SecurityGroupRules: page.rules,
+              ...(page.next && { NextToken: page.next }),
+            });
+          }
+          return Promise.resolve({});
+        });
+      };
+
+      const match = (id: string) => ({
+        SecurityGroupRuleId: id,
+        IsEgress: false,
+        IpProtocol: 'tcp',
+        FromPort: 443,
+        ToPort: 443,
+        CidrIpv4: '10.0.0.0/16',
+      });
+
+      it('walks NextToken and finds a match that lives on the SECOND page', async () => {
+        withExistingPages([
+          { rules: [], next: 'page-2' },
+          { rules: [match('sgr-page2')] },
+        ]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+
+        expect(result.attributes).toEqual({ Id: 'sgr-page2' });
+        const describes = sentCommands().filter(
+          (c) => c instanceof DescribeSecurityGroupRulesCommand
+        ) as DescribeSecurityGroupRulesCommand[];
+        expect(describes).toHaveLength(2);
+        expect(describes[0]?.input.NextToken).toBeUndefined();
+        expect(describes[1]?.input.NextToken).toBe('page-2');
+      });
+
+      it('records NOTHING when the second page carries a second match', async () => {
+        // The regression a single-page read would reintroduce: page 1 alone
+        // looks like "exactly one match" and would record `sgr-page1`.
+        withExistingPages([
+          { rules: [match('sgr-page1')], next: 'page-2' },
+          { rules: [match('sgr-page2')] },
+        ]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+
+        expect(result.attributes).toEqual({});
+      });
+
+      it('gives up (recording nothing) on a NextToken that never terminates', async () => {
+        withExistingPages([{ rules: [match('sgr-looping')], next: 'forever' }]);
+
+        const result = await provider.create('Ingress', RESOURCE_TYPE, PROPS);
+
+        expect(result.attributes).toEqual({});
+        // Bounded: the walk must not spin forever on a pathological token.
+        const describes = sentCommands().filter(
+          (c) => c instanceof DescribeSecurityGroupRulesCommand
+        );
+        expect(describes.length).toBeGreaterThan(1);
+        expect(describes.length).toBeLessThanOrEqual(20);
+      });
+    });
   });
 
   describe('the UPDATE (replacement) arm', () => {
@@ -294,6 +543,45 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
 
       expect(result.wasReplaced).toBe(true);
       expect(result.attributes).toEqual({ Id: 'sgr-new' });
+    });
+
+    it('returns an EMPTY attributes bag when the re-create yields no id', async () => {
+      // The wrong-value risk this pins: the old rule was revoked, so its id is
+      // dead. `attributes` must be present-and-empty rather than absent —
+      // deploy-engine's `result.attributes ?? (wasReplaced ? undefined : previous)`
+      // reads an absent bag as "no opinion", and on a NON-replacement that would
+      // carry the dead id forward. `{}` is not nullish, so it clears.
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof RevokeSecurityGroupIngressCommand) return Promise.resolve({});
+        if (command instanceof AuthorizeSecurityGroupIngressCommand) {
+          // AWS answered without a rule list (or with an ambiguous one).
+          return Promise.resolve({ Return: true });
+        }
+        return Promise.resolve({});
+      });
+
+      const result = await provider.update('Ingress', PHYSICAL_ID, RESOURCE_TYPE, PROPS, {
+        ...PROPS,
+        CidrIp: '10.0.0.0/8',
+      });
+
+      expect(result.wasReplaced).toBe(true);
+      expect(result.attributes).toEqual({});
+      expect(result.attributes).not.toBeUndefined();
+    });
+
+    it('the no-op short-circuit reports NO attributes so the recorded id is kept', async () => {
+      // `cdkd drift --revert` can call update() with new == old. The rule is
+      // never revoked, so its recorded id is still live and must survive — the
+      // engine carries the previous bag forward only when `attributes` is
+      // absent AND `wasReplaced` is false.
+      const result = await provider.update('Ingress', PHYSICAL_ID, RESOURCE_TYPE, PROPS, {
+        ...PROPS,
+      });
+
+      expect(result.wasReplaced).toBe(false);
+      expect(result.attributes).toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 
@@ -391,6 +679,39 @@ describe('EC2Provider AWS::EC2::SecurityGroupIngress rule-id attribute (#1761)',
 
       expect(result).toBeNull();
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['GroupId', { GroupId: undefined }],
+      ['IpProtocol', { IpProtocol: undefined }],
+      ['SecurityGroupRuleId', { SecurityGroupRuleId: undefined }],
+    ])('declines when AWS omits %s from the rule', async (_field, overrides) => {
+      // Each of the three feeds a composite segment or the attribute itself;
+      // adopting a rule with any of them missing would record a malformed id.
+      mockSend.mockResolvedValue({
+        SecurityGroupRules: [
+          {
+            SecurityGroupRuleId: 'sgr-partial',
+            GroupId: GROUP_ID,
+            IsEgress: false,
+            IpProtocol: 'tcp',
+            FromPort: 443,
+            ToPort: 443,
+            ...overrides,
+          },
+        ],
+      });
+
+      const result = await provider.import({
+        logicalId: 'Ingress',
+        resourceType: RESOURCE_TYPE,
+        knownPhysicalId: 'sgr-partial',
+        stackName: 'Stack',
+        region: 'us-east-1',
+        properties: {},
+      });
+
+      expect(result).toBeNull();
     });
 
     it('declines when AWS reports no such rule', async () => {

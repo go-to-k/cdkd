@@ -260,9 +260,17 @@ node "${LOCAL_DIST}" deploy "${STACK}" \
   --region "${REGION}" \
   --yes
 
-STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+# Assignment inside the `if` condition, not a bare `VAR=$(...)`: under `set -e`
+# a failing command substitution in a standalone assignment aborts the script
+# immediately, so the `[ -z ]` diagnostic below could never print. Fail-closed
+# either way — a missing OR unreadable state file fails the run; nothing here
+# concludes "gone" from a probe failure.
+if ! STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null); then
+  echo "FAIL: could not read the state file at s3://${STATE_BUCKET}/${STATE_KEY} after deploy (deploy likely failed, or the object is missing)" >&2
+  exit 1
+fi
 if [ -z "${STATE}" ]; then
-  echo "FAIL: no state file at s3://${STATE_BUCKET}/${STATE_KEY} after deploy (deploy likely failed)" >&2
+  echo "FAIL: state file at s3://${STATE_BUCKET}/${STATE_KEY} is EMPTY after deploy" >&2
   exit 1
 fi
 
@@ -368,9 +376,13 @@ node "${LOCAL_DIST}" deploy "${EXPORT_STACK}" \
   --region "${REGION}" \
   --yes
 
-EXPORT_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${EXPORT_STATE_KEY}" - 2>/dev/null)
+# Same `set -e` shape as the phase-1 read above.
+if ! EXPORT_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${EXPORT_STATE_KEY}" - 2>/dev/null); then
+  echo "FAIL: could not read the state file at s3://${STATE_BUCKET}/${EXPORT_STATE_KEY} after deploy (deploy likely failed, or the object is missing)" >&2
+  exit 1
+fi
 if [ -z "${EXPORT_STATE}" ]; then
-  echo "FAIL: no state file at s3://${STATE_BUCKET}/${EXPORT_STATE_KEY} after deploy (deploy likely failed)" >&2
+  echo "FAIL: state file at s3://${STATE_BUCKET}/${EXPORT_STATE_KEY} is EMPTY after deploy" >&2
   exit 1
 fi
 
@@ -408,7 +420,7 @@ fi
 EXPORT_PLAN=$(printf '%s' "${EXPORT_PLAN_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
 
 if [ "${EXPORT_PLAN_EXIT}" -ne 0 ]; then
-  echo "FAIL: cdkd export --dry-run exited ${EXPORT_PLAN_EXIT} for ${EXPORT_STACK}. If the failure names AWS::EC2::SecurityGroupIngress, cdkd could not resolve the rule's CloudFormation identifier from state (issue #1761). Full output:" >&2
+  echo "FAIL: cdkd export --dry-run exited ${EXPORT_PLAN_EXIT} for ${EXPORT_STACK}. If the failure names AWS::EC2::SecurityGroupIngress, cdkd could not resolve the rule's CloudFormation identifier — check the state assertion above first: an sgr- shaped attributes.Id there means the PROVIDER side is fine and the gap is COMPOSITE_PHYSICAL_ID_IDENTIFIERS in src/cli/commands/export.ts still refusing the type (issue #1761 / #1659); a missing or non-sgr Id means the provider did not record it. Full output:" >&2
   printf '%s\n' "${EXPORT_PLAN}" >&2
   exit 1
 fi
@@ -455,6 +467,10 @@ fi
 
 assert_gone "state file s3://${STATE_BUCKET}/${EXPORT_STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${EXPORT_STATE_KEY}"
 for SG in "${EXPORT_SG_A_ID}" "${EXPORT_SG_B_ID}"; do
+  # Skip an unresolved id like force_cleanup_aws does: `--group-ids ""` is a
+  # MALFORMED-id error, not a not-found one, so gone_probe would report
+  # "undetermined" and hide the real cause (state that never carried the id).
+  [ -z "${SG}" ] && continue
   assert_gone "export-arm security group ${SG} still exists after destroy (orphan)" aws ec2 describe-security-groups --group-ids "${SG}" --region "${REGION}"
 done
 if [ -n "${EXPORT_VPC_ID}" ]; then

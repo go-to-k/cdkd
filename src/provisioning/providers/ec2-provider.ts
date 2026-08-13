@@ -68,6 +68,7 @@ import {
   type _InstanceType,
   type VolumeType,
   type BlockDeviceMapping,
+  type DescribeSecurityGroupRulesResult,
   type IpPermission,
   type SecurityGroupRule,
   type Volume,
@@ -189,6 +190,18 @@ const SG_INGRESS_IP_PROTOCOL_DEFAULT = '-1';
 
 /** The refusal path both the create guard and the canonicalizer report under. */
 const SG_INGRESS_IP_PROTOCOL_PATH = 'AWS::EC2::SecurityGroupIngress IpProtocol';
+
+/**
+ * Page ceiling for {@link EC2Provider.lookupIngressRuleId}'s
+ * `DescribeSecurityGroupRules` walk (issue #1761).
+ *
+ * `DescribeSecurityGroupRules` returns up to 1000 rules per page, so 20 pages
+ * covers 20,000 rules on a single security group — far beyond any real one
+ * (AWS's default quota is 60 rules per SG, 1000 at the maximum quota increase).
+ * The bound exists only so a pathological / looping `NextToken` cannot hang a
+ * deploy; reaching it records nothing rather than answering from a partial view.
+ */
+const MAX_SG_RULE_PAGES = 20;
 
 /**
  * Resolve the `IpProtocol` an `AWS::EC2::SecurityGroupIngress` rule actually
@@ -3189,6 +3202,15 @@ export class EC2Provider implements ResourceProvider {
    * means the identifier would be ambiguous, and adopting an ambiguous id is
    * the #1658 failure mode (a state row that looks adopted but names the wrong
    * AWS object).
+   *
+   * **Paginated, unlike every other `Describe*` in this file.** That is not an
+   * inconsistency to tidy away: the "exactly one" verdict above is a statement
+   * about the WHOLE group, so a truncated first page turns a genuine 2-match
+   * into a false "exactly one" and records the wrong `sgr-` id — the precise
+   * outcome the ambiguity fence exists to prevent. A group can hold thousands
+   * of rules (the account-level quota is per-SG, not per-page), so truncation
+   * is reachable. `MAX_SG_RULE_PAGES` bounds the walk; exhausting it is treated
+   * as "could not see the whole group" and records nothing, same as a throw.
    */
   private async lookupIngressRuleId(
     logicalId: string,
@@ -3196,12 +3218,30 @@ export class EC2Provider implements ResourceProvider {
     properties: Record<string, unknown>
   ): Promise<string | undefined> {
     try {
-      const resp = await this.ec2Client.send(
-        new DescribeSecurityGroupRulesCommand({
-          Filters: [{ Name: 'group-id', Values: [groupId] }],
-        })
-      );
-      const matches = (resp.SecurityGroupRules ?? []).filter(
+      const rules: SecurityGroupRule[] = [];
+      let nextToken: string | undefined;
+      let pages = 0;
+      do {
+        if (pages >= MAX_SG_RULE_PAGES) {
+          this.logger.debug(
+            `SecurityGroupIngress ${logicalId}: DescribeSecurityGroupRules on ${groupId} still ` +
+              `paginating after ${MAX_SG_RULE_PAGES} pages — cannot prove the match is unique, ` +
+              `so not recording an Id attribute`
+          );
+          return undefined;
+        }
+        const resp: DescribeSecurityGroupRulesResult = await this.ec2Client.send(
+          new DescribeSecurityGroupRulesCommand({
+            Filters: [{ Name: 'group-id', Values: [groupId] }],
+            ...(nextToken && { NextToken: nextToken }),
+          })
+        );
+        rules.push(...(resp.SecurityGroupRules ?? []));
+        nextToken = resp.NextToken;
+        pages += 1;
+      } while (nextToken);
+
+      const matches = rules.filter(
         (rule) => rule.IsEgress !== true && securityGroupRuleMatchesCfnIngress(rule, properties)
       );
       const ids = matches
@@ -5013,13 +5053,28 @@ export class EC2Provider implements ResourceProvider {
   /**
    * Adopt an existing EC2 networking resource into cdkd state.
    *
-   * Supported types: `AWS::EC2::VPC`, `AWS::EC2::Subnet`,
-   * `AWS::EC2::SecurityGroup`. Other EC2 types this provider creates
-   * (RouteTable, Route, InternetGateway, VPCGatewayAttachment,
-   * NetworkAcl, Instance) return `null` from import — most have no
-   * stable identity to look up by tag (Routes are derived; SGIngress
-   * is rule-level), and the typical adoption story is "find the VPC,
-   * cdkd reconstructs the rest at deploy time".
+   * Every arm here is OVERRIDE-ONLY: `import()` returns `null` unless the
+   * caller passed `--resource <logicalId>=<physicalId>`, and `verifyExplicit`
+   * then confirms that id against AWS. Supported types:
+   *
+   * - `AWS::EC2::VPC`, `AWS::EC2::Subnet`, `AWS::EC2::SecurityGroup` — verified
+   *   by id, recorded verbatim with no attributes.
+   * - `AWS::EC2::NatGateway` — verified by id, ignoring a gateway already in
+   *   `deleted` / `deleting` state.
+   * - `AWS::EC2::EIP` — accepts an allocation id, a public IP, or the composite
+   *   `<publicIp>|<allocationId>`, and records the composite plus the
+   *   `AllocationId` / `PublicIp` attributes.
+   * - `AWS::EC2::SecurityGroupIngress` — accepts the `sgr-...` rule id
+   *   (CloudFormation's own identifier for the type), declines an EGRESS rule
+   *   id, and records cdkd's composite `<groupId>|<ipProtocol>|<fromPort>|<toPort>`
+   *   plus the rule id as the `Id` attribute (issue #1761).
+   *
+   * The remaining EC2 types this provider creates (RouteTable, Route,
+   * InternetGateway, VPCGatewayAttachment, NetworkAcl, NetworkAclEntry,
+   * SubnetRouteTableAssociation, SubnetNetworkAclAssociation, Instance) return
+   * `null` — Routes and associations are derived from their parent, and the
+   * typical adoption story is "find the VPC, cdkd reconstructs the rest at
+   * deploy time".
    *
    * There is no `aws:cdk:path` tag lookup: AWS rejects `aws:`-prefixed tag
    * writes, so that tag never exists on a real resource and a
@@ -6325,16 +6380,35 @@ function singleSecurityGroupRuleId(rules: SecurityGroupRule[] | undefined): stri
  * makes the comparison decidable from a partial template.
  *
  * Ports are compared with AWS's own `-1` ("all") spelling on both sides, since
- * an omitted `FromPort` / `ToPort` reads back as `-1`.
+ * an omitted `FromPort` / `ToPort` reads back as `-1`, and the template side is
+ * NUMERICALLY coerced — see {@link cfnIngressPortValue}.
  */
+/**
+ * A CFn `FromPort` / `ToPort` in the NUMBER form `DescribeSecurityGroupRules`
+ * reports, for {@link securityGroupRuleMatchesCfnIngress}'s compare.
+ *
+ * An identity compare against `properties['FromPort'] as number` was wrong for
+ * the same reason issue #1513 documents one property over: a YAML / JSON
+ * template may spell a port as the STRING `"443"`, and `buildIpPermission`
+ * passes it through to AWS unchanged, so such a rule deploys fine and would
+ * then never match its own AWS-side row.
+ *
+ * Absent / null / empty is AWS's `-1` ("all ports"). Anything that is not a
+ * number at all becomes `NaN`, which compares unequal to everything — the
+ * lookup fails safe (records nothing) rather than matching an all-ports rule.
+ */
+function cfnIngressPortValue(value: unknown): number {
+  if (value === undefined || value === null || value === '') return -1;
+  return Number(value);
+}
+
 function securityGroupRuleMatchesCfnIngress(
   rule: SecurityGroupRule,
   properties: Record<string, unknown>
 ): boolean {
   if (sgProtocolKey(rule.IpProtocol) !== sgProtocolKey(properties['IpProtocol'])) return false;
-  if ((rule.FromPort ?? -1) !== ((properties['FromPort'] as number | undefined) ?? -1))
-    return false;
-  if ((rule.ToPort ?? -1) !== ((properties['ToPort'] as number | undefined) ?? -1)) return false;
+  if ((rule.FromPort ?? -1) !== cfnIngressPortValue(properties['FromPort'])) return false;
+  if ((rule.ToPort ?? -1) !== cfnIngressPortValue(properties['ToPort'])) return false;
 
   // One source key per CFn ingress resource. When the template declares none
   // (legal — an all-sources rule is rejected by AWS, so this is the degenerate
