@@ -856,6 +856,18 @@ let fabricatedAccountIdentity: { identity: CachedAccountIdentity; expiresAt: num
 let accountInfoInFlight: Promise<CachedAccountIdentity> | null = null;
 
 /**
+ * Bumped by {@link resetAccountInfoCache}, so a lookup that was already in
+ * flight cannot write the cache it was asked to forget.
+ *
+ * Without it the reset only cleared the SETTLED caches: an in-flight resolve
+ * would land afterwards and re-populate `cachedAccountIdentity`, so the next
+ * caller read the pre-reset account. That is the `*Once`-leak shape one layer
+ * down — a later test silently inheriting an earlier one's answer — and the
+ * reset's own comment already claimed to forget it.
+ */
+let accountInfoGeneration = 0;
+
+/**
  * Get AWS account information from STS
  */
 export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccountInfo> {
@@ -874,15 +886,22 @@ export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccoun
   // in-flight promise across callers with different `overrideRegion`s is safe.
   // Since issue #1746 that is structural rather than a property to preserve:
   // `resolveAccountIdentity` takes no region at all.
-  accountInfoInFlight = resolveAccountIdentity();
+  const inFlight = resolveAccountIdentity();
+  accountInfoInFlight = inFlight;
   try {
-    return accountInfoFor(await accountInfoInFlight, overrideRegion);
+    return accountInfoFor(await inFlight, overrideRegion);
   } finally {
-    accountInfoInFlight = null;
+    // Only clear the slot we still OWN. `resetAccountInfoCache` nulls it too, so
+    // a reset mid-flight lets a later caller install its own promise — an
+    // unconditional clear here would drop THAT one and cost a redundant
+    // `GetCallerIdentity`.
+    if (accountInfoInFlight === inFlight) accountInfoInFlight = null;
   }
 }
 
 async function resolveAccountIdentity(): Promise<CachedAccountIdentity> {
+  const generation = accountInfoGeneration;
+  const stillCurrent = (): boolean => generation === accountInfoGeneration;
   const logger = getLogger().child('IntrinsicFunctionResolver');
   const awsClients = getAwsClients();
   const stsClient = awsClients.sts;
@@ -907,7 +926,10 @@ async function resolveAccountIdentity(): Promise<CachedAccountIdentity> {
     // single bad STS answer into a whole deploy that records no ARNs. A
     // fabricated one gets the short TTL above instead of nothing, so the retry
     // is bounded rather than per-call.
-    if (resolved.fabricated) {
+    if (!stillCurrent()) {
+      // A reset landed while this lookup was in flight — return the answer to
+      // our own caller but do NOT re-populate the cache it cleared.
+    } else if (resolved.fabricated) {
       fabricatedAccountIdentity = {
         identity: resolved,
         expiresAt: accountInfoClock.now() + FABRICATED_ACCOUNT_INFO_TTL_MS,
@@ -934,6 +956,10 @@ async function resolveAccountIdentity(): Promise<CachedAccountIdentity> {
     // caching note on the success path. An operator-supplied `AWS_ACCOUNT_ID`
     // IS a real answer and is cached as one; a fabricated id gets the bounded
     // TTL so the retry does not fire on every single caller.
+    if (!stillCurrent()) {
+      // See the success arm: a reset invalidated this lookup's right to cache.
+      return fallback;
+    }
     if (fallback.fabricated) {
       // Guarded on `!cachedAccountIdentity` so a late failure arm cannot install
       // a fabricated window over a real answer a concurrent call already cached
@@ -962,6 +988,9 @@ export function resetAccountInfoCache(): void {
   // clear with it, or a test (or a later phase) would keep reading a fabricated
   // answer it just asked to forget.
   fabricatedAccountIdentity = null;
+  // Invalidate any lookup already in flight so its resolve cannot write the
+  // caches this call just cleared.
+  accountInfoGeneration += 1;
   // ...and so is the in-flight promise: a reset while a lookup is pending would
   // otherwise hand the next caller the identity this call asked to forget, and
   // the resolve arm would re-populate the cache AFTER the reset.

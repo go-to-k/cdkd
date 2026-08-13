@@ -122,6 +122,39 @@ describe('DockerAssetPublisher derives the ECR registry suffix (issue #1745)', (
     );
   });
 
+  it('the REALISTIC cn login path — AWS supplies proxyEndpoint, which must be honoured', async () => {
+    // Review: real ECR `GetAuthorizationToken` ALWAYS returns `proxyEndpoint`,
+    // so the fallback the case above exercises is the branch AWS never takes.
+    mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
+      if (cmd._type === 'DescribeImages') {
+        const err = new Error('Image not found') as Error & { name: string };
+        err.name = 'ImageNotFoundException';
+        throw err;
+      }
+      if (cmd._type === 'GetAuthorizationToken') {
+        return {
+          authorizationData: [
+            {
+              authorizationToken: authToken,
+              proxyEndpoint: `https://${ACCOUNT}.dkr.ecr.cn-north-1.amazonaws.com.cn`,
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    await publisher.push(asset(), ACCOUNT, 'cn-north-1', 'local-tag');
+
+    const login = dockerArgs('login')[0];
+    expect(login?.[login.length - 1]).toBe(
+      `https://${ACCOUNT}.dkr.ecr.cn-north-1.amazonaws.com.cn`
+    );
+    expect(dockerArgs('push')[0]?.[1]).toBe(
+      `${ACCOUNT}.dkr.ecr.cn-north-1.amazonaws.com.cn/my-repo:abc123`
+    );
+  });
+
   it('a commercial region is byte-identical to the pre-fix output', async () => {
     await publisher.publish('h1', asset(), '/tmp/out', ACCOUNT, 'us-east-1');
 

@@ -155,6 +155,30 @@ describe('getAccountInfo caches the ACCOUNT only (issue #1746)', () => {
     expect(commercial.partition).toBe('aws');
   });
 
+  it('resetAccountInfoCache forgets a PENDING lookup too, not just the settled caches', async () => {
+    // Review: deleting `accountInfoInFlight = null` from the reset survived
+    // every other case. A reset while a lookup is in flight must not hand the
+    // next caller the identity it just asked to forget.
+    let release: (v: { Account: string }) => void = () => {};
+    stsSend.mockReturnValueOnce(
+      new Promise<{ Account: string }>((resolve) => {
+        release = resolve;
+      })
+    );
+    const pending = getAccountInfo();
+
+    resetAccountInfoCache();
+    release({ Account: '111111111111' });
+    await pending;
+
+    // A fresh caller after the reset must issue its OWN lookup rather than
+    // adopting the pre-reset one.
+    stsSend.mockResolvedValueOnce({ Account: '222222222222' });
+    const after = await getAccountInfo();
+    expect(after.accountId).toBe('222222222222');
+    expect(stsSend).toHaveBeenCalledTimes(2);
+  });
+
   it('an operator-supplied AWS_ACCOUNT_ID fallback is cached without its region', async () => {
     stsSend.mockRejectedValue(new Error('STS unreachable'));
     process.env['AWS_ACCOUNT_ID'] = '111122223333';

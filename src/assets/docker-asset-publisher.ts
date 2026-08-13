@@ -278,7 +278,7 @@ export class DockerAssetPublisher {
   /**
    * Authenticate with ECR via `docker login --password-stdin`.
    *
-   * The login is cached per registry (`<accountId>.dkr.ecr.<region>`) for the
+   * The login is cached per registry (`<accountId>.dkr.ecr.<region>.<urlSuffix>`) for the
    * process lifetime: a repeat publish to the same registry returns early
    * without the `GetAuthorizationToken` call or the `docker login` subprocess
    * (mirrors `cdk-assets`). ECR tokens are valid ~12h and a deploy process is
