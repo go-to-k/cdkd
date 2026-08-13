@@ -76,8 +76,15 @@ vi.mock('node:readline/promises', () => ({
 
 import { ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3';
 import { DescribeImagesCommand, BatchDeleteImageCommand } from '@aws-sdk/client-ecr';
-import { createGcCommand, parseOlderThan } from '../../../src/cli/commands/gc.js';
+import {
+  createGcCommand,
+  parseOlderThan,
+  collectAssetReferences,
+  type AssetReferences,
+} from '../../../src/cli/commands/gc.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
+import { derivePartitionAndUrlSuffix } from '../../../src/utils/aws-partition.js';
+import type { BootstrapMarker } from '../../../src/assets/asset-storage.js';
 
 const ACCOUNT = '123456789012';
 const REGION = 'us-east-1';
@@ -243,9 +250,13 @@ const REFERENCED_KEYS = [
 ];
 
 async function runGc(extraArgs: string[] = []): Promise<void> {
+  await runGcInRegion(REGION, extraArgs);
+}
+
+async function runGcInRegion(region: string, extraArgs: string[] = []): Promise<void> {
   const cmd = createGcCommand();
   cmd.exitOverride();
-  await cmd.parseAsync(['--region', REGION, ...extraArgs], { from: 'user' });
+  await cmd.parseAsync(['--region', region, ...extraArgs], { from: 'user' });
 }
 
 function s3CommandNames(): string[] {
@@ -776,6 +787,308 @@ describe('cdkd gc', () => {
 
       expect(mockQuestion).not.toHaveBeenCalled();
       expectNothingDeleted();
+    });
+  });
+
+  // Issue #1781: all three asset-reference matchers used to hardcode the
+  // commercial `amazonaws.com` suffix, so outside that partition NOTHING
+  // matched, every live asset read as UNREFERENCED, and gc DELETED it.
+  // Every non-commercial assertion below is paired with a commercial
+  // counter-case asserting the unchanged collection (the #1758 convention).
+  describe('partition URL suffixes (issue #1781)', () => {
+    const MARKER: BootstrapMarker = {
+      assetBucket: ASSET_BUCKET,
+      containerRepo: CONTAINER_REPO,
+      assetSupportVersion: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+
+    /** Collect references out of ONE string, as a state document would carry it. */
+    function collect(value: string): AssetReferences {
+      const refs: AssetReferences = {
+        s3Keys: new Set(),
+        imageTags: new Set(),
+        imageDigests: new Set(),
+      };
+      collectAssetReferences({ SomeProperty: value }, MARKER, refs);
+      return refs;
+    }
+
+    // One region per partition `derivePartitionAndUrlSuffix` knows today.
+    //
+    // SCOPE, stated because the obvious stronger claim is NOT true: this list
+    // is hand-written, so it fences the SUFFIX each listed region derives (flip
+    // `cn-north-1` to a different suffix in that table and the first test below
+    // reds) but NOT the arrival of a NEW arm — a new region prefix + suffix
+    // added there reds nothing here, because nothing enumerates the table.
+    // Coupling gc's list to it needs `src/utils/aws-partition.ts` to export the
+    // mapping, tracked as (#1785).
+    const DERIVE_TABLE_REGIONS = [
+      'us-east-1', // aws          -> amazonaws.com
+      'us-gov-west-1', // aws-us-gov   -> amazonaws.com
+      'cn-north-1', // aws-cn       -> amazonaws.com.cn
+      'us-iso-east-1', // aws-iso      -> c2s.ic.gov
+      'us-isob-east-1', // aws-iso-b    -> sc2s.sgov.gov
+    ];
+
+    // The arms `derivePartitionAndUrlSuffix` does NOT know yet (issue #1764).
+    // gc must match them anyway: a suffix missing from gc's list deletes live
+    // assets, which is the irreversible direction.
+    const UNTABLED_SUFFIXES = [
+      ['eu-isoe-west-1', 'cloud.adc-e.uk'],
+      ['us-isof-south-1', 'csp.hci.ic.gov'],
+      ['eusc-de-east-1', 'amazonaws.eu'],
+    ];
+
+    it('collects a virtual-hosted S3 reference for every partition listed above', () => {
+      for (const region of DERIVE_TABLE_REGIONS) {
+        const { urlSuffix } = derivePartitionAndUrlSuffix(region);
+        const refs = collect(`https://${ASSET_BUCKET}.s3.${region}.${urlSuffix}/live-asset.zip`);
+        expect([...refs.s3Keys], `region ${region} (${urlSuffix})`).toEqual(['live-asset.zip']);
+      }
+    });
+
+    it('collects a virtual-hosted S3 reference for the partitions the derive table lacks', () => {
+      for (const [region, urlSuffix] of UNTABLED_SUFFIXES) {
+        const refs = collect(`https://${ASSET_BUCKET}.s3.${region}.${urlSuffix}/live-asset.zip`);
+        expect([...refs.s3Keys], `region ${region} (${urlSuffix})`).toEqual(['live-asset.zip']);
+      }
+    });
+
+    it('collects a path-style S3 reference outside commercial; commercial unchanged', () => {
+      expect([
+        ...collect(`https://s3.cn-north-1.amazonaws.com.cn/${ASSET_BUCKET}/cn-path.zip`).s3Keys,
+      ]).toEqual(['cn-path.zip']);
+      expect([
+        ...collect(`https://s3.us-iso-east-1.c2s.ic.gov/${ASSET_BUCKET}/iso-path.zip`).s3Keys,
+      ]).toEqual(['iso-path.zip']);
+
+      // Commercial counter-case: byte-identical input still collects the key.
+      expect([
+        ...collect(`https://s3.${REGION}.amazonaws.com/${ASSET_BUCKET}/com-path.zip`).s3Keys,
+      ]).toEqual(['com-path.zip']);
+    });
+
+    it('collects the dualstack / no-region virtual-hosted variants outside commercial', () => {
+      expect([
+        ...collect(`https://${ASSET_BUCKET}.s3.dualstack.cn-north-1.amazonaws.com.cn/dual.zip`)
+          .s3Keys,
+      ]).toEqual(['dual.zip']);
+      expect([...collect(`https://${ASSET_BUCKET}.s3.amazonaws.com.cn/no-region.zip`).s3Keys]).toEqual(
+        ['no-region.zip']
+      );
+
+      // Commercial counter-case.
+      expect([
+        ...collect(`https://${ASSET_BUCKET}.s3.dualstack.${REGION}.amazonaws.com/dual.zip`).s3Keys,
+      ]).toEqual(['dual.zip']);
+    });
+
+    it('strips a query string from a non-commercial pre-signed URL; commercial unchanged', () => {
+      expect([
+        ...collect(
+          `https://${ASSET_BUCKET}.s3.cn-north-1.amazonaws.com.cn/signed.zip?X-Amz-Signature=abc`
+        ).s3Keys,
+      ]).toEqual(['signed.zip']);
+      expect([
+        ...collect(
+          `https://${ASSET_BUCKET}.s3.${REGION}.amazonaws.com/signed.zip?X-Amz-Signature=abc`
+        ).s3Keys,
+      ]).toEqual(['signed.zip']);
+    });
+
+    it('collects an ECR tag + digest outside commercial; commercial unchanged', () => {
+      const digest = `sha256:${'9'.repeat(64)}`;
+
+      const cn = collect(
+        `${ACCOUNT}.dkr.ecr.cn-north-1.amazonaws.com.cn/${CONTAINER_REPO}:cn-tag@${digest}`
+      );
+      expect([...cn.imageTags]).toEqual(['cn-tag']);
+      expect([...cn.imageDigests]).toEqual([digest]);
+
+      const iso = collect(
+        `${ACCOUNT}.dkr.ecr.us-isob-east-1.sc2s.sgov.gov/${CONTAINER_REPO}:iso-tag`
+      );
+      expect([...iso.imageTags]).toEqual(['iso-tag']);
+
+      // Commercial counter-case: byte-identical input still collects both.
+      const com = collect(
+        `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${CONTAINER_REPO}:com-tag@${digest}`
+      );
+      expect([...com.imageTags]).toEqual(['com-tag']);
+      expect([...com.imageDigests]).toEqual([digest]);
+    });
+
+    it('collects the ECR FIPS + short-form hosts outside commercial; commercial unchanged', () => {
+      const digest = `sha256:${'8'.repeat(64)}`;
+
+      // FIPS host (`dkr.ecr-fips.<region>.<urlSuffix>`) — the `us-gov-*`
+      // partition's suffix is the commercial one, so the FIPS infix is the
+      // ONLY thing distinguishing it and a plain `\.ecr\.` matcher misses it.
+      const gov = collect(
+        `${ACCOUNT}.dkr.ecr-fips.us-gov-west-1.amazonaws.com/${CONTAINER_REPO}:gov-tag`
+      );
+      expect([...gov.imageTags]).toEqual(['gov-tag']);
+
+      const cnFips = collect(
+        `${ACCOUNT}.dkr.ecr-fips.cn-north-1.amazonaws.com.cn/${CONTAINER_REPO}:cn-fips-tag@${digest}`
+      );
+      expect([...cnFips.imageTags]).toEqual(['cn-fips-tag']);
+      expect([...cnFips.imageDigests]).toEqual([digest]);
+
+      // Short-form alias (`dkr-ecr.<region>.on.aws`). Deliberately NOT routed
+      // through the shared S3 suffix set — see ECR_REGISTRY_HOST.
+      const short = collect(
+        `${ACCOUNT}.dkr-ecr.${REGION}.on.aws/${CONTAINER_REPO}:short-tag@${digest}`
+      );
+      expect([...short.imageTags]).toEqual(['short-tag']);
+      expect([...short.imageDigests]).toEqual([digest]);
+
+      // Commercial counter-case on the plain host: byte-identical, unchanged.
+      const com = collect(`${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${CONTAINER_REPO}:com-tag`);
+      expect([...com.imageTags]).toEqual(['com-tag']);
+    });
+
+    it('the ECR short-form suffix does NOT leak into the S3 matchers', () => {
+      // `on.aws` is an ECR-only endpoint. If it were folded into the shared
+      // AWS_URL_SUFFIXES set, both S3 shapes below would start matching.
+      expect([...collect(`https://${ASSET_BUCKET}.s3.${REGION}.on.aws/leak.zip`).s3Keys]).toEqual(
+        []
+      );
+      expect([
+        ...collect(`https://s3.${REGION}.on.aws/${ASSET_BUCKET}/leak.zip`).s3Keys,
+      ]).toEqual([]);
+    });
+
+    it('does NOT treat a look-alike host as a cdkd asset reference', () => {
+      // A foreign suffix, and a host that merely EMBEDS a real suffix without
+      // ending in one. Over-matching here would only ever over-protect, but it
+      // would let any string naming the bucket pin an object forever.
+      const lookAlikes = [
+        `https://${ASSET_BUCKET}.s3.${REGION}.example.com/lookalike.zip`,
+        `https://${ASSET_BUCKET}.s3.${REGION}.amazonaws.com.evil.com/lookalike.zip`,
+        `https://s3.${REGION}.example.com/${ASSET_BUCKET}/lookalike.zip`,
+      ];
+      for (const value of lookAlikes) {
+        expect([...collect(value).s3Keys], value).toEqual([]);
+      }
+
+      // BOTH ECR outputs are asserted: a digest-only look-alike carries no
+      // `:tag`, so checking `imageTags` alone would pass it unexamined.
+      const digest = `sha256:${'7'.repeat(64)}`;
+      const ecrLookAlikes = [
+        `${ACCOUNT}.dkr.ecr.${REGION}.example.com/${CONTAINER_REPO}:lookalike-tag@${digest}`,
+        `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com.evil.com/${CONTAINER_REPO}:lookalike-tag`,
+        `${ACCOUNT}.dkr.ecr.${REGION}.example.com/${CONTAINER_REPO}@${digest}`,
+        `${ACCOUNT}.dkr.ecr-fips.${REGION}.example.com/${CONTAINER_REPO}:lookalike-tag`,
+        `${ACCOUNT}.dkr-ecr.${REGION}.on.aws.evil.com/${CONTAINER_REPO}:lookalike-tag`,
+      ];
+      for (const value of ecrLookAlikes) {
+        const refs = collect(value);
+        expect([...refs.imageTags], value).toEqual([]);
+        expect([...refs.imageDigests], value).toEqual([]);
+      }
+    });
+
+    it('keeps the live assets of a cn-north-1 stack instead of deleting them', async () => {
+      // The assertion that actually protects the user: end-to-end, a state
+      // file recording `amazonaws.com.cn` hosts must make gc treat those
+      // objects / images as REFERENCED. Before the fix every one of them was
+      // selected for deletion.
+      const CN_REGION = 'cn-north-1';
+      const CN_MARKER_KEY = `cdkd-bootstrap/${CN_REGION}.json`;
+      const CN_STATE_KEY = `cdkd/CnStack/${CN_REGION}/state.json`;
+      const CN_TAGGED_DIGEST = `sha256:${'1'.repeat(63)}a`;
+      const CN_REF_DIGEST = `sha256:${'2'.repeat(63)}b`;
+      const CN_GARBAGE_DIGEST = `sha256:${'3'.repeat(63)}c`;
+
+      const CN_STATE_BODY = JSON.stringify({
+        version: 8,
+        stackName: 'CnStack',
+        region: CN_REGION,
+        resources: {
+          Fn: {
+            physicalId: 'fn',
+            resourceType: 'AWS::Lambda::Function',
+            properties: {
+              Environment: {
+                Variables: {
+                  VIRTUAL_HOSTED: `https://${ASSET_BUCKET}.s3.${CN_REGION}.amazonaws.com.cn/cn-virtual.zip`,
+                  PATH_STYLE: `https://s3.${CN_REGION}.amazonaws.com.cn/${ASSET_BUCKET}/cn-path.zip`,
+                },
+              },
+            },
+            attributes: {},
+            dependencies: [],
+          },
+          Container: {
+            physicalId: 'container-fn',
+            resourceType: 'AWS::Lambda::Function',
+            properties: {
+              Code: {
+                ImageUri: `${ACCOUNT}.dkr.ecr.${CN_REGION}.amazonaws.com.cn/${CONTAINER_REPO}:cn-tag`,
+              },
+            },
+            attributes: {
+              ResolvedImageUri: `${ACCOUNT}.dkr.ecr.${CN_REGION}.amazonaws.com.cn/${CONTAINER_REPO}@${CN_REF_DIGEST}`,
+            },
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        lastModified: Date.now(),
+      });
+
+      stateBackendMocks.getRawObject.mockImplementation(async (key: string) => {
+        if (key === CN_MARKER_KEY) return MARKER_BODY;
+        if (key === CN_STATE_KEY) return CN_STATE_BODY;
+        return null;
+      });
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === '') return [CN_MARKER_KEY, CN_STATE_KEY];
+        return [];
+      });
+      mockS3Send.mockImplementation(async (command: object) => {
+        if (command instanceof ListObjectsV2Command) {
+          return {
+            Contents: [
+              { Key: 'cn-virtual.zip', Size: 100, LastModified: OLD },
+              { Key: 'cn-path.zip', Size: 100, LastModified: OLD },
+              { Key: 'cn-garbage.zip', Size: 100, LastModified: OLD },
+            ],
+            IsTruncated: false,
+          };
+        }
+        return {};
+      });
+      mockEcrSend.mockImplementation(async (command: object) => {
+        if (command instanceof DescribeImagesCommand) {
+          return {
+            imageDetails: [
+              {
+                imageDigest: CN_TAGGED_DIGEST,
+                imageTags: ['cn-tag'],
+                imageSizeInBytes: 1,
+                imagePushedAt: OLD,
+              },
+              { imageDigest: CN_REF_DIGEST, imageSizeInBytes: 1, imagePushedAt: OLD },
+              {
+                imageDigest: CN_GARBAGE_DIGEST,
+                imageTags: ['cn-garbage'],
+                imageSizeInBytes: 1,
+                imagePushedAt: OLD,
+              },
+            ],
+          };
+        }
+        return {};
+      });
+
+      await runGcInRegion(CN_REGION, ['--yes']);
+
+      // Only the genuinely unreferenced ones go; the referenced cn assets stay.
+      expect(deletedS3Keys()).toEqual(['cn-garbage.zip']);
+      expect(deletedDigests()).toEqual([CN_GARBAGE_DIGEST]);
     });
   });
 });

@@ -116,6 +116,115 @@ function escapeRegExp(value: string): string {
 const KEY_TERMINATORS = '[^\\s"\'?]';
 
 /**
+ * Every AWS partition's URL suffix. The asset-reference matchers match the
+ * suffix against this CLOSED SET instead of hardcoding one literal
+ * (issue #1781).
+ *
+ * Before this list, all three matchers spelled `amazonaws\.com` inline, so a
+ * state file written in `aws-cn` / `us-iso*` / `us-isob*` (recording
+ * `amazonaws.com.cn` / `c2s.ic.gov` / `sc2s.sgov.gov` hosts) matched none of
+ * them and its assets read as UNREFERENCED.
+ *
+ * **What that actually deleted, measured rather than assumed.** The blast
+ * radius is narrower than "every live asset" but still a silent, irreversible
+ * delete:
+ *
+ * - **S3 was already rescued**, by accident. {@link CONTENT_HASH_KEY_RE}
+ *   collects `<sha256>.<ext>` tokens out of ANY string regardless of host, and
+ *   cdkd's file assets are content-addressed with an extension — so a
+ *   non-commercial `https://…amazonaws.com.cn/<sha256>.zip` still had its key
+ *   protected by the name-independent pass. Measured on a real `--dry-run`
+ *   against a seeded `cn-north-1` state file: 71 of 72 objects, including the
+ *   referenced one, were protected with the matchers still broken.
+ * - **ECR was NOT rescued, and is where the bug actually deleted.** cdkd's
+ *   image tags are bare 64-hex with no `.<ext>` tail, so the content-hash pass
+ *   cannot see them, and digests are `sha256:<hex>` — also no tail. With the
+ *   ECR matcher missing the suffix, a referenced non-commercial image is
+ *   selected for deletion. That is the case the live test reproduced.
+ *
+ * Either way the failure direction is the opposite of the #1758 / #1745 sites,
+ * which merely emit a host that does not resolve.
+ *
+ * Two properties of this list are load-bearing:
+ *
+ * - It is the union over ALL partitions, not
+ *   `derivePartitionAndUrlSuffix(region).urlSuffix` for the caller's region.
+ *   The scan reads EVERY state file in the state bucket, written by any cdkd
+ *   binary for any region, so it must match every partition at once; a single
+ *   derived literal would still delete a `cn-north-1` stack's images during a
+ *   `us-east-1` gc run.
+ * - It is deliberately a SUPERSET of the arms
+ *   {@link derivePartitionAndUrlSuffix} currently knows (issue #1764). A
+ *   suffix missing HERE deletes live assets, which is the irreversible
+ *   direction, so this list must lead that table rather than follow it.
+ *
+ * It is a closed SET rather than a `[^/\s]+` wildcard so a look-alike host
+ * (`https://<assetBucket>.s3.<region>.example.com/<key>`) is not treated as a
+ * cdkd asset reference. That direction only ever over-PROTECTS, but it would
+ * also let any string embedding the bucket name pin an object forever, which
+ * quietly turns gc into a no-op.
+ *
+ * NOTE this is a weaker check than `src/utils/ecr-uri.ts`, which CAPTURES the
+ * suffix and validates it against the region the host names. That is the right
+ * shape there (one host, one caller-known region) and the wrong shape here:
+ * the region in a scanned string is not necessarily the region whose partition
+ * the suffix must belong to, and pairing them would re-inherit #1764's missing
+ * arms on the irreversible side.
+ */
+const AWS_URL_SUFFIXES = [
+  'amazonaws.com', // aws, aws-us-gov
+  'amazonaws.com.cn', // aws-cn
+  'amazonaws.eu', // aws-eusc (eusc-de-*)
+  'c2s.ic.gov', // aws-iso (us-iso-*)
+  'sc2s.sgov.gov', // aws-iso-b (us-isob-*)
+  'cloud.adc-e.uk', // aws-iso-e (eu-isoe-*)
+  'csp.hci.ic.gov', // aws-iso-f (us-isof-*)
+];
+
+/**
+ * `(?:amazonaws\.com\.cn|amazonaws\.com|...)` — {@link AWS_URL_SUFFIXES} as a
+ * non-capturing alternation, LONGEST FIRST so `amazonaws.com.cn` is tried
+ * before its own `amazonaws.com` prefix instead of relying on backtracking.
+ *
+ * The `(?:` is load-bearing, not stylistic: every matcher below reads its
+ * results by GROUP INDEX (`match[1]` is the S3 key / the ECR tag, `match[2]`
+ * the ECR digest), and this alternation sits BEFORE those groups in all three
+ * patterns. Making it capturing would shift every index by one and silently
+ * collect the suffix as if it were a key.
+ */
+const URL_SUFFIX_ALTERNATION = `(?:${[...AWS_URL_SUFFIXES]
+  .sort((a, b) => b.length - a.length)
+  .map(escapeRegExp)
+  .join('|')})`;
+
+/**
+ * The HOST half of an ECR registry, as an alternation over the forms AWS
+ * serves: `<acct>.dkr.ecr.<region>.<urlSuffix>`, its FIPS sibling
+ * `<acct>.dkr.ecr-fips.<region>.<urlSuffix>`, and the short-form alias
+ * `<acct>.dkr-ecr.<region>.on.aws`.
+ *
+ * Kept DELIBERATELY separate from the S3 matchers' shared
+ * {@link URL_SUFFIX_ALTERNATION} rather than folded into it: `on.aws` is an
+ * ECR-only endpoint, so adding it to the shared suffix set would also make
+ * `https://<assetBucket>.s3.<region>.on.aws/<key>` a recognized S3 reference.
+ * Widening either matcher only ever over-PROTECTS, but the two services' host
+ * grammars genuinely differ and conflating them is how the next widening goes
+ * wrong.
+ *
+ * Account and region are matched loosely on purpose (see the extractor doc):
+ * collecting a reference from another account's or region's URI can only KEEP
+ * more, never delete more — which is also why the two extra forms are worth
+ * carrying even though cdkd's own publisher writes the plain one. Issue #1785
+ * tracks deriving these host forms from ONE place shared with
+ * `src/utils/ecr-uri.ts` instead of two hand-kept copies.
+ *
+ * Every group is non-capturing, for the {@link URL_SUFFIX_ALTERNATION} reason.
+ */
+const ECR_REGISTRY_HOST =
+  `\\d{12}\\.(?:dkr\\.ecr(?:-fips)?\\.[a-z0-9-]+\\.${URL_SUFFIX_ALTERNATION}` +
+  `|dkr-ecr\\.[a-z0-9-]+\\.on\\.aws)`;
+
+/**
  * cdkd's publishers write content-addressed keys (`<sha256>.<ext>`). A
  * second, name-independent pass collects every such token from every
  * scanned string — belt-and-braces against URL captures that ran through
@@ -156,13 +265,18 @@ function tryDecodeBase64Text(value: string): string | null {
  *   ApiGateway BodyS3Location / SFN DefinitionS3Location, ...) — handled
  *   in the walk itself; every sibling string value is collected.
  * - `s3://<assetBucket>/<key>` URIs.
- * - `https://<assetBucket>.s3[.<region>].amazonaws.com/<key>`
+ * - `https://<assetBucket>.s3[.<region>].<urlSuffix>/<key>`
  *   (virtual-hosted style, region / dualstack variants included).
- * - `https://s3[.<region>].amazonaws.com/<assetBucket>/<key>` (path style).
- * - `<acct>.dkr.ecr.<region>.amazonaws.com/<containerRepo>:<tag>` and/or
- *   `...@sha256:<digest>` image URIs. Account / region are matched
- *   loosely on purpose: collecting a reference from another account's or
- *   region's URI can only over-protect (keep more), never delete more.
+ * - `https://s3[.<region>].<urlSuffix>/<assetBucket>/<key>` (path style).
+ * - `<ecrHost>/<containerRepo>:<tag>` and/or `...@sha256:<digest>` image
+ *   URIs, where `<ecrHost>` is {@link ECR_REGISTRY_HOST}. Account / region
+ *   are matched loosely on purpose: collecting a reference from another
+ *   account's or region's URI can only over-protect (keep more), never
+ *   delete more.
+ *
+ * `<urlSuffix>` in the two S3 shapes is {@link URL_SUFFIX_ALTERNATION}, i.e.
+ * EVERY partition's suffix at once — see that constant for why a per-region
+ * derived literal is the wrong shape here (issue #1781).
  */
 function buildReferenceExtractors(marker: BootstrapMarker): {
   extractFromString: (value: string, refs: AssetReferences) => void;
@@ -171,15 +285,15 @@ function buildReferenceExtractors(marker: BootstrapMarker): {
   const repo = escapeRegExp(marker.containerRepo);
   const s3UriRe = new RegExp(`s3://${bucket}/(${KEY_TERMINATORS}+)`, 'g');
   const virtualHostedRe = new RegExp(
-    `https://${bucket}\\.s3[^/\\s]*\\.amazonaws\\.com/(${KEY_TERMINATORS}+)`,
+    `https://${bucket}\\.s3[^/\\s]*\\.${URL_SUFFIX_ALTERNATION}/(${KEY_TERMINATORS}+)`,
     'g'
   );
   const pathStyleRe = new RegExp(
-    `https://s3[^/\\s]*\\.amazonaws\\.com/${bucket}/(${KEY_TERMINATORS}+)`,
+    `https://s3[^/\\s]*\\.${URL_SUFFIX_ALTERNATION}/${bucket}/(${KEY_TERMINATORS}+)`,
     'g'
   );
   const ecrRe = new RegExp(
-    `\\d{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/${repo}` +
+    `${ECR_REGISTRY_HOST}/${repo}` +
       `(?::([A-Za-z0-9_][A-Za-z0-9._-]{0,127}))?(?:@(sha256:[0-9a-f]{64}))?`,
     'g'
   );
