@@ -28,6 +28,11 @@
 #       (Issue #1419). Runs against the BASELINE deploy, so it pins the
 #       create-side half: pre-fix `create()` registered no autoscaling at
 #       all and NO code path ever registered a `dynamodb:index:*` dimension.
+#  4f. issue #1857: assert the QUOTED-STRING per-GSI WarmThroughput on
+#       WarmCoercionTable reached AWS as NUMBERS. The arm's real
+#       discriminator is step 2 itself — pre-fix the string is forwarded
+#       verbatim into a numeric `Long` field and DynamoDB rejects the whole
+#       CreateTable, so a reverted fix never gets here.
 #   5. cdkd deploy with CDKD_TEST_UPDATE=deletion-protection
 #   8. assert DeletionProtectionEnabled is now true on AWS
 #   9. cdkd deploy with CDKD_TEST_UPDATE=deletion-protection,billing-provisioned
@@ -60,8 +65,15 @@
 #  14. assert DeletionProtectionEnabled is now false (or absent) on AWS,
 #       BillingMode flipped back to PAY_PER_REQUEST, AND the scaling
 #       policy is gone (DeleteScalingPolicy + DeregisterScalableTarget)
-#  15. cdkd destroy --remove-protection --force (works regardless of
-#       the last DeletionProtectionEnabled state)
+#  14d. issue #1830 preconditions: GsiDeleteRetryTable's indexes are ACTIVE
+#       and its table-level WRITE scalable target is registered (the signal
+#       step 15's race driver keys on).
+#  15. cdkd destroy --remove-protection --force --verbose (works regardless
+#       of the last DeletionProtectionEnabled state), teed to a log, with the
+#       issue #1830 race driver running alongside it.
+#  15b. issue #1830: assert the destroy ABSORBED an index-busy DeleteTable
+#       refusal — the AWS refusal text AND a retry line naming the table must
+#       both appear in a destroy that still exited 0.
 #  16. assert the AWS-side table is gone, the per-INDEX scalable target was
 #       deregistered (Issue #1419 — application-autoscaling is a separate
 #       control plane, so DeleteTable alone leaves an orphan target a future
@@ -126,6 +138,56 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 
+# --- issue #1830: the index-busy DeleteTable race driver --------------------
+# Deliberately OUTSIDE the canonical gone-probe block above: that block is
+# matched verbatim by `check-integ-probe-not-found.ts`, so anything added
+# inside it is a lint failure.
+#
+# WHY A DRIVER AT ALL, and why it keys on a LOG line rather than on the clock.
+# `delete()` runs: pre-delete DescribeTable -> auto-scaling teardown ->
+# `hasTransitionalIndex(<the PRE-DELETE snapshot>)` gate -> DeleteTable. An
+# index that is already transitioning when the destroy STARTS is therefore
+# seen by that describe, waited out by the #1521 gate, and the delete then
+# succeeds — with the #1830 fix REVERTED as well, which is exactly the
+# vacuous arm this driver exists to avoid. The only window that reproduces
+# the real defect is BETWEEN the describe and DeleteTable, and the auto-
+# scaling teardown is the only thing in it.
+#
+# `Deregistered auto-scaling target table/<t> (dynamodb:table:WriteCapacityUnits)`
+# is the one debug line emitted inside that window whose ordering is
+# GUARANTEED: it is logged after the pre-delete describe, and 48 further
+# serialized application-auto-scaling calls (12 indexes x 2 dimensions x 2
+# calls) follow it before `DeleteTable`. Keying on it means the driver can
+# fire too LATE (the arm then fails loudly at step 15b with nothing left
+# behind) but never too EARLY (which would arm the #1521 gate and make the
+# arm pass with the fix reverted).
+delete_retry_race_driver() { # $1=destroy log  $2=table  $3=index  $4=marker file
+  local log="$1" table="$2" index="$3" marker="$4"
+  local signal="Deregistered auto-scaling target table/${table} (dynamodb:table:WriteCapacityUnits)"
+  local i
+  for i in $(seq 1 12000); do
+    if [ -s "${log}" ] && grep -qF "${signal}" "${log}"; then
+      # A provisioned-capacity change on ONE index is enough to put it into
+      # `UPDATING`, which is what AWS refuses the delete on. The values are an
+      # increase over the declared 1/1 so the call cannot be a no-op.
+      if aws dynamodb update-table \
+        --table-name "${table}" \
+        --global-secondary-index-updates \
+        "[{\"Update\":{\"IndexName\":\"${index}\",\"ProvisionedThroughput\":{\"ReadCapacityUnits\":4,\"WriteCapacityUnits\":4}}}]" \
+        --region "${REGION}" >/dev/null 2>&1; then
+        printf 'fired' >"${marker}"
+      else
+        printf 'update-rejected' >"${marker}"
+      fi
+      return 0
+    fi
+    sleep 0.05
+  done
+  printf 'signal-timeout' >"${marker}"
+  return 0
+}
+# ---------------------------------------------------------------------------
+
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
 STACK="CdkdDynamoDBGlobalTableExample"
@@ -147,8 +209,18 @@ if [ ! -d node_modules ]; then
   vp install
 fi
 
+# Set once step 15 starts the issue #1830 race driver; killed on every exit
+# path so an aborted run cannot leave a background `aws dynamodb update-table`
+# loop running against a table the cleanup destroy is deleting.
+DELETE_RETRY_DRIVER_PID=""
+
 cleanup() {
   rc=$?
+  if [ -n "${DELETE_RETRY_DRIVER_PID}" ]; then
+    kill "${DELETE_RETRY_DRIVER_PID}" 2>/dev/null || true
+    wait "${DELETE_RETRY_DRIVER_PID}" 2>/dev/null || true
+    DELETE_RETRY_DRIVER_PID=""
+  fi
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     # Retry once on dependency errors (AWS DynamoDB delete can lag
@@ -191,6 +263,12 @@ GSI_PROV_TABLE="$(table_name_for GsiProvisionedTable)"
 GSI_OD_TABLE="$(table_name_for GsiOnDemandTable)"
 GSI_FLIP_TABLE="$(table_name_for GsiFlipTable)"
 OD_REPLICA_TABLE="$(table_name_for OnDemandReplicaTable)"
+WARM_COERCION_TABLE="$(table_name_for WarmCoercionTable)"
+GSI_DELETE_RETRY_TABLE="$(table_name_for GsiDeleteRetryTable)"
+if [ -z "${WARM_COERCION_TABLE}" ] || [ -z "${GSI_DELETE_RETRY_TABLE}" ]; then
+  echo "FAIL: issues #1857 / #1830 — WarmCoercionTable / GsiDeleteRetryTable missing from cdkd state (got '${WARM_COERCION_TABLE}' / '${GSI_DELETE_RETRY_TABLE}')" >&2
+  exit 1
+fi
 # Issue #1512: once step 12e1 has ADDED the on-demand replica, every LATER
 # deploy must keep declaring it. A mode-gated resource disappears from the
 # template in any step whose mode list omits its token, and cdkd then issues a
@@ -327,6 +405,35 @@ else
   echo "[verify] FAIL (issue #1420): cdkd drift reported drift on a freshly-deployed stack — the GSI reverse map does not round-trip" >&2
   exit 1
 fi
+
+echo "[verify] step 4f (Issue #1857): assert the QUOTED-STRING WarmThroughput was COERCED onto the wire"
+# `WarmCoercionTable` declares warmIdx's WarmThroughput as CloudFormation
+# STRINGS ('12000' / '4000') — the shape a quoted template value or an
+# `Fn::Sub` result arrives in. Pre-fix the provider forwarded that block
+# verbatim into the SDK's numeric `Long` fields and DynamoDB rejected the whole
+# CreateTable, so a REVERTED fix fails at step 2 and never reaches this line.
+# That, not the readback below, is the arm's discriminator.
+#
+# What the readback adds is proof the coerced block was SENT and ACCEPTED
+# rather than refused and dropped on the way. It deliberately does NOT
+# discriminate on the VALUE: AWS reports a warm throughput on every index
+# whether or not one was declared (issue #1859), and the declared numbers ARE
+# that default — anything above it is a BILLED increase and this fixture runs
+# against a real account. So the check is a numeric-shape test plus a monotonic
+# floor, never an equality against a pinned literal.
+warm_units_ok() { # $1 = readback value, $2 = declared floor
+  case "$1" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  [ "$1" -ge "$2" ]
+}
+WARM_READ="$(gsi_field "${WARM_COERCION_TABLE}" warmIdx WarmThroughput.ReadUnitsPerSecond)"
+WARM_WRITE="$(gsi_field "${WARM_COERCION_TABLE}" warmIdx WarmThroughput.WriteUnitsPerSecond)"
+if ! warm_units_ok "${WARM_READ}" 12000 || ! warm_units_ok "${WARM_WRITE}" 4000; then
+  echo "FAIL: issue #1857 — expected warmIdx on ${WARM_COERCION_TABLE} to carry a NUMERIC WarmThroughput of at least 12000 read / 4000 write after coercion, got read='${WARM_READ}' write='${WARM_WRITE}'" >&2
+  exit 1
+fi
+echo "[verify] step 4f ok: warmIdx WarmThroughput = ${WARM_READ} read / ${WARM_WRITE} write (declared as the strings '12000' / '4000')"
 
 echo "[verify] step 4c (Issue #1419): assert the per-INDEX auto-scaling target + policy exist on AWS"
 # The bug: cdkd registered application-autoscaling targets only for
@@ -1754,12 +1861,84 @@ if [ "${WRITE_POLICY_AFTER}" != "0" ]; then
 fi
 echo "[verify] step 14c ok: write autoscaling policy torn down"
 
-echo "[verify] step 15: cdkd destroy --remove-protection --force"
+echo "[verify] step 14d (Issue #1830): assert the delete-retry preconditions hold"
+# Both halves have to be true for step 15's driver to reproduce the race, and
+# a silent miss on either would make step 15b's failure look like a broken fix.
+#
+# (a) Every index on the table is ACTIVE right now. If one were already
+#     transitioning, `delete()`'s PRE-DELETE describe would see it and the
+#     #1521 gate would wait it out — which is the arm that passes with the
+#     #1830 fix REVERTED, i.e. exactly the vacuous shape to avoid.
+# (b) The table-level WRITE scalable target exists, because its deregistration
+#     debug line is the driver's signal. Without it the driver never fires and
+#     the arm is inert.
+DELETE_RETRY_BUSY="$(aws dynamodb describe-table --table-name "${GSI_DELETE_RETRY_TABLE}" --region "${REGION}" \
+  --query "length(Table.GlobalSecondaryIndexes[?IndexStatus!='ACTIVE'] || \`[]\`)" --output text)"
+if [ "${DELETE_RETRY_BUSY}" != "0" ]; then
+  echo "FAIL: issue #1830 precondition — ${GSI_DELETE_RETRY_TABLE} has ${DELETE_RETRY_BUSY} non-ACTIVE index(es) before destroy; the #1521 gate would absorb the race and the arm would not discriminate" >&2
+  exit 1
+fi
+DELETE_RETRY_SIGNAL_TARGETS="$(aws application-autoscaling describe-scalable-targets \
+  --service-namespace dynamodb \
+  --resource-ids "table/${GSI_DELETE_RETRY_TABLE}" \
+  --scalable-dimension dynamodb:table:WriteCapacityUnits \
+  --region "${REGION}" \
+  --query 'length(ScalableTargets)' --output text)"
+if [ "${DELETE_RETRY_SIGNAL_TARGETS}" != "1" ]; then
+  echo "FAIL: issue #1830 precondition — expected exactly 1 table-level write scalable target on ${GSI_DELETE_RETRY_TABLE} (the driver's signal), got ${DELETE_RETRY_SIGNAL_TARGETS}" >&2
+  exit 1
+fi
+echo "[verify] step 14d ok: all indexes ACTIVE and the signal target is registered"
+
+echo "[verify] step 15: cdkd destroy --remove-protection --force --verbose (with the issue #1830 race driver)"
 # `--remove-protection` is defense-in-depth: step 14 should have flipped
 # the table back to unprotected, but a partial / re-run of the test
 # could leave the table protected; the flag ensures cdkd handles the
 # residual state without requiring operator intervention.
-${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --remove-protection --force
+#
+# `--verbose` and the tee are what step 15b reads: the auto-scaling
+# deregistration line the driver keys on, AWS's own index-busy refusal, and
+# the retry line that proves cdkd ABSORBED it are all debug-level.
+DESTROY_LOG="$(mktemp)"
+DELETE_RETRY_MARKER="$(mktemp)"
+delete_retry_race_driver "${DESTROY_LOG}" "${GSI_DELETE_RETRY_TABLE}" busyIdx0 "${DELETE_RETRY_MARKER}" &
+DELETE_RETRY_DRIVER_PID=$!
+${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --remove-protection --force --verbose 2>&1 | tee "${DESTROY_LOG}"
+# Kill rather than plain-wait: a driver still looping here is one whose signal
+# never appeared, and waiting out its full timeout would only delay the step
+# 15b failure that already reports exactly that.
+kill "${DELETE_RETRY_DRIVER_PID}" 2>/dev/null || true
+wait "${DELETE_RETRY_DRIVER_PID}" 2>/dev/null || true
+DELETE_RETRY_DRIVER_PID=""
+
+echo "[verify] step 15b (Issue #1830): assert the destroy ABSORBED an index-busy DeleteTable refusal"
+# Discrimination, spelled out because it is the whole point of the arm:
+#   - with the fix REVERTED the refusal below is a hard `ProvisioningError`,
+#     `cdkd destroy` exits non-zero with `PartialFailureError`, and `set -o
+#     pipefail` aborts this script at step 15 — the run cannot reach here;
+#   - with the fix present the destroy exits 0 AND both strings below are in
+#     the log. Requiring the refusal text is what stops the arm passing
+#     vacuously on a run where the driver never landed in the window.
+DELETE_RETRY_OUTCOME="$(cat "${DELETE_RETRY_MARKER}" 2>/dev/null || true)"
+rm -f "${DELETE_RETRY_MARKER}"
+if [ "${DELETE_RETRY_OUTCOME}" != "fired" ]; then
+  echo "FAIL: issue #1830 — the race driver did not issue its out-of-band UpdateTable (outcome='${DELETE_RETRY_OUTCOME:-signal-never-appeared}'), so this run never exercised the index-busy retry. Re-run; if it repeats, the auto-scaling teardown window has shrunk and GsiDeleteRetryTable needs more indexes." >&2
+  exit 1
+fi
+if ! grep -qF "Cannot delete table while indexes are being" "${DESTROY_LOG}"; then
+  echo "FAIL: issue #1830 — the out-of-band UpdateTable landed but AWS never refused the DeleteTable, so the retry path was not exercised. Re-run; if it repeats, the driver is firing too late in the auto-scaling teardown window." >&2
+  exit 1
+fi
+if ! grep -qF "Retrying GsiDeleteRetryTable" "${DESTROY_LOG}"; then
+  echo "FAIL: issue #1830 — AWS refused the DeleteTable but cdkd logged no retry for GsiDeleteRetryTable; the delete did not go through withRetry" >&2
+  exit 1
+fi
+if grep -qF "Failed to delete GsiDeleteRetryTable" "${DESTROY_LOG}"; then
+  echo "FAIL: issue #1830 — the retry did not recover: destroy reported a failure for GsiDeleteRetryTable" >&2
+  exit 1
+fi
+rm -f "${DESTROY_LOG}"
+echo "[verify] step 15b ok: AWS refused the DeleteTable mid-teardown and cdkd retried it to success"
 
 echo "[verify] step 16a: assert tables are gone on AWS"
 assert_gone "table '${TABLE_NAME}' still exists after destroy" aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}"
@@ -1769,7 +1948,9 @@ assert_gone "table '${OD_REPLICA_TABLE}' still exists after destroy" aws dynamod
 assert_gone "table '${GSI_RECOVERY_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_RECOVERY_TABLE}" --region "${REGION}"
 assert_gone "table '${GSI_PROV_RECOVERY_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_PROV_RECOVERY_TABLE}" --region "${REGION}"
 assert_gone "table '${STREAM_RECOVERY_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${STREAM_RECOVERY_TABLE}" --region "${REGION}"
-echo "[verify] step 16a ok: all seven tables deleted"
+assert_gone "table '${WARM_COERCION_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${WARM_COERCION_TABLE}" --region "${REGION}"
+assert_gone "table '${GSI_DELETE_RETRY_TABLE}' still exists after destroy" aws dynamodb describe-table --table-name "${GSI_DELETE_RETRY_TABLE}" --region "${REGION}"
+echo "[verify] step 16a ok: all nine tables deleted"
 
 # Issue #1512: the on-demand replica table is the one whose eu-west-1 replica
 # is never removed by an update — teardown relies entirely on `cdkd destroy`
@@ -1836,6 +2017,14 @@ assert_target_gone "table/${TABLE_NAME}" dynamodb:table:WriteCapacityUnits
 # both the table and index level (read sides are fixed, never registered).
 assert_target_gone "table/${GSI_PROV_RECOVERY_TABLE}" dynamodb:table:WriteCapacityUnits
 assert_target_gone "table/${GSI_PROV_RECOVERY_TABLE}/index/autoProvIdx" dynamodb:index:WriteCapacityUnits
+# Issue #1830: the delete-retry table registers a table-level write target (the
+# driver's signal) plus one per index. Both the FIRST and the LAST index are
+# asserted, because the teardown loop is what the retry re-enters: a delete
+# that retried after partially tearing down must not leave the tail of the loop
+# unrun.
+assert_target_gone "table/${GSI_DELETE_RETRY_TABLE}" dynamodb:table:WriteCapacityUnits
+assert_target_gone "table/${GSI_DELETE_RETRY_TABLE}/index/busyIdx0" dynamodb:index:WriteCapacityUnits
+assert_target_gone "table/${GSI_DELETE_RETRY_TABLE}/index/busyIdx11" dynamodb:index:WriteCapacityUnits
 
 echo "[verify] step 16b: assert cdkd state is empty"
 assert_gone "cdkd state file still exists at s3://${STATE_BUCKET}/${STATE_KEY}" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
