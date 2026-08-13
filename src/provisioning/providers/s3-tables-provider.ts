@@ -481,10 +481,14 @@ export class S3TablesProvider implements ResourceProvider {
       );
     }
 
-    // CFn schema types `Namespace` as `List<String>`, but CDK 2.x's
-    // `s3tables.CfnNamespace` accepts a plain `string` and emits it as
-    // a string (not a singleton array). AWS's CreateNamespace API takes
-    // an array. Accept both wire shapes from the template here.
+    // The CFn schema types `Namespace` as a STRING — live `DescribeType`,
+    // us-east-1, 2026-08-13: `definitions.Namespace = {"type": "string"}` —
+    // and CDK 2.x's `s3tables.CfnNamespace` matches it, accepting a plain
+    // `string` and emitting it as a string (not a singleton array). AWS's
+    // CreateNamespace API takes an array. An array IS still reachable in a
+    // template via `addPropertyOverride('Namespace', [...])`, so both wire
+    // shapes are accepted here (issue #1771 corrected the earlier claim that
+    // the schema itself typed this `List<String>`).
     const rawNs = properties['Namespace'];
     let namespaceName: string | undefined;
     if (Array.isArray(rawNs) && rawNs.length > 0 && typeof rawNs[0] === 'string') {

@@ -28,6 +28,7 @@ import {
   splitCompositePhysicalId,
   type CdkdStateStackTree,
 } from '../../../src/cli/commands/export.js';
+import { getLogger } from '../../../src/utils/logger.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { AwsClients } from '../../../src/utils/aws-clients.js';
@@ -651,6 +652,13 @@ describe('splitCompositePhysicalId', () => {
   // AttachmentType read-only (live DescribeType, us-east-1, 2026-08-12) — the
   // pre-fix {VpcId, InternetGatewayId} map made resolveCompositeId's field
   // check throw and aborted `cdkd export` on every VPC + IGW stack.
+  //
+  // The VALUES below were `InternetGateway` / `VPN` until issue #1771 measured
+  // them: they are `IGW` / `VGW` (Cloud Control ListResources, us-east-1,
+  // 2026-08-13, against a VPC carrying both attachment kinds), and CFn rejects
+  // the spelled-out guesses with `Invalid Attachment Type 'InternetGateway'` at
+  // changeset-create. The registry schema types the field as a bare string and
+  // enumerates nothing, so only a live measurement settles it.
   it('derives AttachmentType for AWS::EC2::VPCGatewayAttachment (IGW, narrow overlay)', () => {
     expect(
       splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'igw-abc|vpc-xyz', {
@@ -658,19 +666,19 @@ describe('splitCompositePhysicalId', () => {
         InternetGatewayId: 'igw-abc',
       })
     ).toEqual({
-      resourceIdentifier: { AttachmentType: 'InternetGateway', VpcId: 'vpc-xyz' },
+      resourceIdentifier: { AttachmentType: 'IGW', VpcId: 'vpc-xyz' },
       propertiesOverlay: { VpcId: 'vpc-xyz' },
     });
   });
 
-  it('derives AttachmentType VPN when the recorded properties carry VpnGatewayId', () => {
+  it('derives AttachmentType VGW when the recorded properties carry VpnGatewayId', () => {
     expect(
       splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'vgw-abc|vpc-xyz', {
         VpcId: 'vpc-xyz',
         VpnGatewayId: 'vgw-abc',
       })
     ).toEqual({
-      resourceIdentifier: { AttachmentType: 'VPN', VpcId: 'vpc-xyz' },
+      resourceIdentifier: { AttachmentType: 'VGW', VpcId: 'vpc-xyz' },
       propertiesOverlay: { VpcId: 'vpc-xyz' },
     });
   });
@@ -679,20 +687,67 @@ describe('splitCompositePhysicalId', () => {
     // A template declaring VpnGatewayId trips the #614 silent-drop routing, so
     // Cloud Control stores the CFn primaryIdentifier joined.
     expect(
-      splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'VPN|vpc-xyz', {})
+      splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'VGW|vpc-xyz', {})
     ).toEqual({
-      resourceIdentifier: { AttachmentType: 'VPN', VpcId: 'vpc-xyz' },
+      resourceIdentifier: { AttachmentType: 'VGW', VpcId: 'vpc-xyz' },
       propertiesOverlay: { VpcId: 'vpc-xyz' },
     });
   });
 
+  it('normalizes a state record carrying the pre-#1771 spelled-out AttachmentType', () => {
+    // State written by an older cdkd through the Cloud Control path stores the
+    // primaryIdentifier verbatim, so a record could carry either spelling. The
+    // CFn-invalid one is accepted as INPUT and normalized rather than passed
+    // through — passing it through is exactly what CFn rejected.
+    for (const [stored, expected] of [
+      ['InternetGateway', 'IGW'],
+      ['VPN', 'VGW'],
+    ] as const) {
+      expect(
+        splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', `${stored}|vpc-xyz`, {})
+      ).toEqual({
+        resourceIdentifier: { AttachmentType: expected, VpcId: 'vpc-xyz' },
+        propertiesOverlay: { VpcId: 'vpc-xyz' },
+      });
+    }
+  });
+
   it('falls back to the gateway-id prefix when properties carry neither gateway id', () => {
+    // BOTH prefixes: the `vgw-` arm was the last unreached branch in
+    // resolveGatewayAttachmentType — its only other test also supplies
+    // VpnGatewayId, which is matched one branch earlier, so mutating this arm
+    // to the wrong value survived the whole suite.
     expect(
       splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'igw-abc|vpc-xyz', {})
     ).toEqual({
-      resourceIdentifier: { AttachmentType: 'InternetGateway', VpcId: 'vpc-xyz' },
+      resourceIdentifier: { AttachmentType: 'IGW', VpcId: 'vpc-xyz' },
       propertiesOverlay: { VpcId: 'vpc-xyz' },
     });
+    expect(
+      splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'vgw-abc|vpc-xyz', {})
+    ).toEqual({
+      resourceIdentifier: { AttachmentType: 'VGW', VpcId: 'vpc-xyz' },
+      propertiesOverlay: { VpcId: 'vpc-xyz' },
+    });
+  });
+
+  it('does not resolve an inherited Object.prototype member as an AttachmentType', () => {
+    // A bare index into an object literal answers for `constructor` /
+    // `toString` / `valueOf` too, so a physical id whose first segment is one
+    // of those would resolve to a FUNCTION instead of falling through to the
+    // property-derivation arms. The lookup uses Object.hasOwn for this reason.
+    expect(
+      splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'constructor|vpc-xyz', {
+        InternetGatewayId: 'igw-abc',
+      })
+    ).toEqual({
+      resourceIdentifier: { AttachmentType: 'IGW', VpcId: 'vpc-xyz' },
+      propertiesOverlay: { VpcId: 'vpc-xyz' },
+    });
+    // With nothing to derive from, it must REFUSE rather than ship a function.
+    expect(() =>
+      splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'toString|vpc-xyz', {})
+    ).toThrow(/cannot determine AttachmentType/);
   });
 
   it('throws when AttachmentType cannot be determined for VPCGatewayAttachment', () => {
@@ -903,6 +958,519 @@ describe('splitCompositePhysicalId', () => {
     expect(() => splitCompositePhysicalId('AWS::Made::Up::Type', 'whatever')).toThrow(
       /no composite-id splitter registered/
     );
+  });
+
+  it.each(['constructor', 'toString', 'valueOf', '__proto__'])(
+    'reports %s as unregistered rather than calling an inherited member',
+    (resourceType) => {
+      // A bare index into the splitter map answers for Object.prototype members,
+      // so `constructor` would make `splitter` the Object constructor — truthy,
+      // callable, and silently returning a String object instead of taking the
+      // not-registered branch. Same hazard as the AttachmentType alias lookup.
+      expect(() => splitCompositePhysicalId(resourceType, 'whatever')).toThrow(
+        /no composite-id splitter registered/
+      );
+      expect(hasCompositeIdSplitter(resourceType)).toBe(false);
+    }
+  );
+});
+
+/**
+ * Issue [#1771](https://github.com/go-to-k/cdkd/issues/1771) — three types cdkd
+ * deploys routinely had no `COMPOSITE_ID_SPLITTERS` entry, and `cdkd export` is
+ * all-or-nothing, so ONE of them aborted the whole command with
+ * "resource type uses a composite primary identifier ... add an entry to
+ * COMPOSITE_ID_SPLITTERS". `AWS::EC2::Route` is the widest blast radius:
+ * essentially every VPC stack with a public subnet declares one.
+ *
+ * Every schema fact asserted below is a LIVE `aws cloudformation describe-type`
+ * measurement, us-east-1, 2026-08-13:
+ *
+ * | type | primaryIdentifier | readOnlyProperties |
+ * |---|---|---|
+ * | `AWS::EC2::Route` | RouteTableId, CidrBlock | CidrBlock |
+ * | `AWS::EC2::EIP` | PublicIp, AllocationId | PublicIp, AllocationId |
+ * | `AWS::Lambda::EventInvokeConfig` | FunctionName, Qualifier | (none) |
+ *
+ * The read-only column is what each `propertiesOverlay` below encodes: a
+ * read-only field written into the synth template's `Properties` is rejected by
+ * CFn at changeset-create, so `EIP` narrows to NOTHING and `Route` to
+ * `RouteTableId`, while `EventInvokeConfig` keeps the default whole-map overlay.
+ */
+describe('splitCompositePhysicalId — issue #1771 types', () => {
+  /**
+   * The live `primaryIdentifier` field sets. `resolveResourceIdentifier` cross-
+   * checks the splitter's output against exactly this list (it throws when a
+   * declared field is missing), so pinning the WHOLE key set here — not just the
+   * fields each individual case happens to look at — is what fences a splitter
+   * that produces a plausible-but-incomplete map.
+   */
+  const PRIMARY_IDENTIFIER_FIELDS: Record<string, string[]> = {
+    'AWS::EC2::Route': ['RouteTableId', 'CidrBlock'],
+    'AWS::EC2::EIP': ['PublicIp', 'AllocationId'],
+    'AWS::Lambda::EventInvokeConfig': ['FunctionName', 'Qualifier'],
+  };
+
+  it('registers all three types', () => {
+    for (const type of Object.keys(PRIMARY_IDENTIFIER_FIELDS)) {
+      expect(hasCompositeIdSplitter(type)).toBe(true);
+    }
+  });
+
+  it('produces exactly the live primaryIdentifier fields for each type', () => {
+    const samples: Record<string, [string, Record<string, unknown>]> = {
+      'AWS::EC2::Route': ['rtb-abc123|0.0.0.0/0', { DestinationCidrBlock: '0.0.0.0/0' }],
+      'AWS::EC2::EIP': ['52.1.2.3|eipalloc-0abc123def456789a', {}],
+      'AWS::Lambda::EventInvokeConfig': ['my-fn|$LATEST', {}],
+    };
+    for (const [type, fields] of Object.entries(PRIMARY_IDENTIFIER_FIELDS)) {
+      const [physicalId, properties] = samples[type]!;
+      const result = splitCompositePhysicalId(type, physicalId, properties);
+      expect(Object.keys(result.resourceIdentifier).sort()).toEqual([...fields].sort());
+    }
+  });
+
+  // ── AWS::EC2::Route ───────────────────────────────────────────────
+  //
+  // CFn's `CidrBlock` holds whichever destination the route declares — NOT
+  // specifically an IPv4 CIDR. Measured live via Cloud Control `GetResource`
+  // against a scratch route table (us-east-1, 2026-08-13): identifier
+  // `rtb-…|::/0` reads back `{"CidrBlock":"::/0","DestinationIpv6CidrBlock":"::/0",…}`.
+  it.each([
+    ['DestinationCidrBlock', '0.0.0.0/0'],
+    ['DestinationIpv6CidrBlock', '::/0'],
+    ['DestinationPrefixListId', 'pl-63a5400a'],
+  ])('maps the %s destination onto CFn CidrBlock verbatim', (key, destination) => {
+    expect(
+      splitCompositePhysicalId('AWS::EC2::Route', `rtb-abc123|${destination}`, {
+        RouteTableId: { Ref: 'RouteTable' },
+        [key]: destination,
+        GatewayId: { Ref: 'Igw' },
+      })
+    ).toEqual({
+      resourceIdentifier: { RouteTableId: 'rtb-abc123', CidrBlock: destination },
+      propertiesOverlay: { RouteTableId: 'rtb-abc123' },
+    });
+  });
+
+  it('never overlays the read-only CidrBlock into Properties', () => {
+    // propertiesOverlay defaults to the whole resourceIdentifier map, so an
+    // absent overlay would hand CFn a read-only property at changeset-create.
+    const result = splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|10.0.0.0/16', {
+      DestinationCidrBlock: '10.0.0.0/16',
+    });
+    expect(result.propertiesOverlay).toBeDefined();
+    expect(result.propertiesOverlay).not.toHaveProperty('CidrBlock');
+  });
+
+  it('accepts a Route state entry whose properties record no destination at all', () => {
+    // A partial / hand-edited state record must not become a refusal — the
+    // physical id alone carries everything the identifier needs.
+    expect(splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|0.0.0.0/0', {})).toEqual({
+      resourceIdentifier: { RouteTableId: 'rtb-abc123', CidrBlock: '0.0.0.0/0' },
+      propertiesOverlay: { RouteTableId: 'rtb-abc123' },
+    });
+  });
+
+  it('does NOT warn when the recorded destination agrees with the physical id', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|::/0', {
+        DestinationIpv6CidrBlock: '::/0',
+      });
+      // A route that declares MULTIPLE destinations is narrowed by the provider
+      // to the first in CFn precedence order, so the losing key must not be read
+      // as a divergence either.
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|0.0.0.0/0', {
+        DestinationCidrBlock: '0.0.0.0/0',
+        DestinationIpv6CidrBlock: '::/0',
+      });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('throws on a Route physical id that is not two parts', () => {
+    expect(() => splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123', {})).toThrow(
+      /expected 2 parts/
+    );
+    expect(() =>
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|0.0.0.0/0|extra', {})
+    ).toThrow(/expected 2 parts/);
+  });
+
+  it('throws on an empty Route segment rather than shipping a blank identifier', () => {
+    expect(() => splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|', {})).toThrow(
+      /empty part/
+    );
+    expect(() => splitCompositePhysicalId('AWS::EC2::Route', '|0.0.0.0/0', {})).toThrow(
+      /empty part/
+    );
+  });
+
+  // ── AWS::EC2::EIP ─────────────────────────────────────────────────
+  it('parses AWS::EC2::EIP and overlays NOTHING (both fields read-only)', () => {
+    expect(
+      splitCompositePhysicalId('AWS::EC2::EIP', '52.1.2.3|eipalloc-0abc123def456789a', {
+        Domain: 'vpc',
+      })
+    ).toEqual({
+      resourceIdentifier: { PublicIp: '52.1.2.3', AllocationId: 'eipalloc-0abc123def456789a' },
+      propertiesOverlay: {},
+    });
+  });
+
+  it('gives EIP an EXPLICIT empty overlay, not an absent one', () => {
+    // An absent overlay falls back to the full resourceIdentifier map at the
+    // overlay site, which would write two read-only properties.
+    const result = splitCompositePhysicalId(
+      'AWS::EC2::EIP',
+      '52.1.2.3|eipalloc-0abc123def456789a',
+      {}
+    );
+    expect(result.propertiesOverlay).toBeDefined();
+    expect(result.propertiesOverlay).toEqual({});
+  });
+
+  it('binds the EIP segments by SHAPE, so a reversed record still resolves', () => {
+    // Every writer goes through `eipPhysicalId` (publicIp first), but that
+    // ordering is the one thing here nobody has verified against a record in
+    // the wild — and a POSITIONAL bind turns a reversed record into
+    // `{PublicIp: 'eipalloc-…', AllocationId: '52.1.2.3'}`, which CFn answers
+    // with an opaque changeset-create failure. The two shapes are disjoint.
+    expect(
+      splitCompositePhysicalId('AWS::EC2::EIP', 'eipalloc-0abc123def456789a|52.1.2.3', {})
+    ).toEqual({
+      resourceIdentifier: { PublicIp: '52.1.2.3', AllocationId: 'eipalloc-0abc123def456789a' },
+      propertiesOverlay: {},
+    });
+  });
+
+  it('refuses an EIP composite in which neither segment is an allocation id', () => {
+    expect(() => splitCompositePhysicalId('AWS::EC2::EIP', '52.1.2.3|52.1.2.4', {})).toThrow(
+      /must be an allocation id/s
+    );
+  });
+
+  it('refuses an EIP composite of TWO allocation ids', () => {
+    // The half the shape bind originally forgot: this satisfies an
+    // allocation-id-only guard and then ships `PublicIp: 'eipalloc-b'` — the
+    // opaque changeset-create failure the discriminator exists to prevent. A
+    // discriminator that validates one side only is not a discriminator.
+    expect(() =>
+      splitCompositePhysicalId('AWS::EC2::EIP', 'eipalloc-0aaa|eipalloc-0bbb', {})
+    ).toThrow(/dotted-quad public IP/s);
+  });
+
+  it('refuses an EIP public-IP segment that is not a dotted quad', () => {
+    expect(() =>
+      splitCompositePhysicalId('AWS::EC2::EIP', 'not-an-ip|eipalloc-0aaa', {})
+    ).toThrow(/dotted-quad public IP/s);
+  });
+
+  it('throws on whitespace-only EIP segments', () => {
+    expect(() => splitCompositePhysicalId('AWS::EC2::EIP', '  |  ', {})).toThrow(/empty part/);
+  });
+
+  it.each(['eipalloc-0abc123def456789a', '52.1.2.3'])(
+    'refuses the bare EIP form %s (neither field recovers the other)',
+    (bare) => {
+      expect(() => splitCompositePhysicalId('AWS::EC2::EIP', bare, {})).toThrow(
+        /expected 2 parts.*re-deploy the resource/s
+      );
+    }
+  );
+
+  it('throws on an empty EIP segment', () => {
+    expect(() => splitCompositePhysicalId('AWS::EC2::EIP', '|eipalloc-0abc', {})).toThrow(
+      /empty part/
+    );
+    expect(() => splitCompositePhysicalId('AWS::EC2::EIP', '52.1.2.3|', {})).toThrow(/empty part/);
+  });
+
+  // ── AWS::Lambda::EventInvokeConfig ────────────────────────────────
+  it('parses AWS::Lambda::EventInvokeConfig with the default whole-map overlay', () => {
+    // The type declares NO readOnlyProperties, and both fields are `required`
+    // Properties the synth template already carries — writing them is what
+    // keeps CFn's identifier-match check satisfied.
+    expect(
+      splitCompositePhysicalId('AWS::Lambda::EventInvokeConfig', 'my-fn|live', {})
+    ).toEqual({
+      resourceIdentifier: { FunctionName: 'my-fn', Qualifier: 'live' },
+    });
+  });
+
+  it('reads a BARE function name as qualifier $LATEST', () => {
+    expect(splitCompositePhysicalId('AWS::Lambda::EventInvokeConfig', 'my-fn', {})).toEqual({
+      resourceIdentifier: { FunctionName: 'my-fn', Qualifier: '$LATEST' },
+    });
+  });
+
+  it('splits an EventInvokeConfig id on the FIRST separator', () => {
+    // A function ARN carries colons but never a `|`, and a qualifier is a
+    // version number or an alias name — the premise the provider's own
+    // parsePhysicalId documents and packCompositeId enforces.
+    expect(
+      splitCompositePhysicalId(
+        'AWS::Lambda::EventInvokeConfig',
+        'arn:aws:lambda:us-east-1:123456789012:function:my-fn|2',
+        {}
+      )
+    ).toEqual({
+      resourceIdentifier: {
+        FunctionName: 'arn:aws:lambda:us-east-1:123456789012:function:my-fn',
+        Qualifier: '2',
+      },
+    });
+  });
+
+  it('throws on a blank or half-empty EventInvokeConfig physical id', () => {
+    expect(() => splitCompositePhysicalId('AWS::Lambda::EventInvokeConfig', '   ', {})).toThrow(
+      /empty physical id/
+    );
+    expect(() => splitCompositePhysicalId('AWS::Lambda::EventInvokeConfig', 'my-fn|', {})).toThrow(
+      /empty part/
+    );
+    expect(() => splitCompositePhysicalId('AWS::Lambda::EventInvokeConfig', '|$LATEST', {})).toThrow(
+      /empty part/
+    );
+    // `'  |  '` clears the whole-id blank guard (it is not blank once split),
+    // so the per-segment check has to trim too or a whitespace FunctionName
+    // ships into the changeset.
+    expect(() => splitCompositePhysicalId('AWS::Lambda::EventInvokeConfig', '  |  ', {})).toThrow(
+      /empty part/
+    );
+  });
+
+  // ── the empty overlay has to SURVIVE both overlay call sites ───────
+  it('keeps an EXPLICIT empty overlay through both template overlay sites', () => {
+    // `propertiesOverlay: {}` only protects the EIP if the overlay sites treat
+    // it as "write nothing" rather than falling back to the full identifier
+    // map. Both spell that fallback `entry.propertiesOverlay ?? entry.resourceIdentifier`,
+    // which is correct for `{}` and would be WRONG for `|| `.
+    const entry = {
+      logicalId: 'Eip',
+      resourceType: 'AWS::EC2::EIP',
+      physicalId: '52.1.2.3|eipalloc-0abc',
+      ...splitCompositePhysicalId('AWS::EC2::EIP', '52.1.2.3|eipalloc-0abc', {}),
+    };
+    // A template that DOES carry both fields as literal strings — the only
+    // shape the overlay would rewrite.
+    const template = {
+      Resources: {
+        Eip: {
+          Type: 'AWS::EC2::EIP',
+          Properties: { Domain: 'vpc', PublicIp: 'stale', AllocationId: 'stale' },
+        },
+      },
+    };
+    const phase1 = filterTemplateForImport(structuredClone(template), [entry]);
+    const phase1Props = (
+      (phase1['Resources'] as Record<string, Record<string, unknown>>)['Eip'] as Record<
+        string,
+        unknown
+      >
+    )['Properties'];
+    expect(phase1Props).toEqual({ Domain: 'vpc', PublicIp: 'stale', AllocationId: 'stale' });
+
+    const phase2 = applyImportOverlayForPhase2(structuredClone(template), [entry]);
+    const phase2Props = (
+      (phase2['Resources'] as Record<string, Record<string, unknown>>)['Eip'] as Record<
+        string,
+        unknown
+      >
+    )['Properties'];
+    // Phase 1 and phase 2 must agree, or CFn sees a property change between
+    // the IMPORT'd state and the UPDATE template and silently REPLACES.
+    expect(phase2Props).toEqual(phase1Props);
+  });
+
+  // ── the Route id-vs-properties divergence policy ───────────────────
+  it('passes through an AWS host-bit canonicalization without warning', () => {
+    // CFn documents rewriting `100.68.0.18/18` to `100.68.0.0/18`, so the id
+    // legitimately differs from what the template declares. Refusing here
+    // would block an export whose identifier is CORRECT.
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      expect(
+        splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|100.68.0.0/18', {
+          DestinationCidrBlock: '100.68.0.18/18',
+        }).resourceIdentifier
+      ).toEqual({ RouteTableId: 'rtb-abc123', CidrBlock: '100.68.0.0/18' });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('canonicalizes a Route identifier the SDK path stored with host bits set', () => {
+    // The defect this fences: `createRoute` packs the destination it SENT, and
+    // EC2 clears host bits on the way in, so state can hold
+    // `rtb-…|100.68.0.18/18` while AWS/CFn hold `100.68.0.0/18`. The recorded
+    // properties hold the SAME non-canonical value, so the agreement check
+    // passes and a verbatim return would ship an identifier CloudFormation
+    // cannot resolve — the exact opaque rejection this path exists to prevent.
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      expect(
+        splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|100.68.0.18/18', {
+          DestinationCidrBlock: '100.68.0.18/18',
+        })
+      ).toEqual({
+        resourceIdentifier: { RouteTableId: 'rtb-abc123', CidrBlock: '100.68.0.0/18' },
+        propertiesOverlay: { RouteTableId: 'rtb-abc123' },
+      });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('canonicalizes even when state records no destination at all', () => {
+    // The no-properties early return is a separate exit from the agreement
+    // check, and it shipped the raw segment too.
+    expect(
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|10.1.2.3/24', {})
+        .resourceIdentifier
+    ).toEqual({ RouteTableId: 'rtb-abc123', CidrBlock: '10.1.2.0/24' });
+  });
+
+  it('leaves a non-IPv4 destination untouched (no canonicalization modelled)', () => {
+    for (const destination of ['::/0', 'pl-63a5400a']) {
+      expect(
+        splitCompositePhysicalId('AWS::EC2::Route', `rtb-abc123|${destination}`, {})
+          .resourceIdentifier['CidrBlock']
+      ).toBe(destination);
+    }
+  });
+
+  it('REFUSES a conclusive prefix-list mismatch (measured: stored verbatim)', () => {
+    // A prefix-list destination is stored VERBATIM on both sides (measured via
+    // Cloud Control), so there is no unmodelled rewrite to excuse a difference:
+    // `pl-AAA` vs `pl-BBB` is the wrong-route case, not a formatting one.
+    expect(() =>
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|pl-63a5400a', {
+        DestinationPrefixListId: 'pl-0123abcd',
+      })
+    ).toThrow(/would then REPLACE \(delete\) it/);
+  });
+
+  it('fences EVERY vs SOME on the decidability boundary', () => {
+    // A record declaring BOTH a modelled and an unmodelled destination is the
+    // only input that tells the two quantifiers apart — with `some` the modelled
+    // IPv4 value would make this throw. The whole refusal policy rests on it
+    // being `every`, i.e. "refuse only when nothing here could excuse the gap".
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      expect(
+        splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|::/0', {
+          DestinationCidrBlock: '10.0.0.0/16',
+          DestinationIpv6CidrBlock: '2001:db8::/64',
+        }).resourceIdentifier
+      ).toEqual({ RouteTableId: 'rtb-abc123', CidrBlock: '::/0' });
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+    // The mirror image: both declared values modelled (IPv4 + prefix list), so
+    // the same shape of record REFUSES. Without the prefix-list class this one
+    // would only warn, and `every` would be unreachable for a multi-key record
+    // (DestinationCidrBlock is the only IPv4 key of the three).
+    expect(() =>
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|172.16.0.0/12', {
+        DestinationCidrBlock: '10.0.0.0/16',
+        DestinationPrefixListId: 'pl-63a5400a',
+      })
+    ).toThrow(/would then REPLACE \(delete\) it/);
+  });
+
+  it('treats a malformed pl- value as unmodelled rather than comparable', () => {
+    // `pl-` + non-hex is not a prefix-list id; classifying it as one would make
+    // an unrelated malformed record throw instead of warn.
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|pl-63a5400a', {
+        DestinationPrefixListId: 'pl-NOT-HEX',
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('canonicalizes a /0 whose address is not already zero', () => {
+    // Fences the `prefixLength === 0` special case: JS shifts are mod 32, so
+    // `0xffffffff << 32` is `0xffffffff`, not 0 — without the ternary a
+    // host-bits-set /0 would come back unchanged.
+    expect(
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|10.0.0.0/0', {})
+        .resourceIdentifier['CidrBlock']
+    ).toBe('0.0.0.0/0');
+  });
+
+  it.each(['999.1.2.3/24', '10.0.0.0/33', '10.0.0/24', 'not-a-cidr'])(
+    'treats %s as un-canonicalizable rather than mangling it',
+    (destination) => {
+      expect(
+        splitCompositePhysicalId('AWS::EC2::Route', `rtb-abc123|${destination}`, {})
+          .resourceIdentifier['CidrBlock']
+      ).toBe(destination);
+    }
+  );
+
+  it('throws on whitespace-only Route segments', () => {
+    expect(() => splitCompositePhysicalId('AWS::EC2::Route', '  |  ', {})).toThrow(/empty part/);
+  });
+
+  it('REFUSES a Route whose IPv4 divergence canonicalization cannot explain', () => {
+    // Decidable case: every declared destination is a parseable IPv4 CIDR, so
+    // the benign explanation is fully modelled and its failure is conclusive.
+    // Continuing would let IMPORT adopt whatever route sits at the id's
+    // destination — and phase 2 would then REPLACE (delete) it.
+    expect(() =>
+      splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|192.168.9.0/24', {
+        DestinationCidrBlock: '10.0.0.0/16',
+      })
+    ).toThrow(/would then REPLACE \(delete\) it/);
+  });
+
+  it('WARNS instead of refusing when a declared destination is an IPv6 CIDR', () => {
+    // IPv6 canonicalization (zero-run compression, host-bit clearing) is the
+    // one shape cdkd does NOT model, so the divergence is merely unexplained
+    // rather than conclusive — refusing on an undecidable signal would block
+    // exports that are fine. A prefix-list id is deliberately NOT in this list:
+    // it is stored verbatim on both sides, so its mismatch IS conclusive and
+    // takes the throw arm (see the dedicated case above).
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      expect(
+        splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|::/0', {
+          DestinationIpv6CidrBlock: '2001:db8::/64',
+        }).resourceIdentifier
+      ).toEqual({ RouteTableId: 'rtb-abc123', CidrBlock: '::/0' });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toMatch(/REPLACE \(delete\) it/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('ignores an empty-string destination when deciding whether state declares one', () => {
+    // A declared-but-empty key is not a declaration; treating it as one would
+    // make every such record refuse against its own (correct) physical id.
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      expect(
+        splitCompositePhysicalId('AWS::EC2::Route', 'rtb-abc123|0.0.0.0/0', {
+          DestinationCidrBlock: '',
+          DestinationIpv6CidrBlock: '',
+        }).resourceIdentifier
+      ).toEqual({ RouteTableId: 'rtb-abc123', CidrBlock: '0.0.0.0/0' });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

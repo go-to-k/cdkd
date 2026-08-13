@@ -1013,10 +1013,14 @@
     {
       "resourceType": "AWS::EC2::EIP",
       "integs": [
-        "ec2-vpc"
+        "ec2-vpc",
+        "export"
       ],
       "signals": {
         "ec2-vpc": [
+          "l1"
+        ],
+        "export": [
           "l1"
         ]
       }
@@ -1077,6 +1081,7 @@
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
+        "export",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -1174,6 +1179,9 @@
         ],
         "emr-instance-fleets": [
           "l2"
+        ],
+        "export": [
+          "l1"
         ],
         "fsx-lustre": [
           "l2"
@@ -1476,6 +1484,7 @@
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
+        "export",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -1575,6 +1584,10 @@
         "emr-instance-fleets": [
           "l2"
         ],
+        "export": [
+          "l1",
+          "literal"
+        ],
         "fsx-lustre": [
           "l2"
         ],
@@ -1670,6 +1683,7 @@
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
+        "export",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -1767,6 +1781,9 @@
         ],
         "emr-instance-fleets": [
           "l2"
+        ],
+        "export": [
+          "l1"
         ],
         "fsx-lustre": [
           "l2"
@@ -2409,6 +2426,7 @@
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
+        "export",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -2512,6 +2530,9 @@
           "l2",
           "literal"
         ],
+        "export": [
+          "l1"
+        ],
         "fsx-lustre": [
           "l2",
           "literal"
@@ -2613,6 +2634,7 @@
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
+        "export",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -2710,6 +2732,10 @@
         ],
         "emr-instance-fleets": [
           "l2"
+        ],
+        "export": [
+          "l1",
+          "literal"
         ],
         "fsx-lustre": [
           "l2"
@@ -3960,10 +3986,14 @@
     {
       "resourceType": "AWS::Lambda::EventInvokeConfig",
       "integs": [
+        "export",
         "lambda-destinations",
         "lambda-event-invoke-config-update"
       ],
       "signals": {
+        "export": [
+          "l1"
+        ],
         "lambda-destinations": [
           "literal"
         ],
@@ -5916,6 +5946,7 @@
     "AWS::EC2::SecurityGroupEgress",
     "AWS::EC2::TransitGateway",
     "AWS::EC2::TransitGatewayAttachment",
+    "AWS::EC2::VPCCidrBlock",
     "AWS::EC2::Volume",
     "AWS::EKS::Cluster",
     "AWS::ELBv2::LoadBalancer",
