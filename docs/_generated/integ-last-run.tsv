@@ -27,7 +27,7 @@ basic	2026-08-01T10:00:06Z	PASS	81	standard	0801 regression sweep; 2 del/0 err, 
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-08-10T05:19:05Z	PASS	36	standard	0810 P2 sweep b6; 6 del 0 err, 0 orph
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bench-cdk-sample	2026-08-12T14:38:30Z	PASS	420	standard	#1681 BROAD gate; 37 del/2 retained(DeletionPolicy)/0 err; log groups swept
+bench-cdk-sample	2026-08-13T03:22:52Z	PASS	1500	standard	1745/1746 partition+urlSuffix; 37 del 2 retained-logs swept, 0 err
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-07-31T06:23:42Z	PASS	78	verify.sh	TTL-refresh sweep re-run in ca-central-1; marker+bucket swept, orph clean
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
