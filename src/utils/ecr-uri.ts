@@ -33,10 +33,31 @@ const ECR_URI_HOST_REGEX = /^(\d{12})\.dkr\.ecr\.([^.]+)\.([^/]+)\//;
  * guard: `…dkr.ecr. us-iso-east-1.amazonaws.com/…` (leading space) and a
  * combining-mark form both parsed, yielding regions `" us-iso-east-1"` and
  * `"us-i̇so-east-1"`. Neither leaks credentials — an ACCEPTED suffix is always
- * an AWS-owned domain — but a region id is `[a-z0-9-]`, so anything else is a
- * malformed host and refusing it keeps the classification honest.
+ * an AWS-owned domain — but a region id is ASCII alphanumeric plus `-`, so
+ * anything else is a malformed host and refusing it keeps the classification
+ * honest.
+ *
+ * TESTED AGAINST THE RAW SEGMENT, BEFORE `toLowerCase()`, and that order is the
+ * whole point: `String.prototype.toLowerCase` performs full Unicode case
+ * folding, so the Kelvin sign U+212A folds to a plain ASCII `k`. Checking the
+ * FOLDED segment therefore accepts `us-eKst-1` and yields the region
+ * `us-ekst-1` — a region the host does not name — which is precisely the
+ * class of substitution this guard exists to refuse. Matching `[A-Za-z0-9-]`
+ * on the raw capture keeps case-insensitivity (the point of issue #1786) while
+ * admitting only characters that fold to themselves.
+ *
+ * ONE DELIBERATE SIDE EFFECT, called out because it is a withdrawal rather than
+ * an addition: refusing here also withdraws the #1764 foreign-suffix diagnostic
+ * from a malformed-region host, so `<acct>.dkr.ecr.us_east_1.example.com/…`
+ * now classifies as an ordinary public image and `ecs-task-resolver.ts` logs
+ * nothing, where before the guard it logged the partition-gap warning. That is
+ * the correct verdict rather than a regression: the diagnostic's whole subject
+ * is "this suffix does not belong to its region's PARTITION", and for a segment
+ * that is not a region id there is no partition to belong to — reporting it
+ * would send the reader hunting for a table entry that could never exist. It is
+ * pinned by a test so a future widening of the guard cannot flip it silently.
  */
-const CANONICAL_REGION_SEGMENT = /^[a-z0-9][a-z0-9-]*$/;
+const CANONICAL_REGION_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
 
 /**
  * The ONE case-normalization boundary of this module (issue #1786).
@@ -67,9 +88,10 @@ const CANONICAL_REGION_SEGMENT = /^[a-z0-9][a-z0-9-]*$/;
  * COMMERCIAL suffix for a `cn-` region, which this module then correctly
  * rejects as a look-alike. Both spellings are broken (the pre-#1786 code
  * accepted it and pointed a `docker login` at a host that does not exist), so
- * the right repair is to canonicalize the region where the CLI accepts it;
- * tracked as issue #1795, deliberately not folded in here because
- * `aws-partition.ts` is owned by the concurrent #1764 lane.
+ * the right repair is to canonicalize the region where the CLI ACCEPTS it —
+ * tracked as issue #1795. That repair does not replace this one: a CLI flag and
+ * a host string read out of a template or a state record are different trust
+ * questions, so this boundary keeps its own normalization either way.
  *
  * The derived suffix is lower-cased too. Every entry in the partition table is
  * a lower-case literal today, so that is a no-op; it is there so this function
@@ -80,9 +102,12 @@ function matchEcrRegistryHost(
 ): { accountId: string; region: string; suffix: string; expectedSuffix: string } | undefined {
   const m = ECR_URI_HOST_REGEX.exec(imageUri);
   if (!m) return undefined;
+  // Guarded on the RAW capture, BEFORE folding — see the regex's own comment:
+  // `toLowerCase()` maps U+212A onto ASCII `k`, so testing the folded segment
+  // would admit `us-eKst-1` as the region `us-ekst-1`.
+  if (!CANONICAL_REGION_SEGMENT.test(m[2]!)) return undefined;
   // The account id is `\d{12}`, so it has no case to normalize.
   const region = m[2]!.toLowerCase();
-  if (!CANONICAL_REGION_SEGMENT.test(region)) return undefined;
   return {
     accountId: m[1]!,
     region,

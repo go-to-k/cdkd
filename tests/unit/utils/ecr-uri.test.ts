@@ -97,9 +97,17 @@ describe('parseEcrRegistryHost / looksLikeEcrHostWithForeignSuffix', () => {
 
     it('the look-alike arms are actually REJECTED, not merely equal', () => {
       // Guards the two assertions above from passing vacuously if the
-      // lower-cased baseline ever regressed to accepting.
-      expect(parseEcrRegistryHost(uri('US-ISO-EAST-1', 'amazonaws.com'))).toBeUndefined();
-      expect(parseEcrRegistryHost(uri('Us-IsO-eAsT-1', 'amazonaws.com'))).toBeUndefined();
+      // lower-cased baseline ever regressed to accepting. Asserts BOTH entry
+      // points, not just the parse: a look-alike is exactly the case the
+      // foreign-suffix predicate is documented to report.
+      expect(verdict(uri('US-ISO-EAST-1', 'amazonaws.com'))).toEqual({
+        parse: undefined,
+        foreignSuffix: true,
+      });
+      expect(verdict(uri('Us-IsO-eAsT-1', 'amazonaws.com'))).toEqual({
+        parse: undefined,
+        foreignSuffix: true,
+      });
     });
 
     it('the GENUINE arms are actually ACCEPTED, not merely equal', () => {
@@ -139,6 +147,21 @@ describe('parseEcrRegistryHost / looksLikeEcrHostWithForeignSuffix', () => {
       expect(verdict(uri('US-EAST-1', 'AMAZONAWS.COM'))).toEqual(verdict(genuine));
     });
 
+    it('the suffix-casing arms are actually ACCEPTED, not merely equal', () => {
+      // This block's baseline lives in another `describe`, so without this
+      // guard a regression rejecting BOTH sides would satisfy every arm above.
+      for (const suffix of ['AMAZONAWS.COM', 'AmAzOnAwS.CoM']) {
+        expect(parseEcrRegistryHost(uri('us-east-1', suffix))).toEqual({
+          accountId: '123456789012',
+          region: 'us-east-1',
+        });
+      }
+      expect(parseEcrRegistryHost(uri('US-ISO-EAST-1', 'C2S.IC.GOV'))).toEqual({
+        accountId: '123456789012',
+        region: 'us-iso-east-1',
+      });
+    });
+
     it('an upper-cased FOREIGN suffix is still rejected', () => {
       // Case-folding must not make an unrelated suffix pass.
       expect(verdict(uri('us-east-1', 'EXAMPLE.COM'))).toEqual({
@@ -174,6 +197,14 @@ describe('parseEcrRegistryHost / looksLikeEcrHostWithForeignSuffix', () => {
       ['underscore', 'us_east_1'],
       ['leading hyphen', '-us-east-1'],
       ['empty-ish', '-'],
+      // U+212A KELVIN SIGN folds to ASCII `k` under `toLowerCase()`. Guarding
+      // the FOLDED segment would accept this and report the region
+      // `us-ekst-1` -- a region the host does not name, which is exactly the
+      // substitution the guard exists to refuse. It is refused only because
+      // the test runs against the RAW capture; if this arm ever passes, the
+      // guard has been moved back after the fold.
+      ['Kelvin sign folding to ASCII k', 'us-e\u212Ast-1'],
+      ['dotted capital I folding to i + combining dot', 'us-\u0130so-east-1'],
     ])('%s', (_label, region) => {
       // Refused on a GENUINE-looking suffix too — the point is that cdkd cannot
       // vouch for the classification, not that the suffix happened to mismatch.
@@ -191,7 +222,7 @@ describe('parseEcrRegistryHost / looksLikeEcrHostWithForeignSuffix', () => {
       ['commercial', 'us-east-1', 'amazonaws.com'],
       ['china', 'cn-north-1', 'amazonaws.com.cn'],
       ['govcloud', 'us-gov-west-1', 'amazonaws.com'],
-      ['a 2-digit-suffixed region', 'ap-southeast-4', 'amazonaws.com'],
+      ['a higher-numbered region', 'ap-southeast-4', 'amazonaws.com'],
     ])('still accepts a real region id: %s', (_label, region, suffix) => {
       expect(parseEcrRegistryHost(uri(region, suffix))).toEqual({
         accountId: '123456789012',
@@ -199,6 +230,27 @@ describe('parseEcrRegistryHost / looksLikeEcrHostWithForeignSuffix', () => {
       });
     });
   });
+
+    it('withdraws the #1764 foreign-suffix diagnostic too, deliberately', () => {
+      // A malformed region carrying a genuinely FOREIGN suffix used to report
+      // `foreignSuffix: true`; it now reports `false`. That is the correct
+      // verdict, not a regression: the diagnostic's subject is "this suffix
+      // does not belong to its region's PARTITION", and a segment that is not
+      // a region id has no partition -- reporting it would send the reader
+      // hunting for a partition-table entry that could never exist. Pinned so
+      // a future widening of the guard cannot flip it back silently.
+      expect(verdict(uri('us_east_1', 'example.com'))).toEqual({
+        parse: undefined,
+        foreignSuffix: false,
+      });
+      // ...while a WELL-FORMED region with the same foreign suffix still
+      // reports it, so the arm above is a scoped withdrawal and not a
+      // wholesale loss of the diagnostic.
+      expect(verdict(uri('us-east-1', 'example.com'))).toEqual({
+        parse: undefined,
+        foreignSuffix: true,
+      });
+    });
 
   // Pins the bound the #1786 fix deliberately did NOT widen, so a future change
   // to ECR_URI_HOST_REGEX cannot silently expand what cdkd `docker login`s to.
