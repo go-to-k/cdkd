@@ -225,10 +225,24 @@ silently never maintained), and the custom-resource response path
 `ResponseURL` the Lambda handler PUTs its cfn-response to, since
 issue #1195 — before that fix a cross-region deploy of any stack carrying a
 Lambda-backed Custom Resource failed hard with the 301, because the
-pre-signed URL was signed against the deploy region's endpoint). The
-bucket-region lookup is cached per bucket name for the process
+pre-signed URL was signed against the deploy region's endpoint). A
+SUCCESSFUL bucket-region lookup is cached per bucket name for the process
 lifetime, so all four consumers share a single `GetBucketLocation`
-call.
+call. A FAILED probe is deliberately not cached (issue
+[#1763](https://github.com/go-to-k/cdkd/issues/1763)): the resolver never
+throws, so a failure degrades to a best guess, and caching that guess
+pinned every later consumer in the process to one transient error's
+answer with no way to heal.
+
+The probe itself is aimed at the caller's own region — falling back to
+the AWS SDK's region chain (`AWS_REGION`, the shared config profile) and
+only then to `us-east-1`. `GetBucketLocation` is answered by any regional
+S3 endpoint for a bucket in the same partition, so the probe never needs
+to know the answer to ask the question; it does have to REACH the right
+partition, and the hardcoded `us-east-1` endpoint it used before issue
+#1763 is unreachable from `aws-cn` / `us-iso*` — so outside the
+commercial partition the probe could not run at all and every consumer
+above silently proceeded against the commercial default.
 
 This is intentionally scoped to the state-bucket S3 clients only.
 Provisioning clients (Cloud Control API, Lambda, IAM, etc.) continue to
