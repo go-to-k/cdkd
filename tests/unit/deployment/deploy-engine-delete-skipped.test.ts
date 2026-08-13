@@ -17,6 +17,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { UNSPECIFIED_SKIP_REASON } from '../../../src/deployment/delete-outcome.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import type {
   CloudFormationTemplate,
@@ -138,12 +139,19 @@ async function failureOf(run: Promise<unknown>): Promise<string> {
 describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
   let provider: ResourceProvider;
   let events: DeploymentEvent[];
+  /** Queued `create()` rejections, mirroring the collision harness's shape. */
+  let createFailures: Error[];
 
   beforeEach(() => {
     vi.clearAllMocks();
     events = [];
+    createFailures = [];
     provider = {
-      create: vi.fn().mockResolvedValue({ physicalId: 'new-pid', attributes: {} }),
+      create: vi.fn().mockImplementation(async () => {
+        const failure = createFailures.shift();
+        if (failure) throw failure;
+        return { physicalId: 'new-pid', attributes: {} };
+      }),
       update: vi.fn().mockResolvedValue({ physicalId: 'old-pid' }),
       delete: vi.fn().mockResolvedValue(undefined),
       getAttribute: vi.fn(),
@@ -353,6 +361,26 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
       expect(result).toBeUndefined();
     });
 
+    it('a skip whose provider reported NO reason still keeps the record', async () => {
+      // `reason` is required by the discriminated union, so this shape can only
+      // come from an untyped producer — but the failure direction matters: if
+      // the engine read "no reason" as "not a skip" it would take the DELETED
+      // path and drop the record of a live resource, which is the exact data
+      // loss being fixed. It must skip, and say the cause is unknown rather
+      // than invent one.
+      (provider.delete as ReturnType<typeof vi.fn>).mockResolvedValue({ outcome: 'skipped' });
+      const counts = freshCounts();
+
+      const { stateResources } = await invokeTemplateDelete(makeEngine(), counts);
+
+      expect(Object.keys(stateResources)).toEqual(['MyResource']);
+      expect(counts.deleted).toBe(0);
+      expect(counts.deleteSkipped).toBe(1);
+      expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        UNSPECIFIED_SKIP_REASON
+      );
+    });
+
     it("control: an explicit `{ outcome: 'deleted' }` behaves like `void`", async () => {
       (provider.delete as ReturnType<typeof vi.fn>).mockResolvedValue({ outcome: 'deleted' });
       const counts = freshCounts();
@@ -413,6 +441,32 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
       expect(failure).toContain(SKIP.reason);
       expect(provider.delete).toHaveBeenCalledTimes(1);
       expect(provider.create).not.toHaveBeenCalled();
+    });
+
+    it('--replace delete-first fallback: a skip FAILS the resource (reached via a name collision)', async () => {
+      // The ONLY route into `replaceDeleteFirstAndRecreate`: the CFn-safe
+      // create-first attempt collides with the old resource's name, so the
+      // engine deletes the old one and re-creates. That delete is the whole
+      // reason the fallback exists — a skip means the name is never released,
+      // so the re-create would collide again.
+      (provider.delete as ReturnType<typeof vi.fn>).mockResolvedValue(SKIP);
+      createFailures = [
+        new Error(
+          `CREATE failed for MyResource: Resource of type '${TYPE}' with identifier ` +
+            `'api1|Query|field' already exists.`
+        ),
+      ];
+
+      const failure = await failureOf(
+        invokeReplacingUpdate(makeEngine({ replace: true }), { requiresReplacement: true })
+      );
+
+      expect(failure).toContain(SKIP.reason);
+      expect(failure).toContain('--replace delete-first fallback');
+      expect(provider.delete).toHaveBeenCalledTimes(1);
+      // Only the collided create-first ran; the re-create must NOT have been
+      // attempted against a name the skip left held.
+      expect(provider.create).toHaveBeenCalledTimes(1);
     });
 
     it('control: the same replacement path completes when the delete is clean', async () => {

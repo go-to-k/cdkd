@@ -933,6 +933,13 @@ async function deployCommand(
             created: deployResult.created,
             updated: deployResult.updated,
             deleted: deployResult.deleted,
+            // Issue #1762: the run-level counterpart of the summary row above.
+            // `cdkd events` renders `RunCounts.skipped` as `⚠N`, and destroy
+            // has populated it since #1752 — without it here a deploy that
+            // skipped a DELETE records a run summary that says only what it
+            // DID delete, so the durable post-mortem understates the run in
+            // exactly the direction this change exists to correct.
+            ...(deployResult.deleteSkipped > 0 && { skipped: deployResult.deleteSkipped }),
           },
           deployResult.durationMs
         );

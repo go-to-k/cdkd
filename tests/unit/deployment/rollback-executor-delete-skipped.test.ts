@@ -148,6 +148,73 @@ describe('rollback executor — a provider-reported delete skip (#1762)', () => 
     expect(state['B']?.physicalId).toBe('new-b');
   });
 
+  it('reverse-replacement delete-new-first: the collision path fails the op', async () => {
+    // Reached when the create-first re-create COLLIDES with the new resource's
+    // name: the executor deletes the new resource to release it, then retries.
+    // A skip there means the retry collides again, so the op must fail now.
+    const del = vi.fn().mockResolvedValue(SKIP);
+    const create = vi
+      .fn()
+      .mockRejectedValue(new Error("Resource of type 'AWS::S3::Bucket' already exists."));
+    const { ctx } = makeCtx({ delete: del, create });
+    const prev = res({ physicalId: 'old-b', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'new-b',
+        previousState: prev,
+      },
+    ];
+    const state: Record<string, ResourceState> = { B: res({ physicalId: 'new-b' }) };
+
+    const result = await replayRollback(ops, state, 'S', ctx);
+
+    expect(del).toHaveBeenCalledOnce();
+    expect(result.failures).toBe(1);
+    // The DISCRIMINATOR: `failures === 1` alone is satisfied by the create
+    // rejection itself, so it would pass with a clean delete too. What the
+    // skip changes is that the post-delete RETRY never runs — a clean delete
+    // releases the name and the executor creates again.
+    expect(create).toHaveBeenCalledTimes(1);
+    // The state record still names the NEW resource — the revert did not happen.
+    expect(state['B']?.physicalId).toBe('new-b');
+  });
+
+  it('reverse-replacement delete-new AFTER the re-create: a WARNING, not a failure', async () => {
+    // The one arm whose policy diverges, and the reason it needs its own case:
+    // the old resource is already re-created and state already points at it,
+    // so the revert SUCCEEDED. A skip here only leaks the new resource, which
+    // is the same outcome that arm's pre-existing catch gives a failed delete —
+    // hence `warnings`, a kept `ROLLBACK_RESOURCE_SUCCEEDED`, and a POPPED
+    // journal segment (`cdkd rollback` exits 2 but does not re-attempt).
+    const del = vi.fn().mockResolvedValue(SKIP);
+    const create = vi.fn().mockResolvedValue({ physicalId: 'old-b', attributes: {} });
+    const { ctx, events } = makeCtx({ delete: del, create });
+    const prev = res({ physicalId: 'old-b', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'new-b',
+        previousState: prev,
+      },
+    ];
+    const state: Record<string, ResourceState> = { B: res({ physicalId: 'new-b' }) };
+
+    const result = await replayRollback(ops, state, 'S', ctx);
+
+    expect(create).toHaveBeenCalledOnce();
+    expect(del).toHaveBeenCalledOnce();
+    expect(result.failures).toBe(0);
+    expect(result.warnings).toBe(1);
+    expect(events).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
+    // The revert itself stands: state names the re-created OLD resource.
+    expect(state['B']?.physicalId).toBe('old-b');
+  });
+
   it('--revert-failed partially-created delete: the op stays outstanding', async () => {
     const del = vi.fn().mockResolvedValue(SKIP);
     const { ctx } = makeCtx({ delete: del });

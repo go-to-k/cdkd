@@ -1180,7 +1180,10 @@ already has its own message-matched already-deleted branch. The DEPLOY-side call
 situation allows: the template-removal DELETE warns and KEEPS the record (the
 next deploy re-attempts it), a replacement delete FAILS the resource (its create
 would otherwise run beside a live old one), and a rollback delete counts as a
-per-op failure so the journal segment is kept for a re-run. The eight same-class arms
+per-op failure so the journal segment is kept for a re-run — except at the
+delete-the-NEW-resource-after-re-creating-the-old arm, whose delete is already
+best-effort (the revert succeeded and state points at the old resource), where a
+skip warns and counts as a WARNING, leaving the new resource untracked. The eight same-class arms
 OUTSIDE the composite-id family were converted by issue
 [#1770](https://github.com/go-to-k/cdkd/issues/1770): both malformed
 `LayerVersionArn` arms, the missing-`FunctionName` Lambda-permission arm, the

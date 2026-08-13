@@ -2480,7 +2480,7 @@ replacement. Each site handles it in the way that resource's situation allows:
 | a resource removed from the template | warns, prints `⚠ <id> (<type>) skipped (<reason>)`, **keeps the state record**, and counts it under `Skipped (not deleted)` in the summary. The deploy still exits `0`: the record is kept, so the resource is still a pending DELETE and the next `cdkd deploy` re-attempts it |
 | the old resource of a replacement (`--replace`, `--recreate-via-*`, an UPDATE the type does not support in place) | **fails the resource** — the replacement create would otherwise run beside a live old one, or collide with its name |
 | the cleanup delete after a create-first replacement | warns; the new resource is already created and recorded, so the old one is untracked whether the delete failed or was skipped. Delete it by hand |
-| a rollback delete (automatic, or `cdkd rollback`) | counted as a per-op **failure**, so the journal segment is kept and re-running `cdkd rollback` re-attempts it |
+| a rollback delete (automatic, or `cdkd rollback`) | counted as a per-op **failure** at four of the five arms, so the journal segment is kept and re-running `cdkd rollback` re-attempts it. The exception is the delete of the NEW resource AFTER the old one was re-created: that arm's delete is already best-effort (the revert itself succeeded and state points at the old resource), so a skip warns and counts as a warning — the new resource is left untracked and must be deleted by hand |
 
 Unlike destroy, a deploy-side skip does not change the exit code — `cdkd
 destroy` has no next run to heal it, whereas a kept record on deploy does.

@@ -50,8 +50,11 @@ export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  *   pair (or started+failed) per per-resource CREATE / UPDATE / DELETE.
  * - `RESOURCE_RETAINED` — destroy-side skip for `DeletionPolicy: Retain`.
  *   The AWS resource is kept ON PURPOSE and the state record is dropped.
- * - `RESOURCE_SKIPPED` — destroy-side skip where cdkd could NOT address the
- *   resource (issue [#1752](https://github.com/go-to-k/cdkd/issues/1752)).
+ * - `RESOURCE_SKIPPED` — a skip where cdkd could NOT address the resource
+ *   (issue [#1752](https://github.com/go-to-k/cdkd/issues/1752)). Emitted by
+ *   `cdkd destroy` / `cdkd state destroy` AND, since issue
+ *   [#1762](https://github.com/go-to-k/cdkd/issues/1762), by the `cdkd deploy`
+ *   DELETE branch for a resource removed from the template.
  *   Three producers today: a malformed composite physicalId; a state record
  *   missing the id or the property the delete is addressed BY — Lambda layer /
  *   permission, Custom Resource, IAM policy / user-group (issue
@@ -140,8 +143,10 @@ export interface DeploymentEvent {
     deleted: number;
     failed?: number;
     /**
-     * Destroy-side resources cdkd could NOT address (issue
-     * [#1752](https://github.com/go-to-k/cdkd/issues/1752)). Omitted when zero.
+     * Resources cdkd could NOT address (issue
+     * [#1752](https://github.com/go-to-k/cdkd/issues/1752)) — destroy-side, and
+     * since issue [#1762](https://github.com/go-to-k/cdkd/issues/1762) the
+     * deploy side's template-DELETE skips too. Omitted when zero.
      * Without it a skip-only run records `result: 'FAILED'` with `deleted: N`
      * and no `failed`, so `cdkd events` would show a failed run naming nothing
      * that failed. Rendered by `printRunEvents` as ` ⚠N` alongside the

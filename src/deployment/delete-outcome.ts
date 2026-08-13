@@ -27,14 +27,33 @@ import type { ResourceDeleteResult } from '../types/resource.js';
  * `void` return ~80 providers still use).
  *
  * A function rather than an inline `result?.outcome === 'skipped'` test at
- * eleven call sites so the back-compat `void` reading lives in ONE place: the
+ * ten call sites so the back-compat `void` reading lives in ONE place: the
  * signature is `Promise<void | ResourceDeleteResult>`, so a caller that awaits
  * it holds `void | ResourceDeleteResult`, which TypeScript will happily let
  * you compare against nothing useful.
  */
 export function deleteSkipReason(result: void | ResourceDeleteResult): string | undefined {
-  return result && result.outcome === 'skipped' ? result.reason : undefined;
+  if (!result || result.outcome !== 'skipped') return undefined;
+  // Branch on `outcome`, then DEFAULT the reason — never return `undefined`
+  // for a value that said `'skipped'`. `reason` is required by the
+  // discriminated union, so a missing one can only come from an untyped
+  // producer (a JS provider, a hand-built test double, a future arm that
+  // forgets it) — and returning `undefined` there would send every caller
+  // down the DELETED path, which for the template-DELETE branch means
+  // dropping the state record of a resource that is still alive. That is
+  // precisely the data loss this module exists to stop, so the one shape it
+  // must never mistake is a skip that under-describes itself.
+  return result.reason?.trim() ? result.reason : UNSPECIFIED_SKIP_REASON;
 }
+
+/**
+ * Stand-in for a `'skipped'` outcome whose producer supplied no `reason`.
+ *
+ * Deliberately says the cause is unknown rather than inventing one: the line
+ * it renders on is the user's only signal that the resource survived, and a
+ * fabricated cause would send them looking in the wrong place.
+ */
+export const UNSPECIFIED_SKIP_REASON = 'no reason reported by the provider';
 
 /**
  * The sentence every deploy-side skip renders, in the log line AND in the
