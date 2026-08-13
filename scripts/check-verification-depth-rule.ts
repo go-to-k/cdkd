@@ -100,15 +100,14 @@ export interface DepthRuleViolation {
 
 export interface DepthRuleReport {
   anchorPresent: boolean;
-  /** Skills whose file was READ. */
-  scannedSkills: string[];
-  /** Lines READ. */
-  scannedLines: number;
   /**
-   * Skills whose lines were actually PATTERN-MATCHED, and how many. Separate
-   * from the read counters on purpose: the first cut incremented the read
-   * counters and then `continue`d past the matching, so a gutted skill still
-   * satisfied a 400-line floor while nothing was inspected. Floor on THESE.
+   * Targets whose lines were actually PATTERN-MATCHED, and how many. Named for
+   * the MATCHING rather than the reading because the first cut incremented a
+   * read counter and then `continue`d past the matching, so a gutted skill
+   * still satisfied a line floor while nothing was inspected. There is no
+   * separate read counter any more: with the file-level exemption gone, read
+   * and matched are the same set, and keeping both invited a floor to be
+   * asserted on the one that proves nothing.
    */
   patternScannedSkills: string[];
   patternScannedLines: number;
@@ -123,8 +122,16 @@ const ALLOW_RE = /<!--\s*allow-cost-downscale:\s*(\S.*?)\s*-->/;
  * run", which matches `to save a run` verbatim. Scoped to the text BEFORE the
  * match so a trailing "... but never do X" cannot launder a real downscale
  * earlier in the same line.
+ *
+ * The token list is deliberately MINIMAL. A first cut also carried
+ * `rather than` / `instead of` / `no longer`, and all three laundered genuine
+ * violations — measured: "Run one narrow fixture rather than three: a broad
+ * sweep is too costly", "Pick the narrow fixture instead of the broad one to
+ * save a run", "We no longer dispatch all three reviewers; a full pass drains
+ * attention" all reported ZERO violations. They are not load-bearing either:
+ * the real tree stays clean without them. Only an explicit negation counts.
  */
-const PROHIBITION_RE = /\b(?:do not|don't|never|must not|rather than|instead of|no longer)\b/i;
+const PROHIBITION_RE = /\b(?:do not|don't|never|must not)\b/i;
 
 function isProhibition(text: string, matchIndex: number): boolean {
   return PROHIBITION_RE.test(text.slice(0, matchIndex));
@@ -144,11 +151,15 @@ function isAllowed(lines: string[], i: number): boolean {
 }
 
 export function checkVerificationDepthRule(repoRoot: string): DepthRuleReport {
-  const claudeMd = readFileSync(join(repoRoot, 'CLAUDE.md'), 'utf8');
+  let claudeMd = '';
+  try {
+    claudeMd = readFileSync(join(repoRoot, 'CLAUDE.md'), 'utf8');
+  } catch {
+    // Report the anchor as missing rather than throwing — a caller wants the
+    // verdict, not a stack trace.
+  }
   const violations: DepthRuleViolation[] = [];
-  const scannedSkills: string[] = [];
   const patternScannedSkills: string[] = [];
-  let scannedLines = 0;
   let patternScannedLines = 0;
 
   const targets: Array<{ name: string; rel: string }> = [
@@ -164,16 +175,13 @@ export function checkVerificationDepthRule(repoRoot: string): DepthRuleReport {
     try {
       body = readFileSync(join(repoRoot, rel), 'utf8');
     } catch {
-      // A governed skill that no longer exists is not a violation — the set is
-      // a list of decision points, and removing one removes its decision. It IS
-      // reported as unscanned via `scannedSkills`, which the floors assert on,
-      // so a rename cannot silently empty this checker.
+      // A governed target that no longer exists is not a violation — the set
+      // is a list of decision points, and removing one removes its decision.
+      // It IS absent from `patternScannedSkills`, which the tests pin against a
+      // LITERAL list, so a rename cannot silently empty this checker.
       continue;
     }
-    scannedSkills.push(skill);
-
     const lines = body.split('\n');
-    scannedLines += lines.length;
     patternScannedSkills.push(skill);
     patternScannedLines += lines.length;
 
@@ -191,8 +199,6 @@ export function checkVerificationDepthRule(repoRoot: string): DepthRuleReport {
 
   return {
     anchorPresent: claudeMd.includes(RULE_ANCHOR),
-    scannedSkills,
-    scannedLines,
     patternScannedSkills,
     patternScannedLines,
     violations,

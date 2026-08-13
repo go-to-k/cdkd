@@ -99,6 +99,9 @@ gates:
       - ".claude/skills/pick-integ/**"
       - ".claude/skills/run-integ/**"
       - ".claude/skills/verify-pr/**"
+      # CLAUDE.md is a pattern-scanned target of the same checker, so
+      # reintroducing banned wording there must stale `check` as well.
+      - "CLAUDE.md"
       - "package.json"
       - "pnpm-lock.yaml"
       - "tsconfig*.json"

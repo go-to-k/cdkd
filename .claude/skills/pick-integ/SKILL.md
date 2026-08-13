@@ -107,7 +107,9 @@ which tests were not run.
    - **P0**: changed-area AND (stale OR failing OR never-run) — the change touches code whose proof is also old/broken.
    - **P1**: changed-area but recently-green — verify the change didn't regress it.
    - **P2**: not changed-area but stale >14d / failing / never-run / **expiring soon** — coverage hygiene
-     (cap to a sensible number; prefer the BROAD set + a spread of providers, and `log()` what you dropped).
+     (prefer the BROAD set + a spread of providers; ORDER them, do not cap them — per the
+     running-order-not-a-budget note above, a long tail is handed forward rather than dropped, and
+     whatever is not run is named explicitly in the wrap-up).
      Rank an expiring-soon test BELOW an already-stale one but ABOVE a recently-green one; within the
      tier, oldest first. When a single cohort is large, say so — draining 105 tests the day they expire
      is not feasible, so start the drain a few days early and spread it across sessions (see the relay

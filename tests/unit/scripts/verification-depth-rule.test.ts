@@ -190,6 +190,38 @@ describe('verification-depth rule checker', () => {
     expect(Object.keys(probes)).toHaveLength(DOWNSCALE_PATTERNS.length);
   });
 
+  it('does NOT let a soft contrast word launder a real downscale', () => {
+    // A first cut also treated `rather than` / `instead of` / `no longer` as
+    // prohibitions, and all three laundered genuine violations. Each of these
+    // reported ZERO before the token list was narrowed to explicit negations.
+    const laundered = [
+      'Run one narrow fixture rather than three: a broad sweep is too costly.',
+      'Pick the narrow fixture instead of the broad one to save a run.',
+      'We no longer dispatch all three reviewers; a full pass drains attention.',
+      'Use the unit tests instead of an integ; a real-AWS run is overkill.',
+    ];
+    for (const sentence of laundered) {
+      const report = withRepoCopy((root) => {
+        const p = join(root, '.claude', 'skills', 'run-integ', 'SKILL.md');
+        writeFileSync(p, `${readFileSync(p, 'utf8')}\n\n${sentence}\n`);
+      });
+      expect(report.violations.length, `laundered: ${sentence}`).toBeGreaterThan(0);
+    }
+  });
+
+  it('scopes the prohibition to the text BEFORE the match', () => {
+    // A trailing negation must not excuse a downscale earlier on the line —
+    // otherwise `PROHIBITION_RE.test(wholeLine)` would pass this suite.
+    const report = withRepoCopy((root) => {
+      const p = join(root, '.claude', 'skills', 'run-integ', 'SKILL.md');
+      writeFileSync(
+        p,
+        `${readFileSync(p, 'utf8')}\n\nTrim the P2 rows to save a run; never let that hide a gap.\n`
+      );
+    });
+    expect(report.violations.length).toBeGreaterThan(0);
+  });
+
   it('does NOT flag a banned construction inside a PROHIBITION', () => {
     // The rule's own text says "Do not narrow an integ selection to save a
     // run", which matches `to save a run` verbatim. Stating the rule is not
