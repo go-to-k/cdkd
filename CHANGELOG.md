@@ -1,3 +1,10 @@
+## [0.282.1](https://github.com/go-to-k/cdkd/compare/v0.282.0...v0.282.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* **gc:** derive gc's URL-suffix list from the partition table so a new arm cannot outrun it ([#1796](https://github.com/go-to-k/cdkd/issues/1796)) ([7c934ca](https://github.com/go-to-k/cdkd/commit/7c934caf5557c212b9bbab7323fe4f9148f1215c))
+
 # [0.282.0](https://github.com/go-to-k/cdkd/compare/v0.281.28...v0.282.0) (2026-08-13)
 
 
