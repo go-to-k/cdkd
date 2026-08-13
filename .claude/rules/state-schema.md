@@ -13,7 +13,7 @@ interface StackState {
   stackName: string;
   region?: string;      // Required on version >= 2 (load-bearing for the S3 key)
   resources: Record<string, ResourceState>;
-  outputs: Record<string, string>;
+  outputs: Record<string, unknown>; // Resolved Output values — NOT coerced to string (see below)
   imports?: StateImportEntry[]; // v4+: Fn::ImportValue refs recorded for strong-reference destroy refusal
   outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs (informational; NO destroy-time refusal — weak reference by design)
   parentStack?: string;        // v6+: populated on nested-stack child state records (undefined on top-level)
@@ -35,17 +35,46 @@ interface StateOutputReadEntry {
 }
 
 interface ResourceState {
-  physicalId: string;                       // AWS physical ID
-  resourceType: string;                     // e.g., "AWS::S3::Bucket"
-  properties: Record<string, any>;          // Resolved template intent (what cdkd was asked to deploy)
-  observedProperties?: Record<string, any>; // AWS-current snapshot at deploy time (drift baseline)
-  attributes: Record<string, any>;          // For Fn::GetAtt resolution
-  dependencies: string[];                   // For proper deletion order
+  physicalId: string;                           // AWS physical ID
+  resourceType: string;                         // e.g., "AWS::S3::Bucket"
+  properties: Record<string, unknown>;          // Resolved template intent (what cdkd was asked to deploy)
+  observedProperties?: Record<string, unknown>; // AWS-current snapshot at deploy time (drift baseline)
+  attributes?: Record<string, unknown>;         // For Fn::GetAtt resolution
+  dependencies?: string[];                      // For proper deletion order
+  metadata?: Record<string, unknown>;           // Additional metadata
   deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+: template attribute recorded at deploy time
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+: template attribute recorded at deploy time
-  provisionedBy?: 'sdk' | 'cc-api';         // v7+: which provisioning layer owns this resource (absent = SDK legacy default)
+  provisionedBy?: 'sdk' | 'cc-api';         // v7+: which provisioning layer owns this resource (absent = pre-v7 record, SDK-managed then; NOT pinned — routing re-decides)
 }
 ```
+
+**`outputs`** values are `unknown`, NOT `string`. `DeployEngine.resolveOutputs`
+returns `Record<string, unknown>` and persists whatever
+`IntrinsicFunctionResolver.resolve` produced for the Output's `Value` — there
+is no stringification step anywhere on that path. Most Outputs do resolve to a
+string, but an `Fn::GetAtt` that CloudFormation defines as a LIST persists a
+JSON **array** into `state.outputs` whenever it is used as the Output value
+directly instead of being wrapped in `Fn::Join` — `AWS::Route53::HostedZone`'s
+`NameServers` is the shipped case (PR #1868 made the provider preserve the SDK
+array through create / update / `getAttribute`, so the list shape now survives
+into state). Two consequences worth stating because both have been assumed
+otherwise: code reading a `state.outputs` value back must not assume `string`
+(narrow before use), and a doc or a type annotation spelling this field
+`Record<string, string>` is wrong (issue
+[#1876](https://github.com/go-to-k/cdkd/issues/1876)). An output the resolver
+could not resolve is stored as `undefined` and therefore drops out of the
+persisted JSON entirely — absence means "not resolved", not "empty string".
+
+**Do not verify any of this from the deploy summary.** `cdkd deploy`'s
+`Outputs:` block prints each value with `String(value)`
+(`src/cli/commands/deploy.ts`), so a persisted ARRAY renders comma-joined with
+no brackets — byte-identical to a genuine comma-separated string, which is
+exactly the observation that makes a reader conclude the value was coerced.
+(`buildDisplayOutputs` in `src/deployment/deploy-engine.ts` does NOT stringify;
+it only selects the template's declared Output keys and drops `undefined` ones,
+so an unresolved output is absent from the block rather than printed.) The
+persisted shape is visible in `state.json` itself, or via `cdkd state show`,
+whose `formatAttributeValue` passes non-scalars through `JSON.stringify`.
 
 **`deletionPolicy` / `updateReplacePolicy`** (schema v5+) are the CFn template
 attributes recorded at deploy time so the next `cdkd deploy` / `cdkd diff` can
@@ -90,10 +119,15 @@ provisioning-layer label: `'sdk'` (cdkd's preferred fast path, direct
 synchronous AWS SDK calls per resource type) or `'cc-api'` (the Cloud
 Control API fallback path, async polling create/update/delete via the
 unified CloudControlClient). Pre-#614 every resource was implicitly
-SDK-managed; the absent / `undefined` field on v6-and-earlier state
-records is treated by the v7 binary as "legacy SDK" (matches pre-#614
-behavior). v7 writers always emit the field explicitly so the routing
-decision is durable across deploys.
+SDK-managed, and the absent / `undefined` field on v6-and-earlier state
+records carries exactly that provenance — but it does NOT pin routing:
+rule 2 below gates on a RECORDED `'cc-api'` alone, so an absent field
+re-enters the matrix and can still be auto-routed to Cloud Control by
+rule 4 (the pre-#614 outcome for that resource). v7 writers always emit
+the field explicitly so the routing decision is durable across deploys.
+Fuller treatment in
+[docs/state-management.md](../../docs/state-management.md)'s `version: 7`
+section.
 
 Routing decision matrix (`ProviderRegistry.getProviderFor`, called by
 the deploy / drift / destroy / state-show paths):
@@ -114,8 +148,13 @@ the deploy / drift / destroy / state-show paths):
 The field is **sticky**: once a resource is `'cc-api'`, subsequent SDK
 Provider backfills (issue #609) do NOT auto-migrate it back. Avoids
 physical-ID churn + destroy + recreate cycles on every backfill
-release. User-initiated CC → SDK migration lives under #615 (or a
-future counterpart). `cdkd destroy` consults the field to pick the
+release. Exception: types in `STICKY_CC_MIGRATION_EXEMPT`
+(`src/provisioning/provider-registry.ts` — consult the constant, its
+membership changes) re-route to their SDK provider anyway, admitted only
+when CC routing is BROKEN and the physicalId is unchanged; see
+docs/state-management.md's `version: 7` section. User-initiated CC → SDK
+migration lives under #615 (or a future counterpart). `cdkd destroy`
+consults the field to pick the
 delete path; `cdkd drift` consults it to pick `readCurrentState`;
 `cdkd state show` displays `ProvisionedBy: sdk | cc-api | (sdk, legacy default)`
 for the absent-field case so users can audit the routing.
