@@ -79,6 +79,9 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
 
       const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateDatabaseCommand);
       expect(call).toBeDefined();
+      // A create issues exactly ONE send; pinning the count is what catches the
+      // code path changing which calls it makes (`.claude/rules/testing.md`).
+      expect(mockSend).toHaveBeenCalledTimes(1);
       expect(databaseInputOf(call![0])).toEqual({
         Name: 'linkdb',
         TargetDatabase: {
@@ -184,10 +187,11 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
       });
 
       const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateDatabaseCommand);
-      // Whole-payload compare: an `undefined`-valued key would still be a key
-      // on the request object, and an empty `TargetDatabase: {}` is a shape
-      // AWS rejects.
-      expect(databaseInputOf(call![0])).toEqual({ Name: 'plaindb', Description: 'plain' });
+      // `toStrictEqual`, not `toEqual`: the latter IGNORES an `undefined`-valued
+      // key, so a regression that writes `TargetDatabase: undefined` onto the
+      // request would slip past it. The shape that actually reaches AWS is what
+      // matters here — an empty `TargetDatabase: {}` is rejected by Glue.
+      expect(databaseInputOf(call![0])).toStrictEqual({ Name: 'plaindb', Description: 'plain' });
     });
 
     it('sends only the members the template declared inside a block', async () => {
@@ -236,6 +240,8 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
 
       const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
       expect(call).toBeDefined();
+      // GetDatabase (the AWS-managed Parameters read) then UpdateDatabase.
+      expect(mockSend).toHaveBeenCalledTimes(2);
       expect(databaseInputOf(call![0])).toEqual({
         Name: 'mydb',
         TargetDatabase: { CatalogId: '123456789012', DatabaseName: 'sourcedb' },
@@ -262,6 +268,208 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
 
       const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
       expect(databaseInputOf(call![0])).toEqual({ Name: 'mydb' });
+    });
+  });
+
+  describe('malformed blocks (shape guards)', () => {
+    // The three blocks are read off the DESIRED bag, so they take the repo's
+    // standard split: REFUSE on a template-path create, WARN on update (which
+    // cannot tell a template push from the state-borne bag `drift --revert` and
+    // the rollback revert arm hand it). Before the guards a malformed value did
+    // not fail - every member read yielded `undefined` and cdkd SENT an empty
+    // `{}` block, or threw a raw TypeError from `.map` on a non-array.
+    it.each([
+      ['a string', 'linked'],
+      ['a number', 7],
+      ['null', null],
+      ['an array', ['sourcedb']],
+    ])('create() refuses a TargetDatabase that is %s, before any AWS call', async (_label, bad) => {
+      await expect(
+        provider.create('L', 'AWS::Glue::Database', {
+          DatabaseInput: { Name: 'db', TargetDatabase: bad },
+        })
+      ).rejects.toThrow(/TargetDatabase must be an object/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['an unresolved intrinsic', { Ref: 'SomeDb' }],
+      ['an empty block', {}],
+    ])(
+      'create() refuses a TargetDatabase that is a plain object but UNREADABLE (%s)',
+      async (_label, bad) => {
+        // A plain object passes the shape guard, so this is the second half of
+        // the class: every member read yields `undefined` and the pre-guard code
+        // put an empty `TargetDatabase: {}` on the wire.
+        await expect(
+          provider.create('L', 'AWS::Glue::Database', {
+            DatabaseInput: { Name: 'db', TargetDatabase: bad },
+          })
+        ).rejects.toThrow(/declares no member cdkd can send/);
+        expect(mockSend).not.toHaveBeenCalled();
+      }
+    );
+
+    it('create() refuses a non-array CreateTableDefaultPermissions, before any AWS call', async () => {
+      await expect(
+        provider.create('L', 'AWS::Glue::Database', {
+          DatabaseInput: { Name: 'db', CreateTableDefaultPermissions: { Permissions: ['ALL'] } },
+        })
+      ).rejects.toThrow(/CreateTableDefaultPermissions must be an array/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('create() refuses a permission ENTRY it cannot read, rather than narrowing the grant list', async () => {
+      // All-or-nothing on purpose: dropping the unreadable entries would send a
+      // SILENTLY NARROWED Lake Formation grant list on one wholesale call.
+      await expect(
+        provider.create('L', 'AWS::Glue::Database', {
+          DatabaseInput: {
+            Name: 'db',
+            CreateTableDefaultPermissions: [
+              { Permissions: ['ALL'], Principal: { DataLakePrincipalIdentifier: 'x' } },
+              'IAM_ALLOWED_PRINCIPALS',
+            ],
+          },
+        })
+      ).rejects.toThrow(/carries an entry cdkd cannot read/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('create() refuses a Permissions member that is not a list (the SDK would drop it)', async () => {
+      await expect(
+        provider.create('L', 'AWS::Glue::Database', {
+          DatabaseInput: {
+            Name: 'db',
+            CreateTableDefaultPermissions: [{ Permissions: 'ALL' }],
+          },
+        })
+      ).rejects.toThrow(/carries an entry cdkd cannot read/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('create() DOWNGRADES the refusal to a warning on a state replay', async () => {
+      // A reverse-replacement re-create reads a STATE record, which the user
+      // cannot edit from the template - refusing would leave the old resource
+      // unrestorable (issue #1463).
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.create(
+        'L',
+        'AWS::Glue::Database',
+        { DatabaseInput: { Name: 'db', TargetDatabase: 'linked' } },
+        { replayingState: true }
+      );
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({ Name: 'db' });
+    });
+
+    it('update() RETAINS the previous block instead of erasing a live resource link', async () => {
+      // UpdateDatabase replaces DatabaseInput wholesale, so omitting the block
+      // would DELETE the live link on a template whose only fault is one
+      // unreadable value (the #1612 "UPDATE retains the previous value" row).
+      mockSend.mockResolvedValueOnce({ Database: { Parameters: {} } });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'mydb',
+        'AWS::Glue::Database',
+        { DatabaseInput: { Name: 'mydb', TargetDatabase: 'linked' } },
+        { DatabaseInput: { Name: 'mydb', TargetDatabase: { DatabaseName: 'sourcedb' } } }
+      );
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({
+        Name: 'mydb',
+        TargetDatabase: { DatabaseName: 'sourcedb' },
+      });
+    });
+
+    it('update() DROPS the key when BOTH sides are unusable', async () => {
+      mockSend.mockResolvedValueOnce({ Database: { Parameters: {} } });
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.update(
+        'L',
+        'mydb',
+        'AWS::Glue::Database',
+        { DatabaseInput: { Name: 'mydb', CreateTableDefaultPermissions: 'ALL' } },
+        { DatabaseInput: { Name: 'mydb', CreateTableDefaultPermissions: 'ALL' } }
+      );
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({ Name: 'mydb' });
+    });
+
+    it('sends an EXPLICIT empty permission list unchanged (a declaration, not a malformed value)', async () => {
+      // `[]` disables the Lake Formation default set, so it must reach AWS.
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.create('L', 'AWS::Glue::Database', {
+        DatabaseInput: { Name: 'db', CreateTableDefaultPermissions: [] },
+      });
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({
+        Name: 'db',
+        CreateTableDefaultPermissions: [],
+      });
+    });
+
+    it('accepts a permission entry with no Principal and one with an empty Principal', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      await provider.create('L', 'AWS::Glue::Database', {
+        DatabaseInput: {
+          Name: 'db',
+          CreateTableDefaultPermissions: [{ Permissions: ['SELECT'] }, { Principal: {} }],
+        },
+      });
+
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof CreateDatabaseCommand);
+      expect(databaseInputOf(call![0])).toStrictEqual({
+        Name: 'db',
+        CreateTableDefaultPermissions: [{ Permissions: ['SELECT'] }, { Principal: {} }],
+      });
+    });
+  });
+
+  describe('getDriftUnknownPaths()', () => {
+    // AWS materializes a Lake Formation DEFAULT for a database that declared no
+    // block, and the observedProperties baseline walks the key UNION - so a
+    // record written before this member was read would report that default as
+    // drift on EVERY existing database. Scoped out PER RESOURCE, the ELBv2
+    // `Targets` shape.
+    it('ignores CreateTableDefaultPermissions when the template declares none', () => {
+      expect(
+        provider.getDriftUnknownPaths('AWS::Glue::Database', {
+          DatabaseInput: { Name: 'db' },
+        })
+      ).toEqual(['DatabaseInput.CreateTableDefaultPermissions']);
+    });
+
+    it('COMPARES it once the template declares it - including an empty list', () => {
+      for (const declared of [[], [{ Permissions: ['ALL'] }]]) {
+        expect(
+          provider.getDriftUnknownPaths('AWS::Glue::Database', {
+            DatabaseInput: { Name: 'db', CreateTableDefaultPermissions: declared },
+          })
+        ).toEqual([]);
+      }
+    });
+
+    it('defaults to COMPARING when the properties bag is absent or unreadable', () => {
+      // Hiding real drift is the worse failure of the two.
+      expect(provider.getDriftUnknownPaths('AWS::Glue::Database')).toEqual([]);
+      expect(
+        provider.getDriftUnknownPaths('AWS::Glue::Database', { DatabaseInput: 'malformed' })
+      ).toEqual([]);
+    });
+
+    it('leaves the Table entry untouched', () => {
+      expect(provider.getDriftUnknownPaths('AWS::Glue::Table')).toEqual(['OpenTableFormatInput']);
     });
   });
 
@@ -347,6 +555,15 @@ describe('GlueProvider AWS::Glue::Database — TargetDatabase / FederatedDatabas
         'L',
         'AWS::Glue::Database'
       )) as Record<string, unknown>;
+
+      // Pin the READ side first. Without this the whole case is vacuous: pre-fix
+      // the readback emitted no TargetDatabase and the builder sent none, so
+      // read-side === write-side held trivially and the test would have passed
+      // against the very bug it is named for.
+      expect((observed['DatabaseInput'] as Record<string, unknown>)['TargetDatabase']).toEqual({
+        CatalogId: '123456789012',
+        DatabaseName: 'sourcedb',
+      });
 
       mockSend.mockResolvedValueOnce({ Database: { Parameters: {} } });
       mockSend.mockResolvedValueOnce({});
