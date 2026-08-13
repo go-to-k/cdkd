@@ -147,7 +147,7 @@ intrinsics-torture-2	2026-07-26T18:57:55Z	PASS	48	verify.sh	0727b sweep-b7 stale
 kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1398 lambda-eventsource re-verify, 5 del 0 err, 0 orph
 kinesis-stream-mode-switch	2026-08-12T11:25:31Z	PASS	99	verify.sh	issue #609 post-rebase run on 0.281.0; provisionedBy=sdk, diff clean; destroy 0 errors 0 orphans
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-08-13T08:36:21Z	PASS	150	verify.sh	issue 1763 broad; 9 deleted 0 errors 0 orphans
+lambda	2026-08-13T09:03:16Z	PASS	300	verify.sh	PR 1745 BROAD gate (resolver is cross-cutting); 9 deleted 0 errors, 0 orphans
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-config-field-removal	2026-08-11T13:09:08Z	PASS	132	verify.sh	issue #609 Lambda 4-prop backfill + review fixes; 5 del 0 err 0 orphans
@@ -239,7 +239,7 @@ rollback-sqs-cooldown	2026-08-10T04:45:42Z	PASS	152	verify.sh	0810 sweep b3; pos
 route53	2026-08-12T16:04:06Z	PASS	780	verify.sh	#1681 on the rebased base (with #1725 packers); Ref->record-name green, 8 del 0 err, orph clean
 s3-analytics-inventory	2026-08-13T00:49:56Z	PASS	135	verify.sh	1707/1717/1718 live after review round 3; 49 assertions, 0 orphans
 s3-asset-deploy	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
-s3-cloudfront	2026-08-08T17:42:05Z	PASS	228	verify.sh	1373 OriginCustomHeaders create+update-survive asserts green; destroy 0 errors 0 orphans
+s3-cloudfront	2026-08-13T09:22:26Z	PASS	1150	verify.sh	PR 1745 re-run after review fixes (provider edit staled integ-destroy); 5 deleted 0 errors, 0 orphans
 s3-directory-bucket	2026-08-10T16:45:07Z	PASS	300	verify.sh	final post-rebase+review-fix run: tags create+update live, auto-empty, 0 orphans (#609)
 s3-event-notification	2026-08-10T04:16:05Z	PASS	73	verify.sh	0810 staleness sweep b1; #1437 EventBridgeEnabled/NESTED_KEY_TARGETS live-verified, 14 del 0 err, 0 orph
 s3-lifecycle	2026-08-13T07:25:36Z	PASS	540	verify.sh	#1754/#1755/#1759 lifecycle round-trip + malformed EventBridgeEnabled refusal; 7 del 0 err, orph clean
