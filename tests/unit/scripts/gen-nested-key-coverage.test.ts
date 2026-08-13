@@ -55,7 +55,7 @@ import { parseProviderSource } from '../../../scripts/gen-property-coverage.ts';
 // Vitest's 5s default does not fit this file. 26 of its tests parse the WHOLE
 // real `src/provisioning/providers` tree through the TypeScript compiler API,
 // or spawn the shipped `--check` against a scratch copy of it — inherently
-// 1-2s each locally and ~3x that on CI. Two of them (the opt-in-table and S3
+// SECONDS each locally and ~3x that on CI. Two of them (the opt-in-table and S3
 // reason-(C) fences, 1.6s / 2.2s locally) timed out on CI at 5s while passing
 // locally three runs in a row, which is exactly the boundary this raises off.
 //
@@ -63,7 +63,37 @@ import { parseProviderSource } from '../../../scripts/gen-property-coverage.ts';
 // it was a heavyweight test added WITHOUT a timeout argument, and the repo's
 // per-test convention (`}, 15_000)`) guarantees that recurs every time this
 // file grows. Slowness here is a property of the file, not of individual tests.
-vi.setConfig({ testTimeout: 15_000 });
+//
+// RAISED 15s -> 60s (issues #1754 / #1755 / #1759), and the reason is the
+// growth this comment predicted rather than a new slow test: that PR grew
+// `s3-bucket-provider.ts` by ~17%, and every one of these tests parses it. The
+// cost is not evenly spread — RE-MEASURED locally, the slowest test is 15.2s (`a
+// WALK-DEPENDENT opt-in must declare minHandoffPoints`), i.e. already AT the old
+// cap, with the two that actually failed CI at 5.3s and 5.0s locally. So the old
+// figure of "1-2s each" was stale by an order of magnitude on the tail, and 15s
+// left no headroom at all for the ~3x CI factor this file's own note records.
+// 60s restores it. A number this large is only defensible because the file is
+// pure offline static analysis with no network and no AWS: the only thing a
+// generous cap can hide here is a genuine performance regression in the critic.
+//
+// NO NUMERIC RUNTIME FENCE, and that is a decision rather than an omission (PR
+// review asked for one or for this paragraph). The gap is real — at a 60s cap
+// and a 15.2s slowest test, a 3.9x critic slowdown lands at 59s and passes
+// silently. But every candidate fence is worse than the gap:
+//   - A wall-clock `expect(elapsed).toBeLessThan(N)` has to straddle a
+//     local-to-CI factor this file's own header measures at ~3x and which moves
+//     with runner contention. Any N tight enough to catch 2x (i.e. under ~30s)
+//     false-fires on a loaded runner; any N loose enough not to (45s+) catches
+//     less than the 60s cap already does on the slowest test.
+//   - A tighter PER-TEST timeout on the heavy probes cannot work either: the
+//     slowest is already 15.2s locally, so its own CI budget is ~45s.
+// So the fence stays the cap, and the mitigation is measurement rather than
+// assertion: `vp test run <this file> --reporter=verbose` prints per-test
+// durations, and the numbers above are the baseline to compare against
+// (2026-08-13, local: slowest 15.2s, the two spawn probes 5.3s / 5.0s). Re-measure
+// and update them when this file's cost changes; a bump made without new numbers
+// is the thing this note exists to prevent.
+vi.setConfig({ testTimeout: 60_000 });
 
 const repoRoot = process.cwd();
 const SCRIPT = resolve(repoRoot, 'scripts/gen-nested-key-coverage.ts');
@@ -4529,9 +4559,9 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     expect(byPath.get('IntelligentTieringConfigurations.TagFilters')).toBe('provider-handled');
   });
 
-  it('lifecycle TagFilters stays allow-list-gated (the destructured-gatherScope residue)', () => {
+  it('lifecycle TagFilters stays allow-list-gated (the destructured-scope-gatherer residue)', () => {
     // The one TagFilters family the write walk still cannot see: the array
-    // reaches the write as a destructured member of gatherScope's returned
+    // reaches the write as a destructured member of `lifecycleRuleScope`'s returned
     // literal (same class as its `.Key` / `.Value` write-pass entries). The
     // allow entry is load-bearing: without it the UNREGRESSED provider flags,
     // proving the key is reviewed rather than silently green.
@@ -4945,6 +4975,30 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     //     -> `InventoryConfigurations.Destination.BucketArn [no-write-evidence]`
     // (`ScheduleFrequency` is `provider-handled` via the key pass, so the write
     // pass never audits it.)
+    //
+    // Re-measured again for #1754 / #1755 / #1759, which took the list 27 -> 26:
+    // `TagFilters` left it because `foldLifecycleScope` writes that CFn spelling
+    // OUTSIDE any reverse-map function, the same mechanism that retired the
+    // three names above. `EventBridgeEnabled` did NOT leave, and the reason is
+    // worth recording because the first cut of that fold DID retire it: writing
+    // the block under a COMPUTED key (`{ ...config, [EVENTBRIDGE_CONFIG_KEY]:
+    // { EventBridgeEnabled } }`) — done for the #1475 hand-off reason the
+    // provider states in-code — also keeps the nested member out of the
+    // unscoped name set. Measured both ways.
+    //
+    // MEASURED, not reasoned: `--check` reports byte-identical totals before and
+    // after the change (874 paths / 801 same-spelling / 51 provider-handled /
+    // 22 allow-listed / 0 divergences in all three passes, run against a scratch
+    // copy of the pre-change provider through the `--providers-dir=` seam), so no
+    // verdict moved and the committed matrix does not drift. The hazard that
+    // WOULD matter — a fold's write vouching for a forward mapper that stopped
+    // writing the SDK member — is probed for real through the `--providers-dir=`
+    // seam rather than asserted here in prose: see "exits 1 naming
+    // LifecycleConfiguration.Rules.Prefix although a DIFF-side fold writes it"
+    // in the shipped-`--check` block below. (It was a comment in the first cut,
+    // which is a measurement that decays silently.) The EventBridge, transition-
+    // date and rule-status folds additionally write their member under a COMPUTED
+    // key for the #1475 reason the provider states in-code.
     expect(withdrawn).toEqual([
       'AnalyticsConfigurations',
       'BucketEncryption',
@@ -4969,7 +5023,6 @@ describe('real-code regression probes (per the repo checker rules)', () => {
       'S3Key',
       'ServerSideEncryptionByDefault',
       'TagFilter',
-      'TagFilters',
       'Topic',
       'TransitionDate',
       'TransitionInDays',
@@ -5130,6 +5183,27 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
       expect(stderr).not.toContain(`AWS::CodeBuild::Project: ${clean} [`);
     });
   }
+
+  it('exits 1 naming LifecycleConfiguration.Rules.Prefix although a DIFF-side fold writes it (#1755)', () => {
+    // Promoted from a COMMENT to a real probe (PR review). Issues #1754 / #1755
+    // / #1759 added `foldLifecycleScope`, which writes `out['Prefix']` on the
+    // DIFF side — the exact shape that, spelled as a named-member spread, makes
+    // a pure function vouch for the forward mapper and switches the write pass
+    // off for a whole subtree (#1475). The measurement that it does NOT was
+    // recorded in prose, which decays silently; run it through the same seam as
+    // its siblings so the claim re-verifies on every CI run.
+    const dir = regressedTree('providers-s3-lifecycle-prefix', 's3-bucket-provider.ts', (source) =>
+      source.replace(
+        "        Prefix: useFilterForm ? undefined : (rule['Prefix'] as string | undefined),\n",
+        ''
+      )
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('nested-key-coverage: FAIL');
+    expect(stderr).toContain('AWS::S3::Bucket: LifecycleConfiguration.Rules.Prefix');
+    expect(stderr).toContain('no-write-evidence');
+  });
 
   it('exits 1 naming BuildBatchConfig.BatchReportMode when its forward write is deleted', () => {
     const dir = regressedTree('providers-batchreport', 'codebuild-provider.ts', (source) =>

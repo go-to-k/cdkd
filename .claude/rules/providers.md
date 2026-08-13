@@ -631,9 +631,48 @@ EVERY notification-configured bucket rather than only on the rare
 single-element list is the CFn `Event`, a longer one has no CFn spelling and
 stays `Events` — mirroring what `readLifecycle` already does for
 `TransitionInDays`. Two literal-based fences would both have passed; the
-round-trip one is what caught it. It also measured what is still open on the same
-rule (issues #1754 / #1755), so "the aliases converge" is not mistaken for "the
-block converges".
+round-trip one is what caught it. It also measured what was still open on the
+same rule (issues #1754 / #1755), so "the aliases converge" was not mistaken for
+"the block converges" — and those, plus the notification residuals of #1759, are
+now FIXED, on four findings worth reusing:
+
+- **Upgrade the fence's UNIT when it stops finding things.** #1748's rows
+  compared one nested ITEM at a time, which is structurally why they missed the
+  RULE-level divergences beside them. Comparing the WHOLE recorded rule against
+  the whole emitted one immediately showed that an ORDINARY CDK-shaped rule
+  using no cdkd tolerance at all disagreed on three keys — `ExpirationInDays` /
+  `NoncurrentVersionExpirationInDays` against an `Expiration` /
+  `NoncurrentVersionExpiration` readback, and the empty-prefix `Filter` the
+  applier SENDS for a scope-less rule but nothing recorded. That is a far wider
+  population than the tolerated spellings the issue was filed for.
+- **A fold whose input is a LIST-wide decision cannot be a pure per-item
+  function.** S3 forbids mixing V1 (top-level `Prefix`) and V2 (`Filter`) rules
+  in one lifecycle configuration, so the form is chosen ACROSS ALL RULES;
+  `lifecycleRuleScope` / `lifecycleUsesFilterForm` are module-level and the
+  applier calls them too, because a fold re-deriving that decision could record
+  a `Filter` the wire never sent. Same share-ONE-helper rule as the appliers,
+  applied to a decision instead of to a value.
+- **A MERGE with a warning arm does not fold the way an alias rename does.**
+  `mergeLegacySingular` drops the legacy singular and WARNS on a `StorageClass`
+  collision. Folding both sides identically there would make the comparison
+  equal, so `update()` would never be called again and the warning would stop
+  after ONE deploy — the finding-3 concealment. The NON-colliding case (the
+  population the fix exists for) folds; a COLLIDING rule is left completely
+  alone, keeping the difference visible until the template drops one
+  declaration. Reach for a no-op callback only when the callback has nothing to
+  say.
+- **The `!isPlainObject(x)` arm of a boolean gate is where the destructive
+  default hides.** `NotificationConfiguration.EventBridgeConfiguration`'s gate
+  was `!isPlainObject(eb) || coerceCfnBoolean(eb['EventBridgeEnabled']) !==
+  false`, and `coerceCfnBoolean` answers `undefined` for a declared `null` /
+  `'yes'` / an array / an unresolved intrinsic — so `undefined !== false`
+  ENABLED delivery for EVERY unreadable value, on a live bucket, with no
+  warning. `configBooleanRefusal` + the per-path answer (#1751's) replaces both
+  arms; #1430's usable-value polarity is untouched, which is what the
+  `s3-lifecycle` integ asserts on both phases. The SKIP unit came from the API,
+  not from the item: `PutBucketNotificationConfiguration` is a full replace, so
+  skipping one family would silently DELETE the others — it needs the
+  `retainPrevious` treatment its sibling appliers use.
 
 **A DIFF-side fold must not name its member in a spread-and-patch literal.**
 `canonicalizeDesiredProperties` is pure and never reaches AWS, but

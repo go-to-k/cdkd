@@ -31,7 +31,18 @@ import {
  *    permanently missing on every EventBridge-enabled bucket.
  */
 
-const { mockSend } = vi.hoisted(() => ({ mockSend: vi.fn() }));
+const { mockSend, childLogger } = vi.hoisted(() => ({
+  mockSend: vi.fn(),
+  // Hoisted so a test can assert the SKIP warning issue #1759 added, not only
+  // the absence of the Put.
+  childLogger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: vi.fn(),
+  },
+}));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -40,13 +51,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
-  };
+  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,
@@ -68,6 +73,7 @@ describe('S3 NotificationConfiguration.EventBridgeConfiguration (issue #1430)', 
 
   beforeEach(() => {
     vi.clearAllMocks();
+    childLogger.child.mockReturnValue(childLogger);
     provider = new S3BucketProvider();
     mockSend.mockResolvedValue({});
   });
@@ -133,13 +139,19 @@ describe('S3 NotificationConfiguration.EventBridgeConfiguration (issue #1430)', 
       expect(cfg.EventBridgeConfiguration).toBeUndefined();
     });
 
-    it('tolerates a null block instead of throwing', async () => {
-      // The condition now READS a member off the block, so a hand-written or
-      // intrinsic-resolved `null` would throw where the pre-fix
-      // `eb !== undefined` test merely emitted. Non-objects stay on the
-      // enable-on-presence side.
+    it('reads a null block as OMITTED rather than enabling delivery', async () => {
+      // Issue #1759 INVERTED this row, and the inversion is the fix. It used to
+      // assert `{}` — i.e. a hand-written or intrinsic-resolved `null` ENABLED
+      // EventBridge delivery, because the gate was `!isPlainObject(eb) ||
+      // coerce(...) !== false` and a null block satisfied the first arm. That is
+      // the destructive-default class #1595 refuses.
+      //
+      // `null` means "block omitted" throughout this provider (the lifecycle
+      // `Filter` / `TagFilters` reads already spell it that way) and
+      // `configBooleanRefusal` gives a null CONTAINER the same absent treatment,
+      // so the answer is the DISABLED side — not a refusal, and never an enable.
       const cfg = await putNotification(null);
-      expect(cfg.EventBridgeConfiguration).toEqual({});
+      expect(cfg.EventBridgeConfiguration).toBeUndefined();
     });
 
     it('leaves sibling Topic configurations untouched when EventBridge is false', async () => {
@@ -196,16 +208,61 @@ describe('S3 NotificationConfiguration.EventBridgeConfiguration (issue #1430)', 
       expect(cfg.EventBridgeConfiguration).toEqual({});
     });
 
-    it('keeps enable-on-presence when the boolean is absent or unresolved', async () => {
-      // An unresolved intrinsic must not silently DISABLE a block the
-      // template asked for — the pre-#1430 behavior is the safe side here.
+    it('keeps enable-on-presence when the boolean key is ABSENT from a declared block', async () => {
+      // CFn marks `EventBridgeEnabled` required, so a declared block with no
+      // boolean in it is an affirmative declaration and enabling is the
+      // pre-existing answer. `configBooleanRefusal` agrees: an ABSENT key
+      // legitimately takes the caller's default.
       expect((await putNotification({})).EventBridgeConfiguration).toEqual({});
-      vi.clearAllMocks();
-      mockSend.mockResolvedValue({});
+    });
+
+    it('REFUSES an unresolved intrinsic instead of enabling delivery (issue #1759)', async () => {
+      // The other half of the inversion above, and the one the issue named:
+      // `coerceCfnBoolean` answers `undefined` for an unresolved intrinsic (and
+      // for `'yes'`, an array, a number), and `undefined !== false` is TRUE — so
+      // EVERY value cdkd cannot read took the ENABLE arm, on a LIVE bucket, with
+      // no warning anywhere.
+      //
+      // The skip unit is the WHOLE notification configuration, because
+      // `PutBucketNotificationConfiguration` is a full replace: skipping one
+      // family would silently DELETE every other one from AWS.
+      await provider.update(
+        'L',
+        BUCKET_NAME,
+        RESOURCE_TYPE,
+        {
+          BucketName: BUCKET_NAME,
+          NotificationConfiguration: {
+            EventBridgeConfiguration: { EventBridgeEnabled: { Ref: 'SomeParam' } },
+            TopicConfigurations: [
+              { Topic: 'arn:aws:sns:us-east-1:1:t', Event: 's3:ObjectCreated:*' },
+            ],
+          },
+        },
+        { BucketName: BUCKET_NAME }
+      );
       expect(
-        (await putNotification({ EventBridgeEnabled: { Ref: 'SomeParam' } }))
-          .EventBridgeConfiguration
-      ).toEqual({});
+        mockSend.mock.calls
+          .map((c) => c[0])
+          .filter((c) => c instanceof PutBucketNotificationConfigurationCommand)
+      ).toHaveLength(0);
+      expect(childLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('EventBridgeEnabled must be a boolean')
+      );
+    });
+
+    it('THROWS the same value on a template-path create', async () => {
+      // The per-path answer #1751 settled one property over: warn-and-SKIP where
+      // a state replay can reach it, REFUSE where the value is always
+      // template-borne.
+      await expect(
+        provider.create('L', RESOURCE_TYPE, {
+          BucketName: BUCKET_NAME,
+          NotificationConfiguration: {
+            EventBridgeConfiguration: { EventBridgeEnabled: 'yes' },
+          },
+        })
+      ).rejects.toThrow(/EventBridgeEnabled must be a boolean/);
     });
 
     it('leaves the block out entirely when the CFn block is absent', async () => {

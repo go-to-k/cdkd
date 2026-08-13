@@ -485,7 +485,7 @@
  *     `passes: ['write']` allow-list entries: the request-level
  *     `TransitionDefaultMinimumObjectSize` hoist and the two lifecycle
  *     `TagFilters` members forwarded through a destructured member of the
- *     in-method `gatherScope` helper's returned literal (member-level taint
+ *     `lifecycleRuleScope` helper's returned literal (member-level taint
  *     through a returned literal is a materially bigger analysis — the same
  *     wrapper-level class as CloudFront's `Tags.Key` / `Tags.Value`).
  *     The `Destination.BucketArn` / `BucketAccountId` terminals needed NO
@@ -1309,7 +1309,7 @@ const S3_BUCKET_TERMINAL_RENAMES = {
   // Per-item config families: the `TagFilters` ARRAY itself, forwarded
   // verbatim under the SDK's `Filter.And.Tags` (the members beneath are
   // covered by the scoped segment renames above; lifecycle's array is the
-  // destructured-gatherScope shape and carries an allow-list entry instead).
+  // destructured-`lifecycleRuleScope` shape and carries an allow-list entry instead).
   'AnalyticsConfigurations.TagFilters': 'Filter.And.Tags',
   'IntelligentTieringConfigurations.TagFilters': 'Filter.And.Tags',
   'MetricsConfigurations.TagFilters': 'Filter.And.Tags',
@@ -1636,7 +1636,7 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     // scoped write evidence (or a resolving terminal rename), so the
     // per-family `TagFilters` / `TransitionInDays` paths are write-verified
     // and their strip-probes exist in the unit test; only the lifecycle
-    // `TagFilters` array (destructured-gatherScope, walker-invisible) stays
+    // `TagFilters` array (destructured-`lifecycleRuleScope`, walker-invisible) stays
     // allow-list-gated. Rule-level `ExpiredObjectDeleteMarker`
     // is not reachable either — the shape pass matches CFn definitions to
     // same-named SDK interfaces, and `@aws-sdk/client-s3` spells it
@@ -1656,7 +1656,7 @@ export const NESTED_KEY_TARGETS: readonly NestedKeyTarget[] = [
     // Measured at 0 findings; the three shapes no mechanism can express carry
     // reviewed `passes: ['write']` allow-list entries (the request-level
     // `TransitionDefaultMinimumObjectSize` hoist and the two
-    // destructured-gatherScope lifecycle `TagFilters` members).
+    // destructured-`lifecycleRuleScope` lifecycle `TagFilters` members).
     freshObjectMapper: true,
     // Measured at opt-in (#1540): 157 written member names, 156 non-empty
     // write scopes, rounded down generously per the field docs.
@@ -2029,8 +2029,10 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
         'Forwarded verbatim into `Filter{,.And}.Tags` by ' +
         'applyLifecycleConfiguration, but through a chain the hand-off taint ' +
         'walk deliberately does not cross: the array reaches the write as a ' +
-        "DESTRUCTURED member of the in-method `gatherScope` helper's returned " +
-        'literal, and member-level taint through a returned literal is a ' +
+        'DESTRUCTURED member of the `lifecycleRuleScope` helper\'s returned ' +
+        'literal (module-level since issue #1755, in-method `gatherScope` ' +
+        'before it — the shape is unchanged), and member-level taint through a ' +
+        'returned literal is a ' +
         'materially bigger analysis (issue #1540; same wrapper-level class as ' +
         'the CloudFront `Tags.Key` / `Tags.Value` entries). The equivalent ' +
         'per-item-config forwards (Analytics / Metrics / IntelligentTiering) ' +
@@ -2042,7 +2044,7 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
     allowKey('AWS::S3::Bucket', 'LifecycleConfiguration.Rules.TagFilters.Value'),
     {
       rationale:
-        'Same destructured-gatherScope forward as the sibling ' +
+        'Same destructured-`lifecycleRuleScope` forward as the sibling ' +
         '`LifecycleConfiguration.Rules.TagFilters.Key` entry (issue #1540).',
       passes: ['write'],
     },
@@ -2053,9 +2055,9 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
       rationale:
         'Presence-encoded: the SDK EventBridgeConfiguration is an EMPTY struct, so the CFn ' +
         'boolean has no member to map onto — applyNotificationConfiguration writes ' +
-        '`EventBridgeConfiguration: {}` when the flag is truthy and omits the block when it ' +
-        'is not. There is no write the terminal-rename mechanism could redirect to ' +
-        '(issue #1393).',
+        '`EventBridgeConfiguration: {}` when the COERCED boolean is true and omits the block ' +
+        'when it is false, REFUSING any value coerceCfnBoolean cannot read (issue #1759). ' +
+        'There is no write the terminal-rename mechanism could redirect to (issue #1393).',
       passes: ['key'],
     },
   ],
@@ -2064,7 +2066,7 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
     {
       rationale:
         'Forwarded verbatim into `Filter{,.And}.Tags` by applyLifecycleConfiguration through ' +
-        'the destructured-gatherScope shape the hand-off taint walk deliberately does not ' +
+        'the destructured-`lifecycleRuleScope` shape the hand-off taint walk deliberately does not ' +
         'cross — same class as the `LifecycleConfiguration.Rules.TagFilters.Key` / `.Value` ' +
         'write-pass entries, here for the ARRAY itself on the key pass (issue #1393). The ' +
         'per-item config families (Analytics / Metrics / IntelligentTiering) resolve via ' +

@@ -298,7 +298,14 @@ describe('nothing skipped: `effectiveProperties` stays ABSENT', () => {
   it('update: an ordinary configuration change records the desired bag unchanged', async () => {
     const properties = {
       BucketName: BUCKET,
-      LifecycleConfiguration: { Rules: [{ Id: 'r1', Status: 'Enabled', ExpirationInDays: 10 }] },
+      // A top-level `Prefix` keeps this rule in the deprecated V1 form, which is
+      // what the wire sends VERBATIM — so it stays the "ordinary CFn-spelled
+      // template" this row is about. A SCOPE-LESS rule is no longer one: the
+      // applier sends it the empty-prefix `Filter` and issue #1755 records that,
+      // which `s3-bucket-provider-never-emitted-spellings.test.ts` fences.
+      LifecycleConfiguration: {
+        Rules: [{ Id: 'r1', Status: 'Enabled', Prefix: 'logs/', ExpirationInDays: 10 }],
+      },
     };
 
     const result = await provider.update('B', BUCKET, RESOURCE_TYPE, properties, {
@@ -363,6 +370,26 @@ const WIRING_SITES: WiringSite[] = [
     previous: { DestinationBucketName: 'live-logs', LogFilePrefix: 'p/' },
     desired: { DestinationBucketName: 1 },
     expected: { DestinationBucketName: 'live-logs', LogFilePrefix: 'p/' },
+  },
+  {
+    // Issue #1759's whole-Put skip, which was in NEITHER fence: without this row
+    // a regression that records the FOLD on a skipped notification Put — state
+    // claiming a configuration AWS never received — passes the whole suite. The
+    // eventbridge file covers only the create-path THROW (PR review).
+    name: 'notification (whole Put, EventBridgeEnabled refusal)',
+    key: 'NotificationConfiguration',
+    previous: {
+      TopicConfigurations: [{ Topic: 'arn:aws:sns:us-east-1:123456789012:t', Event: 's3:ObjectCreated:*' }],
+      EventBridgeConfiguration: { EventBridgeEnabled: true },
+    },
+    desired: {
+      TopicConfigurations: [{ Topic: 'arn:aws:sns:us-east-1:123456789012:t', Event: 's3:ObjectCreated:*' }],
+      EventBridgeConfiguration: { EventBridgeEnabled: 'yes' },
+    },
+    expected: {
+      TopicConfigurations: [{ Topic: 'arn:aws:sns:us-east-1:123456789012:t', Event: 's3:ObjectCreated:*' }],
+      EventBridgeConfiguration: { EventBridgeEnabled: true },
+    },
   },
   {
     name: 'replication (whole Put)',
@@ -434,7 +461,12 @@ const WIRING_SITES: WiringSite[] = [
 // A sibling the run never skips. Its survival is what catches a `retainPrevious`
 // / `retainPreviousItems` call pointed at the WRONG key: a mis-paste overwrites
 // this with the previous bag's value instead of the target property.
-const UNSKIPPED_SIBLING = { Rules: [{ Id: 'keep', Status: 'Enabled', ExpirationInDays: 5 }] };
+// The top-level `Prefix` is load-bearing: it keeps the rule in the V1 form the
+// wire sends verbatim, so no #1755 scope fold applies and this stays a pure
+// WIRING control rather than doubling as coverage for a fold.
+const UNSKIPPED_SIBLING = {
+  Rules: [{ Id: 'keep', Status: 'Enabled', Prefix: 'keep/', ExpirationInDays: 5 }],
+};
 
 describe('UPDATE: every applier records under ITS OWN key (wiring fence)', () => {
   for (const site of WIRING_SITES) {

@@ -391,7 +391,15 @@ MUTATES — and the twin landed in issue
 `S3BucketProvider.canonicalizeDesiredProperties` folds the inventory schedule
 key, the analytics / inventory destination shape, and the defaulted-but-SENT
 members, sharing ONE per-item helper with the appliers so state and template can
-never be folded to different keys.
+never be folded to different keys. It has since grown two WHOLE-BLOCK folds on
+the same rule — `effectiveNotificationConfiguration` and
+`effectiveLifecycleConfiguration` (issues #1748 / #1754 / #1755 / #1759) — which
+add three things worth knowing when you write the next one: the fold's unit can
+be the BLOCK rather than an item; a decision made across a whole LIST (S3
+chooses the V1 vs V2 lifecycle form once per configuration) has to be shared
+with the applier as a function, not re-derived; and an arm the wire WARNS about
+(a legacy singular transition colliding with its plural) must be left unfolded,
+or the comparison goes equal and the warning stops after one deploy.
 
 **A member that is always SENT and always READ BACK must be recorded even when
 the template omits it** (issue
