@@ -12,6 +12,7 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from 'cdk-local';
@@ -233,6 +234,30 @@ async function localInvokeAgentCoreCommand(
   if (options.verbose) logger.setLevel('debug');
 
   warnIfDeprecatedRegion(options);
+
+  // Fold `--region` to its canonical lower-case spelling once, at the handler
+  // entry, exactly as `local-start-api.ts` / `local-invoke.ts` / `local-run-task.ts`
+  // do (issue [#1795](https://github.com/go-to-k/cdkd/issues/1795)). This command
+  // was the one region-taking `cdkd local` command that fix skipped, so its raw
+  // value still reached the consumers that are case-SENSITIVE in the same
+  // direction the partition table is: the SigV4 signing scope (where `--region`
+  // has the highest precedence), the `STSClient` endpoint resolution, and
+  // `applyRoleArnIfSet`. Folding here rather than at each consumer keeps ONE
+  // normalization point per command; the pseudo-parameter resolver folds again
+  // from its own sources and double-folding is a no-op.
+  //
+  // This statement covers `options.region` ONLY, which is NOT the whole story
+  // in this command and was a review finding on the first cut: unlike its three
+  // siblings, agentcore derives a region through FOUR further chains that fall
+  // through past `options.region` — two of them to `options.stackRegion` (a real
+  // flag; cdk-local declares `--stack-region`), all of them to the two env vars,
+  // and then to the resolved stack's or candidate's own region. `stsRegion` in
+  // `applyAgentCoreCredentialEnv` reads its own `args.region` parameter and so
+  // escapes this fold entirely. Each of the four therefore folds its WHOLE
+  // result too; without that, `--sigv4 --stack-region CN-NORTH-1` still reached
+  // the signing scope, and `--assume-role` with an upper-cased `AWS_REGION`
+  // still reached the AssumeRole STS client and the container's own env.
+  if (options.region !== undefined) options.region = canonicalizeRegion(options.region);
 
   let containerId: string | undefined;
   let stopLogs: (() => void) | undefined;
@@ -977,12 +1002,13 @@ export async function buildSigV4HeadersIfRequested(
     );
     return undefined;
   }
-  const region =
+  const region = canonicalizeRegion(
     options.region ??
-    options.stackRegion ??
-    process.env['AWS_REGION'] ??
-    process.env['AWS_DEFAULT_REGION'] ??
-    resolved.stack.region;
+      options.stackRegion ??
+      process.env['AWS_REGION'] ??
+      process.env['AWS_DEFAULT_REGION'] ??
+      resolved.stack.region
+  );
   if (!region) {
     throw new CdkdError(
       `--sigv4: no region resolved for the AgentCore signing scope. ` +
@@ -1240,12 +1266,13 @@ async function resolveAgentCoreCodeImageFromS3(
     key: s3Source.key,
     ...(s3Source.versionId !== undefined && { versionId: s3Source.versionId }),
   };
-  const region =
+  const region = canonicalizeRegion(
     options.region ??
-    options.stackRegion ??
-    process.env['AWS_REGION'] ??
-    process.env['AWS_DEFAULT_REGION'] ??
-    resolved.stack.region;
+      options.stackRegion ??
+      process.env['AWS_REGION'] ??
+      process.env['AWS_DEFAULT_REGION'] ??
+      resolved.stack.region
+  );
 
   const assumeRoleArn = resolveAssumeRoleArn(options, resolved, loaded);
   let credentials:
@@ -1470,11 +1497,12 @@ export async function buildAgentCoreImageContext(
   options: LocalInvokeAgentCoreOptions
 ): Promise<{ context: ImageResolutionContext | undefined; loaded: LocalStateRecord | undefined }> {
   const logger = getLogger();
-  const region =
+  const region = canonicalizeRegion(
     options.region ??
-    process.env['AWS_REGION'] ??
-    process.env['AWS_DEFAULT_REGION'] ??
-    candidate.region;
+      process.env['AWS_REGION'] ??
+      process.env['AWS_DEFAULT_REGION'] ??
+      candidate.region
+  );
 
   let accountId: string | undefined;
   try {
@@ -1542,7 +1570,13 @@ export async function applyAgentCoreCredentialEnv(
   const logger = getLogger();
   let assumeSucceeded = false;
   if (args.assumeRoleArn) {
-    const stsRegion = args.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
+    // FOURTH chain, and the one that escapes the handler-entry fold entirely:
+    // `args.region` is this helper's own parameter, so `--assume-role` with
+    // `AWS_REGION=CN-NORTH-1` and no `--region` handed the raw value BOTH to
+    // the AssumeRole STS client below and to the container's own `AWS_REGION`.
+    const stsRegion = canonicalizeRegion(
+      args.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION']
+    );
     try {
       const creds = await assumeAgentCoreExecutionRole(args.assumeRoleArn, stsRegion);
       dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
