@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
@@ -262,18 +262,89 @@ describe('cdkd local run-task: --region case (issue #1795)', () => {
  */
 describe('cdkd local *: --region is folded at the handler entry (source-level pin)', () => {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-  const commands = ['local-run-task.ts', 'local-invoke.ts', 'local-start-api.ts'];
+  // `local-invoke-agentcore.ts` was added by issue
+  // [#1814](https://github.com/go-to-k/cdkd/issues/1814): it is the one
+  // region-taking `cdkd local` command the #1795 sweep skipped, and its raw
+  // `--region` reached three consumers that are case-SENSITIVE in the same
+  // direction the partition table is — the SigV4 signing SCOPE (where
+  // `--region` has the highest precedence), the `STSClient` endpoint
+  // resolution, and `applyRoleArnIfSet`. None of those are reachable from a
+  // unit test, which is exactly why the fold is pinned at source level here
+  // rather than asserted through a behavior test.
+  const FOLD = 'options.region = canonicalizeRegion(options.region)';
+  const commandsDir = join(repoRoot, 'src', 'cli', 'commands');
+
+  /**
+   * LIVE lines only — a commented-out fold must FAIL this pin, not satisfy it,
+   * and a JSDoc that merely MENTIONS `options.region` above the fold must not
+   * false-fail the ordering check below.
+   *
+   * Comment lines are BLANKED rather than dropped, so indices stay aligned with
+   * the real file and the failure message can quote a usable line number. Block
+   * comments are blanked across their whole span for the same reason (the
+   * sibling `intrinsic-image.test.ts` strips them instead — it reports no line
+   * numbers, so it does not need the alignment).
+   */
+  const liveLinesOf = (file: string): string[] => {
+    let inBlock = false;
+    return readFileSync(join(commandsDir, file), 'utf8')
+      .split('\n')
+      .map((line) => {
+        const trimmed = line.trimStart();
+        if (inBlock) {
+          if (trimmed.includes('*/')) inBlock = false;
+          return '';
+        }
+        if (trimmed.startsWith('/*')) {
+          if (!trimmed.includes('*/')) inBlock = true;
+          return '';
+        }
+        if (trimmed.startsWith('//')) return '';
+        return line.replace(/\/\/.*$/, '');
+      });
+  };
+
+  /**
+   * DERIVED, not hand-listed. A hardcoded array cannot fail for a command that
+   * does not exist yet — the same reason the #1814 binding proof sweeps `src/`
+   * rather than naming its call sites. Every `local-*` command that READS
+   * `options.region` must fold it; one that never reads it needs nothing.
+   * (Measured 2026-08-13: exactly four do. `local-start-{cloudfront,service,alb}.ts`
+   * read it zero times.)
+   */
+  const commands = readdirSync(commandsDir)
+    .filter((f) => f.startsWith('local-') && f.endsWith('.ts'))
+    .filter((f) => liveLinesOf(f).some((line) => line.includes('options.region')));
+
+  it('the sweep found the commands it is supposed to check', () => {
+    // Without a floor, a glob that matched nothing would pass every row below
+    // vacuously — and this suite's whole job is to be non-vacuous.
+    expect(commands.length).toBeGreaterThanOrEqual(4);
+    expect(commands).toContain('local-invoke-agentcore.ts');
+  });
 
   it.each(commands)('%s canonicalizes options.region before using it', (file) => {
-    const src = readFileSync(join(repoRoot, 'src', 'cli', 'commands', file), 'utf8');
-    // LIVE lines only — a commented-out fold must fail this pin, not satisfy it.
-    const liveLines = src
-      .split('\n')
-      .filter((line) => !line.trimStart().startsWith('//'))
-      .join('\n');
-    expect(
-      liveLines,
-      `${file}: live options.region canonicalization not found`
-    ).toContain('options.region = canonicalizeRegion(options.region)');
+    const lines = liveLinesOf(file);
+    const foldAt = lines.findIndex((line) => line.includes(FOLD));
+
+    expect(foldAt, `${file}: live options.region canonicalization not found`).toBeGreaterThan(-1);
+
+    /**
+     * PRESENCE is not enough — the fold has to come FIRST. Moving it below
+     * `applyRoleArnIfSet(...)` left every assertion green under the previous
+     * `toContain` form, while the consumer this exists to protect went back to
+     * receiving the raw value. So: no OTHER read of `options.region` may
+     * precede the fold.
+     */
+    const firstOtherRead = lines.findIndex(
+      (line, i) => i !== foldAt && line.includes('options.region')
+    );
+
+    if (firstOtherRead !== -1) {
+      expect(
+        foldAt,
+        `${file}: options.region is read at line ${firstOtherRead + 1}, BEFORE the fold at line ${foldAt + 1}`
+      ).toBeLessThan(firstOtherRead);
+    }
   });
 });
