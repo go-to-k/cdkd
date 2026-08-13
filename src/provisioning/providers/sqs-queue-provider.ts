@@ -15,6 +15,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -482,7 +483,13 @@ export class SQSQueueProvider implements ResourceProvider {
   }
 
   /**
-   * Construct SQS queue ARN from account/region/queue name
+   * Construct SQS queue ARN from account/region/queue name.
+   *
+   * The partition is derived from the region through the same closed mapping
+   * `${AWS::Partition}` uses (issue #1815) rather than hardcoded to `aws` —
+   * this ARN is recorded into state and served as the queue's `Arn`
+   * attribute, so a commercial literal is structurally valid but wrong in
+   * `aws-cn` / `aws-us-gov` and nothing downstream rejects it.
    */
   private async constructArn(queueName: string): Promise<string> {
     try {
@@ -490,10 +497,26 @@ export class SQSQueueProvider implements ResourceProvider {
       const accountId = identity.Account;
       // Get region from SQS client config
       const region = await this.sqsClient.config.region();
-      return `arn:aws:sqs:${region}:${accountId}:${queueName}`;
+      const { partition } = derivePartitionAndUrlSuffix(region);
+      return `arn:${partition}:sqs:${region}:${accountId}:${queueName}`;
     } catch {
       this.logger.warn('Failed to construct SQS ARN from STS, using placeholder');
-      return `arn:aws:sqs:unknown:unknown:${queueName}`;
+      // The region / account segments stay the pre-existing `unknown`
+      // sentinels — nothing resolved them.
+      //
+      // `AWS_REGION` is a BEST-EFFORT hint for the partition, not an
+      // authoritative read: this arm is dominated by the STS failure above
+      // (the account lookup runs first), so the client's own region is
+      // usually still available — but the shared `AwsClients` sqs client may
+      // equally have been built from an explicit `AwsClientConfig.region` or
+      // from the SDK's own chain, so the env var is not guaranteed to be what
+      // it was configured with. What it does guarantee is the direction: an
+      // unset or unrecognized value derives to the commercial `aws`, so the
+      // placeholder is byte-identical to the old one wherever the old one was
+      // right, and a non-commercial `AWS_REGION` upgrades it rather than
+      // leaving a silent commercial claim.
+      const { partition } = derivePartitionAndUrlSuffix(process.env['AWS_REGION'] ?? '');
+      return `arn:${partition}:sqs:unknown:unknown:${queueName}`;
     }
   }
 

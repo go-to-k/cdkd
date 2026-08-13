@@ -18,6 +18,7 @@ import { EC2Client, DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2
 import { getLogger } from '../../utils/logger.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
@@ -134,15 +135,33 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
   }
 
   /**
-   * Directory bucket ARN: `arn:aws:s3express:{region}:{account}:bucket/{name}`.
+   * Directory bucket ARN:
+   * `arn:{partition}:s3express:{region}:{account}:bucket/{name}`.
    * Also the `ResourceArn` for the S3 Control tag operations. Callers that
    * already resolved the account (for the S3 Control `AccountId` parameter)
    * pass it in so the STS lookup runs once per operation.
+   *
+   * The partition is derived from the region through the same closed mapping
+   * `${AWS::Partition}` uses (issue #1815) rather than hardcoded to `aws`.
+   * Here it is load-bearing TWICE over: the value is served as the bucket's
+   * `Arn` attribute AND passed to S3 Control as the `ResourceArn` of a tag
+   * mutation, so outside the commercial partition the wrong literal does not
+   * merely record a bad string — it aims the tag call at an ARN that does not
+   * name this bucket.
+   *
+   * KNOWN BOUND (pre-existing, not introduced by #1815): the region — and now
+   * the partition derived from it — comes from `s3Client`, while the tag
+   * calls that consume this ARN go through `s3ControlClient`, built from
+   * `providerRegion` (`process.env['AWS_REGION']`). Those two can disagree,
+   * so the ARN can name a different region than the client receiving it. The
+   * region SEGMENT already had this exposure before the partition rode along
+   * with it; unifying the two clients' region resolution is a separate change.
    */
   private async buildBucketArn(bucketName: string, accountId?: string): Promise<string> {
     const region = await this.getRegion();
     const account = accountId ?? (await this.getAccountId());
-    return `arn:aws:s3express:${region}:${account}:bucket/${bucketName}`;
+    const { partition } = derivePartitionAndUrlSuffix(region);
+    return `arn:${partition}:s3express:${region}:${account}:bucket/${bucketName}`;
   }
 
   /**

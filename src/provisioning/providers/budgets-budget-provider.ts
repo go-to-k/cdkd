@@ -23,6 +23,7 @@ import {
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
@@ -117,12 +118,36 @@ export class BudgetsBudgetProvider implements ResourceProvider {
 
   /**
    * Budget ARN for the tagging APIs (`ListTagsForResource` / `TagResource` /
-   * `UntagResource`). Budgets ARNs carry no region component. The `aws`
-   * partition is assumed — consistent with other providers that construct
-   * ARNs; non-`aws` partitions are not supported by cdkd today.
+   * `UntagResource`), and the `Arn` attribute recorded into state.
+   *
+   * Budgets ARNs carry no region component, but they DO carry a partition, so
+   * a region is still needed to name it. It is read from the RESOLVED region
+   * of the very client that receives this ARN — the same
+   * `getClient().config.region()` the `delete()` path already consults for
+   * its `assertRegionMatch` guard — and routed through the closed mapping
+   * `${AWS::Partition}` uses (issue #1815).
+   *
+   * Asking the CLIENT rather than `providerRegion` is what makes the ARN and
+   * its consumer agree. `providerRegion` is `process.env['AWS_REGION']`, and
+   * when that is unset `getClient()` builds `new BudgetsClient({})`, leaving
+   * the SDK to resolve the region from its OWN chain (`AWS_DEFAULT_REGION`,
+   * the `~/.aws/config` profile). So a profile-configured `cn-north-1` /
+   * `us-gov-*` caller would have derived the COMMERCIAL partition from an
+   * empty string while the client itself talked to a non-commercial endpoint
+   * — on the PRIMARY path, not a fallback.
+   *
+   * The `aws` partition USED to be hardcoded here on the stated assumption
+   * that non-`aws` partitions were unsupported. That was wrong in the quiet
+   * direction: the literal is structurally valid everywhere, so in `aws-cn` /
+   * `aws-us-gov` nothing rejected it — the ARN was simply recorded into state
+   * and handed to `TagResource` naming no budget. A client whose region is
+   * unset or unrecognized still derives to `aws`, so commercial output is
+   * unchanged byte for byte.
    */
-  private budgetArn(accountId: string, budgetName: string): string {
-    return `arn:aws:budgets::${accountId}:budget/${budgetName}`;
+  private async budgetArn(accountId: string, budgetName: string): Promise<string> {
+    const region = await this.getClient().config.region();
+    const { partition } = derivePartitionAndUrlSuffix(region ?? '');
+    return `arn:${partition}:budgets::${accountId}:budget/${budgetName}`;
   }
 
   /**
@@ -369,7 +394,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       return {
         physicalId: name,
         attributes: {
-          Arn: this.budgetArn(accountId, name),
+          Arn: await this.budgetArn(accountId, name),
         },
       };
     } catch (error) {
@@ -431,7 +456,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
         physicalId,
         wasReplaced: false,
         attributes: {
-          Arn: this.budgetArn(accountId, physicalId),
+          Arn: await this.budgetArn(accountId, physicalId),
         },
       };
     } catch (error) {
@@ -614,7 +639,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       JSON.stringify([...tags].sort((a, b) => (a.Key ?? '').localeCompare(b.Key ?? '')));
     if (sortedJson(oldTags) === sortedJson(newTags)) return;
 
-    const arn = this.budgetArn(accountId, budgetName);
+    const arn = await this.budgetArn(accountId, budgetName);
     const newKeys = new Set(newTags.map((t) => t.Key));
     const removedKeys = oldTags
       .map((t) => t.Key)
@@ -682,7 +707,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
   /**
    * `Fn::GetAtt` support. CloudFormation documents no attributes for
    * `AWS::Budgets::Budget`; `Arn` is served as a cdkd convenience (computed
-   * — Budgets ARNs are `arn:aws:budgets::{account}:budget/{name}`, verified
+   * — Budgets ARNs are `arn:{partition}:budgets::{account}:budget/{name}`, verified
    * to exist via `DescribeBudget` first).
    */
   async getAttribute(
@@ -702,7 +727,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       await this.getClient().send(
         new DescribeBudgetCommand({ AccountId: accountId, BudgetName: physicalId })
       );
-      return this.budgetArn(accountId, physicalId);
+      return await this.budgetArn(accountId, physicalId);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -740,7 +765,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
         );
         return {
           physicalId: explicit,
-          attributes: { Arn: this.budgetArn(accountId, explicit) },
+          attributes: { Arn: await this.budgetArn(accountId, explicit) },
         };
       } catch (error) {
         if (error instanceof NotFoundException) return null;

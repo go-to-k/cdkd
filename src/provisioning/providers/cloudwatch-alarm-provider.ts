@@ -13,6 +13,7 @@ import {
 } from '@aws-sdk/client-cloudwatch';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -271,13 +272,32 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         `Failed to describe alarm ${alarmName}, constructing ARN from config: ${error instanceof Error ? error.message : String(error)}`
       );
     }
-    // Fallback: construct ARN from client config
+    // Fallback: construct ARN from client config. The PARTITION is derived
+    // from the region through the same closed mapping `${AWS::Partition}`
+    // uses (issue #1815) — a hardcoded `arn:aws:` is structurally valid but
+    // simply WRONG in `aws-cn` / `aws-us-gov`, and nothing downstream rejects
+    // it because it is recorded into state and served as the `Arn` attribute.
     try {
       const region =
         (await this.cloudWatchClient.config.region()) || process.env['AWS_REGION'] || 'us-east-1';
-      return `arn:aws:cloudwatch:${region}:*:alarm:${alarmName}`;
+      const { partition } = derivePartitionAndUrlSuffix(region);
+      return `arn:${partition}:cloudwatch:${region}:*:alarm:${alarmName}`;
     } catch {
-      return `arn:aws:cloudwatch:*:*:alarm:${alarmName}`;
+      // `config.region()` THREW, so there is no region in hand for the region
+      // segment — hence the `*` wildcard, which predates this change.
+      //
+      // NOTE this arm is very nearly DEAD in production, and the `AWS_REGION`
+      // read below is correspondingly near-inert. A real SDK region provider
+      // resolves FROM `AWS_REGION` (among other sources), so "region() throws
+      // while AWS_REGION is set" is a combination the runtime does not
+      // normally produce: in practice reaching this arm means no region could
+      // be resolved from anywhere, and the derived partition is the
+      // commercial `aws`. It is written this way so the arm cannot silently
+      // claim commercial in some future configuration where the two sources
+      // ARE decoupled, and the unit test pins the stated behavior — but do
+      // not read the test as evidence of a live non-commercial path here.
+      const { partition } = derivePartitionAndUrlSuffix(process.env['AWS_REGION'] ?? '');
+      return `arn:${partition}:cloudwatch:*:*:alarm:${alarmName}`;
     }
   }
 

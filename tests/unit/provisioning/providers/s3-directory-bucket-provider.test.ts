@@ -21,12 +21,16 @@ vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
   };
 });
 
+// Mutable so a test can drive the client's region (issue #1815 partition
+// derivation). Reset to `us-east-1` in `beforeEach`.
+const clientRegion = vi.hoisted(() => ({ value: 'us-east-1' as string | undefined }));
+
 vi.mock('../../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     s3: {
       send: mockSend,
       config: {
-        region: () => 'us-east-1',
+        region: () => clientRegion.value,
       },
     },
     sts: { send: mockSend },
@@ -59,6 +63,7 @@ describe('S3DirectoryBucketProvider', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    clientRegion.value = 'us-east-1';
     // Default EC2 mock: resolve AZ name to AZ ID
     mockEc2Send.mockResolvedValue({
       AvailabilityZones: [{ ZoneId: 'use1-az4', ZoneName: 'us-east-1c' }],
@@ -402,6 +407,49 @@ describe('S3DirectoryBucketProvider', () => {
       const result = await provider.import!(makeInput());
       expect(result).toBeNull();
       expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+  // Issue #1815: `buildBucketArn` hardcoded `arn:aws:`. That value is both
+  // recorded into state as the bucket's `Arn` attribute AND handed to S3
+  // Control as the `ResourceArn` of a tag mutation, so outside the commercial
+  // partition it names no bucket at all.
+  describe('ARN partition derivation (issue #1815)', () => {
+    async function createInRegion(region: string, azId: string): Promise<unknown> {
+      clientRegion.value = region;
+      mockEc2Send.mockResolvedValue({
+        AvailabilityZones: [{ ZoneId: azId, ZoneName: `${region}c` }],
+      });
+      mockSend
+        .mockResolvedValueOnce({}) // CreateBucketCommand
+        .mockResolvedValueOnce({ Account: '123456789012' }); // GetCallerIdentityCommand
+
+      const result = await provider.create('DirectoryBucket', 'AWS::S3Express::DirectoryBucket', {
+        BucketName: `my-bucket--${azId}--x-s3`,
+        DataRedundancy: 'SingleAvailabilityZone',
+        LocationName: `${region}c--x-s3`,
+      });
+      return (result.attributes as Record<string, unknown>)['Arn'];
+    }
+
+    it('uses the aws-cn partition for a cn- region', async () => {
+      expect(await createInRegion('cn-north-1', 'cnn1-az1')).toBe(
+        'arn:aws-cn:s3express:cn-north-1:123456789012:bucket/my-bucket--cnn1-az1--x-s3'
+      );
+    });
+
+    it('uses the aws-us-gov partition for a us-gov- region', async () => {
+      expect(await createInRegion('us-gov-west-1', 'usgw1-az1')).toBe(
+        'arn:aws-us-gov:s3express:us-gov-west-1:123456789012:bucket/my-bucket--usgw1-az1--x-s3'
+      );
+    });
+
+    // The safety half of the pair: without a non-commercial account to test
+    // against, "commercial output is unchanged byte for byte" is what makes
+    // the change provably non-breaking.
+    it('leaves a commercial region byte-identical to the pre-fix output', async () => {
+      expect(await createInRegion('ap-northeast-1', 'apne1-az1')).toBe(
+        'arn:aws:s3express:ap-northeast-1:123456789012:bucket/my-bucket--apne1-az1--x-s3'
+      );
     });
   });
 });
