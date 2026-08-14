@@ -99,7 +99,12 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   holds no public expressions (a public ssm reference is stored RESOLVED), so
  *   any `{{resolve:...}}` in one is by construction a secret — which is what
  *   lets an UNCHANGED resource be redacted with no secrets map at all (issue
- *   #1900). A TEMPLATE bag carries public and secret expressions alike, so only
+ *   #1900). One narrow exception exists and is worth knowing rather than
+ *   asserting around: `cdkd import` warns and persists the RAW template
+ *   intrinsic when it cannot resolve one, so a public expression CAN sit in a
+ *   record's `properties`. Trusting it here only copies that same literal into
+ *   `observedProperties`, which the record already carried, so this does not
+ *   make it reach anything new. A TEMPLATE bag carries public and secret expressions alike, so only
  *   a KNOWN secret may be persisted from it, or a `String` / `StringList`
  *   parameter would be stored as its expression and the diff would compare a
  *   resolved desired side against it forever — the perpetual UPDATE issue #1901
