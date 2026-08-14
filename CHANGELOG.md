@@ -1,3 +1,10 @@
+## [0.283.20](https://github.com/go-to-k/cdkd/compare/v0.283.19...v0.283.20) (2026-08-14)
+
+
+### Bug Fixes
+
+* **state:** keep dynamic references unresolved in persisted state ([#1899](https://github.com/go-to-k/cdkd/issues/1899)) ([5b6953d](https://github.com/go-to-k/cdkd/commit/5b6953d9f602e6cb2f4afa0106407c64be874a01))
+
 ## [0.283.19](https://github.com/go-to-k/cdkd/compare/v0.283.18...v0.283.19) (2026-08-14)
 
 
