@@ -1,3 +1,10 @@
+## [0.283.18](https://github.com/go-to-k/cdkd/compare/v0.283.17...v0.283.18) (2026-08-14)
+
+
+### Bug Fixes
+
+* **provisioning:** skip ZIP-only Lambda reads for image functions ([#1890](https://github.com/go-to-k/cdkd/issues/1890)) ([0e07b3b](https://github.com/go-to-k/cdkd/commit/0e07b3b48534d6a532947213637e7418af8f2534))
+
 ## [0.283.17](https://github.com/go-to-k/cdkd/compare/v0.283.16...v0.283.17) (2026-08-13)
 
 
