@@ -19,6 +19,11 @@ import { Construct } from 'constructs';
  *   - A SecretsManager secret with a KNOWN JSON value (so verify.sh can
  *     assert the resolved value against a value it controls).
  *   - An SSM String parameter with a KNOWN value.
+ *   - (NOT declared here) an SSM SecureString parameter that verify.sh creates
+ *     out of band — CloudFormation cannot create one — and that the consumer
+ *     Lambda references through the plain `{{resolve:ssm:...}}` form. It
+ *     decrypts to a real secret, so issue #1901 requires state to hold the
+ *     expression while the String parameter above stays resolved.
  *   - A consumer Lambda whose ENVIRONMENT VARIABLES are literal
  *     `{{resolve:...}}` dynamic-reference strings. cdkd resolves them at
  *     deploy time; verify.sh reads `GetFunctionConfiguration` and asserts
@@ -42,6 +47,12 @@ export class SecretsDynamicRefStack extends cdk.Stack {
     // Simple (non-hierarchical) name: a leading-slash hierarchical name with
     // an unresolved account token makes CDK fail ARN-separator derivation.
     const paramName = `cdkd-test-dynref-param-${account}`;
+    // SecureString counterpart (issue #1901). NOT declared as a CDK resource:
+    // CloudFormation cannot CREATE a SecureString parameter, so verify.sh
+    // creates and deletes it out of band with `aws ssm put-parameter
+    // --type SecureString` before the first deploy. The stack only REFERENCES
+    // it, which is exactly the path under test.
+    const secureParamName = `cdkd-test-dynref-secure-${account}`;
 
     // --- SecretsManager secret with a KNOWN JSON value -----------------
     // generateSecretString is NOT used: we need a value verify.sh knows.
@@ -105,8 +116,14 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         // Explicit AWSCURRENT version-stage form (cdkd supports the
         // 6-field grammar; this exercises the version-stage slot).
         SECRET_PASSWORD_STAGED: `{{resolve:secretsmanager:${secretName}:SecretString:password:AWSCURRENT}}`,
-        // SSM plaintext-parameter form.
+        // SSM plaintext-parameter form. Public config: state stores this
+        // RESOLVED, which is the discriminator for the SecureString case below.
         SSM_VALUE: `{{resolve:ssm:${paramName}}}`,
+        // SSM SecureString via the PLAIN `ssm:` form (issue #1901). cdkd
+        // resolves with WithDecryption, so this yields a real secret and must
+        // be persisted as the unresolved expression — exactly like a
+        // secretsmanager reference, and unlike SSM_VALUE above.
+        SSM_SECURE_VALUE: `{{resolve:ssm:${secureParamName}}}`,
         // Rollback-probe-only extra (forces a Lambda UPDATE this phase; the
         // rollback removes it). NOT gated as a mode-gated CREATE — the env var
         // is added to an existing resource, and the fixture reverts it via

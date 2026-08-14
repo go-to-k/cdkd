@@ -2291,7 +2291,8 @@ cdkd destroy MyStack --purge-events -y
 
 ## `cdkd scrub` (keep resolved secrets out of state)
 
-cdkd resolves CloudFormation dynamic references (`{{resolve:secretsmanager:...}}`)
+cdkd resolves CloudFormation dynamic references (`{{resolve:secretsmanager:...}}`,
+and `{{resolve:ssm:...}}` pointing at a **SecureString** parameter)
 to their concrete value so the secret can be handed to the AWS API on
 create / update. When it PERSISTS state, it stores the UNRESOLVED expression
 rather than the resolved plaintext, so the secret never lands in `state.json`,
@@ -2339,12 +2340,25 @@ rotation invalidates the stale value; a redeploy rewrites the record with the
 expression). Exit codes: 0 (scrubbed / nothing to do), 1 (`--dry-run --fail`
 found plaintext), 2 (error).
 
-**Known limitation.** A SecureString SSM parameter referenced via the plain
-`{{resolve:ssm:...}}` form resolves to plaintext (`WithDecryption`) and is NOT
-yet redacted — it is the same disclosure class but out of the reported
-advisory's scope (`{{resolve:secretsmanager:...}}`), tracked as follow-up issue
-[#1901](https://github.com/go-to-k/cdkd/issues/1901). Prefer referencing secrets
-through Secrets Manager.
+**SSM parameters are redacted by TYPE, not by spelling** (issue
+[#1901](https://github.com/go-to-k/cdkd/issues/1901)). The plain
+`{{resolve:ssm:...}}` form resolves with `WithDecryption`, so it yields a real
+secret whenever the parameter is a `SecureString` — the same disclosure class
+as `{{resolve:secretsmanager:...}}`. cdkd reads the parameter's `Type` off the
+same `GetParameter` response that carries the value and treats the two cases
+differently:
+
+- **`SecureString`** — handled exactly like a Secrets Manager reference: the
+  decrypted value goes to the AWS API, state stores the `{{resolve:ssm:...}}`
+  expression, and `cdkd scrub` cleans it out of state written by an older cdkd.
+- **`String` / `StringList`** — public config, stored RESOLVED in state as
+  before, so a parameter-backed property is not a perpetual spurious UPDATE.
+
+On the diff / no-op comparison path cdkd still has to learn the type, so it
+issues `GetParameter` with `WithDecryption: false` — a `SecureString` comes back
+as its encrypted blob, which is never substituted, cached, or persisted, and the
+comparison stays expression-vs-expression. Once a reference is known to be
+`SecureString`, later comparisons short-circuit with no AWS call at all.
 
 ## `cdkd rollback` (revert a failed deploy)
 

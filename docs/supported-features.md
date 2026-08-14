@@ -66,7 +66,7 @@ top-level features rather than table rows.
 | Cross-region references | ✅ | Via `Fn::GetStackOutput` + S3 state, with a same-account CloudFormation `DescribeStacks` fallback (issue #1697). Cross-account via `RoleArn` (producer-account cdkd state only). |
 | JSON Patch updates | ✅ | RFC 6902, minimal patches; write-only properties re-included per registry schema (`cloudformation:DescribeType`, graceful fallback) |
 | Resource replacement detection | ✅ | 10+ resource types |
-| Dynamic References | ✅ | `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}` |
+| Dynamic References | ✅ | `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}`; secret-bearing ones (secretsmanager, or an ssm `SecureString` parameter) are persisted as the unresolved expression, never as plaintext |
 | DELETE idempotency | ✅ | Not-found errors treated as success |
 | Asset publishing (S3) | ✅ | Lambda code packages |
 | Asset publishing (ECR) | ✅ | Self-implemented Docker image publishing |

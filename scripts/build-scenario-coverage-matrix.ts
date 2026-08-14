@@ -134,7 +134,7 @@ const KNOWN_SCENARIOS: Record<string, string> = {
 
   // ---- Dynamic reference patterns ----
   'dynamic-reference-resolution':
-    'CloudFormation dynamic references (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}`) resolved by cdkd itself (`resolveDynamicReferences`) BEFORE the property reaches the provider — JSON-key (`:SecretString:<key>`), whole-secret, and version-stage forms + plaintext SSM param; the deployed resource carries the RESOLVED value, never the literal token. (`ssm-secure:` is NOT resolved by cdkd and is intentionally out of scope.)',
+    'CloudFormation dynamic references (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}`) resolved by cdkd itself (`resolveDynamicReferences`) BEFORE the property reaches the provider — JSON-key (`:SecretString:<key>`), whole-secret, and version-stage forms + plaintext SSM param; the deployed resource carries the RESOLVED value, never the literal token. Secret-bearing references are additionally REDACTED back to their expression in persisted state, decided by the parameter TYPE rather than the spelling: an `ssm:` reference to a SecureString parameter is redacted (issue #1901) while a String parameter beside it stays resolved. (`ssm-secure:` is NOT resolved by cdkd and is intentionally out of scope.)',
 
   // ---- Custom Resource patterns ----
   'custom-resource-async-poll':

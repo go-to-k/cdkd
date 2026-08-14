@@ -922,6 +922,14 @@ Each layer has clear responsibilities
 
 - CloudFormation Parameters supported (with default values and type coercion)
 - Dynamic References supported: `{{resolve:secretsmanager:...}}` and `{{resolve:ssm:...}}`
+- SECRET-bearing references are resolved for the AWS call but persisted as the
+  UNRESOLVED expression, so no plaintext reaches `state.json` / the rollback
+  journal / CLI output. Which references count as secret-bearing is decided by
+  TYPE, not spelling: every `secretsmanager` reference, plus an `ssm` reference
+  whose parameter is a `SecureString` (issue
+  [#1901](https://github.com/go-to-k/cdkd/issues/1901)). A `String` /
+  `StringList` parameter is public config and stays resolved in state. See
+  [docs/cli-reference.md](cli-reference.md#cdkd-scrub-keep-resolved-secrets-out-of-state).
 
 ## Limitations and Future Extensions
 

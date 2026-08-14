@@ -822,6 +822,30 @@ const cachedAvailabilityZones: Record<string, string[]> = {};
 const cachedDynamicReferences: Record<string, string> = {};
 
 /**
+ * The `{{resolve:ssm:...}}` expressions this process has PROVEN point at a
+ * `SecureString` parameter (issue #1901).
+ *
+ * A plain `ssm` reference is not a secret by SPELLING the way `secretsmanager`
+ * is — whether it resolves to public config or to a decrypted secret depends on
+ * the parameter's `Type`, which is only knowable from the `GetParameter`
+ * response. So secret-ness is discovered on the first resolution and remembered
+ * here, keyed by the full `{{resolve:...}}` expression, for the same lifetime as
+ * {@link cachedDynamicReferences}.
+ *
+ * Two consumers need it AFTER the lookup that populated it: the cache-hit arm
+ * (which must re-record the value as a secret for the current resolution pass)
+ * and the diff / no-op path (which must leave a SecureString reference
+ * unresolved without paying a lookup at all once the type is known). A
+ * reference NOT in this set is only "not known to be secure" — never "proven
+ * public" — so every arm that would leak still asks AWS for the type first.
+ *
+ * Only the TYPE is remembered, never the decrypted value: on the diff path the
+ * lookup is made with `WithDecryption: false`, so the plaintext is never
+ * fetched at all there.
+ */
+const secureStringSsmReferences = new Set<string>();
+
+/**
  * Cache for EC2 instance attributes that require a live DescribeInstances
  * lookup (PrivateIp / PublicIp / PrivateDnsName / PublicDnsName /
  * AvailabilityZone). Keyed by `${physicalId}#${attributeName}`. The IP /
@@ -1037,6 +1061,10 @@ export function resetAccountInfoCache(): void {
   for (const key of Object.keys(cachedDynamicReferences)) {
     delete cachedDynamicReferences[key];
   }
+  // ...and the SecureString verdicts derived from it (issue #1901). Keeping
+  // them would let a stale verdict decide secret-ness for a reference whose
+  // resolved value this call just asked to forget.
+  secureStringSsmReferences.clear();
   // Also reset EC2 instance attribute cache
   for (const key of Object.keys(cachedEc2InstanceAttributes)) {
     delete cachedEc2InstanceAttributes[key];
@@ -1425,9 +1453,11 @@ export class IntrinsicFunctionResolver {
     if (typeof value !== 'object' || value === null) {
       if (typeof value === 'string' && value.includes('{{resolve:')) {
         // `skipDynamicReferences` leaves SECRET references unresolved (handled
-        // per-reference inside resolveDynamicReferences) but still resolves a
-        // plain `ssm` reference — plain ssm is public config, stored RESOLVED in
-        // state, so the diff must resolve it too to compare like-for-like.
+        // per-reference inside resolveDynamicReferences) but still resolves an
+        // ssm reference to a `String` / `StringList` parameter — that is public
+        // config, stored RESOLVED in state, so the diff must resolve it too to
+        // compare like-for-like. An ssm reference to a `SecureString` is a
+        // secret and is left unresolved with the rest (issue #1901).
         return await this.resolveDynamicReferences(value, context);
       }
       return value;
@@ -4212,19 +4242,28 @@ export class IntrinsicFunctionResolver {
 
     for (const { fullMatch, inner } of matches) {
       const service = inner.split(':')[0];
-      // A `secretsmanager` (and any future `ssm-secure`) reference resolves to a
-      // real secret. Record its plaintext -> expression mapping so the deploy
-      // engine can keep the UNRESOLVED expression in persisted state and mask the
-      // value out of logs (GHSA fix). Plain `ssm` is public config, never
-      // recorded. Recorded on the cache-hit path too, so a second reference to
-      // the same secret in the same pass is still redacted.
-      const isSecret = service === 'secretsmanager';
+      // A `secretsmanager` reference resolves to a real secret by SPELLING. A
+      // plain `ssm` one resolves to a secret only when the parameter's `Type` is
+      // `SecureString` (issue #1901) — a fact discovered from the GetParameter
+      // response below and remembered in `secureStringSsmReferences`, so the
+      // cache-hit and skip arms here can act on it without a second lookup.
+      // Either way the plaintext -> expression mapping is recorded so the deploy
+      // engine keeps the UNRESOLVED expression in persisted state and masks the
+      // value out of logs (GHSA fix). A plain `String` / `StringList` parameter
+      // is public config and stays RESOLVED in state, so it is never recorded.
+      // Recorded on the cache-hit path too, so a second reference to the same
+      // secret in the same pass is still redacted.
+      const isKnownSecret =
+        service === 'secretsmanager' || secureStringSsmReferences.has(fullMatch);
 
       // Diff / no-op comparison path: leave SECRET references UNRESOLVED (the
       // expression is what state stores, so comparing keeps like-for-like and
-      // makes no live GetSecretValue). Plain `ssm` still resolves — it is public
-      // config stored resolved in state. (GHSA fix.)
-      if (isSecret && context?.skipDynamicReferences) {
+      // makes no live GetSecretValue). A plain `ssm` reference still resolves —
+      // it is public config stored resolved in state — but it cannot be waved
+      // through on spelling alone, so an ssm reference of UNKNOWN type falls
+      // through to the lookup below, which asks for the type WITHOUT decrypting.
+      // (GHSA fix + issue #1901.)
+      if (isKnownSecret && context?.skipDynamicReferences) {
         continue;
       }
 
@@ -4233,7 +4272,7 @@ export class IntrinsicFunctionResolver {
         const cached = cachedDynamicReferences[fullMatch]!;
         // `cached` truthiness excludes the empty string: an empty secret is not
         // a usable redaction needle (it would match every empty leaf).
-        if (isSecret && cached) context?.recordedSecretValues?.set(cached, fullMatch);
+        if (isKnownSecret && cached) context?.recordedSecretValues?.set(cached, fullMatch);
         result = result.replace(fullMatch, cached);
         continue;
       }
@@ -4241,11 +4280,31 @@ export class IntrinsicFunctionResolver {
       const parts = inner.split(':');
 
       let resolved: string;
+      let isSecret = isKnownSecret;
 
       if (service === 'secretsmanager') {
         resolved = await this.resolveSecretsManagerReference(inner);
       } else if (service === 'ssm') {
-        resolved = await this.resolveSSMReference(parts);
+        // On the comparison path fetch the parameter WITHOUT decryption: a
+        // `SecureString` then comes back as its encrypted blob, so the type can
+        // be learned with no plaintext ever leaving AWS. `String` /
+        // `StringList` are unaffected by the flag, so the value is the same one
+        // the deploy path would resolve and is safe to cache and substitute.
+        const decrypt = context?.skipDynamicReferences !== true;
+        const param = await this.resolveSSMReference(parts, decrypt);
+        if (param.secure) {
+          secureStringSsmReferences.add(fullMatch);
+          isSecret = true;
+          if (!decrypt) {
+            // Comparison path: the value in hand is ciphertext, which is neither
+            // what state holds nor safe to cache. Leave the expression
+            // unresolved, exactly as the secretsmanager skip above does — now
+            // that the type is known, later passes short-circuit before the
+            // lookup.
+            continue;
+          }
+        }
+        resolved = param.value;
       } else {
         this.logger.warn(`Unsupported dynamic reference service: ${service}`);
         continue;
@@ -4508,7 +4567,25 @@ export class IntrinsicFunctionResolver {
     return parts.join(':');
   }
 
-  private async resolveSSMReference(parts: string[]): Promise<string> {
+  /**
+   * Resolve an `{{resolve:ssm:...}}` dynamic reference, reporting whether the
+   * parameter is a `SecureString` (issue #1901).
+   *
+   * `secure` is read off the SAME `GetParameter` response that carries the
+   * value, so classifying a reference costs no extra API call — which is what
+   * makes it affordable on the comparison path too.
+   *
+   * `decrypt` maps straight to `WithDecryption`. SSM ignores it for `String` /
+   * `StringList` (their `Value` is identical either way), so the only thing it
+   * changes is whether a `SecureString`'s `Value` comes back as plaintext or as
+   * its encrypted blob. Callers that only need the TYPE pass `false` and MUST
+   * discard the value when `secure` is set — it is ciphertext, not the resolved
+   * reference.
+   */
+  private async resolveSSMReference(
+    parts: string[],
+    decrypt = true
+  ): Promise<{ value: string; secure: boolean }> {
     const parameterName = parts.slice(1).join(':');
 
     if (!parameterName) {
@@ -4522,7 +4599,7 @@ export class IntrinsicFunctionResolver {
 
     const command = new GetParameterCommand({
       Name: parameterName,
-      WithDecryption: true,
+      WithDecryption: decrypt,
     });
 
     const response = await client.send(command);
@@ -4534,13 +4611,11 @@ export class IntrinsicFunctionResolver {
       );
     }
 
-    // NOTE: a SecureString parameter resolved via the plain `{{resolve:ssm:...}}`
-    // form (WithDecryption: true) returns plaintext and is NOT yet redacted —
-    // it is the same leak class as secretsmanager but out of the reported GHSA
-    // scope, and redacting it correctly needs the diff path to skip it too
-    // (which requires knowing the parameter type without leaking the fetched
-    // value). Tracked as follow-up issue #1901. Plain String / StringList
-    // stays resolved.
-    return paramValue;
+    // A SecureString parameter reached through the plain `{{resolve:ssm:...}}`
+    // form decrypts to a real secret, so the caller treats it exactly like a
+    // `{{resolve:secretsmanager:...}}` value: hand the plaintext to the provider,
+    // persist the unresolved expression. Plain `String` / `StringList` is public
+    // config and stays resolved in state (issue #1901).
+    return { value: paramValue, secure: response.Parameter?.Type === 'SecureString' };
   }
 }
