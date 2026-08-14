@@ -646,6 +646,27 @@ describe('AWS::Lambda::Function #609 property backfill', () => {
       expect(state?.['CodeSigningConfigArn']).toBe('arn:csc:1');
     });
 
+    it('skips ZIP-only runtime-management and code-signing reads for image functions', async () => {
+      mockSend.mockResolvedValueOnce({
+        Configuration: { FunctionName: 'fn', PackageType: 'Image' },
+        Code: { ImageUri: '123456789012.dkr.ecr.us-east-1.amazonaws.com/fn:latest' },
+        Tags: {},
+      });
+      mockSend.mockResolvedValueOnce({}); // GetFunctionRecursionConfig
+      mockSend.mockResolvedValueOnce({}); // GetFunctionConcurrency
+
+      const state = await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function');
+
+      expect(sentOfType(GetRuntimeManagementConfigCommand)).toHaveLength(0);
+      expect(sentOfType(GetFunctionCodeSigningConfigCommand)).toHaveLength(0);
+      expect(state?.['PackageType']).toBe('Image');
+      expect(state?.['Code']).toEqual({
+        ImageUri: '123456789012.dkr.ecr.us-east-1.amazonaws.com/fn:latest',
+      });
+      expect(state).not.toHaveProperty('RuntimeManagementConfig');
+      expect(state).not.toHaveProperty('CodeSigningConfigArn');
+    });
+
     it('omits the keys when AWS reports no value (no phantom drift)', async () => {
       mockReadback({ configuration: { FunctionName: 'fn' } });
 
