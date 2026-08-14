@@ -86,6 +86,12 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
+  # The NameServers probe's stderr scratch file is unlinked on every path
+  # the probe itself takes, but a SIGNAL between its `mktemp` and that
+  # unlink would strand it -- and `/run-integ` SIGTERMs this script on its
+  # time clamp, so that window is reachable rather than theoretical. This
+  # runs on EXIT / INT / TERM, so sweeping it here covers all three.
+  rm -f "${LIVE_NS_STDERR:-}" 2>/dev/null || true
   # `set +eu` so an early-exit (e.g. STATE_BUCKET unset) does not abort
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
   # cleanup should run as much as it can with the env it has.
