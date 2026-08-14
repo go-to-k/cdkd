@@ -793,7 +793,15 @@ export class DeployEngine {
     for (const [logicalId, record] of Object.entries(state.resources)) {
       resources[logicalId] = scrubResourceRecord(record, this.recordedSecretValues);
     }
-    return { ...state, resources };
+    // `outputs` is also secret-bearing: a `CfnOutput` whose Value resolves a
+    // `{{resolve:secretsmanager:...}}` reference (or an Fn::Sub/Join embedding
+    // one) stores the resolved plaintext here, which would otherwise reach
+    // state.json / the exports index / the deploy summary. Redact it too.
+    return {
+      ...state,
+      resources,
+      outputs: redactSecretsForState(state.outputs, this.recordedSecretValues),
+    };
   }
 
   /**
@@ -1390,12 +1398,14 @@ export class DeployEngine {
           // resources, which come from `currentState.resources` (the arg), and
           // condition pruning only touches `Resources`, so resolving against
           // `effectiveTemplate` vs the raw `template` is equivalent here.
-          const resolvedOutputs = await this.resolveOutputs(
-            effectiveTemplate,
-            currentState.resources,
-            stackName,
-            parameterValues,
-            conditions
+          const resolvedOutputs = this.redactStateForPersistProps(
+            await this.resolveOutputs(
+              effectiveTemplate,
+              currentState.resources,
+              stackName,
+              parameterValues,
+              conditions
+            )
           );
           // resolveOutputs stores `undefined` for any output it could not
           // resolve (logged as a warn there). In the no-change path every
@@ -2164,6 +2174,11 @@ export class DeployEngine {
         parameterValues,
         conditions
       );
+      // Redact resolved secrets out of outputs before they flow to the exports
+      // index / deploy summary / state (GHSA fix). The state save also redacts
+      // via `withParentInfo`, but the exports-index `updateForStack` and
+      // `buildDisplayOutputs` read this bag directly.
+      outputs = this.redactStateForPersistProps(outputs);
     } catch (outputError) {
       await this.persistStateAfterOutputFailure(
         stackName,

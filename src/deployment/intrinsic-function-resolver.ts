@@ -2916,7 +2916,9 @@ export class IntrinsicFunctionResolver {
     }
 
     const result: unknown = resolvedList[index];
-    this.logger.debug(`Resolved Fn::Select: index ${index} -> ${JSON.stringify(result)}`);
+    this.logger.debug(
+      `Resolved Fn::Select: index ${index} -> ${this.maskSecretsForLog(JSON.stringify(result), context)}`
+    );
     return result;
   }
 
@@ -3124,7 +3126,9 @@ export class IntrinsicFunctionResolver {
     }
 
     const result = resolvedValue.split(delimiter);
-    this.logger.debug(`Resolved Fn::Split: split by "${delimiter}" -> ${JSON.stringify(result)}`);
+    this.logger.debug(
+      `Resolved Fn::Split: split by "${delimiter}" -> ${this.maskSecretsForLog(JSON.stringify(result), context)}`
+    );
     return result;
   }
 
@@ -4030,7 +4034,9 @@ export class IntrinsicFunctionResolver {
     }
 
     const result = Buffer.from(resolvedValue).toString('base64');
-    this.logger.debug(`Resolved Fn::Base64: ${resolvedValue} -> ${result}`);
+    this.logger.debug(
+      `Resolved Fn::Base64: ${this.maskSecretsForLog(resolvedValue, context)} -> ${this.maskSecretsForLog(result, context)}`
+    );
     return result;
   }
 
@@ -4212,7 +4218,9 @@ export class IntrinsicFunctionResolver {
       // Check cache first
       if (fullMatch in cachedDynamicReferences) {
         const cached = cachedDynamicReferences[fullMatch]!;
-        if (isSecret) context?.recordedSecretValues?.set(cached, fullMatch);
+        // `cached` truthiness excludes the empty string: an empty secret is not
+        // a usable redaction needle (it would match every empty leaf).
+        if (isSecret && cached) context?.recordedSecretValues?.set(cached, fullMatch);
         result = result.replace(fullMatch, cached);
         continue;
       }
@@ -4231,7 +4239,7 @@ export class IntrinsicFunctionResolver {
       }
 
       cachedDynamicReferences[fullMatch] = resolved;
-      if (isSecret) context?.recordedSecretValues?.set(resolved, fullMatch);
+      if (isSecret && resolved) context?.recordedSecretValues?.set(resolved, fullMatch);
       result = result.replace(fullMatch, resolved);
     }
 

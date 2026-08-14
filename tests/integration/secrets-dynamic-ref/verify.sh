@@ -246,6 +246,95 @@ if [ "${DESC_P1}" != "cdkd f1160 removal-reset probe" ] || [ "${KMS_P1}" != "ali
 fi
 echo "    OK: baseline Description + KmsKeyId set on the secret"
 
+# --- Assertion 1c: STATE stores the {{resolve:...}} expression, NOT the
+#     resolved plaintext (GHSA secret-disclosure fix) --------------------
+# cdkd sends the RESOLVED value to AWS (asserted above via the live Lambda
+# env), but must PERSIST the unresolved expression so the plaintext never
+# lands in state.json / `state show` / diff / drift. A plain `ssm:` value is
+# public config and is deliberately NOT redacted, which is the discriminator.
+echo "==> Reading cdkd state to assert secret redaction"
+STATE_JSON=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+
+# The consumer Lambda's persisted env vars.
+LAMBDA_ENV=$(printf '%s' "${STATE_JSON}" \
+  | jq -c '.state.resources | to_entries[]
+             | select(.value.resourceType=="AWS::Lambda::Function")
+             | .value.properties.Environment.Variables' | head -1)
+if [ -z "${LAMBDA_ENV}" ] || [ "${LAMBDA_ENV}" = "null" ]; then
+  echo "FAIL: could not read the consumer Lambda's persisted Environment.Variables from state" >&2
+  exit 1
+fi
+
+STATE_SECRET_PASSWORD=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD // empty')
+STATE_SECRET_FULL=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SECRET_FULL // empty')
+STATE_SSM_VALUE=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SSM_VALUE // empty')
+
+# Guard 3: each secretsmanager env var in STATE must be the UNRESOLVED
+# expression, not the plaintext. (We can print the expression — it names the
+# secret, not its value.)
+redaction_fail=0
+case "${STATE_SECRET_PASSWORD}" in
+  '{{resolve:secretsmanager:'*) echo "    OK: state SECRET_PASSWORD kept the expression: ${STATE_SECRET_PASSWORD}" ;;
+  *) echo "FAIL: state SECRET_PASSWORD is NOT the {{resolve:...}} expression: $(mask "${STATE_SECRET_PASSWORD}")" >&2; redaction_fail=1 ;;
+esac
+case "${STATE_SECRET_FULL}" in
+  '{{resolve:secretsmanager:'*) echo "    OK: state SECRET_FULL kept the expression: ${STATE_SECRET_FULL}" ;;
+  *) echo "FAIL: state SECRET_FULL is NOT the {{resolve:...}} expression: $(mask "${STATE_SECRET_FULL}")" >&2; redaction_fail=1 ;;
+esac
+
+# Guard 4: the plain ssm value IS resolved in state (public config, not a secret).
+if [ "${STATE_SSM_VALUE}" = "${EXPECTED_SSM}" ]; then
+  echo "    OK: state SSM_VALUE kept the resolved value (ssm is not a secret)"
+else
+  echo "FAIL: state SSM_VALUE should be the resolved '${EXPECTED_SSM}' (ssm is public config), got $(mask "${STATE_SSM_VALUE}")" >&2
+  redaction_fail=1
+fi
+
+# Guard 5: the resolved plaintext password must NOT appear ANYWHERE in state.
+# grep -q so the plaintext is never echoed.
+if printf '%s' "${STATE_JSON}" | grep -qF "${EXPECTED_PASSWORD}"; then
+  echo "FAIL: the resolved secret plaintext LEAKED into cdkd state (found the known password in 'state show' output)" >&2
+  redaction_fail=1
+else
+  echo "    OK: resolved secret plaintext is absent from cdkd state"
+fi
+
+if [ "${redaction_fail}" -ne 0 ]; then
+  echo "FAIL: state secret-redaction assertions failed" >&2
+  exit 1
+fi
+
+# Guard 6: a second `cdkd diff` shows NO change (expression-vs-expression) and
+# prints no plaintext. A resolved-vs-expression compare would report a spurious
+# UPDATE of every secret-bearing property on every deploy.
+echo "==> Asserting a re-diff is clean (no perpetual UPDATE) and leaks no plaintext"
+DIFF_OUT=$(node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" 2>&1) || true
+if printf '%s' "${DIFF_OUT}" | grep -qF "${EXPECTED_PASSWORD}"; then
+  echo "FAIL: 'cdkd diff' output leaked the resolved secret plaintext" >&2
+  exit 1
+fi
+echo "    OK: diff leaks no plaintext"
+
+# Guard 7: `cdkd scrub --dry-run` on the freshly-deployed stack finds NOTHING
+# to scrub (deploy already wrote expressions), proving the command runs and the
+# deploy-time redaction is complete.
+echo "==> Asserting 'cdkd scrub --dry-run' finds nothing on the freshly-deployed stack"
+SCRUB_OUT=$(node "${LOCAL_DIST}" scrub "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --dry-run 2>&1)
+if printf '%s' "${SCRUB_OUT}" | grep -qF "${EXPECTED_PASSWORD}"; then
+  echo "FAIL: 'cdkd scrub' output leaked the resolved secret plaintext" >&2
+  exit 1
+fi
+if printf '%s' "${SCRUB_OUT}" | grep -qiE 'no plaintext secrets|nothing to scrub'; then
+  echo "    OK: scrub --dry-run reports the deployed state is already clean"
+else
+  echo "FAIL: scrub --dry-run should report nothing to scrub on a freshly-deployed stack" >&2
+  echo "      output: ${SCRUB_OUT}" >&2
+  exit 1
+fi
+
 # --- Phase 2: removal-reset redeploy (issue #1160 secretsmanager batch) ---
 echo "==> Phase 2: re-deploy dropping Description + KmsKeyId (removal reset)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \

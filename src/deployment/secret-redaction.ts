@@ -88,9 +88,11 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
 export function redactSecretsForState<T>(bag: T, secrets: RecordedSecretValues): T {
   if (secrets.size === 0) return bag;
   const regex = buildNeedleRegex(secrets.keys());
-  // Even below the needle threshold, a whole-value match must still be redacted.
-  const wholeValueExpr = (s: string): string | undefined => secrets.get(s);
-  if (!regex && secrets.size === 0) return bag;
+  // Even below the needle threshold, a NON-EMPTY whole-value match must still be
+  // redacted. An empty-string secret is never a needle (it would match every
+  // empty leaf and corrupt unrelated properties); a resolved secret of '' is
+  // degenerate and the resolver does not record one.
+  const wholeValueExpr = (s: string): string | undefined => (s === '' ? undefined : secrets.get(s));
 
   const walk = (value: unknown): unknown => {
     if (typeof value === 'string') {
@@ -152,8 +154,9 @@ export function scrubResourceRecord<
 export function maskSecretsInText(text: string, secrets: RecordedSecretValues): string {
   if (secrets.size === 0) return text;
   // Whole-value masking first (covers below-threshold secrets that are the
-  // entire string), then substring masking for the rest.
-  if (secrets.has(text)) return SECRET_MASK;
+  // entire string), then substring masking for the rest. An empty-string secret
+  // is never matched (it would mask every empty string).
+  if (text !== '' && secrets.has(text)) return SECRET_MASK;
   const regex = buildNeedleRegex(secrets.keys());
   if (!regex) return text;
   return text.replace(regex, SECRET_MASK);

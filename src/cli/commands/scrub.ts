@@ -23,7 +23,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
-import { scrubResourceRecord } from '../../deployment/secret-redaction.js';
+import { scrubResourceRecord, redactSecretsForState } from '../../deployment/secret-redaction.js';
 import type { StackState } from '../../types/state.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 
@@ -204,7 +204,7 @@ async function scrubCommand(stacks: string[], options: ScrubOptions): Promise<vo
  * AWS mutation. Acquires the stack lock for the read-modify-write unless
  * `dryRun`.
  */
-async function scrubStack(
+export async function scrubStack(
   stack: StackInfo,
   region: string,
   stateBackend: S3StateBackend,
@@ -275,11 +275,34 @@ async function scrubStack(
       }
     }
 
+    // Outputs are secret-bearing too (a CfnOutput resolving a secret reference),
+    // so re-resolve the template Outputs to record any secret they carry.
+    const templateOutputs = stack.template.Outputs ?? {};
+    for (const [name, output] of Object.entries(templateOutputs)) {
+      const value = (output as { Value?: unknown }).Value;
+      if (value === undefined) continue;
+      try {
+        await resolver.resolve(value, {
+          template: stack.template,
+          resources: state.resources,
+          ...(Object.keys(parameters).length > 0 && { parameters }),
+          ...(Object.keys(conditions).length > 0 && { conditions }),
+          stackName: stack.stackName,
+          recordedSecretValues,
+          bestEffort: true,
+        });
+      } catch (err) {
+        logger.debug(
+          `Resolution of output ${name} during scrub was partial: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
     if (recordedSecretValues.size === 0) {
       return { recordsChanged: 0, secretsFound: 0 };
     }
 
-    // Rewrite each record; count how many actually changed.
+    // Rewrite each record + the outputs; count how many actually changed.
     let recordsChanged = 0;
     const newResources: StackState['resources'] = {};
     for (const [logicalId, record] of Object.entries(state.resources)) {
@@ -287,9 +310,17 @@ async function scrubStack(
       if (JSON.stringify(scrubbed) !== JSON.stringify(record)) recordsChanged++;
       newResources[logicalId] = scrubbed;
     }
+    const newOutputs = redactSecretsForState(state.outputs, recordedSecretValues);
+    const outputsChanged = JSON.stringify(newOutputs) !== JSON.stringify(state.outputs);
+    if (outputsChanged) recordsChanged++;
 
     if (recordsChanged > 0 && !opts.dryRun) {
-      const nextState: StackState = { ...state, resources: newResources, lastModified: Date.now() };
+      const nextState: StackState = {
+        ...state,
+        resources: newResources,
+        outputs: newOutputs,
+        lastModified: Date.now(),
+      };
       await stateBackend.saveState(stack.stackName, region, nextState, {
         expectedEtag: loaded.etag,
       });

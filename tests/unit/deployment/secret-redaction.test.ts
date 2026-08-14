@@ -65,6 +65,12 @@ describe('secret-redaction', () => {
       expect(out).toEqual({ S: `prefix-${EXPR}-suffix` });
     });
 
+    it('never treats an empty-string secret as a needle (would corrupt every empty leaf)', () => {
+      const bag = { A: '', B: 'x', C: { D: '' } };
+      const out = redactSecretsForState(bag, secrets([['', EXPR]]));
+      expect(out).toEqual({ A: '', B: 'x', C: { D: '' } });
+    });
+
     it('prefers the longest match when secrets overlap', () => {
       const bag = { S: 'abcdef' };
       const out = redactSecretsForState(
