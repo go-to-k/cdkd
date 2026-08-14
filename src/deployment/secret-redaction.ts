@@ -76,9 +76,19 @@ export const SECRET_MASK = '***';
  * #1910 fixes pass a position SOURCE and nothing else.
  *
  * Its lifetime matches the resolver's `cachedDynamicReferences` — the resolver
- * clears both together. Process-wide rather than per-stack is correct and not a
- * compromise: "this expression names a SecureString parameter" is a fact about
- * the expression, not about the stack that mentions it.
+ * clears both together, and that shared lifetime is the point: this set is the
+ * store behind `secureStringSsmReferences`, which already had exactly this
+ * scope, so nothing is widened by moving it here.
+ *
+ * Process-wide is therefore INHERITED, not claimed to be ideal. It is not
+ * strictly sound across regions or accounts in one run — the same expression
+ * can name a `SecureString` in one region and a plain `String` in another — but
+ * `cachedDynamicReferences` caches the resolved VALUE under the same
+ * assumption, so a per-region store here would fix nothing on its own. Note
+ * which way the imprecision points: an entry only ever GRANTS "persist the
+ * source leaf verbatim", and the leaf is the resource's own template
+ * expression, so the failure mode is a public reference stored as an expression
+ * (a spurious UPDATE, issue #1901's class), never a secret stored as plaintext.
  */
 const recordedSecretExpressions = new Set<string>();
 
@@ -197,6 +207,27 @@ export const TEMPLATE_SOURCED_READBACK_RULES: PathSourceRules = {
   trustAnyExpression: false,
 };
 
+/**
+ * The bag was produced by resolving a STATE source — both relaxations apply.
+ *
+ * The rollback replay is the case (issue #1910): `resolveReplayProps` resolves
+ * the JOURNALED bag and the provider's `effectiveProperties` come back from
+ * that, so the two have identical structure and positional array descent is
+ * sound exactly as it is for a template-derived bag. And the source is a
+ * persisted record, which holds no PUBLIC expressions — a `String` ssm
+ * reference is stored resolved — so any `{{resolve:...}}` in it is by
+ * construction a secret.
+ *
+ * Using `STATE_SOURCED_READBACK_RULES` here instead would be wrong in the
+ * quiet direction: it turns array descent OFF, so a secret nested in a
+ * `Tags[]` / ECS `secrets[]` element falls to the value scan and a colliding
+ * pair still collapses there.
+ */
+export const STATE_DERIVED_RULES: PathSourceRules = {
+  descendArrays: true,
+  trustAnyExpression: true,
+};
+
 function isDynamicReferenceString(value: unknown): value is string {
   return typeof value === 'string' && value.includes('{{resolve:');
 }
@@ -288,6 +319,25 @@ function redactByPath(
   rules: PathSourceRules,
   secretExpressions: ReadonlySet<string>
 ): unknown {
+  // The bag leaf is ALREADY a complete `{{resolve:...}}` token, so there is no
+  // plaintext here to redact and the source has nothing to contribute. Keep it
+  // verbatim (issue #1910 review).
+  //
+  // Without this the pass would OVERWRITE one expression with a DIFFERENT one
+  // whenever the two bags disagree — and they legitimately can, because not
+  // every caller's bag was produced by resolving its source. `cdkd scrub` is
+  // the case: its bag is PERSISTED STATE and its source is TODAY's template, so
+  // for a template edited but not yet deployed (`:AWSPREVIOUS` in state,
+  // `:AWSCURRENT` in the template) it would rewrite state onto the undeployed
+  // expression, report `recordsChanged` for a record holding no plaintext at
+  // all — failing a `--dry-run --fail` CI gate with "plaintext found" — and
+  // then make the next deploy compare expression-vs-expression, see NO_CHANGE,
+  // and never push the new reference to AWS.
+  //
+  // Safe at every other caller: if a resolved bag still carries a whole token,
+  // the resolver did not substitute it, so the leaf already EQUALS its source
+  // and returning it verbatim is what the substitution would have produced.
+  if (typeof bag === 'string' && isSingleDynamicReferenceToken(bag)) return bag;
   if (isDynamicReferenceString(source) && typeof bag === 'string') {
     // A TEMPLATE source carries PUBLIC ssm expressions too, and those must stay
     // RESOLVED in state (#1901) or the diff compares a resolved desired side

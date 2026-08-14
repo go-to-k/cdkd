@@ -7,6 +7,7 @@ import {
   isRecordedSecretExpression,
   clearRecordedSecretExpressions,
   STATE_SOURCED_READBACK_RULES,
+  STATE_DERIVED_RULES,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 
@@ -122,6 +123,69 @@ describe('secret-redaction - SecureString ssm pair sharing one value (issue #191
       new Map()
     );
     expect(redacted.observedProperties?.['Password']).toBe(EXPR_A);
+  });
+
+  // Review blocker: `redactByPath` copied the SOURCE leaf verbatim for any
+  // string bag value, but not every caller's bag was produced by resolving its
+  // source. `cdkd scrub`'s bag is PERSISTED STATE and its source is TODAY's
+  // template, so an edited-but-undeployed template rewrote state onto an
+  // expression AWS has never seen — and reported the record as "cleaned".
+  it('never overwrites a bag leaf that is ALREADY an expression', () => {
+    const stateBag = { Password: EXPR_B };
+    const editedTemplate = { Password: EXPR_A };
+
+    const redacted = redactSecretsForState(
+      stateBag,
+      new Map(),
+      editedTemplate,
+      STATE_SOURCED_READBACK_RULES
+    ) as Record<string, string>;
+
+    // State keeps what it holds: there is no plaintext here to redact, so the
+    // pass has nothing to contribute and must not "converge" the two.
+    expect(redacted['Password']).toBe(EXPR_B);
+  });
+
+  it('still redacts a PLAINTEXT leaf from the same source (the guard is not a blanket skip)', () => {
+    // The direction the guard must NOT break — otherwise it would disable the
+    // whole pass rather than just the already-expression case.
+    const redacted = redactSecretsForState(
+      { Password: SHARED },
+      new Map(),
+      { Password: EXPR_A },
+      STATE_SOURCED_READBACK_RULES
+    ) as Record<string, string>;
+    expect(redacted['Password']).toBe(EXPR_A);
+  });
+
+  // Review finding: the rollback replay's bag IS produced by resolving its
+  // source, so it must descend arrays. `STATE_SOURCED_READBACK_RULES` turns
+  // that off and an array-nested colliding pair silently collapses.
+  it('descends arrays under STATE_DERIVED_RULES so a nested pair does not collapse', () => {
+    recordSecretExpression(EXPR_A);
+    recordSecretExpression(EXPR_B);
+    const bag = { Env: [{ Value: SHARED }, { Value: SHARED }] };
+    const source = { Env: [{ Value: EXPR_A }, { Value: EXPR_B }] };
+
+    const redacted = redactSecretsForState(
+      bag,
+      new Map([[SHARED, EXPR_B]]),
+      source,
+      STATE_DERIVED_RULES
+    ) as { Env: Array<{ Value: string }> };
+
+    expect(redacted.Env[0]!.Value).toBe(EXPR_A);
+    expect(redacted.Env[1]!.Value).toBe(EXPR_B);
+
+    // ...and the contrast that makes the constant load-bearing rather than
+    // decorative: the no-descent rules leave element 0 on the survivor.
+    const collapsed = redactSecretsForState(
+      bag,
+      new Map([[SHARED, EXPR_B]]),
+      source,
+      STATE_SOURCED_READBACK_RULES
+    ) as { Env: Array<{ Value: string }> };
+    expect(collapsed.Env[0]!.Value).toBe(EXPR_B);
   });
 
   it('positions an observed readback against a STATE source unchanged', () => {

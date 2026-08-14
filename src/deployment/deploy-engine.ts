@@ -791,19 +791,6 @@ export class DeployEngine {
    * un-redacted resolved bag; only the persisted copy is rewritten.
    */
   /**
-   * Bag-level redaction of a single properties bag against a specific secrets
-   * map (GHSA fix). Used by the UPDATE no-op re-check so a resolved-plaintext
-   * bag is compared against the expression-bearing stored bag on equal footing.
-   */
-  private redactPropsWith(
-    props: Record<string, unknown>,
-    secrets: RecordedSecretValues
-  ): Record<string, unknown> {
-    if (secrets.size === 0) return props;
-    return redactSecretsForState(props, secrets);
-  }
-
-  /**
    * Redact the resolved stack OUTPUTS bag, positioned by the unresolved
    * template `Outputs` values (issue #1910).
    *
@@ -3219,8 +3206,13 @@ export class DeployEngine {
         // expression) against the stored side, which also holds the expression
         // (GHSA fix): a rotated secret behind an unchanged reference is a no-op,
         // matching CloudFormation, rather than a spurious UPDATE every deploy.
+        // POSITIONED by the same template bag the persist path uses (#1910):
+        // `currentProps` comes from state, which since #1904 holds each leaf's
+        // OWN expression, so a value-only redaction here collapses a coinciding
+        // pair onto the survivor and the comparison can never match — a
+        // redundant UPDATE on every deploy of such a resource.
         if (
-          JSON.stringify(this.redactPropsWith(resolvedProps, updateSecrets)) ===
+          JSON.stringify(redactSecretsForState(resolvedProps, updateSecrets, desiredProps)) ===
           JSON.stringify(currentProps)
         ) {
           // Attribute-only change (schema v5+): `DeletionPolicy` /
@@ -4536,6 +4528,12 @@ export class DeployEngine {
               : await this.resolver.resolve(output.Export.Name, context);
           if (typeof exportName === 'string') {
             outputs[exportName] = value;
+            // The alias is a SECOND key holding the same value, so it needs the
+            // same POSITION source or it falls to the value scan and collapses
+            // onto a sibling's expression (issue #1910 review). This bag feeds
+            // `updateForStack`, so a collapsed alias hands a downstream
+            // `Fn::ImportValue` consumer the WRONG reference.
+            this.outputsTemplateSource[exportName] = output.Value;
           }
         }
       } catch (error) {

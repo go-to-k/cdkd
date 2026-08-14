@@ -168,8 +168,13 @@ describe('DeployEngine - sibling redaction writers position by source (issue #19
     const template: CloudFormationTemplate = {
       Resources: { Fn: { Type: 'AWS::Lambda::Function', Properties: { Handler: 'index.handler' } } },
       Outputs: {
-        Current: { Value: EXPR_CURRENT },
-        Previous: { Value: EXPR_PREVIOUS },
+        // Each carries an Export.Name, so `resolveOutputs` writes a SECOND
+        // alias key holding the same value. Found by review: the alias had no
+        // position source, so it fell to the value scan and collapsed — and
+        // that bag is what feeds the exports index, so a downstream
+        // `Fn::ImportValue` consumer got the SIBLING's expression.
+        Current: { Value: EXPR_CURRENT, Export: { Name: 'CurrentExport' } },
+        Previous: { Value: EXPR_PREVIOUS, Export: { Name: 'PreviousExport' } },
         Public: { Value: 'not-a-secret' },
       },
     };
@@ -177,6 +182,8 @@ describe('DeployEngine - sibling redaction writers position by source (issue #19
     await makeEngine().deploy(stackName, template);
 
     const savedState = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
+    expect(savedState.outputs['CurrentExport']).toBe(EXPR_CURRENT);
+    expect(savedState.outputs['PreviousExport']).toBe(EXPR_PREVIOUS);
     // Before #1910 BOTH were rewritten to whichever expression resolved last,
     // so the next deploy compared a collapsed state against a template that
     // still declares two — a permanent spurious change on the outputs.

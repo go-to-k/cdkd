@@ -23,7 +23,11 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
-import { scrubResourceRecord, redactSecretsForState } from '../../deployment/secret-redaction.js';
+import {
+  scrubResourceRecord,
+  redactSecretsForState,
+  TEMPLATE_SOURCED_READBACK_RULES,
+} from '../../deployment/secret-redaction.js';
 import type { StackState } from '../../types/state.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 
@@ -314,6 +318,14 @@ export async function scrubStack(
       if (value === undefined) continue;
       // The unresolved output value is its POSITION source (#1910).
       outputsTemplateSource[name] = value;
+      // `state.outputs` ALSO carries an export-name ALIAS for the same value
+      // (the deploy engine writes one so `Fn::ImportValue` can find it), and
+      // that second key needs the same source or it falls to the value scan and
+      // collapses onto a sibling's expression. Only a LITERAL export name is
+      // handled: an intrinsic one would need the resolver, and getting it wrong
+      // is worse than leaving the alias on the pre-#1910 behavior.
+      const exportName = (output as { Export?: { Name?: unknown } }).Export?.Name;
+      if (typeof exportName === 'string') outputsTemplateSource[exportName] = value;
       try {
         await resolver.resolve(value, {
           template: stack.template,
@@ -349,10 +361,32 @@ export async function scrubStack(
       // echoing a secret whose leaf the template positions), and it is exactly
       // what an older binary left behind — which is the state `cdkd scrub`
       // exists to clean.
+      // Position `properties` HERE rather than handing `templateProps` to
+      // `scrubResourceRecord` (issue #1910 review). That parameter also
+      // re-points the `observedProperties` walk at the template, which for
+      // scrub is the wrong source: an observed leaf whose expression is in
+      // STATE but no longer in the template would lose the #1900
+      // trust-any-expression relaxation and fall back to the value scan —
+      // exactly the legacy state this command exists to clean.
+      //
+      // TEMPLATE_SOURCED rules, NOT template-derived: this bag is persisted
+      // state, so it was NOT produced by resolving today's template. Their
+      // shapes can diverge, which makes positional array descent unsound, and
+      // the template carries public ssm expressions that must not be persisted.
+      const ownSecrets = secrets ?? new Map<string, string>();
+      const positioned = templateProps
+        ? {
+            ...record,
+            properties: redactSecretsForState(
+              record.properties,
+              ownSecrets,
+              templateProps,
+              TEMPLATE_SOURCED_READBACK_RULES
+            ),
+          }
+        : record;
       const scrubbed =
-        secrets || templateProps
-          ? scrubResourceRecord(record, secrets ?? new Map<string, string>(), templateProps)
-          : record;
+        secrets || templateProps ? scrubResourceRecord(positioned, ownSecrets) : record;
       if (JSON.stringify(scrubbed) !== JSON.stringify(record)) recordsChanged++;
       newResources[logicalId] = scrubbed;
     }

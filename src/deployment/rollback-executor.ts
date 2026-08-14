@@ -73,7 +73,7 @@ import { IntrinsicFunctionResolver, type ResolverContext } from './intrinsic-fun
 import {
   scrubResourceRecord,
   redactSecretsForState,
-  STATE_SOURCED_READBACK_RULES,
+  STATE_DERIVED_RULES,
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import { withRetry } from './retry.js';
@@ -791,12 +791,18 @@ async function resolveReplayProps(
  * deploy reports a change that never converges — the same defect the four
  * deploy-side writers had, arriving here through the replay instead.
  *
- * It is a STATE bag, not a template one, so it takes the state-sourced rules:
- * a persisted record holds no PUBLIC expressions (a `String` ssm reference is
- * stored resolved), which is exactly what `scrubResourceRecord` assumes when it
- * is given no template source.
+ * It takes `STATE_DERIVED_RULES`, which is BOTH relaxations. The source is a
+ * persisted record, so it holds no PUBLIC expressions (a `String` ssm reference
+ * is stored resolved) and any `{{resolve:...}}` in it is by construction a
+ * secret — that is `trustAnyExpression`. And the bag WAS produced by resolving
+ * that source (`resolveReplayProps` -> the provider's `effectiveProperties`),
+ * so the two have identical structure and positional array descent is sound —
+ * that is `descendArrays`. Using `STATE_SOURCED_READBACK_RULES` here reads
+ * plausible and is wrong in the quiet direction: it turns array descent off, so
+ * a secret nested in a `Tags[]` / ECS `secrets[]` element would still collapse
+ * on the replay path.
  *
- * No-op when the op resolved no secret AND there is nothing to position.
+ * No-op when the op resolved no secret.
  */
 function redactRollbackRecord(
   record: ResourceState,
@@ -818,7 +824,7 @@ function redactRollbackRecord(
             record.properties,
             secrets,
             journaledProps,
-            STATE_SOURCED_READBACK_RULES
+            STATE_DERIVED_RULES
           ),
         };
   return scrubResourceRecord(positioned, secrets);
