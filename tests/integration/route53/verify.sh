@@ -499,6 +499,287 @@ if [ "${REMOVAL_QLC}" != "0" ]; then
 fi
 echo "    OK: query logging config deleted (#1160 QueryLoggingConfig removal reset)"
 
+# --- Phase 2.5: the IMPORT path records NameServers too (issue #1875) ------
+# Everything above adopts the deploy-CREATED record. `importHostedZone` is a
+# different write path, and it returned `attributes: {}` from both of its
+# branches — so a zone that entered state through `cdkd import` had no
+# NameServers, the resolver's flat-attribute lookup missed, resolution fell
+# through to the physical-id fallback, and the same Fn::Join asserted above
+# threw and dropped the Output. This phase re-adopts the already-deployed
+# zone and re-runs the SAME two Output assertions against the imported
+# record, which is the only way to see that the two write paths agree.
+echo "==> Phase 2.5: re-adopt the hosted zone via cdkd import (#1875)"
+
+# Re-read state: phase 2 rewrote it, so the phase 1 capture is stale.
+STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+ZONE_LOGICAL_ID=$(echo "${STATE}" | jq -r '
+  .resources | to_entries[]
+  | select(.value.resourceType == "AWS::Route53::HostedZone") | .key' | head -1)
+if [ -z "${ZONE_LOGICAL_ID}" ]; then
+  echo "FAIL: no AWS::Route53::HostedZone row in state to re-import" >&2
+  echo "${STATE}" | jq '.resources | map_values(.resourceType)'
+  exit 1
+fi
+echo "    Hosted zone logical id: ${ZONE_LOGICAL_ID}"
+
+# --- 2.5a: auto mode DECLINES this zone, and that is the documented shape --
+# Auto mode gives the zone no `--resource`, so `importHostedZone` would take
+# its name-lookup branch. It cannot here, and the reason is worth pinning
+# rather than working around: this fixture's zone name embeds the account
+# (`cdkd-test-${this.account}.internal`), so on an env-agnostic stack the
+# synthesized `Name` is an unresolved `Fn::Join` over `{Ref: AWS::AccountId}`
+# rather than a string -- measured, not assumed. `import.ts` pre-substitutes
+# only single-key `{Ref}` intrinsics before calling a provider, so the
+# provider sees the Join, `typeof zoneName !== 'string'` holds, and the row is
+# correctly reported `skipped-not-found`.
+#
+# So the NAME-lookup branch has no live coverage in THIS fixture and is
+# covered by unit tests only; 2.5b below is the live arm. Asserting the skip
+# keeps that honest and doubles as a tripwire: if intrinsic-Name auto
+# resolution ever lands (issue #1897), this assertion goes red and whoever
+# lands it should upgrade this arm to assert resolution instead.
+#
+# It runs under --dry-run because whole-stack auto mode REBUILDS the resource
+# map: three of this fixture's types (Route53::HealthCheck,
+# Route53::CidrCollection, Logs::ResourcePolicy) route through Cloud Control
+# and have no SDK provider, hence no import(), so a persisted auto import
+# would drop their rows and destroy would leak them. --dry-run still runs
+# every provider's import() for real against AWS and still writes the
+# resolved mapping (both happen before the early return), so the decline is
+# genuinely measured while state is left untouched.
+IMPORT_MAP=$(mktemp)
+IMPORT_STDERR=$(mktemp)
+# Keep stdout too: the per-row import summary (imported / skipped / failed and
+# the reason) is printed there, and it is the only thing that explains a zone
+# that did not resolve. Discarding it costs a whole re-run to learn why.
+IMPORT_STDOUT=$(mktemp)
+STATE_BEFORE_DRYRUN=$(printf '%s' "${STATE}" | jq -S -c '.')
+# `--force` is required even though `--dry-run` writes nothing: the
+# existing-state guard runs BEFORE the import loop, while the dry-run early
+# return sits after it (and before `saveState`). So the guard cannot see that
+# this invocation is inert, and refuses whole-stack auto mode over existing
+# state without the flag. Measured, not assumed -- the first run of this arm
+# failed on exactly that. The state comparison below is what proves the pair
+# is genuinely non-mutating rather than trusting the flag's description.
+if ! AWS_REGION="${REGION}" node "${LOCAL_DIST}" import "${STACK}" \
+  --auto --dry-run --force --record-resource-mapping "${IMPORT_MAP}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --yes >"${IMPORT_STDOUT}" 2>"${IMPORT_STDERR}"; then
+  echo "FAIL: cdkd import --auto --dry-run failed" >&2
+  cat "${IMPORT_STDOUT}" >&2
+  cat "${IMPORT_STDERR}" >&2
+  rm -f "${IMPORT_MAP}" "${IMPORT_STDERR}" "${IMPORT_STDOUT}"
+  exit 1
+fi
+rm -f "${IMPORT_STDERR}"
+
+# Validate the payload before the jq that assumes an object (same rule the
+# live delegation-set read above follows).
+if ! jq -e 'type == "object"' "${IMPORT_MAP}" >/dev/null 2>&1; then
+  echo "FAIL: --record-resource-mapping did not write a JSON object" >&2
+  echo "  file said: $(cat "${IMPORT_MAP}")" >&2
+  rm -f "${IMPORT_MAP}" "${IMPORT_STDOUT}"
+  exit 1
+fi
+MAPPED_ZONE_RAW=$(jq -r --arg k "${ZONE_LOGICAL_ID}" '.[$k] // empty' "${IMPORT_MAP}")
+if [ -n "${MAPPED_ZONE_RAW}" ]; then
+  echo "FAIL: auto import resolved ${ZONE_LOGICAL_ID} to '${MAPPED_ZONE_RAW}'" >&2
+  echo "  This fixture's zone Name synthesizes to an unresolved Fn::Join, so the" >&2
+  echo "  name-lookup branch cannot see a string and the row must be skipped." >&2
+  echo "  A resolution here means intrinsic-Name auto import landed (issue #1897):" >&2
+  echo "  good news, but this arm must then be upgraded to assert the resolved id" >&2
+  echo "  and the NameServers it records -- coverage this file does not yet have." >&2
+  rm -f "${IMPORT_MAP}" "${IMPORT_STDOUT}"
+  exit 1
+fi
+
+# The absence above is only meaningful if the import actually PROCESSED the
+# zone, so anchor it on the plan line rather than on a count of other rows.
+# A row-count floor would be the wrong anchor here: every name in this fixture
+# is account-derived, so auto mode legitimately resolves ZERO rows and a
+# `>= 1` floor fails on a healthy run (measured). The plan line is the direct
+# evidence -- it exists only because the zone was walked and its provider's
+# import() was called.
+ZONE_PLAN_LINE=$(grep -F "${ZONE_LOGICAL_ID} (AWS::Route53::HostedZone)" "${IMPORT_STDOUT}" || true)
+if [ -z "${ZONE_PLAN_LINE}" ]; then
+  echo "FAIL: the import plan has no row for ${ZONE_LOGICAL_ID} -- the zone was never walked," >&2
+  echo "  so its absence from the mapping proves nothing" >&2
+  cat "${IMPORT_STDOUT}" >&2
+  rm -f "${IMPORT_MAP}" "${IMPORT_STDOUT}"
+  exit 1
+fi
+# And the row must be the DECLINE, not a failure: a provider error would also
+# keep the zone out of the mapping, for an entirely different reason.
+if ! printf '%s' "${ZONE_PLAN_LINE}" | grep -qF 'no matching AWS resource'; then
+  echo "FAIL: ${ZONE_LOGICAL_ID} was not declined as not-found; the plan said:" >&2
+  echo "  ${ZONE_PLAN_LINE}" >&2
+  rm -f "${IMPORT_MAP}" "${IMPORT_STDOUT}"
+  exit 1
+fi
+rm -f "${IMPORT_MAP}" "${IMPORT_STDOUT}"
+
+# --dry-run must not have touched state. Compare the whole document (sorted,
+# compact) rather than a timestamp: a write that happened to preserve
+# lastModified would still be a write.
+STATE_AFTER_DRYRUN=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -S -c '.')
+if [ "${STATE_BEFORE_DRYRUN}" != "${STATE_AFTER_DRYRUN}" ]; then
+  echo "FAIL: --dry-run import mutated the state document" >&2
+  exit 1
+fi
+echo "    OK: auto mode DECLINED the intrinsic-Name zone (issue #1897) and wrote no state"
+
+# --- 2.5b: the --resource branch, PERSISTED --------------------------------
+# Selective mode (an override, no --auto) is a non-destructive merge: only the
+# listed row is rewritten and every unlisted row is preserved, so the Cloud
+# Control-backed resources above keep their state and destroy stays complete.
+#
+# The override is deliberately spelled with the `/hostedzone/` PREFIX, for two
+# reasons that both matter:
+#   1. It is the form this fix normalizes — `attributes.Id` must come out
+#      bare, matching what a deploy CREATE records.
+#   2. It makes this arm DISCRIMINATING. `import.ts` carries prior attributes
+#      over when the physical id is unchanged, so re-importing at the bare id
+#      would preserve the good map that phase 1's deploy wrote and the arm
+#      would pass even with the fix reverted. Changing the recorded physical
+#      id disables that carry-over, so the attributes asserted below can only
+#      have come from this import.
+AWS_REGION="${REGION}" node "${LOCAL_DIST}" import "${STACK}" \
+  --resource "${ZONE_LOGICAL_ID}=/hostedzone/${ZONE_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --force --yes
+
+IMPORTED_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+IMPORTED_ZONE=$(echo "${IMPORTED_STATE}" | jq -c --arg k "${ZONE_LOGICAL_ID}" '.resources[$k] // empty')
+if [ -z "${IMPORTED_ZONE}" ]; then
+  echo "FAIL: ${ZONE_LOGICAL_ID} is missing from state after the selective import" >&2
+  exit 1
+fi
+
+# Confirm the premise of this arm before trusting its conclusion: if the
+# physical id did NOT change, carry-over was live and the attribute
+# assertions below prove nothing about the import path.
+IMPORTED_PHYSICAL_ID=$(echo "${IMPORTED_ZONE}" | jq -r '.physicalId')
+if [ "${IMPORTED_PHYSICAL_ID}" = "${ZONE_ID}" ]; then
+  echo "FAIL: physical id is still '${ZONE_ID}', so import.ts carried the prior attributes over" >&2
+  echo "  this arm cannot discriminate in that state -- the override must change the recorded id" >&2
+  exit 1
+fi
+
+# `Id` must be BARE even though the override carried the prefix.
+IMPORTED_ATTR_ID=$(echo "${IMPORTED_ZONE}" | jq -r '.attributes.Id // empty')
+if [ "${IMPORTED_ATTR_ID}" != "${ZONE_ID}" ]; then
+  echo "FAIL: imported attributes.Id is '${IMPORTED_ATTR_ID}', expected the bare '${ZONE_ID}'" >&2
+  echo "  a /hostedzone/-prefixed override must be normalized the way createHostedZone does" >&2
+  exit 1
+fi
+
+# And NameServers must be a real LIST matching the live delegation set —
+# the record that was `{}` before this fix.
+if ! echo "${IMPORTED_ZONE}" | jq -e '.attributes.NameServers | type == "array" and length > 0' >/dev/null 2>&1; then
+  echo "FAIL: imported attributes.NameServers is not a non-empty array" >&2
+  echo "${IMPORTED_ZONE}" | jq '.attributes'
+  exit 1
+fi
+IMPORTED_NS_SORTED=$(echo "${IMPORTED_ZONE}" | jq -r '.attributes.NameServers | sort | join(",")')
+if [ "${IMPORTED_NS_SORTED}" != "${LIVE_NAME_SERVERS_SORTED}" ]; then
+  echo "FAIL: imported NameServers do not match Route 53" >&2
+  echo "  got:      ${IMPORTED_NS_SORTED}" >&2
+  echo "  expected: ${LIVE_NAME_SERVERS_SORTED}" >&2
+  exit 1
+fi
+echo "    OK: the --resource branch recorded a bare Id + a live-matching NameServers LIST"
+
+# --- 2.5c: put the canonical physical id back, BEFORE any deploy -----------
+# 2.5b deliberately recorded the prefixed form to defeat the attribute
+# carry-over. Restoring the bare id here is not tidiness -- it has to happen
+# before the redeploy below, and the reason was found the hard way against
+# real AWS: every RecordSet in this fixture takes its `HostedZoneId` from a
+# `Ref` to the zone, so while the zone's recorded physical id is
+# `/hostedzone/Z...` the resolver hands the records a DIFFERENT HostedZoneId
+# than the one in their state. `HostedZoneId` is immutable, so the deploy
+# planned a replacement of all three records, and create-first then collided
+# with the live RRSets ("but it already exists"). Ordering the restore first
+# makes the redeploy a clean NO_CHANGE.
+#
+# The restore is also still DISCRIMINATING for the same reason 2.5b is: the
+# physical id changes again (prefixed -> bare), so nothing is carried over
+# and the attributes asserted below can only have come from this import.
+# Phase 3 then destroys through exactly the record a normal deploy leaves,
+# rather than through a shape only this test produces.
+AWS_REGION="${REGION}" node "${LOCAL_DIST}" import "${STACK}" \
+  --resource "${ZONE_LOGICAL_ID}=${ZONE_ID}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --force --yes
+
+RESTORED_ZONE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null \
+  | jq -c --arg k "${ZONE_LOGICAL_ID}" '.resources[$k] // empty')
+RESTORED_PHYSICAL_ID=$(echo "${RESTORED_ZONE}" | jq -r '.physicalId // empty')
+if [ "${RESTORED_PHYSICAL_ID}" != "${ZONE_ID}" ]; then
+  echo "FAIL: physical id is '${RESTORED_PHYSICAL_ID}' after the restore, expected ${ZONE_ID}" >&2
+  exit 1
+fi
+if ! echo "${RESTORED_ZONE}" | jq -e '.attributes.NameServers | type == "array" and length > 0' >/dev/null 2>&1; then
+  echo "FAIL: NameServers were lost by the restoring import" >&2
+  echo "${RESTORED_ZONE}" | jq '.attributes'
+  exit 1
+fi
+echo "    OK: canonical physical id restored, attributes re-read intact"
+
+# --- 2.5d: the Outputs resolve from the IMPORTED record --------------------
+# This is the user-visible symptom. `cdkd import` does not resolve Outputs
+# (it preserves the existing map), so it takes a deploy to re-resolve them —
+# and that deploy reads the attribute record the import just wrote.
+echo "==> Phase 2.5d: redeploy so the Outputs re-resolve from the imported record"
+node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+REIMPORTED_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+
+# (1) The Fn::Join Output — absent entirely before the fix, because Fn::Join
+# threw on the physical-id string the fallback handed back and resolveOutputs
+# swallowed it per-output.
+REIMPORTED_JOINED=$(echo "${REIMPORTED_STATE}" | jq -r '.outputs.HostedZoneNameServers // empty')
+if [ -z "${REIMPORTED_JOINED}" ]; then
+  echo "FAIL: HostedZoneNameServers output is absent after re-import (#1875 symptom)" >&2
+  echo "${REIMPORTED_STATE}" | jq '.outputs'
+  exit 1
+fi
+REIMPORTED_JOINED_SORTED=$(printf '%s' "${REIMPORTED_JOINED}" | jq -Rr 'split(",") | sort | join(",")')
+if [ "${REIMPORTED_JOINED_SORTED}" != "${LIVE_NAME_SERVERS_SORTED}" ]; then
+  echo "FAIL: HostedZoneNameServers output does not match Route 53 after re-import" >&2
+  echo "  got:      ${REIMPORTED_JOINED_SORTED}" >&2
+  echo "  expected: ${LIVE_NAME_SERVERS_SORTED}" >&2
+  exit 1
+fi
+
+# (2) The bare Fn::GetAtt Output — the PARITY claim the provider docblock
+# makes ("an imported zone and a deployed one resolve identically"). Only
+# this one can see a shape divergence: the joined form renders a list and a
+# comma-string identically, so it cannot tell them apart.
+REIMPORTED_LIST_TYPE=$(echo "${REIMPORTED_STATE}" | jq -r '.outputs.HostedZoneNameServersList | type')
+if [ "${REIMPORTED_LIST_TYPE}" != "array" ]; then
+  echo "FAIL: HostedZoneNameServersList is '${REIMPORTED_LIST_TYPE}' after re-import, expected 'array'" >&2
+  echo "  an IMPORTED zone must persist the same JSON array a DEPLOYED one does" >&2
+  echo "${REIMPORTED_STATE}" | jq '.outputs.HostedZoneNameServersList'
+  exit 1
+fi
+REIMPORTED_LIST_COUNT=$(echo "${REIMPORTED_STATE}" | jq -r '.outputs.HostedZoneNameServersList | length')
+if [ "${REIMPORTED_LIST_COUNT}" != "${LIVE_NAME_SERVERS_COUNT}" ]; then
+  echo "FAIL: HostedZoneNameServersList has ${REIMPORTED_LIST_COUNT} element(s) after re-import, Route 53 reports ${LIVE_NAME_SERVERS_COUNT}" >&2
+  echo "${REIMPORTED_STATE}" | jq '.outputs.HostedZoneNameServersList'
+  exit 1
+fi
+REIMPORTED_LIST_SORTED=$(echo "${REIMPORTED_STATE}" | jq -r '.outputs.HostedZoneNameServersList | sort | join(",")')
+if [ "${REIMPORTED_LIST_SORTED}" != "${LIVE_NAME_SERVERS_SORTED}" ]; then
+  echo "FAIL: HostedZoneNameServersList members do not match Route 53 after re-import" >&2
+  echo "  got:      ${REIMPORTED_LIST_SORTED}" >&2
+  echo "  expected: ${LIVE_NAME_SERVERS_SORTED}" >&2
+  exit 1
+fi
+echo "    OK: an IMPORTED zone resolved both Outputs identically to a DEPLOYED one (${REIMPORTED_LIST_COUNT}-element LIST)"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \

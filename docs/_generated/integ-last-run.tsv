@@ -236,7 +236,7 @@ rollback-deletion-policy-snapshot	2026-08-08T16:34:46Z	PASS	107	verify.sh	P0 fir
 rollback-failure-injection	2026-08-08T17:42:23Z	PASS	389	verify.sh	issue #1375 re-run (background, dodging the 600s clamp); all 8 phases, 17 del/0 err, 0 orphans incl NAT/EIP/ENI
 rollback-replay-effective-props	2026-08-13T05:57:36Z	PASS	191	verify.sh	1741 prune + 1742 ordering at 882fcef8; measured; 0 orphans
 rollback-sqs-cooldown	2026-08-10T04:45:42Z	PASS	152	verify.sh	0810 sweep b3; post-#1361 rollback-executor re-verify, destroy clean
-route53	2026-08-13T18:53:48Z	PASS	438	verify.sh	Issue #1873 re-run after the probe rework fix (stderr kept out of the payload, Route53-specific not-found signature); bare Fn::GetAtt list arm asserted a 4-element LIST against the live delegation set; 8 created / 8 deleted, 0 errors, 0 orphans
+route53	2026-08-14T01:31:34Z	PASS	353	verify.sh	Issue #1875 import-path arm added (Phase 2.5a-d): auto mode declines the intrinsic-Name zone (#1897), --resource branch records a bare Id + live-matching NameServers LIST, canonical id restored, redeploy re-resolved both Outputs identically to a deployed zone; 8 created / 8 deleted, 0 errors, 0 orphans
 s3-analytics-inventory	2026-08-13T00:49:56Z	PASS	135	verify.sh	1707/1717/1718 live after review round 3; 49 assertions, 0 orphans
 s3-asset-deploy	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
 s3-cloudfront	2026-08-13T09:22:26Z	PASS	1150	verify.sh	PR 1745 re-run after review fixes (provider edit staled integ-destroy); 5 deleted 0 errors, 0 orphans
