@@ -86,6 +86,12 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
+  # The NameServers probe's stderr scratch file is unlinked on every path
+  # the probe itself takes, but a SIGNAL between its `mktemp` and that
+  # unlink would strand it -- and `/run-integ` SIGTERMs this script on its
+  # time clamp, so that window is reachable rather than theoretical. This
+  # runs on EXIT / INT / TERM, so sweeping it here covers all three.
+  rm -f "${LIVE_NS_STDERR:-}" 2>/dev/null || true
   # `set +eu` so an early-exit (e.g. STATE_BUCKET unset) does not abort
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
   # cleanup should run as much as it can with the env it has.
@@ -168,17 +174,145 @@ fi
 
 JOINED_NAME_SERVERS_SORTED=$(printf '%s' "${JOINED_NAME_SERVERS}" \
   | jq -Rr 'split(",") | sort | join(",")')
-LIVE_NAME_SERVERS=$(aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGION}" \
-  --query 'DelegationSet.NameServers' --output json 2>/dev/null)
+
+# The live read is a POSITIVE probe (the zone must exist here), so it follows
+# this file's header rule the same way the gone-probes do: branch on the exit
+# status, and report the canonical not-found case separately from an
+# undetermined failure (throttle / auth / network). The original
+# `$(aws ... 2>/dev/null)` form aborted the whole script at the assignment
+# under `set -euo pipefail` with the AWS error discarded, so an expired token
+# and a deleted zone were indistinguishable -- and both looked like the
+# NameServers assertion itself had blown up.
+#
+# stderr goes to a FILE, never `2>&1` into the captured value. The AWS CLI
+# writes to stderr on plenty of SUCCESSFUL calls (urllib3 / NotOpenSSLWarning,
+# python deprecation notices, SSO token refresh), and combining the streams
+# prepends those lines to the JSON payload we are about to parse. The
+# emptiness guard would pass (the string is neither empty nor `null`) and jq
+# would then die with `parse error: Invalid numeric literal` and rc=5, with no
+# FAIL: line naming the assertion -- reintroducing on the SUCCESS path exactly
+# the opacity this block removes from the failure path.
+LIVE_NS_STDERR=$(mktemp)
+if ! LIVE_NAME_SERVERS=$(aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGION}" \
+  --query 'DelegationSet.NameServers' --output json 2>"${LIVE_NS_STDERR}"); then
+  LIVE_NS_ERR=$(cat "${LIVE_NS_STDERR}")
+  rm -f "${LIVE_NS_STDERR}"
+  # Route 53-specific signature, deliberately NARROWER than `gone_probe`'s
+  # generic pattern above -- do NOT hoist the two into one shared variable.
+  # gone_probe is a cross-service NEGATIVE probe whose caller wants any
+  # not-found spelling; this is a POSITIVE probe whose whole job is telling a
+  # deleted zone apart from a broken credential, and the generic pattern
+  # cannot do that here. Two of its alternations match failures that are not
+  # about the zone at all: botocore's SSO-token load error ends in the same
+  # words as a missing resource ("Token for https://... does not exist"), and
+  # a shell reporting a missing `aws` binary ends in the same words as a
+  # missing lookup target. Both would be reported as "the hosted zone is
+  # gone", which is the confusion this block exists to end. The exit code is 1
+  # either way -- it is the DIAGNOSTIC that would lie. (Spelled out rather
+  # than quoted: a verbatim copy of the shared alternation here would read to
+  # scripts/check-integ-probe-not-found.ts as a drifted partial duplicate of
+  # the canonical signature, which is a rule worth keeping.)
+  ROUTE53_ZONE_NOT_FOUND_RE='NoSuchHostedZone|no hosted zone found'
+  if printf '%s' "${LIVE_NS_ERR}" | grep -qiE "${ROUTE53_ZONE_NOT_FOUND_RE}"; then
+    echo "FAIL: hosted zone ${ZONE_ID} does not exist while asserting its NameServers" >&2
+  else
+    echo "FAIL: get-hosted-zone probe undetermined for ${ZONE_ID}" >&2
+  fi
+  echo "  aws said: ${LIVE_NS_ERR}" >&2
+  exit 1
+fi
+rm -f "${LIVE_NS_STDERR}"
+
+# Validate the PAYLOAD before any jq that assumes an array. This subsumes the
+# empty / `null` guard (an absent delegation set serializes as the JSON literal
+# `null`, on which `sort` exits 5 -- a jq error where an assertion failure is
+# meant) AND covers a case the emptiness check missed: an empty `[]` used to
+# fall through and resurface as a confusing joined-output mismatch with an
+# empty `expected:`. It is also what catches a stderr line smuggled into the
+# payload, should any future edit reintroduce `2>&1` here.
+if ! printf '%s' "${LIVE_NAME_SERVERS}" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+  echo "FAIL: get-hosted-zone did not return a NameServers array for ${ZONE_ID}" >&2
+  echo "  aws said: ${LIVE_NAME_SERVERS}" >&2
+  exit 1
+fi
 LIVE_NAME_SERVERS_SORTED=$(printf '%s' "${LIVE_NAME_SERVERS}" \
   | jq -r 'sort | join(",")')
+
+# Both sides are SORTED deliberately, and the trade-off is recorded here
+# because it is a judgement call (issue #1873): Route 53 does not guarantee
+# that GetHostedZone returns the delegation set in the same order that
+# CreateHostedZone did, and the two sides of this comparison come from those
+# two different calls (the Output was resolved from the create-time attribute
+# in state). An unsorted compare would therefore be flaky, and per the repo's
+# "list readbacks must be order-insensitive" rule its failure message would
+# accuse the very fix it is guarding.
+#
+# What sorting gives up is an order-SCRAMBLING regression inside cdkd. That
+# half is fenced deterministically at the unit level instead -- the bare
+# Fn::GetAtt assertions in tests/unit/deployment/intrinsic-functions.test.ts
+# and tests/unit/deployment/deploy-engine-outputs-nameservers-list.test.ts pin
+# the exact element ORDER the resolver produces from a fixed input, which a
+# live AWS readback cannot do.
+#
+# Note what this comparison can NOT see either way, sorted or not: the
+# pre-#1868 single-element collapse. The Output under test is already
+# `Fn::Join`ed with ',', so `['a','b']` and `['a,b']` render the identical
+# string and no post-join check can tell them apart (measured with a stubbed
+# aws, 2026-08-13 UTC -- it passes). Pre-#1868 that shape surfaced here only
+# because Fn::Join THREW on a string operand and the Output went missing from
+# state, which is what the `-z "${JOINED_NAME_SERVERS}"` guard above catches.
+# The element COUNT itself is fenced by the same two unit tests.
 if [ "${JOINED_NAME_SERVERS_SORTED}" != "${LIVE_NAME_SERVERS_SORTED}" ]; then
   echo "FAIL: HostedZoneNameServers output does not match Route 53" >&2
-  echo "  got:      ${JOINED_NAME_SERVERS}" >&2
+  # Print the SORTED form on both lines -- printing the raw output against a
+  # sorted expectation made the two lines differ even on a spurious mismatch.
+  echo "  got:      ${JOINED_NAME_SERVERS_SORTED}" >&2
   echo "  expected: ${LIVE_NAME_SERVERS_SORTED}" >&2
+  echo "  (raw output value: ${JOINED_NAME_SERVERS})" >&2
   exit 1
 fi
 echo "    OK: Fn::Join resolved the HostedZone NameServers list (${JOINED_NAME_SERVERS})"
+
+# --- Assertion: the BARE Fn::GetAtt Output round-trips as a real LIST -------
+# Issue #1873. This is the arm the joined Output above structurally cannot
+# provide: `Fn::Join` with ',' renders `['a','b']` and `['a,b']` identically,
+# so a single-element collapse survives every post-join comparison. cdkd
+# resolves Outputs itself and stores the resolved value verbatim
+# (`resolveOutputs` -> `state.outputs`, typed `Record<string, unknown>`), so
+# the bare Fn::GetAtt persists a JSON ARRAY and the element COUNT and members
+# become directly observable.
+NS_LIST_TYPE=$(echo "${STATE}" | jq -r '.outputs.HostedZoneNameServersList | type')
+if [ "${NS_LIST_TYPE}" != "array" ]; then
+  echo "FAIL: HostedZoneNameServersList is '${NS_LIST_TYPE}', expected 'array'" >&2
+  echo "  a bare Fn::GetAtt over a list-valued attribute must persist a JSON array" >&2
+  echo "${STATE}" | jq '.outputs.HostedZoneNameServersList'
+  exit 1
+fi
+
+# Count first, and compare it to the LIVE count rather than to a literal: the
+# delegation-set size is AWS's to choose, so a hardcoded 4 would be a fixture
+# assumption rather than a measurement. This is the check that catches the
+# pre-#1868 collapse -- one element holding the whole comma-joined string.
+NS_LIST_COUNT=$(echo "${STATE}" | jq -r '.outputs.HostedZoneNameServersList | length')
+LIVE_NAME_SERVERS_COUNT=$(printf '%s' "${LIVE_NAME_SERVERS}" | jq -r 'length')
+if [ "${NS_LIST_COUNT}" != "${LIVE_NAME_SERVERS_COUNT}" ]; then
+  echo "FAIL: HostedZoneNameServersList has ${NS_LIST_COUNT} element(s), Route 53 reports ${LIVE_NAME_SERVERS_COUNT}" >&2
+  echo "  (1 element vs several is the pre-#1868 comma-string collapse)" >&2
+  echo "${STATE}" | jq '.outputs.HostedZoneNameServersList'
+  exit 1
+fi
+
+# Then the members. Sorted for the same reason as the joined assertion above
+# (AWS does not guarantee a stable delegation-set order across calls); the
+# count check above is what the sort cannot give us.
+NS_LIST_SORTED=$(echo "${STATE}" | jq -r '.outputs.HostedZoneNameServersList | sort | join(",")')
+if [ "${NS_LIST_SORTED}" != "${LIVE_NAME_SERVERS_SORTED}" ]; then
+  echo "FAIL: HostedZoneNameServersList members do not match Route 53" >&2
+  echo "  got:      ${NS_LIST_SORTED}" >&2
+  echo "  expected: ${LIVE_NAME_SERVERS_SORTED}" >&2
+  exit 1
+fi
+echo "    OK: bare Fn::GetAtt persisted a ${NS_LIST_COUNT}-element LIST matching the live delegation set (#1873)"
 
 # --- Assertion: Ref to a RecordSet is the record NAME (issue #1681) ----
 # cdkd stores the composite physicalId `<hostedZoneId>|<name>|<type>`, while

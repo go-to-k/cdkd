@@ -2217,14 +2217,82 @@ describe('IntrinsicFunctionResolver - Fn::Join over a list-returning intrinsic',
     expect(result).toBe('ns-1.example.com,ns-2.example.com');
   });
 
-  it('normalizes the legacy comma-delimited HostedZone NameServers state before joining', async () => {
+  // --- Route 53 HostedZone.NameServers list-shape fences (issue #1873) ------
+  // The normalization block in `resolveGetAtt` is guarded THREE ways
+  // (resourceType === HostedZone, attributeName === NameServers, value is a
+  // string) and produces `[]` for the empty string. Each of the tests below
+  // is written so that removing exactly one of those pieces turns it RED —
+  // joining the result with the SAME `,` the block splits on cannot do that,
+  // because `['a,b'].join(',')` and `['a','b'].join(',')` are the same string.
+  const legacyHostedZoneContext = (nameServers: unknown): ResolverContext => ({
+    template: {} as CloudFormationTemplate,
+    resources: {
+      HostedZone: {
+        physicalId: 'Z1234567890',
+        resourceType: 'AWS::Route53::HostedZone',
+        properties: { Name: 'example.com' },
+        attributes: {
+          Id: 'Z1234567890',
+          NameServers: nameServers,
+        },
+        dependencies: [],
+      },
+    },
+  });
+
+  it('normalizes the legacy comma-delimited HostedZone NameServers state into a real list', async () => {
+    const context = legacyHostedZoneContext('ns-1.example.com,ns-2.example.com');
+
+    // Assert the BARE Fn::GetAtt result: this pins the element COUNT and the
+    // per-element values, so replacing `flatValue.split(',')` with
+    // `[flatValue]` fails here (a single element still "is not a string").
+    const bare = await resolver.resolve({ 'Fn::GetAtt': ['HostedZone', 'NameServers'] }, context);
+    expect(bare).toEqual(['ns-1.example.com', 'ns-2.example.com']);
+
+    // And the Fn::Join over it, joined with a delimiter that DIFFERS from the
+    // split delimiter so the join cannot reconstruct the un-split string.
+    const joined = await resolver.resolve(
+      { 'Fn::Join': [' | ', { 'Fn::GetAtt': ['HostedZone', 'NameServers'] }] },
+      context
+    );
+    expect(joined).toBe('ns-1.example.com | ns-2.example.com');
+  });
+
+  it('normalizes an EMPTY legacy NameServers string to an empty list, not a one-element list', async () => {
+    // The `flatValue === '' ? [] : flatValue.split(',')` ternary: an
+    // unconditional `''.split(',')` yields `['']`, i.e. one bogus empty name
+    // server that Fn::Join would render as an empty string.
+    const context = legacyHostedZoneContext('');
+
+    const bare = await resolver.resolve({ 'Fn::GetAtt': ['HostedZone', 'NameServers'] }, context);
+    expect(bare).toEqual([]);
+    expect(bare).toHaveLength(0);
+  });
+
+  it('leaves a HostedZone attribute OTHER than NameServers a string (attributeName guard)', async () => {
+    // Negative control for `attributeName === 'NameServers'`. Without that
+    // guard `.Id` would resolve to `['Z1234567890']` and every consumer that
+    // interpolates the zone id would silently receive an array.
+    const context = legacyHostedZoneContext('ns-1.example.com,ns-2.example.com');
+
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['HostedZone', 'Id'] }, context);
+
+    expect(Array.isArray(result)).toBe(false);
+    expect(result).toBe('Z1234567890');
+  });
+
+  it('leaves a NON-Route 53 resource NameServers attribute a string (resourceType guard)', async () => {
+    // Negative control for `resource.resourceType === 'AWS::Route53::HostedZone'`.
+    // The attribute name matches, and the value happens to contain a comma —
+    // only the resource-type guard keeps it a string. A custom resource is the
+    // realistic carrier: its outputs are opaque strings cdkd must not reshape.
     const context: ResolverContext = {
       template: {} as CloudFormationTemplate,
       resources: {
-        HostedZone: {
-          physicalId: 'Z1234567890',
-          resourceType: 'AWS::Route53::HostedZone',
-          properties: { Name: 'example.com' },
+        Lookup: {
+          physicalId: 'lookup-1',
+          resourceType: 'Custom::DnsLookup',
+          properties: {},
           attributes: {
             NameServers: 'ns-1.example.com,ns-2.example.com',
           },
@@ -2233,12 +2301,32 @@ describe('IntrinsicFunctionResolver - Fn::Join over a list-returning intrinsic',
       },
     };
 
-    const result = await resolver.resolve(
-      { 'Fn::Join': [',', { 'Fn::GetAtt': ['HostedZone', 'NameServers'] }] },
-      context
-    );
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['Lookup', 'NameServers'] }, context);
 
+    expect(Array.isArray(result)).toBe(false);
     expect(result).toBe('ns-1.example.com,ns-2.example.com');
+  });
+
+  it('resolves Fn::Select over the HostedZone NameServers list (both state shapes)', async () => {
+    // Fn::Select is the other common read shape over the list. On the legacy
+    // string state it is ONLY correct once the normalization has produced N
+    // elements — `[flatValue]` makes index 1 out of bounds.
+    const listState = legacyHostedZoneContext(['ns-1.example.com', 'ns-2.example.com']);
+    const stringState = legacyHostedZoneContext('ns-1.example.com,ns-2.example.com');
+
+    for (const context of [listState, stringState]) {
+      const first = await resolver.resolve(
+        { 'Fn::Select': [0, { 'Fn::GetAtt': ['HostedZone', 'NameServers'] }] },
+        context
+      );
+      const second = await resolver.resolve(
+        { 'Fn::Select': [1, { 'Fn::GetAtt': ['HostedZone', 'NameServers'] }] },
+        context
+      );
+
+      expect(first).toBe('ns-1.example.com');
+      expect(second).toBe('ns-2.example.com');
+    }
   });
 
   it('should still resolve Fn::Join whose second arg is a literal array (regression)', async () => {
