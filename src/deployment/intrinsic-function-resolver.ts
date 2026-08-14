@@ -4312,9 +4312,24 @@ export class IntrinsicFunctionResolver {
         // the deploy path would resolve and is safe to cache and substitute.
         const decrypt = context?.skipDynamicReferences !== true;
         const param = await this.resolveSSMReference(parts, decrypt);
-        if (param.secure) {
+        // The FRESH response is authoritative, so a definitive public verdict
+        // both clears `isSecret` and RETRACTS a stale memo. Without the
+        // retraction the verdict could only ever be raised, so one transient
+        // unclassifiable `Type` (or a parameter retyped SecureString ->
+        // String) pinned "secret" for the process — and a pinned PUBLIC value
+        // then becomes a redaction NEEDLE, rewriting an unrelated string that
+        // merely contains it (`prod` turning `my-prod-bucket` into
+        // `my-{{resolve:ssm:/env}}-bucket` in that resource's record). Only a
+        // definitive `SecureString` is memoized: an unclassifiable type is
+        // treated as secret for THIS resolution but deliberately not pinned,
+        // so the next pass re-asks instead of inheriting a transient answer.
+        if (param.type === 'SecureString') {
           secureStringSsmReferences.add(fullMatch);
-          isSecret = true;
+        } else if (!param.secure) {
+          secureStringSsmReferences.delete(fullMatch);
+        }
+        isSecret = param.secure;
+        if (param.secure) {
           if (!decrypt) {
             // Comparison path: the value in hand is ciphertext, which is neither
             // what state holds nor safe to cache. Leave the expression
@@ -4607,7 +4622,7 @@ export class IntrinsicFunctionResolver {
   private async resolveSSMReference(
     parts: string[],
     decrypt = true
-  ): Promise<{ value: string; secure: boolean }> {
+  ): Promise<{ value: string; secure: boolean; type: string | undefined }> {
     const parameterName = parts.slice(1).join(':');
 
     if (!parameterName) {
@@ -4651,6 +4666,9 @@ export class IntrinsicFunctionResolver {
     // it does not become a perpetual UPDATE, and the two genuinely-public types
     // are named explicitly so no real `String` / `StringList` is affected.
     const paramType = response.Parameter?.Type;
+    // `type` is reported alongside the verdict so the caller can tell a
+    // DEFINITIVE `SecureString` (safe to memoize) from an unclassifiable one
+    // (treated as secret, but not pinned — see the caller).
     const secure = paramType !== 'String' && paramType !== 'StringList';
     if (secure && paramType !== 'SecureString') {
       // Reached only if AWS stops returning `Type`, or returns one cdkd does not
@@ -4665,6 +4683,6 @@ export class IntrinsicFunctionResolver {
           `public config.`
       );
     }
-    return { value: paramValue, secure };
+    return { value: paramValue, secure, type: paramType };
   }
 }

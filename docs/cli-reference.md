@@ -2369,11 +2369,19 @@ the wrong EXPRESSION is stored. Tracked as issue
 [#1904](https://github.com/go-to-k/cdkd/issues/1904). Until it is fixed, avoid
 two spellings of one secret value in a single resource.
 
-**Known limitation.** A secret reference used as a NESTED STACK's `Parameters`
-value is resolved by the parent and handed to the child as a literal, so the
-child stack's own state records the plaintext, and `cdkd diff --recursive`
-decrypts it at plan time. This applies to `{{resolve:secretsmanager:...}}` as
-well as to a `SecureString` parameter, and is tracked as issue
+**Known limitation.** Two paths do not yet inherit this redaction, both because
+they resolve a reference through a context that does not record secrets:
+
+- A secret reference used as a NESTED STACK's `Parameters` value is resolved by
+  the parent and handed to the child as a literal, so the child stack's own
+  state records the plaintext, and `cdkd diff --recursive` decrypts it at plan
+  time.
+- `cdkd export` writes the resolved value into the exported CloudFormation
+  template's Parameter value, so the plaintext lands in the template it hands
+  to CloudFormation.
+
+Both apply to `{{resolve:secretsmanager:...}}` as well as to a `SecureString`
+parameter, and are tracked as issue
 [#1903](https://github.com/go-to-k/cdkd/issues/1903).
 
 ## `cdkd rollback` (revert a failed deploy)

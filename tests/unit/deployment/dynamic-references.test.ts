@@ -7,17 +7,22 @@ import {
 import { redactSecretsForState } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
-// Mock logger
+// Mock logger. The spies are module-level rather than created fresh inside the
+// factory so a test can ASSERT on them — `getLogger()` is called per resolver
+// instance, and a factory returning a new object each time makes the warn
+// unobservable. The unclassified-Type warning (issue #1901) is the only signal
+// that a parameter silently changed what state stores, so it needs an assertion.
+const mockLoggerWarn = vi.fn();
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: mockLoggerWarn,
     error: vi.fn(),
     child: () => ({
       debug: vi.fn(),
       info: vi.fn(),
-      warn: vi.fn(),
+      warn: mockLoggerWarn,
       error: vi.fn(),
     }),
   }),
@@ -66,6 +71,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
     resetAccountInfoCache();
     mockSecretsManagerSend.mockReset();
     mockSSMSend.mockReset();
+    mockLoggerWarn.mockReset();
   });
 
   describe('resolveDynamicReferences', () => {
@@ -644,11 +650,15 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       });
 
       const skipContext = { ...defaultContext, skipDynamicReferences: true };
-      await resolver.resolveDynamicReferences(secureExpr, skipContext);
-      await resolver.resolveDynamicReferences(secureExpr, skipContext);
+      const first = await resolver.resolveDynamicReferences(secureExpr, skipContext);
+      const second = await resolver.resolveDynamicReferences(secureExpr, skipContext);
 
-      // Only the FIRST pass had to ask AWS for the parameter's type.
+      // Only the FIRST pass had to ask AWS for the parameter's type...
       expect(mockSSMSend).toHaveBeenCalledTimes(1);
+      // ...and the short-circuit must return the EXPRESSION, not an empty
+      // string / undefined, or the comparison silently comes out equal.
+      expect(first).toBe(secureExpr);
+      expect(second).toBe(secureExpr);
     });
 
     it('re-records the secret on the cache-hit path for a fresh per-resource map', async () => {
@@ -711,6 +721,11 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       });
 
       expect(recordedSecretValues.get('unclassified-value')).toBe(secureExpr);
+      // The warn is the ONLY signal that this parameter silently changed what
+      // state stores, so treating-as-secret without saying so is its own defect.
+      const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('unrecognized Type');
+      expect(warned).toContain(type === undefined ? '(absent)' : String(type));
     });
 
     // `String.replace` interprets `$&` / "$`" / `$'` / `$1` inside a replacement
@@ -733,6 +748,67 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       const cached = await resolver.resolveDynamicReferences(`pw=${secureExpr}`, defaultContext);
       expect(cached).toBe(`pw=${plaintext}`);
       expect(mockSSMSend).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['SecureString', 'SecureString'],
+      ['String', 'String'],
+      ['StringList', 'StringList'],
+    ])('does NOT warn for the recognized Type %s', async (_label, type) => {
+      // Pairs with the fail-closed cases above: without this, an
+      // always-warn implementation would satisfy them while making the
+      // warning meaningless noise on every ordinary deploy.
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'v-known', Type: type } });
+
+      await resolver.resolveDynamicReferences(secureExpr, defaultContext);
+
+      const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).not.toContain('unrecognized Type');
+    });
+
+    it('RETRACTS a stale secure verdict when a later lookup reports a public type', async () => {
+      // The verdict used to be raise-only, so one transient unclassifiable
+      // `Type` pinned "secret" for the process — and a pinned PUBLIC value then
+      // becomes a redaction NEEDLE that rewrites any string containing it.
+      mockSSMSend
+        .mockResolvedValueOnce({ Parameter: { Value: 'prod' } }) // no Type -> fail-closed
+        .mockResolvedValueOnce({ Parameter: { Value: 'prod', Type: 'String' } });
+
+      const first = new Map<string, string>();
+      await resolver.resolveDynamicReferences(secureExpr, {
+        ...defaultContext,
+        recordedSecretValues: first,
+      });
+      expect(first.get('prod')).toBe(secureExpr); // treated as secret this pass
+
+      // A fresh lookup (the value was cached, so force one by clearing) that
+      // reports a definitive public type must clear the verdict.
+      resetAccountInfoCache();
+      const second = new Map<string, string>();
+      const result = await resolver.resolveDynamicReferences(secureExpr, {
+        ...defaultContext,
+        recordedSecretValues: second,
+      });
+
+      expect(result).toBe('prod');
+      // NOT recorded — otherwise `prod` becomes a needle and redaction would
+      // rewrite an unrelated `my-prod-bucket` in the same resource.
+      expect(second.size).toBe(0);
+      expect(mockSSMSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not PIN an unclassifiable type — the next pass re-asks', async () => {
+      // Only a definitive SecureString is memoized, so an anomalous response
+      // cannot silently become a permanent verdict.
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'AQICAHh-blob' } });
+      const skipContext = { ...defaultContext, skipDynamicReferences: true };
+
+      await resolver.resolveDynamicReferences(secureExpr, skipContext);
+      await resolver.resolveDynamicReferences(secureExpr, skipContext);
+
+      // Contrast with the definitive-SecureString case, which short-circuits
+      // to a single call.
+      expect(mockSSMSend).toHaveBeenCalledTimes(2);
     });
 
     it('clears the SecureString verdict with the dynamic-reference cache', async () => {

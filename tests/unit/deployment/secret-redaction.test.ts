@@ -137,3 +137,45 @@ describe('secret-redaction', () => {
     });
   });
 });
+
+// CHARACTERIZATION TEST for issue #1904 — pins a KNOWN DEFECT, not desired
+// behavior. `RecordedSecretValues` is keyed by the resolved PLAINTEXT, so two
+// different expressions resolving to the same value collapse to one entry
+// (last write wins) and BOTH sites are rewritten to the survivor. The
+// consequence is a permanent spurious UPDATE: the template still carries each
+// site's own expression, while state carries the survivor's.
+//
+// This exists because the `secrets-dynamic-ref` fixture used to trip the
+// collision incidentally and no longer does (its version-stage reference was
+// pointed at a different JSON key so the fixture's `diff --fail` guard could
+// test what it is meant to test), which left the defect completely unfenced.
+//
+// WHEN #1904 IS FIXED THIS TEST WILL FAIL. That is intended: the fix should
+// replace it with the inverted assertion — each site keeps ITS OWN expression.
+// Do not "repair" it by loosening the assertion.
+describe('secret-redaction - value-key collision (issue #1904, known defect)', () => {
+  const EXPR_PLAIN = '{{resolve:secretsmanager:s:SecretString:password}}';
+  const EXPR_STAGED = '{{resolve:secretsmanager:s:SecretString:password:AWSCURRENT}}';
+  const SHARED = 'one-and-the-same-secret';
+
+  it('collapses two expressions sharing one resolved value onto the last-recorded one', () => {
+    // Insertion order mirrors a resolution pass over an env map declaring the
+    // plain reference first and the staged one second.
+    const map: RecordedSecretValues = new Map();
+    map.set(SHARED, EXPR_PLAIN);
+    map.set(SHARED, EXPR_STAGED);
+    expect(map.size).toBe(1); // <- the collapse itself
+
+    const redacted = redactSecretsForState(
+      { Variables: { PLAIN: SHARED, STAGED: SHARED } },
+      map
+    ) as { Variables: Record<string, string> };
+
+    // No plaintext survives — the SECURITY property still holds...
+    expect(JSON.stringify(redacted)).not.toContain(SHARED);
+    // ...but PLAIN is rewritten to the STAGED expression, which is the defect:
+    // the next diff compares this against the template's EXPR_PLAIN forever.
+    expect(redacted.Variables['PLAIN']).toBe(EXPR_STAGED);
+    expect(redacted.Variables['STAGED']).toBe(EXPR_STAGED);
+  });
+});

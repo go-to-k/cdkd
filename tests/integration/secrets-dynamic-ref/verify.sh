@@ -316,6 +316,7 @@ STATE_SECRET_PASSWORD=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD //
 STATE_SECRET_FULL=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SECRET_FULL // empty')
 STATE_SSM_VALUE=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SSM_VALUE // empty')
 STATE_SSM_SECURE_VALUE=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SSM_SECURE_VALUE // empty')
+STATE_SECRET_PASSWORD_STAGED=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD_STAGED // empty')
 
 # Guard 3: each secretsmanager env var in STATE must be the UNRESOLVED
 # expression, not the plaintext. (We can print the expression — it names the
@@ -328,6 +329,14 @@ esac
 case "${STATE_SECRET_FULL}" in
   '{{resolve:secretsmanager:'*) echo "    OK: state SECRET_FULL kept the expression: ${STATE_SECRET_FULL}" ;;
   *) echo "FAIL: state SECRET_FULL is NOT the {{resolve:...}} expression: $(mask "${STATE_SECRET_FULL}")" >&2; redaction_fail=1 ;;
+esac
+# The version-stage reference resolves to its OWN distinct value (see issue
+# #1904 and the stack comment), so its state side needs its own assertion —
+# otherwise the one env var whose expression differs from every other is the
+# one form left unverified.
+case "${STATE_SECRET_PASSWORD_STAGED}" in
+  '{{resolve:secretsmanager:'*':AWSCURRENT}}') echo "    OK: state SECRET_PASSWORD_STAGED kept its OWN staged expression: ${STATE_SECRET_PASSWORD_STAGED}" ;;
+  *) echo "FAIL: state SECRET_PASSWORD_STAGED is NOT its own {{resolve:...:AWSCURRENT}} expression: $(mask "${STATE_SECRET_PASSWORD_STAGED}")" >&2; redaction_fail=1 ;;
 esac
 
 # Guard 3b (issue #1901): an ssm reference to a SECURESTRING parameter is a
@@ -373,6 +382,16 @@ if printf '%s' "${STATE_JSON}" | grep -qF "${EXPECTED_SECURE}"; then
   redaction_fail=1
 else
   echo "    OK: decrypted SecureString value is absent from the whole state document"
+fi
+# The staged reference's resolved value (the secret's `username` key) must not
+# survive in the Lambda's persisted env either. Scoped to LAMBDA_ENV, not the
+# whole state: the DynRefSecret resource's OWN SecretString legitimately
+# contains it (same rationale as the password grep above).
+if printf '%s' "${LAMBDA_ENV}" | grep -qF "${EXPECTED_USERNAME}"; then
+  echo "FAIL: the staged reference's resolved value LEAKED into the Lambda's persisted env" >&2
+  redaction_fail=1
+else
+  echo "    OK: staged-reference plaintext is absent from the consumer Lambda's persisted state"
 fi
 
 if [ "${redaction_fail}" -ne 0 ]; then

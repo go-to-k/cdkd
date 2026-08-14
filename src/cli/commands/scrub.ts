@@ -61,8 +61,12 @@ interface ScrubOptions {
 
 /**
  * `cdkd scrub` — rewrite persisted state so any resolved secret dynamic
- * reference (`{{resolve:secretsmanager:...}}`) is stored as its UNRESOLVED
- * expression rather than the plaintext value (GHSA fix).
+ * reference is stored as its UNRESOLVED expression rather than the plaintext
+ * value (GHSA fix). "Secret" here is whatever the RESOLVER classifies as one,
+ * which is the single source of truth this command shares with the deploy
+ * path: every `{{resolve:secretsmanager:...}}`, plus a `{{resolve:ssm:...}}`
+ * naming a `SecureString` parameter (issue #1901). scrub therefore gains a new
+ * secret class automatically, with no second list to keep in sync.
  *
  * A normal `cdkd deploy` already scrubs state as a side effect (the deploy
  * engine redacts every persisted bag), so this command is for cleaning up
@@ -81,8 +85,9 @@ interface ScrubOptions {
  * deliberately needs no CDK code.
  *
  * IMPORTANT: scrubbing does not un-expose an already-leaked secret. A value
- * that was stored in plaintext should be treated as compromised and ROTATED in
- * Secrets Manager; scrub only stops it from being re-read out of state going
+ * that was stored in plaintext should be treated as compromised and ROTATED at
+ * its source — in Secrets Manager, or by re-putting the `SecureString` SSM
+ * parameter; scrub only stops it from being re-read out of state going
  * forward.
  *
  * ORDERING: scrub matches the CURRENT resolved secret value against what state

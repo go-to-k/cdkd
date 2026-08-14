@@ -81,6 +81,11 @@ function makeCtx(provider: { update?: unknown; create?: unknown; delete?: unknow
 
 beforeEach(() => {
   mockSMSend.mockClear();
+  // Reset the ssm spy for the same reason. Without it the SecureString test's
+  // `mock.calls[0]` read and the no-secret test's `not.toHaveBeenCalled()` only
+  // hold because of the order tests happen to run in today, so inserting any
+  // ssm-using test above them would silently break both.
+  mockSSMSend.mockClear();
   // The dynamic-reference cache is module-global; clear it so each test's
   // resolution is a real fetch (keeps the per-test mockSMSend assertion honest).
   resetAccountInfoCache();
@@ -266,8 +271,13 @@ describe('rollback replay - secret re-resolution + state redaction (GHSA #1899)'
     // The resolver really went to SSM (non-vacuity), and with decryption on —
     // the replay needs the concrete value, unlike the diff path.
     expect(mockSSMSend).toHaveBeenCalled();
-    const ssmInput = (mockSSMSend.mock.calls[0]![0] as { input: { WithDecryption?: boolean } }).input;
+    const ssmInput = (
+      mockSSMSend.mock.calls[0]![0] as { input: { Name?: string; WithDecryption?: boolean } }
+    ).input;
     expect(ssmInput.WithDecryption).toBe(true);
+    // ...and fetched the parameter the EXPRESSION names. The mock answers any
+    // name, so without this a replay resolving the wrong parameter passes.
+    expect(ssmInput.Name).toBe('/prod/idp/client-secret');
     // Provider received the DECRYPTED value on both diff sides.
     const desiredArg = update.mock.calls[0]![3] as { ProviderDetails: { client_secret: string } };
     expect(desiredArg.ProviderDetails.client_secret).toBe(SECURE_PLAINTEXT);
