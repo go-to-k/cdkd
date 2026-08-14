@@ -197,6 +197,38 @@ export function handlerAuthFailureHint(statusMessage: string): string {
   );
 }
 
+/** How many key names a malformed-model log line may carry. */
+const MAX_LOGGED_MODEL_KEYS = 12;
+
+/**
+ * Summarize a JSON document by its KEY NAMES, for a log line that must not
+ * carry the document's values (issue #1908).
+ *
+ * The document failed to parse, so the keys cannot be read structurally; this
+ * matches the `"name":` lexical form instead. That is a deliberate trade: the
+ * pattern requires the colon, so a bare string VALUE is never reported, and the
+ * only way a value reaches the line is if the document contains a string that
+ * is itself followed by a colon -- which for an AWS readback means a nested
+ * key. Values are what must not leak, and a key-shaped token is not one.
+ */
+function describeJsonKeys(document: string): string {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  const pattern = /"([^"\\]{1,64})"\s*:/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(document)) !== null) {
+    const key = match[1]!;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+    if (keys.length >= MAX_LOGGED_MODEL_KEYS) break;
+  }
+  if (keys.length === 0) return 'no readable key names';
+  const suffix =
+    pattern.lastIndex < document.length && keys.length >= MAX_LOGGED_MODEL_KEYS ? ', ...' : '';
+  return `keys: ${keys.join(', ')}${suffix}`;
+}
+
 export class CloudControlProvider implements ResourceProvider {
   private cloudControlClient: CloudControlClient;
   private logger = getLogger().child('CloudControlProvider');
@@ -942,7 +974,21 @@ export class CloudControlProvider implements ResourceProvider {
   }
 
   /**
-   * Parse resource model JSON string
+   * Parse resource model JSON string.
+   *
+   * On a parse failure this logs the error plus the model's SHAPE — never its
+   * body (issue #1908, a GHSA-p5qg-v9gv-hc7w residual). The model is an AWS
+   * readback, and a read handler cannot return write-only properties (the #809
+   * premise), so the common secret shapes are absent — but a `{{resolve:...}}`
+   * secret resolved into a NON-write-only property can round-trip back here,
+   * and the previous `Raw model: <first 500 chars>` line would have printed it.
+   * Truncation is not a mitigation: 500 characters is precisely where a
+   * document's leading values sit.
+   *
+   * KEY NAMES are logged and values are not, which is the whole distinction —
+   * a key is a property name from the type's schema, a value is the data. That
+   * keeps the line diagnostic (it says WHICH document failed to parse) without
+   * carrying anything sensitive.
    */
   private parseResourceModel(resourceModel: string): Record<string, unknown> {
     try {
@@ -951,7 +997,7 @@ export class CloudControlProvider implements ResourceProvider {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.logger.warn(
         `Failed to parse resource model: ${errorMessage}\n` +
-          `Raw model: ${resourceModel.substring(0, 500)}${resourceModel.length > 500 ? '...' : ''}`
+          `Model shape: ${resourceModel.length} chars, ${describeJsonKeys(resourceModel)}`
       );
       return {};
     }
