@@ -2377,14 +2377,28 @@ as its encrypted blob, which is never substituted, cached, or persisted, and the
 comparison stays expression-vs-expression. Once a reference is known to be
 `SecureString`, later comparisons short-circuit with no AWS call at all.
 
-**Known limitation.** Two dynamic references that resolve to the SAME value
-(for example the same JSON key written once with and once without an explicit
-version stage) collapse in the redaction map, which is keyed by the resolved
-value — so both sites persist whichever expression was recorded last, and the
-stack then reports a spurious UPDATE on every deploy. No plaintext is exposed;
-the wrong EXPRESSION is stored. Tracked as issue
-[#1904](https://github.com/go-to-k/cdkd/issues/1904). Until it is fixed, avoid
-two spellings of one secret value in a single resource.
+**Two spellings of one secret value.** Two dynamic references that resolve to
+the SAME value — for example the same JSON key written once with and once
+without an explicit version stage — used to collapse in the redaction map,
+which is keyed by the resolved value, so both sites persisted whichever
+expression was recorded last and the stack reported a spurious UPDATE on every
+deploy. No plaintext was ever exposed; the wrong EXPRESSION was stored. cdkd
+now redacts by POSITION as well as by value: each leaf is matched against the
+UNRESOLVED template at the same path, so it keeps its own expression (issues
+[#1904](https://github.com/go-to-k/cdkd/issues/1904) /
+[#1910](https://github.com/go-to-k/cdkd/issues/1910)). Where the template leaf
+is an intrinsic (`Fn::Join` / `Fn::Sub` — what CDK emits whenever the secret's
+ARN is a `Ref`, so the common case) the reference is identified by the shape of
+that intrinsic instead
+([#1916](https://github.com/go-to-k/cdkd/issues/1916)).
+
+A narrow residual remains, and it degrades to the old behavior rather than to
+anything worse: when the intrinsic's literal parts cannot tell the two
+references apart — the part that differs is itself behind a `Ref` — cdkd
+declines to guess and both leaves persist the same expression again. The same
+applies to a pair of `{{resolve:ssm:...}}` references whose parameter `Type`
+AWS did not report. If you hit a spurious UPDATE on a resource holding two
+spellings of one secret, make the differing part a literal in the template.
 
 **Known limitation.** Two paths do not yet inherit this redaction, both because
 they resolve a reference through a context that does not record secrets:

@@ -843,37 +843,46 @@ const cachedAvailabilityZones: Record<string, string[]> = {};
 const cachedDynamicReferences: Record<string, string> = {};
 
 /**
- * The `{{resolve:ssm:...}}` expressions this process has PROVEN point at a
- * `SecureString` parameter (issue #1901).
+ * The `{{resolve:...}}` expressions this process has PROVEN resolve to a
+ * SECRET, reached through `secret-redaction.ts`'s `recordedSecretExpressions`
+ * store. Lifetime is {@link cachedDynamicReferences}'s — `resetAccountInfoCache`
+ * clears both, so a stale verdict can never decide secret-ness for a reference
+ * whose resolved value that call just asked to forget.
  *
- * A plain `ssm` reference is not a secret by SPELLING the way `secretsmanager`
- * is — whether it resolves to public config or to a decrypted secret depends on
- * the parameter's `Type`, which is only knowable from the `GetParameter`
- * response. So secret-ness is discovered on the first resolution and remembered
- * here, keyed by the full `{{resolve:...}}` expression, for the same lifetime as
- * {@link cachedDynamicReferences}.
+ * `ssm` is the kind that NEEDS the memory (issue #1901). A plain `ssm`
+ * reference is not a secret by SPELLING the way `secretsmanager` is — whether
+ * it resolves to public config or to a decrypted secret depends on the
+ * parameter's `Type`, which is only knowable from the `GetParameter` response.
+ * So secret-ness is discovered on the first resolution and remembered, keyed by
+ * the full `{{resolve:...}}` expression. Two consumers need it AFTER the lookup
+ * that populated it: the cache-hit arm (which must re-record the value as a
+ * secret for the current resolution pass) and the diff / no-op path (which must
+ * leave a SecureString reference unresolved without paying a lookup at all once
+ * the type is known). A reference NOT in the set is only "not known to be
+ * secure" — never "proven public" — so every arm that would leak still asks AWS
+ * for the type first. Only the TYPE is remembered, never the decrypted value:
+ * on the diff path the lookup is made with `WithDecryption: false`, so the
+ * plaintext is never fetched at all there.
  *
- * Two consumers need it AFTER the lookup that populated it: the cache-hit arm
- * (which must re-record the value as a secret for the current resolution pass)
- * and the diff / no-op path (which must leave a SecureString reference
- * unresolved without paying a lookup at all once the type is known). A
- * reference NOT in this set is only "not known to be secure" — never "proven
- * public" — so every arm that would leak still asks AWS for the type first.
+ * A `secretsmanager` reference is recorded TOO, and that is issue
+ * [#1916](https://github.com/go-to-k/cdkd/issues/1916). It needed no memory
+ * while the only question asked of the set was "is this expression secret?",
+ * which its spelling settles — but the set is ALSO the candidate list the
+ * redaction path matches an INTRINSIC source leaf against
+ * ({@link secret-redaction.redactSecretsForState}), and a list holding only the
+ * ssm half cannot name the losing member of a collapsed
+ * secretsmanager/secretsmanager pair. Recording every kind is what makes the
+ * set mean what its name says. It changes no verdict here: every arm that reads
+ * it for secret-ness already answers `true` on a `secretsmanager` spelling
+ * before consulting it.
  *
- * Only the TYPE is remembered, never the decrypted value: on the diff path the
- * lookup is made with `WithDecryption: false`, so the plaintext is never
- * fetched at all there.
- *
- * Since issue [#1910](https://github.com/go-to-k/cdkd/issues/1910) the STORE
- * lives in `secret-redaction.ts` rather than here. The two questions ("is this
- * expression's parameter a SecureString?" and "is this expression secret?")
- * have the same answer for every reference kind whose spelling cannot settle
- * it, and the redaction path is the other consumer — so keeping one set in the
- * leaf module means the redactor can answer without any caller threading it,
- * and the resolver reaches it along an import edge it already has. These three
- * wrappers keep this file's call sites reading as they did.
+ * The store lives in `secret-redaction.ts` rather than here (issue
+ * [#1910](https://github.com/go-to-k/cdkd/issues/1910)) because the redaction
+ * path is the other consumer: one set in the LEAF module means the redactor can
+ * answer with no caller threading it, and the resolver reaches it along an
+ * import edge it already has — the reverse would close a cycle.
  */
-const secureStringSsmReferences = {
+const recordedSecretExpressions = {
   has: (expression: string): boolean => isRecordedSecretExpression(expression),
   add: (expression: string): void => recordSecretExpression(expression),
   delete: (expression: string): void => forgetSecretExpression(expression),
@@ -1096,10 +1105,10 @@ export function resetAccountInfoCache(): void {
   for (const key of Object.keys(cachedDynamicReferences)) {
     delete cachedDynamicReferences[key];
   }
-  // ...and the SecureString verdicts derived from it (issue #1901). Keeping
+  // ...and the secret verdicts derived from it (issues #1901 / #1916). Keeping
   // them would let a stale verdict decide secret-ness for a reference whose
   // resolved value this call just asked to forget.
-  secureStringSsmReferences.clear();
+  recordedSecretExpressions.clear();
   // Also reset EC2 instance attribute cache
   for (const key of Object.keys(cachedEc2InstanceAttributes)) {
     delete cachedEc2InstanceAttributes[key];
@@ -4280,7 +4289,7 @@ export class IntrinsicFunctionResolver {
       // A `secretsmanager` reference resolves to a real secret by SPELLING. A
       // plain `ssm` one resolves to a secret only when the parameter's `Type` is
       // `SecureString` (issue #1901) — a fact discovered from the GetParameter
-      // response below and remembered in `secureStringSsmReferences`, so the
+      // response below and remembered in `recordedSecretExpressions`, so the
       // cache-hit and skip arms here can act on it without a second lookup.
       // Either way the plaintext -> expression mapping is recorded so the deploy
       // engine keeps the UNRESOLVED expression in persisted state and masks the
@@ -4289,7 +4298,7 @@ export class IntrinsicFunctionResolver {
       // Recorded on the cache-hit path too, so a second reference to the same
       // secret in the same pass is still redacted.
       const isKnownSecret =
-        service === 'secretsmanager' || secureStringSsmReferences.has(fullMatch);
+        service === 'secretsmanager' || recordedSecretExpressions.has(fullMatch);
 
       // Diff / no-op comparison path: leave SECRET references UNRESOLVED (the
       // expression is what state stores, so comparing keeps like-for-like and
@@ -4307,6 +4316,11 @@ export class IntrinsicFunctionResolver {
         const cached = cachedDynamicReferences[fullMatch]!;
         // `cached` truthiness excludes the empty string: an empty secret is not
         // a usable redaction needle (it would match every empty leaf).
+        // Deliberately does NOT also add to `recordedSecretExpressions`: both
+        // stores are module-level and cleared together, so reaching this arm
+        // means the resolution that POPULATED the cache already recorded the
+        // expression, and a second add could only ever be a no-op. An
+        // unfenceable line is worse than none (issue #1916).
         if (isKnownSecret && cached) context?.recordedSecretValues?.set(cached, fullMatch);
         // Replacer FUNCTION, not a string: `String.replace` interprets `$&`,
         // "$`", `$'` and `$1` inside a replacement STRING, so a resolved value
@@ -4345,9 +4359,9 @@ export class IntrinsicFunctionResolver {
         // treated as secret for THIS resolution but deliberately not pinned,
         // so the next pass re-asks instead of inheriting a transient answer.
         if (param.type === 'SecureString') {
-          secureStringSsmReferences.add(fullMatch);
+          recordedSecretExpressions.add(fullMatch);
         } else if (!param.secure) {
-          secureStringSsmReferences.delete(fullMatch);
+          recordedSecretExpressions.delete(fullMatch);
         }
         isSecret = param.secure;
         if (param.secure) {
@@ -4367,7 +4381,22 @@ export class IntrinsicFunctionResolver {
       }
 
       cachedDynamicReferences[fullMatch] = resolved;
-      if (isSecret && resolved) context?.recordedSecretValues?.set(resolved, fullMatch);
+      if (isSecret && resolved) {
+        context?.recordedSecretValues?.set(resolved, fullMatch);
+        // The value-keyed map above COLLAPSES a group of expressions sharing a
+        // resolved value down to its last member; this set does not, which is
+        // what lets the redaction path name the losing member (issue #1916).
+        //
+        // Gated on the SPELLING rather than on `isSecret`, and that is the
+        // whole care of this line: every ssm verdict is owned by the arm above,
+        // which pins ONLY a definitive `SecureString`. An unclassifiable `Type`
+        // sets `isSecret` for THIS resolution and is deliberately NOT pinned,
+        // so that the next pass re-asks AWS instead of inheriting a transient
+        // answer — recording it here would pin it for the process and undo
+        // exactly that (issue #1901). Such a pair therefore still falls back to
+        // the value scan, i.e. to today's behavior.
+        if (service === 'secretsmanager') recordedSecretExpressions.add(fullMatch);
+      }
       // Replacer FUNCTION — see the cache-hit arm above for why a replacement
       // STRING is unsafe here.
       result = result.replace(fullMatch, () => resolved);
