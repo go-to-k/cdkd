@@ -1,3 +1,10 @@
+## [0.283.19](https://github.com/go-to-k/cdkd/compare/v0.283.18...v0.283.19) (2026-08-14)
+
+
+### Bug Fixes
+
+* **route53:** record NameServers when a hosted zone is IMPORTED, and live-test the import path ([#1898](https://github.com/go-to-k/cdkd/issues/1898)) ([9560189](https://github.com/go-to-k/cdkd/commit/9560189e9df39a7aba5303bda91923b3e25f851b))
+
 ## [0.283.18](https://github.com/go-to-k/cdkd/compare/v0.283.17...v0.283.18) (2026-08-14)
 
 
