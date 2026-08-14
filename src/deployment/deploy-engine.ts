@@ -19,7 +19,11 @@ import {
   looksLikeCdkdGeneratedName,
 } from '../provisioning/resource-name.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
-import { redactSecretsForState, scrubResourceRecord } from './secret-redaction.js';
+import {
+  redactSecretsForState,
+  scrubResourceRecord,
+  maskSecretsInText,
+} from './secret-redaction.js';
 import { DagExecutor } from './dag-executor.js';
 import type {
   CloudFormationTemplate,
@@ -2697,10 +2701,31 @@ export class DeployEngine {
   ): void {
     if (!this.options.eventRecorder) return;
     try {
-      this.options.eventRecorder.record(event);
+      this.options.eventRecorder.record(this.maskSecretsInEvent(event));
     } catch {
       // best-effort: never let event recording surface into the deploy path
     }
+  }
+
+  /**
+   * Mask any resolved secret value out of an event's human-authored text before
+   * it is persisted to `deployments/*.jsonl` (which outlives `cdkd destroy`)
+   * — GHSA fix. An AWS validation error can quote the offending property value
+   * (`Value '<secret>' at 'X' failed to satisfy ...`), and a provider `reason`
+   * is provider-authored prose; both reach the event store as `error.message` /
+   * `reason`. No-op when the deploy recorded no secrets.
+   */
+  private maskSecretsInEvent<T extends { error?: { message?: string }; reason?: string }>(
+    event: T
+  ): T {
+    if (this.recordedSecretValues.size === 0) return event;
+    const secrets = this.recordedSecretValues;
+    const next: T = { ...event };
+    if (next.error?.message) {
+      next.error = { ...next.error, message: maskSecretsInText(next.error.message, secrets) };
+    }
+    if (next.reason) next.reason = maskSecretsInText(next.reason, secrets);
+    return next;
   }
 
   /**
