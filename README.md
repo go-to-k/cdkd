@@ -286,10 +286,12 @@ cdkd drift MyStack                  # exit 1 if drift
 cdkd drift MyStack --accept --yes   # state ← AWS
 cdkd drift MyStack --revert --yes   # AWS ← state
 
-# Secret hygiene — rewrite state so a resolved secret dynamic reference is
-# stored as its {{resolve:...}} expression, not the plaintext (no deploy)
-cdkd scrub MyStack                  # scrub existing state in place
-cdkd scrub MyStack --dry-run --fail # CI gate: exit 1 if plaintext secrets remain
+# State secret hygiene — clean + audit. Keeps cdkd state free of sensitive
+# plaintext: a resolved secret dynamic reference is stored as its
+# {{resolve:...}} expression. No deploy, no AWS mutation.
+cdkd scrub MyStack                  # clean existing state in place
+cdkd scrub MyStack --dry-run        # audit only, report what would change
+cdkd scrub MyStack --dry-run --fail # standing CI gate: exit 1 if plaintext remains
 
 # Asset / destroy / unlock
 cdkd publish-assets                 # synth + upload only (typical CI split)

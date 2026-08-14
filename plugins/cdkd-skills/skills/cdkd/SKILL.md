@@ -161,11 +161,11 @@ AWS_PROFILE=<profile> AWS_REGION=<region> cdkd drift <stack> --revert   # AWS <-
 
 `--accept` and `--revert` are mutually exclusive; both honor `--dry-run`. `--revert` changes live AWS resources — treat it as a destructive operation (see below).
 
-## Keep secrets out of state
+## State secret hygiene (clean + audit)
 
 cdkd resolves CloudFormation dynamic references (`{{resolve:secretsmanager:...}}`) and, when persisting state, stores the UNRESOLVED expression rather than the resolved plaintext — the value never lands in `state.json`, `cdkd state show`, `cdkd diff`, or `cdkd drift` output. A normal `cdkd deploy` already scrubs state this way as a side effect.
 
-`cdkd scrub <stack>` cleans up EXISTING state written by an older cdkd (before this behavior shipped) WITHOUT a redeploy. It synthesizes the app to learn which values are secrets, then rewrites the state record so each plaintext secret becomes its `{{resolve:...}}` expression. It performs no AWS mutation — only `state.json` is rewritten.
+`cdkd scrub <stack>` is the permanent state secret-hygiene command — clean and audit, not incident-only tooling. It synthesizes the app to learn which values are secrets, then rewrites the state record so each plaintext secret becomes its `{{resolve:...}}` expression, WITHOUT a redeploy. It performs no AWS mutation — only `state.json` is rewritten. Use it to clean state written by an older cdkd, and use `--dry-run --fail` as a STANDING CI gate that continuously asserts no plaintext secret lives in state (secrets landing in IaC state is a structural, recurring concern, so it is worth checking on every build rather than once).
 
 ```bash
 AWS_PROFILE=<profile> AWS_REGION=<region> cdkd scrub <stack>              # scrub in place
