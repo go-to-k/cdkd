@@ -3,6 +3,8 @@ import {
   redactSecretsForState,
   maskSecretsInText,
   scrubResourceRecord,
+  STATE_SOURCED_READBACK_RULES,
+  TEMPLATE_SOURCED_READBACK_RULES,
   SECRET_MASK,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
@@ -150,10 +152,12 @@ describe('secret-redaction', () => {
 // pointed at a different JSON key so the fixture's `diff --fail` guard could
 // test what it is meant to test), which left the defect completely unfenced.
 //
-// WHEN #1904 IS FIXED THIS TEST WILL FAIL. That is intended: the fix should
-// replace it with the inverted assertion — each site keeps ITS OWN expression.
-// Do not "repair" it by loosening the assertion.
-describe('secret-redaction - value-key collision (issue #1904, known defect)', () => {
+// UPDATED BY THE #1904 FIX. The collision is REAL and unfixable by value alone,
+// so the two-argument form below still collapses — that is now a documented
+// BOUND rather than a defect, and the second block proves the supported form
+// resolves it. Do not "simplify" by deleting either half: the pair is what
+// records that position, not a better value map, is what fixes this.
+describe('secret-redaction - value-key collision (issue #1904, value-only bound)', () => {
   const EXPR_PLAIN = '{{resolve:secretsmanager:s:SecretString:password}}';
   const EXPR_STAGED = '{{resolve:secretsmanager:s:SecretString:password:AWSCURRENT}}';
   const SHARED = 'one-and-the-same-secret';
@@ -171,11 +175,176 @@ describe('secret-redaction - value-key collision (issue #1904, known defect)', (
       map
     ) as { Variables: Record<string, string> };
 
-    // No plaintext survives — the SECURITY property still holds...
+    // No plaintext survives — the SECURITY property holds either way...
     expect(JSON.stringify(redacted)).not.toContain(SHARED);
-    // ...but PLAIN is rewritten to the STAGED expression, which is the defect:
-    // the next diff compares this against the template's EXPR_PLAIN forever.
+    // ...but PLAIN is rewritten to the STAGED expression. Without a position
+    // source there is nothing that could distinguish them, which is why the fix
+    // supplies one rather than trying to key the map differently.
     expect(redacted.Variables['PLAIN']).toBe(EXPR_STAGED);
     expect(redacted.Variables['STAGED']).toBe(EXPR_STAGED);
+  });
+
+  it('resolves the collision when the SOURCE bag supplies position (#1904 fix)', () => {
+    const map: RecordedSecretValues = new Map();
+    map.set(SHARED, EXPR_PLAIN);
+    map.set(SHARED, EXPR_STAGED);
+
+    // The source is the unresolved template bag the deploy engine now captures.
+    const source = { Variables: { PLAIN: EXPR_PLAIN, STAGED: EXPR_STAGED } };
+    const redacted = redactSecretsForState(
+      { Variables: { PLAIN: SHARED, STAGED: SHARED } },
+      map,
+      source
+    ) as { Variables: Record<string, string> };
+
+    // Each site keeps ITS OWN expression, so the next diff compares
+    // expression-vs-expression per leaf and reports no change.
+    expect(redacted.Variables['PLAIN']).toBe(EXPR_PLAIN);
+    expect(redacted.Variables['STAGED']).toBe(EXPR_STAGED);
+    expect(JSON.stringify(redacted)).not.toContain(SHARED);
+  });
+
+  it('redacts with NO secrets map at all when the source carries the expression (#1900)', () => {
+    // The unchanged-resource case: never resolved this deploy, so there is no
+    // per-resource secrets map — but the record's own properties still hold the
+    // expression, and a live readback echoing the plaintext must not overwrite it.
+    const observed = { Variables: { PLAIN: SHARED } };
+    const source = { Variables: { PLAIN: EXPR_PLAIN } };
+
+    const redacted = redactSecretsForState(observed, new Map(), source, STATE_SOURCED_READBACK_RULES) as {
+      Variables: Record<string, string>;
+    };
+
+    expect(redacted.Variables['PLAIN']).toBe(EXPR_PLAIN);
+    expect(JSON.stringify(redacted)).not.toContain(SHARED);
+  });
+
+  // BLOCKER from review: the path pass first matched ANY `{{resolve:` string, so
+  // a PUBLIC ssm reference — which issue #1901 deliberately keeps RESOLVED in
+  // state — was rewritten back to its expression. The diff resolves the desired
+  // side for a String parameter, so state-as-expression vs desired-as-value is a
+  // change on EVERY deploy: a perpetual UPDATE, i.e. the exact failure #1901
+  // exists to prevent, reintroduced by the #1904 fix.
+  it('does NOT persist a PUBLIC ssm expression the resolver never recorded (#1901)', () => {
+    const PUBLIC_EXPR = '{{resolve:ssm:/app/public-host}}';
+    const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PLAIN]]);
+
+    const redacted = redactSecretsForState(
+      { Host: 'db.example.com', Password: SHARED },
+      secrets,
+      { Host: PUBLIC_EXPR, Password: EXPR_PLAIN }
+    ) as Record<string, string>;
+
+    // Public config stays RESOLVED...
+    expect(redacted['Host']).toBe('db.example.com');
+    // ...while the recorded secret beside it is still redacted.
+    expect(redacted['Password']).toBe(EXPR_PLAIN);
+  });
+
+  // BLOCKER from review: `observedProperties` is an AWS readback and AWS does
+  // not preserve list order (the reason drift-normalize.ts exists). Descending
+  // arrays positionally there wrote the expression onto the WRONG element and
+  // left the real secret in plaintext.
+  it('does NOT map arrays positionally for an AWS readback (#1900 ordering)', () => {
+    const source = {
+      Env: [
+        { Name: 'SECRET', Value: EXPR_PLAIN },
+        { Name: 'PLAIN', Value: 'public' },
+      ],
+    };
+    // AWS returned the list REVERSED, and echoed the secret's plaintext.
+    const observed = {
+      Env: [
+        { Name: 'PLAIN', Value: 'public' },
+        { Name: 'SECRET', Value: SHARED },
+      ],
+    };
+    const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PLAIN]]);
+
+    const redacted = redactSecretsForState(observed, secrets, source, TEMPLATE_SOURCED_READBACK_RULES) as {
+      Env: Array<Record<string, string>>;
+    };
+
+    // The value scan handled it: the secret is redacted where it actually is...
+    expect(redacted.Env[1]!['Value']).toBe(EXPR_PLAIN);
+    // ...and the unrelated public element was NOT overwritten with an expression.
+    expect(redacted.Env[0]!['Value']).toBe('public');
+    expect(JSON.stringify(redacted)).not.toContain(SHARED);
+  });
+
+  // BLOCKER from the RE-review: the array rule and the substitution rule are
+  // decided by DIFFERENT bags, and answering both from one enum leaked the
+  // template's public ssm expression into `observedProperties` -- which is the
+  // drift baseline AND the `--revert` payload, so the literal would be pushed
+  // back to AWS. Reproduced against the branch tip before the split.
+  it('does NOT trust a template source just because the BAG is an AWS readback', () => {
+    const PUBLIC_EXPR = '{{resolve:ssm:/app/public-host}}';
+    const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PLAIN]]);
+
+    const record = {
+      properties: { SSM_VALUE: 'public-host', PASSWORD: SHARED },
+      observedProperties: { SSM_VALUE: 'public-host', PASSWORD: SHARED },
+    };
+
+    const scrubbed = scrubResourceRecord(record, secrets, {
+      SSM_VALUE: PUBLIC_EXPR,
+      PASSWORD: EXPR_PLAIN,
+    });
+
+    // The public value stays RESOLVED on BOTH sides (#1901)...
+    expect(scrubbed.properties['SSM_VALUE']).toBe('public-host');
+    expect(scrubbed.observedProperties!['SSM_VALUE']).toBe('public-host');
+    // ...while the secret is redacted on both.
+    expect(scrubbed.properties['PASSWORD']).toBe(EXPR_PLAIN);
+    expect(scrubbed.observedProperties!['PASSWORD']).toBe(EXPR_PLAIN);
+    expect(JSON.stringify(scrubbed)).not.toContain(SHARED);
+  });
+
+  // The #1900 half must still work through the SAME method: with no template
+  // bag the source is the record's own properties, where any expression IS a
+  // secret, so the readback's plaintext echo is redacted with no secrets map.
+  it('still redacts an unchanged resource observed bag from its own properties (#1900)', () => {
+    const record = {
+      properties: { PASSWORD: EXPR_PLAIN },
+      observedProperties: { PASSWORD: SHARED },
+    };
+
+    const scrubbed = scrubResourceRecord(record, new Map());
+
+    expect(scrubbed.observedProperties!['PASSWORD']).toBe(EXPR_PLAIN);
+    expect(JSON.stringify(scrubbed)).not.toContain(SHARED);
+  });
+
+  // MINOR from the RE-review: the secretsmanager test was a substring match, so
+  // a MIXED leaf carrying BOTH a public ssm token and a secretsmanager one
+  // satisfied it and the WHOLE leaf was persisted -- re-introducing the public
+  // reference. A mixed leaf belongs to the value scan.
+  it('does NOT whole-leaf substitute a MIXED source leaf', () => {
+    const PUBLIC_EXPR = '{{resolve:ssm:/app/public-host}}';
+    const mixedSource = `${PUBLIC_EXPR}-${EXPR_PLAIN}`;
+    const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PLAIN]]);
+
+    const redacted = redactSecretsForState(
+      { Url: `public-host-${SHARED}` },
+      secrets,
+      { Url: mixedSource }
+    ) as { Url: string };
+
+    // Only the secret substring is rewritten; the public half stays resolved.
+    expect(redacted.Url).toBe(`public-host-${EXPR_PLAIN}`);
+    expect(redacted.Url).not.toContain(PUBLIC_EXPR);
+  });
+
+  it('still value-scans a subtree the source cannot position (embedded Fn::Sub)', () => {
+    // The source leaf is an intrinsic OBJECT, so position cannot answer; the
+    // value scan must still find the secret embedded in the joined result.
+    const map: RecordedSecretValues = new Map([[SHARED, EXPR_PLAIN]]);
+    const redacted = redactSecretsForState(
+      { Url: `pw=${SHARED}/db` },
+      map,
+      { Url: { 'Fn::Sub': `pw=${EXPR_PLAIN}/db` } }
+    ) as { Url: string };
+
+    expect(redacted.Url).toBe(`pw=${EXPR_PLAIN}/db`);
   });
 });

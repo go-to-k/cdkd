@@ -641,6 +641,17 @@ export class DeployEngine {
    */
   private perResourceSecrets = new Map<string, RecordedSecretValues>();
   /**
+   * PER-RESOURCE unresolved TEMPLATE properties, keyed by logicalId (issues
+   * #1904 / #1900). The redaction choke point uses this as the POSITION source:
+   * wherever the template leaf is a `{{resolve:...}}` string, state persists
+   * that string verbatim instead of asking the value-keyed map which expression
+   * a plaintext came from — a question that map cannot answer when two
+   * expressions resolve to the same value. Captured at the same two sites that
+   * populate `perResourceSecrets`, where the unresolved bag is already in hand.
+   * Reset per `deploy()`.
+   */
+  private perResourceTemplateProps = new Map<string, Record<string, unknown>>();
+  /**
    * Resolved secrets recorded while resolving the stack OUTPUTS (a `CfnOutput`
    * whose Value resolves a `{{resolve:...}}` reference). Separate from the
    * per-resource maps for the same anti-cross-contamination reason. Reset per
@@ -712,6 +723,7 @@ export class DeployEngine {
     this.recordedImports = [];
     this.recordedOutputReads = [];
     this.perResourceSecrets = new Map();
+    this.perResourceTemplateProps = new Map();
     this.outputSecrets = new Map();
     // Per-deploy-run counter: the resolver instance is engine-scoped and an
     // engine can be reused across deploys, so reset here (not in the
@@ -821,7 +833,19 @@ export class DeployEngine {
       // Redact each record ONLY with the secrets substituted during that
       // resource's own resolution — see the `perResourceSecrets` field doc.
       const secrets = this.perResourceSecrets.get(logicalId);
-      resources[logicalId] = secrets ? scrubResourceRecord(record, secrets) : record;
+      // The template bag is the POSITION source (#1904); when this resource was
+      // not resolved this deploy there is none, and `scrubResourceRecord` falls
+      // back to the record's own `properties` for the observed bag (#1900).
+      const templateProps = this.perResourceTemplateProps.get(logicalId);
+      resources[logicalId] = scrubResourceRecord(
+        record,
+        secrets ?? new Map<string, string>(),
+        // No template bag means this resource was not resolved this deploy (an
+        // UNCHANGED one). `scrubResourceRecord` then falls back to the record's
+        // own already-redacted properties as the observed bag's source, which is
+        // the #1900 path — so do NOT "simplify" this to `templateProps!`.
+        templateProps
+      );
     }
     // `outputs` is also secret-bearing: a `CfnOutput` whose Value resolves a
     // SECRET dynamic reference (`{{resolve:secretsmanager:...}}`, or a
@@ -3026,6 +3050,8 @@ export class DeployEngine {
         // Store the secrets substituted during THIS resource's resolution so the
         // save choke point (and the async observed-capture drain) redact this
         // record only with its own secrets (GHSA fix — see perResourceSecrets).
+        // Capture the UNRESOLVED bag as the redaction position source (#1904).
+        this.perResourceTemplateProps.set(logicalId, desiredProps);
         if (context.recordedSecretValues) {
           this.perResourceSecrets.set(logicalId, context.recordedSecretValues);
         }
@@ -3130,6 +3156,8 @@ export class DeployEngine {
         >;
         const updateSecrets = context.recordedSecretValues ?? new Map<string, string>();
         this.perResourceSecrets.set(logicalId, updateSecrets);
+        // Same position source on the UPDATE path (#1904).
+        this.perResourceTemplateProps.set(logicalId, desiredProps);
 
         this.auditResolvedAssetReferences(logicalId, resourceType, resolvedProps);
 
