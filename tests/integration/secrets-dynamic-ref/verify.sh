@@ -107,10 +107,12 @@ SECURE_PARAM_NAME="cdkd-test-dynref-secure-${ACCOUNT_ID}"
 EXPECTED_PASSWORD="cdkd-known-pw-123"
 EXPECTED_FULL='{"username":"cdkd-user","password":"cdkd-known-pw-123"}'
 EXPECTED_SSM="cdkd-known-ssm-value"
-# The version-stage reference deliberately reads a DIFFERENT json key, so it
-# does NOT resolve to the same plaintext as SECRET_PASSWORD -- see the stack's
-# comment and issue #1904 (two expressions sharing one resolved value collapse
-# in the value-keyed redaction map).
+# The version-stage reference reads the SAME json key as SECRET_PASSWORD, so
+# both resolve to EXPECTED_PASSWORD. That collision is deliberate and is what
+# makes the state-expression + `diff --fail` assertions below discriminating:
+# the value-keyed redaction map collapses the pair, so only a POSITION source
+# can keep each leaf on its own expression (issues #1904 / #1910). See the
+# stack's comment.
 EXPECTED_USERNAME="cdkd-user"
 EXPECTED_SECURE="cdkd-known-secure-value-456"
 
@@ -265,8 +267,11 @@ check_equals "SECRET_PASSWORD (secretsmanager :SecretString:<jsonkey>)" \
   "${ENV_SECRET_PASSWORD}" "${EXPECTED_PASSWORD}"
 check_equals "SECRET_FULL (secretsmanager :SecretString whole-secret)" \
   "${ENV_SECRET_FULL}" "${EXPECTED_FULL}"
+# Same expected value as SECRET_PASSWORD above — that IS the collision. Both
+# references must still reach AWS fully resolved; #1904 / #1910 change what
+# STATE holds, never what the provider is handed.
 check_equals "SECRET_PASSWORD_STAGED (secretsmanager :SecretString:<jsonkey>:AWSCURRENT)" \
-  "${ENV_SECRET_PASSWORD_STAGED}" "${EXPECTED_USERNAME}"
+  "${ENV_SECRET_PASSWORD_STAGED}" "${EXPECTED_PASSWORD}"
 check_equals "SSM_VALUE (ssm:<name> plaintext param)" \
   "${ENV_SSM_VALUE}" "${EXPECTED_SSM}"
 # The SecureString still has to REACH AWS decrypted — issue #1901 changes what
@@ -326,6 +331,16 @@ case "${STATE_SECRET_PASSWORD}" in
   '{{resolve:secretsmanager:'*) echo "    OK: state SECRET_PASSWORD kept the expression: ${STATE_SECRET_PASSWORD}" ;;
   *) echo "FAIL: state SECRET_PASSWORD is NOT the {{resolve:...}} expression: $(mask "${STATE_SECRET_PASSWORD}")" >&2; redaction_fail=1 ;;
 esac
+# ...and specifically NOT its staged sibling's spelling. The case above accepts
+# any secretsmanager expression, so on its own it passes on the collapsed state
+# (#1904 / #1910) — the two leaves resolve to one value, so it is exactly this
+# leaf that gets rewritten to the OTHER one's expression.
+case "${STATE_SECRET_PASSWORD}" in
+  *':AWSCURRENT}}')
+    echo "FAIL: state SECRET_PASSWORD took the STAGED expression — the colliding pair collapsed (#1910)" >&2
+    redaction_fail=1
+    ;;
+esac
 case "${STATE_SECRET_FULL}" in
   '{{resolve:secretsmanager:'*) echo "    OK: state SECRET_FULL kept the expression: ${STATE_SECRET_FULL}" ;;
   *) echo "FAIL: state SECRET_FULL is NOT the {{resolve:...}} expression: $(mask "${STATE_SECRET_FULL}")" >&2; redaction_fail=1 ;;
@@ -383,15 +398,17 @@ if printf '%s' "${STATE_JSON}" | grep -qF "${EXPECTED_SECURE}"; then
 else
   echo "    OK: decrypted SecureString value is absent from the whole state document"
 fi
-# The staged reference's resolved value (the secret's `username` key) must not
-# survive in the Lambda's persisted env either. Scoped to LAMBDA_ENV, not the
-# whole state: the DynRefSecret resource's OWN SecretString legitimately
-# contains it (same rationale as the password grep above).
+# The secret's OTHER json key must not survive either. Since #1910 restored the
+# collision, the staged reference resolves to the password and is covered by the
+# grep above; this now guards SECRET_FULL, whose whole-secret resolution carries
+# the username and must likewise be stored as its expression. Scoped to
+# LAMBDA_ENV, not the whole state: the DynRefSecret resource's OWN SecretString
+# legitimately contains it (same rationale as the password grep above).
 if printf '%s' "${LAMBDA_ENV}" | grep -qF "${EXPECTED_USERNAME}"; then
-  echo "FAIL: the staged reference's resolved value LEAKED into the Lambda's persisted env" >&2
+  echo "FAIL: the whole-secret reference's resolved value LEAKED into the Lambda's persisted env" >&2
   redaction_fail=1
 else
-  echo "    OK: staged-reference plaintext is absent from the consumer Lambda's persisted state"
+  echo "    OK: whole-secret plaintext is absent from the consumer Lambda's persisted state"
 fi
 
 if [ "${redaction_fail}" -ne 0 ]; then
@@ -490,6 +507,7 @@ node "${LOCAL_DIST}" rollback "${STACK}" \
 RB_CFG=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}")
 rb_env() { printf '%s' "${RB_CFG}" | jq -r --arg k "$1" '.Environment.Variables[$k] // empty'; }
 RB_PW=$(rb_env SECRET_PASSWORD)
+RB_PW_STAGED=$(rb_env SECRET_PASSWORD_STAGED)
 RB_SECURE=$(rb_env SSM_SECURE_VALUE)
 RB_EXTRA=$(rb_env ROLLBACK_EXTRA)
 case "${RB_PW}" in
@@ -516,6 +534,21 @@ if [ "${RB_SECURE}" != "${EXPECTED_SECURE}" ]; then
   echo "FAIL: after rollback the Lambda SSM_SECURE_VALUE is not the decrypted value: got $(mask "${RB_SECURE}")" >&2
   exit 1
 fi
+# Issue #1910: the journal is the writer whose collapse is not merely cosmetic.
+# `resolveReplayProps` RE-RESOLVES these expressions and ships the result to the
+# live Lambda, so a staged/unstaged pair collapsed onto one spelling makes the
+# replay resolve the WRONG reference for one of the two leaves. Both must come
+# back as the resolved value, and neither may still be a literal expression.
+case "${RB_PW_STAGED}" in
+  *'{{resolve:'*)
+    echo "FAIL: after rollback the Lambda SECRET_PASSWORD_STAGED is the LITERAL expression — the replay did NOT re-resolve: $(mask "${RB_PW_STAGED}")" >&2
+    exit 1
+    ;;
+esac
+if [ "${RB_PW_STAGED}" != "${EXPECTED_PASSWORD}" ]; then
+  echo "FAIL: after rollback the Lambda SECRET_PASSWORD_STAGED is not the resolved value: got $(mask "${RB_PW_STAGED}")" >&2
+  exit 1
+fi
 if [ -n "${RB_EXTRA}" ]; then
   echo "FAIL: rollback did not revert the Lambda env (ROLLBACK_EXTRA still '$(mask "${RB_EXTRA}")')" >&2
   exit 1
@@ -530,9 +563,23 @@ RB_LAMBDA_ENV=$(printf '%s' "${RB_STATE}" | jq -c '.state.resources | to_entries
              | .value.properties.Environment.Variables' | head -1)
 RB_STATE_PW=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD // empty')
 RB_STATE_SECURE=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.SSM_SECURE_VALUE // empty')
+RB_STATE_PW_STAGED=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD_STAGED // empty')
 case "${RB_STATE_PW}" in
   '{{resolve:secretsmanager:'*) echo "    OK: post-rollback state kept the SECRET_PASSWORD expression" ;;
   *) echo "FAIL: post-rollback state SECRET_PASSWORD is NOT the {{resolve:...}} expression: $(mask "${RB_STATE_PW}")" >&2; exit 1 ;;
+esac
+# Issue #1910: the rollback WRITES state after re-resolving, so it is a redaction
+# site of its own — and the colliding pair is what makes this assertion bite. A
+# plain `:AWSCURRENT}}` suffix check is what discriminates: without a position
+# source BOTH leaves come back on whichever expression the replay recorded last,
+# so SECRET_PASSWORD would hold the staged spelling and this leaf the unstaged
+# one. Checking only "is it an expression" would pass on the collapsed state.
+case "${RB_STATE_PW_STAGED}" in
+  '{{resolve:secretsmanager:'*':AWSCURRENT}}') echo "    OK: post-rollback state kept SECRET_PASSWORD_STAGED's OWN staged expression" ;;
+  *) echo "FAIL: post-rollback state SECRET_PASSWORD_STAGED is NOT its own {{resolve:...:AWSCURRENT}} expression: $(mask "${RB_STATE_PW_STAGED}")" >&2; exit 1 ;;
+esac
+case "${RB_STATE_PW}" in
+  *':AWSCURRENT}}') echo "FAIL: post-rollback state SECRET_PASSWORD took the STAGED expression — the pair collapsed (#1910)" >&2; exit 1 ;;
 esac
 # The rollback WRITES a state record, so it is its own redaction site (issue
 # #1901): re-resolving for the provider must not leave the decrypted value in

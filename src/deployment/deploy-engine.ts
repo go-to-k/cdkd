@@ -658,6 +658,15 @@ export class DeployEngine {
    * `deploy()`.
    */
   private outputSecrets: RecordedSecretValues = new Map();
+  /**
+   * UNRESOLVED template `Outputs` values, keyed by output name (issue #1910) —
+   * the outputs' POSITION source, the sibling of `perResourceTemplateProps` for
+   * the bag `resolveOutputs` produces. Without it two outputs resolving one
+   * secret collapse onto whichever expression was recorded last, exactly as two
+   * resource properties did before #1904. Captured in `resolveOutputs` at the
+   * same point `outputSecrets` is accumulated. Reset per `deploy()`.
+   */
+  private outputsTemplateSource: Record<string, unknown> = {};
 
   /**
    * Per-logical-id snapshot of the intrinsic-RESOLVED desired properties
@@ -725,6 +734,7 @@ export class DeployEngine {
     this.perResourceSecrets = new Map();
     this.perResourceTemplateProps = new Map();
     this.outputSecrets = new Map();
+    this.outputsTemplateSource = {};
     // Per-deploy-run counter: the resolver instance is engine-scoped and an
     // engine can be reused across deploys, so reset here (not in the
     // resolver constructor) to keep the deploy-summary count per run.
@@ -794,6 +804,22 @@ export class DeployEngine {
   }
 
   /**
+   * Redact the resolved stack OUTPUTS bag, positioned by the unresolved
+   * template `Outputs` values (issue #1910).
+   *
+   * A single entry point because THREE call sites redact this same bag — the
+   * state-persist choke point, the no-change re-check, and the post-deploy
+   * publish that feeds the exports index / deploy summary — and before this
+   * they each spelled the value-only redaction separately. Two outputs
+   * resolving one secret collapsed onto whichever expression was recorded last
+   * at all three.
+   */
+  private redactOutputs(outputs: Record<string, unknown>): Record<string, unknown> {
+    if (this.outputSecrets.size === 0) return outputs;
+    return redactSecretsForState(outputs, this.outputSecrets, this.outputsTemplateSource);
+  }
+
+  /**
    * Redact resolved secret plaintext out of rollback-journal operations (GHSA
    * fix). Each op may carry resolved `properties` / `attemptedProperties` and a
    * `previousState` snapshot (whose `properties` / `attributes` /
@@ -802,26 +828,49 @@ export class DeployEngine {
    * whole-secret value from one resource cannot rewrite another's literal.
    * Preserves ops that carry none of those fields, or whose resource recorded
    * no secret.
+   *
+   * The POSITION source matters MORE here than anywhere else (issue #1910).
+   * This journal is not just persisted, it is REPLAYED to AWS by the rollback
+   * executor's `resolveReplayProps`, so a leaf redacted onto a SIBLING's
+   * expression — which is what the value-keyed map does when two expressions
+   * resolve to one value — re-resolves at replay time to the wrong reference.
+   * For two `:AWSCURRENT` / `:AWSPREVIOUS` stages of one secret that is the
+   * wrong VERSION shipped to the live resource the moment the two diverge.
+   *
+   * The two SIDES take different sources, and conflating them would be a fresh
+   * defect rather than a simplification: `properties` / `attemptedProperties`
+   * are this deploy's DESIRED bags, produced by resolving the CURRENT template,
+   * so the template bag positions them. `previousState` is a record read back
+   * from STATE, whose leaves already hold expressions from whenever it was
+   * written — the current template is not its source and may not even have the
+   * same shape — so it is redacted against ITSELF via `scrubResourceRecord`,
+   * the same #1900 fallback an UNCHANGED resource takes.
    */
   private redactOperationsForJournal<T extends CompletedOperation | FailedOperation>(
     operations: T[]
   ): T[] {
     return operations.map((op) => {
       const secrets = this.perResourceSecrets.get(op.logicalId);
-      if (!secrets || secrets.size === 0) return op;
+      const templateProps = this.perResourceTemplateProps.get(op.logicalId);
+      // `previousState` is redactable with NO secrets map at all (#1900), so the
+      // early return has to let that case through or the whole state-sourced
+      // half is dead code.
+      if ((!secrets || secrets.size === 0) && !op.previousState) return op;
+      const ownSecrets = secrets ?? new Map<string, string>();
       const next = { ...op } as CompletedOperation & FailedOperation;
-      if (next.properties) next.properties = redactSecretsForState(next.properties, secrets);
+      if (next.properties) {
+        next.properties = redactSecretsForState(next.properties, ownSecrets, templateProps);
+      }
       if (next.attemptedProperties) {
-        next.attemptedProperties = redactSecretsForState(next.attemptedProperties, secrets);
+        next.attemptedProperties = redactSecretsForState(
+          next.attemptedProperties,
+          ownSecrets,
+          templateProps
+        );
       }
       if (next.previousState) {
-        const prev = { ...next.previousState };
-        prev.properties = redactSecretsForState(prev.properties, secrets);
-        if (prev.attributes) prev.attributes = redactSecretsForState(prev.attributes, secrets);
-        if (prev.observedProperties) {
-          prev.observedProperties = redactSecretsForState(prev.observedProperties, secrets);
-        }
-        next.previousState = prev;
+        // No `sourceProperties`: the previous record positions itself.
+        next.previousState = scrubResourceRecord(next.previousState, ownSecrets);
       }
       return next as unknown as T;
     });
@@ -858,10 +907,7 @@ export class DeployEngine {
     return {
       ...state,
       resources,
-      outputs:
-        this.outputSecrets.size > 0
-          ? redactSecretsForState(state.outputs, this.outputSecrets)
-          : state.outputs,
+      outputs: this.redactOutputs(state.outputs),
     };
   }
 
@@ -1469,15 +1515,14 @@ export class DeployEngine {
           // resources, which come from `currentState.resources` (the arg), and
           // condition pruning only touches `Resources`, so resolving against
           // `effectiveTemplate` vs the raw `template` is equivalent here.
-          const resolvedOutputs = this.redactPropsWith(
+          const resolvedOutputs = this.redactOutputs(
             await this.resolveOutputs(
               effectiveTemplate,
               currentState.resources,
               stackName,
               parameterValues,
               conditions
-            ),
-            this.outputSecrets
+            )
           );
           // resolveOutputs stores `undefined` for any output it could not
           // resolve (logged as a warn there). In the no-change path every
@@ -2250,8 +2295,10 @@ export class DeployEngine {
       // index / deploy summary / state (GHSA fix). The state save also redacts
       // via `withParentInfo`, but the exports-index `updateForStack` and
       // `buildDisplayOutputs` read this bag directly. `resolveOutputs` populated
-      // `this.outputSecrets` with the outputs' own substituted references.
-      outputs = this.redactPropsWith(outputs, this.outputSecrets);
+      // `this.outputSecrets` with the outputs' own substituted references, and
+      // `this.outputsTemplateSource` with the unresolved values that position
+      // them (#1910).
+      outputs = this.redactOutputs(outputs);
     } catch (outputError) {
       await this.persistStateAfterOutputFailure(
         stackName,
@@ -4528,6 +4575,15 @@ export class DeployEngine {
     // output equal to a secret is not recorded here and is not touched.
     if (context.recordedSecretValues) {
       for (const [value, expr] of context.recordedSecretValues) this.outputSecrets.set(value, expr);
+    }
+    // ...and the UNRESOLVED values beside them, as the POSITION source (#1910).
+    // Keyed by output NAME so the walk lines up with the resolved `outputs` bag
+    // this method returns. Accumulated rather than assigned: `resolveOutputs`
+    // runs more than once per deploy (the no-change re-check re-resolves), and
+    // a condition-pruned output is skipped by the loop above, so overwriting
+    // would drop a source this run legitimately did not revisit.
+    for (const [outputKey, output] of Object.entries(template.Outputs)) {
+      this.outputsTemplateSource[outputKey] = output.Value;
     }
 
     return outputs;

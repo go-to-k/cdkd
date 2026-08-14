@@ -50,6 +50,64 @@ export type RecordedSecretValues = Map<string, string>;
 export const SECRET_MASK = '***';
 
 /**
+ * Every `{{resolve:...}}` expression this process has PROVEN resolves to a
+ * secret, as a SET — uncollapsed by resolved value (issue #1910).
+ *
+ * This is the piece {@link RecordedSecretValues} structurally cannot supply.
+ * That map is keyed by the resolved PLAINTEXT, so when two expressions resolve
+ * to the same value it keeps only the last, and asking it whether the LOSING
+ * expression was a secret answers "no" — for precisely the pair the path-based
+ * redaction exists to separate. The losing leaf then falls through to the value
+ * scan and is persisted holding its SIBLING's expression: a permanent spurious
+ * UPDATE, and on the rollback-journal replay path a re-resolution of the wrong
+ * reference against the live resource.
+ *
+ * Only `ssm` needs an entry. A `secretsmanager` reference is secret by
+ * SPELLING (see {@link isKnownSecretExpression}), so it is decidable with no
+ * lookup and no memory; an `ssm` one is secret only when its parameter is a
+ * `SecureString`, which is knowable only from the `GetParameter` response.
+ *
+ * It lives in THIS module rather than in the resolver even though the resolver
+ * is its only writer, for two reasons. This module is the LEAF — the resolver
+ * already imports it, so the store is reachable from the writer without adding
+ * an edge, while the reverse (a leaf importing the resolver) would close a
+ * cycle. And the READER is {@link isKnownSecretExpression} right here, so
+ * homing it here means no call site has to thread it: the four sibling writers
+ * #1910 fixes pass a position SOURCE and nothing else.
+ *
+ * Its lifetime matches the resolver's `cachedDynamicReferences` — the resolver
+ * clears both together. Process-wide rather than per-stack is correct and not a
+ * compromise: "this expression names a SecureString parameter" is a fact about
+ * the expression, not about the stack that mentions it.
+ */
+const recordedSecretExpressions = new Set<string>();
+
+/** Remember that `expression` resolves to a secret. Called by the resolver. */
+export function recordSecretExpression(expression: string): void {
+  recordedSecretExpressions.add(expression);
+}
+
+/**
+ * Forget a previously recorded expression — the resolver's `SecureString`
+ * verdict going the other way (an ssm parameter that turns out to be a plain
+ * `String` / `StringList`, i.e. public config that must stay RESOLVED in
+ * state).
+ */
+export function forgetSecretExpression(expression: string): void {
+  recordedSecretExpressions.delete(expression);
+}
+
+/** Has `expression` been PROVEN to resolve to a secret this process? */
+export function isRecordedSecretExpression(expression: string): boolean {
+  return recordedSecretExpressions.has(expression);
+}
+
+/** Drop every remembered verdict. Paired with the resolver's cache reset. */
+export function clearRecordedSecretExpressions(): void {
+  recordedSecretExpressions.clear();
+}
+
+/**
  * A resolved secret value shorter than this is NOT used as a redaction needle:
  * a 1-2 character plaintext (e.g. a secret whose JSON key holds `"0"`) would
  * match incidental characters everywhere and mangle unrelated state. Such a
@@ -157,17 +215,26 @@ function isDynamicReferenceString(value: unknown): value is string {
  *   (issue #1901), which is not derivable from the string, so that arm consults
  *   what the resolver actually recorded.
  *
- * The residue is narrow and safe: two SecureString ssm references sharing one
- * resolved value still collapse, because the map cannot distinguish them and
- * spelling cannot either. That is the pre-existing behavior, it leaks nothing
- * (both are redacted, just to one expression), and closing it needs the resolver
- * to record expressions in their own set rather than as map values.
+ * `secretExpressions` is what closes the ssm/ssm case (issue #1910). Derived
+ * from the value-keyed map it is useless for exactly this question — the map
+ * already collapsed the pair, so the losing expression is absent from
+ * `secrets.values()` — which is why callers pass the resolver's own SET of
+ * secret expressions instead. Callers that pass nothing fall back to the map's
+ * values, i.e. to the pre-#1910 behavior: the pair still collapses, but nothing
+ * leaks (both leaves are redacted, just onto one expression).
  */
 function isKnownSecretExpression(
   expression: string,
   secretExpressions: ReadonlySet<string>
 ): boolean {
-  return expression.startsWith('{{resolve:secretsmanager:') || secretExpressions.has(expression);
+  return (
+    expression.startsWith('{{resolve:secretsmanager:') ||
+    secretExpressions.has(expression) ||
+    // The pass's own map collapsed every group of expressions sharing a
+    // resolved value down to its last member, so the LOSING members reach this
+    // arm and only this arm (issue #1910).
+    isRecordedSecretExpression(expression)
+  );
 }
 
 /**

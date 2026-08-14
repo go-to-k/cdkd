@@ -28,7 +28,14 @@ import {
 } from '../utils/s3-endpoints.js';
 import { IntrinsicResolutionRefusalError } from '../utils/error-handler.js';
 import { markNonRetryable } from './retryable-errors.js';
-import { maskSecretsInText, type RecordedSecretValues } from './secret-redaction.js';
+import {
+  maskSecretsInText,
+  recordSecretExpression,
+  forgetSecretExpression,
+  isRecordedSecretExpression,
+  clearRecordedSecretExpressions,
+  type RecordedSecretValues,
+} from './secret-redaction.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState, StateImportEntry, StateOutputReadEntry } from '../types/state.js';
 import { S3StateBackend } from '../state/s3-state-backend.js';
@@ -856,8 +863,22 @@ const cachedDynamicReferences: Record<string, string> = {};
  * Only the TYPE is remembered, never the decrypted value: on the diff path the
  * lookup is made with `WithDecryption: false`, so the plaintext is never
  * fetched at all there.
+ *
+ * Since issue [#1910](https://github.com/go-to-k/cdkd/issues/1910) the STORE
+ * lives in `secret-redaction.ts` rather than here. The two questions ("is this
+ * expression's parameter a SecureString?" and "is this expression secret?")
+ * have the same answer for every reference kind whose spelling cannot settle
+ * it, and the redaction path is the other consumer — so keeping one set in the
+ * leaf module means the redactor can answer without any caller threading it,
+ * and the resolver reaches it along an import edge it already has. These three
+ * wrappers keep this file's call sites reading as they did.
  */
-const secureStringSsmReferences = new Set<string>();
+const secureStringSsmReferences = {
+  has: (expression: string): boolean => isRecordedSecretExpression(expression),
+  add: (expression: string): void => recordSecretExpression(expression),
+  delete: (expression: string): void => forgetSecretExpression(expression),
+  clear: (): void => clearRecordedSecretExpressions(),
+};
 
 /**
  * Cache for EC2 instance attributes that require a live DescribeInstances

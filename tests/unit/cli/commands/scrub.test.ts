@@ -22,6 +22,10 @@ const SECRET_EXPR = '{{resolve:secretsmanager:my-secret:SecretString:password::}
 // re-derive secret-ness from the spelling.
 const SECURE_PLAINTEXT = 'decrypted-securestring-value';
 const SECURE_EXPR = '{{resolve:ssm:/prod/db/password}}';
+// A SECOND expression for the SAME secret — its `:AWSCURRENT` version stage.
+// It resolves to SECRET_PLAINTEXT too, so the value-keyed map collapses the
+// pair and only the template can say which leaf held which (issue #1910).
+const SECRET_EXPR_STAGED = '{{resolve:secretsmanager:my-secret:SecretString:password:AWSCURRENT}}';
 
 // Mock resolver: resolving a value equal to SECRET_EXPR records the secret and
 // returns the plaintext (as the real resolver does). This lets scrubStack learn
@@ -41,6 +45,10 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
           if (v === SECURE_EXPR) {
             ctx.recordedSecretValues?.set(SECURE_PLAINTEXT, SECURE_EXPR);
             return SECURE_PLAINTEXT;
+          }
+          if (v === SECRET_EXPR_STAGED) {
+            ctx.recordedSecretValues?.set(SECRET_PLAINTEXT, SECRET_EXPR_STAGED);
+            return SECRET_PLAINTEXT;
           }
           if (Array.isArray(v)) return v.map(walk);
           if (v && typeof v === 'object') {
@@ -221,6 +229,63 @@ describe('cdkd scrub - scrubStack', () => {
     // before, so this is an ADDITION to scrub's coverage rather than a swap.
     expect(env['SECRET']).toBe(SECRET_EXPR);
     expect(env['PUBLIC']).toBe('ok');
+  });
+
+  // Issue #1910: `cdkd scrub` had the synthesized template in hand and passed
+  // no position source, so it could bake the WRONG expression into state while
+  // reporting the stack cleaned.
+  it('keeps each leaf on ITS OWN expression when two references share a value', async () => {
+    const stackInfo = {
+      stackName: 'MyStack',
+      displayName: 'MyStack',
+      artifactId: 'MyStack',
+      dependencyNames: [],
+      template: {
+        Resources: {
+          Fn: {
+            Type: 'AWS::Lambda::Function',
+            Properties: {
+              Environment: { Variables: { PLAIN: SECRET_EXPR, STAGED: SECRET_EXPR_STAGED } },
+            },
+          },
+        },
+        Outputs: { PlainOut: { Value: SECRET_EXPR }, StagedOut: { Value: SECRET_EXPR_STAGED } },
+      },
+    };
+    stateBackend.getState.mockResolvedValue({
+      state: {
+        version: 8,
+        region: 'us-east-1',
+        stackName: 'MyStack',
+        resources: {
+          Fn: {
+            physicalId: 'my-fn',
+            resourceType: 'AWS::Lambda::Function',
+            properties: {
+              Environment: { Variables: { PLAIN: SECRET_PLAINTEXT, STAGED: SECRET_PLAINTEXT } },
+            },
+          },
+        },
+        outputs: { PlainOut: SECRET_PLAINTEXT, StagedOut: SECRET_PLAINTEXT },
+        lastModified: 0,
+      } satisfies StackState,
+      etag: 'etag-1',
+    });
+
+    await scrubStack(stackInfo as never, 'us-east-1', stateBackend as never, lockManager as never, {
+      dryRun: false,
+      logger,
+    });
+
+    const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    const env = (saved.resources['Fn']!.properties['Environment'] as Record<string, unknown>)[
+      'Variables'
+    ] as Record<string, string>;
+    expect(env['PLAIN']).toBe(SECRET_EXPR);
+    expect(env['STAGED']).toBe(SECRET_EXPR_STAGED);
+    expect(saved.outputs['PlainOut']).toBe(SECRET_EXPR);
+    expect(saved.outputs['StagedOut']).toBe(SECRET_EXPR_STAGED);
+    expect(JSON.stringify(saved)).not.toContain(SECRET_PLAINTEXT);
   });
 
   it('returns zero when no state exists for the stack', async () => {

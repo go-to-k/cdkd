@@ -472,7 +472,15 @@ describe('cdkd import', () => {
     // reference must persist as the EXPRESSION, never the fetched plaintext
     // (the same disclosure class the deploy path fixes).
     const secretPlaintext = 'imported-super-secret';
-    smSend.mockResolvedValueOnce({ SecretString: secretPlaintext });
+    // The payload must be valid JSON because the reference names a JSON_KEY.
+    // With a bare string the resolver REFUSES the reference, `resolveImported-
+    // Properties` catches it and persists the RAW template shape — which equals
+    // the redacted form, so every assertion below passed while redaction never
+    // ran at all. The `expect(smSend).toHaveBeenCalled()` guard did not catch
+    // that: the fetch DID happen, it was the parse after it that refused.
+    smSend.mockResolvedValueOnce({
+      SecretString: JSON.stringify({ client_secret: secretPlaintext }),
+    });
 
     const secretExpr = '{{resolve:secretsmanager:my-secret:SecretString:client_secret::}}';
     const tmpl: CloudFormationTemplate = {
@@ -501,11 +509,15 @@ describe('cdkd import', () => {
       string,
       { resources: Record<string, { properties: Record<string, unknown> }> },
     ];
-    // Non-vacuity guard: the resolver actually FETCHED the secret (so it held
-    // the plaintext in hand). Otherwise the assertion below would pass merely
-    // because the raw expression was never resolved — the raw form equals the
-    // redacted form, so redaction would be untested.
+    // Non-vacuity guard: the reference must have RESOLVED, not merely been
+    // fetched. The raw form equals the redacted form, so anything that leaves
+    // the intrinsic unresolved satisfies the assertions below without redaction
+    // running — and a refusal AFTER the fetch does exactly that, which is why
+    // asserting the fetch alone was not enough.
     expect(smSend).toHaveBeenCalled();
+    expect(warnSpy.mock.calls.flat().join('\n')).not.toContain(
+      'Failed to resolve intrinsics in Properties'
+    );
 
     const details = state.resources['Idp']!.properties['ProviderDetails'] as Record<string, unknown>;
     // The secret member holds the expression; the public sibling is untouched.
@@ -514,6 +526,60 @@ describe('cdkd import', () => {
     expect(details['client_secret']).toBe(secretExpr);
     expect(details['client_id']).toBe('public-id');
     // Hard invariant: the plaintext appears NOWHERE in the persisted state.
+    expect(JSON.stringify(state)).not.toContain(secretPlaintext);
+  });
+
+  it('keeps each imported leaf on ITS OWN expression when two references share a value (#1910)', async () => {
+    // `cdkd import` was the fourth sibling writer passing no position source:
+    // two references resolving to one value collapsed onto whichever the
+    // resolver recorded last, so the freshly imported state disagreed with the
+    // template at one leaf and the very next `cdkd deploy` reported a change.
+    const secretPlaintext = 'imported-super-secret';
+    // TWO DISTINCT secrets that happen to hold the same value — a shared
+    // password rotated into two places. Distinct ids rather than two version
+    // stages of one id on purpose: the resolver resolves a stage-qualified
+    // reference off the same fetch, so a stage pair yields ONE call and the
+    // second leaf would silently stay raw, making the assertion vacuous.
+    smSend.mockResolvedValueOnce({ SecretString: secretPlaintext });
+    smSend.mockResolvedValueOnce({ SecretString: secretPlaintext });
+
+    const exprPlain = '{{resolve:secretsmanager:secret-one:SecretString::}}';
+    const exprStaged = '{{resolve:secretsmanager:secret-two:SecretString::}}';
+    const tmpl: CloudFormationTemplate = {
+      AWSTemplateFormatVersion: '2010-09-09',
+      Resources: {
+        Idp: {
+          Type: 'AWS::Cognito::UserPoolIdentityProvider',
+          Properties: {
+            ProviderName: 'oidc',
+            ProviderDetails: { plain: exprPlain, staged: exprStaged },
+          },
+          Metadata: { 'aws:cdk:path': 'S/Idp' },
+        },
+      },
+    };
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+    mockHasProvider.mockReturnValue(true);
+    mockGetProvider.mockImplementation(() => ({
+      import: vi.fn(async () => ({ physicalId: 'idp-phys', attributes: {} })),
+    }));
+
+    await runImport(['import', '--app', 'x', '--yes']);
+
+    const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+      string,
+      string,
+      { resources: Record<string, { properties: Record<string, unknown> }> },
+    ];
+    // Non-vacuity guard, and STRONGER than the sibling test's above: here the
+    // raw form equals the expected form at BOTH leaves, so "it was fetched at
+    // all" is not enough — the collapse can only be observed if BOTH references
+    // were actually resolved to the shared plaintext.
+    expect(smSend).toHaveBeenCalledTimes(2);
+
+    const details = state.resources['Idp']!.properties['ProviderDetails'] as Record<string, unknown>;
+    expect(details['plain']).toBe(exprPlain);
+    expect(details['staged']).toBe(exprStaged);
     expect(JSON.stringify(state)).not.toContain(secretPlaintext);
   });
 

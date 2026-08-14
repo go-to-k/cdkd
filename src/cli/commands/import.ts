@@ -1428,13 +1428,17 @@ async function resolveImportedProperties(
       // whole-secret value from one resource cannot rewrite another's literal
       // (see the deploy engine's `perResourceSecrets` doc for the rationale).
       const recordedSecretValues = new Map<string, string>();
-      const resolved = (await resolver.resolve(resource.properties ?? {}, {
+      // Captured BEFORE the resolve + reassignment below: this unresolved bag is
+      // the POSITION source (#1910), and `resource.properties` is overwritten
+      // with the resolved one two statements later.
+      const unresolvedProperties = resource.properties ?? {};
+      const resolved = (await resolver.resolve(unresolvedProperties, {
         ...baseContext,
         recordedSecretValues,
       })) as Record<string, unknown>;
       resource.properties =
         recordedSecretValues.size > 0
-          ? redactSecretsForState(resolved, recordedSecretValues)
+          ? redactSecretsForState(resolved, recordedSecretValues, unresolvedProperties)
           : resolved;
     } catch (err) {
       // Intrinsic referenced a resource not in the importable set
