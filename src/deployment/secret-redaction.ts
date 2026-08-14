@@ -77,33 +77,62 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
 }
 
 /**
- * Which source leaves may be persisted verbatim by the path pass.
+ * The two rules the path pass needs, which are ORTHOGONAL — this was one
+ * parameter and the conflation was a real defect (found by review, reproduced
+ * against the branch tip).
  *
- * This is NOT "any `{{resolve:` string", and the difference is a real defect
- * rather than a nicety. A TEMPLATE bag also carries a plain
- * `{{resolve:ssm:/public/param}}` for a `String` / `StringList` parameter, which
- * the resolver deliberately keeps RESOLVED in state (issue #1901) — persisting
- * the expression there would make the diff compare a resolved desired side
- * against a stored expression on every run, i.e. exactly the perpetual UPDATE
- * that issue exists to prevent.
+ * They are decided by DIFFERENT bags:
  *
- * So the rule depends on the source's PROVENANCE:
+ * - `descendArrays` follows the BAG's provenance. Positional descent is sound
+ *   only when the bag was PRODUCED BY resolving the source, so the two have
+ *   identical structure. The persisted `properties` is
+ *   `effectiveProperties ?? desiredProperties`, so a provider-NARROWED bag can
+ *   be walked against the template; every `effectiveProperties` producer today
+ *   preserves length and order on an equal-length array, and the length check
+ *   below is what makes a producer that stops doing so fall to the value scan
+ *   rather than mis-align. An AWS readback may be REORDERED — AWS does not
+ *   preserve list order, which is the whole reason
+ *   `src/analyzer/drift-normalize.ts` exists — and descending it positionally
+ *   would write an expression onto the WRONG element while leaving the real
+ *   secret in plaintext.
+ * - `trustAnyExpression` follows the SOURCE's provenance. A persisted STATE bag
+ *   holds no public expressions (a public ssm reference is stored RESOLVED), so
+ *   any `{{resolve:...}}` in one is by construction a secret — which is what
+ *   lets an UNCHANGED resource be redacted with no secrets map at all (issue
+ *   #1900). A TEMPLATE bag carries public and secret expressions alike, so only
+ *   a KNOWN secret may be persisted from it, or a `String` / `StringList`
+ *   parameter would be stored as its expression and the diff would compare a
+ *   resolved desired side against it forever — the perpetual UPDATE issue #1901
+ *   exists to prevent.
  *
- * - `'template-derived'` — the bag was PRODUCED BY resolving the source, so the
- *   two have identical structure and arrays line up positionally. But a template
- *   carries public and secret expressions alike, so only an expression the
- *   resolver actually RECORDED as a secret this pass may be persisted.
- * - `'aws-readback'` — the bag came back from AWS (`observedProperties`), so its
- *   ARRAYS may be reordered relative to the source: AWS does not preserve list
- *   order, which is the whole reason `src/analyzer/drift-normalize.ts` exists.
- *   Descending an array positionally would write an expression onto the WRONG
- *   element and leave the real secret unredacted, so arrays fall to the value
- *   scan. Its source is a persisted STATE bag, where a `{{resolve:...}}` string
- *   is by construction already a secret (a public ssm reference is stored
- *   RESOLVED there), which is what lets an UNCHANGED resource be redacted with
- *   no secrets map at all (issue #1900).
+ * `observedProperties` is exactly the case that proves they are separate: its
+ * bag is an AWS readback (so no array descent) while its source may be the
+ * TEMPLATE (so no blanket trust). Answering both from one enum leaked the
+ * template's public ssm expression into the drift baseline, which
+ * `cdkd drift --revert` then pushes back to AWS as a literal.
  */
-export type PathSourceKind = 'template-derived' | 'aws-readback';
+export interface PathSourceRules {
+  descendArrays: boolean;
+  trustAnyExpression: boolean;
+}
+
+/** The bag was produced by resolving the source: same shape, template source. */
+export const TEMPLATE_DERIVED_RULES: PathSourceRules = {
+  descendArrays: true,
+  trustAnyExpression: false,
+};
+
+/** An AWS readback projected from a persisted STATE bag. */
+export const STATE_SOURCED_READBACK_RULES: PathSourceRules = {
+  descendArrays: false,
+  trustAnyExpression: true,
+};
+
+/** An AWS readback projected from the TEMPLATE: neither relaxation applies. */
+export const TEMPLATE_SOURCED_READBACK_RULES: PathSourceRules = {
+  descendArrays: false,
+  trustAnyExpression: false,
+};
 
 function isDynamicReferenceString(value: unknown): value is string {
   return typeof value === 'string' && value.includes('{{resolve:');
@@ -133,7 +162,22 @@ function isKnownSecretExpression(
   expression: string,
   secretExpressions: ReadonlySet<string>
 ): boolean {
-  return expression.includes('{{resolve:secretsmanager:') || secretExpressions.has(expression);
+  return expression.startsWith('{{resolve:secretsmanager:') || secretExpressions.has(expression);
+}
+
+/**
+ * Is this source leaf a SINGLE complete `{{resolve:...}}` token and nothing
+ * else?
+ *
+ * Whole-leaf substitution is only correct for that shape. A MIXED leaf --
+ * `pre{{resolve:ssm:/public}}-{{resolve:secretsmanager:x}}post`, i.e. anything
+ * the resolver substituted INTO rather than replaced -- must fall to the value
+ * scan, which rewrites just the secret substring. Substituting the whole leaf
+ * there would re-introduce every other token in it, including a public ssm
+ * reference the resolver deliberately left resolved (issue #1901).
+ */
+function isSingleDynamicReferenceToken(value: string): boolean {
+  return /^\{\{resolve:[^{}]*\}\}$/.test(value);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -169,14 +213,17 @@ function redactByPath(
   bag: unknown,
   source: unknown,
   secrets: RecordedSecretValues,
-  kind: PathSourceKind,
+  rules: PathSourceRules,
   secretExpressions: ReadonlySet<string>
 ): unknown {
   if (isDynamicReferenceString(source) && typeof bag === 'string') {
     // A TEMPLATE source carries PUBLIC ssm expressions too, and those must stay
     // RESOLVED in state (#1901) or the diff compares a resolved desired side
     // against a stored expression forever. A STATE source cannot hold one.
-    if (kind === 'aws-readback' || isKnownSecretExpression(source, secretExpressions)) {
+    if (
+      isSingleDynamicReferenceToken(source) &&
+      (rules.trustAnyExpression || isKnownSecretExpression(source, secretExpressions))
+    ) {
       // The source leaf IS what state should hold — exact, and immune to two
       // expressions sharing one resolved value.
       return source;
@@ -186,7 +233,7 @@ function redactByPath(
     return redactSecretsForState(bag, secrets);
   }
   if (
-    kind === 'template-derived' &&
+    rules.descendArrays &&
     Array.isArray(bag) &&
     Array.isArray(source) &&
     bag.length === source.length
@@ -194,7 +241,7 @@ function redactByPath(
     // Positional descent is sound ONLY because the bag was produced by resolving
     // the source. An AWS readback may be REORDERED, so that kind falls through
     // to the value scan rather than writing an expression onto a wrong element.
-    return bag.map((item, i) => redactByPath(item, source[i], secrets, kind, secretExpressions));
+    return bag.map((item, i) => redactByPath(item, source[i], secrets, rules, secretExpressions));
   }
   if (isPlainObject(bag) && isPlainObject(source)) {
     const out: Record<string, unknown> = {};
@@ -202,7 +249,7 @@ function redactByPath(
       // `Object.hasOwn`, not `k in source`: the prototype chain would answer for
       // `constructor` / `toString` and hand the walk a function as the source.
       out[k] = Object.hasOwn(source, k)
-        ? redactByPath(v, source[k], secrets, kind, secretExpressions)
+        ? redactByPath(v, source[k], secrets, rules, secretExpressions)
         : redactSecretsForState(v, secrets);
     }
     return out;
@@ -226,14 +273,14 @@ export function redactSecretsForState<T>(
   bag: T,
   secrets: RecordedSecretValues,
   source?: unknown,
-  kind: PathSourceKind = 'template-derived'
+  rules: PathSourceRules = TEMPLATE_DERIVED_RULES
 ): T {
   // The PATH pass runs even with no recorded secrets — that is the whole point
   // for an UNCHANGED resource, whose `perResourceSecrets` entry is empty
   // because it was never resolved this deploy (issue #1900).
   if (secrets.size === 0 && source === undefined) return bag;
   if (source !== undefined) {
-    return redactByPath(bag, source, secrets, kind, new Set(secrets.values())) as T;
+    return redactByPath(bag, source, secrets, rules, new Set(secrets.values())) as T;
   }
   const regex = buildNeedleRegex(secrets.keys());
   // Even below the needle threshold, a NON-EMPTY whole-value match must still be
@@ -305,11 +352,18 @@ export function scrubResourceRecord<
     // one that actually holds expressions. On the `cdkd scrub` path the original
     // is still plaintext, so using it would degrade this to the value scan.
     // Marked `aws-readback` because this bag came from AWS — see the kind doc.
+    // The RULES differ by which source we ended up with, which is the whole
+    // point of them being two flags: a TEMPLATE source carries public ssm
+    // expressions (so no blanket trust), while the record's own properties
+    // cannot (so the #1900 no-secrets-map path works). Neither descends arrays,
+    // because this bag came back from AWS.
     next.observedProperties = redactSecretsForState(
       record.observedProperties,
       secrets,
       sourceProperties ?? next.properties,
-      'aws-readback'
+      sourceProperties === undefined
+        ? STATE_SOURCED_READBACK_RULES
+        : TEMPLATE_SOURCED_READBACK_RULES
     );
   }
   return next;

@@ -270,6 +270,69 @@ describe('secret-redaction - value-key collision (issue #1904, value-only bound)
     expect(JSON.stringify(redacted)).not.toContain(SHARED);
   });
 
+  // BLOCKER from the RE-review: the array rule and the substitution rule are
+  // decided by DIFFERENT bags, and answering both from one enum leaked the
+  // template's public ssm expression into `observedProperties` -- which is the
+  // drift baseline AND the `--revert` payload, so the literal would be pushed
+  // back to AWS. Reproduced against the branch tip before the split.
+  it('does NOT trust a template source just because the BAG is an AWS readback', () => {
+    const PUBLIC_EXPR = '{{resolve:ssm:/app/public-host}}';
+    const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PLAIN]]);
+
+    const record = {
+      properties: { SSM_VALUE: 'public-host', PASSWORD: SHARED },
+      observedProperties: { SSM_VALUE: 'public-host', PASSWORD: SHARED },
+    };
+
+    const scrubbed = scrubResourceRecord(record, secrets, {
+      SSM_VALUE: PUBLIC_EXPR,
+      PASSWORD: EXPR_PLAIN,
+    });
+
+    // The public value stays RESOLVED on BOTH sides (#1901)...
+    expect(scrubbed.properties['SSM_VALUE']).toBe('public-host');
+    expect(scrubbed.observedProperties!['SSM_VALUE']).toBe('public-host');
+    // ...while the secret is redacted on both.
+    expect(scrubbed.properties['PASSWORD']).toBe(EXPR_PLAIN);
+    expect(scrubbed.observedProperties!['PASSWORD']).toBe(EXPR_PLAIN);
+    expect(JSON.stringify(scrubbed)).not.toContain(SHARED);
+  });
+
+  // The #1900 half must still work through the SAME method: with no template
+  // bag the source is the record's own properties, where any expression IS a
+  // secret, so the readback's plaintext echo is redacted with no secrets map.
+  it('still redacts an unchanged resource observed bag from its own properties (#1900)', () => {
+    const record = {
+      properties: { PASSWORD: EXPR_PLAIN },
+      observedProperties: { PASSWORD: SHARED },
+    };
+
+    const scrubbed = scrubResourceRecord(record, new Map());
+
+    expect(scrubbed.observedProperties!['PASSWORD']).toBe(EXPR_PLAIN);
+    expect(JSON.stringify(scrubbed)).not.toContain(SHARED);
+  });
+
+  // MINOR from the RE-review: the secretsmanager test was a substring match, so
+  // a MIXED leaf carrying BOTH a public ssm token and a secretsmanager one
+  // satisfied it and the WHOLE leaf was persisted -- re-introducing the public
+  // reference. A mixed leaf belongs to the value scan.
+  it('does NOT whole-leaf substitute a MIXED source leaf', () => {
+    const PUBLIC_EXPR = '{{resolve:ssm:/app/public-host}}';
+    const mixedSource = `${PUBLIC_EXPR}-${EXPR_PLAIN}`;
+    const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PLAIN]]);
+
+    const redacted = redactSecretsForState(
+      { Url: `public-host-${SHARED}` },
+      secrets,
+      { Url: mixedSource }
+    ) as { Url: string };
+
+    // Only the secret substring is rewritten; the public half stays resolved.
+    expect(redacted.Url).toBe(`public-host-${EXPR_PLAIN}`);
+    expect(redacted.Url).not.toContain(PUBLIC_EXPR);
+  });
+
   it('still value-scans a subtree the source cannot position (embedded Fn::Sub)', () => {
     // The source leaf is an intrinsic OBJECT, so position cannot answer; the
     // value scan must still find the secret embedded in the joined result.
