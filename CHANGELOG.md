@@ -1,3 +1,10 @@
+## [0.283.23](https://github.com/go-to-k/cdkd/compare/v0.283.22...v0.283.23) (2026-08-14)
+
+
+### Bug Fixes
+
+* **cloud-control:** log a malformed readback model's shape, not its body ([#1913](https://github.com/go-to-k/cdkd/issues/1913)) ([66ca737](https://github.com/go-to-k/cdkd/commit/66ca7379be1ae8e5e94cd137bb57535a7822d523))
+
 ## [0.283.22](https://github.com/go-to-k/cdkd/compare/v0.283.21...v0.283.22) (2026-08-14)
 
 
