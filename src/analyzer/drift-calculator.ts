@@ -198,6 +198,14 @@ function diffAt(
 ): void {
   if (deepEqual(stateValue, awsValue)) return;
 
+  // A state leaf holding an unresolved `{{resolve:...}}` dynamic reference (GHSA
+  // fix: cdkd persists the expression, not the resolved secret) cannot be
+  // compared against the AWS readback, which returns the resolved plaintext (or
+  // nothing, for a write-only secret). Comparing would report permanent phantom
+  // drift on every secret-bearing property, and `--revert` would then write the
+  // expression string back to AWS as a literal. Skip it.
+  if (typeof stateValue === 'string' && stateValue.includes('{{resolve:')) return;
+
   if (
     isPlainObject(stateValue) &&
     isPlainObject(awsValue) &&

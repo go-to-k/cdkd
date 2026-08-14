@@ -21,6 +21,7 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
+import { redactSecretsForState } from '../../deployment/secret-redaction.js';
 import {
   resolveApp,
   resolveStateBucketWithDefault,
@@ -1411,6 +1412,10 @@ async function resolveImportedProperties(
     );
   }
 
+  // Records resolved secret plaintext -> `{{resolve:...}}` expression so the
+  // imported state persists the expression, not the plaintext (GHSA fix), the
+  // same as the deploy path. Accumulated across the import's resources.
+  const recordedSecretValues = new Map<string, string>();
   const baseContext = {
     template,
     resources: stackState.resources,
@@ -1418,6 +1423,7 @@ async function resolveImportedProperties(
     ...(Object.keys(conditions).length > 0 && { conditions }),
     stateBackend,
     stackName: stackState.stackName,
+    recordedSecretValues,
   };
 
   for (const [logicalId, resource] of entries) {
@@ -1426,7 +1432,10 @@ async function resolveImportedProperties(
         string,
         unknown
       >;
-      resource.properties = resolved;
+      resource.properties =
+        recordedSecretValues.size > 0
+          ? redactSecretsForState(resolved, recordedSecretValues)
+          : resolved;
     } catch (err) {
       // Intrinsic referenced a resource not in the importable set
       // (e.g. custom resource that wasn't adopted) or a parameter

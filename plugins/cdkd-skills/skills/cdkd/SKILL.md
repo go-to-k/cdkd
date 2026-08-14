@@ -161,6 +161,20 @@ AWS_PROFILE=<profile> AWS_REGION=<region> cdkd drift <stack> --revert   # AWS <-
 
 `--accept` and `--revert` are mutually exclusive; both honor `--dry-run`. `--revert` changes live AWS resources — treat it as a destructive operation (see below).
 
+## Keep secrets out of state
+
+cdkd resolves CloudFormation dynamic references (`{{resolve:secretsmanager:...}}`) and, when persisting state, stores the UNRESOLVED expression rather than the resolved plaintext — the value never lands in `state.json`, `cdkd state show`, `cdkd diff`, or `cdkd drift` output. A normal `cdkd deploy` already scrubs state this way as a side effect.
+
+`cdkd scrub <stack>` cleans up EXISTING state written by an older cdkd (before this behavior shipped) WITHOUT a redeploy. It synthesizes the app to learn which values are secrets, then rewrites the state record so each plaintext secret becomes its `{{resolve:...}}` expression. It performs no AWS mutation — only `state.json` is rewritten.
+
+```bash
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd scrub <stack>              # scrub in place
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd scrub <stack> --dry-run    # report only, no write
+AWS_PROFILE=<profile> AWS_REGION=<region> cdkd scrub <stack> --dry-run --fail  # CI gate: exit 1 if plaintext remains
+```
+
+Scrubbing needs the CDK app (`--app` / `CDKD_APP` / `cdk.json`) because state records the resolved value with no marker of which values are secrets — only the template carries the references. IMPORTANT: a secret that was ever stored in plaintext should be treated as compromised and ROTATED in Secrets Manager; scrub only stops it being re-read out of state going forward.
+
 ## Reclaim asset storage
 
 Content-addressed assets are deliberately kept on `cdkd destroy` (another stack or a future rollback may reference the same hash), so cdkd-owned asset storage grows over time. `cdkd gc` deletes only assets no state file references, one region per invocation, and never touches CDK's own bootstrap storage:
@@ -237,6 +251,7 @@ cdkd state info
 cdkd state show <stack> --stack-region <region>
 cdkd events <stack> --stack-region <region>
 cdkd drift <stack>
+cdkd scrub <stack>
 cdkd gc --dry-run
 cdkd destroy <stack>
 ```

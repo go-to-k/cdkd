@@ -2289,6 +2289,52 @@ cdkd destroy MyStack --purge-events -y
 - Per-stack: when destroying multiple stacks, each clean stack's history is
   purged independently.
 
+## `cdkd scrub` (keep resolved secrets out of state)
+
+cdkd resolves CloudFormation dynamic references (`{{resolve:secretsmanager:...}}`)
+to their concrete value so the secret can be handed to the AWS API on
+create / update. When it PERSISTS state, it stores the UNRESOLVED expression
+rather than the resolved plaintext, so the secret never lands in `state.json`,
+`cdkd state show`, `cdkd diff`, or `cdkd drift` output — this matches
+CloudFormation, which keeps the reference in the template and resolves it
+service-side. A rotated secret behind an unchanged reference is a no-op on the
+next deploy (again matching CloudFormation), and `cdkd diff` makes no live
+secret fetch.
+
+A normal `cdkd deploy` scrubs state this way as a side effect. `cdkd scrub`
+cleans up EXISTING state written by an older cdkd (before this behavior
+shipped) WITHOUT redeploying:
+
+```bash
+# Rewrite state so plaintext secrets become their {{resolve:...}} expression
+cdkd scrub MyStack
+
+# Report what would change without writing state
+cdkd scrub MyStack --dry-run
+
+# CI gate: exit 1 if any plaintext secret remains in state
+cdkd scrub MyStack --dry-run --fail
+
+# Every stack in the synthesized app
+cdkd scrub --all
+```
+
+**Needs the CDK app.** Unlike the `cdkd state ...` family, `scrub` requires
+`--app` (or `CDKD_APP` / `cdk.json`) because a state file records the resolved
+value with no marker of which values are secrets — only the template carries
+the `{{resolve:...}}` references. `scrub` synthesizes the template, re-resolves
+each resource's properties to learn the resolved secret VALUES (recorded, never
+printed or re-persisted), and replaces those values in the state record's
+`properties` / `attributes` / `observedProperties` with the expression. It
+performs no AWS create / update / delete — only `state.json` is rewritten,
+under the stack lock.
+
+**Scrubbing does not un-expose an already-leaked secret.** A value that was
+ever stored in plaintext should be treated as compromised and ROTATED in
+Secrets Manager; `scrub` only stops it being re-read out of state going
+forward. Exit codes: 0 (scrubbed / nothing to do), 1 (`--dry-run --fail` found
+plaintext), 2 (error).
+
 ## `cdkd rollback` (revert a failed deploy)
 
 `cdkd rollback [STACK]` reverts a stack to its pre-deploy state after a

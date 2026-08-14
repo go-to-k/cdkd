@@ -119,6 +119,31 @@ export function redactSecretsForState<T>(bag: T, secrets: RecordedSecretValues):
 }
 
 /**
+ * Redact resolved secret plaintext out of one resource state record's
+ * `properties` / `attributes` / `observedProperties`, replacing each secret
+ * value with its unresolved expression. Returns a NEW record when any field
+ * changed, or the input by identity when there are no secrets — so callers can
+ * detect a no-op cheaply. Shared by the deploy engine's save choke point and
+ * the `cdkd scrub` command so both scrub the same three fields identically.
+ */
+export function scrubResourceRecord<
+  T extends {
+    properties: Record<string, unknown>;
+    attributes?: Record<string, unknown>;
+    observedProperties?: Record<string, unknown>;
+  },
+>(record: T, secrets: RecordedSecretValues): T {
+  if (secrets.size === 0) return record;
+  const next = { ...record };
+  next.properties = redactSecretsForState(record.properties, secrets);
+  if (record.attributes) next.attributes = redactSecretsForState(record.attributes, secrets);
+  if (record.observedProperties) {
+    next.observedProperties = redactSecretsForState(record.observedProperties, secrets);
+  }
+  return next;
+}
+
+/**
  * Replace every recorded secret value inside `text` with {@link SECRET_MASK}.
  * Used on log lines and error messages where a resolved secret could otherwise
  * be echoed. Whole-value and embedded matches are both masked. Returns `text`

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   redactSecretsForState,
   maskSecretsInText,
+  scrubResourceRecord,
   SECRET_MASK,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
@@ -74,6 +75,38 @@ describe('secret-redaction', () => {
         ])
       );
       expect(out).toEqual({ S: '{{resolve:secretsmanager:long}}' });
+    });
+  });
+
+  describe('scrubResourceRecord', () => {
+    it('returns the record by identity when there are no secrets', () => {
+      const rec = { properties: { a: 'x' } };
+      expect(scrubResourceRecord(rec, new Map())).toBe(rec);
+    });
+
+    it('redacts secrets across properties, attributes and observedProperties', () => {
+      const rec = {
+        physicalId: 'pid',
+        resourceType: 'AWS::Cognito::UserPoolIdentityProvider',
+        properties: { ProviderDetails: { client_secret: 'super-secret-plaintext' } },
+        attributes: { ProviderDetails: { client_secret: 'super-secret-plaintext' } },
+        observedProperties: { ProviderDetails: { client_secret: 'super-secret-plaintext' } },
+      };
+      const out = scrubResourceRecord(rec, secrets([['super-secret-plaintext', EXPR]]));
+      expect(out.properties).toEqual({ ProviderDetails: { client_secret: EXPR } });
+      expect(out.attributes).toEqual({ ProviderDetails: { client_secret: EXPR } });
+      expect(out.observedProperties).toEqual({ ProviderDetails: { client_secret: EXPR } });
+      // physicalId / resourceType are preserved.
+      expect(out.physicalId).toBe('pid');
+      expect(out.resourceType).toBe('AWS::Cognito::UserPoolIdentityProvider');
+    });
+
+    it('leaves optional fields absent when the record has none', () => {
+      const rec = { properties: { ClientSecret: 'super-secret-plaintext' } };
+      const out = scrubResourceRecord(rec, secrets([['super-secret-plaintext', EXPR]]));
+      expect(out.properties).toEqual({ ClientSecret: EXPR });
+      expect('attributes' in out).toBe(false);
+      expect('observedProperties' in out).toBe(false);
     });
   });
 

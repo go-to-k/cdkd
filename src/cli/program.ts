@@ -8,6 +8,7 @@ import { createSynthCommand } from './commands/synth.js';
 import { createListCommand } from './commands/list.js';
 import { createDeployCommand } from './commands/deploy.js';
 import { createDiffCommand } from './commands/diff.js';
+import { createScrubCommand } from './commands/scrub.js';
 import { createDriftCommand } from './commands/drift.js';
 import { createDestroyCommand } from './commands/destroy.js';
 import { createRollbackCommand } from './commands/rollback.js';
@@ -67,6 +68,7 @@ export function buildProgram(): Command {
   program.addCommand(createDriftCommand());
   program.addCommand(createDestroyCommand());
   program.addCommand(createRollbackCommand());
+  program.addCommand(createScrubCommand());
   program.addCommand(createEventsCommand());
   program.addCommand(createGcCommand());
   program.addCommand(createOrphanCommand());

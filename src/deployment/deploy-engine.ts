@@ -19,7 +19,7 @@ import {
   looksLikeCdkdGeneratedName,
 } from '../provisioning/resource-name.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
-import { redactSecretsForState } from './secret-redaction.js';
+import { redactSecretsForState, scrubResourceRecord } from './secret-redaction.js';
 import { DagExecutor } from './dag-executor.js';
 import type {
   CloudFormationTemplate,
@@ -756,23 +756,42 @@ export class DeployEngine {
     return redactSecretsForState(props, this.recordedSecretValues);
   }
 
+  /**
+   * Redact resolved secret plaintext out of rollback-journal operations (GHSA
+   * fix). Each op may carry resolved `properties` / `attemptedProperties` and a
+   * `previousState` snapshot (whose `properties` / `attributes` /
+   * `observedProperties` also hold resolved values). No-op when the deploy
+   * recorded no secrets. Preserves ops that carry none of those fields.
+   */
+  private redactOperationsForJournal<T extends CompletedOperation | FailedOperation>(
+    operations: T[]
+  ): T[] {
+    if (this.recordedSecretValues.size === 0) return operations;
+    const secrets = this.recordedSecretValues;
+    return operations.map((op) => {
+      const next = { ...op } as CompletedOperation & FailedOperation;
+      if (next.properties) next.properties = redactSecretsForState(next.properties, secrets);
+      if (next.attemptedProperties) {
+        next.attemptedProperties = redactSecretsForState(next.attemptedProperties, secrets);
+      }
+      if (next.previousState) {
+        const prev = { ...next.previousState };
+        prev.properties = redactSecretsForState(prev.properties, secrets);
+        if (prev.attributes) prev.attributes = redactSecretsForState(prev.attributes, secrets);
+        if (prev.observedProperties) {
+          prev.observedProperties = redactSecretsForState(prev.observedProperties, secrets);
+        }
+        next.previousState = prev;
+      }
+      return next as unknown as T;
+    });
+  }
+
   private redactStateForPersist(state: StackState): StackState {
     if (this.recordedSecretValues.size === 0) return state;
     const resources: Record<string, ResourceState> = {};
     for (const [logicalId, record] of Object.entries(state.resources)) {
-      resources[logicalId] = {
-        ...record,
-        properties: redactSecretsForState(record.properties, this.recordedSecretValues),
-        ...(record.attributes && {
-          attributes: redactSecretsForState(record.attributes, this.recordedSecretValues),
-        }),
-        ...(record.observedProperties && {
-          observedProperties: redactSecretsForState(
-            record.observedProperties,
-            this.recordedSecretValues
-          ),
-        }),
-      };
+      resources[logicalId] = scrubResourceRecord(record, this.recordedSecretValues);
     }
     return { ...state, resources };
   }
@@ -2389,6 +2408,12 @@ export class DeployEngine {
     // A failed op alone (#1198) IS worth journaling: `cdkd rollback
     // --revert-failed` can act on it even with zero completed ops.
     if (completedOperations.length === 0 && failedOperations.length === 0) return;
+    // Redact resolved secret plaintext out of the journal (GHSA fix): the ops
+    // carry resolved / attempted properties and previous-state snapshots read
+    // from the in-memory working map, which is NOT run through the state save
+    // choke point, so plaintext would otherwise land in rollback-journal.json.
+    const redactedCompleted = this.redactOperationsForJournal(completedOperations);
+    const redactedFailed = this.redactOperationsForJournal(failedOperations);
     try {
       const segment: RollbackJournalSegment = {
         ...(this.options.eventRecorder?.runId !== undefined && {
@@ -2399,8 +2424,8 @@ export class DeployEngine {
         initialDeploy,
         ...(this.options.roleArn && { roleArn: this.options.roleArn }),
         cdkdVersion: getCdkdVersion(),
-        operations: completedOperations,
-        ...(failedOperations.length > 0 && { failedOperations }),
+        operations: redactedCompleted,
+        ...(redactedFailed.length > 0 && { failedOperations: redactedFailed }),
       };
       await this.stateBackend.appendRollbackJournalSegment(stackName, this.stackRegion, segment);
       this.logger.debug(`Rollback journal segment written (${reason})`);
