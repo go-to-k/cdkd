@@ -322,7 +322,8 @@
       "integs": [
         "lambda-url-authtype-replay",
         "rollback-command",
-        "rollback-sqs-cooldown"
+        "rollback-sqs-cooldown",
+        "secrets-dynamic-ref"
       ]
     },
     {

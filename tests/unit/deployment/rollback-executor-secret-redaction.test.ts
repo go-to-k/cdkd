@@ -111,6 +111,12 @@ describe('rollback replay - secret re-resolution + state redaction (GHSA #1899)'
     // Provider received the concrete secret in the desired-props argument.
     const desiredArg = update.mock.calls[0]![3] as { ProviderDetails: { client_secret: string } };
     expect(desiredArg.ProviderDetails.client_secret).toBe(SECRET_PLAINTEXT);
+    // BOTH diff sides are resolved — the PREVIOUS side (arg 4, current.properties)
+    // must resolve too, else a patch-based provider diffs expression-vs-plaintext
+    // and computes a spurious change / wrong no-op. Deleting the current-side
+    // resolveReplayProps call must fail HERE, not pass silently.
+    const prevArg = update.mock.calls[0]![4] as { ProviderDetails: { client_secret: string } };
+    expect(prevArg.ProviderDetails.client_secret).toBe(SECRET_PLAINTEXT);
     // Persisted state holds the EXPRESSION (redacted out of the echoed
     // effectiveProperties), never the plaintext.
     const rec = state.Idp!;
@@ -182,6 +188,10 @@ describe('rollback replay - secret re-resolution + state redaction (GHSA #1899)'
     expect(mockSMSend).toHaveBeenCalled();
     const desiredArg = update.mock.calls[0]![3] as { ProviderDetails: { client_secret: string } };
     expect(desiredArg.ProviderDetails.client_secret).toBe(SECRET_PLAINTEXT);
+    // The PREVIOUS side (arg 4, attemptedProperties) must resolve too — see the
+    // revert test's note; deleting that resolveReplayProps call must fail here.
+    const prevArg = update.mock.calls[0]![4] as { ProviderDetails: { client_secret: string } };
+    expect(prevArg.ProviderDetails.client_secret).toBe(SECRET_PLAINTEXT);
     expect(JSON.stringify(state)).not.toContain(SECRET_PLAINTEXT);
     expect((state.Idp!.properties['ProviderDetails'] as Record<string, unknown>)['client_secret']).toBe(
       SECRET_EXPR
