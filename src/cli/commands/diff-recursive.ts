@@ -282,10 +282,14 @@ export async function computeStackDiff(
       ...(mergedParameters && { parameters: mergedParameters }),
       // Evaluated conditions so `Fn::If` resolves in property values.
       ...(conditions && { conditions }),
-      // Leave `{{resolve:...}}` dynamic references UNRESOLVED for diff (GHSA
-      // fix): state stores the unresolved expression, so comparing the desired
-      // side as its expression avoids a spurious perpetual change and a live
-      // `GetSecretValue` that would print the plaintext.
+      // Leave SECRET `{{resolve:...}}` dynamic references UNRESOLVED for diff
+      // (GHSA fix): state stores the unresolved expression, so comparing the
+      // desired side as its expression avoids a spurious perpetual change and
+      // any live secret fetch that would print the plaintext. As on the deploy
+      // engine's twin, an `ssm` reference is classified by the parameter's TYPE
+      // rather than its spelling (issue #1901), so a not-yet-classified one
+      // still costs one `GetParameter` here — issued with
+      // `WithDecryption: false`, so a `SecureString` never yields plaintext.
       skipDynamicReferences: true,
     });
   return diffCalculator.calculateDiff(

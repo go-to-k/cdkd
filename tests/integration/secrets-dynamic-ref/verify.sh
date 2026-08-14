@@ -13,6 +13,13 @@
 #   - an SSM String parameter with a KNOWN value (cdkd-known-ssm-value)
 #   - a consumer Lambda whose ENV VARS are literal {{resolve:...}} strings
 #
+# ...plus, created OUT OF BAND by this script (CloudFormation cannot create
+# one), an SSM SecureString parameter the Lambda references through the PLAIN
+# `{{resolve:ssm:...}}` form. That reference decrypts to a real secret, so
+# issue #1901 requires it to be persisted as its expression while the String
+# parameter beside it stays RESOLVED — the two together are what force the
+# decision to be made on the parameter's TYPE rather than on the spelling.
+#
 # After deploy we read GetFunctionConfiguration and assert each env var
 # carries the RESOLVED value rather than the literal {{resolve:...}} token.
 # If a reference stays literal or resolves to the wrong value, the test FAILS
@@ -31,7 +38,9 @@
 #   - secretsmanager :SecretString:<jsonkey>            (JSON-key form)   SUPPORTED
 #   - secretsmanager :SecretString  (no key)            (whole secret)    SUPPORTED
 #   - secretsmanager :SecretString:<jsonkey>:AWSCURRENT (version-stage)   SUPPORTED
-#   - ssm:<name>                                        (plaintext param) SUPPORTED
+#   - ssm:<name>            (String param)              (plaintext param) SUPPORTED
+#   - ssm:<name>            (SecureString param)        (decrypts, and is
+#                                                        REDACTED in state)   SUPPORTED
 #   - ssm-secure:<name>                                 (SecureString)    NOT SUPPORTED -> see note below
 #
 # `ssm-secure` is intentionally NOT exercised: cdkd's resolveDynamicReferences
@@ -88,12 +97,22 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 SECRET_NAME="cdkd-test-dynref-secret-${ACCOUNT_ID}"
 PARAM_NAME="cdkd-test-dynref-param-${ACCOUNT_ID}"
+# SecureString counterpart (issue #1901). Created by THIS script, not by the
+# stack: CloudFormation cannot create a SecureString parameter, so the fixture
+# only references it.
+SECURE_PARAM_NAME="cdkd-test-dynref-secure-${ACCOUNT_ID}"
 
 # Known values authored in the fixture stack (NOT secret in any real sense;
 # this is test data, but we still mask the secret-derived ones in output).
 EXPECTED_PASSWORD="cdkd-known-pw-123"
 EXPECTED_FULL='{"username":"cdkd-user","password":"cdkd-known-pw-123"}'
 EXPECTED_SSM="cdkd-known-ssm-value"
+# The version-stage reference deliberately reads a DIFFERENT json key, so it
+# does NOT resolve to the same plaintext as SECRET_PASSWORD -- see the stack's
+# comment and issue #1904 (two expressions sharing one resolved value collapse
+# in the value-keyed redaction map).
+EXPECTED_USERNAME="cdkd-user"
+EXPECTED_SECURE="cdkd-known-secure-value-456"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -127,6 +146,9 @@ cleanup() {
   aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
     --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  # The SecureString parameter is created by this script, so cdkd never deletes
+  # it — the ONLY thing that keeps it from being an orphan is this sweep.
+  aws ssm delete-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     if [ "${destroy_rc}" -eq 0 ]; then
       aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -158,6 +180,24 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
+# --- Out-of-band SecureString parameter (issue #1901) -----------------
+# CloudFormation cannot CREATE a SecureString parameter, so the fixture stack
+# only REFERENCES this one. Created AFTER the pre-run cleanup (which deletes
+# it) and removed again by the cleanup trap.
+echo "==> Creating the SecureString SSM parameter out of band"
+aws ssm put-parameter --name "${SECURE_PARAM_NAME}" --type SecureString \
+  --value "${EXPECTED_SECURE}" --overwrite --region "${REGION}" >/dev/null
+# Fail loudly if AWS did not actually store it as a SecureString: every
+# assertion below would otherwise pass vacuously against a String parameter,
+# which is the OPPOSITE of what is under test.
+SECURE_TYPE=$(aws ssm get-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}" \
+  --query 'Parameter.Type' --output text)
+if [ "${SECURE_TYPE}" != "SecureString" ]; then
+  echo "FAIL: expected '${SECURE_PARAM_NAME}' to be a SecureString, got '${SECURE_TYPE}'" >&2
+  exit 1
+fi
+echo "    OK: SecureString parameter created"
+
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
 node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -187,6 +227,7 @@ ENV_SECRET_PASSWORD=$(get_env SECRET_PASSWORD)
 ENV_SECRET_FULL=$(get_env SECRET_FULL)
 ENV_SECRET_PASSWORD_STAGED=$(get_env SECRET_PASSWORD_STAGED)
 ENV_SSM_VALUE=$(get_env SSM_VALUE)
+ENV_SSM_SECURE_VALUE=$(get_env SSM_SECURE_VALUE)
 
 fail_count=0
 
@@ -218,15 +259,20 @@ check_not_literal SECRET_PASSWORD "${ENV_SECRET_PASSWORD}"
 check_not_literal SECRET_FULL "${ENV_SECRET_FULL}"
 check_not_literal SECRET_PASSWORD_STAGED "${ENV_SECRET_PASSWORD_STAGED}"
 check_not_literal SSM_VALUE "${ENV_SSM_VALUE}"
+check_not_literal SSM_SECURE_VALUE "${ENV_SSM_SECURE_VALUE}"
 
 check_equals "SECRET_PASSWORD (secretsmanager :SecretString:<jsonkey>)" \
   "${ENV_SECRET_PASSWORD}" "${EXPECTED_PASSWORD}"
 check_equals "SECRET_FULL (secretsmanager :SecretString whole-secret)" \
   "${ENV_SECRET_FULL}" "${EXPECTED_FULL}"
 check_equals "SECRET_PASSWORD_STAGED (secretsmanager :SecretString:<jsonkey>:AWSCURRENT)" \
-  "${ENV_SECRET_PASSWORD_STAGED}" "${EXPECTED_PASSWORD}"
+  "${ENV_SECRET_PASSWORD_STAGED}" "${EXPECTED_USERNAME}"
 check_equals "SSM_VALUE (ssm:<name> plaintext param)" \
   "${ENV_SSM_VALUE}" "${EXPECTED_SSM}"
+# The SecureString still has to REACH AWS decrypted — issue #1901 changes what
+# STATE holds, never what the provider is handed.
+check_equals "SSM_SECURE_VALUE (ssm:<name> SecureString param, decrypted)" \
+  "${ENV_SSM_SECURE_VALUE}" "${EXPECTED_SECURE}"
 
 if [ "${fail_count}" -ne 0 ]; then
   echo "FAIL: ${fail_count} dynamic-reference assertion(s) failed" >&2
@@ -269,6 +315,8 @@ fi
 STATE_SECRET_PASSWORD=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD // empty')
 STATE_SECRET_FULL=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SECRET_FULL // empty')
 STATE_SSM_VALUE=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SSM_VALUE // empty')
+STATE_SSM_SECURE_VALUE=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SSM_SECURE_VALUE // empty')
+STATE_SECRET_PASSWORD_STAGED=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD_STAGED // empty')
 
 # Guard 3: each secretsmanager env var in STATE must be the UNRESOLVED
 # expression, not the plaintext. (We can print the expression — it names the
@@ -282,12 +330,31 @@ case "${STATE_SECRET_FULL}" in
   '{{resolve:secretsmanager:'*) echo "    OK: state SECRET_FULL kept the expression: ${STATE_SECRET_FULL}" ;;
   *) echo "FAIL: state SECRET_FULL is NOT the {{resolve:...}} expression: $(mask "${STATE_SECRET_FULL}")" >&2; redaction_fail=1 ;;
 esac
+# The version-stage reference resolves to its OWN distinct value (see issue
+# #1904 and the stack comment), so its state side needs its own assertion —
+# otherwise the one env var whose expression differs from every other is the
+# one form left unverified.
+case "${STATE_SECRET_PASSWORD_STAGED}" in
+  '{{resolve:secretsmanager:'*':AWSCURRENT}}') echo "    OK: state SECRET_PASSWORD_STAGED kept its OWN staged expression: ${STATE_SECRET_PASSWORD_STAGED}" ;;
+  *) echo "FAIL: state SECRET_PASSWORD_STAGED is NOT its own {{resolve:...:AWSCURRENT}} expression: $(mask "${STATE_SECRET_PASSWORD_STAGED}")" >&2; redaction_fail=1 ;;
+esac
+
+# Guard 3b (issue #1901): an ssm reference to a SECURESTRING parameter is a
+# secret too, so state must hold its expression — even though the SPELLING is
+# identical to the plain-ssm reference Guard 4 requires to stay RESOLVED. The
+# two guards together are the discriminator: cdkd must decide by the
+# parameter's TYPE, and a fix that redacted by spelling would fail Guard 4
+# while one that redacted nothing fails this guard.
+case "${STATE_SSM_SECURE_VALUE}" in
+  '{{resolve:ssm:'*) echo "    OK: state SSM_SECURE_VALUE kept the expression: ${STATE_SSM_SECURE_VALUE}" ;;
+  *) echo "FAIL: state SSM_SECURE_VALUE is NOT the {{resolve:...}} expression: $(mask "${STATE_SSM_SECURE_VALUE}")" >&2; redaction_fail=1 ;;
+esac
 
 # Guard 4: the plain ssm value IS resolved in state (public config, not a secret).
 if [ "${STATE_SSM_VALUE}" = "${EXPECTED_SSM}" ]; then
-  echo "    OK: state SSM_VALUE kept the resolved value (ssm is not a secret)"
+  echo "    OK: state SSM_VALUE kept the resolved value (ssm String is not a secret)"
 else
-  echo "FAIL: state SSM_VALUE should be the resolved '${EXPECTED_SSM}' (ssm is public config), got $(mask "${STATE_SSM_VALUE}")" >&2
+  echo "FAIL: state SSM_VALUE should be the resolved '${EXPECTED_SSM}' (ssm String is public config), got $(mask "${STATE_SSM_VALUE}")" >&2
   redaction_fail=1
 fi
 
@@ -307,6 +374,25 @@ if printf '%s' "${LAMBDA_ENV}" | grep -qF "${EXPECTED_PASSWORD}"; then
 else
   echo "    OK: resolved-reference plaintext is absent from the consumer Lambda's persisted state"
 fi
+# Same guard for the decrypted SecureString (issue #1901). Unlike the
+# secretsmanager case there is no sibling resource legitimately holding this
+# value, so the whole STATE document is scanned, not just the Lambda's env.
+if printf '%s' "${STATE_JSON}" | grep -qF "${EXPECTED_SECURE}"; then
+  echo "FAIL: the decrypted SecureString value LEAKED into persisted state (issue #1901)" >&2
+  redaction_fail=1
+else
+  echo "    OK: decrypted SecureString value is absent from the whole state document"
+fi
+# The staged reference's resolved value (the secret's `username` key) must not
+# survive in the Lambda's persisted env either. Scoped to LAMBDA_ENV, not the
+# whole state: the DynRefSecret resource's OWN SecretString legitimately
+# contains it (same rationale as the password grep above).
+if printf '%s' "${LAMBDA_ENV}" | grep -qF "${EXPECTED_USERNAME}"; then
+  echo "FAIL: the staged reference's resolved value LEAKED into the Lambda's persisted env" >&2
+  redaction_fail=1
+else
+  echo "    OK: staged-reference plaintext is absent from the consumer Lambda's persisted state"
+fi
 
 if [ "${redaction_fail}" -ne 0 ]; then
   echo "FAIL: state secret-redaction assertions failed" >&2
@@ -316,14 +402,30 @@ fi
 # Guard 6: a second `cdkd diff` shows NO change (expression-vs-expression) and
 # prints no plaintext. A resolved-vs-expression compare would report a spurious
 # UPDATE of every secret-bearing property on every deploy.
+# `--fail` is what makes the no-change half non-vacuous: it exits 1 on ANY
+# change, so a perpetual UPDATE fails the run instead of only being absent from
+# a plaintext grep.
 echo "==> Asserting a re-diff is clean (no perpetual UPDATE) and leaks no plaintext"
+set +e
 DIFF_OUT=$(node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" 2>&1) || true
+  --region "${REGION}" --fail 2>&1)
+DIFF_RC=$?
+set -e
 if printf '%s' "${DIFF_OUT}" | grep -qF "${EXPECTED_PASSWORD}"; then
   echo "FAIL: 'cdkd diff' output leaked the resolved secret plaintext" >&2
   exit 1
 fi
+if printf '%s' "${DIFF_OUT}" | grep -qF "${EXPECTED_SECURE}"; then
+  echo "FAIL: 'cdkd diff' output leaked the decrypted SecureString value (issue #1901)" >&2
+  exit 1
+fi
 echo "    OK: diff leaks no plaintext"
+if [ "${DIFF_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd diff --fail' reported changes on an unchanged stack (spurious UPDATE — rc=${DIFF_RC})" >&2
+  echo "      output: ${DIFF_OUT}" >&2
+  exit 1
+fi
+echo "    OK: diff reports no changes (secret + SecureString compare expression-vs-expression)"
 
 # Guard 7: `cdkd scrub --dry-run` on the freshly-deployed stack finds NOTHING
 # to scrub (deploy already wrote expressions), proving the command runs and the
@@ -333,6 +435,10 @@ SCRUB_OUT=$(node "${LOCAL_DIST}" scrub "${STACK}" --state-bucket "${STATE_BUCKET
   --region "${REGION}" --dry-run 2>&1)
 if printf '%s' "${SCRUB_OUT}" | grep -qF "${EXPECTED_PASSWORD}"; then
   echo "FAIL: 'cdkd scrub' output leaked the resolved secret plaintext" >&2
+  exit 1
+fi
+if printf '%s' "${SCRUB_OUT}" | grep -qF "${EXPECTED_SECURE}"; then
+  echo "FAIL: 'cdkd scrub' output leaked the decrypted SecureString value (issue #1901)" >&2
   exit 1
 fi
 if printf '%s' "${SCRUB_OUT}" | grep -qiE 'no plaintext secrets|nothing to scrub'; then
@@ -384,6 +490,7 @@ node "${LOCAL_DIST}" rollback "${STACK}" \
 RB_CFG=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}")
 rb_env() { printf '%s' "${RB_CFG}" | jq -r --arg k "$1" '.Environment.Variables[$k] // empty'; }
 RB_PW=$(rb_env SECRET_PASSWORD)
+RB_SECURE=$(rb_env SSM_SECURE_VALUE)
 RB_EXTRA=$(rb_env ROLLBACK_EXTRA)
 case "${RB_PW}" in
   *'{{resolve:'*)
@@ -393,6 +500,20 @@ case "${RB_PW}" in
 esac
 if [ "${RB_PW}" != "${EXPECTED_PASSWORD}" ]; then
   echo "FAIL: after rollback the Lambda SECRET_PASSWORD is not the resolved value: got $(mask "${RB_PW}")" >&2
+  exit 1
+fi
+# Issue #1901 makes the SecureString reference a SECOND thing the journal now
+# stores redacted, so the replay has to re-resolve it too. Without these two
+# checks a replay that shipped the literal `{{resolve:ssm:...}}` to the Lambda
+# passes on the secretsmanager assertions alone.
+case "${RB_SECURE}" in
+  *'{{resolve:'*)
+    echo "FAIL: after rollback the Lambda SSM_SECURE_VALUE is the LITERAL expression — the replay did NOT re-resolve the SecureString: $(mask "${RB_SECURE}")" >&2
+    exit 1
+    ;;
+esac
+if [ "${RB_SECURE}" != "${EXPECTED_SECURE}" ]; then
+  echo "FAIL: after rollback the Lambda SSM_SECURE_VALUE is not the decrypted value: got $(mask "${RB_SECURE}")" >&2
   exit 1
 fi
 if [ -n "${RB_EXTRA}" ]; then
@@ -408,9 +529,17 @@ RB_LAMBDA_ENV=$(printf '%s' "${RB_STATE}" | jq -c '.state.resources | to_entries
              | select(.value.resourceType=="AWS::Lambda::Function")
              | .value.properties.Environment.Variables' | head -1)
 RB_STATE_PW=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD // empty')
+RB_STATE_SECURE=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.SSM_SECURE_VALUE // empty')
 case "${RB_STATE_PW}" in
   '{{resolve:secretsmanager:'*) echo "    OK: post-rollback state kept the SECRET_PASSWORD expression" ;;
   *) echo "FAIL: post-rollback state SECRET_PASSWORD is NOT the {{resolve:...}} expression: $(mask "${RB_STATE_PW}")" >&2; exit 1 ;;
+esac
+# The rollback WRITES a state record, so it is its own redaction site (issue
+# #1901): re-resolving for the provider must not leave the decrypted value in
+# what gets persisted.
+case "${RB_STATE_SECURE}" in
+  '{{resolve:ssm:'*) echo "    OK: post-rollback state kept the SSM_SECURE_VALUE expression" ;;
+  *) echo "FAIL: post-rollback state SSM_SECURE_VALUE is NOT the {{resolve:...}} expression: $(mask "${RB_STATE_SECURE}")" >&2; exit 1 ;;
 esac
 # Scope the plaintext-leak grep to the CONSUMER Lambda's env, NOT the whole
 # state — same rationale as Guard 5 above: the DynRefSecret resource's OWN
@@ -420,7 +549,13 @@ if printf '%s' "${RB_LAMBDA_ENV}" | grep -qF "${EXPECTED_PASSWORD}"; then
   echo "FAIL: post-rollback the Lambda's persisted env leaked the resolved secret plaintext" >&2
   exit 1
 fi
-echo "    OK: post-rollback Lambda state carries no resolved plaintext"
+# The SecureString has no such sibling holding it legitimately, so scan the
+# WHOLE post-rollback state document (issue #1901).
+if printf '%s' "${RB_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+  echo "FAIL: post-rollback state leaked the decrypted SecureString value (issue #1901)" >&2
+  exit 1
+fi
+echo "    OK: post-rollback state carries no resolved plaintext (secret + SecureString)"
 
 # --- Phase 2: removal-reset redeploy (issue #1160 secretsmanager batch) ---
 echo "==> Phase 2: re-deploy dropping Description + KmsKeyId (removal reset)"
@@ -487,6 +622,19 @@ fi
 
 assert_gone "SSM parameter '${PARAM_NAME}' still exists after destroy" aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}"
 echo "    OK: SSM parameter is gone"
+
+# The SecureString parameter is NOT in the stack (this script created it), so
+# destroy must have left it alone — deleting a resource cdkd does not manage
+# would be the real failure here. Then remove it ourselves and prove it is gone,
+# so the run ends with no orphan (the cleanup trap is a backstop, not the proof).
+if gone_probe aws ssm get-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}"; then
+  echo "FAIL: destroy deleted the out-of-band SecureString parameter '${SECURE_PARAM_NAME}' — cdkd must not touch a resource it does not manage" >&2
+  exit 1
+fi
+echo "    OK: destroy left the unmanaged SecureString parameter intact"
+aws ssm delete-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}" >/dev/null
+assert_gone "out-of-band SecureString parameter '${SECURE_PARAM_NAME}' still exists after its explicit delete" aws ssm get-parameter --name "${SECURE_PARAM_NAME}" --region "${REGION}"
+echo "    OK: out-of-band SecureString parameter is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"

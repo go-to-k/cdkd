@@ -733,9 +733,13 @@ export async function replayRollback(
  * resolve-for-provider + redact-for-state split the deploy engine applies at its
  * save choke point. A bag with no `{{resolve:...}}` string resolves to a
  * structural copy of itself (secrets stays empty), so the non-secret rollback
- * path is behaviourally unchanged. Only secretsmanager references are recorded
- * (plain `ssm` is public config, stored resolved — it never appears as an
- * expression in the journal), matching the resolver's own `isSecret` gate.
+ * path is behaviourally unchanged. Which references are RECORDED is the
+ * resolver's own secret gate: every `secretsmanager` one, plus an `ssm` one
+ * whose parameter is a `SecureString` (issue #1901 — that form decrypts to a
+ * real secret, so it is redacted into the journal and must be re-resolved here
+ * exactly like a secretsmanager reference). An ssm reference to a `String` /
+ * `StringList` parameter is public config, stored resolved, and never appears
+ * as an expression in the journal.
  */
 async function resolveReplayProps(
   props: Record<string, unknown> | undefined,

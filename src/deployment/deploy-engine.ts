@@ -824,8 +824,10 @@ export class DeployEngine {
       resources[logicalId] = secrets ? scrubResourceRecord(record, secrets) : record;
     }
     // `outputs` is also secret-bearing: a `CfnOutput` whose Value resolves a
-    // `{{resolve:secretsmanager:...}}` reference (or an Fn::Sub/Join embedding
-    // one) stores the resolved plaintext, which would otherwise reach
+    // SECRET dynamic reference (`{{resolve:secretsmanager:...}}`, or a
+    // `{{resolve:ssm:...}}` pointing at a `SecureString` parameter — issue
+    // #1901 — including an Fn::Sub/Join embedding one) stores the resolved
+    // plaintext, which would otherwise reach
     // state.json / the exports index / the deploy summary. Redact it with the
     // OUTPUTS' own secrets map (a literal output equal to a secret is not
     // recorded there, so it is not touched).
@@ -1395,11 +1397,21 @@ export class DeployEngine {
       // resolver contexts do NOT set this — there, an unresolvable Ref is
       // a genuine error signal.
       diffResolverContext.bestEffort = true;
-      // Leave `{{resolve:...}}` dynamic references UNRESOLVED for the diff (GHSA
-      // fix): state now stores the unresolved expression, so comparing the
-      // desired side as its expression too avoids a spurious perpetual UPDATE on
-      // every deploy of a secret-bearing resource (and avoids a live
-      // `GetSecretValue` at plan time). A changed expression still diffs.
+      // Leave SECRET `{{resolve:...}}` dynamic references UNRESOLVED for the
+      // diff (GHSA fix): state now stores the unresolved expression, so
+      // comparing the desired side as its expression too avoids a spurious
+      // perpetual UPDATE on every deploy of a secret-bearing resource, and
+      // fetches no secret value at plan time. That last claim is scoped to THIS
+      // context: `cdkd diff --recursive` resolves a nested child's `Parameters`
+      // through a context that sets neither flag, so it still decrypts there
+      // (issue #1903 — coupled with the child-state half, so it cannot be fixed
+      // by setting the flag alone). A changed expression still diffs.
+      // An `ssm` reference is classified by the parameter's TYPE rather than by
+      // its spelling (issue #1901), so unlike the secretsmanager case the diff
+      // DOES issue one `GetParameter` per not-yet-classified reference — with
+      // `WithDecryption: false`, so a `SecureString` never yields plaintext
+      // here, while a `String` / `StringList` keeps resolving as the public
+      // config state stores resolved.
       diffResolverContext.skipDynamicReferences = true;
       const diffResolveFn = (value: unknown) => this.resolver.resolve(value, diffResolverContext);
       const changes = await this.diffCalculator.calculateDiff(

@@ -259,8 +259,12 @@ automatic rollback).
 
 **Secret redaction in the journal (GHSA fix).** The persisted operations carry
 `properties` / `attemptedProperties` / `previousState`, which the engine runs
-through the SAME `{{resolve:secretsmanager:...}}` redaction as `state.json`
-before writing — so the journal never holds resolved secret plaintext either.
+through the SAME secret-dynamic-reference redaction as `state.json` before
+writing — every `{{resolve:secretsmanager:...}}`, plus a `{{resolve:ssm:...}}`
+whose parameter is a `SecureString` (issue
+[#1901](https://github.com/go-to-k/cdkd/issues/1901); a `String` / `StringList`
+parameter is public config and stays resolved) — so the journal never holds
+resolved secret plaintext either.
 The replay executor therefore RE-RESOLVES those expressions to the concrete
 secret before calling `provider.update()` / `create()` (a rollback replaying the
 literal `{{resolve:...}}` token would corrupt the resource), and re-redacts the
