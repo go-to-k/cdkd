@@ -92,6 +92,10 @@ cleanup() {
   # time clamp, so that window is reachable rather than theoretical. This
   # runs on EXIT / INT / TERM, so sweeping it here covers all three.
   rm -f "${LIVE_NS_STDERR:-}" 2>/dev/null || true
+  # Same argument for Phase 2.5's three scratch files (issue #1875): they are
+  # unlinked on every path the arm itself takes, but a signal anywhere between
+  # their `mktemp`s and the last unlink strands them.
+  rm -f "${IMPORT_MAP:-}" "${IMPORT_STDERR:-}" "${IMPORT_STDOUT:-}" 2>/dev/null || true
   # `set +eu` so an early-exit (e.g. STATE_BUCKET unset) does not abort
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
   # cleanup should run as much as it can with the env it has.
@@ -510,8 +514,15 @@ echo "    OK: query logging config deleted (#1160 QueryLoggingConfig removal res
 # record, which is the only way to see that the two write paths agree.
 echo "==> Phase 2.5: re-adopt the hosted zone via cdkd import (#1875)"
 
-# Re-read state: phase 2 rewrote it, so the phase 1 capture is stale.
+# Re-read state: phase 2 rewrote it, so the phase 1 capture is stale. Guard
+# the read the way line 146 does -- without it an S3 failure surfaces either
+# as a bare pipefail abort on the jq below or, worse, as the misleading "no
+# HostedZone row in state" verdict, neither of which names the real cause.
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if [ -z "${STATE}" ]; then
+  echo "FAIL: could not read state at s3://${STATE_BUCKET}/${STATE_KEY} before the import phase" >&2
+  exit 1
+fi
 ZONE_LOGICAL_ID=$(echo "${STATE}" | jq -r '
   .resources | to_entries[]
   | select(.value.resourceType == "AWS::Route53::HostedZone") | .key' | head -1)
@@ -711,7 +722,14 @@ AWS_REGION="${REGION}" node "${LOCAL_DIST}" import "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --force --yes
 
-RESTORED_ZONE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null \
+# Keep the WHOLE document: 2.5d edits it (it drops two output keys) and must
+# put back everything else byte-for-byte, so it needs more than the zone row.
+REIMPORT_BASE_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if [ -z "${REIMPORT_BASE_STATE}" ]; then
+  echo "FAIL: could not read state after the restoring import" >&2
+  exit 1
+fi
+RESTORED_ZONE=$(echo "${REIMPORT_BASE_STATE}" \
   | jq -c --arg k "${ZONE_LOGICAL_ID}" '.resources[$k] // empty')
 RESTORED_PHYSICAL_ID=$(echo "${RESTORED_ZONE}" | jq -r '.physicalId // empty')
 if [ "${RESTORED_PHYSICAL_ID}" != "${ZONE_ID}" ]; then
@@ -723,12 +741,61 @@ if ! echo "${RESTORED_ZONE}" | jq -e '.attributes.NameServers | type == "array" 
   echo "${RESTORED_ZONE}" | jq '.attributes'
   exit 1
 fi
-echo "    OK: canonical physical id restored, attributes re-read intact"
+# Compare the MEMBERS, not just the shape: this import re-read them from AWS
+# with carry-over disabled, so it is a second independent parity measurement
+# rather than a repeat of 2.5b's.
+RESTORED_NS_SORTED=$(echo "${RESTORED_ZONE}" | jq -r '.attributes.NameServers | sort | join(",")')
+if [ "${RESTORED_NS_SORTED}" != "${LIVE_NAME_SERVERS_SORTED}" ]; then
+  echo "FAIL: NameServers re-read by the restoring import do not match Route 53" >&2
+  echo "  got:      ${RESTORED_NS_SORTED}" >&2
+  echo "  expected: ${LIVE_NAME_SERVERS_SORTED}" >&2
+  exit 1
+fi
+RESTORED_ATTR_ID=$(echo "${RESTORED_ZONE}" | jq -r '.attributes.Id // empty')
+if [ "${RESTORED_ATTR_ID}" != "${ZONE_ID}" ]; then
+  echo "FAIL: restored attributes.Id is '${RESTORED_ATTR_ID}', expected '${ZONE_ID}'" >&2
+  exit 1
+fi
+echo "    OK: canonical physical id restored, attributes re-read and matching Route 53"
 
 # --- 2.5d: the Outputs resolve from the IMPORTED record --------------------
 # This is the user-visible symptom. `cdkd import` does not resolve Outputs
 # (it preserves the existing map), so it takes a deploy to re-resolve them —
 # and that deploy reads the attribute record the import just wrote.
+#
+# DROP the two outputs first, and note this is what makes the arm able to
+# fail at all. `cdkd import` carries `existingState.outputs` forward, so
+# Phase 1's correct values are still sitting in state here; and the no-change
+# deploy path keeps the PERSISTED map verbatim whenever resolution fails
+# (`resolutionFailed` -> `outputs: persistedOutputs`), precisely so a partial
+# resolve cannot clobber good outputs. Together those mean a broken resolve
+# would leave Phase 1's values in place and every assertion below would read
+# them and pass — the arm would be green with the provider fix reverted
+# (measured: it was, before this deletion was added).
+#
+# With the keys removed, the two outcomes finally differ: a resolution
+# failure leaves them ABSENT (red), while a successful resolve makes the map
+# differ from the persisted one, flips `outputsChanged`, and re-persists them
+# (green). Safe on the failure path — destroy does not read outputs.
+echo "==> Phase 2.5d: drop the two NameServers outputs so the redeploy must re-resolve them"
+PRUNED_STATE=$(echo "${REIMPORT_BASE_STATE}" \
+  | jq 'del(.outputs.HostedZoneNameServers, .outputs.HostedZoneNameServersList)')
+if ! printf '%s' "${PRUNED_STATE}" | jq -e '.outputs | has("HostedZoneNameServers") | not' >/dev/null 2>&1; then
+  echo "FAIL: could not remove HostedZoneNameServers from the state document" >&2
+  exit 1
+fi
+printf '%s' "${PRUNED_STATE}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}"
+
+# Confirm the deletion actually landed in S3 before relying on it: if the put
+# silently no-opped, the assertions below would be reading Phase 1's outputs
+# again and the arm would be vacuous in exactly the way this block fixes.
+PRUNED_READBACK=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if printf '%s' "${PRUNED_READBACK}" | jq -e '.outputs | has("HostedZoneNameServers") or has("HostedZoneNameServersList")' >/dev/null 2>&1; then
+  echo "FAIL: the NameServers outputs are still in S3 state; the redeploy assertion would be vacuous" >&2
+  printf '%s' "${PRUNED_READBACK}" | jq '.outputs | keys'
+  exit 1
+fi
+
 echo "==> Phase 2.5d: redeploy so the Outputs re-resolve from the imported record"
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
