@@ -3,6 +3,8 @@ import {
   redactSecretsForState,
   maskSecretsInText,
   scrubResourceRecord,
+  STATE_SOURCED_READBACK_RULES,
+  TEMPLATE_SOURCED_READBACK_RULES,
   SECRET_MASK,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
@@ -209,7 +211,7 @@ describe('secret-redaction - value-key collision (issue #1904, value-only bound)
     const observed = { Variables: { PLAIN: SHARED } };
     const source = { Variables: { PLAIN: EXPR_PLAIN } };
 
-    const redacted = redactSecretsForState(observed, new Map(), source, 'aws-readback') as {
+    const redacted = redactSecretsForState(observed, new Map(), source, STATE_SOURCED_READBACK_RULES) as {
       Variables: Record<string, string>;
     };
 
@@ -259,7 +261,7 @@ describe('secret-redaction - value-key collision (issue #1904, value-only bound)
     };
     const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PLAIN]]);
 
-    const redacted = redactSecretsForState(observed, secrets, source, 'aws-readback') as {
+    const redacted = redactSecretsForState(observed, secrets, source, TEMPLATE_SOURCED_READBACK_RULES) as {
       Env: Array<Record<string, string>>;
     };
 
