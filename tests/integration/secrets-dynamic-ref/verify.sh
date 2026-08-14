@@ -107,6 +107,11 @@ SECURE_PARAM_NAME="cdkd-test-dynref-secure-${ACCOUNT_ID}"
 EXPECTED_PASSWORD="cdkd-known-pw-123"
 EXPECTED_FULL='{"username":"cdkd-user","password":"cdkd-known-pw-123"}'
 EXPECTED_SSM="cdkd-known-ssm-value"
+# The version-stage reference deliberately reads a DIFFERENT json key, so it
+# does NOT resolve to the same plaintext as SECRET_PASSWORD -- see the stack's
+# comment and issue #1904 (two expressions sharing one resolved value collapse
+# in the value-keyed redaction map).
+EXPECTED_USERNAME="cdkd-user"
 EXPECTED_SECURE="cdkd-known-secure-value-456"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
@@ -261,7 +266,7 @@ check_equals "SECRET_PASSWORD (secretsmanager :SecretString:<jsonkey>)" \
 check_equals "SECRET_FULL (secretsmanager :SecretString whole-secret)" \
   "${ENV_SECRET_FULL}" "${EXPECTED_FULL}"
 check_equals "SECRET_PASSWORD_STAGED (secretsmanager :SecretString:<jsonkey>:AWSCURRENT)" \
-  "${ENV_SECRET_PASSWORD_STAGED}" "${EXPECTED_PASSWORD}"
+  "${ENV_SECRET_PASSWORD_STAGED}" "${EXPECTED_USERNAME}"
 check_equals "SSM_VALUE (ssm:<name> plaintext param)" \
   "${ENV_SSM_VALUE}" "${EXPECTED_SSM}"
 # The SecureString still has to REACH AWS decrypted — issue #1901 changes what

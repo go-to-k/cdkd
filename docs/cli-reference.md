@@ -2360,6 +2360,15 @@ as its encrypted blob, which is never substituted, cached, or persisted, and the
 comparison stays expression-vs-expression. Once a reference is known to be
 `SecureString`, later comparisons short-circuit with no AWS call at all.
 
+**Known limitation.** Two dynamic references that resolve to the SAME value
+(for example the same JSON key written once with and once without an explicit
+version stage) collapse in the redaction map, which is keyed by the resolved
+value — so both sites persist whichever expression was recorded last, and the
+stack then reports a spurious UPDATE on every deploy. No plaintext is exposed;
+the wrong EXPRESSION is stored. Tracked as issue
+[#1904](https://github.com/go-to-k/cdkd/issues/1904). Until it is fixed, avoid
+two spellings of one secret value in a single resource.
+
 **Known limitation.** A secret reference used as a NESTED STACK's `Parameters`
 value is resolved by the parent and handed to the child as a literal, so the
 child stack's own state records the plaintext, and `cdkd diff --recursive`

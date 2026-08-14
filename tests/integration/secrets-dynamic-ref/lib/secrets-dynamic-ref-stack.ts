@@ -115,7 +115,18 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         SECRET_FULL: `{{resolve:secretsmanager:${secretName}:SecretString}}`,
         // Explicit AWSCURRENT version-stage form (cdkd supports the
         // 6-field grammar; this exercises the version-stage slot).
-        SECRET_PASSWORD_STAGED: `{{resolve:secretsmanager:${secretName}:SecretString:password:AWSCURRENT}}`,
+        //
+        // The JSON key is `username`, NOT `password`, and that is load-bearing:
+        // with `password` this reference resolves to the SAME plaintext as
+        // SECRET_PASSWORD above, and the redaction map is keyed by the resolved
+        // VALUE — so the two expressions collapse to one entry, state persists
+        // the staged spelling for BOTH, and the stack takes a permanent
+        // spurious UPDATE. That is a real, shipped defect, filed as issue #1904
+        // and NOT caused by the SecureString work; the fixture points at a
+        // different key so the `diff --fail` guard below keeps testing what it
+        // is meant to test. Do NOT "tidy" this back to `password` — #1904's own
+        // fixture arm is what should re-introduce the collision, deliberately.
+        SECRET_PASSWORD_STAGED: `{{resolve:secretsmanager:${secretName}:SecretString:username:AWSCURRENT}}`,
         // SSM plaintext-parameter form. Public config: state stores this
         // RESOLVED, which is the discriminator for the SecureString case below.
         SSM_VALUE: `{{resolve:ssm:${paramName}}}`,
