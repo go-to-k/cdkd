@@ -345,10 +345,12 @@ case "${STATE_SECRET_FULL}" in
   '{{resolve:secretsmanager:'*) echo "    OK: state SECRET_FULL kept the expression: ${STATE_SECRET_FULL}" ;;
   *) echo "FAIL: state SECRET_FULL is NOT the {{resolve:...}} expression: $(mask "${STATE_SECRET_FULL}")" >&2; redaction_fail=1 ;;
 esac
-# The version-stage reference resolves to its OWN distinct value (see issue
-# #1904 and the stack comment), so its state side needs its own assertion —
-# otherwise the one env var whose expression differs from every other is the
-# one form left unverified.
+# The version-stage reference resolves to the SAME value as SECRET_PASSWORD
+# (issue #1910 restored that collision deliberately — see the stack comment),
+# so this assertion and the `:AWSCURRENT` guard on SECRET_PASSWORD above are a
+# PAIR: together they fence both directions of the collapse. Neither is
+# sufficient alone, because a collapsed state still holds a valid-looking
+# secretsmanager expression at both leaves.
 case "${STATE_SECRET_PASSWORD_STAGED}" in
   '{{resolve:secretsmanager:'*':AWSCURRENT}}') echo "    OK: state SECRET_PASSWORD_STAGED kept its OWN staged expression: ${STATE_SECRET_PASSWORD_STAGED}" ;;
   *) echo "FAIL: state SECRET_PASSWORD_STAGED is NOT its own {{resolve:...:AWSCURRENT}} expression: $(mask "${STATE_SECRET_PASSWORD_STAGED}")" >&2; redaction_fail=1 ;;

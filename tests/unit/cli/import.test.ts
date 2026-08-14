@@ -571,11 +571,15 @@ describe('cdkd import', () => {
       string,
       { resources: Record<string, { properties: Record<string, unknown> }> },
     ];
-    // Non-vacuity guard, and STRONGER than the sibling test's above: here the
-    // raw form equals the expected form at BOTH leaves, so "it was fetched at
-    // all" is not enough — the collapse can only be observed if BOTH references
-    // were actually resolved to the shared plaintext.
+    // Non-vacuity guards. The call COUNT alone is not enough and is the same
+    // class as the bug fixed above: a refusal AFTER the fetch keeps the count
+    // at 2 and still leaves both leaves raw, which equals the expected values.
+    // So assert the count (both references were reached) AND that neither
+    // resolution was refused.
     expect(smSend).toHaveBeenCalledTimes(2);
+    expect(warnSpy.mock.calls.flat().join('\n')).not.toContain(
+      'Failed to resolve intrinsics in Properties'
+    );
 
     const details = state.resources['Idp']!.properties['ProviderDetails'] as Record<string, unknown>;
     expect(details['plain']).toBe(exprPlain);

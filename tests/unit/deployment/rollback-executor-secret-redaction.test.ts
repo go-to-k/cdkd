@@ -286,6 +286,90 @@ describe('rollback replay - secret re-resolution + state redaction (GHSA #1899)'
     );
   });
 
+  // Test review, HIGH: only the revert-UPDATE site was fenced for the collision.
+  // The other two `redactRollbackRecord` call sites are on paths that SHIP to
+  // AWS, so an unfenced collapse there is the wrong-secret-version failure.
+  const STAGED_EXPR = '{{resolve:secretsmanager:my-secret:SecretString:client_secret:AWSCURRENT}}';
+  const collidingDetails = {
+    ProviderDetails: { client_secret: SECRET_EXPR, client_secret_staged: STAGED_EXPR },
+  };
+  const collidingEcho = {
+    ProviderDetails: {
+      client_secret: SECRET_PLAINTEXT,
+      client_secret_staged: SECRET_PLAINTEXT,
+    },
+  };
+
+  function expectUncollapsed(state: Record<string, ResourceState>): void {
+    const details = state.Idp!.properties['ProviderDetails'] as Record<string, string>;
+    expect(details['client_secret']).toBe(SECRET_EXPR);
+    expect(details['client_secret_staged']).toBe(STAGED_EXPR);
+    expect(JSON.stringify(state)).not.toContain(SECRET_PLAINTEXT);
+  }
+
+  it('reverse-replacement re-CREATE: a colliding pair keeps its OWN expressions', async () => {
+    const create = vi.fn().mockResolvedValue({
+      physicalId: 'old-idp',
+      attributes: {},
+      effectiveProperties: collidingEcho,
+    });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+    const prev = res({
+      physicalId: 'old-idp',
+      resourceType: IDP_TYPE,
+      properties: collidingDetails,
+    });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'Idp',
+        changeType: 'UPDATE',
+        resourceType: IDP_TYPE,
+        physicalId: 'new-idp',
+        previousState: prev,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({ physicalId: 'new-idp', resourceType: IDP_TYPE, properties: collidingDetails }),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    expect(mockSMSend).toHaveBeenCalled();
+    expectUncollapsed(state);
+  });
+
+  it('revert-failed-update: a colliding pair keeps its OWN expressions', async () => {
+    const update = vi.fn().mockResolvedValue({
+      physicalId: 'phys-B',
+      effectiveProperties: collidingEcho,
+    });
+    const { ctx } = makeCtx({ update });
+    const prev = res({
+      physicalId: 'phys-B',
+      resourceType: IDP_TYPE,
+      properties: collidingDetails,
+    });
+    const failed: FailedOperation[] = [
+      {
+        logicalId: 'Idp',
+        changeType: 'UPDATE',
+        resourceType: IDP_TYPE,
+        physicalId: 'phys-B',
+        previousState: prev,
+        attemptedProperties: collidingDetails,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({ physicalId: 'phys-B', resourceType: IDP_TYPE, properties: collidingDetails }),
+    };
+
+    await replayFailedOperations(failed, state, 'S', ctx);
+
+    expect(mockSMSend).toHaveBeenCalled();
+    expectUncollapsed(state);
+  });
+
   it('does not fetch any secret when the reverted properties hold no {{resolve:...}} expression', async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
     const { ctx } = makeCtx({ update });

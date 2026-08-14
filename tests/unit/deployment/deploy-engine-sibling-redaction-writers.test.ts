@@ -193,6 +193,56 @@ describe('DeployEngine - sibling redaction writers position by source (issue #19
     expect(JSON.stringify(savedState)).not.toContain(SHARED);
   });
 
+  // Test review, HIGH: the UPDATE no-op re-check is a SIXTH consumer of the
+  // redaction, and the only one whose output is a COMPARISON rather than a
+  // persisted bag. State holds each leaf's own expression since #1904, so a
+  // value-only redaction here can never compare equal — every deploy of such a
+  // resource issues a redundant `provider.update` forever.
+  it('UPDATE no-op re-check: a colliding pair still compares equal to stored state', async () => {
+    const stored: StackState = {
+      version: 8,
+      stackName,
+      region: 'us-east-1',
+      resources: {
+        Fn: {
+          physicalId: 'fn-phys',
+          resourceType: 'AWS::Lambda::Function',
+          // State already holds each leaf's OWN expression.
+          properties: collidingProps,
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    };
+    mockStateBackend.getState!.mockResolvedValue({ state: stored, etag: 'e0' });
+    mockDiffCalculator.calculateDiff!.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Fn',
+          {
+            logicalId: 'Fn',
+            changeType: 'UPDATE',
+            resourceType: 'AWS::Lambda::Function',
+            desiredProperties: collidingProps,
+            // The re-check compares against `currentProperties` — the bag read
+            // back from state, which holds each leaf's own expression.
+            currentProperties: collidingProps,
+          },
+        ],
+      ])
+    );
+
+    const template: CloudFormationTemplate = {
+      Resources: { Fn: { Type: 'AWS::Lambda::Function', Properties: collidingProps } },
+    };
+
+    await makeEngine().deploy(stackName, template);
+
+    // The re-check resolved both leaves to one plaintext, redacted them back by
+    // POSITION, and got exactly what state holds — so there is nothing to do.
+    expect(mockProvider.update!).not.toHaveBeenCalled();
+  });
+
   it('JOURNAL: a completed op keeps each property leaf on its OWN expression', async () => {
     // `Fn` succeeds and `Boom` fails, so the deploy journals `Fn` as a completed
     // operation. `--no-rollback` keeps the segment instead of replaying it.

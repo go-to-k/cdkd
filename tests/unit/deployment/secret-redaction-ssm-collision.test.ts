@@ -110,11 +110,11 @@ describe('secret-redaction - SecureString ssm pair sharing one value (issue #191
     expect(redactOnce()).toBe('plain-config');
   });
 
-  // The set must NOT widen the STATE-sourced arm, which already trusts any
-  // expression it finds (#1900) — this pins that the two mechanisms compose
-  // rather than one masking the other.
+  // The STATE-sourced arm trusts ANY expression it finds (#1900), so it must
+  // keep working with the expression store EMPTY — i.e. the store is not on
+  // this path at all, and deliberately so: a persisted record holds no public
+  // expressions, so there is nothing for the store to disambiguate.
   it('still redacts an observed readback from the record itself with no map', () => {
-    recordSecretExpression(EXPR_A);
     const redacted = scrubResourceRecord(
       {
         properties: { Password: EXPR_A },
