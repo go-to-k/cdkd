@@ -155,7 +155,6 @@ async function scrubCommand(stacks: string[], options: ScrubOptions): Promise<vo
   const lockManager = new LockManager(stateS3.s3, stateConfig);
 
   let totalStacksScrubbed = 0;
-  let totalSecretsFound = 0;
 
   for (const stack of targetStacks) {
     const stackRegion = stack.region || region;
@@ -164,19 +163,22 @@ async function scrubCommand(stacks: string[], options: ScrubOptions): Promise<vo
       roleArn: options.roleArn,
       logger,
     });
-    totalSecretsFound += scrubbed.secretsFound;
-    if (scrubbed.recordsChanged > 0) totalStacksScrubbed++;
+    // The verdict keys on records-that-CHANGED (state actually held plaintext),
+    // NOT on secrets-found: a resource whose reference is already stored as its
+    // `{{resolve:...}}` expression resolves the same secret again but needs no
+    // rewrite. Only a state record still holding the plaintext counts.
     if (scrubbed.recordsChanged > 0) {
+      totalStacksScrubbed++;
       logger.info(
         `${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${scrubbed.recordsChanged} resource record(s) ` +
-          `in ${stack.stackName} (${scrubbed.secretsFound} secret reference(s))`
+          `in ${stack.stackName}`
       );
     } else {
       logger.info(`No plaintext secrets found in ${stack.stackName}`);
     }
   }
 
-  if (totalSecretsFound === 0) {
+  if (totalStacksScrubbed === 0) {
     logger.info('\nNo plaintext secrets found in any target stack state. Nothing to scrub.');
     return;
   }
@@ -227,7 +229,12 @@ export async function scrubStack(
     // Re-resolve each resource's TEMPLATE properties to collect the resolved
     // secret plaintext -> expression map. The resolved output is discarded; only
     // the recorded secrets matter.
-    const recordedSecretValues = new Map<string, string>();
+    // PER-RESOURCE secrets (keyed by logicalId) + a separate outputs map, so a
+    // whole-secret value from one resource cannot rewrite another's literal —
+    // the cross-resource collision the deploy engine's `perResourceSecrets` doc
+    // describes.
+    const perResourceSecrets = new Map<string, Map<string, string>>();
+    const outputSecrets = new Map<string, string>();
     const resolver = new IntrinsicFunctionResolver(region);
     let parameters: Record<string, unknown> = {};
     let conditions: Record<string, boolean> = {};
@@ -255,6 +262,7 @@ export async function scrubStack(
     for (const logicalId of Object.keys(state.resources)) {
       const templateResource = templateResources[logicalId];
       if (!templateResource?.Properties) continue;
+      const recordedSecretValues = new Map<string, string>();
       try {
         await resolver.resolve(templateResource.Properties, {
           template: stack.template,
@@ -273,6 +281,7 @@ export async function scrubStack(
           `Resolution of ${logicalId} during scrub was partial: ${err instanceof Error ? err.message : String(err)}`
         );
       }
+      if (recordedSecretValues.size > 0) perResourceSecrets.set(logicalId, recordedSecretValues);
     }
 
     // Outputs are secret-bearing too (a CfnOutput resolving a secret reference),
@@ -288,7 +297,7 @@ export async function scrubStack(
           ...(Object.keys(parameters).length > 0 && { parameters }),
           ...(Object.keys(conditions).length > 0 && { conditions }),
           stackName: stack.stackName,
-          recordedSecretValues,
+          recordedSecretValues: outputSecrets,
           bestEffort: true,
         });
       } catch (err) {
@@ -298,19 +307,23 @@ export async function scrubStack(
       }
     }
 
-    if (recordedSecretValues.size === 0) {
+    const totalSecrets =
+      outputSecrets.size + [...perResourceSecrets.values()].reduce((n, m) => n + m.size, 0);
+    if (totalSecrets === 0) {
       return { recordsChanged: 0, secretsFound: 0 };
     }
 
-    // Rewrite each record + the outputs; count how many actually changed.
+    // Rewrite each record with ITS OWN secrets + the outputs; count changes.
     let recordsChanged = 0;
     const newResources: StackState['resources'] = {};
     for (const [logicalId, record] of Object.entries(state.resources)) {
-      const scrubbed = scrubResourceRecord(record, recordedSecretValues);
+      const secrets = perResourceSecrets.get(logicalId);
+      const scrubbed = secrets ? scrubResourceRecord(record, secrets) : record;
       if (JSON.stringify(scrubbed) !== JSON.stringify(record)) recordsChanged++;
       newResources[logicalId] = scrubbed;
     }
-    const newOutputs = redactSecretsForState(state.outputs, recordedSecretValues);
+    const newOutputs =
+      outputSecrets.size > 0 ? redactSecretsForState(state.outputs, outputSecrets) : state.outputs;
     const outputsChanged = JSON.stringify(newOutputs) !== JSON.stringify(state.outputs);
     if (outputsChanged) recordsChanged++;
 
@@ -326,7 +339,7 @@ export async function scrubStack(
       });
     }
 
-    return { recordsChanged, secretsFound: recordedSecretValues.size };
+    return { recordsChanged, secretsFound: totalSecrets };
   } finally {
     if (acquired) {
       await lockManager.releaseLock(stack.stackName, region).catch((err) => {
@@ -354,8 +367,6 @@ export function createScrubCommand(): Command {
   );
   cmd.addOption(deprecatedRegionOption);
 
-  cmd.action(async (stacks: string[], options: ScrubOptions) => {
-    await withErrorHandling(() => scrubCommand(stacks, options));
-  });
+  cmd.action(withErrorHandling(scrubCommand));
   return cmd;
 }

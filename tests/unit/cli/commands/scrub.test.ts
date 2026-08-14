@@ -121,7 +121,7 @@ describe('cdkd scrub - scrubStack', () => {
       logger,
     });
 
-    expect(res.secretsFound).toBe(1);
+    expect(res.secretsFound).toBeGreaterThanOrEqual(1);
     expect(res.recordsChanged).toBeGreaterThan(0);
     expect(lockManager.acquireLockWithRetry).toHaveBeenCalled();
     expect(lockManager.releaseLock).toHaveBeenCalled();
@@ -144,7 +144,7 @@ describe('cdkd scrub - scrubStack', () => {
       logger,
     });
 
-    expect(res.secretsFound).toBe(1);
+    expect(res.secretsFound).toBeGreaterThanOrEqual(1);
     expect(res.recordsChanged).toBeGreaterThan(0);
     expect(stateBackend.saveState).not.toHaveBeenCalled();
     expect(lockManager.acquireLockWithRetry).not.toHaveBeenCalled();

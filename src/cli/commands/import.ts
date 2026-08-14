@@ -1412,10 +1412,6 @@ async function resolveImportedProperties(
     );
   }
 
-  // Records resolved secret plaintext -> `{{resolve:...}}` expression so the
-  // imported state persists the expression, not the plaintext (GHSA fix), the
-  // same as the deploy path. Accumulated across the import's resources.
-  const recordedSecretValues = new Map<string, string>();
   const baseContext = {
     template,
     resources: stackState.resources,
@@ -1423,15 +1419,19 @@ async function resolveImportedProperties(
     ...(Object.keys(conditions).length > 0 && { conditions }),
     stateBackend,
     stackName: stackState.stackName,
-    recordedSecretValues,
   };
 
   for (const [logicalId, resource] of entries) {
     try {
-      const resolved = (await resolver.resolve(resource.properties ?? {}, baseContext)) as Record<
-        string,
-        unknown
-      >;
+      // Fresh PER-RESOURCE secrets map so the imported state persists the
+      // `{{resolve:...}}` expression, not the plaintext (GHSA fix), while a
+      // whole-secret value from one resource cannot rewrite another's literal
+      // (see the deploy engine's `perResourceSecrets` doc for the rationale).
+      const recordedSecretValues = new Map<string, string>();
+      const resolved = (await resolver.resolve(resource.properties ?? {}, {
+        ...baseContext,
+        recordedSecretValues,
+      })) as Record<string, unknown>;
       resource.properties =
         recordedSecretValues.size > 0
           ? redactSecretsForState(resolved, recordedSecretValues)

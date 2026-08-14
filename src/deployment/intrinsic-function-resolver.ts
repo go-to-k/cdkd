@@ -1424,7 +1424,10 @@ export class IntrinsicFunctionResolver {
     // Primitives: return as-is (but check strings for dynamic references)
     if (typeof value !== 'object' || value === null) {
       if (typeof value === 'string' && value.includes('{{resolve:')) {
-        if (context.skipDynamicReferences) return value;
+        // `skipDynamicReferences` leaves SECRET references unresolved (handled
+        // per-reference inside resolveDynamicReferences) but still resolves a
+        // plain `ssm` reference — plain ssm is public config, stored RESOLVED in
+        // state, so the diff must resolve it too to compare like-for-like.
         return await this.resolveDynamicReferences(value, context);
       }
       return value;
@@ -2742,8 +2745,9 @@ export class IntrinsicFunctionResolver {
     );
 
     let result = resolvedValues.join(delimiter);
-    // Resolve any dynamic references in the joined result
-    if (!context.skipDynamicReferences && result.includes('{{resolve:')) {
+    // Resolve any dynamic references in the joined result (secret refs are
+    // left unresolved per-reference when skipDynamicReferences is set).
+    if (result.includes('{{resolve:')) {
       result = await this.resolveDynamicReferences(result, context);
     }
     this.logger.debug(`Resolved Fn::Join: ${this.maskSecretsForLog(result, context)}`);
@@ -2881,8 +2885,9 @@ export class IntrinsicFunctionResolver {
       return entry ? entry.replacement : whole;
     });
 
-    // Resolve any dynamic references in the substituted result
-    if (!context.skipDynamicReferences && result.includes('{{resolve:')) {
+    // Resolve any dynamic references in the substituted result (secret refs are
+    // left unresolved per-reference when skipDynamicReferences is set).
+    if (result.includes('{{resolve:')) {
       result = await this.resolveDynamicReferences(result, context);
     }
     this.logger.debug(`Resolved Fn::Sub: ${this.maskSecretsForLog(result, context)}`);
@@ -4214,6 +4219,14 @@ export class IntrinsicFunctionResolver {
       // recorded. Recorded on the cache-hit path too, so a second reference to
       // the same secret in the same pass is still redacted.
       const isSecret = service === 'secretsmanager';
+
+      // Diff / no-op comparison path: leave SECRET references UNRESOLVED (the
+      // expression is what state stores, so comparing keeps like-for-like and
+      // makes no live GetSecretValue). Plain `ssm` still resolves — it is public
+      // config stored resolved in state. (GHSA fix.)
+      if (isSecret && context?.skipDynamicReferences) {
+        continue;
+      }
 
       // Check cache first
       if (fullMatch in cachedDynamicReferences) {

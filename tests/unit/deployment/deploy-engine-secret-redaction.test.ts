@@ -226,6 +226,76 @@ describe('DeployEngine - resolved secrets are redacted out of persisted state (G
     expect(JSON.stringify(savedState)).not.toContain(SECRET_PLAINTEXT);
   });
 
+  it('does NOT redact one resource literal that equals a secret another resource resolved (per-resource scoping)', async () => {
+    // The exact false-positive the secrets-dynamic-ref integ caught: resource A
+    // (a Lambda) resolves a WHOLE-SECRET reference to value V; resource B (the
+    // AWS::SecretsManager::Secret that owns it) carries V as its own LITERAL
+    // property. A session-wide value scan would rewrite B's literal to A's
+    // expression — a spurious perpetual diff. Per-resource scoping must leave
+    // B's literal intact while redacting A's reference.
+    mockStateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
+    mockProvider.create.mockResolvedValue({ physicalId: 'p' });
+    mockProvider.readCurrentState.mockResolvedValue(undefined);
+
+    const wholeSecretExpr = '{{resolve:secretsmanager:my-secret:SecretString::}}';
+    const secretJson = '{"username":"u","password":"cdkd-known-pw"}';
+
+    // Two resources provisioned in one deploy (two DAG entries).
+    mockDagBuilder.getExecutionLevels.mockReturnValue([['TheSecret', 'TheLambda']]);
+    const changes = new Map<string, ResourceChange>([
+      [
+        'TheSecret',
+        {
+          logicalId: 'TheSecret',
+          changeType: 'CREATE',
+          resourceType: 'AWS::SecretsManager::Secret',
+          // Literal secret value (unsafePlainText) — NOT a dynamic reference.
+          desiredProperties: { SecretString: secretJson },
+        },
+      ],
+      [
+        'TheLambda',
+        {
+          logicalId: 'TheLambda',
+          changeType: 'CREATE',
+          resourceType: 'AWS::Lambda::Function',
+          // Whole-secret reference that resolves to the SAME JSON string.
+          desiredProperties: {
+            Environment: { Variables: { FULL: { __resolveSecret: [secretJson, wholeSecretExpr] } } },
+          },
+        },
+      ],
+    ]);
+    mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        TheSecret: { Type: 'AWS::SecretsManager::Secret', Properties: { SecretString: secretJson } },
+        TheLambda: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Environment: { Variables: { FULL: { __resolveSecret: [secretJson, wholeSecretExpr] } } },
+          },
+        },
+      },
+    };
+
+    const engine = makeEngine();
+    await engine.deploy(stackName, template);
+
+    const savedState = mockStateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    // The Lambda's reference IS redacted to the expression.
+    expect(
+      (
+        (savedState.resources['TheLambda']!.properties['Environment'] as Record<string, unknown>)[
+          'Variables'
+        ] as Record<string, unknown>
+      )['FULL']
+    ).toBe(wholeSecretExpr);
+    // The secret's OWN literal is UNTOUCHED (no false-positive over-redaction).
+    expect(savedState.resources['TheSecret']!.properties['SecretString']).toBe(secretJson);
+  });
+
   it('does not redact anything when no secret was resolved (identity path)', async () => {
     mockStateBackend.getState.mockResolvedValue({ state: null, etag: undefined });
     mockProvider.create.mockResolvedValue({ physicalId: 'phys' });

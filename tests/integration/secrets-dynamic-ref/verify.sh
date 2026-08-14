@@ -291,13 +291,21 @@ else
   redaction_fail=1
 fi
 
-# Guard 5: the resolved plaintext password must NOT appear ANYWHERE in state.
-# grep -q so the plaintext is never echoed.
-if printf '%s' "${STATE_JSON}" | grep -qF "${EXPECTED_PASSWORD}"; then
-  echo "FAIL: the resolved secret plaintext LEAKED into cdkd state (found the known password in 'state show' output)" >&2
+# Guard 5: the RESOLVED-REFERENCE values (the consumer Lambda's env vars) must
+# NOT contain the plaintext — this is the dynamic-reference disclosure the fix
+# targets. NOTE we scope this to the Lambda's persisted env, NOT the whole
+# state: the AWS::SecretsManager::Secret resource's OWN `SecretString` is the
+# fixture's hardcoded value (cdk `unsafePlainText`), which legitimately lands in
+# that resource's state properties exactly as CloudFormation stores template
+# values. Redacting a resource's own literal is a separate concern (hardcoded
+# secrets in templates), out of scope for the dynamic-reference fix — and
+# redacting it would be the cross-resource false-positive the per-resource
+# scoping deliberately avoids. grep -q so the plaintext is never echoed.
+if printf '%s' "${LAMBDA_ENV}" | grep -qF "${EXPECTED_PASSWORD}"; then
+  echo "FAIL: the resolved secret plaintext LEAKED into the Lambda's persisted env (dynamic-ref disclosure)" >&2
   redaction_fail=1
 else
-  echo "    OK: resolved secret plaintext is absent from cdkd state"
+  echo "    OK: resolved-reference plaintext is absent from the consumer Lambda's persisted state"
 fi
 
 if [ "${redaction_fail}" -ne 0 ]; then
