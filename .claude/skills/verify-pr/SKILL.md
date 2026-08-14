@@ -164,8 +164,9 @@ Run each check and report pass/fail:
      - **inline spot-check** (small PR, < 300 LOC OR < 5 files, no security-sensitive paths) — read the diff yourself in this step; no sub-agent dispatch.
      - **1 reviewer** (medium PR, 300-1000 LOC) — dispatch a single `pr-code-reviewer` agent (the skill emits a ready-to-paste Agent call).
      - **3-axis parallel** (large PR ≥ 1000 LOC OR security-sensitive paths) — dispatch all three of `pr-spec-reviewer` / `pr-code-reviewer` / `pr-test-reviewer` in parallel (single message, three Agent tool calls).
+     - **security add-on** (additive, ANY tier incl. `inline`) — when the PR touches a security / process-launch surface or is a security fix, `/review-pr` ALSO emits a `pr-security-reviewer` dispatch. Add it to the same parallel batch; its blockers block the merge like any other reviewer's.
 
-     The skill applies bias factors (security surfaces bump up; pure-infra / docs / tests-only bump down). Trust the recommendation; override only when you have a concrete reason (note the reason here).
+     The skill applies bias factors (security surfaces bump up; pure-infra / docs / tests-only bump down) and appends the security reviewer on top of the tier when a security surface / fix is involved. Trust the recommendation; override only when you have a concrete reason (note the reason here).
    - Synthesize the reviewer reports (or your inline read) into a pass / issues-found verdict. Any blocker → fix-back loop before continuing.
    - `git diff main...HEAD` — confirm the diff is what you reviewed (no last-minute commits slipped through).
    - For each change: is it correct? complete? necessary?

@@ -64,6 +64,8 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
    - Any path under `src/provisioning/providers/**` (deletion-sensitive — within the `integ-destroy` markgate scope; real-AWS regressions cost cleanup time)
    - Branch has > 1 fix-back commit (heuristic for "multiple sub-agents wrote the diff" — count commits whose message starts with `fix:` / `fix(` via `git log main..<branch> --oneline | grep -cE '^[a-f0-9]+ fix(\(|:)'`)
 
+   **Security add-on reviewer (additive — NOT part of the tier ladder).** Whenever ANY security / process-launch up-bias path above matches (the surface list + `src/provisioning/providers/**`), OR the PR is a **security fix** — it handles secrets / credentials, adds or changes redaction / masking / escaping, persists a sensitive value to state, or is tied to a GHSA — ALSO dispatch the **`pr-security-reviewer`**, IN ADDITION to whatever the final size tier selects. It does not move the tier up or down; it is a fourth axis bolted on. Why separate from the tier: the size tier decides BREADTH (spec / code / test), but a security defect is a DEPTH concern a tiny PR can carry — a 20-line secret-redaction change is `inline` by size yet needs the write-to-every-reader flow-trace lens. Concretely: the GHSA-p5qg-v9gv-hc7w rollback blocker (redaction stored a `{{resolve:...}}` expression that a rollback then replayed as a literal to AWS) was surfaced by the generic code reviewer only on the SECOND round, after a targeted prompt; a standing security lens catches that class in round one.
+
    **Down-bias triggers** (move tier DOWN by one step, never below inline) — only fires when ALL paths fall in the listed buckets:
 
    - **Pure INERT docs**: every path matches one of `.gitignore`, `README.md`, `docs/**`, `package.json`, `tests/**/*.md`. **Agent-instruction files are deliberately NOT here** — `CLAUDE.md`, `.claude/rules/**`, `.claude/skills/**`, `.claude/agents/**`, `.claude/hooks/**`, `.claude/settings*.json` and `.markgate.yml` change how every future session behaves, so a defect in one has a wider blast radius than most code. (`package.json` counts here only for top-level dep bumps.) `pr-review-gate.sh`'s `DOWN_DOCS_REGEX` carries the same list MINUS `tests/**/*.md` (the hook reaches that shape through its separate tests-only bucket instead), so a diff of exactly `README.md` + a `tests/**/README.md` down-biases here and not there; keep the two in sync and re-check that delta when editing either. The `tests/**/*.md` entry catches integ-test READMEs (`tests/integration/*/README.md`), written for human readers but living under `tests/**`. It is deliberately NOT a blanket `**/*.md`: that form re-admitted `CLAUDE.md`, `.claude/rules/**`, `.claude/skills/**/SKILL.md` and `.claude/agents/*.md` — every file the sentence above excludes — so the exclusion was inert on the skill side while the hook enforced it, which is the drift this list exists to prevent. Added after PR #344 surfaced a 13-file markdown-only cleanup that the strict path-bucket rule mis-categorized as mixed-bucket and forced into 3-axis review.
@@ -119,6 +121,17 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
    For the `inline` tier, the marker is NOT set — the gate's heuristic
    also outputs `inline` for the same PR, so no enforcement fires and
    the merge proceeds without a marker.
+
+   **Security add-on dispatch.** When the security add-on trigger fired (see
+   step 3), dispatch `pr-security-reviewer` ALONGSIDE the tier reviewers (add it
+   to the same parallel batch), wait for it too, and fold its findings into the
+   synthesis: a security blocker blocks the marker exactly like any other. This
+   applies at EVERY tier, `inline` included — an `inline`-by-size security PR
+   still gets the security reviewer, even though the size-tier gate (`pr-review`
+   marker) does not fire for it. The `pr-review-gate.sh` hook is unchanged in
+   this phase (it enforces only the size tier), so the security reviewer here is
+   a skill-level requirement the orchestrator honours, not a hard merge gate; a
+   hard gate is the deferred phase-2 in the tracking issue.
 
    **NEVER set the marker without dispatching the reviewers first.**
    The whole point of the gate is that an un-reviewed large PR cannot
@@ -208,6 +221,26 @@ No reviewer dispatch — orchestrator should spot-check inline:
   - Estimated time: 5 min
 
 If during the inline read you discover a non-obvious bug class (cross-cutting state machine, race, security-sensitive logic), STOP and re-run /review-pr <N> after manually adding the file path to the up-bias trigger list locally, or just dispatch a code reviewer by hand.
+```
+
+**ADDITIONALLY, if the security add-on trigger fired** (step 3 — a security /
+process-launch surface path, `src/provisioning/providers/**`, or a security fix),
+append this to the dispatch (at ANY tier, `inline` included — add it to the same
+parallel batch as the tier reviewers):
+
+```
+Also dispatch the security reviewer IN PARALLEL (add to the batch above):
+
+  Agent {
+    subagent_type: "general-purpose",
+    description: "PR <N> security review",
+    prompt: |
+      Read your role definition at `.claude/agents/pr-security-reviewer.md` (relative to the repo root) and follow it.
+      Inputs:
+      - PR number: <N>
+      - Branch: <branch>
+      - Security concern to focus on: <ASK THE ORCHESTRATOR to name the sensitive value(s) / surface this PR touches — e.g. "the redacted secret expression persisted to state + journal; trace every reader", "the cross-account role assumption", "the authorizer token validation". A security review with no named value to trace defaults to enumerating all sensitive values in the diff.>
+  }
 ```
 
 ## Important
