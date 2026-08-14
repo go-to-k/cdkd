@@ -1,3 +1,10 @@
+## [0.283.24](https://github.com/go-to-k/cdkd/compare/v0.283.23...v0.283.24) (2026-08-14)
+
+
+### Bug Fixes
+
+* **state:** redact by PATH so coinciding secret values keep their own expression ([#1912](https://github.com/go-to-k/cdkd/issues/1912)) ([a35a920](https://github.com/go-to-k/cdkd/commit/a35a920a9a49ced6786f59168cc91f5bea6394bb))
+
 ## [0.283.23](https://github.com/go-to-k/cdkd/compare/v0.283.22...v0.283.23) (2026-08-14)
 
 
