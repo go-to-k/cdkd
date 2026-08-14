@@ -1,3 +1,10 @@
+## [0.283.22](https://github.com/go-to-k/cdkd/compare/v0.283.21...v0.283.22) (2026-08-14)
+
+
+### Bug Fixes
+
+* **cloud-control:** mask the create-path DesiredState debug log (GHSA sibling) ([#1909](https://github.com/go-to-k/cdkd/issues/1909)) ([a477025](https://github.com/go-to-k/cdkd/commit/a477025cdad0ac67b49b6daead302cd58b3a9ee0))
+
 ## [0.283.21](https://github.com/go-to-k/cdkd/compare/v0.283.20...v0.283.21) (2026-08-14)
 
 
