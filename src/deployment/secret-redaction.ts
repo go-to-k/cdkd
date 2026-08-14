@@ -76,6 +76,63 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
   return new RegExp(needles.map(escapeRegExp).join('|'), 'g');
 }
 
+/** Does this string carry a dynamic reference cdkd would have resolved? */
+function carriesDynamicReference(value: unknown): value is string {
+  return typeof value === 'string' && value.includes('{{resolve:');
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * PATH-based redaction: walk `bag` alongside a SOURCE bag that still carries the
+ * unresolved `{{resolve:...}}` expressions, and wherever the source leaf is such
+ * a string, persist THAT string verbatim.
+ *
+ * This exists because value-keyed redaction cannot answer the question at all
+ * when two expressions share one resolved value (issue #1904): the map is keyed
+ * by the plaintext, so the two collapse and every site is rewritten to whichever
+ * expression was recorded last — state then holds an expression the template
+ * does not have at that leaf, and the stack takes a permanent spurious UPDATE.
+ * Position is the only disambiguator, and the source bag supplies it.
+ *
+ * It also covers the case where there is no secrets map to consult at all
+ * (issue #1900): an UNCHANGED resource is never resolved during a deploy, so its
+ * `perResourceSecrets` entry is empty, and a live readback that echoes a secret
+ * would be persisted in plaintext. Projecting from the resource's OWN state
+ * record — which already holds the expressions — redacts it with no secret
+ * fetch and no value matching.
+ *
+ * The value scan is still applied wherever the source cannot answer: a source
+ * leaf that is an intrinsic OBJECT (`Fn::Join` / `Fn::Sub`) resolves to a string
+ * embedding the secret, and only a value match can find it inside. So the two
+ * passes are complementary rather than alternatives — path where position is
+ * knowable, value where it is not.
+ */
+function redactByPath(bag: unknown, source: unknown, secrets: RecordedSecretValues): unknown {
+  if (carriesDynamicReference(source) && typeof bag === 'string') {
+    // The source leaf IS what state should hold — exact, and immune to two
+    // expressions sharing one resolved value.
+    return source;
+  }
+  if (Array.isArray(bag) && Array.isArray(source) && bag.length === source.length) {
+    return bag.map((item, i) => redactByPath(item, source[i], secrets));
+  }
+  if (isPlainObject(bag) && isPlainObject(source)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(bag)) {
+      out[k] =
+        k in source ? redactByPath(v, source[k], secrets) : redactSecretsForState(v, secrets);
+    }
+    return out;
+  }
+  // Shapes diverged (an array whose length changed, a scalar where the source
+  // has an object, a key the source lacks): fall back to the value scan, which
+  // is strictly better than leaving the subtree unredacted.
+  return redactSecretsForState(bag, secrets);
+}
+
 /**
  * Deep-clone `bag`, replacing every occurrence of a recorded secret value with
  * the unresolved `{{resolve:...}}` expression it came from. A string whose WHOLE
@@ -85,8 +142,16 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  * is nothing to redact, so callers can persist the original object unchanged in
  * the common no-secret case.
  */
-export function redactSecretsForState<T>(bag: T, secrets: RecordedSecretValues): T {
-  if (secrets.size === 0) return bag;
+export function redactSecretsForState<T>(
+  bag: T,
+  secrets: RecordedSecretValues,
+  source?: unknown
+): T {
+  // The PATH pass runs even with no recorded secrets — that is the whole point
+  // for an UNCHANGED resource, whose `perResourceSecrets` entry is empty
+  // because it was never resolved this deploy (issue #1900).
+  if (secrets.size === 0 && source === undefined) return bag;
+  if (source !== undefined) return redactByPath(bag, source, secrets) as T;
   const regex = buildNeedleRegex(secrets.keys());
   // Even below the needle threshold, a NON-EMPTY whole-value match must still be
   // redacted. An empty-string secret is never a needle (it would match every
@@ -134,13 +199,24 @@ export function scrubResourceRecord<
     attributes?: Record<string, unknown>;
     observedProperties?: Record<string, unknown>;
   },
->(record: T, secrets: RecordedSecretValues): T {
-  if (secrets.size === 0) return record;
+>(record: T, secrets: RecordedSecretValues, sourceProperties?: Record<string, unknown>): T {
+  if (secrets.size === 0 && sourceProperties === undefined) return record;
   const next = { ...record };
-  next.properties = redactSecretsForState(record.properties, secrets);
+  next.properties = redactSecretsForState(record.properties, secrets, sourceProperties);
   if (record.attributes) next.attributes = redactSecretsForState(record.attributes, secrets);
   if (record.observedProperties) {
-    next.observedProperties = redactSecretsForState(record.observedProperties, secrets);
+    // `observedProperties` is a live AWS readback, so its OWN source of truth is
+    // the record's (already redacted) `properties` — a member whose stored value
+    // is an expression must not be overwritten by the plaintext AWS echoes back
+    // (issue #1900). When a `sourceProperties` bag was supplied it is the
+    // template, which is the better source; otherwise fall back to the record's
+    // own properties, which is what makes an UNCHANGED resource redactable at
+    // all.
+    next.observedProperties = redactSecretsForState(
+      record.observedProperties,
+      secrets,
+      sourceProperties ?? record.properties
+    );
   }
   return next;
 }

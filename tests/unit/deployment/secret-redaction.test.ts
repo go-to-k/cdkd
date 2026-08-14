@@ -150,10 +150,12 @@ describe('secret-redaction', () => {
 // pointed at a different JSON key so the fixture's `diff --fail` guard could
 // test what it is meant to test), which left the defect completely unfenced.
 //
-// WHEN #1904 IS FIXED THIS TEST WILL FAIL. That is intended: the fix should
-// replace it with the inverted assertion — each site keeps ITS OWN expression.
-// Do not "repair" it by loosening the assertion.
-describe('secret-redaction - value-key collision (issue #1904, known defect)', () => {
+// UPDATED BY THE #1904 FIX. The collision is REAL and unfixable by value alone,
+// so the two-argument form below still collapses — that is now a documented
+// BOUND rather than a defect, and the second block proves the supported form
+// resolves it. Do not "simplify" by deleting either half: the pair is what
+// records that position, not a better value map, is what fixes this.
+describe('secret-redaction - value-key collision (issue #1904, value-only bound)', () => {
   const EXPR_PLAIN = '{{resolve:secretsmanager:s:SecretString:password}}';
   const EXPR_STAGED = '{{resolve:secretsmanager:s:SecretString:password:AWSCURRENT}}';
   const SHARED = 'one-and-the-same-secret';
@@ -171,11 +173,60 @@ describe('secret-redaction - value-key collision (issue #1904, known defect)', (
       map
     ) as { Variables: Record<string, string> };
 
-    // No plaintext survives — the SECURITY property still holds...
+    // No plaintext survives — the SECURITY property holds either way...
     expect(JSON.stringify(redacted)).not.toContain(SHARED);
-    // ...but PLAIN is rewritten to the STAGED expression, which is the defect:
-    // the next diff compares this against the template's EXPR_PLAIN forever.
+    // ...but PLAIN is rewritten to the STAGED expression. Without a position
+    // source there is nothing that could distinguish them, which is why the fix
+    // supplies one rather than trying to key the map differently.
     expect(redacted.Variables['PLAIN']).toBe(EXPR_STAGED);
     expect(redacted.Variables['STAGED']).toBe(EXPR_STAGED);
+  });
+
+  it('resolves the collision when the SOURCE bag supplies position (#1904 fix)', () => {
+    const map: RecordedSecretValues = new Map();
+    map.set(SHARED, EXPR_PLAIN);
+    map.set(SHARED, EXPR_STAGED);
+
+    // The source is the unresolved template bag the deploy engine now captures.
+    const source = { Variables: { PLAIN: EXPR_PLAIN, STAGED: EXPR_STAGED } };
+    const redacted = redactSecretsForState(
+      { Variables: { PLAIN: SHARED, STAGED: SHARED } },
+      map,
+      source
+    ) as { Variables: Record<string, string> };
+
+    // Each site keeps ITS OWN expression, so the next diff compares
+    // expression-vs-expression per leaf and reports no change.
+    expect(redacted.Variables['PLAIN']).toBe(EXPR_PLAIN);
+    expect(redacted.Variables['STAGED']).toBe(EXPR_STAGED);
+    expect(JSON.stringify(redacted)).not.toContain(SHARED);
+  });
+
+  it('redacts with NO secrets map at all when the source carries the expression (#1900)', () => {
+    // The unchanged-resource case: never resolved this deploy, so there is no
+    // per-resource secrets map — but the record's own properties still hold the
+    // expression, and a live readback echoing the plaintext must not overwrite it.
+    const observed = { Variables: { PLAIN: SHARED } };
+    const source = { Variables: { PLAIN: EXPR_PLAIN } };
+
+    const redacted = redactSecretsForState(observed, new Map(), source) as {
+      Variables: Record<string, string>;
+    };
+
+    expect(redacted.Variables['PLAIN']).toBe(EXPR_PLAIN);
+    expect(JSON.stringify(redacted)).not.toContain(SHARED);
+  });
+
+  it('still value-scans a subtree the source cannot position (embedded Fn::Sub)', () => {
+    // The source leaf is an intrinsic OBJECT, so position cannot answer; the
+    // value scan must still find the secret embedded in the joined result.
+    const map: RecordedSecretValues = new Map([[SHARED, EXPR_PLAIN]]);
+    const redacted = redactSecretsForState(
+      { Url: `pw=${SHARED}/db` },
+      map,
+      { Url: { 'Fn::Sub': `pw=${EXPR_PLAIN}/db` } }
+    ) as { Url: string };
+
+    expect(redacted.Url).toBe(`pw=${EXPR_PLAIN}/db`);
   });
 });
