@@ -5341,6 +5341,7 @@
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
         "scheduler-custom-group",
+        "secrets-dynamic-ref",
         "sns-inline-subscription",
         "sns-sqs-event",
         "sns-subscription-filter",
@@ -5450,6 +5451,9 @@
         ],
         "scheduler-custom-group": [
           "l2"
+        ],
+        "secrets-dynamic-ref": [
+          "l1"
         ],
         "sns-inline-subscription": [
           "l1"

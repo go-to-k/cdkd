@@ -343,6 +343,85 @@ else
   exit 1
 fi
 
+# --- Phase 1d: standalone rollback RE-RESOLVES secret expressions (GHSA #1899) ---
+# The journal (and each state record) stores the REDACTED {{resolve:...}}
+# expression, never the plaintext. A standalone `cdkd rollback` must re-resolve
+# that expression to the concrete secret for the provider replay — replaying the
+# literal token would corrupt the Lambda's env. This phase proves it end to end:
+#   1. A CDKD_TEST_ROLLBACK deploy adds a non-secret env var (ROLLBACK_EXTRA,
+#      forcing a real Lambda UPDATE whose whole env map is re-sent) plus a
+#      failing SQS queue that depends on the Lambda. --no-rollback leaves the
+#      journal (Lambda previousState secret env = the redacted expression).
+#   2. `cdkd rollback` reverts the Lambda; the fix re-resolves the expression.
+#   3. The live Lambda must carry the RESOLVED secret (never the literal), and
+#      the probe env var must be gone; state must still hold the expression.
+echo "==> Phase 1d: --no-rollback failing deploy + standalone rollback re-resolves the secret"
+set +e
+CDKD_TEST_ROLLBACK=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --no-rollback --yes
+ROLLBACK_DEPLOY_RC=$?
+set -e
+if [ "${ROLLBACK_DEPLOY_RC}" -eq 0 ]; then
+  echo "FAIL: the CDKD_TEST_ROLLBACK deploy was expected to FAIL (invalid SQS queue) but exited 0" >&2
+  exit 1
+fi
+echo "    OK: rollback-probe deploy failed as expected (rc=${ROLLBACK_DEPLOY_RC})"
+
+# The Lambda UPDATE must have completed (ROLLBACK_EXTRA live) before the rollback,
+# else there is nothing to re-resolve on the revert.
+RB_BEFORE=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}")
+EXTRA_BEFORE=$(printf '%s' "${RB_BEFORE}" | jq -r '.Environment.Variables.ROLLBACK_EXTRA // empty')
+if [ "${EXTRA_BEFORE}" != "v2" ]; then
+  echo "FAIL: expected the Lambda UPDATE (ROLLBACK_EXTRA=v2) to have completed before rollback, got '$(mask "${EXTRA_BEFORE}")'" >&2
+  exit 1
+fi
+echo "    OK: Lambda UPDATE completed pre-rollback (ROLLBACK_EXTRA live)"
+
+# Standalone rollback reads the REDACTED journal and must re-resolve.
+node "${LOCAL_DIST}" rollback "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+RB_CFG=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}")
+rb_env() { printf '%s' "${RB_CFG}" | jq -r --arg k "$1" '.Environment.Variables[$k] // empty'; }
+RB_PW=$(rb_env SECRET_PASSWORD)
+RB_EXTRA=$(rb_env ROLLBACK_EXTRA)
+case "${RB_PW}" in
+  *'{{resolve:'*)
+    echo "FAIL: after rollback the Lambda SECRET_PASSWORD is the LITERAL expression — the replay did NOT re-resolve: $(mask "${RB_PW}")" >&2
+    exit 1
+    ;;
+esac
+if [ "${RB_PW}" != "${EXPECTED_PASSWORD}" ]; then
+  echo "FAIL: after rollback the Lambda SECRET_PASSWORD is not the resolved value: got $(mask "${RB_PW}")" >&2
+  exit 1
+fi
+if [ -n "${RB_EXTRA}" ]; then
+  echo "FAIL: rollback did not revert the Lambda env (ROLLBACK_EXTRA still '$(mask "${RB_EXTRA}")')" >&2
+  exit 1
+fi
+echo "    OK: standalone rollback re-resolved the secret (live SECRET_PASSWORD=RESOLVED, ROLLBACK_EXTRA gone)"
+
+# STATE must still hold the {{resolve:...}} expression after the rollback write.
+RB_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+RB_LAMBDA_ENV=$(printf '%s' "${RB_STATE}" | jq -c '.state.resources | to_entries[]
+             | select(.value.resourceType=="AWS::Lambda::Function")
+             | .value.properties.Environment.Variables' | head -1)
+RB_STATE_PW=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD // empty')
+case "${RB_STATE_PW}" in
+  '{{resolve:secretsmanager:'*) echo "    OK: post-rollback state kept the SECRET_PASSWORD expression" ;;
+  *) echo "FAIL: post-rollback state SECRET_PASSWORD is NOT the {{resolve:...}} expression: $(mask "${RB_STATE_PW}")" >&2; exit 1 ;;
+esac
+# Scope the plaintext-leak grep to the CONSUMER Lambda's env, NOT the whole
+# state — same rationale as Guard 5 above: the DynRefSecret resource's OWN
+# SecretString legitimately holds the fixture's hardcoded password, which is out
+# of scope for the dynamic-reference (consumer-side) disclosure this fix targets.
+if printf '%s' "${RB_LAMBDA_ENV}" | grep -qF "${EXPECTED_PASSWORD}"; then
+  echo "FAIL: post-rollback the Lambda's persisted env leaked the resolved secret plaintext" >&2
+  exit 1
+fi
+echo "    OK: post-rollback Lambda state carries no resolved plaintext"
+
 # --- Phase 2: removal-reset redeploy (issue #1160 secretsmanager batch) ---
 echo "==> Phase 2: re-deploy dropping Description + KmsKeyId (removal reset)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \

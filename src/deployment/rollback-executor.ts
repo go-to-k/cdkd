@@ -69,6 +69,8 @@ import {
   type PreDeleteSnapshotClients,
 } from '../provisioning/final-snapshot.js';
 import { getAwsClients } from '../utils/aws-clients.js';
+import { IntrinsicFunctionResolver, type ResolverContext } from './intrinsic-function-resolver.js';
+import { scrubResourceRecord, type RecordedSecretValues } from './secret-redaction.js';
 import { withRetry } from './retry.js';
 import {
   isNameCollisionError,
@@ -713,6 +715,69 @@ export async function replayRollback(
  * just announced and leaving the record describing something AWS does not
  * hold.
  */
+/**
+ * Re-resolve dynamic-reference SECRET expressions
+ * (`{{resolve:secretsmanager:...}}`) in a property bag being REPLAYED to a
+ * provider during rollback (GHSA fix, issue #1899 review).
+ *
+ * The rollback journal — and the state record the replay writes — store the
+ * redacted EXPRESSION, never the plaintext. But a `provider.update()` /
+ * `create()` / `delete()` call must receive the concrete secret value the
+ * reference points at, exactly as the forward deploy did; replaying the literal
+ * `{{resolve:...}}` string would corrupt the resource (e.g. a Lambda env var or
+ * Cognito `client_secret`). Rollback is synth-free, so re-resolve straight from
+ * the expression string here.
+ *
+ * Records each `plaintext -> expression` into `secrets` so the caller can redact
+ * the persisted state record back to the expression — the same
+ * resolve-for-provider + redact-for-state split the deploy engine applies at its
+ * save choke point. A bag with no `{{resolve:...}}` string resolves to a
+ * structural copy of itself (secrets stays empty), so the non-secret rollback
+ * path is behaviourally unchanged. Only secretsmanager references are recorded
+ * (plain `ssm` is public config, stored resolved — it never appears as an
+ * expression in the journal), matching the resolver's own `isSecret` gate.
+ */
+async function resolveReplayProps(
+  props: Record<string, unknown> | undefined,
+  resolver: IntrinsicFunctionResolver,
+  secrets: RecordedSecretValues
+): Promise<Record<string, unknown> | undefined> {
+  if (props === undefined) return undefined;
+  const ctx: ResolverContext = {
+    template: { Resources: {} },
+    resources: {},
+    recordedSecretValues: secrets,
+  };
+  const walk = async (v: unknown): Promise<unknown> => {
+    if (typeof v === 'string') {
+      return v.includes('{{resolve:') ? await resolver.resolveDynamicReferences(v, ctx) : v;
+    }
+    if (Array.isArray(v)) {
+      const out: unknown[] = new Array(v.length) as unknown[];
+      for (let i = 0; i < v.length; i++) out[i] = await walk(v[i]);
+      return out;
+    }
+    if (v !== null && typeof v === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, val] of Object.entries(v)) out[k] = await walk(val);
+      return out;
+    }
+    return v;
+  };
+  return (await walk(props)) as Record<string, unknown>;
+}
+
+/**
+ * Redact resolved secret plaintext back out of a post-rollback state record
+ * (GHSA fix). The record's `properties` may be the provider's
+ * `effectiveProperties`, which can echo the value we just resolved for the
+ * provider call — so scrub it with the same per-op secrets map before it is
+ * persisted. No-op when the op resolved no secret.
+ */
+function redactRollbackRecord(record: ResourceState, secrets: RecordedSecretValues): ResourceState {
+  return secrets.size > 0 ? scrubResourceRecord(record, secrets) : record;
+}
+
 async function updateWithRollbackRetry(
   provider: ResourceProvider,
   args: Parameters<ResourceProvider['update']>,
@@ -812,6 +877,10 @@ async function replaySingle(
 ): Promise<void> {
   const action = classifyRollbackOp(op, stateResources, orphanLogicalIds);
   const { logger } = ctx;
+  // Re-resolves the redacted `{{resolve:secretsmanager:...}}` expressions the
+  // journal / state store back to the concrete secret for the provider replay
+  // (GHSA fix) — see {@link resolveReplayProps}.
+  const resolver = new IntrinsicFunctionResolver(ctx.region);
   /**
    * The route a CREATE-rollback arm resolved for this op (issue #1366) —
    * hoisted so the shared catch's ROLLBACK_RESOURCE_FAILED reports the route
@@ -1064,6 +1133,13 @@ async function replaySingle(
         // resource from its journaled previousState and delete the new one.
         const current = stateResources[op.logicalId]!;
         const prev = op.previousState!;
+        // Re-resolve the redacted secret expressions for the re-CREATE (GHSA
+        // fix): the old resource must be re-created with the concrete secret,
+        // not the literal `{{resolve:...}}` string. `secrets` captures
+        // plaintext->expression to redact the rebuilt state record below.
+        const secrets: RecordedSecretValues = new Map();
+        const resolvedPrevProps =
+          (await resolveReplayProps(prev.properties, resolver, secrets)) ?? {};
         logger.info(
           `  Rollback: Reversing replacement of ${op.logicalId} (${op.resourceType}) — ` +
             `re-creating the old resource and deleting the new one`
@@ -1114,7 +1190,7 @@ async function replaySingle(
               createProvider.create(
                 op.logicalId,
                 op.resourceType,
-                { ...prev.properties },
+                { ...resolvedPrevProps },
                 REPLAYING_STATE_CREATE_CONTEXT
               ),
             op.logicalId,
@@ -1175,7 +1251,7 @@ async function replaySingle(
                 createProvider.create(
                   op.logicalId,
                   op.resourceType,
-                  { ...prev.properties },
+                  { ...resolvedPrevProps },
                   REPLAYING_STATE_CREATE_CONTEXT
                 ),
               op.logicalId,
@@ -1261,12 +1337,18 @@ async function replaySingle(
         // the provider's `effectiveProperties` (issue #1682), which replaces
         // the previous record's `properties` when it reported one.
         const { observedProperties: _staleObserved, ...prevRecord } = prev;
-        stateResources[op.logicalId] = {
-          ...prevRecord,
-          physicalId: createResult.physicalId,
-          attributes: createResult.attributes ?? {},
-          properties: recordedPropertiesAfterReplayCreate(prevRecord, createResult),
-        };
+        // Redact resolved secret plaintext back out (GHSA fix): the create
+        // result's `effectiveProperties` can echo the value we resolved for the
+        // re-CREATE, so scrub the rebuilt record before it is persisted.
+        stateResources[op.logicalId] = redactRollbackRecord(
+          {
+            ...prevRecord,
+            physicalId: createResult.physicalId,
+            attributes: createResult.attributes ?? {},
+            properties: recordedPropertiesAfterReplayCreate(prevRecord, createResult),
+          },
+          secrets
+        );
         await afterOp?.(op.logicalId);
 
         if (!deletedNewFirst && !adoptedLiveNewResource) {
@@ -1348,6 +1430,14 @@ async function replaySingle(
           resourceType: op.resourceType,
           provisionedBy: op.provisionedBy,
         });
+        // Re-resolve the redacted secret expressions in BOTH sides of the diff
+        // to the concrete secret for the provider call (GHSA fix): a patch-based
+        // provider diffs previous-vs-desired, so an unresolved expression on
+        // either side would either replay the literal string or wrongly compute a
+        // no-op. `secrets` captures plaintext->expression to redact the record.
+        const secrets: RecordedSecretValues = new Map();
+        const desiredProps = await resolveReplayProps(previousState.properties, resolver, secrets);
+        const currentProps = await resolveReplayProps(current.properties, resolver, secrets);
         // See {@link updateWithRollbackRetry} for why this is not a bare
         // `provider.update()` and not a bare `withRetry` either.
         const revertResult = await updateWithRollbackRetry(
@@ -1356,14 +1446,17 @@ async function replaySingle(
             op.logicalId,
             current.physicalId,
             op.resourceType,
-            previousState.properties,
-            current.properties,
+            desiredProps ?? {},
+            currentProps ?? {},
           ],
           op.logicalId,
           logger,
           isInterrupted
         );
-        stateResources[op.logicalId] = recordAfterRollbackUpdate(previousState, revertResult);
+        stateResources[op.logicalId] = redactRollbackRecord(
+          recordAfterRollbackUpdate(previousState, revertResult),
+          secrets
+        );
         logger.info(`  Rollback: ${op.logicalId} restored successfully`);
         await afterOp?.(op.logicalId);
         ctx.recordEvent?.({
@@ -1431,6 +1524,9 @@ export async function replayFailedOperations(
     remainingFailedOps: [],
   };
   const { logger } = ctx;
+  // Re-resolves redacted `{{resolve:secretsmanager:...}}` expressions to the
+  // concrete secret for the failed-op provider replay (GHSA fix).
+  const resolver = new IntrinsicFunctionResolver(ctx.region);
   const emitEnvelope = options.emitEnvelope === true && failedOps.length > 0;
   if (emitEnvelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_STARTED', stackName });
 
@@ -1564,6 +1660,10 @@ export async function replayFailedOperations(
           // visible to the provider's delete — with `undefined` a
           // partially-created bucket/repo that already received data would
           // guard-fail this rollback delete even though the template opted in.
+          // NOT re-resolved (unlike the update/create arms): a delete reads only
+          // physical id + these guard opt-ins, never a secret value, so a
+          // `{{resolve:...}}` expression left in a non-guard property is inert —
+          // resolving here would only fetch the secret needlessly.
           const failedCreateDelete = await provider.delete(
             op.logicalId,
             op.physicalId!,
@@ -1612,22 +1712,34 @@ export async function replayFailedOperations(
           // failed op may have partially applied), so a patch-based provider
           // generates ops that undo them. Falls back to the current state
           // properties when resolution never got that far.
+          // Re-resolve redacted secret expressions on BOTH sides for the
+          // provider call (GHSA fix); `secrets` redacts the rebuilt record.
           // See {@link updateWithRollbackRetry} — same three concerns as the
           // `revert` arm (retry / disableOuterRetry / interrupt).
+          const secrets: RecordedSecretValues = new Map();
+          const desiredProps = await resolveReplayProps(prev.properties, resolver, secrets);
+          const attemptedProps = await resolveReplayProps(
+            op.attemptedProperties ?? current.properties,
+            resolver,
+            secrets
+          );
           const revertFailedResult = await updateWithRollbackRetry(
             provider,
             [
               op.logicalId,
               current.physicalId,
               op.resourceType,
-              prev.properties,
-              op.attemptedProperties ?? current.properties,
+              desiredProps ?? {},
+              attemptedProps ?? {},
             ],
             op.logicalId,
             logger,
             options.isInterrupted
           );
-          stateResources[op.logicalId] = recordAfterRollbackUpdate(prev, revertFailedResult);
+          stateResources[op.logicalId] = redactRollbackRecord(
+            recordAfterRollbackUpdate(prev, revertFailedResult),
+            secrets
+          );
           logger.info(`  Rollback: ${op.logicalId} reverted successfully`);
           await options.afterOp?.(op.logicalId);
           ctx.recordEvent?.({

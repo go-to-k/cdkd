@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 
@@ -78,6 +79,17 @@ export class SecretsDynamicRefStack extends cdk.Stack {
     // Inline code keeps this asset-free + cheap. The handler is never
     // invoked by the test; verify.sh reads the function CONFIGURATION
     // (env vars) to assert the references resolved.
+    // CDKD_TEST_ROLLBACK (GHSA rollback replay, issue #1899 review): add a
+    // NON-secret env var so the ROLLBACK phase's redeploy issues a real UPDATE
+    // to this secret-bearing Lambda (its secret env vars are unchanged, but the
+    // whole Environment.Variables map is re-sent). The completed Lambda UPDATE
+    // is journaled with a previousState whose secret env vars are the REDACTED
+    // {{resolve:...}} expressions; a paired failing resource (below) then fails
+    // the deploy, and a standalone `cdkd rollback` must re-resolve those
+    // expressions to the concrete secret rather than replaying the literal
+    // token. verify.sh asserts the rolled-back Lambda carries the RESOLVED
+    // value.
+    const rollbackProbe = process.env.CDKD_TEST_ROLLBACK === 'true';
     const fn = new lambda.Function(this, 'ConsumerFn', {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
@@ -95,8 +107,26 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         SECRET_PASSWORD_STAGED: `{{resolve:secretsmanager:${secretName}:SecretString:password:AWSCURRENT}}`,
         // SSM plaintext-parameter form.
         SSM_VALUE: `{{resolve:ssm:${paramName}}}`,
+        // Rollback-probe-only extra (forces a Lambda UPDATE this phase; the
+        // rollback removes it). NOT gated as a mode-gated CREATE — the env var
+        // is added to an existing resource, and the fixture reverts it via
+        // rollback, never a later deploy that drops it.
+        ...(rollbackProbe ? { ROLLBACK_EXTRA: 'v2' } : {}),
       },
     });
+
+    // CDKD_TEST_ROLLBACK: a resource that FAILS at CREATE (MessageRetentionPeriod
+    // is below SQS's 60s floor), depending on the Lambda so the Lambda UPDATE
+    // completes and is journaled BEFORE this create fails the deploy. Mirrors the
+    // `basic` fixture's CDKD_TEST_FAIL injection. An out-of-range value fails AWS
+    // validation, so nothing is created (no orphan to clean up).
+    if (rollbackProbe) {
+      // allow-mode-gated-drop: failure-injection queue that never succeeds at CREATE; the rollback and every later phase correctly omit it.
+      const failing = new sqs.CfnQueue(this, 'RollbackFailQueue', {
+        messageRetentionPeriod: 30, // invalid: below the 60s minimum -> CreateQueue rejects
+      });
+      failing.addDependency(fn.node.defaultChild as lambda.CfnFunction);
+    }
 
     // The Lambda must read the secret/param? No — cdkd resolves the
     // references at deploy time, so no runtime IAM is needed. We still
