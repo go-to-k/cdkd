@@ -67,6 +67,7 @@
         "export",
         "gc-custom-asset-names",
         "recreate-via-cc-api",
+        "route53",
         "sg-circular-dependency"
       ]
     },
@@ -1333,6 +1334,7 @@
     "--attribute",
     "--attribute-names",
     "--authorizer-id",
+    "--auto",
     "--auto-scaling-group-names",
     "--backup-id",
     "--backup-plan-id",
@@ -1519,6 +1521,7 @@
     "--queue-url",
     "--quiet",
     "--receipt-handle",
+    "--record-resource-mapping",
     "--recursive",
     "--replication-group-id",
     "--repository-description",
