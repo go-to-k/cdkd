@@ -229,7 +229,15 @@ export class CloudControlProvider implements ResourceProvider {
       const cleanProperties = stripNullValues(properties) as Record<string, unknown>;
       const ccProperties = stringifyJsonProperties(resourceType, cleanProperties);
       const desiredState = JSON.stringify(ccProperties);
-      this.logger.debug(`DesiredState for ${logicalId}: ${desiredState}`);
+      // Log the top-level property KEYS only, never the values (GHSA fix, sibling
+      // of the update-path patch-log masking below): a CC-routed resource with no
+      // SDK provider may carry a resolved `{{resolve:secretsmanager:...}}` value
+      // in `ccProperties`, and this provider has no access to the resolver's
+      // recorded-secret map to mask it. Keys are enough to debug a CREATE; the
+      // full document still goes to AWS below.
+      this.logger.debug(
+        `DesiredState for ${logicalId}: keys=${JSON.stringify(Object.keys(ccProperties))}`
+      );
       const createResponse = await this.cloudControlClient.send(
         new CreateResourceCommand({
           TypeName: resourceType,
