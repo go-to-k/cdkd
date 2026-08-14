@@ -2289,7 +2289,7 @@ cdkd destroy MyStack --purge-events -y
 - Per-stack: when destroying multiple stacks, each clean stack's history is
   purged independently.
 
-## `cdkd scrub` (keep resolved secrets out of state)
+## `cdkd scrub` (state secret hygiene: clean + audit)
 
 cdkd resolves CloudFormation dynamic references (`{{resolve:secretsmanager:...}}`,
 and `{{resolve:ssm:...}}` pointing at a **SecureString** parameter)
@@ -2302,9 +2302,26 @@ service-side. A rotated secret behind an unchanged reference is a no-op on the
 next deploy (again matching CloudFormation), and `cdkd diff` makes no live
 secret fetch.
 
-A normal `cdkd deploy` scrubs state this way as a side effect. `cdkd scrub`
-cleans up EXISTING state written by an older cdkd (before this behavior
-shipped) WITHOUT redeploying:
+`cdkd scrub` is the permanent home for that concern: the one command that keeps
+cdkd state free of sensitive plaintext and audits that it stays that way. Two
+modes, both useful long after any one-time migration:
+
+- **Clean** — rewrite existing state in place, WITHOUT redeploying. This is what
+  you run after upgrading cdkd on a stack you do not want to re-provision, or
+  any time you suspect a state file predates a redaction fix.
+- **Audit** — `--dry-run --fail` exits 1 when any plaintext secret is still in
+  state, so it works as a STANDING CI gate rather than incident-only tooling.
+  Secrets landing in IaC state is a structural, recurring concern (the same
+  class Terraform has), so it is worth asserting continuously:
+
+```yaml
+# CI: fail the build if any cdkd state file holds a plaintext secret.
+- run: cdkd scrub --all --dry-run --fail
+```
+
+A normal `cdkd deploy` scrubs state this way as a side effect, so a green gate is
+the expected steady state rather than something you have to maintain. The
+commands:
 
 ```bash
 # Rewrite state so plaintext secrets become their {{resolve:...}} expression
