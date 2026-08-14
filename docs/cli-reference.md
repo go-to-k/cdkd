@@ -2332,8 +2332,19 @@ under the stack lock.
 **Scrubbing does not un-expose an already-leaked secret.** A value that was
 ever stored in plaintext should be treated as compromised and ROTATED in
 Secrets Manager; `scrub` only stops it being re-read out of state going
-forward. Exit codes: 0 (scrubbed / nothing to do), 1 (`--dry-run --fail` found
-plaintext), 2 (error).
+forward. **Run `scrub` BEFORE rotating**: it matches the CURRENT resolved
+secret value against what state holds, so once the secret is rotated the stale
+value in state no longer matches and `scrub` reports "nothing to scrub" (the
+rotation invalidates the stale value; a redeploy rewrites the record with the
+expression). Exit codes: 0 (scrubbed / nothing to do), 1 (`--dry-run --fail`
+found plaintext), 2 (error).
+
+**Known limitation.** A SecureString SSM parameter referenced via the plain
+`{{resolve:ssm:...}}` form resolves to plaintext (`WithDecryption`) and is NOT
+yet redacted — it is the same disclosure class but out of the reported
+advisory's scope (`{{resolve:secretsmanager:...}}`), tracked as follow-up issue
+[#1901](https://github.com/go-to-k/cdkd/issues/1901). Prefer referencing secrets
+through Secrets Manager.
 
 ## `cdkd rollback` (revert a failed deploy)
 

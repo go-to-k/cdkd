@@ -84,6 +84,13 @@ interface ScrubOptions {
  * that was stored in plaintext should be treated as compromised and ROTATED in
  * Secrets Manager; scrub only stops it from being re-read out of state going
  * forward.
+ *
+ * ORDERING: scrub matches the CURRENT resolved secret value against what state
+ * holds, so run it BEFORE rotating. Once the secret is rotated, the value in
+ * state no longer matches the current one and scrub cannot find it (it reports
+ * "nothing to scrub"). A rotated-away stale value in state is invalidated by
+ * the rotation, but to remove it, redeploy the stack (which rewrites the record
+ * with the expression).
  */
 async function scrubCommand(stacks: string[], options: ScrubOptions): Promise<void> {
   const logger = getLogger();
@@ -195,7 +202,8 @@ async function scrubCommand(stacks: string[], options: ScrubOptions): Promise<vo
   logger.info(
     `\nDone: scrubbed ${totalStacksScrubbed} stack(s). ` +
       `The plaintext is no longer stored, but a value that was ever persisted should be ` +
-      `treated as compromised — ROTATE it in Secrets Manager.`
+      `treated as compromised — ROTATE it in Secrets Manager (scrub matches the current ` +
+      `value, so scrub BEFORE rotating).`
   );
 }
 

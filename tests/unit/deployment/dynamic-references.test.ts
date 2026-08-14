@@ -482,5 +482,29 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       expect(mockSecretsManagerSend).not.toHaveBeenCalled();
       expect(recordedSecretValues.size).toBe(0);
     });
+
+    it('still resolves plain {{resolve:ssm:...}} when skipDynamicReferences is set (only secrets are skipped)', async () => {
+      // skipDynamicReferences skips SECRET references (secretsmanager) so a
+      // diff / no-op compare does not fetch a secret or re-persist plaintext,
+      // but plain ssm is public config that state stores RESOLVED — skipping
+      // it would make every ssm-bearing resource a perpetual spurious UPDATE.
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'my-param-value' } });
+      const secretExpr = '{{resolve:secretsmanager:my-secret:SecretString:::}}';
+      const recordedSecretValues = new Map<string, string>();
+
+      const result = await resolver.resolve(
+        { Config: '{{resolve:ssm:/prod/db/host}}', ClientSecret: secretExpr },
+        { ...defaultContext, recordedSecretValues, skipDynamicReferences: true }
+      );
+
+      // ssm resolved, secret left as the unresolved expression.
+      expect(result).toEqual({
+        Config: 'my-param-value',
+        ClientSecret: secretExpr,
+      });
+      expect(mockSSMSend).toHaveBeenCalledTimes(1);
+      expect(mockSecretsManagerSend).not.toHaveBeenCalled();
+      expect(recordedSecretValues.size).toBe(0);
+    });
   });
 });

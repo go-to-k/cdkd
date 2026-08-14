@@ -4534,6 +4534,13 @@ export class IntrinsicFunctionResolver {
       );
     }
 
+    // NOTE: a SecureString parameter resolved via the plain `{{resolve:ssm:...}}`
+    // form (WithDecryption: true) returns plaintext and is NOT yet redacted —
+    // it is the same leak class as secretsmanager but out of the reported GHSA
+    // scope, and redacting it correctly needs the diff path to skip it too
+    // (which requires knowing the parameter type without leaking the fetched
+    // value). Tracked as follow-up issue #1901. Plain String / StringList
+    // stays resolved.
     return paramValue;
   }
 }
