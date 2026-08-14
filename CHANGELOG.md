@@ -1,3 +1,10 @@
+## [0.283.21](https://github.com/go-to-k/cdkd/compare/v0.283.20...v0.283.21) (2026-08-14)
+
+
+### Bug Fixes
+
+* **state:** redact SecureString SSM parameters resolved via {{resolve:ssm:...}} ([#1905](https://github.com/go-to-k/cdkd/issues/1905)) ([ff58dc1](https://github.com/go-to-k/cdkd/commit/ff58dc1733fdf6634880d34ecada226d18664b5d))
+
 ## [0.283.20](https://github.com/go-to-k/cdkd/compare/v0.283.19...v0.283.20) (2026-08-14)
 
 
