@@ -2360,6 +2360,13 @@ as its encrypted blob, which is never substituted, cached, or persisted, and the
 comparison stays expression-vs-expression. Once a reference is known to be
 `SecureString`, later comparisons short-circuit with no AWS call at all.
 
+**Known limitation.** A secret reference used as a NESTED STACK's `Parameters`
+value is resolved by the parent and handed to the child as a literal, so the
+child stack's own state records the plaintext, and `cdkd diff --recursive`
+decrypts it at plan time. This applies to `{{resolve:secretsmanager:...}}` as
+well as to a `SecureString` parameter, and is tracked as issue
+[#1903](https://github.com/go-to-k/cdkd/issues/1903).
+
 ## `cdkd rollback` (revert a failed deploy)
 
 `cdkd rollback [STACK]` reverts a stack to its pre-deploy state after a

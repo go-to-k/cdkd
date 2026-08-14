@@ -17,17 +17,30 @@ vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
 });
 
 // The rollback replay uses the REAL IntrinsicFunctionResolver to re-resolve the
-// redacted `{{resolve:secretsmanager:...}}` expressions the journal / state
-// store. The resolver fetches through getAwsClients().secretsManager — mock the
-// send so it resolves to a known plaintext. `secretsManager` is the ONLY client
-// the replay path needs (no snapshot / no CC).
+// redacted secret expressions the journal / state store. The resolver fetches
+// through getAwsClients() — mock the sends so each resolves to a known
+// plaintext. Two clients are needed, and only two (no snapshot / no CC):
+// `secretsManager` for `{{resolve:secretsmanager:...}}`, and — since issue
+// #1901 — `ssm` for a `{{resolve:ssm:...}}` naming a SecureString parameter,
+// which is now redacted into the journal too and therefore has to be
+// re-resolved on replay exactly like a secretsmanager one.
 const SECRET_PLAINTEXT = 'super-secret-rotated-value';
 const SECRET_EXPR = '{{resolve:secretsmanager:my-secret:SecretString:client_secret::}}';
+const SECURE_PLAINTEXT = 'decrypted-securestring-value';
+const SECURE_EXPR = '{{resolve:ssm:/prod/idp/client-secret}}';
 const mockSMSend = vi.fn(async () => ({
   SecretString: JSON.stringify({ client_secret: SECRET_PLAINTEXT }),
 }));
+// Declares the command parameter (unlike `mockSMSend`, which no assertion
+// inspects) so the SecureString test can read back the `WithDecryption` flag.
+const mockSSMSend = vi.fn(async (_command: unknown) => ({
+  Parameter: { Value: SECURE_PLAINTEXT, Type: 'SecureString' },
+}));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  getAwsClients: () => ({ secretsManager: { send: mockSMSend } }),
+  getAwsClients: () => ({
+    secretsManager: { send: mockSMSend },
+    ssm: { send: mockSSMSend },
+  }),
   setAwsClients: vi.fn(),
   AwsClients: vi.fn(),
 }));
@@ -211,9 +224,60 @@ describe('rollback replay - secret re-resolution + state redaction (GHSA #1899)'
 
     await replayRollback(ops, state, 'S', ctx);
 
-    // No {{resolve:...}} anywhere → no live GetSecretValue, and the provider
-    // still receives the (structurally-equal) previous props.
+    // No {{resolve:...}} anywhere → no live secret fetch of either kind, and the
+    // provider still receives the (structurally-equal) previous props.
     expect(mockSMSend).not.toHaveBeenCalled();
+    expect(mockSSMSend).not.toHaveBeenCalled();
     expect(update).toHaveBeenCalledWith('B', 'phys-B', 'AWS::S3::Bucket', { a: 1 }, { a: 2 });
+  });
+
+  // Issue #1901 makes a SecureString `{{resolve:ssm:...}}` a SECOND value class
+  // the journal / state store REDACTED, so the replay has to re-resolve it for
+  // the provider exactly like a secretsmanager one. Without this the rollback
+  // would ship the literal `{{resolve:ssm:...}}` token to AWS — the
+  // "redacting a value breaks its replay consumer" class.
+  it('revert: a SecureString ssm expression is re-resolved for the provider and re-redacted in state', async () => {
+    // The provider echoes the decrypted value back in effectiveProperties, so
+    // both halves are non-vacuous: without re-resolution the update arg would be
+    // the raw expression, and without re-redaction state would keep the plaintext.
+    const update = vi.fn().mockResolvedValue({
+      physicalId: 'phys-B',
+      effectiveProperties: { ProviderDetails: { client_secret: SECURE_PLAINTEXT } },
+    });
+    const { ctx } = makeCtx({ update });
+    const prev = res({
+      physicalId: 'phys-B',
+      resourceType: IDP_TYPE,
+      properties: { ProviderDetails: { client_id: 'pub', client_secret: SECURE_EXPR } },
+    });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'Idp', changeType: 'UPDATE', resourceType: IDP_TYPE, physicalId: 'phys-B', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({
+        physicalId: 'phys-B',
+        resourceType: IDP_TYPE,
+        properties: { ProviderDetails: { client_id: 'pub-CHANGED', client_secret: SECURE_EXPR } },
+      }),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    // The resolver really went to SSM (non-vacuity), and with decryption on —
+    // the replay needs the concrete value, unlike the diff path.
+    expect(mockSSMSend).toHaveBeenCalled();
+    const ssmInput = (mockSSMSend.mock.calls[0]![0] as { input: { WithDecryption?: boolean } }).input;
+    expect(ssmInput.WithDecryption).toBe(true);
+    // Provider received the DECRYPTED value on both diff sides.
+    const desiredArg = update.mock.calls[0]![3] as { ProviderDetails: { client_secret: string } };
+    expect(desiredArg.ProviderDetails.client_secret).toBe(SECURE_PLAINTEXT);
+    const prevArg = update.mock.calls[0]![4] as { ProviderDetails: { client_secret: string } };
+    expect(prevArg.ProviderDetails.client_secret).toBe(SECURE_PLAINTEXT);
+    // ...while the persisted record keeps the expression and no plaintext.
+    const rec = state.Idp!;
+    expect((rec.properties['ProviderDetails'] as Record<string, unknown>)['client_secret']).toBe(
+      SECURE_EXPR
+    );
+    expect(JSON.stringify(state)).not.toContain(SECURE_PLAINTEXT);
   });
 });

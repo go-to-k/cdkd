@@ -1401,7 +1401,11 @@ export class DeployEngine {
       // diff (GHSA fix): state now stores the unresolved expression, so
       // comparing the desired side as its expression too avoids a spurious
       // perpetual UPDATE on every deploy of a secret-bearing resource, and
-      // fetches no secret value at plan time. A changed expression still diffs.
+      // fetches no secret value at plan time. That last claim is scoped to THIS
+      // context: `cdkd diff --recursive` resolves a nested child's `Parameters`
+      // through a context that sets neither flag, so it still decrypts there
+      // (issue #1903 — coupled with the child-state half, so it cannot be fixed
+      // by setting the flag alone). A changed expression still diffs.
       // An `ssm` reference is classified by the parameter's TYPE rather than by
       // its spelling (issue #1901), so unlike the secretsmanager case the diff
       // DOES issue one `GetParameter` per not-yet-classified reference — with

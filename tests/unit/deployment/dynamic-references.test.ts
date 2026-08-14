@@ -98,6 +98,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       mockSSMSend.mockResolvedValue({
         Parameter: {
           Value: 'my-param-value',
+          Type: 'String',
         },
       });
 
@@ -113,6 +114,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       mockSSMSend.mockResolvedValue({
         Parameter: {
           Value: '/prod/db/host-value',
+          Type: 'String',
         },
       });
 
@@ -131,6 +133,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       mockSSMSend.mockResolvedValue({
         Parameter: {
           Value: 'db.example.com',
+          Type: 'String',
         },
       });
 
@@ -373,6 +376,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       mockSSMSend.mockResolvedValue({
         Parameter: {
           Value: 'resolved-db-name',
+          Type: 'String',
         },
       });
 
@@ -413,6 +417,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       mockSSMSend.mockResolvedValue({
         Parameter: {
           Value: 'ssm-value',
+          Type: 'String',
         },
       });
 
@@ -444,7 +449,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
     });
 
     it('does NOT record a plain ssm reference (public config, not a secret)', async () => {
-      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'public-config' } });
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'public-config', Type: 'String' } });
       const recordedSecretValues = new Map<string, string>();
 
       await resolver.resolveDynamicReferences('{{resolve:ssm:/db/host}}', {
@@ -489,7 +494,7 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       // diff / no-op compare does not fetch a secret or re-persist plaintext,
       // but plain ssm is public config that state stores RESOLVED — skipping
       // it would make every ssm-bearing resource a perpetual spurious UPDATE.
-      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'my-param-value' } });
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'my-param-value', Type: 'String' } });
       const secretExpr = '{{resolve:secretsmanager:my-secret:SecretString:::}}';
       const recordedSecretValues = new Map<string, string>();
 
@@ -582,6 +587,11 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
 
       expect(result).toEqual({ Password: secureExpr });
       expect(decryptionOfCall(0)).toBe(false);
+      // Exactly ONE call: learning the type is all this path may do. Without
+      // this pin, an implementation that classifies with WithDecryption:false
+      // and THEN fetches the plaintext to cache it would still satisfy every
+      // other assertion here.
+      expect(mockSSMSend).toHaveBeenCalledTimes(1);
       // The ciphertext is neither substituted nor recorded as a secret.
       expect(recordedSecretValues.size).toBe(0);
     });
@@ -679,6 +689,71 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
 
       expect(result).toEqual({ Url: 'pw=decrypted-password' });
       expect(recordedSecretValues.get('decrypted-password')).toBe(secureExpr);
+    });
+
+    // The predicate names the PUBLIC types rather than testing for
+    // `=== 'SecureString'`, so anything it cannot positively classify as public
+    // is treated as a secret. Testing the other way round would persist
+    // plaintext for every one of these — the disclosure the fix exists to close.
+    it.each([
+      ['an absent Type', undefined],
+      ['an unrecognized Type', 'FutureSecretType'],
+      ['a differently-cased Type', 'securestring'],
+    ])('fails CLOSED and treats %s as a secret', async (_label, type) => {
+      mockSSMSend.mockResolvedValue({
+        Parameter: { Value: 'unclassified-value', ...(type === undefined ? {} : { Type: type }) },
+      });
+      const recordedSecretValues = new Map<string, string>();
+
+      await resolver.resolveDynamicReferences(secureExpr, {
+        ...defaultContext,
+        recordedSecretValues,
+      });
+
+      expect(recordedSecretValues.get('unclassified-value')).toBe(secureExpr);
+    });
+
+    // `String.replace` interprets `$&` / "$`" / `$'` / `$1` inside a replacement
+    // STRING. A secret is exactly the kind of value that legitimately contains
+    // `$`, and `$&` would splice the matched `{{resolve:...}}` expression back
+    // INTO the value shipped to AWS — corrupting the credential and leaking the
+    // expression into it. Covers the fresh-resolve and the cache-hit arm.
+    it.each([
+      ['ab$&cd', 'a dollar-ampersand'],
+      ["x$'y", 'a dollar-apostrophe'],
+      ['p$1q', 'a dollar-digit'],
+    ])('substitutes %s (%s) verbatim, on both the fresh and cached arms', async (plaintext) => {
+      mockSSMSend.mockResolvedValue({
+        Parameter: { Value: plaintext, Type: 'SecureString' },
+      });
+
+      const fresh = await resolver.resolveDynamicReferences(`pw=${secureExpr}`, defaultContext);
+      expect(fresh).toBe(`pw=${plaintext}`);
+
+      const cached = await resolver.resolveDynamicReferences(`pw=${secureExpr}`, defaultContext);
+      expect(cached).toBe(`pw=${plaintext}`);
+      expect(mockSSMSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('clears the SecureString verdict with the dynamic-reference cache', async () => {
+      // The verdict is derived from a cached resolution, so keeping it across a
+      // reset would let a stale classification decide secret-ness for a value
+      // the cache was just asked to forget.
+      mockSSMSend.mockResolvedValue({
+        Parameter: { Value: 'AQICAHh-ciphertext-blob', Type: 'SecureString' },
+      });
+      const skipContext = { ...defaultContext, skipDynamicReferences: true };
+
+      await resolver.resolveDynamicReferences(secureExpr, skipContext);
+      expect(mockSSMSend).toHaveBeenCalledTimes(1);
+      // Without the reset this second pass short-circuits with no AWS call.
+      await resolver.resolveDynamicReferences(secureExpr, skipContext);
+      expect(mockSSMSend).toHaveBeenCalledTimes(1);
+
+      resetAccountInfoCache();
+
+      await resolver.resolveDynamicReferences(secureExpr, skipContext);
+      expect(mockSSMSend).toHaveBeenCalledTimes(2);
     });
 
     it('redacts the resolved SecureString back to its expression for persisted state', async () => {

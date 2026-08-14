@@ -466,6 +466,7 @@ node "${LOCAL_DIST}" rollback "${STACK}" \
 RB_CFG=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}")
 rb_env() { printf '%s' "${RB_CFG}" | jq -r --arg k "$1" '.Environment.Variables[$k] // empty'; }
 RB_PW=$(rb_env SECRET_PASSWORD)
+RB_SECURE=$(rb_env SSM_SECURE_VALUE)
 RB_EXTRA=$(rb_env ROLLBACK_EXTRA)
 case "${RB_PW}" in
   *'{{resolve:'*)
@@ -475,6 +476,20 @@ case "${RB_PW}" in
 esac
 if [ "${RB_PW}" != "${EXPECTED_PASSWORD}" ]; then
   echo "FAIL: after rollback the Lambda SECRET_PASSWORD is not the resolved value: got $(mask "${RB_PW}")" >&2
+  exit 1
+fi
+# Issue #1901 makes the SecureString reference a SECOND thing the journal now
+# stores redacted, so the replay has to re-resolve it too. Without these two
+# checks a replay that shipped the literal `{{resolve:ssm:...}}` to the Lambda
+# passes on the secretsmanager assertions alone.
+case "${RB_SECURE}" in
+  *'{{resolve:'*)
+    echo "FAIL: after rollback the Lambda SSM_SECURE_VALUE is the LITERAL expression — the replay did NOT re-resolve the SecureString: $(mask "${RB_SECURE}")" >&2
+    exit 1
+    ;;
+esac
+if [ "${RB_SECURE}" != "${EXPECTED_SECURE}" ]; then
+  echo "FAIL: after rollback the Lambda SSM_SECURE_VALUE is not the decrypted value: got $(mask "${RB_SECURE}")" >&2
   exit 1
 fi
 if [ -n "${RB_EXTRA}" ]; then
@@ -490,9 +505,17 @@ RB_LAMBDA_ENV=$(printf '%s' "${RB_STATE}" | jq -c '.state.resources | to_entries
              | select(.value.resourceType=="AWS::Lambda::Function")
              | .value.properties.Environment.Variables' | head -1)
 RB_STATE_PW=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD // empty')
+RB_STATE_SECURE=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.SSM_SECURE_VALUE // empty')
 case "${RB_STATE_PW}" in
   '{{resolve:secretsmanager:'*) echo "    OK: post-rollback state kept the SECRET_PASSWORD expression" ;;
   *) echo "FAIL: post-rollback state SECRET_PASSWORD is NOT the {{resolve:...}} expression: $(mask "${RB_STATE_PW}")" >&2; exit 1 ;;
+esac
+# The rollback WRITES a state record, so it is its own redaction site (issue
+# #1901): re-resolving for the provider must not leave the decrypted value in
+# what gets persisted.
+case "${RB_STATE_SECURE}" in
+  '{{resolve:ssm:'*) echo "    OK: post-rollback state kept the SSM_SECURE_VALUE expression" ;;
+  *) echo "FAIL: post-rollback state SSM_SECURE_VALUE is NOT the {{resolve:...}} expression: $(mask "${RB_STATE_SECURE}")" >&2; exit 1 ;;
 esac
 # Scope the plaintext-leak grep to the CONSUMER Lambda's env, NOT the whole
 # state — same rationale as Guard 5 above: the DynRefSecret resource's OWN
@@ -502,7 +525,13 @@ if printf '%s' "${RB_LAMBDA_ENV}" | grep -qF "${EXPECTED_PASSWORD}"; then
   echo "FAIL: post-rollback the Lambda's persisted env leaked the resolved secret plaintext" >&2
   exit 1
 fi
-echo "    OK: post-rollback Lambda state carries no resolved plaintext"
+# The SecureString has no such sibling holding it legitimately, so scan the
+# WHOLE post-rollback state document (issue #1901).
+if printf '%s' "${RB_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+  echo "FAIL: post-rollback state leaked the decrypted SecureString value (issue #1901)" >&2
+  exit 1
+fi
+echo "    OK: post-rollback state carries no resolved plaintext (secret + SecureString)"
 
 # --- Phase 2: removal-reset redeploy (issue #1160 secretsmanager batch) ---
 echo "==> Phase 2: re-deploy dropping Description + KmsKeyId (removal reset)"
