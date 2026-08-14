@@ -1910,3 +1910,47 @@ describe('CloudControlProvider waitForOperation timeout cap (slow-type floor)', 
     expect(message).toMatch(/after 3600s/);
   });
 });
+
+describe('CloudControlProvider - malformed model log hygiene (issue #1908)', () => {
+  // The raw readback model used to be logged verbatim (truncated to 500 chars).
+  // A `{{resolve:...}}` secret resolved into a NON-write-only property can
+  // round-trip into that readback, so the log line could print it -- and
+  // truncation is not a mitigation, since 500 chars is exactly where a
+  // document's leading values sit.
+  it('logs the parse error and KEY NAMES, never the values', () => {
+    const provider = new CloudControlProvider();
+    const SECRET = 'hunter2-super-secret-value';
+    const malformed = `{"BucketName":"my-bucket","DbPassword":"${SECRET}",`;
+
+    const parsed = (
+      provider as unknown as {
+        parseResourceModel(model: string): Record<string, unknown>;
+      }
+    ).parseResourceModel(malformed);
+
+    expect(parsed).toEqual({});
+
+    const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    // The VALUE must not appear anywhere in the log...
+    expect(warned).not.toContain(SECRET);
+    expect(warned).not.toContain('my-bucket');
+    // ...while the line stays diagnostic: it says which document failed.
+    expect(warned).toContain('Failed to parse resource model');
+    expect(warned).toContain('BucketName');
+    expect(warned).toContain('DbPassword');
+    expect(warned).toContain(`${malformed.length} chars`);
+  });
+
+  it('reports no readable key names rather than echoing an unparseable blob', () => {
+    const provider = new CloudControlProvider();
+    const SECRET = 'plain-secret-blob-no-json-at-all';
+
+    (
+      provider as unknown as { parseResourceModel(model: string): Record<string, unknown> }
+    ).parseResourceModel(SECRET);
+
+    const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).not.toContain(SECRET);
+    expect(warned).toContain('no readable key names');
+  });
+});
