@@ -209,11 +209,64 @@ describe('secret-redaction - value-key collision (issue #1904, value-only bound)
     const observed = { Variables: { PLAIN: SHARED } };
     const source = { Variables: { PLAIN: EXPR_PLAIN } };
 
-    const redacted = redactSecretsForState(observed, new Map(), source) as {
+    const redacted = redactSecretsForState(observed, new Map(), source, 'aws-readback') as {
       Variables: Record<string, string>;
     };
 
     expect(redacted.Variables['PLAIN']).toBe(EXPR_PLAIN);
+    expect(JSON.stringify(redacted)).not.toContain(SHARED);
+  });
+
+  // BLOCKER from review: the path pass first matched ANY `{{resolve:` string, so
+  // a PUBLIC ssm reference — which issue #1901 deliberately keeps RESOLVED in
+  // state — was rewritten back to its expression. The diff resolves the desired
+  // side for a String parameter, so state-as-expression vs desired-as-value is a
+  // change on EVERY deploy: a perpetual UPDATE, i.e. the exact failure #1901
+  // exists to prevent, reintroduced by the #1904 fix.
+  it('does NOT persist a PUBLIC ssm expression the resolver never recorded (#1901)', () => {
+    const PUBLIC_EXPR = '{{resolve:ssm:/app/public-host}}';
+    const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PLAIN]]);
+
+    const redacted = redactSecretsForState(
+      { Host: 'db.example.com', Password: SHARED },
+      secrets,
+      { Host: PUBLIC_EXPR, Password: EXPR_PLAIN }
+    ) as Record<string, string>;
+
+    // Public config stays RESOLVED...
+    expect(redacted['Host']).toBe('db.example.com');
+    // ...while the recorded secret beside it is still redacted.
+    expect(redacted['Password']).toBe(EXPR_PLAIN);
+  });
+
+  // BLOCKER from review: `observedProperties` is an AWS readback and AWS does
+  // not preserve list order (the reason drift-normalize.ts exists). Descending
+  // arrays positionally there wrote the expression onto the WRONG element and
+  // left the real secret in plaintext.
+  it('does NOT map arrays positionally for an AWS readback (#1900 ordering)', () => {
+    const source = {
+      Env: [
+        { Name: 'SECRET', Value: EXPR_PLAIN },
+        { Name: 'PLAIN', Value: 'public' },
+      ],
+    };
+    // AWS returned the list REVERSED, and echoed the secret's plaintext.
+    const observed = {
+      Env: [
+        { Name: 'PLAIN', Value: 'public' },
+        { Name: 'SECRET', Value: SHARED },
+      ],
+    };
+    const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PLAIN]]);
+
+    const redacted = redactSecretsForState(observed, secrets, source, 'aws-readback') as {
+      Env: Array<Record<string, string>>;
+    };
+
+    // The value scan handled it: the secret is redacted where it actually is...
+    expect(redacted.Env[1]!['Value']).toBe(EXPR_PLAIN);
+    // ...and the unrelated public element was NOT overwritten with an expression.
+    expect(redacted.Env[0]!['Value']).toBe('public');
     expect(JSON.stringify(redacted)).not.toContain(SHARED);
   });
 

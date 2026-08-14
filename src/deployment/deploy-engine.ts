@@ -840,6 +840,10 @@ export class DeployEngine {
       resources[logicalId] = scrubResourceRecord(
         record,
         secrets ?? new Map<string, string>(),
+        // No template bag means this resource was not resolved this deploy (an
+        // UNCHANGED one). `scrubResourceRecord` then falls back to the record's
+        // own already-redacted properties as the observed bag's source, which is
+        // the #1900 path — so do NOT "simplify" this to `templateProps!`.
         templateProps
       );
     }

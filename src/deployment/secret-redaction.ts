@@ -76,9 +76,64 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
   return new RegExp(needles.map(escapeRegExp).join('|'), 'g');
 }
 
-/** Does this string carry a dynamic reference cdkd would have resolved? */
-function carriesDynamicReference(value: unknown): value is string {
+/**
+ * Which source leaves may be persisted verbatim by the path pass.
+ *
+ * This is NOT "any `{{resolve:` string", and the difference is a real defect
+ * rather than a nicety. A TEMPLATE bag also carries a plain
+ * `{{resolve:ssm:/public/param}}` for a `String` / `StringList` parameter, which
+ * the resolver deliberately keeps RESOLVED in state (issue #1901) — persisting
+ * the expression there would make the diff compare a resolved desired side
+ * against a stored expression on every run, i.e. exactly the perpetual UPDATE
+ * that issue exists to prevent.
+ *
+ * So the rule depends on the source's PROVENANCE:
+ *
+ * - `'template-derived'` — the bag was PRODUCED BY resolving the source, so the
+ *   two have identical structure and arrays line up positionally. But a template
+ *   carries public and secret expressions alike, so only an expression the
+ *   resolver actually RECORDED as a secret this pass may be persisted.
+ * - `'aws-readback'` — the bag came back from AWS (`observedProperties`), so its
+ *   ARRAYS may be reordered relative to the source: AWS does not preserve list
+ *   order, which is the whole reason `src/analyzer/drift-normalize.ts` exists.
+ *   Descending an array positionally would write an expression onto the WRONG
+ *   element and leave the real secret unredacted, so arrays fall to the value
+ *   scan. Its source is a persisted STATE bag, where a `{{resolve:...}}` string
+ *   is by construction already a secret (a public ssm reference is stored
+ *   RESOLVED there), which is what lets an UNCHANGED resource be redacted with
+ *   no secrets map at all (issue #1900).
+ */
+export type PathSourceKind = 'template-derived' | 'aws-readback';
+
+function isDynamicReferenceString(value: unknown): value is string {
   return typeof value === 'string' && value.includes('{{resolve:');
+}
+
+/**
+ * Is this template expression one whose resolved value is a SECRET?
+ *
+ * Two independent answers, and both are needed:
+ *
+ * - A `secretsmanager` reference is secret BY DEFINITION, so spelling settles
+ *   it with no lookup. This arm is what makes the #1904 fix work at all: when
+ *   two expressions resolve to the same value the value-keyed map keeps only the
+ *   last, so asking the map whether the LOSING expression was a secret answers
+ *   "no" — precisely for the pair the fix exists to separate.
+ * - An `ssm` reference is secret only when its parameter is a `SecureString`
+ *   (issue #1901), which is not derivable from the string, so that arm consults
+ *   what the resolver actually recorded.
+ *
+ * The residue is narrow and safe: two SecureString ssm references sharing one
+ * resolved value still collapse, because the map cannot distinguish them and
+ * spelling cannot either. That is the pre-existing behavior, it leaks nothing
+ * (both are redacted, just to one expression), and closing it needs the resolver
+ * to record expressions in their own set rather than as map values.
+ */
+function isKnownSecretExpression(
+  expression: string,
+  secretExpressions: ReadonlySet<string>
+): boolean {
+  return expression.includes('{{resolve:secretsmanager:') || secretExpressions.has(expression);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -110,20 +165,45 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * passes are complementary rather than alternatives — path where position is
  * knowable, value where it is not.
  */
-function redactByPath(bag: unknown, source: unknown, secrets: RecordedSecretValues): unknown {
-  if (carriesDynamicReference(source) && typeof bag === 'string') {
-    // The source leaf IS what state should hold — exact, and immune to two
-    // expressions sharing one resolved value.
-    return source;
+function redactByPath(
+  bag: unknown,
+  source: unknown,
+  secrets: RecordedSecretValues,
+  kind: PathSourceKind,
+  secretExpressions: ReadonlySet<string>
+): unknown {
+  if (isDynamicReferenceString(source) && typeof bag === 'string') {
+    // A TEMPLATE source carries PUBLIC ssm expressions too, and those must stay
+    // RESOLVED in state (#1901) or the diff compares a resolved desired side
+    // against a stored expression forever. A STATE source cannot hold one.
+    if (kind === 'aws-readback' || isKnownSecretExpression(source, secretExpressions)) {
+      // The source leaf IS what state should hold — exact, and immune to two
+      // expressions sharing one resolved value.
+      return source;
+    }
+    // Public reference: keep the resolved value, but still value-scan it so a
+    // secret embedded beside it is redacted.
+    return redactSecretsForState(bag, secrets);
   }
-  if (Array.isArray(bag) && Array.isArray(source) && bag.length === source.length) {
-    return bag.map((item, i) => redactByPath(item, source[i], secrets));
+  if (
+    kind === 'template-derived' &&
+    Array.isArray(bag) &&
+    Array.isArray(source) &&
+    bag.length === source.length
+  ) {
+    // Positional descent is sound ONLY because the bag was produced by resolving
+    // the source. An AWS readback may be REORDERED, so that kind falls through
+    // to the value scan rather than writing an expression onto a wrong element.
+    return bag.map((item, i) => redactByPath(item, source[i], secrets, kind, secretExpressions));
   }
   if (isPlainObject(bag) && isPlainObject(source)) {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(bag)) {
-      out[k] =
-        k in source ? redactByPath(v, source[k], secrets) : redactSecretsForState(v, secrets);
+      // `Object.hasOwn`, not `k in source`: the prototype chain would answer for
+      // `constructor` / `toString` and hand the walk a function as the source.
+      out[k] = Object.hasOwn(source, k)
+        ? redactByPath(v, source[k], secrets, kind, secretExpressions)
+        : redactSecretsForState(v, secrets);
     }
     return out;
   }
@@ -145,13 +225,16 @@ function redactByPath(bag: unknown, source: unknown, secrets: RecordedSecretValu
 export function redactSecretsForState<T>(
   bag: T,
   secrets: RecordedSecretValues,
-  source?: unknown
+  source?: unknown,
+  kind: PathSourceKind = 'template-derived'
 ): T {
   // The PATH pass runs even with no recorded secrets — that is the whole point
   // for an UNCHANGED resource, whose `perResourceSecrets` entry is empty
   // because it was never resolved this deploy (issue #1900).
   if (secrets.size === 0 && source === undefined) return bag;
-  if (source !== undefined) return redactByPath(bag, source, secrets) as T;
+  if (source !== undefined) {
+    return redactByPath(bag, source, secrets, kind, new Set(secrets.values())) as T;
+  }
   const regex = buildNeedleRegex(secrets.keys());
   // Even below the needle threshold, a NON-EMPTY whole-value match must still be
   // redacted. An empty-string secret is never a needle (it would match every
@@ -200,7 +283,13 @@ export function scrubResourceRecord<
     observedProperties?: Record<string, unknown>;
   },
 >(record: T, secrets: RecordedSecretValues, sourceProperties?: Record<string, unknown>): T {
-  if (secrets.size === 0 && sourceProperties === undefined) return record;
+  // NOT `sourceProperties === undefined`: an UNCHANGED resource has neither a
+  // secrets map nor a template bag, and its observed bag is exactly what needs
+  // redacting (issue #1900) — so an early return gated on those two alone made
+  // that half dead code.
+  if (secrets.size === 0 && sourceProperties === undefined && !record.observedProperties) {
+    return record;
+  }
   const next = { ...record };
   next.properties = redactSecretsForState(record.properties, secrets, sourceProperties);
   if (record.attributes) next.attributes = redactSecretsForState(record.attributes, secrets);
@@ -212,10 +301,15 @@ export function scrubResourceRecord<
     // template, which is the better source; otherwise fall back to the record's
     // own properties, which is what makes an UNCHANGED resource redactable at
     // all.
+    // `next.properties`, not `record.properties`: the just-redacted bag is the
+    // one that actually holds expressions. On the `cdkd scrub` path the original
+    // is still plaintext, so using it would degrade this to the value scan.
+    // Marked `aws-readback` because this bag came from AWS — see the kind doc.
     next.observedProperties = redactSecretsForState(
       record.observedProperties,
       secrets,
-      sourceProperties ?? record.properties
+      sourceProperties ?? next.properties,
+      'aws-readback'
     );
   }
   return next;
