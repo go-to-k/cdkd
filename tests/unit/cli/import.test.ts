@@ -61,6 +61,10 @@ vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => ({
 const stsSend = vi.hoisted(() =>
   vi.fn(async () => ({ Account: '123456789012' }))
 );
+// SecretsManager send for the import-time property resolution pass — a
+// `{{resolve:secretsmanager:...}}` in an imported resource's Properties fetches
+// through here. Defaults to a benign value; the redaction test overrides it.
+const smSend = vi.hoisted(() => vi.fn(async () => ({ SecretString: 'unused-default' })));
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({
     get s3() {
@@ -77,6 +81,7 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
   setAwsClients: vi.fn(),
   getAwsClients: vi.fn(() => ({
     sts: { send: stsSend },
+    secretsManager: { send: smSend },
   })),
 }));
 
@@ -459,6 +464,57 @@ describe('cdkd import', () => {
     // The deploy-side template's Parameter IS rewritten, as for any other
     // reference — only the state snapshot predates it.
     expect(tmpl.Parameters!['AssetParametersaaaa1111S3Bucket']!.Default).toBe(cdkdBucket);
+  });
+
+  it('persists the {{resolve:...}} expression, not the plaintext, for an imported secret property (GHSA fix)', async () => {
+    // `cdkd import` resolves intrinsics in the imported resource's Properties so
+    // state carries concrete values — but a {{resolve:secretsmanager:...}}
+    // reference must persist as the EXPRESSION, never the fetched plaintext
+    // (the same disclosure class the deploy path fixes).
+    const secretPlaintext = 'imported-super-secret';
+    smSend.mockResolvedValueOnce({ SecretString: secretPlaintext });
+
+    const secretExpr = '{{resolve:secretsmanager:my-secret:SecretString:client_secret::}}';
+    const tmpl: CloudFormationTemplate = {
+      AWSTemplateFormatVersion: '2010-09-09',
+      Resources: {
+        Idp: {
+          Type: 'AWS::Cognito::UserPoolIdentityProvider',
+          Properties: {
+            ProviderName: 'oidc',
+            ProviderDetails: { client_id: 'public-id', client_secret: secretExpr },
+          },
+          Metadata: { 'aws:cdk:path': 'S/Idp' },
+        },
+      },
+    };
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+    mockHasProvider.mockReturnValue(true);
+    mockGetProvider.mockImplementation(() => ({
+      import: vi.fn(async () => ({ physicalId: 'idp-phys', attributes: {} })),
+    }));
+
+    await runImport(['import', '--app', 'x', '--yes']);
+
+    const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+      string,
+      string,
+      { resources: Record<string, { properties: Record<string, unknown> }> },
+    ];
+    // Non-vacuity guard: the resolver actually FETCHED the secret (so it held
+    // the plaintext in hand). Otherwise the assertion below would pass merely
+    // because the raw expression was never resolved — the raw form equals the
+    // redacted form, so redaction would be untested.
+    expect(smSend).toHaveBeenCalled();
+
+    const details = state.resources['Idp']!.properties['ProviderDetails'] as Record<string, unknown>;
+    // The secret member holds the expression; the public sibling is untouched.
+    // With the fetch proven above, the only path back to the expression is
+    // redaction of the resolved plaintext.
+    expect(details['client_secret']).toBe(secretExpr);
+    expect(details['client_id']).toBe('public-id');
+    // Hard invariant: the plaintext appears NOWHERE in the persisted state.
+    expect(JSON.stringify(state)).not.toContain(secretPlaintext);
   });
 
   it('leaves state untouched by the rewrite for nested-stack children (#1652)', async () => {

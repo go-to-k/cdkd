@@ -426,4 +426,85 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       });
     });
   });
+
+  describe('secret recording (GHSA fix)', () => {
+    it('records the resolved secretsmanager plaintext -> expression into recordedSecretValues', async () => {
+      mockSecretsManagerSend.mockResolvedValue({ SecretString: 'super-secret-plaintext' });
+      const recordedSecretValues = new Map<string, string>();
+      const expr = '{{resolve:secretsmanager:my-secret:SecretString:::}}';
+
+      const result = await resolver.resolveDynamicReferences(expr, {
+        ...defaultContext,
+        recordedSecretValues,
+      });
+
+      expect(result).toBe('super-secret-plaintext');
+      expect(recordedSecretValues.get('super-secret-plaintext')).toBe(expr);
+    });
+
+    it('does NOT record a plain ssm reference (public config, not a secret)', async () => {
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'public-config' } });
+      const recordedSecretValues = new Map<string, string>();
+
+      await resolver.resolveDynamicReferences('{{resolve:ssm:/db/host}}', {
+        ...defaultContext,
+        recordedSecretValues,
+      });
+
+      expect(recordedSecretValues.size).toBe(0);
+    });
+
+    it('records a secret via resolve() through a nested property (Fn::Sub embedded)', async () => {
+      mockSecretsManagerSend.mockResolvedValue({ SecretString: 'embedded-secret' });
+      const recordedSecretValues = new Map<string, string>();
+
+      const result = await resolver.resolve(
+        { Url: { 'Fn::Sub': 'pw={{resolve:secretsmanager:s:SecretString:::}}' } },
+        { ...defaultContext, recordedSecretValues }
+      );
+
+      expect(result).toEqual({ Url: 'pw=embedded-secret' });
+      expect(recordedSecretValues.get('embedded-secret')).toBe(
+        '{{resolve:secretsmanager:s:SecretString:::}}'
+      );
+    });
+
+    it('leaves {{resolve:...}} unresolved and makes no AWS call when skipDynamicReferences is set', async () => {
+      const recordedSecretValues = new Map<string, string>();
+      const expr = '{{resolve:secretsmanager:my-secret:SecretString:::}}';
+
+      const result = await resolver.resolve(
+        { ClientSecret: expr },
+        { ...defaultContext, recordedSecretValues, skipDynamicReferences: true }
+      );
+
+      expect(result).toEqual({ ClientSecret: expr });
+      expect(mockSecretsManagerSend).not.toHaveBeenCalled();
+      expect(recordedSecretValues.size).toBe(0);
+    });
+
+    it('still resolves plain {{resolve:ssm:...}} when skipDynamicReferences is set (only secrets are skipped)', async () => {
+      // skipDynamicReferences skips SECRET references (secretsmanager) so a
+      // diff / no-op compare does not fetch a secret or re-persist plaintext,
+      // but plain ssm is public config that state stores RESOLVED — skipping
+      // it would make every ssm-bearing resource a perpetual spurious UPDATE.
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'my-param-value' } });
+      const secretExpr = '{{resolve:secretsmanager:my-secret:SecretString:::}}';
+      const recordedSecretValues = new Map<string, string>();
+
+      const result = await resolver.resolve(
+        { Config: '{{resolve:ssm:/prod/db/host}}', ClientSecret: secretExpr },
+        { ...defaultContext, recordedSecretValues, skipDynamicReferences: true }
+      );
+
+      // ssm resolved, secret left as the unresolved expression.
+      expect(result).toEqual({
+        Config: 'my-param-value',
+        ClientSecret: secretExpr,
+      });
+      expect(mockSSMSend).toHaveBeenCalledTimes(1);
+      expect(mockSecretsManagerSend).not.toHaveBeenCalled();
+      expect(recordedSecretValues.size).toBe(0);
+    });
+  });
 });

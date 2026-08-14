@@ -19,6 +19,12 @@ import {
   looksLikeCdkdGeneratedName,
 } from '../provisioning/resource-name.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
+import {
+  redactSecretsForState,
+  scrubResourceRecord,
+  maskSecretsInText,
+  type RecordedSecretValues,
+} from './secret-redaction.js';
 import { DagExecutor } from './dag-executor.js';
 import type {
   CloudFormationTemplate,
@@ -617,6 +623,30 @@ export class DeployEngine {
    * for the weak-reference `Fn::GetStackOutput` intrinsic.
    */
   private recordedOutputReads: StateOutputReadEntry[] = [];
+  /**
+   * PER-RESOURCE map of resolved SECRET dynamic-reference values
+   * (plaintext -> `{{resolve:...}}` expression) the resolver records for each
+   * resource's own resolution (GHSA fix). Keyed by logicalId. Per-resource, NOT
+   * session-wide, because a session-wide map cross-contaminates: if resource A
+   * resolves a `{{resolve:...:SecretString}}` whole-secret reference to value V,
+   * and resource B (e.g. the `AWS::SecretsManager::Secret` that OWNS the secret)
+   * carries V as its own LITERAL property, a session-wide value scan would
+   * wrongly rewrite B's literal to A's expression — a false positive that shows
+   * up as a permanent spurious diff. Redacting each resource only with the
+   * secrets substituted during ITS OWN resolution scopes the value match
+   * correctly. Kept on the engine (not just the resolver context) so the async
+   * observed-property capture — which drains after the context is gone — can
+   * still redact an AWS-readback secret (Cognito `client_secret`). Reset per
+   * `deploy()`. See `secret-redaction.ts`.
+   */
+  private perResourceSecrets = new Map<string, RecordedSecretValues>();
+  /**
+   * Resolved secrets recorded while resolving the stack OUTPUTS (a `CfnOutput`
+   * whose Value resolves a `{{resolve:...}}` reference). Separate from the
+   * per-resource maps for the same anti-cross-contamination reason. Reset per
+   * `deploy()`.
+   */
+  private outputSecrets: RecordedSecretValues = new Map();
 
   /**
    * Per-logical-id snapshot of the intrinsic-RESOLVED desired properties
@@ -681,6 +711,8 @@ export class DeployEngine {
     // `state.outputReads`.
     this.recordedImports = [];
     this.recordedOutputReads = [];
+    this.perResourceSecrets = new Map();
+    this.outputSecrets = new Map();
     // Per-deploy-run counter: the resolver instance is engine-scoped and an
     // engine can be reused across deploys, so reset here (not in the
     // resolver constructor) to keep the deploy-summary count per run.
@@ -719,6 +751,91 @@ export class DeployEngine {
       ...(this.exportIndexStore && { exportIndex: this.exportIndexStore }),
       recordedImports: this.recordedImports,
       recordedOutputReads: this.recordedOutputReads,
+      // FRESH per-context map: the resolver records each resolved secret
+      // (plaintext -> `{{resolve:...}}` expression) here (GHSA fix). The caller
+      // captures it and stores it per-logicalId in `perResourceSecrets` (or in
+      // `outputSecrets` for the outputs pass) so each bag is redacted only with
+      // the secrets substituted during ITS OWN resolution — see the
+      // `perResourceSecrets` field doc for why per-resource, not session-wide.
+      recordedSecretValues: new Map<string, string>(),
+    };
+  }
+
+  /**
+   * Redact resolved secret plaintext out of a bag about to be PERSISTED to
+   * state, replacing each secret value with the unresolved `{{resolve:...}}`
+   * expression it came from (GHSA fix; see `secret-redaction.ts`). No-op when
+   * the deploy recorded no secrets. The bag sent to the AWS API is the
+   * un-redacted resolved bag; only the persisted copy is rewritten.
+   */
+  /**
+   * Bag-level redaction of a single properties bag against a specific secrets
+   * map (GHSA fix). Used by the UPDATE no-op re-check so a resolved-plaintext
+   * bag is compared against the expression-bearing stored bag on equal footing.
+   */
+  private redactPropsWith(
+    props: Record<string, unknown>,
+    secrets: RecordedSecretValues
+  ): Record<string, unknown> {
+    if (secrets.size === 0) return props;
+    return redactSecretsForState(props, secrets);
+  }
+
+  /**
+   * Redact resolved secret plaintext out of rollback-journal operations (GHSA
+   * fix). Each op may carry resolved `properties` / `attemptedProperties` and a
+   * `previousState` snapshot (whose `properties` / `attributes` /
+   * `observedProperties` also hold resolved values). Each op is redacted with
+   * the secrets recorded for ITS OWN resource (`perResourceSecrets`), so a
+   * whole-secret value from one resource cannot rewrite another's literal.
+   * Preserves ops that carry none of those fields, or whose resource recorded
+   * no secret.
+   */
+  private redactOperationsForJournal<T extends CompletedOperation | FailedOperation>(
+    operations: T[]
+  ): T[] {
+    return operations.map((op) => {
+      const secrets = this.perResourceSecrets.get(op.logicalId);
+      if (!secrets || secrets.size === 0) return op;
+      const next = { ...op } as CompletedOperation & FailedOperation;
+      if (next.properties) next.properties = redactSecretsForState(next.properties, secrets);
+      if (next.attemptedProperties) {
+        next.attemptedProperties = redactSecretsForState(next.attemptedProperties, secrets);
+      }
+      if (next.previousState) {
+        const prev = { ...next.previousState };
+        prev.properties = redactSecretsForState(prev.properties, secrets);
+        if (prev.attributes) prev.attributes = redactSecretsForState(prev.attributes, secrets);
+        if (prev.observedProperties) {
+          prev.observedProperties = redactSecretsForState(prev.observedProperties, secrets);
+        }
+        next.previousState = prev;
+      }
+      return next as unknown as T;
+    });
+  }
+
+  private redactStateForPersist(state: StackState): StackState {
+    const resources: Record<string, ResourceState> = {};
+    for (const [logicalId, record] of Object.entries(state.resources)) {
+      // Redact each record ONLY with the secrets substituted during that
+      // resource's own resolution — see the `perResourceSecrets` field doc.
+      const secrets = this.perResourceSecrets.get(logicalId);
+      resources[logicalId] = secrets ? scrubResourceRecord(record, secrets) : record;
+    }
+    // `outputs` is also secret-bearing: a `CfnOutput` whose Value resolves a
+    // `{{resolve:secretsmanager:...}}` reference (or an Fn::Sub/Join embedding
+    // one) stores the resolved plaintext, which would otherwise reach
+    // state.json / the exports index / the deploy summary. Redact it with the
+    // OUTPUTS' own secrets map (a literal output equal to a secret is not
+    // recorded there, so it is not touched).
+    return {
+      ...state,
+      resources,
+      outputs:
+        this.outputSecrets.size > 0
+          ? redactSecretsForState(state.outputs, this.outputSecrets)
+          : state.outputs,
     };
   }
 
@@ -728,12 +845,21 @@ export class DeployEngine {
    * constructed with `options.parentStackInfo` (= it's deploying a
    * nested-stack child). Returns the state unchanged for top-level
    * deploys so the three v6 fields stay absent from non-child state files.
+   *
+   * ALSO the single choke point where resolved SECRET plaintext is redacted out
+   * of the persisted state (GHSA fix): every `stateBackend.saveState` call in
+   * this engine wraps its state through here, so redacting `resources` once here
+   * covers `properties` / `attributes` / `observedProperties` across every
+   * create / update / replacement / rollback / observed-capture path uniformly —
+   * including the async observed-capture drain that runs after the resolver
+   * context is gone (which is why the secret map is session-wide).
    */
   private withParentInfo(state: StackState): StackState {
-    if (!this.options.parentStackInfo) return state;
+    const redacted = this.redactStateForPersist(state);
+    if (!this.options.parentStackInfo) return redacted;
     const { parentStack, parentLogicalId, parentRegion } = this.options.parentStackInfo;
     return {
-      ...state,
+      ...redacted,
       parentStack,
       parentLogicalId,
       parentRegion,
@@ -1269,6 +1395,12 @@ export class DeployEngine {
       // resolver contexts do NOT set this — there, an unresolvable Ref is
       // a genuine error signal.
       diffResolverContext.bestEffort = true;
+      // Leave `{{resolve:...}}` dynamic references UNRESOLVED for the diff (GHSA
+      // fix): state now stores the unresolved expression, so comparing the
+      // desired side as its expression too avoids a spurious perpetual UPDATE on
+      // every deploy of a secret-bearing resource (and avoids a live
+      // `GetSecretValue` at plan time). A changed expression still diffs.
+      diffResolverContext.skipDynamicReferences = true;
       const diffResolveFn = (value: unknown) => this.resolver.resolve(value, diffResolverContext);
       const changes = await this.diffCalculator.calculateDiff(
         currentState,
@@ -1301,12 +1433,15 @@ export class DeployEngine {
           // resources, which come from `currentState.resources` (the arg), and
           // condition pruning only touches `Resources`, so resolving against
           // `effectiveTemplate` vs the raw `template` is equivalent here.
-          const resolvedOutputs = await this.resolveOutputs(
-            effectiveTemplate,
-            currentState.resources,
-            stackName,
-            parameterValues,
-            conditions
+          const resolvedOutputs = this.redactPropsWith(
+            await this.resolveOutputs(
+              effectiveTemplate,
+              currentState.resources,
+              stackName,
+              parameterValues,
+              conditions
+            ),
+            this.outputSecrets
           );
           // resolveOutputs stores `undefined` for any output it could not
           // resolve (logged as a warn there). In the no-change path every
@@ -2075,6 +2210,12 @@ export class DeployEngine {
         parameterValues,
         conditions
       );
+      // Redact resolved secrets out of outputs before they flow to the exports
+      // index / deploy summary / state (GHSA fix). The state save also redacts
+      // via `withParentInfo`, but the exports-index `updateForStack` and
+      // `buildDisplayOutputs` read this bag directly. `resolveOutputs` populated
+      // `this.outputSecrets` with the outputs' own substituted references.
+      outputs = this.redactPropsWith(outputs, this.outputSecrets);
     } catch (outputError) {
       await this.persistStateAfterOutputFailure(
         stackName,
@@ -2319,6 +2460,12 @@ export class DeployEngine {
     // A failed op alone (#1198) IS worth journaling: `cdkd rollback
     // --revert-failed` can act on it even with zero completed ops.
     if (completedOperations.length === 0 && failedOperations.length === 0) return;
+    // Redact resolved secret plaintext out of the journal (GHSA fix): the ops
+    // carry resolved / attempted properties and previous-state snapshots read
+    // from the in-memory working map, which is NOT run through the state save
+    // choke point, so plaintext would otherwise land in rollback-journal.json.
+    const redactedCompleted = this.redactOperationsForJournal(completedOperations);
+    const redactedFailed = this.redactOperationsForJournal(failedOperations);
     try {
       const segment: RollbackJournalSegment = {
         ...(this.options.eventRecorder?.runId !== undefined && {
@@ -2329,8 +2476,8 @@ export class DeployEngine {
         initialDeploy,
         ...(this.options.roleArn && { roleArn: this.options.roleArn }),
         cdkdVersion: getCdkdVersion(),
-        operations: completedOperations,
-        ...(failedOperations.length > 0 && { failedOperations }),
+        operations: redactedCompleted,
+        ...(redactedFailed.length > 0 && { failedOperations: redactedFailed }),
       };
       await this.stateBackend.appendRollbackJournalSegment(stackName, this.stackRegion, segment);
       this.logger.debug(`Rollback journal segment written (${reason})`);
@@ -2587,10 +2734,33 @@ export class DeployEngine {
   ): void {
     if (!this.options.eventRecorder) return;
     try {
-      this.options.eventRecorder.record(event);
+      this.options.eventRecorder.record(this.maskSecretsInEvent(event));
     } catch {
       // best-effort: never let event recording surface into the deploy path
     }
+  }
+
+  /**
+   * Mask any resolved secret value out of an event's human-authored text before
+   * it is persisted to `deployments/*.jsonl` (which outlives `cdkd destroy`)
+   * — GHSA fix. An AWS validation error can quote the offending property value
+   * (`Value '<secret>' at 'X' failed to satisfy ...`), and a provider `reason`
+   * is provider-authored prose; both reach the event store as `error.message` /
+   * `reason`. No-op when the deploy recorded no secrets.
+   */
+  private maskSecretsInEvent<
+    T extends { logicalId?: string; error?: { message?: string }; reason?: string },
+  >(event: T): T {
+    // Mask with the event's own resource secrets; a resource-less (run-level)
+    // event carries no properties-derived text.
+    const secrets = event.logicalId ? this.perResourceSecrets.get(event.logicalId) : undefined;
+    if (!secrets || secrets.size === 0) return event;
+    const next: T = { ...event };
+    if (next.error?.message) {
+      next.error = { ...next.error, message: maskSecretsInText(next.error.message, secrets) };
+    }
+    if (next.reason) next.reason = maskSecretsInText(next.reason, secrets);
+    return next;
   }
 
   /**
@@ -2841,6 +3011,12 @@ export class DeployEngine {
           string,
           unknown
         >;
+        // Store the secrets substituted during THIS resource's resolution so the
+        // save choke point (and the async observed-capture drain) redact this
+        // record only with its own secrets (GHSA fix — see perResourceSecrets).
+        if (context.recordedSecretValues) {
+          this.perResourceSecrets.set(logicalId, context.recordedSecretValues);
+        }
 
         this.auditResolvedAssetReferences(logicalId, resourceType, resolvedProps);
 
@@ -2940,6 +3116,8 @@ export class DeployEngine {
           string,
           unknown
         >;
+        const updateSecrets = context.recordedSecretValues ?? new Map<string, string>();
+        this.perResourceSecrets.set(logicalId, updateSecrets);
 
         this.auditResolvedAssetReferences(logicalId, resourceType, resolvedProps);
 
@@ -2949,8 +3127,15 @@ export class DeployEngine {
         this.attemptedResolvedProps.set(logicalId, resolvedProps);
 
         // Re-check diff after resolving intrinsic functions
-        // DiffCalculator compares unresolved template vs resolved state, which may produce false positives
-        if (JSON.stringify(resolvedProps) === JSON.stringify(currentProps)) {
+        // DiffCalculator compares unresolved template vs resolved state, which may produce false positives.
+        // Compare the REDACTED resolved bag (secret plaintext -> `{{resolve:...}}`
+        // expression) against the stored side, which also holds the expression
+        // (GHSA fix): a rotated secret behind an unchanged reference is a no-op,
+        // matching CloudFormation, rather than a spurious UPDATE every deploy.
+        if (
+          JSON.stringify(this.redactPropsWith(resolvedProps, updateSecrets)) ===
+          JSON.stringify(currentProps)
+        ) {
           // Attribute-only change (schema v5+): `DeletionPolicy` /
           // `UpdateReplacePolicy` may have flipped without any AWS-side
           // property change. There is no per-resource AWS API for those —
@@ -4296,6 +4481,13 @@ export class DeployEngine {
         this.logger.warn(`Failed to resolve output ${outputKey}: ${String(error)}`);
         outputs[outputKey] = undefined;
       }
+    }
+
+    // Accumulate the secrets resolved while producing outputs so the outputs
+    // redaction (GHSA fix) uses only outputs-substituted references — a literal
+    // output equal to a secret is not recorded here and is not touched.
+    if (context.recordedSecretValues) {
+      for (const [value, expr] of context.recordedSecretValues) this.outputSecrets.set(value, expr);
     }
 
     return outputs;

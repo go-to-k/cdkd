@@ -282,6 +282,11 @@ export async function computeStackDiff(
       ...(mergedParameters && { parameters: mergedParameters }),
       // Evaluated conditions so `Fn::If` resolves in property values.
       ...(conditions && { conditions }),
+      // Leave `{{resolve:...}}` dynamic references UNRESOLVED for diff (GHSA
+      // fix): state stores the unresolved expression, so comparing the desired
+      // side as its expression avoids a spurious perpetual change and a live
+      // `GetSecretValue` that would print the plaintext.
+      skipDynamicReferences: true,
     });
   return diffCalculator.calculateDiff(
     currentState,

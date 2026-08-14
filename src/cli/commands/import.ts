@@ -21,6 +21,7 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
+import { redactSecretsForState } from '../../deployment/secret-redaction.js';
 import {
   resolveApp,
   resolveStateBucketWithDefault,
@@ -1422,11 +1423,19 @@ async function resolveImportedProperties(
 
   for (const [logicalId, resource] of entries) {
     try {
-      const resolved = (await resolver.resolve(resource.properties ?? {}, baseContext)) as Record<
-        string,
-        unknown
-      >;
-      resource.properties = resolved;
+      // Fresh PER-RESOURCE secrets map so the imported state persists the
+      // `{{resolve:...}}` expression, not the plaintext (GHSA fix), while a
+      // whole-secret value from one resource cannot rewrite another's literal
+      // (see the deploy engine's `perResourceSecrets` doc for the rationale).
+      const recordedSecretValues = new Map<string, string>();
+      const resolved = (await resolver.resolve(resource.properties ?? {}, {
+        ...baseContext,
+        recordedSecretValues,
+      })) as Record<string, unknown>;
+      resource.properties =
+        recordedSecretValues.size > 0
+          ? redactSecretsForState(resolved, recordedSecretValues)
+          : resolved;
     } catch (err) {
       // Intrinsic referenced a resource not in the importable set
       // (e.g. custom resource that wasn't adopted) or a parameter

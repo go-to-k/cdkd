@@ -246,6 +246,182 @@ if [ "${DESC_P1}" != "cdkd f1160 removal-reset probe" ] || [ "${KMS_P1}" != "ali
 fi
 echo "    OK: baseline Description + KmsKeyId set on the secret"
 
+# --- Assertion 1c: STATE stores the {{resolve:...}} expression, NOT the
+#     resolved plaintext (GHSA secret-disclosure fix) --------------------
+# cdkd sends the RESOLVED value to AWS (asserted above via the live Lambda
+# env), but must PERSIST the unresolved expression so the plaintext never
+# lands in state.json / `state show` / diff / drift. A plain `ssm:` value is
+# public config and is deliberately NOT redacted, which is the discriminator.
+echo "==> Reading cdkd state to assert secret redaction"
+STATE_JSON=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+
+# The consumer Lambda's persisted env vars.
+LAMBDA_ENV=$(printf '%s' "${STATE_JSON}" \
+  | jq -c '.state.resources | to_entries[]
+             | select(.value.resourceType=="AWS::Lambda::Function")
+             | .value.properties.Environment.Variables' | head -1)
+if [ -z "${LAMBDA_ENV}" ] || [ "${LAMBDA_ENV}" = "null" ]; then
+  echo "FAIL: could not read the consumer Lambda's persisted Environment.Variables from state" >&2
+  exit 1
+fi
+
+STATE_SECRET_PASSWORD=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD // empty')
+STATE_SECRET_FULL=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SECRET_FULL // empty')
+STATE_SSM_VALUE=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SSM_VALUE // empty')
+
+# Guard 3: each secretsmanager env var in STATE must be the UNRESOLVED
+# expression, not the plaintext. (We can print the expression — it names the
+# secret, not its value.)
+redaction_fail=0
+case "${STATE_SECRET_PASSWORD}" in
+  '{{resolve:secretsmanager:'*) echo "    OK: state SECRET_PASSWORD kept the expression: ${STATE_SECRET_PASSWORD}" ;;
+  *) echo "FAIL: state SECRET_PASSWORD is NOT the {{resolve:...}} expression: $(mask "${STATE_SECRET_PASSWORD}")" >&2; redaction_fail=1 ;;
+esac
+case "${STATE_SECRET_FULL}" in
+  '{{resolve:secretsmanager:'*) echo "    OK: state SECRET_FULL kept the expression: ${STATE_SECRET_FULL}" ;;
+  *) echo "FAIL: state SECRET_FULL is NOT the {{resolve:...}} expression: $(mask "${STATE_SECRET_FULL}")" >&2; redaction_fail=1 ;;
+esac
+
+# Guard 4: the plain ssm value IS resolved in state (public config, not a secret).
+if [ "${STATE_SSM_VALUE}" = "${EXPECTED_SSM}" ]; then
+  echo "    OK: state SSM_VALUE kept the resolved value (ssm is not a secret)"
+else
+  echo "FAIL: state SSM_VALUE should be the resolved '${EXPECTED_SSM}' (ssm is public config), got $(mask "${STATE_SSM_VALUE}")" >&2
+  redaction_fail=1
+fi
+
+# Guard 5: the RESOLVED-REFERENCE values (the consumer Lambda's env vars) must
+# NOT contain the plaintext — this is the dynamic-reference disclosure the fix
+# targets. NOTE we scope this to the Lambda's persisted env, NOT the whole
+# state: the AWS::SecretsManager::Secret resource's OWN `SecretString` is the
+# fixture's hardcoded value (cdk `unsafePlainText`), which legitimately lands in
+# that resource's state properties exactly as CloudFormation stores template
+# values. Redacting a resource's own literal is a separate concern (hardcoded
+# secrets in templates), out of scope for the dynamic-reference fix — and
+# redacting it would be the cross-resource false-positive the per-resource
+# scoping deliberately avoids. grep -q so the plaintext is never echoed.
+if printf '%s' "${LAMBDA_ENV}" | grep -qF "${EXPECTED_PASSWORD}"; then
+  echo "FAIL: the resolved secret plaintext LEAKED into the Lambda's persisted env (dynamic-ref disclosure)" >&2
+  redaction_fail=1
+else
+  echo "    OK: resolved-reference plaintext is absent from the consumer Lambda's persisted state"
+fi
+
+if [ "${redaction_fail}" -ne 0 ]; then
+  echo "FAIL: state secret-redaction assertions failed" >&2
+  exit 1
+fi
+
+# Guard 6: a second `cdkd diff` shows NO change (expression-vs-expression) and
+# prints no plaintext. A resolved-vs-expression compare would report a spurious
+# UPDATE of every secret-bearing property on every deploy.
+echo "==> Asserting a re-diff is clean (no perpetual UPDATE) and leaks no plaintext"
+DIFF_OUT=$(node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" 2>&1) || true
+if printf '%s' "${DIFF_OUT}" | grep -qF "${EXPECTED_PASSWORD}"; then
+  echo "FAIL: 'cdkd diff' output leaked the resolved secret plaintext" >&2
+  exit 1
+fi
+echo "    OK: diff leaks no plaintext"
+
+# Guard 7: `cdkd scrub --dry-run` on the freshly-deployed stack finds NOTHING
+# to scrub (deploy already wrote expressions), proving the command runs and the
+# deploy-time redaction is complete.
+echo "==> Asserting 'cdkd scrub --dry-run' finds nothing on the freshly-deployed stack"
+SCRUB_OUT=$(node "${LOCAL_DIST}" scrub "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --dry-run 2>&1)
+if printf '%s' "${SCRUB_OUT}" | grep -qF "${EXPECTED_PASSWORD}"; then
+  echo "FAIL: 'cdkd scrub' output leaked the resolved secret plaintext" >&2
+  exit 1
+fi
+if printf '%s' "${SCRUB_OUT}" | grep -qiE 'no plaintext secrets|nothing to scrub'; then
+  echo "    OK: scrub --dry-run reports the deployed state is already clean"
+else
+  echo "FAIL: scrub --dry-run should report nothing to scrub on a freshly-deployed stack" >&2
+  echo "      output: ${SCRUB_OUT}" >&2
+  exit 1
+fi
+
+# --- Phase 1d: standalone rollback RE-RESOLVES secret expressions (GHSA #1899) ---
+# The journal (and each state record) stores the REDACTED {{resolve:...}}
+# expression, never the plaintext. A standalone `cdkd rollback` must re-resolve
+# that expression to the concrete secret for the provider replay — replaying the
+# literal token would corrupt the Lambda's env. This phase proves it end to end:
+#   1. A CDKD_TEST_ROLLBACK deploy adds a non-secret env var (ROLLBACK_EXTRA,
+#      forcing a real Lambda UPDATE whose whole env map is re-sent) plus a
+#      failing SQS queue that depends on the Lambda. --no-rollback leaves the
+#      journal (Lambda previousState secret env = the redacted expression).
+#   2. `cdkd rollback` reverts the Lambda; the fix re-resolves the expression.
+#   3. The live Lambda must carry the RESOLVED secret (never the literal), and
+#      the probe env var must be gone; state must still hold the expression.
+echo "==> Phase 1d: --no-rollback failing deploy + standalone rollback re-resolves the secret"
+set +e
+CDKD_TEST_ROLLBACK=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --no-rollback --yes
+ROLLBACK_DEPLOY_RC=$?
+set -e
+if [ "${ROLLBACK_DEPLOY_RC}" -eq 0 ]; then
+  echo "FAIL: the CDKD_TEST_ROLLBACK deploy was expected to FAIL (invalid SQS queue) but exited 0" >&2
+  exit 1
+fi
+echo "    OK: rollback-probe deploy failed as expected (rc=${ROLLBACK_DEPLOY_RC})"
+
+# The Lambda UPDATE must have completed (ROLLBACK_EXTRA live) before the rollback,
+# else there is nothing to re-resolve on the revert.
+RB_BEFORE=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}")
+EXTRA_BEFORE=$(printf '%s' "${RB_BEFORE}" | jq -r '.Environment.Variables.ROLLBACK_EXTRA // empty')
+if [ "${EXTRA_BEFORE}" != "v2" ]; then
+  echo "FAIL: expected the Lambda UPDATE (ROLLBACK_EXTRA=v2) to have completed before rollback, got '$(mask "${EXTRA_BEFORE}")'" >&2
+  exit 1
+fi
+echo "    OK: Lambda UPDATE completed pre-rollback (ROLLBACK_EXTRA live)"
+
+# Standalone rollback reads the REDACTED journal and must re-resolve.
+node "${LOCAL_DIST}" rollback "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+RB_CFG=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}")
+rb_env() { printf '%s' "${RB_CFG}" | jq -r --arg k "$1" '.Environment.Variables[$k] // empty'; }
+RB_PW=$(rb_env SECRET_PASSWORD)
+RB_EXTRA=$(rb_env ROLLBACK_EXTRA)
+case "${RB_PW}" in
+  *'{{resolve:'*)
+    echo "FAIL: after rollback the Lambda SECRET_PASSWORD is the LITERAL expression — the replay did NOT re-resolve: $(mask "${RB_PW}")" >&2
+    exit 1
+    ;;
+esac
+if [ "${RB_PW}" != "${EXPECTED_PASSWORD}" ]; then
+  echo "FAIL: after rollback the Lambda SECRET_PASSWORD is not the resolved value: got $(mask "${RB_PW}")" >&2
+  exit 1
+fi
+if [ -n "${RB_EXTRA}" ]; then
+  echo "FAIL: rollback did not revert the Lambda env (ROLLBACK_EXTRA still '$(mask "${RB_EXTRA}")')" >&2
+  exit 1
+fi
+echo "    OK: standalone rollback re-resolved the secret (live SECRET_PASSWORD=RESOLVED, ROLLBACK_EXTRA gone)"
+
+# STATE must still hold the {{resolve:...}} expression after the rollback write.
+RB_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+RB_LAMBDA_ENV=$(printf '%s' "${RB_STATE}" | jq -c '.state.resources | to_entries[]
+             | select(.value.resourceType=="AWS::Lambda::Function")
+             | .value.properties.Environment.Variables' | head -1)
+RB_STATE_PW=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD // empty')
+case "${RB_STATE_PW}" in
+  '{{resolve:secretsmanager:'*) echo "    OK: post-rollback state kept the SECRET_PASSWORD expression" ;;
+  *) echo "FAIL: post-rollback state SECRET_PASSWORD is NOT the {{resolve:...}} expression: $(mask "${RB_STATE_PW}")" >&2; exit 1 ;;
+esac
+# Scope the plaintext-leak grep to the CONSUMER Lambda's env, NOT the whole
+# state — same rationale as Guard 5 above: the DynRefSecret resource's OWN
+# SecretString legitimately holds the fixture's hardcoded password, which is out
+# of scope for the dynamic-reference (consumer-side) disclosure this fix targets.
+if printf '%s' "${RB_LAMBDA_ENV}" | grep -qF "${EXPECTED_PASSWORD}"; then
+  echo "FAIL: post-rollback the Lambda's persisted env leaked the resolved secret plaintext" >&2
+  exit 1
+fi
+echo "    OK: post-rollback Lambda state carries no resolved plaintext"
+
 # --- Phase 2: removal-reset redeploy (issue #1160 secretsmanager batch) ---
 echo "==> Phase 2: re-deploy dropping Description + KmsKeyId (removal reset)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \

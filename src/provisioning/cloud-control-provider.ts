@@ -469,8 +469,19 @@ export class CloudControlProvider implements ResourceProvider {
         }
       }
 
+      // Log the patch OPERATIONS + PATHS only, never the values (GHSA fix): a
+      // patch value can be a resolved secret (a Cloud-Control-routed
+      // `{{resolve:secretsmanager:...}}` property, e.g. Cognito
+      // `ProviderDetails.client_secret`), and this provider has no access to the
+      // resolver's recorded-secret map to mask it. Paths are enough to debug
+      // patch generation; the full document still goes to AWS below.
       this.logger.debug(
-        `Generated ${patch.length} patch operations for ${logicalId}: ${JSON.stringify(patch)}`
+        `Generated ${patch.length} patch operations for ${logicalId}: ${JSON.stringify(
+          patch.map((op) => {
+            const anyOp = op as { op?: unknown; path?: unknown };
+            return { op: anyOp.op, path: anyOp.path };
+          })
+        )}`
       );
 
       // Start resource update

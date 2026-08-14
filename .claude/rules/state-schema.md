@@ -256,3 +256,15 @@ cdkd (forward-compat guard, mirrors the state-schema handling). Types live in
 `src/types/rollback-journal.ts`; the replay executor in
 `src/deployment/rollback-executor.ts` (shared with the engine's in-process
 automatic rollback).
+
+**Secret redaction in the journal (GHSA fix).** The persisted operations carry
+`properties` / `attemptedProperties` / `previousState`, which the engine runs
+through the SAME `{{resolve:secretsmanager:...}}` redaction as `state.json`
+before writing — so the journal never holds resolved secret plaintext either.
+The replay executor therefore RE-RESOLVES those expressions to the concrete
+secret before calling `provider.update()` / `create()` (a rollback replaying the
+literal `{{resolve:...}}` token would corrupt the resource), and re-redacts the
+rebuilt state record so the expression stays in state. So
+`attemptedProperties` above is "intrinsic-resolved EXCEPT secret dynamic
+references, which are the redacted expression" — resolved on replay, not
+persisted resolved.

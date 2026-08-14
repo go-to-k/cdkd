@@ -28,6 +28,7 @@ import {
 } from '../utils/s3-endpoints.js';
 import { IntrinsicResolutionRefusalError } from '../utils/error-handler.js';
 import { markNonRetryable } from './retryable-errors.js';
+import { maskSecretsInText, type RecordedSecretValues } from './secret-redaction.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState, StateImportEntry, StateOutputReadEntry } from '../types/state.js';
 import { S3StateBackend } from '../state/s3-state-backend.js';
@@ -689,6 +690,18 @@ export interface ResolverContext {
    */
   recordedOutputReads?: StateOutputReadEntry[];
   /**
+   * Bag for the resolver to push every resolved SECRET dynamic reference into,
+   * keyed by the resolved plaintext VALUE with the original `{{resolve:...}}`
+   * expression as the payload (GHSA fix). The deploy engine reads this after
+   * resolution to (a) redact the plaintext out of the bag it PERSISTS to state
+   * — replacing each secret value with its unresolved expression, CloudFormation
+   * semantics — and (b) mask the value out of log / error output. Only
+   * `secretsmanager` (and any future `ssm-secure`) references are recorded;
+   * plain `ssm` is public config and is deliberately NOT treated as a secret.
+   * See `src/deployment/secret-redaction.ts`.
+   */
+  recordedSecretValues?: RecordedSecretValues;
+  /**
    * Internal hook used while evaluating the template `Conditions` section.
    * A CFn Condition can reference ANOTHER named condition via
    * `{Condition: OtherName}` inside `Fn::And` / `Fn::Or` / `Fn::Not`
@@ -715,6 +728,19 @@ export interface ResolverContext {
    * this unset, keeping the warn as a genuine error signal.
    */
   bestEffort?: boolean;
+  /**
+   * When true, `{{resolve:...}}` dynamic references are left UNRESOLVED (the
+   * expression string is returned verbatim, no AWS `GetSecretValue` /
+   * `GetParameter` call). Set by the diff / no-op comparison paths (GHSA fix):
+   * cdkd now persists the unresolved expression to state (CloudFormation
+   * semantics — the secret value never lands in a persisted artifact), so a
+   * comparison must keep the desired side as its expression too, otherwise a
+   * resolved-plaintext-vs-stored-expression compare reports a spurious change on
+   * every run and `cdkd diff` would also make a live secret-fetch and print the
+   * value. A changed EXPRESSION still shows as a diff; a rotated secret behind an
+   * unchanged expression is a no-op, exactly as under CloudFormation.
+   */
+  skipDynamicReferences?: boolean;
 }
 
 /**
@@ -1398,7 +1424,11 @@ export class IntrinsicFunctionResolver {
     // Primitives: return as-is (but check strings for dynamic references)
     if (typeof value !== 'object' || value === null) {
       if (typeof value === 'string' && value.includes('{{resolve:')) {
-        return await this.resolveDynamicReferences(value);
+        // `skipDynamicReferences` leaves SECRET references unresolved (handled
+        // per-reference inside resolveDynamicReferences) but still resolves a
+        // plain `ssm` reference — plain ssm is public config, stored RESOLVED in
+        // state, so the diff must resolve it too to compare like-for-like.
+        return await this.resolveDynamicReferences(value, context);
       }
       return value;
     }
@@ -2715,11 +2745,12 @@ export class IntrinsicFunctionResolver {
     );
 
     let result = resolvedValues.join(delimiter);
-    // Resolve any dynamic references in the joined result
+    // Resolve any dynamic references in the joined result (secret refs are
+    // left unresolved per-reference when skipDynamicReferences is set).
     if (result.includes('{{resolve:')) {
-      result = await this.resolveDynamicReferences(result);
+      result = await this.resolveDynamicReferences(result, context);
     }
-    this.logger.debug(`Resolved Fn::Join: ${result}`);
+    this.logger.debug(`Resolved Fn::Join: ${this.maskSecretsForLog(result, context)}`);
     return result;
   }
 
@@ -2854,11 +2885,12 @@ export class IntrinsicFunctionResolver {
       return entry ? entry.replacement : whole;
     });
 
-    // Resolve any dynamic references in the substituted result
+    // Resolve any dynamic references in the substituted result (secret refs are
+    // left unresolved per-reference when skipDynamicReferences is set).
     if (result.includes('{{resolve:')) {
-      result = await this.resolveDynamicReferences(result);
+      result = await this.resolveDynamicReferences(result, context);
     }
-    this.logger.debug(`Resolved Fn::Sub: ${result}`);
+    this.logger.debug(`Resolved Fn::Sub: ${this.maskSecretsForLog(result, context)}`);
     return result;
   }
 
@@ -2889,7 +2921,9 @@ export class IntrinsicFunctionResolver {
     }
 
     const result: unknown = resolvedList[index];
-    this.logger.debug(`Resolved Fn::Select: index ${index} -> ${JSON.stringify(result)}`);
+    this.logger.debug(
+      `Resolved Fn::Select: index ${index} -> ${this.maskSecretsForLog(JSON.stringify(result), context)}`
+    );
     return result;
   }
 
@@ -3097,7 +3131,9 @@ export class IntrinsicFunctionResolver {
     }
 
     const result = resolvedValue.split(delimiter);
-    this.logger.debug(`Resolved Fn::Split: split by "${delimiter}" -> ${JSON.stringify(result)}`);
+    this.logger.debug(
+      `Resolved Fn::Split: split by "${delimiter}" -> ${this.maskSecretsForLog(JSON.stringify(result), context)}`
+    );
     return result;
   }
 
@@ -4003,7 +4039,9 @@ export class IntrinsicFunctionResolver {
     }
 
     const result = Buffer.from(resolvedValue).toString('base64');
-    this.logger.debug(`Resolved Fn::Base64: ${resolvedValue} -> ${result}`);
+    this.logger.debug(
+      `Resolved Fn::Base64: ${this.maskSecretsForLog(resolvedValue, context)} -> ${this.maskSecretsForLog(result, context)}`
+    );
     return result;
   }
 
@@ -4150,7 +4188,17 @@ export class IntrinsicFunctionResolver {
    *
    * Results are cached to avoid repeated API calls.
    */
-  async resolveDynamicReferences(value: string): Promise<string> {
+  /**
+   * Mask any resolved secret value out of a string bound for a log line, using
+   * the secrets recorded on the resolution pass (GHSA fix). No-op when the pass
+   * recorded no secrets.
+   */
+  private maskSecretsForLog(text: string, context?: ResolverContext): string {
+    const secrets = context?.recordedSecretValues;
+    return secrets ? maskSecretsInText(text, secrets) : text;
+  }
+
+  async resolveDynamicReferences(value: string, context?: ResolverContext): Promise<string> {
     // Match all {{resolve:...}} patterns
     const pattern = /\{\{resolve:([^}]+)\}\}/g;
     let result = value;
@@ -4163,14 +4211,34 @@ export class IntrinsicFunctionResolver {
     }
 
     for (const { fullMatch, inner } of matches) {
+      const service = inner.split(':')[0];
+      // A `secretsmanager` (and any future `ssm-secure`) reference resolves to a
+      // real secret. Record its plaintext -> expression mapping so the deploy
+      // engine can keep the UNRESOLVED expression in persisted state and mask the
+      // value out of logs (GHSA fix). Plain `ssm` is public config, never
+      // recorded. Recorded on the cache-hit path too, so a second reference to
+      // the same secret in the same pass is still redacted.
+      const isSecret = service === 'secretsmanager';
+
+      // Diff / no-op comparison path: leave SECRET references UNRESOLVED (the
+      // expression is what state stores, so comparing keeps like-for-like and
+      // makes no live GetSecretValue). Plain `ssm` still resolves — it is public
+      // config stored resolved in state. (GHSA fix.)
+      if (isSecret && context?.skipDynamicReferences) {
+        continue;
+      }
+
       // Check cache first
       if (fullMatch in cachedDynamicReferences) {
-        result = result.replace(fullMatch, cachedDynamicReferences[fullMatch]!);
+        const cached = cachedDynamicReferences[fullMatch]!;
+        // `cached` truthiness excludes the empty string: an empty secret is not
+        // a usable redaction needle (it would match every empty leaf).
+        if (isSecret && cached) context?.recordedSecretValues?.set(cached, fullMatch);
+        result = result.replace(fullMatch, cached);
         continue;
       }
 
       const parts = inner.split(':');
-      const service = parts[0];
 
       let resolved: string;
 
@@ -4184,6 +4252,7 @@ export class IntrinsicFunctionResolver {
       }
 
       cachedDynamicReferences[fullMatch] = resolved;
+      if (isSecret && resolved) context?.recordedSecretValues?.set(resolved, fullMatch);
       result = result.replace(fullMatch, resolved);
     }
 
@@ -4465,6 +4534,13 @@ export class IntrinsicFunctionResolver {
       );
     }
 
+    // NOTE: a SecureString parameter resolved via the plain `{{resolve:ssm:...}}`
+    // form (WithDecryption: true) returns plaintext and is NOT yet redacted —
+    // it is the same leak class as secretsmanager but out of the reported GHSA
+    // scope, and redacting it correctly needs the diff path to skip it too
+    // (which requires knowing the parameter type without leaking the fetched
+    // value). Tracked as follow-up issue #1901. Plain String / StringList
+    // stays resolved.
     return paramValue;
   }
 }

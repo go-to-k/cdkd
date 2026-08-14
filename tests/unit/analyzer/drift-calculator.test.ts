@@ -71,6 +71,29 @@ describe('calculateResourceDrift', () => {
     expect(calculateResourceDrift({}, { Anything: 'goes' })).toEqual([]);
   });
 
+  it('skips a state leaf holding an unresolved dynamic reference (GHSA fix)', () => {
+    // State stores the {{resolve:...}} expression; AWS returns the resolved
+    // plaintext (or nothing). Comparing would be permanent phantom drift.
+    const state = {
+      ProviderDetails: { client_secret: '{{resolve:secretsmanager:oidc:SecretString:cs::}}' },
+    };
+    const aws = { ProviderDetails: { client_secret: 'the-real-plaintext-secret' } };
+    expect(calculateResourceDrift(state, aws)).toEqual([]);
+  });
+
+  it('still detects drift on a NON-secret sibling of a dynamic reference', () => {
+    const state = {
+      ProviderDetails: {
+        client_secret: '{{resolve:secretsmanager:oidc:SecretString:cs::}}',
+        client_id: 'id-v1',
+      },
+    };
+    const aws = { ProviderDetails: { client_secret: 'plaintext', client_id: 'id-v2' } };
+    expect(calculateResourceDrift(state, aws)).toEqual([
+      { path: 'ProviderDetails.client_id', stateValue: 'id-v1', awsValue: 'id-v2' },
+    ]);
+  });
+
   it('treats null vs missing as drift when state declares null', () => {
     const state = { LogConfiguration: null };
     const aws = {};
