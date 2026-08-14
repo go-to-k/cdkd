@@ -19,6 +19,7 @@ import {
   looksLikeCdkdGeneratedName,
 } from '../provisioning/resource-name.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
+import { redactSecretsForState } from './secret-redaction.js';
 import { DagExecutor } from './dag-executor.js';
 import type {
   CloudFormationTemplate,
@@ -617,6 +618,15 @@ export class DeployEngine {
    * for the weak-reference `Fn::GetStackOutput` intrinsic.
    */
   private recordedOutputReads: StateOutputReadEntry[] = [];
+  /**
+   * Per-deploy-session map of resolved SECRET dynamic-reference values
+   * (plaintext -> `{{resolve:...}}` expression) the resolver records (GHSA fix).
+   * Accumulated across every resource so the async observed-property capture —
+   * which drains after the resolver context is gone — can still redact an
+   * AWS-readback secret (e.g. Cognito `client_secret`) out of what it persists.
+   * Reset at the start of each `deploy()` call. See `secret-redaction.ts`.
+   */
+  private recordedSecretValues = new Map<string, string>();
 
   /**
    * Per-logical-id snapshot of the intrinsic-RESOLVED desired properties
@@ -681,6 +691,7 @@ export class DeployEngine {
     // `state.outputReads`.
     this.recordedImports = [];
     this.recordedOutputReads = [];
+    this.recordedSecretValues = new Map();
     // Per-deploy-run counter: the resolver instance is engine-scoped and an
     // engine can be reused across deploys, so reset here (not in the
     // resolver constructor) to keep the deploy-summary count per run.
@@ -719,7 +730,51 @@ export class DeployEngine {
       ...(this.exportIndexStore && { exportIndex: this.exportIndexStore }),
       recordedImports: this.recordedImports,
       recordedOutputReads: this.recordedOutputReads,
+      // The resolver records each resolved secret (plaintext -> `{{resolve:...}}`
+      // expression) into the session-wide map so persisted bags can be redacted
+      // back to their expression (GHSA fix). Session-wide (not per-context) so
+      // the async observed-capture drain can still see the secrets.
+      recordedSecretValues: this.recordedSecretValues,
     };
+  }
+
+  /**
+   * Redact resolved secret plaintext out of a bag about to be PERSISTED to
+   * state, replacing each secret value with the unresolved `{{resolve:...}}`
+   * expression it came from (GHSA fix; see `secret-redaction.ts`). No-op when
+   * the deploy recorded no secrets. The bag sent to the AWS API is the
+   * un-redacted resolved bag; only the persisted copy is rewritten.
+   */
+  /**
+   * Bag-level companion of {@link redactStateForPersist} (GHSA fix): redact
+   * resolved secret plaintext out of a single properties bag, used by the
+   * UPDATE no-op re-check so a resolved-plaintext bag is compared against the
+   * expression-bearing stored bag on equal footing.
+   */
+  private redactStateForPersistProps(props: Record<string, unknown>): Record<string, unknown> {
+    if (this.recordedSecretValues.size === 0) return props;
+    return redactSecretsForState(props, this.recordedSecretValues);
+  }
+
+  private redactStateForPersist(state: StackState): StackState {
+    if (this.recordedSecretValues.size === 0) return state;
+    const resources: Record<string, ResourceState> = {};
+    for (const [logicalId, record] of Object.entries(state.resources)) {
+      resources[logicalId] = {
+        ...record,
+        properties: redactSecretsForState(record.properties, this.recordedSecretValues),
+        ...(record.attributes && {
+          attributes: redactSecretsForState(record.attributes, this.recordedSecretValues),
+        }),
+        ...(record.observedProperties && {
+          observedProperties: redactSecretsForState(
+            record.observedProperties,
+            this.recordedSecretValues
+          ),
+        }),
+      };
+    }
+    return { ...state, resources };
   }
 
   /**
@@ -728,12 +783,21 @@ export class DeployEngine {
    * constructed with `options.parentStackInfo` (= it's deploying a
    * nested-stack child). Returns the state unchanged for top-level
    * deploys so the three v6 fields stay absent from non-child state files.
+   *
+   * ALSO the single choke point where resolved SECRET plaintext is redacted out
+   * of the persisted state (GHSA fix): every `stateBackend.saveState` call in
+   * this engine wraps its state through here, so redacting `resources` once here
+   * covers `properties` / `attributes` / `observedProperties` across every
+   * create / update / replacement / rollback / observed-capture path uniformly —
+   * including the async observed-capture drain that runs after the resolver
+   * context is gone (which is why the secret map is session-wide).
    */
   private withParentInfo(state: StackState): StackState {
-    if (!this.options.parentStackInfo) return state;
+    const redacted = this.redactStateForPersist(state);
+    if (!this.options.parentStackInfo) return redacted;
     const { parentStack, parentLogicalId, parentRegion } = this.options.parentStackInfo;
     return {
-      ...state,
+      ...redacted,
       parentStack,
       parentLogicalId,
       parentRegion,
@@ -1269,6 +1333,12 @@ export class DeployEngine {
       // resolver contexts do NOT set this — there, an unresolvable Ref is
       // a genuine error signal.
       diffResolverContext.bestEffort = true;
+      // Leave `{{resolve:...}}` dynamic references UNRESOLVED for the diff (GHSA
+      // fix): state now stores the unresolved expression, so comparing the
+      // desired side as its expression too avoids a spurious perpetual UPDATE on
+      // every deploy of a secret-bearing resource (and avoids a live
+      // `GetSecretValue` at plan time). A changed expression still diffs.
+      diffResolverContext.skipDynamicReferences = true;
       const diffResolveFn = (value: unknown) => this.resolver.resolve(value, diffResolverContext);
       const changes = await this.diffCalculator.calculateDiff(
         currentState,
@@ -2949,8 +3019,15 @@ export class DeployEngine {
         this.attemptedResolvedProps.set(logicalId, resolvedProps);
 
         // Re-check diff after resolving intrinsic functions
-        // DiffCalculator compares unresolved template vs resolved state, which may produce false positives
-        if (JSON.stringify(resolvedProps) === JSON.stringify(currentProps)) {
+        // DiffCalculator compares unresolved template vs resolved state, which may produce false positives.
+        // Compare the REDACTED resolved bag (secret plaintext -> `{{resolve:...}}`
+        // expression) against the stored side, which also holds the expression
+        // (GHSA fix): a rotated secret behind an unchanged reference is a no-op,
+        // matching CloudFormation, rather than a spurious UPDATE every deploy.
+        if (
+          JSON.stringify(this.redactStateForPersistProps(resolvedProps)) ===
+          JSON.stringify(currentProps)
+        ) {
           // Attribute-only change (schema v5+): `DeletionPolicy` /
           // `UpdateReplacePolicy` may have flipped without any AWS-side
           // property change. There is no per-resource AWS API for those —
