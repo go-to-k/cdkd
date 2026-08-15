@@ -1,3 +1,10 @@
+## [0.283.25](https://github.com/go-to-k/cdkd/compare/v0.283.24...v0.283.25) (2026-08-15)
+
+
+### Bug Fixes
+
+* **state:** keep each colliding secret reference on its own expression at every state writer ([#1918](https://github.com/go-to-k/cdkd/issues/1918)) ([08febb1](https://github.com/go-to-k/cdkd/commit/08febb17ac279809b50b17c52aa20eba08d5039a))
+
 ## [0.283.24](https://github.com/go-to-k/cdkd/compare/v0.283.23...v0.283.24) (2026-08-14)
 
 
