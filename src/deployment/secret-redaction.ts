@@ -314,31 +314,60 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 const SKELETON_WILDCARD = '[^}]*';
 
 /**
- * Concatenate skeleton segments, dropping an empty one and COLLAPSING a run of
- * consecutive wildcards into one.
+ * More wildcards than this and the skeleton is REFUSED outright.
  *
- * The collapse is a correctness fix, not tidiness. `[^}]*[^}]*` is semantically
+ * The bound is what actually closes the backtracking class; the collapse below
+ * only closes one ARRANGEMENT of it. A skeleton with N wildcards makes a
+ * FAILING match exponential in N — and failing is the common case, since the
+ * pattern is tried against every recorded expression that is NOT this leaf's.
+ * The collapse merges ADJACENT wildcards, so `${a}${b}${c}` becomes one; but
+ * wildcards separated by a literal cannot merge and backtrack identically.
+ * Measured against a failing candidate: `Fn::Sub '${a}x${b}x…'` at 6 wildcards
+ * 17.7s and at 8 did not finish in two minutes, and a realistic
+ * `Fn::Join['-', 9 x {Ref}]` against a hyphen-rich secret ARN took 855ms per
+ * candidate. So the producer is the wildcard COUNT, not adjacency.
+ *
+ * Refusing costs essentially nothing. The dominant CDK shape carries exactly
+ * ONE wildcard (the secret ARN's `{Ref}`); two or three covers an account plus
+ * a region. Past that the literal text left is too thin to identify a candidate
+ * uniquely anyway, so the skeleton would almost always hit the two-or-more
+ * match refusal one step later — and every refusal degrades to the value scan,
+ * i.e. to the pre-#1916 behavior.
+ */
+const MAX_SKELETON_WILDCARDS = 3;
+
+/**
+ * Concatenate skeleton segments, dropping an empty one and COLLAPSING a run of
+ * consecutive wildcards into one — then REFUSE (return `undefined`) when more
+ * than {@link MAX_SKELETON_WILDCARDS} survive.
+ *
+ * The collapse is a correctness fix, not tidiness: `[^}]*[^}]*` is semantically
  * identical to `[^}]*`, but the engine has to try every split of the input
- * between them, so N adjacent wildcards make a FAILING match exponential — and
- * failing is the common case, since the pattern is tried against every recorded
- * expression that is not this leaf's. Measured on a ~120-char candidate:
- * 4 wildcards 39ms, 5 wildcards ~1s, 6 wildcards 20s, 8 wildcards did not
- * finish in two minutes. Two shapes produce them and both are legal CFn that
- * CDK can emit: an `Fn::Join` with an EMPTY delimiter and consecutive
- * non-string parts, and an `Fn::Sub` with adjacent `${a}${b}` variables. This
- * runs on the state-persist choke point, i.e. AFTER the AWS mutations and
+ * between them. Measured on a ~120-char candidate, before the collapse:
+ * 4 adjacent wildcards 39ms, 5 ~1s, 6 20s, 8 did not finish in two minutes. Two
+ * legal CFn shapes CDK can emit produce ADJACENT ones — an `Fn::Join` with an
+ * EMPTY delimiter and consecutive non-string parts, and an `Fn::Sub` with
+ * adjacent `${a}${b}` variables — and the collapse takes both to a single
+ * wildcard. It does NOT close the class, which is why the cap exists beside it.
+ *
+ * This runs on the state-persist choke point, i.e. AFTER the AWS mutations and
  * BEFORE state is written, so a hang there strands real resources.
  *
  * An empty segment is dropped rather than appended because an empty DELIMITER
  * would otherwise sit between two wildcards and defeat the collapse. A
  * non-empty literal between two wildcards is what anchors the match, and those
- * are left exactly as they are.
+ * are left exactly as they are — and counted.
  */
-function joinSkeletonSegments(segments: readonly string[]): string {
+function joinSkeletonSegments(segments: readonly string[]): string | undefined {
   const out: string[] = [];
+  let wildcards = 0;
   for (const segment of segments) {
     if (segment === '') continue;
-    if (segment === SKELETON_WILDCARD && out[out.length - 1] === SKELETON_WILDCARD) continue;
+    if (segment === SKELETON_WILDCARD) {
+      if (out[out.length - 1] === SKELETON_WILDCARD) continue;
+      wildcards += 1;
+      if (wildcards > MAX_SKELETON_WILDCARDS) return undefined;
+    }
     out.push(segment);
   }
   return out.join('');
@@ -394,7 +423,8 @@ export function intrinsicSkeletonPattern(source: Record<string, unknown>): RegEx
       if (index > 0) segments.push(separator);
       segments.push(typeof part === 'string' ? escapeRegExp(part) : SKELETON_WILDCARD);
     });
-    return new RegExp(`^${joinSkeletonSegments(segments)}$`);
+    const body = joinSkeletonSegments(segments);
+    return body === undefined ? undefined : new RegExp(`^${body}$`);
   }
 
   if (key === 'Fn::Sub') {
@@ -419,7 +449,8 @@ export function intrinsicSkeletonPattern(source: Record<string, unknown>): RegEx
       cursor = hit.index + hit[0].length;
     }
     segments.push(escapeRegExp(template.slice(cursor)));
-    return new RegExp(`^${joinSkeletonSegments(segments)}$`);
+    const body = joinSkeletonSegments(segments);
+    return body === undefined ? undefined : new RegExp(`^${body}$`);
   }
 
   return undefined;
@@ -464,10 +495,17 @@ export function intrinsicSkeletonPattern(source: Record<string, unknown>): RegEx
  * store — which is exactly an `ssm` reference whose `Type` came back
  * unclassifiable (deliberately unpinned per #1901) and which then lost the
  * value collapse. `recordedSecretExpressions` is process-wide, so the winner
- * could in principle come from another resource. Condition 3 refuses any
- * candidate the pass can SEE resolved to something else, so the survivor is
- * never the wrong answer here; what is left is contrived, and it degrades to a
- * spurious UPDATE rather than to a disclosure.
+ * could in principle come from another resource, and condition 3 cannot refuse
+ * one the pass never recorded.
+ *
+ * **What that costs is a WRONG REFERENCE in state, not merely a noisy diff.**
+ * Persisting another leaf's expression is the pre-#1904 failure exactly:
+ * `resolveReplayProps` RE-RESOLVES the persisted expression against AWS and
+ * hands the result to `provider.update`, so a rollback replays the wrong secret
+ * — immediately, if the two references already resolve to different values. It
+ * is narrow (unclassifiable-`ssm` leaves only) but it is not cosmetic, and an
+ * earlier draft of this paragraph called it "a spurious UPDATE rather than a
+ * disclosure", which understated it.
  *
  * There is deliberately NO {@link isKnownSecretExpression} check here, and the
  * asymmetry with {@link redactByPath}'s plain-string arm is principled rather
@@ -494,11 +532,32 @@ function positionByIntrinsicSkeleton(
   if (!pattern) return undefined;
 
   // Condition 3's index, built ONCE rather than re-scanned per candidate. The
-  // map is keyed by plaintext, so this inverts it: an expression the pass
-  // recorded is here against the value it actually resolved to. A collapsed
+  // map is keyed by plaintext, so this walks it the other way: an expression the
+  // pass recorded is here against the value it actually resolved to. A collapsed
   // LOSER is absent, which is the case this function exists to serve.
-  const plaintextOf = new Map<string, string>();
-  for (const [plaintext, expression] of secrets) plaintextOf.set(expression, plaintext);
+  //
+  // It is NOT an inversion, because `secrets` need not be injective — one
+  // expression CAN appear under two plaintexts. Taking the last such plaintext
+  // would WEAKEN condition 3 (the scan it replaced refused when ANY entry
+  // disagreed with `bag`), so a conflicting expression is poisoned to a sentinel
+  // no bag can equal, which refuses it exactly as the scan did.
+  //
+  // Deliberately NOT unit-fenced, because it CANNOT be: the poison is reachable
+  // (a caller-supplied non-injective map takes the branch) but unobservable
+  // through this module's API. Whenever an expression `E` maps to `bag` at all,
+  // `secrets.get(bag)` is `E` — so accepting `E` here and refusing it into the
+  // value scan both yield `E`, and the two spellings agree on every input. It is
+  // kept anyway so the function's stated contract is TRUE rather than
+  // approximately true, and because the divergence would be in the PERMISSIVE
+  // direction on the one fence against a bag/source misalignment. Unreachable
+  // from the resolver regardless: `cachedDynamicReferences` is process-wide, so
+  // one expression yields one plaintext per run.
+  const CONFLICTING = Symbol('conflicting plaintext');
+  const plaintextOf = new Map<string, string | symbol>();
+  for (const [plaintext, expression] of secrets) {
+    const seen = plaintextOf.get(expression);
+    plaintextOf.set(expression, seen === undefined || seen === plaintext ? plaintext : CONFLICTING);
+  }
 
   let matched: string | undefined;
   for (const candidate of new Set([...secretExpressions, ...recordedSecretExpressions])) {

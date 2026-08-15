@@ -72,6 +72,11 @@ function joinSource(tail: string): Record<string, unknown> {
 const SOURCE_PLAIN = joinSource(':SecretString:password}}');
 const SOURCE_STAGED = joinSource(':SecretString:password:AWSCURRENT}}');
 
+/** How many wildcards survived the collapse, independent of literal escaping. */
+function countWildcards(pattern: RegExp): number {
+  return (pattern.source.match(/\[\^\}\]\*/g) ?? []).length;
+}
+
 describe('secret-redaction - intrinsic (Fn::Join / Fn::Sub) source leaf (issue #1916)', () => {
   beforeEach(() => clearRecordedSecretExpressions());
   afterEach(() => clearRecordedSecretExpressions());
@@ -285,18 +290,65 @@ describe('secret-redaction - intrinsic (Fn::Join / Fn::Sub) source leaf (issue #
     ],
   ])('collapses adjacent wildcards for %s', (_label, source) => {
     const pattern = intrinsicSkeletonPattern(source)!;
-    expect(pattern.source).toBe('^\\{\\{resolve:secretsmanager:[^}]*:SecretString:pw\\}\\}$');
+    expect(countWildcards(pattern)).toBe(1);
+    // With the cap in place, dropping the collapse turns these eight into a
+    // REFUSAL rather than an exponential match — so what the collapse buys now
+    // is COVERAGE: an adjacent run is one unknown span and must stay
+    // positionable, not be refused for looking like eight.
+    expect(pattern.test('{{resolve:secretsmanager:anything-here:SecretString:pw}}')).toBe(true);
   });
 
   // The contrast that makes the collapse a COLLAPSE rather than a blanket
   // "one wildcard per pattern": a NON-empty delimiter puts a literal between
   // the parts, that literal is what anchors the match, and both wildcards must
   // survive or the skeleton loses the specificity it exists for.
+  //
+  // Asserted as a COUNT rather than the full source string. The exact source
+  // depends on what `escapeRegExp` happens to escape — widening that set to
+  // cover `-` would red this case while changing nothing that matters, and a
+  // fence that breaks on an innocuous refactor is its own defect. The count
+  // still reds every collapse mutation.
   it('keeps wildcards that a literal separates', () => {
     const pattern = intrinsicSkeletonPattern({
-      'Fn::Join': ['-', ['{{resolve:secretsmanager:', { Ref: 'A' }, { Ref: 'B' }, ':SecretString:pw}}']],
+      'Fn::Join': [
+        '-',
+        ['{{resolve:secretsmanager:', { Ref: 'A' }, { Ref: 'B' }, ':SecretString:pw}}'],
+      ],
     })!;
-    expect(pattern.source).toBe('^\\{\\{resolve:secretsmanager:-[^}]*-[^}]*-:SecretString:pw\\}\\}$');
+    expect(countWildcards(pattern)).toBe(2);
+  });
+
+  // The CAP is what actually closes the backtracking class; the collapse closes
+  // only the ADJACENT arrangement of it. Wildcards separated by a literal
+  // cannot merge and backtrack identically — measured against a failing
+  // candidate, `Fn::Sub '${a}x${b}x…'` took 17.7s at six and did not finish in
+  // two minutes at eight, and a realistic `Fn::Join['-', 9 x {Ref}]` against a
+  // hyphen-rich secret ARN cost 855ms per candidate. Refusing degrades to the
+  // value scan, so the cap costs nothing a real CDK shape needs: the dominant
+  // one carries exactly ONE wildcard.
+  it.each([
+    [
+      'Fn::Join with literal-separated intrinsic parts',
+      {
+        'Fn::Join': [
+          '-',
+          ['{{resolve:secretsmanager:', { Ref: 'A' }, { Ref: 'B' }, { Ref: 'C' }, { Ref: 'D' }],
+        ],
+      },
+    ],
+    [
+      'Fn::Sub with literal-separated variables',
+      { 'Fn::Sub': '{{resolve:secretsmanager:${A}x${B}x${C}x${D}:SecretString:pw}}' },
+    ],
+  ])('refuses a skeleton carrying too many wildcards: %s', (_label, source) => {
+    expect(intrinsicSkeletonPattern(source)).toBeUndefined();
+  });
+
+  it('still builds a skeleton at the wildcard cap', () => {
+    const pattern = intrinsicSkeletonPattern({
+      'Fn::Sub': '{{resolve:secretsmanager:${A}x${B}x${C}:SecretString:pw}}',
+    })!;
+    expect(countWildcards(pattern)).toBe(3);
   });
 
   it('handles the 2-arg Fn::Sub [template, vars] form', () => {
@@ -323,9 +375,16 @@ describe('secret-redaction - intrinsic (Fn::Join / Fn::Sub) source leaf (issue #
   // through. A first cut used shapes whose skeleton matched nothing anyway, so
   // every one of these guards could be deleted with the suite still green: the
   // cases fenced their own labels and nothing else (measured). `MATCHING_PARTS`
-  // is what gives them teeth — on its own it positions `EXPR_PLAIN` uniquely,
-  // so any source that reaches the matcher still carrying it produces a
-  // different string from the fallback.
+  // is what gives most of them teeth — on its own it positions `EXPR_PLAIN`
+  // uniquely, so a source that reaches the matcher still carrying it produces a
+  // different string from the fallback. Three rows build their own shape
+  // instead and get their teeth elsewhere, so do not "normalize" them onto
+  // `MATCHING_PARTS`: the non-string-delimiter row relies on `secret-1` being a
+  // PREFIX of `secret-111122223333` (so the alternative implementation the
+  // production comment names — wildcarding the delimiter — matches and the
+  // answer flips), the non-array-parts row makes the parts string BE a recorded
+  // expression, and the non-string-`Fn::Sub`-template row is fenced by the
+  // THROW the unguarded code takes.
   //
   // One row is the exception and is left in deliberately: the unknown-intrinsic
   // case pins the function's DEFAULT (fall off the end, return `undefined`),
@@ -350,15 +409,12 @@ describe('secret-redaction - intrinsic (Fn::Join / Fn::Sub) source leaf (issue #
         ],
       },
     ],
-    [
-      'an Fn::Join whose parts are not an array',
-      {
-        'Fn::Join': [
-          '',
-          '{{resolve:secretsmanager:cdkd-test-dynref-secret-1:SecretString:password}}',
-        ],
-      },
-    ],
+    // The parts string IS the recorded expression, so relaxing the guard to
+    // `[parts]` yields a skeleton that matches it exactly and the answer flips.
+    // A merely-plausible string here is refused one step later for matching
+    // nothing, which is the second-reason trap this whole block was rebuilt to
+    // avoid — measured: the earlier spelling stayed green with the guard gone.
+    ['an Fn::Join whose parts are not an array', { 'Fn::Join': ['', EXPR_PLAIN] }],
     ['an Fn::Sub whose template is not a string', { 'Fn::Sub': [{ Ref: 'T' }, {}] }],
     ['an unknown intrinsic key', { 'Fn::Select': [0, MATCHING_PARTS] }],
   ])('refuses %s', (_label, source) => {
