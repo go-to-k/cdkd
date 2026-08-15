@@ -570,6 +570,30 @@ describe('secret-redaction - intrinsic (Fn::Join / Fn::Sub) source leaf (issue #
     expect(redacted['P']).toBe(EXPR_STAGED);
   });
 
+  // The case above pins the ABORT, but it discriminates only because the long
+  // candidate does not match — so it does not pin WHY the abort is whole-pass
+  // rather than per-candidate. This one does. The long candidate MATCHES here,
+  // so skipping it would leave `SHORT` as the sole survivor of a set that
+  // really had two members, and condition 2's "exactly one" would be decided
+  // over a filtered list — a speed bound silently becoming a weaker fence.
+  it('refuses rather than SKIPPING a long candidate that would have matched', () => {
+    const LONG = `{{resolve:secretsmanager:${'y'.repeat(520)}:SecretString:password}}`;
+    const SHORT = '{{resolve:secretsmanager:short-secret:SecretString:password}}';
+    // Deliberately does NOT match the skeleton, so it can only be reached
+    // through the value scan — which is what makes the two forms differ.
+    const SURVIVOR = '{{resolve:secretsmanager:unrelated:SecretString:other}}';
+    recordSecretExpression(LONG);
+    recordSecretExpression(SHORT);
+
+    const redacted = redactSecretsForState({ P: SHARED }, new Map([[SHARED, SURVIVOR]]), {
+      P: {
+        'Fn::Join': ['', ['{{resolve:secretsmanager:', { Ref: 'Name' }, ':SecretString:password}}']],
+      },
+    }) as Record<string, string>;
+
+    expect(redacted['P']).toBe(SURVIVOR);
+  });
+
   // The #1901 direction that would be a real regression: a PUBLIC ssm reference
   // must stay RESOLVED in state, or the diff compares a resolved desired side
   // against a stored expression forever.
