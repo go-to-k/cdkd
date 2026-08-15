@@ -513,6 +513,63 @@ describe('secret-redaction - intrinsic (Fn::Join / Fn::Sub) source leaf (issue #
     expect(redacted['P']).toBe(EXPR_STAGED);
   });
 
+  // Condition 3's CONFLICT arm, which an earlier comment claimed could not be
+  // fenced. It can: `EXPR_PLAIN` is recorded here against two different
+  // plaintexts, so the poison refuses it and `EXPR_STAGED` is left as the only
+  // match. Taking the LAST plaintext instead (the spelling this replaced) makes
+  // `EXPR_PLAIN` agree with the bag, so BOTH candidates match, condition 2
+  // refuses, and the value scan answers `EXPR_PLAIN` — a different string.
+  //
+  // The claim that this was unobservable missed exactly that second candidate.
+  // Asserting something cannot be fenced suppresses the attempt to fence it, so
+  // it needs the same evidence a fence does.
+  it('refuses a candidate the pass recorded against MORE THAN ONE plaintext', () => {
+    recordSecretExpression(EXPR_PLAIN);
+    recordSecretExpression(EXPR_STAGED);
+
+    const ambiguous = {
+      'Fn::Join': [
+        '',
+        [
+          '{{resolve:secretsmanager:cdkd-test-dynref-secret-',
+          { Ref: 'AWS::AccountId' },
+          ':SecretString:password',
+          { Ref: 'Stage' },
+          '}}',
+        ],
+      ],
+    };
+
+    const redacted = redactSecretsForState(
+      { P: SHARED },
+      new Map([
+        ['a-different-plaintext', EXPR_PLAIN],
+        [SHARED, EXPR_PLAIN],
+      ]),
+      { P: ambiguous }
+    ) as Record<string, string>;
+
+    expect(redacted['P']).toBe(EXPR_STAGED);
+  });
+
+  // The candidate-length bound. The wildcard cap bounds the exponent; this
+  // bounds the base, because cost at the cap is polynomial in the candidate's
+  // length and that length is template-authored (measured: an adversarial
+  // all-separator 3000-char candidate costs 4.1s AT the cap). The whole pass is
+  // refused rather than the one candidate skipped — skipping would shrink the
+  // set condition 2 counts "exactly one" over, turning a speed bound into a
+  // silent weakening of the fence.
+  it('refuses the pass outright when a recorded candidate is pathologically long', () => {
+    recordSecretExpression(EXPR_PLAIN);
+    recordSecretExpression(`{{resolve:secretsmanager:${'x'.repeat(600)}:SecretString:pw}}`);
+
+    const redacted = redactSecretsForState({ P: SHARED }, new Map([[SHARED, EXPR_STAGED]]), {
+      P: SOURCE_PLAIN,
+    }) as Record<string, string>;
+
+    expect(redacted['P']).toBe(EXPR_STAGED);
+  });
+
   // The #1901 direction that would be a real regression: a PUBLIC ssm reference
   // must stay RESOLVED in state, or the diff compares a resolved desired side
   // against a stored expression forever.

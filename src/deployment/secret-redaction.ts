@@ -327,14 +327,38 @@ const SKELETON_WILDCARD = '[^}]*';
  * `Fn::Join['-', 9 x {Ref}]` against a hyphen-rich secret ARN took 855ms per
  * candidate. So the producer is the wildcard COUNT, not adjacency.
  *
- * Refusing costs essentially nothing. The dominant CDK shape carries exactly
- * ONE wildcard (the secret ARN's `{Ref}`); two or three covers an account plus
- * a region. Past that the literal text left is too thin to identify a candidate
- * uniquely anyway, so the skeleton would almost always hit the two-or-more
- * match refusal one step later — and every refusal degrades to the value scan,
- * i.e. to the pre-#1916 behavior.
+ * What refusing costs is worth stating plainly rather than waving away, because
+ * it is the SAME cost this module's residual note describes: a refused leaf
+ * falls to the value scan, and for a colliding pair that means state holds the
+ * SIBLING's reference, which `resolveReplayProps` re-resolves and applies. A
+ * four-wildcard join carrying substantive literals CAN position uniquely, so
+ * the bound does give something up. It is set where it is because the dominant
+ * CDK shape carries exactly ONE wildcard (the secret ARN's `{Ref}`) and two or
+ * three covers an account plus a region — and because the alternative at the
+ * top of that trade is not "slightly better redaction" but a deploy that hangs
+ * after its AWS mutations.
  */
 const MAX_SKELETON_WILDCARDS = 3;
+
+/**
+ * A candidate longer than this REFUSES the whole positioning pass.
+ *
+ * The wildcard cap bounds the EXPONENT; this bounds the BASE. Cost at the cap
+ * is polynomial in the candidate's length (~cubic, measured: 200 chars 4.9ms,
+ * 1000 chars 192ms, and an adversarial all-separator 3000-char candidate 4.1s),
+ * and candidate length is template-authored — `[^}]*` never crosses a `}`, so
+ * the whole expression is one backtracking run. A real `{{resolve:...}}` is
+ * 100-250 characters even with a full ARN and a JSON key, so this only excludes
+ * the pathological.
+ *
+ * The whole pass is refused rather than that one candidate being SKIPPED, and
+ * the difference is load-bearing: skipping shrinks the candidate set, so a
+ * second match could go unseen and condition 2's "exactly one" would be decided
+ * over a filtered list — turning a bound meant for speed into a silent
+ * weakening of the fence. Refusing degrades to the value scan like every other
+ * refusal here.
+ */
+const MAX_SKELETON_CANDIDATE_LENGTH = 512;
 
 /**
  * Concatenate skeleton segments, dropping an empty one and COLLAPSING a run of
@@ -397,13 +421,17 @@ function joinSkeletonSegments(segments: readonly string[]): string | undefined {
  * template, an object that is not a single-key intrinsic at all), and the
  * caller then falls back to the value scan — i.e. to the pre-#1916 behavior.
  *
- * Exported for its TEST only, and for a reason worth stating: the adjacent-
- * wildcard collapse below cannot be fenced through the public entry point.
- * Catastrophic backtracking is SYNCHRONOUS, so a test that drives it through
- * `redactSecretsForState` does not fail on a timeout — it wedges the vitest
- * worker and the run never ends, which is a worse CI outcome than the defect.
- * Asserting on the returned pattern's `source` is deterministic and needs no
- * timing threshold.
+ * Exported for its TEST only. The reason is now CONVENIENCE rather than
+ * necessity, and the distinction is worth keeping straight: before the wildcard
+ * cap existed, driving the collapse through `redactSecretsForState` did not
+ * fail on a timeout — catastrophic backtracking is SYNCHRONOUS, so it wedged
+ * the vitest worker and the run never ended, which is a worse CI outcome than
+ * the defect and indistinguishable from a slow machine. With the cap, dropping
+ * the collapse turns that same input into a REFUSAL, so the behavior IS
+ * observable through the public entry point. Asserting on the returned
+ * pattern's shape is still the better fence — it names the invariant (how many
+ * unknown spans survived) instead of a downstream consequence — but it is a
+ * choice, not the only option.
  */
 export function intrinsicSkeletonPattern(source: Record<string, unknown>): RegExp | undefined {
   const keys = Object.keys(source);
@@ -542,25 +570,29 @@ function positionByIntrinsicSkeleton(
   // disagreed with `bag`), so a conflicting expression is poisoned to a sentinel
   // no bag can equal, which refuses it exactly as the scan did.
   //
-  // Deliberately NOT unit-fenced, because it CANNOT be: the poison is reachable
-  // (a caller-supplied non-injective map takes the branch) but unobservable
-  // through this module's API. Whenever an expression `E` maps to `bag` at all,
-  // `secrets.get(bag)` is `E` — so accepting `E` here and refusing it into the
-  // value scan both yield `E`, and the two spellings agree on every input. It is
-  // kept anyway so the function's stated contract is TRUE rather than
-  // approximately true, and because the divergence would be in the PERMISSIVE
-  // direction on the one fence against a bag/source misalignment. Unreachable
-  // from the resolver regardless: `cachedDynamicReferences` is process-wide, so
-  // one expression yields one plaintext per run.
+  // The branch is unreachable FROM THE RESOLVER — `cachedDynamicReferences` is
+  // process-wide, so one expression yields one plaintext per run — but it is
+  // reachable through this module's API and it is FENCED, by the "recorded
+  // against MORE THAN ONE plaintext" case. An earlier draft of this comment
+  // claimed the divergence was unobservable, reasoning that `plaintextOf[E] ===
+  // bag` implies `secrets.get(bag) === E` so accepting and falling back agree.
+  // That misses the case where a SECOND candidate also matches: accepting `E`
+  // then makes it two matches, which condition 2 refuses, and the answers
+  // differ. Asserting something cannot be fenced suppresses the attempt, so it
+  // needs the same evidence a fence does.
+  //
+  // `seen === undefined` is the whole test: `RecordedSecretValues` is keyed by
+  // plaintext, so iterating it never yields one plaintext twice and a second
+  // sighting of an expression is always a DIFFERENT plaintext.
   const CONFLICTING = Symbol('conflicting plaintext');
   const plaintextOf = new Map<string, string | symbol>();
   for (const [plaintext, expression] of secrets) {
-    const seen = plaintextOf.get(expression);
-    plaintextOf.set(expression, seen === undefined || seen === plaintext ? plaintext : CONFLICTING);
+    plaintextOf.set(expression, plaintextOf.has(expression) ? CONFLICTING : plaintext);
   }
 
   let matched: string | undefined;
   for (const candidate of new Set([...secretExpressions, ...recordedSecretExpressions])) {
+    if (candidate.length > MAX_SKELETON_CANDIDATE_LENGTH) return undefined;
     if (!pattern.test(candidate)) continue;
     // Condition 3.
     const recordedPlaintext = plaintextOf.get(candidate);
