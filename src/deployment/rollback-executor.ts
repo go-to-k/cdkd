@@ -70,7 +70,12 @@ import {
 } from '../provisioning/final-snapshot.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import { IntrinsicFunctionResolver, type ResolverContext } from './intrinsic-function-resolver.js';
-import { scrubResourceRecord, type RecordedSecretValues } from './secret-redaction.js';
+import {
+  scrubResourceRecord,
+  redactSecretsForState,
+  STATE_DERIVED_RULES,
+  type RecordedSecretValues,
+} from './secret-redaction.js';
 import { withRetry } from './retry.js';
 import {
   isNameCollisionError,
@@ -776,10 +781,53 @@ async function resolveReplayProps(
  * (GHSA fix). The record's `properties` may be the provider's
  * `effectiveProperties`, which can echo the value we just resolved for the
  * provider call — so scrub it with the same per-op secrets map before it is
- * persisted. No-op when the op resolved no secret.
+ * persisted.
+ *
+ * `journaledProps` is the POSITION source (issue #1910): the JOURNALED previous
+ * properties, whose leaves still carry the unresolved `{{resolve:...}}`
+ * expressions this replay resolved FROM. Without it two expressions sharing one
+ * resolved value collapse onto whichever the replay recorded last, so the state
+ * this rollback writes disagrees with the template at one leaf and the next
+ * deploy reports a change that never converges — the same defect the four
+ * deploy-side writers had, arriving here through the replay instead.
+ *
+ * It takes `STATE_DERIVED_RULES`, which is BOTH relaxations. The source is a
+ * persisted record, so it holds no PUBLIC expressions (a `String` ssm reference
+ * is stored resolved) and any `{{resolve:...}}` in it is by construction a
+ * secret — that is `trustAnyExpression`. And the bag WAS produced by resolving
+ * that source (`resolveReplayProps` -> the provider's `effectiveProperties`),
+ * so the two have identical structure and positional array descent is sound —
+ * that is `descendArrays`. Using `STATE_SOURCED_READBACK_RULES` here reads
+ * plausible and is wrong in the quiet direction: it turns array descent off, so
+ * a secret nested in a `Tags[]` / ECS `secrets[]` element would still collapse
+ * on the replay path.
+ *
+ * No-op when the op resolved no secret.
  */
-function redactRollbackRecord(record: ResourceState, secrets: RecordedSecretValues): ResourceState {
-  return secrets.size > 0 ? scrubResourceRecord(record, secrets) : record;
+function redactRollbackRecord(
+  record: ResourceState,
+  secrets: RecordedSecretValues,
+  journaledProps?: Record<string, unknown>
+): ResourceState {
+  if (secrets.size === 0) return record;
+  // Deliberately NOT passed as `sourceProperties`: that parameter means "a
+  // TEMPLATE bag", which suppresses the trust-any-expression relaxation a state
+  // bag is entitled to. Positioning `properties` against the journaled bag is
+  // done here, and `scrubResourceRecord` then handles `attributes` /
+  // `observedProperties` from the already-redacted record as usual.
+  const positioned =
+    journaledProps === undefined
+      ? record
+      : {
+          ...record,
+          properties: redactSecretsForState(
+            record.properties,
+            secrets,
+            journaledProps,
+            STATE_DERIVED_RULES
+          ),
+        };
+  return scrubResourceRecord(positioned, secrets);
 }
 
 async function updateWithRollbackRetry(
@@ -1351,7 +1399,8 @@ async function replaySingle(
             attributes: createResult.attributes ?? {},
             properties: recordedPropertiesAfterReplayCreate(prevRecord, createResult),
           },
-          secrets
+          secrets,
+          prevRecord.properties
         );
         await afterOp?.(op.logicalId);
 
@@ -1459,7 +1508,8 @@ async function replaySingle(
         );
         stateResources[op.logicalId] = redactRollbackRecord(
           recordAfterRollbackUpdate(previousState, revertResult),
-          secrets
+          secrets,
+          previousState.properties
         );
         logger.info(`  Rollback: ${op.logicalId} restored successfully`);
         await afterOp?.(op.logicalId);
@@ -1742,7 +1792,8 @@ export async function replayFailedOperations(
           );
           stateResources[op.logicalId] = redactRollbackRecord(
             recordAfterRollbackUpdate(prev, revertFailedResult),
-            secrets
+            secrets,
+            prev.properties
           );
           logger.info(`  Rollback: ${op.logicalId} reverted successfully`);
           await options.afterOp?.(op.logicalId);

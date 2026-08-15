@@ -116,17 +116,22 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         // Explicit AWSCURRENT version-stage form (cdkd supports the
         // 6-field grammar; this exercises the version-stage slot).
         //
-        // The JSON key is `username`, NOT `password`, and that is load-bearing:
-        // with `password` this reference resolves to the SAME plaintext as
-        // SECRET_PASSWORD above, and the redaction map is keyed by the resolved
-        // VALUE — so the two expressions collapse to one entry, state persists
-        // the staged spelling for BOTH, and the stack takes a permanent
-        // spurious UPDATE. That is a real, shipped defect, filed as issue #1904
-        // and NOT caused by the SecureString work; the fixture points at a
-        // different key so the `diff --fail` guard below keeps testing what it
-        // is meant to test. Do NOT "tidy" this back to `password` — #1904's own
-        // fixture arm is what should re-introduce the collision, deliberately.
-        SECRET_PASSWORD_STAGED: `{{resolve:secretsmanager:${secretName}:SecretString:username:AWSCURRENT}}`,
+        // The JSON key is `password`, DELIBERATELY the same one SECRET_PASSWORD
+        // reads, so the two references resolve to the SAME plaintext. That is
+        // the collision itself, and it is the point of this env var.
+        //
+        // The redaction map is keyed by the resolved VALUE, so the pair
+        // collapses to one entry and — before issues #1904 / #1910 — state
+        // persisted the staged spelling at BOTH leaves, giving the stack a
+        // permanent spurious UPDATE and giving a rollback replay the wrong
+        // reference to re-resolve. This arm used to read `username` instead
+        // precisely to dodge that while it was unfixed; #1910 restored it.
+        //
+        // Do NOT "tidy" this back to a different key: the `diff --fail` guard
+        // and the state-expression assertions in verify.sh are only meaningful
+        // BECAUSE the two references share a value. With distinct keys they
+        // pass no matter what the redaction does.
+        SECRET_PASSWORD_STAGED: `{{resolve:secretsmanager:${secretName}:SecretString:password:AWSCURRENT}}`,
         // SSM plaintext-parameter form. Public config: state stores this
         // RESOLVED, which is the discriminator for the SecureString case below.
         SSM_VALUE: `{{resolve:ssm:${paramName}}}`,

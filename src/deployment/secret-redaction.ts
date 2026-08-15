@@ -27,13 +27,14 @@
  *   lines, the Cloud Control JSON-patch log, AWS validation errors quoting the
  *   offending value).
  *
- * Both operations work by VALUE match rather than by property path: a resolved
- * secret is a distinctive plaintext string that appears in the resolved bag (or
- * a concatenated `Fn::Join` / `Fn::Sub` result) exactly where it was
- * substituted, so a value scan covers the embedded cases uniformly without
- * threading a path argument through every resolver method. Over-redaction (a
- * coincidental match elsewhere) is harmless and the safe direction; under-
- * redaction would leak a secret, so a match is always replaced.
+ * {@link maskSecretsInText} works by VALUE match alone: a resolved secret is a
+ * distinctive plaintext string, so a value scan covers the embedded cases
+ * uniformly without threading a path argument through every resolver method.
+ * Over-redaction (a coincidental match elsewhere) is harmless and the safe
+ * direction; under-redaction would leak a secret, so a match is always
+ * replaced. {@link redactSecretsForState} layers POSITION on top of that scan —
+ * see its own doc and {@link redactByPath} — because a value match cannot tell
+ * two expressions apart once they resolve to the same plaintext.
  *
  * The module is a LEAF — it imports nothing — because both the resolver and the
  * deploy engine consume it and both already sit on a dense import ring.
@@ -48,6 +49,86 @@ export type RecordedSecretValues = Map<string, string>;
 
 /** Fixed marker substituted for a secret value in log / error output. */
 export const SECRET_MASK = '***';
+
+/**
+ * Every `{{resolve:...}}` expression this process has PROVEN resolves to a
+ * secret, as a SET — uncollapsed by resolved value (issue #1910).
+ *
+ * This is the piece {@link RecordedSecretValues} structurally cannot supply.
+ * That map is keyed by the resolved PLAINTEXT, so when two expressions resolve
+ * to the same value it keeps only the last, and asking it whether the LOSING
+ * expression was a secret answers "no" — for precisely the pair the path-based
+ * redaction exists to separate. The losing leaf then falls through to the value
+ * scan and is persisted holding its SIBLING's expression: a permanent spurious
+ * UPDATE, and on the rollback-journal replay path a re-resolution of the wrong
+ * reference against the live resource.
+ *
+ * EVERY secret expression is recorded, not only the `ssm` ones (issue
+ * [#1916](https://github.com/go-to-k/cdkd/issues/1916)). Only `ssm` needs an
+ * entry to answer "is this secret?" — a `secretsmanager` reference is secret by
+ * SPELLING (see {@link isKnownSecretExpression}), decidable with no lookup and
+ * no memory, while an `ssm` one is secret only when its parameter is a
+ * `SecureString`, knowable only from the `GetParameter` response. But this set
+ * answers a SECOND question: it is the CANDIDATE LIST
+ * {@link positionByIntrinsicSkeleton} matches an intrinsic source leaf against,
+ * and there the losing member of a collapsed
+ * secretsmanager/secretsmanager pair must be nameable too. Holding only the ssm
+ * half made the set's name a lie and left that pair unpositionable.
+ *
+ * One kind is deliberately still absent: an `ssm` reference whose `Type` came
+ * back unclassifiable is treated as secret for THAT resolution but not pinned,
+ * so the next pass re-asks AWS rather than inheriting a transient answer
+ * (issue #1901). Recording it here would pin it for the process.
+ *
+ * It lives in THIS module rather than in the resolver even though the resolver
+ * is its only writer, for two reasons. This module is the LEAF — the resolver
+ * already imports it, so the store is reachable from the writer without adding
+ * an edge, while the reverse (a leaf importing the resolver) would close a
+ * cycle. And the READER is {@link isKnownSecretExpression} right here, so
+ * homing it here means no call site has to thread it: the four sibling writers
+ * #1910 fixes pass a position SOURCE and nothing else.
+ *
+ * Its lifetime matches the resolver's `cachedDynamicReferences` — the resolver
+ * clears both together, and that shared lifetime is the point: this set IS the
+ * resolver's own SecureString verdict store, which already had exactly this
+ * scope, so nothing is widened by homing it here.
+ *
+ * Process-wide is therefore INHERITED, not claimed to be ideal. It is not
+ * strictly sound across regions or accounts in one run — the same expression
+ * can name a `SecureString` in one region and a plain `String` in another — but
+ * `cachedDynamicReferences` caches the resolved VALUE under the same
+ * assumption, so a per-region store here would fix nothing on its own. Note
+ * which way the imprecision points: an entry only ever GRANTS "persist the
+ * source leaf verbatim", and the leaf is the resource's own template
+ * expression, so the failure mode is a public reference stored as an expression
+ * (a spurious UPDATE, issue #1901's class), never a secret stored as plaintext.
+ */
+const recordedSecretExpressions = new Set<string>();
+
+/** Remember that `expression` resolves to a secret. Called by the resolver. */
+export function recordSecretExpression(expression: string): void {
+  recordedSecretExpressions.add(expression);
+}
+
+/**
+ * Forget a previously recorded expression — the resolver's `SecureString`
+ * verdict going the other way (an ssm parameter that turns out to be a plain
+ * `String` / `StringList`, i.e. public config that must stay RESOLVED in
+ * state).
+ */
+export function forgetSecretExpression(expression: string): void {
+  recordedSecretExpressions.delete(expression);
+}
+
+/** Has `expression` been PROVEN to resolve to a secret this process? */
+export function isRecordedSecretExpression(expression: string): boolean {
+  return recordedSecretExpressions.has(expression);
+}
+
+/** Drop every remembered verdict. Paired with the resolver's cache reset. */
+export function clearRecordedSecretExpressions(): void {
+  recordedSecretExpressions.clear();
+}
 
 /**
  * A resolved secret value shorter than this is NOT used as a redaction needle:
@@ -139,6 +220,27 @@ export const TEMPLATE_SOURCED_READBACK_RULES: PathSourceRules = {
   trustAnyExpression: false,
 };
 
+/**
+ * The bag was produced by resolving a STATE source — both relaxations apply.
+ *
+ * The rollback replay is the case (issue #1910): `resolveReplayProps` resolves
+ * the JOURNALED bag and the provider's `effectiveProperties` come back from
+ * that, so the two have identical structure and positional array descent is
+ * sound exactly as it is for a template-derived bag. And the source is a
+ * persisted record, which holds no PUBLIC expressions — a `String` ssm
+ * reference is stored resolved — so any `{{resolve:...}}` in it is by
+ * construction a secret.
+ *
+ * Using `STATE_SOURCED_READBACK_RULES` here instead would be wrong in the
+ * quiet direction: it turns array descent OFF, so a secret nested in a
+ * `Tags[]` / ECS `secrets[]` element falls to the value scan and a colliding
+ * pair still collapses there.
+ */
+export const STATE_DERIVED_RULES: PathSourceRules = {
+  descendArrays: true,
+  trustAnyExpression: true,
+};
+
 function isDynamicReferenceString(value: unknown): value is string {
   return typeof value === 'string' && value.includes('{{resolve:');
 }
@@ -157,17 +259,26 @@ function isDynamicReferenceString(value: unknown): value is string {
  *   (issue #1901), which is not derivable from the string, so that arm consults
  *   what the resolver actually recorded.
  *
- * The residue is narrow and safe: two SecureString ssm references sharing one
- * resolved value still collapse, because the map cannot distinguish them and
- * spelling cannot either. That is the pre-existing behavior, it leaks nothing
- * (both are redacted, just to one expression), and closing it needs the resolver
- * to record expressions in their own set rather than as map values.
+ * `secretExpressions` is what closes the ssm/ssm case (issue #1910). Derived
+ * from the value-keyed map it is useless for exactly this question — the map
+ * already collapsed the pair, so the losing expression is absent from
+ * `secrets.values()` — which is why callers pass the resolver's own SET of
+ * secret expressions instead. Callers that pass nothing fall back to the map's
+ * values, i.e. to the pre-#1910 behavior: the pair still collapses, but nothing
+ * leaks (both leaves are redacted, just onto one expression).
  */
 function isKnownSecretExpression(
   expression: string,
   secretExpressions: ReadonlySet<string>
 ): boolean {
-  return expression.startsWith('{{resolve:secretsmanager:') || secretExpressions.has(expression);
+  return (
+    expression.startsWith('{{resolve:secretsmanager:') ||
+    secretExpressions.has(expression) ||
+    // The pass's own map collapsed every group of expressions sharing a
+    // resolved value down to its last member, so the LOSING members reach this
+    // arm and only this arm (issue #1910).
+    isRecordedSecretExpression(expression)
+  );
 }
 
 /**
@@ -190,6 +301,310 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Stands in for a source part the skeleton cannot know — an `Fn::Join` element
+ * that is itself an intrinsic, or an `Fn::Sub` `${...}` variable.
+ *
+ * `[^}]*` rather than `.*` because a recorded expression's INNER text never
+ * contains `}`: the resolver matches them with `/\{\{resolve:([^}]+)\}\}/`, so
+ * the first `}` after `{{resolve:` is already the terminator. Excluding it
+ * means a wildcard can never swallow one token's terminator and run into the
+ * next, so a skeleton for ONE reference cannot match a candidate built from a
+ * different one.
+ */
+const SKELETON_WILDCARD = '[^}]*';
+
+/**
+ * More wildcards than this and the skeleton is REFUSED outright.
+ *
+ * The bound is what actually closes the backtracking class; the collapse below
+ * only closes one ARRANGEMENT of it. A skeleton with N wildcards makes a
+ * FAILING match exponential in N — and failing is the common case, since the
+ * pattern is tried against every recorded expression that is NOT this leaf's.
+ * The collapse merges ADJACENT wildcards, so `${a}${b}${c}` becomes one; but
+ * wildcards separated by a literal cannot merge and backtrack identically.
+ * Measured against a failing candidate: `Fn::Sub '${a}x${b}x…'` at 6 wildcards
+ * 17.7s and at 8 did not finish in two minutes, and a realistic
+ * `Fn::Join['-', 9 x {Ref}]` against a hyphen-rich secret ARN took 855ms per
+ * candidate. So the producer is the wildcard COUNT, not adjacency.
+ *
+ * What refusing costs is worth stating plainly rather than waving away, because
+ * it is the SAME cost this module's residual note describes: a refused leaf
+ * falls to the value scan, and for a colliding pair that means state holds the
+ * SIBLING's reference, which `resolveReplayProps` re-resolves and applies. A
+ * four-wildcard join carrying substantive literals CAN position uniquely, so
+ * the bound does give something up. It is set where it is because the dominant
+ * CDK shape carries exactly ONE wildcard (the secret ARN's `{Ref}`) and two or
+ * three covers an account plus a region — and because the alternative at the
+ * top of that trade is not "slightly better redaction" but a deploy that hangs
+ * after its AWS mutations.
+ */
+const MAX_SKELETON_WILDCARDS = 3;
+
+/**
+ * A candidate longer than this REFUSES the whole positioning pass.
+ *
+ * The wildcard cap bounds the EXPONENT; this bounds the BASE. Cost at the cap
+ * is polynomial in the candidate's length (~cubic, measured: 200 chars 4.9ms,
+ * 1000 chars 192ms, and an adversarial all-separator 3000-char candidate 4.1s),
+ * and candidate length is template-authored — `[^}]*` never crosses a `}`, so
+ * the whole expression is one backtracking run. A real `{{resolve:...}}` is
+ * 100-250 characters even with a full ARN and a JSON key, so this only excludes
+ * the pathological.
+ *
+ * The whole pass is refused rather than that one candidate being SKIPPED, and
+ * the difference is load-bearing: skipping shrinks the candidate set, so a
+ * second match could go unseen and condition 2's "exactly one" would be decided
+ * over a filtered list — turning a bound meant for speed into a silent
+ * weakening of the fence. Refusing degrades to the value scan like every other
+ * refusal here.
+ */
+const MAX_SKELETON_CANDIDATE_LENGTH = 512;
+
+/**
+ * Concatenate skeleton segments, dropping an empty one and COLLAPSING a run of
+ * consecutive wildcards into one — then REFUSE (return `undefined`) when more
+ * than {@link MAX_SKELETON_WILDCARDS} survive.
+ *
+ * The collapse is a correctness fix, not tidiness: `[^}]*[^}]*` is semantically
+ * identical to `[^}]*`, but the engine has to try every split of the input
+ * between them. Measured on a ~120-char candidate, before the collapse:
+ * 4 adjacent wildcards 39ms, 5 ~1s, 6 20s, 8 did not finish in two minutes. Two
+ * legal CFn shapes CDK can emit produce ADJACENT ones — an `Fn::Join` with an
+ * EMPTY delimiter and consecutive non-string parts, and an `Fn::Sub` with
+ * adjacent `${a}${b}` variables — and the collapse takes both to a single
+ * wildcard. It does NOT close the class, which is why the cap exists beside it.
+ *
+ * This runs on the state-persist choke point, i.e. AFTER the AWS mutations and
+ * BEFORE state is written, so a hang there strands real resources.
+ *
+ * An empty segment is dropped rather than appended because an empty DELIMITER
+ * would otherwise sit between two wildcards and defeat the collapse. A
+ * non-empty literal between two wildcards is what anchors the match, and those
+ * are left exactly as they are — and counted.
+ */
+function joinSkeletonSegments(segments: readonly string[]): string | undefined {
+  const out: string[] = [];
+  let wildcards = 0;
+  for (const segment of segments) {
+    if (segment === '') continue;
+    if (segment === SKELETON_WILDCARD) {
+      if (out[out.length - 1] === SKELETON_WILDCARD) continue;
+      wildcards += 1;
+      if (wildcards > MAX_SKELETON_WILDCARDS) return undefined;
+    }
+    out.push(segment);
+  }
+  return out.join('');
+}
+
+/**
+ * Build an anchored pattern describing what a `{{resolve:...}}` expression at
+ * this INTRINSIC source leaf must look like — literal parts kept verbatim,
+ * unknowable parts wildcarded (issue #1916).
+ *
+ * The dominant CDK shape is an `Fn::Join`, because `secret.secretValueFromJson(...)`
+ * renders the secret's ARN as a `Ref` and CDK joins the pieces:
+ *
+ * ```json
+ * {"Fn::Join": ["", ["{{resolve:secretsmanager:my-secret-", {"Ref": "AWS::AccountId"},
+ *                    ":SecretString:password}}"]]}
+ * ```
+ *
+ * which yields `^\{\{resolve:secretsmanager:my\-secret\-[^}]*:SecretString:password\}\}$`
+ * — enough to tell that leaf's expression from its `:AWSCURRENT`-suffixed
+ * sibling, which is precisely what the value map cannot do once the two
+ * resolve to the same plaintext. `Fn::Sub` has the same shape via its literal
+ * template string.
+ *
+ * Returns `undefined` for any source this cannot describe (a delimiter that is
+ * itself an intrinsic, a non-array `Fn::Join`, a non-string `Fn::Sub`
+ * template, an object that is not a single-key intrinsic at all), and the
+ * caller then falls back to the value scan — i.e. to the pre-#1916 behavior.
+ *
+ * Exported for its TEST only. The reason is now CONVENIENCE rather than
+ * necessity, and the distinction is worth keeping straight: before the wildcard
+ * cap existed, driving the collapse through `redactSecretsForState` did not
+ * fail on a timeout — catastrophic backtracking is SYNCHRONOUS, so it wedged
+ * the vitest worker and the run never ended, which is a worse CI outcome than
+ * the defect and indistinguishable from a slow machine. With the cap, dropping
+ * the collapse turns that same input into a REFUSAL, so the behavior IS
+ * observable through the public entry point. Asserting on the returned
+ * pattern's shape is still the better fence — it names the invariant (how many
+ * unknown spans survived) instead of a downstream consequence — but it is a
+ * choice, not the only option.
+ */
+export function intrinsicSkeletonPattern(source: Record<string, unknown>): RegExp | undefined {
+  const keys = Object.keys(source);
+  if (keys.length !== 1) return undefined;
+  const key = keys[0]!;
+
+  if (key === 'Fn::Join') {
+    const args = source[key];
+    if (!Array.isArray(args) || args.length !== 2) return undefined;
+    const [delimiter, parts] = args as [unknown, unknown];
+    // A non-string delimiter is unknowable, and it sits BETWEEN every pair of
+    // parts, so wildcarding it would erase most of the skeleton's specificity.
+    if (typeof delimiter !== 'string' || !Array.isArray(parts)) return undefined;
+    const separator = escapeRegExp(delimiter);
+    const segments: string[] = [];
+    parts.forEach((part, index) => {
+      if (index > 0) segments.push(separator);
+      segments.push(typeof part === 'string' ? escapeRegExp(part) : SKELETON_WILDCARD);
+    });
+    const body = joinSkeletonSegments(segments);
+    return body === undefined ? undefined : new RegExp(`^${body}$`);
+  }
+
+  if (key === 'Fn::Sub') {
+    const args = source[key];
+    // Both forms: the bare template string, and the 2-arg `[template, vars]`.
+    // The variable MAP is deliberately not consulted — a var can be bound to an
+    // intrinsic, so only the `${...}` POSITIONS are reliably knowable.
+    const template = typeof args === 'string' ? args : Array.isArray(args) ? args[0] : undefined;
+    if (typeof template !== 'string') return undefined;
+    const segments: string[] = [];
+    let cursor = 0;
+    const variable = /\$\{([^}]*)\}/g;
+    let hit: RegExpExecArray | null;
+    while ((hit = variable.exec(template)) !== null) {
+      segments.push(escapeRegExp(template.slice(cursor, hit.index)));
+      const inner = hit[1]!;
+      // `${!Foo}` is CloudFormation's escape for a LITERAL `${Foo}`, so it is
+      // known text rather than a substitution point.
+      segments.push(
+        inner.startsWith('!') ? escapeRegExp(`\${${inner.slice(1)}}`) : SKELETON_WILDCARD
+      );
+      cursor = hit.index + hit[0].length;
+    }
+    segments.push(escapeRegExp(template.slice(cursor)));
+    const body = joinSkeletonSegments(segments);
+    return body === undefined ? undefined : new RegExp(`^${body}$`);
+  }
+
+  return undefined;
+}
+
+/**
+ * Position a leaf whose SOURCE is an intrinsic OBJECT, by matching the shape of
+ * that intrinsic against the expressions this process recorded as secrets
+ * (issue #1916).
+ *
+ * This is the residual {@link redactByPath} left behind. Its plain-string arm
+ * persists the source leaf VERBATIM, which needs a source string to copy; when
+ * the source leaf is an `Fn::Join` / `Fn::Sub` there is none, so the leaf fell
+ * to the value scan — and the value map is keyed by the resolved PLAINTEXT, so
+ * a colliding pair collapses there exactly as it did before #1904. That is the
+ * DOMINANT CDK shape rather than an edge case: any secret reached through an L2
+ * token renders the secret ARN as a `Ref`, hence an `Fn::Join`.
+ *
+ * Three conditions must ALL hold before an expression is persisted, and each
+ * removes a different way of being wrong:
+ *
+ * 1. The bag leaf's WHOLE value is a recorded secret plaintext. The skeleton
+ *    describes ONE complete `{{resolve:...}}` token, so a leaf that merely
+ *    EMBEDS a secret (a join with surrounding text) is not this shape at all
+ *    and must keep going to the value scan, which rewrites just the substring.
+ * 2. EXACTLY ONE candidate matches. Two matching candidates mean the skeleton
+ *    genuinely cannot separate them (`{Ref}` in the position that differs), and
+ *    guessing would be the collapse this fix exists to remove, one step over.
+ * 3. The match is not DEMONSTRABLY another value's expression. The pass's own
+ *    map holds each surviving expression against the plaintext it resolved to,
+ *    so a candidate recorded there under a DIFFERENT plaintext is refused. That
+ *    is what fences a bag/source misalignment: a shape-plausible expression is
+ *    rejected outright when the pass can see it resolved to something else. A
+ *    candidate absent from that map is a collapsed LOSER, which is the case
+ *    this whole function exists to serve, so it is accepted.
+ *
+ * Every rejection degrades to the value scan, i.e. to today's behavior, so no
+ * case gets worse than it is without this pass.
+ *
+ * One residual is worth naming rather than leaving to be rediscovered: a single
+ * WRONG candidate can win only when this leaf's own expression is in NEITHER
+ * store — which is exactly an `ssm` reference whose `Type` came back
+ * unclassifiable (deliberately unpinned per #1901) and which then lost the
+ * value collapse. `recordedSecretExpressions` is process-wide, so the winner
+ * could in principle come from another resource, and condition 3 cannot refuse
+ * one the pass never recorded.
+ *
+ * **What that costs is a WRONG REFERENCE in state, not merely a noisy diff.**
+ * Persisting another leaf's expression is the pre-#1904 failure exactly:
+ * `resolveReplayProps` RE-RESOLVES the persisted expression against AWS and
+ * hands the result to `provider.update`, so a rollback replays the wrong secret
+ * — immediately, if the two references already resolve to different values. It
+ * is narrow (unclassifiable-`ssm` leaves only) but it is not cosmetic, and an
+ * earlier draft of this paragraph called it "a spurious UPDATE rather than a
+ * disclosure", which understated it.
+ *
+ * There is deliberately NO {@link isKnownSecretExpression} check here, and the
+ * asymmetry with {@link redactByPath}'s plain-string arm is principled rather
+ * than an oversight. That arm's candidate is the SOURCE LEAF itself — arbitrary
+ * template text, which genuinely can be a PUBLIC ssm reference that must stay
+ * resolved in state (issue #1901), so it has to be tested. Here the candidates
+ * come only from {@link recordedSecretExpressions} and from the values of a
+ * {@link RecordedSecretValues} map, both of which the resolver populates ONLY
+ * on a proven-secret verdict — so the test could never answer `false`, and an
+ * unfalsifiable guard reads as protection while fencing nothing. Widening
+ * either candidate source is what would make it necessary again.
+ */
+function positionByIntrinsicSkeleton(
+  bag: string,
+  source: Record<string, unknown>,
+  secrets: RecordedSecretValues,
+  secretExpressions: ReadonlySet<string>
+): string | undefined {
+  // Condition 1. The empty string is excluded for the reason the value pass
+  // excludes it: it is not a distinguishing value.
+  if (bag === '' || !secrets.has(bag)) return undefined;
+
+  const pattern = intrinsicSkeletonPattern(source);
+  if (!pattern) return undefined;
+
+  // Condition 3's index, built ONCE rather than re-scanned per candidate. The
+  // map is keyed by plaintext, so this walks it the other way: an expression the
+  // pass recorded is here against the value it actually resolved to. A collapsed
+  // LOSER is absent, which is the case this function exists to serve.
+  //
+  // It is NOT an inversion, because `secrets` need not be injective — one
+  // expression CAN appear under two plaintexts. Taking the last such plaintext
+  // would WEAKEN condition 3 (the scan it replaced refused when ANY entry
+  // disagreed with `bag`), so a conflicting expression is poisoned to a sentinel
+  // no bag can equal, which refuses it exactly as the scan did.
+  //
+  // The branch is unreachable FROM THE RESOLVER — `cachedDynamicReferences` is
+  // process-wide, so one expression yields one plaintext per run — but it is
+  // reachable through this module's API and it is FENCED, by the "recorded
+  // against MORE THAN ONE plaintext" case. An earlier draft of this comment
+  // claimed the divergence was unobservable, reasoning that `plaintextOf[E] ===
+  // bag` implies `secrets.get(bag) === E` so accepting and falling back agree.
+  // That misses the case where a SECOND candidate also matches: accepting `E`
+  // then makes it two matches, which condition 2 refuses, and the answers
+  // differ. Asserting something cannot be fenced suppresses the attempt, so it
+  // needs the same evidence a fence does.
+  //
+  // `seen === undefined` is the whole test: `RecordedSecretValues` is keyed by
+  // plaintext, so iterating it never yields one plaintext twice and a second
+  // sighting of an expression is always a DIFFERENT plaintext.
+  const CONFLICTING = Symbol('conflicting plaintext');
+  const plaintextOf = new Map<string, string | symbol>();
+  for (const [plaintext, expression] of secrets) {
+    plaintextOf.set(expression, plaintextOf.has(expression) ? CONFLICTING : plaintext);
+  }
+
+  let matched: string | undefined;
+  for (const candidate of new Set([...secretExpressions, ...recordedSecretExpressions])) {
+    if (candidate.length > MAX_SKELETON_CANDIDATE_LENGTH) return undefined;
+    if (!pattern.test(candidate)) continue;
+    // Condition 3.
+    const recordedPlaintext = plaintextOf.get(candidate);
+    if (recordedPlaintext !== undefined && recordedPlaintext !== bag) continue;
+    // Condition 2.
+    if (matched !== undefined) return undefined;
+    matched = candidate;
+  }
+  return matched;
+}
+
+/**
  * PATH-based redaction: walk `bag` alongside a SOURCE bag that still carries the
  * unresolved `{{resolve:...}}` expressions, and wherever the source leaf is such
  * a string, persist THAT string verbatim.
@@ -208,11 +623,18 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * record — which already holds the expressions — redacts it with no secret
  * fetch and no value matching.
  *
- * The value scan is still applied wherever the source cannot answer: a source
- * leaf that is an intrinsic OBJECT (`Fn::Join` / `Fn::Sub`) resolves to a string
- * embedding the secret, and only a value match can find it inside. So the two
- * passes are complementary rather than alternatives — path where position is
- * knowable, value where it is not.
+ * A source leaf that is an intrinsic OBJECT (`Fn::Join` / `Fn::Sub`) has no
+ * string to copy, so it goes through {@link positionByIntrinsicSkeleton} first
+ * (issue #1916): when the intrinsic's literal parts describe exactly one of the
+ * recorded secret expressions, THAT is persisted. This is the dominant CDK
+ * shape — an L2 secret token renders the ARN as a `Ref`, hence a join.
+ *
+ * The value scan is still applied wherever neither can answer: a leaf that
+ * merely EMBEDS a secret inside surrounding text, an intrinsic whose skeleton
+ * matches zero or several candidates, a diverged shape, a key the source lacks.
+ * So the passes are complementary rather than alternatives — path where
+ * position is knowable, skeleton where the position is an intrinsic, value
+ * where neither is.
  */
 function redactByPath(
   bag: unknown,
@@ -221,6 +643,25 @@ function redactByPath(
   rules: PathSourceRules,
   secretExpressions: ReadonlySet<string>
 ): unknown {
+  // The bag leaf is ALREADY a complete `{{resolve:...}}` token, so there is no
+  // plaintext here to redact and the source has nothing to contribute. Keep it
+  // verbatim (issue #1910 review).
+  //
+  // Without this the pass would OVERWRITE one expression with a DIFFERENT one
+  // whenever the two bags disagree — and they legitimately can, because not
+  // every caller's bag was produced by resolving its source. `cdkd scrub` is
+  // the case: its bag is PERSISTED STATE and its source is TODAY's template, so
+  // for a template edited but not yet deployed (`:AWSPREVIOUS` in state,
+  // `:AWSCURRENT` in the template) it would rewrite state onto the undeployed
+  // expression, report `recordsChanged` for a record holding no plaintext at
+  // all — failing a `--dry-run --fail` CI gate with "plaintext found" — and
+  // then make the next deploy compare expression-vs-expression, see NO_CHANGE,
+  // and never push the new reference to AWS.
+  //
+  // Safe at every other caller: if a resolved bag still carries a whole token,
+  // the resolver did not substitute it, so the leaf already EQUALS its source
+  // and returning it verbatim is what the substitution would have produced.
+  if (typeof bag === 'string' && isSingleDynamicReferenceToken(bag)) return bag;
   if (isDynamicReferenceString(source) && typeof bag === 'string') {
     // A TEMPLATE source carries PUBLIC ssm expressions too, and those must stay
     // RESOLVED in state (#1901) or the diff compares a resolved desired side
@@ -236,6 +677,19 @@ function redactByPath(
     // Public reference: keep the resolved value, but still value-scan it so a
     // secret embedded beside it is redacted.
     return redactSecretsForState(bag, secrets);
+  }
+  if (typeof bag === 'string' && isPlainObject(source)) {
+    // The source leaf is an intrinsic OBJECT, so there is no string to copy —
+    // the residual #1904 left and #1916 closes. Deliberately NOT gated on
+    // `rules`: `descendArrays` is about walking a LIST, and `trustAnyExpression`
+    // relaxes a check this arm does not make. The candidates come only from
+    // stores the resolver populates on a proven-secret verdict, so none can be
+    // a public ssm reference (the perpetual-UPDATE hazard of issue #1901) —
+    // see `positionByIntrinsicSkeleton`'s own doc, which explains why it holds
+    // NO `isKnownSecretExpression` check.
+    const positioned = positionByIntrinsicSkeleton(bag, source, secrets, secretExpressions);
+    if (positioned !== undefined) return positioned;
+    // Fall through to the value scan below on any refusal.
   }
   if (
     rules.descendArrays &&

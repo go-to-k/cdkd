@@ -144,6 +144,76 @@ describe('rollback replay - secret re-resolution + state redaction (GHSA #1899)'
     expect(JSON.stringify(state)).not.toContain(SECRET_PLAINTEXT);
   });
 
+  // Issue #1910: the rollback WRITES state after re-resolving, so it is a
+  // redaction site of its own, and it had no position source either. Two
+  // expressions resolving to one value collapse in the value-keyed map, so the
+  // state this replay persists disagrees with the template at one leaf and the
+  // next deploy reports a change that never converges.
+  it('revert: two references sharing one resolved value keep their OWN expressions', async () => {
+    // Both stages of one secret resolve to the same plaintext — which they do
+    // until the versions diverge, and at that point the replay would be
+    // shipping the WRONG version to the live resource.
+    const STAGED_EXPR = '{{resolve:secretsmanager:my-secret:SecretString:client_secret:AWSCURRENT}}';
+    const update = vi.fn().mockResolvedValue({
+      physicalId: 'phys-B',
+      // The provider echoes BOTH resolved leaves back, so without a position
+      // source the redaction has only the collapsed map to work from.
+      effectiveProperties: {
+        ProviderDetails: {
+          client_id: 'pub',
+          client_secret: SECRET_PLAINTEXT,
+          client_secret_staged: SECRET_PLAINTEXT,
+        },
+      },
+    });
+    const { ctx } = makeCtx({ update });
+    const journaled = {
+      ProviderDetails: {
+        client_id: 'pub',
+        client_secret: SECRET_EXPR,
+        client_secret_staged: STAGED_EXPR,
+      },
+    };
+    const prev = res({ physicalId: 'phys-B', resourceType: IDP_TYPE, properties: journaled });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'Idp',
+        changeType: 'UPDATE',
+        resourceType: IDP_TYPE,
+        physicalId: 'phys-B',
+        previousState: prev,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({
+        physicalId: 'phys-B',
+        resourceType: IDP_TYPE,
+        properties: {
+          ProviderDetails: {
+            client_id: 'pub-CHANGED',
+            client_secret: SECRET_EXPR,
+            client_secret_staged: STAGED_EXPR,
+          },
+        },
+      }),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    // Non-vacuity: the plaintext really was in hand on both leaves.
+    expect(mockSMSend).toHaveBeenCalled();
+    const desiredArg = update.mock.calls[0]![3] as {
+      ProviderDetails: Record<string, string>;
+    };
+    expect(desiredArg.ProviderDetails['client_secret']).toBe(SECRET_PLAINTEXT);
+    expect(desiredArg.ProviderDetails['client_secret_staged']).toBe(SECRET_PLAINTEXT);
+
+    const details = state.Idp!.properties['ProviderDetails'] as Record<string, string>;
+    expect(details['client_secret']).toBe(SECRET_EXPR);
+    expect(details['client_secret_staged']).toBe(STAGED_EXPR);
+    expect(JSON.stringify(state)).not.toContain(SECRET_PLAINTEXT);
+  });
+
   it('reverse-replacement: re-CREATE gets the resolved secret, state keeps the expression', async () => {
     const create = vi.fn().mockResolvedValue({
       physicalId: 'old-idp',
@@ -214,6 +284,90 @@ describe('rollback replay - secret re-resolution + state redaction (GHSA #1899)'
     expect((state.Idp!.properties['ProviderDetails'] as Record<string, unknown>)['client_secret']).toBe(
       SECRET_EXPR
     );
+  });
+
+  // Test review, HIGH: only the revert-UPDATE site was fenced for the collision.
+  // The other two `redactRollbackRecord` call sites are on paths that SHIP to
+  // AWS, so an unfenced collapse there is the wrong-secret-version failure.
+  const STAGED_EXPR = '{{resolve:secretsmanager:my-secret:SecretString:client_secret:AWSCURRENT}}';
+  const collidingDetails = {
+    ProviderDetails: { client_secret: SECRET_EXPR, client_secret_staged: STAGED_EXPR },
+  };
+  const collidingEcho = {
+    ProviderDetails: {
+      client_secret: SECRET_PLAINTEXT,
+      client_secret_staged: SECRET_PLAINTEXT,
+    },
+  };
+
+  function expectUncollapsed(state: Record<string, ResourceState>): void {
+    const details = state.Idp!.properties['ProviderDetails'] as Record<string, string>;
+    expect(details['client_secret']).toBe(SECRET_EXPR);
+    expect(details['client_secret_staged']).toBe(STAGED_EXPR);
+    expect(JSON.stringify(state)).not.toContain(SECRET_PLAINTEXT);
+  }
+
+  it('reverse-replacement re-CREATE: a colliding pair keeps its OWN expressions', async () => {
+    const create = vi.fn().mockResolvedValue({
+      physicalId: 'old-idp',
+      attributes: {},
+      effectiveProperties: collidingEcho,
+    });
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+    const prev = res({
+      physicalId: 'old-idp',
+      resourceType: IDP_TYPE,
+      properties: collidingDetails,
+    });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'Idp',
+        changeType: 'UPDATE',
+        resourceType: IDP_TYPE,
+        physicalId: 'new-idp',
+        previousState: prev,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({ physicalId: 'new-idp', resourceType: IDP_TYPE, properties: collidingDetails }),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    expect(mockSMSend).toHaveBeenCalled();
+    expectUncollapsed(state);
+  });
+
+  it('revert-failed-update: a colliding pair keeps its OWN expressions', async () => {
+    const update = vi.fn().mockResolvedValue({
+      physicalId: 'phys-B',
+      effectiveProperties: collidingEcho,
+    });
+    const { ctx } = makeCtx({ update });
+    const prev = res({
+      physicalId: 'phys-B',
+      resourceType: IDP_TYPE,
+      properties: collidingDetails,
+    });
+    const failed: FailedOperation[] = [
+      {
+        logicalId: 'Idp',
+        changeType: 'UPDATE',
+        resourceType: IDP_TYPE,
+        physicalId: 'phys-B',
+        previousState: prev,
+        attemptedProperties: collidingDetails,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({ physicalId: 'phys-B', resourceType: IDP_TYPE, properties: collidingDetails }),
+    };
+
+    await replayFailedOperations(failed, state, 'S', ctx);
+
+    expect(mockSMSend).toHaveBeenCalled();
+    expectUncollapsed(state);
   });
 
   it('does not fetch any secret when the reverted properties hold no {{resolve:...}} expression', async () => {
