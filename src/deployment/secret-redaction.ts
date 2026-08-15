@@ -314,6 +314,37 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 const SKELETON_WILDCARD = '[^}]*';
 
 /**
+ * Concatenate skeleton segments, dropping an empty one and COLLAPSING a run of
+ * consecutive wildcards into one.
+ *
+ * The collapse is a correctness fix, not tidiness. `[^}]*[^}]*` is semantically
+ * identical to `[^}]*`, but the engine has to try every split of the input
+ * between them, so N adjacent wildcards make a FAILING match exponential — and
+ * failing is the common case, since the pattern is tried against every recorded
+ * expression that is not this leaf's. Measured on a ~120-char candidate:
+ * 4 wildcards 39ms, 5 wildcards ~1s, 6 wildcards 20s, 8 wildcards did not
+ * finish in two minutes. Two shapes produce them and both are legal CFn that
+ * CDK can emit: an `Fn::Join` with an EMPTY delimiter and consecutive
+ * non-string parts, and an `Fn::Sub` with adjacent `${a}${b}` variables. This
+ * runs on the state-persist choke point, i.e. AFTER the AWS mutations and
+ * BEFORE state is written, so a hang there strands real resources.
+ *
+ * An empty segment is dropped rather than appended because an empty DELIMITER
+ * would otherwise sit between two wildcards and defeat the collapse. A
+ * non-empty literal between two wildcards is what anchors the match, and those
+ * are left exactly as they are.
+ */
+function joinSkeletonSegments(segments: readonly string[]): string {
+  const out: string[] = [];
+  for (const segment of segments) {
+    if (segment === '') continue;
+    if (segment === SKELETON_WILDCARD && out[out.length - 1] === SKELETON_WILDCARD) continue;
+    out.push(segment);
+  }
+  return out.join('');
+}
+
+/**
  * Build an anchored pattern describing what a `{{resolve:...}}` expression at
  * this INTRINSIC source leaf must look like — literal parts kept verbatim,
  * unknowable parts wildcarded (issue #1916).
@@ -336,8 +367,16 @@ const SKELETON_WILDCARD = '[^}]*';
  * itself an intrinsic, a non-array `Fn::Join`, a non-string `Fn::Sub`
  * template, an object that is not a single-key intrinsic at all), and the
  * caller then falls back to the value scan — i.e. to the pre-#1916 behavior.
+ *
+ * Exported for its TEST only, and for a reason worth stating: the adjacent-
+ * wildcard collapse below cannot be fenced through the public entry point.
+ * Catastrophic backtracking is SYNCHRONOUS, so a test that drives it through
+ * `redactSecretsForState` does not fail on a timeout — it wedges the vitest
+ * worker and the run never ends, which is a worse CI outcome than the defect.
+ * Asserting on the returned pattern's `source` is deterministic and needs no
+ * timing threshold.
  */
-function intrinsicSkeletonPattern(source: Record<string, unknown>): RegExp | undefined {
+export function intrinsicSkeletonPattern(source: Record<string, unknown>): RegExp | undefined {
   const keys = Object.keys(source);
   if (keys.length !== 1) return undefined;
   const key = keys[0]!;
@@ -349,10 +388,13 @@ function intrinsicSkeletonPattern(source: Record<string, unknown>): RegExp | und
     // A non-string delimiter is unknowable, and it sits BETWEEN every pair of
     // parts, so wildcarding it would erase most of the skeleton's specificity.
     if (typeof delimiter !== 'string' || !Array.isArray(parts)) return undefined;
-    const body = parts
-      .map((part) => (typeof part === 'string' ? escapeRegExp(part) : SKELETON_WILDCARD))
-      .join(escapeRegExp(delimiter));
-    return new RegExp(`^${body}$`);
+    const separator = escapeRegExp(delimiter);
+    const segments: string[] = [];
+    parts.forEach((part, index) => {
+      if (index > 0) segments.push(separator);
+      segments.push(typeof part === 'string' ? escapeRegExp(part) : SKELETON_WILDCARD);
+    });
+    return new RegExp(`^${joinSkeletonSegments(segments)}$`);
   }
 
   if (key === 'Fn::Sub') {
@@ -362,20 +404,22 @@ function intrinsicSkeletonPattern(source: Record<string, unknown>): RegExp | und
     // intrinsic, so only the `${...}` POSITIONS are reliably knowable.
     const template = typeof args === 'string' ? args : Array.isArray(args) ? args[0] : undefined;
     if (typeof template !== 'string') return undefined;
-    let body = '';
+    const segments: string[] = [];
     let cursor = 0;
     const variable = /\$\{([^}]*)\}/g;
     let hit: RegExpExecArray | null;
     while ((hit = variable.exec(template)) !== null) {
-      body += escapeRegExp(template.slice(cursor, hit.index));
+      segments.push(escapeRegExp(template.slice(cursor, hit.index)));
       const inner = hit[1]!;
       // `${!Foo}` is CloudFormation's escape for a LITERAL `${Foo}`, so it is
       // known text rather than a substitution point.
-      body += inner.startsWith('!') ? escapeRegExp(`\${${inner.slice(1)}}`) : SKELETON_WILDCARD;
+      segments.push(
+        inner.startsWith('!') ? escapeRegExp(`\${${inner.slice(1)}}`) : SKELETON_WILDCARD
+      );
       cursor = hit.index + hit[0].length;
     }
-    body += escapeRegExp(template.slice(cursor));
-    return new RegExp(`^${body}$`);
+    segments.push(escapeRegExp(template.slice(cursor)));
+    return new RegExp(`^${joinSkeletonSegments(segments)}$`);
   }
 
   return undefined;
@@ -415,6 +459,16 @@ function intrinsicSkeletonPattern(source: Record<string, unknown>): RegExp | und
  * Every rejection degrades to the value scan, i.e. to today's behavior, so no
  * case gets worse than it is without this pass.
  *
+ * One residual is worth naming rather than leaving to be rediscovered: a single
+ * WRONG candidate can win only when this leaf's own expression is in NEITHER
+ * store — which is exactly an `ssm` reference whose `Type` came back
+ * unclassifiable (deliberately unpinned per #1901) and which then lost the
+ * value collapse. `recordedSecretExpressions` is process-wide, so the winner
+ * could in principle come from another resource. Condition 3 refuses any
+ * candidate the pass can SEE resolved to something else, so the survivor is
+ * never the wrong answer here; what is left is contrived, and it degrades to a
+ * spurious UPDATE rather than to a disclosure.
+ *
  * There is deliberately NO {@link isKnownSecretExpression} check here, and the
  * asymmetry with {@link redactByPath}'s plain-string arm is principled rather
  * than an oversight. That arm's candidate is the SOURCE LEAF itself — arbitrary
@@ -439,18 +493,19 @@ function positionByIntrinsicSkeleton(
   const pattern = intrinsicSkeletonPattern(source);
   if (!pattern) return undefined;
 
+  // Condition 3's index, built ONCE rather than re-scanned per candidate. The
+  // map is keyed by plaintext, so this inverts it: an expression the pass
+  // recorded is here against the value it actually resolved to. A collapsed
+  // LOSER is absent, which is the case this function exists to serve.
+  const plaintextOf = new Map<string, string>();
+  for (const [plaintext, expression] of secrets) plaintextOf.set(expression, plaintext);
+
   let matched: string | undefined;
   for (const candidate of new Set([...secretExpressions, ...recordedSecretExpressions])) {
     if (!pattern.test(candidate)) continue;
     // Condition 3.
-    let resolvedToAnotherValue = false;
-    for (const [plaintext, expression] of secrets) {
-      if (expression === candidate && plaintext !== bag) {
-        resolvedToAnotherValue = true;
-        break;
-      }
-    }
-    if (resolvedToAnotherValue) continue;
+    const recordedPlaintext = plaintextOf.get(candidate);
+    if (recordedPlaintext !== undefined && recordedPlaintext !== bag) continue;
     // Condition 2.
     if (matched !== undefined) return undefined;
     matched = candidate;
@@ -536,9 +591,11 @@ function redactByPath(
     // The source leaf is an intrinsic OBJECT, so there is no string to copy —
     // the residual #1904 left and #1916 closes. Deliberately NOT gated on
     // `rules`: `descendArrays` is about walking a LIST, and `trustAnyExpression`
-    // relaxes a check this arm does not make, since every candidate is already
-    // filtered through `isKnownSecretExpression` and so can never be a public
-    // ssm reference (the perpetual-UPDATE hazard of issue #1901).
+    // relaxes a check this arm does not make. The candidates come only from
+    // stores the resolver populates on a proven-secret verdict, so none can be
+    // a public ssm reference (the perpetual-UPDATE hazard of issue #1901) —
+    // see `positionByIntrinsicSkeleton`'s own doc, which explains why it holds
+    // NO `isKnownSecretExpression` check.
     const positioned = positionByIntrinsicSkeleton(bag, source, secrets, secretExpressions);
     if (positioned !== undefined) return positioned;
     // Fall through to the value scan below on any refusal.

@@ -8,6 +8,7 @@ import {
   redactSecretsForState,
   recordSecretExpression,
   clearRecordedSecretExpressions,
+  intrinsicSkeletonPattern,
   TEMPLATE_SOURCED_READBACK_RULES,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
@@ -46,11 +47,18 @@ const EXPR_STAGED = `{{resolve:secretsmanager:${SECRET_NAME}:SecretString:passwo
 const SHARED = 'sh4red-pl4intext-p4ssw0rd';
 
 /**
- * What CDK emits for `secret.secretValueFromJson('password')` on an
- * env-agnostic stack: the secret's ARN / name carries a `Ref`, so the whole
- * dynamic reference is an `Fn::Join` and the source leaf is an intrinsic
- * OBJECT rather than a `{{resolve:...}}` STRING. This is the DOMINANT CDK
- * shape, which is what made issue #1916 a real bound rather than an edge case.
+ * The shape an env-agnostic CDK stack really synthesizes, copied from the
+ * `secrets-dynamic-ref` integ fixture's own template (verified by synthesizing
+ * it: `Stack.of(this).account` is a token, so the interpolated secret name
+ * becomes an `Fn::Join` and the source leaf is an intrinsic OBJECT rather than
+ * a `{{resolve:...}}` STRING). That is what made issue #1916 a real bound
+ * rather than an edge case.
+ *
+ * The same shape arrives by a second route with a different tail: CDK's L2
+ * `secret.secretValueFromJson(...)` `Ref`s the SECRET RESOURCE and appends the
+ * empty stage / version slots (`...:SecretString:password::}}`). The `Ref`
+ * sits in the same middle position, so the skeleton behaves identically; only
+ * the literal tail differs.
  */
 function joinSource(tail: string): Record<string, unknown> {
   return {
@@ -188,20 +196,194 @@ describe('secret-redaction - intrinsic (Fn::Join / Fn::Sub) source leaf (issue #
     expect(redacted['P']).toBe(SURVIVOR);
   });
 
+  // A behavior guard, NOT a clause fence, and the difference is worth stating
+  // because a first cut claimed otherwise. Whenever the pass refuses, the
+  // answer comes from the value scan — which is the SURVIVOR — and the survivor
+  // is always among the candidates (it is in the map's values), so no
+  // single-clause mutation can make this case produce a different string. The
+  // clause-level fences for the pattern filter are the wildcard and ambiguity
+  // cases below and above.
   it('refuses when the skeleton matches NO candidate', () => {
     recordSecretExpression(EXPR_PLAIN);
 
     const unrelated = {
-      'Fn::Join': ['', ['{{resolve:secretsmanager:some-other-secret-', { Ref: 'X' }, ':SecretString:key}}']],
+      'Fn::Join': [
+        '',
+        ['{{resolve:secretsmanager:some-other-secret-', { Ref: 'X' }, ':SecretString:key}}'],
+      ],
     };
 
-    const redacted = redactSecretsForState(
-      { P: SHARED },
-      new Map([[SHARED, EXPR_PLAIN]]),
-      { P: unrelated }
-    ) as Record<string, string>;
+    const redacted = redactSecretsForState({ P: SHARED }, new Map([[SHARED, EXPR_PLAIN]]), {
+      P: unrelated,
+    }) as Record<string, string>;
 
     expect(redacted['P']).toBe(EXPR_PLAIN);
+  });
+
+  // The wildcard is `[^}]*`, not `.*`, and this is what makes that a decision
+  // rather than a detail. A skeleton whose LAST segment is a wildcard would,
+  // under `.*`, match a candidate's `}}` terminator and accept an expression
+  // the source's literal parts never described — here the source says only
+  // "starts with `{{resolve:secretsmanager:pre-`", which is not a complete
+  // token, so the honest answer is to refuse and let the value scan reply.
+  it('does not let a wildcard swallow a candidate terminator', () => {
+    const LOSER = '{{resolve:secretsmanager:pre-1:SecretString:k}}';
+    const SURVIVOR = '{{resolve:secretsmanager:other:SecretString:k}}';
+    recordSecretExpression(LOSER);
+
+    const openEnded = {
+      'Fn::Join': ['', ['{{resolve:secretsmanager:pre-', { Ref: 'Tail' }]],
+    };
+
+    const redacted = redactSecretsForState({ P: SHARED }, new Map([[SHARED, SURVIVOR]]), {
+      P: openEnded,
+    }) as Record<string, string>;
+
+    expect(redacted['P']).toBe(SURVIVOR);
+  });
+
+  // A run of adjacent wildcards is legal CFn — an `Fn::Join` with an EMPTY
+  // delimiter and consecutive `Ref` parts, or an `Fn::Sub` with adjacent
+  // `${a}${b}` — and `[^}]*[^}]*...` makes a FAILING match exponential, which
+  // is the common case since the pattern is tried against every recorded
+  // expression that is NOT this leaf's. Unfixed this took 20s at six wildcards
+  // and did not finish at eight, ON the state-persist choke point (after the
+  // AWS mutations, before state is written), so a hang there strands real
+  // resources.
+  //
+  // Asserted on the PATTERN, not by timing it, and that is deliberate:
+  // catastrophic backtracking is SYNCHRONOUS, so driving it through
+  // `redactSecretsForState` does not fail on vitest's case timeout — it wedges
+  // the worker and the run never terminates. Measured while probing this very
+  // fence: the timing version of it did not fail, it hung for the full 10-minute
+  // harness limit. A hung CI is a worse outcome than the defect, and it is not a
+  // fence at all, because a hang cannot be told from a slow machine.
+  it.each([
+    [
+      'Fn::Join with an empty delimiter and consecutive intrinsic parts',
+      {
+        'Fn::Join': [
+          '',
+          [
+            '{{resolve:secretsmanager:',
+            { Ref: 'A' },
+            { Ref: 'B' },
+            { Ref: 'C' },
+            { Ref: 'D' },
+            { Ref: 'E' },
+            { Ref: 'F' },
+            { Ref: 'G' },
+            { Ref: 'H' },
+            ':SecretString:pw}}',
+          ],
+        ],
+      },
+    ],
+    [
+      'Fn::Sub with adjacent variables',
+      { 'Fn::Sub': '{{resolve:secretsmanager:${A}${B}${C}${D}${E}${F}${G}${H}:SecretString:pw}}' },
+    ],
+  ])('collapses adjacent wildcards for %s', (_label, source) => {
+    const pattern = intrinsicSkeletonPattern(source)!;
+    expect(pattern.source).toBe('^\\{\\{resolve:secretsmanager:[^}]*:SecretString:pw\\}\\}$');
+  });
+
+  // The contrast that makes the collapse a COLLAPSE rather than a blanket
+  // "one wildcard per pattern": a NON-empty delimiter puts a literal between
+  // the parts, that literal is what anchors the match, and both wildcards must
+  // survive or the skeleton loses the specificity it exists for.
+  it('keeps wildcards that a literal separates', () => {
+    const pattern = intrinsicSkeletonPattern({
+      'Fn::Join': ['-', ['{{resolve:secretsmanager:', { Ref: 'A' }, { Ref: 'B' }, ':SecretString:pw}}']],
+    })!;
+    expect(pattern.source).toBe('^\\{\\{resolve:secretsmanager:-[^}]*-[^}]*-:SecretString:pw\\}\\}$');
+  });
+
+  it('handles the 2-arg Fn::Sub [template, vars] form', () => {
+    recordSecretExpression(EXPR_PLAIN);
+    recordSecretExpression(EXPR_STAGED);
+
+    const redacted = redactSecretsForState({ P: SHARED }, new Map([[SHARED, EXPR_STAGED]]), {
+      P: {
+        'Fn::Sub': [
+          '{{resolve:secretsmanager:cdkd-test-dynref-secret-${Acct}:SecretString:password}}',
+          { Acct: { Ref: 'AWS::AccountId' } },
+        ],
+      },
+    }) as Record<string, string>;
+
+    expect(redacted['P']).toBe(EXPR_PLAIN);
+  });
+
+  // The refusals that keep a malformed or unknowable source out of the pass.
+  //
+  // Each shape is built so that RELAXING its guard changes the OBSERVABLE
+  // answer — the pass either accepts and returns `EXPR_PLAIN` where the
+  // survivor `EXPR_STAGED` is correct, or the unguarded code throws on its way
+  // through. A first cut used shapes whose skeleton matched nothing anyway, so
+  // every one of these guards could be deleted with the suite still green: the
+  // cases fenced their own labels and nothing else (measured). `MATCHING_PARTS`
+  // is what gives them teeth — on its own it positions `EXPR_PLAIN` uniquely,
+  // so any source that reaches the matcher still carrying it produces a
+  // different string from the fallback.
+  //
+  // One row is the exception and is left in deliberately: the unknown-intrinsic
+  // case pins the function's DEFAULT (fall off the end, return `undefined`),
+  // and a default has no guard to relax, so no mutation of the current code
+  // makes it fail. It guards against a future arm that starts treating an
+  // unrecognized key's args as a join.
+  const MATCHING_PARTS = [
+    '{{resolve:secretsmanager:cdkd-test-dynref-secret-',
+    { Ref: 'AWS::AccountId' },
+    ':SecretString:password}}',
+  ];
+
+  it.each([
+    ['a multi-key object is not an intrinsic', { 'Fn::Join': ['', MATCHING_PARTS], Extra: 1 }],
+    ['an Fn::Join that is not a 2-element array', { 'Fn::Join': ['', MATCHING_PARTS, 'extra'] }],
+    [
+      'an Fn::Join with a non-string delimiter',
+      {
+        'Fn::Join': [
+          { Ref: 'Sep' },
+          ['{{resolve:secretsmanager:cdkd-test-dynref-secret-1', ':SecretString:password}}'],
+        ],
+      },
+    ],
+    [
+      'an Fn::Join whose parts are not an array',
+      {
+        'Fn::Join': [
+          '',
+          '{{resolve:secretsmanager:cdkd-test-dynref-secret-1:SecretString:password}}',
+        ],
+      },
+    ],
+    ['an Fn::Sub whose template is not a string', { 'Fn::Sub': [{ Ref: 'T' }, {}] }],
+    ['an unknown intrinsic key', { 'Fn::Select': [0, MATCHING_PARTS] }],
+  ])('refuses %s', (_label, source) => {
+    recordSecretExpression(EXPR_PLAIN);
+
+    const redacted = redactSecretsForState({ P: SHARED }, new Map([[SHARED, EXPR_STAGED]]), {
+      P: source,
+    }) as Record<string, string>;
+
+    expect(redacted['P']).toBe(EXPR_STAGED);
+  });
+
+  // The empty-string guard, driven through the one input that reaches it: a
+  // caller-supplied map keyed by `''`. The resolver never records an empty
+  // secret, so this mirrors the value pass's own exclusion rather than a live
+  // shape — an empty needle is not a distinguishing value and must not let a
+  // whole leaf be replaced.
+  it('refuses an empty bag leaf even when the skeleton matches', () => {
+    recordSecretExpression(EXPR_PLAIN);
+
+    const redacted = redactSecretsForState({ P: '' }, new Map([['', EXPR_PLAIN]]), {
+      P: SOURCE_PLAIN,
+    }) as Record<string, string>;
+
+    expect(redacted['P']).toBe('');
   });
 
   // Condition 1, driven through the input that actually reaches it: the
@@ -279,12 +461,13 @@ describe('secret-redaction - intrinsic (Fn::Join / Fn::Sub) source leaf (issue #
   // must stay RESOLVED in state, or the diff compares a resolved desired side
   // against a stored expression forever.
   //
-  // The skeleton pass cannot reach it because a public expression is never
-  // RECORDED, so it is never a candidate — which is the invariant this case
-  // pins, from the outside: an intrinsic source describing a public reference,
-  // with a recorded SECRET whose shape it does not match, must leave the leaf
-  // alone. A widening of the candidate list to "any expression the source
-  // mentions" would fail here.
+  // Like the no-candidate case, this is a BEHAVIOR guard rather than a clause
+  // fence, and an earlier version of this comment claimed otherwise — wrongly.
+  // A public reference's resolved value is not a recorded secret plaintext, so
+  // condition 1 returns before the candidate loop is reached, and no
+  // single-clause mutation changes the outcome. It stays because the OUTCOME is
+  // the #1901 invariant (a `String` / `StringList` parameter must survive
+  // RESOLVED in state) and a future rewrite of this arm could break it.
   it('never persists a public ssm expression through the skeleton path', () => {
     const PUBLIC_HOST = 'db.example.com';
     recordSecretExpression(EXPR_PLAIN);
