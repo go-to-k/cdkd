@@ -2467,6 +2467,42 @@ applies to a pair of `{{resolve:ssm:...}}` references whose parameter `Type`
 AWS did not report. If you hit a spurious UPDATE on a resource holding two
 spellings of one secret, make the differing part a literal in the template.
 
+**Secrets inside a LIST are redacted too, including on a resource that did not
+change** (issue [#1915](https://github.com/go-to-k/cdkd/issues/1915)). A
+reference nested in an array — an ECS task definition's
+`ContainerDefinitions[].Environment[]` is the usual shape — used to keep its
+resolved plaintext in the record's `observedProperties` (the drift baseline)
+whenever the resource was UNCHANGED on that deploy, because the resource is
+never re-resolved then and AWS does not return list elements in the template's
+order. cdkd now matches list elements by their identity field (`Name` / `Key`)
+rather than by position, which does not depend on order, so the leaf is
+redacted like any other. Elements that carry no such identity field are left
+alone rather than guessed at, so nothing is ever written onto the wrong
+element; a redaction cdkd cannot place falls back to matching by value.
+
+**A secret whose value is itself a `{{resolve:...}}` string is redacted**
+(issue [#1917](https://github.com/go-to-k/cdkd/issues/1917)). Such a value is
+byte-identical to an already-redacted expression, and cdkd used to keep any
+such leaf verbatim — which persisted the plaintext. cdkd now asks a narrower
+question: does the reference it is being compared against describe the SAME
+generation of the resource? Only a resource's own stored properties can answer
+yes; a template never can, whichever command is running. When the answer is no,
+the leaf is matched by VALUE instead — so a plaintext cdkd resolved this run is
+still replaced by its own reference, while a reference already in state is left
+exactly as it is. A legacy leaf of this shape is cleaned the next time either
+`cdkd deploy` or `cdkd scrub` resolves that secret.
+
+**A reference you have edited but not deployed is never rewritten** — by
+`cdkd scrub` or by `cdkd deploy`. If state holds `...:AWSPREVIOUS` and the
+template now says `...:AWSCURRENT`, scrub leaves the record alone and reports
+nothing to scrub, and a deploy that fails and rolls back leaves the reverted
+reference in place. Rewriting either would make the next `cdkd deploy` compare
+the new expression against itself, see no change, and never push the edit to
+AWS — a credential rotation that silently never happens, invisible to
+`cdkd drift` because the baseline would have been rewritten too. The same rule
+covers the drift baseline: `observedProperties` keeps the reference AWS was
+last seen holding, so `cdkd drift --revert` cannot push an undeployed one.
+
 **Known limitation.** Two paths do not yet inherit this redaction, both because
 they resolve a reference through a context that does not record secrets:
 

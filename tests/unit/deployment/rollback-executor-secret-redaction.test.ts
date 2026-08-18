@@ -26,10 +26,20 @@ vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
 // re-resolved on replay exactly like a secretsmanager one.
 const SECRET_PLAINTEXT = 'super-secret-rotated-value';
 const SECRET_EXPR = '{{resolve:secretsmanager:my-secret:SecretString:client_secret::}}';
+// A secret whose resolved plaintext is ITSELF a complete `{{resolve:...}}`
+// string (issue #1917). Held in the same mock secret under its own JSON key, so
+// no test has to override the shared mock implementation and risk leaking it.
+const TOKEN_SHAPED_PLAINTEXT = '{{resolve:secretsmanager:decoy/other:SecretString:key}}';
+const TOKEN_EXPR = '{{resolve:secretsmanager:my-secret:SecretString:token_shaped::}}';
+const TOKEN_EXPR_STAGED =
+  '{{resolve:secretsmanager:my-secret:SecretString:token_shaped:AWSCURRENT}}';
 const SECURE_PLAINTEXT = 'decrypted-securestring-value';
 const SECURE_EXPR = '{{resolve:ssm:/prod/idp/client-secret}}';
 const mockSMSend = vi.fn(async () => ({
-  SecretString: JSON.stringify({ client_secret: SECRET_PLAINTEXT }),
+  SecretString: JSON.stringify({
+    client_secret: SECRET_PLAINTEXT,
+    token_shaped: TOKEN_SHAPED_PLAINTEXT,
+  }),
 }));
 // Declares the command parameter (unlike `mockSMSend`, which no assertion
 // inspects) so the SecureString test can read back the `WithDecryption` flag.
@@ -212,6 +222,71 @@ describe('rollback replay - secret re-resolution + state redaction (GHSA #1899)'
     expect(details['client_secret']).toBe(SECRET_EXPR);
     expect(details['client_secret_staged']).toBe(STAGED_EXPR);
     expect(JSON.stringify(state)).not.toContain(SECRET_PLAINTEXT);
+  });
+
+  // BINDING test for the CONSTANT this writer passes, not for what that constant
+  // DOES (issue #1917 review). The rules matrix in
+  // `secret-redaction-provenance.test.ts` pins each constant's behavior, but
+  // nothing pinned `redactRollbackRecord`'s CHOICE — swapping it to any other
+  // constant left the whole suite green while re-opening #1917 AND disabling
+  // positional descent on the replay path.
+  //
+  // The fixture separates `STATE_DERIVED_RULES` from all four alternatives at
+  // once, and each half of its shape is load-bearing:
+  //
+  //  - The list holds PLAIN STRINGS, so the order-independent keyed descent
+  //    cannot pair them and only `descendArrays` can tell the two leaves apart.
+  //    That kills the two `descendArrays: false` constants.
+  //  - The resolved plaintext is TOKEN-SHAPED, so a constant without
+  //    `sourceIsSameGeneration` refuses the source and falls to the value scan.
+  //    That kills `TEMPLATE_DERIVED_RULES`, which shares `descendArrays: true`.
+  //  - The two references COLLIDE on one plaintext, so the value scan's answer
+  //    is visibly wrong (both leaves take whichever expression was recorded
+  //    last) rather than merely different.
+  it('binds the replay writer to STATE_DERIVED_RULES, not merely to its behavior', async () => {
+    const update = vi.fn().mockResolvedValue({
+      physicalId: 'phys-B',
+      effectiveProperties: {
+        Label: 'pub',
+        Scopes: [TOKEN_SHAPED_PLAINTEXT, TOKEN_SHAPED_PLAINTEXT],
+      },
+    });
+    const { ctx } = makeCtx({ update });
+    // `Label` differs from the live record below so the revert is a REAL
+    // change: `resolveReplayProps` short-circuits when the journaled bag already
+    // equals what state holds, and a short-circuited replay resolves nothing at
+    // all, which would make every assertion here vacuous.
+    const journaled = { Label: 'pub', Scopes: [TOKEN_EXPR, TOKEN_EXPR_STAGED] };
+    const prev = res({ physicalId: 'phys-B', resourceType: IDP_TYPE, properties: journaled });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'Idp',
+        changeType: 'UPDATE',
+        resourceType: IDP_TYPE,
+        physicalId: 'phys-B',
+        previousState: prev,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({
+        physicalId: 'phys-B',
+        resourceType: IDP_TYPE,
+        properties: { Label: 'pub-CHANGED', Scopes: [TOKEN_EXPR, TOKEN_EXPR_STAGED] },
+      }),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    // Non-vacuity: the replay really did resolve both leaves to the plaintext
+    // and hand it to the provider. Without this the assertions below would also
+    // pass on a replay that never resolved anything.
+    expect(mockSMSend).toHaveBeenCalled();
+    const desiredArg = update.mock.calls[0]![3] as { Scopes: string[] };
+    expect(desiredArg.Scopes).toEqual([TOKEN_SHAPED_PLAINTEXT, TOKEN_SHAPED_PLAINTEXT]);
+
+    const scopes = state.Idp!.properties['Scopes'] as string[];
+    expect(scopes[0]).toBe(TOKEN_EXPR);
+    expect(scopes[1]).toBe(TOKEN_EXPR_STAGED);
   });
 
   it('reverse-replacement: re-CREATE gets the resolved secret, state keeps the expression', async () => {

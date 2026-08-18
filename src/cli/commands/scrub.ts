@@ -26,7 +26,8 @@ import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-r
 import {
   scrubResourceRecord,
   redactSecretsForState,
-  TEMPLATE_SOURCED_READBACK_RULES,
+  TEMPLATE_SOURCED_RULES,
+  STATE_SOURCED_CROSS_GENERATION_RULES,
 } from '../../deployment/secret-redaction.js';
 import type { StackState } from '../../types/state.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
@@ -371,8 +372,13 @@ export async function scrubStack(
       //
       // TEMPLATE_SOURCED rules, NOT template-derived: this bag is persisted
       // state, so it was NOT produced by resolving today's template. Their
-      // shapes can diverge, which makes positional array descent unsound, and
-      // the template carries public ssm expressions that must not be persisted.
+      // shapes can diverge, which makes positional array descent unsound; the
+      // template carries public ssm expressions that must not be persisted; and
+      // it is a different GENERATION, so a state leaf that ALREADY holds a
+      // `{{resolve:...}}` token is not overwritten from it (issue #1917) — an
+      // edited-but-undeployed template would otherwise rewrite state onto its
+      // own expression and the next deploy would see NO_CHANGE. See the
+      // generation table on `PathSourceRules`.
       const ownSecrets = secrets ?? new Map<string, string>();
       const positioned = templateProps
         ? {
@@ -381,15 +387,52 @@ export async function scrubStack(
               record.properties,
               ownSecrets,
               templateProps,
-              TEMPLATE_SOURCED_READBACK_RULES
+              TEMPLATE_SOURCED_RULES
             ),
           }
         : record;
+      // STATE_SOURCED_CROSS_GENERATION rules for the observed walk (issue #1917
+      // review). `scrubResourceRecord` would otherwise DERIVE
+      // `STATE_SOURCED_READBACK_RULES` from the absent source argument — right
+      // for every other caller, wrong here, because `positioned.properties`
+      // above has already been moved onto TODAY's template. Taking that as the
+      // observed source for a leaf that already holds an expression would
+      // rewrite the drift baseline onto a reference the stack may never have
+      // deployed, which `cdkd drift --revert` then pushes to AWS. The
+      // trust-any-expression relaxation is kept — that source is still a STATE
+      // bag — because it is what cleans a legacy PLAINTEXT observed leaf.
       const scrubbed =
-        secrets || templateProps ? scrubResourceRecord(positioned, ownSecrets) : record;
+        secrets || templateProps
+          ? scrubResourceRecord(
+              positioned,
+              ownSecrets,
+              undefined,
+              STATE_SOURCED_CROSS_GENERATION_RULES
+            )
+          : record;
       if (JSON.stringify(scrubbed) !== JSON.stringify(record)) recordsChanged++;
       newResources[logicalId] = scrubbed;
     }
+    // The DEFAULT rules, deliberately, and the reasoning is worth recording
+    // because the constant's name argues against it. `state.outputs` is a
+    // PERSISTED bag while `outputsTemplateSource` is TODAY's template, so
+    // `TEMPLATE_DERIVED_RULES` — "the bag was produced by resolving the
+    // source" — is not literally true of this pair. It is nonetheless the right
+    // call, because the two constants differ on `descendArrays` ALONE
+    // (`sourceIsSameGeneration` is already false in both), and that flag cannot
+    // fire here: `outputsTemplateSource[name]` is a template Output's `Value`,
+    // which CloudFormation requires to be a string or an intrinsic OBJECT — a
+    // list-valued output is an `Fn::GetAtt`, never a literal array — so the
+    // array arm is never reached however the bag is shaped. Measured across
+    // every reachable shape (list bag against an `Fn::GetAtt` source, scalar,
+    // `Fn::Join` source): byte-identical output under both constants. Switching
+    // it would put a third, INERT behavior-shaped change in a PR that ships
+    // two issues.
+    //
+    // What would make this wrong: `outputsTemplateSource` gaining a source
+    // whose value can be an ARRAY. At that point the bag really is a persisted
+    // generation walked against today's template, positional descent stops
+    // being sound, and this call site needs `TEMPLATE_SOURCED_RULES`.
     const newOutputs =
       outputSecrets.size > 0
         ? redactSecretsForState(state.outputs, outputSecrets, outputsTemplateSource)

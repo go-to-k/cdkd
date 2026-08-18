@@ -312,6 +312,12 @@
       ]
     },
     {
+      "flag": "--no-capture-observed-state",
+      "integs": [
+        "secrets-array-nested"
+      ]
+    },
+    {
       "flag": "--no-cfn-fallback",
       "integs": [
         "cross-stack-cfn-fallback"
@@ -524,6 +530,7 @@
         "scheduler-custom-group",
         "schema-v7-to-v8-migration",
         "sdk-ccapi-crossref",
+        "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",
         "serverless-api",
@@ -757,6 +764,7 @@
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
         "sdk-ccapi-crossref",
+        "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",
         "serverless-api",
@@ -1029,6 +1037,7 @@
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
         "sdk-ccapi-crossref",
+        "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",
         "serverless-api",
@@ -1274,6 +1283,7 @@
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
         "sdk-ccapi-crossref",
+        "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",
         "serverless-api",
@@ -1305,7 +1315,6 @@
     "--ignore-errors",
     "--image-build-concurrency",
     "--no-aggressive-vpc-parallel",
-    "--no-capture-observed-state",
     "--prefix-user-supplied-names",
     "--role-arn",
     "--stack",
@@ -1397,6 +1406,7 @@
     "--event-source-arn",
     "--execution-arn",
     "--fail",
+    "--family-prefix",
     "--field-name",
     "--file-path",
     "--file-system-id",
@@ -1555,6 +1565,7 @@
     "--scope",
     "--secret",
     "--secret-id",
+    "--secret-string",
     "--select",
     "--selection-id",
     "--service",
@@ -1581,6 +1592,7 @@
     "--stage-name",
     "--state-machine-arn",
     "--statement-id",
+    "--status",
     "--stream-name",
     "--subnet-id",
     "--subscription-arn",
