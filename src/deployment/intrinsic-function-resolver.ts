@@ -1384,8 +1384,16 @@ export class IntrinsicFunctionResolver {
   private readonly cachedDynamicReferences = new Map<string, CachedDynamicReference>();
 
   /**
-   * SSM parameter names this resolver has already warned about for an
-   * unrecognized `Type` (issue #1933 review).
+   * `<parameter name>\u0000<reported Type>` pairs this resolver has already
+   * warned about (issue #1933 review).
+   *
+   * Keyed on the PAIR rather than the name alone: two different anomalous types
+   * for one parameter are two different facts — the line REPORTS the type, so
+   * suppressing the second would hide a `Type` nobody has seen yet behind one
+   * that was already explained. The volume problem this set exists for is N
+   * IDENTICAL lines for N occurrences of one reference, which the pair still
+   * bounds, because the type is a property of the parameter rather than of the
+   * occurrence.
    *
    * The warning is per LOOKUP, and a parameter with an anomalous `Type` is
    * deliberately never cached (see `cacheable` in `resolveDynamicReferences`),
@@ -4844,6 +4852,21 @@ export class IntrinsicFunctionResolver {
    * AWS rather than inheriting a transient verdict). Retrying only the throttle
    * shape keeps every real answer — `ParameterNotFound`, `AccessDenied`, a
    * malformed reference — failing fast and unchanged.
+   *
+   * Two bounds, both NAMED rather than fixed here:
+   *
+   * - No `isInterrupted` is threaded, so a Ctrl-C landing inside the backoff is
+   *   only noticed when that sleep ends — worst case ~8s, ~15s across the whole
+   *   schedule. `withRetry` supports the hook, but the only interrupt state in
+   *   the tree is `DeployEngine.interrupted`, which reaches nothing here;
+   *   wiring it means a resolver option threaded from that engine.
+   * - It says NOTHING about concurrency. The client is captured before the
+   *   first attempt, so a sibling stack's teardown (`stackAwsClients.destroy()`
+   *   in `deploy.ts`) during a backoff surfaces as a raw, non-throttle-shaped
+   *   failure on the next attempt. That is a property of the ambient-singleton
+   *   design this PR deliberately does not touch (issue
+   *   [#1957](https://github.com/go-to-k/cdkd/issues/1957)), not something the
+   *   retry makes safe.
    */
   private sendWithThrottleRetry<T>(operation: () => Promise<T>, label: string): Promise<T> {
     return withRetry(operation, label, {
@@ -4926,14 +4949,14 @@ export class IntrinsicFunctionResolver {
     if (
       secure &&
       paramType !== 'SecureString' &&
-      !this.warnedUnrecognizedSsmTypes.has(parameterName)
+      !this.warnedUnrecognizedSsmTypes.has(`${parameterName}\u0000${String(paramType)}`)
     ) {
       // Reached only if AWS stops returning `Type`, or returns one cdkd does not
       // know. The value is treated as a secret (see above), which is safe but
       // silently changes what state stores — so say so rather than let the
-      // parameter quietly start persisting as its expression. Once per parameter
-      // per resolver — see `warnedUnrecognizedSsmTypes`.
-      this.warnedUnrecognizedSsmTypes.add(parameterName);
+      // parameter quietly start persisting as its expression. Once per
+      // (parameter, type) per resolver — see `warnedUnrecognizedSsmTypes`.
+      this.warnedUnrecognizedSsmTypes.add(`${parameterName}\u0000${String(paramType)}`);
       const reported = paramType === undefined ? '(absent)' : `'${String(paramType)}'`;
       this.logger.warn(
         `SSM parameter '${parameterName}' reported an unrecognized Type ${reported} — treating ` +

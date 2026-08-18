@@ -1034,21 +1034,25 @@ async function runDriftForStack(
     // `{{resolve:...}}` string, so a stack with no dynamic reference makes no
     // AWS call here.
     //
-    // One instance per stack, but the DEDUPLICATION is not this instance's
-    // doing, and the distinction matters under `--all`: resolved values live in
-    // the module-global `cachedDynamicReferences`
-    // (`intrinsic-function-resolver.ts`), and a secretsmanager / ssm lookup
-    // goes through the AMBIENT `getAwsClients()` rather than through the
-    // `region` handed to this constructor. So an expression is fetched once per
-    // PROCESS, not once per stack, and against the ambient region regardless of
-    // which stack's record named it. That is INHERITED rather than chosen —
-    // `cdkd deploy` caches on exactly the same terms, so one expression naming
-    // different secrets in two regions is already unrepresentable there — and
-    // it is a real hazard for a cross-region `--all` run — `--all --revert` can
-    // push one region's secret into another region's resource. Filed as issue
-    // [#1933](https://github.com/go-to-k/cdkd/issues/1933) and deliberately not
-    // papered over here: a per-region cache belongs in the resolver, where
-    // every caller inherits it, not in one command's private workaround.
+    // One instance per stack, and since issue
+    // [#1933](https://github.com/go-to-k/cdkd/issues/1933) that instance IS the
+    // dedup scope: `cachedDynamicReferences` moved off module scope onto the
+    // resolver, so an expression is fetched once per STACK (it used to be once
+    // per process) and one stack's resolved value can no longer be handed to
+    // another stack's — or another region's — records.
+    //
+    // What is NOT fixed by that, and is the surviving hazard for a cross-region
+    // `--all` run: the lookup itself still goes through the AMBIENT
+    // `getAwsClients()` rather than through the `region` handed to this
+    // constructor, and this command installs its clients ONCE (see the
+    // `setAwsClients` call at the top of `runDrift`) while looping over stacks
+    // in several regions. So every stack's expression resolves against the CLI
+    // region, and `--all --revert` can still push one region's secret into
+    // another region's resource. Filed as issue
+    // [#1957](https://github.com/go-to-k/cdkd/issues/1957) and deliberately not
+    // papered over here: region-pinned lookup clients are a credentials
+    // decision that belongs in the resolver, where every caller inherits it,
+    // not in one command's private workaround.
     const secretResolver = new IntrinsicFunctionResolver(region);
     const entries = Object.entries(state.resources ?? {}).sort(([a], [b]) => a.localeCompare(b));
 

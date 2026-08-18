@@ -949,7 +949,7 @@ async function replaySingle(
    * The caller's resolver, SHARED across every op of the replay (issue #1933).
    * Constructing one here would cost a fresh secret lookup per op now that the
    * resolved-value cache lives on the instance — see the construction site in
-   * `replayCompletedOperations`.
+   * {@link replayRollback}.
    */
   resolver: IntrinsicFunctionResolver,
   orphanLogicalIds: Set<string>,

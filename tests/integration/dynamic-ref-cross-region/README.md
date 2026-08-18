@@ -30,19 +30,24 @@ with its own region — so a region boundary is now also a cache boundary.
    different values, and asserts the type really is `SecureString` before
    proceeding (a parameter that came back `String` would make the secret arm
    vacuous). Created out of band because CloudFormation cannot create one.
-3. Deploys TWO stacks in ONE cdkd process, one per region, each declaring two
-   SSM parameters whose `Value`s are the identical literal
-   `{{resolve:ssm:<shared name>}}` expressions.
+3. Deploys TWO stacks in ONE cdkd process, one per region, each declaring
+   THREE SSM parameters: the `String` echo, the `SecureString` echo, and a
+   THIRD that repeats the `SecureString` reference EMBEDDED in a longer string
+   and `DependsOn` the second — so it always resolves on a cache HIT.
 4. Asserts each region's echo parameters carry ITS OWN region's values — for
    both arms — with a dedicated failure message for the leak shape (region B
    holding region A's value / secret).
-5. Asserts, for the `SecureString` arm only, that each stack's `state.json`
+5. Asserts, for the two `SecureString` arms, that each stack's `state.json`
    holds the unresolved `{{resolve:ssm:...}}` expression and NEITHER region's
-   plaintext. This is the half the cache's per-entry secret verdict decides: a
-   cache hit that fails to re-record the secret for a later resource persists
-   plaintext, and a `String` arm can never show it because a public value is
-   never redacted.
-6. Destroys both stacks, asserts all four echo parameters and both state
+   plaintext — and it is the EMBEDDED one that makes this discriminating. A
+   leaf whose whole value is the template's token is repositioned from the
+   template SOURCE by `redactSecretsForState`, so the bare arm comes out
+   redacted even if the pass recorded nothing; an embedded occurrence has no
+   such fallback, so only the cache-hit arm re-recording the secret (using the
+   verdict carried on the cache entry) keeps its plaintext out of state. A
+   `String` arm can show none of this, because a public value is never
+   redacted.
+6. Destroys both stacks, asserts all six echo parameters and both state
    records are gone (tri-state gone probes), then deletes the seeded
    parameters.
 

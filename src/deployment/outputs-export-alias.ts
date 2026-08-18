@@ -84,20 +84,25 @@
  * it can only see what the RESOLVER recorded — and all inherited rather than
  * introduced here:
  *
- * - An `ssm` reference whose `Type` came back unclassifiable is deliberately
- *   never pinned (issue
- *   [#1901](https://github.com/go-to-k/cdkd/issues/1901), so the next pass
- *   re-asks AWS rather than inheriting a transient verdict), so a later cache
- *   hit can substitute that plaintext with nothing recorded and the refusal
- *   cannot fire. Closing it belongs with #1901's classification.
+ * - (CLOSED by issue [#1933](https://github.com/go-to-k/cdkd/issues/1933),
+ *   kept here because the reasoning is worth not re-deriving.) An `ssm`
+ *   reference whose `Type` came back unclassifiable is still deliberately never
+ *   pinned (issue [#1901](https://github.com/go-to-k/cdkd/issues/1901), so the
+ *   next pass re-asks AWS rather than inheriting a transient verdict) — but its
+ *   VALUE is no longer cached either, precisely so the two cannot disagree. A
+ *   later occurrence therefore RE-RESOLVES and records into its own bag rather
+ *   than substituting a plaintext with nothing recorded, so the refusal fires.
  * - A `Ref` to a `NoEcho` PARAMETER substituted into an export name is recorded
  *   nowhere: `NoEcho` is outside cdkd's dynamic-reference secret model
  *   entirely, so nothing here can see it.
  * - `evaluateConditions` runs BEFORE any bag is built, in both the deploy engine
  *   and `cdkd scrub`, and records into a map its caller discards while still
- *   WARMING the resolver's dynamic-reference cache — so an unpinned ssm
- *   reference first reached from a `Conditions` entry is invisible to every
- *   later bag. Scoped to that ONE caller: `resolveParameters` routes through
+ *   WARMING the resolver's dynamic-reference cache — so a PINNED reference
+ *   (`secretsmanager`, or a definitive `SecureString`) first reached from a
+ *   `Conditions` entry is invisible to every later bag. Narrowed by #1933: an
+ *   UNPINNED ssm value is not cached, so it is no longer reachable this way,
+ *   and a pinned one still carries its verdict on the cache entry — the residual
+ *   is now only that the conditions pass's own recorded VALUES are discarded. Scoped to that ONE caller: `resolveParameters` routes through
  *   `resolveSSMParameter`, not `resolveDynamicReferences`, so it warms no cache
  *   (an earlier revision of this note claimed otherwise). Merging a conditions
  *   map into an outputs bag would make a condition's secret a redaction NEEDLE

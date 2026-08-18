@@ -999,6 +999,45 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       expect(mockSSMSend).toHaveBeenCalledTimes(2);
     });
 
+    it('re-records an EMBEDDED occurrence on the cache hit, so its state keeps the expression', async () => {
+      // This is the mechanism `tests/integration/dynamic-ref-cross-region`
+      // phase 3c rests on, at unit scale.
+      //
+      // A leaf whose WHOLE value is the template's `{{resolve:...}}` token is
+      // repositioned from the SOURCE bag by `redactSecretsForState`, so it comes
+      // out redacted even when the pass recorded nothing — which is why a second
+      // BARE reference cannot tell a working cache-hit re-record from a broken
+      // one. An EMBEDDED occurrence has no such fallback: only the value map can
+      // rewrite it, and on a cache hit the value map is filled from the verdict
+      // the entry carries.
+      mockSSMSend.mockResolvedValue({
+        Parameter: { Value: 'decrypted-password', Type: 'SecureString' },
+      });
+      const stackResolver = new IntrinsicFunctionResolver('us-east-1');
+
+      // Resource 1: the bare reference, fresh resolution (populates the cache).
+      await stackResolver.resolveDynamicReferences(sharedSsmExpr, {
+        ...defaultContext,
+        recordedSecretValues: new Map<string, string>(),
+      });
+
+      // Resource 2: the SAME expression embedded in a longer string, resolved on
+      // the cache hit, with its OWN per-resource bag.
+      const embeddedSource = `db=${sharedSsmExpr};mode=test`;
+      const secondResource = new Map<string, string>();
+      const resolvedBag = await stackResolver.resolve(
+        { ConnectionString: embeddedSource },
+        { ...defaultContext, recordedSecretValues: secondResource }
+      );
+
+      expect(resolvedBag).toEqual({ ConnectionString: 'db=decrypted-password;mode=test' });
+      expect(mockSSMSend).toHaveBeenCalledTimes(1); // it really was a cache hit
+      // The persisted record must carry the expression back inside the string.
+      expect(redactSecretsForState(resolvedBag, secondResource)).toEqual({
+        ConnectionString: embeddedSource,
+      });
+    });
+
     it('keeps redacting after another region resolver RETRACTS the shared verdict', async () => {
       // The verdict store stayed process-global while the values moved onto the
       // instance, so the two lifetimes can now disagree: the same parameter
@@ -1068,6 +1107,26 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
 
       expect(resolved).toBe('v-after-throttle');
       expect(mockSSMSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries a THROTTLED secretsmanager lookup too', async () => {
+      // The twin of the ssm case. Both lookups gained calls from the narrower
+      // cache, so a wrapper on only one of them is an arbitrary split — and
+      // removing the secretsmanager one reddened nothing before this test.
+      const secretExpr = '{{resolve:secretsmanager:app/db:SecretString:password}}';
+      const throttle = Object.assign(new Error('Rate exceeded'), {
+        name: 'ThrottlingException',
+      });
+      mockSecretsManagerSend
+        .mockRejectedValueOnce(throttle)
+        .mockResolvedValueOnce({ SecretString: JSON.stringify({ password: 'pw-after-throttle' }) });
+
+      const resolved = await resolver.resolveDynamicReferences(secretExpr, defaultContext);
+
+      // Value AND attempt count: without the count a wrapper-less
+      // implementation that happened to succeed first time would pass.
+      expect(resolved).toBe('pw-after-throttle');
+      expect(mockSecretsManagerSend).toHaveBeenCalledTimes(2);
     });
 
     it('does NOT retry a real answer — a missing parameter fails fast', async () => {

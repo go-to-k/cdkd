@@ -62,12 +62,41 @@ export class DynamicRefCrossRegionStack extends cdk.Stack {
     // now carries per entry, so without this arm the whole verdict-carrying
     // half of the #1933 fix has no real-AWS coverage — the `String` arm above
     // exercises only the value, which is never redacted.
-    new ssm.CfnParameter(this, 'SecureEchoParameter', {
+    const secureEcho = new ssm.CfnParameter(this, 'SecureEchoParameter', {
       type: 'String',
       name: `${this.stackName}-secure-echo`,
       value: `{{resolve:ssm:${props.secureSourceParameterName}}}`,
       description:
         'Echoes the region-local value of the shared SecureString source parameter (cdkd issue #1933)',
     });
+
+    // The CACHE-HIT resource, and the two things that make it discriminating.
+    //
+    // ORDER: `addDependency` forces it to be provisioned AFTER `secureEcho`, so
+    // its resolution is guaranteed to HIT the cache the first one populated. A
+    // second resource alone would not settle this — within a stack cdkd resolves
+    // up to `--concurrency` resources at once, so both could take the fresh path
+    // and the cache-hit arm would never run.
+    //
+    // SHAPE: the reference is EMBEDDED in a longer string rather than being the
+    // whole value, and that is what makes the persisted state prove something.
+    // Redaction is both path-based and value-based (see
+    // `src/deployment/secret-redaction.ts`): a leaf whose WHOLE value is the
+    // template's `{{resolve:...}}` token is repositioned from the SOURCE and
+    // would come out redacted even if the pass recorded nothing, so a bare
+    // second reference cannot tell a working cache-hit re-record from a broken
+    // one. An embedded occurrence has no such fallback — the surrounding text
+    // means the source leaf is not a bare expression, so the only thing that can
+    // rewrite the plaintext back out is the VALUE map, which the cache-hit arm
+    // is what populates for this resource. Drop the verdict the cache entry
+    // carries and this parameter's record persists the decrypted secret.
+    const embeddedEcho = new ssm.CfnParameter(this, 'SecureEmbeddedEchoParameter', {
+      type: 'String',
+      name: `${this.stackName}-secure-embedded-echo`,
+      value: `db={{resolve:ssm:${props.secureSourceParameterName}}};mode=test`,
+      description:
+        'Echoes the SecureString value EMBEDDED in a larger string, resolved on a cache hit (cdkd issue #1933)',
+    });
+    embeddedEcho.addResourceDependency(secureEcho);
   }
 }

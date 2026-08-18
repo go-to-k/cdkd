@@ -31,13 +31,16 @@
 # while this fixture pins that the CACHE no longer carries one region's value
 # into another's resource.
 #
-# TWO arms run per region, and both are needed. The `String` arm proves the
+# THREE arms run per region, and each proves something the others cannot. The `String` arm proves the
 # resolved VALUE is region-local. The `SecureString` arm (seeded out of band by
 # this script — CloudFormation cannot create one) additionally reaches the
 # REDACTION path: cdkd hands the provider the decrypted value while persisting
 # the unresolved expression (issue #1901), which is the half the cache's
 # per-entry secret verdict decides. Without it the verdict-carrying logic gets
-# no real-AWS coverage at all.
+# no real-AWS coverage at all. A THIRD resource repeats the SecureString
+# reference EMBEDDED in a longer string and DependsOn the second, so it resolves
+# on a cache HIT whose leaf cannot be repositioned from the template — the only
+# arm that fails if the cache entry stops carrying its secret verdict.
 #
 # SECURITY: the SecureString values are test data, but are never printed —
 # assertions compare them and report PASS/FAIL only.
@@ -114,6 +117,11 @@ ECHO_PARAM_A="${STACK_A}-echo"
 ECHO_PARAM_B="${STACK_B}-echo"
 SECURE_ECHO_PARAM_A="${STACK_A}-secure-echo"
 SECURE_ECHO_PARAM_B="${STACK_B}-secure-echo"
+# The cache-HIT resource: same expression, EMBEDDED in a longer string, and
+# DependsOn the bare one so it always resolves second. See the stack comment for
+# why both properties are needed to make phase 3c discriminating.
+EMBEDDED_ECHO_PARAM_A="${STACK_A}-secure-embedded-echo"
+EMBEDDED_ECHO_PARAM_B="${STACK_B}-secure-embedded-echo"
 
 SOURCE_PARAM="/cdkd-test/dynref-cross-region-${ACCOUNT_ID}"
 EXPECTED_A="cdkd-dynref-region-a"
@@ -164,6 +172,8 @@ cleanup() {
   aws ssm delete-parameter --name "${ECHO_PARAM_B}" --region "${REGION_B}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${SECURE_ECHO_PARAM_A}" --region "${REGION_A}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${SECURE_ECHO_PARAM_B}" --region "${REGION_B}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${EMBEDDED_ECHO_PARAM_A}" --region "${REGION_A}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${EMBEDDED_ECHO_PARAM_B}" --region "${REGION_B}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${SOURCE_PARAM}" --region "${REGION_A}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${SOURCE_PARAM}" --region "${REGION_B}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${SECURE_PARAM}" --region "${REGION_A}" >/dev/null 2>&1 || true
@@ -256,11 +266,37 @@ if [ "${ACTUAL_SECURE_B}" != "${EXPECTED_SECURE_B}" ]; then
 fi
 echo "    OK: each region resolved its own SecureString value"
 
+echo "==> Phase 3b-2: the CACHE-HIT resource resolved the same region's secret"
+ACTUAL_EMBEDDED_A="$(aws ssm get-parameter --name "${EMBEDDED_ECHO_PARAM_A}" --region "${REGION_A}" \
+  --query 'Parameter.Value' --output text)"
+ACTUAL_EMBEDDED_B="$(aws ssm get-parameter --name "${EMBEDDED_ECHO_PARAM_B}" --region "${REGION_B}" \
+  --query 'Parameter.Value' --output text)"
+if [ "${ACTUAL_EMBEDDED_A}" != "db=${EXPECTED_SECURE_A};mode=test" ]; then
+  echo "FAIL: ${EMBEDDED_ECHO_PARAM_A} (${REGION_A}) did not substitute its own region's secret" >&2
+  exit 1
+fi
+if [ "${ACTUAL_EMBEDDED_B}" != "db=${EXPECTED_SECURE_B};mode=test" ]; then
+  echo "FAIL: ${EMBEDDED_ECHO_PARAM_B} (${REGION_B}) did not substitute its own region's secret" >&2
+  exit 1
+fi
+echo "    OK: the cache-hit arm substituted the region-local secret in both stacks"
+
 echo "==> Phase 3c: persisted state holds the EXPRESSION, never the plaintext"
-# The redaction half (issue #1901), which only the SecureString arm can reach:
-# the provider got the decrypted value (asserted above) while state must store
-# the unresolved reference. A cache hit that failed to re-record the secret for
-# a later resource is exactly how the plaintext would land here instead.
+# The redaction half (issue #1901), which only a SecureString arm can reach: the
+# provider got the decrypted value (asserted above) while state must store the
+# unresolved reference.
+#
+# What each of the two secret resources contributes, because they prove
+# DIFFERENT things and only one of them is about this PR:
+#
+#   - the BARE reference exercises the fresh-resolution recorder, and its leaf
+#     would be repositioned from the template source even if nothing were
+#     recorded — so it is a regression net for #1901, not a fence for #1933;
+#   - the EMBEDDED reference is resolved on a cache HIT (it DependsOn the bare
+#     one) and its leaf cannot be repositioned, so the only thing that can keep
+#     its plaintext out of state is the cache-hit arm re-recording the secret
+#     using the verdict carried on the cache entry. Drop that verdict and this
+#     phase fails on the embedded record with the decrypted value in state.json.
 assert_state_redacted() { # usage: assert_state_redacted <stack> <region> <plaintext>
   local stack="$1" region="$2" plaintext="$3"
   local state_json
@@ -296,6 +332,10 @@ assert_gone "${SECURE_ECHO_PARAM_A} still exists in ${REGION_A} after destroy" \
   aws ssm get-parameter --name "${SECURE_ECHO_PARAM_A}" --region "${REGION_A}"
 assert_gone "${SECURE_ECHO_PARAM_B} still exists in ${REGION_B} after destroy" \
   aws ssm get-parameter --name "${SECURE_ECHO_PARAM_B}" --region "${REGION_B}"
+assert_gone "${EMBEDDED_ECHO_PARAM_A} still exists in ${REGION_A} after destroy" \
+  aws ssm get-parameter --name "${EMBEDDED_ECHO_PARAM_A}" --region "${REGION_A}"
+assert_gone "${EMBEDDED_ECHO_PARAM_B} still exists in ${REGION_B} after destroy" \
+  aws ssm get-parameter --name "${EMBEDDED_ECHO_PARAM_B}" --region "${REGION_B}"
 assert_gone "state.json for ${STACK_A} still present after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK_A}/${REGION_A}/state.json"
 assert_gone "state.json for ${STACK_B} still present after destroy" \
