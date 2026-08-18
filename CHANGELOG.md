@@ -1,3 +1,10 @@
+## [0.283.29](https://github.com/go-to-k/cdkd/compare/v0.283.28...v0.283.29) (2026-08-18)
+
+
+### Bug Fixes
+
+* **cognito:** default MfaConfiguration to OFF when the call enables no MFA factor ([#1929](https://github.com/go-to-k/cdkd/issues/1929)) ([d91a8a0](https://github.com/go-to-k/cdkd/commit/d91a8a0d5386fc4a87e5e5e98cbc711d1bc9af17))
+
 ## [0.283.28](https://github.com/go-to-k/cdkd/compare/v0.283.27...v0.283.28) (2026-08-18)
 
 
