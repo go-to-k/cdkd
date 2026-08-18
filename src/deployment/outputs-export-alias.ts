@@ -17,6 +17,12 @@
  * the template to redact legacy state. Two of those writers spelling the rule
  * separately is exactly how they drifted apart in the first place.
  *
+ * The two writers do NOT share every rule, and the differences are deliberate —
+ * each is documented at the rule it applies to. In short: the engine knows
+ * which output it just resolved a value from and which outputs its conditions
+ * suppressed; scrub knows neither, because its bag was written by an earlier
+ * binary under conditions it can only re-evaluate best-effort.
+ *
  * The message builders live here for the reason
  * `src/provisioning/nested-stack-messages.ts` gives: a test that pins behavior
  * on a warning must not pin it on a hand-copied string, or a reword silently
@@ -24,14 +30,20 @@
  *
  * Unlike that module this one is NOT import-free — it takes `secret-redaction`,
  * which is itself a documented no-import leaf, so no cycle is reachable through
- * it. The masking has to be here rather than at the call sites: an export name
- * can be an INTRINSIC that resolved to secret plaintext, and a builder that
- * accepted a pre-masked string would put the burden of remembering on every
- * caller — which is the same shape of mistake this module exists to prevent.
+ * it.
+ *
+ * KNOWN RESIDUAL, inherited rather than introduced: the secret-bearing-name
+ * refusal below can only see secrets the RESOLVER recorded. An `ssm` reference
+ * whose `Type` came back unclassifiable is deliberately never pinned (issue
+ * [#1901](https://github.com/go-to-k/cdkd/issues/1901), so the next pass
+ * re-asks AWS rather than inheriting a transient verdict), so a later cache hit
+ * can substitute that plaintext into an export name with nothing recorded, and
+ * the refusal cannot fire. Closing it belongs with #1901's classification, not
+ * here.
  */
 
 import type { TemplateOutput } from '../types/resource.js';
-import { maskSecretsInText, type RecordedSecretValues } from './secret-redaction.js';
+import { SECRET_MASK, type RecordedSecretValues } from './secret-redaction.js';
 
 /**
  * Does CloudFormation suppress this output on this deploy?
@@ -40,6 +52,9 @@ import { maskSecretsInText, type RecordedSecretValues } from './secret-redaction
  * `resolveOutputs` mirrors that (issue #1028). Unknown condition names are
  * KEPT, matching `filterResourcesByCondition` on the resource side — a
  * condition cdkd could not evaluate must not silently delete an output.
+ *
+ * DEPLOY-SIDE ONLY. `cdkd scrub` deliberately does not use this: see
+ * {@link collectDeclaredOutputNames}.
  */
 export function isOutputSuppressedByCondition(
   output: TemplateOutput,
@@ -57,6 +72,9 @@ export function isOutputSuppressedByCondition(
  * it must not write a position source either, and its name is free for an
  * export alias to use. Reserving names for suppressed outputs would drop a
  * WORKING export the moment an unrelated condition went false.
+ *
+ * Sound at deploy time because these are the SAME condition values the deploy
+ * itself acted on. Not sound in scrub — see {@link collectDeclaredOutputNames}.
  */
 export function collectPublishedOutputNames(
   outputs: Record<string, TemplateOutput>,
@@ -70,22 +88,56 @@ export function collectPublishedOutputNames(
 }
 
 /**
- * Would aliasing `exportName` land on a key another published output owns?
+ * Every DECLARED output name, conditions ignored — the set `cdkd scrub` tests
+ * collisions against.
+ *
+ * Scrub must be a SUPERSET here, and the asymmetry with the deploy engine is
+ * forced by what scrub can know. Its condition values are re-evaluated
+ * best-effort, from template defaults only (the command takes no
+ * `--parameters`), and `evaluateConditions` assumes FALSE on any evaluation
+ * failure. So "suppressed" is both easy to hit spuriously and impossible to
+ * confirm against the deploy that actually wrote the state.
+ *
+ * The two error directions are not symmetric, which is what settles the rule:
+ *
+ * - Judging a colliding output suppressed when the DEPLOY published it (the
+ *   spurious-false case above) makes scrub miss the collision, write the
+ *   exporting output's expression over the colliding key, and persist a
+ *   reference naming a DIFFERENT secret — the #1919 corruption, produced by
+ *   the remediation command itself.
+ * - Judging it published when the deploy suppressed it costs one spurious
+ *   warning and one key redacted by VALUE match instead of by position, which
+ *   is exact unless two references resolve to the same value.
+ *
+ * A wrong reference beats a lost precision bound, so scrub over-approximates.
+ */
+export function collectDeclaredOutputNames(outputs: Record<string, TemplateOutput>): Set<string> {
+  return new Set(Object.keys(outputs));
+}
+
+/**
+ * Would aliasing `exportName` land on a key another output owns?
  *
  * An output exporting under its OWN name is not a collision: the alias rewrites
  * the identical key with the identical value, and both bags then carry the same
  * source.
+ *
+ * Deliberately NOT extended to two outputs sharing one `Export.Name` with no
+ * output of that name. Both bags stay consistent there (one iteration writes
+ * both the value and its source), so it is not this issue's class — see
+ * `docs/cross-stack-references.md`.
  */
 export function isExportAliasCollision(
   exportName: string,
   outputKey: string,
-  publishedOutputNames: ReadonlySet<string>
+  ownedOutputNames: ReadonlySet<string>
 ): boolean {
-  return exportName !== outputKey && publishedOutputNames.has(exportName);
+  return exportName !== outputKey && ownedOutputNames.has(exportName);
 }
 
 /**
- * Does this resolved export name carry secret PLAINTEXT?
+ * The secrets present in a resolved `Export.Name`, or `undefined` when it
+ * carries none.
  *
  * An `Export.Name` may be an intrinsic (`Fn::Sub` / `Fn::Join`), and those
  * substitute dynamic references — so the resolved name can contain a resolved
@@ -93,42 +145,94 @@ export function isExportAliasCollision(
  * VALUES only, so the plaintext would land in `state.json` and be republished
  * into the exports index.
  *
- * Deliberately an exact CONTAINMENT scan rather than
- * `recordedSecretValues.has(name)` or a `maskSecretsInText` round-trip
- * comparison: the former only catches a name that is EXACTLY the secret, and
- * the latter inherits the mask's minimum-needle-length filter, which skips
- * short secrets embedded in a longer name. Both leave a leak this check exists
- * to refuse, and the scan is over a handful of recorded values.
+ * The primary signal is `substitutedIntoName`: the caller resolves the name
+ * with its OWN `recordedSecretValues` map, so a non-empty map means the
+ * resolver substituted a secret INTO THIS NAME. That is exact — no length
+ * threshold and no coincidental match, which a containment scan over the whole
+ * pass's secrets cannot promise. (An earlier revision used that scan and it was
+ * wrong in both directions: a degenerate one-character recorded secret made
+ * every name containing that character "secret" and silently dropped unrelated
+ * working exports, while the mask it fed could not mask short values at all.)
+ *
+ * `recordedThisPass` adds one exact backstop: a name whose WHOLE value equals a
+ * recorded secret. That covers a LITERAL `Export.Name` spelling out a value
+ * that is a secret elsewhere in the template, where nothing was substituted.
+ *
+ * No empty-string special case, in either map: the resolver never records an
+ * empty secret (`secret-redaction.ts` states it — an empty needle would match
+ * every leaf), so an `''` key cannot reach here, and a guard against it would
+ * be a branch no test could ever distinguish.
  */
-export function exportNameCarriesSecret(
+export function exportNameSecretExposure(
   exportName: string,
-  secrets: RecordedSecretValues | undefined
-): boolean {
-  if (!secrets || secrets.size === 0) return false;
-  for (const value of secrets.keys()) {
-    if (value !== '' && exportName.includes(value)) return true;
-  }
-  return false;
+  substitutedIntoName: RecordedSecretValues,
+  recordedThisPass?: RecordedSecretValues
+): RecordedSecretValues | undefined {
+  const exposure: RecordedSecretValues = new Map(substitutedIntoName);
+  const wholeValue = recordedThisPass?.get(exportName);
+  if (wholeValue !== undefined) exposure.set(exportName, wholeValue);
+  return exposure.size > 0 ? exposure : undefined;
 }
 
 /**
- * Warning for an `Export.Name` colliding with a published output NAME.
+ * Replace EVERY occurrence of every exposed secret with the mask.
+ *
+ * Deliberately not `maskSecretsInText`: that helper skips needles shorter than
+ * its minimum length, which is right when scanning arbitrary bags for
+ * coincidental matches but wrong here, where the values are known to be IN this
+ * string. Feeding a detected-but-unmaskable name to it printed the secret under
+ * a "masked:" label — a message asserting a protection it had not performed.
+ * Longest-first so a secret containing another is masked whole.
+ */
+function maskEveryOccurrence(text: string, exposure: RecordedSecretValues): string {
+  let out = text;
+  for (const value of Array.from(exposure.keys()).sort((a, b) => b.length - a.length)) {
+    out = out.split(value).join(SECRET_MASK);
+  }
+  return out;
+}
+
+/**
+ * Warning for an `Export.Name` that resolved to something containing secret
+ * plaintext. Refused rather than published: the name would be a state KEY, and
+ * keys are never redacted.
+ *
+ * The name is shown MASKED, and omitted entirely if masking somehow left it
+ * unchanged. stderr is a reader like any other, so the invariant is absolute: a
+ * message must never claim a masking it did not perform.
+ */
+export function secretBearingExportNameWarning(
+  outputKey: string,
+  exportName: string,
+  exposure: RecordedSecretValues
+): string {
+  const masked = maskEveryOccurrence(exportName, exposure);
+  const shown = masked === exportName ? '' : `(masked: "${masked}") `;
+  return (
+    `Output ${outputKey} has an Export.Name that resolves to a value containing a secret ` +
+    `${shown}— skipping the export alias. ` +
+    `An export name becomes a key in state.json and in the exports index, and redaction rewrites ` +
+    `VALUES only, so publishing it would persist the secret in plaintext. ` +
+    `Use a non-secret Export.Name.`
+  );
+}
+
+/**
+ * Warning for an `Export.Name` colliding with an output NAME it does not own.
  *
  * Names both outputs because the two are equally likely to be the mistake, and
  * says which value survives — the export is skipped, so the key keeps the
- * output's own value. `exportName` is masked: it can be an intrinsic that
- * resolved to secret plaintext, and stderr is a reader like any other.
+ * output's own value.
+ *
+ * No masking here, and none is needed: the name printed is one that MATCHED a
+ * declared output name, i.e. template text, and a name carrying a secret is
+ * refused by {@link secretBearingExportNameWarning} before this is reached.
  */
-export function exportAliasCollisionWarning(
-  outputKey: string,
-  exportName: string,
-  secrets?: RecordedSecretValues
-): string {
-  const shown = secrets ? maskSecretsInText(exportName, secrets) : exportName;
+export function exportAliasCollisionWarning(outputKey: string, exportName: string): string {
   return (
-    `Output ${outputKey} exports as "${shown}", which is also the name of another output in this stack — ` +
-    `skipping the export alias, so output ${shown} keeps its own value and the export is not published. ` +
-    `A consumer's Fn::ImportValue on "${shown}" therefore resolves to output ${shown}, NOT to ${outputKey} ` +
+    `Output ${outputKey} exports as "${exportName}", which is also the name of another output in this stack — ` +
+    `skipping the export alias, so output ${exportName} keeps its own value and the export is not published. ` +
+    `A consumer's Fn::ImportValue on "${exportName}" therefore resolves to output ${exportName}, NOT to ${outputKey} ` +
     `(CloudFormation would publish both). Rename the export, or the colliding output.`
   );
 }
@@ -140,7 +244,9 @@ export function exportAliasCollisionWarning(
  * binary, where the alias may have won the colliding key — so it cannot claim
  * the key belongs to either output. It drops the position source for that key
  * and lets the value scan decide from the plaintext actually stored, which is
- * why this message promises something weaker than the deploy-time one.
+ * why this message promises something weaker than the deploy-time one. It can
+ * also fire on a template the deploy handled cleanly, per
+ * {@link collectDeclaredOutputNames}.
  */
 export function exportAliasCollisionScrubWarning(outputKey: string, exportName: string): string {
   return (
@@ -148,24 +254,5 @@ export function exportAliasCollisionScrubWarning(outputKey: string, exportName: 
     `state cannot say which of the two the stored value under "${exportName}" came from, so that key is ` +
     `redacted by value match instead of by template position, and two references resolving to the same ` +
     `value could still collapse there. Rename the export, or the colliding output, and redeploy.`
-  );
-}
-
-/**
- * Warning for an `Export.Name` that resolved to something containing secret
- * plaintext. Refused rather than published: the name would be a state KEY, and
- * keys are never redacted.
- */
-export function secretBearingExportNameWarning(
-  outputKey: string,
-  exportName: string,
-  secrets: RecordedSecretValues
-): string {
-  return (
-    `Output ${outputKey} has an Export.Name that resolves to a value containing a secret ` +
-    `(masked: "${maskSecretsInText(exportName, secrets)}") — skipping the export alias. ` +
-    `An export name becomes a key in state.json and in the exports index, and redaction rewrites ` +
-    `VALUES only, so publishing it would persist the secret in plaintext. ` +
-    `Use a non-secret Export.Name.`
   );
 }

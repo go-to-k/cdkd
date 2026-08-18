@@ -22,12 +22,6 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
-import {
-  collectPublishedOutputNames,
-  exportAliasCollisionScrubWarning,
-  isExportAliasCollision,
-  isOutputSuppressedByCondition,
-} from '../../deployment/outputs-export-alias.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
 import {
   scrubResourceRecord,
@@ -37,6 +31,11 @@ import {
 } from '../../deployment/secret-redaction.js';
 import type { StackState } from '../../types/state.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
+import {
+  collectDeclaredOutputNames,
+  exportAliasCollisionScrubWarning,
+  isExportAliasCollision,
+} from '../../deployment/outputs-export-alias.js';
 
 /**
  * Signals `cdkd scrub` found stacks whose state still holds plaintext secrets.
@@ -332,52 +331,85 @@ export async function scrubStack(
     // secret — in the command that exists to remediate the advisory, and
     // republished from there into the exports index.
     //
-    // The guard is deliberately NOT a strict mirror of the deploy engine's. The
-    // engine skips the alias and lets the owning output position the key,
-    // because it JUST resolved that key's value and knows whose it is. Scrub
-    // knows nothing of the sort: its bag is state written by an older binary,
-    // where the alias may well have WON the key, so "the owner's Value
-    // positions it" is an assumption that is wrong exactly when the state is
-    // corrupted — the case scrub exists for. So a colliding key gets NO source
-    // at all and falls to the value scan, which reads the plaintext actually
-    // stored and maps it back to the expression that produced it. That is the
-    // pre-#1910 behavior, which for this key is what the issue calls "weaker but
-    // not wrong: it returned an expression that at least resolved to the value
-    // it replaced". The narrow residual it accepts is the #1910 collapse (two
-    // expressions sharing one resolved value) for that single key.
-    const publishedOutputNames = collectPublishedOutputNames(templateOutputs, conditions);
+    // Two rules differ from the engine's on purpose, and both follow from what
+    // scrub can KNOW about state some earlier binary wrote:
+    //
+    // 1. A colliding key gets NO source at all, rather than the owning output's.
+    //    The engine just resolved that key's value and knows whose it is; scrub
+    //    does not, and in the corrupted-legacy case — the case it exists for —
+    //    the alias may well have WON the key. So the key falls to the VALUE
+    //    scan, which reads the plaintext actually stored and maps it back to
+    //    the expression that produced it. That is the pre-#1910 behavior, which
+    //    for this key is what the issue calls "weaker but not wrong: it
+    //    returned an expression that at least resolved to the value it
+    //    replaced". The residual it accepts is the #1910 collapse (two
+    //    expressions sharing one resolved value) for that single key; neither
+    //    rule dominates there, and the test file pins both sides of the trade.
+    //
+    // 2. Collisions are tested against every DECLARED output name, conditions
+    //    ignored, and an INTRINSIC `Export.Name` is best-effort resolved for
+    //    that test alone — see `collectDeclaredOutputNames` for why scrub must
+    //    over-approximate here, and note the legacy population is exactly the
+    //    binaries that DID resolve intrinsic export names into state keys, so a
+    //    literal-only test leaves the original corruption reachable. The
+    //    resolved name is never written as a source key: it is only compared.
+    const declaredOutputNames = collectDeclaredOutputNames(templateOutputs);
     const ambiguousKeys = new Set<string>();
     for (const [name, output] of Object.entries(templateOutputs)) {
-      const exportName = (output as { Export?: { Name?: unknown } }).Export?.Name;
+      // The declared type says `string`, but templates carry intrinsics here and
+      // the pre-fix binary resolved them into state keys.
+      const declaredExportName = (output as { Export?: { Name?: unknown } }).Export?.Name;
+      let exportName: unknown = declaredExportName;
+      if (declaredExportName !== undefined && typeof declaredExportName !== 'string') {
+        try {
+          exportName = await resolver.resolve(declaredExportName, {
+            template: stack.template,
+            resources: state.resources,
+            ...(Object.keys(parameters).length > 0 && { parameters }),
+            ...(Object.keys(conditions).length > 0 && { conditions }),
+            stackName: stack.stackName,
+            bestEffort: true,
+          });
+        } catch (err) {
+          logger.debug(
+            `Export.Name of output ${name} could not be resolved during scrub: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
       if (
         typeof exportName === 'string' &&
-        isExportAliasCollision(exportName, name, publishedOutputNames)
+        isExportAliasCollision(exportName, name, declaredOutputNames)
       ) {
         ambiguousKeys.add(exportName);
         logger.warn(exportAliasCollisionScrubWarning(name, exportName));
       }
     }
     for (const [name, output] of Object.entries(templateOutputs)) {
-      const value = (output as { Value?: unknown }).Value;
+      const value = output.Value;
       if (value === undefined) continue;
-      // A condition-suppressed output publishes no value, so `state.outputs`
-      // holds no key of its name and a source under it can only clobber an
-      // export alias that took the free name.
-      if (isOutputSuppressedByCondition(output, conditions)) continue;
       // The unresolved output value is its POSITION source (#1910).
       if (!ambiguousKeys.has(name)) outputsTemplateSource[name] = value;
       // `state.outputs` ALSO carries an export-name ALIAS for the same value
       // (the deploy engine writes one so `Fn::ImportValue` can find it), and
       // that second key needs the same source or it falls to the value scan and
-      // collapses onto a sibling's expression. Only a LITERAL export name is
-      // handled: an intrinsic one would need the resolver, and getting it wrong
-      // is worse than leaving the alias on the pre-#1910 behavior. (That also
-      // means scrub never meets the secret-bearing-name case the deploy engine
-      // refuses — an unresolved intrinsic never becomes a key here.)
+      // collapses onto a sibling's expression. Only a LITERAL export name gets a
+      // source: the resolved form of an intrinsic one is trusted for the
+      // collision TEST above but not as a key to write under, since a
+      // best-effort resolution with template-default parameters can differ from
+      // what the deploy resolved. (Nor can scrub meet the secret-bearing-name
+      // case the deploy engine refuses: it never writes a resolved name.)
       const exportName = (output as { Export?: { Name?: unknown } }).Export?.Name;
       if (typeof exportName === 'string' && !ambiguousKeys.has(exportName)) {
         outputsTemplateSource[exportName] = value;
       }
+      // NOT gated on the suppression rules the deploy engine applies, and this
+      // is load-bearing rather than an omission: skipping the iteration would
+      // skip the resolve below, so a secret this output carries would never be
+      // RECORDED, and a stack whose only secret sits in a
+      // (possibly-spuriously) suppressed output would be reported CLEAN by the
+      // command whose job is to find it. The write above is the only thing a
+      // suppressed output could get wrong, and the ambiguity set already covers
+      // that.
       try {
         await resolver.resolve(value, {
           template: stack.template,

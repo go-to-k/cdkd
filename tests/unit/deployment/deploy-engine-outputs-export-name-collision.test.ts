@@ -72,17 +72,22 @@ const PLAINTEXT_B = 'beta-plaintext-secret';
 const EXPR_B = '{{resolve:secretsmanager:beta:SecretString:password:AWSCURRENT}}';
 const PUBLIC_A = 'alpha-public-endpoint';
 const PUBLIC_B = 'beta-public-endpoint';
+// A secret SHORTER than `secret-redaction`'s MIN_NEEDLE_LENGTH (4). Degenerate
+// as a secret, load-bearing as a fixture: the masking helper skips needles this
+// short, so a message built through it would print this plaintext under a
+// "masked:" label. Real secrets are longer, which is exactly why the case has
+// to be pinned rather than trusted.
+const PLAINTEXT_SHORT = 'abc';
+const EXPR_SHORT = '{{resolve:secretsmanager:tiny:SecretString:pin:AWSCURRENT}}';
 
 const SECRET_BY_EXPRESSION: Record<string, string> = {
   [EXPR_A]: PLAINTEXT_A,
   [EXPR_B]: PLAINTEXT_B,
+  [EXPR_SHORT]: PLAINTEXT_SHORT,
 };
 
 /** `Fn::Sub` variables the mock substitutes, standing in for pseudo-parameters. */
 const SUB_VARS: Record<string, string> = { Prefix: 'producer' };
-
-/** Every value the engine asked the resolver to resolve, for call-count proofs. */
-const resolveCalls = vi.hoisted(() => [] as unknown[]);
 
 function substituteSecrets(text: string, ctx: { recordedSecretValues?: Map<string, string> }) {
   let out = text;
@@ -136,10 +141,9 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
     resetPhysicalIdFallbackCount: vi.fn(),
     resolve: vi
       .fn()
-      .mockImplementation((props: unknown, ctx: { recordedSecretValues?: Map<string, string> }) => {
-        resolveCalls.push(props);
-        return Promise.resolve(resolveWithSecrets(props, ctx ?? {}));
-      }),
+      .mockImplementation((props: unknown, ctx: { recordedSecretValues?: Map<string, string> }) =>
+        Promise.resolve(resolveWithSecrets(props, ctx ?? {}))
+      ),
     resolveParameters: vi.fn().mockReturnValue({}),
     evaluateConditions: vi.fn().mockImplementation(() => Promise.resolve(conditionValues.value)),
   })),
@@ -163,7 +167,6 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     conditionValues.value = {};
-    resolveCalls.length = 0;
     mockProvider = {
       create: vi.fn().mockResolvedValue({ physicalId: 'res-phys' }),
       update: vi.fn(),
@@ -507,24 +510,83 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     // The post-loop source pass skips suppressed outputs, which is sound only
     // because the bag is not accumulated across several resolutions in one
     // deploy. The two call sites are mutually exclusive — the no-change branch
-    // returns before `executeDeployment` — and `deploy()` resets the bag. Pinned
-    // because a third caller, or a fall-through from the no-change branch, would
-    // silently re-open the question.
-    const outputs: Record<string, TemplateOutput> = { SecretBeta: { Value: EXPR_B } };
-
-    await deployOutputs(outputs);
-    expect(resolveCalls.filter((v) => v === EXPR_B)).toHaveLength(1);
-
-    resolveCalls.length = 0;
-    vi.clearAllMocks();
-    mockStateBackend.saveState!.mockResolvedValue('etag-new');
-    mockExportIndexStore.updateForStack!.mockResolvedValue(undefined);
-    mockLockManager.acquireLockWithRetry!.mockResolvedValue(true);
-    mockDiffCalculator.filterByType!.mockImplementation(
-      (changes: Map<string, ResourceChange>, type: string) =>
-        Array.from(changes.values()).filter((c) => c.changeType === type)
+    // returns before `executeDeployment` — and `deploy()` resets the bag.
+    //
+    // Spying on the METHOD, not on how many times a particular Output value was
+    // handed to the resolver: a second `resolveOutputs` call over a DIFFERENT
+    // output set (say a condition-pruned one) is precisely the shape this
+    // decision fears — two calls disagreeing about which names are published —
+    // and a value-counting assertion cannot see it.
+    const spy = vi.spyOn(
+      DeployEngine.prototype as unknown as { resolveOutputs: () => Promise<unknown> },
+      'resolveOutputs'
     );
-    await deployOutputs(outputs, { path: 'no-change' });
-    expect(resolveCalls.filter((v) => v === EXPR_B)).toHaveLength(1);
+    try {
+      await deployOutputs({ SecretBeta: { Value: EXPR_B } });
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      spy.mockClear();
+      vi.clearAllMocks();
+      mockStateBackend.saveState!.mockResolvedValue('etag-new');
+      mockExportIndexStore.updateForStack!.mockResolvedValue(undefined);
+      mockLockManager.acquireLockWithRetry!.mockResolvedValue(true);
+      mockDiffCalculator.filterByType!.mockImplementation(
+        (changes: Map<string, ResourceChange>, type: string) =>
+          Array.from(changes.values()).filter((c) => c.changeType === type)
+      );
+      await deployOutputs({ SecretBeta: { Value: EXPR_B } }, { path: 'no-change' });
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a SHORT secret in an export name is refused, and the message shows NO name rather than a false mask', async () => {
+    // The bug this pins was introduced by the fix for the previous one: the
+    // refusal used an exact containment scan (so a short secret IS caught) while
+    // the message formatted the name through the masking helper (which skips
+    // needles below its minimum length). The result printed the secret verbatim
+    // under a "masked:" label — a message asserting a protection it had not
+    // performed. Masking is now exhaustive, so the name is genuinely masked; the
+    // assertion that matters either way is that the plaintext never appears.
+    const { saved } = await deployOutputs({
+      SecretBeta: { Value: EXPR_B, Export: { Name: { 'Fn::Sub': `export-${EXPR_SHORT}-v2` } as never } },
+    });
+
+    const refusals = warnings().filter((w) => w.includes('Export.Name that resolves'));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).not.toContain(PLAINTEXT_SHORT);
+    expect(Object.keys(saved)).toEqual(['SecretBeta']);
+  });
+
+  it('an export name carrying TWO secrets masks both', async () => {
+    const { saved } = await deployOutputs({
+      SecretBeta: {
+        Value: EXPR_B,
+        Export: { Name: { 'Fn::Sub': `${EXPR_A}-and-${EXPR_SHORT}` } as never },
+      },
+    });
+
+    const refusals = warnings().filter((w) => w.includes('Export.Name that resolves'));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).not.toContain(PLAINTEXT_A);
+    expect(refusals[0]).not.toContain(PLAINTEXT_SHORT);
+    expect(Object.keys(saved)).toEqual(['SecretBeta']);
+  });
+
+  it('TWO suppressed outputs free BOTH names', async () => {
+    const { saved, indexed } = await deployOutputs(
+      {
+        GhostOne: { Value: PUBLIC_A, Condition: 'IsProd' },
+        GhostTwo: { Value: PUBLIC_B, Condition: 'IsProd' },
+        SecretBeta: { Value: EXPR_B, Export: { Name: 'GhostTwo' } },
+      },
+      { conditions: { IsProd: false } }
+    );
+
+    expect(saved['GhostTwo']).toBe(EXPR_B);
+    expect(indexed['GhostTwo']).toBe(EXPR_B);
+    expect(Object.hasOwn(saved, 'GhostOne')).toBe(false);
+    expect(warnings()).toEqual([]);
   });
 });

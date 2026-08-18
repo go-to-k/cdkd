@@ -2,7 +2,7 @@ import { getLogger } from '../utils/logger.js';
 import {
   collectPublishedOutputNames,
   exportAliasCollisionWarning,
-  exportNameCarriesSecret,
+  exportNameSecretExposure,
   isExportAliasCollision,
   isOutputSuppressedByCondition,
   secretBearingExportNameWarning,
@@ -4535,10 +4535,18 @@ export class DeployEngine {
         // If the output has an Export.Name, also store under that key
         // so Fn::ImportValue can find it by export name
         if (output.Export?.Name) {
+          // Resolved with its OWN `recordedSecretValues` map, not the pass's:
+          // `Fn::Sub` / `Fn::Join` substitute dynamic references, so the map
+          // tells us EXACTLY whether a secret went into THIS name — no length
+          // threshold, and no coincidental match against a sibling's secret.
+          const nameSecrets: RecordedSecretValues = new Map();
           const exportName =
             typeof output.Export.Name === 'string'
               ? output.Export.Name
-              : await this.resolver.resolve(output.Export.Name, context);
+              : await this.resolver.resolve(output.Export.Name, {
+                  ...context,
+                  recordedSecretValues: nameSecrets,
+                });
           if (typeof exportName === 'string') {
             // TWO refusals guard this alias, and both are about the same thing:
             // this bag's KEYS (issue #1919).
@@ -4548,8 +4556,11 @@ export class DeployEngine {
             //    resolved name can contain secret PLAINTEXT. It would become a
             //    key in `state.json` and in the exports index, and every
             //    redaction pass walks VALUES only, so nothing downstream would
-            //    ever scrub it. Refuse rather than publish; the warning shows
-            //    the name MASKED, since stderr is a reader too.
+            //    ever scrub it. Refuse rather than publish. Detected from the
+            //    name's OWN resolution map (above), so the answer is exact
+            //    rather than a containment guess; the warning masks every
+            //    occurrence and omits the name outright if it cannot, since
+            //    stderr is a reader too.
             //
             // 2. COLLISION with a published output NAME. Two writers key this
             //    one bag: this alias, and the post-loop pass below that writes
@@ -4591,18 +4602,15 @@ export class DeployEngine {
             // A condition-suppressed output writes neither a value nor a source
             // (see the post-loop pass), so its name is free — reserving it would
             // drop a working export because an unrelated condition went false.
-            if (exportNameCarriesSecret(exportName, context.recordedSecretValues)) {
-              this.logger.warn(
-                secretBearingExportNameWarning(
-                  outputKey,
-                  exportName,
-                  context.recordedSecretValues ?? new Map()
-                )
-              );
+            const exposure = exportNameSecretExposure(
+              exportName,
+              nameSecrets,
+              context.recordedSecretValues
+            );
+            if (exposure) {
+              this.logger.warn(secretBearingExportNameWarning(outputKey, exportName, exposure));
             } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
-              this.logger.warn(
-                exportAliasCollisionWarning(outputKey, exportName, context.recordedSecretValues)
-              );
+              this.logger.warn(exportAliasCollisionWarning(outputKey, exportName));
             } else {
               outputs[exportName] = value;
               // The alias is a SECOND key holding the same value, so it needs the

@@ -166,12 +166,32 @@ exports index, and redaction rewrites VALUES only, so nothing downstream
 would ever scrub it. cdkd skips such an alias and warns with the name
 masked.
 
+**Two outputs sharing ONE `Export.Name`** (with no output of that name) is
+NOT guarded, deliberately. Both bags stay consistent there — one iteration
+writes the value and its source together — so it is not the corruption
+above; the later output simply wins the key, where CloudFormation would
+reject the template outright. cdkd is not a template validator and a
+warning here would fire on a shape that cannot reach a real CFn deploy,
+so it is documented rather than diagnosed.
+
 `cdkd scrub` applies the same collision rule to the source it rebuilds
-from the template, with one deliberate difference: it is redacting state
-written by an EARLIER binary, where the alias may have won the colliding
-key, so it cannot say which output the stored value belongs to. It drops
-the position source for that key and redacts it by value match instead,
-which is exact unless two references resolve to the same value.
+from the template, with two deliberate differences, both forced by what it
+can know about state an EARLIER binary wrote:
+
+- It drops the position source for the colliding key entirely, rather than
+  letting the owning output keep it. The alias may have WON that key, so
+  "the owner's template value positions it" is an assumption that is wrong
+  exactly when the state is corrupted — the case scrub exists for. The key
+  is redacted by value match instead, which is exact unless two references
+  resolve to the same value.
+- It tests collisions against every DECLARED output name, ignoring
+  conditions, and resolves an intrinsic `Export.Name` best-effort for that
+  test alone. Scrub re-evaluates conditions best-effort from template
+  defaults (it takes no parameters) and assumes false on failure, so
+  trusting them would let it miss a collision the deploy really made — and
+  a missed collision writes a wrong-secret reference, while an
+  over-approximated one costs a spurious warning and one key redacted by
+  value instead of by position.
 
 CDK's AUTO-generated export names cannot collide — they are of the form
 `StackName:ExportsOutputRefResourceABC123` and a `:` is not legal in a
