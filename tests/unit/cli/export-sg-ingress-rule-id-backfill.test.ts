@@ -486,6 +486,12 @@ describe('cdkd export — SecurityGroupIngress rule-id backfill (issue #1791)', 
       /TWO DISTINCT AWS::EC2::SecurityGroupIngress resources that differ only by SOURCE/
     );
     expect(reason).toMatch(/set the row's attributes\.Id to the 'sgr-\.\.\.' id that belongs to it/);
+    // ...and that remedy is only actionable if cdkd names the ids it COULD
+    // read. Asking the user to set attributes.Id to "the right one" while
+    // withholding the candidates it saw is a remedy they cannot carry out.
+    expect(reason).toMatch(
+      new RegExp(`The readable candidates cdkd did see: '${SG_RULE_ID}'\\.`)
+    );
   });
 
   it('does NOT prescribe the ambiguity remedy when only ONE rule matched', async () => {

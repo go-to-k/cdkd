@@ -1944,11 +1944,18 @@ async function backfillSecurityGroupIngressRuleId(
     // is. Without this the user gets "open a cdkd issue" and never sees the
     // remedy they can actually act on, because that remedy lives only in the
     // `> 1` message this branch pre-empts.
+    // The remedy tells the user to set `attributes.Id` to the id that belongs
+    // to this row, so name the ids cdkd COULD read — otherwise it asks them to
+    // pick a value it saw and withheld.
+    const readableNote =
+      ids.length > 0
+        ? ` The readable candidates cdkd did see: ${ids.map((id) => `'${id}'`).join(', ')}.`
+        : '';
     const ambiguityNote =
       matched.length > 1
         ? ` Note that ${matched.length} rules matching one row is an ambiguity in its own ` +
           `right, which cdkd could not resolve even if every id were readable: ` +
-          `${SG_INGRESS_AMBIGUITY_REMEDY}`
+          `${SG_INGRESS_AMBIGUITY_REMEDY}${readableNote}`
         : '';
     throw new Error(
       `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}', and a live ` +
