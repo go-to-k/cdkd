@@ -120,8 +120,23 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
    record the gate so subsequent `gh pr merge` calls are unblocked:
 
    ```bash
-   mise exec -- markgate set integ-destroy
+   mise exec -- markgate set integ-destroy || {
+     echo "markgate set integ-destroy FAILED — the marker was NOT recorded." >&2
+     exit 1
+   }
    ```
+
+   **Check the exit code; do not fire and forget.** Under the old
+   `hash: files` mode this command could not fail. The gate now runs
+   markgate 0.4's `hash: diff` (see `.markgate.yml`), where `set` exits
+   **2** if `origin/main` is unresolvable in this worktree or the branch
+   has no delta against the merge base — and it writes that to stderr,
+   so an unchecked call looks silent and successful. Failing to notice
+   means you burned a real-AWS deploy + destroy and recorded nothing:
+   the merge is still blocked, and the natural reaction is to run the
+   integ AGAIN rather than to `git fetch origin`. Run from the PR's own
+   worktree on the PR branch, and if it exits 2, fix the base ref rather
+   than re-running the integ.
 
    If any of the above failed, do NOT set the marker — that is the
    whole point of the gate. The hook

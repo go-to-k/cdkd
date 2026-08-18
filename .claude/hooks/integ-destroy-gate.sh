@@ -2,11 +2,14 @@
 # integ-destroy-gate.sh
 #
 # PreToolUse hook. Blocks `gh pr merge` (including --auto) unless the
-# `integ-destroy` markgate marker is fresh for the current content
-# state. The gate's scope (see .markgate.yml) covers every code path
-# that participates in real-AWS resource destruction; editing any of
-# them invalidates the marker and forces a successful `/run-integ`
-# destroy run before the PR can be merged.
+# `integ-destroy` markgate marker is fresh for THIS BRANCH'S DELTA
+# against origin/main. The gate's scope (see .markgate.yml) covers
+# every code path that participates in real-AWS resource destruction;
+# a change this branch makes to any of them invalidates the marker and
+# forces a successful `/run-integ` destroy run before the PR can be
+# merged. A change to one of them arriving FROM main does not — the
+# gate runs on markgate 0.4's `hash: diff` mode, so an already-gated
+# change someone else merged no longer costs a real-AWS re-run.
 #
 # This is the structural counterpart to the CLAUDE.md rule "Never
 # merge a PR whose destroy path is unverified". The rule said it; the
@@ -230,14 +233,46 @@ if [ "$status" -eq 0 ]; then
   exit 0
 fi
 
+# markgate 0.4's `hash: diff` adds a THIRD outcome: exit 2 is a hard
+# evaluation error, not a stale marker. It fires when `origin/main`
+# cannot be resolved (never fetched, shallow clone with no merge base)
+# or when this branch has no delta against the merge base at all.
+# Neither is fixed by running an integ -- `markgate set integ-destroy`
+# fails on exactly the same condition, so the generic "/run-integ"
+# advice below would burn a real-AWS run and leave the merge blocked
+# anyway. `markgate status` also errors on this path and prints no
+# `state:` line, so the reason extraction below would come back empty
+# and silently degrade to the wrong message. Name the real remedy.
+if [ "$status" -eq 2 ]; then
+  cat >&2 <<'EOF_ERR'
+Blocked by integ-destroy-gate: markgate could not EVALUATE the
+`integ-destroy` gate (exit 2). This is not a stale marker, and
+/run-integ will NOT fix it -- `markgate set` fails the same way.
+
+Likely cause and remedy:
+  * `origin/main` missing or stale in this worktree
+      git fetch origin
+  * shallow clone with no merge base against origin/main
+      git fetch --unshallow
+  * this branch has no delta against merge-base(origin/main, HEAD)
+      commit the work first, or run from a branch that is ahead of main
+
+Diagnose with:
+  mise exec -- markgate status integ-destroy
+EOF_ERR
+  exit 2
+fi
+
 # Extract the parenthesized reason from `markgate status integ-destroy` so
 # the error message tells the user *why* the gate is stale. With markgate
 # 0.3+ the gate carries `ttl: 14d`, so a stale marker is either "(digest
-# differs)" (real-AWS-relevant code changed) or "(expired by ttl: 14d,
-# marker is Nd old)" (the marker simply aged out and the AWS-side behavior
-# it verified is no longer plausibly current). Distinguishing the two
-# avoids the "but I didn't change anything" confusion. Fails open to the
-# pre-0.3 generic message when extraction fails.
+# differs)" (real-AWS-relevant code changed on this branch) or "(expired
+# by ttl: 14d, marker is Nd old)" (the marker simply aged out and the
+# AWS-side behavior it verified is no longer plausibly current).
+# Distinguishing the two avoids the "but I didn't change anything"
+# confusion. Fails open to the pre-0.3 generic message when extraction
+# fails — which is also what happens on the exit-2 path below, where
+# `markgate status` itself errors and prints no `state:` line.
 reason=$("${markgate[@]}" status integ-destroy 2>/dev/null \
   | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
 

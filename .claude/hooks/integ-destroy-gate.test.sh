@@ -50,11 +50,21 @@ verdict="\${MARKGATE_MOCK_VERDICT:-stale}"
 case "\$1" in
   verify)
     [ "\$verdict" = "fresh" ] && exit 0
+    # markgate 0.4 `hash: diff` exits 2 when it cannot EVALUATE the gate
+    # (unresolvable base ref, empty delta) as opposed to 1 for a stale
+    # marker. Different remedy, so the hook must branch on it.
+    [ "\$verdict" = "error" ] && exit 2
     exit 1
     ;;
   status)
     if [ "\$verdict" = "fresh" ]; then
       printf 'key:        %s\nstate:      match\n' "\$2"
+    elif [ "\$verdict" = "error" ]; then
+      # Real 0.4 behavior on this path: the message goes to stderr and
+      # stdout carries no `state:` line at all, so the hook's awk reason
+      # extraction comes back empty.
+      echo "markgate: hash=diff: base ref does not resolve" >&2
+      exit 2
     else
       printf 'key:        %s\nstate:      stale (digest differs)\n' "\$2"
     fi
@@ -158,6 +168,39 @@ run_case "gh issue body quoting 'gh pr merge' passes through" 0 stale "" \
 # command starts with `echo`. MUST pass through.
 run_case "echo body quoting 'gh pr merge' passes through" 0 stale "" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"echo \"after CI green: gh pr merge --auto\""}}' "$side_repo")"
+
+# --- markgate 0.4 exit-2 (cannot EVALUATE) cases ---
+#
+# The stale path and the evaluation-error path BOTH exit 2, so an
+# exit-code-only assertion cannot tell them apart -- and telling them
+# apart is the entire point, because their remedies are opposite:
+# `/run-integ` fixes a stale marker and is useless (and expensive --
+# it is a real-AWS deploy + destroy) against an unresolvable base ref,
+# where `markgate set` fails identically. So assert on the MESSAGE.
+run_msg_case() {
+  local name="$1"; local verdict="$2"; local want_re="$3"; local reject_re="$4"; local payload="$5"
+  local err
+  err=$(printf '%s' "$payload" | MARKGATE_MOCK_VERDICT="$verdict" "$HOOK" 2>&1 >/dev/null)
+  if printf '%s' "$err" | grep -qE "$want_re" && ! printf '%s' "$err" | grep -qE "$reject_re"; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$name"
+  else
+    fail=$((fail + 1))
+    fail_log+="FAIL $name: stderr did not match /$want_re/ (or matched forbidden /$reject_re/)\n  stderr: $err\n"
+    printf 'FAIL %s\n' "$name"
+  fi
+}
+
+# Evaluation error names the base-ref remedy and must NOT advise an integ run.
+run_msg_case "exit-2 names git fetch, not /run-integ" error \
+  'could not EVALUATE' 'Required action' \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
+
+# The converse: a genuinely stale marker must still advise the integ run
+# and must NOT claim an evaluation error. Without this the case above
+# could pass while the hook printed the error text unconditionally.
+run_msg_case "stale marker still advises /run-integ" stale \
+  'Required action' 'could not EVALUATE' \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
 
 echo
 echo "Pass: $pass  Fail: $fail"
