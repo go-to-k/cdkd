@@ -202,7 +202,8 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
     mockSend.mockReset();
     warnSpy.mockReset();
     debugSpy.mockReset();
-    // Skip `withRetry`'s real ~47s backoff. Set per-suite rather than per-test
+    // Skip `withRetry`'s real backoff — ~95s at this type's budget of 14 since
+    // issue #1950, not the ~47s of the default 8. Set per-suite rather than per-test
     // so no test can silently pay it if an expectation moves.
     deleteTableRetryDelays.sleep = () => Promise.resolve();
     provider = new DynamoDBTableProvider();
@@ -254,8 +255,8 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
     // The exception NAME and the "still in use" prefix are shared with
     // genuinely terminal conflicts, so the classifier keys on the message
     // clause. Pinned by its exact emitted shape, not by "it threw": a
-    // name-keyed classifier would also end up throwing here, just 47s later and
-    // after 9 sends.
+    // name-keyed classifier would also end up throwing here, just minutes later
+    // (a settle poll plus a backoff step per attempt) and after 15 sends.
     const stub = stubDeleteFailingTimes(Number.POSITIVE_INFINITY, terminalInUseError);
 
     await expect(provider.delete(LOGICAL_ID, TABLE_NAME, RESOURCE_TYPE, {})).rejects.toThrow(
@@ -443,7 +444,7 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
   it('reads the sleep seam at CALL time, not when the retry options are built', async () => {
     // Set the seam from INSIDE the first refusal — i.e. after `delete()` has
     // already built `withRetry`'s options bag. A spread-at-construction seam
-    // captures `undefined` there and silently falls back to the real ~47s
+    // captures `undefined` there and silently falls back to the real ~95s
     // schedule; reading it per sleep picks the override up.
     delete deleteTableRetryDelays.sleep;
     const sleepSpy = vi.fn(() => Promise.resolve());

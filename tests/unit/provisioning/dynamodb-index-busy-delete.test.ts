@@ -107,10 +107,12 @@ import { isRetryableTransientError } from '../../../src/deployment/retryable-err
 import type { Logger } from '../../../src/types/config.js';
 import {
   DynamoDBTableProvider,
+  TABLE_ACTIVE_WAIT_ATTEMPTS,
   deleteTableRetryDelays as tableDeleteDelays,
 } from '../../../src/provisioning/providers/dynamodb-table-provider.js';
 import {
   DynamoDBGlobalTableProvider,
+  TABLE_GONE_WAIT_ATTEMPTS,
   deleteTableRetryDelays as globalTableDeleteDelays,
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 
@@ -335,13 +337,17 @@ describe('the two per-type budget constants (issue #1950)', () => {
    */
   const PESSIMISTIC_POLL_RTT_MS = 500;
   /**
-   * `TABLE_ACTIVE_WAIT_ATTEMPTS` from `dynamodb-table-provider.ts`: the <=60
-   * polls `--remove-protection` spends waiting for the table to reach ACTIVE
-   * BEFORE the loop starts, inside the same per-resource deadline. That wait
-   * now sleeps `INDEX_SETTLE_POLL_INTERVAL_MS` rather than its own `1000`, so
-   * only the COUNT is copied here, not the unit.
+   * The polls `--remove-protection` spends waiting for the table to reach
+   * ACTIVE BEFORE the loop starts, inside the same per-resource deadline.
+   *
+   * IMPORTED, not copied. It was a local `60`, and raising the provider's real
+   * cap to 900 — ~18 min added to a 30-minute deadline — left all 51 tests
+   * green: a copied cap stops tracking the moment the original moves, which is
+   * exactly the failure the GlobalTable side avoids by OBSERVING its gate cap
+   * below. The wait also reads `INDEX_SETTLE_POLL_INTERVAL_MS` for its sleep,
+   * so neither the count nor the unit is restated here.
    */
-  const TABLE_ACTIVE_WAIT_POLLS = 60;
+  const TABLE_ACTIVE_WAIT_POLLS = TABLE_ACTIVE_WAIT_ATTEMPTS;
   /**
    * The FLOOR the `Table` budget has to clear by a real multiple: a FIVE-item
    * table's GSI create took ~8 min on the live #1950 run. Five items is about
@@ -499,6 +505,22 @@ describe('the two per-type budget constants (issue #1950)', () => {
     );
   });
 
+  it('GlobalTable: the budget still clears the FLOOR the retry exists for', async () => {
+    // The ceiling below is only half a fence. Lowering this budget — "8 looks
+    // risky next to that gate, let us take it to 2" — silently guts issue
+    // #1830 for this type, and every other test in the tree keeps passing
+    // because they all derive their counts FROM the constant. Probed: 8 -> 1
+    // left all 40 tests green.
+    //
+    // The floor is the same measured one the sibling is held to, but the
+    // MULTIPLE is not: loop(8) is ~10.4 min against a ~8 min floor, i.e. ~1.3x,
+    // where `Table` gets 2x. That is the honest position — this type cannot
+    // afford more, because the #1521 gate has already spent ~18 of the 30
+    // minutes — and it is why the budget must not go DOWN either.
+    const measured = await measureLoop(GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES);
+    expect(loopMs(MEASURED_POLL_RTT_MS, measured)).toBeGreaterThan(MEASURED_FLOOR_MS);
+  });
+
   it('GlobalTable: the #1521 gate PLUS the loop stays under the deadline', async () => {
     // Why this type keeps 8 while the sibling took 14. Its `delete()` reaches
     // the loop having already spent the #1521 pre-delete settle gate out of the
@@ -511,18 +533,35 @@ describe('the two per-type budget constants (issue #1950)', () => {
     // The raise would CREATE that crossing rather than inherit it, on a common
     // shape. This fence is what stops a later "make the budgets agree again"
     // from doing it silently.
+    //
+    // WHAT THIS MODELS, precisely: the EXHAUSTED-budget path, which is the one
+    // the budget bounds. `waitForTableGone`'s 600 polls run AFTER the loop and
+    // only when it SUCCEEDS — an exhausted budget throws and skips them — so
+    // they are excluded here on purpose rather than forgotten. The
+    // late-SUCCESS path, where they do run, is asserted below as the tracked
+    // overshoot it is.
     const gatePolls = await observeGlobalTablePreDeleteGatePolls();
     const measured = await measureLoop(GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES);
     const gateMs = gatePolls * (INDEX_SETTLE_POLL_INTERVAL_MS + MEASURED_POLL_RTT_MS);
-    const singleRegionWorstCaseMs = gateMs + loopMs(MEASURED_POLL_RTT_MS, measured);
+    const exhaustedBudgetWorstCaseMs = gateMs + loopMs(MEASURED_POLL_RTT_MS, measured);
 
     // The margin is ONE MINUTE, not the sibling's ten, and the difference is
     // the finding rather than a weaker rule: the gate alone eats ~18 of the 30
     // minutes, so there is no version of this path with a comfortable margin —
-    // that is issue #1955's problem. A minute is what the terms this model
-    // omits need (the `DeleteTable` calls themselves; on a replicated table the
-    // replica teardown blows past the deadline outright, also #1955).
-    expect(singleRegionWorstCaseMs).toBeLessThan(DEFAULT_RESOURCE_TIMEOUT_MS - 60_000);
+    // that is issue #1955's problem. A minute is what the terms even THIS case
+    // omits need (the `DeleteTable` calls themselves).
+    expect(exhaustedBudgetWorstCaseMs).toBeLessThan(DEFAULT_RESOURCE_TIMEOUT_MS - 60_000);
+
+    // The other path, asserted rather than left implied: when the loop succeeds
+    // late, the gone-wait DOES run and the same single-region shape reaches
+    // ~40.4 min — already over the deadline at the CURRENT budget, so it is not
+    // a consequence of any calibration here and 8 cannot fix it. Asserted as
+    // GREATER so it documents the live overshoot: if a later change brings this
+    // path back under the deadline (issue #1955), this reds and the comments
+    // claiming an overshoot have to be revisited — which is the point.
+    const goneWaitMs =
+      TABLE_GONE_WAIT_ATTEMPTS * (INDEX_SETTLE_POLL_INTERVAL_MS + MEASURED_POLL_RTT_MS);
+    expect(exhaustedBudgetWorstCaseMs + goneWaitMs).toBeGreaterThan(DEFAULT_RESOURCE_TIMEOUT_MS);
 
     // ...and the sibling's budget would NOT fit here, which is the whole reason
     // the two constants exist. Asserted as a PREMISE, so the fence above cannot

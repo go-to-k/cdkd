@@ -69,6 +69,7 @@ import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import {
   DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
   GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
+  INDEX_SETTLE_POLL_INTERVAL_MS,
   DELETE_INDEX_WAIT_PROCEED_NOTE,
   deleteTableWithIndexBusyRetry,
   hasTransitionalIndex,
@@ -5227,7 +5228,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     tableName: string,
     region: string,
     logicalId: string,
-    maxAttempts = 600
+    maxAttempts = REPLICA_GONE_WAIT_ATTEMPTS
   ): Promise<void> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -5236,7 +5237,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
         const replica = response.Table?.Replicas?.find((r) => r.RegionName === region);
         if (!replica) return;
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
       } catch (err) {
         if (err instanceof ResourceNotFoundException) return;
         throw err;
@@ -5264,12 +5265,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private async waitForTableGone(
     tableName: string,
     logicalId: string,
-    maxAttempts = 600
+    maxAttempts = TABLE_GONE_WAIT_ATTEMPTS
   ): Promise<void> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: tableName }));
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
       } catch (err) {
         if (err instanceof ResourceNotFoundException) return;
         throw err;
@@ -5452,6 +5453,29 @@ export function autoScalingResourceId(tableName: string, indexName?: string): st
  * budget does not have to be waited out.
  */
 export const autoScalingRetryDelays: { sleep?: (ms: number) => Promise<void> } = {};
+
+/**
+ * Polls `waitForReplicaGone` spends waiting for a replica to disappear.
+ *
+ * Named rather than inlined because it is a TERM of the per-resource deadline
+ * arithmetic on this type's delete path (see
+ * `GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`), which prices it through
+ * {@link INDEX_SETTLE_POLL_INTERVAL_MS} — the sleep this loop now reads rather
+ * than spelling its own `1000`, so the two cannot drift while that arithmetic
+ * claims they agree.
+ */
+const REPLICA_GONE_WAIT_ATTEMPTS = 600;
+
+/**
+ * Polls `waitForTableGone` spends confirming the table is actually gone.
+ *
+ * EXPORTED, unlike its replica sibling, because the delete-path budget fence
+ * reads it: this wait runs AFTER the index-busy retry loop and only when that
+ * loop SUCCEEDS, which is what keeps it out of the loop's own worst case and
+ * puts it into the late-success one (both spelled out on
+ * `GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`).
+ */
+export const TABLE_GONE_WAIT_ATTEMPTS = 600;
 
 /**
  * Test seam for the index-busy `DeleteTable` retry's backoff (issue #1830),

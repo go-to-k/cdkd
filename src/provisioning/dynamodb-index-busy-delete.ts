@@ -140,12 +140,18 @@ export function isIndexBusyDeleteError(message: string): boolean {
  *                after the `--remove-protection` UpdateTable = ~72s. Nothing
  *                else — this provider has no pre-delete gate.
  *   GlobalTable  the #1521 pre-delete settle gate, 900 polls = ~18 min, plus
- *                `waitForReplicaGone` at 600 polls (~12 min) per NON-LOCAL
- *                replica.
+ *                `waitForReplicaGone` at REPLICA_GONE_WAIT_ATTEMPTS (600)
+ *                polls (~12 min) per NON-LOCAL replica.
  * ```
  *
- * So the SAME loop leaves ~28.4 min of the deadline free on one type and ~12
+ * So the SAME loop leaves ~28.8 min of the deadline free on one type and ~12
  * min on the other, and one budget cannot be right for both.
+ *
+ * `GlobalTable` also has a term AFTER the loop — `waitForTableGone` at
+ * TABLE_GONE_WAIT_ATTEMPTS (600) polls, ~12 min — which the exhaustion case
+ * does NOT pay, because the loop THROWS when the budget runs out and the wait
+ * never runs. It lands on the late-SUCCESS case instead; see
+ * {@link GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES}.
  *
  * **Table: 14, raised from `withRetry`'s default of 8 by issue #1950.** A live
  * `dynamodb-gsi-update` destroy (us-east-1, 2026-08-18) measured a FIVE-item
@@ -185,8 +191,9 @@ export const TABLE_DELETE_INDEX_BUSY_MAX_RETRIES = 14;
  * derivation; this note is only about why the #1950 raise stops here.
  *
  * **The single-region shape is what refuses it.** A `TableV2` with no non-local
- * replica whose index is transitioning pays the #1521 gate and then the loop,
- * with nothing else in between:
+ * replica whose index is transitioning pays the #1521 gate and then the loop.
+ * When the budget RUNS OUT — the case a budget is sized for — that is the whole
+ * of it, because the loop throws and `waitForTableGone` below never runs:
  *
  * ```
  *   at 8    900 polls x ~1.2s (~18 min) + loop(8)  623s  = ~28.4 min  fits
@@ -197,16 +204,27 @@ export const TABLE_DELETE_INDEX_BUSY_MAX_RETRIES = 14;
  * common shape: the user-visible result is a generic `ResourceTimeoutError`
  * that never mentions indexes — precisely the outcome the bounded re-arm exists
  * to prevent. Even 9 (~29.7 min) leaves under a minute, which the terms this
- * model omits (the `DeleteTable` calls themselves, the replica teardown) can
- * eat on their own.
+ * model omits (the `DeleteTable` calls themselves) can eat on their own.
+ *
+ * **What that table does NOT cover, stated rather than implied**: the case
+ * where the loop SUCCEEDS on a late attempt. Then `waitForTableGone`'s 600
+ * polls (~12 min) DO run, and the same single-region shape reaches ~40.4 min —
+ * over the deadline at the CURRENT budget, so it is not a consequence of any
+ * calibration here and not something 8 can fix. It is the same overshoot the
+ * replicated shape has, and it is issue #1955's. The two cases are exclusive:
+ * an exhausted budget ends in a throw, a late success ends in the gone-wait,
+ * and no run pays both. The budget below is sized against the first, which is
+ * the only one it controls; the fence in the unit suite models that case and
+ * asserts the second as a known, tracked overshoot.
  *
  * It also honors what issue #1950 asked for: moving a shipped type's
  * wall-clock destroy behaviour is its own change with its own review and its
  * own real-AWS run, not something a sibling type's calibration carries along.
  *
  * The REPLICATED shape stays where it already was — gate + 600 polls (~12 min)
- * per non-local replica + loop(8) is ~40 min, over the deadline before this
- * change and unaffected by it. That pre-existing overshoot is issue #1955.
+ * per non-local replica + loop(8), plus the gone-wait on a late success, is
+ * ~40 min or more, over the deadline before this change and unaffected by it.
+ * That pre-existing overshoot is issue #1955 too.
  */
 export const GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES = 8;
 
@@ -248,16 +266,20 @@ export const DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS = 60;
 /**
  * Sleep between two `DescribeTable` polls of {@link waitForIndexesSettled}.
  *
- * Named rather than inlined because it is the unit EVERY poll budget on the
- * DynamoDB delete path is denominated in — a poll count only becomes a wall
+ * Named rather than inlined because it is the unit every poll budget on the
+ * DynamoDB DELETE path is denominated in — a poll count only becomes a wall
  * clock through this, and the deadline arguments at
- * {@link TABLE_DELETE_INDEX_BUSY_MAX_RETRIES} multiply it. Four counts ride on
- * it: this module's 60-poll re-arm, `GlobalTable`'s 900-poll #1521 pre-delete
- * gate and the same 900-poll default its auto-scaling caller takes
- * (`waitForIndexesActive` in `dynamodb-globaltable-provider.ts`), and the
- * `Table` provider's 60-poll `waitForTableActiveAfterUpdate`, which reads this
- * constant for its own sleep so the `--remove-protection` term of that
- * arithmetic is denominated rather than merely asserted.
+ * {@link TABLE_DELETE_INDEX_BUSY_MAX_RETRIES} multiply it. Each of those counts
+ * READS it, which is what makes the claim checkable rather than a convention:
+ * this module's 60-poll re-arm; `GlobalTable`'s 900-poll #1521 pre-delete gate
+ * (and the same 900-poll default its auto-scaling caller takes, since both go
+ * through `waitForIndexesActive` -> {@link waitForIndexesSettled});
+ * `GlobalTable`'s `waitForReplicaGone` and `waitForTableGone` at 600 polls
+ * each; and the `Table` provider's 60-poll `waitForTableActiveAfterUpdate`.
+ *
+ * Deliberately NOT claimed for the whole file: `waitForReplicaActive` keeps its
+ * own `1000`, and is left alone because it runs on the CREATE / UPDATE path,
+ * which no arithmetic here prices.
  *
  * It is a FLOOR on the per-poll cost, never the whole of it — each poll also
  * pays a `DescribeTable` round trip, which is why the live run's 60-poll
@@ -394,8 +416,9 @@ export async function waitForIndexesSettled(opts: {
  * would print the other type's promise. The remaining-attempt count is DERIVED
  * from the pair and never spelled out: `withRetry` runs `1 + maxRetries`
  * attempts in total, and writing the number by hand is how this line came to
- * promise 8 further attempts when 7 were left. Both figures are CLAMPED at
- * zero: the function is exported, and an `attemptNumber` past the budget
+ * promise 8 further attempts when 7 were left. Both figures are CLAMPED — the
+ * attempt count at zero, the minutes at one, since the announced attempt
+ * re-arms too: the function is exported, and an `attemptNumber` past the budget
  * otherwise printed "up to 0 more attempts" and then went negative.
  *
  * The per-attempt settle budget is attached to "this attempt plus the N more"
@@ -422,6 +445,15 @@ export async function waitForIndexesSettled(opts: {
  * is only the sleep: each poll also pays a `DescribeTable` round trip and
  * `withRetry` sleeps its backoff between attempts, so the true patience is
  * longer than the figure printed.
+ *
+ * The floor is conditioned on those waits RUNNING, which the sentence says out
+ * loud rather than assuming. {@link waitForIndexesSettled} returns early on any
+ * non-throttle `DescribeTable` failure (a describe-denied principal that can
+ * still delete, say) and returns at once whenever the GSI-status proxy
+ * disagrees with AWS's real refusal predicate — the gap named above. In those
+ * runs every remaining retry pays only backoff, and cdkd gives up in ~1.6 min
+ * having announced ~14. Unconditional, the figure would be plainly false
+ * there.
  *
  * It must NOT carry AWS's own sentence: the `dynamodb-globaltable` integ greps
  * the destroy log for `Cannot delete table while indexes are being` to prove
@@ -465,7 +497,8 @@ export function indexBusyRetryWarning(opts: {
     `and retrying (this attempt plus up to ${remainingAttempts} more attempts; ` +
     `each one first waits up to ${DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS} ` +
     `DescribeTable polls ~${pollSeconds}s apart before its DeleteTable, so cdkd ` +
-    `will not give up for at least ~${settleFloorMinutes} more minutes). Nothing is ` +
+    `will not give up for at least ~${settleFloorMinutes} more minutes while those ` +
+    `settle waits run). Nothing is ` +
     `wrong with the table; a large index backfill can outlast this budget, in ` +
     `which case the destroy fails with AWS's own message and re-running it ` +
     `succeeds once the index is ACTIVE.`

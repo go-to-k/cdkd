@@ -241,7 +241,12 @@ function liveCapacityAlreadyMatches(
  * `UpdateTable` — capacity, TTL, tags, table class. Calibrated on those and
  * sufficient for them.
  */
-const TABLE_ACTIVE_WAIT_ATTEMPTS = 60;
+// EXPORTED so the index-busy budget fence can read the real cap instead of
+// copying it: this wait runs BEFORE that loop inside the same per-resource
+// deadline, so it is a term of that arithmetic, and a copied 60 went on
+// passing when the real cap was mutated to 900 (~18 min added to a 30-min
+// deadline).
+export const TABLE_ACTIVE_WAIT_ATTEMPTS = 60;
 
 /**
  * The same budget for a BillingMode FLIP, which DynamoDB settles on a
