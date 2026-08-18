@@ -47,6 +47,12 @@ import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
+import {
+  WARM_THROUGHPUT_MEMBERS,
+  coerceWarmThroughput as coerceWarmThroughputSpec,
+  isWarmThroughputDecrease,
+  toFiniteNumber,
+} from '../dynamodb-warm-throughput.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -178,29 +184,18 @@ function hasUsableTableCapacity(value: unknown): boolean {
   return true;
 }
 
-/**
- * A capacity member, or `undefined` when the value is not a usable number.
- *
- * `Number()` coercion is NOT good enough here and the first draft of this
- * helper shipped that bug: `Number(null)`, `Number('')`, `Number([])` and
- * `Number(false)` are all **0**, not `NaN` — so a live `0` would have compared
- * EQUAL to a desired `null` / `''` / `[]` / `false` and suppressed the call.
- * The blast radius on DynamoDB is small (a PROVISIONED index's capacity is
- * always >= 1), but the rule this encodes is copied to other providers, so it
- * is spelled correctly rather than relying on the type that happens to be
- * unreachable today.
- *
- * A YAML-borne numeric STRING is still accepted, because that is a real
- * template shape and `'5'` genuinely means 5.
- */
-function capacityNumber(value: unknown): number | undefined {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
-  if (typeof value === 'string' && value.trim() !== '') {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : undefined;
-  }
-  return undefined;
-}
+// `capacityNumber` — a capacity member, or `undefined` when the value is not a
+// usable number — is now {@link toFiniteNumber}, imported from
+// `../dynamodb-warm-throughput.ts`. It was BYTE-identical to that module's own
+// member parser, and near-identical to `dynamodb-globaltable-provider.ts`'s
+// third copy, so the review of issue #1857's PR collapsed the three into one
+// spelling; nothing about the rule changed. The rule, restated because it is
+// what the copies kept getting right by luck: `Number()` alone is not good
+// enough, since `Number(null)`, `Number('')`, `Number([])`, `Number(false)` and
+// `Number('   ')` are all **0** rather than `NaN`, so a live `0` would compare
+// EQUAL to a desired `null` / `''` / `[]` / `false` and suppress the call. A
+// YAML-borne numeric STRING is still accepted, because that is a real template
+// shape and `'5'` genuinely means 5.
 
 /**
  * Does the capacity AWS currently holds for a GSI already equal the pair the
@@ -224,10 +219,10 @@ function liveCapacityAlreadyMatches(
   requested: ProvisionedThroughput
 ): boolean {
   if (live === undefined) return false;
-  const liveRead = capacityNumber(live.ReadCapacityUnits);
-  const liveWrite = capacityNumber(live.WriteCapacityUnits);
-  const wantRead = capacityNumber(requested.ReadCapacityUnits);
-  const wantWrite = capacityNumber(requested.WriteCapacityUnits);
+  const liveRead = toFiniteNumber(live.ReadCapacityUnits);
+  const liveWrite = toFiniteNumber(live.WriteCapacityUnits);
+  const wantRead = toFiniteNumber(requested.ReadCapacityUnits);
+  const wantWrite = toFiniteNumber(requested.WriteCapacityUnits);
   if (liveRead === undefined || liveWrite === undefined) return false;
   if (wantRead === undefined || wantWrite === undefined) return false;
   return liveRead === wantRead && liveWrite === wantWrite;
@@ -278,8 +273,10 @@ const BILLING_FLIP_ACTIVE_WAIT_ATTEMPTS = 600;
  * Still not `!== undefined`, and still ONE spelling for the write sites and the
  * drift side both: a value this refuses is a value cdkd does not send, so the
  * readback must not emit AWS's computed value as though the template had asked
- * for it. A YAML-borne numeric STRING is accepted, via {@link capacityNumber},
- * because `'12000'` genuinely means 12000.
+ * for it. A YAML-borne numeric STRING is accepted, by the shared coercion's own
+ * number reader ({@link toFiniteNumber}, in `../dynamodb-warm-throughput.ts` —
+ * the one this file's capacity paths read too), because `'12000'` genuinely
+ * means 12000.
  */
 function isSendableWarmThroughput(value: unknown): boolean {
   return coerceWarmThroughput(value) !== undefined;
@@ -301,8 +298,9 @@ function isSendableWarmThroughput(value: unknown): boolean {
  * over), and it makes the quoted form WORK instead of merely warning.
  *
  * Per MEMBER, so a bad one cannot take a good one with it, and never `NaN`:
- * {@link capacityNumber} accepts a number or a numeric string and rejects
- * everything else, so a member that does not resolve is OMITTED from the spec
+ * the shared coercion's number reader is {@link toFiniteNumber} — a number or
+ * a numeric string, everything else rejected — so a member that
+ * does not resolve is OMITTED from the spec
  * and reported in `dropped` for the caller to announce. AWS accepts a
  * one-member `WarmThroughput` (measured us-east-1, 2026-08-13: an
  * `UpdateTable` carrying only `ReadUnitsPerSecond` is a valid request shape —
@@ -341,27 +339,22 @@ function isSendableWarmThroughput(value: unknown): boolean {
  * the comparator's `deepEqual` is strict about that. It is the generic
  * stringly-typed-CFn class (every numeric property has it), not something this
  * coercion can reach from the write side.
+ *
+ * The RULE moved to `../dynamodb-warm-throughput.ts` when
+ * `AWS::DynamoDB::GlobalTable` needed the same one (issue #1857); this is the
+ * local adapter onto the shape this file's four call sites already read, so
+ * the behaviour, the signature and the tests are unchanged. The shared
+ * coercion always reports `droppedMembers`, including on a total refusal —
+ * that arm is unreachable from here, since a `usable === 0` outcome maps to
+ * `undefined` and the names go with it, which is exactly what this file did
+ * before.
  */
 function coerceWarmThroughput(
   value: unknown
 ): { spec: WarmThroughput; dropped: string[] } | undefined {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
-  const bag = value as Record<string, unknown>;
-  const spec: WarmThroughput = {};
-  const dropped: string[] = [];
-  let usable = 0;
-  for (const member of ['ReadUnitsPerSecond', 'WriteUnitsPerSecond'] as const) {
-    if (bag[member] === undefined) continue;
-    const n = capacityNumber(bag[member]);
-    if (n === undefined) {
-      dropped.push(member);
-      continue;
-    }
-    spec[member] = n;
-    usable++;
-  }
-  if (usable === 0) return undefined;
-  return { spec, dropped };
+  const { spec, droppedMembers } = coerceWarmThroughputSpec(value);
+  if (spec === undefined) return undefined;
+  return { spec, dropped: [...droppedMembers] };
 }
 
 /**
@@ -456,68 +449,16 @@ interface WarmThroughputUnits {
   WriteUnitsPerSecond?: number | undefined;
 }
 
-/**
- * Is the WarmThroughput this update would SEND a DECREASE of what AWS already
- * holds (issue #1768)?
- *
- * Measured live (us-east-1, 2026-08-13) against a table AWS reports
- * `{ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000}` for:
- *
- * ```
- * UpdateTable WarmThroughput={ReadUnitsPerSecond: 6000, WriteUnitsPerSecond: 2000}
- *   ValidationException: One or more parameter values were invalid: Requested
- *   ReadUnitsPerSecond for WarmThroughput for table is lower than current
- *   WarmThroughput, decreasing WarmThroughput is not supported
- * UpdateTable WarmThroughput={ReadUnitsPerSecond: 6000}      -> same rejection
- * UpdateTable WarmThroughput={WriteUnitsPerSecond: 2000}     -> same rejection, naming WriteUnitsPerSecond
- * UpdateTable WarmThroughput={12000, 4000}  (re-assert)      -> ACCEPTED
- * ```
- *
- * So the value is one AWS raises with the table's traffic and never lowers,
- * and a decrease is REJECTED rather than accepted-and-ignored — which is what
- * the issue said to measure before choosing, because the two produce different
- * correct answers. The caller SKIPS the call on a true here.
- *
- * Rules, each one chosen so the skip is right for EVERY `update()` caller
- * (the deploy engine, `cdkd drift --revert`, and the rollback executor's two
- * revert arms — none of which can make AWS lower the value, so none of them
- * loses anything a doomed call would have achieved):
- *
- * - Only the members the desired side DECLARES are examined; an omitted member
- *   is not sent and cannot be a decrease.
- * - EVERY declared member must be at-or-below its live counterpart AND at
- *   least one strictly below. A MIXED request (one member up, one down) still
- *   goes out: AWS rejects it by name, which is the pre-fix behavior and better
- *   than silently dropping the increase the user asked for.
- * - Anything not resolvable to a finite number fails OPEN (the call is still
- *   issued): the worst case is the pre-fix behavior, whereas a false positive
- *   would silently drop a real increase. Only the LIVE side can actually reach
- *   that arm now (PR review round 8): the desired side is a COERCED spec, so a
- *   malformed template value or an unresolved intrinsic has already been
- *   dropped by {@link coerceWarmThroughput} and cannot arrive here. The check
- *   is kept for the live side, which is whatever `DescribeTable` returned.
- */
-function isWarmThroughputDecrease(
-  // The COERCED spec — every call site passes one (PR review round 8), so the
-  // type says so rather than leaving it to convention.
-  desired: WarmThroughput,
-  live: WarmThroughputUnits | undefined
-): boolean {
-  if (live === undefined) return false;
-  let sawDecrease = false;
-  for (const member of ['ReadUnitsPerSecond', 'WriteUnitsPerSecond'] as const) {
-    if (desired[member] === undefined) continue;
-    const wanted = capacityNumber(desired[member]);
-    const current = capacityNumber(live[member]);
-    // Unusable on either side: fail open, and stop — a partial verdict on the
-    // remaining member could still skip a call carrying an unreadable one.
-    // Only the LIVE side can reach this now (see the header).
-    if (wanted === undefined || current === undefined) return false;
-    if (wanted > current) return false;
-    if (wanted < current) sawDecrease = true;
-  }
-  return sawDecrease;
-}
+// `isWarmThroughputDecrease` — the measured `decreasing WarmThroughput is not
+// supported` guard (issue #1768) — moved to `../dynamodb-warm-throughput.ts`
+// when `AWS::DynamoDB::GlobalTable` needed the same rule (issue #1857). It is
+// the SAME function, verbatim: the two providers' independent spellings were
+// compared over every declared / mixed / equal / above / absent-live /
+// unusable-live / empty-spec combination and agreed on all of them, which is
+// precisely why keeping two was the risk. The live side still passes a
+// `...WarmThroughputDescription`, whose AWS-managed `Status` the shared
+// two-member parameter type ignores exactly as {@link WarmThroughputUnits}
+// did.
 
 /**
  * Does the warm throughput AWS currently holds already equal what this update
@@ -552,10 +493,12 @@ function warmThroughputAlreadyMatches(
 ): boolean {
   if (live === undefined) return false;
   let compared = 0;
-  for (const member of ['ReadUnitsPerSecond', 'WriteUnitsPerSecond'] as const) {
+  // The shared member tuple, not a local re-spelling of it: the order and the
+  // membership are the same fact {@link isWarmThroughputDecrease} compares on.
+  for (const member of WARM_THROUGHPUT_MEMBERS) {
     if (desired[member] === undefined) continue;
-    const wanted = capacityNumber(desired[member]);
-    const current = capacityNumber(live[member]);
+    const wanted = toFiniteNumber(desired[member]);
+    const current = toFiniteNumber(live[member]);
     if (wanted === undefined || current === undefined) return false;
     if (wanted !== current) return false;
     compared++;
@@ -3299,8 +3242,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
   ): boolean {
     if (requested === undefined) return false;
     if (
-      capacityNumber(requested.ReadCapacityUnits) !== 0 ||
-      capacityNumber(requested.WriteCapacityUnits) !== 0
+      toFiniteNumber(requested.ReadCapacityUnits) !== 0 ||
+      toFiniteNumber(requested.WriteCapacityUnits) !== 0
     ) {
       return false;
     }

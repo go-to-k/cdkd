@@ -825,6 +825,142 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
       billingSeedTable.addPropertyOverride('BillingMode', { Unusable: 'not-a-string' });
     }
 
+    // ─── Issue #1857: the WarmThroughput numeric coercion ──────────────────
+    //
+    // CloudFormation is stringly typed, so a template may legitimately declare
+    // `WarmThroughput: { ReadUnitsPerSecond: '12000' }` as a QUOTED string —
+    // that is also the shape an `Fn::Sub` result arrives in. Pre-fix the
+    // GlobalTable provider forwarded the block VERBATIM, so the string reached
+    // the wire in a numeric `Long` field and DynamoDB rejected the whole
+    // `CreateTable` call; post-fix `coerceWarmThroughput` converts it per
+    // member before the call is built.
+    //
+    // The discriminator is therefore TOTAL rather than assertion-shaped: with
+    // the fix reverted, step 2's baseline deploy FAILS on this table and the
+    // run never reaches step 4f at all. Step 4f exists to prove the coerced
+    // numbers actually reached AWS rather than being dropped on the way.
+    //
+    // `addPropertyOverride` rather than a typed prop, and that choice is
+    // load-bearing: the L1 declares both members as `number`, and CDK's
+    // generated property renderer is the wrong place to smuggle a string
+    // through. An override is applied to the RENDERED template, so the quoted
+    // form is guaranteed to survive synth unchanged.
+    //
+    // The declared numbers are DynamoDB's own default / minimum warm
+    // throughput (12000 read units per second, 4000 write). Deliberately NOT
+    // raised above the default: warm throughput above the default is a BILLED
+    // increase and this fixture runs against a real account. That is also why
+    // step 4f cannot discriminate on the VALUE alone (an index that declares
+    // nothing reads back the same default — issue #1859) and says so.
+    const warmCoercionTable = new ddb.CfnGlobalTable(this, 'WarmCoercionTable', {
+      keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
+      attributeDefinitions: [
+        { attributeName: 'pk', attributeType: 'S' },
+        { attributeName: 'warmPk', attributeType: 'S' },
+      ],
+      billingMode: 'PAY_PER_REQUEST',
+      globalSecondaryIndexes: [
+        {
+          indexName: 'warmIdx',
+          keySchema: [{ attributeName: 'warmPk', keyType: 'HASH' }],
+          projection: { projectionType: 'KEYS_ONLY' },
+        },
+      ],
+      replicas: [{ region: this.region }],
+    });
+    warmCoercionTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    warmCoercionTable.addPropertyOverride('GlobalSecondaryIndexes.0.WarmThroughput', {
+      ReadUnitsPerSecond: '12000',
+      WriteUnitsPerSecond: '4000',
+    });
+
+    // ─── Issue #1830: the index-busy `DeleteTable` retry ───────────────────
+    //
+    // `delete()` refuses to call `DeleteTable` while an index is transitioning
+    // (issue #1521) — but that gate reads the PRE-DELETE `DescribeTable`,
+    // which is taken BEFORE the auto-scaling teardown loop. An index that
+    // enters `UPDATING` inside that window is invisible to the gate, AWS
+    // refuses the delete with `Cannot delete table while indexes are being
+    // created, updated, or deleted`, and pre-fix that surfaced as a hard
+    // `PartialFailureError` with state preserved. The fix retries.
+    //
+    // This table exists to make that window WIDE ENOUGH to drive from a shell.
+    // The teardown issues `DeleteScalingPolicy` + `DeregisterScalableTarget`
+    // unconditionally, per dimension, for the TABLE and then for EVERY LIVE
+    // INDEX — so the window is 4 + 4*N serialized application-auto-scaling
+    // calls, and the index count is the only knob a fixture has over it. At 12
+    // indexes the post-signal window is 48 calls (measured class: ~50-120 ms
+    // each), against a driver latency of well under a second.
+    //
+    // The table-level WRITE target is the SIGNAL: it is the only scalable
+    // target this table registers at table level, it is torn down SECOND (the
+    // read dimension is never registered, so its teardown logs nothing), and
+    // its `Deregistered auto-scaling target ...` debug line is emitted AFTER
+    // the pre-delete describe and BEFORE `DeleteTable`. Keying on it is what
+    // makes the arm reproduce the real race instead of the one the #1521 gate
+    // already absorbs: an out-of-band update issued BEFORE the destroy is seen
+    // by the pre-delete describe, waited out, and the delete then succeeds
+    // with the fix REVERTED.
+    //
+    // Per-index READ capacity is FIXED (not auto-scaled) on purpose, so no
+    // `dynamodb:index:ReadCapacityUnits` target is registered and the teardown
+    // of that dimension stays a pure two-call no-op that still costs window.
+    const DELETE_RETRY_INDEX_COUNT = 12;
+    const deleteRetryIndex = (i: number): string => `busyIdx${i}`;
+    const deleteRetryAttr = (i: number): string => `busyPk${i}`;
+    const deleteRetryAutoScaling = {
+      writeCapacityAutoScalingSettings: {
+        minCapacity: 1,
+        maxCapacity: 2,
+        targetTrackingScalingPolicyConfiguration: { targetValue: 70 },
+      },
+    };
+    const gsiDeleteRetryTable = new ddb.CfnGlobalTable(this, 'GsiDeleteRetryTable', {
+      keySchema: [{ attributeName: 'pk', keyType: 'HASH' }],
+      attributeDefinitions: [
+        { attributeName: 'pk', attributeType: 'S' },
+        ...Array.from({ length: DELETE_RETRY_INDEX_COUNT }, (_, i) => ({
+          attributeName: deleteRetryAttr(i),
+          attributeType: 'S',
+        })),
+      ],
+      // PROVISIONED because a table-level write auto-scaling target is what the
+      // arm's signal reads, and the GlobalTable CFn shape offers no fixed
+      // table-level `WriteCapacityUnits` — a PAY_PER_REQUEST twin would
+      // register no scalable target at all and leave the window unobservable.
+      billingMode: 'PROVISIONED',
+      writeProvisionedThroughputSettings: deleteRetryAutoScaling,
+      globalSecondaryIndexes: Array.from({ length: DELETE_RETRY_INDEX_COUNT }, (_, i) => ({
+        indexName: deleteRetryIndex(i),
+        keySchema: [{ attributeName: deleteRetryAttr(i), keyType: 'HASH' }],
+        projection: { projectionType: 'KEYS_ONLY' },
+        writeProvisionedThroughputSettings: deleteRetryAutoScaling,
+      })),
+      replicas: [
+        {
+          region: this.region,
+          readProvisionedThroughputSettings: { readCapacityUnits: 1 },
+          globalSecondaryIndexes: Array.from({ length: DELETE_RETRY_INDEX_COUNT }, (_, i) => ({
+            indexName: deleteRetryIndex(i),
+            readProvisionedThroughputSettings: { readCapacityUnits: 1 },
+          })),
+        },
+      ],
+    });
+    gsiDeleteRetryTable.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    new cdk.CfnOutput(this, 'WarmCoercionTableName', {
+      value: warmCoercionTable.ref,
+      description:
+        'PAY_PER_REQUEST GlobalTable whose GSI declares WarmThroughput as quoted strings (issue #1857)',
+    });
+
+    new cdk.CfnOutput(this, 'GsiDeleteRetryTableName', {
+      value: gsiDeleteRetryTable.ref,
+      description:
+        'PROVISIONED GlobalTable with 12 GSIs, used by the issue #1830 index-busy delete-retry race',
+    });
+
     new cdk.CfnOutput(this, 'BillingSeedTableName', {
       value: billingSeedTable.ref,
       description:

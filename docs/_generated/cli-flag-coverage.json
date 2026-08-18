@@ -1334,6 +1334,7 @@
     "--asset-bucket",
     "--assume-role",
     "--attribute",
+    "--attribute-definitions",
     "--attribute-names",
     "--authorizer-id",
     "--auto",

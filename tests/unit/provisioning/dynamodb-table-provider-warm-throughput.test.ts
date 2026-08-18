@@ -232,6 +232,57 @@ describe('DynamoDBTableProvider WarmThroughput wiring', () => {
       expect(findCalls(CreateTableCommand)[0]!.input).not.toHaveProperty('WarmThroughput');
       expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain('carries no usable');
     });
+
+    it('never puts ZERO on the wire for a WHITESPACE-only string', async () => {
+      // `Number('   ')` is **0**, not NaN — so unlike `'abc'` above this shape
+      // gets past a plain `Number.isFinite` check and becomes a request for
+      // zero warm units, which nobody declared and AWS cannot honour.
+      //
+      // The rule lives in `src/provisioning/dynamodb-warm-throughput.ts` and is
+      // read by BOTH DynamoDB providers (issue #1857), so it is fenced HERE as
+      // well as on the GlobalTable side: with only one suite watching it, a
+      // relaxation on the shared module would still leave this type green while
+      // silently changing what it sends.
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+      });
+
+      await provider.create('L', RESOURCE_TYPE, {
+        KeySchema: KEY_SCHEMA,
+        AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+        BillingMode: 'PAY_PER_REQUEST',
+        WarmThroughput: { ReadUnitsPerSecond: '   ', WriteUnitsPerSecond: '\t\n' },
+      });
+
+      // The regression's shape:
+      // `WarmThroughput: {ReadUnitsPerSecond: 0, WriteUnitsPerSecond: 0}`.
+      expect(findCalls(CreateTableCommand)[0]!.input).not.toHaveProperty('WarmThroughput');
+      expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain('carries no usable');
+    });
+
+    it('sends the usable half when only ONE member is whitespace', async () => {
+      // Per MEMBER, like every other unusable value: a blank read half must not
+      // take a perfectly good write half with it.
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+      });
+
+      await provider.create('L', RESOURCE_TYPE, {
+        KeySchema: KEY_SCHEMA,
+        AttributeDefinitions: ATTRIBUTE_DEFINITIONS,
+        BillingMode: 'PAY_PER_REQUEST',
+        WarmThroughput: { ReadUnitsPerSecond: '  ', WriteUnitsPerSecond: 4000 },
+      });
+
+      expect(findCalls(CreateTableCommand)[0]!.input.WarmThroughput).toEqual({
+        WriteUnitsPerSecond: 4000,
+      });
+      expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'ReadUnitsPerSecond'
+      );
+    });
   });
 
   describe('PER-INDEX WarmThroughput on the CreateTable path (PR review round 6)', () => {
