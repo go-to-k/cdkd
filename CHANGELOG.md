@@ -1,3 +1,10 @@
+## [0.283.36](https://github.com/go-to-k/cdkd/compare/v0.283.35...v0.283.36) (2026-08-18)
+
+
+### Bug Fixes
+
+* **deployment:** scope the dynamic-reference cache to the resolver instance so it cannot cross a region or a stack ([#1966](https://github.com/go-to-k/cdkd/issues/1966)) ([a330c82](https://github.com/go-to-k/cdkd/commit/a330c828c2aee3327a2e826fa4754411202651ab))
+
 ## [0.283.35](https://github.com/go-to-k/cdkd/compare/v0.283.34...v0.283.35) (2026-08-18)
 
 
