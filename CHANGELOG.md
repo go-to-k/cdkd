@@ -1,3 +1,10 @@
+## [0.283.35](https://github.com/go-to-k/cdkd/compare/v0.283.34...v0.283.35) (2026-08-18)
+
+
+### Bug Fixes
+
+* **cognito:** gate MfaConfiguration on the update path, refuse a malformed value, and widen the MFA warnings ([#1965](https://github.com/go-to-k/cdkd/issues/1965)) ([5a3e57a](https://github.com/go-to-k/cdkd/commit/5a3e57a526648fcfe85999dec5f4e0b98daae4ce))
+
 ## [0.283.34](https://github.com/go-to-k/cdkd/compare/v0.283.33...v0.283.34) (2026-08-18)
 
 
