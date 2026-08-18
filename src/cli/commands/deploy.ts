@@ -900,6 +900,15 @@ async function deployCommand(
         if (deployResult.deleteSkipped > 0) {
           logger.info(`  Skipped (not deleted): ${yellow(deployResult.deleteSkipped)}`);
         }
+        // Issue #1819: same only-when-non-zero rule and the same reason. Worded
+        // as what SURVIVED rather than as "partial", because the row the user
+        // is looking at was updated fine — the number counts resources the
+        // update was supposed to retire and did not.
+        if (deployResult.updatePartial > 0) {
+          logger.info(
+            `  Updated with an orphaned predecessor: ${yellow(deployResult.updatePartial)}`
+          );
+        }
         logger.info(`  Unchanged: ${gray(deployResult.unchanged)}`);
         logger.info(`  Duration: ${cyan((deployResult.durationMs / 1000).toFixed(2) + 's')}`);
 
@@ -939,7 +948,15 @@ async function deployCommand(
             // skipped a DELETE records a run summary that says only what it
             // DID delete, so the durable post-mortem understates the run in
             // exactly the direction this change exists to correct.
-            ...(deployResult.deleteSkipped > 0 && { skipped: deployResult.deleteSkipped }),
+            // Issue #1819 rides the SAME run-level counter as #1762's skipped
+            // DELETE: `cdkd events` renders `RunCounts.skipped` as `⚠N`, and
+            // both cases mean "cdkd did not address a resource it was
+            // responsible for". Splitting them at the run level would need a
+            // schema field for a number the per-resource events already carry
+            // — each survivor has its own RESOURCE_SKIPPED with the reason.
+            ...(deployResult.deleteSkipped + deployResult.updatePartial > 0 && {
+              skipped: deployResult.deleteSkipped + deployResult.updatePartial,
+            }),
           },
           deployResult.durationMs
         );

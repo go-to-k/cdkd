@@ -104,10 +104,11 @@ type ProvisionCountsBag = {
   deleted: number;
   skipped: number;
   deleteSkipped: number;
+  updatePartial: number;
 };
 
 function freshCounts(): ProvisionCountsBag {
-  return { created: 0, updated: 0, deleted: 0, skipped: 0, deleteSkipped: 0 };
+  return { created: 0, updated: 0, deleted: 0, skipped: 0, deleteSkipped: 0, updatePartial: 0 };
 }
 
 /**
