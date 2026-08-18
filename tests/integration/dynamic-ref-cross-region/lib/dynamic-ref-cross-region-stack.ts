@@ -9,6 +9,13 @@ export interface DynamicRefCrossRegionStackProps extends cdk.StackProps {
    * under this name in EACH region, holding a DIFFERENT value.
    */
   readonly sourceParameterName: string;
+  /**
+   * The `SecureString` counterpart, again one parameter under this name in EACH
+   * region holding a DIFFERENT value. Created out of band by `verify.sh`:
+   * CloudFormation cannot create a `SecureString`, so the fixture only
+   * REFERENCES it — the same shape `secrets-dynamic-ref` uses.
+   */
+  readonly secureSourceParameterName: string;
 }
 
 /**
@@ -46,6 +53,21 @@ export class DynamicRefCrossRegionStack extends cdk.Stack {
       value: `{{resolve:ssm:${props.sourceParameterName}}}`,
       description:
         'Echoes the region-local value of the shared source parameter (cdkd issue #1933)',
+    });
+
+    // The SECRET arm. A plain `{{resolve:ssm:...}}` reference to a
+    // `SecureString` resolves with `WithDecryption`, so cdkd hands the
+    // provider the plaintext while persisting the unresolved expression
+    // (issue #1901). That is the path whose verdict the resolved-value cache
+    // now carries per entry, so without this arm the whole verdict-carrying
+    // half of the #1933 fix has no real-AWS coverage — the `String` arm above
+    // exercises only the value, which is never redacted.
+    new ssm.CfnParameter(this, 'SecureEchoParameter', {
+      type: 'String',
+      name: `${this.stackName}-secure-echo`,
+      value: `{{resolve:ssm:${props.secureSourceParameterName}}}`,
+      description:
+        'Echoes the region-local value of the shared SecureString source parameter (cdkd issue #1933)',
     });
   }
 }

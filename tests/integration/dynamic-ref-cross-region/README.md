@@ -24,16 +24,27 @@ with its own region — so a region boundary is now also a cache boundary.
 ## What the fixture does
 
 1. Seeds the SAME SSM parameter name in TWO regions with DIFFERENT values
-   (`cdkd-dynref-region-a` / `cdkd-dynref-region-b`). Both are ordinary
-   `String` parameters — public test data, nothing to mask.
-2. Deploys TWO stacks in ONE cdkd process, one per region, each declaring an
-   SSM parameter whose `Value` is the identical literal
-   `{{resolve:ssm:<shared name>}}` expression.
-3. Asserts each region's echo parameter carries ITS OWN region's value, with a
-   dedicated failure message for the leak shape (region B holding region A's
-   value).
-4. Destroys both stacks, asserts both echo parameters and both state records
-   are gone (tri-state gone probes), then deletes the seeded parameters.
+   (`cdkd-dynref-region-a` / `cdkd-dynref-region-b`), as ordinary `String`
+   parameters — public test data, nothing to mask.
+2. Seeds a SECOND shared name as a `SecureString` in both regions, again with
+   different values, and asserts the type really is `SecureString` before
+   proceeding (a parameter that came back `String` would make the secret arm
+   vacuous). Created out of band because CloudFormation cannot create one.
+3. Deploys TWO stacks in ONE cdkd process, one per region, each declaring two
+   SSM parameters whose `Value`s are the identical literal
+   `{{resolve:ssm:<shared name>}}` expressions.
+4. Asserts each region's echo parameters carry ITS OWN region's values — for
+   both arms — with a dedicated failure message for the leak shape (region B
+   holding region A's value / secret).
+5. Asserts, for the `SecureString` arm only, that each stack's `state.json`
+   holds the unresolved `{{resolve:ssm:...}}` expression and NEITHER region's
+   plaintext. This is the half the cache's per-entry secret verdict decides: a
+   cache hit that fails to re-record the secret for a later resource persists
+   plaintext, and a `String` arm can never show it because a public value is
+   never redacted.
+6. Destroys both stacks, asserts all four echo parameters and both state
+   records are gone (tri-state gone probes), then deletes the seeded
+   parameters.
 
 Pre-fix, step 3 fails on the second stack.
 
@@ -68,9 +79,9 @@ deploy is the mode this fixture pins.
   cannot make an ambient client point at the right region, so #1933's own
   title (one region's secret resolved into another's resource) stays reachable
   until #1957 lands.
-- The CROSS-STACK half of #1933 (a second stack's secrets map coming back
-  empty so `cdkd scrub --all` reports it clean). That half needs a
-  `SecureString` / Secrets Manager reference shared by two stacks in ONE
-  region; `tests/integration/secrets-dynamic-ref` is the nearest existing
-  shape. Covered by unit tests today
+- The CROSS-STACK half of #1933 in ONE region (a second stack's secrets map
+  coming back empty so `cdkd scrub --all` reports it clean). The
+  `SecureString` arm here covers the redaction path across two REGIONS;
+  the same-region two-stack shape is `tests/integration/secrets-dynamic-ref`'s
+  territory and is covered by unit tests today
   (`tests/unit/deployment/dynamic-references.test.ts`).

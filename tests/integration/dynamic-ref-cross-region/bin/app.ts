@@ -11,15 +11,19 @@ const regionA = process.env['CDKD_IT_DYNREF_REGION_A'] ?? 'us-east-1';
 const regionB = process.env['CDKD_IT_DYNREF_REGION_B'] ?? 'us-west-2';
 const sourceParameterName =
   process.env['CDKD_IT_DYNREF_SOURCE_PARAM'] ?? '/cdkd-test/dynref-cross-region';
+const secureSourceParameterName =
+  process.env['CDKD_IT_DYNREF_SECURE_PARAM'] ?? '/cdkd-test/dynref-cross-region-secure';
 
 new DynamicRefCrossRegionStack(app, 'CdkdDynamicRefCrossRegionAStack', {
   description: 'Resolves a shared {{resolve:ssm:...}} expression in region A (cdkd issue #1933)',
   env: { region: regionA },
   sourceParameterName,
+  secureSourceParameterName,
 });
 
 new DynamicRefCrossRegionStack(app, 'CdkdDynamicRefCrossRegionBStack', {
   description: 'Resolves the SAME expression in region B (cdkd issue #1933)',
   env: { region: regionB },
   sourceParameterName,
+  secureSourceParameterName,
 });

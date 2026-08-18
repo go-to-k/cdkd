@@ -27,7 +27,8 @@ import {
   s3BucketWebsiteUrl,
 } from '../utils/s3-endpoints.js';
 import { IntrinsicResolutionRefusalError } from '../utils/error-handler.js';
-import { markNonRetryable } from './retryable-errors.js';
+import { markNonRetryable, isThrottlingError } from './retryable-errors.js';
+import { withRetry } from './retry.js';
 import {
   maskSecretsInText,
   recordSecretExpression,
@@ -964,6 +965,26 @@ function accountInfoFor(identity: CachedAccountIdentity, overrideRegion?: string
  */
 const FABRICATED_ACCOUNT_INFO_TTL_MS = 10_000;
 
+/**
+ * Retries after the first attempt for a dynamic-reference lookup, THROTTLE-shaped
+ * failures only (issue #1933 review). Everything else — a missing parameter, a
+ * denied secret — is a real answer and is thrown to the caller unchanged.
+ *
+ * It matters more since the cache became per-resolver AND stopped memoizing a
+ * value whose ssm `Type` was unclassifiable: both raise the call COUNT for the
+ * same template (one lookup per resolver rather than per process; one per
+ * occurrence for the anomalous type), and a bare `send` turned the resulting
+ * throttle into an aborted deploy. At the default backoff (1s -> 2s -> 4s -> 8s)
+ * this adds at most ~15s of sleep, against re-running the whole deploy.
+ */
+const MAX_DYNAMIC_REFERENCE_THROTTLE_RETRIES = 4;
+
+/**
+ * Test seam: overriding `sleep` lets unit tests drive the backoff schedule
+ * without real waits (mirrors `describeTypeRetryDelays`).
+ */
+export const dynamicReferenceRetryDelays: { sleep?: (ms: number) => Promise<void> } = {};
+
 /** Test seam for {@link FABRICATED_ACCOUNT_INFO_TTL_MS} expiry. */
 export const accountInfoClock = { now: (): number => Date.now() };
 
@@ -1361,6 +1382,20 @@ export class IntrinsicFunctionResolver {
    * profile / assume-role config) and belongs to #1957 rather than here.
    */
   private readonly cachedDynamicReferences = new Map<string, CachedDynamicReference>();
+
+  /**
+   * SSM parameter names this resolver has already warned about for an
+   * unrecognized `Type` (issue #1933 review).
+   *
+   * The warning is per LOOKUP, and a parameter with an anomalous `Type` is
+   * deliberately never cached (see `cacheable` in `resolveDynamicReferences`),
+   * so it is re-looked-up for every occurrence of the reference in the stack —
+   * which without this set means one identical warn line per occurrence per
+   * pass, on the exact template that most needs the line to be READ. Scoped to
+   * the resolver, like the value cache: a different stack genuinely deserves
+   * its own warning, since the parameter it names may be a different region's.
+   */
+  private readonly warnedUnrecognizedSsmTypes = new Set<string>();
 
   constructor(region?: string, options?: IntrinsicFunctionResolverOptions) {
     this.resolverRegion = region || process.env['AWS_REGION'] || 'us-east-1';
@@ -4404,21 +4439,38 @@ export class IntrinsicFunctionResolver {
         // The `cached.value` test excludes the empty string: an empty secret is
         // not a usable redaction needle (it would match every empty leaf).
         //
-        // The verdict comes off the ENTRY as well as from
-        // `recordedSecretExpressions`, because that store is process-global
-        // while this cache is not: another stack's resolver can RETRACT the memo
-        // (its own region's copy of the parameter being a plain `String`), after
-        // which `isKnownSecret` alone would stop redacting this stack's secret
-        // for every resource that hits the cache. `cached.secret` is the verdict
-        // the authoritative response for THIS resolver produced, so honouring it
-        // can only redact what the first resolution already redacted.
+        // The verdict is read off the ENTRY **and only off the entry** —
+        // deliberately NOT `isKnownSecret`, and that exclusion is the point.
+        // `isKnownSecret` consults the process-global `recordedSecretExpressions`,
+        // which a FOREIGN resolver writes to, so ORing it in here would re-open
+        // the cross-resolver channel this cache's instance scope exists to close
+        // — in the opposite direction from the leak (issue #1933 review):
+        //
+        //   virginia resolves `/env` -> `String` -> retracts the memo, caches
+        //   {value:'prod', secret:false}; tokyo resolves the SAME expression ->
+        //   `SecureString` -> re-adds the memo; virginia's next resource hits
+        //   this arm with `isKnownSecret` true from TOKYO's add and records
+        //   'prod' as a redaction NEEDLE, rewriting its own `my-prod-bucket`
+        //   into `my-{{resolve:ssm:/env}}-bucket`.
+        //
+        // That is exactly the corruption the retraction arm below exists to
+        // prevent, arriving through the cache instead. Reachable at the default
+        // `--stack-concurrency 4`.
+        //
+        // Nothing legitimate is lost, because `cached.secret` is AUTHORITATIVE
+        // for every entry this resolver could have written: for ssm it is
+        // `param.secure` off the fresh `GetParameter` response (which OVERWRITES
+        // the `isKnownSecret` seed below), for secretsmanager it is `true` by
+        // spelling, and only `cacheable` — i.e. definitive — verdicts are stored
+        // at all. A cache hit therefore already knows its own answer, and the
+        // global store can only ever contradict it with another region's.
         //
         // Still deliberately does NOT add to `recordedSecretExpressions`:
         // reaching this arm means the resolution that POPULATED this instance's
         // cache already recorded whatever it was entitled to pin, and a second
         // add could only ever be a no-op or an un-pinning it explicitly avoided
         // (issue #1916).
-        if ((isKnownSecret || cached.secret) && cached.value) {
+        if (cached.secret && cached.value) {
           context?.recordedSecretValues?.set(cached.value, fullMatch);
         }
         // Replacer FUNCTION, not a string: `String.replace` interprets `$&`,
@@ -4617,7 +4669,10 @@ export class IntrinsicFunctionResolver {
       ...(versionId && versionId !== '' && { VersionId: versionId }),
     });
 
-    const response = await client.send(command);
+    const response = await this.sendWithThrottleRetry(
+      () => client.send(command),
+      `secretsmanager:${secretId}`
+    );
     const secretString = response.SecretString;
 
     if (!secretString) {
@@ -4777,6 +4832,29 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Run one dynamic-reference lookup, retrying THROTTLE-shaped failures only
+   * (issue #1933 review).
+   *
+   * Both lookups behind `{{resolve:...}}` were bare `send` calls, so a single
+   * `Rate exceeded` aborted the deploy. That was already the wrong trade for a
+   * read, and this PR raises the call count on both paths: the resolved-value
+   * cache is per-resolver now (one lookup per stack rather than one per
+   * process), and a value whose ssm `Type` came back unclassifiable is
+   * deliberately not cached at all (one lookup per OCCURRENCE, so it re-asks
+   * AWS rather than inheriting a transient verdict). Retrying only the throttle
+   * shape keeps every real answer — `ParameterNotFound`, `AccessDenied`, a
+   * malformed reference — failing fast and unchanged.
+   */
+  private sendWithThrottleRetry<T>(operation: () => Promise<T>, label: string): Promise<T> {
+    return withRetry(operation, label, {
+      maxRetries: MAX_DYNAMIC_REFERENCE_THROTTLE_RETRIES,
+      isRetryable: (_message, error) => isThrottlingError(error),
+      logger: this.logger,
+      ...(dynamicReferenceRetryDelays.sleep ? { sleep: dynamicReferenceRetryDelays.sleep } : {}),
+    });
+  }
+
+  /**
    * Resolve an `{{resolve:ssm:...}}` dynamic reference, reporting whether the
    * parameter is a `SecureString` (issue #1901).
    *
@@ -4811,7 +4889,10 @@ export class IntrinsicFunctionResolver {
       WithDecryption: decrypt,
     });
 
-    const response = await client.send(command);
+    const response = await this.sendWithThrottleRetry(
+      () => client.send(command),
+      `ssm:${parameterName}`
+    );
     const paramValue = response.Parameter?.Value;
 
     if (paramValue === undefined || paramValue === null) {
@@ -4842,11 +4923,17 @@ export class IntrinsicFunctionResolver {
     // DEFINITIVE `SecureString` (safe to memoize) from an unclassifiable one
     // (treated as secret, but not pinned — see the caller).
     const secure = paramType !== 'String' && paramType !== 'StringList';
-    if (secure && paramType !== 'SecureString') {
+    if (
+      secure &&
+      paramType !== 'SecureString' &&
+      !this.warnedUnrecognizedSsmTypes.has(parameterName)
+    ) {
       // Reached only if AWS stops returning `Type`, or returns one cdkd does not
       // know. The value is treated as a secret (see above), which is safe but
       // silently changes what state stores — so say so rather than let the
-      // parameter quietly start persisting as its expression.
+      // parameter quietly start persisting as its expression. Once per parameter
+      // per resolver — see `warnedUnrecognizedSsmTypes`.
+      this.warnedUnrecognizedSsmTypes.add(parameterName);
       const reported = paramType === undefined ? '(absent)' : `'${String(paramType)}'`;
       this.logger.warn(
         `SSM parameter '${parameterName}' reported an unrecognized Type ${reported} — treating ` +

@@ -31,9 +31,16 @@
 # while this fixture pins that the CACHE no longer carries one region's value
 # into another's resource.
 #
-# Only PUBLIC test values are used (SSM `String` parameters, never
-# `SecureString`), so nothing here needs masking — the region dimension is a
-# property of the CACHE KEY, not of the secret-ness of the value.
+# TWO arms run per region, and both are needed. The `String` arm proves the
+# resolved VALUE is region-local. The `SecureString` arm (seeded out of band by
+# this script — CloudFormation cannot create one) additionally reaches the
+# REDACTION path: cdkd hands the provider the decrypted value while persisting
+# the unresolved expression (issue #1901), which is the half the cache's
+# per-entry secret verdict decides. Without it the verdict-carrying logic gets
+# no real-AWS coverage at all.
+#
+# SECURITY: the SecureString values are test data, but are never printed —
+# assertions compare them and report PASS/FAIL only.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -105,14 +112,27 @@ STACK_A="CdkdDynamicRefCrossRegionAStack"
 STACK_B="CdkdDynamicRefCrossRegionBStack"
 ECHO_PARAM_A="${STACK_A}-echo"
 ECHO_PARAM_B="${STACK_B}-echo"
+SECURE_ECHO_PARAM_A="${STACK_A}-secure-echo"
+SECURE_ECHO_PARAM_B="${STACK_B}-secure-echo"
 
 SOURCE_PARAM="/cdkd-test/dynref-cross-region-${ACCOUNT_ID}"
 EXPECTED_A="cdkd-dynref-region-a"
 EXPECTED_B="cdkd-dynref-region-b"
 
+# The SecureString counterpart. Same name in both regions, different values, and
+# created by THIS script — CloudFormation cannot create a SecureString, so the
+# stacks only reference it (same shape as secrets-dynamic-ref). It is what gives
+# the fix's verdict-carrying half real-AWS coverage: a `String` value is never
+# redacted, so the String arms above cannot exercise it. Test data, but treated
+# as secret throughout — never echoed, only compared.
+SECURE_PARAM="/cdkd-test/dynref-cross-region-secure-${ACCOUNT_ID}"
+EXPECTED_SECURE_A="cdkd-dynref-secure-a"
+EXPECTED_SECURE_B="cdkd-dynref-secure-b"
+
 export CDKD_IT_DYNREF_REGION_A="${REGION_A}"
 export CDKD_IT_DYNREF_REGION_B="${REGION_B}"
 export CDKD_IT_DYNREF_SOURCE_PARAM="${SOURCE_PARAM}"
+export CDKD_IT_DYNREF_SECURE_PARAM="${SECURE_PARAM}"
 
 echo "[verify] region-a=${REGION_A} region-b=${REGION_B} source-param=${SOURCE_PARAM}"
 
@@ -124,8 +144,16 @@ fi
 # Seed an `rc` so a signal-triggered cleanup does not read an unset variable
 # as success and skip its own teardown.
 rc=0
+cleaned=0
 cleanup() {
   rc=$?
+  # The INT / TERM traps call `cleanup` and then `exit`, which re-fires the EXIT
+  # trap — so without this guard every signalled run destroys twice (the second
+  # pass racing the first through `cdkd destroy` and the delete-parameter calls).
+  if [ "${cleaned}" -eq 1 ]; then
+    exit "${rc}"
+  fi
+  cleaned=1
   echo "[verify] cleanup (exit ${rc})"
   # Best-effort stack teardown first, so the echo parameters go with their
   # stacks and cdkd state is not left pointing at deleted resources.
@@ -134,8 +162,12 @@ cleanup() {
   # Then direct AWS cleanup in case destroy itself is what broke.
   aws ssm delete-parameter --name "${ECHO_PARAM_A}" --region "${REGION_A}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${ECHO_PARAM_B}" --region "${REGION_B}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${SECURE_ECHO_PARAM_A}" --region "${REGION_A}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${SECURE_ECHO_PARAM_B}" --region "${REGION_B}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${SOURCE_PARAM}" --region "${REGION_A}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${SOURCE_PARAM}" --region "${REGION_B}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${SECURE_PARAM}" --region "${REGION_A}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${SECURE_PARAM}" --region "${REGION_B}" >/dev/null 2>&1 || true
   # Stale state/lock keys, in case the destroy above could not run.
   for region in "${REGION_A}" "${REGION_B}"; do
     for stack in "${STACK_A}" "${STACK_B}"; do
@@ -155,6 +187,23 @@ aws ssm put-parameter --name "${SOURCE_PARAM}" --type String \
 aws ssm put-parameter --name "${SOURCE_PARAM}" --type String \
   --value "${EXPECTED_B}" --overwrite --region "${REGION_B}" >/dev/null
 echo "    OK: ${SOURCE_PARAM} = ${EXPECTED_A} (${REGION_A}) / ${EXPECTED_B} (${REGION_B})"
+
+aws ssm put-parameter --name "${SECURE_PARAM}" --type SecureString \
+  --value "${EXPECTED_SECURE_A}" --overwrite --region "${REGION_A}" >/dev/null
+aws ssm put-parameter --name "${SECURE_PARAM}" --type SecureString \
+  --value "${EXPECTED_SECURE_B}" --overwrite --region "${REGION_B}" >/dev/null
+# Assert the type really is SecureString before proceeding: a parameter that
+# silently came back `String` would make the whole secret arm vacuous (it would
+# resolve and pass every value assertion while redacting nothing).
+for region in "${REGION_A}" "${REGION_B}"; do
+  SECURE_TYPE="$(aws ssm get-parameter --name "${SECURE_PARAM}" --region "${region}" \
+    --query 'Parameter.Type' --output text)"
+  if [ "${SECURE_TYPE}" != "SecureString" ]; then
+    echo "FAIL: ${SECURE_PARAM} in ${region} has Type '${SECURE_TYPE}', expected SecureString" >&2
+    exit 1
+  fi
+done
+echo "    OK: ${SECURE_PARAM} seeded as SecureString in both regions (values not shown)"
 
 echo "==> Phase 2: deploy BOTH stacks in ONE cdkd process (serial)"
 ${CLI} deploy "${STACK_A}" "${STACK_B}" \
@@ -186,6 +235,54 @@ if [ "${ACTUAL_B}" != "${EXPECTED_B}" ]; then
 fi
 echo "    OK: each region resolved its own value"
 
+echo "==> Phase 3b: same assertion for the SecureString arm (values never printed)"
+ACTUAL_SECURE_A="$(aws ssm get-parameter --name "${SECURE_ECHO_PARAM_A}" --region "${REGION_A}" \
+  --query 'Parameter.Value' --output text)"
+ACTUAL_SECURE_B="$(aws ssm get-parameter --name "${SECURE_ECHO_PARAM_B}" --region "${REGION_B}" \
+  --query 'Parameter.Value' --output text)"
+
+if [ "${ACTUAL_SECURE_A}" != "${EXPECTED_SECURE_A}" ]; then
+  echo "FAIL: ${SECURE_ECHO_PARAM_A} (${REGION_A}) did not resolve to its own region's SecureString value" >&2
+  exit 1
+fi
+if [ "${ACTUAL_SECURE_B}" = "${EXPECTED_SECURE_A}" ]; then
+  echo "FAIL: ${SECURE_ECHO_PARAM_B} (${REGION_B}) carries region A's SECRET — the dynamic-reference" >&2
+  echo "      cache leaked one region's decrypted SecureString into another (issue #1933)." >&2
+  exit 1
+fi
+if [ "${ACTUAL_SECURE_B}" != "${EXPECTED_SECURE_B}" ]; then
+  echo "FAIL: ${SECURE_ECHO_PARAM_B} (${REGION_B}) did not resolve to its own region's SecureString value" >&2
+  exit 1
+fi
+echo "    OK: each region resolved its own SecureString value"
+
+echo "==> Phase 3c: persisted state holds the EXPRESSION, never the plaintext"
+# The redaction half (issue #1901), which only the SecureString arm can reach:
+# the provider got the decrypted value (asserted above) while state must store
+# the unresolved reference. A cache hit that failed to re-record the secret for
+# a later resource is exactly how the plaintext would land here instead.
+assert_state_redacted() { # usage: assert_state_redacted <stack> <region> <plaintext>
+  local stack="$1" region="$2" plaintext="$3"
+  local state_json
+  state_json="$(${CLI} state show "${stack}" --state-bucket "${STATE_BUCKET}" \
+    --region "${region}" --json)"
+  if printf '%s' "${state_json}" | grep -F -q "${plaintext}"; then
+    echo "FAIL: ${stack} (${region}) persisted the decrypted SecureString plaintext in state.json" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${state_json}" | grep -F -q "{{resolve:ssm:${SECURE_PARAM}}}"; then
+    echo "FAIL: ${stack} (${region}) state.json does not carry the unresolved" >&2
+    echo "      {{resolve:ssm:...}} expression for the SecureString reference" >&2
+    exit 1
+  fi
+}
+assert_state_redacted "${STACK_A}" "${REGION_A}" "${EXPECTED_SECURE_A}"
+assert_state_redacted "${STACK_B}" "${REGION_B}" "${EXPECTED_SECURE_B}"
+# ...and neither stack's state may carry the OTHER region's secret either.
+assert_state_redacted "${STACK_A}" "${REGION_A}" "${EXPECTED_SECURE_B}"
+assert_state_redacted "${STACK_B}" "${REGION_B}" "${EXPECTED_SECURE_A}"
+echo "    OK: both states hold the expression and neither plaintext"
+
 echo "==> Phase 4: destroy both stacks"
 ${CLI} destroy "${STACK_A}" "${STACK_B}" \
   --state-bucket "${STATE_BUCKET}" --force
@@ -195,6 +292,10 @@ assert_gone "${ECHO_PARAM_A} still exists in ${REGION_A} after destroy" \
   aws ssm get-parameter --name "${ECHO_PARAM_A}" --region "${REGION_A}"
 assert_gone "${ECHO_PARAM_B} still exists in ${REGION_B} after destroy" \
   aws ssm get-parameter --name "${ECHO_PARAM_B}" --region "${REGION_B}"
+assert_gone "${SECURE_ECHO_PARAM_A} still exists in ${REGION_A} after destroy" \
+  aws ssm get-parameter --name "${SECURE_ECHO_PARAM_A}" --region "${REGION_A}"
+assert_gone "${SECURE_ECHO_PARAM_B} still exists in ${REGION_B} after destroy" \
+  aws ssm get-parameter --name "${SECURE_ECHO_PARAM_B}" --region "${REGION_B}"
 assert_gone "state.json for ${STACK_A} still present after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK_A}/${REGION_A}/state.json"
 assert_gone "state.json for ${STACK_B} still present after destroy" \
@@ -203,10 +304,16 @@ assert_gone "state.json for ${STACK_B} still present after destroy" \
 echo "==> Phase 6: delete the seeded source parameters"
 aws ssm delete-parameter --name "${SOURCE_PARAM}" --region "${REGION_A}" >/dev/null
 aws ssm delete-parameter --name "${SOURCE_PARAM}" --region "${REGION_B}" >/dev/null
+aws ssm delete-parameter --name "${SECURE_PARAM}" --region "${REGION_A}" >/dev/null
+aws ssm delete-parameter --name "${SECURE_PARAM}" --region "${REGION_B}" >/dev/null
 assert_gone "source parameter still exists in ${REGION_A}" \
   aws ssm get-parameter --name "${SOURCE_PARAM}" --region "${REGION_A}"
 assert_gone "source parameter still exists in ${REGION_B}" \
   aws ssm get-parameter --name "${SOURCE_PARAM}" --region "${REGION_B}"
+assert_gone "SecureString source parameter still exists in ${REGION_A}" \
+  aws ssm get-parameter --name "${SECURE_PARAM}" --region "${REGION_A}"
+assert_gone "SecureString source parameter still exists in ${REGION_B}" \
+  aws ssm get-parameter --name "${SECURE_PARAM}" --region "${REGION_B}"
 
 trap - EXIT INT TERM
 echo "PASS: dynamic-ref-cross-region"
