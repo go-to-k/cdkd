@@ -672,6 +672,83 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     expect(saved['Exporter']).toBeUndefined();
   });
 
+  it('a THROWN outputs pass does not position the PREVIOUS bag by this template', async () => {
+    // Measured, not argued (issue #1919 round-5 review). Under `--strict-getatt`
+    // an unresolvable output RETHROWS out of the loop, and the failure path
+    // still saves state: `persistStateAfterOutputFailure` ->  `withParentInfo`
+    // -> `redactStateForPersist` -> `redactOutputs(currentState.outputs)`. So
+    // the PREVIOUS deploy's bag gets redacted with THIS pass's secrets — which
+    // is right for the value scan — while the position source at that moment
+    // holds only the alias keys written before the throw, built from THIS
+    // template. Positioning by it makes `redactByPath` return a known-secret
+    // source leaf verbatim, replacing a public stored value with a reference to
+    // a secret that never produced it.
+    //
+    // `Exporter` is declared FIRST so its alias source lands before `Boom`
+    // throws, and the previous bag holds a plain value under that same key.
+    mockDiffCalculator.hasChanges!.mockReturnValue(true);
+    mockStateBackend.getState!.mockResolvedValue({
+      state: { ...noChangeState(), outputs: { Legacy: 'previously-public-value' } },
+      etag: 'etag-old',
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } },
+      Outputs: {
+        Exporter: { Value: EXPR_A, Export: { Name: 'Legacy' } },
+        Boom: { Value: { 'Fn::Join': ['', ['__THROW__']] } as never },
+      },
+    };
+
+    const engine = new DeployEngine(
+      mockStateBackend as never,
+      mockLockManager as never,
+      mockDagBuilder as never,
+      mockDiffCalculator as never,
+      mockProviderRegistry as never,
+      { dryRun: false, strictGetAtt: true },
+      'us-east-1',
+      mockExportIndexStore as never
+    );
+    await expect(engine.deploy(stackName, template)).rejects.toBeInstanceOf(Error);
+
+    const savedState = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
+    // The stored public value survives as itself. Positioned by the partial
+    // source it became EXPR_A — a secretsmanager reference standing in for a
+    // value that never came from that secret, persisted by the FAILURE path.
+    expect((savedState.outputs as Record<string, unknown>)['Legacy']).toBe(
+      'previously-public-value'
+    );
+    // The value scan still runs, which is the half that must NOT be lost: a
+    // previous bag holding this pass's plaintext is still redacted.
+    expect(JSON.stringify(savedState)).not.toContain(PLAINTEXT_A);
+  });
+
+  it('a name EMBEDDING a recorded secret is refused, not just one that equals it', async () => {
+    // The gap this closes was measurable as an asymmetry INSIDE this PR: the
+    // deploy refusal matched a whole name only, while the scrub key scan did
+    // bounded containment over the same map — so a name like
+    // `prod-<secret>-endpoint` was written as a state KEY by the deploy and then
+    // reported by `cdkd scrub --dry-run --fail` as an UNREPAIRABLE leak. The
+    // tool created the exact state it tells the user it cannot fix.
+    //
+    // The plaintext reaches the name WITHOUT a fresh substitution here (the
+    // literal is spelled in the template), which is the route the name's own
+    // resolution map cannot see — an unpinned-ssm cache hit and an `Fn::Sub`
+    // variable echoing the value arrive the same way.
+    const { saved, savedStateJson } = await deployOutputs({
+      SecretAlpha: { Value: EXPR_A },
+      Exporter: { Value: PUBLIC_B, Export: { Name: `prod-${PLAINTEXT_A}-endpoint` } },
+    });
+
+    const refusals = warnings().filter((w) => w.includes('Export.Name that resolves'));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).not.toContain(PLAINTEXT_A);
+    expect(refusals[0]).toContain('prod-***-endpoint');
+    expect(Object.keys(saved).sort()).toEqual(['Exporter', 'SecretAlpha']);
+    expect(savedStateJson).not.toContain(PLAINTEXT_A);
+  });
+
   it('a LITERAL export name equal to a recorded secret is refused too', async () => {
     // The whole-value backstop, which the name-scoped map cannot supply: nothing
     // was SUBSTITUTED into a literal name, so only a comparison against the

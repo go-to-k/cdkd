@@ -12,10 +12,13 @@
  * output owns a key, `redactByPath` positions a leaf by a source belonging to a
  * DIFFERENT output and persists that output's `{{resolve:...}}` reference as
  * this one's value. So the rules deciding key ownership live here, in one
- * place, because THREE writers apply them: `DeployEngine.resolveOutputs` (both
- * of its bags) and `cdkd scrub`, which reconstructs the same source bag from
- * the template to redact legacy state. Two of those writers spelling the rule
- * separately is exactly how they drifted apart in the first place.
+ * place, because FOUR writers apply them: `DeployEngine.resolveOutputs` (both of
+ * its bags), `cdkd scrub` (which reconstructs the same source bag from the
+ * template to redact legacy state), and `analyzer/outputs-diff.ts`, which
+ * PREVIEWS the very bag the deploy persists — a count that was wrong here for
+ * two rounds, and the missing writer was the one whose divergence surfaces as a
+ * phantom diff row on every run. Writers spelling the rule separately is
+ * exactly how they drifted apart in the first place.
  *
  * The two writers do NOT share every rule, and the differences are deliberate —
  * each is documented at the rule it applies to. In short: the engine knows
@@ -45,14 +48,17 @@
  * - A `Ref` to a `NoEcho` PARAMETER substituted into an export name is recorded
  *   nowhere: `NoEcho` is outside cdkd's dynamic-reference secret model
  *   entirely, so nothing here can see it.
- * - Resolutions that run BEFORE any bag is built — parameter defaults and
- *   condition evaluation, in both the deploy engine and `cdkd scrub` — record
- *   into a map their caller discards. They still WARM the resolver's cache, so
- *   an unpinned ssm reference first reached from a parameter Default or a
- *   `Conditions` entry is invisible to every later bag. Merging those maps into
- *   an outputs / resource bag would be the cross-contamination the per-bag
- *   design exists to prevent, so the fix belongs on the resolver's cache-hit
- *   arm (i.e. with #1901's classification), not here. Named rather than closed.
+ * - `evaluateConditions` runs BEFORE any bag is built, in both the deploy engine
+ *   and `cdkd scrub`, and records into a map its caller discards while still
+ *   WARMING the resolver's dynamic-reference cache — so an unpinned ssm
+ *   reference first reached from a `Conditions` entry is invisible to every
+ *   later bag. Scoped to that ONE caller: `resolveParameters` routes through
+ *   `resolveSSMParameter`, not `resolveDynamicReferences`, so it warms no cache
+ *   (an earlier revision of this note claimed otherwise). Merging a conditions
+ *   map into an outputs bag would make a condition's secret a redaction NEEDLE
+ *   over outputs — the cross-contamination the per-bag design exists to
+ *   prevent — so the fix belongs on the resolver's cache-hit arm (i.e. with
+ *   #1901's classification), not here. Named rather than closed.
  * - The refusal errs the other way for `Fn::Select` / `Fn::Split`, whose
  *   DISCARDED elements are still resolved: a secret in an unused element lands
  *   in the name's map and suppresses a working export. Fail-safe and warned, so
@@ -159,6 +165,51 @@ export function isExportAliasCollision(
 }
 
 /**
+ * Mirrors `secret-redaction`'s own `MIN_NEEDLE_LENGTH`. Duplicated rather than
+ * imported because the two bounds answer different questions and should be free
+ * to diverge: that one bounds what may be REWRITTEN, this one what may be
+ * REFUSED or REPORTED.
+ */
+const MIN_SECRET_NEEDLE = 4;
+
+/**
+ * Which recorded secrets are visible in `text`, or `undefined` when none is.
+ *
+ * ONE rule for both callers below, because they were inconsistent and the
+ * inconsistency was a hole: the export-name check refused only an exact
+ * whole-name match while the state-KEY scan did bounded containment over the
+ * same kind of map — so `prod-<secret>-endpoint` was written as a state key by
+ * the deploy and then reported by `cdkd scrub` as an UNREPAIRABLE leak. The tool
+ * was creating the exact state it tells the user it cannot fix.
+ *
+ * A WHOLE-value match counts at any length; an EMBEDDED one only at or above
+ * {@link MIN_SECRET_NEEDLE}. The bound is what makes containment safe to use for
+ * a refusal at all — an unbounded scan over a degenerate one-character secret
+ * matches almost every name and silently drops working exports — and its cost
+ * is stated rather than hidden: a secret of three characters or fewer embedded
+ * in a longer string is not seen. That value is indistinguishable from
+ * coincidence, and the same bound already governs every substring redaction
+ * cdkd performs.
+ *
+ * No empty-string case is needed at either caller: the resolver never records an
+ * empty secret (`secret-redaction` says so — an empty needle would match every
+ * leaf), and the length bound excludes it from the containment arm regardless.
+ */
+function secretsPresentIn(
+  text: string,
+  secrets: RecordedSecretValues | undefined
+): RecordedSecretValues | undefined {
+  if (!secrets || secrets.size === 0) return undefined;
+  const exposure: RecordedSecretValues = new Map();
+  for (const [plaintext, expression] of secrets) {
+    if (text === plaintext || (plaintext.length >= MIN_SECRET_NEEDLE && text.includes(plaintext))) {
+      exposure.set(plaintext, expression);
+    }
+  }
+  return exposure.size > 0 ? exposure : undefined;
+}
+
+/**
  * The secrets present in a resolved `Export.Name`, or `undefined` when it
  * carries none.
  *
@@ -177,9 +228,13 @@ export function isExportAliasCollision(
  * every name containing that character "secret" and silently dropped unrelated
  * working exports, while the mask it fed could not mask short values at all.)
  *
- * `recordedThisPass` adds one exact backstop: a name whose WHOLE value equals a
- * recorded secret. That covers a LITERAL `Export.Name` spelling out a value
- * that is a secret elsewhere in the template, where nothing was substituted —
+ * `recordedThisPass` adds the backstop for plaintext that arrived by any route
+ * OTHER than a fresh substitution into this name — a literal `Export.Name`
+ * spelling the value out, an unpinned-ssm cache hit, an `Fn::Sub` variable or
+ * `Fn::GetAtt` echoing it. Scanned with the same bounded rule the state-KEY
+ * check uses ({@link secretsPresentIn}); an earlier revision matched only the
+ * WHOLE name here, which let the deploy write `prod-<secret>-endpoint` as a
+ * state key that `cdkd scrub` then reported as unrepairable. It applies —
  * with the ORDER caveat that "elsewhere" means an output iterated EARLIER, the
  * only ones whose resolution has happened by the time this runs. A literal name
  * matching a secret first resolved by a LATER output is not caught, and cannot
@@ -196,8 +251,9 @@ export function exportNameSecretExposure(
   recordedThisPass?: RecordedSecretValues
 ): RecordedSecretValues | undefined {
   const exposure: RecordedSecretValues = new Map(substitutedIntoName);
-  const wholeValue = recordedThisPass?.get(exportName);
-  if (wholeValue !== undefined) exposure.set(exportName, wholeValue);
+  for (const [plaintext, expression] of secretsPresentIn(exportName, recordedThisPass) ?? []) {
+    exposure.set(plaintext, expression);
+  }
   return exposure.size > 0 ? exposure : undefined;
 }
 
@@ -222,23 +278,8 @@ export function stateKeySecretExposure(
   key: string,
   secrets: RecordedSecretValues
 ): RecordedSecretValues | undefined {
-  const exposure: RecordedSecretValues = new Map();
-  for (const [plaintext, expression] of secrets) {
-    if (plaintext === '') continue;
-    if (key === plaintext || (plaintext.length >= MIN_KEY_NEEDLE && key.includes(plaintext))) {
-      exposure.set(plaintext, expression);
-    }
-  }
-  return exposure.size > 0 ? exposure : undefined;
+  return secretsPresentIn(key, secrets);
 }
-
-/**
- * Mirrors `secret-redaction`'s own `MIN_NEEDLE_LENGTH`. Duplicated rather than
- * exported from there because the two bounds answer different questions and
- * should be free to diverge: that one bounds what may be REWRITTEN, this one
- * bounds what may be REPORTED.
- */
-const MIN_KEY_NEEDLE = 4;
 
 /**
  * Replace EVERY occurrence of every exposed secret with the mask.

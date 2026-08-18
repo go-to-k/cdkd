@@ -195,13 +195,22 @@ can know about state an EARLIER binary wrote:
   a missed collision writes a wrong-secret reference, while an
   over-approximated one costs a spurious warning and one key redacted by
   value instead of by position.
-- If an intrinsic `Export.Name` cannot be resolved at all, scrub redacts
-  that stack's outputs by value match ENTIRELY and warns. The deploy keyed
-  state under a name this run cannot reproduce, and that name could be any
-  output's, so there is no single key to distrust. A name that resolves
-  successfully but differently from what the deploy resolved — a
-  parameterized prefix, since scrub sees only template defaults — remains
-  undetectable and is a known residual.
+- If an intrinsic `Export.Name` does not fully resolve, scrub redacts that
+  stack's outputs by value match ENTIRELY and warns. "Not fully" covers
+  three shapes, not just a throw: a resolution error, a non-string result,
+  and — the common one — a returned string that still contains an
+  unsubstituted `${Placeholder}`, because `Fn::Sub` warns and keeps the
+  placeholder rather than throwing, and scrub takes no parameters. In all
+  three the deploy keyed state under a name this run cannot reproduce, and
+  that name could be any output's, so there is no single key to distrust. A
+  name that resolves to a DIFFERENT but complete string than the deploy
+  produced remains undetectable and is a known residual.
+
+`cdkd diff` previews this same bag through `src/analyzer/outputs-diff.ts`,
+which is the fourth writer of the key space and applies the same collision
+and secret-name refusals. It has to: previewing an alias the deploy refuses
+made `cdkd diff` report the same phantom change on every run and
+`cdkd diff --fail` exit 1 forever.
 
 **A state KEY that already holds plaintext cannot be scrubbed.** State
 written by a pre-fix binary can carry `state.outputs["pre-<secret>"]`, and

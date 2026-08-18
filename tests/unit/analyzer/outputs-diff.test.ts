@@ -90,6 +90,50 @@ function templateWithExport(): CloudFormationTemplate {
 }
 
 describe('resolveTemplateOutputs', () => {
+  it('SKIPS an export alias whose name is another published output (issue #1919)', async () => {
+    // The deploy engine refuses this alias and keeps the colliding output's own
+    // value. Previewing it here made the two bags disagree permanently: the diff
+    // reported an ADD/MODIFY on every run, `cdkd diff --fail` never went green,
+    // and the user was told an export is published that deploy declines to
+    // publish. Declared owner-first, the order that makes the alias win in an
+    // unguarded pass.
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        PublicAlpha: { Value: 'alpha-public' },
+        Exporter: { Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] }, Export: { Name: 'PublicAlpha' } },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+
+    expect(r.outputs).toEqual({ PublicAlpha: 'alpha-public', Exporter: ARN });
+    expect([...r.exportNames]).toEqual([]);
+    // NOT a resolution failure: the bag matches what deploy writes, so there is
+    // nothing to withhold.
+    expect(r.resolutionFailed).toBe(false);
+  });
+
+  it('SKIPS an export alias whose name carries a secret reference (issue #1919)', async () => {
+    // Deploy refuses such a name because it becomes a state KEY and redaction
+    // walks values only. This resolver runs with `skipDynamicReferences`, so the
+    // name arrives still spelled as its expression — which is the signal.
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        Exporter: {
+          Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
+          Export: { Name: 'pre-{{resolve:secretsmanager:db:SecretString:password}}' },
+        },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+
+    expect(r.outputs).toEqual({ Exporter: ARN });
+    expect([...r.exportNames]).toEqual([]);
+  });
+
   it('builds the same bag shape the deploy engine persists — value key AND Export.Name alias', async () => {
     const r = await resolveTemplateOutputs(templateWithExport(), RESOLVER);
     // Both keys, same value: `Fn::ImportValue` resolves by EXPORT name, so a
@@ -554,8 +598,25 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
     'utf8'
   );
 
-  it('deploy still writes the Export.Name alias as a second bag key', () => {
+  it('deploy still writes the Export.Name alias as a second bag key, and GUARDS it', () => {
+    // This fence went VACUOUS once (issue #1919 review) and the way it did is
+    // the lesson: it grepped for the literal alias write, the deploy engine
+    // moved that write inside a guard's `else` arm, and the literal survived —
+    // so the fence stayed green through the exact drift it exists to catch,
+    // while this module kept previewing an alias the deploy had started
+    // refusing (a phantom diff on every run, forever).
+    //
+    // A literal that can survive inside a branch cannot fence a branch. So both
+    // halves are pinned instead: the write still exists, AND both writers of
+    // this key space consult the same shared rule. Removing the guard from
+    // either side reds this.
     expect(source).toContain('outputs[exportName] = value;');
+    expect(source).toContain('isExportAliasCollision(exportName, outputKey, publishedOutputNames)');
+    const twin = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../src/analyzer/outputs-diff.ts'),
+      'utf8'
+    );
+    expect(twin).toContain('isExportAliasCollision(exportName, outputKey, publishedOutputNames)');
   });
 
   it('deploy still skips a condition-false output', () => {

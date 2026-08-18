@@ -1,6 +1,10 @@
 import type { CloudFormationTemplate, TemplateOutput } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
 import { INTRINSIC_KEYS, type IntrinsicResolveFn } from './diff-calculator.js';
+import {
+  collectPublishedOutputNames,
+  isExportAliasCollision,
+} from '../deployment/outputs-export-alias.js';
 
 /**
  * Kind of change for one key of the persisted Outputs bag.
@@ -129,7 +133,10 @@ const UNSUBSTITUTED_SUB_PLACEHOLDER = /\$\{[^}]*\}/;
  * DEEP rather than shallow: an unresolved leaf can sit anywhere inside an array
  * or object an outer intrinsic already built.
  */
-function isUnresolvedValue(value: unknown, sourceUsedSub: boolean): boolean {
+// Exported for `cdkd scrub` (issue #1919): it resolves an intrinsic
+// `Export.Name` for a collision test and must apply the SAME "did this actually
+// resolve?" rule, or it trusts a name it provably could not reproduce.
+export function isUnresolvedValue(value: unknown, sourceUsedSub: boolean): boolean {
   if (value === undefined) return true;
   if (typeof value === 'symbol') return true;
   if (typeof value === 'string') {
@@ -150,7 +157,7 @@ function isUnresolvedValue(value: unknown, sourceUsedSub: boolean): boolean {
  * arguments and a laundered placeholder from an inner `Fn::Sub` surfaces in the
  * outer result.
  */
-function templateUsesSub(templateValue: unknown): boolean {
+export function templateUsesSub(templateValue: unknown): boolean {
   if (templateValue === null || typeof templateValue !== 'object') return false;
   if (Array.isArray(templateValue)) return templateValue.some(templateUsesSub);
   const record = templateValue as Record<string, unknown>;
@@ -246,6 +253,14 @@ export async function resolveTemplateOutputs(
   const failedKeys = new Set<string>();
   const secretSourceKeys = new Set<string>();
   let resolutionFailed = false;
+  // The deploy engine REFUSES an export alias whose name is another published
+  // output's name, and refuses one carrying a secret (issue #1919). This module
+  // previews the bag that engine persists, so it has to refuse the same two —
+  // it is the THIRD writer of that key space. Without this the preview publishes
+  // an alias the deploy will not, and `computeOutputsDiff` reports a phantom
+  // ADD/MODIFY on EVERY run: `cdkd diff --fail` never goes green again, and the
+  // user is told an export exists that deploy declines to publish.
+  const publishedOutputNames = collectPublishedOutputNames(template.Outputs ?? {}, conditions);
 
   if (!template.Outputs) {
     return { outputs, exportNames, failedKeys, secretSourceKeys, resolutionFailed };
@@ -329,8 +344,30 @@ export async function resolveTemplateOutputs(
         }
       }
       if (typeof exportName === 'string' && !isUnresolvedValue(exportName, exportSourceUsedSub)) {
-        outputs[exportName] = value;
-        exportNames.add(exportName);
+        if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
+          // Deploy skips this alias and keeps the colliding output's own value,
+          // so previewing it here would be a permanent phantom row. NOT a
+          // resolution failure: the bag matches what deploy writes, which is the
+          // point of the suppression flag, so nothing needs withholding.
+          logger.debug(
+            `Diff skipping export alias ${exportName} of ${outputKey} — collides with an output name`
+          );
+        } else if (isSecretDynamicReference(exportName)) {
+          // The deploy REFUSES a name that resolves to secret plaintext, because
+          // the name becomes a state KEY and redaction walks values only. This
+          // resolver runs with `skipDynamicReferences`, so the same name arrives
+          // here still spelled as its expression — which is exactly the signal.
+          // Residual, matching this module's existing reasoning about the plain
+          // `ssm:` spelling: an unpinned `{{resolve:ssm:...}}` in a name is
+          // secret only by parameter TYPE, unknowable here, so deploy may refuse
+          // one this preview still publishes.
+          logger.debug(
+            `Diff skipping export alias of ${outputKey} — the name carries a secret reference`
+          );
+        } else {
+          outputs[exportName] = value;
+          exportNames.add(exportName);
+        }
       } else {
         // An Export.Name that stayed intrinsic means the alias key the deploy
         // WILL write is unknown, so the bag is incomplete — same suppression as

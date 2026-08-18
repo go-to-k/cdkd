@@ -31,6 +31,7 @@ import {
 } from '../../deployment/secret-redaction.js';
 import type { StackState } from '../../types/state.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
+import { isUnresolvedValue, templateUsesSub } from '../../analyzer/outputs-diff.js';
 import {
   collectDeclaredOutputNames,
   exportAliasCollisionScrubWarning,
@@ -56,7 +57,7 @@ export class ScrubNeededError extends CdkdError {
   }
 }
 
-interface ScrubOptions {
+export interface ScrubOptions {
   app?: string;
   output: string;
   stateBucket?: string;
@@ -248,12 +249,23 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     return;
   }
 
-  logger.info(
-    `\nDone: scrubbed ${totalStacksScrubbed} stack(s). ` +
-      `The plaintext is no longer stored there, but a value that was ever persisted should be ` +
-      `treated as compromised — ROTATE it in Secrets Manager (scrub matches the current ` +
-      `value, so scrub BEFORE rotating).${keyNote}`
-  );
+  // Gated: with only key findings this rewrote nothing, and asserting that "the
+  // plaintext is no longer stored" would be the same false claim the masking
+  // invariant forbids.
+  if (totalStacksScrubbed > 0) {
+    logger.info(
+      `\nDone: scrubbed ${totalStacksScrubbed} stack(s). ` +
+        `The plaintext is no longer stored there, but a value that was ever persisted should be ` +
+        `treated as compromised — ROTATE it in Secrets Manager (scrub matches the current ` +
+        `value, so scrub BEFORE rotating).${keyNote}`
+    );
+  } else {
+    logger.info(`\nNothing could be rewritten.${keyNote} ROTATE any exposed secret.`);
+  }
+  // `--fail` is documented as a --dry-run CI gate, but a REAL run over a
+  // key-only leak would otherwise exit 0 — and that is the one finding class a
+  // real run cannot fix, so exiting clean is exactly backwards.
+  if (options.fail && totalStacksWithUnscrubbableKeys > 0) throw new ScrubNeededError();
 }
 
 /**
@@ -449,7 +461,25 @@ export async function scrubStack(
         // a name scrub cannot reproduce.
         outputsSourceUntrusted = true;
       }
+      // A resolution that came BACK is not the same as one that SUCCEEDED:
+      // `resolveSub` does not throw on an unresolvable placeholder, it warns and
+      // keeps `${Foo}` in the string. Scrub takes no `--parameters`, so that is
+      // the COMMON shape for a parameterized export name — and trusting it would
+      // run the collision test against a name scrub provably could not
+      // reproduce, re-enabling the wrong-secret rewrite in the remediation
+      // command. Same rule the diff twin applies, imported rather than
+      // re-spelled.
       if (
+        declaredExportName !== undefined &&
+        typeof exportName === 'string' &&
+        isUnresolvedValue(exportName, templateUsesSub(declaredExportName))
+      ) {
+        outputsSourceUntrusted = true;
+        logger.warn(
+          `Export.Name of output ${name} did not fully resolve during scrub — ` +
+            `redacting this stack's outputs by value match instead of by template position, since state may be keyed under a name this run cannot reproduce.`
+        );
+      } else if (
         typeof exportName === 'string' &&
         isExportAliasCollision(exportName, name, declaredOutputNames)
       ) {
@@ -657,7 +687,11 @@ export function createScrubCommand(): Command {
     .argument('[stacks...]', 'Stack name(s) to scrub (physical name or display path)')
     .option('--all', 'Scrub every stack in the synthesized app', false)
     .option('--dry-run', 'Report what would be scrubbed without writing state')
-    .option('--fail', 'With --dry-run, exit non-zero if any plaintext secret is found (CI gate)');
+    .option(
+      '--fail',
+      'With --dry-run, exit non-zero if any plaintext secret is found (CI gate). ' +
+        'Also exits non-zero on a real run when a leak was found that scrub cannot rewrite.'
+    );
 
   [...commonOptions, ...appOptions, ...stateOptions, ...stackOptions, ...contextOptions].forEach(
     (opt) => cmd.addOption(opt)

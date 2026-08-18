@@ -169,7 +169,12 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
   })),
 }));
 
-import { scrubStack, scrubCommand, ScrubNeededError } from '../../../../src/cli/commands/scrub.js';
+import {
+  scrubStack,
+  scrubCommand,
+  ScrubNeededError,
+  type ScrubOptions,
+} from '../../../../src/cli/commands/scrub.js';
 import { exportAliasCollisionScrubWarning } from '../../../../src/deployment/outputs-export-alias.js';
 
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -469,6 +474,64 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     expect(saved!.outputs['PublicAlpha']).toBe(SECRET_EXPR);
   });
 
+  it('an unresolvable ${Placeholder} in an export name makes the bag untrusted too', async () => {
+    // `resolveSub` does NOT throw on a placeholder it cannot substitute — it
+    // warns and keeps `${EnvName}` in the string — and scrub takes no
+    // `--parameters`, so this is the COMMON shape for a parameterized export
+    // name, not an edge case. A returned string is not a resolved one.
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ PublicAlpha: SECRET_PLAINTEXT, SecretBeta: SECRET_PLAINTEXT }),
+      etag: 'etag-1',
+    });
+
+    const { saved } = await scrub({
+      PublicAlpha: { Value: OWNER_EXPR },
+      SecretBeta: {
+        Value: SECRET_EXPR,
+        Export: { Name: { 'Fn::Sub': '${EnvName}-Shared' } as never },
+      },
+    });
+
+    // Value-scanned, so the stored plaintext maps back to the expression that
+    // produced it rather than to the owner's.
+    expect(saved!.outputs['PublicAlpha']).toBe(SECRET_EXPR);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('did not fully resolve during scrub')
+    );
+  });
+
+  it('CI GATE: a REAL run also exits non-zero on a leak it cannot rewrite', async () => {
+    // `--fail` was inert without `--dry-run`, so a real run over the one finding
+    // class a real run CANNOT fix exited 0 — exactly backwards.
+    synthStacks.length = 0;
+    synthStacks.push(
+      makeStackInfo({
+        Exporter: {
+          Value: PUBLIC_VALUE,
+          Export: { Name: { 'Fn::Sub': `pre-${UNPINNED_EXPR}` } as never },
+        },
+        Leaky: { Value: UNPINNED_EXPR },
+      })
+    );
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState({ [`pre-${UNPINNED_PLAINTEXT}`]: 'some-value' }),
+      etag: 'etag-1',
+    });
+
+    await expect(
+      scrubCommand([], {
+        output: 'cdk.out',
+        statePrefix: 'cdkd',
+        fail: true,
+      } satisfies Partial<ScrubOptions> as ScrubOptions)
+    ).rejects.toBeInstanceOf(ScrubNeededError);
+
+    const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+    // And it must not claim to have removed anything.
+    expect(summary).toContain('Nothing could be rewritten');
+    expect(summary).not.toContain('The plaintext is no longer stored');
+  });
+
   it('a state with NO outputs field is still scrubbed rather than throwing', async () => {
     // Every other consumer treats `outputs` as optional, and so does this
     // function's own redaction call — so indexing it directly made the
@@ -556,7 +619,12 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     });
 
     await expect(
-      scrubCommand([], { output: 'cdk.out', statePrefix: 'cdkd', dryRun: true, fail: true } as never)
+      scrubCommand([], {
+        output: 'cdk.out',
+        statePrefix: 'cdkd',
+        dryRun: true,
+        fail: true,
+      } satisfies Partial<ScrubOptions> as ScrubOptions)
     ).rejects.toBeInstanceOf(ScrubNeededError);
 
     expect(commandStateBackend.saveState).not.toHaveBeenCalled();

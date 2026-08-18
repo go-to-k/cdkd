@@ -4517,6 +4517,7 @@ export class DeployEngine {
     // on (issue #1919).
     const publishedOutputNames = collectPublishedOutputNames(template.Outputs, conditions);
 
+    let outputsPassCompleted = false;
     try {
       for (const [outputKey, output] of Object.entries(template.Outputs)) {
         // CFn semantics: an output whose `Condition` evaluates false is simply
@@ -4689,6 +4690,7 @@ export class DeployEngine {
           outputs[outputKey] = undefined;
         }
       }
+      outputsPassCompleted = true;
     } finally {
       // Accumulate the secrets resolved while producing outputs so the outputs
       // redaction (GHSA fix) uses only outputs-substituted references — a
@@ -4700,19 +4702,29 @@ export class DeployEngine {
       // recorded before that point would otherwise be dropped while the
       // resolver's module-global cache stays warm. Same invariant, other exit.
       //
-      // Unlike that merge this one is DEFENSIVE, and it is labelled so rather
-      // than left looking fenced: a mutation test replacing this `finally` with
-      // a rethrow passes the whole suite, because the only consumer of
-      // `outputSecrets` is `redactOutputs`, which the throw path never reaches
-      // (`persistStateAfterOutputFailure` writes resources, not outputs). It is
-      // kept because it costs one keyword and because the NEXT consumer of this
-      // bag — a masked error message, a journal writer — would inherit the hole
-      // silently; it is not kept in the belief that a test covers it.
+      // An earlier revision called this DEFENSIVE and unobservable. That was
+      // WRONG, and how it was wrong is the point: the throw path DOES reach
+      // `redactOutputs`, through `persistStateAfterOutputFailure` ->
+      // `withParentInfo` -> `redactStateForPersist`, which redacts
+      // `currentState.outputs` — the PREVIOUS deploy's bag. Accumulating here is
+      // what lets that bag's plaintext be redacted at all, so the merge is
+      // load-bearing on exactly the path it was claimed not to reach.
       if (context.recordedSecretValues) {
         for (const [value, expr] of context.recordedSecretValues) {
           this.outputSecrets.set(value, expr);
         }
       }
+      // ...and the POSITION source must GO, for the same reason it now matters.
+      // The post-loop pass below never ran, so this bag holds only the alias
+      // keys written before the throw: a PARTIAL source, built from THIS
+      // template, about to position the PREVIOUS deploy's bag. That is the
+      // bag/source provenance mismatch `secret-redaction` calls unsound —
+      // `redactByPath` returns a known-secret source leaf VERBATIM, so a
+      // coinciding key persists an expression that need not name the value it
+      // replaced. Dropping it degrades those keys to the value scan, which reads
+      // what is actually stored. Same call the scrub twin makes through
+      // `outputsSourceUntrusted`, for the same reason.
+      if (!outputsPassCompleted) this.outputsTemplateSource = {};
     }
     // ...and the UNRESOLVED values beside them, as the POSITION source (#1910).
     // Keyed by output NAME so the walk lines up with the resolved `outputs` bag
