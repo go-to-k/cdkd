@@ -1548,6 +1548,10 @@ async function replaySingle(
           logger.warn(
             `  Rollback: ${op.logicalId} restored, ${updatePartialMessage(rollbackPartial)}`
           );
+          // Counted like every other warn-and-continue arm in this file: the
+          // rollback did not fail, but it did not fully address the resource
+          // either, and the summary is what tells the user to look.
+          result.warnings++;
         } else {
           logger.info(`  Rollback: ${op.logicalId} restored successfully`);
         }
@@ -1559,6 +1563,11 @@ async function replaySingle(
           logicalId: op.logicalId,
           resourceType: op.resourceType,
           ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+          // Carry the survivor into the DURABLE record. A rollback runs during
+          // an already-failing deploy, so a log line is the least likely thing
+          // a user still has; without this the orphan's id dies with the
+          // terminal.
+          ...(rollbackPartial !== undefined && { reason: rollbackPartial }),
         });
         return;
       }
@@ -1834,7 +1843,20 @@ export async function replayFailedOperations(
             secrets,
             prev.properties
           );
-          logger.info(`  Rollback: ${op.logicalId} reverted successfully`);
+          // Issue #1819: the FOURTH `provider.update()` call site -- the
+          // `--revert-failed` arm. Missing it left `cdkd rollback
+          // --revert-failed` printing "reverted successfully" over a stranded
+          // resource: the exact pre-#1819 silence, on the command a user
+          // reaches for when a deploy has already gone wrong.
+          const revertFailedPartial = updatePartialReason(revertFailedResult);
+          if (revertFailedPartial !== undefined) {
+            logger.warn(
+              `  Rollback: ${op.logicalId} reverted, ${updatePartialMessage(revertFailedPartial)}`
+            );
+            result.warnings++;
+          } else {
+            logger.info(`  Rollback: ${op.logicalId} reverted successfully`);
+          }
           await options.afterOp?.(op.logicalId);
           ctx.recordEvent?.({
             eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
@@ -1843,6 +1865,7 @@ export async function replayFailedOperations(
             logicalId: op.logicalId,
             resourceType: op.resourceType,
             ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+            ...(revertFailedPartial !== undefined && { reason: revertFailedPartial }),
           });
           break;
         }

@@ -940,7 +940,12 @@ async function deployCommand(
           stackInfo.stackName,
           {
             created: deployResult.created,
-            updated: deployResult.updated,
+            // Issue #1819: a partial update still UPDATED the resource, unlike a
+            // skipped DELETE which did nothing. Counting it only under
+            // `skipped` would make the durable record say `~0` for a run whose
+            // own RESOURCE_SUCCEEDED events show an UPDATE, so it counts in
+            // BOTH: `updated` for what happened, `skipped` for what did not.
+            updated: deployResult.updated + deployResult.updatePartial,
             deleted: deployResult.deleted,
             // Issue #1762: the run-level counterpart of the summary row above.
             // `cdkd events` renders `RunCounts.skipped` as `⚠N`, and destroy

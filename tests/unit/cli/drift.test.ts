@@ -1334,6 +1334,41 @@ describe('cdkd drift', () => {
       expect(mockReleaseLock).toHaveBeenCalledWith('TestStack', 'us-east-1');
     });
 
+    // Issue #1819: the revert landed, but the provider left something behind
+    // (a replacement whose old resource survives). The revert still SUCCEEDS --
+    // the resource is at the desired state -- so this annotates the line rather
+    // than failing it. Without a test the whole arm was deletable.
+    it('--revert annotates the succeeded line when the provider reports a partial', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Cert1: makeResource({
+            physicalId: 'arn:aws:acm:us-east-1:0:certificate/new',
+            resourceType: 'AWS::CertificateManager::Certificate',
+            properties: { ValidationMethod: 'DNS' },
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ ValidationMethod: 'EMAIL' }),
+        update: vi.fn(async () => ({
+          physicalId: 'arn:aws:acm:us-east-1:0:certificate/new',
+          wasReplaced: true,
+          outcome: 'partial' as const,
+          reason: 'old certificate arn:aws:acm:us-east-1:0:certificate/old is still in use',
+        })),
+      });
+
+      const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+      // A partial is NOT a failure: the revert happened, so this must not
+      // become the exit-2 path the failing-update test below covers.
+      expect(error).toBeUndefined();
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('partial (');
+      expect(warned).toContain('is still in use');
+    });
+
     it('--revert with --dry-run does NOT call provider.update or acquire a lock', async () => {
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValueOnce(

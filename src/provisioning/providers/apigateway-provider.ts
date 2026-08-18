@@ -814,21 +814,30 @@ export class ApiGatewayProvider implements ResourceProvider {
       // Create new resource
       const createResult = await this.createResource(logicalId, resourceType, properties);
 
-      // Delete old resource
+      // Delete old resource. What it leaves behind rides out on the update's
+      // `'partial'` outcome (issue #1819): the new resource already exists so
+      // the replacement cannot be aborted, and a survivor here is not inert --
+      // the OLD PathPart stays routable on the deployed API while cdkd's state
+      // points only at the new one.
+      let orphanReason: string | undefined;
       try {
         await this.deleteResource(logicalId, physicalId, resourceType, previousProperties);
       } catch (error) {
+        orphanReason = `old API Gateway Resource ${physicalId} could not be deleted: ${String(error)}`;
         this.logger.warn(
           `Failed to delete old API Gateway Resource ${physicalId} during replacement: ${String(error)}. ` +
             `The old resource may be orphaned and require manual cleanup.`
         );
       }
 
-      return {
+      const base = {
         physicalId: createResult.physicalId,
-        wasReplaced: true,
+        wasReplaced: true as const,
         attributes: createResult.attributes ?? {},
       };
+      return orphanReason !== undefined
+        ? { ...base, outcome: 'partial' as const, reason: orphanReason }
+        : base;
     }
 
     // No changes needed (RestApiId and ParentId changes also require replacement,

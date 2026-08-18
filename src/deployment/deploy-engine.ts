@@ -2733,6 +2733,10 @@ export class DeployEngine {
     // `deleteSkipped` this does NOT suppress `RESOURCE_SUCCEEDED` — the row's
     // resource really was updated — it adds a second event naming the survivor.
     let updatePartial: string | undefined;
+    // Snapshot BEFORE the body runs: a replacement re-points the state record
+    // to the NEW physical id, so by the time the event is built the survivor's
+    // id is gone from state and only the free-text reason would still carry it.
+    const physicalIdBeforeUpdate = stateResources[logicalId]?.physicalId;
     try {
       await withResourceDeadline(
         async () => {
@@ -2816,6 +2820,10 @@ export class DeployEngine {
           ...(stateResources[logicalId]?.provisionedBy
             ? { provisionedBy: stateResources[logicalId]?.provisionedBy }
             : labelRouting && { provisionedBy: labelRouting }),
+          // The SURVIVOR's id as a FIELD, not only inside `reason`: a `--json`
+          // consumer should not have to parse prose, and this is the one datum
+          // a cleanup pass actually needs.
+          ...(physicalIdBeforeUpdate && { physicalId: physicalIdBeforeUpdate }),
           reason: updatePartial,
           durationMs: Date.now() - resourceStartedAt,
         });

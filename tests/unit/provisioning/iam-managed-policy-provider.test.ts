@@ -246,6 +246,37 @@ describe('IAMManagedPolicyProvider', () => {
 
       expect(result.wasReplaced).toBe(true);
       expect(result.physicalId).toBe(newArn);
+      // The clean control for the partial arm below: a replacement whose old
+      // policy IS deleted must carry no outcome, or every replacement would be
+      // counted and rendered as a partial.
+      expect(result.outcome).toBeUndefined();
+    });
+
+    // Issue #1819: the old policy survives when its delete fails, and before
+    // the outcome channel that was a bare logger.warn with the deploy exiting 0
+    // and the policy out of state.
+    it('reports partial when the old policy cannot be deleted', async () => {
+      const newArn = 'arn:aws:iam::123456789012:policy/new/MyManagedPolicy';
+      mockSend.mockResolvedValueOnce({ Policy: { Arn: newArn, PolicyName: 'MyManagedPolicy' } });
+      mockSend.mockRejectedValueOnce(new Error('DeleteConflict: policy still attached'));
+
+      const result = await provider.update(
+        'MyManagedPolicy',
+        ARN,
+        'AWS::IAM::ManagedPolicy',
+        { PolicyDocument: POLICY_DOC, Path: '/new/' },
+        { PolicyDocument: POLICY_DOC, Path: '/' }
+      );
+
+      // The row still succeeded -- the new policy exists and is what state
+      // must point at.
+      expect(result.wasReplaced).toBe(true);
+      expect(result.physicalId).toBe(newArn);
+      expect(result.outcome).toBe('partial');
+      // The reason names the OLD arn: state now points at the new one, so
+      // nothing else downstream still knows which policy survived.
+      expect(result.reason).toContain(ARN);
+      expect(result.reason).toContain('DeleteConflict');
     });
 
     it('replaces the policy when Description changes (Description is immutable)', async () => {

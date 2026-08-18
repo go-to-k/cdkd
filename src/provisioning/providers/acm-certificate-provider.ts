@@ -65,9 +65,22 @@ import type {
  * message rather than to the pre-#1922 silence.
  */
 function isCertificateInUseError(error: unknown): boolean {
-  const name = error instanceof Error ? error.name : '';
+  // Walk the CAUSE CHAIN, not just the top error. `delete()` wraps every
+  // non-not-found failure in a `ProvisioningError`, so by the time the
+  // replacement's catch sees it the SDK class is one level down and the top
+  // `name` is always `ProvisioningError`. Checking only the top is how the
+  // first version of this classifier could never fire on the real path -- and
+  // its unit test still passed, because that test's fixture message had been
+  // hand-authored to contain the phrase the regex looked for.
+  for (let current: unknown = error; current instanceof Error; current = current.cause) {
+    if (current.name === 'ResourceInUseException') return true;
+  }
+  // Message fallback for a re-thrown error that kept the text but lost the
+  // class. `/in use/i`, NOT `/still in use/`: ACM's own wording is
+  // `Certificate arn:... is in use.` -- the stricter phrase matched nothing AWS
+  // actually sends.
   const message = error instanceof Error ? error.message : String(error);
-  return name === 'ResourceInUseException' || /ResourceInUseException|still in use/i.test(message);
+  return /ResourceInUseException|in use/i.test(message);
 }
 
 export class ACMCertificateProvider implements ResourceProvider {
@@ -253,7 +266,7 @@ export class ACMCertificateProvider implements ResourceProvider {
         // resource", so it sails straight past the catch below — the one path
         // that would have told the user the old certificate is still there.
         if (deleteResult?.outcome === 'skipped') {
-          orphanReason = deleteResult.reason;
+          orphanReason = `old certificate ${physicalId} was not deleted: ${deleteResult.reason}`;
           this.logger.warn(
             `Skipped deleting old ACM certificate ${physicalId} during replacement: ${deleteResult.reason}. ` +
               `The old certificate may be orphaned and require manual cleanup.`

@@ -287,7 +287,9 @@ describe('ACMCertificateProvider', () => {
     it('reports partial when the old certificate is still in use', async () => {
       const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
       mockSend.mockResolvedValueOnce({ CertificateArn: newArn }); // create
-      const inUse = new Error('Certificate is still in use by another resource');
+      // AWS's OWN wording, not a phrase invented to match the classifier: ACM
+      // says `Certificate <arn> is in use.` with the class in `name`.
+      const inUse = new Error(`Certificate ${ARN} is in use.`);
       inUse.name = 'ResourceInUseException';
       mockSend.mockRejectedValueOnce(inUse); // delete refused
 
@@ -313,6 +315,50 @@ describe('ACMCertificateProvider', () => {
       // rather than the branch.
       expect(result.reason).toContain('is still in use by another resource and was not deleted');
       expect(result.reason).not.toContain('could not be deleted');
+    });
+
+    // The classifier's two arms are pinned INDEPENDENTLY. With one input
+    // carrying both signals they mask each other -- removing either still
+    // passes because the other catches it, which is how the first version of
+    // this suite left the whole classifier deletable.
+    it('detects in-use from the CAUSE CHAIN when the message says nothing', async () => {
+      const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
+      mockSend.mockResolvedValueOnce({ CertificateArn: newArn });
+      // Name only. `delete()` wraps this in a ProvisioningError, so the class
+      // sits one level down -- the sole signal, visible only to the cause walk.
+      const inUse = new Error('Operation cannot be completed at this time.');
+      inUse.name = 'ResourceInUseException';
+      mockSend.mockRejectedValueOnce(inUse);
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        'AWS::CertificateManager::Certificate',
+        { DomainName: 'example.com', SubjectAlternativeNames: ['www.example.com'] },
+        { DomainName: 'example.com', SubjectAlternativeNames: ['api.example.com'] }
+      );
+
+      expect(result.outcome).toBe('partial');
+      expect(result.reason).toContain('is still in use by another resource and was not deleted');
+    });
+
+    it('detects in-use from the MESSAGE when the SDK class was lost', async () => {
+      const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
+      mockSend.mockResolvedValueOnce({ CertificateArn: newArn });
+      // A re-thrown error that kept AWS's text but lost the class: nothing to
+      // walk to, so only the message arm can classify it.
+      mockSend.mockRejectedValueOnce(new Error(`Certificate ${ARN} is in use.`));
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        'AWS::CertificateManager::Certificate',
+        { DomainName: 'example.com', SubjectAlternativeNames: ['www.example.com'] },
+        { DomainName: 'example.com', SubjectAlternativeNames: ['api.example.com'] }
+      );
+
+      expect(result.outcome).toBe('partial');
+      expect(result.reason).toContain('is still in use by another resource and was not deleted');
     });
 
     it('reports partial with the raw cause for a non-in-use delete failure', async () => {
