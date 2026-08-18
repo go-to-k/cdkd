@@ -25,10 +25,11 @@ import {
  * a fact rather than a convention.
  */
 
-const { mockSend, mockAutoScalingSend, retrySpy } = vi.hoisted(() => ({
+const { mockSend, mockAutoScalingSend, retrySpy, settleSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   mockAutoScalingSend: vi.fn(),
   retrySpy: vi.fn(),
+  settleSpy: vi.fn(),
 }));
 
 /**
@@ -46,6 +47,10 @@ vi.mock('../../../src/provisioning/dynamodb-index-busy-delete.js', async (import
     deleteTableWithIndexBusyRetry: (opts: Parameters<typeof actual.deleteTableWithIndexBusyRetry>[0]) => {
       retrySpy(opts);
       return actual.deleteTableWithIndexBusyRetry(opts);
+    },
+    waitForIndexesSettled: (opts: Parameters<typeof actual.waitForIndexesSettled>[0]) => {
+      settleSpy(opts);
+      return actual.waitForIndexesSettled(opts);
     },
   };
 });
@@ -523,5 +528,61 @@ describe('both DynamoDB providers route DeleteTable through the shared retry', (
     expect(stub.deletes()).toBe(2);
     expect(retrySpy).toHaveBeenCalledTimes(1);
     expect(retrySpy.mock.calls[0]?.[0]).toMatchObject({ typeLabel: 'GlobalTable' });
+  });
+
+  it('the DELETE path re-arms with the shared bound and NOT the auto-scaling note', async () => {
+    const stub = stubOneRefusal();
+
+    await new DynamoDBGlobalTableProvider().delete(
+      'Warm',
+      'shared-table',
+      'AWS::DynamoDB::GlobalTable',
+      {}
+    );
+
+    expect(stub.deletes()).toBe(2);
+    const reArmCall = settleSpy.mock.calls.at(-1)?.[0];
+    expect(reArmCall).toMatchObject({ maxAttempts: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS });
+    expect(reArmCall?.proceedNote).toBe(DELETE_INDEX_WAIT_PROCEED_NOTE);
+    // The specific regression: collapsing onto this provider's own defaults.
+    expect(reArmCall?.maxAttempts).not.toBe(900);
+    expect(reArmCall?.proceedNote).not.toMatch(/auto-scaling/i);
+  });
+});
+
+/**
+ * The GlobalTable provider kept its OWN defaults when the LOOP moved into the
+ * shared module: a 900-poll cap and an auto-scaling proceed note, both of which
+ * belong to the caller that has no backstop. The delete path deliberately passes
+ * neither. Nothing stood over that split, so a later "simplification" onto the
+ * shared defaults would silently hand the auto-scaling caller the delete-path
+ * note (and the delete path a 15x larger budget than its arithmetic allows) with
+ * every behavioural test still green. These two fence it from both sides.
+ */
+describe('the moved GlobalTable defaults stay distinct from the delete path (issue #1931)', () => {
+  it('the AUTO-SCALING caller keeps the 900-poll cap and its own note', async () => {
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof DescribeTableCommand) {
+        return Promise.resolve({
+          Table: { TableName: 'shared-table', GlobalSecondaryIndexes: [] },
+          $metadata: {},
+        } as DescribeTableCommandOutput);
+      }
+      return Promise.resolve({});
+    });
+
+    const provider = new DynamoDBGlobalTableProvider();
+    // `waitForIndexesActive` is private; the auto-scaling caller reaches it with
+    // NO opts, which is exactly the default this fences.
+    await (
+      provider as unknown as {
+        waitForIndexesActive: (physicalId: string, logicalId: string) => Promise<void>;
+      }
+    ).waitForIndexesActive('shared-table', 'Warm');
+
+    const defaultCall = settleSpy.mock.calls.at(-1)?.[0];
+    expect(defaultCall?.maxAttempts).toBe(900);
+    expect(defaultCall?.proceedNote).toMatch(/auto-scaling/i);
+    expect(defaultCall?.proceedNote).not.toBe(DELETE_INDEX_WAIT_PROCEED_NOTE);
   });
 });
