@@ -309,6 +309,27 @@ describe('DynamoDBGlobalTable delete retry on the index-busy refusal (issue #183
     expect(refusalWarnings[0]).not.toContain('Cannot delete table while indexes are being');
   });
 
+  it('counts the REMAINING attempts in the warning, not the whole retry budget', async () => {
+    // The line fires from inside attempt 2 of `1 + DELETE_INDEX_BUSY_MAX_RETRIES`
+    // (= 9), so 7 attempts are left, not 8. It shipped saying 8 because the
+    // number was the raw `DELETE_INDEX_BUSY_MAX_RETRIES` constant — a promise
+    // of one more attempt than the loop can actually make. Pinned as an exact
+    // phrase: an off-by-one here is invisible to a reader and only ever
+    // discovered by someone counting the retries in the log.
+    stubDeleteFailingTimes(1, indexBusyError);
+
+    await provider.delete('Warm', TABLE_NAME, RESOURCE_TYPE, {});
+
+    const refusalWarnings = warnings().filter((w) => w.includes('AWS refused DeleteTable'));
+    expect(refusalWarnings).toHaveLength(1);
+    expect(refusalWarnings[0]).toContain('up to 7 more attempts');
+    // ...and the settle budget is stated as POLLS, not as seconds: the
+    // constant is a DescribeTable count, and rendering it as `60s` claimed a
+    // wall clock the loop does not have (each poll also pays a round trip).
+    expect(refusalWarnings[0]).toContain('up to 60 DescribeTable polls');
+    expect(refusalWarnings[0]).not.toMatch(/\b60s\b/);
+  });
+
   it('does not warn when the delete succeeds first time', async () => {
     stubDeleteFailingTimes(0, indexBusyError);
 

@@ -22,7 +22,45 @@ import {
   WARM_THROUGHPUT_MEMBERS,
   coerceWarmThroughput,
   isWarmThroughputDecrease,
+  toFiniteNumber,
 } from '../../../src/provisioning/dynamodb-warm-throughput.js';
+
+describe('toFiniteNumber (the ONE CFn-numeric rule, issue #1857 PR review)', () => {
+  // This rule was written by hand THREE times: here, as
+  // `dynamodb-table-provider.ts`'s `capacityNumber` (byte-identical), and as
+  // `dynamodb-globaltable-provider.ts`'s `toFiniteNumber` (a different spelling
+  // of the same total function). Both copies are gone; these cases are the
+  // union of what the three answered, so a future edit to the survivor cannot
+  // quietly move any of them.
+  //
+  // The zero-valued shapes are the load-bearing half. `Number()` maps ALL of
+  // `null` / `''` / `'   '` / `[]` / `false` to **0**, so accepting them would
+  // (a) let a live capacity of 0 compare EQUAL to a desired `null` and suppress
+  // a real UpdateTable, and (b) send a warm throughput of 0 that nobody
+  // declared.
+  it.each([
+    ['a number', 12000, 12000],
+    ['a zero', 0, 0],
+    ['a negative (AWS decides, not this reader)', -1, -1],
+    ['a YAML-borne numeric string', '12000', 12000],
+    ['a numeric string with surrounding space', ' 12000 ', 12000],
+    ['a decimal string', '0.5', 0.5],
+    ['undefined', undefined, undefined],
+    ['null', null, undefined],
+    ['an empty string', '', undefined],
+    ['a whitespace-only string', '   ', undefined],
+    ['a non-numeric string', 'twelve', undefined],
+    ['an empty array', [], undefined],
+    ['a populated array', [1], undefined],
+    ['false', false, undefined],
+    ['true', true, undefined],
+    ['an object (an unresolved intrinsic)', { 'Fn::If': ['c', 1, 2] }, undefined],
+    ['NaN', Number.NaN, undefined],
+    ['Infinity', Number.POSITIVE_INFINITY, undefined],
+  ])('reads %s', (_label, input, expected) => {
+    expect(toFiniteNumber(input)).toBe(expected);
+  });
+});
 
 describe('coerceWarmThroughput (issue #1857 / #1808)', () => {
   it('coerces a stringly-typed CFn member to a number', () => {

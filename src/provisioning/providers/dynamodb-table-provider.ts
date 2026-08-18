@@ -48,8 +48,10 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import {
+  WARM_THROUGHPUT_MEMBERS,
   coerceWarmThroughput as coerceWarmThroughputSpec,
   isWarmThroughputDecrease,
+  toFiniteNumber,
 } from '../dynamodb-warm-throughput.js';
 import type {
   ResourceProvider,
@@ -182,29 +184,18 @@ function hasUsableTableCapacity(value: unknown): boolean {
   return true;
 }
 
-/**
- * A capacity member, or `undefined` when the value is not a usable number.
- *
- * `Number()` coercion is NOT good enough here and the first draft of this
- * helper shipped that bug: `Number(null)`, `Number('')`, `Number([])` and
- * `Number(false)` are all **0**, not `NaN` — so a live `0` would have compared
- * EQUAL to a desired `null` / `''` / `[]` / `false` and suppressed the call.
- * The blast radius on DynamoDB is small (a PROVISIONED index's capacity is
- * always >= 1), but the rule this encodes is copied to other providers, so it
- * is spelled correctly rather than relying on the type that happens to be
- * unreachable today.
- *
- * A YAML-borne numeric STRING is still accepted, because that is a real
- * template shape and `'5'` genuinely means 5.
- */
-function capacityNumber(value: unknown): number | undefined {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
-  if (typeof value === 'string' && value.trim() !== '') {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : undefined;
-  }
-  return undefined;
-}
+// `capacityNumber` — a capacity member, or `undefined` when the value is not a
+// usable number — is now {@link toFiniteNumber}, imported from
+// `../dynamodb-warm-throughput.ts`. It was BYTE-identical to that module's own
+// member parser, and near-identical to `dynamodb-globaltable-provider.ts`'s
+// third copy, so the review of issue #1857's PR collapsed the three into one
+// spelling; nothing about the rule changed. The rule, restated because it is
+// what the copies kept getting right by luck: `Number()` alone is not good
+// enough, since `Number(null)`, `Number('')`, `Number([])`, `Number(false)` and
+// `Number('   ')` are all **0** rather than `NaN`, so a live `0` would compare
+// EQUAL to a desired `null` / `''` / `[]` / `false` and suppress the call. A
+// YAML-borne numeric STRING is still accepted, because that is a real template
+// shape and `'5'` genuinely means 5.
 
 /**
  * Does the capacity AWS currently holds for a GSI already equal the pair the
@@ -228,10 +219,10 @@ function liveCapacityAlreadyMatches(
   requested: ProvisionedThroughput
 ): boolean {
   if (live === undefined) return false;
-  const liveRead = capacityNumber(live.ReadCapacityUnits);
-  const liveWrite = capacityNumber(live.WriteCapacityUnits);
-  const wantRead = capacityNumber(requested.ReadCapacityUnits);
-  const wantWrite = capacityNumber(requested.WriteCapacityUnits);
+  const liveRead = toFiniteNumber(live.ReadCapacityUnits);
+  const liveWrite = toFiniteNumber(live.WriteCapacityUnits);
+  const wantRead = toFiniteNumber(requested.ReadCapacityUnits);
+  const wantWrite = toFiniteNumber(requested.WriteCapacityUnits);
   if (liveRead === undefined || liveWrite === undefined) return false;
   if (wantRead === undefined || wantWrite === undefined) return false;
   return liveRead === wantRead && liveWrite === wantWrite;
@@ -283,8 +274,9 @@ const BILLING_FLIP_ACTIVE_WAIT_ATTEMPTS = 600;
  * drift side both: a value this refuses is a value cdkd does not send, so the
  * readback must not emit AWS's computed value as though the template had asked
  * for it. A YAML-borne numeric STRING is accepted, by the shared coercion's own
- * number reader (`../dynamodb-warm-throughput.ts`, which applies exactly
- * {@link capacityNumber}'s rule), because `'12000'` genuinely means 12000.
+ * number reader ({@link toFiniteNumber}, in `../dynamodb-warm-throughput.ts` —
+ * the one this file's capacity paths read too), because `'12000'` genuinely
+ * means 12000.
  */
 function isSendableWarmThroughput(value: unknown): boolean {
   return coerceWarmThroughput(value) !== undefined;
@@ -306,8 +298,8 @@ function isSendableWarmThroughput(value: unknown): boolean {
  * over), and it makes the quoted form WORK instead of merely warning.
  *
  * Per MEMBER, so a bad one cannot take a good one with it, and never `NaN`:
- * the shared coercion's number reader applies {@link capacityNumber}'s rule —
- * a number or a numeric string, everything else rejected — so a member that
+ * the shared coercion's number reader is {@link toFiniteNumber} — a number or
+ * a numeric string, everything else rejected — so a member that
  * does not resolve is OMITTED from the spec
  * and reported in `dropped` for the caller to announce. AWS accepts a
  * one-member `WarmThroughput` (measured us-east-1, 2026-08-13: an
@@ -501,10 +493,12 @@ function warmThroughputAlreadyMatches(
 ): boolean {
   if (live === undefined) return false;
   let compared = 0;
-  for (const member of ['ReadUnitsPerSecond', 'WriteUnitsPerSecond'] as const) {
+  // The shared member tuple, not a local re-spelling of it: the order and the
+  // membership are the same fact {@link isWarmThroughputDecrease} compares on.
+  for (const member of WARM_THROUGHPUT_MEMBERS) {
     if (desired[member] === undefined) continue;
-    const wanted = capacityNumber(desired[member]);
-    const current = capacityNumber(live[member]);
+    const wanted = toFiniteNumber(desired[member]);
+    const current = toFiniteNumber(live[member]);
     if (wanted === undefined || current === undefined) return false;
     if (wanted !== current) return false;
     compared++;
@@ -3248,8 +3242,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
   ): boolean {
     if (requested === undefined) return false;
     if (
-      capacityNumber(requested.ReadCapacityUnits) !== 0 ||
-      capacityNumber(requested.WriteCapacityUnits) !== 0
+      toFiniteNumber(requested.ReadCapacityUnits) !== 0 ||
+      toFiniteNumber(requested.WriteCapacityUnits) !== 0
     ) {
       return false;
     }

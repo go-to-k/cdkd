@@ -60,6 +60,7 @@ import {
   WARM_THROUGHPUT_MEMBERS,
   coerceWarmThroughput,
   isWarmThroughputDecrease,
+  toFiniteNumber,
   type WarmThroughputCoercion,
   type WarmThroughputSpec,
 } from '../dynamodb-warm-throughput.js';
@@ -3999,7 +4000,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         this.logger.debug(
           `Waiting for indexes on ${physicalId} to settle before DeleteTable (issue #1521)`
         );
-        await this.waitForIndexesActive(physicalId, logicalId);
+        await this.waitForIndexesActive(physicalId, logicalId, {
+          proceedNote: DELETE_INDEX_WAIT_PROCEED_NOTE,
+        });
       }
       // ...and retry when AWS refuses ANYWAY (issue #1830). The gate above is
       // necessary but not sufficient: it reads the PRE-DELETE describe, which
@@ -4030,16 +4033,29 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           //
           // BOUNDED, and deliberately far shorter than the 15-minute poll the
           // #1521 pre-delete gate uses. That gate runs ONCE, ahead of the
-          // retry loop; this one runs per retry, so the caller's wall clock is
-          // the product — and `destroy-runner.ts` caps a single `delete()` at
-          // the per-resource deadline (30 min by default, and this provider
-          // declares no `getMinResourceTimeoutMs` to lift it). At the 15-minute
-          // poll the budget was ~2h, so a genuinely stuck index spent 30
-          // minutes reaching a generic `ResourceTimeoutError` that never
-          // mentions indexes, instead of surfacing AWS's own actionable
-          // sentence. The bound below keeps the worst case at
-          // 8 x 60s of polling + `withRetry`'s ~47s of backoff ~= 8.8 min, so
-          // the real refusal is what the user sees.
+          // retry loop; this one runs per retry, so the RETRY LOOP's wall
+          // clock is the product — and `destroy-runner.ts` caps a single
+          // `delete()` at the per-resource deadline (30 min by default, and
+          // this provider declares no `getMinResourceTimeoutMs` to lift it).
+          // At the 15-minute poll the loop alone budgeted ~2h, so a genuinely
+          // stuck index spent 30 minutes reaching a generic
+          // `ResourceTimeoutError` that never mentions indexes, instead of
+          // surfacing AWS's own actionable sentence. The bound below keeps the
+          // LOOP's worst case at 8 x ~60 polls + `withRetry`'s ~47s of backoff
+          // ~= 8.8 min.
+          //
+          // That figure is the LOOP's, not `delete()`'s, and the difference
+          // matters because the deadline is applied to `delete()`. The same
+          // call can already have spent the #1521 gate's full 900 polls (~15
+          // min) just above, and up to 600 polls (~10 min) in
+          // `waitForReplicaGone` per non-local replica before that. So a
+          // replicated table whose index is transitioning can still reach
+          // roughly 15 + 10 + 8.8 ~= 34 min for a single replica and end in
+          // exactly the generic `ResourceTimeoutError` this bound exists to
+          // avoid. What the bound buys is that the RETRY is no longer the part
+          // that spends the budget; bringing the WHOLE `delete()` worst case
+          // under the deadline is a separate problem this change does not
+          // solve.
           if (deleteAttempts++ > 0) {
             if (deleteAttempts === 2) {
               // ONE line, at default verbosity. `withRetry` announces its
@@ -4047,13 +4063,21 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               // spending minutes re-polling printed nothing naming the cause —
               // and the C1 budget above ends in a timeout that has to be
               // diagnosable from a normal run's output.
+              // DERIVED, never spelled out: `withRetry` runs
+              // `1 + maxRetries` attempts in total and `deleteAttempts`
+              // counts the one now starting, so the remainder falls out of
+              // the same constant that bounds the loop. Writing the number
+              // by hand is how this line came to promise 8 further attempts
+              // when 7 were left.
+              const remainingAttempts = 1 + DELETE_INDEX_BUSY_MAX_RETRIES - deleteAttempts;
               this.logger.warn(
                 `DynamoDB GlobalTable ${logicalId}: AWS refused DeleteTable on ${physicalId} ` +
                   `because a global secondary index is still being created, updated or ` +
                   `deleted — application auto-scaling can start an index capacity change at ` +
                   `any moment, including during this destroy. Waiting for the index to settle ` +
-                  `and retrying (up to ${DELETE_INDEX_BUSY_MAX_RETRIES} more attempts, ` +
-                  `${DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS}s of settling each). Nothing is ` +
+                  `and retrying (up to ${remainingAttempts} more attempts, each preceded by ` +
+                  `up to ${DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS} DescribeTable polls ~1s ` +
+                  `apart — a little over a minute of settling per attempt). Nothing is ` +
                   `wrong with the table; a large index backfill can outlast this budget, in ` +
                   `which case the destroy fails with AWS's own message and re-running it ` +
                   `succeeds once the index is ACTIVE.`
@@ -4061,9 +4085,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             }
             await this.waitForIndexesActive(physicalId, logicalId, {
               maxAttempts: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
-              timeoutNote:
-                `the DeleteTable retry will go ahead anyway and AWS's own refusal stays the ` +
-                `backstop.`,
+              proceedNote: DELETE_INDEX_WAIT_PROCEED_NOTE,
             });
           }
           await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
@@ -4077,12 +4099,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // terminal conflicts, so the message is the only discriminator.
           isRetryable: (message) => isIndexBusyDeleteError(message),
           logger: this.logger,
-          // Read the seam at CALL time, not at options-construction time: a
-          // test that sets `deleteTableRetryDelays.sleep` after constructing
-          // the provider would otherwise silently get `withRetry`'s real ~47s
-          // schedule. Passing `sleep` unconditionally is safe — `withRetry`'s
-          // dense-schedule detection keys on `maxRetries` / `initialDelayMs` /
-          // `maxDelayMs` / `isRetryable`, all of which this caller already sets.
+          // Read the seam per SLEEP, not once when this options bag is built.
+          // The bag is built inside `delete()`, so even a plain
+          // `sleep: deleteTableRetryDelays.sleep` would pick up a seam
+          // installed at any point before the call — including one a test
+          // installs after constructing the provider. The narrower case the
+          // closure covers is a seam installed after `delete()` was ALREADY
+          // invoked: the suite's `reads the sleep seam at CALL time` test sets
+          // it from inside the first refusal, and a value read at bag-construction
+          // time would have captured `undefined` there and silently paid
+          // `withRetry`'s real ~47s schedule. Passing `sleep` unconditionally
+          // is safe — `withRetry`'s dense-schedule detection keys on
+          // `maxRetries` / `initialDelayMs` / `maxDelayMs` / `isRetryable`,
+          // all of which this caller already sets.
           sleep: (ms: number) =>
             deleteTableRetryDelays.sleep
               ? deleteTableRetryDelays.sleep(ms)
@@ -5158,16 +5187,29 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * `opts.maxAttempts` exists because the cap is only right for a wait that
    * runs ONCE: the #1830 delete retry re-runs this per attempt, so the caller's
    * wall clock is the product and the default would blow past the per-resource
-   * deadline `destroy-runner.ts` enforces. `opts.timeoutNote` lets that caller
-   * say what happens next, since the default sentence is about auto-scaling
-   * registration and means nothing on a delete path.
+   * deadline `destroy-runner.ts` enforces.
+   *
+   * `opts.proceedNote` covers the OTHER thing that is caller-specific: what it
+   * costs when the wait ends WITHOUT confirming. Both arms that end that way —
+   * the timeout, and a `DescribeTable` that failed for a reason other than
+   * throttling or a gone table — stop waiting and let the caller proceed, so
+   * one note serves both. The consequences genuinely differ: on the delete
+   * path AWS refuses the `DeleteTable` and that refusal is the backstop, while
+   * the auto-scaling caller has NO backstop — `reconcileAutoScalingTargets`
+   * simply skips an index that is not ready and nothing downstream refuses.
+   * The default sentence is the auto-scaling one; every delete-path caller
+   * passes {@link DELETE_INDEX_WAIT_PROCEED_NOTE}.
    */
   private async waitForIndexesActive(
     tableName: string,
     logicalId: string,
-    opts?: { maxAttempts?: number; timeoutNote?: string }
+    opts?: { maxAttempts?: number; proceedNote?: string }
   ): Promise<void> {
     const maxAttempts = opts?.maxAttempts ?? 900;
+    const proceedNote =
+      opts?.proceedNote ??
+      `auto-scaling registration for a still-building index may have been skipped. The ` +
+        `next deploy re-asserts it.`;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const response = await this.dynamoDBClient.send(
@@ -5206,13 +5248,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         }
         // Anything else: give up the WAIT, never the operation. A delete path
         // must tolerate a stale read rather than fail fast (a throw here would
-        // strand the resource), so the caller proceeds and AWS answers. Warn
-        // rather than debug — this is the arm that silently turned a wait into
-        // a no-op, and a run at default verbosity has to be able to see it.
+        // strand the resource), so the caller proceeds. Warn rather than debug
+        // — this is the arm that silently turned a wait into a no-op, and a run
+        // at default verbosity has to be able to see it. What proceeding COSTS
+        // is the caller's to say (`proceedNote`): "AWS's own error stays the
+        // backstop" is true where a refusable call follows, and false for the
+        // auto-scaling caller, which just skips the index.
         this.logger.warn(
           `DescribeTable failed while waiting for indexes on ${tableName} (${logicalId}), so ` +
-            `cdkd stopped waiting and is proceeding; AWS's own error stays the backstop: ` +
-            `${message}`
+            `cdkd stopped waiting; ${proceedNote} DescribeTable error: ${message}`
         );
         return;
       }
@@ -5220,10 +5264,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
     this.logger.warn(
       `Indexes on ${tableName} (${logicalId}) did not all reach ACTIVE within ` +
-        `${maxAttempts}s; ` +
-        (opts?.timeoutNote ??
-          `auto-scaling registration for a still-building index may have been skipped. The ` +
-            `next deploy re-asserts it.`)
+        `${maxAttempts} DescribeTable polls (~1s apart, so a little over ` +
+        `${maxAttempts}s of wall clock); ${proceedNote}`
     );
   }
 
@@ -5762,34 +5804,43 @@ const DELETE_INDEX_BUSY_MAX_RETRIES = 8;
 const DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS = 60;
 
 /**
- * Coerce a CFn numeric (CFn is stringly-typed) to a finite number.
+ * What proceeding costs when a DELETE-path index-settle wait ends WITHOUT
+ * confirming — passed as
+ * {@link DynamoDBGlobalTableProvider['waitForIndexesActive']}'s `proceedNote`
+ * by BOTH delete-path callers (the #1521 pre-delete gate and the #1830 retry
+ * re-arm).
  *
- * The `trim()` is load-bearing, not defensive: `Number('   ')` is **0**, so a
- * whitespace-only `ReadCapacityUnits` / `MaxReadRequestUnits` would be read as
- * a request for ZERO capacity — a value nobody declared. The shared
- * `WarmThroughput` rule in `../dynamodb-warm-throughput.ts` already refuses
- * that shape for the same reason, and this file REFUSING it there while
- * accepting it here is exactly the divergence the extraction exists to
- * prevent.
+ * The default note that helper falls back to is the auto-scaling caller's, and
+ * it is not merely unhelpful here but wrong: nothing on the delete path
+ * re-asserts anything on a later deploy. Conversely the delete path really
+ * does have a backstop — `DeleteTable` follows immediately and AWS refuses it
+ * again if the index is still transitioning — which the auto-scaling caller
+ * does not: `reconcileAutoScalingTargets` skips an index that is not ready and
+ * nothing downstream notices. One sentence per caller, so neither claims the
+ * other's safety net.
  */
-function toFiniteNumber(value: unknown): number | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
-  if (typeof value !== 'string' || value.trim() === '') return undefined;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : undefined;
-}
+const DELETE_INDEX_WAIT_PROCEED_NOTE = `the DeleteTable goes ahead anyway and AWS's own refusal stays the backstop.`;
 
+// `toFiniteNumber` — the CFn-numeric reader every capacity / throughput path in
+// this file uses — is IMPORTED from `../dynamodb-warm-throughput.ts` rather
+// than spelled here. It was a local copy until the review of issue #1857's PR:
+// this file's spelling, `dynamodb-table-provider.ts`'s `capacityNumber` and the
+// shared module's own member parser were three hand-written statements of one
+// rule, which is the divergence that module exists to prevent, one level below
+// the rule it was extracted for. The `trim()` in it is load-bearing, not
+// defensive: `Number('   ')` is **0**, so a whitespace-only
+// `ReadCapacityUnits` / `MaxReadRequestUnits` would otherwise read as a request
+// for ZERO capacity that nobody declared.
+//
 // `WARM_THROUGHPUT_MEMBERS` / `WarmThroughputSpec` / `WarmThroughputCoercion` /
-// `coerceWarmThroughput` live in `../dynamodb-warm-throughput.ts` — the same
-// stringly-typed-CFn coercion `AWS::DynamoDB::Table` shipped for issue #1808,
-// so one type cannot start accepting a shape the other refuses. Only that
-// Table spelling ever shipped; the GlobalTable side arrived with issue #1857,
-// so this is the Table rule LIFTED rather than two shipped rules merged. The
-// one shape the drafted GlobalTable spelling answered differently was a
-// whitespace-only string, where a bare `Number('   ')` is 0 rather than NaN;
-// the shared rule takes the REFUSING answer, since that is not a capacity
-// anyone declared — and `toFiniteNumber` above now agrees with it.
+// `coerceWarmThroughput` live there too — the same stringly-typed-CFn coercion
+// `AWS::DynamoDB::Table` shipped for issue #1808, so one type cannot start
+// accepting a shape the other refuses. Only that Table spelling ever shipped;
+// the GlobalTable side arrived with issue #1857, so this is the Table rule
+// LIFTED rather than two shipped rules merged. The one shape the drafted
+// GlobalTable spelling answered differently was a whitespace-only string, where
+// a bare `Number('   ')` is 0 rather than NaN; the shared rule takes the
+// REFUSING answer, since that is not a capacity anyone declared.
 
 /**
  * Build the {@link ThroughputDiagnostic} for a `WarmThroughput` block that did

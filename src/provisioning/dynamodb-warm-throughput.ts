@@ -106,19 +106,30 @@ export interface WarmThroughputCoercion {
 }
 
 /**
- * A `WarmThroughput` member, or `undefined` when the value is not a usable
- * number.
+ * A CloudFormation-borne numeric property, or `undefined` when the value is
+ * not a usable number.
  *
- * Plain `Number()` coercion is NOT good enough and both providers learned it
- * separately: `Number(null)`, `Number('')`, `Number([])`, `Number(false)` and
- * `Number('   ')` are all **0**, not `NaN` — so a live `0` would compare EQUAL
- * to a desired `null` / `''` / `[]` / `false`, and a whitespace-only string
- * would be forwarded as a request for zero warm units.
+ * Plain `Number()` coercion is NOT good enough and the tree learned it three
+ * separate times: `Number(null)`, `Number('')`, `Number([])`, `Number(false)`
+ * and `Number('   ')` are all **0**, not `NaN` — so a live `0` would compare
+ * EQUAL to a desired `null` / `''` / `[]` / `false`, and a whitespace-only
+ * string would be forwarded as a request for zero units.
  *
  * A YAML-borne numeric STRING is still accepted, because that is a real
  * template shape and `'12000'` genuinely means 12000.
+ *
+ * EXPORTED, and not because warm throughput needs it exported. This exact rule
+ * was hand-written three times — here, as `dynamodb-table-provider.ts`'s
+ * `capacityNumber` (byte-identical), and as `dynamodb-globaltable-provider.ts`'s
+ * `toFiniteNumber` (a different spelling of the same total function) — which is
+ * precisely the divergence this module exists to stop: the next "fix" to one of
+ * them would have left the other two answering differently, with nothing in the
+ * tree saying which was intended. It reads `ReadCapacityUnits` /
+ * `MaxReadRequestUnits` / `MinCapacity` as readily as it reads
+ * `ReadUnitsPerSecond`; there is only ever one right answer for "is this
+ * stringly-typed CFn value a number I can send?".
  */
-function warmThroughputNumber(value: unknown): number | undefined {
+export function toFiniteNumber(value: unknown): number | undefined {
   if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
   if (typeof value === 'string' && value.trim() !== '') {
     const n = Number(value);
@@ -161,7 +172,7 @@ export function coerceWarmThroughput(raw: unknown): WarmThroughputCoercion {
     // and this is the spelling `dynamodb-table-provider.ts` shipped and its
     // tests pin.
     if (bag[member] === undefined) continue;
-    const coerced = warmThroughputNumber(bag[member]);
+    const coerced = toFiniteNumber(bag[member]);
     if (coerced === undefined) {
       droppedMembers.push(member);
       continue;
@@ -229,8 +240,8 @@ export function isWarmThroughputDecrease(
   let sawDecrease = false;
   for (const member of WARM_THROUGHPUT_MEMBERS) {
     if (desired[member] === undefined) continue;
-    const wanted = warmThroughputNumber(desired[member]);
-    const current = warmThroughputNumber(live[member]);
+    const wanted = toFiniteNumber(desired[member]);
+    const current = toFiniteNumber(live[member]);
     // Unusable on either side: fail open, and stop — a partial verdict on the
     // remaining member could still skip a call carrying an unreadable one.
     if (wanted === undefined || current === undefined) return false;

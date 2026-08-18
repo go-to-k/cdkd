@@ -178,15 +178,23 @@ delete_retry_race_driver() { # $1=destroy log  $2=table  $3=marker file
       # literally the condition the refusal names ("indexes are being
       # created"). The index is never cleaned up on purpose: the table it hangs
       # off is deleted seconds later by the destroy under test.
-      if aws dynamodb update-table \
+      # `2>&1 >/dev/null` (in that order) keeps AWS's own refusal and discards
+      # the success payload. The stderr goes INTO the marker because the driver
+      # runs in a background subshell whose output is interleaved with the
+      # destroy's `tee`: discarding it, as this did, made `update-rejected` the
+      # one outcome nobody could diagnose — and it is the outcome whose causes
+      # (the table is already DELETING, a throttle, a limit) are the ones worth
+      # telling apart.
+      local err
+      if err="$(aws dynamodb update-table \
         --table-name "${table}" \
         --attribute-definitions AttributeName=raceKey,AttributeType=S \
         --global-secondary-index-updates \
         "[{\"Create\":{\"IndexName\":\"raceIdx\",\"KeySchema\":[{\"AttributeName\":\"raceKey\",\"KeyType\":\"HASH\"}],\"Projection\":{\"ProjectionType\":\"KEYS_ONLY\"},\"ProvisionedThroughput\":{\"ReadCapacityUnits\":1,\"WriteCapacityUnits\":1}}}]" \
-        --region "${REGION}" >/dev/null 2>&1; then
+        --region "${REGION}" 2>&1 >/dev/null)"; then
         printf 'fired' >"${marker}"
       else
-        printf 'update-rejected' >"${marker}"
+        printf 'update-rejected: %s' "${err}" >"${marker}"
       fi
       return 0
     fi
@@ -222,6 +230,13 @@ fi
 # path so an aborted run cannot leave a background `aws dynamodb update-table`
 # loop running against a table the cleanup destroy is deleting.
 DELETE_RETRY_DRIVER_PID=""
+# The step 15 destroy log and the driver's outcome marker. Declared here rather
+# than only at step 15 so `cleanup()` can sweep them under `set -u` on the exit
+# paths that never reach step 15, and so a FAILURE at step 15 / 15b — which
+# leaves both behind, since the success path is the only place that removes
+# them inline — cannot leak two `mktemp` files per run.
+DESTROY_LOG=""
+DELETE_RETRY_MARKER=""
 
 cleanup() {
   rc=$?
@@ -229,6 +244,18 @@ cleanup() {
     kill "${DELETE_RETRY_DRIVER_PID}" 2>/dev/null || true
     wait "${DELETE_RETRY_DRIVER_PID}" 2>/dev/null || true
     DELETE_RETRY_DRIVER_PID=""
+  fi
+  # Sweep AFTER the driver is dead: it writes the marker, so removing it while
+  # the driver still runs would just let it be re-created. `if` rather than
+  # `[ ... ] && rm`, because under `set -e` a false test in an `&&` list aborts
+  # the function and would skip the destroy below it.
+  if [ -n "${DESTROY_LOG}" ]; then
+    rm -f "${DESTROY_LOG}"
+    DESTROY_LOG=""
+  fi
+  if [ -n "${DELETE_RETRY_MARKER}" ]; then
+    rm -f "${DELETE_RETRY_MARKER}"
+    DELETE_RETRY_MARKER=""
   fi
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
@@ -1930,10 +1957,29 @@ echo "[verify] step 15b (Issue #1830): assert the destroy ABSORBED an index-busy
 #     vacuously on a run where the driver never landed in the window.
 DELETE_RETRY_OUTCOME="$(cat "${DELETE_RETRY_MARKER}" 2>/dev/null || true)"
 rm -f "${DELETE_RETRY_MARKER}"
-if [ "${DELETE_RETRY_OUTCOME}" != "fired" ]; then
-  echo "FAIL: issue #1830 — the race driver did not issue its out-of-band UpdateTable (outcome='${DELETE_RETRY_OUTCOME:-signal-never-appeared}'), so this run never exercised the index-busy retry. Re-run; if it repeats, the auto-scaling teardown window has shrunk and GsiDeleteRetryTable needs more indexes." >&2
-  exit 1
-fi
+# Each outcome has a DIFFERENT cause and therefore a different remedy; one
+# shared sentence sent every one of them to "widen the teardown window", which
+# only addresses the last.
+case "${DELETE_RETRY_OUTCOME}" in
+  fired) ;;
+  update-rejected*)
+    echo "FAIL: issue #1830 — the race driver fired inside the window but AWS REFUSED its own out-of-band UpdateTable, so no index ever entered a transitional state and the retry path was never reached. AWS said: ${DELETE_RETRY_OUTCOME#update-rejected: }" >&2
+    echo "       If that text says the table is already being deleted or does not exist, the driver fired too LATE in the auto-scaling teardown window: GsiDeleteRetryTable needs more indexes to widen it. Anything else (throttle, index/attribute limit, permissions) is a refusal of the driver's own call and is what to fix." >&2
+    exit 1
+    ;;
+  signal-timeout)
+    echo "FAIL: issue #1830 — the race driver polled the destroy log for its full budget and never saw the deregistration line it keys on, so it never fired. Check that the destroy still logs 'Deregistered auto-scaling target table/${GSI_DELETE_RETRY_TABLE} (dynamodb:table:WriteCapacityUnits)' at debug level and that step 15 still passes --verbose; a renamed or re-ordered log line silences this driver." >&2
+    exit 1
+    ;;
+  '')
+    echo "FAIL: issue #1830 — the race driver recorded no outcome at all, i.e. the destroy finished (and the driver was killed) before its signal line appeared. Same diagnosis as signal-timeout: the log line the driver keys on, or --verbose, is what to check first." >&2
+    exit 1
+    ;;
+  *)
+    echo "FAIL: issue #1830 — the race driver wrote an outcome this step does not know: '${DELETE_RETRY_OUTCOME}'. Add a branch for it here rather than widening the 'fired' test." >&2
+    exit 1
+    ;;
+esac
 if ! grep -qF "Cannot delete table while indexes are being" "${DESTROY_LOG}"; then
   echo "FAIL: issue #1830 — the out-of-band UpdateTable landed but AWS never refused the DeleteTable, so the retry path was not exercised. Re-run; if it repeats, the driver is firing too late in the auto-scaling teardown window." >&2
   exit 1
@@ -2028,9 +2074,16 @@ assert_target_gone "table/${GSI_PROV_RECOVERY_TABLE}" dynamodb:table:WriteCapaci
 assert_target_gone "table/${GSI_PROV_RECOVERY_TABLE}/index/autoProvIdx" dynamodb:index:WriteCapacityUnits
 # Issue #1830: the delete-retry table registers a table-level write target (the
 # driver's signal) plus one per index. Both the FIRST and the LAST index are
-# asserted, because the teardown loop is what the retry re-enters: a delete
-# that retried after partially tearing down must not leave the tail of the loop
-# unrun.
+# asserted because the driver's out-of-band `UpdateTable` lands in the MIDDLE
+# of the teardown loop: the table-level write deregistration it keys on is
+# emitted first, and all 48 per-index calls (12 indexes x 2 dimensions x 2
+# calls) follow it. Asserting only the first index would pass on a run where
+# the concurrent `UpdateTable` aborted the tail of the loop.
+#
+# Note this is NOT about the retry re-running the teardown — the loop sits
+# outside `withRetry`, whose closure re-runs only the index-settle wait and the
+# `DeleteTable`, so a retry never re-enters it. The loop runs exactly once,
+# ahead of every delete attempt.
 assert_target_gone "table/${GSI_DELETE_RETRY_TABLE}" dynamodb:table:WriteCapacityUnits
 assert_target_gone "table/${GSI_DELETE_RETRY_TABLE}/index/busyIdx0" dynamodb:index:WriteCapacityUnits
 assert_target_gone "table/${GSI_DELETE_RETRY_TABLE}/index/busyIdx11" dynamodb:index:WriteCapacityUnits
