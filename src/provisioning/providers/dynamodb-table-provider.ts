@@ -55,6 +55,8 @@ import {
 } from '../dynamodb-warm-throughput.js';
 import {
   DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+  INDEX_SETTLE_POLL_INTERVAL_MS,
+  TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
   DELETE_INDEX_WAIT_PROCEED_NOTE,
   deleteTableWithIndexBusyRetry,
   waitForIndexesSettled,
@@ -779,7 +781,8 @@ function desiredIndexEntriesByName(value: unknown): Map<string, Record<string, u
  * Test seam for the index-busy `DeleteTable` retry's backoff (issue #1931),
  * mirroring the sibling provider's export of the same name. Production leaves
  * `sleep` undefined so `withRetry`'s real schedule applies; a test injects a
- * no-op so the ~47s budget does not have to be waited out.
+ * no-op so the ~95s of backoff at this type's budget
+ * (`TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`) does not have to be waited out.
  *
  * One seam PER PROVIDER rather than one on the shared module: a `Table` test
  * that silences this backoff must not also silence the `GlobalTable` one, since
@@ -2189,6 +2192,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
         logicalId,
         physicalId,
         typeLabel: 'table',
+        // THIS type's budget. The two DynamoDB types no longer share one: the
+        // sibling reaches this loop with the #1521 gate's ~18 min already spent
+        // out of the same 30-min deadline, so it keeps the original 8 while
+        // this path — whose only pre-cost is the ACTIVE wait above — carries 14
+        // (issue #1950; the derivation for both is on the constant).
+        maxRetries: TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
         logger: this.logger,
         deleteTable: async () => {
           await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
@@ -2201,14 +2210,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // (30 min by default; this provider declares no
         // `getMinResourceTimeoutMs` to lift it). At
         // `DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS` the whole loop's worst case is
-        // ~18.4 min (issue #1950 raised the retry budget to 14; the full
-        // arithmetic is on `DELETE_INDEX_BUSY_MAX_RETRIES`), so a genuinely
-        // stuck index still ends in AWS's own actionable sentence rather than a
-        // generic `ResourceTimeoutError` that never mentions indexes. On THIS
-        // provider the only other thing sharing that deadline is the
-        // `--remove-protection` ACTIVE wait above (<=60 polls, ~72s), which the
-        // budget is sized with — the whole `delete()` worst case is ~19.6 min
-        // against the 30-min deadline.
+        // ~18.4 min (issue #1950 raised THIS type's retry budget to 14; the
+        // full arithmetic is on `TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`), so a
+        // genuinely stuck index still ends in AWS's own actionable sentence
+        // rather than a generic `ResourceTimeoutError` that never mentions
+        // indexes. On THIS provider the only other thing sharing that deadline
+        // is the `--remove-protection` ACTIVE wait above (<=60 polls, ~72s),
+        // which the budget is sized with — the whole `delete()` worst case is
+        // ~19.6 min against the 30-min deadline, two thirds of it.
         //
         // That deadline wraps `destroy-runner.ts`'s OUTER retry loop, not a
         // single `delete()` — up to 4 calls share it. The budget survives that
@@ -2834,7 +2843,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
       // Sleep between polls; tolerate any non-terminal status (UPDATING,
       // and defensively CREATING / others) — we just wait for ACTIVE.
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      //
+      // Reads the SHARED poll interval rather than its own `1000`: the
+      // index-busy budget arithmetic prices this wait as `<=60 polls x that
+      // interval` when it checks the delete path against the per-resource
+      // deadline, so a private copy here would let the two drift while the
+      // arithmetic went on claiming they agree.
+      await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
     }
     throw new Error(
       `Table ${tableName} did not reach ACTIVE status within ${maxAttempts} seconds after UpdateTable`
