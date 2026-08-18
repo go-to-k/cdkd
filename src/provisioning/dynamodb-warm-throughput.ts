@@ -15,16 +15,26 @@
  *     lowers it (`decreasing WarmThroughput is not supported`, measured live
  *     us-east-1 2026-08-13 for issue #1768).
  *
- * The two providers reached this file from opposite directions and their
- * independent answers were compared input by input before the merge (a quoted
- * numeric string, a partially usable block, a mixed decrease/increase, an
- * absent live value, a zero, a negative, a non-numeric string, a whitespace
- * string, an explicit `undefined` / `null`, a boolean, an empty block, a
- * scalar, an array): {@link isWarmThroughputDecrease} agreed on EVERY probe,
- * and the coercion agreed on every probe but one — a whitespace-only string,
- * where a bare `Number('   ')` is `0` rather than `NaN`. This module keeps the
- * REFUSING answer for that shape, since `'   '` is not a capacity anyone
- * declared and a warm throughput of 0 is not a request AWS can honour.
+ * **Provenance, stated precisely because it is easy to over-claim.** Exactly
+ * ONE of these rules ever shipped: `AWS::DynamoDB::Table` got them in PR #1808
+ * (issues #1760 / #1768), and the `AWS::DynamoDB::GlobalTable` side never
+ * existed outside the change that created this file (issue #1857). So this is
+ * the Table rule LIFTED — not two shipped rules reconciled, and no deployed
+ * behaviour changed for either type when it moved here.
+ *
+ * What WAS compared is the lifted rule against the GlobalTable spelling
+ * drafted alongside it, over the shapes both had to answer (a quoted numeric
+ * string, a partially usable block, a mixed decrease/increase, an absent live
+ * value, a zero, a negative, a non-numeric string, a whitespace string, an
+ * explicit `undefined` / `null`, a boolean, an empty block, a scalar, an
+ * array). {@link isWarmThroughputDecrease} agreed on every one; the coercion
+ * agreed on all but a whitespace-only string, where a bare `Number('   ')` is
+ * `0` rather than `NaN`. This module keeps the REFUSING answer for that shape,
+ * since `'   '` is not a capacity anyone declared and a warm throughput of 0
+ * is not a request AWS can honour. That is a DRAFT reconciled against a
+ * shipped rule, which is worth less than two shipped rules agreeing — the
+ * reason to read the probe list as a design note rather than as field
+ * evidence.
  *
  * Living here rather than in either provider is the point. A decrease guard is
  * three clauses that all FAIL OPEN for different reasons, and two files

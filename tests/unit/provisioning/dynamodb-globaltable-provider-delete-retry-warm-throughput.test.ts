@@ -92,14 +92,11 @@ import {
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 // The two WarmThroughput RULES live in a module both DynamoDB providers read,
 // so `AWS::DynamoDB::Table` (issue #1808) and `AWS::DynamoDB::GlobalTable`
-// (issue #1857) cannot answer the same question differently. Exercised from
-// here because this is the suite that owns the GlobalTable send sites reading
-// them; `dynamodb-table-provider-warm-throughput*.test.ts` exercises the same
-// module through the sibling provider's four write sites.
-import {
-  coerceWarmThroughput,
-  isWarmThroughputDecrease,
-} from '../../../src/provisioning/dynamodb-warm-throughput.js';
+// (issue #1857) cannot answer the same question differently. The RULE is
+// pinned in `dynamodb-warm-throughput.test.ts`, named for the module so a
+// third consumer's author finds it; this file exercises it through THIS
+// provider's send sites, and `dynamodb-table-provider-warm-throughput*.test.ts`
+// through the sibling's.
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::GlobalTable';
 const TABLE_NAME = 'warm-table';
@@ -268,145 +265,277 @@ describe('DynamoDBGlobalTable delete retry on the index-busy refusal (issue #183
     // DELETE_INDEX_BUSY_MAX_RETRIES (8) retries after the first attempt.
     expect(stub.attempts()).toBe(9);
   });
-});
 
-describe('WarmThroughput coercion helpers (issue #1857)', () => {
-  it('coerces a stringly-typed CFn member to a number', () => {
-    expect(coerceWarmThroughput({ ReadUnitsPerSecond: '12000' })).toEqual({
-      spec: { ReadUnitsPerSecond: 12000 },
-      droppedMembers: [],
-    });
-  });
-
-  it('produces a wire-identical block for a quoted and an already-numeric value', () => {
-    // The whole point of coercion: the two templates must be indistinguishable
-    // downstream. Compared by SERIALIZATION, not by `toEqual`, because
-    // `toEqual` treats 12000 and '12000' as different anyway while a member
-    // ORDER divergence — which does change the wire bytes — it would miss.
-    const quoted = coerceWarmThroughput({ ReadUnitsPerSecond: '12000', WriteUnitsPerSecond: '4000' });
-    const numeric = coerceWarmThroughput({ ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 });
-    expect(JSON.stringify(quoted.spec)).toBe(JSON.stringify(numeric.spec));
-    expect(JSON.stringify(quoted.spec)).toBe('{"ReadUnitsPerSecond":12000,"WriteUnitsPerSecond":4000}');
-  });
-
-  it('emits members in a fixed order regardless of the template order', () => {
-    const reversed = coerceWarmThroughput({ WriteUnitsPerSecond: 4000, ReadUnitsPerSecond: 12000 });
-    expect(JSON.stringify(reversed.spec)).toBe(
-      '{"ReadUnitsPerSecond":12000,"WriteUnitsPerSecond":4000}'
+  it('matches the refusal case-INSENSITIVELY (the classifier`s /i flag)', async () => {
+    // The clause arrives inside a wrapper prefix whose casing is not ours, so
+    // the classifier is anchored with `/i`. Nothing else in the suite exercises
+    // that flag, and a regression dropping it turns this run into the
+    // one-attempt hard failure the `terminalInUseError` case pins.
+    const stub = stubDeleteFailingTimes(
+      1,
+      () =>
+        new ResourceInUseException({
+          message:
+            'ATTEMPT TO CHANGE A RESOURCE WHICH IS STILL IN USE: CANNOT DELETE TABLE WHILE ' +
+            'INDEXES ARE BEING CREATED, UPDATED, OR DELETED.',
+          $metadata: {},
+        })
     );
+
+    await expect(provider.delete('Warm', TABLE_NAME, RESOURCE_TYPE, {})).resolves.toBeUndefined();
+    expect(stub.attempts()).toBe(2);
   });
 
-  it('drops only the unusable member and NAMES it, sending the usable one', () => {
-    expect(
-      coerceWarmThroughput({ ReadUnitsPerSecond: '12000', WriteUnitsPerSecond: { Ref: 'Unresolved' } })
-    ).toEqual({
-      spec: { ReadUnitsPerSecond: 12000 },
-      droppedMembers: ['WriteUnitsPerSecond'],
-    });
+  it('WARNS once at default verbosity when it starts absorbing the refusal', async () => {
+    // `withRetry` announces its retries through `opts.logger?.debug`, so
+    // without this line a delete spending minutes re-polling printed NOTHING
+    // naming the cause — and the bounded re-arm below can end in a timeout that
+    // has to be diagnosable from an ordinary run's output.
+    const stub = stubDeleteFailingTimes(2, indexBusyError);
+
+    await provider.delete('Warm', TABLE_NAME, RESOURCE_TYPE, {});
+
+    expect(stub.attempts()).toBe(3);
+    const refusalWarnings = warnings().filter((w) => w.includes('AWS refused DeleteTable'));
+    // ONE line even across two retries: this announces the CONDITION, not each
+    // attempt (which is what `withRetry`'s debug line already does).
+    expect(refusalWarnings).toHaveLength(1);
+    expect(refusalWarnings[0]).toContain(TABLE_NAME);
+    expect(refusalWarnings[0]).toContain('global secondary index');
+    // It must NOT carry AWS's own sentence: `verify.sh` step 15b greps the
+    // destroy log for `Cannot delete table while indexes are being` to prove
+    // AWS really refused, and a cdkd-authored copy would satisfy that grep
+    // without the refusal having happened.
+    expect(refusalWarnings[0]).not.toContain('Cannot delete table while indexes are being');
   });
 
-  it('refuses the whole block when no member is usable', () => {
-    expect(coerceWarmThroughput({ ReadUnitsPerSecond: { Ref: 'Unresolved' } })).toEqual({
-      droppedMembers: ['ReadUnitsPerSecond'],
-    });
-    // Present-but-not-an-object: no member to name, so no dropped list.
-    expect(coerceWarmThroughput('nonsense')).toEqual({ droppedMembers: [] });
-    // An empty declaration asks for nothing; there is nothing to send.
-    expect(coerceWarmThroughput({})).toEqual({ droppedMembers: [] });
+  it('does not warn when the delete succeeds first time', async () => {
+    stubDeleteFailingTimes(0, indexBusyError);
+
+    await provider.delete('Warm', TABLE_NAME, RESOURCE_TYPE, {});
+
+    expect(warnings().filter((w) => w.includes('AWS refused DeleteTable'))).toHaveLength(0);
   });
 
-  it('reports an ABSENT member as absent rather than as dropped', () => {
-    expect(coerceWarmThroughput({ ReadUnitsPerSecond: 12000 })).toEqual({
-      spec: { ReadUnitsPerSecond: 12000 },
-      droppedMembers: [],
+  it('reads the sleep seam at CALL time, not when the retry options are built', async () => {
+    // Set the seam from INSIDE the first refusal — i.e. after `delete()` has
+    // already built `withRetry`'s options bag. A spread-at-construction seam
+    // captures `undefined` there and silently falls back to the real ~47s
+    // schedule; reading it per sleep picks the override up.
+    delete deleteTableRetryDelays.sleep;
+    const sleepSpy = vi.fn(() => Promise.resolve());
+    let attempts = 0;
+    let deleted = false;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        return deleted ? Promise.reject(newRnf()) : Promise.resolve({ Table: LIVE_TABLE });
+      }
+      if (command instanceof DeleteTableCommand) {
+        attempts += 1;
+        if (attempts === 1) {
+          deleteTableRetryDelays.sleep = sleepSpy;
+          return Promise.reject(indexBusyError());
+        }
+        deleted = true;
+        return Promise.resolve({});
+      }
+      return Promise.resolve({});
     });
-  });
 
-  it('answers sendability through the ONE predicate — the presence of `spec`', () => {
-    // Anything asking "should this be sent?" tests `spec` rather than deriving
-    // a second opinion about the same bag; a second spelling is what
-    // eventually disagrees with the coercion that builds the request.
-    // `dynamodb-table-provider.ts` names that test `isSendableWarmThroughput`
-    // and defines it AS this success, so the two providers agree structurally.
-    // Both polarities pinned so a future refactor cannot make `spec` present
-    // for an unusable bag or absent for a usable one.
-    expect(coerceWarmThroughput({ ReadUnitsPerSecond: '12000' }).spec).toBeDefined();
-    expect(coerceWarmThroughput({ ReadUnitsPerSecond: { Ref: 'X' } }).spec).toBeUndefined();
-    expect(coerceWarmThroughput(undefined).spec).toBeUndefined();
-  });
+    await provider.delete('Warm', TABLE_NAME, RESOURCE_TYPE, {});
 
-  it('refuses a WHITESPACE-only member instead of reading it as zero', () => {
-    // The ONE input the two providers' independent spellings disagreed on
-    // before they were merged (issue #1857 vs issue #1808): a bare
-    // `Number('   ')` is 0, not NaN, so a naive coercion would have sent a
-    // request for zero warm units — a value nobody declared and one AWS
-    // cannot honour. The shared rule takes the REFUSING answer, and NAMES the
-    // member so the refusal message can say which half was unusable.
-    expect(coerceWarmThroughput({ ReadUnitsPerSecond: '   ' })).toEqual({
-      droppedMembers: ['ReadUnitsPerSecond'],
-    });
-    // The usable half of a partially-whitespace block still goes out.
-    expect(
-      coerceWarmThroughput({ ReadUnitsPerSecond: '\t\n', WriteUnitsPerSecond: 4000 })
-    ).toEqual({
-      spec: { WriteUnitsPerSecond: 4000 },
-      droppedMembers: ['ReadUnitsPerSecond'],
-    });
+    expect(attempts).toBe(2);
+    expect(sleepSpy).toHaveBeenCalled();
   });
 });
 
-describe('isWarmThroughputDecrease (issue #1857)', () => {
-  it('is a decrease when every declared member is at-or-below live and one is strictly below', () => {
-    expect(
-      isWarmThroughputDecrease(
-        { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 },
-        { ReadUnitsPerSecond: 20000, WriteUnitsPerSecond: 4000 }
+/**
+ * The wall-clock half of issue #1830, which the retry-count tests above cannot
+ * see: every retry RE-RUNS the settle poll, so the count MULTIPLIES the poll.
+ * Driven on fake timers because the quantities under test are minutes.
+ */
+describe('DynamoDBGlobalTable index-busy delete retry: wall-clock budget (issue #1830)', () => {
+  let provider: DynamoDBGlobalTableProvider;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockSend.mockReset();
+    mockAutoScalingSend.mockReset();
+    warnSpy.mockReset();
+    mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
+    deleteTableRetryDelays.sleep = () => Promise.resolve();
+    provider = new DynamoDBGlobalTableProvider();
+  });
+
+  afterEach(() => {
+    delete deleteTableRetryDelays.sleep;
+    vi.useRealTimers();
+  });
+
+  /** Advance virtual time in 1s steps until `settled` or `maxSeconds` elapse. */
+  async function drive(settled: () => boolean, maxSeconds: number): Promise<number> {
+    for (let second = 1; second <= maxSeconds; second++) {
+      if (settled()) return second;
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    return maxSeconds;
+  }
+
+  it('bounds the per-retry re-arm poll instead of re-running the 15-minute one', async () => {
+    // The index NEVER settles after the first delete attempt, so every re-arm
+    // poll runs to its cap. With the cap at `waitForIndexesActive`'s 15-minute
+    // default the budget is 8 x 900s ~= 2h — inside a call `destroy-runner.ts`
+    // caps at 30 min, so a genuinely stuck index produced a 30-minute wait and
+    // a generic `ResourceTimeoutError` that never mentions indexes, instead of
+    // AWS's own actionable sentence. Bounded, the whole sequence is
+    // 8 x 60s + `withRetry`'s backoff, so it SETTLES inside the window driven
+    // below; unbounded, the FIRST re-arm poll alone outlasts it and the
+    // promise is still pending when the drive gives up.
+    let deleteAttempts = 0;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        return Promise.resolve({
+          Table: {
+            ...LIVE_TABLE,
+            // ACTIVE until the first delete goes out, so the #1521 pre-delete
+            // gate (which keeps its full 15-minute poll) never fires and this
+            // test measures only the #1830 re-arm.
+            GlobalSecondaryIndexes: [
+              { IndexName: 'gsi1', IndexStatus: deleteAttempts === 0 ? 'ACTIVE' : 'UPDATING' },
+            ],
+          },
+        });
+      }
+      if (command instanceof DeleteTableCommand) {
+        deleteAttempts += 1;
+        return Promise.reject(indexBusyError());
+      }
+      return Promise.resolve({});
+    });
+
+    let settled = false;
+    const outcome = provider
+      .delete('Warm', TABLE_NAME, RESOURCE_TYPE, {})
+      .then(
+        () => 'resolved',
+        () => 'rejected'
       )
-    ).toBe(true);
+      .finally(() => {
+        settled = true;
+      });
+
+    // 700 virtual seconds: comfortably past the bounded 8 x 60s of polling,
+    // and well short of even ONE 900s poll.
+    await drive(() => settled, 700);
+
+    expect(settled).toBe(true);
+    await expect(outcome).resolves.toBe('rejected');
+    // 1 initial + DELETE_INDEX_BUSY_MAX_RETRIES (8).
+    expect(deleteAttempts).toBe(9);
   });
 
-  it('is NOT a decrease when the value is unchanged', () => {
-    expect(
-      isWarmThroughputDecrease({ ReadUnitsPerSecond: 12000 }, { ReadUnitsPerSecond: 12000 })
-    ).toBe(false);
-  });
+  it('keeps waiting through a THROTTLED DescribeTable rather than treating it as settled', async () => {
+    // A throttled describe says nothing about the indexes. Reading it as
+    // "settled" degraded the re-arm to no wait at all, so every retry burned
+    // inside `withRetry`'s ~47s grid against a condition needing minutes.
+    // Driven through the #1521 pre-delete gate, which is the same poll.
+    const throttle = (): Error =>
+      Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+    let describes = 0;
+    let deleted = false;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        describes += 1;
+        if (deleted) return Promise.reject(newRnf());
+        // 1: the pre-delete describe, reporting a TRANSITIONING index so the
+        //    #1521 gate fires.
+        // 2-4: the gate's poll, throttled.
+        // 5+: settled.
+        if (describes === 1) {
+          return Promise.resolve({
+            Table: {
+              ...LIVE_TABLE,
+              GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'UPDATING' }],
+            },
+          });
+        }
+        if (describes <= 4) return Promise.reject(throttle());
+        return Promise.resolve({ Table: LIVE_TABLE });
+      }
+      if (command instanceof DeleteTableCommand) {
+        deleted = true;
+        return Promise.resolve({});
+      }
+      return Promise.resolve({});
+    });
 
-  it('is NOT a decrease when the value rises — the increase must still be sent', () => {
-    expect(
-      isWarmThroughputDecrease({ ReadUnitsPerSecond: 20000 }, { ReadUnitsPerSecond: 12000 })
-    ).toBe(false);
-  });
-
-  it('fails OPEN on a MIXED block: one member down, one up is a real increase', () => {
-    expect(
-      isWarmThroughputDecrease(
-        { ReadUnitsPerSecond: 8000, WriteUnitsPerSecond: 9000 },
-        { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 }
+    let settled = false;
+    const outcome = provider
+      .delete('Warm', TABLE_NAME, RESOURCE_TYPE, {})
+      .then(
+        () => 'resolved',
+        (e: unknown) => String(e)
       )
-    ).toBe(false);
+      .finally(() => {
+        settled = true;
+      });
+    await drive(() => settled, 60);
+
+    await expect(outcome).resolves.toBe('resolved');
+    // Pre-delete + 3 throttled polls + the settled one: the poll SURVIVED the
+    // throttles. Returning on the first one leaves this at 2.
+    expect(
+      mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof DescribeTableCommand)
+        // Only the describes issued BEFORE the delete belong to the wait.
+        .length
+    ).toBeGreaterThanOrEqual(5);
   });
 
-  it('considers DECLARED members only — an absent member cannot lower anything', () => {
-    // Write is 4000 live and not declared at all. Only the declared read half
-    // decides, and it IS below live.
-    expect(
-      isWarmThroughputDecrease(
-        { ReadUnitsPerSecond: 8000 },
-        { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 }
+  it('WARNS and proceeds when the settle poll`s DescribeTable fails for another reason', async () => {
+    // Giving up the WAIT is right — a delete path must tolerate a stale read
+    // rather than fail fast — but doing it at debug level made the degradation
+    // invisible. The operation still goes ahead and AWS stays the backstop.
+    let describes = 0;
+    let deleted = false;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        describes += 1;
+        if (deleted) return Promise.reject(newRnf());
+        if (describes === 1) {
+          return Promise.resolve({
+            Table: {
+              ...LIVE_TABLE,
+              GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'UPDATING' }],
+            },
+          });
+        }
+        return Promise.reject(new Error('AccessDeniedException: not authorized'));
+      }
+      if (command instanceof DeleteTableCommand) {
+        deleted = true;
+        return Promise.resolve({});
+      }
+      return Promise.resolve({});
+    });
+
+    let settled = false;
+    const outcome = provider
+      .delete('Warm', TABLE_NAME, RESOURCE_TYPE, {})
+      .then(
+        () => 'resolved',
+        (e: unknown) => String(e)
       )
-    ).toBe(true);
-  });
+      .finally(() => {
+        settled = true;
+      });
+    await drive(() => settled, 60);
 
-  it('fails OPEN when the live side is absent or has no counterpart', () => {
-    expect(isWarmThroughputDecrease({ ReadUnitsPerSecond: 8000 }, undefined)).toBe(false);
-    expect(
-      isWarmThroughputDecrease({ ReadUnitsPerSecond: 8000 }, { WriteUnitsPerSecond: 4000 })
-    ).toBe(false);
-  });
-
-  it('fails OPEN when nothing is declared', () => {
-    expect(isWarmThroughputDecrease({}, { ReadUnitsPerSecond: 12000 })).toBe(false);
-    expect(isWarmThroughputDecrease(undefined, { ReadUnitsPerSecond: 12000 })).toBe(false);
+    await expect(outcome).resolves.toBe('resolved');
+    const stopped = warnings().filter((w) => w.includes('DescribeTable failed while waiting'));
+    expect(stopped).toHaveLength(1);
+    expect(stopped[0]).toContain('not authorized');
   });
 });
 
@@ -653,5 +782,262 @@ describe('WarmThroughput on the wire (issue #1857)', () => {
     expect(dropped).toHaveLength(1);
     expect(dropped[0]).toContain('was DROPPED');
     expect(dropped[0]).toContain('ReadUnitsPerSecond is still sent');
+  });
+});
+
+/**
+ * A GSI carrying `WarmThroughput` on a PROVISIONED table, for the billing-flip
+ * ride-along. `maxRead` has no place here — an on-demand ceiling cannot be sent
+ * under PROVISIONED — so the per-index capacity is what varies instead.
+ */
+function provisionedPropsWithWarm(
+  billingMode: 'PROVISIONED' | 'PAY_PER_REQUEST',
+  warm: unknown,
+  readCapacity = 5
+): Record<string, unknown> {
+  return {
+    TableName: TABLE_NAME,
+    BillingMode: billingMode,
+    AttributeDefinitions: [
+      { AttributeName: 'pk', AttributeType: 'S' },
+      { AttributeName: 'g1pk', AttributeType: 'S' },
+    ],
+    KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+    GlobalSecondaryIndexes: [
+      {
+        IndexName: 'gsi1',
+        KeySchema: [{ AttributeName: 'g1pk', KeyType: 'HASH' }],
+        Projection: { ProjectionType: 'ALL' },
+        WriteProvisionedThroughputSettings: {
+          WriteCapacityAutoScalingSettings: { MinCapacity: 1, MaxCapacity: 10 },
+        },
+        ...(warm !== undefined && { WarmThroughput: warm }),
+      },
+    ],
+    Replicas: [
+      {
+        Region: 'us-east-1',
+        GlobalSecondaryIndexes: [
+          {
+            IndexName: 'gsi1',
+            ReadProvisionedThroughputSettings: { ReadCapacityUnits: readCapacity },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * `DescribeTable` for the flip: the table is still PAY_PER_REQUEST (which is
+ * what makes the next deploy a flip) and its gsi1 reports a live warm value.
+ */
+function stubLiveFlipWarm(live: Record<string, unknown> | undefined): void {
+  mockSend.mockImplementation((command: unknown) => {
+    if (command instanceof DescribeTableCommand) {
+      return Promise.resolve({
+        Table: {
+          TableName: TABLE_NAME,
+          TableArn: TABLE_ARN,
+          TableId: 'tid-1',
+          TableStatus: 'ACTIVE',
+          BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 'gsi1',
+              IndexStatus: 'ACTIVE',
+              ...(live !== undefined && { WarmThroughput: live }),
+            },
+          ],
+          Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+        },
+      });
+    }
+    return Promise.resolve({});
+  });
+}
+
+/** The `GlobalSecondaryIndexUpdates` of the UpdateTable that carries the flip. */
+const billingFlipIndexUpdates = (): Array<Record<string, unknown>> => {
+  const flip = mockSend.mock.calls
+    .map((c) => c[0])
+    .find(
+      (c): c is UpdateTableCommand =>
+        c instanceof UpdateTableCommand && c.input.BillingMode !== undefined
+    );
+  return (flip?.input.GlobalSecondaryIndexUpdates ?? []) as Array<Record<string, unknown>>;
+};
+
+/**
+ * The billing-flip RIDE-ALONG (issue #1857), which no other test in the
+ * provisioning suite reaches.
+ *
+ * Every other WarmThroughput wire test runs PAY_PER_REQUEST on both sides, so
+ * `oldBilling === newBilling` and step 4's flip branch never executes at all.
+ * A code review replaced the guarded `warmToSend` with a bare
+ * `gsi.WarmThroughput` and the ENTIRE suite stayed green — this describe is
+ * what makes that mutation fail.
+ *
+ * The direction is PAY_PER_REQUEST -> PROVISIONED, which is where the site
+ * lives: AWS requires per-index `ProvisionedThroughput` in the same UpdateTable
+ * that flips a table TO provisioned, so the ride-along exists only on that arm.
+ */
+describe('WarmThroughput on the billing-flip ride-along (issue #1857)', () => {
+  let provider: DynamoDBGlobalTableProvider;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockAutoScalingSend.mockReset();
+    warnSpy.mockReset();
+    mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
+    provider = new DynamoDBGlobalTableProvider();
+  });
+
+  it('rides a changed WarmThroughput along with the flip when it is an INCREASE', async () => {
+    // The positive polarity first: the ride-along has to keep working, or a
+    // guard that returned `undefined` unconditionally would satisfy the
+    // decrease case below while silently dropping every legitimate change.
+    stubLiveFlipWarm({ ReadUnitsPerSecond: 12000, Status: 'ACTIVE' });
+    const previous = provisionedPropsWithWarm('PAY_PER_REQUEST', { ReadUnitsPerSecond: 12000 });
+    const next = provisionedPropsWithWarm('PROVISIONED', { ReadUnitsPerSecond: 20000 });
+
+    await provider.update('Warm', TABLE_NAME, RESOURCE_TYPE, next, previous);
+
+    const updates = billingFlipIndexUpdates();
+    expect(updates).toHaveLength(1);
+    const update = updates[0]!['Update'] as Record<string, unknown>;
+    expect(update['IndexName']).toBe('gsi1');
+    expect(update['ProvisionedThroughput']).toBeDefined();
+    expect(update['WarmThroughput']).toEqual({ ReadUnitsPerSecond: 20000 });
+  });
+
+  it('does NOT ride a DECREASE along, and still carries the ProvisionedThroughput the flip needs', async () => {
+    // The template has fallen behind a value AWS grew on its own. Forwarding
+    // the doomed member fails the WHOLE flip — a `ValidationException` on a
+    // property the user was not changing — so the member is dropped and the
+    // flip goes out intact. The regression's shape is
+    // `WarmThroughput: {ReadUnitsPerSecond: 12000}` on this very Update.
+    stubLiveFlipWarm({ ReadUnitsPerSecond: 20000, Status: 'ACTIVE' });
+    const previous = provisionedPropsWithWarm('PAY_PER_REQUEST', { ReadUnitsPerSecond: 20000 });
+    const next = provisionedPropsWithWarm('PROVISIONED', { ReadUnitsPerSecond: 12000 });
+
+    await provider.update('Warm', TABLE_NAME, RESOURCE_TYPE, next, previous);
+
+    const updates = billingFlipIndexUpdates();
+    expect(updates).toHaveLength(1);
+    const update = updates[0]!['Update'] as Record<string, unknown>;
+    expect(update['IndexName']).toBe('gsi1');
+    // The flip itself is unharmed — this is the whole reason the member is
+    // dropped rather than the update refused.
+    expect(update['ProvisionedThroughput']).toBeDefined();
+    expect(update['WarmThroughput']).toBeUndefined();
+
+    const refusal = warnings().filter((w) => w.includes('WarmThroughput was NOT sent'));
+    expect(refusal).toHaveLength(1);
+    expect(refusal[0]).toContain("GSI 'gsi1'");
+    expect(refusal[0]).toContain('ReadUnitsPerSecond=12000');
+    expect(refusal[0]).toContain('ReadUnitsPerSecond=20000');
+    // Both sides always render at least one member here — `isWarmThroughputDecrease`
+    // answers `true` only when a declared member is strictly below a finite
+    // live counterpart — so the empty-render placeholder an earlier cut carried
+    // was unreachable and is gone. Pinned so it cannot come back as an
+    // untestable branch.
+    expect(refusal[0]).not.toContain('(none)');
+  });
+
+  it('skips the live-warm baseline for an index whose live block carries only Status', async () => {
+    // `DescribeTable` reports `WarmThroughput: {Status: 'UPDATING'}` with no
+    // units while the value is being applied. The live map's
+    // `Object.keys(spec).length > 0` gate drops that entry, so the guard has no
+    // counterpart to compare against and FAILS OPEN — AWS, not cdkd, decides.
+    // Without a test feeding this shape the gate was pure assertion.
+    stubLiveFlipWarm({ Status: 'UPDATING' });
+    const previous = provisionedPropsWithWarm('PAY_PER_REQUEST', { ReadUnitsPerSecond: 20000 });
+    const next = provisionedPropsWithWarm('PROVISIONED', { ReadUnitsPerSecond: 12000 });
+
+    await provider.update('Warm', TABLE_NAME, RESOURCE_TYPE, next, previous);
+
+    const update = billingFlipIndexUpdates()[0]!['Update'] as Record<string, unknown>;
+    // Failing OPEN means the value goes out: a lower number with no live number
+    // to compare it against is not evidence of a decrease.
+    expect(update['WarmThroughput']).toEqual({ ReadUnitsPerSecond: 12000 });
+    expect(warnings().filter((w) => w.includes('WarmThroughput was NOT sent'))).toHaveLength(0);
+  });
+});
+
+/**
+ * `toFiniteNumber` — this file's coercion for every OTHER numeric CFn member
+ * (capacity units, on-demand ceilings) — and the WHITESPACE shape (code review
+ * of the issue #1857 PR).
+ *
+ * `Number('   ')` is **0**, so before the `trim()` guard a whitespace-only
+ * `MaxReadRequestUnits` was read as a request for ZERO capacity — in the very
+ * file that now REFUSES exactly that shape for `WarmThroughput`, via the shared
+ * `dynamodb-warm-throughput.ts` rule. That divergence is what the extraction
+ * exists to prevent, so the two coercions have to answer alike.
+ */
+describe('toFiniteNumber whitespace parity with the shared WarmThroughput rule', () => {
+  let provider: DynamoDBGlobalTableProvider;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockAutoScalingSend.mockReset();
+    warnSpy.mockReset();
+    mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
+    mockSend.mockResolvedValue({
+      Table: { TableName: TABLE_NAME, TableArn: TABLE_ARN, TableId: 'tid-1', TableStatus: 'ACTIVE' },
+    });
+    provider = new DynamoDBGlobalTableProvider();
+  });
+
+  const createdIndex = (): Record<string, unknown> => {
+    const creates = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c): c is CreateTableCommand => c instanceof CreateTableCommand);
+    expect(creates).toHaveLength(1);
+    return creates[0]!.input.GlobalSecondaryIndexes![0]! as unknown as Record<string, unknown>;
+  };
+
+  it('refuses a WHITESPACE-only on-demand ceiling instead of sending zero', async () => {
+    // `propsWithWarm`'s `maxRead` lands on the replica's
+    // `ReadOnDemandThroughputSettings.MaxReadRequestUnits`. The regression's
+    // shape is `OnDemandThroughput: {MaxReadRequestUnits: 0}` — a ceiling of
+    // zero, which nobody declared.
+    await provider.create(
+      'Warm',
+      RESOURCE_TYPE,
+      propsWithWarm(undefined, '   ' as unknown as number)
+    );
+
+    expect(createdIndex()['OnDemandThroughput']).toBeUndefined();
+    // ...and the refusal is ANNOUNCED, naming the member, exactly as an
+    // unresolved intrinsic is.
+    const unresolved = warnings().filter((w) => w.includes('MaxReadRequestUnits'));
+    expect(unresolved.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still accepts a QUOTED numeric ceiling — the guard must not refuse a real template', async () => {
+    // Both polarities: a template really can carry `MaxReadRequestUnits: '77'`
+    // (CloudFormation is stringly typed), and a guard that rejected it would
+    // break working stacks.
+    await provider.create('Warm', RESOURCE_TYPE, propsWithWarm(undefined, '77' as unknown as number));
+
+    expect(createdIndex()['OnDemandThroughput']).toEqual({ MaxReadRequestUnits: 77 });
+    expect(warnings().filter((w) => w.includes('MaxReadRequestUnits'))).toHaveLength(0);
+  });
+
+  it('agrees with the shared WarmThroughput coercion on the same bag', async () => {
+    // The two coercions read DIFFERENT members of the same index, so the point
+    // is that neither accepts the whitespace: a run where the ceiling is
+    // dropped but the warm value is not (or vice versa) is the divergence.
+    await provider.create(
+      'Warm',
+      RESOURCE_TYPE,
+      propsWithWarm({ ReadUnitsPerSecond: '   ' }, '   ' as unknown as number)
+    );
+
+    const index = createdIndex();
+    expect(index['OnDemandThroughput']).toBeUndefined();
+    expect(index['WarmThroughput']).toBeUndefined();
   });
 });
