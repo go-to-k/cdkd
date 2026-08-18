@@ -1,3 +1,10 @@
+## [0.283.26](https://github.com/go-to-k/cdkd/compare/v0.283.25...v0.283.26) (2026-08-18)
+
+
+### Bug Fixes
+
+* **export:** heal a pre-[#1761](https://github.com/go-to-k/cdkd/issues/1761) SecurityGroupIngress row by live-reading its rule id ([#1879](https://github.com/go-to-k/cdkd/issues/1879)) ([1d2d423](https://github.com/go-to-k/cdkd/commit/1d2d423e7984a695a2655e901ec1d5c688b5c83f))
+
 ## [0.283.25](https://github.com/go-to-k/cdkd/compare/v0.283.24...v0.283.25) (2026-08-15)
 
 
