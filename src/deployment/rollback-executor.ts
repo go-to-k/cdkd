@@ -82,6 +82,7 @@ import {
   isNameCooldownError,
   isRecreateRetryableError,
 } from './retryable-errors.js';
+import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
 
 /**
@@ -1537,7 +1538,19 @@ async function replaySingle(
           secrets,
           previousState.properties
         );
-        logger.info(`  Rollback: ${op.logicalId} restored successfully`);
+        // Issue #1819: the rollback restored the resource, but the provider may
+        // have left something behind (a replacement whose old resource
+        // survives). Saying "restored successfully" over that is the same
+        // silence the channel exists to end — and a rollback is exactly when a
+        // user is least able to go looking for an untracked resource.
+        const rollbackPartial = updatePartialReason(revertResult);
+        if (rollbackPartial !== undefined) {
+          logger.warn(
+            `  Rollback: ${op.logicalId} restored, ${updatePartialMessage(rollbackPartial)}`
+          );
+        } else {
+          logger.info(`  Rollback: ${op.logicalId} restored successfully`);
+        }
         await afterOp?.(op.logicalId);
         ctx.recordEvent?.({
           eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
