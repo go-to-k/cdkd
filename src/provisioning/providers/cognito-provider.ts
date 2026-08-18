@@ -362,10 +362,13 @@ function buildMfaConfigRequest(
   if (dropped.length > 0) {
     // Three outcomes, not two. Splitting only on OFF made the second arm claim
     // a rejection that does not happen whenever a RECOGNIZED factor rides
-    // alongside the dropped entry: the request carries that factor's block, AWS
-    // accepts, and the entry is simply ignored. That is the silent-drop case
-    // this warning exists to surface, so telling the user to expect a hard
-    // failure there is the worst of the three things it could say.
+    // alongside the dropped entry: the request carries that factor's block, so
+    // the dropped entry is not what fails the call. That is the silent-drop
+    // case this warning exists to surface, so telling the user to expect a hard
+    // failure there is the worst of the three things it could say. The arm says
+    // a block IS SENT rather than that a factor IS ENABLED, because that is all
+    // this code knows -- e.g. SMS_MFA without SmsConfiguration sends a block
+    // AWS then rejects.
     const anyFactorBlock =
       request.SmsMfaConfiguration !== undefined ||
       request.SoftwareTokenMfaConfiguration !== undefined ||
@@ -374,8 +377,8 @@ function buildMfaConfigRequest(
       request.MfaConfiguration === 'OFF'
         ? `MfaConfiguration is OFF, so this pool deploys with MFA DISABLED`
         : anyFactorBlock
-          ? `MfaConfiguration is ${request.MfaConfiguration} and another factor IS enabled, so ` +
-            `these entries are silently ignored rather than failing the call on their own`
+          ? `MfaConfiguration is ${request.MfaConfiguration} and another factor block IS sent, ` +
+            `so these entries are silently ignored rather than failing the call on their own`
           : `MfaConfiguration is ${request.MfaConfiguration} with no factor enabled, so AWS ` +
             `rejects this call rather than deploying the pool with MFA disabled`;
     logger?.warn(

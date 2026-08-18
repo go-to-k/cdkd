@@ -1000,7 +1000,7 @@ describe('CognitoUserPoolProvider', () => {
         ['SMS_MFA', { SmsConfiguration: { SnsCallerArn: 'arn:aws:iam::123456789012:role/sms' } }],
         ['EMAIL_OTP', {}],
       ])(
-        'reports a dropped entry as ignored, not rejected, when %s is also enabled',
+        'warns that a dropped entry did not fail the call when a %s block is also sent',
         async (factor, extra) => {
           mockSend.mockResolvedValueOnce({
             UserPool: { Id: 'us-east-1_abc123', Arn: `arn:mixed-${factor}` },

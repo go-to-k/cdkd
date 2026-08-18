@@ -661,10 +661,11 @@ Three more review findings hardened the failure paths. The create-side registrat
   the default resolves and reports the value actually being sent, because a
   warning written to PREDICT its outcome states the opposite in two branches: an
   explicit template `MfaConfiguration: OFF` really does deploy MFA-disabled, and
-  a dropped entry riding alongside a recognized factor is simply ignored by an
-  AWS call that succeeds. Both are named explicitly now; predicting a rejection
-  on the silent-drop path is the worst of the three things the message could
-  say. Warn coverage is widened separately in issue
+  a dropped entry riding alongside a recognized factor is not what fails the
+  call. Both are named explicitly now, and the second arm says a factor block
+  IS SENT rather than that a factor IS ENABLED, because that is all the code
+  knows; predicting a rejection on the silent-drop path is the worst of the
+  three things the message could say. Warn coverage is widened separately in issue
   [#1932](https://github.com/go-to-k/cdkd/issues/1932). The
   sub-block half deliberately leaves the email-OTP message/subject shape on its
   existing `OPTIONAL` default: `EmailMfaConfiguration` is emitted for a bare
