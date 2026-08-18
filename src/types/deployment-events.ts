@@ -55,7 +55,14 @@ export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  *   `cdkd destroy` / `cdkd state destroy` AND, since issue
  *   [#1762](https://github.com/go-to-k/cdkd/issues/1762), by the `cdkd deploy`
  *   DELETE branch for a resource removed from the template.
- *   Three producers today: a malformed composite physicalId; a state record
+ *   Since issue [#1819](https://github.com/go-to-k/cdkd/issues/1819) it is ALSO
+ *   emitted for a PARTIAL UPDATE — a replacement whose inner delete left the
+ *   OLD resource alive. That is the one case where this event sits NEXT TO a
+ *   `RESOURCE_SUCCEEDED` for the same logical id rather than replacing it: the
+ *   SUCCEEDED row names the resource that WAS updated, and this row names the
+ *   predecessor that survived (its `physicalId` is the OLD one). The invariant
+ *   still holds — the row this event describes was not destroyed.
+ *   Producers on the DELETE side: a malformed composite physicalId; a state record
  *   missing the id or the property the delete is addressed BY — Lambda layer /
  *   permission, Custom Resource, IAM policy / user-group (issue
  *   [#1770](https://github.com/go-to-k/cdkd/issues/1770)) — both of which issue

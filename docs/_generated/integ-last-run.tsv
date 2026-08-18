@@ -5,7 +5,7 @@
 # GENERATED SHAPE - do not hand-edit. After recording a run, run:
 # INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
-acm-certificate	2026-08-18T14:21:27Z	PASS	38	verify.sh	#1819/#1922 partial-outcome arm added; 0 orphans
+acm-certificate	2026-08-18T16:10:56Z	PASS	36	verify.sh	#1819/#1922 final; partial arm; 0 orphans
 agentcore-tools	2026-08-01T09:36:05Z	PASS	58	verify.sh	0801 regression sweep; 3 phases ok, 0 orphans
 alb	2026-08-11T14:04:52Z	PASS	396	verify.sh	#1609 final post-rebase: removal resets + sibling retained + revert mass-reset guard; destroy 16/0, orphans clean
 alb-advanced	2026-07-28T02:54:42Z	PASS	206	standard	ALB active wait 156s (#1274), destroy 17/0 errors

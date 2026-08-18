@@ -2735,7 +2735,7 @@ async function runRevert(
           if (revertPartial !== undefined) {
             logger.warn(
               `  ✓ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, ` +
-                `${updatePartialMessage(revertPartial)}`
+                `${maskSecretsInText(updatePartialMessage(revertPartial), secrets)}`
             );
           } else {
             logger.info(

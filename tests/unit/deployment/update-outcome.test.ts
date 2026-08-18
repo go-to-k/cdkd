@@ -47,6 +47,27 @@ describe('updatePartialReason (issue #1819)', () => {
     expect(reason).toBeDefined();
     expect(reason).toContain('without a reason');
   });
+
+  // Same three rules `deleteSkipReason` enforces, and for the same reason: the
+  // producers this guard exists for are untyped, so the guard must not itself
+  // be the thing that crashes or that ships junk into the durable event store.
+  it('does not crash on a NON-STRING reason from an untyped producer', () => {
+    const untyped = { physicalId: 'p', wasReplaced: true, outcome: 'partial', reason: 42 };
+    // `?.trim()` would make this a TypeError thrown out of the update path --
+    // a crash introduced by the hardening itself.
+    expect(() => updatePartialReason(untyped as never)).not.toThrow();
+    expect(updatePartialReason(untyped as never)).toContain('without a reason');
+  });
+
+  it('treats a whitespace-only reason as absent, and trims a padded one', () => {
+    const blank = { physicalId: 'p', wasReplaced: true, outcome: 'partial', reason: '   ' };
+    expect(updatePartialReason(blank as never)).toContain('without a reason');
+
+    const padded = { physicalId: 'p', wasReplaced: true, outcome: 'partial', reason: '  x  ' };
+    // Trimmed, so a padded reason cannot break the status line or land
+    // verbatim in the events store.
+    expect(updatePartialReason(padded as never)).toBe('x');
+  });
 });
 
 describe('updatePartialMessage', () => {

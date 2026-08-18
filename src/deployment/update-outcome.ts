@@ -37,7 +37,15 @@ export function updatePartialReason(result: ResourceUpdateResult | undefined): s
   // caller's contract is "a reason string whenever the update was partial",
   // and handing back `undefined` there would silently restore the pre-#1819
   // behavior at exactly the site that exists to end it.
-  return result.reason || 'provider reported a partial update without a reason';
+  // `typeof`, not `?.trim()`: the producers this default exists for are
+  // untyped, and a non-STRING reason (`42`, an object) makes `.trim` itself
+  // `undefined` -- a TypeError thrown out of the update path, i.e. a crash
+  // introduced by the very guard meant to harden it. Trimmed on return too, so
+  // a padded reason cannot break the status line or land verbatim in the
+  // durable event store. Same three rules as `deleteSkipReason`.
+  if (typeof result.reason !== 'string') return UNSPECIFIED_PARTIAL_REASON;
+  const trimmed = result.reason.trim();
+  return trimmed === '' ? UNSPECIFIED_PARTIAL_REASON : trimmed;
 }
 
 /**
@@ -49,6 +57,15 @@ export function updatePartialReason(result: ResourceUpdateResult | undefined): s
  * not destroyed". Calling the row skipped would be false and would put the
  * event store at odds with its own contract.
  */
+/**
+ * Stand-in for a `'partial'` outcome whose producer supplied no usable reason.
+ *
+ * Says the cause is unknown rather than inventing one: the row still has to
+ * announce that something survived, and a confident-sounding wrong cause is
+ * worse than an admitted gap.
+ */
+export const UNSPECIFIED_PARTIAL_REASON = 'provider reported a partial update without a reason';
+
 export function updatePartialMessage(reason: string): string {
   return `partial (${reason})`;
 }

@@ -1623,11 +1623,14 @@ throw, so it slips past the `catch` that would have warned — precisely when th
 old resource IS left behind. What to do depends on the ORDERING, and it is not
 the same for all of them:
 
-- **create-then-delete** (ACM certificate, IAM managed policy, IAM role): the
-  new resource already exists and `ResourceUpdateResult` has no skip channel,
-  so the replacement cannot be aborted. WARN, in the same orphan wording the
-  failure arm uses (`The old role may be orphaned and require manual
-  cleanup.`), naming the skip's `reason`.
+- **create-then-delete** (ACM certificate, IAM managed policy, IAM role, and
+  the API Gateway Resource PathPart replacement): the new resource already
+  exists, so the replacement cannot be aborted. WARN, in the same orphan wording
+  the failure arm uses (`The old role may be orphaned and require manual
+  cleanup.`), naming the skip's `reason` — and since issue
+  [#1819](https://github.com/go-to-k/cdkd/issues/1819) ALSO return
+  `{ outcome: 'partial', reason }`, so the outcome is counted and recorded
+  rather than living only in the log.
 - **delete-then-create** (SNS subscription): ABORT with a `ProvisioningError`
   BEFORE creating the replacement. Continuing would leave two subscriptions on
   the topic and deliver every message twice, and that duplicate is precisely
