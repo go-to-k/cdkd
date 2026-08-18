@@ -135,11 +135,20 @@ cleanup() {
   # throttle and leak exactly the table it is here to reap. Only an explicit
   # not-found ends the loop early; the index-busy refusal (and anything else)
   # keeps retrying.
+  DELETE_DONE=""
   for _ in $(seq 1 40); do
-    DELETE_ERR="$(aws dynamodb delete-table --table-name "${TABLE_NAME}" --region "${REGION}" 2>&1 >/dev/null)" && break
-    printf '%s' "${DELETE_ERR}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' && break
+    DELETE_ERR="$(aws dynamodb delete-table --table-name "${TABLE_NAME}" --region "${REGION}" 2>&1 >/dev/null)" && { DELETE_DONE=1; break; }
+    printf '%s' "${DELETE_ERR}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' && { DELETE_DONE=1; break; }
     sleep 15
   done
+  # SAY SO on exhaustion. Falling out of this loop silently is the worst outcome
+  # an integ can produce: a terminal error (expired credentials, AccessDenied)
+  # burns all 40 attempts and then LEAKS a real table with nothing in the log to
+  # attribute it to. The loop cannot fail the run -- it is teardown, and it runs
+  # inside `set +eu` -- so a loud message is the only signal available.
+  if [ -z "${DELETE_DONE}" ]; then
+    echo "WARN: cleanup could not delete ${TABLE_NAME} after 40 attempts (~10 min) — it may still exist and MUST be checked. Last AWS error: ${DELETE_ERR}" >&2
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true

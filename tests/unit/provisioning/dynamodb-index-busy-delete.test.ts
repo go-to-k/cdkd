@@ -100,6 +100,7 @@ import {
 // Imported rather than restated so lowering it reds this suite — a fence has to
 // watch the field it claims to watch.
 import { DEFAULT_RESOURCE_TIMEOUT_MS } from '../../../src/deployment/deploy-engine.js';
+import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
 import type { Logger } from '../../../src/types/config.js';
 import {
   DynamoDBTableProvider,
@@ -458,6 +459,7 @@ describe('both DynamoDB providers route DeleteTable through the shared retry', (
     mockSend.mockReset();
     mockAutoScalingSend.mockReset();
     retrySpy.mockReset();
+    settleSpy.mockReset();
     mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
     tableDeleteDelays.sleep = () => Promise.resolve();
     globalTableDeleteDelays.sleep = () => Promise.resolve();
@@ -541,6 +543,13 @@ describe('both DynamoDB providers route DeleteTable through the shared retry', (
     );
 
     expect(stub.deletes()).toBe(2);
+    // Assert the re-arm HAPPENED before reading it. Without this the fence is
+    // vacuous in one direction: `settleSpy` is reset per test, but `.at(-1)` on
+    // an empty list is `undefined`, and `toMatchObject` against `undefined`
+    // would throw rather than describe the regression -- while a LEAKED call
+    // from a sibling test (identical opts) would satisfy every assertion below.
+    // A removed `reArm` must fail here, not merely fail to be observed.
+    expect(settleSpy).toHaveBeenCalledTimes(1);
     const reArmCall = settleSpy.mock.calls.at(-1)?.[0];
     expect(reArmCall).toMatchObject({ maxAttempts: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS });
     expect(reArmCall?.proceedNote).toBe(DELETE_INDEX_WAIT_PROCEED_NOTE);
@@ -560,6 +569,13 @@ describe('both DynamoDB providers route DeleteTable through the shared retry', (
  * every behavioural test still green. These two fence it from both sides.
  */
 describe('the moved GlobalTable defaults stay distinct from the delete path (issue #1931)', () => {
+  // Own hooks rather than relying on the previous describe's: isolation that
+  // depends on declaration ORDER breaks silently when a test is inserted above.
+  beforeEach(() => {
+    mockSend.mockReset();
+    settleSpy.mockReset();
+  });
+
   it('the AUTO-SCALING caller keeps the 900-poll cap and its own note', async () => {
     mockSend.mockImplementation((cmd: unknown) => {
       if (cmd instanceof DescribeTableCommand) {
@@ -573,7 +589,10 @@ describe('the moved GlobalTable defaults stay distinct from the delete path (iss
 
     const provider = new DynamoDBGlobalTableProvider();
     // `waitForIndexesActive` is private; the auto-scaling caller reaches it with
-    // NO opts, which is exactly the default this fences.
+    // NO opts, so calling it that way exercises the DEFAULT it would get.
+    // Residual, stated rather than implied: this fences the default, NOT the
+    // call site -- a regression that passed explicit delete-path opts AT the
+    // auto-scaling call site would leave both fences green.
     await (
       provider as unknown as {
         waitForIndexesActive: (physicalId: string, logicalId: string) => Promise<void>;
@@ -584,5 +603,30 @@ describe('the moved GlobalTable defaults stay distinct from the delete path (iss
     expect(defaultCall?.maxAttempts).toBe(900);
     expect(defaultCall?.proceedNote).toMatch(/auto-scaling/i);
     expect(defaultCall?.proceedNote).not.toBe(DELETE_INDEX_WAIT_PROCEED_NOTE);
+  });
+});
+
+/**
+ * The ~8.8 min worst case is only true while the OUTER retry loop in
+ * `destroy-runner.ts` invokes `delete()` exactly ONCE for this refusal. That
+ * loop runs up to 4 attempts and keys on `isRetryableTransientError`, so adding
+ * this message to `RETRYABLE_ERROR_MESSAGE_PATTERNS` would silently take the
+ * worst case to ~35 min and blow the 30-min per-resource deadline the budget is
+ * sized against. The module comment asserts that property; this pins it, so the
+ * claim cannot rot into a comment that used to be true.
+ */
+describe('the index-busy refusal stays OUTSIDE the outer retry classifier (issue #1931)', () => {
+  it('neither AWS\'s raw sentence nor the wrapped form is treated as retryable', () => {
+    const raw =
+      'Attempt to change a resource which is still in use: Cannot delete table ' +
+      'while indexes are being created, updated, or deleted.';
+    const wrapped = `Failed to delete DynamoDB table Orders: ${raw}`;
+
+    for (const message of [raw, wrapped]) {
+      expect(isRetryableTransientError(new Error(message), message)).toBe(false);
+      // The classifier this module DOES want must still fire on the same text,
+      // or the fence would pass simply because nothing matches anything.
+      expect(isIndexBusyDeleteError(message)).toBe(true);
+    }
   });
 });

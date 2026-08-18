@@ -22,8 +22,16 @@
  * another lane at the time. Issue #1931 is the sibling `AWS::DynamoDB::Table`
  * gap that PR left: its `delete()` had no retry at all. Rather than write the
  * classifier, the budget and the warning a second time, they were LIFTED here
- * unchanged and both providers now read them. No deployed behaviour changed
- * for `GlobalTable` when they moved.
+ * and both providers now read them.
+ *
+ * What did NOT change for `GlobalTable` is its AWS-FACING behaviour: the call
+ * order, the budgets, the #1521 pre-delete gate and the replica teardown are
+ * identical. Two LOG LINES did change, deliberately, and the claim is scoped
+ * rather than blanket because a blanket one is falsifiable by the diff: the
+ * unclassified-error arm now names the error CLASS at warn and keeps AWS's raw
+ * text at debug (it leaked an account id and an assumed-role ARN at default
+ * verbosity), and {@link indexBusyRetryWarning} was reworded so its own
+ * arithmetic reads consistently. That provider's suite was updated to match.
  *
  * Living here rather than in either provider is the point: the classifier is a
  * single regex whose PRECISION is the whole safety argument (see
