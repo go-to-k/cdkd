@@ -26,6 +26,35 @@
  * suppressed; scrub knows neither, because its bag was written by an earlier
  * binary under conditions it can only re-evaluate best-effort.
  *
+ * THE PARITY TABLE. "These writers agree" is this module's load-bearing claim,
+ * and it was carried in review reports rather than in the code until a round
+ * traded one divergence for two. Every row is pinned by a test on BOTH sides —
+ * `deploy-engine-outputs-export-name-collision.test.ts` and
+ * `analyzer/outputs-diff.test.ts` — because a row tested on one side only is
+ * how the last divergence shipped.
+ *
+ * | `Export.Name` shape                          | deploy            | diff              |
+ * |----------------------------------------------|-------------------|-------------------|
+ * | intrinsic, substitutes a secret               | refuse (exact)    | refuse (spelling) |
+ * | LITERAL, spelled as a `{{resolve:...}}` token | publish           | publish           |
+ * | LITERAL, contains a recorded plaintext        | refuse            | SUPPRESS delta    |
+ * | intrinsic/literal, unpinned `ssm:` plaintext  | refuse if recorded| publish (residual)|
+ * | collides with a published output name         | refuse            | refuse            |
+ *
+ * Two rows deserve their reason stated, because both look wrong in isolation:
+ *
+ * - A LITERAL name spelled as an expression is PUBLISHED, not refused. The
+ *   deploy short-circuits a string `Export.Name` past the resolver, so nothing
+ *   is substituted and the key holds the EXPRESSION — which is what state
+ *   stores post-redaction anyway. Refusing it on the diff side alone produced a
+ *   phantom REMOVE on every run.
+ * - A LITERAL name in a stack that resolves a secret makes the DIFF suppress
+ *   its whole outputs delta. Deploy refuses such a name only when it CONTAINS a
+ *   resolved plaintext, and the preview never substitutes one, so it cannot
+ *   decide; suppressing is this module's twin's existing answer to "cannot
+ *   reproduce what deploy will do", and it also avoids printing a
+ *   plaintext-bearing key into CI logs.
+ *
  * The message builders live here for the reason
  * `src/provisioning/nested-stack-messages.ts` gives: a test that pins behavior
  * on a warning must not pin it on a hand-copied string, or a reword silently
@@ -219,14 +248,22 @@ function secretsPresentIn(
  * VALUES only, so the plaintext would land in `state.json` and be republished
  * into the exports index.
  *
- * The primary signal is `substitutedIntoName`: the caller resolves the name
- * with its OWN `recordedSecretValues` map, so a non-empty map means the
- * resolver substituted a secret INTO THIS NAME. That is exact — no length
- * threshold and no coincidental match, which a containment scan over the whole
- * pass's secrets cannot promise. (An earlier revision used that scan and it was
- * wrong in both directions: a degenerate one-character recorded secret made
- * every name containing that character "secret" and silently dropped unrelated
- * working exports, while the mask it fed could not mask short values at all.)
+ * TWO signals, and neither subsumes the other:
+ *
+ * - `substitutedIntoName` — the caller resolves the name with its OWN
+ *   `recordedSecretValues` map, so a non-empty map means the resolver
+ *   substituted a secret INTO THIS NAME. Exact, and the only arm that can see a
+ *   substituted secret SHORTER than the containment bound below.
+ * - a bounded containment scan of `recordedThisPass` ({@link secretsPresentIn}),
+ *   which catches plaintext that arrived by any other route — a literal name, a
+ *   cache hit, an `Fn::Sub` variable echoing the value.
+ *
+ * An earlier revision had only the first, calling the scan unpromising because
+ * an UNBOUNDED one is: a degenerate one-character recorded secret would make
+ * every name containing that character "secret" and silently drop working
+ * exports. The bound is what makes the scan safe, and without the scan the
+ * deploy wrote `prod-<secret>-endpoint` as a state key that `cdkd scrub` then
+ * reported as unrepairable.
  *
  * `recordedThisPass` adds the backstop for plaintext that arrived by any route
  * OTHER than a fresh substitution into this name — a literal `Export.Name`
@@ -263,7 +300,7 @@ export function exportNameSecretExposure(
  * Unlike {@link exportNameSecretExposure} there is no resolution to attribute
  * this to: the key was written by an EARLIER binary, so containment is the only
  * available signal. It is therefore bounded the same way `secret-redaction`
- * bounds its own substring scan — a value shorter than {@link MIN_KEY_NEEDLE}
+ * bounds its own substring scan — a value shorter than {@link MIN_SECRET_NEEDLE}
  * is matched only as the WHOLE key — because an unbounded containment scan over
  * a degenerate short secret flags every key in the state and fails the
  * `--dry-run --fail` CI gate repo-wide, which is the availability failure the

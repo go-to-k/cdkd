@@ -207,10 +207,17 @@ can know about state an EARLIER binary wrote:
   produced remains undetectable and is a known residual.
 
 `cdkd diff` previews this same bag through `src/analyzer/outputs-diff.ts`,
-which is the fourth writer of the key space and applies the same collision
-and secret-name refusals. It has to: previewing an alias the deploy refuses
-made `cdkd diff` report the same phantom change on every run and
-`cdkd diff --fail` exit 1 forever.
+the fourth writer of the key space, and it has to agree ROW BY ROW: an
+alias the preview publishes and the deploy refuses (or the reverse) is a
+phantom change on every run and `cdkd diff --fail` red forever. Two rows
+are worth naming because they read as inconsistent otherwise. A LITERAL
+`Export.Name` spelled as a `{{resolve:...}}` token is PUBLISHED by both —
+the deploy never substitutes a string name, so the key holds the
+expression, which is what state stores anyway. And a LITERAL name in a
+stack that resolves a secret makes the DIFF suppress its whole Outputs
+section: the deploy refuses such a name only when it CONTAINS the resolved
+plaintext, and the preview never resolves one, so it declines to guess
+rather than print a row whose key may hold that plaintext.
 
 **A state KEY that already holds plaintext cannot be scrubbed.** State
 written by a pre-fix binary can carry `state.outputs["pre-<secret>"]`, and

@@ -73,6 +73,9 @@ function lenientResolver(value: unknown): Promise<unknown> {
 const ARN = 'arn:aws:s3:::bucket';
 const RESOLVER = resolverFor({
   'Bucket.Arn': ARN,
+  // An attribute whose VALUE is an expression string: the shape an intrinsic
+  // `Export.Name` takes after this resolver's `skipDynamicReferences` pass.
+  'Bucket.SecretishName': 'pre-{{resolve:secretsmanager:db:SecretString:pw}}',
   // Constructible-but-unknown attribute: resolves to undefined, does NOT throw.
   'Role.RoleId': undefined,
 });
@@ -114,16 +117,17 @@ describe('resolveTemplateOutputs', () => {
     expect(r.resolutionFailed).toBe(false);
   });
 
-  it('SKIPS an export alias whose name carries a secret reference (issue #1919)', async () => {
-    // Deploy refuses such a name because it becomes a state KEY and redaction
-    // walks values only. This resolver runs with `skipDynamicReferences`, so the
-    // name arrives still spelled as its expression — which is the signal.
+  it('PARITY row 1 — an INTRINSIC name still carrying a secret spelling is skipped', async () => {
+    // Deploy substitutes plaintext into an intrinsic name and then REFUSES it,
+    // because the name would become a state KEY and redaction walks values only.
+    // This resolver runs with `skipDynamicReferences`, so the same name arrives
+    // here still spelled as its expression — which is the signal.
     const template: CloudFormationTemplate = {
       Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
       Outputs: {
         Exporter: {
           Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
-          Export: { Name: 'pre-{{resolve:secretsmanager:db:SecretString:password}}' },
+          Export: { Name: { 'Fn::GetAtt': ['Bucket', 'SecretishName'] } as never },
         },
       },
     };
@@ -132,6 +136,58 @@ describe('resolveTemplateOutputs', () => {
 
     expect(r.outputs).toEqual({ Exporter: ARN });
     expect([...r.exportNames]).toEqual([]);
+  });
+
+  it('PARITY row 2 — a LITERAL name spelled as an expression is PUBLISHED, as deploy publishes it', async () => {
+    // The regression the previous round shipped: refusing by SPELLING refused
+    // this too, while the deploy engine short-circuits a STRING `Export.Name`
+    // past the resolver entirely — it substitutes nothing, uses the string
+    // verbatim as the key, and publishes. Refusing here made the preview report
+    // a phantom REMOVE on every run and kept `cdkd diff --fail` red, which is
+    // the inverse of the bug the refusal was added for.
+    const literalName = '{{resolve:secretsmanager:db:SecretString:pw}}';
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        Exporter: { Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] }, Export: { Name: literalName } },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+
+    expect(r.outputs).toEqual({ Exporter: ARN, [literalName]: ARN });
+    expect([...r.exportNames]).toEqual([literalName]);
+  });
+
+  it('PARITY row 3 — a LITERAL name in a secret-bearing stack SUPPRESSES rather than guesses', async () => {
+    // Deploy refuses a literal name that CONTAINS a resolved plaintext
+    // (`prod-<secret>-endpoint`), and this preview can never see a plaintext —
+    // its resolver does not substitute one. Publishing would risk a phantom ADD
+    // whose row PRINTS the plaintext-bearing key into CI logs, so the delta is
+    // suppressed instead. Narrowed to stacks that actually resolve a secret:
+    // with none, there is nothing a name could contain.
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        DbSecret: { Value: '{{resolve:secretsmanager:db:SecretString:pw}}' },
+        Exporter: {
+          Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
+          Export: { Name: 'MyStack:BucketArn' },
+        },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+
+    expect([...r.exportNames]).toEqual([]);
+    expect(r.resolutionFailed).toBe(true);
+  });
+
+  it('PARITY row 3 — the same literal name publishes when the stack resolves NO secret', async () => {
+    // The other half, so the suppression cannot silently widen to every stack.
+    const r = await resolveTemplateOutputs(templateWithExport(), RESOLVER);
+    expect([...r.exportNames]).toEqual(['StackA:BucketArn']);
+    expect(r.resolutionFailed).toBe(false);
   });
 
   it('builds the same bag shape the deploy engine persists — value key AND Export.Name alias', async () => {
@@ -617,6 +673,26 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
       'utf8'
     );
     expect(twin).toContain('isExportAliasCollision(exportName, outputKey, publishedOutputNames)');
+  });
+
+  it('both writers still guard the SECRET-bearing export name', () => {
+    // The collision guard was fenced first and the SECRET guard was not — and
+    // the secret guard is the one rule that actually diverged (the two sides
+    // disagreed in BOTH directions on a literal name for a full round). Each
+    // side keeps its own predicate here, because they answer the same question
+    // from different information: deploy resolves the name and asks what was
+    // substituted; the diff never substitutes and asks how the name is SPELLED,
+    // gated on the name being intrinsic. Losing either arm reds this.
+    const twin = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../src/analyzer/outputs-diff.ts'),
+      'utf8'
+    );
+    expect(source).toContain('exportNameSecretExposure(');
+    expect(source).toContain('secretBearingExportNameWarning(outputKey, exportName, exposure)');
+    expect(twin).toContain('declaredExportIsIntrinsic && isSecretDynamicReference(exportName)');
+    // ...and the undecidable LITERAL arm, which is what keeps the diff from
+    // publishing an alias deploy refuses without being able to see the secret.
+    expect(twin).toContain('!declaredExportIsIntrinsic && secretSourceKeys.size > 0');
   });
 
   it('deploy still skips a condition-false output', () => {

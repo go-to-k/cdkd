@@ -334,6 +334,7 @@ export async function resolveTemplateOutputs(
       // wrong alias key, which is worse than a phantom because a consumer reads
       // it — or suppress on a name that never used `Fn::Sub` at all.
       const exportSourceUsedSub = templateUsesSub(output.Export.Name);
+      const declaredExportIsIntrinsic = typeof output.Export.Name !== 'string';
       if (typeof exportName !== 'string') {
         try {
           exportName = await resolveFn(structuredClone(exportName));
@@ -344,7 +345,24 @@ export async function resolveTemplateOutputs(
         }
       }
       if (typeof exportName === 'string' && !isUnresolvedValue(exportName, exportSourceUsedSub)) {
-        if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
+        // The refusal order MIRRORS the deploy engine's — secret first, then
+        // collision — so a name matching both is attributed the same way on
+        // both sides. See `outputs-export-alias.ts`'s parity table for the full
+        // row-by-row correspondence this block is written against.
+        if (declaredExportIsIntrinsic && isSecretDynamicReference(exportName)) {
+          // An INTRINSIC name that still carries a `{{resolve:...}}` spelling
+          // after this resolver's `skipDynamicReferences` pass is one the deploy
+          // WILL substitute plaintext into, and then refuse (the name would be a
+          // state KEY, which no redaction pass walks). Gated on INTRINSIC
+          // deliberately: for a LITERAL name the deploy substitutes nothing —
+          // it uses the string verbatim as the key — so it publishes, and
+          // refusing here would be a phantom REMOVE on every run. That gate is
+          // the round-6 regression this replaces, which traded one divergence
+          // for two.
+          logger.debug(
+            `Diff skipping export alias of ${outputKey} — the name carries a secret reference`
+          );
+        } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
           // Deploy skips this alias and keeps the colliding output's own value,
           // so previewing it here would be a permanent phantom row. NOT a
           // resolution failure: the bag matches what deploy writes, which is the
@@ -352,18 +370,25 @@ export async function resolveTemplateOutputs(
           logger.debug(
             `Diff skipping export alias ${exportName} of ${outputKey} — collides with an output name`
           );
-        } else if (isSecretDynamicReference(exportName)) {
-          // The deploy REFUSES a name that resolves to secret plaintext, because
-          // the name becomes a state KEY and redaction walks values only. This
-          // resolver runs with `skipDynamicReferences`, so the same name arrives
-          // here still spelled as its expression — which is exactly the signal.
-          // Residual, matching this module's existing reasoning about the plain
-          // `ssm:` spelling: an unpinned `{{resolve:ssm:...}}` in a name is
-          // secret only by parameter TYPE, unknowable here, so deploy may refuse
-          // one this preview still publishes.
+        } else if (!declaredExportIsIntrinsic && secretSourceKeys.size > 0) {
+          // UNDECIDABLE, so suppress rather than guess. The deploy refuses a
+          // LITERAL name that CONTAINS a resolved secret plaintext — the
+          // `prod-<secret>-endpoint` shape — and this preview cannot see any
+          // plaintext at all, because its resolver never substitutes one. The
+          // condition narrows that to stacks where the deploy actually records a
+          // secret: with no secret-bearing output there is nothing for a name to
+          // contain, and the ordinary stack is unaffected.
+          //
+          // Suppressing (this module's existing answer to "cannot reproduce what
+          // deploy will do") beats publishing: a phantom ADD would also PRINT a
+          // key holding that plaintext into CI logs. Narrower than deploy's
+          // signal by the same margin `isSecretDynamicReference` already
+          // documents — a pinned SecureString `ssm:` value is a secret deploy
+          // records and this scan does not name.
           logger.debug(
-            `Diff skipping export alias of ${outputKey} — the name carries a secret reference`
+            `Diff cannot decide the export alias of ${outputKey} — a literal name may contain a resolved secret`
           );
+          resolutionFailed = true;
         } else {
           outputs[exportName] = value;
           exportNames.add(exportName);

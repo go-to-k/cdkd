@@ -2421,8 +2421,11 @@ forward. **Run `scrub` BEFORE rotating**: it matches the CURRENT resolved
 secret value against what state holds, so once the secret is rotated the stale
 value in state no longer matches and `scrub` reports "nothing to scrub" (the
 rotation invalidates the stale value; a redeploy rewrites the record with the
-expression). Exit codes: 0 (scrubbed / nothing to do), 1 (`--dry-run --fail`
-found plaintext), 2 (error).
+expression). Exit codes: 0 (scrubbed / nothing to do), 1 (`--fail` found
+plaintext: with `--dry-run` any plaintext at all, and on a REAL run a leak
+scrub cannot rewrite — a state KEY holding a secret, which needs an
+`Export.Name` change plus a redeploy, issue
+[#1919](https://github.com/go-to-k/cdkd/issues/1919)), 2 (error).
 
 **SSM parameters are redacted by TYPE, not by spelling** (issue
 [#1901](https://github.com/go-to-k/cdkd/issues/1901)). The plain

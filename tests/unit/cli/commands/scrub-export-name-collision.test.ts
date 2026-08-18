@@ -179,6 +179,16 @@ import { exportAliasCollisionScrubWarning } from '../../../../src/deployment/out
 
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
+/**
+ * A COMPLETE `ScrubOptions`, built without a cast so a newly REQUIRED option
+ * fails to compile here instead of being silently erased by an `as`.
+ */
+function commandOptions(overrides: Partial<ScrubOptions>): ScrubOptions {
+  // `verbose` is REQUIRED and the previous cast erased it — which is the drift
+  // this helper exists to surface.
+  return { output: 'cdk.out', statePrefix: 'cdkd', verbose: false, ...overrides };
+}
+
 function makeStackInfo(outputs: Record<string, TemplateOutput>): {
   stackName: string;
   template: CloudFormationTemplate;
@@ -519,11 +529,7 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     });
 
     await expect(
-      scrubCommand([], {
-        output: 'cdk.out',
-        statePrefix: 'cdkd',
-        fail: true,
-      } satisfies Partial<ScrubOptions> as ScrubOptions)
+      scrubCommand([], commandOptions({ fail: true }))
     ).rejects.toBeInstanceOf(ScrubNeededError);
 
     const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
@@ -619,12 +625,7 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     });
 
     await expect(
-      scrubCommand([], {
-        output: 'cdk.out',
-        statePrefix: 'cdkd',
-        dryRun: true,
-        fail: true,
-      } satisfies Partial<ScrubOptions> as ScrubOptions)
+      scrubCommand([], commandOptions({ dryRun: true, fail: true }))
     ).rejects.toBeInstanceOf(ScrubNeededError);
 
     expect(commandStateBackend.saveState).not.toHaveBeenCalled();

@@ -674,18 +674,20 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
 
   it('a THROWN outputs pass does not position the PREVIOUS bag by this template', async () => {
     // Measured, not argued (issue #1919 round-5 review). Under `--strict-getatt`
-    // an unresolvable output RETHROWS out of the loop, and the failure path
-    // still saves state: `persistStateAfterOutputFailure` ->  `withParentInfo`
-    // -> `redactStateForPersist` -> `redactOutputs(currentState.outputs)`. So
-    // the PREVIOUS deploy's bag gets redacted with THIS pass's secrets — which
-    // is right for the value scan — while the position source at that moment
-    // holds only the alias keys written before the throw, built from THIS
-    // template. Positioning by it makes `redactByPath` return a known-secret
-    // source leaf verbatim, replacing a public stored value with a reference to
-    // a secret that never produced it.
+    // an unresolvable Output RETHROWS, and the failure path still saves state:
+    // `persistStateAfterOutputFailure` -> `withParentInfo` ->
+    // `redactStateForPersist` -> `redactOutputs(currentState.outputs)`. So the
+    // PREVIOUS deploy's bag is redacted with THIS pass's secrets — right for the
+    // value scan — while the position source holds only the alias keys written
+    // before the throw, built from THIS template. Positioning by it makes
+    // `redactByPath` return a known-secret source leaf verbatim, replacing a
+    // public stored value with a reference to a secret that never produced it.
     //
-    // `Exporter` is declared FIRST so its alias source lands before `Boom`
-    // throws, and the previous bag holds a plain value under that same key.
+    // The throw is placed in the ALIAS pass on purpose: since the pass split,
+    // pass 1 writes no source at all, so a value-side throw leaves the bag empty
+    // and cannot discriminate. `First` publishes its alias source, then
+    // `Second`'s name resolution throws — which is the only shape that leaves a
+    // PARTIAL source behind.
     mockDiffCalculator.hasChanges!.mockReturnValue(true);
     mockStateBackend.getState!.mockResolvedValue({
       state: { ...noChangeState(), outputs: { Legacy: 'previously-public-value' } },
@@ -695,8 +697,11 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     const template: CloudFormationTemplate = {
       Resources: { Res: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } },
       Outputs: {
-        Exporter: { Value: EXPR_A, Export: { Name: 'Legacy' } },
-        Boom: { Value: { 'Fn::Join': ['', ['__THROW__']] } as never },
+        First: { Value: EXPR_A, Export: { Name: 'Legacy' } },
+        Second: {
+          Value: PUBLIC_B,
+          Export: { Name: { 'Fn::Join': ['', ['__THROW__']] } as never },
+        },
       },
     };
 
@@ -724,29 +729,58 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     expect(JSON.stringify(savedState)).not.toContain(PLAINTEXT_A);
   });
 
-  it('a name EMBEDDING a recorded secret is refused, not just one that equals it', async () => {
-    // The gap this closes was measurable as an asymmetry INSIDE this PR: the
-    // deploy refusal matched a whole name only, while the scrub key scan did
-    // bounded containment over the same map — so a name like
-    // `prod-<secret>-endpoint` was written as a state KEY by the deploy and then
-    // reported by `cdkd scrub --dry-run --fail` as an UNREPAIRABLE leak. The
-    // tool created the exact state it tells the user it cannot fix.
-    //
-    // The plaintext reaches the name WITHOUT a fresh substitution here (the
-    // literal is spelled in the template), which is the route the name's own
-    // resolution map cannot see — an unpinned-ssm cache hit and an `Fn::Sub`
-    // variable echoing the value arrive the same way.
-    const { saved, savedStateJson } = await deployOutputs({
-      SecretAlpha: { Value: EXPR_A },
-      Exporter: { Value: PUBLIC_B, Export: { Name: `prod-${PLAINTEXT_A}-endpoint` } },
+  it('PARITY row 2 — a LITERAL name spelled as an expression is PUBLISHED', async () => {
+    // The deploy side of the row the previous round got wrong on the diff side.
+    // A STRING `Export.Name` short-circuits the resolver entirely, so nothing is
+    // substituted and the key is the expression itself — which is what state
+    // stores post-redaction anyway, so there is nothing to refuse. Pinned HERE
+    // as well as in the diff twin, because a parity claim tested on one side
+    // only is exactly how the divergence shipped.
+    const literalName = '{{resolve:secretsmanager:db:SecretString:pw}}';
+    const { saved, indexed } = await deployOutputs({
+      Exporter: { Value: PUBLIC_A, Export: { Name: literalName } },
     });
 
-    const refusals = warnings().filter((w) => w.includes('Export.Name that resolves'));
-    expect(refusals).toHaveLength(1);
-    expect(refusals[0]).not.toContain(PLAINTEXT_A);
-    expect(refusals[0]).toContain('prod-***-endpoint');
-    expect(Object.keys(saved).sort()).toEqual(['Exporter', 'SecretAlpha']);
-    expect(savedStateJson).not.toContain(PLAINTEXT_A);
+    expect(saved[literalName]).toBe(PUBLIC_A);
+    expect(indexed[literalName]).toBe(PUBLIC_A);
+    expect(warnings()).toEqual([]);
+  });
+
+  it('PARITY row 3 — the literal-name refusal does not depend on DECLARATION ORDER', async () => {
+    // The order-dependence class this issue's own addendum flagged for the
+    // original defect, reappearing in its fix: the refusal consults the secrets
+    // recorded SO FAR, so with the exporting output declared FIRST the map was
+    // still empty and the same template published a plaintext state KEY —
+    // unredactable, republished into the exports index, and then reported by
+    // `cdkd scrub` as unrepairable. Both orders must refuse; the value/alias
+    // pass split is what makes that true.
+    for (const order of ['exporter-first', 'secret-first'] as const) {
+      vi.clearAllMocks();
+      alreadyRecorded.clear();
+      mockStateBackend.getState!.mockResolvedValue({ state: null, etag: undefined });
+      mockStateBackend.saveState!.mockResolvedValue('etag-new');
+      mockExportIndexStore.updateForStack!.mockResolvedValue(undefined);
+      mockLockManager.acquireLockWithRetry!.mockResolvedValue(true);
+      mockProvider.create!.mockResolvedValue({ physicalId: 'res-phys' });
+      mockDiffCalculator.filterByType!.mockImplementation(
+        (changes: Map<string, ResourceChange>, type: string) =>
+          Array.from(changes.values()).filter((c) => c.changeType === type)
+      );
+
+      const exporter: [string, TemplateOutput] = [
+        'Exporter',
+        { Value: PUBLIC_B, Export: { Name: `prod-${PLAINTEXT_A}-endpoint` } },
+      ];
+      const secretOutput: [string, TemplateOutput] = ['SecretAlpha', { Value: EXPR_A }];
+      const declared =
+        order === 'exporter-first' ? [exporter, secretOutput] : [secretOutput, exporter];
+
+      const { saved, savedStateJson } = await deployOutputs(Object.fromEntries(declared));
+
+      expect(Object.keys(saved).sort()).toEqual(['Exporter', 'SecretAlpha']);
+      expect(savedStateJson).not.toContain(PLAINTEXT_A);
+      expect(warnings().filter((w) => w.includes('Export.Name that resolves'))).toHaveLength(1);
+    }
   });
 
   it('a LITERAL export name equal to a recorded secret is refused too', async () => {
