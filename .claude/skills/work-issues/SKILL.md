@@ -179,11 +179,12 @@ next only to break a tie:
 
 | # | Rule | Why |
 |---|---|---|
-| 1 | **Umbrella issues sort LAST**, whatever else they score | They cannot be finished in one lane, so a lane leaves the issue open with ambiguous residue, and their many sites collide with everything |
-| 2 | **`fix:` outranks everything else** (`feat:` / `test:` / `docs:` / `audit:` / `chore:`) | A `fix:` is a defect in shipped behavior a user can hit today; the rest are improvements to behavior that is not wrong |
-| 3 | **Area: `deploy` > `diff` = `destroy` > everything else** | Deploy is the tool's primary function — it is what cdkd exists to do, so a deploy defect costs more than an equally-sized defect elsewhere. `diff` and `destroy` rank equally behind it |
-| 4 | **Prefer issues landing in ONE isolated file** over cross-cutting ones | Not just collision-avoidance for this run: a cross-cutting file admits only one lane at a time, so taking it blocks the widest set of future parallel work. Among equals, spend the contested files last |
-| 5 | **Newer first** (higher issue number / `created_at`) | Not novelty — **accuracy**. A freshly filed issue was written against current code, so its file:line tables and reproduction still hold. Older ones rot: on 2026-08-13 two of the enumerated sites in a one-day-old issue were already fixed or deleted. An older issue is likelier to be partly done, superseded, or wrong |
+| 1 | **Security issues come FIRST**, ahead of every other rule below | A security defect is the one class where the cost keeps growing while it sits: the vulnerable behavior is already shipped, already running in users' accounts, and the report may be public. Every other rule orders work by how much value a fix adds; this one orders it by how much a delay costs |
+| 2 | **Umbrella issues sort LAST**, whatever else they score | They cannot be finished in one lane, so a lane leaves the issue open with ambiguous residue, and their many sites collide with everything |
+| 3 | **`fix:` outranks everything else** (`feat:` / `test:` / `docs:` / `audit:` / `chore:`) | A `fix:` is a defect in shipped behavior a user can hit today; the rest are improvements to behavior that is not wrong |
+| 4 | **Area: `deploy` > `diff` = `destroy` > everything else** | Deploy is the tool's primary function — it is what cdkd exists to do, so a deploy defect costs more than an equally-sized defect elsewhere. `diff` and `destroy` rank equally behind it |
+| 5 | **Prefer issues landing in ONE isolated file** over cross-cutting ones | Not just collision-avoidance for this run: a cross-cutting file admits only one lane at a time, so taking it blocks the widest set of future parallel work. Among equals, spend the contested files last |
+| 6 | **Newer first** (higher issue number / `created_at`) | Not novelty — **accuracy**. A freshly filed issue was written against current code, so its file:line tables and reproduction still hold. Older ones rot: on 2026-08-13 two of the enumerated sites in a one-day-old issue were already fixed or deleted. An older issue is likelier to be partly done, superseded, or wrong |
 
 **Detecting each signal** — from the same REST listing §1 already fetched, plus
 the body when needed:
@@ -200,6 +201,22 @@ gh api 'repos/{owner}/{repo}/issues?state=open&per_page=60' \
 gh issue view <n> --json body -q .body | grep -i 'Session-fit:'
 ```
 
+- **Security**: the issue reports a vulnerability in shipped behavior rather than a
+  bug — credential / secret handling, redaction or masking, a sensitive value
+  persisted or logged, IAM / role-assumption scope, auth or token verification,
+  command injection or arbitrary execution, or anything tied to a GHSA advisory.
+  Signals: a `security` label, a GHSA link, a private-report reference, or a title /
+  body naming `secret`, `credential`, `token`, `redact`, `leak`, `privilege`,
+  `injection`. Path signal: the issue names any surface the security add-on reviewer
+  covers (`src/utils/role-arn.ts`, `src/local/{cognito-jwt,lambda-authorizer,`
+  `docker-runner,docker-image-builder,ecr-puller}.ts`,
+  `src/provisioning/providers/**` when the defect is about what gets stored or
+  exposed). When in doubt, treat it as security — the cost of ranking a normal bug
+  first is one position in a queue.
+  Two consequences that follow from rule 1 sitting above rule 2: a security issue
+  that is ALSO an umbrella is not deferred by the umbrella rule — split it, take the
+  concrete sites this lane can close now, and file the remainder. And a security
+  issue does not lose its place for being older; rule 6 never applies to it.
 - **Umbrella**: title or body says `umbrella`, `audit:`, `Backfill`, `N entries
   across M types`, or the body carries a TABLE of sites rather than one defect.
   A "residual of #N" issue naming two or three concrete sites is NOT an umbrella —
@@ -218,20 +235,23 @@ gh issue view <n> --json body -q .body | grep -i 'Session-fit:'
   reason to skip.
 
 **These are tiebreakers, not a scoring formula — do not average them.** Apply
-rule 1, then 2, then 3, and stop at the first that separates the candidates. And
-they rank *what to take first*; they never justify taking an issue that fails the
-disjointness gate, nor skipping the §0 safety screen.
+rule 1, then 2, then 3, and so on, stopping at the first that separates the
+candidates. And they rank *what to take first*; they never justify taking an issue
+that fails the disjointness gate, nor skipping the §0 safety screen.
 
 Two overrides worth stating, because both have been talked into by a ranking
 before:
 
-- **A user-reported breakage outranks the table.** If an issue reports a
-  currently-broken user-facing path, take it first regardless of type, area or
-  age. The ranking exists to order a backlog of self-filed findings, not to make
+- **A user-reported breakage outranks the rest of the table** (but not rule 1 —
+  nothing outranks a security issue). If an issue reports a currently-broken
+  user-facing path, take it first regardless of type, area or age. The ranking exists to order a backlog of self-filed findings, not to make
   someone wait behind a `fix(deploy)` because their bug is filed as `fix(state)`.
 - **Ranking never lowers verification depth.** A rank-1 issue and a rank-9 issue
   get the same review tier, the same integs and the same live test — priority
-  decides ORDER, never rigor (see CLAUDE.md → "Cost is not a tiebreaker").
+  decides ORDER, never rigor (see CLAUDE.md → "Cost is not a tiebreaker"). A
+  security issue moves the other way: dispatch `pr-security-reviewer` in addition
+  to whatever tier its size gives (`CLAUDE.md` → "PR review pattern"), since urgency
+  is a reason to start it sooner, never to check it less.
 
 ## 4. CLAIM the chosen issues BEFORE editing
 
