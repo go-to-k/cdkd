@@ -198,12 +198,24 @@ function diffAt(
 ): void {
   if (deepEqual(stateValue, awsValue)) return;
 
-  // A state leaf holding an unresolved `{{resolve:...}}` dynamic reference (GHSA
-  // fix: cdkd persists the expression, not the resolved secret) cannot be
-  // compared against the AWS readback, which returns the resolved plaintext (or
-  // nothing, for a write-only secret). Comparing would report permanent phantom
-  // drift on every secret-bearing property, and `--revert` would then write the
-  // expression string back to AWS as a literal. Skip it.
+  // FALLBACK for a state leaf whose `{{resolve:...}}` dynamic reference could
+  // not be resolved (GHSA fix: cdkd persists the expression, not the resolved
+  // secret). An expression cannot be compared against the AWS readback, which
+  // returns the resolved plaintext (or nothing, for a write-only secret), so
+  // comparing reports phantom drift on every secret-bearing property.
+  //
+  // This is no longer the mechanism that normally handles a secret-bearing
+  // leaf. `cdkd drift` — the only caller of `calculateResourceDrift` — now
+  // re-resolves its baseline before comparing (issue #1914), so a resolvable
+  // reference arrives here as plaintext on BOTH sides and is compared properly;
+  // it was the blanket skip here that made a console edit of such a property
+  // undetectable and unrevertible. What still reaches this line is the case
+  // that has no better answer: a deleted secret, a rotated-away version, a
+  // least-privilege role without `secretsmanager:GetSecretValue`, or a
+  // reference spelling cdkd cannot resolve at all. `runDriftForStack` warns
+  // per-resource and falls back to the unresolved baseline for exactly those,
+  // and this line is what then keeps the resource's other properties comparable
+  // instead of drowning them in phantom drift.
   if (typeof stateValue === 'string' && stateValue.includes('{{resolve:')) return;
 
   if (
