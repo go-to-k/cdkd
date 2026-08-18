@@ -27,7 +27,7 @@ basic	2026-08-01T10:00:06Z	PASS	81	standard	0801 regression sweep; 2 del/0 err, 
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-08-10T05:19:05Z	PASS	36	standard	0810 P2 sweep b6; 6 del 0 err, 0 orph
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bench-cdk-sample	2026-08-14T14:09:21Z	PASS	429	standard	broad re-run after the review blocker fixes: 39 created, 37 deleted + 2 retained, 0 errors
+bench-cdk-sample	2026-08-18T13:43:01Z	PASS	300	standard	broad-set arm for #1933 resolver change; 39 created, 37 deleted + 2 retained, 0 errors; 3 leftover log groups swept
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-07-31T06:23:42Z	PASS	78	verify.sh	TTL-refresh sweep re-run in ca-central-1; marker+bucket swept, orph clean
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
@@ -80,6 +80,7 @@ drift-revert	2026-08-13T08:34:06Z	PASS	215	verify.sh	broad set; 13 deleted 0 err
 drift-revert-arrays	2026-08-13T08:30:39Z	PASS	230	verify.sh	issue 1783/1784 seams; 19 deleted 0 errors 0 orphans
 drift-revert-vpc	2026-08-11T15:53:33Z	PASS	314	verify.sh	#1591 final: both-sides canonicalizer + cdkd diff wiring; 21 del/0 err, 0 orph
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
+dynamic-ref-cross-region	2026-08-18T13:31:37Z	PASS	168	verify.sh	#1933 new fixture; 4 params 2 regions, String + SecureString arms, state holds expression only; 4 deleted 0 errors 0 orphans; binding proof: module-global cache probe FAILs the same fixture
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
 dynamodb-globaltable	2026-08-18T15:51:37Z	PASS	900	verify.sh	#1950 post-review re-run: GlobalTable still bounded at N/8 while Table runs N/14; 12 deleted 0 errors 0 orphans in all replica regions
 dynamodb-gsi-update	2026-08-18T15:51:37Z	PASS	1080	verify.sh	#1950 post-review re-run: Table budget 14 live, same 5-item backfill used 7 of 14; 1 deleted 0 errors 0 orphans
