@@ -2105,6 +2105,22 @@ describe('Outputs-only change (issue #1921)', () => {
     expect(messages.some((m) => m.includes('could not be resolved'))).toBe(true);
   });
 
+  it('keeps the pretty-printer newlines in a multi-line value', () => {
+    // The regression this pins: the full control-char class includes \n, and
+    // stripping ran AFTER the indent replace, so every multi-line value
+    // collapsed onto one line. JSON.stringify already escapes < 0x20 INSIDE
+    // strings, so C0 on this path is only the structural newlines.
+    const lines: string[] = [];
+    renderOutputChangeLines(
+      [{ name: 'Out', changeType: 'ADD', newValue: ['a', 'b'], isExport: false }],
+      (m) => lines.push(m)
+    );
+    const valueLine = lines.find((l) => l.includes('new:'))!;
+    expect(valueLine.split('\n').length).toBeGreaterThan(1);
+    expect(valueLine).toContain('"a"');
+    expect(valueLine).toContain('"b"');
+  });
+
   it('strips control characters from rendered VALUES too, not just names', () => {
     // JSON.stringify escapes everything below 0x20 but passes C1 and the bidi
     // marks through unchanged.

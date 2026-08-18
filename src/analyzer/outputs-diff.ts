@@ -1,4 +1,4 @@
-import type { CloudFormationTemplate } from '../types/resource.js';
+import type { CloudFormationTemplate, TemplateOutput } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
 import { INTRINSIC_KEYS, type IntrinsicResolveFn } from './diff-calculator.js';
 
@@ -168,8 +168,18 @@ function templateUsesSub(templateValue: unknown): boolean {
  * `cdkd scrub` exists to repair), and printing it is this module's problem
  * because it is the first code path that DISPLAYS a stored output value.
  */
-function isDynamicReference(value: unknown): boolean {
-  return typeof value === 'string' && value.includes('{{resolve:');
+function isSecretDynamicReference(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  // Only the spellings that are secret-bearing REGARDLESS of what they point at.
+  // A plain `{{resolve:ssm:...}}` is deliberately excluded: per issue #1901 it is
+  // classified by the parameter's TYPE, and a `String` / `StringList` parameter
+  // is PUBLIC and legitimately persisted RESOLVED. Treating it as a signal would
+  // fire on a perfectly ordinary record — and since the verdict is record-WIDE,
+  // that would withhold every previous value in the stack and tell the user to
+  // run `cdkd scrub`, which would find nothing to fix. The residual is a
+  // pre-#1901 SecureString `ssm:` record, a strictly narrower gap than the
+  // false positive this exclusion removes.
+  return value.includes('{{resolve:secretsmanager:') || value.includes('{{resolve:ssm-secure:');
 }
 
 /** Structural equality, mirroring the deploy engine's `outputMapsEqual` leaf rule. */
@@ -239,13 +249,24 @@ export async function resolveTemplateOutputs(
     return { outputs, exportNames, failedKeys, secretSourceKeys, resolutionFailed };
   }
 
+  /**
+   * Record a key the resolver DROPPED — plus the literal `Export.Name` alias the
+   * deploy would have written alongside it. Both are absent from the bag, so
+   * both would otherwise read as phantom REMOVEs and make the suppression
+   * warning fire on the ordinary pending-resource case.
+   */
+  const recordFailure = (outputKey: string, output: TemplateOutput): void => {
+    failedKeys.add(outputKey);
+    if (typeof output.Export?.Name === 'string') failedKeys.add(output.Export.Name);
+  };
+
   // Pass 1: which keys does the TEMPLATE prove are secret-bearing? Walked over
   // EVERY declared output — including condition-skipped ones, which never reach
   // the resolve loop below yet can still sit on the stored side and print as a
   // REMOVE row. A literal `Export.Name` alias is recorded too, since the deploy
   // writes the same value under both keys.
   for (const [outputKey, output] of Object.entries(template.Outputs)) {
-    if (!isDynamicReference(output.Value)) continue;
+    if (!isSecretDynamicReference(output.Value)) continue;
     secretSourceKeys.add(outputKey);
     if (typeof output.Export?.Name === 'string') secretSourceKeys.add(output.Export.Name);
   }
@@ -267,7 +288,7 @@ export async function resolveTemplateOutputs(
     } catch (error) {
       logger.debug(`Diff could not resolve output ${outputKey}: ${String(error)}`);
       resolutionFailed = true;
-      failedKeys.add(outputKey);
+      recordFailure(outputKey, output);
       continue;
     }
     if (isUnresolvedValue(value, sourceUsedSub)) {
@@ -276,13 +297,20 @@ export async function resolveTemplateOutputs(
       // that CREATE.
       logger.debug(`Diff left output ${outputKey} unresolved (references a pending resource)`);
       resolutionFailed = true;
-      failedKeys.add(outputKey);
+      recordFailure(outputKey, output);
       continue;
     }
     outputs[outputKey] = value;
 
     if (output.Export?.Name) {
       let exportName: unknown = output.Export.Name;
+      // The `Fn::Sub` scoping is derived from `Export.Name`'s OWN source, not
+      // from `output.Value`: an export name can be an `Fn::Sub` while the value
+      // is a plain `Fn::GetAtt` (or the reverse), and reusing the value's flag
+      // would either miss a laundered placeholder in the NAME — publishing a
+      // wrong alias key, which is worse than a phantom because a consumer reads
+      // it — or suppress on a name that never used `Fn::Sub` at all.
+      const exportSourceUsedSub = templateUsesSub(output.Export.Name);
       if (typeof exportName !== 'string') {
         try {
           exportName = await resolveFn(structuredClone(exportName));
@@ -292,7 +320,7 @@ export async function resolveTemplateOutputs(
           continue;
         }
       }
-      if (typeof exportName === 'string' && !isUnresolvedValue(exportName, sourceUsedSub)) {
+      if (typeof exportName === 'string' && !isUnresolvedValue(exportName, exportSourceUsedSub)) {
         outputs[exportName] = value;
         exportNames.add(exportName);
       } else {
@@ -352,8 +380,8 @@ export function computeOutputsDiff(
 
   // Pass 1: is this a pre-GHSA record? See the "Withholding" note above.
   const legacyRecord = Object.entries(currentBag).some(([name, oldValue]) => {
-    if (isDynamicReference(oldValue)) return false;
-    return isDynamicReference(desired[name]) || secretSourceKeys.has(name);
+    if (isSecretDynamicReference(oldValue)) return false;
+    return isSecretDynamicReference(desired[name]) || secretSourceKeys.has(name);
   });
 
   const push = (change: OutputChange): void => {

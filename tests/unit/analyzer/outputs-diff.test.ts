@@ -370,6 +370,55 @@ describe('computeOutputsDiff — legacy secret plaintext on the stored side', ()
   });
 });
 
+describe('Export.Name scoping + alias failure keys (issue #1921 review round 3)', () => {
+  it('scopes the ${...} test to Export.Name OWN source, not the value\'s', async () => {
+    // The bug: `sourceUsedSub` came from `output.Value`. An export name that IS
+    // an Fn::Sub, on an output whose Value is not, would have its laundered
+    // `${...}` accepted -- publishing a WRONG alias key, which is worse than a
+    // phantom because a consumer's Fn::ImportValue reads that string.
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        Out: {
+          Value: 'plain-literal',
+          Export: { Name: { 'Fn::Sub': 'stack-${Pending}' } as unknown as string },
+        },
+      },
+    };
+    const r = await resolveTemplateOutputs(template, async (v) =>
+      typeof v === 'string' ? v : 'stack-${Pending}'
+    );
+    expect(r.resolutionFailed).toBe(true);
+    expect([...r.exportNames]).toEqual([]);
+  });
+
+  it('does NOT suppress an export name containing a literal ${...} with no Fn::Sub source', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { Out: { Value: 'v', Export: { Name: 'literal-${not-a-sub}' } } },
+    };
+    const r = await resolveTemplateOutputs(template, lenientResolver);
+    expect(r.resolutionFailed).toBe(false);
+    expect([...r.exportNames]).toEqual(['literal-${not-a-sub}']);
+  });
+
+  it('records the literal Export.Name alias as a failed key when the VALUE fails', async () => {
+    // Both keys are dropped from the bag, so both must be excluded from the
+    // suppression-warning computation or the alias reads as a phantom REMOVE.
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        Pending: {
+          Value: { 'Fn::GetAtt': ['NotYetCreated', 'Arn'] },
+          Export: { Name: 'S:Pending' },
+        },
+      },
+    };
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+    expect([...r.failedKeys].sort()).toEqual(['Pending', 'S:Pending']);
+  });
+});
+
 describe('secretSourceKeys + record-level withholding (issue #1921 review round 2)', () => {
   const EXPR = '{{resolve:secretsmanager:prod/db:SecretString:password}}';
 
@@ -425,6 +474,36 @@ describe('secretSourceKeys + record-level withholding (issue #1921 review round 
     expect(added.changeType).toBe('ADD');
     expect(added.oldValueRedacted).toBeUndefined();
     expect(added.newValue).toBe('n');
+  });
+
+  it('does NOT treat a PUBLIC {{resolve:ssm:...}} output as a legacy record', () => {
+    // Per issue #1901 an ssm reference is classified by the parameter's TYPE: a
+    // String / StringList parameter is public and legitimately persisted
+    // RESOLVED, while the diff (skipDynamicReferences) holds the expression. A
+    // signal keyed on "any {{resolve:" would fire on that ordinary record --
+    // and since the verdict is record-WIDE, it would withhold every previous
+    // value in the stack and advise `cdkd scrub`, which would find nothing.
+    const changes = computeOutputsDiff(
+      { PublicParam: 'us-east-1a', Other: 'old' },
+      { PublicParam: '{{resolve:ssm:/my/public/param}}', Other: 'new' },
+      new Set(),
+      new Set()
+    );
+    for (const change of changes) {
+      expect(change.oldValueRedacted).toBeUndefined();
+    }
+    expect(changes.find((c) => c.name === 'Other')!.oldValue).toBe('old');
+  });
+
+  it('DOES treat an ssm-secure reference as secret-bearing', () => {
+    const changes = computeOutputsDiff(
+      { Secret: 'plaintext' },
+      { Secret: '{{resolve:ssm-secure:/my/secret}}' },
+      new Set(),
+      new Set()
+    );
+    expect(changes[0]!.oldValueRedacted).toBe(true);
+    expect(JSON.stringify(changes)).not.toContain('plaintext');
   });
 
   it('a fully post-GHSA record withholds NOTHING', () => {

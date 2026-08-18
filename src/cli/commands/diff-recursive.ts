@@ -1039,6 +1039,21 @@ function stripControlChars(value: string): string {
 }
 
 /**
+ * The same guard for an already-JSON-SERIALIZED value: C1 and the bidi marks
+ * only, deliberately NOT C0.
+ *
+ * `JSON.stringify` escapes every character below 0x20 that occurs INSIDE a
+ * string, so the only C0 left on this path is the pretty-printer's own
+ * structural newlines — stripping those collapses a multi-line value onto a
+ * single line. What `JSON.stringify` passes through unchanged is the C1 range
+ * and the bidi overrides, and those are what this removes.
+ */
+function stripDisplayOnlyChars(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
+}
+
+/**
  * Render one node's Outputs delta (issue #1921) via `logFn`, returning the
  * per-kind counts. Emits nothing when there is no delta, so an unchanged
  * Outputs section adds no noise to a resource-only diff.
@@ -1060,10 +1075,11 @@ export function renderOutputChangeLines(
 
   logFn('\n  Outputs:');
   const indent = '            ';
-  // Values are stripped as well as names: `JSON.stringify` escapes everything
-  // below 0x20 but passes C1 and the bidi marks through unchanged.
+  // Values are guarded too, but with the C0 range EXCLUDED — see
+  // `stripDisplayOnlyChars`. Using the full class here deleted the
+  // pretty-printer's newlines and collapsed every multi-line value onto one line.
   const render = (value: unknown): string =>
-    stripControlChars(
+    stripDisplayOnlyChars(
       (JSON.stringify(value, null, 2) ?? 'undefined').replace(/\n/g, `\n${indent}`)
     );
   const renderOld = (change: OutputChange): string =>

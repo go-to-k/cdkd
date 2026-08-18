@@ -358,8 +358,11 @@ break a consumer — was hidden the same way.
   section never silently conflates "unchanged" with "uncomputable".
 - Because this is the first code path that **displays** a stored output value,
   it withholds an `oldValue` that is legacy secret plaintext. Two signals
-  identify such a record: the desired side still being a `{{resolve:...}}`
-  expression while the stored side is not (the condition `cdkd scrub` repairs),
+  identify such a record: the desired side still being a secret-bearing dynamic
+  reference (`{{resolve:secretsmanager:` / `{{resolve:ssm-secure:` — a plain
+  `{{resolve:ssm:` is excluded, since per issue #1901 it is classified by the
+  parameter's type and a `String` parameter is public and legitimately stored
+  resolved) while the stored side is not (the condition `cdkd scrub` repairs),
   and the template itself declaring the key's value as a dynamic reference —
   the latter collected for *every* declared output, including condition-skipped
   ones, because those have no desired side at all and would otherwise print in
