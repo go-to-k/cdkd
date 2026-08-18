@@ -700,3 +700,56 @@ Three more review findings hardened the failure paths. The create-side registrat
   `ON` and its assertion was pinned exactly, because `OPTIONAL` is what the
   default produces anyway and so could not distinguish a threaded explicit value
   from a fired default.
+
+- ✅ **`update()` can now report a PARTIAL outcome, and the ACM replacement orphan
+  stops being invisible** — `src/types/resource.ts`,
+  `src/deployment/update-outcome.ts`, `src/deployment/deploy-engine.ts`,
+  `src/cli/commands/{deploy,drift}.ts`, `src/deployment/rollback-executor.ts`,
+  the ACM + two IAM providers. **Gap (issue
+  [#1819](https://github.com/go-to-k/cdkd/issues/1819)):** `delete` gained a skip
+  channel in #1752; `update` had none, so an update that discovered it could not
+  finish had two options — return normally (a lie) or throw (fail the resource).
+  Four providers implement a REPLACEMENT inside `update()` by pairing create and
+  delete, and by the time the inner delete runs the NEW resource already exists,
+  so aborting would strand an untracked resource. The three create-then-delete
+  providers therefore emitted a `logger.warn` and the deploy exited 0 with the
+  old resource alive and no longer in cdkd state — discoverable only by reading
+  the log. **Live half (issue
+  [#1922](https://github.com/go-to-k/cdkd/issues/1922)):** ACM refuses to delete
+  a certificate a consumer still references (typically a CloudFront distribution
+  in another stack not yet updated), so the replacement's delete throws
+  `ResourceInUseException` and lands in exactly that swallowing catch.
+  **Fix:** `ResourceUpdateResult` is now a base intersected with a discriminated
+  outcome union — omitted / `'updated'`, or `'partial'` with a REQUIRED reason,
+  mirroring `ResourceDeleteResult` so the requirement is compiler-enforced rather
+  than asserted in a doc comment. Omission still means clean, so the ~80
+  providers returning a bare `{ physicalId, wasReplaced }` are untouched.
+  Deliberately no `'skipped'` member: an update that cannot touch the resource
+  at all throws, so that value would be an unreachable enum member.
+  **The naming is load-bearing.** `'partial'`, not `'skipped'`:
+  `RESOURCE_SKIPPED`'s documented invariant is "the resource this row names was
+  not destroyed", and a partial update DID update its row's resource. #1922
+  proposed emitting `RESOURCE_SKIPPED` for the row, which would have put the
+  events store at odds with its own contract. The engine instead emits
+  `RESOURCE_SUCCEEDED` for the updated row AND a `RESOURCE_SKIPPED` naming the
+  SURVIVOR — for which the invariant is exactly true, and which carries the
+  physical id a cleanup pass needs, since state now points at the new resource.
+  No new event type was required. Consumption follows `delete-outcome.ts`
+  exactly: a leaf `update-outcome.ts` (no imports beyond the type, because the
+  engine, `drift --revert` and the rollback executor all consume it and already
+  sit on a dense import ring), a counter kept apart from both `updated` and
+  `deleteSkipped`, a `partial (<reason>)` status line at warn level, a
+  summary row shown only when non-zero, and the shared run-level `skipped`
+  counter `cdkd events` renders as `⚠N`. All three `update()` call sites
+  consume it, so no entry point silently drops what another reports.
+  `sns-subscription` is deliberately untouched — it is delete-then-create and
+  correctly ABORTS, because the alternative is a second live subscription
+  delivering every message twice. **Not included:** the exit-code half of #1922
+  step 3. Deploy does not exit non-zero for its own skipped-DELETE case either,
+  so making a partial UPDATE do so would be arbitrary, and making both do so is
+  a behavior change to every deploy that skips a delete — filed separately.
+  14 new unit tests (helper, ACM producer, engine wiring), each carrying its
+  clean-update control so none passes vacuously, and each mutation-proven:
+  reverting the ACM producer to warn-only fails 2, always-partial fails 1,
+  disabling the in-use classifier fails 1, counting a partial as clean fails 1,
+  dropping the survivor event fails 1, dropping the status line fails 1.

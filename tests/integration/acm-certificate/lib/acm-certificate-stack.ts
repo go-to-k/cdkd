@@ -31,10 +31,38 @@ export class AcmCertificateStack extends cdk.Stack {
     // but distinct from any other test deploy in this account.
     const domain = `cdkd-integ-${this.stackName.toLowerCase()}.example.test`;
 
+    // `CDKD_TEST_UPDATE=validation` flips ValidationMethod DNS -> EMAIL, which
+    // is the ONE property that reaches the ACM provider's own create-then-delete
+    // replacement -- the code path issue #1819's `'partial'` outcome lives on.
+    //
+    // The choice is forced, not stylistic. The provider treats six fields as
+    // immutable, but the deploy engine classifies a change as a replacement
+    // FIRST, from the CloudFormation registry's `createOnlyProperties`, and
+    // does its own DELETE -> CREATE without ever calling `provider.update()`.
+    // For this type that list is SubjectAlternativeNames /
+    // DomainValidationOptions / KeyAlgorithm / DomainName /
+    // CertificateAuthorityArn / CertificateExport -- five of the provider's six.
+    // `ValidationMethod` is the only one absent from it, so it is the only
+    // change the engine hands to `update()` for the provider to replace itself.
+    // Picking any of the others silently tests the engine's path instead, which
+    // is exactly what the first version of this arm did.
+    // Set through the L1 escape hatch rather than `CertificateValidation
+    // .fromEmail()`, because that L2 helper ALSO emits DomainValidationOptions
+    // -- which IS createOnly, so the engine would classify the replacement and
+    // intercept it exactly as SubjectAlternativeNames did. The template must
+    // differ in ValidationMethod and NOTHING else for this arm to reach the
+    // provider. (It also emitted a validationDomain AWS rejects for a
+    // `.example.test` name, which is how that attempt surfaced.)
+    const updateMode = process.env['CDKD_TEST_UPDATE'] ?? '';
     const cert = new acm.Certificate(this, 'TestCertificate', {
       domainName: domain,
       validation: acm.CertificateValidation.fromDns(),
     });
+    if (updateMode.includes('validation')) {
+      const cfnCert = cert.node.defaultChild as acm.CfnCertificate;
+      cfnCert.validationMethod = 'EMAIL';
+      cfnCert.domainValidationOptions = undefined;
+    }
 
     new cdk.CfnOutput(this, 'CertificateArn', {
       value: cert.certificateArn,
