@@ -141,6 +141,23 @@ mask() {
   echo "${head}***(len=${n})"
 }
 
+# Echo a captured command output as FAILURE diagnostics — but never before
+# proving it carries no plaintext. These diagnostics sit on exactly the paths
+# that exist to DETECT a redaction bug, so an unchecked echo prints the secret
+# to the terminal and into the CI log at the precise moment redaction failed.
+# Withholds rather than masking wholesale, so an ordinary failure still shows
+# the output that explains it.
+diag_output() { # diag_output <text>
+  local text="$1"
+  if printf '%s' "${text}" | grep -qF "${EXPECTED_PASSWORD}" \
+    || printf '%s' "${text}" | grep -qF "${EXPECTED_SECURE}" \
+    || printf '%s' "${text}" | grep -qF "${EXPECTED_USERNAME}"; then
+    echo "      output: <WITHHELD — it carries a resolved secret, which is itself the bug>" >&2
+    return 0
+  fi
+  echo "      output: ${text}" >&2
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
@@ -447,7 +464,7 @@ fi
 echo "    OK: diff leaks no plaintext"
 if [ "${DIFF_RC}" -ne 0 ]; then
   echo "FAIL: 'cdkd diff --fail' reported changes on an unchanged stack (spurious UPDATE — rc=${DIFF_RC})" >&2
-  echo "      output: ${DIFF_OUT}" >&2
+  diag_output "${DIFF_OUT}"
   exit 1
 fi
 echo "    OK: diff reports no changes (secret + SecureString compare expression-vs-expression)"
@@ -470,7 +487,7 @@ if printf '%s' "${SCRUB_OUT}" | grep -qiE 'no plaintext secrets|nothing to scrub
   echo "    OK: scrub --dry-run reports the deployed state is already clean"
 else
   echo "FAIL: scrub --dry-run should report nothing to scrub on a freshly-deployed stack" >&2
-  echo "      output: ${SCRUB_OUT}" >&2
+  diag_output "${SCRUB_OUT}"
   exit 1
 fi
 
@@ -554,7 +571,7 @@ run_drift() { # run_drift <extra args...> -> sets DRIFT_OUT / DRIFT_RC
 run_drift
 if [ "${DRIFT_RC}" -ne 0 ]; then
   echo "FAIL: 'cdkd drift' reported drift on a freshly deployed stack (rc=${DRIFT_RC})" >&2
-  echo "      output: ${DRIFT_OUT}" >&2
+  diag_output "${DRIFT_OUT}"
   exit 1
 fi
 assert_no_plaintext "'cdkd drift' on a clean stack" "${DRIFT_OUT}"
@@ -577,14 +594,14 @@ fi
 assert_no_plaintext "'cdkd drift' on a drifted secret leaf" "${DRIFT_OUT}"
 if ! printf '%s' "${DRIFT_OUT}" | grep -qF "Environment.Variables.SECRET_PASSWORD"; then
   echo "FAIL: 'cdkd drift' did not name the drifted secret env var" >&2
-  echo "      output: ${DRIFT_OUT}" >&2
+  diag_output "${DRIFT_OUT}"
   exit 1
 fi
 # The state side of the diff must be the EXPRESSION (not the value it resolves
 # to, and not a blind mask).
 if ! printf '%s' "${DRIFT_OUT}" | grep -qF "{{resolve:secretsmanager:"; then
   echo "FAIL: the drift report's state side is not the {{resolve:...}} expression" >&2
-  echo "      output: ${DRIFT_OUT}" >&2
+  diag_output "${DRIFT_OUT}"
   exit 1
 fi
 echo "    OK: the console edit is reported, with the expression on the state side"
@@ -600,7 +617,7 @@ if printf '%s' "${DRIFT_OUT}" | grep -qF "${DRIFT_SENTINEL}"; then
 fi
 if ! printf '%s' "${DRIFT_OUT}" | grep -qF '***'; then
   echo "FAIL: 'cdkd drift' did not mask the AWS side of the drifted secret path" >&2
-  echo "      output: ${DRIFT_OUT}" >&2
+  diag_output "${DRIFT_OUT}"
   exit 1
 fi
 echo "    OK: the unidentifiable AWS-side value is masked, not printed"
@@ -634,13 +651,13 @@ ACCEPT_REFUSE_RC=$?
 set -e
 if [ "${ACCEPT_REFUSE_RC}" -ne 0 ]; then
   echo "FAIL: 'cdkd drift --accept' failed instead of refusing the path (rc=${ACCEPT_REFUSE_RC})" >&2
-  echo "      output: ${ACCEPT_REFUSE_OUT}" >&2
+  diag_output "${ACCEPT_REFUSE_OUT}"
   exit 1
 fi
 assert_no_plaintext "'cdkd drift --accept' on a masked path" "${ACCEPT_REFUSE_OUT}"
 if ! printf '%s' "${ACCEPT_REFUSE_OUT}" | grep -qF "not accepting"; then
   echo "FAIL: --accept did not say it was refusing the secret-bearing path" >&2
-  echo "      output: ${ACCEPT_REFUSE_OUT}" >&2
+  diag_output "${ACCEPT_REFUSE_OUT}"
   exit 1
 fi
 REFUSED_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
@@ -679,7 +696,7 @@ REVERT_RC=$?
 set -e
 if [ "${REVERT_RC}" -ne 0 ]; then
   echo "FAIL: 'cdkd drift --revert' failed (rc=${REVERT_RC})" >&2
-  echo "      output: ${REVERT_OUT}" >&2
+  diag_output "${REVERT_OUT}"
   exit 1
 fi
 assert_no_plaintext "'cdkd drift --revert'" "${REVERT_OUT}"
@@ -732,7 +749,7 @@ echo "    OK: the revert's state write kept the expressions"
 run_drift
 if [ "${DRIFT_RC}" -ne 0 ]; then
   echo "FAIL: 'cdkd drift' still reports drift after --revert (rc=${DRIFT_RC})" >&2
-  echo "      output: ${DRIFT_OUT}" >&2
+  diag_output "${DRIFT_OUT}"
   exit 1
 fi
 echo "    OK: the stack is clean again after --revert"
@@ -763,7 +780,7 @@ echo "    OK: SECRET_PASSWORD is absent from the live Lambda"
 run_drift
 if [ "${DRIFT_RC}" -ne 0 ]; then
   echo "FAIL: 'cdkd drift' reported drift for a property AWS no longer returns (rc=${DRIFT_RC})" >&2
-  echo "      output: ${DRIFT_OUT}" >&2
+  diag_output "${DRIFT_OUT}"
   exit 1
 fi
 assert_no_plaintext "'cdkd drift' on an absent secret-bearing property" "${DRIFT_OUT}"
@@ -802,6 +819,13 @@ fi
 # whether or not the fix is present.
 ABSENT_PW=$(printf '%s' "${ABSENT_ENV}" | jq -r '.SECRET_PASSWORD // empty')
 case "${ABSENT_PW}" in
+  '{{resolve:secretsmanager:'*':AWSCURRENT}}')
+    # Inert here — no collapse route reaches this arm — but kept so all three
+    # SECRET_PASSWORD checks in this file read the same way, and so a future
+    # change that DOES open one is caught by whichever runs first.
+    echo "FAIL: --accept left SECRET_PASSWORD on its staged sibling's expression" >&2
+    exit 1
+    ;;
   '{{resolve:secretsmanager:'*)
     echo "    OK: --accept left the unreadable property's reference intact in the observed baseline"
     ;;
@@ -826,7 +850,7 @@ set -e
 run_drift
 if [ "${DRIFT_RC}" -ne 0 ]; then
   echo "FAIL: could not restore a clean drift state after the absent-property arm (rc=${DRIFT_RC})" >&2
-  echo "      output: ${DRIFT_OUT}" >&2
+  diag_output "${DRIFT_OUT}"
   exit 1
 fi
 echo "    OK: stack restored to a clean drift state"
@@ -876,7 +900,7 @@ ACCEPT_RC=$?
 set -e
 if [ "${ACCEPT_RC}" -ne 0 ]; then
   echo "FAIL: 'cdkd drift --accept' failed (rc=${ACCEPT_RC})" >&2
-  echo "      output: ${ACCEPT_OUT}" >&2
+  diag_output "${ACCEPT_OUT}"
   exit 1
 fi
 assert_no_plaintext "'cdkd drift --accept'" "${ACCEPT_OUT}"
@@ -935,7 +959,7 @@ set -e
 run_drift
 if [ "${DRIFT_RC}" -ne 0 ]; then
   echo "FAIL: could not restore the stack to a clean drift state (rc=${DRIFT_RC})" >&2
-  echo "      output: ${DRIFT_OUT}" >&2
+  diag_output "${DRIFT_OUT}"
   exit 1
 fi
 echo "    OK: stack restored to a clean drift state"

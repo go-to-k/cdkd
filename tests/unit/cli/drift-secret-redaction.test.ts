@@ -1473,6 +1473,7 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     // whole-token preservation gate declines to copy the live value into a
     // mixed leaf, so the mechanism cannot create an exposure it is unable to
     // mask.
+    expect(update).toHaveBeenCalledTimes(1);
     const sent = update.mock.calls[0]![3] as { Env: Record<string, unknown> };
     expect(String(sent.Env['DSN'])).not.toContain(SECURE_PLAINTEXT);
     expect(String(sent.Env['DSN'])).toContain(UNSUPPORTED_EXPR);
@@ -1512,6 +1513,7 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
 
     const { output } = await runDrift(['TestStack', '--revert', '--yes']);
 
+    expect(update).toHaveBeenCalledTimes(1);
     const sent = update.mock.calls[0]![3] as { Env: Record<string, unknown> };
     expect(String(sent.Env['DSN'])).not.toContain(SECURE_PLAINTEXT);
     expect(output).not.toContain(SECURE_PLAINTEXT);
@@ -1793,6 +1795,7 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
 
     await runDrift(['TestStack', '--revert', '--yes']);
 
+    expect(update).toHaveBeenCalledTimes(1);
     const sent = update.mock.calls[0]![3] as { Env: Record<string, unknown> };
     expect(sent.Env['DB']).toBe(UNSUPPORTED_EXPR);
   });

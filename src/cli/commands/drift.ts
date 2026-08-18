@@ -1291,11 +1291,21 @@ async function runDriftForStack(
         // already holds these literals and state records them. Worth saying
         // once per resource, and safe to say — a token names a reference, not a
         // value.
+        //
+        // The revert clause is deliberately conditional. Preservation only
+        // applies where the property's WHOLE value is the token; a token
+        // EMBEDDED in a larger string (`"jdbc:...password={{resolve:ssm-secure:/pw}}"`)
+        // is not preserved, and this is the message the user reads immediately
+        // before the confirmation prompt — promising an untouched live value
+        // there would misinform someone about to authorise a destructive write.
         logger.warn(
           `${logicalId} (${resource.resourceType}): cdkd cannot resolve ` +
             `${maskSecretsInText([...unresolvedTokens].join(', '), secrets)} — those properties ` +
-            `are NOT compared, and a revert leaves their live values unchanged. cdkd resolves ` +
-            `'secretsmanager' and 'ssm' references only.`
+            `are NOT compared. A revert leaves a property whose WHOLE value is one of these ` +
+            `tokens untouched; where a token is EMBEDDED in a longer string, the revert writes ` +
+            `that string with the token literal, exactly as 'cdkd deploy' does — so a resolved ` +
+            `value AWS holds there WOULD be overwritten. cdkd resolves 'secretsmanager' and ` +
+            `'ssm' references only.`
         );
       }
       // Observed-baseline blind spot (issue #1498): the snapshot is captured
@@ -2160,26 +2170,34 @@ export function preserveLiveValuesAtUnresolvedTokens(
       // the AWS error text alike.
       //
       // Returning the send string unchanged restores the pre-#1914 behaviour
-      // for exactly that narrow shape — the literal token ships, which is what
-      // `cdkd deploy` does — and gives up the live-value preservation there.
-      // That trade is deliberate: a NEW disclosure is worse than a preserved
-      // pre-existing breakage, and the breakage is confined to a leaf mixing an
-      // unresolvable reference with a resolvable one. Masking by SPAN, which is
-      // what would let this case be both preserved and safe, is issue #1935.
+      // for that shape — the literal token ships, which is what `cdkd deploy`
+      // does — and gives up the live-value preservation there. That trade is
+      // deliberate: a NEW disclosure is worse than a preserved pre-existing
+      // breakage.
+      //
+      // The shape is ANY leaf whose whole value is not the token, which is
+      // wider than the two-reference case: a single token embedded in a longer
+      // string (`"jdbc:...password={{resolve:ssm-secure:/pw}}"`) is not
+      // preserved either, so a revert triggered by a sibling key writes that
+      // string over whatever AWS holds. Both user-facing warnings say so,
+      // because the detection one is read immediately before the confirmation
+      // prompt. Masking by SPAN, which is what would let these cases be both
+      // preserved and safe, is issue #1935.
       if (!isWholeDynamicReference(value)) return value;
       if (live === undefined) return value;
       // REGISTER what was just moved. Nothing was recorded FOR THIS LEAF —
       // that is what made the token a survivor — so copying the live value in
       // and leaving the mask sets untouched hands a plaintext to three readers
-      // that would each have masked it:
+      // that would each have masked it: the retry logger, the AWS-error report,
+      // and the #1644 narrowing delta (whose `descendArrays: false` rules
+      // cannot position an array-nested leaf and rely on the value scan finding
+      // it).
       //
       // (`secrets` itself is NOT necessarily empty here: a resource can hold
       // one resolvable `secretsmanager` reference AND one `ssm-secure`
       // survivor, which is exactly the shape `referencesUnresolved` describes.
-      // Reading this header as "the map is empty" would make the guards below
-      // look unreachable, and they are not.) the retry logger, the AWS-error report, and the #1644
-      // narrowing delta (whose `descendArrays: false` rules cannot position an
-      // array-nested leaf and rely on the value scan finding it).
+      // Reading the sentence above as "the map is empty" would make the guards
+      // below look unreachable, and they are not.)
       //
       // The rule this is an instance of: a mechanism that deliberately moves
       // plaintext into a bag must also register that plaintext with everything
@@ -2604,12 +2622,13 @@ async function runRevert(
         }
         if (unresolvedTokens.size > 0) {
           // A warning, not a failure — failing would abandon every OTHER
-          // drifted property on the resource and exit 2. But the wording no
-          // longer claims replaying the token is a no-op: that is true only for
-          // a record cdkd deployed, and false for a CFn-migrated one where
-          // CloudFormation resolved the reference server-side. What is true in
-          // BOTH cases is what `preserveLiveValuesAtUnresolvedTokens` makes
-          // true — the live value at those positions is left exactly as it is.
+          // drifted property on the resource and exit 2. The wording claims
+          // neither that replaying the token is a no-op (true only for a record
+          // cdkd deployed, false for a CFn-migrated one where CloudFormation
+          // resolved the reference server-side) NOR that the live value is
+          // always preserved: `preserveLiveValuesAtUnresolvedTokens` preserves
+          // it only where the property's WHOLE value is the token, and declines
+          // for an embedded one.
           logger.warn(
             // Deliberately worded so it cannot be confused with the
             // DETECTION-side warning, which names the same tokens: a test that
@@ -2617,9 +2636,11 @@ async function runRevert(
             // messages must differ in more than punctuation.
             `  ! [revert] ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
               `cdkd cannot resolve ` +
-              `${maskSecretsInText([...unresolvedTokens].join(', '), secrets)} — the live value ` +
-              `at those properties is left UNCHANGED by this revert, since cdkd cannot tell what ` +
-              `it should be.`
+              `${maskSecretsInText([...unresolvedTokens].join(', '), secrets)} — a property ` +
+              `whose WHOLE value is one of these tokens is left UNCHANGED by this revert. Where ` +
+              `a token is EMBEDDED in a longer string, that string is written with the token ` +
+              `literal, exactly as 'cdkd deploy' does, so a resolved value AWS holds there is ` +
+              `overwritten.`
           );
         }
         // AWS-current values for non-drifted top-level keys + desired

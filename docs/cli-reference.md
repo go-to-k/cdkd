@@ -1940,13 +1940,25 @@ therefore mask.
 A reference cdkd does not resolve at all — `{{resolve:ssm-secure:...}}` is the
 one such spelling today — is **not** an error, and is **not** compared: the
 property is reported as neither clean nor drifted, and a warning names the
-token once per resource. A `--revert` triggered by any other drifted property
-on the same resource leaves the live value at those positions **unchanged**,
-because cdkd cannot tell what it should be. That matters for a stack adopted
-with `cdkd import --migrate-from-cloudformation`: CloudFormation resolves
-`ssm-secure` server-side, so AWS holds the resolved value while cdkd state
-holds the literal token, and writing the token back would replace a working
-secret with a string.
+token once per resource.
+
+What a `--revert` triggered by another drifted property on the same resource
+does to those positions depends on where the token sits, and the difference
+matters for a stack adopted with `cdkd import --migrate-from-cloudformation`,
+where CloudFormation resolved `ssm-secure` server-side so AWS holds the
+resolved value while cdkd state holds the literal token:
+
+- If the property's **whole value** is the token, the live value is left
+  **unchanged** — cdkd cannot tell what it should be, so it does not touch it.
+- If the token is **embedded in a longer string** (`"jdbc:...password={{resolve:ssm-secure:/pw}}"`),
+  that string is written **with the token literal**, exactly as `cdkd deploy`
+  does — so a resolved value AWS holds there **is overwritten**. Preserving
+  this case needs masking by span, which is tracked separately; until then,
+  prefer a `secretsmanager` or plain `ssm` reference in a composed string, or
+  keep the reference as the property's whole value.
+
+Both the drift warning and the revert warning state which of the two applies,
+and the drift one is printed before the confirmation prompt.
 
 Drift detection works automatically for every resource type that goes
 through Cloud Control API (the majority of cdkd's surface). SDK
