@@ -1,4 +1,12 @@
 import { getLogger } from '../utils/logger.js';
+import {
+  collectPublishedOutputNames,
+  exportAliasCollisionWarning,
+  exportNameCarriesSecret,
+  isExportAliasCollision,
+  isOutputSuppressedByCondition,
+  secretBearingExportNameWarning,
+} from './outputs-export-alias.js';
 import { bold, cyan, gray, green, red, yellow } from '../utils/colors.js';
 import { formatResourceLine } from '../utils/resource-line.js';
 import { getLiveRenderer } from '../utils/live-renderer.js';
@@ -4504,6 +4512,11 @@ export class DeployEngine {
       stackName
     );
 
+    // The names this deploy PUBLISHES. Owns keys in both this bag and the
+    // position-source bag below, and is the set an export alias must not land
+    // on (issue #1919).
+    const publishedOutputNames = collectPublishedOutputNames(template.Outputs, conditions);
+
     for (const [outputKey, output] of Object.entries(template.Outputs)) {
       // CFn semantics: an output whose `Condition` evaluates false is simply
       // not created — skip it silently instead of attempting resolution
@@ -4511,7 +4524,7 @@ export class DeployEngine {
       // even publish an output/export CFn would omit). Mirrors the resource
       // side's `filterResourcesByCondition` (issue #1028; unknown condition
       // names are kept, matching that helper's semantics).
-      if (output.Condition !== undefined && conditions?.[output.Condition] === false) {
+      if (isOutputSuppressedByCondition(output, conditions)) {
         this.logger.debug(`Skipping output ${outputKey} — condition ${output.Condition} is false`);
         continue;
       }
@@ -4527,45 +4540,68 @@ export class DeployEngine {
               ? output.Export.Name
               : await this.resolver.resolve(output.Export.Name, context);
           if (typeof exportName === 'string') {
-            // COLLISION GUARD (issue #1919): an `Export.Name` spelled exactly
-            // like ANOTHER declared output's NAME must not be aliased at all.
+            // TWO refusals guard this alias, and both are about the same thing:
+            // this bag's KEYS (issue #1919).
             //
-            // Two writers key this one bag: the alias below, and the post-loop
-            // pass at the end of this method that writes the POSITION source
-            // for every declared output NAME. On a collision they disagree —
-            // the alias puts THIS output's resolved value under key `A` while
-            // the post-loop pass puts output `A`'s UNRESOLVED value under the
-            // same key — and `redactByPath`'s expression arm then returns the
-            // source leaf verbatim, persisting A's `{{resolve:...}}` expression
-            // as THIS output's value into state and the exports index. That is
-            // the wrong-reference class issue #1910 exists to remove, one layer
-            // up. It is also ORDER-DEPENDENT: the corruption needs the
-            // exporting output to be iterated AFTER the colliding-name output,
-            // otherwise the latter's own write reclaims the key and only the
-            // alias is lost.
+            // 1. SECRET-BEARING NAME. `Export.Name` may be an intrinsic, and
+            //    `Fn::Sub` / `Fn::Join` substitute dynamic references — so the
+            //    resolved name can contain secret PLAINTEXT. It would become a
+            //    key in `state.json` and in the exports index, and every
+            //    redaction pass walks VALUES only, so nothing downstream would
+            //    ever scrub it. Refuse rather than publish; the warning shows
+            //    the name MASKED, since stderr is a reader too.
             //
-            // Of the issue's two directions this takes SKIP-AND-WARN rather
-            // than re-keying the source pass by the alias rule. Matching the
-            // source pass to the alias's write order would keep the two bags
-            // consistent, but it would leave `outputs[A]` holding a DIFFERENT
-            // output's value — order-dependently — which is corruption of the
-            // output named `A` even once its expression is right. Skipping
-            // instead partitions the key space by construction: declared output
-            // NAMES belong to the post-loop pass, export aliases to this one,
-            // and no key is in both. Nothing reachable is lost, because a
-            // consumer resolving export `A` reads key `A` from the exports
-            // index, and that key is output `A`'s — so the export was
-            // unreachable by name either way. WARN, since that is a
-            // hand-written-template mistake cdkd cannot honour.
+            // 2. COLLISION with a published output NAME. Two writers key this
+            //    one bag: this alias, and the post-loop pass below that writes
+            //    the redaction POSITION source for every published output NAME.
+            //    On a collision they disagree — the alias puts THIS output's
+            //    resolved value under key `A` while the post-loop pass puts
+            //    output `A`'s UNRESOLVED value there — and `redactByPath`'s
+            //    expression arm then returns the source leaf verbatim,
+            //    persisting A's `{{resolve:...}}` expression as THIS output's
+            //    value into state and the exports index. That is the
+            //    wrong-reference class issue #1910 exists to remove, one layer
+            //    up. It is ORDER-DEPENDENT: the corruption needs the exporting
+            //    output to be iterated AFTER the colliding-name output,
+            //    otherwise the latter's own write reclaims the key and only the
+            //    alias is lost.
             //
-            // A collision with the output's OWN name is not one: the alias
-            // rewrites the identical key with the identical value, and both
-            // writers then carry the same source.
-            if (exportName !== outputKey && Object.hasOwn(template.Outputs, exportName)) {
+            //    Of the issue's two directions this takes SKIP-AND-WARN rather
+            //    than re-keying the source pass by the alias rule. Matching the
+            //    source pass to the alias's write order would keep the two bags
+            //    consistent, but it would leave `outputs[A]` holding a DIFFERENT
+            //    output's value — order-dependently — which is corruption of the
+            //    output named `A` even once its expression is right. Skipping
+            //    instead partitions the key space by construction: published
+            //    output NAMES belong to the post-loop pass, export aliases to
+            //    this one, and no key is in both.
+            //
+            //    This IS a behavior change with a consumer-visible edge, stated
+            //    plainly because the warning fires on the PRODUCER's deploy
+            //    while the effect lands on the CONSUMER's: where the alias
+            //    previously won the key, an `Fn::ImportValue` on that name now
+            //    resolves to the colliding output's value instead. CFn would
+            //    publish both (its export namespace is separate from its output
+            //    names), so this is a deliberate parity divergence — cdkd's
+            //    exports index is derived from the outputs bag and cannot hold
+            //    two values under one key. Fail-closed and warned beats a
+            //    silently wrong reference.
+            //
+            // The collision set is the PUBLISHED names, not the declared ones.
+            // A condition-suppressed output writes neither a value nor a source
+            // (see the post-loop pass), so its name is free — reserving it would
+            // drop a working export because an unrelated condition went false.
+            if (exportNameCarriesSecret(exportName, context.recordedSecretValues)) {
               this.logger.warn(
-                `Output ${outputKey} exports as "${exportName}", which is also the name of another output in this stack — ` +
-                  `skipping the export alias so output ${exportName} keeps its own value. ` +
-                  `Rename the export (or that output) to make the export reachable.`
+                secretBearingExportNameWarning(
+                  outputKey,
+                  exportName,
+                  context.recordedSecretValues ?? new Map()
+                )
+              );
+            } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
+              this.logger.warn(
+                exportAliasCollisionWarning(outputKey, exportName, context.recordedSecretValues)
               );
             } else {
               outputs[exportName] = value;
@@ -4618,17 +4654,27 @@ export class DeployEngine {
     }
     // ...and the UNRESOLVED values beside them, as the POSITION source (#1910).
     // Keyed by output NAME so the walk lines up with the resolved `outputs` bag
-    // this method returns. Accumulated rather than assigned: `resolveOutputs`
-    // runs more than once per deploy (the no-change re-check re-resolves), and
-    // a condition-pruned output is skipped by the loop above, so overwriting
-    // would drop a source this run legitimately did not revisit.
+    // this method returns.
     //
-    // This pass owns every DECLARED output name — including a condition-pruned
-    // one, which still writes its source here while contributing no value. That
-    // is why the alias guard above tests the declared set rather than the
-    // surviving one: a pruned sibling would clobber an alias just the same
-    // (issue #1919).
+    // PUBLISHED names only. A condition-suppressed output contributed no value
+    // above, so a source under its name can never position anything — it can
+    // only CLOBBER an export alias that legitimately took the free name, which
+    // is the #1919 corruption arriving from the other side. Restricting the
+    // pass is what lets the alias guard key on the published set and keep such
+    // an export working.
+    //
+    // An earlier revision of this comment claimed the writes had to accumulate
+    // because `resolveOutputs` runs more than once per deploy. That is wrong,
+    // and it was load-bearing for the wrong decision, so it is corrected rather
+    // than deleted: there are exactly two call sites (the no-change branch and
+    // the post-provisioning one) and they are MUTUALLY EXCLUSIVE — the
+    // no-change branch returns before `executeDeployment` — while `deploy()`
+    // resets this bag. So at most one call runs per deploy, and skipping a
+    // suppressed output here cannot drop a source some other pass wrote.
+    // `tests/unit/deployment/deploy-engine-outputs-export-name-collision.test.ts`
+    // pins that single-call property, since this decision now rests on it.
     for (const [outputKey, output] of Object.entries(template.Outputs)) {
+      if (!publishedOutputNames.has(outputKey)) continue;
       this.outputsTemplateSource[outputKey] = output.Value;
     }
 

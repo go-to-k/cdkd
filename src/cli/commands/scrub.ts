@@ -22,6 +22,12 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
+import {
+  collectPublishedOutputNames,
+  exportAliasCollisionScrubWarning,
+  isExportAliasCollision,
+  isOutputSuppressedByCondition,
+} from '../../deployment/outputs-export-alias.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
 import {
   scrubResourceRecord,
@@ -314,19 +320,64 @@ export async function scrubStack(
     // Outputs are secret-bearing too (a CfnOutput resolving a secret reference),
     // so re-resolve the template Outputs to record any secret they carry.
     const templateOutputs = stack.template.Outputs ?? {};
+    // The SAME key-space rules the deploy engine applies when it builds this bag
+    // (issue #1919) — shared rather than re-spelled, because this bag only works
+    // if it reproduces the deploy engine's key ownership. Without a guard here
+    // `cdkd scrub` was the WORSE half of that defect: its bag is legacy state
+    // holding plaintext, and the alias write below runs AFTER the owning
+    // output's write in this single loop (the opposite winner from the deploy
+    // engine, where the post-loop pass wins), so a colliding export name
+    // positioned a CORRECT public output by the exporting output's secret
+    // expression and rewrote it into a reference naming a DIFFERENT output's
+    // secret — in the command that exists to remediate the advisory, and
+    // republished from there into the exports index.
+    //
+    // The guard is deliberately NOT a strict mirror of the deploy engine's. The
+    // engine skips the alias and lets the owning output position the key,
+    // because it JUST resolved that key's value and knows whose it is. Scrub
+    // knows nothing of the sort: its bag is state written by an older binary,
+    // where the alias may well have WON the key, so "the owner's Value
+    // positions it" is an assumption that is wrong exactly when the state is
+    // corrupted — the case scrub exists for. So a colliding key gets NO source
+    // at all and falls to the value scan, which reads the plaintext actually
+    // stored and maps it back to the expression that produced it. That is the
+    // pre-#1910 behavior, which for this key is what the issue calls "weaker but
+    // not wrong: it returned an expression that at least resolved to the value
+    // it replaced". The narrow residual it accepts is the #1910 collapse (two
+    // expressions sharing one resolved value) for that single key.
+    const publishedOutputNames = collectPublishedOutputNames(templateOutputs, conditions);
+    const ambiguousKeys = new Set<string>();
+    for (const [name, output] of Object.entries(templateOutputs)) {
+      const exportName = (output as { Export?: { Name?: unknown } }).Export?.Name;
+      if (
+        typeof exportName === 'string' &&
+        isExportAliasCollision(exportName, name, publishedOutputNames)
+      ) {
+        ambiguousKeys.add(exportName);
+        logger.warn(exportAliasCollisionScrubWarning(name, exportName));
+      }
+    }
     for (const [name, output] of Object.entries(templateOutputs)) {
       const value = (output as { Value?: unknown }).Value;
       if (value === undefined) continue;
+      // A condition-suppressed output publishes no value, so `state.outputs`
+      // holds no key of its name and a source under it can only clobber an
+      // export alias that took the free name.
+      if (isOutputSuppressedByCondition(output, conditions)) continue;
       // The unresolved output value is its POSITION source (#1910).
-      outputsTemplateSource[name] = value;
+      if (!ambiguousKeys.has(name)) outputsTemplateSource[name] = value;
       // `state.outputs` ALSO carries an export-name ALIAS for the same value
       // (the deploy engine writes one so `Fn::ImportValue` can find it), and
       // that second key needs the same source or it falls to the value scan and
       // collapses onto a sibling's expression. Only a LITERAL export name is
       // handled: an intrinsic one would need the resolver, and getting it wrong
-      // is worse than leaving the alias on the pre-#1910 behavior.
+      // is worse than leaving the alias on the pre-#1910 behavior. (That also
+      // means scrub never meets the secret-bearing-name case the deploy engine
+      // refuses — an unresolved intrinsic never becomes a key here.)
       const exportName = (output as { Export?: { Name?: unknown } }).Export?.Name;
-      if (typeof exportName === 'string') outputsTemplateSource[exportName] = value;
+      if (typeof exportName === 'string' && !ambiguousKeys.has(exportName)) {
+        outputsTemplateSource[exportName] = value;
+      }
       try {
         await resolver.resolve(value, {
           template: stack.template,
