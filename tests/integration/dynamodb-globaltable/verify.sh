@@ -161,19 +161,28 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # fire too LATE (the arm then fails loudly at step 15b with nothing left
 # behind) but never too EARLY (which would arm the #1521 gate and make the
 # arm pass with the fix reverted).
-delete_retry_race_driver() { # $1=destroy log  $2=table  $3=index  $4=marker file
-  local log="$1" table="$2" index="$3" marker="$4"
+delete_retry_race_driver() { # $1=destroy log  $2=table  $3=marker file
+  local log="$1" table="$2" marker="$3"
   local signal="Deregistered auto-scaling target table/${table} (dynamodb:table:WriteCapacityUnits)"
   local i
   for i in $(seq 1 12000); do
     if [ -s "${log}" ] && grep -qF "${signal}" "${log}"; then
-      # A provisioned-capacity change on ONE index is enough to put it into
-      # `UPDATING`, which is what AWS refuses the delete on. The values are an
-      # increase over the declared 1/1 so the call cannot be a no-op.
+      # CREATE a new index rather than re-provisioning an existing one.
+      # Measured 2026-08-18: a provisioned-capacity `Update` on an empty index
+      # settles in well under a second, so it was ACTIVE again before
+      # `DeleteTable` arrived and AWS never refused — the arm failed twice in a
+      # row reporting "the UpdateTable landed but AWS never refused". Widening
+      # the window (more indexes) does not fix that, because the problem is how
+      # SHORT the transition is, not how narrow the window is. An index CREATE
+      # holds the table in `UPDATING` through the backfill, which is also
+      # literally the condition the refusal names ("indexes are being
+      # created"). The index is never cleaned up on purpose: the table it hangs
+      # off is deleted seconds later by the destroy under test.
       if aws dynamodb update-table \
         --table-name "${table}" \
+        --attribute-definitions AttributeName=raceKey,AttributeType=S \
         --global-secondary-index-updates \
-        "[{\"Update\":{\"IndexName\":\"${index}\",\"ProvisionedThroughput\":{\"ReadCapacityUnits\":4,\"WriteCapacityUnits\":4}}}]" \
+        "[{\"Create\":{\"IndexName\":\"raceIdx\",\"KeySchema\":[{\"AttributeName\":\"raceKey\",\"KeyType\":\"HASH\"}],\"Projection\":{\"ProjectionType\":\"KEYS_ONLY\"},\"ProvisionedThroughput\":{\"ReadCapacityUnits\":1,\"WriteCapacityUnits\":1}}}]" \
         --region "${REGION}" >/dev/null 2>&1; then
         printf 'fired' >"${marker}"
       else
@@ -1901,7 +1910,7 @@ echo "[verify] step 15: cdkd destroy --remove-protection --force --verbose (with
 # the retry line that proves cdkd ABSORBED it are all debug-level.
 DESTROY_LOG="$(mktemp)"
 DELETE_RETRY_MARKER="$(mktemp)"
-delete_retry_race_driver "${DESTROY_LOG}" "${GSI_DELETE_RETRY_TABLE}" busyIdx0 "${DELETE_RETRY_MARKER}" &
+delete_retry_race_driver "${DESTROY_LOG}" "${GSI_DELETE_RETRY_TABLE}" "${DELETE_RETRY_MARKER}" &
 DELETE_RETRY_DRIVER_PID=$!
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --remove-protection --force --verbose 2>&1 | tee "${DESTROY_LOG}"
 # Kill rather than plain-wait: a driver still looping here is one whose signal
