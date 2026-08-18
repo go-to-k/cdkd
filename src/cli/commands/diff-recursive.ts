@@ -342,9 +342,29 @@ export async function computeStackDiff(
   // of showing a phantom the apply would never write. Nothing is lost: an output
   // only fails to resolve because it references a resource this deploy has yet
   // to create, and that CREATE is already on the resource side of the diff.
-  const outputChanges = resolved.resolutionFailed
-    ? []
-    : computeOutputsDiff(currentState.outputs, resolved.outputs, resolved.exportNames);
+  let outputChanges: OutputChange[] = [];
+  if (resolved.resolutionFailed) {
+    // Surface the case where the outputs DID differ but a resolution failure
+    // suppressed the report, mirroring the deploy engine's twin warning
+    // ("Outputs changed but one or more could not be resolved"). Silence here
+    // would leave "no outputs shown" ambiguous between "unchanged" and
+    // "could not be computed".
+    if (
+      computeOutputsDiff(currentState.outputs, resolved.outputs, resolved.exportNames).length > 0
+    ) {
+      logger.warn(
+        `Outputs of stack ${stackName} may have changed, but one or more could not be resolved ` +
+          `against current state — omitting the Outputs section from this diff. ` +
+          `It is usually an output referencing a resource this deploy has yet to create.`
+      );
+    }
+  } else {
+    outputChanges = computeOutputsDiff(
+      currentState.outputs,
+      resolved.outputs,
+      resolved.exportNames
+    );
+  }
 
   return { changes, outputChanges };
 }
@@ -715,6 +735,12 @@ export interface DiffOutputChangeJson {
   changeType: OutputChange['changeType'];
   oldValue?: unknown;
   newValue?: unknown;
+  /**
+   * Present and true when `oldValue` was WITHHELD because state holds legacy
+   * secret plaintext for this key (run `cdkd scrub`). The change is still
+   * reported; only the value is omitted.
+   */
+  oldValueRedacted?: boolean;
   /** True for an `Export.Name` key — the ones a consumer's `Fn::ImportValue` reads. */
   export: boolean;
 }
@@ -767,7 +793,12 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
       // `JSON.stringify` does not have to drop them: an ADD has no old side and
       // a REMOVE has no new side, and a key present-but-null would read as a
       // real null value.
-      ...(change.changeType !== 'ADD' ? { oldValue: change.oldValue } : {}),
+      // A withheld legacy-plaintext value is withheld from `--json` too — that
+      // payload is the one most likely to be captured by CI tooling.
+      ...(change.changeType !== 'ADD' && !change.oldValueRedacted
+        ? { oldValue: change.oldValue }
+        : {}),
+      ...(change.oldValueRedacted ? { oldValueRedacted: true } : {}),
       ...(change.changeType !== 'REMOVE' ? { newValue: change.newValue } : {}),
       export: change.isExport,
     })),
@@ -989,6 +1020,18 @@ export function renderChangeLines(
   return { create: createCount, update: updateCount, delete: deleteCount };
 }
 
+/** Stand-in printed instead of a withheld legacy-plaintext output value. */
+const REDACTED_LEGACY_PLAINTEXT = '<redacted: legacy plaintext in state — run `cdkd scrub`>';
+
+/**
+ * Strip C0/C1 control characters (incl. ESC, so ANSI sequences cannot survive)
+ * from a template-controlled string before it reaches the terminal.
+ */
+function stripControlChars(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
+}
+
 /**
  * Render one node's Outputs delta (issue #1921) via `logFn`, returning the
  * per-kind counts. Emits nothing when there is no delta, so an unchanged
@@ -1013,25 +1056,33 @@ export function renderOutputChangeLines(
   const indent = '            ';
   const render = (value: unknown): string =>
     (JSON.stringify(value, null, 2) ?? 'undefined').replace(/\n/g, `\n${indent}`);
+  const renderOld = (change: OutputChange): string =>
+    change.oldValueRedacted ? REDACTED_LEGACY_PLAINTEXT : render(change.oldValue);
 
   for (const change of outputChanges) {
     const exported = change.isExport ? ' [export]' : '';
+    // Unlike a resource line's logical id — which CloudFormation constrains to
+    // [A-Za-z0-9] — an Outputs bag key can be an `Export.Name` that cdkd
+    // RESOLVED from an `Fn::Sub` / parameter / SSM value, so it never passed a
+    // CFn validator and may carry control characters or ANSI escapes that would
+    // rewrite the surrounding terminal output.
+    const name = stripControlChars(change.name);
     switch (change.changeType) {
       case 'ADD':
         counts.add++;
-        logFn(`    [+] ${change.name}${exported}`);
+        logFn(`    [+] ${name}${exported}`);
         logFn(`          new: ${render(change.newValue)}`);
         break;
       case 'MODIFY':
         counts.change++;
-        logFn(`    [~] ${change.name}${exported}`);
-        logFn(`          old: ${render(change.oldValue)}`);
+        logFn(`    [~] ${name}${exported}`);
+        logFn(`          old: ${renderOld(change)}`);
         logFn(`          new: ${render(change.newValue)}`);
         break;
       case 'REMOVE':
         counts.remove++;
-        logFn(`    [-] ${change.name}${exported}`);
-        logFn(`          old: ${render(change.oldValue)}`);
+        logFn(`    [-] ${name}${exported}`);
+        logFn(`          old: ${renderOld(change)}`);
         break;
     }
   }

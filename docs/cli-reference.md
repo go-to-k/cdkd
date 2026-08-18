@@ -1611,8 +1611,10 @@ would apply, comparing the synth template against cdkd's S3 state.
   human renderer's `[via CC API: <props>]` annotation in machine form;
   absent when the resource routes via its SDK provider). Each
   `outputChanges` entry is `{name, changeType: "ADD" | "MODIFY" | "REMOVE",
-  oldValue?, newValue?, export}` — `oldValue` is absent on an `ADD` and
-  `newValue` on a `REMOVE`. Progress logging is suppressed so stdout carries
+  oldValue?, newValue?, oldValueRedacted?, export}` — `oldValue` is absent on an
+  `ADD` and `newValue` on a `REMOVE`, and `oldValue` is also withheld (with
+  `oldValueRedacted: true` in its place) when state holds legacy secret
+  plaintext for that key. Progress logging is suppressed so stdout carries
   only the JSON payload.
 
 **Outputs section** (issue
@@ -1648,8 +1650,23 @@ never inflates the create / update / delete counts. Output values are resolved
 best-effort against current state, exactly as `cdkd deploy` resolves them; when
 an output cannot be fully resolved (typically because it references a resource
 this deploy has yet to create) the Outputs section is omitted rather than
-guessed — that resource's `CREATE` is already on the resource side of the
-diff.
+guessed — that resource's `CREATE` is already on the resource side of the diff
+— and a warning says so, so an absent section never silently means "unchanged".
+
+Because this is the only command that prints a **stored** output value, two
+safeguards apply. A previous value that is legacy secret plaintext — recognisable
+because the template side is still a `{{resolve:...}}` expression while state is
+not, exactly what [`cdkd scrub`](#cdkd-scrub) repairs — is withheld from both the
+text and `--json` output rather than printed into CI logs. And output / export
+names are stripped of control characters before display: an `Export.Name` is a
+value cdkd resolved (from an `Fn::Sub`, a parameter, an SSM lookup), so unlike a
+CloudFormation logical ID it never passed a validator and could otherwise carry
+terminal escape sequences.
+
+Resolving `Outputs` is new work for `cdkd diff`: an output using
+`Fn::ImportValue` / `Fn::GetStackOutput` may now cost a `ListExports` /
+`DescribeStacks` call (subject to `--no-cfn-fallback`), and a `{{resolve:ssm:...}}`
+output one `GetParameter` issued with `WithDecryption: false`.
 
 **Routing annotation**: every CREATE / UPDATE line whose template uses a
 top-level CFn property cdkd's SDK provider does not yet wire is tagged

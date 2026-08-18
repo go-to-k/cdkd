@@ -1918,6 +1918,153 @@ describe('Outputs-only change (issue #1921)', () => {
     expect(out).toContain('0 to create, 0 to update, 0 to delete');
   });
 
+  it('renders a MODIFY row with both sides and the change count', () => {
+    const lines: string[] = [];
+    const counts = renderOutputChangeLines(
+      [{ name: 'Out', changeType: 'MODIFY', oldValue: 'a', newValue: 'b', isExport: false }],
+      (m) => lines.push(m)
+    );
+    const out = lines.join('\n');
+    expect(out).toContain('[~] Out');
+    expect(out).toContain('old: "a"');
+    expect(out).toContain('new: "b"');
+    expect(counts).toEqual({ add: 0, change: 1, remove: 0 });
+  });
+
+  it('WITHHOLDS a redacted legacy-plaintext old value in the human render', () => {
+    const lines: string[] = [];
+    renderOutputChangeLines(
+      [
+        {
+          name: 'DbPassword',
+          changeType: 'MODIFY',
+          newValue: '{{resolve:secretsmanager:prod/db:SecretString:password}}',
+          isExport: false,
+          oldValueRedacted: true,
+        },
+      ],
+      (m) => lines.push(m)
+    );
+    const out = lines.join('\n');
+    expect(out).toContain('<redacted: legacy plaintext in state');
+    expect(out).not.toContain('hunter2');
+  });
+
+  it('strips control characters from a template-controlled output name', () => {
+    // An Export.Name is a RESOLVED value (Fn::Sub / parameter / SSM), so unlike
+    // a CFn logical id it never passed a validator and can carry ANSI escapes
+    // that would rewrite the surrounding diff output.
+    const lines: string[] = [];
+    renderOutputChangeLines(
+      [{ name: 'Evil\u001b[2KName\r', changeType: 'ADD', newValue: 'v', isExport: true }],
+      (m) => lines.push(m)
+    );
+    const out = lines.join('\n');
+    // The ESC is what makes `[2K` an ERASE-LINE command; stripping it leaves the
+    // residual bracket text as inert characters, which is the point -- the
+    // sequence can no longer act on the terminal.
+    expect(out).not.toContain('\u001b');
+    expect(out).not.toContain('\r');
+    expect(out).toContain('[export]');
+  });
+
+  it('WITHHOLDS a redacted legacy-plaintext old value in --json too', () => {
+    const node: DiffTreeNode = {
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      changes: changeMap([]),
+      ccApiRoutes: new Map(),
+      outputChanges: [
+        {
+          name: 'DbPassword',
+          changeType: 'MODIFY',
+          newValue: '{{resolve:secretsmanager:prod/db:SecretString:password}}',
+          isExport: false,
+          oldValueRedacted: true,
+        },
+      ],
+      children: [],
+    };
+    const json = diffTreeToJson(node);
+    expect(json.outputChanges[0]!.oldValueRedacted).toBe(true);
+    expect(Object.keys(json.outputChanges[0]!)).not.toContain('oldValue');
+    expect(JSON.stringify(json)).not.toContain('hunter2');
+  });
+
+  it('threads evaluated conditions, so a condition-false output is not reported', async () => {
+    // Without `conditions` reaching resolveTemplateOutputs, a condition-false
+    // output would be resolved and reported as an ADD the deploy never writes.
+    const tpl: CloudFormationTemplate = {
+      Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+      Conditions: { IsDev: { 'Fn::Equals': ['a', 'b'] } },
+      Outputs: { DevOnly: { Value: 'dev', Condition: 'IsDev' } },
+    };
+    const { outputChanges } = await diffFor(stateWith({}), tpl);
+    expect(outputChanges).toEqual([]);
+  });
+
+  it('a nested child carries its OWN Outputs delta under --recursive', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-1921-'));
+    try {
+      const childPath = join(dir, 'child.json');
+      writeFileSync(
+        childPath,
+        JSON.stringify({
+          Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+          Outputs: { ChildOut: { Value: 'child-value' } },
+        })
+      );
+      const parentTemplate: CloudFormationTemplate = {
+        Resources: {
+          Child: { Type: NESTED, Metadata: { 'aws:asset:path': 'child.json' }, Properties: {} },
+        },
+      };
+      const backend = fakeBackend({
+        P: st('P', { Child: res(NESTED, {}) }),
+        'P~Child': stateWith({}),
+      });
+      const node = await buildDiffTree({
+        stackName: 'P',
+        displayName: 'P',
+        region: 'us-east-1',
+        template: parentTemplate,
+        nestedTemplates: { Child: childPath },
+        recursive: true,
+        stateBackend: backend,
+        diffCalculator: new DiffCalculator(),
+      });
+      expect(node.outputChanges).toEqual([]);
+      expect(node.children[0]!.outputChanges).toEqual([
+        { name: 'ChildOut', changeType: 'ADD', newValue: 'child-value', isExport: false },
+      ]);
+      // The parent node is clean, so only the CHILD's delta can make the tree dirty.
+      expect(treeHasChanges(node)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a nested child removed from the template reports its outputs as REMOVE', async () => {
+    const backend = fakeBackend({
+      P: st('P', { Gone: res(NESTED, {}) }),
+      'P~Gone': stateWith({ OldOut: 'v' }),
+    });
+    const node = await buildDiffTree({
+      stackName: 'P',
+      displayName: 'P',
+      region: 'us-east-1',
+      template: { Resources: {} },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+    expect(node.children[0]!.outputChanges).toEqual([
+      { name: 'OldOut', changeType: 'REMOVE', oldValue: 'v', isExport: false },
+    ]);
+  });
+
   it('renders nothing for an empty Outputs delta', () => {
     const lines: string[] = [];
     const counts = renderOutputChangeLines([], (m) => lines.push(m));

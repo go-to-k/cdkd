@@ -41,6 +41,31 @@ export type IntrinsicResolveFn = (value: unknown) => Promise<unknown>;
  *
  * MUST be pure and synchronous — it runs inside the diff, before any AWS call.
  */
+/**
+ * The CloudFormation intrinsic function keys, as a single shared set.
+ *
+ * Exported so `outputs-diff.ts` detects a surviving intrinsic with exactly the
+ * same key list this calculator uses — a second hand-maintained copy is how the
+ * two drift into disagreeing about what "unresolved" means.
+ */
+export const INTRINSIC_KEYS: ReadonlySet<string> = new Set([
+  'Ref',
+  'Fn::Sub',
+  'Fn::GetAtt',
+  'Fn::Join',
+  'Fn::Select',
+  'Fn::Split',
+  'Fn::If',
+  'Fn::ImportValue',
+  'Fn::FindInMap',
+  'Fn::Base64',
+  'Fn::GetAZs',
+  'Fn::Equals',
+  'Fn::And',
+  'Fn::Or',
+  'Fn::Not',
+]);
+
 export type CanonicalizePropertiesFn = (
   resourceType: string,
   properties: Record<string, unknown>
@@ -841,23 +866,7 @@ export class DiffCalculator {
     return changes;
   }
 
-  private static readonly INTRINSIC_KEYS = new Set([
-    'Ref',
-    'Fn::Sub',
-    'Fn::GetAtt',
-    'Fn::Join',
-    'Fn::Select',
-    'Fn::Split',
-    'Fn::If',
-    'Fn::ImportValue',
-    'Fn::FindInMap',
-    'Fn::Base64',
-    'Fn::GetAZs',
-    'Fn::Equals',
-    'Fn::And',
-    'Fn::Or',
-    'Fn::Not',
-  ]);
+  private static readonly INTRINSIC_KEYS = INTRINSIC_KEYS;
 
   /**
    * Check if a value is itself a CloudFormation intrinsic function.

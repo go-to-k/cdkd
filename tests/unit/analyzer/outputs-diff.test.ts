@@ -38,7 +38,18 @@ import {
 } from '../../../src/analyzer/outputs-diff.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
-/** Resolver stand-in: substitutes `Fn::GetAtt` from a table, else echoes back. */
+/**
+ * Resolver stand-in modelled on the REAL one `computeStackDiff` passes.
+ *
+ * That is `IntrinsicFunctionResolver.resolve(..., {bestEffort: true})` directly,
+ * NOT `DiffCalculator.resolveBestEffort`'s returns-the-original-value wrapper —
+ * so an unresolvable `Fn::GetAtt` THROWS here, as it does in production. A more
+ * forgiving mock would agree with a wrong assumption about the contract this
+ * module actually faces.
+ *
+ * `undefined` entries in the table model the constructible-but-unknown
+ * attributes (`StreamArn`, `PolicyId`, `VpcId`) that resolve WITHOUT throwing.
+ */
 function resolverFor(table: Record<string, unknown>) {
   return async (value: unknown): Promise<unknown> => {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -46,16 +57,25 @@ function resolverFor(table: Record<string, unknown>) {
       if (keys.length === 1 && keys[0] === 'Fn::GetAtt') {
         const [id, attr] = (value as { 'Fn::GetAtt': [string, string] })['Fn::GetAtt'];
         const key = `${id}.${attr}`;
-        // Unknown reference -> best-effort resolvers return the ORIGINAL value.
-        return key in table ? table[key] : value;
+        if (!(key in table)) throw new Error(`Resource not found in state: ${id}`);
+        return table[key];
       }
     }
     return value;
   };
 }
 
+/** The lenient shape the `IntrinsicResolveFn` TYPE also permits (returns the input). */
+function lenientResolver(value: unknown): Promise<unknown> {
+  return Promise.resolve(value);
+}
+
 const ARN = 'arn:aws:s3:::bucket';
-const RESOLVER = resolverFor({ 'Bucket.Arn': ARN });
+const RESOLVER = resolverFor({
+  'Bucket.Arn': ARN,
+  // Constructible-but-unknown attribute: resolves to undefined, does NOT throw.
+  'Role.RoleId': undefined,
+});
 
 function templateWithExport(): CloudFormationTemplate {
   return {
@@ -120,18 +140,71 @@ describe('resolveTemplateOutputs', () => {
   });
 
   it('flags an intrinsic buried inside a resolved container (deep, not shallow)', async () => {
-    // The regression this pins: a shallow "is this value itself an intrinsic?"
-    // check passes a half-substituted Fn::Join through as if resolved, and the
-    // partially-built value then diffs against state as a phantom change.
+    // Uses the LENIENT resolver shape on purpose: this is the arm that catches a
+    // surviving intrinsic nested inside a structure an outer intrinsic already
+    // built, which a shallow "is this value itself an intrinsic?" check misses.
     const template: CloudFormationTemplate = {
       Resources: {},
       Outputs: {
         Joined: { Value: ['literal', { 'Fn::GetAtt': ['NotYetCreated', 'Arn'] }] },
       },
     };
+    const r = await resolveTemplateOutputs(template, lenientResolver);
+    expect(r.resolutionFailed).toBe(true);
+    expect(r.outputs).toEqual({});
+  });
+
+  it('flags an attribute that resolves to undefined WITHOUT throwing', async () => {
+    // The deploy engine keys its refusal on exactly this (`v === undefined`).
+    // `IntrinsicFunctionResolver.resolve` returns undefined rather than throwing
+    // for a constructible-but-unknown attribute (StreamArn / PolicyId / VpcId).
+    // JSON.stringify drops an undefined-valued key, so state can NEVER hold one
+    // -- without this arm the output is a permanent phantom ADD printing
+    // `new: undefined` and `--fail` exits 1 forever on a clean stack.
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { RoleId: { Value: { 'Fn::GetAtt': ['Role', 'RoleId'] } } },
+    };
     const r = await resolveTemplateOutputs(template, RESOLVER);
     expect(r.resolutionFailed).toBe(true);
     expect(r.outputs).toEqual({});
+  });
+
+  it('flags a symbol result (a top-level Ref: AWS::NoValue)', async () => {
+    // resolveValue strips the AWS::NoValue sentinel only INSIDE arrays/objects;
+    // a top-level Fn::If selecting it returns the bare symbol, which is likewise
+    // not persistable and would be a permanent phantom.
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { Maybe: { Value: { 'Fn::If': ['C', 'x', { Ref: 'AWS::NoValue' }] } } },
+    };
+    const r = await resolveTemplateOutputs(template, async () => Symbol('AWS::NoValue'));
+    expect(r.resolutionFailed).toBe(true);
+    expect(r.outputs).toEqual({});
+  });
+
+  it('flags a half-substituted Fn::Sub placeholder string', async () => {
+    // resolveSub catches a genuine Ref/GetAtt miss, WARNS, and keeps the literal
+    // `${Foo}` in the output STRING -- no throw, no intrinsic object -- so this
+    // launders straight past an object-only check and diffs as a phantom whose
+    // printed value is "arn:...${NewBucket}".
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { Subbed: { Value: { 'Fn::Sub': 'arn:${NewBucket}' } } },
+    };
+    const r = await resolveTemplateOutputs(template, async () => 'arn:${NewBucket}');
+    expect(r.resolutionFailed).toBe(true);
+    expect(r.outputs).toEqual({});
+  });
+
+  it('a fully-substituted Fn::Sub result is NOT flagged', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { Subbed: { Value: { 'Fn::Sub': 'arn:${Bucket}' } } },
+    };
+    const r = await resolveTemplateOutputs(template, async () => 'arn:real-bucket');
+    expect(r.resolutionFailed).toBe(false);
+    expect(r.outputs).toEqual({ Subbed: 'arn:real-bucket' });
   });
 
   it('flags an Export.Name that stays intrinsic — the alias key deploy will write is unknown', async () => {
@@ -240,6 +313,38 @@ describe('computeOutputsDiff', () => {
   });
 });
 
+describe('computeOutputsDiff — legacy secret plaintext on the stored side', () => {
+  const EXPR = '{{resolve:secretsmanager:prod/db:SecretString:password}}';
+
+  it('WITHHOLDS a stored plaintext when the desired side is still a secret expression', () => {
+    // `cdkd diff` resolves with skipDynamicReferences, so the desired side stays
+    // the expression. A state record written before the GHSA redaction landed
+    // holds the RESOLVED PLAINTEXT instead (what `cdkd scrub` repairs). This is
+    // the first code path that DISPLAYS a stored output value, and diff is run
+    // in CI -- printing it would put the secret in build logs.
+    const changes = computeOutputsDiff({ DbPassword: 'hunter2' }, { DbPassword: EXPR }, new Set());
+    expect(changes).toHaveLength(1);
+    expect(changes[0]!.changeType).toBe('MODIFY');
+    expect(changes[0]!.oldValueRedacted).toBe(true);
+    // The value must be ABSENT, not merely flagged.
+    expect(changes[0]).not.toHaveProperty('oldValue');
+    expect(JSON.stringify(changes)).not.toContain('hunter2');
+  });
+
+  it('does NOT withhold when both sides are expressions (already-redacted state)', () => {
+    const other = '{{resolve:secretsmanager:prod/db:SecretString:username}}';
+    const changes = computeOutputsDiff({ DbPassword: other }, { DbPassword: EXPR }, new Set());
+    expect(changes[0]!.oldValueRedacted).toBeUndefined();
+    expect(changes[0]!.oldValue).toBe(other);
+  });
+
+  it('does NOT withhold an ordinary non-secret change', () => {
+    const changes = computeOutputsDiff({ Out: 'old' }, { Out: 'new' }, new Set());
+    expect(changes[0]!.oldValueRedacted).toBeUndefined();
+    expect(changes[0]!.oldValue).toBe('old');
+  });
+});
+
 describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => {
   // This module is a deliberate SECOND implementation of the deploy engine's
   // outputs resolution — see the file header for why sharing was rejected. The
@@ -260,9 +365,17 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
     expect(source).toMatch(/output\.Condition !== undefined && conditions\?\.\[output\.Condition\] === false/);
   });
 
-  it('deploy still declines to persist a partially-resolved outputs bag', () => {
-    // The predicate the diff mirrors by returning no delta when
-    // `resolutionFailed` — see computeStackDiffWithOutputs.
+  it('deploy still DEFINES its failure signal as an undefined bag value', () => {
+    // Watch the DEFINITION, not the consumption. An earlier version of this
+    // fence pinned `!resolutionFailed && !outputMapsEqual(` -- the line that
+    // USES the flag -- which stayed green while the diff twin disagreed with
+    // deploy about what "failed" MEANS (it checked only for surviving
+    // intrinsics and missed `undefined`, deploy's actual signal). The mirrored
+    // behavior lives in `isUnresolvedValue`, whose first arm is this predicate.
+    expect(source).toMatch(/some\(\(v\) => v === undefined\)/);
+  });
+
+  it('deploy still declines to persist when that signal is set', () => {
     expect(source).toMatch(/!resolutionFailed && !outputMapsEqual\(/);
   });
 });

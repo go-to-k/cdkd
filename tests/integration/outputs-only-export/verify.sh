@@ -16,7 +16,10 @@
 #            carries it in `outputChanges` (issue #1921 — the preview half of
 #            #875, which previously printed "No changes detected" and exited 0
 #            while the deploy below does persist the export).
-#   Phase 2a: redeploy producer alone. Assert it is a
+#   Phase 2a: redeploy producer alone. Assert the export IS persisted, then that
+#            `cdkd diff` goes CLEAN again -- the discriminating no-phantom arm,
+#            since the output now resolves from real state via Fn::GetAtt.
+#            Assert it is a
 #             no-op ("No changes detected"), the bucket is NOT recreated, yet
 #             the export is now persisted to state AND the exports index.
 #   Phase 2b: deploy consumer with --exclusively (producer NOT redeployed).
@@ -262,6 +265,31 @@ if [[ "${IDX_PRODUCER}" != "${PRODUCER}" ]]; then
   exit 1
 fi
 pass "exports index now carries ${EXPORT_NAME} owned by ${PRODUCER}"
+
+# Issue #1921, the DISCRIMINATING negative arm. The phase-1 negative check above
+# only proves "no Outputs on either side" -- empty vs empty, which cannot catch
+# the phantom class that actually matters: a RESOLUTION disagreement between the
+# preview and the apply on an output that IS persisted. Now that the export is
+# in state and its value comes from a real `Fn::GetAtt` on the bucket, re-running
+# the same diff must report NOTHING. If the diff resolved the output even
+# slightly differently from the deploy (undefined-vs-value, a half-substituted
+# Fn::Sub, an export alias built differently), this is where it shows up -- as a
+# permanent change reported on an untouched stack.
+set +e
+DIFF_AFTER_OUT=$(CDKD_TEST_WITH_CONSUMER=true ${CDKD} diff ${PRODUCER} --fail --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" 2>&1)
+DIFF_AFTER_RC=$?
+set -e
+if [[ "${DIFF_AFTER_RC}" -ne 0 ]]; then
+  echo "FAIL: cdkd diff --fail exited ${DIFF_AFTER_RC} after the export was persisted (expected 0 — the preview and the apply disagree on how the output resolves)"
+  echo "${DIFF_AFTER_OUT}"
+  exit 1
+fi
+if ! echo "${DIFF_AFTER_OUT}" | grep -q "No changes detected"; then
+  echo "FAIL: cdkd diff reports a change on the stack it just deployed (phantom Outputs diff)"
+  echo "${DIFF_AFTER_OUT}"
+  exit 1
+fi
+pass "cdkd diff is clean once the export is persisted (preview matches apply)"
 
 # ---------------------------------------------------------------------------
 echo ""

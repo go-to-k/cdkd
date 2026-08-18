@@ -333,17 +333,30 @@ break a consumer — was hidden the same way.
   condition-false output is skipped (CFn never creates it), and an
   `Export.Name` is stored as a **second key** holding the same value, since
   `Fn::ImportValue` resolves by export name.
-- The diff's resolvers are **best-effort** — they return the ORIGINAL value on
-  failure rather than throwing, unlike the deploy side whose catch stores
-  `undefined` — so the unresolved detector is a DEEP intrinsic walk. A shallow
-  check would let a half-substituted `Fn::Join` through as resolved and diff it
-  against state as a phantom.
+- The unresolved detector is deliberately **wider** than the deploy side's
+  `v === undefined`, because the diff's best-effort resolver fails in more ways.
+  It flags `undefined` (the same signal — `resolve` returns it *without*
+  throwing for a constructible-but-unknown attribute such as
+  `AWS::DynamoDB::Table.StreamArn`), a symbol (`Ref: AWS::NoValue` selected at
+  top level), a surviving intrinsic object, and an unsubstituted `${...}` string
+  (`resolveSub` keeps the literal placeholder on a genuine miss rather than
+  throwing). Each would otherwise be a PERMANENT phantom change on a stack the
+  deploy considers clean, with `--fail` exiting 1 forever.
 - `computeOutputsDiff` compares **bag key by bag key**, which is exactly the
   `outputMapsEqual` predicate the deploy engine gates its persist on, so the
   preview cannot drift from the apply. A partially-resolved bag reports no
   delta at all, mirroring the deploy engine declining to persist one — and
   nothing is lost, since an output only fails to resolve when it references a
   resource this deploy has yet to CREATE, which the resource side already shows.
+  As on the deploy side a suppressed delta is WARNED about, so an absent Outputs
+  section never silently conflates "unchanged" with "uncomputable".
+- Because this is the first code path that **displays** a stored output value,
+  it withholds an `oldValue` that is legacy secret plaintext — detectable when
+  the desired side is still a `{{resolve:...}}` expression while the stored side
+  is not, the condition `cdkd scrub` repairs — and strips control characters
+  from template-controlled output / export names before they reach the terminal
+  (an `Export.Name` is a resolved value, so unlike a CFn logical id it never
+  passed a validator).
 
 The module is a deliberate SECOND implementation rather than shared code: the
 deploy-side block lives in `deploy-engine.ts`, which is in the `integ-broad`

@@ -1,6 +1,6 @@
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
-import type { IntrinsicResolveFn } from './diff-calculator.js';
+import { INTRINSIC_KEYS, type IntrinsicResolveFn } from './diff-calculator.js';
 
 /**
  * Kind of change for one key of the persisted Outputs bag.
@@ -33,6 +33,12 @@ export interface OutputChange {
    * (state records the flat bag only, not which key was an alias of which).
    */
   isExport: boolean;
+  /**
+   * True when {@link oldValue} was WITHHELD because it is legacy secret
+   * plaintext (see {@link computeOutputsDiff}). Renderers and the `--json`
+   * projection must not emit the value when this is set.
+   */
+  oldValueRedacted?: boolean;
 }
 
 /** Result of resolving a template's `Outputs` section for the diff. */
@@ -50,44 +56,73 @@ export interface ResolvedTemplateOutputs {
   resolutionFailed: boolean;
 }
 
-const INTRINSIC_KEYS: ReadonlySet<string> = new Set([
-  'Ref',
-  'Fn::Sub',
-  'Fn::GetAtt',
-  'Fn::Join',
-  'Fn::Select',
-  'Fn::Split',
-  'Fn::If',
-  'Fn::ImportValue',
-  'Fn::FindInMap',
-  'Fn::Base64',
-  'Fn::GetAZs',
-  'Fn::Equals',
-  'Fn::And',
-  'Fn::Or',
-  'Fn::Not',
-]);
+/**
+ * A `${...}` placeholder `Fn::Sub` did NOT substitute.
+ *
+ * `resolveSub` catches a genuine `Ref` / `Fn::GetAtt` miss, WARNS, and keeps the
+ * literal `${Foo}` in the output string — it neither throws nor leaves an
+ * intrinsic object behind. So a half-substituted `Fn::Sub` reaches this module
+ * looking like an ordinary resolved string, and comparing it against state
+ * reports a phantom change whose printed value is `"arn:...${NewBucket}"`.
+ *
+ * `${!Literal}` is `Fn::Sub`'s ESCAPE and resolves to the literal text
+ * `${Literal}` — which, after resolution, is indistinguishable from a
+ * placeholder that failed to substitute. This pattern therefore also matches
+ * that legitimately-resolved case. The false positive is deliberate: it
+ * SUPPRESSES the outputs delta, which is the pre-#1921 behavior for that stack,
+ * while the alternative is a phantom change reported on every single run.
+ */
+const UNSUBSTITUTED_SUB_PLACEHOLDER = /\$\{[^}]*\}/;
 
 /**
- * True when `value` is, or anywhere CONTAINS, an unresolved intrinsic.
+ * True when `value` is, or anywhere CONTAINS, something the diff could not
+ * fully resolve against current state.
  *
- * The deploy engine detects a failed output resolution by testing the bag for
- * `undefined` — its resolver throws and the catch stores `undefined`. The diff
- * resolver is best-effort (`IntrinsicResolveFn` "returns the original value if
- * resolution fails"), so the same failure arrives as a surviving intrinsic
- * instead. This is that check ported to the best-effort world.
+ * The deploy engine's twin check is `Object.values(bag).some(v => v ===
+ * undefined)` — its resolver THROWS on failure and the catch stores `undefined`.
+ * The diff's resolver is best-effort and fails in three further ways that all
+ * have to count as "unresolved" here, because anything that slips through is
+ * compared against state and reported as a change the apply will never make:
  *
- * DEEP, not shallow: an `Fn::Join` whose argument list holds one unresolvable
- * `Fn::GetAtt` resolves to a partially-substituted structure, not to a bare
- * intrinsic, and treating that as resolved would compare a half-built value
- * against state and report a phantom change.
+ * 1. `undefined` — the SAME signal the deploy side keys on. `resolve` returns it
+ *    WITHOUT throwing for a constructible-but-unknown attribute
+ *    (`AWS::DynamoDB::Table.StreamArn`, `AWS::IAM::Policy.PolicyId`,
+ *    `AWS::EC2::SecurityGroup.VpcId`, ...). `JSON.stringify` drops an
+ *    `undefined`-valued key, so state can never hold one and such an output
+ *    would otherwise report a PERMANENT phantom `ADD` printing `new: undefined`.
+ * 2. A symbol — `Ref: AWS::NoValue` resolves to a sentinel symbol, which
+ *    `resolveValue` strips only INSIDE arrays / objects; a top-level
+ *    `Fn::If` selecting `AWS::NoValue` returns it bare. Not persistable, so
+ *    again a permanent phantom.
+ * 3. A surviving intrinsic OBJECT, or an unsubstituted `Fn::Sub` placeholder
+ *    STRING (see {@link UNSUBSTITUTED_SUB_PLACEHOLDER}).
+ *
+ * DEEP rather than shallow: an unresolved leaf can sit anywhere inside an array
+ * or object an outer intrinsic already built.
  */
-function containsIntrinsic(value: unknown): boolean {
+function isUnresolvedValue(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value === 'symbol') return true;
+  if (typeof value === 'string') return UNSUBSTITUTED_SUB_PLACEHOLDER.test(value);
   if (value === null || typeof value !== 'object') return false;
-  if (Array.isArray(value)) return value.some(containsIntrinsic);
+  if (Array.isArray(value)) return value.some(isUnresolvedValue);
   const keys = Object.keys(value as Record<string, unknown>);
   if (keys.length === 1 && INTRINSIC_KEYS.has(keys[0]!)) return true;
-  return Object.values(value as Record<string, unknown>).some(containsIntrinsic);
+  return Object.values(value as Record<string, unknown>).some(isUnresolvedValue);
+}
+
+/**
+ * True when `value` is a string carrying a CloudFormation dynamic reference.
+ *
+ * The diff resolves with `skipDynamicReferences`, so a secret-bearing output
+ * arrives here as its unresolved `{{resolve:...}}` expression — which is also
+ * what post-GHSA state stores. A state record written by an OLDER binary can
+ * still hold the resolved PLAINTEXT instead (that mismatch is exactly what
+ * `cdkd scrub` exists to repair), and printing it is this module's problem
+ * because it is the first code path that DISPLAYS a stored output value.
+ */
+function isDynamicReference(value: unknown): boolean {
+  return typeof value === 'string' && value.includes('{{resolve:');
 }
 
 /** Structural equality, mirroring the deploy engine's `outputMapsEqual` leaf rule. */
@@ -163,7 +198,7 @@ export async function resolveTemplateOutputs(
       resolutionFailed = true;
       continue;
     }
-    if (containsIntrinsic(value)) {
+    if (isUnresolvedValue(value)) {
       // The common, EXPECTED case: the output references a resource this deploy
       // has not created yet. Not a warning — the resource section already shows
       // that CREATE.
@@ -184,7 +219,7 @@ export async function resolveTemplateOutputs(
           continue;
         }
       }
-      if (typeof exportName === 'string') {
+      if (typeof exportName === 'string' && !isUnresolvedValue(exportName)) {
         outputs[exportName] = value;
         exportNames.add(exportName);
       } else {
@@ -230,6 +265,23 @@ export function computeOutputsDiff(
     }
     const oldValue = currentBag[name];
     if (!valuesEqual(oldValue, newValue)) {
+      // A desired side that is STILL a `{{resolve:...}}` expression, against a
+      // stored side that is NOT, means state holds the RESOLVED PLAINTEXT of
+      // that secret — a record written before the GHSA redaction landed (the
+      // condition `cdkd scrub` repairs). Report the change, WITHHOLD the value:
+      // `cdkd diff` is a preview routinely run in CI, so printing it would put
+      // the secret in build logs. Deliberately narrow — it fires only where the
+      // desired side PROVES the key is secret-bearing.
+      if (isDynamicReference(newValue) && !isDynamicReference(oldValue)) {
+        changes.push({
+          name,
+          changeType: 'MODIFY',
+          newValue,
+          isExport,
+          oldValueRedacted: true,
+        });
+        continue;
+      }
       changes.push({ name, changeType: 'MODIFY', oldValue, newValue, isExport });
     }
   }
