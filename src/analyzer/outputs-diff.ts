@@ -191,6 +191,28 @@ function isSecretDynamicReference(value: unknown): boolean {
   return value.includes('{{resolve:secretsmanager:') || value.includes('{{resolve:ssm-secure:');
 }
 
+/**
+ * The same question asked of a whole template VALUE, walking every string leaf.
+ *
+ * The leaf predicate answers `false` for a non-string, and an output's `Value`
+ * is very often an OBJECT: `secret.secretValueFromJson(...)` renders the
+ * secret's ARN as a `Ref`, so the value is an `Fn::Join` / `Fn::Sub` — which
+ * CLAUDE.md's #1916 note calls the DOMINANT CDK shape, not an edge case.
+ * Feeding the raw value to the leaf predicate therefore reported "no secret
+ * here" for exactly the templates most likely to have one, which silently
+ * disarmed BOTH signals built on it: the export-alias decision below (issue
+ * #1919) and the legacy-record withholding that keeps a pre-GHSA plaintext out
+ * of the rendered diff (issue #1921).
+ */
+function containsSecretDynamicReference(value: unknown): boolean {
+  if (typeof value === 'string') return isSecretDynamicReference(value);
+  if (Array.isArray(value)) return value.some(containsSecretDynamicReference);
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(containsSecretDynamicReference);
+  }
+  return false;
+}
+
 /** Structural equality, mirroring the deploy engine's `outputMapsEqual` leaf rule. */
 function valuesEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -289,7 +311,7 @@ export async function resolveTemplateOutputs(
   // REMOVE row. A literal `Export.Name` alias is recorded too, since the deploy
   // writes the same value under both keys.
   for (const [outputKey, output] of Object.entries(template.Outputs)) {
-    if (!isSecretDynamicReference(output.Value)) continue;
+    if (!containsSecretDynamicReference(output.Value)) continue;
     secretSourceKeys.add(outputKey);
     if (typeof output.Export?.Name === 'string') secretSourceKeys.add(output.Export.Name);
   }
@@ -373,21 +395,24 @@ export async function resolveTemplateOutputs(
         } else if (!declaredExportIsIntrinsic && secretSourceKeys.size > 0) {
           // UNDECIDABLE, so suppress rather than guess. The deploy refuses a
           // LITERAL name that CONTAINS a resolved secret plaintext — the
-          // `prod-<secret>-endpoint` shape — and this preview cannot see any
-          // plaintext at all, because its resolver never substitutes one. The
-          // condition narrows that to stacks where the deploy actually records a
-          // secret: with no secret-bearing output there is nothing for a name to
-          // contain, and the ordinary stack is unaffected.
+          // `prod-<secret>-endpoint` shape — and this preview never substitutes
+          // a plaintext, so it cannot evaluate that predicate. Narrowed to
+          // stacks where the deploy actually records a secret: with no
+          // secret-bearing output there is nothing for a name to contain.
           //
-          // Suppressing (this module's existing answer to "cannot reproduce what
-          // deploy will do") beats publishing: a phantom ADD would also PRINT a
-          // key holding that plaintext into CI logs. Narrower than deploy's
-          // signal by the same margin `isSecretDynamicReference` already
-          // documents — a pinned SecureString `ssm:` value is a secret deploy
-          // records and this scan does not name.
+          // Suppressing is this module's existing answer to "cannot reproduce
+          // what deploy will do", and it also avoids printing a row whose KEY
+          // may hold that plaintext into CI logs.
+          //
+          // `recordFailure` is what keeps the suppression honest: the alias key
+          // is absent from this bag but may well be PRESENT in state, and
+          // without recording it the warning downstream reads it as a REMOVE
+          // and blames "an output referencing a resource this deploy has yet to
+          // create" — the wrong cause, on every run, forever.
           logger.debug(
             `Diff cannot decide the export alias of ${outputKey} — a literal name may contain a resolved secret`
           );
+          failedKeys.add(exportName);
           resolutionFailed = true;
         } else {
           outputs[exportName] = value;
@@ -451,8 +476,8 @@ export function computeOutputsDiff(
 
   // Pass 1: is this a pre-GHSA record? See the "Withholding" note above.
   const legacyRecord = Object.entries(currentBag).some(([name, oldValue]) => {
-    if (isSecretDynamicReference(oldValue)) return false;
-    return isSecretDynamicReference(desired[name]) || secretSourceKeys.has(name);
+    if (containsSecretDynamicReference(oldValue)) return false;
+    return containsSecretDynamicReference(desired[name]) || secretSourceKeys.has(name);
   });
 
   const push = (change: OutputChange): void => {

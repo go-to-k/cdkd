@@ -152,7 +152,12 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
               if (body.includes('${Unresolvable}')) {
                 throw new Error('Parameter Unresolvable has no value during scrub');
               }
-              return walk(body.replace('${Owner}', 'PublicAlpha').replace('${Free}', 'FreeName'));
+              return walk(
+                body
+                  .replace('${Owner}', 'PublicAlpha')
+                  .replace('${Free}', 'FreeName')
+                  .replace('${SecretName}', OWNER_PLAINTEXT)
+              );
             }
             const out: Record<string, unknown> = {};
             for (const [k, val] of entries) out[k] = walk(val);
@@ -175,7 +180,10 @@ import {
   ScrubNeededError,
   type ScrubOptions,
 } from '../../../../src/cli/commands/scrub.js';
-import { exportAliasCollisionScrubWarning } from '../../../../src/deployment/outputs-export-alias.js';
+import {
+  exportAliasCollisionScrubWarning,
+  secretBearingStateKeyWarning,
+} from '../../../../src/deployment/outputs-export-alias.js';
 
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
@@ -696,6 +704,34 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     expect(stateBackend.saveState).not.toHaveBeenCalled();
   });
 
+  it('the collision warning MASKS a resolved name that carries plaintext', async () => {
+    // The deploy twin prints its colliding name unmasked, and its rationale is
+    // that the secret refusal already cleared it. Scrub runs no such refusal and
+    // its name is a BEST-EFFORT resolved intrinsic, so it must mask its own —
+    // otherwise the shared helper asserts an invariant only one caller upholds.
+    // Contrived by construction (the resolved name has to equal a declared
+    // output name) but the disclosure is real: the warning goes to stderr.
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ [OWNER_PLAINTEXT]: 'v', Exporter: SECRET_PLAINTEXT }),
+      etag: 'etag-1',
+    });
+
+    await scrub({
+      [OWNER_PLAINTEXT]: { Value: OWNER_EXPR },
+      Exporter: {
+        Value: SECRET_EXPR,
+        Export: { Name: { 'Fn::Sub': '${SecretName}' } as never },
+      },
+    });
+
+    const collisionWarnings = logger.warn.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes('is also the name of another output'));
+    expect(collisionWarnings).toHaveLength(1);
+    expect(collisionWarnings[0]).not.toContain(OWNER_PLAINTEXT);
+    expect(collisionWarnings[0]).toContain('***');
+  });
+
   it('a SUPPRESSED output is still RESOLVED, so its leaked plaintext is found and scrubbed', async () => {
     // Skipping the iteration for a suppressed output would skip the resolve that
     // RECORDS its secret — and with no other secret in the stack, scrub would
@@ -716,5 +752,23 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     expect(changed).toBeGreaterThan(0);
     expect(saved!.outputs['GhostAlpha']).toBe(SECRET_EXPR);
     expect(JSON.stringify(saved)).not.toContain(SECRET_PLAINTEXT);
+  });
+});
+
+describe('outputs-export-alias message builders', () => {
+  it('strips control characters from a printed state KEY', () => {
+    // An export NAME — and so a state key derived from one — is a RESOLVED value
+    // that never passed a CloudFormation validator, so it can carry ANSI escapes
+    // or bidi overrides into a terminal or a CI log. `diff-recursive.ts`
+    // documents that hazard for this same key space; these warnings print the
+    // same strings and must not be the way in.
+    const key = 'pre-\u001b[31mred\u202e-endpoint';
+    const message = secretBearingStateKeyWarning('MyStack', key, new Map([['red', 'EXPR']]));
+
+    expect(message).not.toContain('\u001b');
+    expect(message).not.toContain('\u202e');
+    // ...while still naming enough of the key to act on.
+    expect(message).toContain('pre-');
+    expect(message).toContain('-endpoint');
   });
 });

@@ -41,9 +41,11 @@ import {
 } from '../../deployment/outputs-export-alias.js';
 
 /**
- * Signals `cdkd scrub` found stacks whose state still holds plaintext secrets.
- * Only thrown under `--dry-run --fail`; carries no message (the plan was
- * already printed) and maps to a non-zero exit so CI can gate on it.
+ * Signals `cdkd scrub` found plaintext it is reporting rather than removing.
+ * Thrown under `--fail`: with `--dry-run` when any plaintext secret is in state,
+ * and on a REAL run when a leak was found that scrub cannot rewrite (a
+ * secret-bearing output KEY, issue #1919). Carries no message — the plan was
+ * already printed — and maps to a non-zero exit so CI can gate on it.
  */
 // Exported alongside `scrubCommand` so a test can assert the CI gate fails on
 // the exact error type the CLI maps to a non-zero exit, rather than on any throw.
@@ -377,7 +379,7 @@ export async function scrubStack(
     // secret — in the command that exists to remediate the advisory, and
     // republished from there into the exports index.
     //
-    // Two rules differ from the engine's on purpose, and both follow from what
+    // Three rules differ from the engine's on purpose, and all follow from what
     // scrub can KNOW about state some earlier binary wrote:
     //
     // 1. A colliding key gets NO source at all, rather than the owning output's.
@@ -421,6 +423,7 @@ export async function scrubStack(
     //    undetectable from here.
     const declaredOutputNames = collectDeclaredOutputNames(templateOutputs);
     const ambiguousKeys = new Set<string>();
+    const collisions: Array<[outputKey: string, exportName: string]> = [];
     let outputsSourceUntrusted = false;
     for (const [name, output] of Object.entries(templateOutputs)) {
       // The declared type says `string`, but templates carry intrinsics here and
@@ -484,7 +487,12 @@ export async function scrubStack(
         isExportAliasCollision(exportName, name, declaredOutputNames)
       ) {
         ambiguousKeys.add(exportName);
-        logger.warn(exportAliasCollisionScrubWarning(name, exportName));
+        // The WARNING is deferred to after the value loop below, for the same
+        // reason the deploy engine decides aliases in a second pass: this loop
+        // runs first, so `outputSecrets` is not yet complete, and the message
+        // masks its name against that map. Warning here would print a resolved
+        // name whose plaintext had not been recorded yet.
+        collisions.push([name, exportName]);
       }
     }
     for (const [name, output] of Object.entries(templateOutputs)) {
@@ -528,6 +536,10 @@ export async function scrubStack(
           `Resolution of output ${name} during scrub was partial: ${err instanceof Error ? err.message : String(err)}`
         );
       }
+    }
+
+    for (const [name, exportName] of collisions) {
+      logger.warn(exportAliasCollisionScrubWarning(name, exportName, outputSecrets));
     }
 
     // A KEY that already holds plaintext is the residue of an earlier binary

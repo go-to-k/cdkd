@@ -4499,11 +4499,6 @@ export class DeployEngine {
   }
 
   /**
-   * Resolve stack outputs from template and resource attributes
-   *
-   * Uses IntrinsicFunctionResolver for full CloudFormation intrinsic function support.
-   */
-  /**
    * What a failed Output resolution does, shared by both passes of
    * {@link resolveOutputs} so they cannot drift — the alias pass reports the
    * SAME failure for a name it could not resolve as the value pass does for a
@@ -4545,6 +4540,15 @@ export class DeployEngine {
     outputs[outputKey] = undefined;
   }
 
+  /**
+   * Resolve stack outputs from template and resource attributes.
+   *
+   * Uses `IntrinsicFunctionResolver` for full CloudFormation intrinsic function
+   * support, and runs in TWO passes — every value, then every export alias —
+   * so an alias decision sees the complete set of secrets this pass resolved
+   * rather than whatever the declaration order happened to have recorded by
+   * then (issue #1919).
+   */
   private async resolveOutputs(
     template: CloudFormationTemplate,
     resources: Record<string, ResourceState>,
@@ -4693,10 +4697,14 @@ export class DeployEngine {
         //    persisting A's `{{resolve:...}}` expression as THIS output's
         //    value into state and the exports index. That is the
         //    wrong-reference class issue #1910 exists to remove, one layer
-        //    up. It is ORDER-DEPENDENT: the corruption needs the exporting
-        //    output to be iterated AFTER the colliding-name output,
-        //    otherwise the latter's own write reclaims the key and only the
-        //    alias is lost.
+        //    up. It WAS order-dependent — the corruption needed the exporting
+        //    output iterated AFTER the colliding-name output, or the latter's
+        //    own write reclaimed the key and only the alias was lost — and the
+        //    value/alias pass split has made it UNCONDITIONAL: every alias now
+        //    runs after every value write, so without this guard the alias
+        //    always wins the key while the post-loop pass always writes the
+        //    owner's source. The test file still pins both declaration orders,
+        //    which now assert the same thing rather than two different ones.
         //
         //    Of the issue's two directions this takes SKIP-AND-WARN rather
         //    than re-keying the source pass by the alias rule. Matching the

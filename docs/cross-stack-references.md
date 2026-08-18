@@ -214,10 +214,12 @@ are worth naming because they read as inconsistent otherwise. A LITERAL
 `Export.Name` spelled as a `{{resolve:...}}` token is PUBLISHED by both —
 the deploy never substitutes a string name, so the key holds the
 expression, which is what state stores anyway. And a LITERAL name in a
-stack that resolves a secret makes the DIFF suppress its whole Outputs
-section: the deploy refuses such a name only when it CONTAINS the resolved
-plaintext, and the preview never resolves one, so it declines to guess
-rather than print a row whose key may hold that plaintext.
+stack that resolves a secret makes `cdkd diff` omit its Outputs section
+entirely for that run: the deploy refuses such a name only when it CONTAINS
+the resolved plaintext, which the preview never resolves, so it declines to
+guess rather than print a row whose key may hold that plaintext. The
+omission is reported as the usual could-not-resolve notice, and the alias
+key is recorded so that notice does not fire on the alias alone.
 
 **A state KEY that already holds plaintext cannot be scrubbed.** State
 written by a pre-fix binary can carry `state.outputs["pre-<secret>"]`, and

@@ -48,12 +48,17 @@
  *   is substituted and the key holds the EXPRESSION — which is what state
  *   stores post-redaction anyway. Refusing it on the diff side alone produced a
  *   phantom REMOVE on every run.
- * - A LITERAL name in a stack that resolves a secret makes the DIFF suppress
- *   its whole outputs delta. Deploy refuses such a name only when it CONTAINS a
- *   resolved plaintext, and the preview never substitutes one, so it cannot
- *   decide; suppressing is this module's twin's existing answer to "cannot
- *   reproduce what deploy will do", and it also avoids printing a
- *   plaintext-bearing key into CI logs.
+ * - A LITERAL name in a stack that resolves a secret makes the DIFF suppress its
+ *   whole outputs delta, and RECORD the alias key as failed so the suppression
+ *   warning cannot blame the wrong cause. Deploy refuses such a name only when
+ *   it CONTAINS a resolved plaintext, and the preview never substitutes one, so
+ *   it cannot decide; suppressing is this module's twin's existing answer to
+ *   "cannot reproduce what deploy will do", and it also avoids printing a
+ *   plaintext-bearing key into CI logs. It is deliberately the WEAKER of the two
+ *   fixes considered: deciding the case from the stored bag (state holding the
+ *   key proves a previous deploy published it) would keep the outputs delta
+ *   working, but it is a new positive arm and belongs in its own review rather
+ *   than in a fix round.
  *
  * The message builders live here for the reason
  * `src/provisioning/nested-stack-messages.ts` gives: a test that pins behavior
@@ -265,17 +270,14 @@ function secretsPresentIn(
  * deploy wrote `prod-<secret>-endpoint` as a state key that `cdkd scrub` then
  * reported as unrepairable.
  *
- * `recordedThisPass` adds the backstop for plaintext that arrived by any route
- * OTHER than a fresh substitution into this name — a literal `Export.Name`
- * spelling the value out, an unpinned-ssm cache hit, an `Fn::Sub` variable or
- * `Fn::GetAtt` echoing it. Scanned with the same bounded rule the state-KEY
- * check uses ({@link secretsPresentIn}); an earlier revision matched only the
- * WHOLE name here, which let the deploy write `prod-<secret>-endpoint` as a
- * state key that `cdkd scrub` then reported as unrepairable. It applies —
- * with the ORDER caveat that "elsewhere" means an output iterated EARLIER, the
- * only ones whose resolution has happened by the time this runs. A literal name
- * matching a secret first resolved by a LATER output is not caught, and cannot
- * be without resolving the whole template before deciding anything.
+ * The containment arm applies with no order caveat any more: the deploy engine
+ * resolves EVERY output value
+ * before deciding any alias, so this arm sees the complete map whatever the
+ * declaration order. (An earlier revision of this paragraph said catching that
+ * required "resolving the whole template before deciding anything" and called
+ * it impractical — the value pass already does exactly that, at no extra cost.
+ * The residual is now only a secret first substituted by ANOTHER output's
+ * `Export.Name`, since those resolve in the second pass, in declaration order.)
  *
  * No empty-string special case, in either map: the resolver never records an
  * empty secret (`secret-redaction.ts` states it — an empty needle would match
@@ -306,16 +308,28 @@ export function exportNameSecretExposure(
  * `--dry-run --fail` CI gate repo-wide, which is the availability failure the
  * export-name check was redesigned to avoid.
  *
- * The bound's cost is stated rather than hidden: a secret of three characters
- * or fewer EMBEDDED in a longer key goes unreported. That value is
- * indistinguishable from coincidence here, and the same bound already applies
- * to every substring redaction cdkd performs.
+ * Bound and cost are {@link secretsPresentIn}'s; see there.
  */
 export function stateKeySecretExposure(
   key: string,
   secrets: RecordedSecretValues
 ): RecordedSecretValues | undefined {
   return secretsPresentIn(key, secrets);
+}
+
+/**
+ * Strip control characters from a value about to be printed.
+ *
+ * An export NAME — and therefore a state key derived from one — is a RESOLVED
+ * value that never passed a CloudFormation validator, so it can carry ANSI
+ * escapes or bidi overrides straight into a terminal or a CI log.
+ * `diff-recursive.ts` documents that hazard for the same key space and strips
+ * the same class; this module's warnings print the same strings and must not be
+ * the way in.
+ */
+function stripControlChars(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
 }
 
 /**
@@ -350,8 +364,8 @@ export function secretBearingExportNameWarning(
   exportName: string,
   exposure: RecordedSecretValues
 ): string {
-  const masked = maskEveryOccurrence(exportName, exposure);
-  const shown = masked === exportName ? '' : `(masked: "${masked}") `;
+  const masked = stripControlChars(maskEveryOccurrence(exportName, exposure));
+  const shown = masked === stripControlChars(exportName) ? '' : `(masked: "${masked}") `;
   return (
     `Output ${outputKey} has an Export.Name that resolves to a value containing a secret ` +
     `${shown}— skipping the export alias. ` +
@@ -379,7 +393,7 @@ export function secretBearingStateKeyWarning(
 ): string {
   return (
     `State for ${stackName} holds an output KEY containing a secret ` +
-    `(masked: "${maskEveryOccurrence(key, exposure)}") — cdkd scrub cannot rewrite a key, ` +
+    `(masked: "${stripControlChars(maskEveryOccurrence(key, exposure))}") — cdkd scrub cannot rewrite a key, ` +
     `only a value, because the key IS the export name consumers resolve by. ` +
     `Give that output a non-secret Export.Name and redeploy: the next deploy replaces ` +
     `state.outputs and the exports index entirely. ROTATE the exposed secret.`
@@ -398,10 +412,11 @@ export function secretBearingStateKeyWarning(
  * refused by {@link secretBearingExportNameWarning} before this is reached.
  */
 export function exportAliasCollisionWarning(outputKey: string, exportName: string): string {
+  const shown = stripControlChars(exportName);
   return (
-    `Output ${outputKey} exports as "${exportName}", which is also the name of another output in this stack — ` +
-    `skipping the export alias, so output ${exportName} keeps its own value and the export is not published. ` +
-    `A consumer's Fn::ImportValue on "${exportName}" therefore resolves to output ${exportName}, NOT to ${outputKey} ` +
+    `Output ${outputKey} exports as "${shown}", which is also the name of another output in this stack — ` +
+    `skipping the export alias, so output ${shown} keeps its own value and the export is not published. ` +
+    `A consumer's Fn::ImportValue on "${shown}" therefore resolves to output ${shown}, NOT to ${outputKey} ` +
     `(CloudFormation would publish both). Rename the export, or the colliding output.`
   );
 }
@@ -417,10 +432,23 @@ export function exportAliasCollisionWarning(outputKey: string, exportName: strin
  * also fire on a template the deploy handled cleanly, per
  * {@link collectDeclaredOutputNames}.
  */
-export function exportAliasCollisionScrubWarning(outputKey: string, exportName: string): string {
+export function exportAliasCollisionScrubWarning(
+  outputKey: string,
+  exportName: string,
+  secrets?: RecordedSecretValues
+): string {
+  // Masked here, unlike the deploy twin. That one prints a name the secret
+  // refusal has already cleared; scrub runs no such check, and its `exportName`
+  // is a BEST-EFFORT resolved intrinsic that can carry plaintext — so the
+  // helper's "no masking needed" rationale holds for one caller only, and the
+  // other must supply its own.
+  const exposure = secrets ? secretsPresentIn(exportName, secrets) : undefined;
+  const shown = stripControlChars(
+    exposure ? maskEveryOccurrence(exportName, exposure) : exportName
+  );
   return (
-    `Output ${outputKey} exports as "${exportName}", which is also the name of another output in this stack — ` +
-    `state cannot say which of the two the stored value under "${exportName}" came from, so that key is ` +
+    `Output ${outputKey} exports as "${shown}", which is also the name of another output in this stack — ` +
+    `state cannot say which of the two the stored value under "${shown}" came from, so that key is ` +
     `redacted by value match instead of by template position, and two references resolving to the same ` +
     `value could still collapse there. Rename the export, or the colliding output, and redeploy.`
   );

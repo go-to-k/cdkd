@@ -51,9 +51,25 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
  * attributes (`StreamArn`, `PolicyId`, `VpcId`) that resolve WITHOUT throwing.
  */
 function resolverFor(table: Record<string, unknown>) {
-  return async (value: unknown): Promise<unknown> => {
+  const resolve = async (value: unknown): Promise<unknown> => {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       const keys = Object.keys(value as Record<string, unknown>);
+      // `Fn::Join` FOLDS to a string, which is what makes the dominant CDK
+      // secret shape (`{'Fn::Join': ['', ['{{resolve:secretsmanager:', {Ref},
+      // ':SecretString:pw::}}']]}`) arrive here as a resolved value rather than
+      // as a surviving intrinsic. Without this arm a fixture built on that shape
+      // is reported unresolved and can never exercise the secret signals.
+      if (keys.length === 1 && keys[0] === 'Fn::Join') {
+        const [sep, parts] = (value as { 'Fn::Join': [string, unknown[]] })['Fn::Join'];
+        const resolvedParts = [];
+        for (const part of parts) resolvedParts.push(String(await resolve(part)));
+        return resolvedParts.join(sep);
+      }
+      if (keys.length === 1 && keys[0] === 'Ref') {
+        const id = (value as { Ref: string }).Ref;
+        if (!(id in table)) throw new Error(`Resource not found in state: ${id}`);
+        return table[id];
+      }
       if (keys.length === 1 && keys[0] === 'Fn::GetAtt') {
         const [id, attr] = (value as { 'Fn::GetAtt': [string, string] })['Fn::GetAtt'];
         const key = `${id}.${attr}`;
@@ -63,6 +79,7 @@ function resolverFor(table: Record<string, unknown>) {
     }
     return value;
   };
+  return resolve;
 }
 
 /** The lenient shape the `IntrinsicResolveFn` TYPE also permits (returns the input). */
@@ -76,6 +93,8 @@ const RESOLVER = resolverFor({
   // An attribute whose VALUE is an expression string: the shape an intrinsic
   // `Export.Name` takes after this resolver's `skipDynamicReferences` pass.
   'Bucket.SecretishName': 'pre-{{resolve:secretsmanager:db:SecretString:pw}}',
+  // A `Ref` target, for the `Fn::Join`-wrapped secret shape.
+  Sec: 'arn:aws:secretsmanager:us-east-1:1234:secret:db',
   // Constructible-but-unknown attribute: resolves to undefined, does NOT throw.
   'Role.RoleId': undefined,
 });
@@ -161,15 +180,28 @@ describe('resolveTemplateOutputs', () => {
 
   it('PARITY row 3 — a LITERAL name in a secret-bearing stack SUPPRESSES rather than guesses', async () => {
     // Deploy refuses a literal name that CONTAINS a resolved plaintext
-    // (`prod-<secret>-endpoint`), and this preview can never see a plaintext —
-    // its resolver does not substitute one. Publishing would risk a phantom ADD
-    // whose row PRINTS the plaintext-bearing key into CI logs, so the delta is
-    // suppressed instead. Narrowed to stacks that actually resolve a secret:
-    // with none, there is nothing a name could contain.
+    // (`prod-<secret>-endpoint`), and this preview never resolves one, so it
+    // cannot evaluate that predicate. Publishing would risk a phantom ADD whose
+    // row PRINTS the plaintext-bearing key into CI logs, so the delta is
+    // suppressed instead — this module's existing answer to "cannot reproduce
+    // what deploy will do".
+    //
+    // The secret-bearing output uses the INTRINSIC shape on purpose: an
+    // `Fn::Join` around a `Ref` to the secret's ARN is what
+    // `secret.secretValueFromJson(...)` renders, and a shallow string scan of
+    // `output.Value` reports no secret for it — which is the DOMINANT CDK shape
+    // and disarmed this whole branch.
     const template: CloudFormationTemplate = {
       Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
       Outputs: {
-        DbSecret: { Value: '{{resolve:secretsmanager:db:SecretString:pw}}' },
+        DbSecret: {
+          Value: {
+            'Fn::Join': [
+              '',
+              ['{{resolve:secretsmanager:', { Ref: 'Sec' }, ':SecretString:password::}}'],
+            ],
+          },
+        },
         Exporter: {
           Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
           Export: { Name: 'MyStack:BucketArn' },
@@ -180,11 +212,53 @@ describe('resolveTemplateOutputs', () => {
     const r = await resolveTemplateOutputs(template, RESOLVER);
 
     expect([...r.exportNames]).toEqual([]);
+    expect(Object.hasOwn(r.outputs, 'MyStack:BucketArn')).toBe(false);
     expect(r.resolutionFailed).toBe(true);
+    // The value keys still resolved — the suppression is a reporting decision,
+    // not a resolution failure.
+    expect(r.outputs['Exporter']).toBe(ARN);
+  });
+
+  it('PARITY row 3 — the suppression RECORDS the alias key, so the warning cannot misreport', async () => {
+    // The suppression drops a key that may well be PRESENT in state. Without
+    // recording it, `diff-recursive`'s `wouldHaveChanged` filter reads it as a
+    // REMOVE and the stack warns "one or more could not be resolved ... usually
+    // an output referencing a resource this deploy has yet to create" — the
+    // wrong cause, on every run, forever.
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        DbSecret: {
+          Value: {
+            'Fn::Join': [
+              '',
+              ['{{resolve:secretsmanager:', { Ref: 'Sec' }, ':SecretString:password::}}'],
+            ],
+          },
+        },
+        Exporter: {
+          Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
+          Export: { Name: 'MyStack:BucketArn' },
+        },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+
+    expect(r.failedKeys.has('MyStack:BucketArn')).toBe(true);
+    // The filter the warning is computed through must therefore drop the row a
+    // stored copy of that key would otherwise produce.
+    const wouldHaveChanged = computeOutputsDiff(
+      { 'MyStack:BucketArn': 'arn:aws:s3:::previously-published' },
+      r.outputs,
+      r.exportNames,
+      r.secretSourceKeys
+    ).filter((change) => !r.failedKeys.has(change.name));
+    expect(wouldHaveChanged.map((c) => c.name)).not.toContain('MyStack:BucketArn');
   });
 
   it('PARITY row 3 — the same literal name publishes when the stack resolves NO secret', async () => {
-    // The other half, so the suppression cannot silently widen to every stack.
+    // The other half, so the rule cannot silently widen to every stack.
     const r = await resolveTemplateOutputs(templateWithExport(), RESOLVER);
     expect([...r.exportNames]).toEqual(['StackA:BucketArn']);
     expect(r.resolutionFailed).toBe(false);
@@ -452,6 +526,22 @@ describe('computeOutputsDiff — legacy secret plaintext on the stored side', ()
     expect(changes[0]!.changeType).toBe('MODIFY');
     expect(changes[0]!.oldValueRedacted).toBe(true);
     // The value must be ABSENT, not merely flagged.
+    expect(changes[0]).not.toHaveProperty('oldValue');
+    expect(JSON.stringify(changes)).not.toContain('hunter2');
+  });
+
+  it('withholds a legacy plaintext when the DESIRED side is an intrinsic-wrapped secret', () => {
+    // The same shallow-scan gap on the WITHHOLDING signal (issue #1921's half):
+    // the desired value is the dominant CDK shape — an `Fn::Join` around a `Ref`
+    // to the secret's ARN — so a string-only test reported "not a secret" and
+    // the stored PLAINTEXT was printed as the row's `old:` value, into CI logs.
+    const desired = {
+      DbPassword: {
+        'Fn::Join': ['', ['{{resolve:secretsmanager:', { Ref: 'Sec' }, ':SecretString:pw::}}']],
+      },
+    };
+    const changes = computeOutputsDiff({ DbPassword: 'hunter2-plaintext' }, desired, new Set());
+    expect(changes[0]!.oldValueRedacted).toBe(true);
     expect(changes[0]).not.toHaveProperty('oldValue');
     expect(JSON.stringify(changes)).not.toContain('hunter2');
   });
