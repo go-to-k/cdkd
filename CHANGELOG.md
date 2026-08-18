@@ -1,3 +1,10 @@
+## [0.283.31](https://github.com/go-to-k/cdkd/compare/v0.283.30...v0.283.31) (2026-08-18)
+
+
+### Bug Fixes
+
+* **state:** key the already-an-expression refusal on SOURCE GENERATION and reach array-nested secrets ([#1944](https://github.com/go-to-k/cdkd/issues/1944)) ([0653731](https://github.com/go-to-k/cdkd/commit/0653731b72ea489aab6a81ccfe1c8213b545c606))
+
 ## [0.283.30](https://github.com/go-to-k/cdkd/compare/v0.283.29...v0.283.30) (2026-08-18)
 
 
