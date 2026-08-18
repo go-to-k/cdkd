@@ -91,6 +91,8 @@ import {
   DELETE_INDEX_BUSY_MAX_RETRIES,
   DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
   DELETE_INDEX_WAIT_PROCEED_NOTE,
+  INDEX_SETTLE_POLL_INTERVAL_MS,
+  deleteTableWithIndexBusyRetry,
   hasTransitionalIndex,
   indexBusyRetryWarning,
   isIndexBusyDeleteError,
@@ -212,6 +214,49 @@ describe('indexBusyRetryWarning (the ONE line printed at default verbosity)', ()
     expect(first).not.toContain('more attempts, each preceded by');
   });
 
+  it('states the remaining WALL CLOCK as a floor, derived from the constants', () => {
+    // Issue #1950 took the budget to 14, so the loop can now run for the better
+    // part of twenty minutes and an attempt COUNT no longer tells a user
+    // watching one table whether it is settling or stuck. A floor rather than
+    // an estimate: `INDEX_SETTLE_POLL_INTERVAL_MS` is only the sleep, so the
+    // real wall clock is longer — and a line promising a shorter wait than the
+    // loop takes would be the more misleading of the two.
+    //
+    // The line fires from inside attempt 2, where the attempts still to run —
+    // each of which re-arms — number exactly `DELETE_INDEX_BUSY_MAX_RETRIES`.
+    const firstRetryMinutes = Math.round(
+      (DELETE_INDEX_BUSY_MAX_RETRIES *
+        DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS *
+        INDEX_SETTLE_POLL_INTERVAL_MS) /
+        60_000
+    );
+    expect(
+      indexBusyRetryWarning({
+        typeLabel: 'table',
+        logicalId: 'Orders',
+        physicalId: 'orders-table',
+        attemptNumber: 2,
+      })
+    ).toContain(`at least ~${firstRetryMinutes} more minutes`);
+
+    // ...and it SHRINKS with the attempt, so the figure is derived from where
+    // the loop actually is rather than being one more constant in the string.
+    // (Production only ever prints the line once, on the first retry; a fixed
+    // string would pass the assertion above and this is what catches it.)
+    expect(
+      indexBusyRetryWarning({
+        typeLabel: 'table',
+        logicalId: 'Orders',
+        physicalId: 'orders-table',
+        attemptNumber: DELETE_INDEX_BUSY_MAX_RETRIES,
+      })
+    ).toContain(
+      `at least ~${Math.round(
+        (2 * DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS * INDEX_SETTLE_POLL_INTERVAL_MS) / 60_000
+      )} more minutes`
+    );
+  });
+
   it('names the caller`s resource type, so neither provider claims the other`s', () => {
     const gt = indexBusyRetryWarning({
       typeLabel: 'GlobalTable',
@@ -239,25 +284,162 @@ describe('indexBusyRetryWarning (the ONE line printed at default verbosity)', ()
 });
 
 describe('the shared budget constants', () => {
-  it('bounds the re-arm poll well under the per-resource destroy deadline', () => {
+  /**
+   * What ONE re-arm poll costs in wall clock.
+   *
+   * {@link INDEX_SETTLE_POLL_INTERVAL_MS} is only the SLEEP; each poll also
+   * pays a `DescribeTable` round trip. The live #1950 run measured the pair at
+   * ~1.2s: a 60-poll re-arm took ~72s, and the per-attempt gaps were 73 / 74 /
+   * 77 / 80 / 80 / 80s once `withRetry`'s backoff is subtracted. The fence the
+   * budget shipped with priced a poll at the interval ALONE, which is how it
+   * came to quote a ~8.8 min worst case for a loop the same run showed taking
+   * ~10.4 min.
+   */
+  const MEASURED_POLL_RTT_MS = 200;
+  /**
+   * A poll costing 1.5x the interval instead of the measured ~1.2x — the "AWS
+   * is slower today than it was on 2026-08-18" arm. The budget has to survive
+   * it too, because the deadline it is sized against does not move with it.
+   */
+  const PESSIMISTIC_POLL_RTT_MS = 500;
+  /**
+   * `TABLE_ACTIVE_WAIT_ATTEMPTS` from `dynamodb-table-provider.ts`: the <=60
+   * polls `--remove-protection` spends waiting for the table to reach ACTIVE
+   * BEFORE this loop starts, inside the same per-resource deadline.
+   *
+   * The one term here that is a copy rather than an import — the constant is
+   * module-private on that provider. It is also the smallest term, and the
+   * pessimistic fence below covers it growing by half.
+   */
+  const TABLE_ACTIVE_WAIT_POLLS = 60;
+  /**
+   * The FLOOR the budget has to clear by a real multiple: a FIVE-item table's
+   * GSI create took ~8 min on the live #1950 run. Five items is about as small
+   * as a backfill gets, so that is AWS's roughly fixed index-create latency
+   * rather than a data-proportional cost.
+   */
+  const MEASURED_FLOOR_MS = 8 * 60_000;
+
+  /**
+   * Drive the REAL loop against a refusal that never clears, recording what it
+   * actually spends: how many times it re-armed, and every millisecond it asked
+   * to sleep.
+   *
+   * MEASURED rather than restated, because that is what makes the fences below
+   * move when a sibling constant does. `withRetry`'s schedule (1, 2, 4, 8, 8
+   * ... capped at 8s) lives in `retry.ts`, and the fence this replaces hard-
+   * coded its 47s total — a figure DERIVED from a budget of 8, so raising the
+   * budget silently left the fence asserting the old loop's cost.
+   */
+  async function measureLoop(): Promise<{
+    attempts: number;
+    reArms: number;
+    backoffMs: number;
+  }> {
+    let attempts = 0;
+    let reArms = 0;
+    let backoffMs = 0;
+    const silent: Logger = {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    };
+    await expect(
+      deleteTableWithIndexBusyRetry({
+        logicalId: 'Orders',
+        physicalId: 'orders-table',
+        typeLabel: 'table',
+        logger: silent,
+        deleteTable: () => {
+          attempts += 1;
+          return Promise.reject(
+            new ResourceInUseException({ message: INDEX_BUSY_MESSAGE, $metadata: {} })
+          );
+        },
+        reArm: () => {
+          reArms += 1;
+          return Promise.resolve();
+        },
+        // Records instead of sleeping. `withRetry` splits each delay into <=1s
+        // chunks for its interrupt check, so the SUM of the calls is the
+        // backoff, not any single one.
+        sleepSeam: {
+          sleep: (ms: number) => {
+            backoffMs += ms;
+            return Promise.resolve();
+          },
+        },
+      })
+    ).rejects.toThrow(INDEX_BUSY_MESSAGE);
+    return { attempts, reArms, backoffMs };
+  }
+
+  /** Loop + the Table path's pre-delete ACTIVE wait, at a given poll cost. */
+  function deletePathWorstCaseMs(
+    pollRttMs: number,
+    measured: { reArms: number; backoffMs: number }
+  ): number {
+    const pollMs = INDEX_SETTLE_POLL_INTERVAL_MS + pollRttMs;
+    return (
+      measured.reArms * DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS * pollMs +
+      measured.backoffMs +
+      TABLE_ACTIVE_WAIT_POLLS * pollMs
+    );
+  }
+
+  it('spends exactly `1 + budget` attempts and one re-arm per retry', async () => {
+    // The shape both fences below are computed from, pinned separately so a
+    // failure there is readable: if this is wrong, the wall-clock numbers are
+    // measuring something other than the loop.
+    const measured = await measureLoop();
+    expect(measured.attempts).toBe(1 + DELETE_INDEX_BUSY_MAX_RETRIES);
+    expect(measured.reArms).toBe(DELETE_INDEX_BUSY_MAX_RETRIES);
+  });
+
+  it('covers a backfill well past the FLOOR case the budget used to stop at', async () => {
+    // Issue #1950: at the shipped budget of 8 the loop ran ~10.4 min against a
+    // ~8 min floor — one retry of headroom on the cheapest backfill AWS can do,
+    // so the feature delivered its promise only for the smallest possible
+    // table. Requiring 2x the floor is what "not calibrated at the floor" means
+    // as a number: AWS's fixed index-create latency PLUS a data-proportional
+    // term of comparable size. It cannot mean "covers any backfill" — that term
+    // is unbounded and no fixed budget reaches it.
+    const measured = await measureLoop();
+    const loopMs =
+      measured.reArms *
+        DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS *
+        (INDEX_SETTLE_POLL_INTERVAL_MS + MEASURED_POLL_RTT_MS) +
+      measured.backoffMs;
+    expect(loopMs).toBeGreaterThanOrEqual(2 * MEASURED_FLOOR_MS);
+  });
+
+  it('keeps the whole DELETE-path worst case under the per-resource deadline', async () => {
     // `destroy-runner.ts` caps the whole `delete()` CALL at
     // `DEFAULT_RESOURCE_TIMEOUT_MS` and neither provider declares a
-    // `getMinResourceTimeoutMs` to lift it. The LOOP's worst case is
-    // `maxRetries x rearm polls (~1s each) + withRetry's ~47s of backoff`.
-    const worstCaseMs =
-      (DELETE_INDEX_BUSY_MAX_RETRIES * DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS + 47) * 1000;
+    // `getMinResourceTimeoutMs` to lift it. Asserting against the IMPORTED
+    // constant (not a copy of its value) is what makes lowering the real
+    // deadline red this test.
+    const measured = await measureLoop();
 
-    // MARGIN: half the deadline, chosen rather than "just under it". The
-    // deadline is per RESOURCE, not per delete attempt, so the loop is not the
-    // only thing spending it — `--remove-protection` can prepend an
-    // `UpdateTable` plus a <=60s ACTIVE wait, and the GlobalTable sibling
-    // prepends a 15-minute #1521 settle gate and a replica / auto-scaling
-    // teardown. Leaving half the budget to everything else is what keeps the
-    // give-up message AWS's own actionable sentence instead of a generic
-    // `ResourceTimeoutError` that never mentions indexes. Asserting against
-    // the imported constant (not a copy of its value) is what makes lowering
-    // the real deadline red this test.
-    expect(worstCaseMs).toBeLessThan(DEFAULT_RESOURCE_TIMEOUT_MS / 2);
+    // MARGIN: two thirds of the deadline, and note what this now counts that
+    // the half-the-deadline fence it replaces did not — the Table path's
+    // pre-delete ACTIVE wait, and a poll priced at its MEASURED cost rather
+    // than at the bare sleep interval. Counting more terms at a truer cost is
+    // why the threshold moved; the value it permits (14) is one retry above
+    // what the old fence's own formula allowed (13), not a doubling.
+    expect(deletePathWorstCaseMs(MEASURED_POLL_RTT_MS, measured)).toBeLessThan(
+      (DEFAULT_RESOURCE_TIMEOUT_MS * 2) / 3
+    );
+
+    // ...and it still fits, with five minutes to spare, if a poll turns out to
+    // cost half again what the live run measured. `withResourceDeadline` does
+    // NOT cancel the operation it wraps: on an overshoot it rejects while this
+    // loop keeps issuing `DeleteTable` in the background, so the cost of being
+    // wrong here is not merely a worse message.
+    expect(deletePathWorstCaseMs(PESSIMISTIC_POLL_RTT_MS, measured)).toBeLessThan(
+      DEFAULT_RESOURCE_TIMEOUT_MS - 5 * 60_000
+    );
   });
 
   it('states what proceeding costs on the delete path, not the auto-scaling one', () => {
@@ -607,11 +789,11 @@ describe('the moved GlobalTable defaults stay distinct from the delete path (iss
 });
 
 /**
- * The ~8.8 min worst case is only true while the OUTER retry loop in
+ * The ~18.4 min worst case is only true while the OUTER retry loop in
  * `destroy-runner.ts` invokes `delete()` exactly ONCE for this refusal. That
  * loop runs up to 4 attempts and keys on `isRetryableTransientError`, so adding
  * this message to `RETRYABLE_ERROR_MESSAGE_PATTERNS` would silently take the
- * worst case to ~35 min and blow the 30-min per-resource deadline the budget is
+ * worst case to ~74 min and blow the 30-min per-resource deadline the budget is
  * sized against. The module comment asserts that property; this pins it, so the
  * claim cannot rot into a comment that used to be true.
  */

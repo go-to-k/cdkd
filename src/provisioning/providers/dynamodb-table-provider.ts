@@ -2201,9 +2201,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // (30 min by default; this provider declares no
         // `getMinResourceTimeoutMs` to lift it). At
         // `DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS` the whole loop's worst case is
-        // ~8.8 min, so a genuinely stuck index still ends in AWS's own
-        // actionable sentence rather than a generic `ResourceTimeoutError` that
-        // never mentions indexes.
+        // ~18.4 min (issue #1950 raised the retry budget to 14; the full
+        // arithmetic is on `DELETE_INDEX_BUSY_MAX_RETRIES`), so a genuinely
+        // stuck index still ends in AWS's own actionable sentence rather than a
+        // generic `ResourceTimeoutError` that never mentions indexes. On THIS
+        // provider the only other thing sharing that deadline is the
+        // `--remove-protection` ACTIVE wait above (<=60 polls, ~72s), which the
+        // budget is sized with — the whole `delete()` worst case is ~19.6 min
+        // against the 30-min deadline.
         //
         // That deadline wraps `destroy-runner.ts`'s OUTER retry loop, not a
         // single `delete()` — up to 4 calls share it. The budget survives that

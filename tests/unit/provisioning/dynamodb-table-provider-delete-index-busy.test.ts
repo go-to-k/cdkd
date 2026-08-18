@@ -65,7 +65,11 @@ import {
   DynamoDBTableProvider,
   deleteTableRetryDelays,
 } from '../../../src/provisioning/providers/dynamodb-table-provider.js';
-import { DELETE_INDEX_WAIT_PROCEED_NOTE } from '../../../src/provisioning/dynamodb-index-busy-delete.js';
+import {
+  DELETE_INDEX_BUSY_MAX_RETRIES,
+  DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+  DELETE_INDEX_WAIT_PROCEED_NOTE,
+} from '../../../src/provisioning/dynamodb-index-busy-delete.js';
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::Table';
 const LOGICAL_ID = 'Orders';
@@ -275,8 +279,10 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
       `Failed to delete DynamoDB table ${LOGICAL_ID}: Attempt to change a resource which is ` +
         'still in use: Cannot delete table while indexes are being created, updated, or deleted.'
     );
-    // DELETE_INDEX_BUSY_MAX_RETRIES (8) retries after the first attempt.
-    expect(stub.attempts()).toBe(9);
+    // `DELETE_INDEX_BUSY_MAX_RETRIES` retries after the first attempt. Derived
+    // from the constant, not from its value: issue #1950 raised it from 8 to 14
+    // and a literal 9 here would have gone on asserting the old budget.
+    expect(stub.attempts()).toBe(1 + DELETE_INDEX_BUSY_MAX_RETRIES);
   });
 
   it('matches the refusal case-INSENSITIVELY (the classifier`s /i flag)', async () => {
@@ -321,15 +327,21 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
     expect(refusalWarnings[0]).not.toContain('GlobalTable');
     expect(refusalWarnings[0]).toContain(TABLE_NAME);
     expect(refusalWarnings[0]).toContain('global secondary index');
-    // It fires from inside attempt 2 of `1 + DELETE_INDEX_BUSY_MAX_RETRIES`
-    // (= 9), so 7 attempts are left, not 8 — the off-by-one the shared module
+    // It fires from inside attempt 2 of `1 + DELETE_INDEX_BUSY_MAX_RETRIES`, so
+    // one fewer than the budget is left — the off-by-one the shared module
     // derives rather than spells.
-    expect(refusalWarnings[0]).toContain('up to 7 more attempts');
+    expect(refusalWarnings[0]).toContain(
+      `up to ${DELETE_INDEX_BUSY_MAX_RETRIES - 1} more attempts`
+    );
     // ...and the settle budget is stated as POLLS, not as seconds: the constant
     // is a DescribeTable count, and rendering it as `60s` claims a wall clock
-    // the loop does not have (each poll also pays a round trip).
-    expect(refusalWarnings[0]).toContain('up to 60 DescribeTable polls');
+    // the loop does not have (each poll also pays a round trip). The wall clock
+    // IS stated (issue #1950), separately and as a floor.
+    expect(refusalWarnings[0]).toContain(
+      `up to ${DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS} DescribeTable polls`
+    );
     expect(refusalWarnings[0]).not.toMatch(/\b60s\b/);
+    expect(refusalWarnings[0]).toMatch(/at least ~\d+ more minutes/);
     // It must NOT carry AWS's own sentence: the integ arm greps the destroy log
     // for `Cannot delete table while indexes are being` to prove AWS really
     // refused, and a cdkd-authored copy would satisfy that grep without the

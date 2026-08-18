@@ -105,18 +105,76 @@ export function isIndexBusyDeleteError(message: string): boolean {
 }
 
 /**
- * Retry budget for the index-busy `DeleteTable` refusal (issue #1830).
+ * Retry budget for the index-busy `DeleteTable` refusal (issues #1830 /
+ * #1950).
  *
- * Left at `withRetry`'s own default of 8 rather than raised. Named rather than
- * inlined because passing it at all is what opts this call out of
- * `withRetry`'s dense IAM-propagation schedule, which would be wrong for a
- * condition measured in seconds-to-minutes rather than sub-second.
+ * RAISED from `withRetry`'s default of 8 by issue #1950. A live
+ * `dynamodb-gsi-update` destroy (us-east-1, 2026-08-18) measured a FIVE-item
+ * table's GSI create consuming 7 of the 8 retries. Five items is about as
+ * small as a backfill gets, so those ~8 minutes are AWS's roughly FIXED
+ * index-create latency rather than a data-proportional cost: the old budget
+ * cleared the FLOOR of the condition it absorbs with one retry to spare, and
+ * any table holding real data was expected to exceed it.
  *
- * The count MULTIPLIES the per-attempt re-arm poll below, so the two have to
- * be read together — see {@link DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS} for the
- * arithmetic and for why the poll is not a 15-minute one.
+ * **Why 14, and not simply double.** This count MULTIPLIES the per-attempt
+ * re-arm poll, so the arithmetic belongs to the LOOP rather than to this
+ * constant, and every term is a constant elsewhere in the tree:
+ *
+ * ```
+ *   re-arm     DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS (60) polls x ~1.2s
+ *              = ~72s.   ~1.2s is INDEX_SETTLE_POLL_INTERVAL_MS of sleep plus
+ *              a DescribeTable round trip, MEASURED: the live log's
+ *              per-attempt gaps were 73 / 74 / 77 / 80 / 80 / 80s, which is
+ *              this plus the backoff below.
+ *   backoff    withRetry's 1, 2, 4, 8, 8 ... capped at 8s (retry.ts) =
+ *              8N - 17 seconds for N retries.
+ *   loop(N)    N x 72 + (8N - 17) = 80N - 17 seconds.
+ *   pre-delete <= TABLE_ACTIVE_WAIT_ATTEMPTS (60) polls waiting for the table
+ *              to go ACTIVE after the `--remove-protection` UpdateTable
+ *              (~72s, `dynamodb-table-provider.ts`; the Table path only).
+ *   deadline   DEFAULT_RESOURCE_TIMEOUT_MS = 30 min, applied by
+ *              `destroy-runner.ts` around the whole delete.
+ * ```
+ *
+ * At N=8 that is 623s (~10.4 min). The "~8.8 min" this file used to quote was
+ * the same product at an IDEALIZED 1.0s per poll, which the live run
+ * disproved. At N=14 it is 1103s (~18.4 min), or 1175s (~19.6 min) including
+ * the ACTIVE wait — two thirds of the deadline, leaving ~10.4 min.
+ *
+ * 16, the "just double it" answer, does NOT survive the same arithmetic: 1335s
+ * measured, and 1641s (~27.4 min) if a poll costs 1.5s rather than the
+ * measured ~1.2s, i.e. 2.6 min of margin. 15 is already past the two-thirds
+ * fence. So 14 is the LARGEST value the deadline permits with real margin —
+ * and what it buys is ~2.3x the measured floor, NOT coverage of an arbitrary
+ * backfill, which is data-proportional and cannot be bounded by any fixed
+ * budget. Past the budget the outcome is unchanged and still actionable: AWS's
+ * own sentence, and a re-run that succeeds once the index is ACTIVE.
+ *
+ * Margin rather than "just under the deadline" because `withResourceDeadline`
+ * (`src/deployment/resource-deadline.ts`) does NOT cancel: when it fires it
+ * rejects while this loop keeps issuing `DeleteTable` in the background, so an
+ * overshoot is not merely a worse error message.
+ *
+ * Raising the RE-ARM bound instead was the other lever, and was rejected: that
+ * poll returns on the first `DescribeTable` reporting the indexes settled, so
+ * a longer one buys the same wall clock without a single fresh `DeleteTable`
+ * probe — and the probe is the part that tests AWS's ACTUAL refusal predicate
+ * rather than cdkd's GSI-status proxy for it.
+ *
+ * SHARED, so this MOVES `AWS::DynamoDB::GlobalTable` too: that type's destroy
+ * now spends up to ~18.4 min rather than ~10.4 min absorbing the same refusal.
+ * Deliberate (the same AWS refusal has to answer the same way on both types),
+ * and it does not change which calls that provider makes. Its own delete()
+ * can prepend a 15-minute #1521 settle gate and a ~10-minute
+ * `waitForReplicaGone` per non-local replica, a stack that already exceeded
+ * the deadline before this change; see the note at its `deleteTableWithIndexBusyRetry`
+ * call site.
+ *
+ * Named rather than inlined because passing it at all is what opts this call
+ * out of `withRetry`'s dense IAM-propagation schedule, which would be wrong
+ * for a condition measured in minutes rather than sub-second.
  */
-export const DELETE_INDEX_BUSY_MAX_RETRIES = 8;
+export const DELETE_INDEX_BUSY_MAX_RETRIES = 14;
 
 /**
  * `DescribeTable` polls (~1s apart) the index-busy `DeleteTable` retry spends
@@ -126,29 +184,44 @@ export const DELETE_INDEX_BUSY_MAX_RETRIES = 8;
  * Bounded well under the 15-minute default `GlobalTable`'s pre-delete #1521
  * gate uses, because THAT default is sized for a wait that runs once while
  * this one runs per retry: the caller's wall clock is
- * `DELETE_INDEX_BUSY_MAX_RETRIES x this + withRetry's ~47s of backoff`, and
- * `destroy-runner.ts` runs the delete under a per-resource deadline (30 min by
- * default; neither DynamoDB provider declares a `getMinResourceTimeoutMs` to
- * lift it). At 900 polls the product was ~2h, so a genuinely stuck index
- * produced a 30-minute wait ending in a generic `ResourceTimeoutError` that
- * never mentions indexes. At 60 the LOOP's worst case is ~8.8 min and the user
- * gets AWS's own actionable sentence instead.
+ * `DELETE_INDEX_BUSY_MAX_RETRIES x this x ~1.2s per poll + withRetry's
+ * backoff`, and `destroy-runner.ts` runs the delete under a per-resource
+ * deadline (30 min by default; neither DynamoDB provider declares a
+ * `getMinResourceTimeoutMs` to lift it). At 900 polls the product would be
+ * ~4.2h, so a genuinely stuck index would produce a 30-minute wait ending in a
+ * generic `ResourceTimeoutError` that never mentions indexes. At 60 the LOOP's
+ * worst case is ~18.4 min — see {@link DELETE_INDEX_BUSY_MAX_RETRIES} for
+ * every term of that product and for why the budget is 14 — and the user gets
+ * AWS's own actionable sentence instead.
  *
  * **What that deadline actually wraps**, since the arithmetic depends on it:
  * NOT one `delete()` but `destroy-runner.ts`'s whole outer retry loop, which
  * calls `delete()` up to 4 times (`maxAttempts = 3`) inside the one deadline.
- * Four times ~8.8 min would blow straight through 30 min. It does not, and the
+ * Four times ~18.4 min would blow straight through 30 min. It does not, and the
  * reason is load-bearing rather than incidental: that outer loop only retries
  * when `isRetryableTransientError` says so, and this refusal matches no entry
  * in `RETRYABLE_ERROR_MESSAGE_PATTERNS` (verified against the real classifier —
  * both AWS's raw sentence and the `Failed to delete DynamoDB table ...` wrap
  * return false), so the outer loop runs `delete()` exactly ONCE for it and the
  * budget below is not re-multiplied. Adding this message to those patterns
- * would silently make the worst case ~35 min — over the deadline.
+ * would silently make the worst case ~74 min — well over the deadline.
  *
  * The FIRST attempt is unaffected — it does not re-arm at all.
  */
 export const DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS = 60;
+
+/**
+ * Sleep between two `DescribeTable` polls of {@link waitForIndexesSettled}.
+ *
+ * Named rather than inlined because it is the unit BOTH budgets above are
+ * denominated in: a poll count only becomes a wall clock through this, and the
+ * whole "does the loop fit inside the per-resource deadline" argument at
+ * {@link DELETE_INDEX_BUSY_MAX_RETRIES} multiplies it. It is a FLOOR on the
+ * per-poll cost, never the whole of it — each poll also pays a `DescribeTable`
+ * round trip, which is why the live run's 60-poll re-arm took ~72s and not
+ * 60s, and why the arithmetic above prices a poll at ~1.2s.
+ */
+export const INDEX_SETTLE_POLL_INTERVAL_MS = 1_000;
 
 /**
  * What proceeding costs when a DELETE-path index-settle wait ends WITHOUT
@@ -211,7 +284,7 @@ export async function waitForIndexesSettled(opts: {
           `DescribeTable throttled while waiting for indexes on ${tableName} ` +
             `(attempt ${attempt}/${maxAttempts}); still waiting: ${message}`
         );
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
         continue;
       }
       // The table is GONE — there is nothing left to wait for, and this is a
@@ -250,7 +323,7 @@ export async function waitForIndexesSettled(opts: {
       );
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
   }
   logger.warn(
     `Indexes on ${tableName} (${logicalId}) did not all reach ACTIVE within ` +
@@ -274,8 +347,19 @@ export async function waitForIndexesSettled(opts: {
  *
  * The per-attempt settle budget is attached to "this attempt plus the N more"
  * rather than to the N alone, because the re-arm runs before the attempt this
- * very line announces too — 8 re-arms for 7 remaining attempts. Saying "N more
- * attempts, each preceded by ..." made one sentence quote two different counts.
+ * very line announces too — 14 re-arms for 13 remaining attempts. Saying "N
+ * more attempts, each preceded by ..." made one sentence quote two different
+ * counts.
+ *
+ * It also states the remaining wall clock, as a FLOOR (issue #1950). With the
+ * budget at {@link DELETE_INDEX_BUSY_MAX_RETRIES} the loop can now run for the
+ * better part of twenty minutes, and a user watching a destroy sit on one
+ * table for that long needs to tell SETTLING from STUCK — an attempt count
+ * alone does not say how long it will take. A floor rather than an estimate
+ * because {@link INDEX_SETTLE_POLL_INTERVAL_MS} is only the sleep: each poll
+ * also pays a `DescribeTable` round trip and `withRetry` sleeps its backoff
+ * between attempts, so the real figure is larger, and a line that promised a
+ * shorter wait than the loop takes would be the more misleading of the two.
  *
  * It must NOT carry AWS's own sentence: the `dynamodb-globaltable` integ greps
  * the destroy log for `Cannot delete table while indexes are being` to prove
@@ -289,6 +373,16 @@ export function indexBusyRetryWarning(opts: {
   attemptNumber: number;
 }): string {
   const remainingAttempts = 1 + DELETE_INDEX_BUSY_MAX_RETRIES - opts.attemptNumber;
+  // Attempts still to run INCLUDING the one this line announces — each of them
+  // re-arms, so this is also the number of settle polls ahead. Derived from the
+  // constants for the same reason `remainingAttempts` is: a hand-written figure
+  // is how this line once came to promise one more attempt than the loop makes.
+  const settleFloorMinutes = Math.round(
+    ((remainingAttempts + 1) *
+      DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS *
+      INDEX_SETTLE_POLL_INTERVAL_MS) /
+      60_000
+  );
   return (
     `DynamoDB ${opts.typeLabel} ${opts.logicalId}: AWS refused DeleteTable on ${opts.physicalId} ` +
     `because a global secondary index is still being created, updated or ` +
@@ -297,7 +391,8 @@ export function indexBusyRetryWarning(opts: {
     `and retrying (this attempt plus up to ${remainingAttempts} more attempts; ` +
     `each one first waits up to ${DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS} ` +
     `DescribeTable polls ~1s apart — a little over a minute of settling — ` +
-    `before its DeleteTable). Nothing is ` +
+    `before its DeleteTable, so this can keep retrying for at least ` +
+    `~${settleFloorMinutes} more minutes). Nothing is ` +
     `wrong with the table; a large index backfill can outlast this budget, in ` +
     `which case the destroy fails with AWS's own message and re-running it ` +
     `succeeds once the index is ACTIVE.`

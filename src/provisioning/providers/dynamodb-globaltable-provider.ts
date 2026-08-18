@@ -4052,12 +4052,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // can already have spent the #1521 gate's full 900 polls (~15 min) just
         // above, and up to 600 polls (~10 min) in `waitForReplicaGone` per
         // non-local replica before that. So a replicated table whose index is
-        // transitioning can still reach roughly 15 + 10 + 8.8 ~= 34 min for a
+        // transitioning can still reach roughly 15 + 10 + 18.4 ~= 43 min for a
         // single replica and end in exactly the generic `ResourceTimeoutError`
-        // this bound exists to avoid. What the bound buys is that the RETRY is
-        // no longer the part that spends the budget; bringing the WHOLE
-        // `delete()` worst case under the deadline is a separate problem this
-        // change does not solve.
+        // this bound exists to avoid. That total was already over the deadline
+        // at the old 8-retry budget (~34 min) — issue #1950's raise to 14
+        // widens an overshoot it did not create, deliberately, because the same
+        // AWS refusal has to answer the same way on both DynamoDB types. What
+        // the bound buys is that the RETRY is no longer the part that spends the
+        // budget; bringing the WHOLE `delete()` worst case under the deadline is
+        // a separate problem this change does not solve (issue #1955).
         reArm: () =>
           this.waitForIndexesActive(physicalId, logicalId, {
             maxAttempts: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
