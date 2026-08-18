@@ -10,6 +10,8 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
  * - AWS::Cognito::UserPoolDomain
  * - AWS::Cognito::UserPool #609 backfill properties (UserPoolTier / EnabledMfas
  *   / EmailAuthenticationMessage+Subject / WebAuthnRelyingPartyID+UserVerification)
+ * - AWS::Cognito::UserPool passkey-only shape (#1920): WebAuthn with no MFA
+ *   factor and no MfaConfiguration, which must land as MfaConfiguration OFF
  */
 export class CognitoStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -84,12 +86,49 @@ export class CognitoStack extends cdk.Stack {
     const backfillPool = new cognito.CfnUserPool(this, 'BackfillUserPool', {
       userPoolName: `cdkd-test-backfill-${cdk.Aws.ACCOUNT_ID}`,
       userPoolTier: 'ESSENTIALS',
-      mfaConfiguration: 'OPTIONAL',
+      // Deliberately ON, not OPTIONAL: OPTIONAL is exactly what the no-value
+      // default produces for a pool with a factor, so an OPTIONAL here could
+      // not distinguish "the template's explicit value was threaded through"
+      // from "the default fired". ON is reachable only by threading.
+      mfaConfiguration: 'ON',
       enabledMfas: ['SOFTWARE_TOKEN_MFA'],
       webAuthnRelyingPartyId: 'auth.cdkd.example.com',
       webAuthnUserVerification: 'preferred',
     });
     backfillPool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    // Passkey-only pool (issue #1920). WebAuthn is configured as the FIRST
+    // auth factor with NO MFA factor and — the load-bearing part — NO
+    // MfaConfiguration property at all. CloudFormation defaults that to OFF,
+    // but cdkd used to default the post-create SetUserPoolMfaConfig call to
+    // OPTIONAL, and AWS rejects OPTIONAL when no real MFA factor is enabled
+    // ("Invalid MFA Configuration given. SMS MFA, Email MFA, or Software Token
+    // MFA must be enabled."), which failed the create and then rolled the pool
+    // back via the post-create atomicity path.
+    //
+    // DO NOT set mfaConfiguration on this pool: its ABSENCE is the input under
+    // test. Setting it would make the arm vacuous — the explicit value would
+    // be threaded through and the defaulting branch never exercised.
+    const passkeyOnlyPool = new cognito.CfnUserPool(this, 'PasskeyOnlyUserPool', {
+      userPoolName: `cdkd-test-passkey-only-${cdk.Aws.ACCOUNT_ID}`,
+      // WebAuthn passkeys require the ESSENTIALS tier (or higher).
+      userPoolTier: 'ESSENTIALS',
+      webAuthnRelyingPartyId: 'passkey.cdkd.example.com',
+      webAuthnUserVerification: 'required',
+    });
+    passkeyOnlyPool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    // The OPTIONAL half of the same defaulting rule (issue #1920). A real MFA
+    // factor with NO MfaConfiguration must still land as OPTIONAL -- otherwise
+    // the fix's own failure mode is the dangerous one: a pool that declared a
+    // factor would deploy with MFA switched OFF. As with the passkey pool, the
+    // ABSENCE of mfaConfiguration is the input under test -- do not add one.
+    const factorDefaultPool = new cognito.CfnUserPool(this, 'FactorDefaultUserPool', {
+      userPoolName: `cdkd-test-factor-default-${cdk.Aws.ACCOUNT_ID}`,
+      userPoolTier: 'ESSENTIALS',
+      enabledMfas: ['SOFTWARE_TOKEN_MFA'],
+    });
+    factorDefaultPool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     // Outputs
     new cdk.CfnOutput(this, 'UserPoolId', {
@@ -102,6 +141,14 @@ export class CognitoStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'BackfillUserPoolId', {
       value: backfillPool.ref,
+    });
+
+    new cdk.CfnOutput(this, 'PasskeyOnlyUserPoolId', {
+      value: passkeyOnlyPool.ref,
+    });
+
+    new cdk.CfnOutput(this, 'FactorDefaultUserPoolId', {
+      value: factorDefaultPool.ref,
     });
 
     cdk.Tags.of(this).add('Project', 'cdkd');

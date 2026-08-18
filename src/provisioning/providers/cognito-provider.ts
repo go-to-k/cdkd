@@ -134,26 +134,6 @@ const MFA_FACTOR_SOFTWARE_TOKEN = 'SOFTWARE_TOKEN_MFA';
 const MFA_FACTOR_EMAIL_OTP = 'EMAIL_OTP';
 
 /**
- * Build the `SetUserPoolMfaConfig` request from the CFn-level MFA properties,
- * or return `undefined` when none of the MFA-config-API-routed properties are
- * present (so the caller skips the extra control-plane call entirely).
- *
- * The properties that route through `SetUserPoolMfaConfig` (NOT CreateUserPool):
- * - `EnabledMfas`               -> per-factor sub-blocks (see constants above)
- * - `EmailAuthenticationMessage`/`EmailAuthenticationSubject` -> the
- *   `EmailMfaConfiguration` message/subject (email-OTP template)
- * - `WebAuthnRelyingPartyID`/`WebAuthnUserVerification` -> `WebAuthnConfiguration`
- *
- * `MfaConfiguration` (ON/OFF/OPTIONAL) MUST be threaded into this request:
- * `SetUserPoolMfaConfig` is a full-replace of the pool's MFA state, and an
- * omitted `MfaConfiguration` defaults to OFF on the wire — which resets the
- * pool to MFA-disabled and makes AWS reject (or silently drop) the per-factor
- * sub-blocks we are trying to enable. Use the template's `MfaConfiguration`
- * when present; default to `OPTIONAL` when factors are present but the template
- * omitted it (factors are meaningless under OFF, and OPTIONAL enables them
- * without forcing MFA on every user).
- */
-/**
  * True when any MFA-config-API-routed property is present, i.e. a
  * `SetUserPoolMfaConfig` call will run post-create. When true, `create()` must
  * NOT forward `MfaConfiguration` to `CreateUserPool`: AWS rejects
@@ -179,9 +159,31 @@ function hasMfaConfigProps(properties: Record<string, unknown>): boolean {
   );
 }
 
+/**
+ * Build the `SetUserPoolMfaConfig` request from the CFn-level MFA properties,
+ * or return `undefined` when none of the MFA-config-API-routed properties are
+ * present (so the caller skips the extra control-plane call entirely).
+ *
+ * The properties that route through `SetUserPoolMfaConfig` (NOT CreateUserPool):
+ * - `EnabledMfas`               -> per-factor sub-blocks (see constants above)
+ * - `EmailAuthenticationMessage`/`EmailAuthenticationSubject` -> the
+ *   `EmailMfaConfiguration` message/subject (email-OTP template)
+ * - `WebAuthnRelyingPartyID`/`WebAuthnUserVerification` -> `WebAuthnConfiguration`
+ *
+ * `MfaConfiguration` (ON/OFF/OPTIONAL) MUST be threaded into this request:
+ * `SetUserPoolMfaConfig` is a full-replace of the pool's MFA state, and an
+ * omitted `MfaConfiguration` defaults to OFF on the wire — which resets the
+ * pool to MFA-disabled and makes AWS reject (or silently drop) the per-factor
+ * sub-blocks we are trying to enable. Use the template's `MfaConfiguration`
+ * when present; when the template omitted it, default by whether this call
+ * enables an MFA FACTOR — `OPTIONAL` if it does, `OFF` (CloudFormation's own
+ * default) if it does not. The body comment on that decision explains why both
+ * halves of the factor test are load-bearing.
+ */
 function buildMfaConfigRequest(
   physicalId: string,
-  properties: Record<string, unknown>
+  properties: Record<string, unknown>,
+  logger?: { warn: (message: string) => void }
 ): SetUserPoolMfaConfigCommandInput | undefined {
   const enabledMfas = Array.isArray(properties['EnabledMfas'])
     ? (properties['EnabledMfas'] as string[])
@@ -208,13 +210,27 @@ function buildMfaConfigRequest(
 
   const request: SetUserPoolMfaConfigCommandInput = { UserPoolId: physicalId };
 
-  // SetUserPoolMfaConfig is a full-replace: an omitted MfaConfiguration resets
-  // the pool to OFF, which would disable the very factors we are enabling.
-  // Thread the template value; default to OPTIONAL when factors are present.
-  const mfaConfiguration = properties['MfaConfiguration'] as UserPoolMfaType | undefined;
-  request.MfaConfiguration = mfaConfiguration ?? 'OPTIONAL';
-
   const factors = new Set(enabledMfas ?? []);
+
+  // An entry AWS does not recognize enables nothing, so it would otherwise be a
+  // silent drop. Warn rather than throw: the recognized set is a hardcoded
+  // mirror of an AWS enum, and a factor AWS adds later must not be refused by
+  // cdkd. The MfaConfiguration default below is keyed on the REQUESTED set for
+  // that same forward-compatibility reason.
+  const unrecognizedFactors = [...factors].filter(
+    (factor) =>
+      factor !== MFA_FACTOR_SMS &&
+      factor !== MFA_FACTOR_SOFTWARE_TOKEN &&
+      factor !== MFA_FACTOR_EMAIL_OTP
+  );
+  if (unrecognizedFactors.length > 0) {
+    logger?.warn(
+      `EnabledMfas contains ${unrecognizedFactors.map((f) => `'${f}'`).join(', ')}, which cdkd ` +
+        `does not map to an MFA factor block (known: ${MFA_FACTOR_SMS}, ` +
+        `${MFA_FACTOR_SOFTWARE_TOKEN}, ${MFA_FACTOR_EMAIL_OTP}). No factor is enabled for those ` +
+        `entries.`
+    );
+  }
 
   if (factors.has(MFA_FACTOR_SOFTWARE_TOKEN)) {
     request.SoftwareTokenMfaConfiguration = { Enabled: true };
@@ -250,6 +266,41 @@ function buildMfaConfigRequest(
         : {}),
     };
   }
+
+  // SetUserPoolMfaConfig is a full-replace: an omitted MfaConfiguration resets
+  // the pool to OFF, which would disable the very factors we are enabling. So
+  // thread the template's value, and when the template omitted it, default by
+  // whether this call enables an MFA FACTOR at all. OFF is CloudFormation's own
+  // default, and it is REQUIRED for a passkey-only pool: WebAuthn is not an MFA
+  // factor, so AWS rejects OPTIONAL there with "Invalid MFA Configuration given.
+  // SMS MFA, Email MFA, or Software Token MFA must be enabled." (issue #1920).
+  //
+  // BOTH halves of the condition are load-bearing; neither alone is safe, and
+  // the unsafe versions are exactly the ones this is natural to "simplify" to:
+  //
+  //  - The REQUESTED-set half (`factors.size > 0`) is what keeps a MISSPELLED
+  //    entry loud. `EnabledMfas: ['SOFTWARE_TOKEN']` emits no factor block, so
+  //    a sub-block-only condition would send OFF, AWS would ACCEPT it, and the
+  //    pool would ship with MFA silently disabled and the declared factor
+  //    dropped. Today that typo yields OPTIONAL and AWS refuses loudly, naming
+  //    the problem; that behavior is preserved deliberately.
+  //  - The SUB-BLOCK half keeps the email-OTP message/subject shape on its
+  //    existing OPTIONAL default. `EmailMfaConfiguration` is emitted for a bare
+  //    EmailAuthenticationMessage/Subject customization too, and whether AWS
+  //    accepts that block under OFF is UNVERIFIED — the integ cannot reach it
+  //    (email-OTP needs a verified SES sender; see the fixture note), so that
+  //    shape is deliberately left unchanged rather than flipped on an untested
+  //    wire assumption. Issue #1920 proposed keying on EnabledMfas alone, which
+  //    WOULD have flipped it; issue #1923 tracks the SES-account verification
+  //    that would settle it.
+  const enablesMfaFactor =
+    factors.size > 0 ||
+    request.SmsMfaConfiguration !== undefined ||
+    request.SoftwareTokenMfaConfiguration !== undefined ||
+    request.EmailMfaConfiguration !== undefined;
+  const mfaConfiguration = properties['MfaConfiguration'] as UserPoolMfaType | undefined;
+  request.MfaConfiguration = mfaConfiguration ?? (enablesMfaFactor ? 'OPTIONAL' : 'OFF');
+
   return request;
 }
 
@@ -544,7 +595,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     physicalId: string,
     properties: Record<string, unknown>
   ): Promise<void> {
-    const request = buildMfaConfigRequest(physicalId, properties);
+    const request = buildMfaConfigRequest(physicalId, properties, this.logger);
     if (!request) return;
     await this.retryOnTransientControlPlane(
       () => this.getClient().send(new SetUserPoolMfaConfigCommand(request)),

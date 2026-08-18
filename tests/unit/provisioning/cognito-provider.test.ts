@@ -14,14 +14,21 @@ vi.mock('@aws-sdk/client-cognito-identity-provider', async () => {
   };
 });
 
-vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = {
+// Hoisted so the tests can assert on the provider's own warnings (the
+// unrecognized-EnabledMfas warn below); the module factory closes over the
+// same object.
+const { childLogger } = vi.hoisted(() => ({
+  childLogger: {
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
-  };
+    child: vi.fn(),
+  },
+}));
+childLogger.child.mockReturnValue(childLogger);
+
+vi.mock('../../../src/utils/logger.js', () => {
   return {
     getLogger: () => ({
       child: () => childLogger,
@@ -631,6 +638,11 @@ describe('CognitoUserPoolProvider', () => {
           Message: 'Your code is {####}',
           Subject: 'Sign-in code',
         });
+        // Deliberately still OPTIONAL: EmailMfaConfiguration IS emitted here, and
+        // whether AWS accepts that block under OFF is unverified (issue #1923),
+        // so this shape keeps its existing default rather than being flipped on
+        // an untested wire assumption.
+        expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
       });
     });
 
@@ -652,6 +664,207 @@ describe('CognitoUserPoolProvider', () => {
           RelyingPartyId: 'auth.example.com',
           UserVerification: 'preferred',
         });
+        // WebAuthn is not an MFA factor, so the call must NOT claim OPTIONAL —
+        // AWS rejects that outright (issue #1920). Pinned as the WHOLE request:
+        // the original blind spot here was a field nobody asserted, so asserting
+        // the complete input is what stops the next one from hiding too.
+        expect(mfaCall.input).toEqual({
+          UserPoolId: 'us-east-1_abc123',
+          MfaConfiguration: 'OFF',
+          WebAuthnConfiguration: {
+            RelyingPartyId: 'auth.example.com',
+            UserVerification: 'preferred',
+          },
+        });
+      });
+    });
+
+    describe('MfaConfiguration default on SetUserPoolMfaConfig', () => {
+      // SetUserPoolMfaConfig is a full-replace, so the request always carries
+      // MfaConfiguration. When the template omits it, the value is chosen by
+      // whether the call enables a real MFA factor. Both polarities are pinned
+      // here: the OFF arm is the issue #1920 regression, and the OPTIONAL arm
+      // is the reason the default exists at all.
+      it('defaults to OFF for a WebAuthn-only pool (no MFA factor enabled)', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:wa-only' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          WebAuthnRelyingPartyID: 'auth.example.com',
+          WebAuthnUserVerification: 'required',
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.MfaConfiguration).toBe('OFF');
+        expect(mfaCall.input.WebAuthnConfiguration).toEqual({
+          RelyingPartyId: 'auth.example.com',
+          UserVerification: 'required',
+        });
+      });
+
+      it('defaults to OFF for a WebAuthn-only pool on update too', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:wa-upd' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { WebAuthnRelyingPartyID: 'auth.example.com' },
+          {}
+        );
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.MfaConfiguration).toBe('OFF');
+      });
+
+      it('still defaults to OPTIONAL when a real MFA factor is enabled', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:soft' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
+        expect(mfaCall.input.SoftwareTokenMfaConfiguration).toEqual({ Enabled: true });
+      });
+
+      it('defaults to OPTIONAL when a real factor rides alongside WebAuthn', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:mixed' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: ['EMAIL_OTP'],
+          WebAuthnRelyingPartyID: 'auth.example.com',
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
+      });
+
+      it('lets an explicit OFF win over the OPTIONAL default', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:explicit-off' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+          MfaConfiguration: 'OFF',
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.input.MfaConfiguration).toBe('OFF');
+      });
+
+      // THE regression this fix must not introduce. An unrecognized entry emits
+      // no factor block, so keying the default on the RECOGNIZED set would send
+      // OFF here -- and AWS ACCEPTS OFF, so the pool would ship with MFA
+      // silently disabled and the declared factor dropped. Keying on the
+      // REQUESTED set keeps the pre-existing loud failure: OPTIONAL with no
+      // factor block is what AWS refuses, naming the problem.
+      it('keeps OPTIONAL for an unrecognized EnabledMfas entry so AWS still refuses loudly', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:typo' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: ['SOFTWARE_TOKEN'], // typo for SOFTWARE_TOKEN_MFA
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
+        expect(mfaCall.input.SoftwareTokenMfaConfiguration).toBeUndefined();
+      });
+
+      it('warns which EnabledMfas entries it does not recognize', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:typo-warn' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: ['SOFTWARE_TOKEN', 'SOFTWARE_TOKEN_MFA'],
+        });
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain("'SOFTWARE_TOKEN'");
+        // The recognized sibling must NOT be named as unrecognized.
+        expect(warned).not.toContain("'SOFTWARE_TOKEN_MFA'");
+      });
+
+      it('does not warn when every EnabledMfas entry is recognized', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:no-warn' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: ['SOFTWARE_TOKEN_MFA', 'SMS_MFA'],
+        });
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).not.toContain('EnabledMfas contains');
+      });
+
+      it('defaults to OFF for an EMPTY EnabledMfas array alongside WebAuthn', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:empty' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: [],
+          WebAuthnRelyingPartyID: 'auth.example.com',
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.input.MfaConfiguration).toBe('OFF');
+      });
+
+      it('defaults to OPTIONAL for the SMS factor and carries SmsConfiguration', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:sms' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: ['SMS_MFA'],
+          SmsConfiguration: { SnsCallerArn: 'arn:aws:iam::123456789012:role/sms' },
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
+        expect(mfaCall.input.SmsMfaConfiguration).toEqual({
+          SmsConfiguration: { SnsCallerArn: 'arn:aws:iam::123456789012:role/sms' },
+        });
+      });
+
+      it('lets an explicit ON win over the OFF default', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:explicit-on' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          WebAuthnRelyingPartyID: 'auth.example.com',
+          MfaConfiguration: 'ON',
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.input.MfaConfiguration).toBe('ON');
       });
     });
 
