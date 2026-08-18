@@ -648,9 +648,16 @@ Three more review findings hardened the failure paths. The create-side registrat
   MISSPELLED entry loud: `EnabledMfas: ['SOFTWARE_TOKEN']` emits no factor block,
   so a recognized-set-only test would have sent `OFF`, which AWS ACCEPTS — the
   pool would have shipped with MFA silently disabled and the declared factor
-  dropped, turning a loud pre-existing failure into a silent one. Keying on the
-  requested set also keeps this forward-compatible with any factor AWS adds
-  later, which is why an unrecognized entry WARNS rather than throwing. The
+  dropped, turning a loud pre-existing failure into a silent one. The same hole
+  exists via the property's SHAPE rather than its spelling: a hand-written YAML
+  scalar (`EnabledMfas: SOFTWARE_TOKEN_MFA`) or a `!Ref` to a `String` parameter
+  fails `Array.isArray`, so it too read as "no factor declared". A
+  present-but-non-list value is therefore treated as factor intent as well (and
+  warned about) — in `hasMfaConfigProps` too, so the call is not skipped
+  outright and the factor dropped one layer earlier. Keying on what the template
+  DECLARED rather than on what cdkd RECOGNIZES also keeps this
+  forward-compatible with any factor AWS adds later, which is why an
+  unrecognized entry WARNS rather than throwing. The
   sub-block half deliberately leaves the email-OTP message/subject shape on its
   existing `OPTIONAL` default: `EmailMfaConfiguration` is emitted for a bare
   `EmailAuthenticationMessage` / `Subject` customization too, and whether AWS
@@ -658,11 +665,13 @@ Three more review findings hardened the failure paths. The create-side registrat
   (email-OTP needs a verified SES sender), so it was not flipped on an untested
   wire assumption (issue [#1923](https://github.com/go-to-k/cdkd/issues/1923)).
   Applies to create and update alike (both route through `applyMfaConfig`).
-  12 new unit tests pin both polarities of the default (WebAuthn-only and an
+  14 new unit tests pin both polarities of the default (WebAuthn-only and an
   empty `EnabledMfas` -> `OFF`, on create AND update; a real factor, alone or
   alongside WebAuthn, and the SMS arm -> `OPTIONAL`), both polarities of the
   override (an explicit `OFF` beats the `OPTIONAL` default, an explicit `ON`
-  beats the `OFF` one), the misspelled-entry guard, and both polarities of the
+  beats the `OFF` one), the misspelled-entry guard, the non-list shape (its
+  default, its own warn, and that it still issues the call at all), and both
+  polarities of the
   warn; the WebAuthn-only test now pins the WHOLE request via `toEqual`, since
   the original blind spot was precisely a field nobody asserted. The `cognito`
   integ fixture gained both arms: a `PasskeyOnlyUserPool` (WebAuthn, no

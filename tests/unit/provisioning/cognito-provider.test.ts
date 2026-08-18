@@ -800,9 +800,11 @@ describe('CognitoUserPoolProvider', () => {
         });
 
         const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
-        expect(warned).toContain("'SOFTWARE_TOKEN'");
+        // Quoted, so the closing quote keeps the recognized sibling from
+        // matching as a prefix of the unrecognized one.
+        expect(warned).toContain('"SOFTWARE_TOKEN"');
         // The recognized sibling must NOT be named as unrecognized.
-        expect(warned).not.toContain("'SOFTWARE_TOKEN_MFA'");
+        expect(warned).not.toContain('"SOFTWARE_TOKEN_MFA"');
       });
 
       it('does not warn when every EnabledMfas entry is recognized', async () => {
@@ -817,6 +819,62 @@ describe('CognitoUserPoolProvider', () => {
 
         const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
         expect(warned).not.toContain('EnabledMfas contains');
+      });
+
+      // The same silent-drop class as the misspelled entry, reached through the
+      // SHAPE instead of the spelling: a YAML scalar (or a !Ref to a String
+      // parameter) fails Array.isArray, so it used to read as "no factor
+      // declared" -> OFF -> ACCEPTED by AWS -> MFA silently disabled.
+      it('keeps OPTIONAL when EnabledMfas is a scalar rather than a list', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:scalar' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: 'SOFTWARE_TOKEN_MFA',
+          WebAuthnRelyingPartyID: 'auth.example.com',
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
+        expect(mfaCall.input.SoftwareTokenMfaConfiguration).toBeUndefined();
+      });
+
+      it('warns that a non-list EnabledMfas enabled no factor', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:scalar-warn' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: 'SOFTWARE_TOKEN_MFA',
+          WebAuthnRelyingPartyID: 'auth.example.com',
+        });
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('is not a list');
+      });
+
+      // A mis-shaped declaration with no OTHER MFA-routed property must still
+      // reach SetUserPoolMfaConfig at all -- otherwise the call is skipped and
+      // the factor is dropped in silence, one layer earlier than the default.
+      it('still issues SetUserPoolMfaConfig for a scalar EnabledMfas on its own', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:scalar-only' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: 'SOFTWARE_TOKEN_MFA',
+        });
+
+        const mfaCall = mockSend.mock.calls.find(
+          (c) => c[0].constructor.name === 'SetUserPoolMfaConfigCommand'
+        );
+        expect(mfaCall).toBeDefined();
+        expect(mfaCall![0].input.MfaConfiguration).toBe('OPTIONAL');
       });
 
       it('defaults to OFF for an EMPTY EnabledMfas array alongside WebAuthn', async () => {
