@@ -464,10 +464,12 @@ is where §9 and §10 live.
 - **This SKILL.md** when the lesson is about running THIS flow (triage, claiming,
   fan-out, ship order).
 - **Another skill**, but only one this run actually exercised (`/run-integ`,
-  `/verify-pr`, `/review-pr`, `/pick-integ`). Those four sit in the `check` gate's
-  scope, so editing them re-runs typecheck / lint / build / tests.
+  `/verify-pr`, `/review-pr`, `/pick-integ`, `/check`, `/check-docs`, `/cleanup`).
+  The first four sit in the `check` gate's scope, so editing one invalidates the
+  `check` marker and forces a `/check` re-run.
 - **`CLAUDE.md` / `.claude/rules/**`** when it applies to any work in this repo, not
-  just this flow (`docs` gate scope; `CLAUDE.md` is in `check` as well).
+  just this flow (both are in the `docs` gate's scope, alongside `src/**`,
+  `docs/**` and `README.md`; `CLAUDE.md` is in `check` as well).
 - **Memory** (`~/.claude/projects/.../memory/`) when the lesson is judgmental and
   cross-repo. Weakest enforcement — the landing spot when nothing above can hold the
   rule, not the default one.
@@ -490,10 +492,12 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   at it instead.
 - If the lesson is about the FLOW rather than about cdkd, mirror it into the
   same-named `work-issues` skill in the sibling repos (`../cdk-local`,
-  `../cdk-real-drift`) in this same session. They run this flow with different gates
-  and different ship steps, so adapt the wording per repo instead of copying the
-  section verbatim — but a fix that lands in only one of the three is how the three
-  drift apart.
+  `../cdk-real-drift`). They run this flow with different gates and different ship
+  steps, so adapt the wording per repo rather than copying the section verbatim, and
+  it is one PR per repo under that repo's own worktree + `chore:` + gate flow. Do
+  them in this session when it can pay for two more gate runs; otherwise file one
+  issue per repo carrying the `Session-fit` line. What is not an option is landing
+  the fix in only one of the three — that is how the three drift apart.
 
 ### 10-d. Ship it like any other change
 
@@ -502,27 +506,35 @@ Every worktree is gone by §9 and you are back on `main`, where
 worktree:
 
 ```bash
-git worktree add .claude/worktrees/chore-work-issues-retro \
-  -b chore/work-issues-retro origin/main
-cd .claude/worktrees/chore-work-issues-retro && pnpm install
+# Date-suffix the branch: a merged branch is deleted, and re-pushing that same
+# name is refused by post-merge-orphan-push-gate on the next run.
+B=chore/work-issues-retro-$(date +%Y%m%d)
+git worktree add ".claude/worktrees/${B##*/}" -b "$B" origin/main
+cd ".claude/worktrees/${B##*/}"
+mise trust && mise install    # untrusted .mise.toml: vp / markgate will not resolve
+pnpm install                  # worktrees have no node_modules
 ```
 
 - `chore:` prefix — `.claude/**` is not `src/**`, and `commit-prefix-scope-gate`
   blocks `fix:` / `feat:` here (a `feat(work-issues)` commit ships a misleading
   minor release; PR #346).
 - English only in every committed line.
-- `/check` only if the edit lands in `check` scope; `/check-docs` only for
-  `CLAUDE.md` / `docs/**` / `.claude/rules/**`. A `work-issues`-only edit is in
-  NEITHER scope — but `gh pr create` is still gated on the `verify-pr` marker, so
-  run `/verify-pr` regardless. It is a tooling-only PR with no `src/**` change, so
-  §8's live-test exemption applies.
+- Scope does not exempt you from the markers: `check-gate` verifies BOTH `check`
+  and `docs` on every commit without computing scope, and a fresh worktree starts
+  with none, so a `work-issues`-only edit still needs them. `/verify-pr` sets all
+  three in one pass (and `gh pr create` is gated on the third), so run it before the
+  commit. It is a tooling-only PR with no `src/**` change, so §8's live-test
+  exemption applies.
 - Agent-instruction files are deliberately NOT down-biased in `/review-pr`'s tier
   heuristic — a wrong rule here propagates into every future session — so take the
   tier the heuristic gives and do not argue it down.
-- **Merge it before the wrap report.** By construction it is `Session-fit: now`: it
-  lands in the file this run just proved wrong, and its evidence dies with this
-  session's context. Leaving it open is both an open PR (NOT CLOSEABLE) and the one
-  deferral whose value decays to zero while it waits.
+- **Merge it before the wrap report, then remove the worktree** (`git worktree
+  remove .claude/worktrees/<name> && git worktree prune` — §9 ends with "only the
+  main checkout should remain", and §10 must not undo that). This is
+  `Session-fit: now` on the criterion that deferring leaves main self-inconsistent:
+  the skill would keep telling the next run to do the thing this run just proved it
+  gets wrong. Its evidence also dies with this session's context, and leaving the PR
+  open is an open PR (NOT CLOSEABLE) besides.
 
 Then report the outcome in one line of the wrap: what changed, in which step, and
 the run evidence behind it — or "no skill change" plus what held.
@@ -577,10 +589,11 @@ the run evidence behind it — or "no skill change" plus what held.
 - **English-only** for all committed/public artifacts (source, docs, PR/commit
   messages, issue comments on this repo).
 - **Never download/run/install untrusted third-party content** (§0).
-- **Drive each lane to MERGED, not to "pushed".** The skill's own section 9 is
-  the finish line: merge, pull, confirm the release bump, rebuild, remove the
-  worktree. A lane left as an open PR is unfinished work, and a NOT-CLOSEABLE
-  session verdict is a to-do list rather than a stopping point — keep going
+- **Drive each lane to MERGED, not to "pushed".** Section 9 is the finish line for
+  a LANE — merge, pull, confirm the release bump, rebuild, remove the worktree —
+  and section 10 is the finish line for the RUN. A lane left as an open PR is
+  unfinished work, and a NOT-CLOSEABLE session verdict is a to-do list rather
+  than a stopping point — keep going
   until every lane is merged and every worktree removed, or until the only
   blockers left are ones you cannot act on (CI in flight, a running reviewer, a
   maintainer decision). Low context is not such a blocker: commit, push, file
