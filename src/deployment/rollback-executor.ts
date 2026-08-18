@@ -648,6 +648,21 @@ export async function replayRollback(
   ctx.logger.info(`Rolling back ${operations.length} completed operation(s)...`);
   ctx.recordEvent?.({ eventType: 'ROLLBACK_STARTED', stackName });
 
+  // ONE resolver for the whole replay, mirroring `replayFailedOperations`.
+  // It re-resolves the redacted `{{resolve:secretsmanager:...}}` expressions the
+  // journal / state store back to the concrete secret for the provider replay
+  // (GHSA fix) — see {@link resolveReplayProps}.
+  //
+  // Hoisted out of `replaySingle` by issue #1933: that fix moved the resolved-
+  // value cache from module scope onto the resolver INSTANCE, so a resolver per
+  // OP would re-fetch every referenced secret once per op — a 100-op replay
+  // paying 100 GetSecretValue calls for one expression, where the module-global
+  // cache used to dedupe them. The whole replay is one stack in one region
+  // (`ctx.region`), which is exactly the scope the instance cache is meant to
+  // have, and both loops below are strictly sequential, so sharing adds no
+  // concurrency exposure the failed-op sibling does not already carry.
+  const resolver = new IntrinsicFunctionResolver(ctx.region);
+
   const { createOps, otherOps } = partitionOps(operations);
 
   // Step 1: UPDATE/DELETE rollbacks in reverse completion order.
@@ -661,6 +676,7 @@ export async function replayRollback(
       stateResources,
       stackName,
       ctx,
+      resolver,
       orphanLogicalIds,
       result,
       options.afterOp,
@@ -681,6 +697,7 @@ export async function replayRollback(
         stateResources,
         stackName,
         ctx,
+        resolver,
         orphanLogicalIds,
         result,
         options.afterOp,
@@ -928,6 +945,13 @@ async function replaySingle(
   stateResources: Record<string, ResourceState>,
   stackName: string,
   ctx: RollbackExecutorContext,
+  /**
+   * The caller's resolver, SHARED across every op of the replay (issue #1933).
+   * Constructing one here would cost a fresh secret lookup per op now that the
+   * resolved-value cache lives on the instance — see the construction site in
+   * {@link replayRollback}.
+   */
+  resolver: IntrinsicFunctionResolver,
   orphanLogicalIds: Set<string>,
   result: RollbackReplayResult,
   afterOp?: (logicalId: string) => Promise<void> | void,
@@ -935,10 +959,6 @@ async function replaySingle(
 ): Promise<void> {
   const action = classifyRollbackOp(op, stateResources, orphanLogicalIds);
   const { logger } = ctx;
-  // Re-resolves the redacted `{{resolve:secretsmanager:...}}` expressions the
-  // journal / state store back to the concrete secret for the provider replay
-  // (GHSA fix) — see {@link resolveReplayProps}.
-  const resolver = new IntrinsicFunctionResolver(ctx.region);
   /**
    * The route a CREATE-rollback arm resolved for this op (issue #1366) —
    * hoisted so the shared catch's ROLLBACK_RESOURCE_FAILED reports the route

@@ -96,8 +96,14 @@ beforeEach(() => {
   // hold because of the order tests happen to run in today, so inserting any
   // ssm-using test above them would silently break both.
   mockSSMSend.mockClear();
-  // The dynamic-reference cache is module-global; clear it so each test's
-  // resolution is a real fetch (keeps the per-test mockSMSend assertion honest).
+  // Per-test isolation of the resolved-value cache no longer comes from this
+  // call: since issue #1933 the cache lives on the RESOLVER INSTANCE, and
+  // `replayRollback` / `replayFailedOperations` each build a fresh one per
+  // replay — so every test starts with an empty cache by construction, which is
+  // what keeps the per-test `mockSMSend` counts honest. The reset is still
+  // wanted for the process-global SecureString VERDICT store (and the account /
+  // AZ caches), where a verdict pinned by one test would otherwise decide
+  // secret-ness in the next.
   resetAccountInfoCache();
 });
 
@@ -518,5 +524,90 @@ describe('rollback replay - secret re-resolution + state redaction (GHSA #1899)'
       SECURE_EXPR
     );
     expect(JSON.stringify(state)).not.toContain(SECURE_PLAINTEXT);
+  });
+});
+
+// The replay builds ONE resolver and shares it across every op (issue #1933).
+// Before that hoist it built one per op, which was free while the resolved-value
+// cache was module-global and became an N-times-per-expression refetch the
+// moment the cache moved onto the instance. Both directions are pinned here:
+// the dedupe the hoist exists for, and the per-op correctness it must not cost.
+describe('rollback replay - one resolver per REPLAY, not per op (issue #1933)', () => {
+  function opFor(logicalId: string, expr: string): CompletedOperation {
+    return {
+      logicalId,
+      changeType: 'UPDATE',
+      resourceType: IDP_TYPE,
+      physicalId: `phys-${logicalId}`,
+      previousState: res({
+        physicalId: `phys-${logicalId}`,
+        resourceType: IDP_TYPE,
+        properties: { ProviderDetails: { client_id: 'pub', client_secret: expr } },
+      }),
+    };
+  }
+
+  function stateFor(logicalIds: string[], expr: string): Record<string, ResourceState> {
+    const out: Record<string, ResourceState> = {};
+    for (const logicalId of logicalIds) {
+      out[logicalId] = res({
+        physicalId: `phys-${logicalId}`,
+        resourceType: IDP_TYPE,
+        // Differs from `previousState` so the op is a real revert, not a
+        // 'skip-already-done'.
+        properties: { ProviderDetails: { client_id: 'pub-CHANGED', client_secret: expr } },
+      });
+    }
+    return out;
+  }
+
+  it('fetches ONE expression once for a multi-op replay', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys' });
+    const { ctx } = makeCtx({ update });
+    const logicalIds = ['IdpA', 'IdpB', 'IdpC', 'IdpD'];
+    const ops = logicalIds.map((id) => opFor(id, SECRET_EXPR));
+
+    await replayRollback(ops, stateFor(logicalIds, SECRET_EXPR), 'S', ctx);
+
+    // Non-vacuity: every op really ran and really re-resolved.
+    expect(update).toHaveBeenCalledTimes(4);
+    for (const call of update.mock.calls) {
+      const desired = call[3] as { ProviderDetails: { client_secret: string } };
+      expect(desired.ProviderDetails.client_secret).toBe(SECRET_PLAINTEXT);
+    }
+    // ...but the secret was fetched ONCE. Per-op resolvers make this 4 (8 in
+    // fact — both diff sides resolve), which is the amplification the hoist
+    // removes.
+    expect(mockSMSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps DIFFERENT expressions apart across ops of the same replay', async () => {
+    // The other polarity: sharing one resolver must not let one op's value
+    // answer for another's. A cache keyed loosely enough to collide would ship
+    // the WRONG secret to a live resource on replay.
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys' });
+    const { ctx } = makeCtx({ update });
+    const ops = [opFor('IdpSecret', SECRET_EXPR), opFor('IdpSecure', SECURE_EXPR)];
+    const state = {
+      ...stateFor(['IdpSecret'], SECRET_EXPR),
+      ...stateFor(['IdpSecure'], SECURE_EXPR),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    const bySecret = new Map<string, string>();
+    for (const call of update.mock.calls) {
+      const logicalId = call[0] as string;
+      const desired = call[3] as { ProviderDetails: { client_secret: string } };
+      bySecret.set(logicalId, desired.ProviderDetails.client_secret);
+    }
+    expect(bySecret.get('IdpSecret')).toBe(SECRET_PLAINTEXT);
+    expect(bySecret.get('IdpSecure')).toBe(SECURE_PLAINTEXT);
+    // Each expression cost its own lookup, on its own service client.
+    expect(mockSMSend).toHaveBeenCalledTimes(1);
+    expect(mockSSMSend).toHaveBeenCalledTimes(1);
+    // And neither plaintext leaked into the other record.
+    expect(JSON.stringify(state['IdpSecret'])).not.toContain(SECURE_PLAINTEXT);
+    expect(JSON.stringify(state['IdpSecure'])).not.toContain(SECRET_PLAINTEXT);
   });
 });

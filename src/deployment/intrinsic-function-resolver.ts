@@ -27,7 +27,8 @@ import {
   s3BucketWebsiteUrl,
 } from '../utils/s3-endpoints.js';
 import { IntrinsicResolutionRefusalError } from '../utils/error-handler.js';
-import { markNonRetryable } from './retryable-errors.js';
+import { markNonRetryable, isThrottlingError } from './retryable-errors.js';
+import { withRetry } from './retry.js';
 import {
   maskSecretsInText,
   recordSecretExpression,
@@ -838,16 +839,39 @@ let cachedAccountIdentity: CachedAccountIdentity | null = null;
 const cachedAvailabilityZones: Record<string, string[]> = {};
 
 /**
- * Cache for resolved dynamic references (secretsmanager, ssm)
+ * One resolved dynamic reference, as remembered by
+ * {@link IntrinsicFunctionResolver.cachedDynamicReferences}.
+ *
+ * `secret` is the verdict the resolution that PRODUCED this value reached —
+ * `true` for every `secretsmanager` spelling and for an `ssm` parameter whose
+ * `GetParameter` response classified it as a `SecureString`. It is carried HERE
+ * rather than re-derived from the process-global verdict store on every hit
+ * because the two now have different lifetimes (issue #1933): another stack's
+ * resolver — plausibly in another region, where the same parameter NAME is a
+ * plain `String` — RETRACTS the store's memo when its own lookup comes back
+ * public, and this instance's later resources would then stop redacting a value
+ * that is genuinely secret for THEM. The entry answers for the region and the
+ * stack that resolved it, which is the whole point of the instance scope.
  */
-const cachedDynamicReferences: Record<string, string> = {};
+interface CachedDynamicReference {
+  value: string;
+  secret: boolean;
+}
 
 /**
  * The `{{resolve:...}}` expressions this process has PROVEN resolve to a
  * SECRET, reached through `secret-redaction.ts`'s `recordedSecretExpressions`
- * store. Lifetime is {@link cachedDynamicReferences}'s — `resetAccountInfoCache`
- * clears both, so a stale verdict can never decide secret-ness for a reference
- * whose resolved value that call just asked to forget.
+ * store. Process-global, and cleared by `resetAccountInfoCache` so a test (or a
+ * later phase) cannot inherit a verdict it just asked to forget.
+ *
+ * NOTE this store is deliberately WIDER-lived than the resolved VALUES it was
+ * once paired with: those moved onto the resolver instance (issue #1933), while
+ * a verdict is a statement about a reference's TYPE, which the redaction path
+ * must be able to read with no resolver in hand. The asymmetry is safe in the
+ * one direction that matters — a verdict inherited across regions can only make
+ * a reference be treated AS a secret (persisted as its expression, never as
+ * plaintext), and the reverse case re-asks AWS because the fresh response is
+ * authoritative and the value cache no longer answers for another region.
  *
  * `ssm` is the kind that NEEDS the memory (issue #1901). A plain `ssm`
  * reference is not a secret by SPELLING the way `secretsmanager` is — whether
@@ -940,6 +964,26 @@ function accountInfoFor(identity: CachedAccountIdentity, overrideRegion?: string
  * the same deploy heal.
  */
 const FABRICATED_ACCOUNT_INFO_TTL_MS = 10_000;
+
+/**
+ * Retries after the first attempt for a dynamic-reference lookup, THROTTLE-shaped
+ * failures only (issue #1933 review). Everything else — a missing parameter, a
+ * denied secret — is a real answer and is thrown to the caller unchanged.
+ *
+ * It matters more since the cache became per-resolver AND stopped memoizing a
+ * value whose ssm `Type` was unclassifiable: both raise the call COUNT for the
+ * same template (one lookup per resolver rather than per process; one per
+ * occurrence for the anomalous type), and a bare `send` turned the resulting
+ * throttle into an aborted deploy. At the default backoff (1s -> 2s -> 4s -> 8s)
+ * this adds at most ~15s of sleep, against re-running the whole deploy.
+ */
+const MAX_DYNAMIC_REFERENCE_THROTTLE_RETRIES = 4;
+
+/**
+ * Test seam: overriding `sleep` lets unit tests drive the backoff schedule
+ * without real waits (mirrors `describeTypeRetryDelays`).
+ */
+export const dynamicReferenceRetryDelays: { sleep?: (ms: number) => Promise<void> } = {};
 
 /** Test seam for {@link FABRICATED_ACCOUNT_INFO_TTL_MS} expiry. */
 export const accountInfoClock = { now: (): number => Date.now() };
@@ -1101,13 +1145,12 @@ export function resetAccountInfoCache(): void {
   for (const key of Object.keys(cachedAvailabilityZones)) {
     delete cachedAvailabilityZones[key];
   }
-  // Also reset dynamic reference cache
-  for (const key of Object.keys(cachedDynamicReferences)) {
-    delete cachedDynamicReferences[key];
-  }
-  // ...and the secret verdicts derived from it (issues #1901 / #1916). Keeping
-  // them would let a stale verdict decide secret-ness for a reference whose
-  // resolved value this call just asked to forget.
+  // Resolved dynamic-reference VALUES are no longer cleared here: they live on
+  // the resolver instance (issue #1933), so their lifetime already ends with
+  // the stack / region context that chose the AWS clients behind the lookup.
+  // The secret verdicts below are still process-global, hence still cleared
+  // (issues #1901 / #1916) — keeping them would let a stale verdict decide
+  // secret-ness for a reference this call just asked to forget.
   recordedSecretExpressions.clear();
   // Also reset EC2 instance attribute cache
   for (const key of Object.keys(cachedEc2InstanceAttributes)) {
@@ -1276,6 +1319,91 @@ export class IntrinsicFunctionResolver {
    * deploy summary.
    */
   private physicalIdFallbackCount = 0;
+
+  /**
+   * Resolved `{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` values,
+   * keyed by the full expression — INSTANCE-scoped, which closes the CACHE half
+   * of issue [#1933](https://github.com/go-to-k/cdkd/issues/1933). The issue is
+   * only PARTIALLY addressed by this field: see "what this does NOT settle"
+   * below.
+   *
+   * It used to be a module-global map keyed by the expression ALONE, and both
+   * halves of that were wrong for the same reason: the key and the lifetime
+   * were narrower than the value they stood for.
+   *
+   * - REGION. Secrets Manager secrets and SSM parameters are regional and
+   *   independent — the same NAME in `us-east-1` and `ap-northeast-1` is two
+   *   different values, routinely two different credentials — so the first
+   *   region to resolve an expression won it for the whole process, and every
+   *   later stack in every other region silently reused that value.
+   * - STACK. Nothing reset the map between stacks, so a second stack's
+   *   resolution cache-HIT and skipped the lookup that re-records the value as
+   *   a secret. `cdkd scrub --all` then found an empty secrets map for that
+   *   stack and reported it clean.
+   *
+   * Instance scope settles both at once because a region boundary and a stack
+   * boundary are BOTH resolver boundaries in cdkd: {@link resolverRegion} is
+   * fixed at construction, and every caller builds one resolver per stack
+   * (`DeployEngine` per deploy, `scrub` / `import` / `diff-recursive` /
+   * `rollback-executor` per stack). Re-keying by region alone would have left
+   * the stack half open, which is why the lifetime — not the key — is what
+   * moved.
+   *
+   * ONE caller is a known EXCEPTION to that invariant, and it is written down
+   * here because an invariant recorded without its exception is how the next
+   * change breaks it: `cdkd export` builds a single `paramResolver`
+   * (`src/cli/commands/export.ts`, the `buildResolvedParametersPerStack`
+   * pre-pass) and shares it across every node of a nested-stack tree, while the
+   * nodes carry a per-node `region`. It is safe TODAY for two independent
+   * reasons — the resolver is constructed with the tree's single `rootRegion`
+   * and nested children do not yet diverge from it, and that pre-pass passes no
+   * `recordedSecretValues` bag, so neither the region nor the secrets-recording
+   * dimension has anything to cross. Both stop holding the moment cross-region
+   * nested stacks ship or that pass starts recording secrets; a resolver per
+   * node is the fix then, not a wider key here.
+   *
+   * What this does NOT settle — issue
+   * [#1957](https://github.com/go-to-k/cdkd/issues/1957) owns it: the lookups
+   * themselves still go through the process-ambient `getAwsClients()` singleton
+   * (see `resolveSecretsManagerReference` / `resolveSSMReference`), whose region
+   * is whichever the process installed last. So a resolver constructed for
+   * region B while the ambient clients point at region A still reads A on its
+   * FIRST resolution — no cache involved, so nothing here can prevent it.
+   * `cdkd deploy` re-pins the singleton per stack, which makes a SERIAL
+   * multi-region deploy correct end to end, but the default
+   * `--stack-concurrency 4` races for it (a hazard `deploy.ts` already
+   * documents) and `cdkd scrub` installs its clients once while resolving
+   * stacks in several regions. The split of ownership is therefore: THIS field
+   * closes the cache as a cross-region / cross-stack carrier, while #1957 owns
+   * the wrong-region READ — which is the outcome #1933's title names, so #1933
+   * is not fully resolved until #1957 lands. Pinning the lookup to
+   * {@link resolverRegion} means constructing region-scoped clients, which is a
+   * credentials decision (a bare `new SSMClient({ region })` drops the ambient
+   * profile / assume-role config) and belongs to #1957 rather than here.
+   */
+  private readonly cachedDynamicReferences = new Map<string, CachedDynamicReference>();
+
+  /**
+   * `<parameter name>\u0000<reported Type>` pairs this resolver has already
+   * warned about (issue #1933 review).
+   *
+   * Keyed on the PAIR rather than the name alone: two different anomalous types
+   * for one parameter are two different facts — the line REPORTS the type, so
+   * suppressing the second would hide a `Type` nobody has seen yet behind one
+   * that was already explained. The volume problem this set exists for is N
+   * IDENTICAL lines for N occurrences of one reference, which the pair still
+   * bounds, because the type is a property of the parameter rather than of the
+   * occurrence.
+   *
+   * The warning is per LOOKUP, and a parameter with an anomalous `Type` is
+   * deliberately never cached (see `cacheable` in `resolveDynamicReferences`),
+   * so it is re-looked-up for every occurrence of the reference in the stack —
+   * which without this set means one identical warn line per occurrence per
+   * pass, on the exact template that most needs the line to be READ. Scoped to
+   * the resolver, like the value cache: a different stack genuinely deserves
+   * its own warning, since the parameter it names may be a different region's.
+   */
+  private readonly warnedUnrecognizedSsmTypes = new Set<string>();
 
   constructor(region?: string, options?: IntrinsicFunctionResolverOptions) {
     this.resolverRegion = region || process.env['AWS_REGION'] || 'us-east-1';
@@ -4311,24 +4439,55 @@ export class IntrinsicFunctionResolver {
         continue;
       }
 
-      // Check cache first
-      if (fullMatch in cachedDynamicReferences) {
-        const cached = cachedDynamicReferences[fullMatch]!;
-        // `cached` truthiness excludes the empty string: an empty secret is not
-        // a usable redaction needle (it would match every empty leaf).
-        // Deliberately does NOT also add to `recordedSecretExpressions`: both
-        // stores are module-level and cleared together, so reaching this arm
-        // means the resolution that POPULATED the cache already recorded the
-        // expression, and a second add could only ever be a no-op. An
-        // unfenceable line is worse than none (issue #1916).
-        if (isKnownSecret && cached) context?.recordedSecretValues?.set(cached, fullMatch);
+      // Check cache first. INSTANCE-scoped, so a hit can only ever be a value
+      // THIS resolver resolved — i.e. one from its own stack and its own region
+      // (issue #1933; see the field's own doc).
+      const cached = this.cachedDynamicReferences.get(fullMatch);
+      if (cached) {
+        // The `cached.value` test excludes the empty string: an empty secret is
+        // not a usable redaction needle (it would match every empty leaf).
+        //
+        // The verdict is read off the ENTRY **and only off the entry** —
+        // deliberately NOT `isKnownSecret`, and that exclusion is the point.
+        // `isKnownSecret` consults the process-global `recordedSecretExpressions`,
+        // which a FOREIGN resolver writes to, so ORing it in here would re-open
+        // the cross-resolver channel this cache's instance scope exists to close
+        // — in the opposite direction from the leak (issue #1933 review):
+        //
+        //   virginia resolves `/env` -> `String` -> retracts the memo, caches
+        //   {value:'prod', secret:false}; tokyo resolves the SAME expression ->
+        //   `SecureString` -> re-adds the memo; virginia's next resource hits
+        //   this arm with `isKnownSecret` true from TOKYO's add and records
+        //   'prod' as a redaction NEEDLE, rewriting its own `my-prod-bucket`
+        //   into `my-{{resolve:ssm:/env}}-bucket`.
+        //
+        // That is exactly the corruption the retraction arm below exists to
+        // prevent, arriving through the cache instead. Reachable at the default
+        // `--stack-concurrency 4`.
+        //
+        // Nothing legitimate is lost, because `cached.secret` is AUTHORITATIVE
+        // for every entry this resolver could have written: for ssm it is
+        // `param.secure` off the fresh `GetParameter` response (which OVERWRITES
+        // the `isKnownSecret` seed below), for secretsmanager it is `true` by
+        // spelling, and only `cacheable` — i.e. definitive — verdicts are stored
+        // at all. A cache hit therefore already knows its own answer, and the
+        // global store can only ever contradict it with another region's.
+        //
+        // Still deliberately does NOT add to `recordedSecretExpressions`:
+        // reaching this arm means the resolution that POPULATED this instance's
+        // cache already recorded whatever it was entitled to pin, and a second
+        // add could only ever be a no-op or an un-pinning it explicitly avoided
+        // (issue #1916).
+        if (cached.secret && cached.value) {
+          context?.recordedSecretValues?.set(cached.value, fullMatch);
+        }
         // Replacer FUNCTION, not a string: `String.replace` interprets `$&`,
         // "$`", `$'` and `$1` inside a replacement STRING, so a resolved value
         // containing any of them would be corrupted on its way to AWS — and
         // `$&` in particular splices the matched `{{resolve:...}}` expression
         // back INTO the value. A secret is exactly the kind of value that
         // legitimately contains `$`.
-        result = result.replace(fullMatch, () => cached);
+        result = result.replace(fullMatch, () => cached.value);
         continue;
       }
 
@@ -4336,6 +4495,19 @@ export class IntrinsicFunctionResolver {
 
       let resolved: string;
       let isSecret = isKnownSecret;
+      /**
+       * May the resolved value be REMEMBERED, or must the next pass re-ask?
+       *
+       * Cleared for exactly the answers the verdict store refuses to pin — an
+       * ssm parameter judged secret from a `Type` that is not a definitive
+       * `SecureString` (issue #1901's fail-closed arm). Caching one would pin
+       * the transient answer for the whole resolver anyway, which is what the
+       * refusal to memoize exists to prevent: before the value cache became
+       * instance-scoped this was already true process-wide, and the
+       * "next pass re-asks" property only ever held on the comparison path,
+       * which caches nothing (issue #1933).
+       */
+      let cacheable = true;
 
       if (service === 'secretsmanager') {
         resolved = await this.resolveSecretsManagerReference(inner);
@@ -4362,6 +4534,10 @@ export class IntrinsicFunctionResolver {
           recordedSecretExpressions.add(fullMatch);
         } else if (!param.secure) {
           recordedSecretExpressions.delete(fullMatch);
+        } else {
+          // Secret, but from a `Type` too anomalous to memoize — so the VALUE is
+          // not memoized either. See `cacheable`'s doc above.
+          cacheable = false;
         }
         isSecret = param.secure;
         if (param.secure) {
@@ -4380,7 +4556,13 @@ export class IntrinsicFunctionResolver {
         continue;
       }
 
-      cachedDynamicReferences[fullMatch] = resolved;
+      // The verdict is stored ALONGSIDE the value so the cache-hit arm above can
+      // re-record it into a later pass's bag on its own, without depending on a
+      // process-global verdict store another stack's resolver can retract from
+      // under it (issue #1933).
+      if (cacheable) {
+        this.cachedDynamicReferences.set(fullMatch, { value: resolved, secret: isSecret });
+      }
       if (isSecret && resolved) {
         context?.recordedSecretValues?.set(resolved, fullMatch);
         // The value-keyed map above COLLAPSES a group of expressions sharing a
@@ -4495,7 +4677,10 @@ export class IntrinsicFunctionResolver {
       ...(versionId && versionId !== '' && { VersionId: versionId }),
     });
 
-    const response = await client.send(command);
+    const response = await this.sendWithThrottleRetry(
+      () => client.send(command),
+      `secretsmanager:${secretId}`
+    );
     const secretString = response.SecretString;
 
     if (!secretString) {
@@ -4655,6 +4840,44 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Run one dynamic-reference lookup, retrying THROTTLE-shaped failures only
+   * (issue #1933 review).
+   *
+   * Both lookups behind `{{resolve:...}}` were bare `send` calls, so a single
+   * `Rate exceeded` aborted the deploy. That was already the wrong trade for a
+   * read, and this PR raises the call count on both paths: the resolved-value
+   * cache is per-resolver now (one lookup per stack rather than one per
+   * process), and a value whose ssm `Type` came back unclassifiable is
+   * deliberately not cached at all (one lookup per OCCURRENCE, so it re-asks
+   * AWS rather than inheriting a transient verdict). Retrying only the throttle
+   * shape keeps every real answer — `ParameterNotFound`, `AccessDenied`, a
+   * malformed reference — failing fast and unchanged.
+   *
+   * Two bounds, both NAMED rather than fixed here:
+   *
+   * - No `isInterrupted` is threaded, so a Ctrl-C landing inside the backoff is
+   *   only noticed when that sleep ends — worst case ~8s, ~15s across the whole
+   *   schedule. `withRetry` supports the hook, but the only interrupt state in
+   *   the tree is `DeployEngine.interrupted`, which reaches nothing here;
+   *   wiring it means a resolver option threaded from that engine.
+   * - It says NOTHING about concurrency. The client is captured before the
+   *   first attempt, so a sibling stack's teardown (`stackAwsClients.destroy()`
+   *   in `deploy.ts`) during a backoff surfaces as a raw, non-throttle-shaped
+   *   failure on the next attempt. That is a property of the ambient-singleton
+   *   design this PR deliberately does not touch (issue
+   *   [#1957](https://github.com/go-to-k/cdkd/issues/1957)), not something the
+   *   retry makes safe.
+   */
+  private sendWithThrottleRetry<T>(operation: () => Promise<T>, label: string): Promise<T> {
+    return withRetry(operation, label, {
+      maxRetries: MAX_DYNAMIC_REFERENCE_THROTTLE_RETRIES,
+      isRetryable: (_message, error) => isThrottlingError(error),
+      logger: this.logger,
+      ...(dynamicReferenceRetryDelays.sleep ? { sleep: dynamicReferenceRetryDelays.sleep } : {}),
+    });
+  }
+
+  /**
    * Resolve an `{{resolve:ssm:...}}` dynamic reference, reporting whether the
    * parameter is a `SecureString` (issue #1901).
    *
@@ -4689,7 +4912,10 @@ export class IntrinsicFunctionResolver {
       WithDecryption: decrypt,
     });
 
-    const response = await client.send(command);
+    const response = await this.sendWithThrottleRetry(
+      () => client.send(command),
+      `ssm:${parameterName}`
+    );
     const paramValue = response.Parameter?.Value;
 
     if (paramValue === undefined || paramValue === null) {
@@ -4720,11 +4946,17 @@ export class IntrinsicFunctionResolver {
     // DEFINITIVE `SecureString` (safe to memoize) from an unclassifiable one
     // (treated as secret, but not pinned — see the caller).
     const secure = paramType !== 'String' && paramType !== 'StringList';
-    if (secure && paramType !== 'SecureString') {
+    if (
+      secure &&
+      paramType !== 'SecureString' &&
+      !this.warnedUnrecognizedSsmTypes.has(`${parameterName}\u0000${String(paramType)}`)
+    ) {
       // Reached only if AWS stops returning `Type`, or returns one cdkd does not
       // know. The value is treated as a secret (see above), which is safe but
       // silently changes what state stores — so say so rather than let the
-      // parameter quietly start persisting as its expression.
+      // parameter quietly start persisting as its expression. Once per
+      // (parameter, type) per resolver — see `warnedUnrecognizedSsmTypes`.
+      this.warnedUnrecognizedSsmTypes.add(`${parameterName}\u0000${String(paramType)}`);
       const reported = paramType === undefined ? '(absent)' : `'${String(paramType)}'`;
       this.logger.warn(
         `SSM parameter '${parameterName}' reported an unrecognized Type ${reported} — treating ` +
