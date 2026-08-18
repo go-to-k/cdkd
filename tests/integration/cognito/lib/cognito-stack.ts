@@ -12,6 +12,10 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
  *   / EmailAuthenticationMessage+Subject / WebAuthnRelyingPartyID+UserVerification)
  * - AWS::Cognito::UserPool passkey-only shape (#1920): WebAuthn with no MFA
  *   factor and no MfaConfiguration, which must land as MfaConfiguration OFF
+ * - AWS::Cognito::UserPool MFA update transitions (#1925), under
+ *   CDKD_TEST_UPDATE=true: enabling MFA on an existing pool (the UpdateUserPool
+ *   gate) and dropping an undeclared MfaConfiguration back to OFF (the
+ *   announced downgrade)
  */
 export class CognitoStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -130,6 +134,68 @@ export class CognitoStack extends cdk.Stack {
     });
     factorDefaultPool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
+    // ---------------------------------------------------------------------
+    // CDKD_TEST_UPDATE arms (issue #1925). Both pools below CHANGE shape
+    // between the base deploy and the update deploy; that transition is the
+    // subject under test, so neither arm may be made to look like the other.
+    // ---------------------------------------------------------------------
+    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+
+    // Item 1 -- the enable-MFA-on-update transition.
+    //
+    // Base arm: NO MfaConfiguration and NO EnabledMfas, so the pool is created
+    // with MFA genuinely off and `hasMfaConfigProps` is false (no
+    // SetUserPoolMfaConfig call happens at all).
+    // Update arm: MfaConfiguration + a real factor arrive together.
+    //
+    // Before the fix, `update()` forwarded MfaConfiguration to UpdateUserPool
+    // unconditionally. That call runs BEFORE the SetUserPoolMfaConfig that
+    // enables the factor, so AWS sees "MFA required/optional" on a pool with no
+    // factor enabled -- the rejection the create path has always gated against.
+    // The fix applies the same `!hasMfaConfigProps` gate on update, so
+    // MfaConfiguration travels on SetUserPoolMfaConfig together with the factor.
+    //
+    // ON, not OPTIONAL, on the update arm: OPTIONAL is exactly what the
+    // no-value default produces for a pool that declares a factor, so an
+    // OPTIONAL assertion could not tell a threaded explicit value from a fired
+    // default. ON is reachable only by threading, and it triggers the same
+    // pre-fix UpdateUserPool rejection. Same argument as BackfillUserPool above.
+    const mfaTransitionPool = new cognito.CfnUserPool(this, 'MfaTransitionUserPool', {
+      userPoolName: `cdkd-test-mfa-transition-${cdk.Aws.ACCOUNT_ID}`,
+      userPoolTier: 'ESSENTIALS',
+      ...(isUpdate
+        ? { mfaConfiguration: 'ON', enabledMfas: ['SOFTWARE_TOKEN_MFA'] }
+        : {}),
+    });
+    mfaTransitionPool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    // Item 3 -- the undeclared downgrade to OFF is ANNOUNCED, not silent.
+    //
+    // Base arm: MFA really on (OPTIONAL + SOFTWARE_TOKEN_MFA) alongside a
+    // WebAuthn config.
+    // Update arm: MfaConfiguration and EnabledMfas both REMOVED, leaving only
+    // the WebAuthn config.
+    //
+    // WebAuthn is not an MFA factor, so on the update arm `hasMfaConfigProps`
+    // is still true (SetUserPoolMfaConfig runs) while the resolved
+    // MfaConfiguration defaults to OFF -- and because that call is a full
+    // replace, the live OPTIONAL is overwritten and the factor is dropped. That
+    // is template-is-truth / CloudFormation parity and is deliberately NOT
+    // changed; what the fix adds is a warning naming the live value it is about
+    // to turn off. The WebAuthn config must stay on BOTH arms: it is what keeps
+    // the update routed through SetUserPoolMfaConfig at all, and dropping it
+    // would make the arm vacuous.
+    const mfaDowngradePool = new cognito.CfnUserPool(this, 'MfaDowngradeUserPool', {
+      userPoolName: `cdkd-test-mfa-downgrade-${cdk.Aws.ACCOUNT_ID}`,
+      userPoolTier: 'ESSENTIALS',
+      webAuthnRelyingPartyId: 'downgrade.cdkd.example.com',
+      webAuthnUserVerification: 'preferred',
+      ...(isUpdate
+        ? {}
+        : { mfaConfiguration: 'OPTIONAL', enabledMfas: ['SOFTWARE_TOKEN_MFA'] }),
+    });
+    mfaDowngradePool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
     // Outputs
     new cdk.CfnOutput(this, 'UserPoolId', {
       value: userPool.userPoolId,
@@ -149,6 +215,14 @@ export class CognitoStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'FactorDefaultUserPoolId', {
       value: factorDefaultPool.ref,
+    });
+
+    new cdk.CfnOutput(this, 'MfaTransitionUserPoolId', {
+      value: mfaTransitionPool.ref,
+    });
+
+    new cdk.CfnOutput(this, 'MfaDowngradeUserPoolId', {
+      value: mfaDowngradePool.ref,
     });
 
     cdk.Tags.of(this).add('Project', 'cdkd');

@@ -17,6 +17,19 @@
 #   - FactorDefaultUserPool: a pool that DECLARES a factor with no
 #     MfaConfiguration must still land as OPTIONAL -- the inverse regression,
 #     where the fix would silently disable MFA on a pool that asked for it.
+# Then, under CDKD_TEST_UPDATE=true, asserts the two MFA UPDATE transitions
+# (issue #1925):
+#   - MfaTransitionUserPool: a pool created with NO MfaConfiguration and NO
+#     EnabledMfas is re-deployed with MfaConfiguration ON + SOFTWARE_TOKEN_MFA.
+#     update() used to forward MfaConfiguration to UpdateUserPool ungated, which
+#     runs BEFORE the SetUserPoolMfaConfig that enables the factor -- the same
+#     "MFA required/optional with no factor enabled" rejection the create path
+#     has always gated against. The fix applies that gate on update too.
+#   - MfaDowngradeUserPool: a pool created with MFA OPTIONAL + a factor is
+#     re-deployed with BOTH removed, leaving only its WebAuthn config. The
+#     full-replace SetUserPoolMfaConfig then resets it to OFF -- template-is-truth
+#     parity that is deliberately UNCHANGED -- and cdkd must ANNOUNCE the
+#     downgrade naming the live value, instead of doing it silently.
 # Then asserts the destroy path removes the pools and the state file.
 #
 # All four properties route through the SDK CognitoUserPoolProvider (the
@@ -67,14 +80,72 @@ STACK="CognitoStack"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
+# Resolve a pool by its AWS-assigned NAME, paginating ListUserPools.
+#
+# Assertions below look pools up THIS way rather than by cdkd's logical id: the
+# logical id matching a name is a coincidence of this fixture, and reading the
+# id back out of cdkd's own state would let a provider that never talked to AWS
+# satisfy the assertion. Failures are tri-state like `gone_probe`: an API error
+# hard-FAILs rather than being reported as "no such pool", which would read as a
+# missing resource and send the reader hunting in the wrong place.
+#
+# `exit 1` inside the command substitution aborts the caller under `set -e`
+# (the assignment inherits the subshell's status); `cleanup` runs under
+# `set +eu`, where the same failure degrades to an empty result and the
+# best-effort sweep simply skips.
+pool_id_by_name() { # usage: pool_id_by_name <exact pool name>
+  local want="$1" token="" out id rc
+  if [ -z "${want}" ]; then
+    echo "FAIL: pool_id_by_name called with an empty pool name" >&2
+    return 1
+  fi
+  while :; do
+    # Status captured explicitly rather than left to errexit: errexit is CLEARED
+    # inside `$( )`, so in `V="$(pool_id_by_name ...)"` an intermediate failure
+    # here would not abort the body and the empty result would read as "no such
+    # pool" -- the gone-probe rule's failure mode one layer up (#1120).
+    if [ -z "${token}" ]; then
+      out="$(aws cognito-idp list-user-pools --max-results 60 --region "${REGION}" --output json 2>&1)"; rc=$?
+    else
+      out="$(aws cognito-idp list-user-pools --max-results 60 --next-token "${token}" --region "${REGION}" --output json 2>&1)"; rc=$?
+    fi
+    if [ "${rc}" -ne 0 ]; then
+      echo "FAIL: list-user-pools failed while resolving '${want}': ${out}" >&2
+      return 1
+    fi
+    id="$(printf '%s' "${out}" | jq -r --arg n "${want}" '[.UserPools[] | select(.Name == $n) | .Id][0] // empty')"
+    if [ -n "${id}" ]; then
+      printf '%s' "${id}"
+      return 0
+    fi
+    token="$(printf '%s' "${out}" | jq -r '.NextToken // empty')"
+    [ -n "${token}" ] || return 0
+  done
+}
+
+# Populated after the STATE_BUCKET / binary guards below. Empty until then, so
+# a signal arriving during `npm install` leaves the name-based sweep a no-op
+# rather than deleting a pool named "cdkd-test-mfa-transition-".
+ACCOUNT_ID=""
+UPDATE_LOG=""
+
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
+  # Seed from the caller's status BEFORE anything here can overwrite it, so a
+  # signal trap that ran `(exit 130)` first still reports 130. Teardown itself
+  # is unconditional -- rc never gates it -- so a lost status can never skip a
+  # sweep; it is preserved only so the final exit code stays honest.
+  local rc=$?
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  if [ -n "${UPDATE_LOG}" ]; then
+    rm -f "${UPDATE_LOG}"
+    UPDATE_LOG=""
+  fi
   local destroy_rc=1
   if [ -x "${LOCAL_DIST}" ]; then
     # `state destroy` rejects `--force`; the confirmation skip flag is `--yes`.
@@ -88,7 +159,21 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  # Name-based sweep for the two CDKD_TEST_UPDATE pools. `state destroy` drops
+  # cdkd's record, not the AWS resource, so a run that died between the update
+  # deploy and the destroy phase would otherwise strand them -- and their names
+  # are fixed, so the next run would collide instead of failing cleanly.
+  if [ -n "${ACCOUNT_ID}" ]; then
+    local stray
+    for name in "cdkd-test-mfa-transition-${ACCOUNT_ID}" "cdkd-test-mfa-downgrade-${ACCOUNT_ID}"; do
+      stray="$(pool_id_by_name "${name}")"
+      if [ -n "${stray}" ] && [ "${stray}" != "None" ]; then
+        aws cognito-idp delete-user-pool --user-pool-id "${stray}" --region "${REGION}" >/dev/null 2>&1 || true
+      fi
+    done
+  fi
   set -eu
+  return "${rc}"
 }
 
 trap cleanup EXIT
@@ -105,6 +190,12 @@ if [ ! -f "${LOCAL_DIST}" ]; then
   exit 1
 fi
 
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+if [ -z "${ACCOUNT_ID}" ] || [ "${ACCOUNT_ID}" = "None" ]; then
+  echo "FAIL: could not resolve the AWS account id (needed to build the pool names)" >&2
+  exit 1
+fi
+
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
   npm install
@@ -115,7 +206,9 @@ cleanup
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
-node "${LOCAL_DIST}" deploy "${STACK}" \
+# `env -u` so a CDKD_TEST_UPDATE inherited from the caller cannot silently make
+# Phase 1 deploy the UPDATE arm, which would collapse both arms into one.
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -287,8 +380,139 @@ if [ "${FACTOR_SOFTWARE}" != "true" ]; then
 fi
 echo "    OK: factor-default MfaConfiguration == OPTIONAL with SOFTWARE_TOKEN_MFA enabled"
 
-# --- Phase 2: destroy -------------------------------------------------
-echo "==> Phase 2: destroy"
+# --- Assertion 8: MFA update-arm baselines (issue #1925) --------------
+# Both pools are resolved by their AWS-assigned NAME (see pool_id_by_name), so
+# a provider that wrote cdkd state without reaching AWS cannot satisfy these.
+TRANSITION_NAME="cdkd-test-mfa-transition-${ACCOUNT_ID}"
+DOWNGRADE_NAME="cdkd-test-mfa-downgrade-${ACCOUNT_ID}"
+
+TRANSITION_POOL_ID="$(pool_id_by_name "${TRANSITION_NAME}")"
+if [ -z "${TRANSITION_POOL_ID}" ]; then
+  echo "FAIL: no user pool named '${TRANSITION_NAME}' after Phase 1" >&2
+  exit 1
+fi
+echo "    MFA-transition UserPool id: ${TRANSITION_POOL_ID}"
+
+DOWNGRADE_POOL_ID="$(pool_id_by_name "${DOWNGRADE_NAME}")"
+if [ -z "${DOWNGRADE_POOL_ID}" ]; then
+  echo "FAIL: no user pool named '${DOWNGRADE_NAME}' after Phase 1" >&2
+  exit 1
+fi
+echo "    MFA-downgrade UserPool id: ${DOWNGRADE_POOL_ID}"
+
+# The transition pool starts with MFA genuinely OFF. Pinned so Phase 2's
+# OFF -> ON assertion is a real transition rather than a value that was already
+# there -- without this, a provider that ignored the update entirely could pass
+# Phase 2 if the pool had somehow been created ON.
+TRANSITION_MFA_BEFORE=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${TRANSITION_POOL_ID}" --region "${REGION}" --output json \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+if [ "${TRANSITION_MFA_BEFORE}" != "OFF" ]; then
+  echo "FAIL: MFA-transition pool starts at MfaConfiguration '${TRANSITION_MFA_BEFORE}', expected 'OFF' (the base arm declares neither MfaConfiguration nor EnabledMfas)" >&2
+  exit 1
+fi
+echo "    OK: MFA-transition pool baseline MfaConfiguration == OFF"
+
+# The downgrade pool starts with MFA really ON (OPTIONAL + a factor). Phase 2
+# removes both from the template; this is the value the announcement must name.
+DOWNGRADE_MFA_BEFORE=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${DOWNGRADE_POOL_ID}" --region "${REGION}" --output json)
+DOWNGRADE_MFA_CONFIG_BEFORE=$(echo "${DOWNGRADE_MFA_BEFORE}" \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+DOWNGRADE_SOFTWARE_BEFORE=$(echo "${DOWNGRADE_MFA_BEFORE}" \
+  | jq -r 'if (.SoftwareTokenMfaConfiguration|has("Enabled")) then .SoftwareTokenMfaConfiguration.Enabled|tostring else "null" end')
+if [ "${DOWNGRADE_MFA_CONFIG_BEFORE}" != "OPTIONAL" ] || [ "${DOWNGRADE_SOFTWARE_BEFORE}" != "true" ]; then
+  echo "FAIL: MFA-downgrade pool baseline is MfaConfiguration='${DOWNGRADE_MFA_CONFIG_BEFORE}' / SoftwareTokenMfaConfiguration.Enabled='${DOWNGRADE_SOFTWARE_BEFORE}', expected 'OPTIONAL' / 'true'" >&2
+  echo "${DOWNGRADE_MFA_BEFORE}" | jq . >&2 || true
+  exit 1
+fi
+echo "    OK: MFA-downgrade pool baseline MfaConfiguration == OPTIONAL with SOFTWARE_TOKEN_MFA enabled"
+
+# --- Phase 2: update arm (issue #1925) --------------------------------
+echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (MFA update transitions)"
+UPDATE_LOG="$(mktemp -t cdkd-cognito-update.XXXXXX)"
+# `tee` keeps the output visible in the run log while also making the
+# announcement assertion below possible. Under `set -o pipefail` a failed
+# deploy still aborts the script -- which is itself the item-1 assertion.
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes 2>&1 | tee "${UPDATE_LOG}"
+
+# --- Assertion 9: MFA enabled on update (issue #1925 item 1) ----------
+# Reaching this line is already most of the assertion: before the fix,
+# update() sent MfaConfiguration=ON to UpdateUserPool while the pool still had
+# no factor enabled, and AWS rejected the call -- the deploy above would have
+# exited non-zero and `set -o pipefail` would have aborted here.
+TRANSITION_MFA=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${TRANSITION_POOL_ID}" --region "${REGION}" --output json)
+TRANSITION_MFA_CONFIG=$(echo "${TRANSITION_MFA}" \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+# Exactly ON: OPTIONAL is what the no-value default produces for a pool that
+# declares a factor, so accepting it could not tell the template's explicit
+# value from a fired default.
+if [ "${TRANSITION_MFA_CONFIG}" != "ON" ]; then
+  echo "FAIL: after the update, MFA-transition pool MfaConfiguration is '${TRANSITION_MFA_CONFIG}', expected exactly 'ON' (the update arm's explicit value)" >&2
+  echo "${TRANSITION_MFA}" | jq . >&2 || true
+  exit 1
+fi
+TRANSITION_SOFTWARE=$(echo "${TRANSITION_MFA}" \
+  | jq -r 'if (.SoftwareTokenMfaConfiguration|has("Enabled")) then .SoftwareTokenMfaConfiguration.Enabled|tostring else "null" end')
+if [ "${TRANSITION_SOFTWARE}" != "true" ]; then
+  echo "FAIL: after the update, MFA-transition pool SoftwareTokenMfaConfiguration.Enabled is '${TRANSITION_SOFTWARE}', expected 'true' (the factor must be enabled in the same call that sets MfaConfiguration)" >&2
+  echo "${TRANSITION_MFA}" | jq . >&2 || true
+  exit 1
+fi
+echo "    OK: MFA-transition pool went OFF -> ON with SOFTWARE_TOKEN_MFA enabled"
+
+# --- Assertion 10: the downgrade is ANNOUNCED (issue #1925 item 3) ----
+# The load-bearing half. Before the fix there was no message at all, so this
+# grep is what discriminates -- the wire behavior below is unchanged by design.
+if ! grep -q "the template declares no MfaConfiguration" "${UPDATE_LOG}"; then
+  echo "FAIL: the update turned MFA off on ${DOWNGRADE_POOL_ID} without announcing it (no 'the template declares no MfaConfiguration' warning in the deploy output)" >&2
+  exit 1
+fi
+# The message must name the value it is turning OFF, not just that it defaulted.
+# A warning that cannot say what was lost is the one this assertion exists to
+# reject; it is also what proves the live value was read BEFORE UpdateUserPool
+# could reset it.
+if ! grep -q "live value was OPTIONAL" "${UPDATE_LOG}"; then
+  echo "FAIL: the downgrade warning does not name the live value (expected 'live value was OPTIONAL' in the deploy output)" >&2
+  grep -i "MfaConfiguration" "${UPDATE_LOG}" >&2 || true
+  exit 1
+fi
+echo "    OK: the undeclared downgrade to OFF was announced, naming the live OPTIONAL"
+
+# --- Assertion 11: the downgrade actually happened, unchanged ---------
+# Template-is-truth parity is DELIBERATELY not changed by #1925 item 3: the
+# announcement is additive. Asserting the wire result pins that -- if a future
+# change made the warning also PRESERVE the live value, this fails and the
+# behavior change has to be deliberate.
+DOWNGRADE_MFA=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${DOWNGRADE_POOL_ID}" --region "${REGION}" --output json)
+DOWNGRADE_MFA_CONFIG=$(echo "${DOWNGRADE_MFA}" \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+if [ "${DOWNGRADE_MFA_CONFIG}" != "OFF" ]; then
+  echo "FAIL: after the update, MFA-downgrade pool MfaConfiguration is '${DOWNGRADE_MFA_CONFIG}', expected 'OFF' (the template dropped MfaConfiguration, and SetUserPoolMfaConfig is a full replace)" >&2
+  echo "${DOWNGRADE_MFA}" | jq . >&2 || true
+  exit 1
+fi
+# The WebAuthn config is what kept this update routed through
+# SetUserPoolMfaConfig at all, so it must survive -- otherwise the arm proves
+# nothing about the OFF default and only shows the block being dropped.
+DOWNGRADE_WA_RP=$(echo "${DOWNGRADE_MFA}" \
+  | jq -r 'if (.WebAuthnConfiguration|has("RelyingPartyId")) then .WebAuthnConfiguration.RelyingPartyId else "null" end')
+if [ "${DOWNGRADE_WA_RP}" != "downgrade.cdkd.example.com" ]; then
+  echo "FAIL: after the update, MFA-downgrade pool WebAuthnConfiguration.RelyingPartyId is '${DOWNGRADE_WA_RP}', expected 'downgrade.cdkd.example.com'" >&2
+  exit 1
+fi
+echo "    OK: MFA-downgrade pool went OPTIONAL -> OFF with its WebAuthn config intact"
+
+rm -f "${UPDATE_LOG}"
+UPDATE_LOG=""
+
+# --- Phase 3: destroy -------------------------------------------------
+echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -303,8 +527,14 @@ echo "    OK: Passkey-only UserPool is gone"
 assert_gone "Factor-default UserPool ${FACTOR_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${FACTOR_POOL_ID}" --region "${REGION}"
 echo "    OK: Factor-default UserPool is gone"
 
+assert_gone "MFA-transition UserPool ${TRANSITION_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${TRANSITION_POOL_ID}" --region "${REGION}"
+echo "    OK: MFA-transition UserPool is gone"
+
+assert_gone "MFA-downgrade UserPool ${DOWNGRADE_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${DOWNGRADE_POOL_ID}" --region "${REGION}"
+echo "    OK: MFA-downgrade UserPool is gone"
+
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> cognito test passed (SignInPolicy #1380 / UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP-as-MFA unit-only) / MfaConfiguration defaulting both arms OFF+OPTIONAL #1920 closed + clean destroy)"
+echo "==> cognito test passed (SignInPolicy #1380 / UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP-as-MFA unit-only) / MfaConfiguration defaulting both arms OFF+OPTIONAL #1920 / MFA update transitions: enable-on-update + announced undeclared downgrade #1925 + clean destroy)"

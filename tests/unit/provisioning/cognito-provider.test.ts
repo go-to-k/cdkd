@@ -599,6 +599,10 @@ describe('CognitoUserPoolProvider', () => {
       });
 
       it('applies EnabledMfas via SetUserPoolMfaConfig on update', async () => {
+        // The undeclared-downgrade pre-read (#1925 item 3) runs first: its gate
+        // is a deliberate SUPERSET (no declared MfaConfiguration + some
+        // MFA-routed property), so it fires here and its result goes unused.
+        mockSend.mockResolvedValueOnce({ MfaConfiguration: 'OFF' }); // GetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:upd' } }); // DescribeUserPool
@@ -611,12 +615,13 @@ describe('CognitoUserPoolProvider', () => {
           {}
         );
 
-        expect(mockSend).toHaveBeenCalledTimes(3);
-        expect(mockSend.mock.calls[0][0].constructor.name).toBe('UpdateUserPoolCommand');
-        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mockSend).toHaveBeenCalledTimes(4);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('GetUserPoolMfaConfigCommand');
+        expect(mockSend.mock.calls[1][0].constructor.name).toBe('UpdateUserPoolCommand');
+        const mfaCall = mockSend.mock.calls[2][0];
         expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
         expect(mfaCall.input.SoftwareTokenMfaConfiguration).toEqual({ Enabled: true });
-        expect(mockSend.mock.calls[2][0].constructor.name).toBe('DescribeUserPoolCommand');
+        expect(mockSend.mock.calls[3][0].constructor.name).toBe('DescribeUserPoolCommand');
       });
     });
 
@@ -706,11 +711,11 @@ describe('CognitoUserPoolProvider', () => {
       });
 
       it('defaults to OFF for a WebAuthn-only pool on update too', async () => {
-        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         // GetUserPoolMfaConfig: the undeclared-OFF announcement probe (#1925
-        // item 3) reads the live value before the full-replace write. OFF here,
-        // so nothing is being downgraded and no warning is emitted.
+        // item 3) reads the live value BEFORE UpdateUserPool can reset it. OFF
+        // here, so nothing is being downgraded and no warning is emitted.
         mockSend.mockResolvedValueOnce({ MfaConfiguration: 'OFF' });
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:wa-upd' } }); // DescribeUserPool
 
@@ -1292,8 +1297,8 @@ describe('CognitoUserPoolProvider', () => {
     // template-is-truth parity and is NOT changed — only announced.
     describe('undeclared downgrade to OFF on update (#1925)', () => {
       it('reads the live value and warns when the update turns MFA off', async () => {
-        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         mockSend.mockResolvedValueOnce({ MfaConfiguration: 'ON' }); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:downgrade' } }); // DescribeUserPool
 
@@ -1305,21 +1310,25 @@ describe('CognitoUserPoolProvider', () => {
           {}
         );
 
-        const getCall = mockSend.mock.calls[1][0];
+        // The read must come FIRST: AWS documents UpdateUserPool as resetting
+        // omitted parameters, so probing after it could read a value this same
+        // call already clobbered and the announcement would go silent.
+        const getCall = mockSend.mock.calls[0][0];
         expect(getCall.constructor.name).toBe('GetUserPoolMfaConfigCommand');
         expect(getCall.input.UserPoolId).toBe('us-east-1_abc123');
+        expect(mockSend.mock.calls[1][0].constructor.name).toBe('UpdateUserPoolCommand');
 
         const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
         expect(warned).toContain('the template declares no MfaConfiguration');
-        expect(warned).toContain('live value is ON');
+        expect(warned).toContain('live value was ON');
 
         // The request itself is unchanged — this is an announcement, not a fix.
         expect(mockSend.mock.calls[2][0].input.MfaConfiguration).toBe('OFF');
       });
 
       it('warns for a live OPTIONAL too', async () => {
-        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         mockSend.mockResolvedValueOnce({ MfaConfiguration: 'OPTIONAL' }); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:downgrade-opt' } }); // Describe
 
@@ -1332,7 +1341,7 @@ describe('CognitoUserPoolProvider', () => {
         );
 
         expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-          'live value is OPTIONAL'
+          'live value was OPTIONAL'
         );
       });
 
@@ -1380,8 +1389,13 @@ describe('CognitoUserPoolProvider', () => {
       });
 
       // Silent polarity 3: the resolved value is not OFF, so the update is not
-      // a downgrade at all.
-      it('does not probe when the update enables a factor', async () => {
+      // a downgrade at all. The pre-read's gate is a deliberate SUPERSET, so it
+      // DOES probe here — what must stay silent is the warning, decided off the
+      // built request. Asserted as "probed but did not warn" rather than "did
+      // not probe", because the latter would pin the over-read as if it were
+      // the contract.
+      it('does not warn when the update enables a factor, even though it probed', async () => {
+        mockSend.mockResolvedValueOnce({ MfaConfiguration: 'ON' }); // GetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:no-downgrade' } }); // Describe
@@ -1394,16 +1408,19 @@ describe('CognitoUserPoolProvider', () => {
           {}
         );
 
-        expect(
-          mockSend.mock.calls.some((c) => c[0].constructor.name === 'GetUserPoolMfaConfigCommand')
-        ).toBe(false);
+        // A live ON is primed deliberately: the ONLY thing keeping this silent
+        // is the resolved value being OPTIONAL rather than OFF.
+        expect(mockSend.mock.calls[2][0].input.MfaConfiguration).toBe('OPTIONAL');
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+          'the template declares no MfaConfiguration'
+        );
       });
 
       // The probe exists only to ANNOUNCE, so its failure must not fail the
       // update the user asked for.
       it('is best-effort: a failed probe does not fail the update', async () => {
-        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         mockSend.mockRejectedValueOnce(new Error('AccessDenied')); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:probe-fail' } }); // Describe
 

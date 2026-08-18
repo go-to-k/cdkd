@@ -802,7 +802,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     physicalId: string,
     properties: Record<string, unknown>,
     declaredMfaConfiguration: string,
-    options: { announceUndeclaredOff?: boolean } = {}
+    options: { liveMfaConfiguration?: string } = {}
   ): Promise<void> {
     const request = buildMfaConfigRequest(
       physicalId,
@@ -811,12 +811,23 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       declaredMfaConfiguration
     );
     if (!request) return;
+    // The announcement decision keys on the BUILT request, so there is exactly
+    // one definition of "this deploy resolves to OFF". Only the live-value READ
+    // moves earlier (see `readLiveMfaConfiguration`'s call site in `update()`);
+    // `create()` passes no live value, so it can never warn -- correct, since a
+    // fresh pool has no value to downgrade.
     if (
-      options.announceUndeclaredOff === true &&
       declaredMfaConfiguration === '' &&
-      request.MfaConfiguration === 'OFF'
+      request.MfaConfiguration === 'OFF' &&
+      (options.liveMfaConfiguration === 'ON' || options.liveMfaConfiguration === 'OPTIONAL')
     ) {
-      await this.warnOnUndeclaredMfaDowngrade(physicalId);
+      this.logger.warn(
+        `UserPool ${physicalId}: the template declares no MfaConfiguration, so this update sends ` +
+          `MfaConfiguration=OFF (CloudFormation's own default) to a pool whose live value was ` +
+          `${options.liveMfaConfiguration} — SetUserPoolMfaConfig is a full replace, so MFA is ` +
+          `turned OFF. Declare MfaConfiguration: ${options.liveMfaConfiguration} in the template ` +
+          `to keep it.`
+      );
     }
     await this.retryOnTransientControlPlane(
       () => this.getClient().send(new SetUserPoolMfaConfigCommand(request)),
@@ -825,45 +836,44 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   }
 
   /**
-   * Announce the OFF default when it is about to turn MFA OFF on an UPDATE
-   * (issue #1925, third item).
+   * Read the pool's live `MfaConfiguration` for the undeclared-downgrade
+   * announcement (issue #1925, third item), or `undefined` when it cannot be
+   * determined.
    *
    * `SetUserPoolMfaConfig` is a full replace and this provider re-issues it on
-   * every update where any MFA-routed property is present, unconditioned on
-   * the MFA configuration having CHANGED. So a WebAuthn-only template applied
-   * to a pool whose live `MfaConfiguration` is `ON` / `OPTIONAL` — console
-   * drift, or a `cdkd import` of an MFA-enabled pool — writes `OFF` on the
-   * next unrelated property change. That is defensible template-is-truth /
-   * CloudFormation parity and is NOT changed here; only its silence is.
+   * every update carrying an MFA-routed property, unconditioned on the MFA
+   * configuration having CHANGED. So a WebAuthn-only template applied to a pool
+   * whose live `MfaConfiguration` is `ON` / `OPTIONAL` — console drift, or a
+   * `cdkd import` of an MFA-enabled pool — writes `OFF` on the next unrelated
+   * property change. That is defensible template-is-truth / CloudFormation
+   * parity and is NOT changed here; only its silence is.
    *
-   * Restricted to the UPDATE path and to a template that declared NO
-   * `MfaConfiguration`, because those are the two conditions under which the
-   * OFF is cdkd's DEFAULT rather than the user's instruction. On a fresh
-   * create nothing is being downgraded (there is no live value), and an
-   * explicit `MfaConfiguration: OFF` is the template saying so — warning on
-   * either would be noise on every passkey-only deploy.
+   * **Called BEFORE `UpdateUserPool`, deliberately.** AWS documents
+   * `UpdateUserPool` as resetting omitted parameters to their defaults, and
+   * whether that includes `MfaConfiguration` is UNVERIFIED — the SDK's own
+   * field documentation does not say. Reading after the update would therefore
+   * make this announcement silently inert on exactly the pools it exists for,
+   * on the branch where AWS does reset it. Reading first is correct under
+   * EITHER answer, the same discipline the pinned-OFF warning follows for the
+   * `EmailMfaConfiguration`-under-`OFF` question (issue #1923). It also means
+   * the value reported is the one the user last saw, not one this same call
+   * already clobbered.
    *
    * Best-effort by construction: the read exists only to ANNOUNCE, so a
    * failure must not fail the update the user asked for.
    */
-  private async warnOnUndeclaredMfaDowngrade(physicalId: string): Promise<void> {
+  private async readLiveMfaConfiguration(physicalId: string): Promise<string | undefined> {
     try {
       const live = await this.getClient().send(
         new GetUserPoolMfaConfigCommand({ UserPoolId: physicalId })
       );
-      const liveMfa = live.MfaConfiguration;
-      if (liveMfa !== 'ON' && liveMfa !== 'OPTIONAL') return;
-      this.logger.warn(
-        `UserPool ${physicalId}: the template declares no MfaConfiguration, so this update sends ` +
-          `MfaConfiguration=OFF (CloudFormation's own default) to a pool whose live value is ` +
-          `${liveMfa} — SetUserPoolMfaConfig is a full replace, so MFA is turned OFF. Declare ` +
-          `MfaConfiguration: ${liveMfa} in the template to keep it.`
-      );
+      return live.MfaConfiguration;
     } catch (error) {
       this.logger.debug(
         `Could not read the live MFA configuration of UserPool ${physicalId} to check for an ` +
           `undeclared downgrade to OFF: ${error instanceof Error ? error.message : String(error)}`
       );
+      return undefined;
     }
   }
 
@@ -929,6 +939,21 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       MFA_CONFIGURATION_PATH,
       { onUnusable: (message) => this.logger.warn(message) }
     );
+
+    // Capture the live MFA configuration BEFORE `UpdateUserPool` can touch it
+    // (issue #1925, third item) -- see `readLiveMfaConfiguration` for why the
+    // ordering is load-bearing. Gated by a cheap SUPERSET of the announcement
+    // condition, built only from predicates that already exist: a template that
+    // DECLARED a value is never a defaulted downgrade, and one with no
+    // MFA-routed property never reaches `SetUserPoolMfaConfig` at all. Whether
+    // the resolved value is actually `OFF` is decided later, off the BUILT
+    // request, so the OPTIONAL/OFF default rule is never restated here -- the
+    // cost of the looser gate is one extra read on an update that declares a
+    // factor without an MfaConfiguration, and the result is simply unused.
+    const liveMfaConfiguration =
+      mfaConfiguration === '' && hasMfaConfigProps(properties)
+        ? await this.readLiveMfaConfiguration(physicalId)
+        : undefined;
 
     try {
       const updateParams: UpdateUserPoolCommandInput = {
@@ -1059,7 +1084,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // UpdateUserPool — apply them via SetUserPoolMfaConfig after the main
       // update (no-op when none are present).
       await this.applyMfaConfig(physicalId, properties, mfaConfiguration, {
-        announceUndeclaredOff: true,
+        ...(liveMfaConfiguration !== undefined ? { liveMfaConfiguration } : {}),
       });
 
       this.logger.debug(`Successfully updated Cognito User Pool ${logicalId}`);
