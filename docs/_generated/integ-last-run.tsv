@@ -46,7 +46,7 @@ cloudwatch-anomaly-detector	2026-07-30T16:41:15Z	PASS	35	verify.sh	final run pos
 codebuild-project	2026-08-11T03:08:37Z	PASS	63	verify.sh	#1160 codebuild batch final: reset + 7 CFn retentions live-verified; destroy 3/0
 codecommit	2026-08-01T09:36:05Z	PASS	83	verify.sh	0801 regression sweep; 3 phases ok, 0 orphans
 codedeploy-lambda-deployment-group	2026-07-26T19:45:58Z	PASS	109	verify.sh	re-run after version-agnostic fixture fix; live-verified, account clean (remnant-warning follow-up: issue #1252)
-cognito	2026-08-18T06:36:23Z	PASS	71	verify.sh	#1920 merge candidate; 3 MfaConfiguration arms; 0 orphans
+cognito	2026-08-18T07:05:53Z	PASS	59	verify.sh	#1920 final merge candidate; 3 MfaConfiguration arms; 0 orphans
 cognito-custom-attribute-add	2026-08-10T11:50:46Z	PASS	47	verify.sh	0810 P0/P1 sweep b2; AddCustomAttributes reaches AWS, 3 phases
 cognito-identity-pool	2026-08-10T11:50:46Z	PASS	45	verify.sh	0810 P0/P1 sweep b1; identity+user pool gone, orph clean
 cognito-lambda-triggers	2026-08-10T04:23:28Z	PASS	58	verify.sh	0810 sweep b2; post-#1395 SignInPolicy, triggers fired, 8 del 0 err, 0 orph

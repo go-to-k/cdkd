@@ -984,27 +984,60 @@ describe('CognitoUserPoolProvider', () => {
         const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
         expect(warned).toContain('{"Ref":"MfaParam"} (not a list)');
         expect(warned).not.toContain('[object Object]');
+        // Arm 3 of the consequence: nothing else is enabled here, so AWS is
+        // what refuses. Asserted so the arm's own text cannot rot unnoticed.
+        expect(warned).toContain('AWS rejects');
       });
 
       // An unrecognized entry ALONGSIDE a working factor: AWS accepts and the
       // entry is silently ignored. The warning must say that rather than
       // predicting a rejection that never comes.
-      it('tells the user the call succeeds when a dropped entry rides with a real factor', async () => {
+      // Every factor that makes AWS accept, not just software-token: each is a
+      // separate disjunct of the sub-block test, and a single-factor case
+      // leaves the other two deletable.
+      it.each([
+        ['SOFTWARE_TOKEN_MFA', {}],
+        ['SMS_MFA', { SmsConfiguration: { SnsCallerArn: 'arn:aws:iam::123456789012:role/sms' } }],
+        ['EMAIL_OTP', {}],
+      ])(
+        'reports a dropped entry as ignored, not rejected, when %s is also enabled',
+        async (factor, extra) => {
+          mockSend.mockResolvedValueOnce({
+            UserPool: { Id: 'us-east-1_abc123', Arn: `arn:mixed-${factor}` },
+          });
+          mockSend.mockResolvedValueOnce({});
+
+          await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+            EnabledMfas: ['SOFTWARE_TOKEN', factor],
+            ...extra,
+          });
+
+          const mfaCall = mockSend.mock.calls[1][0];
+          expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
+          const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+          expect(warned).toContain('silently ignored');
+          // The call is NOT predicted to fail: AWS accepts it and drops the
+          // unrecognized entry.
+          expect(warned).not.toContain('AWS rejects');
+        }
+      );
+
+      // Pins the `?? String(f)` fallback. A template cannot produce an
+      // undefined member, but JSON.stringify(undefined) returns undefined and
+      // join() would render it as a gap naming no entry at all.
+      it('names an undefined EnabledMfas member instead of leaving a blank gap', async () => {
         mockSend.mockResolvedValueOnce({
-          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:mixed-warn' },
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:undef-member' },
         });
         mockSend.mockResolvedValueOnce({});
 
         await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
-          EnabledMfas: ['SOFTWARE_TOKEN', 'SOFTWARE_TOKEN_MFA'],
+          EnabledMfas: [undefined],
         });
 
-        const mfaCall = mockSend.mock.calls[1][0];
-        expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
-        expect(mfaCall.input.SoftwareTokenMfaConfiguration).toEqual({ Enabled: true });
         const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
-        expect(warned).toContain('silently ignored');
-        expect(warned).not.toContain('AWS rejects');
+        expect(warned).toContain('undefined');
+        expect(warned).not.toContain('entries  do not map');
       });
 
       it('defaults to OFF for an EMPTY EnabledMfas array alongside WebAuthn', async () => {

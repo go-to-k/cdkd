@@ -673,7 +673,7 @@ Three more review findings hardened the failure paths. The create-side registrat
   (email-OTP needs a verified SES sender), so it was not flipped on an untested
   wire assumption (issue [#1923](https://github.com/go-to-k/cdkd/issues/1923)).
   Applies to create and update alike (both route through `applyMfaConfig`).
-  20 new unit tests pin both polarities of the default (WebAuthn-only and an
+  23 new unit tests pin both polarities of the default (WebAuthn-only and an
   empty `EnabledMfas` -> `OFF`, on create AND update; a real factor, alone or
   alongside WebAuthn, and the SMS arm -> `OPTIONAL`), both polarities of the
   override (an explicit `OFF` beats the `OPTIONAL` default, an explicit `ON`

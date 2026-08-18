@@ -144,11 +144,11 @@ const MFA_FACTOR_EMAIL_OTP = 'EMAIL_OTP';
  * as absence lets the MfaConfiguration default resolve to `OFF`, which AWS
  * ACCEPTS — so the pool ships with MFA disabled and the declared factor
  * dropped, silently. Treating it as intent keeps the default at `OPTIONAL`
- * instead, which AWS refuses loudly (unless the template pinned
- * `MfaConfiguration` itself, or another factor is enabled — the warning in
- * `buildMfaConfigRequest` reports which of those actually happened). Same reasoning as the unrecognized-spelling case
- * in `buildMfaConfigRequest`; this is that hole reached through the SHAPE
- * instead of the spelling.
+ * instead, which AWS refuses loudly — unless the template pinned
+ * `MfaConfiguration: OFF`, or another factor is enabled. The warning in
+ * `buildMfaConfigRequest` reports which of those three actually happened.
+ * Same reasoning as the unrecognized-spelling case there; this is that hole
+ * reached through the SHAPE instead of the spelling.
  */
 function readEnabledMfas(properties: Record<string, unknown>): {
   factors: string[] | undefined;
@@ -348,10 +348,13 @@ function buildMfaConfigRequest(
   // JSON.stringify, not `${f}` -- a non-string member would otherwise print as
   // [object Object] and name nothing, and for the intrinsic shape this warning
   // exists to surface (`EnabledMfas: {Ref: Param}`) that IS the likely member.
-  // The `?? String(f)` tail is not dead: JSON.stringify(undefined) returns
+  // The `?? String(f)` tail is defensive: JSON.stringify(undefined) returns
   // undefined, which join() would render as an empty gap naming no entry at
-  // all. TypeScript types the call as returning `string`, so the tail looks
-  // unreachable to a reader or a lint autofix -- keep it.
+  // all. A template cannot produce an undefined member (the resolver filters
+  // AWS::NoValue out of arrays), so this guards non-template callers only --
+  // but TypeScript types JSON.stringify as returning `string`, which makes the
+  // tail look unreachable to a reader or a lint autofix. A unit test passes
+  // [undefined] directly so deleting it fails rather than going unnoticed.
   const dropped: string[] = unrecognizedFactors.map((f) => JSON.stringify(f) ?? String(f));
   if (enabledMfasMalformed) {
     dropped.push(`${JSON.stringify(properties['EnabledMfas'])} (not a list)`);
@@ -372,7 +375,7 @@ function buildMfaConfigRequest(
         ? `MfaConfiguration is OFF, so this pool deploys with MFA DISABLED`
         : anyFactorBlock
           ? `MfaConfiguration is ${request.MfaConfiguration} and another factor IS enabled, so ` +
-            `the call succeeds and these entries are silently ignored`
+            `these entries are silently ignored rather than failing the call on their own`
           : `MfaConfiguration is ${request.MfaConfiguration} with no factor enabled, so AWS ` +
             `rejects this call rather than deploying the pool with MFA disabled`;
     logger?.warn(
