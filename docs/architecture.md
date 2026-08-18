@@ -310,6 +310,47 @@ async calculateDiff(
 - **Replacement propagation to dependents** (issue #807): after per-resource diffs are computed, the calculator walks reverse reference edges (`Ref` / `Fn::GetAtt` / `Fn::Sub` and intrinsics nesting them) from every resource whose `propertyChanges` include `requiresReplacement: true` and promotes transitive `NO_CHANGE` dependents to `UPDATE` — mirroring CloudFormation's new-physical-ID propagation (e.g. an `AWS::ECS::Service` whose only "change" is the `Ref` to a replaced `AWS::ECS::TaskDefinition` revision still gets `UpdateService`). Each promoted referencing property is re-evaluated against the replacement rules, so a promoted dependent whose referencing property is itself immutable becomes a replacement seed for *its* dependents in turn. The synthetic change's `requiresReplacement` is evaluated with `undefined` old/new values: the referencing property's template value did not actually change (only its resolved physical ID / ARN will), so unconditional `replacementProperties` (which match on the property name) still fire while `conditionalReplacements` are not fed a phantom resolved-string → unresolved-intrinsic delta that would spuriously report "changed". Promotion is safe even when speculative: the deploy engine re-resolves the promoted resource's properties against the in-flight state map (which by DAG order already carries the dependency's new physical ID) and skips the provider call when nothing actually changed. Each synthetic change carries `replacementPropagated: true` so `cdkd diff` annotates the property line `[replacement propagated]` — the apparent old-value → `{Ref}` delta in the display reads as a propagated replacement, not a literal value edit.
 - **Diff display**: When showing property changes, only the actually changed sub-properties are displayed. Unchanged sibling values and intrinsic-containing values are stripped from the output to reduce noise.
 
+#### `outputs-diff.ts`
+
+`diff-calculator.ts` compares `Resources` only. The template's `Outputs`
+section is compared separately by `outputs-diff.ts`, called from
+`computeStackDiff` in `src/cli/commands/diff-recursive.ts` (issue
+[#1921](https://github.com/go-to-k/cdkd/issues/1921)).
+
+This exists because an **Outputs-only** change — one whose `Resources` section
+is byte-identical — is a real change the deploy performs: `cdkd deploy` persists
+it and republishes the exports index (issue #875, see the no-change branch of
+`deploy-engine.ts`). Without the preview half, such a stack printed
+`No changes detected` and `cdkd diff --fail` exited `0` while the apply did
+write new outputs. The motivating chain is a producer that gains an
+`Export.Name` because a downstream stack started referencing it: the diff
+steered the user away from the very deploy that would let the consumer's
+`Fn::ImportValue` resolve. The reverse — an export being REMOVED, which can
+break a consumer — was hidden the same way.
+
+- `resolveTemplateOutputs` reproduces the bag shape
+  `DeployEngine.resolveOutputs` persists to `StackState.outputs`: a
+  condition-false output is skipped (CFn never creates it), and an
+  `Export.Name` is stored as a **second key** holding the same value, since
+  `Fn::ImportValue` resolves by export name.
+- The diff's resolvers are **best-effort** — they return the ORIGINAL value on
+  failure rather than throwing, unlike the deploy side whose catch stores
+  `undefined` — so the unresolved detector is a DEEP intrinsic walk. A shallow
+  check would let a half-substituted `Fn::Join` through as resolved and diff it
+  against state as a phantom.
+- `computeOutputsDiff` compares **bag key by bag key**, which is exactly the
+  `outputMapsEqual` predicate the deploy engine gates its persist on, so the
+  preview cannot drift from the apply. A partially-resolved bag reports no
+  delta at all, mirroring the deploy engine declining to persist one — and
+  nothing is lost, since an output only fails to resolve when it references a
+  resource this deploy has yet to CREATE, which the resource side already shows.
+
+The module is a deliberate SECOND implementation rather than shared code: the
+deploy-side block lives in `deploy-engine.ts`, which is in the `integ-broad`
+and `integ-destroy` merge-gate scopes. `tests/unit/analyzer/outputs-diff.test.ts`
+pays for that trade with an anti-drift fence asserting the three mirrored
+deploy-side semantics still hold.
+
 #### `intrinsic-function-resolver.ts`
 
 Resolves CloudFormation intrinsic functions

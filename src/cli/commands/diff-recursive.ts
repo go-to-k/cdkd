@@ -7,6 +7,11 @@ import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import type { CanonicalizePropertiesFn } from '../../analyzer/diff-calculator.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
+import {
+  computeOutputsDiff,
+  resolveTemplateOutputs,
+  type OutputChange,
+} from '../../analyzer/outputs-diff.js';
 import { getLogger } from '../../utils/logger.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import {
@@ -58,6 +63,17 @@ export interface DiffTreeNode {
    * template inspection).
    */
   ccApiRoutes: Map<string, string[]>;
+  /**
+   * Per-key changes to this node's persisted `Outputs` bag (issue #1921).
+   *
+   * Empty when the Outputs section is unchanged AND when any output could not
+   * be resolved — see {@link resolveTemplateOutputs}. Only real changes are
+   * carried (there is no `NO_CHANGE` member), so a non-empty array always means
+   * the next deploy would write outputs, which is what makes an Outputs-ONLY
+   * change reach {@link nodeHasChanges} instead of printing "No changes
+   * detected" while the apply republishes the exports index.
+   */
+  outputChanges: OutputChange[];
   /** Direct nested-stack children, DFS order. Empty for leaves and for non-recursive runs. */
   children: DiffTreeNode[];
 }
@@ -157,11 +173,24 @@ async function loadStateOrEmpty(
   };
 }
 
+/** What one stack's diff yields: its per-resource changes plus its Outputs delta. */
+export interface StackDiffResult {
+  /** Per-resource changes, including `NO_CHANGE` entries. */
+  changes: Map<string, ResourceChange>;
+  /** Per-key Outputs changes (issue #1921); empty when unchanged or unresolvable. */
+  outputChanges: OutputChange[];
+}
+
 /**
  * Compute the per-resource diff for one stack: `currentState` (cdkd state)
  * vs `template` (synth desired state), with a best-effort intrinsic
  * resolver so changes buried inside intrinsics (e.g. `Fn::Join` literal
  * args) are detected against resolved values in state.
+ *
+ * Also computes the `Outputs` delta (issue #1921) — an Outputs-only change has
+ * a byte-identical `Resources` section, so without it such a stack previews as
+ * "No changes detected" while the apply persists new outputs and republishes
+ * the exports index.
  *
  * Pure with respect to AWS state mutation — only reads state (the resolver
  * may read producer state for `Fn::ImportValue` / `Fn::GetStackOutput`).
@@ -186,7 +215,7 @@ export async function computeStackDiff(
    * deploy engine's option so preview and apply resolve identically.
    */
   cfnFallback?: boolean
-): Promise<Map<string, ResourceChange>> {
+): Promise<StackDiffResult> {
   const intrinsicResolver = new IntrinsicFunctionResolver(region, {
     cfnFallback: cfnFallback ?? true,
   });
@@ -292,12 +321,32 @@ export async function computeStackDiff(
       // `WithDecryption: false`, so a `SecureString` never yields plaintext.
       skipDynamicReferences: true,
     });
-  return diffCalculator.calculateDiff(
+  const changes = await diffCalculator.calculateDiff(
     currentState,
     effectiveTemplate,
     resolveFn,
     canonicalizeProperties
   );
+
+  // Issue #1921: the Outputs section, resolved through the SAME resolver /
+  // conditions the resource diff just used. Resolving here rather than in a
+  // second pass matters — parameter binding and condition evaluation can issue
+  // SSM calls, and a separate entry point would pay for them twice.
+  //
+  // `effectiveTemplate` mirrors the deploy engine's no-change branch. Condition
+  // pruning only rewrites `Resources`, so its `Outputs` are the raw template's.
+  const resolved = await resolveTemplateOutputs(effectiveTemplate, resolveFn, conditions);
+  // A partially-resolved bag reports NO delta, exactly like the deploy engine
+  // declining to persist one (`resolutionFailed` there). Being conservative in
+  // the same direction is what keeps an unchanged stack at "no changes" instead
+  // of showing a phantom the apply would never write. Nothing is lost: an output
+  // only fails to resolve because it references a resource this deploy has yet
+  // to create, and that CREATE is already on the resource side of the diff.
+  const outputChanges = resolved.resolutionFailed
+    ? []
+    : computeOutputsDiff(currentState.outputs, resolved.outputs, resolved.exportNames);
+
+  return { changes, outputChanges };
 }
 
 /**
@@ -433,7 +482,7 @@ export async function buildDiffTree(args: {
   } = args;
 
   const state = await loadStateOrEmpty(stackName, region, stateBackend);
-  const changes = await computeStackDiff(
+  const { changes, outputChanges } = await computeStackDiff(
     state,
     template,
     region,
@@ -451,6 +500,7 @@ export async function buildDiffTree(args: {
     region,
     changes,
     ccApiRoutes,
+    outputChanges,
     children: [],
   };
   if (!recursive) return node;
@@ -532,7 +582,7 @@ async function buildDeletedSubtree(
   diffCalculator: DiffCalculator
 ): Promise<DiffTreeNode> {
   const state = await loadStateOrEmpty(stackName, region, stateBackend);
-  const changes = await computeStackDiff(
+  const { changes, outputChanges } = await computeStackDiff(
     state,
     EMPTY_TEMPLATE,
     region,
@@ -549,6 +599,11 @@ async function buildDeletedSubtree(
     // already recorded on each resource's `provisionedBy`, and the diff line
     // only shows the type. No annotation surface.
     ccApiRoutes: new Map(),
+    // The empty template carries no `Outputs`, so every persisted key diffs as
+    // REMOVE — which is accurate: destroying the child drops its whole state
+    // record, and any export it published stops resolving for consumers. No
+    // special case, so this node obeys the same rule as every other.
+    outputChanges,
     children: [],
   };
   for (const [logicalId, resource] of Object.entries(state.resources)) {
@@ -626,7 +681,10 @@ export function nodeHasChanges(node: DiffTreeNode): boolean {
   for (const change of node.changes.values()) {
     if (change.changeType !== 'NO_CHANGE') return true;
   }
-  return false;
+  // Issue #1921: an Outputs-only change has no resource change at all, so this
+  // arm is the ONLY thing standing between it and "No changes detected" — and
+  // it is what makes `--fail` exit 1 for it, matching `cdk diff --fail`.
+  return node.outputChanges.length > 0;
 }
 
 /** True when this node OR any descendant has a real change (tree-wide drift detector for `--fail`). */
@@ -651,11 +709,26 @@ export interface DiffChangeJson {
   ccApi?: string[];
 }
 
+/** Serializable Outputs change record for `--json` (issue #1921). */
+export interface DiffOutputChangeJson {
+  name: string;
+  changeType: OutputChange['changeType'];
+  oldValue?: unknown;
+  newValue?: unknown;
+  /** True for an `Export.Name` key — the ones a consumer's `Fn::ImportValue` reads. */
+  export: boolean;
+}
+
 /** Serializable diff-tree node for `--json` (nested when `--recursive`). */
 export interface DiffNodeJson {
   stack: string;
   region: string;
   changes: DiffChangeJson[];
+  /**
+   * Outputs delta (issue #1921). Always present — empty array when unchanged —
+   * for the same key-set stability reason as `children`.
+   */
+  outputChanges: DiffOutputChangeJson[];
   children: DiffNodeJson[];
 }
 
@@ -687,6 +760,17 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
     stack: node.stackName,
     region: node.region,
     changes,
+    outputChanges: node.outputChanges.map((change) => ({
+      name: change.name,
+      changeType: change.changeType,
+      // `oldValue` / `newValue` are omitted rather than set to `undefined` so
+      // `JSON.stringify` does not have to drop them: an ADD has no old side and
+      // a REMOVE has no new side, and a key present-but-null would read as a
+      // real null value.
+      ...(change.changeType !== 'ADD' ? { oldValue: change.oldValue } : {}),
+      ...(change.changeType !== 'REMOVE' ? { newValue: change.newValue } : {}),
+      export: change.isExport,
+    })),
     children: node.children.map(diffTreeToJson),
   };
 }
@@ -906,6 +990,55 @@ export function renderChangeLines(
 }
 
 /**
+ * Render one node's Outputs delta (issue #1921) via `logFn`, returning the
+ * per-kind counts. Emits nothing when there is no delta, so an unchanged
+ * Outputs section adds no noise to a resource-only diff.
+ *
+ * Rows are keyed by the PERSISTED bag key, which is what `StackState.outputs`
+ * holds and what the exports index publishes. An output carrying an
+ * `Export.Name` therefore shows TWO rows — its logical name and its export
+ * name — because the deploy writes both keys. That is the useful half for the
+ * motivating case: the `[export]`-tagged row IS the string a downstream
+ * `Fn::ImportValue` resolves, so the user can match it against the consumer
+ * that was failing with "export not found".
+ */
+export function renderOutputChangeLines(
+  outputChanges: readonly OutputChange[],
+  logFn: (msg: string) => void
+): { add: number; change: number; remove: number } {
+  const counts = { add: 0, change: 0, remove: 0 };
+  if (outputChanges.length === 0) return counts;
+
+  logFn('\n  Outputs:');
+  const indent = '            ';
+  const render = (value: unknown): string =>
+    (JSON.stringify(value, null, 2) ?? 'undefined').replace(/\n/g, `\n${indent}`);
+
+  for (const change of outputChanges) {
+    const exported = change.isExport ? ' [export]' : '';
+    switch (change.changeType) {
+      case 'ADD':
+        counts.add++;
+        logFn(`    [+] ${change.name}${exported}`);
+        logFn(`          new: ${render(change.newValue)}`);
+        break;
+      case 'MODIFY':
+        counts.change++;
+        logFn(`    [~] ${change.name}${exported}`);
+        logFn(`          old: ${render(change.oldValue)}`);
+        logFn(`          new: ${render(change.newValue)}`);
+        break;
+      case 'REMOVE':
+        counts.remove++;
+        logFn(`    [-] ${change.name}${exported}`);
+        logFn(`          old: ${render(change.oldValue)}`);
+        break;
+    }
+  }
+  return counts;
+}
+
+/**
  * Render a diff tree (root + nested children, DFS) via `logFn`. Only nodes
  * that actually have changes get a block — unchanged nested children are
  * walked silently so the output shows only what the next deploy would do
@@ -925,7 +1058,18 @@ export function renderDiffTree(
       update,
       delete: del,
     } = renderChangeLines(node.changes, logFn, node.ccApiRoutes);
+    const outputs = renderOutputChangeLines(node.outputChanges, logFn);
     logFn(`\n${create} to create, ${update} to update, ${del} to delete`);
+    // A SECOND summary line rather than extra terms on the first: the resource
+    // counts drive what the deploy does to AWS, while an Outputs change is a
+    // state / exports-index write with no resource operation behind it. Folding
+    // them together would read as "1 to update" for a stack whose resources are
+    // untouched. Printed only when there is something to say.
+    if (outputs.add + outputs.change + outputs.remove > 0) {
+      logFn(
+        `${outputs.add} output(s) to add, ${outputs.change} to change, ${outputs.remove} to remove`
+      );
+    }
   }
   for (const child of node.children) {
     renderDiffTree(child, false, logFn);
