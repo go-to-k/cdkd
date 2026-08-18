@@ -1,3 +1,10 @@
+## [0.283.34](https://github.com/go-to-k/cdkd/compare/v0.283.33...v0.283.34) (2026-08-18)
+
+
+### Bug Fixes
+
+* **dynamodb:** make the index-busy DeleteTable retry budget per type, and raise only AWS::DynamoDB::Table ([#1964](https://github.com/go-to-k/cdkd/issues/1964)) ([b2a2dba](https://github.com/go-to-k/cdkd/commit/b2a2dba1a875a5f659c9f3e3662680fa71c838ff))
+
 ## [0.283.33](https://github.com/go-to-k/cdkd/compare/v0.283.32...v0.283.33) (2026-08-18)
 
 
