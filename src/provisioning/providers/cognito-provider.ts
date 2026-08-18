@@ -134,6 +134,70 @@ const MFA_FACTOR_SOFTWARE_TOKEN = 'SOFTWARE_TOKEN_MFA';
 const MFA_FACTOR_EMAIL_OTP = 'EMAIL_OTP';
 
 /**
+ * Read `EnabledMfas` as the pair (recognized list, "the template asked for a
+ * factor at all").
+ *
+ * The second half exists because `Array.isArray` is not the same question as
+ * "did the user declare a factor". A hand-written YAML scalar
+ * (`EnabledMfas: SOFTWARE_TOKEN_MFA`) or an intrinsic that resolves to a String
+ * parameter is a factor DECLARATION that happens to be mis-shaped. Treating it
+ * as absence lets the MfaConfiguration default resolve to `OFF`, which AWS
+ * ACCEPTS — so the pool ships with MFA disabled and the declared factor
+ * dropped, silently. Treating it as intent keeps the default at `OPTIONAL`
+ * instead, which AWS refuses loudly — unless the template pinned
+ * `MfaConfiguration: OFF`, or another factor is enabled. The warning in
+ * `buildMfaConfigRequest` reports which of those three actually happened.
+ * Same reasoning as the unrecognized-spelling case there; this is that hole
+ * reached through the SHAPE instead of the spelling.
+ */
+function readEnabledMfas(properties: Record<string, unknown>): {
+  factors: string[] | undefined;
+  declaresFactor: boolean;
+  malformed: boolean;
+} {
+  const raw = properties['EnabledMfas'];
+  if (Array.isArray(raw)) {
+    const factors = raw as string[];
+    return { factors, declaresFactor: factors.length > 0, malformed: false };
+  }
+  // `null` / `''` are absence, not a mis-shaped declaration: the intrinsic
+  // resolver deletes `AWS::NoValue` keys outright rather than emitting null, so
+  // a literal null is "explicitly nothing", and an empty string declares no
+  // factor either. Treating them as intent would fire a spurious
+  // SetUserPoolMfaConfig and turn a previously-working deploy into a hard AWS
+  // rejection. This matches the truthy gating used for every sibling string
+  // property below.
+  const malformed = raw !== undefined && raw !== null && raw !== '';
+  return { factors: undefined, declaresFactor: malformed, malformed };
+}
+
+/**
+ * True when any MFA-config-API-routed property is present, i.e. a
+ * `SetUserPoolMfaConfig` call will run post-create. When true, `create()` must
+ * NOT forward `MfaConfiguration` to `CreateUserPool`: AWS rejects
+ * `CreateUserPool` with `MfaConfiguration: ON/OPTIONAL` unless the pool already
+ * has SMS configured (+ phone_number auto-verification) OR software-token MFA
+ * enabled — but software-token / email-OTP MFA can only be enabled via the
+ * post-create `SetUserPoolMfaConfig` call, not on `CreateUserPool`. So the
+ * correct sequence is: `CreateUserPool` WITHOUT `MfaConfiguration` (defaults
+ * OFF) -> `SetUserPoolMfaConfig` sets `MfaConfiguration` + the factor blocks
+ * together (the factor satisfies the MFA requirement, no SMS needed). This
+ * mirrors how CloudFormation/CDK sequence the two calls.
+ */
+function hasMfaConfigProps(properties: Record<string, unknown>): boolean {
+  // `declaresFactor` (not just a non-empty array) so a mis-shaped declaration
+  // still routes through SetUserPoolMfaConfig and fails loudly, rather than
+  // skipping the call and dropping the factor in silence.
+  return (
+    readEnabledMfas(properties).declaresFactor ||
+    !!(properties['EmailAuthenticationMessage'] as string | undefined) ||
+    !!(properties['EmailAuthenticationSubject'] as string | undefined) ||
+    !!(properties['WebAuthnRelyingPartyID'] as string | undefined) ||
+    !!(properties['WebAuthnUserVerification'] as string | undefined)
+  );
+}
+
+/**
  * Build the `SetUserPoolMfaConfig` request from the CFn-level MFA properties,
  * or return `undefined` when none of the MFA-config-API-routed properties are
  * present (so the caller skips the extra control-plane call entirely).
@@ -149,43 +213,21 @@ const MFA_FACTOR_EMAIL_OTP = 'EMAIL_OTP';
  * omitted `MfaConfiguration` defaults to OFF on the wire — which resets the
  * pool to MFA-disabled and makes AWS reject (or silently drop) the per-factor
  * sub-blocks we are trying to enable. Use the template's `MfaConfiguration`
- * when present; default to `OPTIONAL` when factors are present but the template
- * omitted it (factors are meaningless under OFF, and OPTIONAL enables them
- * without forcing MFA on every user).
+ * when present; when the template omitted it, default by whether this call
+ * enables an MFA FACTOR — `OPTIONAL` if it does, `OFF` (CloudFormation's own
+ * default) if it does not. The body comment on that decision explains why both
+ * halves of the factor test are load-bearing.
  */
-/**
- * True when any MFA-config-API-routed property is present, i.e. a
- * `SetUserPoolMfaConfig` call will run post-create. When true, `create()` must
- * NOT forward `MfaConfiguration` to `CreateUserPool`: AWS rejects
- * `CreateUserPool` with `MfaConfiguration: ON/OPTIONAL` unless the pool already
- * has SMS configured (+ phone_number auto-verification) OR software-token MFA
- * enabled — but software-token / email-OTP MFA can only be enabled via the
- * post-create `SetUserPoolMfaConfig` call, not on `CreateUserPool`. So the
- * correct sequence is: `CreateUserPool` WITHOUT `MfaConfiguration` (defaults
- * OFF) -> `SetUserPoolMfaConfig` sets `MfaConfiguration` + the factor blocks
- * together (the factor satisfies the MFA requirement, no SMS needed). This
- * mirrors how CloudFormation/CDK sequence the two calls.
- */
-function hasMfaConfigProps(properties: Record<string, unknown>): boolean {
-  const enabledMfas = Array.isArray(properties['EnabledMfas'])
-    ? (properties['EnabledMfas'] as string[])
-    : undefined;
-  return (
-    (enabledMfas !== undefined && enabledMfas.length > 0) ||
-    !!(properties['EmailAuthenticationMessage'] as string | undefined) ||
-    !!(properties['EmailAuthenticationSubject'] as string | undefined) ||
-    !!(properties['WebAuthnRelyingPartyID'] as string | undefined) ||
-    !!(properties['WebAuthnUserVerification'] as string | undefined)
-  );
-}
-
 function buildMfaConfigRequest(
   physicalId: string,
-  properties: Record<string, unknown>
+  properties: Record<string, unknown>,
+  logger?: { warn: (message: string) => void }
 ): SetUserPoolMfaConfigCommandInput | undefined {
-  const enabledMfas = Array.isArray(properties['EnabledMfas'])
-    ? (properties['EnabledMfas'] as string[])
-    : undefined;
+  const {
+    factors: enabledMfas,
+    declaresFactor,
+    malformed: enabledMfasMalformed,
+  } = readEnabledMfas(properties);
   // Truthy (non-empty) gating — NOT `!== undefined` — because
   // `readCurrentState` ALWAYS emits these as empty-string / empty-array
   // placeholders (so a console-side ADD surfaces as drift). A `!== undefined`
@@ -208,13 +250,14 @@ function buildMfaConfigRequest(
 
   const request: SetUserPoolMfaConfigCommandInput = { UserPoolId: physicalId };
 
-  // SetUserPoolMfaConfig is a full-replace: an omitted MfaConfiguration resets
-  // the pool to OFF, which would disable the very factors we are enabling.
-  // Thread the template value; default to OPTIONAL when factors are present.
-  const mfaConfiguration = properties['MfaConfiguration'] as UserPoolMfaType | undefined;
-  request.MfaConfiguration = mfaConfiguration ?? 'OPTIONAL';
-
   const factors = new Set(enabledMfas ?? []);
+
+  const unrecognizedFactors = [...factors].filter(
+    (factor) =>
+      factor !== MFA_FACTOR_SMS &&
+      factor !== MFA_FACTOR_SOFTWARE_TOKEN &&
+      factor !== MFA_FACTOR_EMAIL_OTP
+  );
 
   if (factors.has(MFA_FACTOR_SOFTWARE_TOKEN)) {
     request.SoftwareTokenMfaConfiguration = { Enabled: true };
@@ -250,6 +293,101 @@ function buildMfaConfigRequest(
         : {}),
     };
   }
+
+  // SetUserPoolMfaConfig is a full-replace: an omitted MfaConfiguration resets
+  // the pool to OFF, which would disable the very factors we are enabling. So
+  // thread the template's value, and when the template omitted it, default by
+  // whether this call enables an MFA FACTOR at all. OFF is CloudFormation's own
+  // default, and it is REQUIRED for a passkey-only pool: WebAuthn is not an MFA
+  // factor, so AWS rejects OPTIONAL there with "Invalid MFA Configuration given.
+  // SMS MFA, Email MFA, or Software Token MFA must be enabled." (issue #1920).
+  //
+  // BOTH halves of the condition are load-bearing; neither alone is safe, and
+  // the unsafe versions are exactly the ones this is natural to "simplify" to:
+  //
+  //  - The DECLARED-factor half is what keeps a bad factor declaration loud. It
+  //    is true for any non-empty `EnabledMfas` AND for a mis-shaped one (a YAML
+  //    scalar / String-param ref), neither of which emits a factor block. A
+  //    sub-block-only condition would send OFF for both, AWS would ACCEPT it,
+  //    and the pool would ship with MFA silently disabled and the declared
+  //    factor dropped. Keeping OPTIONAL makes AWS refuse loudly and name the
+  //    problem — the pre-existing behavior, preserved deliberately.
+  //  - The EmailMfaConfiguration half keeps the email-OTP message/subject shape
+  //    on its existing OPTIONAL default: that block is emitted for a bare
+  //    EmailAuthenticationMessage/Subject customization with NO EnabledMfas, so
+  //    it is the one sub-block the first half does not already imply. Whether
+  //    AWS accepts it under OFF is UNVERIFIED — the integ cannot reach it
+  //    (email-OTP needs a verified SES sender; see the fixture note) — so that
+  //    shape is deliberately left unchanged rather than flipped on an untested
+  //    wire assumption. Issue #1920 proposed keying on EnabledMfas alone, which
+  //    WOULD have flipped it; issue #1923 tracks the SES-account verification
+  //    that would settle it.
+  //
+  // Note SmsMfaConfiguration / SoftwareTokenMfaConfiguration are deliberately
+  // NOT tested here: both are only ever set inside a `factors.has(...)` guard,
+  // so each is strictly implied by the first half. Including them would read as
+  // defensive but no input could make them decisive, and no test could fail on
+  // their removal.
+  const enablesMfaFactor = declaresFactor || request.EmailMfaConfiguration !== undefined;
+  const mfaConfiguration = properties['MfaConfiguration'] as UserPoolMfaType | undefined;
+  request.MfaConfiguration = mfaConfiguration ?? (enablesMfaFactor ? 'OPTIONAL' : 'OFF');
+
+  // Warn about a factor declaration that enables nothing — AFTER the line
+  // above, so the message can state the value actually being sent instead of
+  // predicting it. Predicting is how the earlier version came to lie: it
+  // claimed "left at OPTIONAL so AWS rejects the call" even when an explicit
+  // `MfaConfiguration: OFF` in the template made the request OFF, which AWS
+  // ACCEPTS — the one branch where the pool really does deploy with MFA off.
+  //
+  // Warn rather than throw for an unrecognized SPELLING: that set is a
+  // hardcoded mirror of an AWS enum, so refusing would break a valid template
+  // the day AWS adds a factor. cdkd would still not know the new factor's
+  // sub-block, so the entry is dropped either way -- the warning is what makes
+  // that visible, since the outcome varies (AWS refuses when nothing else is
+  // enabled, but accepts and ignores the entry when a sibling factor is).
+  // JSON.stringify, not `${f}` -- a non-string member would otherwise print as
+  // [object Object] and name nothing, and for the intrinsic shape this warning
+  // exists to surface (`EnabledMfas: {Ref: Param}`) that IS the likely member.
+  // The `?? String(f)` tail is defensive: JSON.stringify(undefined) returns
+  // undefined, which join() would render as an empty gap naming no entry at
+  // all. A template cannot produce an undefined member (the resolver filters
+  // AWS::NoValue out of arrays), so this guards non-template callers only --
+  // but TypeScript types JSON.stringify as returning `string`, which makes the
+  // tail look unreachable to a reader or a lint autofix. A unit test passes
+  // [undefined] directly so deleting it fails rather than going unnoticed.
+  const dropped: string[] = unrecognizedFactors.map((f) => JSON.stringify(f) ?? String(f));
+  if (enabledMfasMalformed) {
+    dropped.push(`${JSON.stringify(properties['EnabledMfas'])} (not a list)`);
+  }
+  if (dropped.length > 0) {
+    // Three outcomes, not two. Splitting only on OFF made the second arm claim
+    // a rejection that does not happen whenever a RECOGNIZED factor rides
+    // alongside the dropped entry: the request carries that factor's block, so
+    // the dropped entry is not what fails the call. That is the silent-drop
+    // case this warning exists to surface, so telling the user to expect a hard
+    // failure there is the worst of the three things it could say. The arm says
+    // a block IS SENT rather than that a factor IS ENABLED, because that is all
+    // this code knows -- e.g. SMS_MFA without SmsConfiguration sends a block
+    // AWS then rejects.
+    const anyFactorBlock =
+      request.SmsMfaConfiguration !== undefined ||
+      request.SoftwareTokenMfaConfiguration !== undefined ||
+      request.EmailMfaConfiguration !== undefined;
+    const consequence =
+      request.MfaConfiguration === 'OFF'
+        ? `MfaConfiguration is OFF, so this pool deploys with MFA DISABLED`
+        : anyFactorBlock
+          ? `MfaConfiguration is ${request.MfaConfiguration} and another factor block IS sent, ` +
+            `so these entries are silently ignored rather than failing the call on their own`
+          : `MfaConfiguration is ${request.MfaConfiguration} with no factor enabled, so AWS ` +
+            `rejects this call rather than deploying the pool with MFA disabled`;
+    logger?.warn(
+      `UserPool ${physicalId}: EnabledMfas entries ${dropped.join(', ')} do not map to an MFA ` +
+        `factor block (known: ${MFA_FACTOR_SMS}, ${MFA_FACTOR_SOFTWARE_TOKEN}, ` +
+        `${MFA_FACTOR_EMAIL_OTP}); no factor is enabled from them. ${consequence}.`
+    );
+  }
+
   return request;
 }
 
@@ -544,7 +682,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     physicalId: string,
     properties: Record<string, unknown>
   ): Promise<void> {
-    const request = buildMfaConfigRequest(physicalId, properties);
+    const request = buildMfaConfigRequest(physicalId, properties, this.logger);
     if (!request) return;
     await this.retryOnTransientControlPlane(
       () => this.getClient().send(new SetUserPoolMfaConfigCommand(request)),

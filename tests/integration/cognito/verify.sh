@@ -10,6 +10,13 @@
 #                                   -> GetUserPoolMfaConfig (per-factor blocks)
 #   - WebAuthnRelyingPartyID/UserVerification
 #                                   -> GetUserPoolMfaConfig.WebAuthnConfiguration
+# Also asserts BOTH arms of the MfaConfiguration defaulting rule (issue #1920):
+#   - PasskeyOnlyUserPool: a WebAuthn pool with NO MFA factor and NO
+#     MfaConfiguration must deploy at all (cdkd used to send OPTIONAL, which
+#     AWS rejects with no factor enabled) and land as OFF, matching CFn.
+#   - FactorDefaultUserPool: a pool that DECLARES a factor with no
+#     MfaConfiguration must still land as OPTIONAL -- the inverse regression,
+#     where the fix would silently disable MFA on a pool that asked for it.
 # Then asserts the destroy path removes the pools and the state file.
 #
 # All four properties route through the SDK CognitoUserPoolProvider (the
@@ -164,8 +171,12 @@ MFA=$(aws cognito-idp get-user-pool-mfa-config \
 # load-bearing assertion guarding the #609-review blocker fix.
 MFA_CONFIG=$(echo "${MFA}" \
   | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
-if [ "${MFA_CONFIG}" != "OPTIONAL" ] && [ "${MFA_CONFIG}" != "ON" ]; then
-  echo "FAIL: MfaConfiguration is '${MFA_CONFIG}', expected ON or OPTIONAL (pool reset to OFF would drop the factors)" >&2
+# Pinned to the EXACT templated value, not "ON or OPTIONAL": the pool declares
+# ON, while OPTIONAL is what the no-value default would produce for a pool with
+# a factor. Accepting either could not tell a threaded explicit value from a
+# fired default, so the slack is what made this assertion non-discriminating.
+if [ "${MFA_CONFIG}" != "ON" ]; then
+  echo "FAIL: MfaConfiguration is '${MFA_CONFIG}', expected exactly 'ON' (the template's explicit value; OPTIONAL here would mean the explicit value was dropped and the default fired)" >&2
   echo "${MFA}" | jq . >&2 || true
   exit 1
 fi
@@ -202,6 +213,80 @@ if [ "${WA_UV}" != "preferred" ]; then
 fi
 echo "    OK: WebAuthnRelyingPartyID + WebAuthnUserVerification landed"
 
+# --- Assertion 6: passkey-only pool defaults to OFF (issue #1920) -----
+# The deploy above is itself most of this assertion: before the fix, cdkd sent
+# MfaConfiguration=OPTIONAL for this pool, AWS rejected the
+# SetUserPoolMfaConfig call, and the post-create atomicity path deleted the
+# pool — so Phase 1 failed outright and never reached here.
+PASSKEY_POOL_ID=$(echo "${STATE}" | jq -r '.outputs.PasskeyOnlyUserPoolId // empty')
+if [ -z "${PASSKEY_POOL_ID}" ]; then
+  echo "FAIL: PasskeyOnlyUserPoolId output missing from state" >&2
+  exit 1
+fi
+echo "    Passkey-only UserPool id: ${PASSKEY_POOL_ID}"
+
+PASSKEY_MFA=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${PASSKEY_POOL_ID}" --region "${REGION}" --output json)
+
+# CloudFormation's default for MfaConfiguration is OFF. Anything else here
+# means cdkd invented a value the template never asked for.
+PASSKEY_MFA_CONFIG=$(echo "${PASSKEY_MFA}" \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+if [ "${PASSKEY_MFA_CONFIG}" != "OFF" ]; then
+  echo "FAIL: passkey-only pool MfaConfiguration is '${PASSKEY_MFA_CONFIG}', expected 'OFF' (CloudFormation's default for an omitted MfaConfiguration — issue #1920)" >&2
+  echo "${PASSKEY_MFA}" | jq . >&2 || true
+  exit 1
+fi
+echo "    OK: passkey-only MfaConfiguration == OFF"
+
+# The WebAuthn block must still land — OFF must not have cost us the config
+# the template DID ask for.
+PASSKEY_WA_RP=$(echo "${PASSKEY_MFA}" \
+  | jq -r 'if (.WebAuthnConfiguration|has("RelyingPartyId")) then .WebAuthnConfiguration.RelyingPartyId else "null" end')
+PASSKEY_WA_UV=$(echo "${PASSKEY_MFA}" \
+  | jq -r 'if (.WebAuthnConfiguration|has("UserVerification")) then .WebAuthnConfiguration.UserVerification else "null" end')
+if [ "${PASSKEY_WA_RP}" != "passkey.cdkd.example.com" ]; then
+  echo "FAIL: passkey-only WebAuthnConfiguration.RelyingPartyId is '${PASSKEY_WA_RP}', expected 'passkey.cdkd.example.com'" >&2
+  exit 1
+fi
+if [ "${PASSKEY_WA_UV}" != "required" ]; then
+  echo "FAIL: passkey-only WebAuthnConfiguration.UserVerification is '${PASSKEY_WA_UV}', expected 'required'" >&2
+  exit 1
+fi
+echo "    OK: passkey-only WebAuthn config landed under MfaConfiguration OFF"
+
+# --- Assertion 7: factor pool defaults to OPTIONAL (issue #1920) ------
+# The inverse of assertion 6, and the direction that actually matters for
+# security: a pool that DECLARES a factor but no MfaConfiguration must still
+# land as OPTIONAL. If the defaulting rule ever over-reaches to OFF here, MFA
+# would be silently disabled on a pool whose template asked for it.
+FACTOR_POOL_ID=$(echo "${STATE}" | jq -r '.outputs.FactorDefaultUserPoolId // empty')
+if [ -z "${FACTOR_POOL_ID}" ]; then
+  echo "FAIL: FactorDefaultUserPoolId output missing from state" >&2
+  exit 1
+fi
+echo "    Factor-default UserPool id: ${FACTOR_POOL_ID}"
+
+FACTOR_MFA=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${FACTOR_POOL_ID}" --region "${REGION}" --output json)
+
+FACTOR_MFA_CONFIG=$(echo "${FACTOR_MFA}" \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+if [ "${FACTOR_MFA_CONFIG}" != "OPTIONAL" ]; then
+  echo "FAIL: factor-default pool MfaConfiguration is '${FACTOR_MFA_CONFIG}', expected 'OPTIONAL' (a declared MFA factor must not deploy with MFA disabled — issue #1920)" >&2
+  echo "${FACTOR_MFA}" | jq . >&2 || true
+  exit 1
+fi
+
+FACTOR_SOFTWARE=$(echo "${FACTOR_MFA}" \
+  | jq -r 'if (.SoftwareTokenMfaConfiguration|has("Enabled")) then .SoftwareTokenMfaConfiguration.Enabled|tostring else "null" end')
+if [ "${FACTOR_SOFTWARE}" != "true" ]; then
+  echo "FAIL: factor-default pool SoftwareTokenMfaConfiguration.Enabled is '${FACTOR_SOFTWARE}', expected 'true'" >&2
+  echo "${FACTOR_MFA}" | jq . >&2 || true
+  exit 1
+fi
+echo "    OK: factor-default MfaConfiguration == OPTIONAL with SOFTWARE_TOKEN_MFA enabled"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -212,8 +297,14 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 assert_gone "Backfill UserPool ${POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${POOL_ID}" --region "${REGION}"
 echo "    OK: Backfill UserPool is gone"
 
+assert_gone "Passkey-only UserPool ${PASSKEY_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${PASSKEY_POOL_ID}" --region "${REGION}"
+echo "    OK: Passkey-only UserPool is gone"
+
+assert_gone "Factor-default UserPool ${FACTOR_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${FACTOR_POOL_ID}" --region "${REGION}"
+echo "    OK: Factor-default UserPool is gone"
+
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> cognito test passed (SignInPolicy #1380 / UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP-as-MFA unit-only) closed + clean destroy)"
+echo "==> cognito test passed (SignInPolicy #1380 / UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP-as-MFA unit-only) / MfaConfiguration defaulting both arms OFF+OPTIONAL #1920 closed + clean destroy)"
