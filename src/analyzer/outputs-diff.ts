@@ -259,6 +259,12 @@ export async function resolveTemplateOutputs(
    */
   const recordFailure = (outputKey: string, output: TemplateOutput): void => {
     failedKeys.add(outputKey);
+    // Only a LITERAL alias can be named. An INTRINSIC `Export.Name` on a failed
+    // output has no resolved string to record, so if state holds that alias it
+    // still reads as a phantom REMOVE. Accepted rather than worked around: the
+    // name is genuinely unknowable here, and `failedKeys` feeds ONLY the
+    // suppression-warning filter — never a rendered row — so the worst outcome
+    // is one spurious warning line, not a wrong diff.
     if (typeof output.Export?.Name === 'string') failedKeys.add(output.Export.Name);
   };
 
