@@ -187,6 +187,22 @@ One consequence of neutralising rather than deleting is that a pattern needing a
 
 See `feedback_cross_agent_main_tree_contention.md` for the full session history that motivated the cwd-awareness; cdkd#562 for the original line-start anchoring fix to `check-gate.sh`, and cdkd#1455 for its replacement.
 
+## Cross-repo delegation (issue 1961)
+
+Resolving the target working tree (the "cwd-aware" section above) fixed WHERE a gate looks. It did not fix WHOSE RULES apply. The hooks a session runs come from one repo's `.claude/settings.json` — whichever repo the session started in — and they fire on every Bash call, including commands whose target is a different repository. So the marker lookup ends up target-correct while the policy around it stays session-correct, and the two disagree exactly when the repos' gate scripts have diverged. They have: cdkd carries 35 gates, cdk-local 17, cdk-real-drift 10, each evolved separately.
+
+Seen twice on 2026-08-18 while landing the markgate `hash: diff` adoption across three repos. A `gh pr create` for cdk-real-drift was refused by **cdkd's** copy of `verify-pr-gate`; feeding the same payload to both copies settled it — cdk-real-drift's own hook answered `PR diff touches no src/** (docs/tooling-only) — exempt` and exited 0, while cdkd's copy, which has no such exemption, exited 2. Both times the agent correctly refused to route around the block and hand-ran the target repo's checklist instead: right behavior, pure waste, since the target's own policy had already exempted the change.
+
+`lib/foreign-repo.sh` provides `hook_delegate_if_foreign <target_dir> <hook_basename> <payload>`, called by all 24 gates that resolve a target dir, immediately after resolution completes. When the target is a different repo that ships its own copy of that gate, the payload is piped to it and its exit status becomes the gate's. Otherwise the caller proceeds with its own policy.
+
+**Why delegation and not an early exit.** "Exit 0 when the target is foreign" is the obvious fix and it is wrong, for a reason easy to miss: the foreign repo's hooks are NOT registered in this session. Silencing our copy leaves the command with no gate at all — on the two incidents above that would have skipped the `verify-pr` requirement rather than applying the wrong one, which is strictly weaker than the status quo. Delegation is the only shape that is never weaker than not having the file: correct policy when a counterpart exists, today's behavior (plus a stderr note) when it does not.
+
+Identity is compared by **git common dir**, not by toplevel. Two worktrees of one repo have different toplevels and a single common dir, and gate work legitimately runs from `.claude/worktrees/<branch>/` against the main tree — a toplevel comparison would have called that foreign and delegated to the same repo's own hook for no reason.
+
+Failure directions are all set to fall back rather than to pass: an unknown repo on either side, a missing counterpart, a non-executable counterpart, and an unrunnable one (exit 126/127, which is "could not run" and not a verdict) each return control to the caller's own policy. `CDKD_HOOK_DELEGATED=1` is set on the delegated call so a counterpart that also carries the helper cannot hop again. A missing or unloadable library degrades to exactly the pre-1961 behavior, so the gate never opens because the helper broke.
+
+Smoke test at `.claude/hooks/lib/foreign-repo.test.sh` (13 cases against real throwaway repos and a real `git worktree` — the decision is what `git rev-parse --git-common-dir` reports, so a git mock would only be testing the mock).
+
 ## Uncommitted-work safety (multi-session)
 
 Two hooks added after the 2026-08-09 two-sessions-one-worktree incident: two sessions both drove `.claude/worktrees/fix-1387-globaltable-gsi-throughput`, and the second one found ~228 lines of uncommitted changes it had not written, could not attribute them, and ran `git checkout --` on the two files. Those lines were the first session's finished, tested provider fix plus its regression tests. `git checkout --` writes no reflog entry and creates no stash, so nothing in git held a copy; the work survived only because the reverting session happened to save a diff by hand first. Both sessions then serialized their remaining lanes behind each other to avoid a repeat.

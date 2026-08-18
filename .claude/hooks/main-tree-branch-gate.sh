@@ -105,6 +105,21 @@ if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
   target_dir="$c_target"
 fi
 
+# Cross-repo delegation (issue 1961). The hooks a session runs come from
+# ONE repo's settings, but they fire on every Bash call -- including
+# commands whose target is a different repository. When that target ships
+# its own copy of this gate, that copy decides; ours must not impose a
+# policy the target never adopted. Falls back to this repo's policy (with
+# a stderr note) when the target has no counterpart, and degrades to
+# exactly today's behaviour if the library is missing -- never weaker.
+__fr_dir="${BASH_SOURCE[0]%/*}"
+[ "$__fr_dir" = "${BASH_SOURCE[0]}" ] && __fr_dir="."
+# shellcheck source=lib/foreign-repo.sh
+if . "$__fr_dir/lib/foreign-repo.sh" 2>/dev/null \
+   && declare -F hook_delegate_if_foreign >/dev/null; then
+  hook_delegate_if_foreign "$target_dir" "${BASH_SOURCE[0]##*/}" "$input" || true
+fi
+
 # Is the target dir the main worktree (= the top-level of the
 # shared .git directory)? `git rev-parse --show-toplevel` returns
 # the current worktree's top — which differs between the main
