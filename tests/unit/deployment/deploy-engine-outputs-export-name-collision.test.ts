@@ -148,6 +148,18 @@ function resolveWithSecrets(
   if (Array.isArray(value)) return value.map((v) => resolveWithSecrets(v, ctx));
   if (value && typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>);
+    // `Fn::Join` resolves its parts AS IT GOES — the real resolver runs them
+    // through `Promise.all`, so an earlier part can record and cache before a
+    // later one rejects. `__THROW__` is that later part.
+    if (entries.length === 1 && entries[0]![0] === 'Fn::Join') {
+      const [sep, parts] = entries[0]![1] as [string, unknown[]];
+      const resolved: string[] = [];
+      for (const part of parts) {
+        if (part === '__THROW__') throw new Error('deliberate resolve failure (sibling element)');
+        resolved.push(String(resolveWithSecrets(part, ctx)));
+      }
+      return resolved.join(sep);
+    }
     // `Fn::Sub` collapses an OBJECT source leaf to a STRING — the shape that
     // makes an `Export.Name` intrinsic able to carry secret plaintext into a key.
     if (entries.length === 1 && entries[0]![0] === 'Fn::Sub' && typeof entries[0]![1] === 'string') {
@@ -604,6 +616,12 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     expect(refusals).toHaveLength(1);
     expect(refusals[0]).not.toContain(PLAINTEXT_A);
     expect(refusals[0]).not.toContain(PLAINTEXT_SHORT);
+    // Positively assert the name was RENDERED masked. Without this a mask that
+    // matches nothing passes every negative assertion — the builder suppresses
+    // the name when masking changed nothing, so "no plaintext" is satisfied by
+    // printing no name at all, and the useful half of the message is lost
+    // silently.
+    expect(refusals[0]).toContain('***-and-***');
     expect(Object.keys(saved)).toEqual(['SecretBeta']);
   });
 
@@ -629,6 +647,29 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     expect(JSON.stringify(indexed)).not.toContain(PLAINTEXT_UNPINNED);
     // Redacted onto the expression that produced it, not merely dropped.
     expect(saved['Later']).toBe(`v-${EXPR_UNPINNED}`);
+  });
+
+  it('a THROWING export-name resolve still keeps what it recorded before throwing', async () => {
+    // The escape the `finally` exists for, and the third round in a row this
+    // class of bug shipped: the resolver records and caches AS IT GOES, so an
+    // `Fn::Join` whose first element resolves a secret and whose second rejects
+    // leaves the module-global cache WARM. Merge the map only on the success
+    // path and that recording is lost — the later output cache-hits, its hit arm
+    // re-records only what it can still prove is secret (an unpinned ssm
+    // reference cannot be, #1901), and its plaintext is persisted.
+    const { saved, savedStateJson } = await deployOutputs({
+      Exporter: {
+        Value: PUBLIC_A,
+        Export: { Name: { 'Fn::Join': ['', [EXPR_UNPINNED, '__THROW__']] } as never },
+      },
+      Later: { Value: { 'Fn::Sub': `v-${EXPR_UNPINNED}` } as never },
+    });
+
+    expect(savedStateJson).not.toContain(PLAINTEXT_UNPINNED);
+    expect(saved['Later']).toBe(`v-${EXPR_UNPINNED}`);
+    // The throwing output itself is dropped (warn-and-continue), which is the
+    // pre-existing behavior and not what this case is about.
+    expect(saved['Exporter']).toBeUndefined();
   });
 
   it('a LITERAL export name equal to a recorded secret is refused too', async () => {
@@ -661,6 +702,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     const refusals = warnings().filter((w) => w.includes('Export.Name that resolves'));
     expect(refusals).toHaveLength(1);
     expect(refusals[0]).not.toContain('with-a-long-tail');
+    expect(refusals[0]).toContain('***-***');
     expect(Object.keys(saved)).toEqual(['SecretBeta']);
   });
 

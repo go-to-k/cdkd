@@ -36,6 +36,7 @@ import {
   exportAliasCollisionScrubWarning,
   isExportAliasCollision,
   secretBearingStateKeyWarning,
+  stateKeySecretExposure,
 } from '../../deployment/outputs-export-alias.js';
 
 /**
@@ -43,7 +44,9 @@ import {
  * Only thrown under `--dry-run --fail`; carries no message (the plan was
  * already printed) and maps to a non-zero exit so CI can gate on it.
  */
-class ScrubNeededError extends CdkdError {
+// Exported alongside `scrubCommand` so a test can assert the CI gate fails on
+// the exact error type the CLI maps to a non-zero exit, rather than on any throw.
+export class ScrubNeededError extends CdkdError {
   readonly silent: boolean = true;
 
   constructor() {
@@ -108,7 +111,10 @@ interface ScrubOptions {
  * the rotation, but to remove it, redeploy the stack (which rewrites the record
  * with the expression).
  */
-async function scrubCommand(stacks: string[], options: ScrubOptions): Promise<void> {
+// Exported for tests: the `--dry-run --fail` CI gate lives in this function, not
+// in `scrubStack`, so pinning it at the helper's return value proves nothing
+// about whether a finding actually fails the build (issue #1919 review).
+export async function scrubCommand(stacks: string[], options: ScrubOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
   warnIfDeprecatedRegion(options);
@@ -178,6 +184,12 @@ async function scrubCommand(stacks: string[], options: ScrubOptions): Promise<vo
   const lockManager = new LockManager(stateS3.s3, stateConfig);
 
   let totalStacksScrubbed = 0;
+  // Counted SEPARATELY from the stacks actually rewritten. A key-holding-
+  // plaintext finding is a finding the command cannot remedy (issue #1919), and
+  // folding it into the scrubbed count made the summary claim a remediation it
+  // had not performed — the same invariant the export-name warning enforces:
+  // a message must never assert what it did not do.
+  let totalStacksWithUnscrubbableKeys = 0;
 
   for (const stack of targetStacks) {
     const stackRegion = stack.region || region;
@@ -196,30 +208,41 @@ async function scrubCommand(stacks: string[], options: ScrubOptions): Promise<vo
         `${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${scrubbed.recordsChanged} resource record(s) ` +
           `in ${stack.stackName}`
       );
-    } else if (scrubbed.secretBearingKeys > 0) {
-      // A leak this command cannot remedy still counts as a finding — the CI
+    } else if (scrubbed.secretBearingKeys === 0) {
+      logger.info(`No plaintext secrets found in ${stack.stackName}`);
+    }
+    if (scrubbed.secretBearingKeys > 0) {
+      // A leak this command cannot remedy still counts as a FINDING — the CI
       // gate below must not call a state clean while `state.json` holds
-      // plaintext in an output KEY (issue #1919). No state is written: the
-      // remedy is a template change, named in the warning already logged.
-      totalStacksScrubbed++;
-      logger.info(
+      // plaintext in an output KEY (issue #1919) — but never as a scrub. No
+      // state is written for it: the remedy is a template change, named in the
+      // warning already logged. Reported outside the if/else above because a
+      // stack can both hold scrubbable records AND carry such a key.
+      totalStacksWithUnscrubbableKeys++;
+      logger.warn(
         `${scrubbed.secretBearingKeys} output KEY(s) in ${stack.stackName} hold plaintext and CANNOT be scrubbed — ` +
           `rename the Export.Name and redeploy (see the warning above).`
       );
-    } else {
-      logger.info(`No plaintext secrets found in ${stack.stackName}`);
     }
   }
 
-  if (totalStacksScrubbed === 0) {
+  if (totalStacksScrubbed === 0 && totalStacksWithUnscrubbableKeys === 0) {
     logger.info('\nNo plaintext secrets found in any target stack state. Nothing to scrub.');
     return;
   }
 
+  // Named separately in every summary line below, so the count that says
+  // "scrubbed" only ever covers state this command actually rewrote.
+  const keyNote =
+    totalStacksWithUnscrubbableKeys > 0
+      ? ` ${totalStacksWithUnscrubbableKeys} stack(s) hold plaintext in an output KEY, which cdkd scrub ` +
+        `cannot rewrite — rename that output's Export.Name and redeploy.`
+      : '';
+
   if (options.dryRun) {
     logger.info(
       `\nPlan: ${totalStacksScrubbed} stack(s) hold plaintext secrets and would be scrubbed ` +
-        `(--dry-run, no state written). ROTATE any exposed secret in Secrets Manager.`
+        `(--dry-run, no state written).${keyNote} ROTATE any exposed secret in Secrets Manager.`
     );
     if (options.fail) throw new ScrubNeededError();
     return;
@@ -227,9 +250,9 @@ async function scrubCommand(stacks: string[], options: ScrubOptions): Promise<vo
 
   logger.info(
     `\nDone: scrubbed ${totalStacksScrubbed} stack(s). ` +
-      `The plaintext is no longer stored, but a value that was ever persisted should be ` +
+      `The plaintext is no longer stored there, but a value that was ever persisted should be ` +
       `treated as compromised — ROTATE it in Secrets Manager (scrub matches the current ` +
-      `value, so scrub BEFORE rotating).`
+      `value, so scrub BEFORE rotating).${keyNote}`
   );
 }
 
@@ -350,7 +373,13 @@ export async function scrubStack(
     //    does not, and in the corrupted-legacy case — the case it exists for —
     //    the alias may well have WON the key. So the key falls to the VALUE
     //    scan, which reads the plaintext actually stored and maps it back to
-    //    the expression that produced it. That is the pre-#1910 behavior, which
+    //    the expression that produced it — as far as a value scan can, which is
+    //    exactly: a WHOLE-value match always, and an EMBEDDED one only for
+    //    secrets at or above `secret-redaction`'s minimum needle length. A
+    //    short secret embedded in a longer stored value therefore survives this
+    //    fallback, and the stack is reported clean; that bound is the value
+    //    scan's, not this rule's, but this rule is what exposes the key to it.
+    //    That is the pre-#1910 behavior, which
     //    for this key is what the issue calls "weaker but not wrong: it
     //    returned an expression that at least resolved to the value it
     //    replaced". The residual it accepts is stated exactly, because an
@@ -478,12 +507,17 @@ export async function scrubStack(
     // here would be worse than leaving it, and for the template-side remedy.
     // Counted so a state that leaks only through a key cannot be reported clean
     // by `--dry-run --fail`.
-    const recordedPlaintexts = [...outputSecrets.keys()];
-    const secretBearingKeys = Object.keys(state.outputs).filter((key) =>
-      recordedPlaintexts.some((plaintext) => key.includes(plaintext))
-    );
-    for (const key of secretBearingKeys) {
-      logger.warn(secretBearingStateKeyWarning(stack.stackName, key, outputSecrets));
+    // `state.outputs ?? {}`: every other consumer treats the field as optional
+    // (`export-index-store.ts`, `state.ts`, `nested-stack-provider.ts`) and so
+    // does this function's own redaction call below, so indexing it directly
+    // would make the REMEDIATION command throw on a state file that simply has
+    // no outputs — refusing to scrub the resources it could have scrubbed.
+    const secretBearingKeys: string[] = [];
+    for (const key of Object.keys(state.outputs ?? {})) {
+      const exposure = stateKeySecretExposure(key, outputSecrets);
+      if (!exposure) continue;
+      secretBearingKeys.push(key);
+      logger.warn(secretBearingStateKeyWarning(stack.stackName, key, exposure));
     }
 
     const totalSecrets =

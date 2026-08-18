@@ -559,7 +559,26 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
   });
 
   it('deploy still skips a condition-false output', () => {
-    expect(source).toMatch(/output\.Condition !== undefined && conditions\?\.\[output\.Condition\] === false/);
+    // The predicate MOVED (issue #1919): the deploy engine now shares it with
+    // `cdkd scrub` through `outputs-export-alias.ts`, because the outputs bag
+    // has two key writers that must agree about which outputs are published.
+    // Behavior is unchanged — `outputs-diff.ts:283` still spells it inline, and
+    // this fence still watches exactly that parity — so the fence follows the
+    // predicate rather than being relaxed. BOTH halves are asserted: the rule
+    // itself, and that the deploy engine still calls it. Either one moving on
+    // its own is drift, and the single grep this replaces could only see the
+    // first.
+    const rules = readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../../src/deployment/outputs-export-alias.ts'
+      ),
+      'utf8'
+    );
+    expect(rules).toMatch(
+      /output\.Condition !== undefined && conditions\?\.\[output\.Condition\] === false/
+    );
+    expect(source).toContain('isOutputSuppressedByCondition(output, conditions)');
   });
 
   it('deploy still DEFINES its failure signal as an undefined bag value', () => {

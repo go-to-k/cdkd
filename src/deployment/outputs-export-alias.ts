@@ -45,6 +45,14 @@
  * - A `Ref` to a `NoEcho` PARAMETER substituted into an export name is recorded
  *   nowhere: `NoEcho` is outside cdkd's dynamic-reference secret model
  *   entirely, so nothing here can see it.
+ * - Resolutions that run BEFORE any bag is built — parameter defaults and
+ *   condition evaluation, in both the deploy engine and `cdkd scrub` — record
+ *   into a map their caller discards. They still WARM the resolver's cache, so
+ *   an unpinned ssm reference first reached from a parameter Default or a
+ *   `Conditions` entry is invisible to every later bag. Merging those maps into
+ *   an outputs / resource bag would be the cross-contamination the per-bag
+ *   design exists to prevent, so the fix belongs on the resolver's cache-hit
+ *   arm (i.e. with #1901's classification), not here. Named rather than closed.
  * - The refusal errs the other way for `Fn::Select` / `Fn::Split`, whose
  *   DISCARDED elements are still resolved: a secret in an unused element lands
  *   in the name's map and suppresses a working export. Fail-safe and warned, so
@@ -171,7 +179,11 @@ export function isExportAliasCollision(
  *
  * `recordedThisPass` adds one exact backstop: a name whose WHOLE value equals a
  * recorded secret. That covers a LITERAL `Export.Name` spelling out a value
- * that is a secret elsewhere in the template, where nothing was substituted.
+ * that is a secret elsewhere in the template, where nothing was substituted —
+ * with the ORDER caveat that "elsewhere" means an output iterated EARLIER, the
+ * only ones whose resolution has happened by the time this runs. A literal name
+ * matching a secret first resolved by a LATER output is not caught, and cannot
+ * be without resolving the whole template before deciding anything.
  *
  * No empty-string special case, in either map: the resolver never records an
  * empty secret (`secret-redaction.ts` states it — an empty needle would match
@@ -188,6 +200,45 @@ export function exportNameSecretExposure(
   if (wholeValue !== undefined) exposure.set(exportName, wholeValue);
   return exposure.size > 0 ? exposure : undefined;
 }
+
+/**
+ * Secrets visible in a state KEY, or `undefined` when there are none.
+ *
+ * Unlike {@link exportNameSecretExposure} there is no resolution to attribute
+ * this to: the key was written by an EARLIER binary, so containment is the only
+ * available signal. It is therefore bounded the same way `secret-redaction`
+ * bounds its own substring scan — a value shorter than {@link MIN_KEY_NEEDLE}
+ * is matched only as the WHOLE key — because an unbounded containment scan over
+ * a degenerate short secret flags every key in the state and fails the
+ * `--dry-run --fail` CI gate repo-wide, which is the availability failure the
+ * export-name check was redesigned to avoid.
+ *
+ * The bound's cost is stated rather than hidden: a secret of three characters
+ * or fewer EMBEDDED in a longer key goes unreported. That value is
+ * indistinguishable from coincidence here, and the same bound already applies
+ * to every substring redaction cdkd performs.
+ */
+export function stateKeySecretExposure(
+  key: string,
+  secrets: RecordedSecretValues
+): RecordedSecretValues | undefined {
+  const exposure: RecordedSecretValues = new Map();
+  for (const [plaintext, expression] of secrets) {
+    if (plaintext === '') continue;
+    if (key === plaintext || (plaintext.length >= MIN_KEY_NEEDLE && key.includes(plaintext))) {
+      exposure.set(plaintext, expression);
+    }
+  }
+  return exposure.size > 0 ? exposure : undefined;
+}
+
+/**
+ * Mirrors `secret-redaction`'s own `MIN_NEEDLE_LENGTH`. Duplicated rather than
+ * exported from there because the two bounds answer different questions and
+ * should be free to diverge: that one bounds what may be REWRITTEN, this one
+ * bounds what may be REPORTED.
+ */
+const MIN_KEY_NEEDLE = 4;
 
 /**
  * Replace EVERY occurrence of every exposed secret with the mask.

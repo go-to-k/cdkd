@@ -27,15 +27,49 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { StackState } from '../../../../src/types/state.js';
 import type { CloudFormationTemplate, TemplateOutput } from '../../../../src/types/resource.js';
 
+const commandLogger = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  setLevel: vi.fn(),
+}));
 vi.mock('../../../../src/utils/logger.js', () => ({
-  getLogger: () => ({
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    setLevel: vi.fn(),
-    child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
-  }),
+  getLogger: () => ({ ...commandLogger, child: () => commandLogger }),
+}));
+
+// The command-level mocks below exist for ONE test — the `--dry-run --fail`
+// gate — and are inert for every `scrubStack` case, which is handed its
+// backend, lock manager and logger directly.
+const synthStacks = vi.hoisted(() => [] as unknown[]);
+const commandStateBackend = vi.hoisted(() => ({
+  getState: vi.fn(),
+  saveState: vi.fn().mockResolvedValue('etag-2'),
+}));
+vi.mock('../../../../src/synthesis/synthesizer.js', () => ({
+  Synthesizer: vi.fn().mockImplementation(() => ({
+    synthesize: vi.fn().mockImplementation(() => Promise.resolve({ stacks: synthStacks })),
+    expandMacrosForStacks: vi.fn().mockResolvedValue(undefined),
+  })),
+  synthesisStatusMessage: () => 'synthesizing',
+}));
+vi.mock('../../../../src/cli/config-loader.js', () => ({
+  resolveApp: () => 'node app.js',
+  resolveStateBucketWithDefault: () => Promise.resolve('cdkd-state-bucket'),
+}));
+vi.mock('../../../../src/utils/aws-clients.js', () => ({
+  AwsClients: vi.fn().mockImplementation(() => ({ s3: {} })),
+  setAwsClients: vi.fn(),
+}));
+vi.mock('../../../../src/utils/role-arn.js', () => ({ applyRoleArnIfSet: vi.fn() }));
+vi.mock('../../../../src/state/s3-state-backend.js', () => ({
+  S3StateBackend: vi.fn().mockImplementation(() => commandStateBackend),
+}));
+vi.mock('../../../../src/state/lock-manager.js', () => ({
+  LockManager: vi.fn().mockImplementation(() => ({
+    acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
+    releaseLock: vi.fn().mockResolvedValue(undefined),
+  })),
 }));
 
 const PUBLIC_VALUE = 'alpha-public-endpoint';
@@ -61,6 +95,11 @@ const TWIN_EXPR = '{{resolve:secretsmanager:gamma:SecretString:password:AWSCURRE
 const UNPINNED_PLAINTEXT = 'unpinned-securestring-value';
 const UNPINNED_EXPR = '{{resolve:ssm:/p/unclassifiable}}';
 const alreadyRecorded = vi.hoisted(() => new Set<string>());
+// A degenerate SHORT secret, below the substring bound. Real secrets are longer;
+// this one exists to prove an unbounded containment scan over state KEYS would
+// flag unrelated keys and fail the CI gate repo-wide.
+const TINY_PLAINTEXT = 'abc';
+const TINY_EXPR = '{{resolve:secretsmanager:tiny:SecretString:pin:AWSCURRENT}}';
 
 /** Conditions scrub's best-effort re-evaluation returns; per-test knob. */
 const conditionValues: { value: Record<string, boolean> } = { value: {} };
@@ -88,6 +127,10 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
           if (v === OWNER_EXPR) {
             record(OWNER_PLAINTEXT, OWNER_EXPR);
             return OWNER_PLAINTEXT;
+          }
+          if (v === TINY_EXPR) {
+            record(TINY_PLAINTEXT, TINY_EXPR);
+            return TINY_PLAINTEXT;
           }
           if (v === UNPINNED_EXPR) {
             record(UNPINNED_PLAINTEXT, UNPINNED_EXPR);
@@ -126,7 +169,7 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
   })),
 }));
 
-import { scrubStack } from '../../../../src/cli/commands/scrub.js';
+import { scrubStack, scrubCommand, ScrubNeededError } from '../../../../src/cli/commands/scrub.js';
 import { exportAliasCollisionScrubWarning } from '../../../../src/deployment/outputs-export-alias.js';
 
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -403,6 +446,126 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     );
   });
 
+  it('an intrinsic name resolving to a NON-STRING also makes the bag untrusted', async () => {
+    // The other arm of the same rule, and the one the throw case cannot pin: a
+    // resolution that SUCCEEDS but does not yield a string is equally a name
+    // scrub cannot reproduce. Without this arm the flag is only set by the
+    // catch, so a template whose export name resolves to a list silently keeps
+    // a source bag that positions the deploy-written key by the wrong output.
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ PublicAlpha: SECRET_PLAINTEXT, SecretBeta: SECRET_PLAINTEXT }),
+      etag: 'etag-1',
+    });
+
+    const { saved } = await scrub({
+      PublicAlpha: { Value: OWNER_EXPR },
+      SecretBeta: {
+        Value: SECRET_EXPR,
+        // Resolves to an OBJECT (the mock walks it and returns a map), not a string.
+        Export: { Name: { 'Fn::GetAtt': ['Res', 'Arn'] } as never },
+      },
+    });
+
+    expect(saved!.outputs['PublicAlpha']).toBe(SECRET_EXPR);
+  });
+
+  it('a state with NO outputs field is still scrubbed rather than throwing', async () => {
+    // Every other consumer treats `outputs` as optional, and so does this
+    // function's own redaction call — so indexing it directly made the
+    // REMEDIATION command throw on a state file that simply has none, refusing
+    // to scrub the resources it could have scrubbed.
+    const stateWithoutOutputs = {
+      version: 8,
+      region: 'us-east-1',
+      stackName: 'MyStack',
+      resources: {
+        Fn: {
+          physicalId: 'my-fn',
+          resourceType: 'AWS::Lambda::Function',
+          properties: { Secret: SECRET_PLAINTEXT },
+        },
+      },
+      lastModified: 0,
+    } as unknown as StackState;
+    stateBackend.getState.mockResolvedValue({ state: stateWithoutOutputs, etag: 'etag-1' });
+
+    const res = await scrubStack(
+      {
+        stackName: 'MyStack',
+        template: {
+          Resources: { Fn: { Type: 'AWS::Lambda::Function', Properties: { Secret: SECRET_EXPR } } },
+          Outputs: {},
+        },
+      } as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      { dryRun: false, logger: logger as never }
+    );
+
+    expect(res.recordsChanged).toBeGreaterThan(0);
+    const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.resources['Fn']!.properties['Secret']).toBe(SECRET_EXPR);
+  });
+
+  it('the KEY scan is BOUNDED: a degenerate short secret does not flag unrelated keys', async () => {
+    // An unbounded containment scan over keys turns a three-character recorded
+    // secret into a repo-wide `--dry-run --fail` failure: every key containing
+    // those characters is reported as leaking. That is the availability failure
+    // the export-name check was redesigned to avoid, and the same discipline
+    // applies here — below the substring bound only a WHOLE-key match counts.
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ MyabcExport: 'unrelated-value', Tiny: TINY_PLAINTEXT }),
+      etag: 'etag-1',
+    });
+
+    const res = await scrubStack(
+      makeStackInfo({ Tiny: { Value: TINY_EXPR } }) as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      { dryRun: true, logger: logger as never }
+    );
+
+    expect(res.secretBearingKeys).toBe(0);
+    // The VALUE still is remediated — the bound applies to key REPORTING only.
+    expect(res.recordsChanged).toBeGreaterThan(0);
+  });
+
+  it('CI GATE: --dry-run --fail exits non-zero on a KEY-only finding', async () => {
+    // The wiring this field exists for. `scrubStack`'s return value proves
+    // nothing on its own: the verdict, the message and the throw all live in
+    // `scrubCommand`, and pinning only the helper leaves "does a finding fail
+    // the build?" unverified — which is the entire point of reporting a key
+    // that cannot be scrubbed.
+    synthStacks.length = 0;
+    synthStacks.push(
+      makeStackInfo({
+        Exporter: {
+          Value: PUBLIC_VALUE,
+          Export: { Name: { 'Fn::Sub': `pre-${UNPINNED_EXPR}` } as never },
+        },
+        Leaky: { Value: UNPINNED_EXPR },
+      })
+    );
+    // State whose RECORDS are clean — only the KEY holds plaintext, so nothing
+    // is scrubbable and the pre-#1919 verdict would have been "clean".
+    commandStateBackend.getState.mockResolvedValue({
+      state: makeState({ [`pre-${UNPINNED_PLAINTEXT}`]: 'some-value' }),
+      etag: 'etag-1',
+    });
+
+    await expect(
+      scrubCommand([], { output: 'cdk.out', statePrefix: 'cdkd', dryRun: true, fail: true } as never)
+    ).rejects.toBeInstanceOf(ScrubNeededError);
+
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+    const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+    // The summary must not claim a remediation it did not perform.
+    expect(summary).toContain('cannot rewrite');
+    expect(summary).not.toContain('Would scrub 1');
+  });
+
   it('THE OTHER COST: two DISTINCT secrets sharing one plaintext can name the wrong one', async () => {
     // Stated because an earlier revision of this rationale called the fallback's
     // residual a lost precision bound. It is not: the value map is keyed by
@@ -451,9 +614,14 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     );
 
     expect(res.secretBearingKeys).toBe(1);
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('holds an output KEY containing a secret')
-    );
+    const keyWarnings = logger.warn.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes('holds an output KEY containing a secret'));
+    expect(keyWarnings).toHaveLength(1);
+    // The warning is about a plaintext leak; printing the key verbatim would BE
+    // the leak, on a different reader.
+    expect(keyWarnings[0]).not.toContain(UNPINNED_PLAINTEXT);
+    expect(keyWarnings[0]).toContain('***');
     // Reported, not rewritten: dry-run writes nothing, and the key is untouched
     // in what would be written.
     expect(stateBackend.saveState).not.toHaveBeenCalled();

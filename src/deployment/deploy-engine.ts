@@ -4517,168 +4517,202 @@ export class DeployEngine {
     // on (issue #1919).
     const publishedOutputNames = collectPublishedOutputNames(template.Outputs, conditions);
 
-    for (const [outputKey, output] of Object.entries(template.Outputs)) {
-      // CFn semantics: an output whose `Condition` evaluates false is simply
-      // not created — skip it silently instead of attempting resolution
-      // (which would warn on a Ref to a condition-pruned resource and could
-      // even publish an output/export CFn would omit). Mirrors the resource
-      // side's `filterResourcesByCondition` (issue #1028; unknown condition
-      // names are kept, matching that helper's semantics).
-      if (isOutputSuppressedByCondition(output, conditions)) {
-        this.logger.debug(`Skipping output ${outputKey} — condition ${output.Condition} is false`);
-        continue;
-      }
-      try {
-        const value = await this.resolver.resolve(output.Value, context);
-        outputs[outputKey] = value;
+    try {
+      for (const [outputKey, output] of Object.entries(template.Outputs)) {
+        // CFn semantics: an output whose `Condition` evaluates false is simply
+        // not created — skip it silently instead of attempting resolution
+        // (which would warn on a Ref to a condition-pruned resource and could
+        // even publish an output/export CFn would omit). Mirrors the resource
+        // side's `filterResourcesByCondition` (issue #1028; unknown condition
+        // names are kept, matching that helper's semantics).
+        if (isOutputSuppressedByCondition(output, conditions)) {
+          this.logger.debug(
+            `Skipping output ${outputKey} — condition ${output.Condition} is false`
+          );
+          continue;
+        }
+        try {
+          const value = await this.resolver.resolve(output.Value, context);
+          outputs[outputKey] = value;
 
-        // If the output has an Export.Name, also store under that key
-        // so Fn::ImportValue can find it by export name
-        if (output.Export?.Name) {
-          // Resolved with its OWN `recordedSecretValues` map, not the pass's:
-          // `Fn::Sub` / `Fn::Join` substitute dynamic references, so the map
-          // tells us EXACTLY whether a secret went into THIS name — no length
-          // threshold, and no coincidental match against a sibling's secret.
-          //
-          // The isolation is for the DECISION only, and the RECORDING side
-          // effect is merged back below — do not re-isolate it. Recording is
-          // process-global in effect: the resolver caches a resolved dynamic
-          // reference, and its cache-hit arm re-records only what it can still
-          // PROVE is secret (a `secretsmanager` spelling, or a PINNED
-          // SecureString). An `ssm` reference whose `Type` came back
-          // unclassifiable is deliberately never pinned (issue #1901), so if
-          // this resolution is the FIRST to touch it and its record dies here,
-          // a LATER output resolving the same reference cache-hits, records
-          // nothing, and its plaintext is persisted — a regression against the
-          // shared-context behavior this replaced.
-          const nameSecrets: RecordedSecretValues = new Map();
-          const exportName =
-            typeof output.Export.Name === 'string'
-              ? output.Export.Name
-              : await this.resolver.resolve(output.Export.Name, {
-                  ...context,
-                  recordedSecretValues: nameSecrets,
-                });
-          // Merge what the name's resolution learned back into the PASS map.
-          // Unconditional — before the string check, because a name that
-          // resolved to a non-string warmed the resolver's cache just the same
-          // — and harmless to the decision below, which reads `nameSecrets`
-          // itself rather than this map.
-          for (const [plaintext, expression] of nameSecrets) {
-            context.recordedSecretValues?.set(plaintext, expression);
-          }
-          if (typeof exportName === 'string') {
-            // TWO refusals guard this alias, and both are about the same thing:
-            // this bag's KEYS (issue #1919).
+          // If the output has an Export.Name, also store under that key
+          // so Fn::ImportValue can find it by export name
+          if (output.Export?.Name) {
+            // Resolved with its OWN `recordedSecretValues` map, not the pass's:
+            // `Fn::Sub` / `Fn::Join` substitute dynamic references, so the map
+            // tells us EXACTLY whether a secret went into THIS name — no length
+            // threshold, and no coincidental match against a sibling's secret.
             //
-            // 1. SECRET-BEARING NAME. `Export.Name` may be an intrinsic, and
-            //    `Fn::Sub` / `Fn::Join` substitute dynamic references — so the
-            //    resolved name can contain secret PLAINTEXT. It would become a
-            //    key in `state.json` and in the exports index, and every
-            //    redaction pass walks VALUES only, so nothing downstream would
-            //    ever scrub it. Refuse rather than publish. Detected from the
-            //    name's OWN resolution map (above), so the answer is exact
-            //    rather than a containment guess; the warning masks every
-            //    occurrence and omits the name outright if it cannot, since
-            //    stderr is a reader too.
-            //
-            // 2. COLLISION with a published output NAME. Two writers key this
-            //    one bag: this alias, and the post-loop pass below that writes
-            //    the redaction POSITION source for every published output NAME.
-            //    On a collision they disagree — the alias puts THIS output's
-            //    resolved value under key `A` while the post-loop pass puts
-            //    output `A`'s UNRESOLVED value there — and `redactByPath`'s
-            //    expression arm then returns the source leaf verbatim,
-            //    persisting A's `{{resolve:...}}` expression as THIS output's
-            //    value into state and the exports index. That is the
-            //    wrong-reference class issue #1910 exists to remove, one layer
-            //    up. It is ORDER-DEPENDENT: the corruption needs the exporting
-            //    output to be iterated AFTER the colliding-name output,
-            //    otherwise the latter's own write reclaims the key and only the
-            //    alias is lost.
-            //
-            //    Of the issue's two directions this takes SKIP-AND-WARN rather
-            //    than re-keying the source pass by the alias rule. Matching the
-            //    source pass to the alias's write order would keep the two bags
-            //    consistent, but it would leave `outputs[A]` holding a DIFFERENT
-            //    output's value — order-dependently — which is corruption of the
-            //    output named `A` even once its expression is right. Skipping
-            //    instead partitions the key space by construction: published
-            //    output NAMES belong to the post-loop pass, export aliases to
-            //    this one, and no key is in both.
-            //
-            //    This IS a behavior change with a consumer-visible edge, stated
-            //    plainly because the warning fires on the PRODUCER's deploy
-            //    while the effect lands on the CONSUMER's: where the alias
-            //    previously won the key, an `Fn::ImportValue` on that name now
-            //    resolves to the colliding output's value instead. CFn would
-            //    publish both (its export namespace is separate from its output
-            //    names), so this is a deliberate parity divergence — cdkd's
-            //    exports index is derived from the outputs bag and cannot hold
-            //    two values under one key. Fail-closed and warned beats a
-            //    silently wrong reference.
-            //
-            // The collision set is the PUBLISHED names, not the declared ones.
-            // A condition-suppressed output writes neither a value nor a source
-            // (see the post-loop pass), so its name is free — reserving it would
-            // drop a working export because an unrelated condition went false.
-            const exposure = exportNameSecretExposure(
-              exportName,
-              nameSecrets,
-              context.recordedSecretValues
-            );
-            if (exposure) {
-              this.logger.warn(secretBearingExportNameWarning(outputKey, exportName, exposure));
-            } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
-              this.logger.warn(exportAliasCollisionWarning(outputKey, exportName));
-            } else {
-              outputs[exportName] = value;
-              // The alias is a SECOND key holding the same value, so it needs the
-              // same POSITION source or it falls to the value scan and collapses
-              // onto a sibling's expression (issue #1910 review). This bag feeds
-              // `updateForStack`, so a collapsed alias hands a downstream
-              // `Fn::ImportValue` consumer the WRONG reference.
-              this.outputsTemplateSource[exportName] = output.Value;
+            // The isolation is for the DECISION only, and the RECORDING side
+            // effect is merged back below — do not re-isolate it. Recording is
+            // process-global in effect: the resolver caches a resolved dynamic
+            // reference, and its cache-hit arm re-records only what it can still
+            // PROVE is secret (a `secretsmanager` spelling, or a PINNED
+            // SecureString). An `ssm` reference whose `Type` came back
+            // unclassifiable is deliberately never pinned (issue #1901), so if
+            // this resolution is the FIRST to touch it and its record dies here,
+            // a LATER output resolving the same reference cache-hits, records
+            // nothing, and its plaintext is persisted — a regression against the
+            // shared-context behavior this replaced.
+            const nameSecrets: RecordedSecretValues = new Map();
+            let exportName: unknown;
+            try {
+              exportName =
+                typeof output.Export.Name === 'string'
+                  ? output.Export.Name
+                  : await this.resolver.resolve(output.Export.Name, {
+                      ...context,
+                      recordedSecretValues: nameSecrets,
+                    });
+            } finally {
+              // Merge what the name's resolution learned back into the PASS map.
+              //
+              // `finally`, and that is the load-bearing part rather than a style
+              // choice: the resolver records and caches AS IT GOES, so a
+              // resolution that records one element and then throws on the next
+              // (an `Fn::Join` whose `Promise.all` has a sibling reject) leaves
+              // the module-global cache WARM with nothing recorded here. Every
+              // later consumer then cache-hits, the hit arm re-records only what
+              // it can still prove is secret, and an unpinned ssm reference
+              // (#1901) is persisted in plaintext. Any exit that skips this merge
+              // — `throw` here, `continue`, a discarded local — reopens that hole,
+              // so the invariant is: this recording survives EVERY exit from this
+              // block. Unconditional for the same reason: a name that resolved to
+              // a non-string warmed the cache just the same.
+              for (const [plaintext, expression] of nameSecrets) {
+                context.recordedSecretValues?.set(plaintext, expression);
+              }
+            }
+            if (typeof exportName === 'string') {
+              // TWO refusals guard this alias, and both are about the same thing:
+              // this bag's KEYS (issue #1919).
+              //
+              // 1. SECRET-BEARING NAME. `Export.Name` may be an intrinsic, and
+              //    `Fn::Sub` / `Fn::Join` substitute dynamic references — so the
+              //    resolved name can contain secret PLAINTEXT. It would become a
+              //    key in `state.json` and in the exports index, and every
+              //    redaction pass walks VALUES only, so nothing downstream would
+              //    ever scrub it. Refuse rather than publish. Detected from the
+              //    name's OWN resolution map (above), so the answer is exact
+              //    rather than a containment guess; the warning masks every
+              //    occurrence and omits the name outright if it cannot, since
+              //    stderr is a reader too.
+              //
+              // 2. COLLISION with a published output NAME. Two writers key this
+              //    one bag: this alias, and the post-loop pass below that writes
+              //    the redaction POSITION source for every published output NAME.
+              //    On a collision they disagree — the alias puts THIS output's
+              //    resolved value under key `A` while the post-loop pass puts
+              //    output `A`'s UNRESOLVED value there — and `redactByPath`'s
+              //    expression arm then returns the source leaf verbatim,
+              //    persisting A's `{{resolve:...}}` expression as THIS output's
+              //    value into state and the exports index. That is the
+              //    wrong-reference class issue #1910 exists to remove, one layer
+              //    up. It is ORDER-DEPENDENT: the corruption needs the exporting
+              //    output to be iterated AFTER the colliding-name output,
+              //    otherwise the latter's own write reclaims the key and only the
+              //    alias is lost.
+              //
+              //    Of the issue's two directions this takes SKIP-AND-WARN rather
+              //    than re-keying the source pass by the alias rule. Matching the
+              //    source pass to the alias's write order would keep the two bags
+              //    consistent, but it would leave `outputs[A]` holding a DIFFERENT
+              //    output's value — order-dependently — which is corruption of the
+              //    output named `A` even once its expression is right. Skipping
+              //    instead partitions the key space by construction: published
+              //    output NAMES belong to the post-loop pass, export aliases to
+              //    this one, and no key is in both.
+              //
+              //    This IS a behavior change with a consumer-visible edge, stated
+              //    plainly because the warning fires on the PRODUCER's deploy
+              //    while the effect lands on the CONSUMER's: where the alias
+              //    previously won the key, an `Fn::ImportValue` on that name now
+              //    resolves to the colliding output's value instead. CFn would
+              //    publish both (its export namespace is separate from its output
+              //    names), so this is a deliberate parity divergence — cdkd's
+              //    exports index is derived from the outputs bag and cannot hold
+              //    two values under one key. Fail-closed and warned beats a
+              //    silently wrong reference.
+              //
+              // The collision set is the PUBLISHED names, not the declared ones.
+              // A condition-suppressed output writes neither a value nor a source
+              // (see the post-loop pass), so its name is free — reserving it would
+              // drop a working export because an unrelated condition went false.
+              const exposure = exportNameSecretExposure(
+                exportName,
+                nameSecrets,
+                context.recordedSecretValues
+              );
+              if (exposure) {
+                this.logger.warn(secretBearingExportNameWarning(outputKey, exportName, exposure));
+              } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
+                this.logger.warn(exportAliasCollisionWarning(outputKey, exportName));
+              } else {
+                outputs[exportName] = value;
+                // The alias is a SECOND key holding the same value, so it needs the
+                // same POSITION source or it falls to the value scan and collapses
+                // onto a sibling's expression (issue #1910 review). This bag feeds
+                // `updateForStack`, so a collapsed alias hands a downstream
+                // `Fn::ImportValue` consumer the WRONG reference.
+                this.outputsTemplateSource[exportName] = output.Value;
+              }
             }
           }
+        } catch (error) {
+          // Issue #1111 item 2: under --strict-getatt an unresolvable Output
+          // fails the deploy instead of silently publishing nothing (which
+          // breaks downstream Fn::ImportValue consumers with "export not
+          // found" long after this deploy exits 0).
+          if (this.options.strictGetAtt) {
+            // `cause` is load-bearing, not decoration (issue #1874 review). The
+            // non-retryable marker is a NON-ENUMERABLE symbol on the original
+            // error, so re-wrapping without a cause DROPS it — while inlining
+            // the refusal's full text, which for a resolver refusal includes
+            // template-controlled identifiers. A logical id like
+            // `MyDependencyViolationHandler` then puts `DependencyViolation`
+            // (the substring table's only whitespace-free entry) into this
+            // message, and the classifier reads it as transient. That is
+            // reachable: this throw leaves `executeDeployment`, leaves the child
+            // `deploy()`, passes through `NestedStackProvider.create`, and lands
+            // in the PARENT's `withRetry` — so a nested stack would re-run a
+            // whole child deploy plus rollback per retry on a path that can
+            // never succeed. `isMarkedNonRetryable` walks the `.cause` chain, so
+            // threading the cause preserves the marker.
+            throw new Error(
+              `Failed to resolve output ${outputKey}: ${error instanceof Error ? error.message : String(error)} ` +
+                `(--strict-getatt promotes output resolution failures to deploy errors; ` +
+                `drop the flag to warn and skip the output instead)`,
+              { cause: error }
+            );
+          }
+          this.logger.warn(`Failed to resolve output ${outputKey}: ${String(error)}`);
+          outputs[outputKey] = undefined;
         }
-      } catch (error) {
-        // Issue #1111 item 2: under --strict-getatt an unresolvable Output
-        // fails the deploy instead of silently publishing nothing (which
-        // breaks downstream Fn::ImportValue consumers with "export not
-        // found" long after this deploy exits 0).
-        if (this.options.strictGetAtt) {
-          // `cause` is load-bearing, not decoration (issue #1874 review). The
-          // non-retryable marker is a NON-ENUMERABLE symbol on the original
-          // error, so re-wrapping without a cause DROPS it — while inlining
-          // the refusal's full text, which for a resolver refusal includes
-          // template-controlled identifiers. A logical id like
-          // `MyDependencyViolationHandler` then puts `DependencyViolation`
-          // (the substring table's only whitespace-free entry) into this
-          // message, and the classifier reads it as transient. That is
-          // reachable: this throw leaves `executeDeployment`, leaves the child
-          // `deploy()`, passes through `NestedStackProvider.create`, and lands
-          // in the PARENT's `withRetry` — so a nested stack would re-run a
-          // whole child deploy plus rollback per retry on a path that can
-          // never succeed. `isMarkedNonRetryable` walks the `.cause` chain, so
-          // threading the cause preserves the marker.
-          throw new Error(
-            `Failed to resolve output ${outputKey}: ${error instanceof Error ? error.message : String(error)} ` +
-              `(--strict-getatt promotes output resolution failures to deploy errors; ` +
-              `drop the flag to warn and skip the output instead)`,
-            { cause: error }
-          );
-        }
-        this.logger.warn(`Failed to resolve output ${outputKey}: ${String(error)}`);
-        outputs[outputKey] = undefined;
       }
-    }
-
-    // Accumulate the secrets resolved while producing outputs so the outputs
-    // redaction (GHSA fix) uses only outputs-substituted references — a literal
-    // output equal to a secret is not recorded here and is not touched.
-    if (context.recordedSecretValues) {
-      for (const [value, expr] of context.recordedSecretValues) this.outputSecrets.set(value, expr);
+    } finally {
+      // Accumulate the secrets resolved while producing outputs so the outputs
+      // redaction (GHSA fix) uses only outputs-substituted references — a
+      // literal output equal to a secret is not recorded here and is not
+      // touched.
+      //
+      // `finally` for the same reason as the export-name merge above:
+      // `--strict-getatt` RETHROWS out of the loop, and everything this pass
+      // recorded before that point would otherwise be dropped while the
+      // resolver's module-global cache stays warm. Same invariant, other exit.
+      //
+      // Unlike that merge this one is DEFENSIVE, and it is labelled so rather
+      // than left looking fenced: a mutation test replacing this `finally` with
+      // a rethrow passes the whole suite, because the only consumer of
+      // `outputSecrets` is `redactOutputs`, which the throw path never reaches
+      // (`persistStateAfterOutputFailure` writes resources, not outputs). It is
+      // kept because it costs one keyword and because the NEXT consumer of this
+      // bag — a masked error message, a journal writer — would inherit the hole
+      // silently; it is not kept in the belief that a test covers it.
+      if (context.recordedSecretValues) {
+        for (const [value, expr] of context.recordedSecretValues) {
+          this.outputSecrets.set(value, expr);
+        }
+      }
     }
     // ...and the UNRESOLVED values beside them, as the POSITION source (#1910).
     // Keyed by output NAME so the walk lines up with the resolved `outputs` bag

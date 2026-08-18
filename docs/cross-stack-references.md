@@ -206,11 +206,17 @@ can know about state an EARLIER binary wrote:
 **A state KEY that already holds plaintext cannot be scrubbed.** State
 written by a pre-fix binary can carry `state.outputs["pre-<secret>"]`, and
 every redaction pass rewrites values only. `cdkd scrub` REPORTS such a key
-(and `--dry-run --fail` now fails on it) but never rewrites it: the key is
+(and `--dry-run --fail` fails on it) but never rewrites it: the key is
 the export name consumers resolve by, so renaming it would silently retire
 a live export. The remedy is a template change — give the output a
 non-secret `Export.Name` and redeploy, which replaces `state.outputs` and
-the exports index wholesale — plus rotating the exposed secret.
+the exports index wholesale — plus rotating the exposed secret. Such a
+finding is counted and reported SEPARATELY from the stacks scrub actually
+rewrote, so the summary never claims to have removed a value it could not
+reach. Reporting is bounded the same way cdkd's substring redaction is: a
+secret of three characters or fewer is matched only as a whole key, since
+an unbounded scan over so short a value flags unrelated keys and fails the
+CI gate everywhere.
 
 CDK's AUTO-generated export names cannot collide — they are of the form
 `StackName:ExportsOutputRefResourceABC123` and a `:` is not legal in a
