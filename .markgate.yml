@@ -25,10 +25,14 @@
 #   integ-destroy  — real-AWS deploy + destroy with zero orphan
 #                    resources. Set ONLY by /run-integ when the destroy
 #                    step finishes with 0 errors and the post-destroy
-#                    AWS state is empty. Carries a 14d TTL on top of
-#                    the file-scope check, so a marker stays valid only
-#                    as long as the AWS-side behavior it verified is
-#                    plausibly current. The PreToolUse hook in
+#                    AWS state is empty. Uses `hash: diff` (markgate
+#                    0.4+), so the marker tracks THIS branch's delta
+#                    against origin/main rather than the current
+#                    content of the scoped files — an unrelated change
+#                    arriving from main no longer forces a real-AWS
+#                    re-run. Carries a 14d TTL on top of that check, so
+#                    a marker stays valid only as long as the AWS-side
+#                    behavior it verified is plausibly current. The PreToolUse hook in
 #                    .claude/hooks/integ-destroy-gate.sh blocks
 #                    `gh pr merge` (and `gh pr merge --auto`) when this
 #                    gate is stale, so deletion-touching code never
@@ -137,8 +141,37 @@ gates:
     requires: [check, docs]
 
   integ-destroy:
-    hash: files
-    # Wall-clock TTL on top of the file-scope check (markgate 0.3+).
+    # `hash: diff` (markgate 0.4+) digests this branch's working-tree
+    # delta against `merge-base(origin/main, HEAD)`, restricted to the
+    # include set below — NOT the current content of those files. The
+    # difference only shows up under concurrency, which is this repo's
+    # normal state: with `hash: files`, merging main into a feature
+    # branch invalidated the marker whenever ANYONE had touched a
+    # scoped file, forcing a real-AWS re-run that proved nothing. That
+    # invalidation is a false positive by construction — every change
+    # on main already passed this same gate in its own PR. Measured
+    # over 250 merged PRs (6.3 days): 143 touched this scope, 101 of
+    # those were invalidated by another PR's merge, and 100 of the 101
+    # had zero file overlap with the incoming change.
+    #
+    # What is still caught: an in-scope edit on this branch (committed
+    # or not), and a change arriving from main to a file THIS branch
+    # also modified — the delta is taken from the merge base, so an
+    # incoming change to a shared file lands inside our own delta.
+    # What is NOT caught: cross-file interaction (main changes B, this
+    # branch changes A, a caller uses both). `hash: files` caught that
+    # incidentally; it was 1 of the 101 cases above. `integ-broad` is
+    # sentinel-bound and unaffected by this mode, so it remains the
+    # backstop for cross-cutting regressions, and the TTL below still
+    # forces a periodic real-AWS run regardless of code churn.
+    #
+    # `base` is mandatory on a diff gate and has no default: markgate
+    # deliberately refuses to fall back to `origin/HEAD`, which is
+    # frequently unset in CI clones and would make this gate mean
+    # different things locally and in CI.
+    hash: diff
+    base: origin/main
+    # Wall-clock TTL on top of the branch-delta check (markgate 0.3+).
     # Real-AWS behavior drifts even when the repo doesn't (AWS SDK
     # updates, API behavior changes, eventual-consistency tweaks); a
     # marker that's been clean for two weeks no longer proves the
@@ -149,8 +182,9 @@ gates:
     # weekly).
     ttl: 14d
     # Scope: every code path that participates in real-AWS resource
-    # destruction. Editing any of these REQUIRES a fresh `/run-integ`
-    # destroy verification before the PR can be merged. The list is
+    # destruction. Changing any of these ON THIS BRANCH requires a
+    # fresh `/run-integ` destroy verification before the PR can be
+    # merged; a change to one of them arriving from main does not. The list is
     # intentionally broad — false positives (forced extra integ runs)
     # are far cheaper than false negatives (broken destroy reaching a
     # release tag).
