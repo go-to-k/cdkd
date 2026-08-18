@@ -1654,19 +1654,29 @@ guessed — that resource's `CREATE` is already on the resource side of the diff
 — and a warning says so, so an absent section never silently means "unchanged".
 
 Because this is the only command that prints a **stored** output value, two
-safeguards apply. A previous value that is legacy secret plaintext — recognisable
-because the template side is still a `{{resolve:...}}` expression while state is
-not, exactly what [`cdkd scrub`](#cdkd-scrub) repairs — is withheld from both the
-text and `--json` output rather than printed into CI logs. And output / export
-names are stripped of control characters before display: an `Export.Name` is a
-value cdkd resolved (from an `Fn::Sub`, a parameter, an SSM lookup), so unlike a
-CloudFormation logical ID it never passed a validator and could otherwise carry
-terminal escape sequences.
+safeguards apply. A previous value that is legacy secret plaintext is withheld from
+both the text and `--json` output rather than printed into CI logs. Two signals
+identify such a record: the template side still being a `{{resolve:...}}`
+expression while state is not (exactly what [`cdkd scrub`](#cdkd-scrub) repairs),
+and the template declaring the output's value as a dynamic reference — the latter
+also covers an output that was condition-skipped or deleted, which has no
+template side left to compare. Because a record with any such key was written by
+a pre-redaction binary, the withholding applies to every previous value in that
+record; the change itself is still reported. Second, output / export names and
+rendered values are stripped of control and bidi characters before display: an
+`Export.Name` is a value cdkd resolved (from an `Fn::Sub`, a parameter, an SSM
+lookup), so unlike a CloudFormation logical ID it never passed a validator. The
+`--json` payload is deliberately left byte-faithful — it is a machine interface,
+and mutating a name a consumer matches on would be worse than the display concern
+it would avoid.
 
 Resolving `Outputs` is new work for `cdkd diff`: an output using
 `Fn::ImportValue` / `Fn::GetStackOutput` may now cost a `ListExports` /
-`DescribeStacks` call (subject to `--no-cfn-fallback`), and a `{{resolve:ssm:...}}`
-output one `GetParameter` issued with `WithDecryption: false`.
+`DescribeStacks` call (subject to `--no-cfn-fallback`), an `Fn::GetAZs` output an
+EC2 `DescribeAvailabilityZones`, a `{{resolve:ssm:...}}` output one
+`GetParameter` issued with `WithDecryption: false`, and an `Fn::GetStackOutput`
+carrying a `RoleArn` a cross-account `sts:AssumeRole` (the `RoleArn` must be a
+template literal, so it is not attacker-selectable).
 
 **Routing annotation**: every CREATE / UPDATE line whose template uses a
 top-level CFn property cdkd's SDK provider does not yet wire is tagged

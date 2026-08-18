@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import type { CloudFormationTemplate, TemplateResource } from '../../types/resource.js';
 import type { ResourceChange, StackState } from '../../types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
-import { DiffCalculator } from '../../analyzer/diff-calculator.js';
+import { DiffCalculator, INTRINSIC_KEYS } from '../../analyzer/diff-calculator.js';
 import type { CanonicalizePropertiesFn } from '../../analyzer/diff-calculator.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
@@ -336,22 +336,37 @@ export async function computeStackDiff(
   // `effectiveTemplate` mirrors the deploy engine's no-change branch. Condition
   // pruning only rewrites `Resources`, so its `Outputs` are the raw template's.
   const resolved = await resolveTemplateOutputs(effectiveTemplate, resolveFn, conditions);
-  // A partially-resolved bag reports NO delta, exactly like the deploy engine
-  // declining to persist one (`resolutionFailed` there). Being conservative in
-  // the same direction is what keeps an unchanged stack at "no changes" instead
-  // of showing a phantom the apply would never write. Nothing is lost: an output
-  // only fails to resolve because it references a resource this deploy has yet
-  // to create, and that CREATE is already on the resource side of the diff.
+  // A partially-resolved bag reports NO delta, exactly like the deploy engine's
+  // NO-CHANGE branch declining to persist one (`resolutionFailed` there). That
+  // branch is the one this preview stands in for; deploy's changed-resources
+  // branch has no such gate, correctly, because by then every resource exists.
+  // Being conservative in the same direction is what keeps an unchanged stack at
+  // "no changes" instead of showing a phantom the apply would never write.
+  // Nothing is lost: an output only fails to resolve because it references a
+  // resource this deploy has yet to create, and that CREATE is already on the
+  // resource side of the diff.
   let outputChanges: OutputChange[] = [];
   if (resolved.resolutionFailed) {
     // Surface the case where the outputs DID differ but a resolution failure
     // suppressed the report, mirroring the deploy engine's twin warning
-    // ("Outputs changed but one or more could not be resolved"). Silence here
-    // would leave "no outputs shown" ambiguous between "unchanged" and
-    // "could not be computed".
-    if (
-      computeOutputsDiff(currentState.outputs, resolved.outputs, resolved.exportNames).length > 0
-    ) {
+    // ("Outputs changed but one or more could not be resolved"). Silence would
+    // leave "no Outputs section" ambiguous between "unchanged" and "could not
+    // be computed".
+    //
+    // The failed keys are excluded first, and that exclusion is what keeps the
+    // warning meaningful. Unlike the deploy side — which keeps an unresolved key
+    // with the value `undefined` — this resolver DROPS it, so a naive diff reads
+    // every failed key as a REMOVE. Without the filter the warning would fire on
+    // the ordinary, expected case the resolver itself logs at debug (an output
+    // referencing a resource this deploy will create), including on the very
+    // first diff of a stack.
+    const wouldHaveChanged = computeOutputsDiff(
+      currentState.outputs,
+      resolved.outputs,
+      resolved.exportNames,
+      resolved.secretSourceKeys
+    ).filter((change) => !resolved.failedKeys.has(change.name));
+    if (wouldHaveChanged.length > 0) {
       logger.warn(
         `Outputs of stack ${stackName} may have changed, but one or more could not be resolved ` +
           `against current state — omitting the Outputs section from this diff. ` +
@@ -362,7 +377,8 @@ export async function computeStackDiff(
     outputChanges = computeOutputsDiff(
       currentState.outputs,
       resolved.outputs,
-      resolved.exportNames
+      resolved.exportNames,
+      resolved.secretSourceKeys
     );
   }
 
@@ -806,24 +822,6 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
   };
 }
 
-const INTRINSIC_KEYS = new Set([
-  'Ref',
-  'Fn::Sub',
-  'Fn::GetAtt',
-  'Fn::Join',
-  'Fn::Select',
-  'Fn::Split',
-  'Fn::If',
-  'Fn::ImportValue',
-  'Fn::FindInMap',
-  'Fn::Base64',
-  'Fn::GetAZs',
-  'Fn::Equals',
-  'Fn::And',
-  'Fn::Or',
-  'Fn::Not',
-]);
-
 function isIntrinsic(value: unknown): boolean {
   if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
     return false;
@@ -1024,12 +1022,20 @@ export function renderChangeLines(
 const REDACTED_LEGACY_PLAINTEXT = '<redacted: legacy plaintext in state — run `cdkd scrub`>';
 
 /**
- * Strip C0/C1 control characters (incl. ESC, so ANSI sequences cannot survive)
- * from a template-controlled string before it reaches the terminal.
+ * Strip characters that let a template-controlled string manipulate the
+ * TERMINAL rather than merely appear in it: C0 (incl. ESC, so no ANSI sequence
+ * survives), DEL, C1 (the 8-bit CSI forms some terminals still honor), and the
+ * bidi / format overrides that visually reorder a rendered line.
+ *
+ * Applied only on the human-render path. The `--json` payload is deliberately
+ * left byte-faithful: it is a machine interface, an export NAME is data a
+ * consumer may match on, and silently mutating it there would trade a real
+ * correctness regression for a display concern belonging to whatever renders
+ * the JSON. `JSON.stringify` already escapes everything below 0x20.
  */
 function stripControlChars(value: string): string {
   // eslint-disable-next-line no-control-regex
-  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
+  return value.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
 }
 
 /**
@@ -1054,8 +1060,12 @@ export function renderOutputChangeLines(
 
   logFn('\n  Outputs:');
   const indent = '            ';
+  // Values are stripped as well as names: `JSON.stringify` escapes everything
+  // below 0x20 but passes C1 and the bidi marks through unchanged.
   const render = (value: unknown): string =>
-    (JSON.stringify(value, null, 2) ?? 'undefined').replace(/\n/g, `\n${indent}`);
+    stripControlChars(
+      (JSON.stringify(value, null, 2) ?? 'undefined').replace(/\n/g, `\n${indent}`)
+    );
   const renderOld = (change: OutputChange): string =>
     change.oldValueRedacted ? REDACTED_LEGACY_PLAINTEXT : render(change.oldValue);
 

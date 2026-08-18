@@ -61,6 +61,7 @@ cfnMockSend.mockImplementation(async (cmd: { constructor: { name: string } }) =>
   throw new Error(`unexpected CloudFormation command: ${cmd.constructor.name}`);
 });
 
+import { getLogger } from '../../../src/utils/logger.js';
 import {
   buildDiffTree,
   computeStackDiff,
@@ -2063,6 +2064,58 @@ describe('Outputs-only change (issue #1921)', () => {
     expect(node.children[0]!.outputChanges).toEqual([
       { name: 'OldOut', changeType: 'REMOVE', oldValue: 'v', isExport: false },
     ]);
+  });
+
+  it('does NOT warn when the suppressed delta is only the pending output itself', async () => {
+    // The regression this pins: this resolver DROPS an unresolved key (deploy
+    // keeps it as `undefined`), so a naive diff reads it as a REMOVE and the
+    // suppression warning fires on the ordinary, expected pending-resource case
+    // -- including the first diff of a never-deployed stack.
+    const warn = vi.mocked(getLogger().warn);
+    warn.mockClear();
+    const tpl: CloudFormationTemplate = {
+      Resources: {
+        A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } },
+        New: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'y' } },
+      },
+      Outputs: { Pending: { Value: { 'Fn::GetAtt': ['New', 'Arn'] } } },
+    };
+    const { outputChanges } = await diffFor(stateWith({ Pending: 'stale' }), tpl);
+    expect(outputChanges).toEqual([]);
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    expect(messages.filter((m) => m.includes('could not be resolved'))).toEqual([]);
+  });
+
+  it('DOES warn when a genuine other-key delta was suppressed', async () => {
+    const warn = vi.mocked(getLogger().warn);
+    warn.mockClear();
+    const tpl: CloudFormationTemplate = {
+      Resources: {
+        A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } },
+        New: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'y' } },
+      },
+      Outputs: {
+        Pending: { Value: { 'Fn::GetAtt': ['New', 'Arn'] } },
+        Real: { Value: 'changed' },
+      },
+    };
+    const { outputChanges } = await diffFor(stateWith({ Real: 'was' }), tpl);
+    expect(outputChanges).toEqual([]);
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => m.includes('could not be resolved'))).toBe(true);
+  });
+
+  it('strips control characters from rendered VALUES too, not just names', () => {
+    // JSON.stringify escapes everything below 0x20 but passes C1 and the bidi
+    // marks through unchanged.
+    const lines: string[] = [];
+    renderOutputChangeLines(
+      [{ name: 'Out', changeType: 'ADD', newValue: 'a\u009bBb\u202Ec', isExport: false }],
+      (m) => lines.push(m)
+    );
+    const out = lines.join('\n');
+    expect(out).not.toContain('\u009b');
+    expect(out).not.toContain('\u202e');
   });
 
   it('renders nothing for an empty Outputs delta', () => {

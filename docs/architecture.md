@@ -338,25 +338,40 @@ break a consumer — was hidden the same way.
   It flags `undefined` (the same signal — `resolve` returns it *without*
   throwing for a constructible-but-unknown attribute such as
   `AWS::DynamoDB::Table.StreamArn`), a symbol (`Ref: AWS::NoValue` selected at
-  top level), a surviving intrinsic object, and an unsubstituted `${...}` string
+  top level), a surviving intrinsic object, and — only for a value whose raw
+  template source actually used `Fn::Sub` — an unsubstituted `${...}` string
   (`resolveSub` keeps the literal placeholder on a genuine miss rather than
   throwing). Each would otherwise be a PERMANENT phantom change on a stack the
-  deploy considers clean, with `--fail` exiting 1 forever.
+  deploy considers clean, with `--fail` exiting 1 forever. The `Fn::Sub` scoping
+  matters: applied to every string, the placeholder test would also match an IAM
+  policy body's `${aws:username}` or a UserData shell `${VAR}`, and a single such
+  key suppresses the whole Outputs section for that stack forever.
 - `computeOutputsDiff` compares **bag key by bag key**, which is exactly the
   `outputMapsEqual` predicate the deploy engine gates its persist on, so the
   preview cannot drift from the apply. A partially-resolved bag reports no
-  delta at all, mirroring the deploy engine declining to persist one — and
+  delta at all, mirroring the deploy engine's NO-CHANGE branch declining to
+  persist one (its changed-resources branch has no such gate, correctly, since
+  by then every resource exists) — and
   nothing is lost, since an output only fails to resolve when it references a
   resource this deploy has yet to CREATE, which the resource side already shows.
   As on the deploy side a suppressed delta is WARNED about, so an absent Outputs
   section never silently conflates "unchanged" with "uncomputable".
 - Because this is the first code path that **displays** a stored output value,
-  it withholds an `oldValue` that is legacy secret plaintext — detectable when
-  the desired side is still a `{{resolve:...}}` expression while the stored side
-  is not, the condition `cdkd scrub` repairs — and strips control characters
-  from template-controlled output / export names before they reach the terminal
-  (an `Export.Name` is a resolved value, so unlike a CFn logical id it never
-  passed a validator).
+  it withholds an `oldValue` that is legacy secret plaintext. Two signals
+  identify such a record: the desired side still being a `{{resolve:...}}`
+  expression while the stored side is not (the condition `cdkd scrub` repairs),
+  and the template itself declaring the key's value as a dynamic reference —
+  the latter collected for *every* declared output, including condition-skipped
+  ones, because those have no desired side at all and would otherwise print in
+  full as a `REMOVE` row. A hit on either makes the whole record suspect (it was
+  written by a pre-GHSA binary), so the withholding is record-level; the change
+  is still reported, only the value is withheld.
+- It also strips control and bidi characters from template-controlled output /
+  export names and rendered values before they reach the terminal — an
+  `Export.Name` is a value cdkd *resolved*, so unlike a CFn logical ID it never
+  passed a validator. The `--json` payload is left byte-faithful on purpose: it
+  is a machine interface where mutating a name a consumer matches on would be a
+  correctness regression.
 
 The module is a deliberate SECOND implementation rather than shared code: the
 deploy-side block lives in `deploy-engine.ts`, which is in the `integ-broad`

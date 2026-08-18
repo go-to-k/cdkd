@@ -183,6 +183,31 @@ describe('resolveTemplateOutputs', () => {
     expect(r.outputs).toEqual({});
   });
 
+  it('does NOT flag a literal ${...} in a value whose source used no Fn::Sub', async () => {
+    // The over-match this scoping removes: an IAM policy body with
+    // `${aws:username}`, a UserData shell `${VAR}`, or any literal a user wrote
+    // would otherwise set resolutionFailed and suppress the WHOLE Outputs
+    // section for that stack, on every run, forever.
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { Policy: { Value: 'arn:aws:iam::${aws:username}:role/x' } },
+    };
+    const r = await resolveTemplateOutputs(template, lenientResolver);
+    expect(r.resolutionFailed).toBe(false);
+    expect(r.outputs).toEqual({ Policy: 'arn:aws:iam::${aws:username}:role/x' });
+  });
+
+  it('finds an Fn::Sub NESTED inside an Fn::Join and still flags its laundered placeholder', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        Joined: { Value: { 'Fn::Join': ['', [{ 'Fn::Sub': 'arn:${Pending}' }, '-x']] } },
+      },
+    };
+    const r = await resolveTemplateOutputs(template, async () => 'arn:${Pending}-x');
+    expect(r.resolutionFailed).toBe(true);
+  });
+
   it('flags a half-substituted Fn::Sub placeholder string', async () => {
     // resolveSub catches a genuine Ref/GetAtt miss, WARNS, and keeps the literal
     // `${Foo}` in the output STRING -- no throw, no intrinsic object -- so this
@@ -342,6 +367,99 @@ describe('computeOutputsDiff — legacy secret plaintext on the stored side', ()
     const changes = computeOutputsDiff({ Out: 'old' }, { Out: 'new' }, new Set());
     expect(changes[0]!.oldValueRedacted).toBeUndefined();
     expect(changes[0]!.oldValue).toBe('old');
+  });
+});
+
+describe('secretSourceKeys + record-level withholding (issue #1921 review round 2)', () => {
+  const EXPR = '{{resolve:secretsmanager:prod/db:SecretString:password}}';
+
+  it('records a secret-sourced key even when its output is condition-SKIPPED', async () => {
+    // The reachable leak this closes: a condition-false secret output is never
+    // resolved, so it has NO desired side -- it lands in the REMOVE loop and
+    // would print `old: "hunter2"` in full. The TEMPLATE still proves it secret.
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        DbPassword: { Value: EXPR, Condition: 'IsProd', Export: { Name: 'S:DbPassword' } },
+      },
+    };
+    const r = await resolveTemplateOutputs(template, RESOLVER, { IsProd: false });
+    expect(r.outputs).toEqual({});
+    expect([...r.secretSourceKeys].sort()).toEqual(['DbPassword', 'S:DbPassword']);
+  });
+
+  it('WITHHOLDS a condition-skipped secret output on the REMOVE row', () => {
+    const changes = computeOutputsDiff(
+      { DbPassword: 'hunter2' },
+      {},
+      new Set(),
+      new Set(['DbPassword'])
+    );
+    expect(changes).toHaveLength(1);
+    expect(changes[0]!.changeType).toBe('REMOVE');
+    expect(changes[0]!.oldValueRedacted).toBe(true);
+    expect(changes[0]).not.toHaveProperty('oldValue');
+    expect(JSON.stringify(changes)).not.toContain('hunter2');
+  });
+
+  it('withholds RECORD-wide: one legacy key makes every other stored value suspect', () => {
+    // A record with any pre-GHSA key was written by a pre-GHSA binary, so every
+    // value in it is unredacted -- including a renamed export's REMOVE row.
+    const changes = computeOutputsDiff(
+      { DbPassword: 'hunter2', 'S:OldExport': 'also-secret', Plain: 'a' },
+      { DbPassword: EXPR, Plain: 'b' },
+      new Set(),
+      new Set()
+    );
+    for (const change of changes) {
+      expect(change.oldValueRedacted).toBe(true);
+      expect(change).not.toHaveProperty('oldValue');
+    }
+    expect(JSON.stringify(changes)).not.toContain('hunter2');
+    expect(JSON.stringify(changes)).not.toContain('also-secret');
+  });
+
+  it('leaves an ADD alone — it has no stored side to withhold', () => {
+    const changes = computeOutputsDiff({ DbPassword: 'hunter2' }, { DbPassword: EXPR, New: 'n' }, new Set(), new Set());
+    const added = changes.find((c) => c.name === 'New')!;
+    expect(added.changeType).toBe('ADD');
+    expect(added.oldValueRedacted).toBeUndefined();
+    expect(added.newValue).toBe('n');
+  });
+
+  it('a fully post-GHSA record withholds NOTHING', () => {
+    const changes = computeOutputsDiff({ Plain: 'a' }, { Plain: 'b' }, new Set(), new Set());
+    expect(changes[0]!.oldValueRedacted).toBeUndefined();
+    expect(changes[0]!.oldValue).toBe('a');
+  });
+});
+
+describe('failedKeys (issue #1921 review round 2)', () => {
+  it('names the keys that were DROPPED, so a caller can tell them from real REMOVEs', async () => {
+    // The deploy side keeps an unresolved key with value `undefined`; this
+    // resolver drops it, so without failedKeys every failure reads as a REMOVE
+    // and the suppression warning fires on the ordinary pending-resource case.
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: {
+        Pending: { Value: { 'Fn::GetAtt': ['NotYetCreated', 'Arn'] } },
+        Fine: { Value: 'ok' },
+      },
+    };
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+    expect(r.resolutionFailed).toBe(true);
+    expect([...r.failedKeys]).toEqual(['Pending']);
+    expect(r.outputs).toEqual({ Fine: 'ok' });
+  });
+
+  it('a condition-skipped output is NOT a failed key (CFn really does not create it)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+      Outputs: { Gone: { Value: 'x', Condition: 'IsDev' } },
+    };
+    const r = await resolveTemplateOutputs(template, RESOLVER, { IsDev: false });
+    expect(r.resolutionFailed).toBe(false);
+    expect([...r.failedKeys]).toEqual([]);
   });
 });
 

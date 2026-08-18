@@ -50,10 +50,32 @@ export interface ResolvedTemplateOutputs {
   /**
    * True when at least one output could not be fully resolved against current
    * state. See {@link computeOutputsDiff}'s caller contract: the diff must then
-   * report NO outputs delta, because the deploy engine likewise declines to
-   * persist a partially-resolved bag.
+   * report NO outputs delta — the deploy engine's NO-CHANGE branch likewise
+   * declines to persist a partially-resolved bag. (Its changed-resources branch
+   * has no such gate, because by then every resource exists and resolution is
+   * expected to succeed; the mirrored semantics here are the no-change one.)
    */
   resolutionFailed: boolean;
+  /**
+   * The bag keys that FAILED to resolve, so they are absent from {@link outputs}
+   * rather than present-with-a-bad-value.
+   *
+   * The deploy side keeps such a key with the value `undefined`; dropping it
+   * instead means a naive diff reads it as a REMOVE. Callers deciding whether a
+   * suppressed delta is worth WARNING about must exclude these, or the common
+   * "references a resource this deploy will create" case warns on every run.
+   */
+  failedKeys: Set<string>;
+  /**
+   * Bag keys whose RAW TEMPLATE value is a `{{resolve:...}}` dynamic reference —
+   * i.e. keys the template PROVES are secret-bearing, independently of what
+   * either side of the comparison currently holds.
+   *
+   * Collected for EVERY declared output including condition-skipped ones,
+   * because a skipped output still appears on the stored side and would
+   * otherwise print its value as a REMOVE row. See {@link computeOutputsDiff}.
+   */
+  secretSourceKeys: Set<string>;
 }
 
 /**
@@ -65,12 +87,18 @@ export interface ResolvedTemplateOutputs {
  * looking like an ordinary resolved string, and comparing it against state
  * reports a phantom change whose printed value is `"arn:...${NewBucket}"`.
  *
+ * Only consulted for a value whose TEMPLATE source actually contained an
+ * `Fn::Sub` (see {@link templateUsesSub}). Applying it to every string
+ * over-matches badly: an IAM policy body with `${aws:username}`, a UserData
+ * snippet with a shell `${VAR}`, or any literal a user wrote would set
+ * `resolutionFailed` and suppress the WHOLE Outputs section for that stack, on
+ * every run, forever.
+ *
+ * Within `Fn::Sub`-sourced values one false positive remains and is accepted:
  * `${!Literal}` is `Fn::Sub`'s ESCAPE and resolves to the literal text
- * `${Literal}` — which, after resolution, is indistinguishable from a
- * placeholder that failed to substitute. This pattern therefore also matches
- * that legitimately-resolved case. The false positive is deliberate: it
- * SUPPRESSES the outputs delta, which is the pre-#1921 behavior for that stack,
- * while the alternative is a phantom change reported on every single run.
+ * `${Literal}`, which post-resolution is indistinguishable from a placeholder
+ * that failed to substitute. That case merely SUPPRESSES the section (the
+ * pre-#1921 behavior) whereas the alternative is a phantom reported every run.
  */
 const UNSUBSTITUTED_SUB_PLACEHOLDER = /\$\{[^}]*\}/;
 
@@ -94,21 +122,40 @@ const UNSUBSTITUTED_SUB_PLACEHOLDER = /\$\{[^}]*\}/;
  *    `resolveValue` strips only INSIDE arrays / objects; a top-level
  *    `Fn::If` selecting `AWS::NoValue` returns it bare. Not persistable, so
  *    again a permanent phantom.
- * 3. A surviving intrinsic OBJECT, or an unsubstituted `Fn::Sub` placeholder
- *    STRING (see {@link UNSUBSTITUTED_SUB_PLACEHOLDER}).
+ * 3. A surviving intrinsic OBJECT, or — only when the template source used
+ *    `Fn::Sub` — an unsubstituted placeholder STRING (see
+ *    {@link UNSUBSTITUTED_SUB_PLACEHOLDER}).
  *
  * DEEP rather than shallow: an unresolved leaf can sit anywhere inside an array
  * or object an outer intrinsic already built.
  */
-function isUnresolvedValue(value: unknown): boolean {
+function isUnresolvedValue(value: unknown, sourceUsedSub: boolean): boolean {
   if (value === undefined) return true;
   if (typeof value === 'symbol') return true;
-  if (typeof value === 'string') return UNSUBSTITUTED_SUB_PLACEHOLDER.test(value);
+  if (typeof value === 'string') {
+    return sourceUsedSub && UNSUBSTITUTED_SUB_PLACEHOLDER.test(value);
+  }
   if (value === null || typeof value !== 'object') return false;
-  if (Array.isArray(value)) return value.some(isUnresolvedValue);
+  if (Array.isArray(value)) return value.some((v) => isUnresolvedValue(v, sourceUsedSub));
   const keys = Object.keys(value as Record<string, unknown>);
   if (keys.length === 1 && INTRINSIC_KEYS.has(keys[0]!)) return true;
-  return Object.values(value as Record<string, unknown>).some(isUnresolvedValue);
+  return Object.values(value as Record<string, unknown>).some((v) =>
+    isUnresolvedValue(v, sourceUsedSub)
+  );
+}
+
+/**
+ * True when this output's RAW template value contains an `Fn::Sub` anywhere —
+ * including nested inside an `Fn::Join` / `Fn::If`, since those resolve their
+ * arguments and a laundered placeholder from an inner `Fn::Sub` surfaces in the
+ * outer result.
+ */
+function templateUsesSub(templateValue: unknown): boolean {
+  if (templateValue === null || typeof templateValue !== 'object') return false;
+  if (Array.isArray(templateValue)) return templateValue.some(templateUsesSub);
+  const record = templateValue as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(record, 'Fn::Sub')) return true;
+  return Object.values(record).some(templateUsesSub);
 }
 
 /**
@@ -165,6 +212,12 @@ function valuesEqual(a: unknown, b: unknown): boolean {
  * 3. Resolution is best-effort and never throws — a diff must never harden into
  *    an error where the deploy would have succeeded.
  *
+ * The parity claim is scoped to the deploy engine's NO-CHANGE branch, which is
+ * the one this preview stands in for. Its changed-resources branch resolves
+ * outputs with no `resolutionFailed` gate at all — correctly, because by then
+ * every resource exists and resolution is expected to succeed, whereas a diff
+ * runs BEFORE any of them are created.
+ *
  * Deliberately does NOT redact secrets the way the deploy side does: this
  * resolver runs with `skipDynamicReferences`, so a `{{resolve:...}}` reference
  * is never resolved to plaintext in the first place and the bag already holds
@@ -178,15 +231,33 @@ export async function resolveTemplateOutputs(
   const logger = getLogger().child('OutputsDiff');
   const outputs: Record<string, unknown> = {};
   const exportNames = new Set<string>();
+  const failedKeys = new Set<string>();
+  const secretSourceKeys = new Set<string>();
   let resolutionFailed = false;
 
-  if (!template.Outputs) return { outputs, exportNames, resolutionFailed };
+  if (!template.Outputs) {
+    return { outputs, exportNames, failedKeys, secretSourceKeys, resolutionFailed };
+  }
+
+  // Pass 1: which keys does the TEMPLATE prove are secret-bearing? Walked over
+  // EVERY declared output — including condition-skipped ones, which never reach
+  // the resolve loop below yet can still sit on the stored side and print as a
+  // REMOVE row. A literal `Export.Name` alias is recorded too, since the deploy
+  // writes the same value under both keys.
+  for (const [outputKey, output] of Object.entries(template.Outputs)) {
+    if (!isDynamicReference(output.Value)) continue;
+    secretSourceKeys.add(outputKey);
+    if (typeof output.Export?.Name === 'string') secretSourceKeys.add(output.Export.Name);
+  }
 
   for (const [outputKey, output] of Object.entries(template.Outputs)) {
     if (output.Condition !== undefined && conditions?.[output.Condition] === false) {
       logger.debug(`Skipping output ${outputKey} — condition ${output.Condition} is false`);
+      // NOT a resolution failure — CFn genuinely does not create it, so the
+      // deploy drops it from the bag too and a REMOVE here is CORRECT.
       continue;
     }
+    const sourceUsedSub = templateUsesSub(output.Value);
 
     let value: unknown;
     try {
@@ -196,14 +267,16 @@ export async function resolveTemplateOutputs(
     } catch (error) {
       logger.debug(`Diff could not resolve output ${outputKey}: ${String(error)}`);
       resolutionFailed = true;
+      failedKeys.add(outputKey);
       continue;
     }
-    if (isUnresolvedValue(value)) {
+    if (isUnresolvedValue(value, sourceUsedSub)) {
       // The common, EXPECTED case: the output references a resource this deploy
       // has not created yet. Not a warning — the resource section already shows
       // that CREATE.
       logger.debug(`Diff left output ${outputKey} unresolved (references a pending resource)`);
       resolutionFailed = true;
+      failedKeys.add(outputKey);
       continue;
     }
     outputs[outputKey] = value;
@@ -219,7 +292,7 @@ export async function resolveTemplateOutputs(
           continue;
         }
       }
-      if (typeof exportName === 'string' && !isUnresolvedValue(exportName)) {
+      if (typeof exportName === 'string' && !isUnresolvedValue(exportName, sourceUsedSub)) {
         outputs[exportName] = value;
         exportNames.add(exportName);
       } else {
@@ -231,7 +304,7 @@ export async function resolveTemplateOutputs(
     }
   }
 
-  return { outputs, exportNames, resolutionFailed };
+  return { outputs, exportNames, failedKeys, secretSourceKeys, resolutionFailed };
 }
 
 /**
@@ -246,49 +319,68 @@ export async function resolveTemplateOutputs(
  * The practical payoff is that the motivating #875 case shows the user the
  * literal export name their downstream `Fn::ImportValue` needs.
  *
- * Keys are emitted in a stable order: template order for keys the desired bag
- * still has, then the state-only (removed) keys.
+ * ## Withholding legacy secret plaintext
+ *
+ * This is the first code path that DISPLAYS a stored output value, and
+ * `cdkd diff` is routinely run in CI — so a value that turns out to be secret
+ * plaintext would land in build logs. `StackState.outputs` is only guaranteed
+ * redacted for records written after the GHSA fix; an older binary persisted
+ * the RESOLVED plaintext, which is the condition `cdkd scrub` repairs.
+ *
+ * Two independent signals identify such a record, and BOTH are needed:
+ *
+ * - the desired side is still a `{{resolve:...}}` expression (this resolver
+ *   runs with `skipDynamicReferences`) while the stored side is not; and
+ * - `secretSourceKeys` — the template itself declares the key's value as a
+ *   dynamic reference. This one reaches cases the first cannot: a
+ *   condition-skipped secret output, or one deleted from the template, has NO
+ *   desired side at all and would otherwise print in full as a REMOVE row.
+ *
+ * A hit on either makes the WHOLE record suspect, not just that key: the
+ * record was written by a pre-GHSA binary, so every value in it is unredacted.
+ * Withholding is therefore record-level. The change is still REPORTED — only
+ * the value is withheld — so `--fail` and the exports story are unaffected.
  */
 export function computeOutputsDiff(
   current: Record<string, unknown> | undefined,
   desired: Record<string, unknown>,
-  exportNames: ReadonlySet<string>
+  exportNames: ReadonlySet<string>,
+  secretSourceKeys: ReadonlySet<string> = new Set()
 ): OutputChange[] {
   const changes: OutputChange[] = [];
   const currentBag = current ?? {};
 
+  // Pass 1: is this a pre-GHSA record? See the "Withholding" note above.
+  const legacyRecord = Object.entries(currentBag).some(([name, oldValue]) => {
+    if (isDynamicReference(oldValue)) return false;
+    return isDynamicReference(desired[name]) || secretSourceKeys.has(name);
+  });
+
+  const push = (change: OutputChange): void => {
+    if (legacyRecord && change.changeType !== 'ADD') {
+      const { oldValue: _dropped, ...rest } = change;
+      changes.push({ ...rest, oldValueRedacted: true });
+      return;
+    }
+    changes.push(change);
+  };
+
   for (const [name, newValue] of Object.entries(desired)) {
     const isExport = exportNames.has(name);
     if (!Object.prototype.hasOwnProperty.call(currentBag, name)) {
+      // An ADD has no stored side, so there is nothing to withhold.
       changes.push({ name, changeType: 'ADD', newValue, isExport });
       continue;
     }
     const oldValue = currentBag[name];
     if (!valuesEqual(oldValue, newValue)) {
-      // A desired side that is STILL a `{{resolve:...}}` expression, against a
-      // stored side that is NOT, means state holds the RESOLVED PLAINTEXT of
-      // that secret — a record written before the GHSA redaction landed (the
-      // condition `cdkd scrub` repairs). Report the change, WITHHOLD the value:
-      // `cdkd diff` is a preview routinely run in CI, so printing it would put
-      // the secret in build logs. Deliberately narrow — it fires only where the
-      // desired side PROVES the key is secret-bearing.
-      if (isDynamicReference(newValue) && !isDynamicReference(oldValue)) {
-        changes.push({
-          name,
-          changeType: 'MODIFY',
-          newValue,
-          isExport,
-          oldValueRedacted: true,
-        });
-        continue;
-      }
-      changes.push({ name, changeType: 'MODIFY', oldValue, newValue, isExport });
+      push({ name, changeType: 'MODIFY', oldValue, newValue, isExport });
     }
   }
 
   for (const [name, oldValue] of Object.entries(currentBag)) {
     if (Object.prototype.hasOwnProperty.call(desired, name)) continue;
-    changes.push({ name, changeType: 'REMOVE', oldValue, isExport: false });
+    push({ name, changeType: 'REMOVE', oldValue, isExport: false });
   }
 
   return changes;

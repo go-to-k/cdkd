@@ -23,25 +23,6 @@ import {
 export type IntrinsicResolveFn = (value: unknown) => Promise<unknown>;
 
 /**
- * Per-type normalization applied to BOTH comparison sides (issue #1591).
- *
- * A provider that deliberately sends LESS than the template declares records
- * the narrowed bag in state (`effectiveProperties`). Without the identical
- * narrowing here the template's extra keys read as a user-made change on every
- * later deploy — and for a create-only property that is a REPLACEMENT, so a
- * previously-green no-op deploy starts destroying and re-creating the resource,
- * or failing outright where the provider refuses the shape on the create path.
- *
- * BOTH sides, not just the desired one: a record written BEFORE the provider
- * started narrowing still carries every key, so a desired-only normalization
- * flips the same difference to a REMOVAL and breaks exactly the population the
- * narrowing exists for. State can only carry the wider bag when it is junk, so
- * normalizing it is safe and the next write self-heals the record.
- * `drift-normalize.ts` records the same both-sides rule for ordering.
- *
- * MUST be pure and synchronous — it runs inside the diff, before any AWS call.
- */
-/**
  * The CloudFormation intrinsic function keys, as a single shared set.
  *
  * Exported so `outputs-diff.ts` detects a surviving intrinsic with exactly the
@@ -66,6 +47,25 @@ export const INTRINSIC_KEYS: ReadonlySet<string> = new Set([
   'Fn::Not',
 ]);
 
+/**
+ * Per-type normalization applied to BOTH comparison sides (issue #1591).
+ *
+ * A provider that deliberately sends LESS than the template declares records
+ * the narrowed bag in state (`effectiveProperties`). Without the identical
+ * narrowing here the template's extra keys read as a user-made change on every
+ * later deploy — and for a create-only property that is a REPLACEMENT, so a
+ * previously-green no-op deploy starts destroying and re-creating the resource,
+ * or failing outright where the provider refuses the shape on the create path.
+ *
+ * BOTH sides, not just the desired one: a record written BEFORE the provider
+ * started narrowing still carries every key, so a desired-only normalization
+ * flips the same difference to a REMOVAL and breaks exactly the population the
+ * narrowing exists for. State can only carry the wider bag when it is junk, so
+ * normalizing it is safe and the next write self-heals the record.
+ * `drift-normalize.ts` records the same both-sides rule for ordering.
+ *
+ * MUST be pure and synchronous — it runs inside the diff, before any AWS call.
+ */
 export type CanonicalizePropertiesFn = (
   resourceType: string,
   properties: Record<string, unknown>
