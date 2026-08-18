@@ -134,19 +134,6 @@ const MFA_FACTOR_SOFTWARE_TOKEN = 'SOFTWARE_TOKEN_MFA';
 const MFA_FACTOR_EMAIL_OTP = 'EMAIL_OTP';
 
 /**
- * True when any MFA-config-API-routed property is present, i.e. a
- * `SetUserPoolMfaConfig` call will run post-create. When true, `create()` must
- * NOT forward `MfaConfiguration` to `CreateUserPool`: AWS rejects
- * `CreateUserPool` with `MfaConfiguration: ON/OPTIONAL` unless the pool already
- * has SMS configured (+ phone_number auto-verification) OR software-token MFA
- * enabled — but software-token / email-OTP MFA can only be enabled via the
- * post-create `SetUserPoolMfaConfig` call, not on `CreateUserPool`. So the
- * correct sequence is: `CreateUserPool` WITHOUT `MfaConfiguration` (defaults
- * OFF) -> `SetUserPoolMfaConfig` sets `MfaConfiguration` + the factor blocks
- * together (the factor satisfies the MFA requirement, no SMS needed). This
- * mirrors how CloudFormation/CDK sequence the two calls.
- */
-/**
  * Read `EnabledMfas` as the pair (recognized list, "the template asked for a
  * factor at all").
  *
@@ -171,10 +158,30 @@ function readEnabledMfas(properties: Record<string, unknown>): {
     const factors = raw as string[];
     return { factors, declaresFactor: factors.length > 0, malformed: false };
   }
-  const malformed = raw !== undefined && raw !== null;
+  // `null` / `''` are absence, not a mis-shaped declaration: the intrinsic
+  // resolver deletes `AWS::NoValue` keys outright rather than emitting null, so
+  // a literal null is "explicitly nothing", and an empty string declares no
+  // factor either. Treating them as intent would fire a spurious
+  // SetUserPoolMfaConfig and turn a previously-working deploy into a hard AWS
+  // rejection. This matches the truthy gating used for every sibling string
+  // property below.
+  const malformed = raw !== undefined && raw !== null && raw !== '';
   return { factors: undefined, declaresFactor: malformed, malformed };
 }
 
+/**
+ * True when any MFA-config-API-routed property is present, i.e. a
+ * `SetUserPoolMfaConfig` call will run post-create. When true, `create()` must
+ * NOT forward `MfaConfiguration` to `CreateUserPool`: AWS rejects
+ * `CreateUserPool` with `MfaConfiguration: ON/OPTIONAL` unless the pool already
+ * has SMS configured (+ phone_number auto-verification) OR software-token MFA
+ * enabled — but software-token / email-OTP MFA can only be enabled via the
+ * post-create `SetUserPoolMfaConfig` call, not on `CreateUserPool`. So the
+ * correct sequence is: `CreateUserPool` WITHOUT `MfaConfiguration` (defaults
+ * OFF) -> `SetUserPoolMfaConfig` sets `MfaConfiguration` + the factor blocks
+ * together (the factor satisfies the MFA requirement, no SMS needed). This
+ * mirrors how CloudFormation/CDK sequence the two calls.
+ */
 function hasMfaConfigProps(properties: Record<string, unknown>): boolean {
   // `declaresFactor` (not just a non-empty array) so a mis-shaped declaration
   // still routes through SetUserPoolMfaConfig and fails loudly, rather than
@@ -243,41 +250,12 @@ function buildMfaConfigRequest(
 
   const factors = new Set(enabledMfas ?? []);
 
-  // An entry AWS does not recognize enables nothing, so it would otherwise be a
-  // silent drop. Warn rather than throw: the recognized set is a hardcoded
-  // mirror of an AWS enum, and a factor AWS adds later must not be refused by
-  // cdkd. The MfaConfiguration default below is keyed on the REQUESTED set for
-  // that same forward-compatibility reason.
-  // An entry AWS does not recognize enables nothing, so it would otherwise be a
-  // silent drop. Warn rather than throw: the recognized set is a hardcoded
-  // mirror of an AWS enum, so refusing an unknown entry would break a valid
-  // template the day AWS adds a factor. (cdkd would still not know the new
-  // factor's sub-block — the point is that it errors legibly at AWS instead of
-  // silently dropping it, since such an entry keeps MfaConfiguration OPTIONAL.)
-  // JSON.stringify, not `'${f}'`: a non-string member would otherwise print as
-  // [object Object] and name nothing.
   const unrecognizedFactors = [...factors].filter(
     (factor) =>
       factor !== MFA_FACTOR_SMS &&
       factor !== MFA_FACTOR_SOFTWARE_TOKEN &&
       factor !== MFA_FACTOR_EMAIL_OTP
   );
-  if (unrecognizedFactors.length > 0) {
-    logger?.warn(
-      `UserPool ${physicalId}: EnabledMfas contains ` +
-        `${unrecognizedFactors.map((f) => JSON.stringify(f)).join(', ')}, which cdkd does not ` +
-        `map to an MFA factor block (known: ${MFA_FACTOR_SMS}, ${MFA_FACTOR_SOFTWARE_TOKEN}, ` +
-        `${MFA_FACTOR_EMAIL_OTP}). No factor is enabled for those entries.`
-    );
-  }
-  if (enabledMfasMalformed) {
-    logger?.warn(
-      `UserPool ${physicalId}: EnabledMfas is ${JSON.stringify(properties['EnabledMfas'])}, ` +
-        `which is not a list. CloudFormation types this property as a list of strings; no factor ` +
-        `is enabled from it. MfaConfiguration is left at OPTIONAL so AWS rejects the call rather ` +
-        `than silently deploying the pool with MFA disabled.`
-    );
-  }
 
   if (factors.has(MFA_FACTOR_SOFTWARE_TOKEN)) {
     request.SoftwareTokenMfaConfiguration = { Enabled: true };
@@ -351,6 +329,35 @@ function buildMfaConfigRequest(
   const enablesMfaFactor = declaresFactor || request.EmailMfaConfiguration !== undefined;
   const mfaConfiguration = properties['MfaConfiguration'] as UserPoolMfaType | undefined;
   request.MfaConfiguration = mfaConfiguration ?? (enablesMfaFactor ? 'OPTIONAL' : 'OFF');
+
+  // Warn about a factor declaration that enables nothing — AFTER the line
+  // above, so the message can state the value actually being sent instead of
+  // predicting it. Predicting is how the earlier version came to lie: it
+  // claimed "left at OPTIONAL so AWS rejects the call" even when an explicit
+  // `MfaConfiguration: OFF` in the template made the request OFF, which AWS
+  // ACCEPTS — the one branch where the pool really does deploy with MFA off.
+  //
+  // Warn rather than throw for an unrecognized SPELLING: that set is a
+  // hardcoded mirror of an AWS enum, so refusing would break a valid template
+  // the day AWS adds a factor. cdkd would still not know the new factor's
+  // sub-block; the point is that it fails legibly at AWS rather than dropping
+  // the factor silently, because such an entry keeps MfaConfiguration OPTIONAL.
+  const dropped: string[] = unrecognizedFactors.map((f) => JSON.stringify(f) ?? String(f));
+  if (enabledMfasMalformed) {
+    dropped.push(`${JSON.stringify(properties['EnabledMfas'])} (not a list)`);
+  }
+  if (dropped.length > 0) {
+    const consequence =
+      request.MfaConfiguration === 'OFF'
+        ? `MfaConfiguration is OFF, so this pool deploys with MFA DISABLED`
+        : `MfaConfiguration is ${request.MfaConfiguration}, so AWS rejects this call rather ` +
+          `than deploying the pool with MFA disabled`;
+    logger?.warn(
+      `UserPool ${physicalId}: EnabledMfas entries ${dropped.join(', ')} do not map to an MFA ` +
+        `factor block (known: ${MFA_FACTOR_SMS}, ${MFA_FACTOR_SOFTWARE_TOKEN}, ` +
+        `${MFA_FACTOR_EMAIL_OTP}); no factor is enabled from them. ${consequence}.`
+    );
+  }
 
   return request;
 }

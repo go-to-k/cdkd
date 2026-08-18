@@ -745,7 +745,10 @@ describe('CognitoUserPoolProvider', () => {
         mockSend.mockResolvedValueOnce({});
 
         await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
-          EnabledMfas: ['EMAIL_OTP'],
+          // SOFTWARE_TOKEN_MFA, not EMAIL_OTP: an EMAIL_OTP factor also emits
+          // EmailMfaConfiguration, so it would satisfy EITHER half of the
+          // condition and could not tell them apart.
+          EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
           WebAuthnRelyingPartyID: 'auth.example.com',
         });
 
@@ -854,7 +857,10 @@ describe('CognitoUserPoolProvider', () => {
         });
 
         const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
-        expect(warned).toContain('is not a list');
+        expect(warned).toContain('(not a list)');
+        // The message must state the value actually sent. Here nothing forced
+        // OFF, so the call stays OPTIONAL and AWS is what refuses it.
+        expect(warned).toContain('MfaConfiguration is OPTIONAL');
       });
 
       // A mis-shaped declaration with no OTHER MFA-routed property must still
@@ -875,6 +881,83 @@ describe('CognitoUserPoolProvider', () => {
         );
         expect(mfaCall).toBeDefined();
         expect(mfaCall![0].input.MfaConfiguration).toBe('OPTIONAL');
+      });
+
+      // The create()-side consequence of counting a mis-shaped declaration as
+      // MFA props: MfaConfiguration must stop riding CreateUserPool (AWS
+      // rejects ON there before any factor exists) and travel on the
+      // SetUserPoolMfaConfig call instead. Nothing pinned this branch before.
+      it('keeps an explicit MfaConfiguration off CreateUserPool for a scalar EnabledMfas', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:scalar-on' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: 'SOFTWARE_TOKEN_MFA',
+          MfaConfiguration: 'ON',
+        });
+
+        const createCall = mockSend.mock.calls[0][0];
+        expect(createCall.constructor.name).toBe('CreateUserPoolCommand');
+        expect(createCall.input.MfaConfiguration).toBeUndefined();
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.MfaConfiguration).toBe('ON');
+      });
+
+      // The one branch where a dropped factor really does deploy MFA-disabled:
+      // the template itself asked for OFF. The warn must say so rather than
+      // predicting the rejection that does not happen.
+      it('warns that the pool deploys MFA-disabled when an explicit OFF meets a dropped factor', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:scalar-off' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: 'SOFTWARE_TOKEN_MFA',
+          MfaConfiguration: 'OFF',
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.input.MfaConfiguration).toBe('OFF');
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('deploys with MFA DISABLED');
+      });
+
+      // `null` / `''` are absence, not a mis-shaped declaration: neither may
+      // fire a spurious SetUserPoolMfaConfig or flip the default to OPTIONAL.
+      it('treats a null or empty-string EnabledMfas as absence, not as intent', async () => {
+        for (const [arn, value] of [
+          ['arn:null-mfa', null],
+          ['arn:empty-mfa', ''],
+        ] as const) {
+          mockSend.mockClear();
+          mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: arn } });
+          mockSend.mockResolvedValueOnce({});
+
+          await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+            EnabledMfas: value,
+            WebAuthnRelyingPartyID: 'auth.example.com',
+          });
+
+          const mfaCall = mockSend.mock.calls[1][0];
+          expect(mfaCall.input.MfaConfiguration).toBe('OFF');
+        }
+      });
+
+      it('issues no SetUserPoolMfaConfig at all for a null EnabledMfas on its own', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:null-only' },
+        });
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: null,
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('CreateUserPoolCommand');
       });
 
       it('defaults to OFF for an EMPTY EnabledMfas array alongside WebAuthn', async () => {

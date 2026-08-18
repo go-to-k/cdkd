@@ -657,7 +657,11 @@ Three more review findings hardened the failure paths. The create-side registrat
   outright and the factor dropped one layer earlier. Keying on what the template
   DECLARED rather than on what cdkd RECOGNIZES also keeps this
   forward-compatible with any factor AWS adds later, which is why an
-  unrecognized entry WARNS rather than throwing. The
+  unrecognized entry WARNS rather than throwing. The warning is emitted AFTER
+  the default resolves and reports the value actually being sent, because the
+  one case where a dropped factor really does deploy MFA-disabled is an explicit
+  template `MfaConfiguration: OFF` — a warning written to predict the outcome
+  instead of reading it stated the opposite there. The
   sub-block half deliberately leaves the email-OTP message/subject shape on its
   existing `OPTIONAL` default: `EmailMfaConfiguration` is emitted for a bare
   `EmailAuthenticationMessage` / `Subject` customization too, and whether AWS
@@ -665,13 +669,14 @@ Three more review findings hardened the failure paths. The create-side registrat
   (email-OTP needs a verified SES sender), so it was not flipped on an untested
   wire assumption (issue [#1923](https://github.com/go-to-k/cdkd/issues/1923)).
   Applies to create and update alike (both route through `applyMfaConfig`).
-  14 new unit tests pin both polarities of the default (WebAuthn-only and an
+  18 new unit tests pin both polarities of the default (WebAuthn-only and an
   empty `EnabledMfas` -> `OFF`, on create AND update; a real factor, alone or
   alongside WebAuthn, and the SMS arm -> `OPTIONAL`), both polarities of the
   override (an explicit `OFF` beats the `OPTIONAL` default, an explicit `ON`
   beats the `OFF` one), the misspelled-entry guard, the non-list shape (its
-  default, its own warn, and that it still issues the call at all), and both
-  polarities of the
+  default, its warn, that it still issues the call at all, and that it keeps an
+  explicit value off `CreateUserPool`), `null` / `''` as absence rather than
+  intent, and both polarities of the
   warn; the WebAuthn-only test now pins the WHOLE request via `toEqual`, since
   the original blind spot was precisely a field nobody asserted. The `cognito`
   integ fixture gained both arms: a `PasskeyOnlyUserPool` (WebAuthn, no
