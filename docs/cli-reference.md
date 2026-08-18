@@ -1863,9 +1863,9 @@ Exit codes:
 
 | Exit | Meaning |
 | --- | --- |
-| `0` | Every inspected stack has zero drift, OR `--accept` / `--revert` resolved every drift cleanly. |
+| `0` | Every inspected stack has zero drift, OR `--accept` / `--revert` resolved every drift cleanly. `--accept` also exits `0` when it deliberately REFUSED a secret-bearing property whose AWS-current value it could not identify (see "Secret dynamic references" above) — the refusal is warned about by name and the drift is still reported on the next run. |
 | `1` | Drift detected on at least one resource on at least one stack (detection-only mode), OR the command crashed (no state found, AWS error, bad arguments). Both go through the default error handler — drift detection emits the rich human report before throwing, so the report is the only output for the drift case. |
-| `2` | `--revert` finished but one or more `provider.update` calls failed OR threw `ResourceUpdateNotSupportedError` (`PartialFailureError`). Successful resources are now in sync; re-run `cdkd drift <stack>` to see what's left, then either `cdkd drift <stack> --revert` (for the recoverable failures) or `cdkd deploy <stack> --replace` (for the update-not-supported ones). |
+| `2` | `--revert` finished but one or more resources did not revert (`PartialFailureError`): a `provider.update` call failed, threw `ResourceUpdateNotSupportedError`, or — counted and reported separately, since it never reached `provider.update` at all — cdkd could not re-resolve the dynamic reference(s) the resource's state records (grant the caller `secretsmanager:GetSecretValue` / `ssm:GetParameter`, or fix the reference). Successful resources are now in sync; re-run `cdkd drift <stack>` to see what's left, then either `cdkd drift <stack> --revert` (for the recoverable failures) or `cdkd deploy <stack> --replace` (for the update-not-supported ones). |
 
 The command produces three terminal states per resource:
 
@@ -1877,6 +1877,88 @@ The command produces three terminal states per resource:
 - **drift unknown** — the provider does not implement the optional
   `readCurrentState` method yet. Reported as `? <logicalId> (<type>)`
   in a separate block at the bottom of each stack's report.
+
+**Secret dynamic references** (`{{resolve:secretsmanager:...}}`, and
+`{{resolve:ssm:...}}` naming a `SecureString` parameter) are compared
+like-for-like. cdkd state stores the unresolved expression, never the
+plaintext, so `cdkd drift` re-resolves the baseline in memory before
+comparing it against the AWS-current snapshot — a comparison, and nothing
+else: the resolved value is never written to state (issue
+[#1914](https://github.com/go-to-k/cdkd/issues/1914)).
+
+This means `cdkd drift` needs **read access to the referenced secrets**:
+`secretsmanager:GetSecretValue` for a `secretsmanager` reference, and
+`ssm:GetParameter` (with `kms:Decrypt` on the parameter's key) for an `ssm`
+one. Earlier versions made no such call. If the caller lacks the permission,
+or the secret has been deleted, cdkd **warns and continues**: that one
+resource's secret-bearing properties are reported as neither clean nor
+drifted — they are simply not compared — and every other resource and stack
+in the run is unaffected.
+
+What the report is allowed to show at a secret-bearing property is
+deliberately narrow:
+
+- When AWS holds the value the reference resolves to, both sides render as
+  the `{{resolve:...}}` expression, so the property is clean and nothing is
+  printed at all.
+- When AWS holds anything else — the commonest cause is a **Secrets Manager
+  rotation**, where the deployed resource still carries the previous version,
+  but an out-of-band console edit looks identical from here — the property is
+  reported as drifted with the AWS side shown as `***`. cdkd cannot tell a
+  stale secret from a non-secret edit, so it does not print either.
+- When AWS returns **nothing** for that exact property, it is reported as
+  neither clean nor drifted. A write-only credential (`MasterUserPassword` and
+  friends) is not returned by any readback, so an absence there means "cannot
+  be checked", not "was removed" — reporting it would make `cdkd drift` exit 1
+  forever on every stack with a templated credential. This applies to the
+  property itself only: a whole block disappearing (the console's "remove all
+  environment variables") IS reported, and `--accept` refuses it, because
+  accepting an absence deletes the key and would take the `{{resolve:...}}`
+  reference with it. Use `--revert` for that shape.
+- `--accept` **refuses** such a property and says so: it will not write `***`
+  into state, and it will not write a value it could not identify. The drift
+  keeps being reported. Use `--revert` to push the referenced value back to
+  AWS, or re-deploy if the reference itself changed. Properties that are not
+  secret-bearing are accepted normally in the same run, and `--accept
+  --dry-run` prints the same refusal the real run will make.
+- `--revert` re-resolves before calling the provider, so the live resource
+  receives the concrete secret rather than the literal `{{resolve:...}}`
+  token.
+
+**Known limitation.** cdkd cannot mask a value for a reference it never
+resolved, so for `{{resolve:ssm-secure:...}}` the protections above are not
+complete. The report masks by POSITION and the `--revert` payload declines to
+carry such a value, but if a provider echoes its own readback back to cdkd
+(`effectiveProperties`, which `--revert` persists as a narrowing) the resolved
+value can reach `state.json` with nothing able to recognise it. This predates
+the reconciliation described here — that write previously had no redaction at
+all — and closing it needs masking by SPAN rather than by value, which is
+tracked separately. If that matters for your stack, prefer a
+`secretsmanager` or plain `ssm` reference, both of which cdkd resolves and can
+therefore mask.
+
+A reference cdkd does not resolve at all — `{{resolve:ssm-secure:...}}` is the
+one such spelling today — is **not** an error, and is **not** compared: the
+property is reported as neither clean nor drifted, and a warning names the
+token once per resource.
+
+What a `--revert` triggered by another drifted property on the same resource
+does to those positions depends on where the token sits, and the difference
+matters for a stack adopted with `cdkd import --migrate-from-cloudformation`,
+where CloudFormation resolved `ssm-secure` server-side so AWS holds the
+resolved value while cdkd state holds the literal token:
+
+- If the property's **whole value** is the token, the live value is left
+  **unchanged** — cdkd cannot tell what it should be, so it does not touch it.
+- If the token is **embedded in a longer string** (`"jdbc:...password={{resolve:ssm-secure:/pw}}"`),
+  that string is written **with the token literal**, exactly as `cdkd deploy`
+  does — so a resolved value AWS holds there **is overwritten**. Preserving
+  this case needs masking by span, which is tracked separately; until then,
+  prefer a `secretsmanager` or plain `ssm` reference in a composed string, or
+  keep the reference as the property's whole value.
+
+Both the drift warning and the revert warning state which of the two applies,
+and the drift one is printed before the confirmation prompt.
 
 Drift detection works automatically for every resource type that goes
 through Cloud Control API (the majority of cdkd's surface). SDK

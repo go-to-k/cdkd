@@ -25,6 +25,12 @@
 # If a reference stays literal or resolves to the wrong value, the test FAILS
 # with specifics.
 #
+# Phase 1d (issue #1914) then drives `cdkd drift` over the same stack: state
+# holds the {{resolve:...}} expressions while AWS holds the resolved plaintext,
+# so the command has to re-resolve for its comparison and for `--revert`'s
+# provider call while persisting and printing only the expression. Phase 1e
+# covers the standalone rollback.
+#
 # Phase 2 (CDKD_TEST_REMOVAL=true, issue #1160 secretsmanager batch) then
 # drops the secret's Description + KmsKeyId from the template and asserts the
 # live secret resets to the pristine defaults (both absent from
@@ -133,6 +139,23 @@ mask() {
   local head
   head=$(printf '%s' "${v}" | cut -c1-2)
   echo "${head}***(len=${n})"
+}
+
+# Echo a captured command output as FAILURE diagnostics — but never before
+# proving it carries no plaintext. These diagnostics sit on exactly the paths
+# that exist to DETECT a redaction bug, so an unchecked echo prints the secret
+# to the terminal and into the CI log at the precise moment redaction failed.
+# Withholds rather than masking wholesale, so an ordinary failure still shows
+# the output that explains it.
+diag_output() { # diag_output <text>
+  local text="$1"
+  if printf '%s' "${text}" | grep -qF "${EXPECTED_PASSWORD}" \
+    || printf '%s' "${text}" | grep -qF "${EXPECTED_SECURE}" \
+    || printf '%s' "${text}" | grep -qF "${EXPECTED_USERNAME}"; then
+    echo "      output: <WITHHELD — it carries a resolved secret, which is itself the bug>" >&2
+    return 0
+  fi
+  echo "      output: ${text}" >&2
 }
 
 cleanup() {
@@ -441,7 +464,7 @@ fi
 echo "    OK: diff leaks no plaintext"
 if [ "${DIFF_RC}" -ne 0 ]; then
   echo "FAIL: 'cdkd diff --fail' reported changes on an unchanged stack (spurious UPDATE — rc=${DIFF_RC})" >&2
-  echo "      output: ${DIFF_OUT}" >&2
+  diag_output "${DIFF_OUT}"
   exit 1
 fi
 echo "    OK: diff reports no changes (secret + SecureString compare expression-vs-expression)"
@@ -464,11 +487,484 @@ if printf '%s' "${SCRUB_OUT}" | grep -qiE 'no plaintext secrets|nothing to scrub
   echo "    OK: scrub --dry-run reports the deployed state is already clean"
 else
   echo "FAIL: scrub --dry-run should report nothing to scrub on a freshly-deployed stack" >&2
-  echo "      output: ${SCRUB_OUT}" >&2
+  diag_output "${SCRUB_OUT}"
   exit 1
 fi
 
-# --- Phase 1d: standalone rollback RE-RESOLVES secret expressions (GHSA #1899) ---
+# --- Phase 1d: `cdkd drift` and the secret expressions (issue #1914) -------
+# The drift command is state-driven, so its baseline is the REDACTED record —
+# `{{resolve:...}}` expressions — while `readCurrentState` returns the resolved
+# plaintext AWS actually holds. Nothing reconciled the two, and all three of the
+# command's modes broke on it: the comparison could not compare (PR #1899 bought
+# quiet by SKIPPING every secret-bearing leaf, which also made a real console
+# edit of one undetectable), `--accept` persisted the plaintext into state.json,
+# and `--revert` shipped the literal `{{resolve:...}}` token to the live Lambda.
+#
+# Four assertions, in the order the fix has to hold them:
+#   (a) a freshly deployed stack reports NO drift,
+#   (b) no drift output ever carries the plaintext — nor any OTHER value at a
+#       path known to carry a secret, since cdkd cannot tell an out-of-band edit
+#       from the previous version of a rotated secret and must mask both,
+#   (c) `--revert` leaves the live env var holding the RESOLVED value,
+#   (d) `--accept` refuses a masked path and leaves no plaintext in state.json,
+#       while still recording the non-secret paths in the same run.
+#
+# Ordered so the stack is handed back to Phase 1e exactly as it was found: the
+# injected drift is reverted, and the accepted key is removed and re-accepted.
+echo "==> Phase 1d: cdkd drift on a dynamic-reference stack (issue #1914)"
+
+drift_env() { # drift_env <var> -> live value of one consumer-Lambda env var
+  aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" \
+    | jq -r --arg k "$1" '.Environment.Variables[$k] // empty'
+}
+
+# Re-send the consumer Lambda's WHOLE env map with one key overridden (or added).
+# The map is never echoed — it carries the resolved secrets by construction.
+set_live_env() { # set_live_env <key> <value>
+  local key="$1" value="$2" env_json
+  env_json=$(aws lambda get-function-configuration --function-name "${FN_NAME}" \
+    --region "${REGION}" \
+    | jq -c --arg k "${key}" --arg v "${value}" '{Variables: (.Environment.Variables + {($k): $v})}') \
+    || return 1
+  aws lambda update-function-configuration --function-name "${FN_NAME}" \
+    --region "${REGION}" --environment "${env_json}" >/dev/null
+  aws lambda wait function-updated-v2 --function-name "${FN_NAME}" --region "${REGION}" \
+    2>/dev/null || aws lambda wait function-updated --function-name "${FN_NAME}" --region "${REGION}"
+}
+
+drop_live_env() { # drop_live_env <key>
+  local key="$1" env_json
+  env_json=$(aws lambda get-function-configuration --function-name "${FN_NAME}" \
+    --region "${REGION}" \
+    | jq -c --arg k "${key}" '{Variables: (.Environment.Variables | del(.[$k]))}') \
+    || return 1
+  aws lambda update-function-configuration --function-name "${FN_NAME}" \
+    --region "${REGION}" --environment "${env_json}" >/dev/null
+  aws lambda wait function-updated-v2 --function-name "${FN_NAME}" --region "${REGION}" \
+    2>/dev/null || aws lambda wait function-updated --function-name "${FN_NAME}" --region "${REGION}"
+}
+
+# grep -qF so a match is never echoed. Checks every known plaintext, including
+# the SecureString one, which has no sibling resource legitimately holding it.
+assert_no_plaintext() { # assert_no_plaintext "<what>" "<text>"
+  local what="$1" text="$2" leaked=0
+  printf '%s' "${text}" | grep -qF "${EXPECTED_PASSWORD}" && leaked=1
+  printf '%s' "${text}" | grep -qF "${EXPECTED_SECURE}" && leaked=1
+  printf '%s' "${text}" | grep -qF "${EXPECTED_USERNAME}" && leaked=1
+  if [ "${leaked}" -ne 0 ]; then
+    echo "FAIL: ${what} leaked a resolved secret plaintext" >&2
+    exit 1
+  fi
+  echo "    OK: ${what} carries no plaintext"
+}
+
+run_drift() { # run_drift <extra args...> -> sets DRIFT_OUT / DRIFT_RC
+  set +e
+  DRIFT_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" "$@" 2>&1)
+  DRIFT_RC=$?
+  set -e
+}
+
+# (a) + (b): a freshly deployed dynamic-ref stack has NO drift, and says so
+# without printing anything the state record deliberately does not hold.
+run_drift
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift' reported drift on a freshly deployed stack (rc=${DRIFT_RC})" >&2
+  diag_output "${DRIFT_OUT}"
+  exit 1
+fi
+assert_no_plaintext "'cdkd drift' on a clean stack" "${DRIFT_OUT}"
+echo "    OK: no drift on the freshly deployed stack"
+
+# Inject drift the way a console edit would: overwrite ONE secret-bearing env
+# var, leaving the rest of the map alone.
+echo "==> Injecting out-of-band drift on the consumer Lambda's SECRET_PASSWORD"
+DRIFT_SENTINEL="cdkd-drift-injected-not-the-secret"
+set_live_env SECRET_PASSWORD "${DRIFT_SENTINEL}"
+
+# The edit MUST be detected. Before the fix the comparator skipped every leaf
+# whose state side is an expression, so this returned rc=0 — the assertion that
+# makes the like-for-like comparison non-vacuous.
+run_drift
+if [ "${DRIFT_RC}" -eq 0 ]; then
+  echo "FAIL: 'cdkd drift' saw no drift after SECRET_PASSWORD was changed out of band" >&2
+  exit 1
+fi
+assert_no_plaintext "'cdkd drift' on a drifted secret leaf" "${DRIFT_OUT}"
+if ! printf '%s' "${DRIFT_OUT}" | grep -qF "Environment.Variables.SECRET_PASSWORD"; then
+  echo "FAIL: 'cdkd drift' did not name the drifted secret env var" >&2
+  diag_output "${DRIFT_OUT}"
+  exit 1
+fi
+# The state side of the diff must be the EXPRESSION (not the value it resolves
+# to, and not a blind mask).
+if ! printf '%s' "${DRIFT_OUT}" | grep -qF "{{resolve:secretsmanager:"; then
+  echo "FAIL: the drift report's state side is not the {{resolve:...}} expression" >&2
+  diag_output "${DRIFT_OUT}"
+  exit 1
+fi
+echo "    OK: the console edit is reported, with the expression on the state side"
+
+# ...and the injected value itself must NOT be printed. cdkd cannot tell an
+# out-of-band edit from the PREVIOUS version of a rotated secret — both are "a
+# value at a path known to carry a secret that is not what the reference
+# resolves to today" — so the AWS side of such a diff is masked. This sentinel
+# is the stand-in for the rotated case, which needs no rotation to express.
+if printf '%s' "${DRIFT_OUT}" | grep -qF "${DRIFT_SENTINEL}"; then
+  echo "FAIL: 'cdkd drift' printed the AWS-current value at a secret-bearing path verbatim" >&2
+  exit 1
+fi
+if ! printf '%s' "${DRIFT_OUT}" | grep -qF '***'; then
+  echo "FAIL: 'cdkd drift' did not mask the AWS side of the drifted secret path" >&2
+  diag_output "${DRIFT_OUT}"
+  exit 1
+fi
+echo "    OK: the unidentifiable AWS-side value is masked, not printed"
+
+# The DRIFTED SET must be exactly that one path: every other secret-bearing env
+# var compares expression-vs-plaintext too, so a fix that resolved nothing (or
+# resolved only some references) shows up here as phantom drift.
+set +e
+DRIFT_JSON=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+set -e
+DRIFT_PATHS=$(printf '%s' "${DRIFT_JSON}" \
+  | jq -r '.[].drifted[] | select(.type=="AWS::Lambda::Function") | .changes[].path' \
+  | sort | tr '\n' ',' | sed 's/,$//')
+if [ "${DRIFT_PATHS}" != "Environment.Variables.SECRET_PASSWORD" ]; then
+  echo "FAIL: expected exactly one drifted Lambda path, got: ${DRIFT_PATHS}" >&2
+  exit 1
+fi
+assert_no_plaintext "'cdkd drift --json'" "${DRIFT_JSON}"
+echo "    OK: exactly one drifted path — no phantom drift on the untouched references"
+
+# --accept must REFUSE this path rather than persisting what it just masked:
+# writing `***` into the baseline would corrupt state and make the next deploy
+# push the literal mask at AWS. The drift keeps being reported, which is the
+# honest outcome — `--revert` below is what actually fixes it.
+echo "==> Asserting --accept refuses the unidentifiable secret-bearing path"
+set +e
+ACCEPT_REFUSE_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --accept --yes 2>&1)
+ACCEPT_REFUSE_RC=$?
+set -e
+if [ "${ACCEPT_REFUSE_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift --accept' failed instead of refusing the path (rc=${ACCEPT_REFUSE_RC})" >&2
+  diag_output "${ACCEPT_REFUSE_OUT}"
+  exit 1
+fi
+assert_no_plaintext "'cdkd drift --accept' on a masked path" "${ACCEPT_REFUSE_OUT}"
+if ! printf '%s' "${ACCEPT_REFUSE_OUT}" | grep -qF "not accepting"; then
+  echo "FAIL: --accept did not say it was refusing the secret-bearing path" >&2
+  diag_output "${ACCEPT_REFUSE_OUT}"
+  exit 1
+fi
+REFUSED_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+if printf '%s' "${REFUSED_STATE}" | grep -qF "${DRIFT_SENTINEL}"; then
+  echo "FAIL: --accept persisted the injected value at a secret-bearing path" >&2
+  exit 1
+fi
+if printf '%s' "${REFUSED_STATE}" | grep -qF '"***"'; then
+  echo "FAIL: --accept persisted the MASK into state.json" >&2
+  exit 1
+fi
+REFUSED_ENV=$(printf '%s' "${REFUSED_STATE}" \
+  | jq -c '.state.resources | to_entries[]
+             | select(.value.resourceType=="AWS::Lambda::Function")
+             | .value.observedProperties.Environment.Variables' | head -1)
+case "$(printf '%s' "${REFUSED_ENV}" | jq -r '.SECRET_PASSWORD // empty')" in
+  '{{resolve:secretsmanager:'*':AWSCURRENT}}')
+    echo "FAIL: --accept left SECRET_PASSWORD on its staged sibling's expression" >&2
+    exit 1
+    ;;
+  '{{resolve:secretsmanager:'*) echo "    OK: --accept left the path on its own expression" ;;
+  *)
+    echo "FAIL: --accept did not leave SECRET_PASSWORD as its own {{resolve:...}} expression" >&2
+    exit 1
+    ;;
+esac
+
+# (c) --revert must RE-RESOLVE the expression before handing it to the provider.
+# Shipping the literal token is the live-breakage half of issue #1914.
+echo "==> Reverting the injected drift"
+set +e
+REVERT_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --revert --yes 2>&1)
+REVERT_RC=$?
+set -e
+if [ "${REVERT_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift --revert' failed (rc=${REVERT_RC})" >&2
+  diag_output "${REVERT_OUT}"
+  exit 1
+fi
+assert_no_plaintext "'cdkd drift --revert'" "${REVERT_OUT}"
+
+REVERTED_PASSWORD=$(drift_env SECRET_PASSWORD)
+case "${REVERTED_PASSWORD}" in
+  '{{resolve:'*)
+    echo "FAIL: --revert wrote the LITERAL {{resolve:...}} token to the live Lambda: ${REVERTED_PASSWORD}" >&2
+    exit 1
+    ;;
+esac
+if [ "${REVERTED_PASSWORD}" != "${EXPECTED_PASSWORD}" ]; then
+  echo "FAIL: --revert left SECRET_PASSWORD as $(mask "${REVERTED_PASSWORD}"), expected the resolved secret" >&2
+  exit 1
+fi
+echo "    OK: --revert restored the RESOLVED secret on the live Lambda"
+
+# The whole env map is re-sent on a revert, so every OTHER reference had to be
+# re-resolved too — a fix that only handled the drifted leaf corrupts these.
+REVERTED_STAGED=$(drift_env SECRET_PASSWORD_STAGED)
+REVERTED_SECURE=$(drift_env SSM_SECURE_VALUE)
+REVERTED_FULL=$(drift_env SECRET_FULL)
+if [ "${REVERTED_STAGED}" != "${EXPECTED_PASSWORD}" ] \
+  || [ "${REVERTED_SECURE}" != "${EXPECTED_SECURE}" ] \
+  || [ "${REVERTED_FULL}" != "${EXPECTED_FULL}" ]; then
+  echo "FAIL: --revert corrupted a sibling reference the same update re-sent" >&2
+  echo "      staged=$(mask "${REVERTED_STAGED}") secure=$(mask "${REVERTED_SECURE}") full=$(mask "${REVERTED_FULL}")" >&2
+  exit 1
+fi
+echo "    OK: every sibling reference the same update re-sent stayed resolved"
+
+# ...and the revert's own state write (the #1644 narrowing record) must not have
+# persisted what it just resolved.
+POST_REVERT_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+POST_REVERT_ENV=$(printf '%s' "${POST_REVERT_STATE}" \
+  | jq -c '.state.resources | to_entries[]
+             | select(.value.resourceType=="AWS::Lambda::Function")
+             | .value.observedProperties.Environment.Variables' | head -1)
+if printf '%s' "${POST_REVERT_ENV}" | grep -qF "${EXPECTED_PASSWORD}"; then
+  echo "FAIL: --revert persisted the resolved secret into the observed baseline" >&2
+  exit 1
+fi
+if printf '%s' "${POST_REVERT_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+  echo "FAIL: --revert persisted the decrypted SecureString value into state" >&2
+  exit 1
+fi
+echo "    OK: the revert's state write kept the expressions"
+
+run_drift
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift' still reports drift after --revert (rc=${DRIFT_RC})" >&2
+  diag_output "${DRIFT_OUT}"
+  exit 1
+fi
+echo "    OK: the stack is clean again after --revert"
+
+# --- A property AWS stops reporting is UNKNOWN, not drift ------------------
+# The live twin of the write-only-credential shape (`MasterUserPassword` and
+# friends, which no readback returns). Dropping the env var out of band makes
+# `readCurrentState` answer with no SECRET_PASSWORD at all, which is the same
+# `awsValue === undefined` at a secret-bearing leaf.
+#
+# Before the fix this was three bugs at once, all introduced by resolving the
+# baseline — `calculateResourceDrift`'s `{{resolve:` skip stopped firing once
+# the state side was no longer a token: drift reported forever, `--accept`
+# writing `undefined` and so DELETING the `{{resolve:...}}` reference out of
+# state, and `--revert` re-pushing the credential on every run. No new resource
+# and no extra deploy is needed to reach it.
+echo "==> Asserting an absent readback at a secret-bearing leaf is not drift"
+drop_live_env SECRET_PASSWORD
+# The setup must be PROVEN to have taken: a silent no-op here leaves a clean
+# stack and every assertion below passes for the wrong reason. Same guard the
+# pre-fix seed further down carries.
+if [ -n "$(drift_env SECRET_PASSWORD)" ]; then
+  echo "FAIL: could not drop SECRET_PASSWORD from the live Lambda — the assertions below would pass vacuously" >&2
+  exit 1
+fi
+echo "    OK: SECRET_PASSWORD is absent from the live Lambda"
+
+run_drift
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift' reported drift for a property AWS no longer returns (rc=${DRIFT_RC})" >&2
+  diag_output "${DRIFT_OUT}"
+  exit 1
+fi
+assert_no_plaintext "'cdkd drift' on an absent secret-bearing property" "${DRIFT_OUT}"
+if printf '%s' "${DRIFT_OUT}" | grep -qF "Environment.Variables.SECRET_PASSWORD"; then
+  echo "FAIL: 'cdkd drift' named a property it cannot read back as drifted" >&2
+  exit 1
+fi
+echo "    OK: an unreadable secret-bearing property is reported as neither clean nor drifted"
+
+# ...and the reference must survive an --accept run driven by anything else.
+set_live_env DRIFT_ABSENT_PROBE "cdkd-absent-probe"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --accept --yes >/dev/null 2>&1
+ABSENT_ACCEPT_RC=$?
+set -e
+if [ "${ABSENT_ACCEPT_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift --accept' failed while a secret-bearing property was unreadable (rc=${ABSENT_ACCEPT_RC})" >&2
+  exit 1
+fi
+ABSENT_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+ABSENT_ENV=$(printf '%s' "${ABSENT_STATE}" \
+  | jq -c '.state.resources | to_entries[]
+             | select(.value.resourceType=="AWS::Lambda::Function")
+             | .value.observedProperties.Environment.Variables' | head -1)
+# The accept must have LANDED, or the reference below survives only because
+# nothing was written at all.
+if [ "$(printf '%s' "${ABSENT_ENV}" | jq -r '.DRIFT_ABSENT_PROBE // empty')" != "cdkd-absent-probe" ]; then
+  echo "FAIL: --accept did not record the probe key, so the reference assertion below is vacuous" >&2
+  exit 1
+fi
+# observedProperties, NOT properties: this record HAS an observed capture, so
+# that is the bag `--accept` rewrites (the `hasObserved` branch). Asserting
+# against `properties` reads a bag the command never touches, which passes
+# whether or not the fix is present.
+ABSENT_PW=$(printf '%s' "${ABSENT_ENV}" | jq -r '.SECRET_PASSWORD // empty')
+case "${ABSENT_PW}" in
+  '{{resolve:secretsmanager:'*':AWSCURRENT}}')
+    # Inert here — no collapse route reaches this arm — but kept so all three
+    # SECRET_PASSWORD checks in this file read the same way, and so a future
+    # change that DOES open one is caught by whichever runs first.
+    echo "FAIL: --accept left SECRET_PASSWORD on its staged sibling's expression" >&2
+    exit 1
+    ;;
+  '{{resolve:secretsmanager:'*)
+    echo "    OK: --accept left the unreadable property's reference intact in the observed baseline"
+    ;;
+  '')
+    echo "FAIL: --accept ERASED the {{resolve:...}} reference from state.observedProperties" >&2
+    exit 1
+    ;;
+  *)
+    echo "FAIL: state SECRET_PASSWORD is no longer its {{resolve:...}} expression: $(mask "${ABSENT_PW}")" >&2
+    exit 1
+    ;;
+esac
+
+# Restore: put the resolved value back and drop the probe key, then re-accept so
+# the observed baseline matches AWS again before phase 1d's seed.
+set_live_env SECRET_PASSWORD "${EXPECTED_PASSWORD}"
+drop_live_env DRIFT_ABSENT_PROBE
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --accept --yes >/dev/null 2>&1
+set -e
+run_drift
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: could not restore a clean drift state after the absent-property arm (rc=${DRIFT_RC})" >&2
+  diag_output "${DRIFT_OUT}"
+  exit 1
+fi
+echo "    OK: stack restored to a clean drift state"
+
+# (d) --accept must not carry a plaintext into state.json, on either of the two
+# routes it can arrive by.
+#
+# Route 1 is the AWS-CURRENT value: the drift is injected on a NON-secret key so
+# the accepted write is a real one, and what makes the assertion bite is that
+# before the fix every secret-bearing leaf ALSO drifted, so the same `--accept`
+# wrote every resolved secret into state.
+#
+# Route 2 is the bag ALREADY IN STATE, and it cannot be produced by driving the
+# CLI — it is what a user HAS after running `cdkd drift --accept` on a pre-fix
+# binary: `observedProperties` holding the resolved secret while `properties`
+# still holds the expression. Re-accepting for an unrelated key re-persists that
+# whole bag. So the record is seeded directly into the state bucket here, which
+# is the only way to reach the positioned redaction at all — the very pass a
+# mutation probe was used to justify, and which had no real-AWS coverage
+# without this.
+echo "==> Seeding a PRE-FIX state record (plaintext in observedProperties)"
+PREFIX_SEED=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq --arg pw "${EXPECTED_PASSWORD}" '
+      .resources |= with_entries(
+        if .value.resourceType == "AWS::Lambda::Function"
+           and (.value.observedProperties.Environment.Variables.SECRET_PASSWORD? != null)
+        then .value.observedProperties.Environment.Variables.SECRET_PASSWORD = $pw
+        else . end)') || {
+  echo "FAIL: could not read the state document to seed the pre-fix shape" >&2
+  exit 1
+}
+# Fail loudly rather than seeding nothing: every assertion below would pass
+# vacuously against an unmodified record.
+if ! printf '%s' "${PREFIX_SEED}" | grep -qF "${EXPECTED_PASSWORD}"; then
+  echo "FAIL: the pre-fix seed did not take — no plaintext in the patched document" >&2
+  exit 1
+fi
+printf '%s' "${PREFIX_SEED}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}"
+echo "    OK: state now holds the plaintext an older binary would have written"
+
+echo "==> Accepting an out-of-band env addition"
+set_live_env DRIFT_EXTRA "cdkd-drift-extra"
+set +e
+ACCEPT_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --accept --yes 2>&1)
+ACCEPT_RC=$?
+set -e
+if [ "${ACCEPT_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift --accept' failed (rc=${ACCEPT_RC})" >&2
+  diag_output "${ACCEPT_OUT}"
+  exit 1
+fi
+assert_no_plaintext "'cdkd drift --accept'" "${ACCEPT_OUT}"
+
+POST_ACCEPT_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+POST_ACCEPT_ENV=$(printf '%s' "${POST_ACCEPT_STATE}" \
+  | jq -c '.state.resources | to_entries[]
+             | select(.value.resourceType=="AWS::Lambda::Function")
+             | .value.observedProperties.Environment.Variables' | head -1)
+# Non-vacuous: the accept really did write something.
+if [ "$(printf '%s' "${POST_ACCEPT_ENV}" | jq -r '.DRIFT_EXTRA // empty')" != "cdkd-drift-extra" ]; then
+  echo "FAIL: --accept did not record the out-of-band env addition" >&2
+  exit 1
+fi
+if printf '%s' "${POST_ACCEPT_ENV}" | grep -qF "${EXPECTED_PASSWORD}"; then
+  echo "FAIL: --accept persisted the resolved secret plaintext into state.json" >&2
+  exit 1
+fi
+if printf '%s' "${POST_ACCEPT_ENV}" | grep -qF "${EXPECTED_USERNAME}"; then
+  echo "FAIL: --accept persisted the whole-secret plaintext into state.json" >&2
+  exit 1
+fi
+if printf '%s' "${POST_ACCEPT_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+  echo "FAIL: --accept persisted the decrypted SecureString value into state.json" >&2
+  exit 1
+fi
+ACCEPT_STATE_PASSWORD=$(printf '%s' "${POST_ACCEPT_ENV}" | jq -r '.SECRET_PASSWORD // empty')
+case "${ACCEPT_STATE_PASSWORD}" in
+  '{{resolve:secretsmanager:'*':AWSCURRENT}}')
+    echo "FAIL: --accept left SECRET_PASSWORD on its staged sibling's expression" >&2
+    exit 1
+    ;;
+  '{{resolve:secretsmanager:'*) : ;;
+  *)
+    echo "FAIL: --accept did not keep SECRET_PASSWORD as its own {{resolve:...}} expression" >&2
+    exit 1
+    ;;
+esac
+echo "    OK: --accept wrote the AWS-current value and left every secret leaf on its expression"
+# ...and specifically: the plaintext SEEDED into observedProperties above is
+# gone, re-redacted onto its own expression by the positioned pass. The
+# `EXPECTED_PASSWORD` grep on `POST_ACCEPT_ENV` a few lines up is what proves
+# it, but only because of the seed — without it that grep passes on a bag that
+# never held the plaintext in the first place. This line records the dependency
+# so the seed is not tidied away as setup noise.
+echo "    OK: the seeded pre-fix plaintext was re-redacted out of the observed baseline"
+
+# Restore: drop the injected key and re-accept, so Phase 1e starts from the
+# baseline Phase 1 deployed.
+drop_live_env DRIFT_EXTRA
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --accept --yes >/dev/null 2>&1
+set -e
+run_drift
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: could not restore the stack to a clean drift state (rc=${DRIFT_RC})" >&2
+  diag_output "${DRIFT_OUT}"
+  exit 1
+fi
+echo "    OK: stack restored to a clean drift state"
+
+# --- Phase 1e: standalone rollback RE-RESOLVES secret expressions (GHSA #1899) ---
 # The journal (and each state record) stores the REDACTED {{resolve:...}}
 # expression, never the plaintext. A standalone `cdkd rollback` must re-resolve
 # that expression to the concrete secret for the provider replay — replaying the
@@ -480,7 +976,7 @@ fi
 #   2. `cdkd rollback` reverts the Lambda; the fix re-resolves the expression.
 #   3. The live Lambda must carry the RESOLVED secret (never the literal), and
 #      the probe env var must be gone; state must still hold the expression.
-echo "==> Phase 1d: --no-rollback failing deploy + standalone rollback re-resolves the secret"
+echo "==> Phase 1e: --no-rollback failing deploy + standalone rollback re-resolves the secret"
 set +e
 CDKD_TEST_ROLLBACK=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --no-rollback --yes

@@ -38,6 +38,17 @@ import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
+import {
+  IntrinsicFunctionResolver,
+  type ResolverContext,
+} from '../../deployment/intrinsic-function-resolver.js';
+import {
+  maskSecretsInText,
+  redactSecretsForState,
+  SECRET_MASK,
+  STATE_SOURCED_READBACK_RULES,
+  type RecordedSecretValues,
+} from '../../deployment/secret-redaction.js';
 import type { ReadCurrentStateContext, ResourceProvider } from '../../types/resource.js';
 import type { ResourceState, StackState } from '../../types/state.js';
 
@@ -62,8 +73,63 @@ type DriftOutcome =
        * `readCurrentState`. Captured here so `--revert` can pass it to
        * `provider.update` as the `previousProperties` argument without
        * re-issuing the read.
+       *
+       * Deliberately UNREDACTED (issue #1914): this bag is handed to
+       * `provider.update` as the AWS-current side, so a `{{resolve:...}}`
+       * expression written over a secret leaf would tell the provider AWS
+       * currently holds the literal token.
+       *
+       * So it must not be printed or persisted RAW, which is not the same as
+       * never reaching either. It reaches state on one path — `--revert` sends
+       * `buildRevertNewProperties`'s merge of it with the desired subtrees, and
+       * the provider's echo of that becomes the #1644 narrowing delta — and
+       * that path redacts it before the write. It reaches stdout on one path
+       * too: the revert PLAN derives tag / untemplated-key PATH names from it,
+       * and those are masked where they are PRINTED — the lists themselves stay
+       * unmasked because their callers use them as KEY SETS. Everything else reads
+       * `changes`, which is redacted as the outcome is constructed.
        */
       awsProperties: Record<string, unknown>;
+      /**
+       * `plaintext -> {{resolve:...}}` for every SECRET dynamic reference the
+       * drift comparison re-resolved out of this resource's baseline and its
+       * `properties` (issue #1914). Empty for the overwhelming majority of
+       * resources, which carry no dynamic reference at all.
+       *
+       * Read by `runAccept`, which redacts the baseline it is about to persist
+       * with the same map the comparison built — the `--accept` write is fed by
+       * a live AWS readback and is therefore a disclosure surface of its own.
+       * `runRevert` deliberately does NOT read it: a revert needs the
+       * resolution direction (expression -> today's plaintext) against AWS as
+       * it is NOW, so it re-derives its own map rather than inverting this one.
+       */
+      secrets: RecordedSecretValues;
+      /**
+       * The `changes[].path` values whose reported value cdkd could not
+       * identify — a masked VALUE at a known-secret path, or a masked PATH
+       * (issue #1914).
+       *
+       * Carried rather than re-derived by comparing against `SECRET_MASK`,
+       * which would false-refuse a property whose real value is the string
+       * `***` and cannot see a masked path at all. Read by
+       * `acceptRefusalReason` (shared by the `--accept` write and its plan) and
+       * by `runRevert`, which cannot overlay a subtree whose TOP-LEVEL segment
+       * it can no longer name.
+       */
+      maskedPaths: SecretPathSet;
+      /**
+       * Whether cdkd failed to fully resolve this resource's dynamic
+       * references — the lookup threw, OR a `{{resolve:...}}` token survived
+       * the pass (issue #1914).
+       *
+       * Read by `printRevertPlan`, which derives its tag / untemplated-key
+       * lists from the deliberately-unredacted `awsProperties` and masks them
+       * with `secrets`. `secrets.size === 0` is NOT the same question: a
+       * resource with one resolvable `secretsmanager` reference AND one
+       * `ssm-secure` survivor has a non-empty map that still cannot mask what
+       * the survivor's position holds.
+       */
+      referencesUnresolved: boolean;
     }
   | { kind: 'clean'; logicalId: string; resourceType: string }
   | { kind: 'unsupported'; logicalId: string; resourceType: string }
@@ -456,6 +522,488 @@ function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUn
 }
 
 /**
+ * Does any string anywhere in `value` carry a `{{resolve:...}}` dynamic
+ * reference?
+ *
+ * Cheap pre-check so the overwhelming majority of resources — which reference
+ * no secret at all — never build a resolver context and never pay a deep clone
+ * of their property bag.
+ */
+function containsDynamicReference(value: unknown): boolean {
+  if (typeof value === 'string') return value.includes('{{resolve:');
+  if (Array.isArray(value)) return value.some(containsDynamicReference);
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(containsDynamicReference);
+  }
+  return false;
+}
+
+/**
+ * The dotted property paths at which a resource is KNOWN to carry a secret,
+ * learned while re-resolving its state bags (issue #1914).
+ *
+ * Recorded at the leaf's OWN dotted path. That is a finer coordinate space than
+ * the one `calculateResourceDrift` reports in — it never descends an array, so
+ * a secret at `Tags.0.Value` surfaces as a drift on `Tags` — which is what
+ * {@link isSecretBearingPath}'s prefix test exists to bridge, in both
+ * directions at once.
+ */
+type SecretPathSet = Set<string>;
+
+/**
+ * Byte-for-byte the threshold `secret-redaction.ts` applies when it builds its
+ * substring needles (`MIN_NEEDLE_LENGTH`). Copied rather than imported because
+ * that constant is module-private there and this file may not widen its
+ * exports; the two must agree or this function would call a leaf secret-bearing
+ * that `redactSecretsForState` will not redact.
+ */
+const MIN_SECRET_NEEDLE_LENGTH = 4;
+
+/**
+ * Does `value` hold a plaintext this pass has recorded as a secret?
+ *
+ * Two branches with deliberately different strictness, and the asymmetry is the
+ * point. A WHOLE-value match is exact evidence at any length, so it is accepted
+ * unconditionally. A SUBSTRING match is only evidence when the plaintext is
+ * long enough to be distinctive: a 1-3 character secret (a JSON key holding
+ * `"0"`) occurs inside unrelated values constantly, and accepting it would mark
+ * half the resource's paths secret-bearing — masking values that are not
+ * secrets and, worse, making `--accept` refuse them.
+ *
+ * So this errs toward NOT marking on the substring branch, and that direction
+ * is chosen rather than inherited: `redactSecretsForState` applies the same
+ * threshold when it builds needles, so a sub-threshold plaintext is not
+ * substituted there either. Marking a path this function's caller cannot
+ * actually redact would produce a `***` with no mechanism behind it.
+ */
+function carriesRecordedSecret(value: string, secrets: RecordedSecretValues): boolean {
+  if (value === '') return false;
+  if (secrets.has(value)) return true;
+  for (const plaintext of secrets.keys()) {
+    if (plaintext.length >= MIN_SECRET_NEEDLE_LENGTH && value.includes(plaintext)) return true;
+  }
+  return false;
+}
+
+/**
+ * Is this unresolvable token one whose value is a SECRET by definition?
+ *
+ * `ssm-secure` is the only such spelling, and it is decidable with no lookup:
+ * CloudFormation defines exactly three dynamic-reference services (`ssm`,
+ * `ssm-secure`, `secretsmanager`), cdkd resolves the other two, and
+ * `ssm-secure` is the encrypted one.
+ *
+ * Anything else reaching the survivor arm is not a CloudFormation dynamic
+ * reference at all — it is text that merely looks like one — and treating it as
+ * secret is not the safe direction it appears to be: the path would be masked
+ * to `***`, refused by `--accept`, and pinned to the live value by
+ * {@link preserveLiveValuesAtUnresolvedTokens}, which is permanently stuck
+ * drift with no remedy the user can apply. Such a token is still REPORTED; it
+ * just does not claim to be a secret.
+ */
+function isSecretBySpelling(token: string): boolean {
+  return token.startsWith('{{resolve:ssm-secure:');
+}
+
+/**
+ * Every `{{resolve:...}}` token still present in `value`.
+ *
+ * Used to NAME an unresolvable reference without quoting the string it sits in.
+ * That string is a partially substituted leaf: `resolveDynamicReferences`
+ * substitutes token by token, so a leaf holding two references comes back with
+ * the resolvable one already replaced by its PLAINTEXT. Interpolating it into a
+ * log line prints the secret — from the command whose purpose is not to. A
+ * token is a reference NAME and carries no value, so it is always safe to show.
+ */
+function survivingDynamicReferences(value: string): string[] {
+  // `[^}]+`, matching `intrinsic-function-resolver.ts`'s own scan pattern
+  // exactly. The two MUST agree or a token the resolver tried and left behind
+  // is reported by neither — a `{` inside a token (`{{resolve:ssm:/a{b}}`) is
+  // the shape that separates them. Note this is the OPPOSITE agreement from
+  // {@link isWholeDynamicReference}, which mirrors `secret-redaction.ts`
+  // instead; they answer different questions against different modules and
+  // there is no single class that can serve both.
+  return value.match(/\{\{resolve:[^}]+\}\}/g) ?? [];
+}
+
+/**
+ * Record the dotted path of every leaf holding a `{{resolve:...}}` string.
+ *
+ * The OFFLINE seed for {@link SecretPathSet}: it needs no AWS call, so it is
+ * what remains when resolution fails. Issue #1900's mechanism applied to
+ * positions instead of values — the record's own bags already say WHERE the
+ * references are, and that is the half of the answer a failed lookup does not
+ * take away.
+ *
+ * Necessarily coarser than the resolved answer, because a `{{resolve:ssm:...}}`
+ * naming a plain `String` parameter is PUBLIC config and only the resolver's
+ * TYPE verdict can say so. Marking such a path secret-bearing over-masks it,
+ * which is why the seed is used ONLY on the failure path, where the alternative
+ * is not masking at all.
+ */
+function collectDynamicReferencePaths(value: unknown, into: SecretPathSet, path = ''): void {
+  if (typeof value === 'string') {
+    if (value.includes('{{resolve:')) into.add(path);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, i) =>
+      collectDynamicReferencePaths(item, into, path === '' ? String(i) : `${path}.${i}`)
+    );
+    return;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      collectDynamicReferencePaths(v, into, path === '' ? k : `${path}.${k}`);
+    }
+  }
+}
+
+/**
+ * Re-resolve the SECRET dynamic references (`{{resolve:secretsmanager:...}}`,
+ * and an `{{resolve:ssm:...}}` naming a `SecureString`) held by a bag read back
+ * out of cdkd STATE (issue #1914).
+ *
+ * State stores the unresolved EXPRESSION — that is the GHSA-p5qg-v9gv-hc7w
+ * redaction — while a provider's `readCurrentState` snapshot necessarily holds
+ * the resolved PLAINTEXT, because that is what AWS was given at deploy time.
+ * Nothing in `cdkd drift` reconciled the two, and all three of the command's
+ * modes broke on it: the comparison reported permanent phantom drift and
+ * printed the plaintext as the AWS-current side, `--accept` persisted that
+ * plaintext back into `state.json`, and `--revert` shipped the literal
+ * `{{resolve:...}}` string to the live resource.
+ *
+ * The counterpart of the rollback replay's `resolveReplayProps`
+ * (`src/deployment/rollback-executor.ts`), and for the same reason: both
+ * commands are synth-free, so the expression string in the persisted record is
+ * the only thing there is to resolve from. Every plaintext is recorded into
+ * `secrets` so the caller can redact it back out of anything it PRINTS or
+ * PERSISTS, and every path that produced one into `secretPaths` so the caller
+ * can act on a value it does NOT recognise there — see {@link redactDriftChanges}.
+ *
+ * A `{{resolve:...}}` token that SURVIVES the pass is reported through
+ * `onUnresolved` and left in place — it is not an error. The resolver's
+ * unsupported-service arm (`ssm-secure:` is the live example) warns and returns
+ * the literal, and `cdkd deploy` resolves through the very same code, so AWS is
+ * ALREADY holding that literal string and state records it. Replaying it is
+ * therefore a correct no-op, and failing the resource over it would take every
+ * other drifted property on that resource down with it (plus exit 2). The
+ * report exists so the user learns cdkd is shipping a token it cannot resolve,
+ * which is a real thing to know and not a reason to stop.
+ *
+ * Only the TOKENS are reported, never the leaf that held them: the leaf is
+ * partially substituted by this point, so a mixed `secretsmanager` +
+ * `ssm-secure` string comes back carrying real plaintext.
+ *
+ * Returns the input by identity when it holds no dynamic reference, so the
+ * non-secret path is unchanged down to object identity.
+ */
+async function resolveStateSecretExpressions(
+  props: Record<string, unknown>,
+  resolver: IntrinsicFunctionResolver,
+  secrets: RecordedSecretValues,
+  options: {
+    secretPaths?: SecretPathSet;
+    onUnresolved?: (tokens: string[], path: string) => void;
+  } = {}
+): Promise<Record<string, unknown>> {
+  if (!containsDynamicReference(props)) return props;
+  const { secretPaths, onUnresolved } = options;
+  const ctx: ResolverContext = {
+    template: { Resources: {} },
+    resources: {},
+    recordedSecretValues: secrets,
+  };
+  const walk = async (v: unknown, path: string): Promise<unknown> => {
+    if (typeof v === 'string') {
+      if (!v.includes('{{resolve:')) return v;
+      const resolved = await resolver.resolveDynamicReferences(v, ctx);
+      // Only tokens that were in the INPUT. The scan runs over the RESOLVED
+      // string, so a secret whose plaintext happens to contain
+      // `{{resolve:...}}`-shaped text would otherwise be reported verbatim by
+      // the very warning that exists to avoid printing values.
+      const survivors = survivingDynamicReferences(resolved).filter((t) => v.includes(t));
+      if (survivors.length > 0) {
+        // The position is secret-bearing even though nothing was recorded for
+        // it — but only for a spelling that IS a secret. `ssm-secure` is, by
+        // definition, and the value at such a path is emphatically not safe to
+        // print: CloudFormation resolves it SERVER-side, so a record adopted by
+        // `cdkd import --migrate-from-cloudformation` has the literal token in
+        // state while AWS holds the PLAINTEXT. Without this the report, the
+        // `--json` payload and `--accept` all see it unmasked.
+        if (survivors.some(isSecretBySpelling)) secretPaths?.add(path);
+        onUnresolved?.(survivors, path);
+      }
+      // A recorded plaintext at this leaf means the leaf is secret-bearing —
+      // permanently, not only for the value it holds right now. That is the
+      // fact `redactDriftChanges` needs when AWS answers with something the
+      // secrets map does NOT contain (a rotated-away previous version, an
+      // out-of-band edit): the value is unrecognisable but the POSITION is
+      // still known to hold a secret.
+      if (carriesRecordedSecret(resolved, secrets)) secretPaths?.add(path);
+      return resolved;
+    }
+    if (Array.isArray(v)) {
+      const out: unknown[] = new Array(v.length) as unknown[];
+      // Indexed like any other segment — this is the plain walk, with no
+      // array-specific rule at all. Bridging it to the coordinate space the
+      // comparator reports in (which never descends an array, so a secret at
+      // `Tags.0.Value` surfaces as a drift on `Tags`) is entirely
+      // {@link isSecretBearingPath}'s prefix test, and that test is what a
+      // mutation probe reds. Collapsing the index here would ALSO work, which
+      // is exactly why nothing here argues for one over the other: the choice
+      // is unobservable, so the code takes the form with no special case.
+      for (let i = 0; i < v.length; i++) {
+        out[i] = await walk(v[i], path === '' ? String(i) : `${path}.${i}`);
+      }
+      return out;
+    }
+    if (v !== null && typeof v === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, val] of Object.entries(v)) {
+        out[k] = await walk(val, path === '' ? k : `${path}.${k}`);
+      }
+      return out;
+    }
+    return v;
+  };
+  return (await walk(props, '')) as Record<string, unknown>;
+}
+
+/**
+ * Is a drift reported at `path` positioned on, or above, a known secret?
+ *
+ * The PREFIX direction is the one that matters: a secret sits at a leaf (or at
+ * an array the comparator never descends), while a drift can be reported at any
+ * ancestor of it — `Environment` rather than
+ * `Environment.Variables.SECRET_PASSWORD` — whenever the two sides disagree
+ * about the shape rather than the value. The reverse containment is checked too
+ * and costs nothing.
+ */
+function isSecretBearingPath(path: string, secretPaths: SecretPathSet): boolean {
+  if (secretPaths.size === 0) return false;
+  for (const secretPath of secretPaths) {
+    if (
+      secretPath === path ||
+      secretPath.startsWith(`${path}.`) ||
+      path.startsWith(`${secretPath}.`)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Redact one side of a drift entry.
+ *
+ * Two passes, and the second is the one issue #1914's review turned up. The
+ * VALUE pass rewrites any recorded plaintext back onto its own
+ * `{{resolve:...}}` expression, which is exact and is all that is needed while
+ * the secret AWS holds is the secret the reference resolves to today.
+ *
+ * It stops being enough the moment those two differ, and they differ for the
+ * most ordinary reason there is: a Secrets Manager ROTATION. The deployed
+ * resource then still holds the PREVIOUS secret while the re-resolved baseline
+ * holds the new one, so the path drifts and the AWS side matches no key in a
+ * map built from today's value — it is a real secret that would be printed
+ * verbatim and persisted by `--accept`. An out-of-band edit is
+ * indistinguishable from it at this layer, so the POSITION decides: at a path
+ * known to carry a secret, the only value ever shown is the expression itself,
+ * and anything else becomes {@link SECRET_MASK}.
+ *
+ * `undefined` and `null` are exempt — an absent or null key discloses nothing,
+ * and masking them would turn "AWS does not have this key" into "AWS has
+ * something secret here", which is both wrong and less useful.
+ */
+function redactDriftValue(
+  value: unknown,
+  secrets: RecordedSecretValues,
+  secretBearing: boolean
+): unknown {
+  const redacted = redactSecretsForState(value, secrets);
+  if (!secretBearing) return redacted;
+  if (redacted === undefined || redacted === null) return redacted;
+  if (typeof redacted === 'string' && isWholeDynamicReference(redacted)) return redacted;
+  return SECRET_MASK;
+}
+
+/**
+ * Is the WHOLE string a single `{{resolve:...}}` token and nothing else?
+ *
+ * Byte-for-byte `secret-redaction.ts`'s `isSingleDynamicReferenceToken`,
+ * including the `[^{}]*` character class. The difference from `[^}]+` is
+ * narrow and worth stating correctly: it is a `{` INSIDE the token, e.g.
+ * `{{resolve:ssm:/a{b}}`. (A previous version of this comment claimed
+ * `{{resolve:a}}{{resolve:b}}` would pass under `[^}]+` — it would not, since
+ * `[^}]+` cannot span the `}` in the middle either.) Matching the sibling
+ * exactly is what matters here: this predicate decides whether a value may be
+ * shown INSTEAD of `SECRET_MASK`, and `redactByPath` uses its copy to decide
+ * whether a leaf is already an expression, so a disagreement would let one of
+ * them treat as a token what the other treats as data. Copied rather than
+ * imported because that helper is module-private and this file may not widen
+ * that module's exports.
+ */
+function isWholeDynamicReference(value: string): boolean {
+  return /^\{\{resolve:[^{}]*\}\}$/.test(value);
+}
+
+/**
+ * Why `--accept` must not persist this drift, or `undefined` when it may.
+ *
+ * Shared by the WRITE (`runAccept`) and the PLAN (`printAcceptPlan`) so the two
+ * cannot disagree — a `--dry-run` that promises a write the real run refuses is
+ * worse than either behaviour on its own.
+ *
+ * Two refusals, both about a value cdkd could not identify rather than about
+ * secrecy as such:
+ *
+ * - A masked VALUE says AWS holds something at a known-secret path that is not
+ *   what the reference resolves to. Writing `***` would corrupt the baseline
+ *   and make the next deploy push the literal mask at AWS.
+ * - A masked PATH says the readback answered with a map KEYED by a secret.
+ *   `setAtPath` would then create a key literally named `***` — and when
+ *   `awsValue` is `undefined` it would INSERT that key rather than removing the
+ *   real one, so the value check alone does not cover it.
+ *
+ * The path check is what makes the value exemptions safe: `redactDriftValue`
+ * lets `undefined` / `null` / a whole expression through unmasked, which is
+ * right for a value and says nothing about the path it sits at.
+ */
+function acceptRefusalReason(
+  change: PropertyDrift,
+  maskedPaths: SecretPathSet
+): string | undefined {
+  if (!maskedPaths.has(change.path)) return undefined;
+  if (change.path.includes(SECRET_MASK)) {
+    return (
+      'its property NAME came back carrying a secret value, so cdkd cannot name the key to ' +
+      'write — and no redaction pass can clear it either, since they all walk values and never ' +
+      'keys. ROTATE the secret; that is the only remedy'
+    );
+  }
+  if (change.awsValue === undefined) {
+    return (
+      'AWS no longer reports it, and accepting an absence DELETES the key — which at or above ' +
+      'a secret dynamic reference would erase the reference out of cdkd state. Use --revert to ' +
+      'push it back, or re-deploy'
+    );
+  }
+  return (
+    'it carries a secret dynamic reference and the value AWS currently holds is not the one ' +
+    'the reference resolves to'
+  );
+}
+
+/**
+ * Redact resolved secret plaintext out of the drift entries that get REPORTED
+ * (issue #1914).
+ *
+ * Both sides need it, for different reasons. `stateValue` comes from the
+ * re-resolved comparison baseline, so at a secret leaf it now holds the
+ * plaintext the state record deliberately does not store. `awsValue` is the
+ * live readback, which holds that plaintext by construction. Either one
+ * reaching `writeHumanReport` / `writeJsonReport` / the `--accept` and
+ * `--revert` plans is the disclosure the redaction exists to prevent.
+ *
+ * Redacting `awsValue` also settles what `--accept` PERSISTS: that is the value
+ * it writes into the baseline, so a secret one arrives at the state write
+ * already carrying its expression — or, when it could not be recognised, as
+ * {@link SECRET_MASK}, which `runAccept` refuses to persist.
+ *
+ * The PATH is redacted too. `redactSecretsForState` walks values and never
+ * object KEYS, so a readback that answers with a map keyed by a secret (a
+ * Lambda env var NAMED with one) renders as
+ * `Environment.Variables.<plaintext>` in every printer. It is masked here
+ * rather than assumed impossible, and a masked path also marks the change
+ * secret-bearing, so `--accept` will not write a key it can no longer name.
+ *
+ * Returns the input array by identity when there is nothing to act on.
+ */
+function redactDriftChanges(
+  changes: PropertyDrift[],
+  secrets: RecordedSecretValues,
+  secretPaths: SecretPathSet
+): { changes: PropertyDrift[]; maskedPaths: SecretPathSet } {
+  if (secrets.size === 0 && secretPaths.size === 0) {
+    return { changes, maskedPaths: new Set<string>() };
+  }
+  // The paths whose reported value cdkd could not identify. Returned rather
+  // than re-derived downstream by comparing against `SECRET_MASK`: a property
+  // whose real value happens to BE the string `***` would otherwise be refused
+  // by `--accept` for no reason, and a masked PATH is not detectable from the
+  // value at all.
+  const maskedPaths = new Set<string>();
+  const redacted: PropertyDrift[] = [];
+  for (const change of changes) {
+    // NOTE the asymmetry with `printRevertPlan`, which loudly WITHHOLDS its
+    // key lists when a resource's references could not be resolved: here the
+    // path is simply left as it is, because on that path `secrets` is empty and
+    // `maskSecretsInText` has nothing to match. Both are the same limit — a
+    // value cdkd never resolved cannot be recognised inside a KEY — but only
+    // the plan can withhold, since a drift entry without its path says nothing
+    // at all.
+    const maskedPath = maskSecretsInText(change.path, secrets);
+    // Two independent reasons a change is secret-bearing, and they are kept
+    // apart because only one of them licenses the DROP below: the POSITION is
+    // known to hold a secret, or the property NAME turned out to carry one.
+    const positionIsSecret = isSecretBearingPath(change.path, secretPaths);
+    const nameCarriesSecret = maskedPath !== change.path;
+    const secretBearing = positionIsSecret || nameCarriesSecret;
+    // EXACT, not the prefix match above. `isSecretBearingPath` deliberately
+    // matches ANCESTORS so a drift reported above a secret is masked — but that
+    // is the wrong granularity for the drop below, which claims a property
+    // cannot be READ BACK. That is a fact about a leaf. A whole `Environment`
+    // block disappearing from AWS (the console's "remove all environment
+    // variables") is real drift the user wants to see, and pre-#1914 it WAS
+    // reported, because the `{{resolve:` skip only ever covered leaf strings.
+    const positionIsSecretLeaf = secretPaths.has(change.path);
+    // An ABSENT AWS value at a secret-bearing path is "AWS cannot read this
+    // back", not "AWS changed it" — a write-only credential (RDS / DocDB /
+    // Neptune / ElastiCache / Cognito all declare no `getDriftUnknownPaths`)
+    // simply is not returned by any readback. Dropping it RESTORES the
+    // pre-#1914 behaviour exactly: `calculateResourceDrift`'s `{{resolve:`
+    // skip used to cover this, and it stopped covering it precisely because
+    // this PR makes the baseline arrive RESOLVED, so the state side is no
+    // longer a `{{resolve:` string.
+    //
+    // Reporting it instead is not a smaller change, it is three bugs: `cdkd
+    // drift` exits 1 forever on any stack with a templated credential;
+    // `--accept` writes `undefined` at the path, which `setAtPath` turns into a
+    // DELETED key — erasing the `{{resolve:...}}` reference from `properties`
+    // altogether; and `--revert` re-pushes the credential to AWS on every run.
+    // Masking-and-refusing instead of dropping fixes only the second.
+    // Scoped to `positionIsSecretLeaf`, NOT to `secretBearing` and NOT to the
+    // prefix match: the rationale is that a write-only credential is not
+    // readable, which is a fact about ONE LEAF. A key whose NAME carries a
+    // secret and that AWS no longer has is ordinary drift; so is a whole
+    // subtree vanishing.
+    if (positionIsSecretLeaf && change.awsValue === undefined) continue;
+    const stateValue = redactDriftValue(change.stateValue, secrets, secretBearing);
+    const awsValue = redactDriftValue(change.awsValue, secrets, secretBearing);
+    // `secretBearing &&` is load-bearing: without it a property whose REAL
+    // value is the string `***` at an ordinary path lands here and `--accept`
+    // refuses it forever. At a secret-bearing path the two are genuinely
+    // indistinguishable, so refusing is right there.
+    if (
+      maskedPath !== change.path ||
+      (secretBearing && awsValue === SECRET_MASK) ||
+      // An ABSENT value that survived the drop above — a subtree that vanished
+      // from AWS, or an ancestor of a secret. It IS real drift and is reported,
+      // but `--accept` must not persist it: `setAtPath(bag, path, undefined)`
+      // DELETES the key, which at or above a secret position erases the
+      // `{{resolve:...}}` reference out of `properties` altogether. `--revert`
+      // is the operation that fixes this shape.
+      (secretBearing && change.awsValue === undefined)
+    ) {
+      maskedPaths.add(maskedPath);
+    }
+    redacted.push({ path: maskedPath, stateValue, awsValue });
+  }
+  return { changes: redacted, maskedPaths };
+}
+
+/**
  * Run drift detection for one stack and shape the per-resource outcomes
  * into a {@link StackDriftReport}. The state object + etag are stored on
  * the report so `--accept` can write back without a re-read, and
@@ -480,6 +1028,28 @@ async function runDriftForStack(
   return await withStackName(stackName, async () => {
     const outcomes: DriftOutcome[] = [];
     const state: StackState = result.state;
+    const logger = getLogger();
+    // Issue #1914: the resolver used to re-resolve the secret expressions this
+    // stack's records store. Only ever CALLED for a bag that actually holds a
+    // `{{resolve:...}}` string, so a stack with no dynamic reference makes no
+    // AWS call here.
+    //
+    // One instance per stack, but the DEDUPLICATION is not this instance's
+    // doing, and the distinction matters under `--all`: resolved values live in
+    // the module-global `cachedDynamicReferences`
+    // (`intrinsic-function-resolver.ts`), and a secretsmanager / ssm lookup
+    // goes through the AMBIENT `getAwsClients()` rather than through the
+    // `region` handed to this constructor. So an expression is fetched once per
+    // PROCESS, not once per stack, and against the ambient region regardless of
+    // which stack's record named it. That is INHERITED rather than chosen —
+    // `cdkd deploy` caches on exactly the same terms, so one expression naming
+    // different secrets in two regions is already unrepresentable there — and
+    // it is a real hazard for a cross-region `--all` run — `--all --revert` can
+    // push one region's secret into another region's resource. Filed as issue
+    // [#1933](https://github.com/go-to-k/cdkd/issues/1933) and deliberately not
+    // papered over here: a per-region cache belongs in the resolver, where
+    // every caller inherits it, not in one command's private workaround.
+    const secretResolver = new IntrinsicFunctionResolver(region);
     const entries = Object.entries(state.resources ?? {}).sort(([a], [b]) => a.localeCompare(b));
 
     for (const [logicalId, resource] of entries) {
@@ -621,6 +1191,123 @@ async function runDriftForStack(
       // template don't fire false positives on every run.
       const useObserved = resource.observedProperties !== undefined;
       const baseline = useObserved ? resource.observedProperties! : (resource.properties ?? {});
+      // Issue #1914: the baseline comes out of STATE, where a secret dynamic
+      // reference is stored as its unresolved `{{resolve:...}}` expression
+      // (GHSA-p5qg-v9gv-hc7w), while `aws` is a live readback holding the
+      // resolved plaintext. An expression never equals a plaintext, so without
+      // this the two sides could not agree and every dynamic-ref stack reported
+      // permanent phantom drift — with the plaintext printed as the AWS-current
+      // side of the diff.
+      //
+      // Resolved for COMPARISON ONLY: `resource.observedProperties` /
+      // `resource.properties` are untouched, so nothing here can widen what
+      // state holds. What the resolution DOES leak forward is the plaintext now
+      // sitting in `changes[].stateValue`, which `redactDriftChanges` puts back
+      // on its expression before the outcome is built.
+      const secrets: RecordedSecretValues = new Map();
+      // PROVEN secret paths — filled by resolution, so a `{{resolve:ssm:...}}`
+      // naming a plain `String` parameter correctly stays out of it.
+      const secretPaths: SecretPathSet = new Set<string>();
+      // ...and the OFFLINE fallback, computed with no AWS call from where the
+      // `{{resolve:` strings simply ARE. Only used when resolution fails, where
+      // the alternative is no positional masking at all — and that is not a
+      // theoretical gap: the likeliest failure is a least-privilege role, and
+      // the comparator's `{{resolve:` skip only re-arms for a LEAF whose state
+      // side is a string. A resource whose `observedProperties` lack the secret
+      // key while `properties` have it drifts at the ANCESTOR, with the whole
+      // AWS subtree — plaintext included — as `awsValue`. Coarser than the
+      // proven set (it cannot tell a public ssm reference from a secret one),
+      // so it over-masks; that is the direction to err in when the choice is
+      // against printing a secret.
+      const seededSecretPaths: SecretPathSet = new Set<string>();
+      collectDynamicReferencePaths(baseline, seededSecretPaths);
+      if (useObserved) collectDynamicReferencePaths(resource.properties ?? {}, seededSecretPaths);
+      const unresolvedTokens = new Set<string>();
+      const noteUnresolved = (tokens: string[]): void => {
+        for (const token of tokens) unresolvedTokens.add(token);
+      };
+      let comparisonBaseline = baseline;
+      let secretResolutionFailed = false;
+      try {
+        comparisonBaseline = await resolveStateSecretExpressions(
+          baseline,
+          secretResolver,
+          secrets,
+          { secretPaths, onUnresolved: noteUnresolved }
+        );
+        // The record's `properties` are resolved into the SAME map and path set
+        // (the resolved bag is thrown away — only those two are wanted) so a
+        // leaf the observed baseline never captured is still redactable.
+        // Without it, a resource whose readback omitted a secret-bearing key at
+        // deploy time has no map entry for that secret, and the live value AWS
+        // returns for it now would reach both the report and `--accept`'s state
+        // write in plaintext. Issue #1900's shape, arriving here through the
+        // observed capture instead of an UNCHANGED resource. Free unless the
+        // template side names a reference the baseline does not, since resolved
+        // values are cached.
+        if (useObserved) {
+          await resolveStateSecretExpressions(resource.properties ?? {}, secretResolver, secrets, {
+            secretPaths,
+            onUnresolved: noteUnresolved,
+          });
+        }
+      } catch (err) {
+        // Before this issue `cdkd drift` made no secret lookups at all, so
+        // every way one can fail is a failure mode this change INTRODUCED: a
+        // deleted secret, a version rotated out from under a pinned reference,
+        // or — the likeliest — a least-privilege role that was never granted
+        // `secretsmanager:GetSecretValue` / `ssm:GetParameter` because drift
+        // never needed them. Letting it propagate would abort the whole
+        // command: every remaining resource, and under `--all` every remaining
+        // STACK, over one unreadable reference on one resource.
+        //
+        // Degrade to the pre-issue behaviour for THIS resource instead. The
+        // unresolved baseline still carries its `{{resolve:...}}` strings, so
+        // `calculateResourceDrift`'s skip suppresses the phantom drift exactly
+        // as it did before — the resource's secret-bearing paths are simply not
+        // compared, which is what the command already did and is strictly
+        // better than not running at all.
+        //
+        // The VALUE map is cleared: a partial one would redact some leaves and
+        // not others, unevenly and for a reason no reader could see. The PATH
+        // answer is not lost with it — `seededSecretPaths` was computed offline
+        // and takes over below, because the skip does not cover a drift
+        // reported ABOVE a secret leaf.
+        secretResolutionFailed = true;
+        comparisonBaseline = baseline;
+        logger.warn(
+          `${logicalId} (${resource.resourceType}): could not resolve the dynamic reference(s) ` +
+            `this resource's state records, so its secret-bearing properties are NOT compared — ` +
+            // Masked BEFORE the map is cleared, and that ordering is the whole
+            // reason the clear is below rather than above. The message comes
+            // from an external system whose wording cdkd does not control, and
+            // a partially completed pass can already hold a plaintext.
+            `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
+        );
+        secrets.clear();
+      }
+      if (unresolvedTokens.size > 0) {
+        // Not a failure: `cdkd deploy` resolves through this same code, so AWS
+        // already holds these literals and state records them. Worth saying
+        // once per resource, and safe to say — a token names a reference, not a
+        // value.
+        //
+        // The revert clause is deliberately conditional. Preservation only
+        // applies where the property's WHOLE value is the token; a token
+        // EMBEDDED in a larger string (`"jdbc:...password={{resolve:ssm-secure:/pw}}"`)
+        // is not preserved, and this is the message the user reads immediately
+        // before the confirmation prompt — promising an untouched live value
+        // there would misinform someone about to authorise a destructive write.
+        logger.warn(
+          `${logicalId} (${resource.resourceType}): cdkd cannot resolve ` +
+            `${maskSecretsInText([...unresolvedTokens].join(', '), secrets)} — those properties ` +
+            `are NOT compared. A revert leaves a property whose WHOLE value is one of these ` +
+            `tokens untouched; where a token is EMBEDDED in a longer string, the revert writes ` +
+            `that string with the token literal, exactly as 'cdkd deploy' does — so a resolved ` +
+            `value AWS holds there WOULD be overwritten. cdkd resolves 'secretsmanager' and ` +
+            `'ssm' references only.`
+        );
+      }
       // Observed-baseline blind spot (issue #1498): the snapshot is captured
       // per-resource BEFORE dependent sibling resources run, so a parent key
       // that a sibling resource type materializes later (ECS
@@ -646,7 +1333,7 @@ async function runDriftForStack(
       // left alone and still reported. No AWS call unless a unique id is
       // actually present.
       const normalized = await canonicalizePrincipalUniqueIds(
-        baseline,
+        comparisonBaseline,
         aws,
         resolvePrincipalUniqueId
       );
@@ -705,15 +1392,35 @@ async function runDriftForStack(
         unionWalkObjects: useObserved,
         unorderedPaths,
       });
-      if (changes.length === 0) {
+      // Issue #1914: redacted BEFORE the outcome exists, so no reader can be
+      // added later that sees the plaintext. Every consumer of a drifted
+      // outcome — the human report, the `--json` payload, both plans, and the
+      // value `--accept` writes into state — reads `changes`.
+      //
+      // The PROVEN path set when resolution succeeded, the offline seed when it
+      // did not — never a half-populated mixture of the two.
+      //
+      // Run BEFORE the clean/drifted decision, not inside the drifted arm: this
+      // pass can DROP a change (an absent AWS value at a secret-bearing path is
+      // unknown, not drift), and deciding on the raw list first produced a
+      // `drifted` outcome with an empty change list — a report that says drift
+      // was detected and then shows nothing.
+      const reported = redactDriftChanges(
+        changes,
+        secrets,
+        secretResolutionFailed ? seededSecretPaths : secretPaths
+      );
+      if (reported.changes.length === 0) {
         outcomes.push({ kind: 'clean', logicalId, resourceType: resource.resourceType });
       } else {
         outcomes.push({
           kind: 'drifted',
           logicalId,
           resourceType: resource.resourceType,
-          changes,
+          ...reported,
           awsProperties: aws,
+          secrets,
+          referencesUnresolved: secretResolutionFailed || unresolvedTokens.size > 0,
         });
       }
     }
@@ -760,6 +1467,21 @@ export function buildReadCurrentStateContext(
     };
   }
   return { siblings };
+}
+
+/**
+ * Read the value at a dotted path, or `undefined` when any segment is missing.
+ * The read counterpart of {@link setAtPath}, and it parses the same subset:
+ * the drift comparator only synthesizes paths through plain objects.
+ */
+function getAtPath(source: unknown, path: string): unknown {
+  if (path.length === 0) return source;
+  let cursor: unknown = source;
+  for (const segment of path.split('.')) {
+    if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor)) return undefined;
+    cursor = (cursor as Record<string, unknown>)[segment];
+  }
+  return cursor;
 }
 
 function setAtPath(target: Record<string, unknown>, path: string, value: unknown): void {
@@ -849,12 +1571,89 @@ async function runAccept(
           ? existing.observedProperties
           : (existing.properties ?? {});
         const newBaseline = JSON.parse(JSON.stringify(baselineSource)) as Record<string, unknown>;
+        const accepted: PropertyDrift[] = [];
         for (const change of outcome.changes) {
+          // Issue #1914: anything the report had to MASK is not a value — it
+          // is the statement that cdkd could not identify what AWS holds. The
+          // path is left as state has it and the user is told which one and
+          // why; the drift keeps being reported, which is the honest outcome
+          // (`--revert` can fix it, `--accept` cannot).
+          const refusal = acceptRefusalReason(change, outcome.maskedPaths);
+          if (refusal !== undefined) {
+            logger.warn(
+              `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+                `not accepting '${change.path}' — ${refusal}, so cdkd will not write it to ` +
+                `state. Run 'cdkd drift ${report.stackName} --revert' to push the referenced ` +
+                `value back to AWS, or re-deploy if the reference changed.`
+            );
+            continue;
+          }
           setAtPath(newBaseline, change.path, change.awsValue);
+          accepted.push(change);
+        }
+        // Issue #1914: `--accept` is a WRITE-TO-STATE surface fed by a live AWS
+        // readback, so it is exactly the shape GHSA-p5qg-v9gv-hc7w covers — a
+        // resolved secret reaching `state.json` re-introduces the disclosure
+        // for anyone with read access to the state bucket.
+        //
+        // `redactDriftChanges` has already redacted every value written just
+        // above, so this pass is NOT a duplicate of it: what it reaches is the
+        // rest of the bag, i.e. the untouched clone of the record's own
+        // baseline. That clone is exactly where a plaintext survives today —
+        // any user who ran `--accept` on a pre-fix binary has an
+        // `observedProperties` holding the resolved secret while `properties`
+        // still holds the expression, and re-accepting for an unrelated key
+        // would re-persist it verbatim. Measured: without this line that state
+        // round-trips the plaintext.
+        //
+        // The POSITIONED form, and the two arms differ for a reason. Normally
+        // the record's own `properties` are the source: they hold no PUBLIC
+        // expression — a `String` ssm reference is stored resolved — so any
+        // `{{resolve:...}}` leaf in them is by construction a secret and may be
+        // copied over verbatim (`trustAnyExpression`), while array descent
+        // stays OFF because this bag came back from AWS and may be reordered.
+        // That is what catches a stored plaintext the VALUE map cannot: after a
+        // rotation the map holds today's secret and the stored one is last
+        // week's, so only position can name it.
+        //
+        // The same call covers the resolution-FAILED resource with no extra arm,
+        // which is why there is no flag for it: the map is empty there, so
+        // `redactSecretsForState` runs its path pass alone — the #1900 offline
+        // mechanism, which works precisely because it needs no secret fetch.
+        //
+        // Positioning cannot mis-pin a drifted SECRET leaf: the masked values
+        // above remove that input entirely, since such a path is refused before
+        // it can reach `newBaseline`.
+        //
+        // It can still overwrite an accepted value at a PUBLIC reference,
+        // though, and that is a real hole rather than a hypothetical one: a
+        // public `{{resolve:ssm:...}}` CAN sit in `properties` (the `cdkd
+        // import` warn path, documented in `secret-redaction.ts`), such a path
+        // is not secret-bearing so the change is accepted normally, and
+        // `trustAnyExpression` then copies the source expression straight over
+        // it. Rather than claim it cannot happen, the write is CHECKED below
+        // and the user is told — a silent permanent no-op is the failure mode
+        // worth naming, and the check catches any future cause of it too.
+        const redactedBaseline = redactSecretsForState(
+          newBaseline,
+          outcome.secrets,
+          existing.properties ?? {},
+          STATE_SOURCED_READBACK_RULES
+        );
+        for (const change of accepted) {
+          if (deepEqualUnordered(getAtPath(redactedBaseline, change.path), change.awsValue)) {
+            continue;
+          }
+          logger.warn(
+            `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+              `'${change.path}' was NOT recorded — cdkd state holds an unresolved ` +
+              `'{{resolve:...}}' reference at that property, and the reference wins over an ` +
+              `accepted value. Change the template if that reference is wrong.`
+          );
         }
         resources[outcome.logicalId] = hasObserved
-          ? { ...existing, observedProperties: newBaseline }
-          : { ...existing, properties: newBaseline };
+          ? { ...existing, observedProperties: redactedBaseline }
+          : { ...existing, properties: redactedBaseline };
       }
 
       const newState: StackState = {
@@ -1323,6 +2122,150 @@ function mergeUntemplatedValue(awsValue: unknown, desiredValue: unknown): unknow
 }
 
 /**
+ * Replace every leaf of a revert payload that still holds a `{{resolve:...}}`
+ * token with the value AWS currently has at that position (issue #1914,
+ * round-3 review).
+ *
+ * The round-3 change downgraded an unresolvable reference from a per-resource
+ * failure to a warning, on the premise that `cdkd deploy` resolves through the
+ * resolver's same unsupported-service arm — so AWS already holds the literal
+ * and replaying it is a no-op. **That premise holds only for records cdkd
+ * deployed.** CloudFormation resolves `ssm-secure` SERVER-side, so a record
+ * adopted by `cdkd import --migrate-from-cloudformation` has the literal token
+ * in state while the live resource holds the PLAINTEXT. `diffAt` skips such a
+ * leaf, so it never drifts — but `buildRevertNewProperties` overlays the whole
+ * top-level subtree when any SIBLING key drifts, which would push the literal
+ * token over a resolved value. That is defect 1 of this issue surviving in a
+ * narrower case, on a live AWS write.
+ *
+ * Deciding by PROVENANCE would need a flag state does not carry. Deciding by
+ * what AWS actually holds needs nothing and is exact in both directions: for a
+ * cdkd-deployed record AWS holds the token, so copying it back is the same
+ * no-op the premise described; for a migrated record AWS holds the resolved
+ * value, which is left untouched.
+ *
+ * Falls back to KEEPING the token wherever AWS has nothing at that position —
+ * that is what `cdkd deploy` sends, so it is the safe residual rather than
+ * dropping a property the resource may require. Array descent is positional
+ * and bails to that same residual on any length mismatch, since a reordered
+ * readback cannot be positioned against.
+ */
+export function preserveLiveValuesAtUnresolvedTokens(
+  send: Record<string, unknown>,
+  awsProperties: Record<string, unknown>,
+  secrets: RecordedSecretValues
+): Record<string, unknown> {
+  const walk = (value: unknown, live: unknown): unknown => {
+    if (typeof value === 'string' && value.includes('{{resolve:')) {
+      // ONLY a whole token is preserved, and this gate is a disclosure boundary
+      // rather than a tidiness rule (issue #1914 round-6 review).
+      //
+      // A MIXED leaf (`{{ssm-secure:/host}}:{{secretsmanager:db}}`) arrives here
+      // already PARTIALLY resolved. Copying the live value in would move the
+      // ssm-secure plaintext into the payload — and the registration below
+      // correctly declines to register it, because the send string is not a
+      // token and would substitute the secretsmanager half's plaintext into
+      // state if it were. So the mechanism would CREATE an exposure it then
+      // cannot mask: unmaskable in the #1644 narrowing delta, the retry log and
+      // the AWS error text alike.
+      //
+      // Returning the send string unchanged restores the pre-#1914 behaviour
+      // for that shape — the literal token ships, which is what `cdkd deploy`
+      // does — and gives up the live-value preservation there. That trade is
+      // deliberate: a NEW disclosure is worse than a preserved pre-existing
+      // breakage.
+      //
+      // The shape is ANY leaf whose whole value is not the token, which is
+      // wider than the two-reference case: a single token embedded in a longer
+      // string (`"jdbc:...password={{resolve:ssm-secure:/pw}}"`) is not
+      // preserved either, so a revert triggered by a sibling key writes that
+      // string over whatever AWS holds. Both user-facing warnings say so,
+      // because the detection one is read immediately before the confirmation
+      // prompt. Masking by SPAN, which is what would let these cases be both
+      // preserved and safe, is issue #1935.
+      if (!isWholeDynamicReference(value)) return value;
+      if (live === undefined) return value;
+      // REGISTER what was just moved. Nothing was recorded FOR THIS LEAF —
+      // that is what made the token a survivor — so copying the live value in
+      // and leaving the mask sets untouched hands a plaintext to three readers
+      // that would each have masked it: the retry logger, the AWS-error report,
+      // and the #1644 narrowing delta (whose `descendArrays: false` rules
+      // cannot position an array-nested leaf and rely on the value scan finding
+      // it).
+      //
+      // (`secrets` itself is NOT necessarily empty here: a resource can hold
+      // one resolvable `secretsmanager` reference AND one `ssm-secure`
+      // survivor, which is exactly the shape `referencesUnresolved` describes.
+      // Reading the sentence above as "the map is empty" would make the guards
+      // below look unreachable, and they are not.)
+      //
+      // The rule this is an instance of: a mechanism that deliberately moves
+      // plaintext into a bag must also register that plaintext with everything
+      // that masks. Moving the value and not the metadata is its own defect
+      // class.
+      //
+      // THREE conditions, each removing a different way of being wrong:
+      //
+      //  - `isWholeDynamicReference(value)` — the map's VALUE is what
+      //    `redactSecretsForState` substitutes IN, so it must be an expression
+      //    and nothing else. On a MIXED leaf
+      //    (`user:{{secretsmanager:...}}@{{ssm-secure:...}}`) the send string is
+      //    already PARTIALLY RESOLVED, so registering it whole would write the
+      //    secretsmanager half's plaintext into state — the GHSA class, through
+      //    the mechanism that exists to prevent it. That half is already
+      //    covered by its own map entry from the value scan.
+      //  - `isSecretBySpelling(value)` — the same rule the path marking uses
+      //    one function up. Registering a look-alike spelling's live value
+      //    makes a redaction NEEDLE out of ordinary data.
+      //  - the needle floor — `redactSecretsForState`'s whole-value branch
+      //    matches at ANY length, so a live `"1"` or `"prod"` would rewrite
+      //    every unrelated delta leaf equal to it into this token: the #1904
+      //    wrong-reference corruption, after which the next deploy ships the
+      //    literal token to AWS.
+      //
+      // A non-string live value is NOT registered, and is NOT reachable by the
+      // position pass either — `redactByPath`'s expression arm requires a
+      // string on both sides, so an object or a number lands in the value scan
+      // with no entry. It is still copied, because the alternative is sending
+      // the token over a live value; it is a stated residual, unmaskable if the
+      // provider later echoes it CHANGED.
+      // The whole-token condition is NOT repeated here: the gate above already
+      // returned for anything else, so a second copy would be a line no
+      // mutation can red.
+      //
+      // Two degenerate cases, both left alone deliberately. For a
+      // cdkd-DEPLOYED record `live === value`, so the entry is `token -> token`
+      // and every substitution it can drive is the identity. And `set`
+      // overwrites when a secretsmanager secret and an ssm-secure parameter
+      // share a value — in which case both expressions resolve to that same
+      // value, so either substitution is correct.
+      if (
+        typeof live === 'string' &&
+        live.length >= MIN_SECRET_NEEDLE_LENGTH &&
+        isSecretBySpelling(value)
+      ) {
+        secrets.set(live, value);
+      }
+      return live;
+    }
+    if (Array.isArray(value)) {
+      const liveItems = Array.isArray(live) && live.length === value.length ? live : undefined;
+      return value.map((item, i) => walk(item, liveItems?.[i]));
+    }
+    if (value !== null && typeof value === 'object') {
+      const liveObject = isPlainRecord(live) ? live : undefined;
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = walk(v, liveObject?.[k]);
+      }
+      return out;
+    }
+    return value;
+  };
+  return walk(send, awsProperties) as Record<string, unknown>;
+}
+
+/**
  * Build the `newProperties` object passed to `provider.update` during
  * `--revert`. Strategy:
  *
@@ -1550,6 +2493,11 @@ async function runRevert(
   let totalFailed = 0;
   let totalUnsupported = 0;
   let totalSucceeded = 0;
+  // Issue #1914 (minor): counted apart from `totalFailed`, whose summary line
+  // calls every entry an "AWS update failure". A resource cdkd could not
+  // re-resolve never reached `provider.update` at all, and telling the user to
+  // look at an update that did not happen sends them to the wrong place.
+  let totalUnresolvable = 0;
 
   for (const report of reports) {
     const driftedOutcomes = report.outcomes.filter(
@@ -1564,6 +2512,13 @@ async function runRevert(
     // Collected inside the concurrent tasks and applied to state ONCE, under
     // the same lock, after they all settle.
     const narrowedByLogicalId = new Map<string, Record<string, unknown>>();
+    // Issue #1914: one resolver per stack, re-resolving the secret expressions
+    // the state baseline stores so the provider is handed the concrete value.
+    // Deliberately NOT the drift-detection run's map: that one is keyed
+    // plaintext -> expression (the redaction direction), and a revert needs the
+    // resolution direction, against AWS as it is NOW rather than as it was when
+    // the report was built.
+    const revertSecretResolver = new IntrinsicFunctionResolver(report.region);
     try {
       const tasks = driftedOutcomes.map((outcome) => async () => {
         const stateResource = report.state.resources[outcome.logicalId];
@@ -1581,6 +2536,15 @@ async function runRevert(
         // Schema v7+ (#614): route the revert update through the
         // state-recorded layer so a CC-managed resource is reverted via
         // Cloud Control.
+        //
+        // NOT guarded, deliberately (issue #1914 review): a registry lookup
+        // that throws here cannot happen, because DETECTION performs the same
+        // lookup with the same inputs and routes a failure to an `unsupported`
+        // outcome — such a resource never becomes `drifted` and never reaches
+        // this loop. A catch here would be an arm no mutation can red, which is
+        // worse than none. The payload build below IS guarded, because that one
+        // is reachable: `readCurrentState` is provider-authored and its output
+        // is not vetted.
         const provider: ResourceProvider = providerRegistry.getProviderFor({
           resourceType: outcome.resourceType,
           provisionedBy: stateResource.provisionedBy,
@@ -1590,8 +2554,95 @@ async function runRevert(
         // to push back to AWS. Using `properties` alone would push the
         // last-deployed template intent and miss any AWS-side defaults
         // we captured at deploy time but never wrote into the template.
-        const desiredProperties =
-          stateResource.observedProperties ?? stateResource.properties ?? {};
+        //
+        // Issue #1914: RE-RESOLVED before it is handed to the provider. State
+        // stores a secret dynamic reference as its unresolved
+        // `{{resolve:...}}` expression (GHSA-p5qg-v9gv-hc7w), so the bag as
+        // read is not something AWS can be given — pushing it back set the
+        // live property to the literal token, corrupting whatever consumes it
+        // (a Lambda env var, a Cognito `client_secret`). This is the rollback
+        // replay's `resolveReplayProps` on the second synth-free write path.
+        // A bag with no dynamic reference resolves to itself by identity.
+        const secrets: RecordedSecretValues = new Map();
+        const revertBaseline = stateResource.observedProperties ?? stateResource.properties ?? {};
+        // No `secretPaths` here, deliberately: nothing on this path masks by
+        // position. What a revert PRINTS comes from `outcome.changes`, redacted
+        // once at detection, and what it WRITES is redacted by value + position
+        // against `revertBaseline` below.
+        const unresolvedTokens = new Set<string>();
+        const noteUnresolved = (tokens: string[]): void => {
+          for (const token of tokens) unresolvedTokens.add(token);
+        };
+        let desiredProperties: Record<string, unknown>;
+        try {
+          desiredProperties = await resolveStateSecretExpressions(
+            revertBaseline,
+            revertSecretResolver,
+            secrets,
+            { onUnresolved: noteUnresolved }
+          );
+          // Mirrors the detection pass: `properties` are resolved into the same
+          // map so a secret the OBSERVED baseline never captured is still a key
+          // in it. Revert needs that for the narrowing write below, whose
+          // position source can only reach leaves the two bags share.
+          if (stateResource.observedProperties !== undefined) {
+            await resolveStateSecretExpressions(
+              stateResource.properties ?? {},
+              revertSecretResolver,
+              secrets,
+              { onUnresolved: noteUnresolved }
+            );
+          }
+        } catch (err) {
+          // Reported per-resource rather than aborting the run, and with its
+          // OWN message: 'AWS update failed' would be a lie — no update was
+          // attempted, the reference the state record names could not be read.
+          totalUnresolvable++;
+          logger.error(
+            `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+              `could not re-resolve the dynamic reference(s) this resource's state records — ` +
+              `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
+          );
+          return;
+        }
+        // Issue #1914 (minor): `buildRevertNewProperties` keys the overlay on
+        // each change's TOP-LEVEL segment, so a path whose first segment is
+        // itself the mask matches nothing in the desired bag and the subtree is
+        // silently not reverted — while the plan promised it and `--accept`'s
+        // refusal pointed the user here. Say it instead.
+        const unrevertablePaths = outcome.changes
+          .map((c) => c.path)
+          .filter((path) => (path.split('.', 1)[0] ?? '').includes(SECRET_MASK));
+        if (unrevertablePaths.length > 0) {
+          logger.warn(
+            `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): cannot ` +
+              `revert ${unrevertablePaths.join(', ')} — cdkd cannot name the property, so it is ` +
+              `left as AWS has it. ROTATE the secret that leaked into the property name.`
+          );
+        }
+        if (unresolvedTokens.size > 0) {
+          // A warning, not a failure — failing would abandon every OTHER
+          // drifted property on the resource and exit 2. The wording claims
+          // neither that replaying the token is a no-op (true only for a record
+          // cdkd deployed, false for a CFn-migrated one where CloudFormation
+          // resolved the reference server-side) NOR that the live value is
+          // always preserved: `preserveLiveValuesAtUnresolvedTokens` preserves
+          // it only where the property's WHOLE value is the token, and declines
+          // for an embedded one.
+          logger.warn(
+            // Deliberately worded so it cannot be confused with the
+            // DETECTION-side warning, which names the same tokens: a test that
+            // greps for the token alone is satisfied by either, so the two
+            // messages must differ in more than punctuation.
+            `  ! [revert] ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+              `cdkd cannot resolve ` +
+              `${maskSecretsInText([...unresolvedTokens].join(', '), secrets)} — a property ` +
+              `whose WHOLE value is one of these tokens is left UNCHANGED by this revert. Where ` +
+              `a token is EMBEDDED in a longer string, that string is written with the token ` +
+              `literal, exactly as 'cdkd deploy' does, so a resolved value AWS holds there is ` +
+              `overwritten.`
+          );
+        }
         // AWS-current values for non-drifted top-level keys + desired
         // values for drifted top-level subtrees. See
         // `buildRevertNewProperties` docstring for why we don't pass a
@@ -1607,12 +2658,40 @@ async function runRevert(
         // them. With observed-capture present the baseline IS authoritative
         // and the overlay is unchanged, so an out-of-band addition is still
         // stripped. See `mergeUntemplatedValue`.
-        const newProperties = buildRevertNewProperties(
-          outcome.changes,
-          desiredProperties,
-          outcome.awsProperties,
-          { preserveUntemplated: stateResource.observedProperties === undefined }
-        );
+        let newProperties: Record<string, unknown>;
+        try {
+          const overlaid = buildRevertNewProperties(
+            outcome.changes,
+            desiredProperties,
+            outcome.awsProperties,
+            { preserveUntemplated: stateResource.observedProperties === undefined }
+          );
+          // Issue #1914: a token cdkd could not resolve must never be WRITTEN
+          // over whatever AWS holds — see the helper for why the "it is already
+          // there" premise is false on a CFn-migrated record. Skipped entirely
+          // when nothing survived, so the ordinary revert is byte-identical.
+          newProperties =
+            unresolvedTokens.size > 0
+              ? preserveLiveValuesAtUnresolvedTokens(overlaid, outcome.awsProperties, secrets)
+              : overlaid;
+        } catch (err) {
+          // Reachability note (issue #1914 review): this arm is narrower than
+          // it looks, and is kept only because it is cheap. A bag so malformed
+          // that `buildRevertNewProperties` cannot walk it — a self-referential
+          // `readCurrentState` result, say — throws in DETECTION first, where
+          // `calculateResourceDrift` walks the same bags, so the resource never
+          // reaches this loop. What is left for it to catch is a provider whose
+          // output the comparator tolerates and the merge does not. The
+          // detection-side equivalent is NOT per-resource and aborts the run;
+          // that is pre-existing and out of scope here.
+          totalFailed++;
+          logger.error(
+            `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+              `could not build the revert payload — ` +
+              `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
+          );
+          return;
+        }
         try {
           const updateResult = await withRetry(
             () =>
@@ -1633,7 +2712,12 @@ async function runRevert(
                 { desiredFromAwsReadback: true }
               ),
             outcome.logicalId,
-            { logger: { debug: (msg) => logger.debug(msg) } }
+            // Issue #1914: the retry logger echoes the failing call's AWS error
+            // verbatim, and this call's payload now carries RESOLVED secrets —
+            // an AWS validation error routinely quotes the offending property
+            // value. Same fence `deploy-engine.ts` puts on its own provider
+            // calls. No-op when the op resolved no secret.
+            { logger: { debug: (msg) => logger.debug(maskSecretsInText(msg, secrets)) } }
           );
           totalSucceeded++;
           logger.info(
@@ -1654,14 +2738,68 @@ async function runRevert(
                 updateResult.effectiveProperties
               );
               if (Object.keys(delta).length > 0) {
-                narrowedByLogicalId.set(outcome.logicalId, delta);
+                // Issue #1914: the delta is the provider's echo of a bag we
+                // just resolved secrets INTO, and it is persisted below — so
+                // this is a state-write surface, and fixing the revert without
+                // it would have moved the disclosure rather than closed it.
+                //
+                // RESIDUAL, stated here because this is where it lands: cdkd
+                // cannot mask a value for a reference it never RESOLVED. For an
+                // unresolvable one (`ssm-secure`) the provider can echo its own
+                // readback in `effectiveProperties`, and this write persists
+                // that echo — with no map entry to match and, on a MIXED leaf,
+                // no single token on the source side to position against
+                // either. It is not created by this command's own bags (the
+                // report masks by PATH, and the payload declines to copy a live
+                // value into a mixed leaf), and before this pass existed the
+                // delta was persisted with no redaction at all. Masking by SPAN
+                // is issue #1935.
+                //
+                // Positioned against `revertBaseline` — the SAME bag
+                // `desiredProperties` was resolved from — and not against
+                // `properties`, which is a different bag whenever an observed
+                // capture exists.
+                //
+                // `STATE_SOURCED_READBACK_RULES`, NOT the `STATE_DERIVED_RULES`
+                // that `redactRollbackRecord` uses on its own echo. Both grant
+                // `trustAnyExpression`, which is right here for the same reason
+                // it is right there: a persisted record holds no PUBLIC
+                // expression, so any `{{resolve:...}}` leaf in the source is by
+                // construction a secret. They differ on ARRAY descent, and the
+                // rollback's justification for it does not carry over. There
+                // the whole bag descends from resolving the journaled one, so
+                // the two have identical structure; here `collectNarrowedTopLevelKeys`
+                // derives the delta from `newProperties`, which is
+                // `buildRevertNewProperties`'s merge of the AWS-CURRENT
+                // snapshot with the resolved desired subtrees — so a top-level
+                // key that did not drift comes from AWS and may be reordered.
+                // Positional descent over an equal-length, differently-ordered
+                // array would write a sibling's expression onto the wrong
+                // element: the #1904 wrong-reference class, on a write path.
+                // Those leaves fall to the value scan instead, and TWO things
+                // keep that scan complete rather than one: the
+                // `properties`-side map completion above, and
+                // `preserveLiveValuesAtUnresolvedTokens` registering every live
+                // value it copied in. Without the second, a token nested in an
+                // array — ECS `ContainerDefinitions[].Environment[]`, the shape
+                // this advisory keeps landing in — reached neither pass and
+                // landed in `state.json` as plaintext.
+                narrowedByLogicalId.set(
+                  outcome.logicalId,
+                  redactSecretsForState(
+                    delta,
+                    secrets,
+                    revertBaseline,
+                    STATE_SOURCED_READBACK_RULES
+                  )
+                );
               }
             }
           } catch (captureErr) {
             logger.warn(
               `  ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, but ` +
                 `the provider's reported effective properties could not be read — ` +
-                `${captureErr instanceof Error ? captureErr.message : String(captureErr)}`
+                `${maskSecretsInText(captureErr instanceof Error ? captureErr.message : String(captureErr), secrets)}`
             );
           }
         } catch (err) {
@@ -1671,12 +2809,14 @@ async function runRevert(
           if (err instanceof ResourceUpdateNotSupportedError) {
             totalUnsupported++;
             logger.warn(
-              `  ⊘ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): could not revert — ${err.message}`
+              `  ⊘ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): could not revert — ${maskSecretsInText(err.message, secrets)}`
             );
             return;
           }
           totalFailed++;
-          const msg = err instanceof Error ? err.message : String(err);
+          // Masked (issue #1914): this is the error from a call whose payload
+          // carried resolved secrets, and AWS quotes the offending value.
+          const msg = maskSecretsInText(err instanceof Error ? err.message : String(err), secrets);
           logger.error(
             `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): AWS update failed — ${msg}`
           );
@@ -1793,6 +2933,7 @@ async function runRevert(
 
   const summaryParts = [`${totalSucceeded} reverted`];
   if (totalUnsupported > 0) summaryParts.push(`${totalUnsupported} update-not-supported`);
+  if (totalUnresolvable > 0) summaryParts.push(`${totalUnresolvable} reference-unresolvable`);
   if (totalFailed > 0) summaryParts.push(`${totalFailed} failed`);
   logger.info(`\nRevert summary: ${summaryParts.join(', ')}.`);
 
@@ -1803,10 +2944,13 @@ async function runRevert(
     );
   }
 
-  if (totalFailed > 0 || totalUnsupported > 0) {
+  if (totalFailed > 0 || totalUnsupported > 0 || totalUnresolvable > 0) {
     throw new PartialFailureError(
-      `Revert completed with ${totalFailed + totalUnsupported} resource error(s) ` +
-        `(${totalFailed} AWS update failure(s), ${totalUnsupported} update-not-supported). ` +
+      `Revert completed with ${totalFailed + totalUnsupported + totalUnresolvable} resource ` +
+        `error(s) (${totalFailed} AWS update failure(s), ${totalUnsupported} ` +
+        `update-not-supported, ${totalUnresolvable} whose dynamic reference(s) could not be ` +
+        `resolved — those never reached provider.update; grant the caller ` +
+        `secretsmanager:GetSecretValue / ssm:GetParameter, or fix the reference). ` +
         `Re-run 'cdkd drift <stack>' to see the remaining drift, then 'cdkd drift <stack> --revert' to retry.`
     );
   }
@@ -1830,6 +2974,14 @@ function printAcceptPlan(reports: StackDriftReport[]): void {
     for (const o of drifted) {
       process.stdout.write(`  ~ ${o.logicalId} (${o.resourceType})\n`);
       for (const change of o.changes) {
+        // Issue #1914: a `--dry-run` that promises a write the real run will
+        // refuse is worse than either behaviour alone, so the plan asks the
+        // same predicate `runAccept` does.
+        const refusal = acceptRefusalReason(change, o.maskedPaths);
+        if (refusal !== undefined) {
+          process.stdout.write(`    ${change.path}: SKIPPED — ${refusal}\n`);
+          continue;
+        }
         process.stdout.write(
           `    ${change.path}: ${formatScalar(change.stateValue)} -> ${formatScalar(change.awsValue)}\n`
         );
@@ -1877,14 +3029,39 @@ function printRevertPlan(reports: StackDriftReport[]): void {
           stateResource.observedProperties ?? stateResource.properties ?? {},
           o.awsProperties
         );
-        if (preserved.length > 0) {
+        // Issue #1914 (minor): these lists are masked with `o.secrets`, which
+        // cannot answer for a reference cdkd never resolved — so a
+        // secret-carrying key would print unmasked, exactly the case the
+        // masking exists for. The offline path seed cannot help either: it
+        // locates positions, and masking a KEY needs the VALUE. Suppress the
+        // lists instead and say why.
+        //
+        // Keyed on `referencesUnresolved` rather than on an empty map: a
+        // resource with one resolvable reference and one survivor has a
+        // non-empty map that still cannot mask the survivor's position.
+        const cannotMaskKeys = o.referencesUnresolved;
+        if (cannotMaskKeys && preserved.length > 0) {
+          process.stdout.write(
+            `    ! ${preserved.length} AWS-authored tag(s) will be preserved, but cdkd could not ` +
+              `resolve this resource's dynamic reference(s), so their names are withheld — they ` +
+              `come from the live readback and cannot be checked for secrets without them.\n`
+          );
+        }
+        if (!cannotMaskKeys && preserved.length > 0) {
           const tagWord = preserved.length === 1 ? 'tag' : 'tags';
           process.stdout.write(
             `    ! reverting this tag list KEEPS ${preserved.length} AWS-authored ` +
               `${tagWord} the baseline does not carry:\n`
           );
           for (const path of preserved) {
-            process.stdout.write(`        ${path}\n`);
+            // Issue #1914: these names are built from `o.awsProperties`, the
+            // one bag on this path that is deliberately unredacted — so a
+            // readback answering with a map KEYED by a secret would print the
+            // plaintext here, the exact case `redactDriftChanges` masks for the
+            // diff lines. Masked at the point of printing rather than at the
+            // point of building, so the callers that use these lists as
+            // KEY SETS keep the real keys.
+            process.stdout.write(`        ${maskSecretsInText(path, o.secrets)}\n`);
           }
           // "Every other tag reverts normally" is only true on the
           // observed-capture baseline. Under #1626's raw-TEMPLATE baseline
@@ -1908,7 +3085,16 @@ function printRevertPlan(reports: StackDriftReport[]): void {
           stateResource.properties ?? {},
           o.awsProperties
         );
-        if (unbaselined.length > 0) {
+        if (o.referencesUnresolved && unbaselined.length > 0) {
+          // Same withholding as the tag list above, and it must say something:
+          // silently skipping the block left the user with no signal at all.
+          process.stdout.write(
+            `    ! ${unbaselined.length} AWS-authored value(s) will be left untouched, but cdkd ` +
+              `could not resolve this resource's dynamic reference(s), so their paths are ` +
+              `withheld — they come from the live readback and cannot be checked for secrets ` +
+              `without them.\n`
+          );
+        } else if (unbaselined.length > 0) {
           const word = unbaselined.length === 1 ? 'value' : 'values';
           process.stdout.write(
             `    ! this resource has no observed-capture baseline, so the revert ` +
@@ -1916,7 +3102,8 @@ function printRevertPlan(reports: StackDriftReport[]): void {
               `untouched:\n`
           );
           for (const path of unbaselined) {
-            process.stdout.write(`        ${path}\n`);
+            // Masked for the same reason as the preserved-tag list above.
+            process.stdout.write(`        ${maskSecretsInText(path, o.secrets)}\n`);
           }
           process.stdout.write(
             `      The template does not declare these, so cdkd cannot tell an AWS-authored ` +
