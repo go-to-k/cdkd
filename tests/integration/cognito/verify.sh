@@ -440,10 +440,19 @@ CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --yes 2>&1 | tee "${UPDATE_LOG}"
 
 # --- Assertion 9: MFA enabled on update (issue #1925 item 1) ----------
-# Reaching this line is already most of the assertion: before the fix,
-# update() sent MfaConfiguration=ON to UpdateUserPool while the pool still had
-# no factor enabled, and AWS rejected the call -- the deploy above would have
-# exited non-zero and `set -o pipefail` would have aborted here.
+# Reaching this line is already most of the assertion: before the fix, update()
+# sent MfaConfiguration=ON to UpdateUserPool while the pool still had no factor
+# enabled, and the deploy above would have exited non-zero (`set -o pipefail`
+# aborts here).
+#
+# MEASURED us-east-1 2026-08-18, so this branch is not reasoning from the docs:
+# `UpdateUserPool --mfa-configuration ON` against a pool with no factor enabled
+# is REJECTED with `InvalidParameterException: Cannot turn MFA functionality ON,
+# once the user pool has been created.`, while the same call AFTER
+# SetUserPoolMfaConfig enabled software-token is ACCEPTED (as is OPTIONAL with a
+# factor enabled). Note the message reads like a blanket prohibition and is not
+# one -- the rejection is conditional on the factor existing, which is exactly
+# what the gate reorders around.
 TRANSITION_MFA=$(aws cognito-idp get-user-pool-mfa-config \
   --user-pool-id "${TRANSITION_POOL_ID}" --region "${REGION}" --output json)
 TRANSITION_MFA_CONFIG=$(echo "${TRANSITION_MFA}" \
@@ -474,8 +483,10 @@ if ! grep -q "the template declares no MfaConfiguration" "${UPDATE_LOG}"; then
 fi
 # The message must name the value it is turning OFF, not just that it defaulted.
 # A warning that cannot say what was lost is the one this assertion exists to
-# reject; it is also what proves the live value was read BEFORE UpdateUserPool
-# could reset it.
+# reject. (It does NOT prove the read is ordered before UpdateUserPool: MEASURED
+# us-east-1 2026-08-18, UpdateUserPool does not reset MfaConfiguration when the
+# field is omitted, so either ordering would report OPTIONAL here. The ordering
+# is defensive only -- see readLiveMfaConfiguration.)
 if ! grep -q "live value was OPTIONAL" "${UPDATE_LOG}"; then
   echo "FAIL: the downgrade warning does not name the live value (expected 'live value was OPTIONAL' in the deploy output)" >&2
   grep -i "MfaConfiguration" "${UPDATE_LOG}" >&2 || true

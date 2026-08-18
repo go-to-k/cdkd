@@ -13,7 +13,7 @@ A computed read `properties[k]` also counts when `k` iterates a literal name tab
 - Declared properties: **1138** (**1136** with read evidence)
 - Fully wired classes: **82**
 - Allow-listed classes (visible, non-blocking): **2**
-- Classes with a whole-bag blind spot (recorded, never an excuse): **21**
+- Classes with a whole-bag blind spot (recorded, never an excuse): **22**
 - **Wiring gaps (blocks CI): 0**
 
 ## Wiring gaps
@@ -38,6 +38,7 @@ Sites where a whole property bag left the evidence walk (a spread, an unresolvab
 | `ACMCertificateProvider` (acm-certificate-provider.ts) | `computed key in update()` |
 | `ApiGatewayProvider` (apigateway-provider.ts) | `computed key in updateAuthorizer()`, `computed key in updateMethod()` |
 | `AppSyncProvider` (appsync-provider.ts) | `computed key in applyGraphQLApiConfig()`, `computed key in updateDataSource()`, `computed key in updateGraphQLApi()`, `computed key in updateResolver()` |
+| `CognitoUserPoolProvider` (cognito-provider.ts) | `object spread in narrowMfaConfiguration()` |
 | `DynamoDBGlobalTableProvider` (dynamodb-globaltable-provider.ts) | `computed key in canonicalizeDriftProperties()`, `computed key in collectDesiredKeyAttributeNames()`, `extractLocalTags(...) in update()`, `object spread in canonicalizeDriftProperties()`, `object spread in create()`, `object spread in stripProvisionedCapacityKeys()` |
 | `EC2Provider` (ec2-provider.ts) | `computed key in narrowRouteDestinations()`, `object spread in canonicalizeSgInlineRuleProtocols()`, `object spread in createSecurityGroupIngress()`, `object spread in narrowIngressIpProtocol()`, `object spread in narrowRouteDestinations()` |
 | `ECRProvider` (ecr-provider.ts) | `hasCdkAutoDeleteTag(...) in delete()` |

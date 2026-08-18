@@ -7,7 +7,7 @@
     "wired": 82,
     "gap": 0,
     "allowListed": 2,
-    "classesWithBlindSpots": 21
+    "classesWithBlindSpots": 22
   },
   "classes": [
     {
@@ -4791,6 +4791,7 @@
           ],
           "seededBy": [
             "applyMfaConfig",
+            "canonicalizeDesiredProperties",
             "create",
             "update"
           ]
@@ -4807,6 +4808,7 @@
           ],
           "seededBy": [
             "applyMfaConfig",
+            "canonicalizeDesiredProperties",
             "create",
             "update"
           ]
@@ -4865,6 +4867,7 @@
           ],
           "seededBy": [
             "applyMfaConfig",
+            "canonicalizeDesiredProperties",
             "create",
             "update"
           ]
@@ -4890,9 +4893,11 @@
             "AWS::Cognito::UserPool"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
+            "canonicalizeDesiredProperties",
             "create",
             "update"
           ]
@@ -4951,6 +4956,7 @@
           ],
           "seededBy": [
             "applyMfaConfig",
+            "canonicalizeDesiredProperties",
             "create",
             "update"
           ]
@@ -5090,6 +5096,7 @@
           ],
           "seededBy": [
             "applyMfaConfig",
+            "canonicalizeDesiredProperties",
             "create",
             "update"
           ]
@@ -5106,13 +5113,16 @@
           ],
           "seededBy": [
             "applyMfaConfig",
+            "canonicalizeDesiredProperties",
             "create",
             "update"
           ]
         }
       ],
       "gaps": [],
-      "blindSpots": []
+      "blindSpots": [
+        "object spread in narrowMfaConfiguration()"
+      ]
     },
     {
       "file": "dlm-lifecycle-policy-provider.ts",
