@@ -7,8 +7,19 @@
 # is a no-op at the resource level, but the new export MUST still be persisted
 # to state + the exports index — otherwise the consumer's Fn::ImportValue fails.
 #
-#   Phase 1: deploy producer alone (no export). Assert no export in state/index.
-#   Phase 2a: consumer now exists → redeploy producer alone. Assert it is a
+#   Phase 1: deploy producer alone (no export). Assert no export in state/index,
+#            and that `cdkd diff` reports NO change (the anti-vacuity half of
+#            the phase-2 diff assertion below — issue #1921).
+#   Phase 2a-pre: consumer now exists → `cdkd diff` the producer BEFORE
+#            redeploying. Assert the Outputs-only change is PREVIEWED: the
+#            human output names the export, `--fail` exits 1, and `--json`
+#            carries it in `outputChanges` (issue #1921 — the preview half of
+#            #875, which previously printed "No changes detected" and exited 0
+#            while the deploy below does persist the export).
+#   Phase 2a: redeploy producer alone. Assert the export IS persisted, then that
+#            `cdkd diff` goes CLEAN again -- the discriminating no-phantom arm,
+#            since the output now resolves from real state via Fn::GetAtt.
+#            Assert it is a
 #             no-op ("No changes detected"), the bucket is NOT recreated, yet
 #             the export is now persisted to state AND the exports index.
 #   Phase 2b: deploy consumer with --exclusively (producer NOT redeployed).
@@ -127,6 +138,78 @@ if [[ -n "${INDEX_BODY}" ]]; then
 fi
 pass "exports index has no producer export after phase 1"
 
+# Issue #1921 anti-vacuity: the freshly-deployed producer must diff CLEAN. A
+# fix that simply always reported an Outputs delta would satisfy phase 2a-pre
+# while making every diff of an untouched stack dirty, so this negative arm is
+# what gives that assertion its discriminating power. `--fail` must exit 0.
+set +e
+DIFF_CLEAN_OUT=$(env -u CDKD_TEST_WITH_CONSUMER ${CDKD} diff ${PRODUCER} --fail --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" 2>&1)
+DIFF_CLEAN_RC=$?
+set -e
+if [[ "${DIFF_CLEAN_RC}" -ne 0 ]]; then
+  echo "FAIL: cdkd diff --fail on the just-deployed producer exited ${DIFF_CLEAN_RC} (expected 0 — phantom Outputs diff)"
+  echo "${DIFF_CLEAN_OUT}"
+  exit 1
+fi
+if ! echo "${DIFF_CLEAN_OUT}" | grep -q "No changes detected"; then
+  echo "FAIL: cdkd diff on the just-deployed producer did not report 'No changes detected'"
+  echo "${DIFF_CLEAN_OUT}"
+  exit 1
+fi
+pass "cdkd diff reports no changes on the just-deployed producer (no phantom)"
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "==> Phase 2a-pre: cdkd diff PREVIEWS the Outputs-only change (issue #1921)"
+# The bug this pins: before #1921 the diff compared Resources only, so this
+# printed "No changes detected" and `--fail` exited 0 — steering the user away
+# from the very deploy phase 2a proves is needed. Run BEFORE the redeploy so
+# the state really is the pre-export one.
+set +e
+DIFF_OUT=$(CDKD_TEST_WITH_CONSUMER=true ${CDKD} diff ${PRODUCER} --fail --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" 2>&1)
+DIFF_RC=$?
+set -e
+echo "${DIFF_OUT}"
+if [[ "${DIFF_RC}" -ne 1 ]]; then
+  echo "FAIL: cdkd diff --fail exited ${DIFF_RC} for the Outputs-only change (expected 1)"
+  exit 1
+fi
+pass "cdkd diff --fail exits 1 for the Outputs-only change"
+
+if echo "${DIFF_OUT}" | grep -q "No changes detected"; then
+  echo "FAIL: cdkd diff still reports 'No changes detected' for the Outputs-only change (#1921 regression)"
+  exit 1
+fi
+if ! echo "${DIFF_OUT}" | grep -q "Outputs:"; then
+  echo "FAIL: cdkd diff printed no Outputs section for the Outputs-only change"
+  exit 1
+fi
+# The `[export]`-tagged row is the load-bearing one: that string is what the
+# consumer's Fn::ImportValue resolves against in phase 2b.
+if ! echo "${DIFF_OUT}" | grep -qE "\[\+\] ${EXPORT_NAME} \[export\]"; then
+  echo "FAIL: cdkd diff did not report ${EXPORT_NAME} as an added export row"
+  exit 1
+fi
+pass "cdkd diff names the added export ${EXPORT_NAME} in its Outputs section"
+
+DIFF_JSON=$(CDKD_TEST_WITH_CONSUMER=true ${CDKD} diff ${PRODUCER} --json --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" 2>/dev/null)
+JSON_OK=$(echo "${DIFF_JSON}" | python3 -c "
+import sys, json
+trees = json.load(sys.stdin)
+entries = [c for t in trees for c in t.get('outputChanges', [])
+           if c['name'] == '${EXPORT_NAME}' and c['changeType'] == 'ADD' and c.get('export') is True]
+# The resource section must stay EMPTY — this is an Outputs-ONLY change, and a
+# fix that also manufactured a resource change would be a different bug.
+resources = [c for t in trees for c in t.get('changes', [])]
+print('ok' if len(entries) == 1 and not resources else f'entries={entries} resources={resources}')
+")
+if [[ "${JSON_OK}" != "ok" ]]; then
+  echo "FAIL: cdkd diff --json did not carry the added export in outputChanges: ${JSON_OK}"
+  echo "${DIFF_JSON}"
+  exit 1
+fi
+pass "cdkd diff --json carries the added export in outputChanges (and no resource change)"
+
 # ---------------------------------------------------------------------------
 echo ""
 echo "==> Phase 2a: consumer now exists → redeploy producer alone (Outputs-only change)"
@@ -182,6 +265,31 @@ if [[ "${IDX_PRODUCER}" != "${PRODUCER}" ]]; then
   exit 1
 fi
 pass "exports index now carries ${EXPORT_NAME} owned by ${PRODUCER}"
+
+# Issue #1921, the DISCRIMINATING negative arm. The phase-1 negative check above
+# only proves "no Outputs on either side" -- empty vs empty, which cannot catch
+# the phantom class that actually matters: a RESOLUTION disagreement between the
+# preview and the apply on an output that IS persisted. Now that the export is
+# in state and its value comes from a real `Fn::GetAtt` on the bucket, re-running
+# the same diff must report NOTHING. If the diff resolved the output even
+# slightly differently from the deploy (undefined-vs-value, a half-substituted
+# Fn::Sub, an export alias built differently), this is where it shows up -- as a
+# permanent change reported on an untouched stack.
+set +e
+DIFF_AFTER_OUT=$(CDKD_TEST_WITH_CONSUMER=true ${CDKD} diff ${PRODUCER} --fail --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" 2>&1)
+DIFF_AFTER_RC=$?
+set -e
+if [[ "${DIFF_AFTER_RC}" -ne 0 ]]; then
+  echo "FAIL: cdkd diff --fail exited ${DIFF_AFTER_RC} after the export was persisted (expected 0 — the preview and the apply disagree on how the output resolves)"
+  echo "${DIFF_AFTER_OUT}"
+  exit 1
+fi
+if ! echo "${DIFF_AFTER_OUT}" | grep -q "No changes detected"; then
+  echo "FAIL: cdkd diff reports a change on the stack it just deployed (phantom Outputs diff)"
+  echo "${DIFF_AFTER_OUT}"
+  exit 1
+fi
+pass "cdkd diff is clean once the export is persisted (preview matches apply)"
 
 # ---------------------------------------------------------------------------
 echo ""

@@ -61,9 +61,11 @@ cfnMockSend.mockImplementation(async (cmd: { constructor: { name: string } }) =>
   throw new Error(`unexpected CloudFormation command: ${cmd.constructor.name}`);
 });
 
+import { getLogger } from '../../../src/utils/logger.js';
 import {
   buildDiffTree,
   computeStackDiff,
+  renderOutputChangeLines,
   indexNestedChildTemplates,
   readNestedTemplate,
   nodeHasChanges,
@@ -164,6 +166,7 @@ describe('nodeHasChanges / treeHasChanges', () => {
     region: 'us-east-1',
     changes: changeMap(changes),
     ccApiRoutes: new Map(),
+    outputChanges: [],
     children: [],
   });
 
@@ -214,6 +217,7 @@ describe('diffTreeToJson', () => {
         },
       ]),
       ccApiRoutes: new Map(),
+      outputChanges: [],
       children: [
         {
           stackName: 'P~C',
@@ -221,6 +225,7 @@ describe('diffTreeToJson', () => {
           region: 'us-east-1',
           changes: changeMap([{ logicalId: 'New', changeType: 'CREATE', resourceType: 'T' }]),
           ccApiRoutes: new Map(),
+          outputChanges: [],
           children: [],
         },
       ],
@@ -251,6 +256,7 @@ describe('diffTreeToJson', () => {
         },
       ]),
       ccApiRoutes: new Map(),
+      outputChanges: [],
       children: [],
     };
     const json = diffTreeToJson(node);
@@ -273,6 +279,7 @@ describe('renderDiffTree', () => {
     region: 'us-east-1',
     changes: changeMap(changes),
     ccApiRoutes,
+    outputChanges: [],
     children: [],
   });
 
@@ -626,7 +633,7 @@ describe('computeStackDiff / buildDiffTree canonicalizer wiring (#1591)', () => 
   it('computeStackDiff forwards it — without it the preview disagrees with the apply', async () => {
     const state = st('S', { R: res(ROUTE, narrowedRoute) });
 
-    const withFn = await computeStackDiff(
+    const { changes: withFn } = await computeStackDiff(
       state,
       routeTemplate,
       'us-east-1',
@@ -640,7 +647,7 @@ describe('computeStackDiff / buildDiffTree canonicalizer wiring (#1591)', () => 
 
     // The control: this is what `cdkd diff` printed before the fix, and what
     // it would print again if the argument were dropped.
-    const withoutFn = await computeStackDiff(
+    const { changes: withoutFn } = await computeStackDiff(
       state,
       routeTemplate,
       'us-east-1',
@@ -741,7 +748,7 @@ describe('computeStackDiff / buildDiffTree cfnFallback threading (#1697)', () =>
   });
 
   it('computeStackDiff default: the CFn fallback resolves the import (preview matches apply)', async () => {
-    const changes = await computeStackDiff(
+    const { changes } = await computeStackDiff(
       resolvedState(),
       importTemplate,
       'us-east-1',
@@ -754,7 +761,7 @@ describe('computeStackDiff / buildDiffTree cfnFallback threading (#1697)', () =>
   });
 
   it('computeStackDiff cfnFallback:false: no CFn call, the import stays unresolved (previewed change)', async () => {
-    const changes = await computeStackDiff(
+    const { changes } = await computeStackDiff(
       resolvedState(),
       importTemplate,
       'us-east-1',
@@ -873,7 +880,7 @@ describe('computeStackDiff', () => {
       Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
     };
     const empty = st('S', {});
-    const changes = await computeStackDiff(
+    const { changes } = await computeStackDiff(
       empty,
       template,
       'us-east-1',
@@ -889,7 +896,7 @@ describe('computeStackDiff', () => {
       Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
     };
     const state = st('S', { A: res('AWS::SSM::Parameter', { Value: 'x' }) });
-    const changes = await computeStackDiff(
+    const { changes } = await computeStackDiff(
       state,
       template,
       'us-east-1',
@@ -929,7 +936,7 @@ describe('computeStackDiff', () => {
       const state = st('S', {
         A: res('AWS::SSM::Parameter', { Name: 'p-dev', Value: 'dev-suffix' }),
       });
-      const changes = await computeStackDiff(
+      const { changes } = await computeStackDiff(
         state,
         template,
         'us-east-1',
@@ -949,7 +956,7 @@ describe('computeStackDiff', () => {
         },
         Always: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } },
       });
-      const changes = await computeStackDiff(
+      const { changes } = await computeStackDiff(
         st('S', {}),
         template,
         'us-east-1',
@@ -970,7 +977,7 @@ describe('computeStackDiff', () => {
         },
       });
       const state = st('S', { ProdOnly: res('AWS::SSM::Parameter', { Value: 'prod-only' }) });
-      const changes = await computeStackDiff(
+      const { changes } = await computeStackDiff(
         state,
         template,
         'us-east-1',
@@ -989,7 +996,7 @@ describe('computeStackDiff', () => {
         },
       });
       const state = st('S', { A: res('AWS::SSM::Parameter', { Value: 'dev-v' }) });
-      const changes = await computeStackDiff(
+      const { changes } = await computeStackDiff(
         state,
         template,
         'us-east-1',
@@ -1008,7 +1015,7 @@ describe('computeStackDiff', () => {
         },
       };
       const state = st('S', { A: res('AWS::SSM::Parameter', { Value: 'given' }) });
-      const changes = await computeStackDiff(
+      const { changes } = await computeStackDiff(
         state,
         template,
         'us-east-1',
@@ -1037,7 +1044,7 @@ describe('computeStackDiff', () => {
         },
       };
       const state = st('S', { Gated: res('AWS::SSM::Parameter', { Value: 'v' }) });
-      const changes = await computeStackDiff(
+      const { changes } = await computeStackDiff(
         state,
         template,
         'us-east-1',
@@ -1062,7 +1069,7 @@ describe('computeStackDiff', () => {
         },
       };
       const state = st('S', { A: res('AWS::SSM::Parameter', { Value: 'dev-q' }) });
-      const changes = await computeStackDiff(
+      const { changes } = await computeStackDiff(
         state,
         template,
         'us-east-1',
@@ -1088,7 +1095,7 @@ describe('computeStackDiff', () => {
         },
       };
       const state = st('S', { A: res('AWS::SSM::Parameter', { Value: 'x' }) });
-      const changes = await computeStackDiff(
+      const { changes } = await computeStackDiff(
         state,
         template,
         'us-east-1',
@@ -1119,7 +1126,7 @@ describe('computeStackDiff', () => {
         },
       };
       const state = st('S', { A: res('AWS::SSM::Parameter', { Value: 'dev' }) });
-      const changes = await computeStackDiff(
+      const { changes } = await computeStackDiff(
         state,
         template,
         'us-east-1',
@@ -1175,7 +1182,7 @@ describe('computeStackDiff', () => {
       const state = st('S', { A: res('AWS::SSM::Parameter', { Value: 'given' }) });
       // No parameters supplied and no default — binding fails, the diff must
       // not throw and keeps the pre-#1027 raw-intrinsic comparison (UPDATE).
-      const changes = await computeStackDiff(
+      const { changes } = await computeStackDiff(
         state,
         template,
         'us-east-1',
@@ -1731,7 +1738,7 @@ describe('buildDiffTree — down-passed nested-stack Parameters (spurious-change
       },
     };
     const state = st('S', { A: res('AWS::SSM::Parameter', { Type: 'String', Value: 'prefix:my-topic' }) });
-    const changes = await computeStackDiff(
+    const { changes } = await computeStackDiff(
       state,
       template,
       'us-east-1',
@@ -1756,7 +1763,7 @@ describe('buildDiffTree — down-passed nested-stack Parameters (spurious-change
     const state = st('S', { A: res('AWS::SSM::Parameter', { Type: 'String', Value: 'prefix:my-topic' }) });
     // No parameters passed -> the Ref cannot resolve -> raw intrinsic kept ->
     // spurious UPDATE. This is the pre-fix behavior the recursive walker hit.
-    const changes = await computeStackDiff(
+    const { changes } = await computeStackDiff(
       state,
       template,
       'us-east-1',
@@ -1765,5 +1772,410 @@ describe('buildDiffTree — down-passed nested-stack Parameters (spurious-change
       new DiffCalculator()
     );
     expect(changes.get('A')!.changeType).toBe('UPDATE');
+  });
+});
+
+describe('Outputs-only change (issue #1921)', () => {
+  // `cdkd deploy` persists an Outputs-only change (#875) but `cdkd diff` did
+  // not report one: the calculator compares Resources alone, so a stack that
+  // gained an export with a byte-identical Resources section printed "No
+  // changes detected" and `--fail` exited 0 — steering the user away from the
+  // very deploy that would repair a downstream Fn::ImportValue.
+  const ARN = 'arn:aws:ssm:us-east-1:1:parameter/p';
+
+  /** Template whose single resource matches `stateWithOutputs`'s resource exactly. */
+  function template(outputs?: CloudFormationTemplate['Outputs']): CloudFormationTemplate {
+    return {
+      Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+      ...(outputs && { Outputs: outputs }),
+    };
+  }
+
+  function stateWith(outputs: Record<string, unknown>): StackState {
+    return {
+      stackName: 'S',
+      region: 'us-east-1',
+      resources: { A: res('AWS::SSM::Parameter', { Value: 'x' }) },
+      outputs,
+      version: 6,
+      lastModified: 0,
+    };
+  }
+
+  const diffFor = async (state: StackState, tpl: CloudFormationTemplate) =>
+    computeStackDiff(state, tpl, 'us-east-1', 'S', fakeBackend({}), new DiffCalculator());
+
+  it('an added export is reported even though every resource is NO_CHANGE', async () => {
+    const { changes, outputChanges } = await diffFor(
+      stateWith({}),
+      template({ Arn: { Value: ARN, Export: { Name: 'S:Arn' } } })
+    );
+    expect([...changes.values()].every((c) => c.changeType === 'NO_CHANGE')).toBe(true);
+    expect(outputChanges).toEqual([
+      { name: 'Arn', changeType: 'ADD', newValue: ARN, isExport: false },
+      { name: 'S:Arn', changeType: 'ADD', newValue: ARN, isExport: true },
+    ]);
+  });
+
+  it('a changed value and a removed key are both reported', async () => {
+    const { outputChanges } = await diffFor(
+      stateWith({ Kept: 'old', Gone: 'bye' }),
+      template({ Kept: { Value: 'new' } })
+    );
+    expect(outputChanges).toEqual([
+      { name: 'Kept', changeType: 'MODIFY', oldValue: 'old', newValue: 'new', isExport: false },
+      { name: 'Gone', changeType: 'REMOVE', oldValue: 'bye', isExport: false },
+    ]);
+  });
+
+  it('an unchanged stack with unchanged outputs reports NO delta (no phantom)', async () => {
+    // The acceptance criterion that guards against the fix over-firing: the two
+    // resolution paths must agree, or every diff of a clean stack shows churn.
+    const { outputChanges } = await diffFor(
+      stateWith({ Arn: ARN, 'S:Arn': ARN }),
+      template({ Arn: { Value: ARN, Export: { Name: 'S:Arn' } } })
+    );
+    expect(outputChanges).toEqual([]);
+  });
+
+  it('a stack with no Outputs on either side reports NO delta', async () => {
+    const { outputChanges } = await diffFor(stateWith({}), template());
+    expect(outputChanges).toEqual([]);
+  });
+
+  it('nodeHasChanges / treeHasChanges are TRUE for an Outputs-only delta', async () => {
+    const backend = fakeBackend({ S: stateWith({}) });
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: template({ Arn: { Value: ARN, Export: { Name: 'S:Arn' } } }),
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+    // Without the #1921 arm both are false and `cdkd diff` prints
+    // "No changes detected" while `--fail` exits 0.
+    expect(nodeHasChanges(node)).toBe(true);
+    expect(treeHasChanges(node)).toBe(true);
+  });
+
+  it('an unchanged stack stays FALSE (the fix does not make every diff dirty)', async () => {
+    const backend = fakeBackend({ S: stateWith({ Arn: ARN, 'S:Arn': ARN }) });
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: template({ Arn: { Value: ARN, Export: { Name: 'S:Arn' } } }),
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+    expect(treeHasChanges(node)).toBe(false);
+  });
+
+  it('an output referencing a not-yet-created resource suppresses the delta, not the diff', async () => {
+    // Best-effort resolution: the reference cannot resolve until the CREATE
+    // lands, so reporting it would be a phantom the apply never writes. The
+    // resource CREATE is still reported.
+    const tpl: CloudFormationTemplate = {
+      Resources: {
+        A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } },
+        New: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'y' } },
+      },
+      Outputs: { Pending: { Value: { 'Fn::GetAtt': ['New', 'Arn'] } } },
+    };
+    const { changes, outputChanges } = await diffFor(stateWith({}), tpl);
+    expect(changes.get('New')!.changeType).toBe('CREATE');
+    expect(outputChanges).toEqual([]);
+  });
+
+  it('renders a human Outputs section, marking the export row', async () => {
+    const backend = fakeBackend({ S: stateWith({ Old: 'x' }) });
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: template({ Arn: { Value: ARN, Export: { Name: 'S:Arn' } } }),
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+    const lines: string[] = [];
+    renderDiffTree(node, true, (m) => lines.push(m));
+    const out = lines.join('\n');
+    expect(out).toContain('Outputs:');
+    expect(out).toContain('[+] Arn');
+    // The `[export]` tag is the load-bearing half: that string is what a
+    // consumer's Fn::ImportValue resolves against.
+    expect(out).toContain('[+] S:Arn [export]');
+    expect(out).toContain('[-] Old');
+    expect(out).toContain('2 output(s) to add, 0 to change, 1 to remove');
+    // The resource summary stays resource-scoped — an Outputs write is not an
+    // AWS operation and must not inflate the create/update/delete counts.
+    expect(out).toContain('0 to create, 0 to update, 0 to delete');
+  });
+
+  it('renders a MODIFY row with both sides and the change count', () => {
+    const lines: string[] = [];
+    const counts = renderOutputChangeLines(
+      [{ name: 'Out', changeType: 'MODIFY', oldValue: 'a', newValue: 'b', isExport: false }],
+      (m) => lines.push(m)
+    );
+    const out = lines.join('\n');
+    expect(out).toContain('[~] Out');
+    expect(out).toContain('old: "a"');
+    expect(out).toContain('new: "b"');
+    expect(counts).toEqual({ add: 0, change: 1, remove: 0 });
+  });
+
+  it('WITHHOLDS a redacted legacy-plaintext old value in the human render', () => {
+    const lines: string[] = [];
+    renderOutputChangeLines(
+      [
+        {
+          name: 'DbPassword',
+          changeType: 'MODIFY',
+          newValue: '{{resolve:secretsmanager:prod/db:SecretString:password}}',
+          isExport: false,
+          oldValueRedacted: true,
+        },
+      ],
+      (m) => lines.push(m)
+    );
+    const out = lines.join('\n');
+    expect(out).toContain('<redacted: legacy plaintext in state');
+    expect(out).not.toContain('hunter2');
+  });
+
+  it('strips control characters from a template-controlled output name', () => {
+    // An Export.Name is a RESOLVED value (Fn::Sub / parameter / SSM), so unlike
+    // a CFn logical id it never passed a validator and can carry ANSI escapes
+    // that would rewrite the surrounding diff output.
+    const lines: string[] = [];
+    renderOutputChangeLines(
+      [{ name: 'Evil\u001b[2KName\r', changeType: 'ADD', newValue: 'v', isExport: true }],
+      (m) => lines.push(m)
+    );
+    const out = lines.join('\n');
+    // The ESC is what makes `[2K` an ERASE-LINE command; stripping it leaves the
+    // residual bracket text as inert characters, which is the point -- the
+    // sequence can no longer act on the terminal.
+    expect(out).not.toContain('\u001b');
+    expect(out).not.toContain('\r');
+    expect(out).toContain('[export]');
+  });
+
+  it('WITHHOLDS a redacted legacy-plaintext old value in --json too', () => {
+    const node: DiffTreeNode = {
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      changes: changeMap([]),
+      ccApiRoutes: new Map(),
+      outputChanges: [
+        {
+          name: 'DbPassword',
+          changeType: 'MODIFY',
+          newValue: '{{resolve:secretsmanager:prod/db:SecretString:password}}',
+          isExport: false,
+          oldValueRedacted: true,
+        },
+      ],
+      children: [],
+    };
+    const json = diffTreeToJson(node);
+    expect(json.outputChanges[0]!.oldValueRedacted).toBe(true);
+    expect(Object.keys(json.outputChanges[0]!)).not.toContain('oldValue');
+    expect(JSON.stringify(json)).not.toContain('hunter2');
+  });
+
+  it('threads evaluated conditions, so a condition-false output is not reported', async () => {
+    // Without `conditions` reaching resolveTemplateOutputs, a condition-false
+    // output would be resolved and reported as an ADD the deploy never writes.
+    const tpl: CloudFormationTemplate = {
+      Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+      Conditions: { IsDev: { 'Fn::Equals': ['a', 'b'] } },
+      Outputs: { DevOnly: { Value: 'dev', Condition: 'IsDev' } },
+    };
+    const { outputChanges } = await diffFor(stateWith({}), tpl);
+    expect(outputChanges).toEqual([]);
+  });
+
+  it('a nested child carries its OWN Outputs delta under --recursive', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-1921-'));
+    try {
+      const childPath = join(dir, 'child.json');
+      writeFileSync(
+        childPath,
+        JSON.stringify({
+          Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+          Outputs: { ChildOut: { Value: 'child-value' } },
+        })
+      );
+      const parentTemplate: CloudFormationTemplate = {
+        Resources: {
+          Child: { Type: NESTED, Metadata: { 'aws:asset:path': 'child.json' }, Properties: {} },
+        },
+      };
+      const backend = fakeBackend({
+        P: st('P', { Child: res(NESTED, {}) }),
+        'P~Child': stateWith({}),
+      });
+      const node = await buildDiffTree({
+        stackName: 'P',
+        displayName: 'P',
+        region: 'us-east-1',
+        template: parentTemplate,
+        nestedTemplates: { Child: childPath },
+        recursive: true,
+        stateBackend: backend,
+        diffCalculator: new DiffCalculator(),
+      });
+      expect(node.outputChanges).toEqual([]);
+      expect(node.children[0]!.outputChanges).toEqual([
+        { name: 'ChildOut', changeType: 'ADD', newValue: 'child-value', isExport: false },
+      ]);
+      // The parent node is clean, so only the CHILD's delta can make the tree dirty.
+      expect(treeHasChanges(node)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a nested child removed from the template reports its outputs as REMOVE', async () => {
+    const backend = fakeBackend({
+      P: st('P', { Gone: res(NESTED, {}) }),
+      'P~Gone': stateWith({ OldOut: 'v' }),
+    });
+    const node = await buildDiffTree({
+      stackName: 'P',
+      displayName: 'P',
+      region: 'us-east-1',
+      template: { Resources: {} },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+    expect(node.children[0]!.outputChanges).toEqual([
+      { name: 'OldOut', changeType: 'REMOVE', oldValue: 'v', isExport: false },
+    ]);
+  });
+
+  it('does NOT warn when the suppressed delta is only the pending output itself', async () => {
+    // The regression this pins: this resolver DROPS an unresolved key (deploy
+    // keeps it as `undefined`), so a naive diff reads it as a REMOVE and the
+    // suppression warning fires on the ordinary, expected pending-resource case
+    // -- including the first diff of a never-deployed stack.
+    const warn = vi.mocked(getLogger().warn);
+    warn.mockClear();
+    const tpl: CloudFormationTemplate = {
+      Resources: {
+        A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } },
+        New: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'y' } },
+      },
+      Outputs: { Pending: { Value: { 'Fn::GetAtt': ['New', 'Arn'] } } },
+    };
+    const { outputChanges } = await diffFor(stateWith({ Pending: 'stale' }), tpl);
+    expect(outputChanges).toEqual([]);
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    expect(messages.filter((m) => m.includes('could not be resolved'))).toEqual([]);
+  });
+
+  it('DOES warn when a genuine other-key delta was suppressed', async () => {
+    const warn = vi.mocked(getLogger().warn);
+    warn.mockClear();
+    const tpl: CloudFormationTemplate = {
+      Resources: {
+        A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } },
+        New: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'y' } },
+      },
+      Outputs: {
+        Pending: { Value: { 'Fn::GetAtt': ['New', 'Arn'] } },
+        Real: { Value: 'changed' },
+      },
+    };
+    const { outputChanges } = await diffFor(stateWith({ Real: 'was' }), tpl);
+    expect(outputChanges).toEqual([]);
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => m.includes('could not be resolved'))).toBe(true);
+  });
+
+  it('keeps the pretty-printer newlines in a multi-line value', () => {
+    // The regression this pins: the full control-char class includes \n, and
+    // stripping ran AFTER the indent replace, so every multi-line value
+    // collapsed onto one line. JSON.stringify already escapes < 0x20 INSIDE
+    // strings, so C0 on this path is only the structural newlines.
+    const lines: string[] = [];
+    renderOutputChangeLines(
+      [{ name: 'Out', changeType: 'ADD', newValue: ['a', 'b'], isExport: false }],
+      (m) => lines.push(m)
+    );
+    const valueLine = lines.find((l) => l.includes('new:'))!;
+    expect(valueLine.split('\n').length).toBeGreaterThan(1);
+    expect(valueLine).toContain('"a"');
+    expect(valueLine).toContain('"b"');
+  });
+
+  it('strips control characters from rendered VALUES too, not just names', () => {
+    // JSON.stringify escapes everything below 0x20 but passes C1 and the bidi
+    // marks through unchanged.
+    const lines: string[] = [];
+    renderOutputChangeLines(
+      [{ name: 'Out', changeType: 'ADD', newValue: 'a\u009bBb\u202Ec', isExport: false }],
+      (m) => lines.push(m)
+    );
+    const out = lines.join('\n');
+    expect(out).not.toContain('\u009b');
+    expect(out).not.toContain('\u202e');
+  });
+
+  it('renders nothing for an empty Outputs delta', () => {
+    const lines: string[] = [];
+    const counts = renderOutputChangeLines([], (m) => lines.push(m));
+    expect(lines).toEqual([]);
+    expect(counts).toEqual({ add: 0, change: 0, remove: 0 });
+  });
+
+  it('carries the Outputs delta into --json, omitting the absent side per kind', async () => {
+    const backend = fakeBackend({ S: stateWith({ Old: 'x' }) });
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: template({ Arn: { Value: ARN, Export: { Name: 'S:Arn' } } }),
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+    const json = diffTreeToJson(node);
+    expect(json.outputChanges).toEqual([
+      { name: 'Arn', changeType: 'ADD', newValue: ARN, export: false },
+      { name: 'S:Arn', changeType: 'ADD', newValue: ARN, export: true },
+      { name: 'Old', changeType: 'REMOVE', oldValue: 'x', export: false },
+    ]);
+    // An ADD carries no `oldValue` key at all (not `oldValue: null`).
+    expect(Object.keys(json.outputChanges[0]!)).not.toContain('oldValue');
+    expect(Object.keys(json.outputChanges[2]!)).not.toContain('newValue');
+  });
+
+  it('--json keeps the outputChanges key present when there is no delta', async () => {
+    const backend = fakeBackend({ S: stateWith({}) });
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: template(),
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+    expect(diffTreeToJson(node).outputChanges).toEqual([]);
   });
 });

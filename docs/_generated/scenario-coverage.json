@@ -258,7 +258,7 @@
     },
     {
       "tag": "multi-stack-outputs-only-export",
-      "description": "Outputs-only change on an already-deployed producer (issue #875): a downstream consumer starts referencing the producer, so CDK synth adds a new Output/Export to the producer WITHOUT changing any of its resources. The producer redeploy is a no-op at the resource level but must still persist the new export to state + the exports index, otherwise the consumer (deployed with --exclusively, so the producer is not redeployed to paper over the gap) fails to resolve its Fn::ImportValue."
+      "description": "Outputs-only change on an already-deployed producer (issue #875): a downstream consumer starts referencing the producer, so CDK synth adds a new Output/Export to the producer WITHOUT changing any of its resources. The producer redeploy is a no-op at the resource level but must still persist the new export to state + the exports index, otherwise the consumer (deployed with --exclusively, so the producer is not redeployed to paper over the gap) fails to resolve its Fn::ImportValue. Also covers the PREVIEW half (issue #1921): `cdkd diff` must report the Outputs-only change — human Outputs section naming the `[export]` row, `--fail` exiting 1, and the entry in `--json` `outputChanges` — where it previously printed \"No changes detected\" and exited 0, steering the user away from the deploy that publishes the export; paired with a negative arm requiring the freshly-deployed producer to still diff clean."
     },
     {
       "tag": "nat-gateway-cleanup",
@@ -2508,7 +2508,7 @@
     },
     {
       "scenario": "multi-stack-outputs-only-export",
-      "description": "Outputs-only change on an already-deployed producer (issue #875): a downstream consumer starts referencing the producer, so CDK synth adds a new Output/Export to the producer WITHOUT changing any of its resources. The producer redeploy is a no-op at the resource level but must still persist the new export to state + the exports index, otherwise the consumer (deployed with --exclusively, so the producer is not redeployed to paper over the gap) fails to resolve its Fn::ImportValue.",
+      "description": "Outputs-only change on an already-deployed producer (issue #875): a downstream consumer starts referencing the producer, so CDK synth adds a new Output/Export to the producer WITHOUT changing any of its resources. The producer redeploy is a no-op at the resource level but must still persist the new export to state + the exports index, otherwise the consumer (deployed with --exclusively, so the producer is not redeployed to paper over the gap) fails to resolve its Fn::ImportValue. Also covers the PREVIEW half (issue #1921): `cdkd diff` must report the Outputs-only change — human Outputs section naming the `[export]` row, `--fail` exiting 1, and the entry in `--json` `outputChanges` — where it previously printed \"No changes detected\" and exited 0, steering the user away from the deploy that publishes the export; paired with a negative arm requiring the freshly-deployed producer to still diff clean.",
       "fixtures": [
         "outputs-only-export"
       ]

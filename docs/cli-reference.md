@@ -1601,15 +1601,82 @@ would apply, comparing the synth template against cdkd's S3 state.
   --recursive --fail`. Without `--fail`, `cdkd diff` always exits `0` even
   when changes are present (parity with `cdk diff`'s default).
 - `--json` — emit the diff as JSON instead of human-readable text. A flat
-  array of `{stack, region, changes: [...], children: [...]}` records (one
-  per target stack); with `--recursive`, `children` is populated with the
-  same nested shape recursively. `NO_CHANGE` resources are omitted;
-  `children` is always present (empty on leaves) so the key set is stable.
+  array of `{stack, region, changes: [...], outputChanges: [...], children:
+  [...]}` records (one per target stack); with `--recursive`, `children` is
+  populated with the same nested shape recursively. `NO_CHANGE` resources are
+  omitted; `children` and `outputChanges` are always present (empty on leaves /
+  when the Outputs section is unchanged) so the key set is stable.
   Each change entry additionally carries `ccApi?: string[]` when the
   resource would auto-route via Cloud Control API on the next deploy (the
   human renderer's `[via CC API: <props>]` annotation in machine form;
-  absent when the resource routes via its SDK provider). Progress logging
-  is suppressed so stdout carries only the JSON payload.
+  absent when the resource routes via its SDK provider). Each
+  `outputChanges` entry is `{name, changeType: "ADD" | "MODIFY" | "REMOVE",
+  oldValue?, newValue?, oldValueRedacted?, export}` — `oldValue` is absent on an
+  `ADD` and `newValue` on a `REMOVE`, and `oldValue` is also withheld (with
+  `oldValueRedacted: true` in its place) when state holds legacy secret
+  plaintext for that key. Progress logging is suppressed so stdout carries
+  only the JSON payload.
+
+**Outputs section** (issue
+[#1921](https://github.com/go-to-k/cdkd/issues/1921)): the diff also compares
+the template's `Outputs` against the outputs bag in state, so an
+**Outputs-only** change — one whose `Resources` section is byte-identical — is
+reported instead of printing `No changes detected`, and `--fail` exits `1` for
+it. This is the preview half of the Outputs-only persist `cdkd deploy` gained
+in [#875](https://github.com/go-to-k/cdkd/issues/875): when a downstream stack
+starts referencing a producer, CDK synth adds an `Output` with an `Export.Name`
+to the producer while leaving its resources untouched, and without this the
+preview steered the user away from the deploy that publishes the export.
+Removals are reported too — dropping an export can break a consumer's
+`Fn::ImportValue`.
+
+```text
+Outputs:
+  [+] ExportsOutputFnGetAttBucketArn
+        new: "arn:aws:s3:::my-bucket"
+  [+] ProducerStack:ExportsOutputFnGetAttBucketArn [export]
+        new: "arn:aws:s3:::my-bucket"
+
+0 to create, 0 to update, 0 to delete
+2 output(s) to add, 0 to change, 0 to remove
+```
+
+Rows are keyed by what actually lands in state, so an output carrying an
+`Export.Name` shows **two** rows — its logical name and its export name. The
+`[export]` row is the string a consumer's `Fn::ImportValue` resolves against.
+The Outputs counts are a **separate** summary line: an Outputs change is a
+state / exports-index write with no AWS resource operation behind it, so it
+never inflates the create / update / delete counts. Output values are resolved
+best-effort against current state, exactly as `cdkd deploy` resolves them; when
+an output cannot be fully resolved (typically because it references a resource
+this deploy has yet to create) the Outputs section is omitted rather than
+guessed — that resource's `CREATE` is already on the resource side of the diff
+— and a warning says so, so an absent section never silently means "unchanged".
+
+Because this is the only command that prints a **stored** output value, two
+safeguards apply. A previous value that is legacy secret plaintext is withheld from
+both the text and `--json` output rather than printed into CI logs. Two signals
+identify such a record: the template side still being a `{{resolve:...}}`
+expression while state is not (exactly what [`cdkd scrub`](#cdkd-scrub) repairs),
+and the template declaring the output's value as a dynamic reference — the latter
+also covers an output that was condition-skipped or deleted, which has no
+template side left to compare. Because a record with any such key was written by
+a pre-redaction binary, the withholding applies to every previous value in that
+record; the change itself is still reported. Second, output / export names and
+rendered values are stripped of control and bidi characters before display: an
+`Export.Name` is a value cdkd resolved (from an `Fn::Sub`, a parameter, an SSM
+lookup), so unlike a CloudFormation logical ID it never passed a validator. The
+`--json` payload is deliberately left byte-faithful — it is a machine interface,
+and mutating a name a consumer matches on would be worse than the display concern
+it would avoid.
+
+Resolving `Outputs` is new work for `cdkd diff`: an output using
+`Fn::ImportValue` / `Fn::GetStackOutput` may now cost a `ListExports` /
+`DescribeStacks` call (subject to `--no-cfn-fallback`), an `Fn::GetAZs` output an
+EC2 `DescribeAvailabilityZones`, a `{{resolve:ssm:...}}` output one
+`GetParameter` issued with `WithDecryption: false`, and an `Fn::GetStackOutput`
+carrying a `RoleArn` a cross-account `sts:AssumeRole` (the `RoleArn` must be a
+template literal, so it is not attacker-selectable).
 
 **Routing annotation**: every CREATE / UPDATE line whose template uses a
 top-level CFn property cdkd's SDK provider does not yet wire is tagged

@@ -310,6 +310,78 @@ async calculateDiff(
 - **Replacement propagation to dependents** (issue #807): after per-resource diffs are computed, the calculator walks reverse reference edges (`Ref` / `Fn::GetAtt` / `Fn::Sub` and intrinsics nesting them) from every resource whose `propertyChanges` include `requiresReplacement: true` and promotes transitive `NO_CHANGE` dependents to `UPDATE` — mirroring CloudFormation's new-physical-ID propagation (e.g. an `AWS::ECS::Service` whose only "change" is the `Ref` to a replaced `AWS::ECS::TaskDefinition` revision still gets `UpdateService`). Each promoted referencing property is re-evaluated against the replacement rules, so a promoted dependent whose referencing property is itself immutable becomes a replacement seed for *its* dependents in turn. The synthetic change's `requiresReplacement` is evaluated with `undefined` old/new values: the referencing property's template value did not actually change (only its resolved physical ID / ARN will), so unconditional `replacementProperties` (which match on the property name) still fire while `conditionalReplacements` are not fed a phantom resolved-string → unresolved-intrinsic delta that would spuriously report "changed". Promotion is safe even when speculative: the deploy engine re-resolves the promoted resource's properties against the in-flight state map (which by DAG order already carries the dependency's new physical ID) and skips the provider call when nothing actually changed. Each synthetic change carries `replacementPropagated: true` so `cdkd diff` annotates the property line `[replacement propagated]` — the apparent old-value → `{Ref}` delta in the display reads as a propagated replacement, not a literal value edit.
 - **Diff display**: When showing property changes, only the actually changed sub-properties are displayed. Unchanged sibling values and intrinsic-containing values are stripped from the output to reduce noise.
 
+#### `outputs-diff.ts`
+
+`diff-calculator.ts` compares `Resources` only. The template's `Outputs`
+section is compared separately by `outputs-diff.ts`, called from
+`computeStackDiff` in `src/cli/commands/diff-recursive.ts` (issue
+[#1921](https://github.com/go-to-k/cdkd/issues/1921)).
+
+This exists because an **Outputs-only** change — one whose `Resources` section
+is byte-identical — is a real change the deploy performs: `cdkd deploy` persists
+it and republishes the exports index (issue #875, see the no-change branch of
+`deploy-engine.ts`). Without the preview half, such a stack printed
+`No changes detected` and `cdkd diff --fail` exited `0` while the apply did
+write new outputs. The motivating chain is a producer that gains an
+`Export.Name` because a downstream stack started referencing it: the diff
+steered the user away from the very deploy that would let the consumer's
+`Fn::ImportValue` resolve. The reverse — an export being REMOVED, which can
+break a consumer — was hidden the same way.
+
+- `resolveTemplateOutputs` reproduces the bag shape
+  `DeployEngine.resolveOutputs` persists to `StackState.outputs`: a
+  condition-false output is skipped (CFn never creates it), and an
+  `Export.Name` is stored as a **second key** holding the same value, since
+  `Fn::ImportValue` resolves by export name.
+- The unresolved detector is deliberately **wider** than the deploy side's
+  `v === undefined`, because the diff's best-effort resolver fails in more ways.
+  It flags `undefined` (the same signal — `resolve` returns it *without*
+  throwing for a constructible-but-unknown attribute such as
+  `AWS::DynamoDB::Table.StreamArn`), a symbol (`Ref: AWS::NoValue` selected at
+  top level), a surviving intrinsic object, and — only for a value whose raw
+  template source actually used `Fn::Sub` — an unsubstituted `${...}` string
+  (`resolveSub` keeps the literal placeholder on a genuine miss rather than
+  throwing). Each would otherwise be a PERMANENT phantom change on a stack the
+  deploy considers clean, with `--fail` exiting 1 forever. The `Fn::Sub` scoping
+  matters: applied to every string, the placeholder test would also match an IAM
+  policy body's `${aws:username}` or a UserData shell `${VAR}`, and a single such
+  key suppresses the whole Outputs section for that stack forever.
+- `computeOutputsDiff` compares **bag key by bag key**, which is exactly the
+  `outputMapsEqual` predicate the deploy engine gates its persist on, so the
+  preview cannot drift from the apply. A partially-resolved bag reports no
+  delta at all, mirroring the deploy engine's NO-CHANGE branch declining to
+  persist one (its changed-resources branch has no such gate, correctly, since
+  by then every resource exists) — and
+  nothing is lost, since an output only fails to resolve when it references a
+  resource this deploy has yet to CREATE, which the resource side already shows.
+  As on the deploy side a suppressed delta is WARNED about, so an absent Outputs
+  section never silently conflates "unchanged" with "uncomputable".
+- Because this is the first code path that **displays** a stored output value,
+  it withholds an `oldValue` that is legacy secret plaintext. Two signals
+  identify such a record: the desired side still being a secret-bearing dynamic
+  reference (`{{resolve:secretsmanager:` / `{{resolve:ssm-secure:` — a plain
+  `{{resolve:ssm:` is excluded, since per issue #1901 it is classified by the
+  parameter's type and a `String` parameter is public and legitimately stored
+  resolved) while the stored side is not (the condition `cdkd scrub` repairs),
+  and the template itself declaring the key's value as a dynamic reference —
+  the latter collected for *every* declared output, including condition-skipped
+  ones, because those have no desired side at all and would otherwise print in
+  full as a `REMOVE` row. A hit on either makes the whole record suspect (it was
+  written by a pre-GHSA binary), so the withholding is record-level; the change
+  is still reported, only the value is withheld.
+- It also strips control and bidi characters from template-controlled output /
+  export names and rendered values before they reach the terminal — an
+  `Export.Name` is a value cdkd *resolved*, so unlike a CFn logical ID it never
+  passed a validator. The `--json` payload is left byte-faithful on purpose: it
+  is a machine interface where mutating a name a consumer matches on would be a
+  correctness regression.
+
+The module is a deliberate SECOND implementation rather than shared code: the
+deploy-side block lives in `deploy-engine.ts`, which is in the `integ-broad`
+and `integ-destroy` merge-gate scopes. `tests/unit/analyzer/outputs-diff.test.ts`
+pays for that trade with an anti-drift fence asserting the three mirrored
+deploy-side semantics still hold.
+
 #### `intrinsic-function-resolver.ts`
 
 Resolves CloudFormation intrinsic functions
