@@ -24,8 +24,12 @@
 # the per-stack region-pinned AWS clients into a process-global singleton
 # (`setAwsClients` in src/cli/commands/deploy.ts), so with the default
 # concurrency of 4 two multi-region stacks race for the ambient clients — a
-# hazard deploy.ts already documents and issue #1934 tracks. Serial deploy is
-# the mode this fixture pins; the concurrent case is #1934's to verify.
+# hazard deploy.ts already documents and issue #1957 tracks. Serial deploy is
+# the mode this fixture pins, because it is the mode the cache fix alone makes
+# correct: #1957 owns the wrong-region READ (the racing singleton, and
+# `cdkd scrub` installing its clients once for stacks in several regions),
+# while this fixture pins that the CACHE no longer carries one region's value
+# into another's resource.
 #
 # Only PUBLIC test values are used (SSM `String` parameters, never
 # `SecureString`), so nothing here needs masking — the region dimension is a

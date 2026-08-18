@@ -88,20 +88,32 @@ export const SECRET_MASK = '***';
  * homing it here means no call site has to thread it: the four sibling writers
  * #1910 fixes pass a position SOURCE and nothing else.
  *
- * Its lifetime matches the resolver's `cachedDynamicReferences` — the resolver
- * clears both together, and that shared lifetime is the point: this set IS the
- * resolver's own SecureString verdict store, which already had exactly this
- * scope, so nothing is widened by homing it here.
+ * Its lifetime NO LONGER matches the resolver's `cachedDynamicReferences`, and
+ * that divergence is now deliberate (issue
+ * [#1933](https://github.com/go-to-k/cdkd/issues/1933)). The resolved VALUES
+ * moved onto the RESOLVER INSTANCE — one per stack, each carrying its own
+ * region — because a value is only true for the region that read it. A VERDICT
+ * is a statement about a reference's TYPE and has to be readable with no
+ * resolver in hand: {@link isKnownSecretExpression} is consulted from the
+ * redaction path, whose callers thread a position SOURCE and nothing else. So
+ * this set stays process-wide while the values do not, and
+ * `resetAccountInfoCache` now clears only this one.
  *
- * Process-wide is therefore INHERITED, not claimed to be ideal. It is not
- * strictly sound across regions or accounts in one run — the same expression
- * can name a `SecureString` in one region and a plain `String` in another — but
- * `cachedDynamicReferences` caches the resolved VALUE under the same
- * assumption, so a per-region store here would fix nothing on its own. Note
- * which way the imprecision points: an entry only ever GRANTS "persist the
- * source leaf verbatim", and the leaf is the resource's own template
- * expression, so the failure mode is a public reference stored as an expression
- * (a spurious UPDATE, issue #1901's class), never a secret stored as plaintext.
+ * Process-wide is therefore CHOSEN here rather than inherited, and the choice
+ * is what makes a stale verdict correctable: a resolver whose fresh
+ * `GetParameter` reports a public `Type` RETRACTS the entry
+ * ({@link forgetSecretExpression}) for every later reader, which a per-region
+ * store would scope away. It is still not strictly sound across regions or
+ * accounts in one run — the same expression can name a `SecureString` in one
+ * region and a plain `String` in another — but note which way the imprecision
+ * points in EACH direction now that the two stores can disagree. An entry only
+ * ever GRANTS "persist the source leaf verbatim", so a verdict inherited from
+ * another region can at worst store a public reference as an expression (a
+ * spurious UPDATE, issue #1901's class), never a secret as plaintext. And the
+ * opposite move — another region RETRACTING a verdict this stack still needs —
+ * cannot un-redact anything either, because each of the resolver's own cache
+ * entries carries the verdict that produced it and re-records on a hit without
+ * consulting this set.
  */
 const recordedSecretExpressions = new Set<string>();
 
@@ -715,10 +727,14 @@ function positionByIntrinsicSkeleton(
   // disagreed with `bag`), so a conflicting expression is poisoned to a sentinel
   // no bag can equal, which refuses it exactly as the scan did.
   //
-  // The branch is unreachable FROM THE RESOLVER — `cachedDynamicReferences` is
-  // process-wide, so one expression yields one plaintext per run — but it is
-  // reachable through this module's API and it is FENCED, by the "recorded
-  // against MORE THAN ONE plaintext" case. An earlier draft of this comment
+  // The branch is HARD to reach from the resolver — one resolver's
+  // `cachedDynamicReferences` yields one plaintext per expression, so a single
+  // pass cannot produce two — but it is no longer unreachable from there since
+  // that cache became per-resolver (issue #1933): two resolvers in two regions
+  // legitimately resolve one expression to two different plaintexts, and a
+  // caller merging their maps lands exactly here. It is reachable through this
+  // module's API regardless, and it is FENCED, by the "recorded against MORE
+  // THAN ONE plaintext" case. An earlier draft of this comment
   // claimed the divergence was unobservable, reasoning that `plaintextOf[E] ===
   // bag` implies `secrets.get(bag) === E` so accepting and falling back agree.
   // That misses the case where a SECOND candidate also matches: accepting `E`

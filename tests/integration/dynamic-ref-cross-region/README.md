@@ -60,11 +60,14 @@ deploy is the mode this fixture pins.
 
 - The concurrent (`--stack-concurrency > 1`) multi-region case, and more
   generally any caller that does NOT re-pin the ambient clients per stack
-  (`cdkd drift --all` builds one client set from the CLI region and loops over
-  stacks in several regions). That is the ambient-client half of #1933,
-  tracked as issue [#1934](https://github.com/go-to-k/cdkd/issues/1934) — the
+  (`cdkd scrub` installs one client set from the CLI region and then resolves
+  stacks in several regions, which leaves a region-B `SecureString` in
+  plaintext in `state.json`). That is the ambient-client half of #1933, filed
+  as issue [#1957](https://github.com/go-to-k/cdkd/issues/1957) — the
   instance-scoped cache removes the CACHE as a cross-region carrier, but it
-  cannot make an ambient client point at the right region.
+  cannot make an ambient client point at the right region, so #1933's own
+  title (one region's secret resolved into another's resource) stays reachable
+  until #1957 lands.
 - The CROSS-STACK half of #1933 (a second stack's secrets map coming back
   empty so `cdkd scrub --all` reports it clean). That half needs a
   `SecureString` / Secrets Manager reference shared by two stacks in ONE

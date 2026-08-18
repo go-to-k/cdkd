@@ -1301,8 +1301,10 @@ export class IntrinsicFunctionResolver {
 
   /**
    * Resolved `{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` values,
-   * keyed by the full expression — INSTANCE-scoped, which is the fix for issue
-   * [#1933](https://github.com/go-to-k/cdkd/issues/1933).
+   * keyed by the full expression — INSTANCE-scoped, which closes the CACHE half
+   * of issue [#1933](https://github.com/go-to-k/cdkd/issues/1933). The issue is
+   * only PARTIALLY addressed by this field: see "what this does NOT settle"
+   * below.
    *
    * It used to be a module-global map keyed by the expression ALONE, and both
    * halves of that were wrong for the same reason: the key and the lifetime
@@ -1326,16 +1328,37 @@ export class IntrinsicFunctionResolver {
    * the stack half open, which is why the lifetime — not the key — is what
    * moved.
    *
-   * What this does NOT settle: the lookups themselves still go through the
-   * process-ambient `getAwsClients()` singleton (see
-   * `resolveSecretsManagerReference` / `resolveSSMReference`), whose region is
-   * whichever the process installed. So a resolver constructed for region B
-   * while the ambient clients point at region A still reads A on its FIRST
-   * resolution — no cache involved. Pinning the lookup to
+   * ONE caller is a known EXCEPTION to that invariant, and it is written down
+   * here because an invariant recorded without its exception is how the next
+   * change breaks it: `cdkd export` builds a single `paramResolver`
+   * (`src/cli/commands/export.ts`, the `buildResolvedParametersPerStack`
+   * pre-pass) and shares it across every node of a nested-stack tree, while the
+   * nodes carry a per-node `region`. It is safe TODAY for two independent
+   * reasons — the resolver is constructed with the tree's single `rootRegion`
+   * and nested children do not yet diverge from it, and that pre-pass passes no
+   * `recordedSecretValues` bag, so neither the region nor the secrets-recording
+   * dimension has anything to cross. Both stop holding the moment cross-region
+   * nested stacks ship or that pass starts recording secrets; a resolver per
+   * node is the fix then, not a wider key here.
+   *
+   * What this does NOT settle — issue
+   * [#1957](https://github.com/go-to-k/cdkd/issues/1957) owns it: the lookups
+   * themselves still go through the process-ambient `getAwsClients()` singleton
+   * (see `resolveSecretsManagerReference` / `resolveSSMReference`), whose region
+   * is whichever the process installed last. So a resolver constructed for
+   * region B while the ambient clients point at region A still reads A on its
+   * FIRST resolution — no cache involved, so nothing here can prevent it.
+   * `cdkd deploy` re-pins the singleton per stack, which makes a SERIAL
+   * multi-region deploy correct end to end, but the default
+   * `--stack-concurrency 4` races for it (a hazard `deploy.ts` already
+   * documents) and `cdkd scrub` installs its clients once while resolving
+   * stacks in several regions. The split of ownership is therefore: THIS field
+   * closes the cache as a cross-region / cross-stack carrier, while #1957 owns
+   * the wrong-region READ — which is the outcome #1933's title names, so #1933
+   * is not fully resolved until #1957 lands. Pinning the lookup to
    * {@link resolverRegion} means constructing region-scoped clients, which is a
    * credentials decision (a bare `new SSMClient({ region })` drops the ambient
-   * profile / assume-role config) and is tracked as issue
-   * [#1934](https://github.com/go-to-k/cdkd/issues/1934).
+   * profile / assume-role config) and belongs to #1957 rather than here.
    */
   private readonly cachedDynamicReferences = new Map<string, CachedDynamicReference>();
 
