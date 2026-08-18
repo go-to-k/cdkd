@@ -53,6 +53,12 @@ import {
   isWarmThroughputDecrease,
   toFiniteNumber,
 } from '../dynamodb-warm-throughput.js';
+import {
+  DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+  DELETE_INDEX_WAIT_PROCEED_NOTE,
+  deleteTableWithIndexBusyRetry,
+  waitForIndexesSettled,
+} from '../dynamodb-index-busy-delete.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -768,6 +774,19 @@ function desiredIndexEntriesByName(value: unknown): Map<string, Record<string, u
   }
   return byName;
 }
+
+/**
+ * Test seam for the index-busy `DeleteTable` retry's backoff (issue #1931),
+ * mirroring the sibling provider's export of the same name. Production leaves
+ * `sleep` undefined so `withRetry`'s real schedule applies; a test injects a
+ * no-op so the ~47s budget does not have to be waited out.
+ *
+ * One seam PER PROVIDER rather than one on the shared module: a `Table` test
+ * that silences this backoff must not also silence the `GlobalTable` one, since
+ * the two suites run in the same worker and a suite that stopped paying a delay
+ * it meant to exercise fails silently — it just gets faster.
+ */
+export const deleteTableRetryDelays: { sleep?: (ms: number) => Promise<void> } = {};
 
 export class DynamoDBTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
@@ -2143,7 +2162,58 @@ export class DynamoDBTableProvider implements ResourceProvider {
     }
 
     try {
-      await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
+      // AWS refuses `DeleteTable` while a GSI is transitioning
+      // (`Cannot delete table while indexes are being created, updated, or
+      // deleted`), and the condition is TRANSIENT: a real destroy lost a table
+      // to it and the very next `cdkd destroy` succeeded with no other change
+      // (issue #1830, measured on the sibling `AWS::DynamoDB::GlobalTable`
+      // type). Application auto-scaling can start an index capacity change at
+      // any moment, so any table with an autoscaled GSI can hit it — this
+      // provider simply had no retry, so it surfaced as a hard
+      // `PartialFailureError` with state preserved and the user re-ran a
+      // destroy for something that clears itself in seconds (issue #1931).
+      //
+      // The rule is the sibling provider's, READ rather than re-spelled: the
+      // classifier, the retry budget, the bounded re-arm and the warning all
+      // come from `../dynamodb-index-busy-delete.ts`.
+      //
+      // Deliberately NO pre-delete describe / settle gate here (the sibling's
+      // #1521 gate). This provider's `delete()` issues `DeleteTable` with
+      // nothing between it and the caller, so there is no window of its own to
+      // close; adding a fresh describe would only shrink the race the retry
+      // exists to absorb — and the integ arm races exactly that window, so it
+      // would stop discriminating.
+      await deleteTableWithIndexBusyRetry({
+        logicalId,
+        physicalId,
+        typeLabel: 'table',
+        logger: this.logger,
+        deleteTable: async () => {
+          await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
+        },
+        // Re-arm on the CONDITION, not on the clock: an index backfill outlasts
+        // any fixed backoff grid, while this poll returns on its first
+        // `DescribeTable` once the index has settled. BOUNDED — it runs per
+        // retry, so the loop's wall clock is the product and
+        // `destroy-runner.ts` caps a single `delete()` at the per-resource
+        // deadline (30 min by default; this provider declares no
+        // `getMinResourceTimeoutMs` to lift it). At
+        // `DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS` the whole loop's worst case is
+        // ~8.8 min, so a genuinely stuck index still ends in AWS's own
+        // actionable sentence rather than a generic `ResourceTimeoutError` that
+        // never mentions indexes.
+        reArm: () =>
+          waitForIndexesSettled({
+            tableName: physicalId,
+            logicalId,
+            logger: this.logger,
+            describeTable: () =>
+              this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId })),
+            maxAttempts: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+            proceedNote: DELETE_INDEX_WAIT_PROCEED_NOTE,
+          }),
+        sleepSeam: deleteTableRetryDelays,
+      });
       this.logger.debug(`Successfully deleted DynamoDB table ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
