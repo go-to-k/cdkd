@@ -70,6 +70,10 @@ const PLAINTEXT_A = 'alpha-plaintext-secret';
 const EXPR_A = '{{resolve:secretsmanager:alpha:SecretString:password:AWSCURRENT}}';
 const PLAINTEXT_B = 'beta-plaintext-secret';
 const EXPR_B = '{{resolve:secretsmanager:beta:SecretString:password:AWSCURRENT}}';
+// The OTHER version stage of the same secret: a DIFFERENT expression resolving
+// to the SAME plaintext, so the value-keyed map keeps only the last and cannot
+// tell the two leaves apart. Only a POSITION source can.
+const EXPR_B_ALT = '{{resolve:secretsmanager:beta:SecretString:password:AWSPREVIOUS}}';
 const PUBLIC_A = 'alpha-public-endpoint';
 const PUBLIC_B = 'beta-public-endpoint';
 // A secret SHORTER than `secret-redaction`'s MIN_NEEDLE_LENGTH (4). Degenerate
@@ -95,6 +99,7 @@ const SECRET_BY_EXPRESSION: Record<string, string> = {
   [EXPR_A]: PLAINTEXT_A,
   [EXPR_B]: PLAINTEXT_B,
   [EXPR_SHORT]: PLAINTEXT_SHORT,
+  [EXPR_B_ALT]: PLAINTEXT_B,
   [EXPR_UNPINNED]: PLAINTEXT_UNPINNED,
   [EXPR_NESTED]: PLAINTEXT_NESTED,
 };
@@ -487,9 +492,17 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     // Guard-the-guard: the collision check must not cost the ordinary alias its
     // position source (issue #1918), which is what keeps a cross-stack consumer
     // off a sibling's expression.
+    //
+    // `BetaTwin` is what makes the SOURCE actually load-bearing here — an
+    // earlier version of this test asserted only the published value, which the
+    // value scan alone reproduces, so the name claimed more than the assertions
+    // checked. Twin resolves to the same plaintext through the OTHER stage and
+    // is declared LAST, so the value map keeps `EXPR_B_ALT`: without the alias's
+    // own position source the key collapses onto that sibling expression.
     const { saved, indexed } = await deployOutputs({
       SecretAlpha: { Value: EXPR_A },
       SecretBeta: { Value: EXPR_B, Export: { Name: 'BetaExport' } },
+      BetaTwin: { Value: EXPR_B_ALT },
     });
 
     expect(indexed['BetaExport']).toBe(EXPR_B);
@@ -513,7 +526,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
 
   // --- key space: an INTRINSIC Export.Name -----------------------------------
 
-  it('an INTRINSIC Export.Name is published under its RESOLVED name, with its own source', async () => {
+  it('an INTRINSIC Export.Name is published under its RESOLVED name', async () => {
     const { saved, indexed } = await deployOutputs({
       SecretBeta: { Value: EXPR_B, Export: { Name: { 'Fn::Sub': '${Prefix}-BetaExport' } as never } },
     });
@@ -628,47 +641,58 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
   it('a REFUSED export name still RECORDS its secret for the rest of the pass', async () => {
     // The regression this pins was introduced by the fix for the previous
     // round: resolving `Export.Name` with a private secrets map made the
-    // DECISION exact, but the map was then discarded — and resolving is not
-    // side-effect-free. It warms the resolver's cache, whose hit arm re-records
-    // only what it can still PROVE is secret. An unpinned ssm reference (#1901)
-    // first touched by an export-name resolve therefore became invisible to
-    // every later output, and its plaintext was persisted into state.json, the
-    // exports index and the CLI summary — something main did NOT do.
+    // DECISION exact, but resolving is not side-effect-free. It warms the
+    // resolver's cache, whose hit arm re-records only what it can still PROVE is
+    // secret. An unpinned ssm reference (#1901) first touched by an export-name
+    // resolve therefore became invisible to every later consumer.
     //
-    // `Later` is declared SECOND so the export-name resolve happens first, which
-    // is the whole point: the fixture's mock records a RECORD_ONCE expression
-    // only on its first resolution, exactly as the cache-hit arm behaves.
-    const { saved, indexed, savedStateJson } = await deployOutputs({
-      Exporter: { Value: PUBLIC_A, Export: { Name: { 'Fn::Sub': `pre-${EXPR_UNPINNED}` } as never } },
-      Later: { Value: { 'Fn::Sub': `v-${EXPR_UNPINNED}` } as never },
+    // WHAT MAKES THIS FIXTURE REACH THE MERGE, stated because it stopped doing
+    // so once and no test noticed: `EXPR_UNPINNED` appears ONLY in an
+    // `Export.Name`, never in a `Value`. Since the pass split resolves every
+    // value before any name, a fixture that also put it in a Value would record
+    // it in pass 1 and leave `nameSecrets` empty here — which is exactly how the
+    // earlier version of this test drifted off the branch it names. The consumer
+    // is a LATER output's literal-name refusal, which is the live production
+    // path: pass 2 walks names in declaration order.
+    const { saved, savedStateJson } = await deployOutputs({
+      Exporter: {
+        Value: PUBLIC_A,
+        Export: { Name: { 'Fn::Sub': `pre-${EXPR_UNPINNED}` } as never },
+      },
+      LaterExporter: {
+        Value: PUBLIC_B,
+        Export: { Name: `prod-${PLAINTEXT_UNPINNED}-endpoint` },
+      },
     });
 
+    // Both aliases refused: the first for substituting a secret into its name,
+    // the second because that secret is now in the pass map and its literal name
+    // contains it. Without the merge the second is PUBLISHED as a plaintext key.
+    expect(Object.keys(saved).sort()).toEqual(['Exporter', 'LaterExporter']);
     expect(savedStateJson).not.toContain(PLAINTEXT_UNPINNED);
-    expect(JSON.stringify(indexed)).not.toContain(PLAINTEXT_UNPINNED);
-    // Redacted onto the expression that produced it, not merely dropped.
-    expect(saved['Later']).toBe(`v-${EXPR_UNPINNED}`);
+    expect(warnings().filter((w) => w.includes('Export.Name that resolves'))).toHaveLength(2);
   });
 
-  it('a THROWING export-name resolve still keeps what it recorded before throwing', async () => {
-    // The escape the `finally` exists for, and the third round in a row this
-    // class of bug shipped: the resolver records and caches AS IT GOES, so an
-    // `Fn::Join` whose first element resolves a secret and whose second rejects
-    // leaves the module-global cache WARM. Merge the map only on the success
-    // path and that recording is lost — the later output cache-hits, its hit arm
-    // re-records only what it can still prove is secret (an unpinned ssm
-    // reference cannot be, #1901), and its plaintext is persisted.
+  it('...and still records it when that name resolution THROWS partway', async () => {
+    // The `finally` half. `Fn::Join` resolves its parts as it goes, so the first
+    // element records and caches before the second rejects; merging only on the
+    // success path loses that recording while the cache stays warm. Same
+    // consumer as above, so the assertion discriminates for the same reason.
     const { saved, savedStateJson } = await deployOutputs({
       Exporter: {
         Value: PUBLIC_A,
         Export: { Name: { 'Fn::Join': ['', [EXPR_UNPINNED, '__THROW__']] } as never },
       },
-      Later: { Value: { 'Fn::Sub': `v-${EXPR_UNPINNED}` } as never },
+      LaterExporter: {
+        Value: PUBLIC_B,
+        Export: { Name: `prod-${PLAINTEXT_UNPINNED}-endpoint` },
+      },
     });
 
     expect(savedStateJson).not.toContain(PLAINTEXT_UNPINNED);
-    expect(saved['Later']).toBe(`v-${EXPR_UNPINNED}`);
-    // The throwing output itself is dropped (warn-and-continue), which is the
-    // pre-existing behavior and not what this case is about.
+    expect(Object.hasOwn(saved, `prod-${PLAINTEXT_UNPINNED}-endpoint`)).toBe(false);
+    // The throwing output is dropped by the shared failure handler (warn-and-
+    // continue), which is pre-existing behavior and not what this pins.
     expect(saved['Exporter']).toBeUndefined();
   });
 
@@ -690,7 +714,13 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     // PARTIAL source behind.
     mockDiffCalculator.hasChanges!.mockReturnValue(true);
     mockStateBackend.getState!.mockResolvedValue({
-      state: { ...noChangeState(), outputs: { Legacy: 'previously-public-value' } },
+      state: {
+        ...noChangeState(),
+        // `Leaked` is what makes the second assertion discriminate: the previous
+        // bag must actually HOLD this pass's plaintext, or "the value scan still
+        // runs" is a claim no assertion checks.
+        outputs: { Legacy: 'previously-public-value', Leaked: PLAINTEXT_A },
+      },
       etag: 'etag-old',
     });
 

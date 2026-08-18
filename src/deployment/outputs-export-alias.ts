@@ -35,11 +35,21 @@
  *
  * | `Export.Name` shape                          | deploy            | diff              |
  * |----------------------------------------------|-------------------|-------------------|
- * | intrinsic, substitutes a secret               | refuse (exact)    | refuse (spelling) |
+ * | intrinsic, substitutes a secretsmanager ref    | refuse (exact)    | refuse (spelling) |
+ * | intrinsic, substitutes a PINNED SecureString   | refuse (exact)    | publish (residual)|
  * | LITERAL, spelled as a `{{resolve:...}}` token | publish           | publish           |
  * | LITERAL, contains a recorded plaintext        | refuse            | SUPPRESS delta    |
  * | intrinsic/literal, unpinned `ssm:` plaintext  | refuse if recorded| publish (residual)|
  * | collides with a published output name         | refuse            | refuse            |
+ *
+ * The SecureString row is a real divergence, recorded rather than closed: the
+ * diff's spelling test matches only `secretsmanager:` / `ssm-secure:`, because a
+ * plain `{{resolve:ssm:...}}` is secret by parameter TYPE (issue #1901) and
+ * treating the spelling as a signal would fire on ordinary public config. So an
+ * intrinsic name substituting a pinned SecureString is refused by the deploy and
+ * published by the preview — a permanent phantom ADD. No plaintext escapes (the
+ * preview never substitutes one), so it is a reporting defect, not a
+ * disclosure.
  *
  * Two rows deserve their reason stated, because both look wrong in isolation:
  *
@@ -58,7 +68,8 @@
  *   fixes considered: deciding the case from the stored bag (state holding the
  *   key proves a previous deploy published it) would keep the outputs delta
  *   working, but it is a new positive arm and belongs in its own review rather
- *   than in a fix round.
+ *   than in a fix round — issue
+ *   [#1942](https://github.com/go-to-k/cdkd/issues/1942).
  *
  * The message builders live here for the reason
  * `src/provisioning/nested-stack-messages.ts` gives: a test that pins behavior
@@ -101,6 +112,7 @@
  */
 
 import type { TemplateOutput } from '../types/resource.js';
+import { stripControlChars } from '../utils/regexp.js';
 import { SECRET_MASK, type RecordedSecretValues } from './secret-redaction.js';
 
 /**
@@ -318,21 +330,6 @@ export function stateKeySecretExposure(
 }
 
 /**
- * Strip control characters from a value about to be printed.
- *
- * An export NAME — and therefore a state key derived from one — is a RESOLVED
- * value that never passed a CloudFormation validator, so it can carry ANSI
- * escapes or bidi overrides straight into a terminal or a CI log.
- * `diff-recursive.ts` documents that hazard for the same key space and strips
- * the same class; this module's warnings print the same strings and must not be
- * the way in.
- */
-function stripControlChars(value: string): string {
-  // eslint-disable-next-line no-control-regex
-  return value.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
-}
-
-/**
  * Replace EVERY occurrence of every exposed secret with the mask.
  *
  * Deliberately not `maskSecretsInText`: that helper skips needles shorter than
@@ -367,7 +364,7 @@ export function secretBearingExportNameWarning(
   const masked = stripControlChars(maskEveryOccurrence(exportName, exposure));
   const shown = masked === stripControlChars(exportName) ? '' : `(masked: "${masked}") `;
   return (
-    `Output ${outputKey} has an Export.Name that resolves to a value containing a secret ` +
+    `Output ${stripControlChars(outputKey)} has an Export.Name that resolves to a value containing a secret ` +
     `${shown}— skipping the export alias. ` +
     `An export name becomes a key in state.json and in the exports index, and redaction rewrites ` +
     `VALUES only, so publishing it would persist the secret in plaintext. ` +
@@ -392,7 +389,7 @@ export function secretBearingStateKeyWarning(
   exposure: RecordedSecretValues
 ): string {
   return (
-    `State for ${stackName} holds an output KEY containing a secret ` +
+    `State for ${stripControlChars(stackName)} holds an output KEY containing a secret ` +
     `(masked: "${stripControlChars(maskEveryOccurrence(key, exposure))}") — cdkd scrub cannot rewrite a key, ` +
     `only a value, because the key IS the export name consumers resolve by. ` +
     `Give that output a non-secret Export.Name and redeploy: the next deploy replaces ` +
@@ -413,10 +410,11 @@ export function secretBearingStateKeyWarning(
  */
 export function exportAliasCollisionWarning(outputKey: string, exportName: string): string {
   const shown = stripControlChars(exportName);
+  const from = stripControlChars(outputKey);
   return (
-    `Output ${outputKey} exports as "${shown}", which is also the name of another output in this stack — ` +
+    `Output ${from} exports as "${shown}", which is also the name of another output in this stack — ` +
     `skipping the export alias, so output ${shown} keeps its own value and the export is not published. ` +
-    `A consumer's Fn::ImportValue on "${shown}" therefore resolves to output ${shown}, NOT to ${outputKey} ` +
+    `A consumer's Fn::ImportValue on "${shown}" therefore resolves to output ${shown}, NOT to ${from} ` +
     `(CloudFormation would publish both). Rename the export, or the colliding output.`
   );
 }
@@ -435,19 +433,22 @@ export function exportAliasCollisionWarning(outputKey: string, exportName: strin
 export function exportAliasCollisionScrubWarning(
   outputKey: string,
   exportName: string,
-  secrets?: RecordedSecretValues
+  secrets: RecordedSecretValues
 ): string {
-  // Masked here, unlike the deploy twin. That one prints a name the secret
-  // refusal has already cleared; scrub runs no such check, and its `exportName`
-  // is a BEST-EFFORT resolved intrinsic that can carry plaintext — so the
-  // helper's "no masking needed" rationale holds for one caller only, and the
-  // other must supply its own.
-  const exposure = secrets ? secretsPresentIn(exportName, secrets) : undefined;
+  // The masking argument is REQUIRED so a future caller cannot silently print
+  // an unmasked name — even though today it never fires. Both callers only
+  // reach this message when the name MATCHED a declared output name, i.e.
+  // template text, so a resolved intrinsic carrying plaintext is refused by the
+  // collision test before it can be printed. An earlier comment here claimed
+  // the opposite as the reason for masking; the honest reason is that scrub,
+  // unlike the deploy twin, has no secret refusal upstream to make that
+  // guarantee structural, so the mask stays as the cheap belt.
+  const exposure = secretsPresentIn(exportName, secrets);
   const shown = stripControlChars(
     exposure ? maskEveryOccurrence(exportName, exposure) : exportName
   );
   return (
-    `Output ${outputKey} exports as "${shown}", which is also the name of another output in this stack — ` +
+    `Output ${stripControlChars(outputKey)} exports as "${shown}", which is also the name of another output in this stack — ` +
     `state cannot say which of the two the stored value under "${shown}" came from, so that key is ` +
     `redacted by value match instead of by template position, and two references resolving to the same ` +
     `value could still collapse there. Rename the export, or the colliding output, and redeploy.`

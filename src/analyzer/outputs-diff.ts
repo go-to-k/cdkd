@@ -5,6 +5,7 @@ import {
   collectPublishedOutputNames,
   isExportAliasCollision,
 } from '../deployment/outputs-export-alias.js';
+import { stripControlChars } from '../utils/regexp.js';
 
 /**
  * Kind of change for one key of the persisted Outputs bag.
@@ -382,7 +383,7 @@ export async function resolveTemplateOutputs(
           // the round-6 regression this replaces, which traded one divergence
           // for two.
           logger.debug(
-            `Diff skipping export alias of ${outputKey} — the name carries a secret reference`
+            `Diff skipping export alias of ${stripControlChars(outputKey)} — the name carries a secret reference`
           );
         } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
           // Deploy skips this alias and keeps the colliding output's own value,
@@ -390,7 +391,7 @@ export async function resolveTemplateOutputs(
           // resolution failure: the bag matches what deploy writes, which is the
           // point of the suppression flag, so nothing needs withholding.
           logger.debug(
-            `Diff skipping export alias ${exportName} of ${outputKey} — collides with an output name`
+            `Diff skipping export alias ${stripControlChars(exportName)} of ${stripControlChars(outputKey)} — collides with an output name`
           );
         } else if (!declaredExportIsIntrinsic && secretSourceKeys.size > 0) {
           // UNDECIDABLE, so suppress rather than guess. The deploy refuses a
@@ -402,15 +403,19 @@ export async function resolveTemplateOutputs(
           //
           // Suppressing is this module's existing answer to "cannot reproduce
           // what deploy will do", and it also avoids printing a row whose KEY
-          // may hold that plaintext into CI logs.
+          // may hold that plaintext into CI logs. The stronger fix — deciding
+          // the case from the stored bag — is deferred to issue
+          // [#1942](https://github.com/go-to-k/cdkd/issues/1942).
           //
-          // `recordFailure` is what keeps the suppression honest: the alias key
-          // is absent from this bag but may well be PRESENT in state, and
-          // without recording it the warning downstream reads it as a REMOVE
-          // and blames "an output referencing a resource this deploy has yet to
-          // create" — the wrong cause, on every run, forever.
+          // Recording the ALIAS key is what keeps the suppression honest: it is
+          // absent from this bag but may well be PRESENT in state, and without
+          // recording it the warning downstream reads it as a REMOVE and blames
+          // "an output referencing a resource this deploy has yet to create" —
+          // the wrong cause, on every run, forever. `failedKeys.add` directly,
+          // NOT `recordFailure`: that helper also records `outputKey`, whose
+          // value resolved fine and belongs in the diff.
           logger.debug(
-            `Diff cannot decide the export alias of ${outputKey} — a literal name may contain a resolved secret`
+            `Diff cannot decide the export alias of ${stripControlChars(outputKey)} — a literal name may contain a resolved secret`
           );
           failedKeys.add(exportName);
           resolutionFailed = true;
@@ -476,7 +481,15 @@ export function computeOutputsDiff(
 
   // Pass 1: is this a pre-GHSA record? See the "Withholding" note above.
   const legacyRecord = Object.entries(currentBag).some(([name, oldValue]) => {
-    if (containsSecretDynamicReference(oldValue)) return false;
+    // LEAF granularity on the VETO, deep on both positive arms — and the
+    // asymmetry is the point rather than an oversight. Widening this one (as an
+    // earlier revision did) makes a CONTAINER holding any expression leaf vote
+    // "already redacted", so a partially-redacted bag —
+    // `["{{resolve:secretsmanager:A}}", "prod-<plaintext>"]`, the residue
+    // `cdkd scrub` itself admits it can leave — is read as post-GHSA and its
+    // plaintext leaf then prints in a rendered row. A veto must be harder to
+    // earn than a suspicion.
+    if (typeof oldValue === 'string' && isSecretDynamicReference(oldValue)) return false;
     return containsSecretDynamicReference(desired[name]) || secretSourceKeys.has(name);
   });
 

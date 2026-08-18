@@ -188,6 +188,13 @@ import {
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
 /**
+ * The map the production call passes. Its content is irrelevant to these three
+ * assertions — none of these names contains a secret — but the ARGUMENT is
+ * required, so a caller cannot silently print an unmasked name.
+ */
+const SECRETS_FOR_MESSAGE = new Map([[SECRET_PLAINTEXT, SECRET_EXPR]]);
+
+/**
  * A COMPLETE `ScrubOptions`, built without a cast so a newly REQUIRED option
  * fails to compile here instead of being silently erased by an `as`.
  */
@@ -289,7 +296,7 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     expect(saved!.outputs['SecretBeta']).toBe(SECRET_EXPR);
     expect(JSON.stringify(saved)).not.toContain(SECRET_PLAINTEXT);
     expect(logger.warn).toHaveBeenCalledWith(
-      exportAliasCollisionScrubWarning('SecretBeta', 'PublicAlpha')
+      exportAliasCollisionScrubWarning('SecretBeta', 'PublicAlpha', SECRETS_FOR_MESSAGE)
     );
   });
 
@@ -375,7 +382,7 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
 
     expect(saved!.outputs['PublicAlpha']).toBe(SECRET_EXPR);
     expect(logger.warn).toHaveBeenCalledWith(
-      exportAliasCollisionScrubWarning('SecretBeta', 'PublicAlpha')
+      exportAliasCollisionScrubWarning('SecretBeta', 'PublicAlpha', SECRETS_FOR_MESSAGE)
     );
   });
 
@@ -396,7 +403,7 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     expect(saved!.outputs['PublicAlpha']).toBe(PUBLIC_VALUE);
     expect(saved!.outputs['SecretBeta']).toBe(SECRET_EXPR);
     expect(logger.warn).toHaveBeenCalledWith(
-      exportAliasCollisionScrubWarning('SecretBeta', 'PublicAlpha')
+      exportAliasCollisionScrubWarning('SecretBeta', 'PublicAlpha', SECRETS_FOR_MESSAGE)
     );
   });
 

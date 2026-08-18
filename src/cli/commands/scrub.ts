@@ -243,10 +243,17 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       : '';
 
   if (options.dryRun) {
-    logger.info(
-      `\nPlan: ${totalStacksScrubbed} stack(s) hold plaintext secrets and would be scrubbed ` +
-        `(--dry-run, no state written).${keyNote} ROTATE any exposed secret in Secrets Manager.`
-    );
+    // Gated like its non-dry-run twin: with only key findings this would plan
+    // to scrub nothing, and "0 stack(s) ... would be scrubbed" reads as a clean
+    // result directly above a warning that says otherwise.
+    if (totalStacksScrubbed > 0) {
+      logger.info(
+        `\nPlan: ${totalStacksScrubbed} stack(s) hold plaintext secrets and would be scrubbed ` +
+          `(--dry-run, no state written).${keyNote} ROTATE any exposed secret in Secrets Manager.`
+      );
+    } else {
+      logger.info(`\nPlan: nothing can be scrubbed.${keyNote} ROTATE any exposed secret.`);
+    }
     if (options.fail) throw new ScrubNeededError();
     return;
   }

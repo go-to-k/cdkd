@@ -1,3 +1,4 @@
+import { stripControlChars } from '../../utils/regexp.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { CloudFormationTemplate, TemplateResource } from '../../types/resource.js';
@@ -1032,12 +1033,10 @@ const REDACTED_LEGACY_PLAINTEXT = '<redacted: legacy plaintext in state — run 
  * consumer may match on, and silently mutating it there would trade a real
  * correctness regression for a display concern belonging to whatever renders
  * the JSON. `JSON.stringify` already escapes everything below 0x20.
+ *
+ * The helper itself now lives in `src/utils/regexp.ts` — `outputs-export-alias`
+ * prints the same class of string and had grown a second copy.
  */
-function stripControlChars(value: string): string {
-  // eslint-disable-next-line no-control-regex
-  return value.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
-}
-
 /**
  * The same guard for an already-JSON-SERIALIZED value: C1 and the bidi marks
  * only, deliberately NOT C0.

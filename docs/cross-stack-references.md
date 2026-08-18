@@ -224,7 +224,9 @@ key is recorded so that notice does not fire on the alias alone.
 **A state KEY that already holds plaintext cannot be scrubbed.** State
 written by a pre-fix binary can carry `state.outputs["pre-<secret>"]`, and
 every redaction pass rewrites values only. `cdkd scrub` REPORTS such a key
-(and `--dry-run --fail` fails on it) but never rewrites it: the key is
+(and `--fail` exits 1 on it — under `--dry-run` as part of the standing CI
+gate, and on a REAL run too, since that is the one finding class a real run
+cannot fix) but never rewrites it: the key is
 the export name consumers resolve by, so renaming it would silently retire
 a live export. The remedy is a template change — give the output a
 non-secret `Export.Name` and redeploy, which replaces `state.outputs` and

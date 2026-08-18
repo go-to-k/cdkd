@@ -546,6 +546,24 @@ describe('computeOutputsDiff — legacy secret plaintext on the stored side', ()
     expect(JSON.stringify(changes)).not.toContain('hunter2');
   });
 
+  it('a PARTIALLY-redacted stored list still counts as legacy (veto stays at LEAF granularity)', () => {
+    // The veto must be harder to earn than the suspicion. Widening it to a deep
+    // walk — as the positive arms legitimately are — makes a CONTAINER holding
+    // any expression leaf vote "already redacted", so this bag, the partial
+    // residue `cdkd scrub` itself admits it can leave, is read as post-GHSA and
+    // its plaintext leaf prints in the rendered row.
+    const current = {
+      Endpoints: ['{{resolve:secretsmanager:A:SecretString:pw}}', 'prod-hunter2-plaintext'],
+    };
+    const desired = { Endpoints: ['{{resolve:secretsmanager:A:SecretString:pw}}', 'prod-new'] };
+
+    const changes = computeOutputsDiff(current, desired, new Set());
+
+    expect(changes[0]!.oldValueRedacted).toBe(true);
+    expect(changes[0]).not.toHaveProperty('oldValue');
+    expect(JSON.stringify(changes)).not.toContain('hunter2');
+  });
+
   it('does NOT withhold when both sides are expressions (already-redacted state)', () => {
     const other = '{{resolve:secretsmanager:prod/db:SecretString:username}}';
     const changes = computeOutputsDiff({ DbPassword: other }, { DbPassword: EXPR }, new Set());
