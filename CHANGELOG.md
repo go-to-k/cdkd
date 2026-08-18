@@ -1,3 +1,10 @@
+## [0.283.28](https://github.com/go-to-k/cdkd/compare/v0.283.27...v0.283.28) (2026-08-18)
+
+
+### Bug Fixes
+
+* **dynamodb:** retry the index-busy GlobalTable delete and share one WarmThroughput rule with the Table provider ([#1930](https://github.com/go-to-k/cdkd/issues/1930)) ([a372690](https://github.com/go-to-k/cdkd/commit/a372690c67312c67440d57aa10a08127350b4477))
+
 ## [0.283.27](https://github.com/go-to-k/cdkd/compare/v0.283.26...v0.283.27) (2026-08-18)
 
 
