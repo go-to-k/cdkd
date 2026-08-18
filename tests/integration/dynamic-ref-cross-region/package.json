@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-example-dynamic-ref-cross-region",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Verifies a {{resolve:ssm:...}} dynamic reference resolves per-region when two stacks in different regions share one expression (cdkd issue #1933)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

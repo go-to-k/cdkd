@@ -781,9 +781,10 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       });
       expect(first.get('prod')).toBe(secureExpr); // treated as secret this pass
 
-      // A fresh lookup (the value was cached, so force one by clearing) that
-      // reports a definitive public type must clear the verdict.
-      resetAccountInfoCache();
+      // The next pass asks AWS again with NO reset in between: a value judged
+      // secret from a `Type` too anomalous to memoize is not cached either
+      // (issue #1933), which is what lets a definitive public answer arrive and
+      // clear the verdict.
       const second = new Map<string, string>();
       const result = await resolver.resolveDynamicReferences(secureExpr, {
         ...defaultContext,
@@ -811,10 +812,11 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
       expect(mockSSMSend).toHaveBeenCalledTimes(2);
     });
 
-    it('clears the SecureString verdict with the dynamic-reference cache', async () => {
-      // The verdict is derived from a cached resolution, so keeping it across a
-      // reset would let a stale classification decide secret-ness for a value
-      // the cache was just asked to forget.
+    it('clears the SecureString verdict on reset, so a later pass re-asks AWS', async () => {
+      // The verdict store is process-global (the resolved VALUES are not — they
+      // live on the resolver instance since issue #1933), so the process-global
+      // reset must clear it: keeping it would let a stale classification decide
+      // secret-ness for a reference this call just asked to forget.
       mockSSMSend.mockResolvedValue({
         Parameter: { Value: 'AQICAHh-ciphertext-blob', Type: 'SecureString' },
       });
@@ -850,6 +852,142 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
         Password: secureExpr,
         Endpoint: 'db.example.com',
       });
+    });
+  });
+  // The resolved-value cache lives on the RESOLVER INSTANCE, not on the module
+  // (issue #1933). It used to be a process-global map keyed by the expression
+  // alone, so its key and its lifetime were both narrower than the values they
+  // stood for: no region component, and no reset between stacks.
+  describe('resolved-value cache scope (issue #1933)', () => {
+    const sharedSecretExpr = '{{resolve:secretsmanager:shared/db:SecretString}}';
+    const sharedSsmExpr = '{{resolve:ssm:/shared/db/password}}';
+
+    it('does not serve one region resolution to a resolver built for another region', async () => {
+      // Secrets Manager secrets are REGIONAL: the same NAME in two regions is
+      // two different secrets, routinely two different credentials. With the
+      // process-global map the first region to resolve the expression won it
+      // for every later stack in every other region.
+      mockSecretsManagerSend
+        .mockResolvedValueOnce({ SecretString: 'virginia-password' })
+        .mockResolvedValueOnce({ SecretString: 'tokyo-password' });
+
+      const virginia = new IntrinsicFunctionResolver('us-east-1');
+      const tokyo = new IntrinsicFunctionResolver('ap-northeast-1');
+
+      expect(await virginia.resolveDynamicReferences(sharedSecretExpr, defaultContext)).toBe(
+        'virginia-password'
+      );
+      expect(await tokyo.resolveDynamicReferences(sharedSecretExpr, defaultContext)).toBe(
+        'tokyo-password'
+      );
+      expect(mockSecretsManagerSend).toHaveBeenCalledTimes(2);
+
+      // The OTHER polarity of the same guard: isolation is between resolvers,
+      // not per call. A second reference from the SAME resolver must still be
+      // served from its own cache, or the fix would have simply disabled
+      // caching (and every one of these lookups is a billed API call).
+      expect(await virginia.resolveDynamicReferences(sharedSecretExpr, defaultContext)).toBe(
+        'virginia-password'
+      );
+      expect(mockSecretsManagerSend).toHaveBeenCalledTimes(2);
+    });
+
+    it("records the secret into the SECOND stack's own map (the scrub --all clean report)", async () => {
+      // `cdkd scrub --all` builds one resolver per stack and one secrets map
+      // per resource. With the process-global cache, stack B's resolution
+      // cache-HIT and the hit arm re-recorded only what it could still prove
+      // secret — an ssm parameter whose `Type` came back unclassifiable is
+      // never pinned in the verdict store, so B's map stayed empty and the scan
+      // found nothing to redact. B was reported clean while its state held the
+      // plaintext.
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'unclassified-secret' } });
+
+      const stackA = new IntrinsicFunctionResolver('us-east-1');
+      const stackB = new IntrinsicFunctionResolver('us-east-1');
+
+      const aSecrets = new Map<string, string>();
+      await stackA.resolveDynamicReferences(sharedSsmExpr, {
+        ...defaultContext,
+        recordedSecretValues: aSecrets,
+      });
+      expect(aSecrets.get('unclassified-secret')).toBe(sharedSsmExpr);
+
+      const bSecrets = new Map<string, string>();
+      const bResolved = await stackB.resolveDynamicReferences(sharedSsmExpr, {
+        ...defaultContext,
+        recordedSecretValues: bSecrets,
+      });
+
+      expect(bResolved).toBe('unclassified-secret');
+      expect(bSecrets.get('unclassified-secret')).toBe(sharedSsmExpr);
+      expect(mockSSMSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('re-asks for an unclassifiable ssm value on the next resource of the SAME stack', async () => {
+      // A `Type` too anomalous to memoize is too anomalous to cache: pinning
+      // the value would inherit the transient answer for the whole resolver,
+      // which is exactly what refusing to memoize the verdict prevents (issue
+      // #1901). The definitive-`SecureString` polarity is the neighbouring
+      // "re-records the secret on the cache-hit path" test — that one IS cached
+      // and answers from the cache with a single lookup.
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'unclassified-secret' } });
+      const resolverForStack = new IntrinsicFunctionResolver('us-east-1');
+
+      const firstResource = new Map<string, string>();
+      await resolverForStack.resolveDynamicReferences(sharedSsmExpr, {
+        ...defaultContext,
+        recordedSecretValues: firstResource,
+      });
+
+      const secondResource = new Map<string, string>();
+      await resolverForStack.resolveDynamicReferences(sharedSsmExpr, {
+        ...defaultContext,
+        recordedSecretValues: secondResource,
+      });
+
+      expect(secondResource.get('unclassified-secret')).toBe(sharedSsmExpr);
+      expect(mockSSMSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps redacting after another region resolver RETRACTS the shared verdict', async () => {
+      // The verdict store stayed process-global while the values moved onto the
+      // instance, so the two lifetimes can now disagree: the same parameter
+      // NAME can be a `SecureString` here and a plain `String` in another
+      // region, and that region's resolver retracts the memo. This resolver's
+      // later resources must keep redacting their own region's secret, which is
+      // why the entry carries the verdict that produced it.
+      mockSSMSend
+        .mockResolvedValueOnce({ Parameter: { Value: 'tokyo-password', Type: 'SecureString' } })
+        .mockResolvedValueOnce({ Parameter: { Value: 'public-value', Type: 'String' } });
+
+      const tokyo = new IntrinsicFunctionResolver('ap-northeast-1');
+      const virginia = new IntrinsicFunctionResolver('us-east-1');
+
+      const firstResource = new Map<string, string>();
+      await tokyo.resolveDynamicReferences(sharedSsmExpr, {
+        ...defaultContext,
+        recordedSecretValues: firstResource,
+      });
+      expect(firstResource.get('tokyo-password')).toBe(sharedSsmExpr);
+
+      // The other region sees a plain String under the same name and retracts.
+      const otherRegion = new Map<string, string>();
+      await virginia.resolveDynamicReferences(sharedSsmExpr, {
+        ...defaultContext,
+        recordedSecretValues: otherRegion,
+      });
+      expect(otherRegion.size).toBe(0);
+
+      const secondResource = new Map<string, string>();
+      const resolved = await tokyo.resolveDynamicReferences(sharedSsmExpr, {
+        ...defaultContext,
+        recordedSecretValues: secondResource,
+      });
+
+      expect(resolved).toBe('tokyo-password');
+      expect(secondResource.get('tokyo-password')).toBe(sharedSsmExpr);
+      // Served from tokyo's own cache — the retraction cost no extra lookup.
+      expect(mockSSMSend).toHaveBeenCalledTimes(2);
     });
   });
 });

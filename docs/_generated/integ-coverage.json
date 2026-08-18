@@ -5514,6 +5514,7 @@
         "deletion-policy-retain",
         "deployment-events",
         "destroy-interrupt",
+        "dynamic-ref-cross-region",
         "elasticache-replicationgroup-getatt",
         "eventbridge",
         "export-nested-stack",
@@ -5599,6 +5600,9 @@
         "destroy-interrupt": [
           "l2",
           "literal"
+        ],
+        "dynamic-ref-cross-region": [
+          "l1"
         ],
         "elasticache-replicationgroup-getatt": [
           "l1"
