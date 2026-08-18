@@ -1,3 +1,10 @@
+## [0.283.30](https://github.com/go-to-k/cdkd/compare/v0.283.29...v0.283.30) (2026-08-18)
+
+
+### Bug Fixes
+
+* **dynamodb:** retry the index-busy DeleteTable on AWS::DynamoDB::Table, and share one rule with GlobalTable ([#1953](https://github.com/go-to-k/cdkd/issues/1953)) ([6cf6fee](https://github.com/go-to-k/cdkd/commit/6cf6fee32dea19492ebb3fc9e45ac6554f5d026c))
+
 ## [0.283.29](https://github.com/go-to-k/cdkd/compare/v0.283.28...v0.283.29) (2026-08-18)
 
 
