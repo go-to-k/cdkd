@@ -7,8 +7,8 @@
 #
 # Why this gate exists (PR #348 incident, 2026-05-13):
 #
-#   The `integ-destroy` marker is content-digest based and accepts ANY
-#   clean real-AWS destroy. A narrow feature integ (e.g. PR #348's
+#   The `integ-destroy` marker records a digest, not provenance, and
+#   accepts ANY clean real-AWS destroy. A narrow feature integ (e.g. PR #348's
 #   `import-value-strong-ref`: 2-stack S3 + SSM fixture) IS sufficient
 #   to flip `integ-destroy` green. But that fixture does NOT exercise
 #   VPC + NAT GW + Lambda hyperplane ENI lifecycle, multi-resource

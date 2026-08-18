@@ -1,9 +1,13 @@
 # markgate configuration — https://github.com/go-to-k/markgate
 #
-# Four narrow-scope gates back the pre-commit / pre-PR / pre-merge
-# checks for this repo. Each gate only invalidates when files in its
-# own `include` set change, so a tests-only commit doesn't re-run doc
-# checks and a docs-only commit doesn't re-run typecheck/build/tests.
+# Seven narrow-scope gates back the pre-commit / pre-PR / pre-merge
+# checks for this repo. Each gate only invalidates within its own
+# `include` set, so a tests-only commit doesn't re-run doc checks and
+# a docs-only commit doesn't re-run typecheck/build/tests. Most gates
+# invalidate on the CONTENT of those files (`hash: files`);
+# `integ-destroy` instead invalidates on this branch's DELTA against
+# origin/main within them (`hash: diff`), and `integ-broad` /
+# `pr-review` are bound to sentinel files rather than to source.
 #
 # Gates:
 #   check          — typecheck/lint/build/unit tests
@@ -150,7 +154,7 @@ gates:
     # scoped file, forcing a real-AWS re-run that proved nothing. That
     # invalidation is a false positive by construction — every change
     # on main already passed this same gate in its own PR. Measured
-    # over 250 merged PRs (6.3 days): 143 touched this scope, 101 of
+    # over 250 merged PRs (9.4 days): 143 touched this scope, 101 of
     # those were invalidated by another PR's merge, and 100 of the 101
     # had zero file overlap with the incoming change.
     #
@@ -160,10 +164,20 @@ gates:
     # incoming change to a shared file lands inside our own delta.
     # What is NOT caught: cross-file interaction (main changes B, this
     # branch changes A, a caller uses both). `hash: files` caught that
-    # incidentally; it was 1 of the 101 cases above. `integ-broad` is
-    # sentinel-bound and unaffected by this mode, so it remains the
-    # backstop for cross-cutting regressions, and the TTL below still
-    # forces a periodic real-AWS run regardless of code churn.
+    # incidentally. Note the bucket carefully: the not-caught class is
+    # an unknown subset of the 100 ZERO-OVERLAP cases, not of the 1
+    # overlapping case — the overlapping one is precisely what this
+    # mode still catches. So the residual risk is bounded above by
+    # 100, not by 1, and how much of it is real is unmeasured.
+    #
+    # `integ-broad` is NOT the backstop for that class, despite the
+    # obvious guess: its CROSS_CUTTING_REGEX (integ-broad-gate.sh)
+    # does not cover `src/provisioning/providers/**`, so the commonest
+    # instance — this branch changes provider A while main changed
+    # provider B — never fires it, and its sentinel binding makes it
+    # code-independent, so it cannot detect an interaction at all.
+    # The honest backstop is the TTL below, which forces a periodic
+    # real-AWS run regardless of code churn.
     #
     # `base` is mandatory on a diff gate and has no default: markgate
     # deliberately refuses to fall back to `origin/HEAD`, which is
@@ -236,9 +250,9 @@ gates:
     # is stale, forcing a broad integ in addition to whatever feature
     # integ the change came with.
     #
-    # Why a separate marker (vs. extending `integ-destroy`): markgate
-    # is content-digest based; `integ-destroy` doesn't distinguish
-    # which integ flipped it. The sentinel below is written ONLY by
+    # Why a separate marker (vs. extending `integ-destroy`): a markgate
+    # marker records a digest, not provenance, so `integ-destroy`
+    # doesn't distinguish which integ flipped it. The sentinel below is written ONLY by
     # /run-integ when a broad-set test name passes — so a narrow
     # feature integ legitimately flips `integ-destroy` (it WAS a
     # clean real-AWS destroy) while leaving `integ-broad` stale,

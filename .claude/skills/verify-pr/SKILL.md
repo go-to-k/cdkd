@@ -42,8 +42,9 @@ Run each check and report pass/fail:
 
 2. **Tests**
    - `vp run test` - all unit tests pass
+   - Every scope / diff check in this skill uses `origin/main...HEAD`, not `main...HEAD`. The gate hooks derive their scope from `origin/main` and the `integ-destroy` digest is pinned to `merge-base(origin/main, HEAD)`, so a local `main` that has not been fetched makes this skill and the hook that blocks the merge disagree about what the branch touched.
    - Report test count (files and tests)
-   - **Test coverage check**: compare `git diff main...HEAD` for `src/` changes vs `tests/` changes. If new logic was added or modified in `src/` but no corresponding test files were added or updated, flag as **fail** and add the missing tests before proceeding
+   - **Test coverage check**: compare `git diff origin/main...HEAD` for `src/` changes vs `tests/` changes. If new logic was added or modified in `src/` but no corresponding test files were added or updated, flag as **fail** and add the missing tests before proceeding
 
 3. **CI status**
    - If PR number is not provided as argument, auto-detect via `gh pr view --json number -q .number`
@@ -112,7 +113,10 @@ Run each check and report pass/fail:
      ```bash
      mise exec -- markgate verify integ-destroy
      ```
-     If this exits non-zero, run `/run-integ <relevant-test>` (e.g. `bench-cdk-sample`) and confirm it reports 0 errors / 0 orphans — the skill itself will then call `markgate set integ-destroy`.
+     **Read the exit code, do not just test for non-zero.** The gate runs markgate 0.4's `hash: diff` mode, which has three outcomes, and two of them have opposite remedies:
+     - **exit 1** — the marker is genuinely stale (this branch changed in-scope code, or the 14d TTL expired). Run `/run-integ <relevant-test>` (e.g. `bench-cdk-sample`) and confirm it reports 0 errors / 0 orphans; the skill itself then calls `markgate set integ-destroy`.
+     - **exit 2** — markgate could not EVALUATE the gate: `origin/main` unresolvable (never fetched, shallow clone) or no delta against the merge base. **`/run-integ` cannot fix this** — `markgate set` fails on the identical condition, so running one burns a real-AWS run and leaves the gate blocked anyway. The remedy is `git fetch origin` (or `--unshallow`, or committing the branch's work). `markgate status` also errors here and prints no `state:` line, so the usual staleness reason comes back empty.
+
      CI is necessary but not sufficient — it does not exercise real-AWS destroy. The gate is the structural enforcement of that fact.
    - **CROSS-CUTTING CHECK (load-bearing)**: the `integ-destroy` marker accepts ANY clean real-AWS destroy. A narrow feature-specific integ (e.g. `import-value-strong-ref`'s 2-stack S3+SSM fixture) IS sufficient to flip the marker, but it does NOT exercise the broad deploy / destroy code paths a cross-cutting change touches. When the PR diff touches ANY of:
      - `src/deployment/deploy-engine.ts`
@@ -138,7 +142,7 @@ Run each check and report pass/fail:
      These exercise multi-resource VPC / Lambda / IAM / CFn-Custom paths that narrow integs leave uncovered. Cross-cutting code paths affect EVERY user's deploy/destroy, not just the feature you added — broad integs are the only structural defense against shipping a regression that only surfaces in production on stacks unlike your fixture. Bypassing this is the PR #348 trap from 2026-05-13 (Issue #343 shipped without bench-cdk-sample validation; surfaced post-merge as an incident).
      ```bash
      # Detection: only fires when the diff actually touches cross-cutting code.
-     if git diff main...HEAD --name-only | grep -qE '^src/deployment/(deploy-engine|intrinsic-function-resolver)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/register-providers\.ts$'; then
+     if git diff origin/main...HEAD --name-only | grep -qE '^src/deployment/(deploy-engine|intrinsic-function-resolver)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/register-providers\.ts$'; then
        echo "Cross-cutting code touched — broad integ required (bench-cdk-sample / lambda / microservices / drift-revert)."
        # Then run the broad integ via /run-integ and confirm 0 errors / 0 orphans.
      fi
@@ -148,7 +152,7 @@ Run each check and report pass/fail:
      ```bash
      # Only check when the PR diff actually touches the gate scope.
      # Mirrors how `gh pr merge` is checked, but in the worktree that has the PR's content.
-     if git diff main...HEAD --name-only | grep -qE '^src/local/|^src/cli/commands/local-|^tests/integration/local-'; then
+     if git diff origin/main...HEAD --name-only | grep -qE '^src/local/|^src/cli/commands/local-|^tests/integration/local-'; then
        mise exec -- markgate verify integ-local
      fi
      ```
@@ -168,7 +172,7 @@ Run each check and report pass/fail:
 
      The skill applies bias factors (security surfaces bump up; pure-infra / docs / tests-only bump down) and appends the security reviewer on top of the tier when a security surface / fix is involved. Trust the recommendation; override only when you have a concrete reason (note the reason here).
    - Synthesize the reviewer reports (or your inline read) into a pass / issues-found verdict. Any blocker → fix-back loop before continuing.
-   - `git diff main...HEAD` — confirm the diff is what you reviewed (no last-minute commits slipped through).
+   - `git diff origin/main...HEAD` — confirm the diff is what you reviewed (no last-minute commits slipped through).
    - For each change: is it correct? complete? necessary?
    - Check for:
      - Logic errors or unhandled edge cases
@@ -228,7 +232,7 @@ Run each check and report pass/fail:
       - `gh pr view <PR> --json commits -q '.commits | length'` — commit count on the PR
       - `git log main..HEAD --oneline | wc -l` — commit count locally
       - If they match and >1, the PR has been iterated on; the initial body is almost certainly stale
-    - Read the current body (`gh pr view <PR> --json body -q .body`) and compare against the actual final diff (`git diff main...HEAD`). Flag any of:
+    - Read the current body (`gh pr view <PR> --json body -q .body`) and compare against the actual final diff (`git diff origin/main...HEAD`). Flag any of:
       - Bullets describing behavior that was reverted in a later commit
       - Bullets describing checks/validations the code no longer performs
       - File:line citations that no longer exist
