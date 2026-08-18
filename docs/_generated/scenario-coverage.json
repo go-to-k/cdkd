@@ -807,6 +807,13 @@
       "scenarios": []
     },
     {
+      "name": "dynamic-ref-cross-region",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution"
+      ]
+    },
+    {
       "name": "dynamodb-autoscaling",
       "annotated": false,
       "scenarios": []
@@ -2236,6 +2243,7 @@
       "scenario": "dynamic-reference-resolution",
       "description": "CloudFormation dynamic references (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}`) resolved by cdkd itself (`resolveDynamicReferences`) BEFORE the property reaches the provider — JSON-key (`:SecretString:<key>`), whole-secret, and version-stage forms + plaintext SSM param; the deployed resource carries the RESOLVED value, never the literal token. Secret-bearing references are additionally REDACTED back to their expression in persisted state, decided by the parameter TYPE rather than the spelling: an `ssm:` reference to a SecureString parameter is redacted (issue #1901) while a String parameter beside it stays resolved. (`ssm-secure:` is NOT resolved by cdkd and is intentionally out of scope.)",
       "fixtures": [
+        "dynamic-ref-cross-region",
         "secrets-array-nested",
         "secrets-dynamic-ref"
       ]

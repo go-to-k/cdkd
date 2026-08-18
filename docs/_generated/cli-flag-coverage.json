@@ -137,6 +137,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "dsql",
+        "dynamic-ref-cross-region",
         "dynamodb-autoscaling",
         "dynamodb-globaltable",
         "dynamodb-gsi-update",
@@ -404,6 +405,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "dsql",
+        "dynamic-ref-cross-region",
         "dynamodb-autoscaling",
         "dynamodb-globaltable",
         "dynamodb-gsi-update",
@@ -639,6 +641,7 @@
         "drift-revert",
         "drift-revert-arrays",
         "dsql",
+        "dynamic-ref-cross-region",
         "dynamodb-autoscaling",
         "dynamodb-globaltable",
         "dynamodb-gsi-update",
@@ -847,6 +850,12 @@
       ]
     },
     {
+      "flag": "--stack-concurrency",
+      "integs": [
+        "dynamic-ref-cross-region"
+      ]
+    },
+    {
       "flag": "--state-bucket",
       "integs": [
         "acm-certificate",
@@ -910,6 +919,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "dsql",
+        "dynamic-ref-cross-region",
         "dynamodb-autoscaling",
         "dynamodb-globaltable",
         "dynamodb-gsi-update",
@@ -1173,6 +1183,7 @@
         "dlm-lifecycle-policy",
         "docker-image-asset",
         "dsql",
+        "dynamic-ref-cross-region",
         "dynamodb-autoscaling",
         "dynamodb-gsi-update",
         "dynamodb-ondemand",
@@ -1318,7 +1329,6 @@
     "--prefix-user-supplied-names",
     "--role-arn",
     "--stack",
-    "--stack-concurrency",
     "--strict"
   ],
   "unknownFlagsInIntegs": [
