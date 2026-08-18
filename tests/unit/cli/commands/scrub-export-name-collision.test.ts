@@ -51,6 +51,16 @@ const OWNER_EXPR = '{{resolve:secretsmanager:alpha:SecretString:password:AWSCURR
 // version stages of one secret, i.e. the #1910 collapse the value scan cannot
 // separate.
 const STAGED_EXPR = '{{resolve:secretsmanager:beta:SecretString:password:AWSPREVIOUS}}';
+// A FOURTH expression that is a DISTINCT secret happening to resolve to the same
+// plaintext as SECRET_EXPR — not another stage of the same one. This is the
+// shape that makes the value-scan fallback's cost a wrong-SECRET reference
+// rather than a lost precision bound.
+const TWIN_EXPR = '{{resolve:secretsmanager:gamma:SecretString:password:AWSCURRENT}}';
+// An `ssm` reference the resolver never PINS (issue #1901): recorded on its
+// FIRST resolution only, exactly as the cache-hit arm behaves.
+const UNPINNED_PLAINTEXT = 'unpinned-securestring-value';
+const UNPINNED_EXPR = '{{resolve:ssm:/p/unclassifiable}}';
+const alreadyRecorded = vi.hoisted(() => new Set<string>());
 
 /** Conditions scrub's best-effort re-evaluation returns; per-test knob. */
 const conditionValues: { value: Record<string, boolean> } = { value: {} };
@@ -62,14 +72,26 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
     resolve: vi
       .fn()
       .mockImplementation((value: unknown, ctx: { recordedSecretValues?: Map<string, string> }) => {
+        const record = (plaintext: string, expr: string): void => {
+          // An unpinned ssm reference is recorded only on its FIRST resolution.
+          if (expr === UNPINNED_EXPR) {
+            if (alreadyRecorded.has(expr)) return;
+            alreadyRecorded.add(expr);
+          }
+          ctx.recordedSecretValues?.set(plaintext, expr);
+        };
         const walk = (v: unknown): unknown => {
-          if (v === SECRET_EXPR || v === STAGED_EXPR) {
-            ctx.recordedSecretValues?.set(SECRET_PLAINTEXT, v);
+          if (v === SECRET_EXPR || v === STAGED_EXPR || v === TWIN_EXPR) {
+            record(SECRET_PLAINTEXT, v as string);
             return SECRET_PLAINTEXT;
           }
           if (v === OWNER_EXPR) {
-            ctx.recordedSecretValues?.set(OWNER_PLAINTEXT, OWNER_EXPR);
+            record(OWNER_PLAINTEXT, OWNER_EXPR);
             return OWNER_PLAINTEXT;
+          }
+          if (v === UNPINNED_EXPR) {
+            record(UNPINNED_PLAINTEXT, UNPINNED_EXPR);
+            return UNPINNED_PLAINTEXT;
           }
           if (Array.isArray(v)) return v.map(walk);
           if (v && typeof v === 'object') {
@@ -81,11 +103,21 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
               entries[0]![0] === 'Fn::Sub' &&
               typeof entries[0]![1] === 'string'
             ) {
-              return (entries[0]![1] as string).replace('${Owner}', 'PublicAlpha');
+              const body = entries[0]![1] as string;
+              // A parameter this run cannot resolve — the deploy could, from a
+              // real parameter value.
+              if (body.includes('${Unresolvable}')) {
+                throw new Error('Parameter Unresolvable has no value during scrub');
+              }
+              return walk(body.replace('${Owner}', 'PublicAlpha').replace('${Free}', 'FreeName'));
             }
             const out: Record<string, unknown> = {};
             for (const [k, val] of entries) out[k] = walk(val);
             return out;
+          }
+          if (typeof v === 'string' && v.includes(UNPINNED_EXPR)) {
+            record(UNPINNED_PLAINTEXT, UNPINNED_EXPR);
+            return v.split(UNPINNED_EXPR).join(UNPINNED_PLAINTEXT);
           }
           return v;
         };
@@ -147,6 +179,7 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
   beforeEach(() => {
     vi.clearAllMocks();
     conditionValues.value = {};
+    alreadyRecorded.clear();
     stateBackend = { getState: vi.fn(), saveState: vi.fn().mockResolvedValue('etag-2') };
     lockManager = {
       acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
@@ -299,6 +332,131 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     expect(logger.warn).toHaveBeenCalledWith(
       exportAliasCollisionScrubWarning('SecretBeta', 'PublicAlpha')
     );
+  });
+
+  it('the export-name resolve RECORDS into the pass map, so a later value is not left in plaintext', async () => {
+    // The export-name loop runs BEFORE the value loop, so a dynamic reference
+    // first resolved there warms the resolver's cache — and the cache-hit arm
+    // re-records only what it can still prove is secret. An unpinned ssm
+    // reference (#1901) resolved first for a collision test and NOT recorded
+    // would be invisible when the value loop meets it, so its plaintext would
+    // survive `cdkd scrub` and `--dry-run --fail` would report the state CLEAN.
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ Leaky: UNPINNED_PLAINTEXT }),
+      etag: 'etag-1',
+    });
+
+    const { saved, secretsFound } = await scrub({
+      Exporter: { Value: PUBLIC_VALUE, Export: { Name: { 'Fn::Sub': `x-${UNPINNED_EXPR}` } as never } },
+      Leaky: { Value: UNPINNED_EXPR },
+    });
+
+    expect(secretsFound).toBeGreaterThan(0);
+    expect(saved!.outputs['Leaky']).toBe(UNPINNED_EXPR);
+    expect(JSON.stringify(saved)).not.toContain(UNPINNED_PLAINTEXT);
+  });
+
+  it('a resolved intrinsic name is COMPARED, never WRITTEN as a source key', async () => {
+    // The resolution uses template defaults and can differ from what the deploy
+    // resolved, so it may name a key this state never had — or a different one.
+    // Writing a source under it would position a key by an output that has no
+    // claim to it. Here the resolved name is FREE (no collision), and the state
+    // key of that name holds a DIFFERENT output's secret: trusting the resolved
+    // name as a source key persists the exporter's expression over it.
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ FreeName: OWNER_PLAINTEXT, XOut: SECRET_PLAINTEXT }),
+      etag: 'etag-1',
+    });
+
+    const { saved } = await scrub({
+      Owner: { Value: OWNER_EXPR },
+      XOut: { Value: SECRET_EXPR, Export: { Name: { 'Fn::Sub': '${Free}' } as never } },
+    });
+
+    expect(saved!.outputs['FreeName']).toBe(OWNER_EXPR);
+    expect(saved!.outputs['XOut']).toBe(SECRET_EXPR);
+  });
+
+  it('an UNRESOLVABLE intrinsic name makes the whole outputs bag value-scanned, and warns', async () => {
+    // Scrub cannot reproduce the name the deploy keyed state under, and that
+    // name could be ANY output's — so there is no single key to distrust and no
+    // honest way to keep positioning the rest. Here position would be actively
+    // wrong: the deploy's resolved name was `PublicAlpha`, so that key holds the
+    // EXPORTER's value while the template says the owner's expression belongs
+    // there.
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ PublicAlpha: SECRET_PLAINTEXT, SecretBeta: SECRET_PLAINTEXT }),
+      etag: 'etag-1',
+    });
+
+    const { saved } = await scrub({
+      PublicAlpha: { Value: OWNER_EXPR },
+      SecretBeta: {
+        Value: SECRET_EXPR,
+        Export: { Name: { 'Fn::Sub': 'pre-${Unresolvable}' } as never },
+      },
+    });
+
+    expect(saved!.outputs['PublicAlpha']).toBe(SECRET_EXPR);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('redacting this stack\'s outputs by value match')
+    );
+  });
+
+  it('THE OTHER COST: two DISTINCT secrets sharing one plaintext can name the wrong one', async () => {
+    // Stated because an earlier revision of this rationale called the fallback's
+    // residual a lost precision bound. It is not: the value map is keyed by
+    // PLAINTEXT, so two DIFFERENT secrets colliding on one value leave only the
+    // last, and the ambiguous key is persisted holding a reference to the OTHER
+    // secret. Smaller blast radius than the alternative — one key, and only when
+    // two secrets coincide — but the same KIND of error, and the docs and code
+    // comments now say so.
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ PublicAlpha: SECRET_PLAINTEXT, SecretBeta: SECRET_PLAINTEXT }),
+      etag: 'etag-1',
+    });
+
+    // `PublicAlpha` genuinely holds gamma's secret; beta's resolves to the same
+    // plaintext and is recorded last, so the value scan names BETA on both keys.
+    const { saved } = await scrub(collidingOutputs(TWIN_EXPR));
+
+    expect(saved!.outputs['PublicAlpha']).toBe(SECRET_EXPR);
+    expect(saved!.outputs['SecretBeta']).toBe(SECRET_EXPR);
+    expect(JSON.stringify(saved)).not.toContain(SECRET_PLAINTEXT);
+  });
+
+  it('a state KEY holding plaintext is REPORTED and never rewritten', async () => {
+    // The residue of a pre-fix binary publishing an export name that resolved to
+    // a secret. No redaction pass can reach it — they all walk values — and
+    // renaming the key would silently retire a live export, so scrub reports it
+    // instead. Without the report, `--dry-run --fail` calls a state clean while
+    // `state.json` holds plaintext.
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ [`pre-${UNPINNED_PLAINTEXT}`]: 'some-value', Leaky: UNPINNED_PLAINTEXT }),
+      etag: 'etag-1',
+    });
+
+    const res = await scrubStack(
+      makeStackInfo({
+        Exporter: {
+          Value: PUBLIC_VALUE,
+          Export: { Name: { 'Fn::Sub': `pre-${UNPINNED_EXPR}` } as never },
+        },
+        Leaky: { Value: UNPINNED_EXPR },
+      }) as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      { dryRun: true, logger: logger as never }
+    );
+
+    expect(res.secretBearingKeys).toBe(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('holds an output KEY containing a secret')
+    );
+    // Reported, not rewritten: dry-run writes nothing, and the key is untouched
+    // in what would be written.
+    expect(stateBackend.saveState).not.toHaveBeenCalled();
   });
 
   it('a SUPPRESSED output is still RESOLVED, so its leaked plaintext is found and scrubbed', async () => {

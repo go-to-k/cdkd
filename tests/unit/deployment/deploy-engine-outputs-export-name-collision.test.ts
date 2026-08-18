@@ -79,21 +79,53 @@ const PUBLIC_B = 'beta-public-endpoint';
 // to be pinned rather than trusted.
 const PLAINTEXT_SHORT = 'abc';
 const EXPR_SHORT = '{{resolve:secretsmanager:tiny:SecretString:pin:AWSCURRENT}}';
+// An `ssm` reference whose parameter Type came back unclassifiable: the resolver
+// resolves it WITH decryption but deliberately never PINS it (issue #1901), so
+// its cache-hit arm records nothing on a second resolution. Modelled below by
+// recording it exactly once per deploy — which is what makes the recording side
+// effect of the export-name resolution observable.
+const PLAINTEXT_UNPINNED = 'unpinned-securestring-value';
+const EXPR_UNPINNED = '{{resolve:ssm:/p/unclassifiable}}';
+// A NESTED pair: the short secret is a PREFIX of the long one, so masking them
+// shortest-first leaves the long one's tail in the message.
+const PLAINTEXT_NESTED = 'abc-with-a-long-tail';
+const EXPR_NESTED = '{{resolve:secretsmanager:nested:SecretString:pw:AWSCURRENT}}';
 
 const SECRET_BY_EXPRESSION: Record<string, string> = {
   [EXPR_A]: PLAINTEXT_A,
   [EXPR_B]: PLAINTEXT_B,
   [EXPR_SHORT]: PLAINTEXT_SHORT,
+  [EXPR_UNPINNED]: PLAINTEXT_UNPINNED,
+  [EXPR_NESTED]: PLAINTEXT_NESTED,
 };
+
+/**
+ * Expressions the mock records only on their FIRST resolution in a deploy —
+ * the resolver's cache-hit behavior for a reference it cannot prove is secret.
+ */
+const RECORD_ONCE = new Set([EXPR_UNPINNED]);
+const alreadyRecorded = vi.hoisted(() => new Set<string>());
 
 /** `Fn::Sub` variables the mock substitutes, standing in for pseudo-parameters. */
 const SUB_VARS: Record<string, string> = { Prefix: 'producer' };
+
+function record(
+  ctx: { recordedSecretValues?: Map<string, string> },
+  plaintext: string,
+  expr: string
+): void {
+  if (RECORD_ONCE.has(expr)) {
+    if (alreadyRecorded.has(expr)) return;
+    alreadyRecorded.add(expr);
+  }
+  ctx.recordedSecretValues?.set(plaintext, expr);
+}
 
 function substituteSecrets(text: string, ctx: { recordedSecretValues?: Map<string, string> }) {
   let out = text;
   for (const [expr, plaintext] of Object.entries(SECRET_BY_EXPRESSION)) {
     if (!out.includes(expr)) continue;
-    ctx.recordedSecretValues?.set(plaintext, expr);
+    record(ctx, plaintext, expr);
     out = out.split(expr).join(plaintext);
   }
   return out;
@@ -108,7 +140,7 @@ function resolveWithSecrets(
     // (an `Fn::Sub` body), mirroring the real dynamic-reference substitution.
     const plaintext = SECRET_BY_EXPRESSION[value];
     if (plaintext !== undefined) {
-      ctx.recordedSecretValues?.set(plaintext, value);
+      record(ctx, plaintext, value);
       return plaintext;
     }
     return substituteSecrets(value, ctx);
@@ -167,6 +199,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     conditionValues.value = {};
+    alreadyRecorded.clear();
     mockProvider = {
       create: vi.fn().mockResolvedValue({ physicalId: 'res-phys' }),
       update: vi.fn(),
@@ -572,6 +605,81 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     expect(refusals[0]).not.toContain(PLAINTEXT_A);
     expect(refusals[0]).not.toContain(PLAINTEXT_SHORT);
     expect(Object.keys(saved)).toEqual(['SecretBeta']);
+  });
+
+  it('a REFUSED export name still RECORDS its secret for the rest of the pass', async () => {
+    // The regression this pins was introduced by the fix for the previous
+    // round: resolving `Export.Name` with a private secrets map made the
+    // DECISION exact, but the map was then discarded — and resolving is not
+    // side-effect-free. It warms the resolver's cache, whose hit arm re-records
+    // only what it can still PROVE is secret. An unpinned ssm reference (#1901)
+    // first touched by an export-name resolve therefore became invisible to
+    // every later output, and its plaintext was persisted into state.json, the
+    // exports index and the CLI summary — something main did NOT do.
+    //
+    // `Later` is declared SECOND so the export-name resolve happens first, which
+    // is the whole point: the fixture's mock records a RECORD_ONCE expression
+    // only on its first resolution, exactly as the cache-hit arm behaves.
+    const { saved, indexed, savedStateJson } = await deployOutputs({
+      Exporter: { Value: PUBLIC_A, Export: { Name: { 'Fn::Sub': `pre-${EXPR_UNPINNED}` } as never } },
+      Later: { Value: { 'Fn::Sub': `v-${EXPR_UNPINNED}` } as never },
+    });
+
+    expect(savedStateJson).not.toContain(PLAINTEXT_UNPINNED);
+    expect(JSON.stringify(indexed)).not.toContain(PLAINTEXT_UNPINNED);
+    // Redacted onto the expression that produced it, not merely dropped.
+    expect(saved['Later']).toBe(`v-${EXPR_UNPINNED}`);
+  });
+
+  it('a LITERAL export name equal to a recorded secret is refused too', async () => {
+    // The whole-value backstop, which the name-scoped map cannot supply: nothing
+    // was SUBSTITUTED into a literal name, so only a comparison against the
+    // pass's recorded values can catch a template that spells a secret out.
+    const { saved, savedStateJson } = await deployOutputs({
+      SecretAlpha: { Value: EXPR_A },
+      Exporter: { Value: PUBLIC_B, Export: { Name: PLAINTEXT_A } },
+    });
+
+    const refusals = warnings().filter((w) => w.includes('Export.Name that resolves'));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).not.toContain(PLAINTEXT_A);
+    expect(Object.hasOwn(saved, PLAINTEXT_A)).toBe(false);
+    expect(savedStateJson).not.toContain(PLAINTEXT_A);
+  });
+
+  it('masking is LONGEST-FIRST, so a nested secret cannot leave the longer one in fragments', async () => {
+    // `PLAINTEXT_SHORT` is a prefix of `PLAINTEXT_NESTED`. Masking shortest-first
+    // consumes the prefix and leaves the remainder of the longer secret in the
+    // message — a partial disclosure a "masked:" label would still claim as safe.
+    const { saved } = await deployOutputs({
+      SecretBeta: {
+        Value: EXPR_B,
+        Export: { Name: { 'Fn::Sub': `${EXPR_SHORT}-${EXPR_NESTED}` } as never },
+      },
+    });
+
+    const refusals = warnings().filter((w) => w.includes('Export.Name that resolves'));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).not.toContain('with-a-long-tail');
+    expect(Object.keys(saved)).toEqual(['SecretBeta']);
+  });
+
+  it('TWO outputs sharing ONE Export.Name is deliberately NOT guarded', async () => {
+    // Documented behavior (docs/cross-stack-references.md): both bags stay
+    // consistent — one iteration writes the value and its source together — so
+    // it is not this issue's class. The later output simply wins the key, where
+    // CloudFormation would reject the template outright. Pinned because a
+    // deliberate non-behavior with no test is one a future round silently
+    // reverses.
+    const { saved, indexed } = await deployOutputs({
+      First: { Value: EXPR_A, Export: { Name: 'SharedExport' } },
+      Second: { Value: EXPR_B, Export: { Name: 'SharedExport' } },
+    });
+
+    expect(saved['SharedExport']).toBe(EXPR_B);
+    expect(indexed['SharedExport']).toBe(EXPR_B);
+    expect(saved['First']).toBe(EXPR_A);
+    expect(warnings()).toEqual([]);
   });
 
   it('TWO suppressed outputs free BOTH names', async () => {

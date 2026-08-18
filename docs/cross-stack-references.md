@@ -182,8 +182,11 @@ can know about state an EARLIER binary wrote:
   letting the owning output keep it. The alias may have WON that key, so
   "the owner's template value positions it" is an assumption that is wrong
   exactly when the state is corrupted — the case scrub exists for. The key
-  is redacted by value match instead, which is exact unless two references
-  resolve to the same value.
+  is redacted by value match instead. That is exact unless two DISTINCT
+  secrets resolve to the same value, in which case the key can end up
+  holding a reference naming the other one: a smaller blast radius than
+  the alternative (one key, and only when two secrets coincide) but the
+  same kind of error, so it is stated rather than glossed.
 - It tests collisions against every DECLARED output name, ignoring
   conditions, and resolves an intrinsic `Export.Name` best-effort for that
   test alone. Scrub re-evaluates conditions best-effort from template
@@ -192,6 +195,22 @@ can know about state an EARLIER binary wrote:
   a missed collision writes a wrong-secret reference, while an
   over-approximated one costs a spurious warning and one key redacted by
   value instead of by position.
+- If an intrinsic `Export.Name` cannot be resolved at all, scrub redacts
+  that stack's outputs by value match ENTIRELY and warns. The deploy keyed
+  state under a name this run cannot reproduce, and that name could be any
+  output's, so there is no single key to distrust. A name that resolves
+  successfully but differently from what the deploy resolved — a
+  parameterized prefix, since scrub sees only template defaults — remains
+  undetectable and is a known residual.
+
+**A state KEY that already holds plaintext cannot be scrubbed.** State
+written by a pre-fix binary can carry `state.outputs["pre-<secret>"]`, and
+every redaction pass rewrites values only. `cdkd scrub` REPORTS such a key
+(and `--dry-run --fail` now fails on it) but never rewrites it: the key is
+the export name consumers resolve by, so renaming it would silently retire
+a live export. The remedy is a template change — give the output a
+non-secret `Export.Name` and redeploy, which replaces `state.outputs` and
+the exports index wholesale — plus rotating the exposed secret.
 
 CDK's AUTO-generated export names cannot collide — they are of the form
 `StackName:ExportsOutputRefResourceABC123` and a `:` is not legal in a

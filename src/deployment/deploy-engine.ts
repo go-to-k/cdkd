@@ -4539,6 +4539,18 @@ export class DeployEngine {
           // `Fn::Sub` / `Fn::Join` substitute dynamic references, so the map
           // tells us EXACTLY whether a secret went into THIS name — no length
           // threshold, and no coincidental match against a sibling's secret.
+          //
+          // The isolation is for the DECISION only, and the RECORDING side
+          // effect is merged back below — do not re-isolate it. Recording is
+          // process-global in effect: the resolver caches a resolved dynamic
+          // reference, and its cache-hit arm re-records only what it can still
+          // PROVE is secret (a `secretsmanager` spelling, or a PINNED
+          // SecureString). An `ssm` reference whose `Type` came back
+          // unclassifiable is deliberately never pinned (issue #1901), so if
+          // this resolution is the FIRST to touch it and its record dies here,
+          // a LATER output resolving the same reference cache-hits, records
+          // nothing, and its plaintext is persisted — a regression against the
+          // shared-context behavior this replaced.
           const nameSecrets: RecordedSecretValues = new Map();
           const exportName =
             typeof output.Export.Name === 'string'
@@ -4547,6 +4559,14 @@ export class DeployEngine {
                   ...context,
                   recordedSecretValues: nameSecrets,
                 });
+          // Merge what the name's resolution learned back into the PASS map.
+          // Unconditional — before the string check, because a name that
+          // resolved to a non-string warmed the resolver's cache just the same
+          // — and harmless to the decision below, which reads `nameSecrets`
+          // itself rather than this map.
+          for (const [plaintext, expression] of nameSecrets) {
+            context.recordedSecretValues?.set(plaintext, expression);
+          }
           if (typeof exportName === 'string') {
             // TWO refusals guard this alias, and both are about the same thing:
             // this bag's KEYS (issue #1919).

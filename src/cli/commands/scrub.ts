@@ -35,6 +35,7 @@ import {
   collectDeclaredOutputNames,
   exportAliasCollisionScrubWarning,
   isExportAliasCollision,
+  secretBearingStateKeyWarning,
 } from '../../deployment/outputs-export-alias.js';
 
 /**
@@ -195,6 +196,16 @@ async function scrubCommand(stacks: string[], options: ScrubOptions): Promise<vo
         `${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${scrubbed.recordsChanged} resource record(s) ` +
           `in ${stack.stackName}`
       );
+    } else if (scrubbed.secretBearingKeys > 0) {
+      // A leak this command cannot remedy still counts as a finding — the CI
+      // gate below must not call a state clean while `state.json` holds
+      // plaintext in an output KEY (issue #1919). No state is written: the
+      // remedy is a template change, named in the warning already logged.
+      totalStacksScrubbed++;
+      logger.info(
+        `${scrubbed.secretBearingKeys} output KEY(s) in ${stack.stackName} hold plaintext and CANNOT be scrubbed — ` +
+          `rename the Export.Name and redeploy (see the warning above).`
+      );
     } else {
       logger.info(`No plaintext secrets found in ${stack.stackName}`);
     }
@@ -235,7 +246,7 @@ export async function scrubStack(
   stateBackend: S3StateBackend,
   lockManager: LockManager,
   opts: { dryRun: boolean; roleArn?: string | undefined; logger: ReturnType<typeof getLogger> }
-): Promise<{ recordsChanged: number; secretsFound: number }> {
+): Promise<{ recordsChanged: number; secretsFound: number; secretBearingKeys: number }> {
   const { logger } = opts;
   const acquired = !opts.dryRun;
   if (acquired) {
@@ -245,7 +256,7 @@ export async function scrubStack(
     const loaded = await stateBackend.getState(stack.stackName, region);
     if (!loaded) {
       logger.debug(`No state for ${stack.stackName} (${region}) — skipping`);
-      return { recordsChanged: 0, secretsFound: 0 };
+      return { recordsChanged: 0, secretsFound: 0, secretBearingKeys: 0 };
     }
     const state = loaded.state;
 
@@ -342,9 +353,13 @@ export async function scrubStack(
     //    the expression that produced it. That is the pre-#1910 behavior, which
     //    for this key is what the issue calls "weaker but not wrong: it
     //    returned an expression that at least resolved to the value it
-    //    replaced". The residual it accepts is the #1910 collapse (two
-    //    expressions sharing one resolved value) for that single key; neither
-    //    rule dominates there, and the test file pins both sides of the trade.
+    //    replaced". The residual it accepts is stated exactly, because an
+    //    earlier revision understated it: when two DISTINCT secrets happen to
+    //    resolve to one plaintext, the value map keeps one of them, so the
+    //    ambiguous key can be persisted holding a reference naming the OTHER
+    //    secret — not merely a lost precision bound. Neither rule dominates
+    //    (position can name the wrong secret on this key too, from the other
+    //    direction), and the test file pins both sides of the trade.
     //
     // 2. Collisions are tested against every DECLARED output name, conditions
     //    ignored, and an INTRINSIC `Export.Name` is best-effort resolved for
@@ -353,8 +368,19 @@ export async function scrubStack(
     //    binaries that DID resolve intrinsic export names into state keys, so a
     //    literal-only test leaves the original corruption reachable. The
     //    resolved name is never written as a source key: it is only compared.
+    //
+    // 3. If an intrinsic `Export.Name` cannot be resolved at all, the WHOLE
+    //    outputs source bag is dropped and every output key falls to the value
+    //    scan. The deploy keyed state under a name scrub then cannot reproduce,
+    //    and that name could be ANY output's — so there is no key to mark
+    //    ambiguous and no honest way to keep positioning the rest. A residual
+    //    remains and is documented rather than hidden: a name that resolves
+    //    SUCCESSFULLY but differently from what the deploy resolved (a
+    //    parameterized prefix, since scrub has only template defaults) is
+    //    undetectable from here.
     const declaredOutputNames = collectDeclaredOutputNames(templateOutputs);
     const ambiguousKeys = new Set<string>();
+    let outputsSourceUntrusted = false;
     for (const [name, output] of Object.entries(templateOutputs)) {
       // The declared type says `string`, but templates carry intrinsics here and
       // the pre-fix binary resolved them into state keys.
@@ -368,13 +394,31 @@ export async function scrubStack(
             ...(Object.keys(parameters).length > 0 && { parameters }),
             ...(Object.keys(conditions).length > 0 && { conditions }),
             stackName: stack.stackName,
+            // Records into the SAME map the value loop below fills, and that is
+            // load-bearing rather than tidiness: this loop runs FIRST, so a
+            // dynamic reference first resolved here warms the resolver's cache,
+            // and its cache-hit arm re-records only what it can still prove is
+            // secret. An unpinned ssm reference (#1901) would then be invisible
+            // when the value loop meets it, and its plaintext would survive the
+            // command that exists to remove it — `--dry-run --fail` reporting
+            // CLEAN on a leaking stack.
+            recordedSecretValues: outputSecrets,
             bestEffort: true,
           });
         } catch (err) {
-          logger.debug(
-            `Export.Name of output ${name} could not be resolved during scrub: ${err instanceof Error ? err.message : String(err)}`
+          // No key to mark ambiguous — the name the deploy used is unknown and
+          // could be any output's — so the whole source bag becomes untrusted.
+          outputsSourceUntrusted = true;
+          logger.warn(
+            `Export.Name of output ${name} could not be resolved during scrub (${err instanceof Error ? err.message : String(err)}) — ` +
+              `redacting this stack's outputs by value match instead of by template position, since state may be keyed under a name this run cannot reproduce.`
           );
         }
+      }
+      if (declaredExportName !== undefined && typeof exportName !== 'string') {
+        // Same reasoning as the catch: a name that resolved to a non-string is
+        // a name scrub cannot reproduce.
+        outputsSourceUntrusted = true;
       }
       if (
         typeof exportName === 'string' &&
@@ -427,10 +471,25 @@ export async function scrubStack(
       }
     }
 
+    // A KEY that already holds plaintext is the residue of an earlier binary
+    // publishing an export name that resolved to a secret (issue #1919). No
+    // redaction pass can reach it — they all walk values — so this is REPORTED,
+    // never rewritten: see `secretBearingStateKeyWarning` for why renaming a key
+    // here would be worse than leaving it, and for the template-side remedy.
+    // Counted so a state that leaks only through a key cannot be reported clean
+    // by `--dry-run --fail`.
+    const recordedPlaintexts = [...outputSecrets.keys()];
+    const secretBearingKeys = Object.keys(state.outputs).filter((key) =>
+      recordedPlaintexts.some((plaintext) => key.includes(plaintext))
+    );
+    for (const key of secretBearingKeys) {
+      logger.warn(secretBearingStateKeyWarning(stack.stackName, key, outputSecrets));
+    }
+
     const totalSecrets =
       outputSecrets.size + [...perResourceSecrets.values()].reduce((n, m) => n + m.size, 0);
     if (totalSecrets === 0) {
-      return { recordsChanged: 0, secretsFound: 0 };
+      return { recordsChanged: 0, secretsFound: 0, secretBearingKeys: 0 };
     }
 
     // Rewrite each record with ITS OWN secrets, POSITIONED by its own unresolved
@@ -518,7 +577,11 @@ export async function scrubStack(
     // being sound, and this call site needs `TEMPLATE_SOURCED_RULES`.
     const newOutputs =
       outputSecrets.size > 0
-        ? redactSecretsForState(state.outputs, outputSecrets, outputsTemplateSource)
+        ? redactSecretsForState(
+            state.outputs,
+            outputSecrets,
+            outputsSourceUntrusted ? undefined : outputsTemplateSource
+          )
         : state.outputs;
     const outputsChanged = JSON.stringify(newOutputs) !== JSON.stringify(state.outputs);
     if (outputsChanged) recordsChanged++;
@@ -535,7 +598,11 @@ export async function scrubStack(
       });
     }
 
-    return { recordsChanged, secretsFound: totalSecrets };
+    return {
+      recordsChanged,
+      secretsFound: totalSecrets,
+      secretBearingKeys: secretBearingKeys.length,
+    };
   } finally {
     if (acquired) {
       await lockManager.releaseLock(stack.stackName, region).catch((err) => {

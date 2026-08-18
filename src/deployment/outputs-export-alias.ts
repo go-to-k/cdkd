@@ -32,14 +32,24 @@
  * which is itself a documented no-import leaf, so no cycle is reachable through
  * it.
  *
- * KNOWN RESIDUAL, inherited rather than introduced: the secret-bearing-name
- * refusal below can only see secrets the RESOLVER recorded. An `ssm` reference
- * whose `Type` came back unclassifiable is deliberately never pinned (issue
- * [#1901](https://github.com/go-to-k/cdkd/issues/1901), so the next pass
- * re-asks AWS rather than inheriting a transient verdict), so a later cache hit
- * can substitute that plaintext into an export name with nothing recorded, and
- * the refusal cannot fire. Closing it belongs with #1901's classification, not
- * here.
+ * KNOWN RESIDUALS of the secret-bearing-name refusal, all of the same shape —
+ * it can only see what the RESOLVER recorded — and all inherited rather than
+ * introduced here:
+ *
+ * - An `ssm` reference whose `Type` came back unclassifiable is deliberately
+ *   never pinned (issue
+ *   [#1901](https://github.com/go-to-k/cdkd/issues/1901), so the next pass
+ *   re-asks AWS rather than inheriting a transient verdict), so a later cache
+ *   hit can substitute that plaintext with nothing recorded and the refusal
+ *   cannot fire. Closing it belongs with #1901's classification.
+ * - A `Ref` to a `NoEcho` PARAMETER substituted into an export name is recorded
+ *   nowhere: `NoEcho` is outside cdkd's dynamic-reference secret model
+ *   entirely, so nothing here can see it.
+ * - The refusal errs the other way for `Fn::Select` / `Fn::Split`, whose
+ *   DISCARDED elements are still resolved: a secret in an unused element lands
+ *   in the name's map and suppresses a working export. Fail-safe and warned, so
+ *   it is documented rather than special-cased. (`Fn::If` resolves only the
+ *   taken branch and has no such effect.)
  */
 
 import type { TemplateOutput } from '../types/resource.js';
@@ -106,8 +116,13 @@ export function collectPublishedOutputNames(
  *   reference naming a DIFFERENT secret — the #1919 corruption, produced by
  *   the remediation command itself.
  * - Judging it published when the deploy suppressed it costs one spurious
- *   warning and one key redacted by VALUE match instead of by position, which
- *   is exact unless two references resolve to the same value.
+ *   warning and one key redacted by VALUE match instead of by position. State
+ *   exactly what that costs, since an earlier revision understated it: the
+ *   value map is keyed by PLAINTEXT, so when two DISTINCT secrets resolve to
+ *   one value it keeps only the last, and that key can be persisted holding a
+ *   reference naming the OTHER secret. It is a smaller blast radius than the
+ *   first case (one key, and only when two secrets coincide, versus every
+ *   collision) but it is the same KIND of error, not a mere loss of precision.
  *
  * A wrong reference beats a lost precision bound, so scrub over-approximates.
  */
@@ -214,6 +229,31 @@ export function secretBearingExportNameWarning(
     `An export name becomes a key in state.json and in the exports index, and redaction rewrites ` +
     `VALUES only, so publishing it would persist the secret in plaintext. ` +
     `Use a non-secret Export.Name.`
+  );
+}
+
+/**
+ * Warning for a state KEY that already holds secret plaintext — the residue an
+ * EARLIER binary left when it published an export name that resolved to one.
+ *
+ * `cdkd scrub` cannot repair this. Every redaction pass rewrites VALUES; a key
+ * is the export's identity, so renaming it here would silently retire an export
+ * consumers resolve by name, and dropping it would delete a live export. The
+ * remedy is in the template: give the output a non-secret `Export.Name` and
+ * redeploy, which rewrites `state.outputs` wholesale and republishes the index.
+ * Reported so the `--dry-run --fail` CI gate stops calling such a state clean.
+ */
+export function secretBearingStateKeyWarning(
+  stackName: string,
+  key: string,
+  exposure: RecordedSecretValues
+): string {
+  return (
+    `State for ${stackName} holds an output KEY containing a secret ` +
+    `(masked: "${maskEveryOccurrence(key, exposure)}") — cdkd scrub cannot rewrite a key, ` +
+    `only a value, because the key IS the export name consumers resolve by. ` +
+    `Give that output a non-secret Export.Name and redeploy: the next deploy replaces ` +
+    `state.outputs and the exports index entirely. ROTATE the exposed secret.`
   );
 }
 
