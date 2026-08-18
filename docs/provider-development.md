@@ -2297,7 +2297,7 @@ This is the **structural defense** against the "provider author forgets to emit 
 So the emission gate needs a companion that removes the path from the COMPARISON too:
 
 - For a TOP-LEVEL key, declare it in `getDriftUnknownPaths(resourceType, properties)` — per-resource via the #1602 seam, so it is ignored on BOTH sides when the template declares nothing and still compared when it does. That covers the transition and the steady state with one declaration.
-- For a PER-ELEMENT key there is no such declaration: an ignore-path never crosses an array (see the divergence note below), and declaring the enclosing array instead switches drift off for the whole subtree. That case needs a BOTH-SIDES normalizer in the `drift-protocol-normalize.ts` mould, and a live test seeded with a STALE observed baseline — a fresh-deploy fixture takes both sides from the same readback and structurally cannot exercise the transition. `AWS::DynamoDB::GlobalTable`'s `GlobalSecondaryIndexes[].WarmThroughput` is exactly this shape, which is why #1742 ships its ordering half and leaves that one open.
+- For a PER-ELEMENT key there is no such declaration: an ignore-path never crosses an array (see the divergence note below), and declaring the enclosing array instead switches drift off for the whole subtree. That case needs a BOTH-SIDES normalizer in the `drift-protocol-normalize.ts` mould, and a live test seeded with a STALE observed baseline — a fresh-deploy fixture takes both sides from the same readback and structurally cannot exercise the transition. `AWS::DynamoDB::GlobalTable`'s `GlobalSecondaryIndexes[].WarmThroughput` is exactly this shape, and is now the WORKED example rather than the open question: PR [#1859](https://github.com/go-to-k/cdkd/pull/1859) closed it through the `canonicalizeDriftProperties` seam (issue [#1784](https://github.com/go-to-k/cdkd/issues/1784)), which IS the both-sides normalizer this bullet asks for — the provider names the member in a closed `DRIFT_STRIPPED_INDEX_MEMBERS` table and strips it from each bag, so an already-written baseline and a post-fix readback converge on carrying no member at all. Copy the NORMALIZER half's shape — but note it is only half of what this bullet asks for: the live test seeded with a STALE observed baseline was NOT shipped with it and is still outstanding (issue [#1939](https://github.com/go-to-k/cdkd/issues/1939)), so #1859 is the worked answer for the mechanism and an open question for the proof. Take the two things that come with it as well: the emission change and the normalizer had to ship in ONE change (landing the readback half alone is precisely the stranding described above), and the accepted cost is that a DECLARED per-element value stops being reported entirely — the hook sees one bag with no desired-side reference, so it cannot express the declared-gate `getDriftUnknownPaths` gives you for a top-level key. The sibling `AWS::DynamoDB::Table` type has the same shape and has not adopted the seam yet (issue [#1812](https://github.com/go-to-k/cdkd/issues/1812)).
 
 Contrast an ORDERING fix, which has no such asymmetry: `getDriftUnorderedPaths` canonicalizes both sides, so an existing baseline and the readback converge rather than diverge, and it can ship on its own.
 
@@ -2331,6 +2331,20 @@ getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>)
   return [];
 }
 ```
+
+`DynamoDBTableProvider` is the other consumer, and the clearer illustration of the absent-bag rule below. It scopes on whether the template declares the property AT ALL rather than on a sibling's value — `WarmThroughput` is returned as unknown unless the desired bag declares it — and its predicate deliberately answers DECLARED for an absent or uninformative bag, so the path stays COMPARED:
+
+```typescript
+function declaresWarmThroughput(properties?: Record<string, unknown>): boolean {
+  // A bag that was never populated is NOT evidence the template declared
+  // nothing, so answer 'declared' and keep comparing. A wrong DROP here is
+  // unrecoverable phantom drift; the residual is a loud revert failure.
+  if (!desiredBagIsInformative(properties)) return true;
+  return properties !== undefined && isSendableWarmThroughput(properties['WarmThroughput']);
+}
+```
+
+It also shows what the seam is FOR beyond a configuration split (issues [#1760](https://github.com/go-to-k/cdkd/issues/1760) / [#1602](https://github.com/go-to-k/cdkd/issues/1602)): an AWS-computed value that an earlier binary froze into `observedProperties` would otherwise drift forever, and per-resource scoping is what retires those records without switching the key off for the type.
 
 Two rules for this shape (issue [#1602](https://github.com/go-to-k/cdkd/issues/1602)):
 
