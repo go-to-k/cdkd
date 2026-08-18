@@ -115,7 +115,7 @@ eventbridge-pipes	2026-08-10T11:50:46Z	PASS	179	verify.sh	0810 P0/P1 sweep b2; 6
 eventbridge-scheduler	2026-08-01T10:00:06Z	PASS	46	verify.sh	0801 regression sweep; ok, 0 orphans
 eventbus-policy	2026-08-11T10:54:05Z	PASS	56	verify.sh	new fixture (issue 1608): deploy/diff/update/destroy clean, 0 orphans
 eventsourcemapping-race	2026-08-13T16:32:07Z	PASS	89	verify.sh	#1815 partition predicates; ESM create+process+no-orphan destroy, 5 del 0 err 0 orph
-export	2026-08-13T11:51:49Z	PASS	330	verify.sh	post-rebase combined fixture: 1761 SgIngress + 1788 VPCCidrBlock/ipv6 arms; rc 0, 0 orphans
+export	2026-08-18T10:15:56Z	PASS	222	verify.sh	#1919 broad gate: outputs key-space guard + diff twin; 6 steps ok, 0 err, 0 orphans
 export-nested-stack	2026-08-10T04:45:42Z	PASS	153	verify.sh	0810 sweep b3; export->CFn nested adopt + CFn delete clean, 0 orph
 fifo-sqs-event-source	2026-07-27T06:44:00Z	PASS	111	verify.sh	final-tree gate refresh for #1256; destroy 6/0 errors, 0 orphans
 fsx-lustre	2026-08-02T05:30:54Z	PASS	899	verify.sh	0802 heavy TTL sweep; deploy+update+destroy ok, 0 orphans, no final backup

@@ -1,6 +1,11 @@
 import type { CloudFormationTemplate, TemplateOutput } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
 import { INTRINSIC_KEYS, type IntrinsicResolveFn } from './diff-calculator.js';
+import {
+  collectPublishedOutputNames,
+  isExportAliasCollision,
+} from '../deployment/outputs-export-alias.js';
+import { stripControlChars } from '../utils/regexp.js';
 
 /**
  * Kind of change for one key of the persisted Outputs bag.
@@ -129,7 +134,10 @@ const UNSUBSTITUTED_SUB_PLACEHOLDER = /\$\{[^}]*\}/;
  * DEEP rather than shallow: an unresolved leaf can sit anywhere inside an array
  * or object an outer intrinsic already built.
  */
-function isUnresolvedValue(value: unknown, sourceUsedSub: boolean): boolean {
+// Exported for `cdkd scrub` (issue #1919): it resolves an intrinsic
+// `Export.Name` for a collision test and must apply the SAME "did this actually
+// resolve?" rule, or it trusts a name it provably could not reproduce.
+export function isUnresolvedValue(value: unknown, sourceUsedSub: boolean): boolean {
   if (value === undefined) return true;
   if (typeof value === 'symbol') return true;
   if (typeof value === 'string') {
@@ -150,7 +158,7 @@ function isUnresolvedValue(value: unknown, sourceUsedSub: boolean): boolean {
  * arguments and a laundered placeholder from an inner `Fn::Sub` surfaces in the
  * outer result.
  */
-function templateUsesSub(templateValue: unknown): boolean {
+export function templateUsesSub(templateValue: unknown): boolean {
   if (templateValue === null || typeof templateValue !== 'object') return false;
   if (Array.isArray(templateValue)) return templateValue.some(templateUsesSub);
   const record = templateValue as Record<string, unknown>;
@@ -182,6 +190,28 @@ function isSecretDynamicReference(value: unknown): boolean {
   // pre-#1901 SecureString `ssm:` record, a strictly narrower gap than the
   // false positive this exclusion removes.
   return value.includes('{{resolve:secretsmanager:') || value.includes('{{resolve:ssm-secure:');
+}
+
+/**
+ * The same question asked of a whole template VALUE, walking every string leaf.
+ *
+ * The leaf predicate answers `false` for a non-string, and an output's `Value`
+ * is very often an OBJECT: `secret.secretValueFromJson(...)` renders the
+ * secret's ARN as a `Ref`, so the value is an `Fn::Join` / `Fn::Sub` — which
+ * CLAUDE.md's #1916 note calls the DOMINANT CDK shape, not an edge case.
+ * Feeding the raw value to the leaf predicate therefore reported "no secret
+ * here" for exactly the templates most likely to have one, which silently
+ * disarmed BOTH signals built on it: the export-alias decision below (issue
+ * #1919) and the legacy-record withholding that keeps a pre-GHSA plaintext out
+ * of the rendered diff (issue #1921).
+ */
+function containsSecretDynamicReference(value: unknown): boolean {
+  if (typeof value === 'string') return isSecretDynamicReference(value);
+  if (Array.isArray(value)) return value.some(containsSecretDynamicReference);
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(containsSecretDynamicReference);
+  }
+  return false;
 }
 
 /** Structural equality, mirroring the deploy engine's `outputMapsEqual` leaf rule. */
@@ -246,6 +276,14 @@ export async function resolveTemplateOutputs(
   const failedKeys = new Set<string>();
   const secretSourceKeys = new Set<string>();
   let resolutionFailed = false;
+  // The deploy engine REFUSES an export alias whose name is another published
+  // output's name, and refuses one carrying a secret (issue #1919). This module
+  // previews the bag that engine persists, so it has to refuse the same two —
+  // it is the THIRD writer of that key space. Without this the preview publishes
+  // an alias the deploy will not, and `computeOutputsDiff` reports a phantom
+  // ADD/MODIFY on EVERY run: `cdkd diff --fail` never goes green again, and the
+  // user is told an export exists that deploy declines to publish.
+  const publishedOutputNames = collectPublishedOutputNames(template.Outputs ?? {}, conditions);
 
   if (!template.Outputs) {
     return { outputs, exportNames, failedKeys, secretSourceKeys, resolutionFailed };
@@ -274,7 +312,7 @@ export async function resolveTemplateOutputs(
   // REMOVE row. A literal `Export.Name` alias is recorded too, since the deploy
   // writes the same value under both keys.
   for (const [outputKey, output] of Object.entries(template.Outputs)) {
-    if (!isSecretDynamicReference(output.Value)) continue;
+    if (!containsSecretDynamicReference(output.Value)) continue;
     secretSourceKeys.add(outputKey);
     if (typeof output.Export?.Name === 'string') secretSourceKeys.add(output.Export.Name);
   }
@@ -319,6 +357,7 @@ export async function resolveTemplateOutputs(
       // wrong alias key, which is worse than a phantom because a consumer reads
       // it — or suppress on a name that never used `Fn::Sub` at all.
       const exportSourceUsedSub = templateUsesSub(output.Export.Name);
+      const declaredExportIsIntrinsic = typeof output.Export.Name !== 'string';
       if (typeof exportName !== 'string') {
         try {
           exportName = await resolveFn(structuredClone(exportName));
@@ -329,8 +368,61 @@ export async function resolveTemplateOutputs(
         }
       }
       if (typeof exportName === 'string' && !isUnresolvedValue(exportName, exportSourceUsedSub)) {
-        outputs[exportName] = value;
-        exportNames.add(exportName);
+        // The refusal order MIRRORS the deploy engine's — secret first, then
+        // collision — so a name matching both is attributed the same way on
+        // both sides. See `outputs-export-alias.ts`'s parity table for the full
+        // row-by-row correspondence this block is written against.
+        if (declaredExportIsIntrinsic && isSecretDynamicReference(exportName)) {
+          // An INTRINSIC name that still carries a `{{resolve:...}}` spelling
+          // after this resolver's `skipDynamicReferences` pass is one the deploy
+          // WILL substitute plaintext into, and then refuse (the name would be a
+          // state KEY, which no redaction pass walks). Gated on INTRINSIC
+          // deliberately: for a LITERAL name the deploy substitutes nothing —
+          // it uses the string verbatim as the key — so it publishes, and
+          // refusing here would be a phantom REMOVE on every run. That gate is
+          // the round-6 regression this replaces, which traded one divergence
+          // for two.
+          logger.debug(
+            `Diff skipping export alias of ${stripControlChars(outputKey)} — the name carries a secret reference`
+          );
+        } else if (isExportAliasCollision(exportName, outputKey, publishedOutputNames)) {
+          // Deploy skips this alias and keeps the colliding output's own value,
+          // so previewing it here would be a permanent phantom row. NOT a
+          // resolution failure: the bag matches what deploy writes, which is the
+          // point of the suppression flag, so nothing needs withholding.
+          logger.debug(
+            `Diff skipping export alias ${stripControlChars(exportName)} of ${stripControlChars(outputKey)} — collides with an output name`
+          );
+        } else if (!declaredExportIsIntrinsic && secretSourceKeys.size > 0) {
+          // UNDECIDABLE, so suppress rather than guess. The deploy refuses a
+          // LITERAL name that CONTAINS a resolved secret plaintext — the
+          // `prod-<secret>-endpoint` shape — and this preview never substitutes
+          // a plaintext, so it cannot evaluate that predicate. Narrowed to
+          // stacks where the deploy actually records a secret: with no
+          // secret-bearing output there is nothing for a name to contain.
+          //
+          // Suppressing is this module's existing answer to "cannot reproduce
+          // what deploy will do", and it also avoids printing a row whose KEY
+          // may hold that plaintext into CI logs. The stronger fix — deciding
+          // the case from the stored bag — is deferred to issue
+          // [#1942](https://github.com/go-to-k/cdkd/issues/1942).
+          //
+          // Recording the ALIAS key is what keeps the suppression honest: it is
+          // absent from this bag but may well be PRESENT in state, and without
+          // recording it the warning downstream reads it as a REMOVE and blames
+          // "an output referencing a resource this deploy has yet to create" —
+          // the wrong cause, on every run, forever. `failedKeys.add` directly,
+          // NOT `recordFailure`: that helper also records `outputKey`, whose
+          // value resolved fine and belongs in the diff.
+          logger.debug(
+            `Diff cannot decide the export alias of ${stripControlChars(outputKey)} — a literal name may contain a resolved secret`
+          );
+          failedKeys.add(exportName);
+          resolutionFailed = true;
+        } else {
+          outputs[exportName] = value;
+          exportNames.add(exportName);
+        }
       } else {
         // An Export.Name that stayed intrinsic means the alias key the deploy
         // WILL write is unknown, so the bag is incomplete — same suppression as
@@ -389,8 +481,16 @@ export function computeOutputsDiff(
 
   // Pass 1: is this a pre-GHSA record? See the "Withholding" note above.
   const legacyRecord = Object.entries(currentBag).some(([name, oldValue]) => {
-    if (isSecretDynamicReference(oldValue)) return false;
-    return isSecretDynamicReference(desired[name]) || secretSourceKeys.has(name);
+    // LEAF granularity on the VETO, deep on both positive arms — and the
+    // asymmetry is the point rather than an oversight. Widening this one (as an
+    // earlier revision did) makes a CONTAINER holding any expression leaf vote
+    // "already redacted", so a partially-redacted bag —
+    // `["{{resolve:secretsmanager:A}}", "prod-<plaintext>"]`, the residue
+    // `cdkd scrub` itself admits it can leave — is read as post-GHSA and its
+    // plaintext leaf then prints in a rendered row. A veto must be harder to
+    // earn than a suspicion.
+    if (typeof oldValue === 'string' && isSecretDynamicReference(oldValue)) return false;
+    return containsSecretDynamicReference(desired[name]) || secretSourceKeys.has(name);
   });
 
   const push = (change: OutputChange): void => {

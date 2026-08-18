@@ -117,6 +117,133 @@ The index is therefore **not load-bearing for correctness** — it can
 disappear entirely without affecting cdkd's safety guarantees, only
 its performance.
 
+### Export names share one namespace with output names
+
+`state.outputs` — the bag the index is built from — is keyed by output
+NAME, and an output carrying `Export:` is additionally aliased under its
+export name in that same bag. The two key spaces are therefore ONE
+namespace, unlike CloudFormation, where exports live in a namespace of
+their own. Two consequences follow, both of them cdkd behavior a
+CloudFormation user would not predict (issue
+[#1919](https://github.com/go-to-k/cdkd/issues/1919)).
+
+**An `Export.Name` equal to another published output's name is skipped.**
+The template is asking cdkd to store two different values under one key.
+cdkd keeps the output's own value, drops the export alias, and warns on
+the producer's deploy naming both outputs. Before this the winner
+depended on template ORDER, and the secret redaction (issue
+[#1910](https://github.com/go-to-k/cdkd/issues/1910)), which positions
+each persisted leaf by its own unresolved template value, could then
+store one output's `{{resolve:...}}` reference as the other's value.
+
+This is a **consumer-visible change, and the warning does not reach the
+person who feels it**. Where the alias previously won the key, an
+`Fn::ImportValue` on that name now resolves to the colliding OUTPUT's
+value instead of the exporting one's — silently, on the CONSUMER's next
+deploy, while the warning was printed on the PRODUCER's. It is also a
+deliberate **CloudFormation-parity divergence**: CFn publishes both,
+because its export namespace is separate; cdkd's exports index is derived
+from the outputs bag and cannot hold two values under one key, so it
+fails closed on the one it can prove is ambiguous. Rename the export (or
+the colliding output) and redeploy the producer — there is no
+configuration that restores the old behavior, and the old behavior was
+order-dependent anyway.
+
+**A condition-suppressed output does NOT reserve its name.** It publishes
+no value on this deploy, so an export alias may take the name and is
+positioned by its own template value. Reserving names for suppressed
+outputs would DROP a working export because an unrelated condition went
+false — and the next producer deploy would then delete that export's
+index entry, leaving the consumer with `export 'X' not found in any
+stack`. An output exporting under its OWN name is not a collision either:
+the alias is the same key holding the same value.
+
+**An `Export.Name` that resolves to secret plaintext is refused.**
+`Export.Name` may be an intrinsic (`Fn::Sub` / `Fn::Join`), and those
+substitute dynamic references — so the resolved name can contain a
+resolved secret. That name would become a KEY in `state.json` and in the
+exports index, and redaction rewrites VALUES only, so nothing downstream
+would ever scrub it. cdkd skips such an alias and warns with the name
+masked.
+
+**Two outputs sharing ONE `Export.Name`** (with no output of that name) is
+NOT guarded, deliberately. Both bags stay consistent there — one iteration
+writes the value and its source together — so it is not the corruption
+above; the later output simply wins the key, where CloudFormation would
+reject the template outright. cdkd is not a template validator and a
+warning here would fire on a shape that cannot reach a real CFn deploy,
+so it is documented rather than diagnosed.
+
+`cdkd scrub` applies the same collision rule to the source it rebuilds
+from the template, with two deliberate differences, both forced by what it
+can know about state an EARLIER binary wrote:
+
+- It drops the position source for the colliding key entirely, rather than
+  letting the owning output keep it. The alias may have WON that key, so
+  "the owner's template value positions it" is an assumption that is wrong
+  exactly when the state is corrupted — the case scrub exists for. The key
+  is redacted by value match instead. That is exact unless two DISTINCT
+  secrets resolve to the same value, in which case the key can end up
+  holding a reference naming the other one: a smaller blast radius than
+  the alternative (one key, and only when two secrets coincide) but the
+  same kind of error, so it is stated rather than glossed.
+- It tests collisions against every DECLARED output name, ignoring
+  conditions, and resolves an intrinsic `Export.Name` best-effort for that
+  test alone. Scrub re-evaluates conditions best-effort from template
+  defaults (it takes no parameters) and assumes false on failure, so
+  trusting them would let it miss a collision the deploy really made — and
+  a missed collision writes a wrong-secret reference, while an
+  over-approximated one costs a spurious warning and one key redacted by
+  value instead of by position.
+- If an intrinsic `Export.Name` does not fully resolve, scrub redacts that
+  stack's outputs by value match ENTIRELY and warns. "Not fully" covers
+  three shapes, not just a throw: a resolution error, a non-string result,
+  and — the common one — a returned string that still contains an
+  unsubstituted `${Placeholder}`, because `Fn::Sub` warns and keeps the
+  placeholder rather than throwing, and scrub takes no parameters. In all
+  three the deploy keyed state under a name this run cannot reproduce, and
+  that name could be any output's, so there is no single key to distrust. A
+  name that resolves to a DIFFERENT but complete string than the deploy
+  produced remains undetectable and is a known residual.
+
+`cdkd diff` previews this same bag through `src/analyzer/outputs-diff.ts`,
+the fourth writer of the key space, and it has to agree ROW BY ROW: an
+alias the preview publishes and the deploy refuses (or the reverse) is a
+phantom change on every run and `cdkd diff --fail` red forever. Two rows
+are worth naming because they read as inconsistent otherwise. A LITERAL
+`Export.Name` spelled as a `{{resolve:...}}` token is PUBLISHED by both —
+the deploy never substitutes a string name, so the key holds the
+expression, which is what state stores anyway. And a LITERAL name in a
+stack that resolves a secret makes `cdkd diff` omit its Outputs section
+entirely for that run: the deploy refuses such a name only when it CONTAINS
+the resolved plaintext, which the preview never resolves, so it declines to
+guess rather than print a row whose key may hold that plaintext. The
+omission is reported as the usual could-not-resolve notice, and the alias
+key is recorded so that notice does not fire on the alias alone.
+
+**A state KEY that already holds plaintext cannot be scrubbed.** State
+written by a pre-fix binary can carry `state.outputs["pre-<secret>"]`, and
+every redaction pass rewrites values only. `cdkd scrub` REPORTS such a key
+(and `--fail` exits 1 on it — under `--dry-run` as part of the standing CI
+gate, and on a REAL run too, since that is the one finding class a real run
+cannot fix) but never rewrites it: the key is
+the export name consumers resolve by, so renaming it would silently retire
+a live export. The remedy is a template change — give the output a
+non-secret `Export.Name` and redeploy, which replaces `state.outputs` and
+the exports index wholesale — plus rotating the exposed secret. Such a
+finding is counted and reported SEPARATELY from the stacks scrub actually
+rewrote, so the summary never claims to have removed a value it could not
+reach. Reporting is bounded the same way cdkd's substring redaction is: a
+secret of three characters or fewer is matched only as a whole key, since
+an unbounded scan over so short a value flags unrelated keys and fails the
+CI gate everywhere.
+
+CDK's AUTO-generated export names cannot collide — they are of the form
+`StackName:ExportsOutputRefResourceABC123` and a `:` is not legal in a
+logical id — but `Stack.exportValue(value, { name })` takes a
+caller-chosen name, so a CDK app can produce this shape just as a
+hand-written template can.
+
 ---
 
 ## State schema v4

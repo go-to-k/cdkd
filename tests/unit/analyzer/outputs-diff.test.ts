@@ -51,9 +51,25 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
  * attributes (`StreamArn`, `PolicyId`, `VpcId`) that resolve WITHOUT throwing.
  */
 function resolverFor(table: Record<string, unknown>) {
-  return async (value: unknown): Promise<unknown> => {
+  const resolve = async (value: unknown): Promise<unknown> => {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       const keys = Object.keys(value as Record<string, unknown>);
+      // `Fn::Join` FOLDS to a string, which is what makes the dominant CDK
+      // secret shape (`{'Fn::Join': ['', ['{{resolve:secretsmanager:', {Ref},
+      // ':SecretString:pw::}}']]}`) arrive here as a resolved value rather than
+      // as a surviving intrinsic. Without this arm a fixture built on that shape
+      // is reported unresolved and can never exercise the secret signals.
+      if (keys.length === 1 && keys[0] === 'Fn::Join') {
+        const [sep, parts] = (value as { 'Fn::Join': [string, unknown[]] })['Fn::Join'];
+        const resolvedParts = [];
+        for (const part of parts) resolvedParts.push(String(await resolve(part)));
+        return resolvedParts.join(sep);
+      }
+      if (keys.length === 1 && keys[0] === 'Ref') {
+        const id = (value as { Ref: string }).Ref;
+        if (!(id in table)) throw new Error(`Resource not found in state: ${id}`);
+        return table[id];
+      }
       if (keys.length === 1 && keys[0] === 'Fn::GetAtt') {
         const [id, attr] = (value as { 'Fn::GetAtt': [string, string] })['Fn::GetAtt'];
         const key = `${id}.${attr}`;
@@ -63,6 +79,7 @@ function resolverFor(table: Record<string, unknown>) {
     }
     return value;
   };
+  return resolve;
 }
 
 /** The lenient shape the `IntrinsicResolveFn` TYPE also permits (returns the input). */
@@ -73,6 +90,11 @@ function lenientResolver(value: unknown): Promise<unknown> {
 const ARN = 'arn:aws:s3:::bucket';
 const RESOLVER = resolverFor({
   'Bucket.Arn': ARN,
+  // An attribute whose VALUE is an expression string: the shape an intrinsic
+  // `Export.Name` takes after this resolver's `skipDynamicReferences` pass.
+  'Bucket.SecretishName': 'pre-{{resolve:secretsmanager:db:SecretString:pw}}',
+  // A `Ref` target, for the `Fn::Join`-wrapped secret shape.
+  Sec: 'arn:aws:secretsmanager:us-east-1:1234:secret:db',
   // Constructible-but-unknown attribute: resolves to undefined, does NOT throw.
   'Role.RoleId': undefined,
 });
@@ -90,6 +112,158 @@ function templateWithExport(): CloudFormationTemplate {
 }
 
 describe('resolveTemplateOutputs', () => {
+  it('SKIPS an export alias whose name is another published output (issue #1919)', async () => {
+    // The deploy engine refuses this alias and keeps the colliding output's own
+    // value. Previewing it here made the two bags disagree permanently: the diff
+    // reported an ADD/MODIFY on every run, `cdkd diff --fail` never went green,
+    // and the user was told an export is published that deploy declines to
+    // publish. Declared owner-first, the order that makes the alias win in an
+    // unguarded pass.
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        PublicAlpha: { Value: 'alpha-public' },
+        Exporter: { Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] }, Export: { Name: 'PublicAlpha' } },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+
+    expect(r.outputs).toEqual({ PublicAlpha: 'alpha-public', Exporter: ARN });
+    expect([...r.exportNames]).toEqual([]);
+    // NOT a resolution failure: the bag matches what deploy writes, so there is
+    // nothing to withhold.
+    expect(r.resolutionFailed).toBe(false);
+  });
+
+  it('PARITY row 1 — an INTRINSIC name still carrying a secret spelling is skipped', async () => {
+    // Deploy substitutes plaintext into an intrinsic name and then REFUSES it,
+    // because the name would become a state KEY and redaction walks values only.
+    // This resolver runs with `skipDynamicReferences`, so the same name arrives
+    // here still spelled as its expression — which is the signal.
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        Exporter: {
+          Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
+          Export: { Name: { 'Fn::GetAtt': ['Bucket', 'SecretishName'] } as never },
+        },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+
+    expect(r.outputs).toEqual({ Exporter: ARN });
+    expect([...r.exportNames]).toEqual([]);
+  });
+
+  it('PARITY row 2 — a LITERAL name spelled as an expression is PUBLISHED, as deploy publishes it', async () => {
+    // The regression the previous round shipped: refusing by SPELLING refused
+    // this too, while the deploy engine short-circuits a STRING `Export.Name`
+    // past the resolver entirely — it substitutes nothing, uses the string
+    // verbatim as the key, and publishes. Refusing here made the preview report
+    // a phantom REMOVE on every run and kept `cdkd diff --fail` red, which is
+    // the inverse of the bug the refusal was added for.
+    const literalName = '{{resolve:secretsmanager:db:SecretString:pw}}';
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        Exporter: { Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] }, Export: { Name: literalName } },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+
+    expect(r.outputs).toEqual({ Exporter: ARN, [literalName]: ARN });
+    expect([...r.exportNames]).toEqual([literalName]);
+  });
+
+  it('PARITY row 3 — a LITERAL name in a secret-bearing stack SUPPRESSES rather than guesses', async () => {
+    // Deploy refuses a literal name that CONTAINS a resolved plaintext
+    // (`prod-<secret>-endpoint`), and this preview never resolves one, so it
+    // cannot evaluate that predicate. Publishing would risk a phantom ADD whose
+    // row PRINTS the plaintext-bearing key into CI logs, so the delta is
+    // suppressed instead — this module's existing answer to "cannot reproduce
+    // what deploy will do".
+    //
+    // The secret-bearing output uses the INTRINSIC shape on purpose: an
+    // `Fn::Join` around a `Ref` to the secret's ARN is what
+    // `secret.secretValueFromJson(...)` renders, and a shallow string scan of
+    // `output.Value` reports no secret for it — which is the DOMINANT CDK shape
+    // and disarmed this whole branch.
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        DbSecret: {
+          Value: {
+            'Fn::Join': [
+              '',
+              ['{{resolve:secretsmanager:', { Ref: 'Sec' }, ':SecretString:password::}}'],
+            ],
+          },
+        },
+        Exporter: {
+          Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
+          Export: { Name: 'MyStack:BucketArn' },
+        },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+
+    expect([...r.exportNames]).toEqual([]);
+    expect(Object.hasOwn(r.outputs, 'MyStack:BucketArn')).toBe(false);
+    expect(r.resolutionFailed).toBe(true);
+    // The value keys still resolved — the suppression is a reporting decision,
+    // not a resolution failure.
+    expect(r.outputs['Exporter']).toBe(ARN);
+  });
+
+  it('PARITY row 3 — the suppression RECORDS the alias key, so the warning cannot misreport', async () => {
+    // The suppression drops a key that may well be PRESENT in state. Without
+    // recording it, `diff-recursive`'s `wouldHaveChanged` filter reads it as a
+    // REMOVE and the stack warns "one or more could not be resolved ... usually
+    // an output referencing a resource this deploy has yet to create" — the
+    // wrong cause, on every run, forever.
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        DbSecret: {
+          Value: {
+            'Fn::Join': [
+              '',
+              ['{{resolve:secretsmanager:', { Ref: 'Sec' }, ':SecretString:password::}}'],
+            ],
+          },
+        },
+        Exporter: {
+          Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
+          Export: { Name: 'MyStack:BucketArn' },
+        },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+
+    expect(r.failedKeys.has('MyStack:BucketArn')).toBe(true);
+    // The filter the warning is computed through must therefore drop the row a
+    // stored copy of that key would otherwise produce.
+    const wouldHaveChanged = computeOutputsDiff(
+      { 'MyStack:BucketArn': 'arn:aws:s3:::previously-published' },
+      r.outputs,
+      r.exportNames,
+      r.secretSourceKeys
+    ).filter((change) => !r.failedKeys.has(change.name));
+    expect(wouldHaveChanged.map((c) => c.name)).not.toContain('MyStack:BucketArn');
+  });
+
+  it('PARITY row 3 — the same literal name publishes when the stack resolves NO secret', async () => {
+    // The other half, so the rule cannot silently widen to every stack.
+    const r = await resolveTemplateOutputs(templateWithExport(), RESOLVER);
+    expect([...r.exportNames]).toEqual(['StackA:BucketArn']);
+    expect(r.resolutionFailed).toBe(false);
+  });
+
   it('builds the same bag shape the deploy engine persists — value key AND Export.Name alias', async () => {
     const r = await resolveTemplateOutputs(templateWithExport(), RESOLVER);
     // Both keys, same value: `Fn::ImportValue` resolves by EXPORT name, so a
@@ -356,6 +530,40 @@ describe('computeOutputsDiff — legacy secret plaintext on the stored side', ()
     expect(JSON.stringify(changes)).not.toContain('hunter2');
   });
 
+  it('withholds a legacy plaintext when the DESIRED side is an intrinsic-wrapped secret', () => {
+    // The same shallow-scan gap on the WITHHOLDING signal (issue #1921's half):
+    // the desired value is the dominant CDK shape — an `Fn::Join` around a `Ref`
+    // to the secret's ARN — so a string-only test reported "not a secret" and
+    // the stored PLAINTEXT was printed as the row's `old:` value, into CI logs.
+    const desired = {
+      DbPassword: {
+        'Fn::Join': ['', ['{{resolve:secretsmanager:', { Ref: 'Sec' }, ':SecretString:pw::}}']],
+      },
+    };
+    const changes = computeOutputsDiff({ DbPassword: 'hunter2-plaintext' }, desired, new Set());
+    expect(changes[0]!.oldValueRedacted).toBe(true);
+    expect(changes[0]).not.toHaveProperty('oldValue');
+    expect(JSON.stringify(changes)).not.toContain('hunter2');
+  });
+
+  it('a PARTIALLY-redacted stored list still counts as legacy (veto stays at LEAF granularity)', () => {
+    // The veto must be harder to earn than the suspicion. Widening it to a deep
+    // walk — as the positive arms legitimately are — makes a CONTAINER holding
+    // any expression leaf vote "already redacted", so this bag, the partial
+    // residue `cdkd scrub` itself admits it can leave, is read as post-GHSA and
+    // its plaintext leaf prints in the rendered row.
+    const current = {
+      Endpoints: ['{{resolve:secretsmanager:A:SecretString:pw}}', 'prod-hunter2-plaintext'],
+    };
+    const desired = { Endpoints: ['{{resolve:secretsmanager:A:SecretString:pw}}', 'prod-new'] };
+
+    const changes = computeOutputsDiff(current, desired, new Set());
+
+    expect(changes[0]!.oldValueRedacted).toBe(true);
+    expect(changes[0]).not.toHaveProperty('oldValue');
+    expect(JSON.stringify(changes)).not.toContain('hunter2');
+  });
+
   it('does NOT withhold when both sides are expressions (already-redacted state)', () => {
     const other = '{{resolve:secretsmanager:prod/db:SecretString:username}}';
     const changes = computeOutputsDiff({ DbPassword: other }, { DbPassword: EXPR }, new Set());
@@ -554,12 +762,68 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
     'utf8'
   );
 
-  it('deploy still writes the Export.Name alias as a second bag key', () => {
+  it('deploy still writes the Export.Name alias as a second bag key, and GUARDS it', () => {
+    // This fence went VACUOUS once (issue #1919 review) and the way it did is
+    // the lesson: it grepped for the literal alias write, the deploy engine
+    // moved that write inside a guard's `else` arm, and the literal survived —
+    // so the fence stayed green through the exact drift it exists to catch,
+    // while this module kept previewing an alias the deploy had started
+    // refusing (a phantom diff on every run, forever).
+    //
+    // A literal that can survive inside a branch cannot fence a branch. So both
+    // halves are pinned instead: the write still exists, AND both writers of
+    // this key space consult the same shared rule. Removing the guard from
+    // either side reds this.
     expect(source).toContain('outputs[exportName] = value;');
+    expect(source).toContain('isExportAliasCollision(exportName, outputKey, publishedOutputNames)');
+    const twin = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../src/analyzer/outputs-diff.ts'),
+      'utf8'
+    );
+    expect(twin).toContain('isExportAliasCollision(exportName, outputKey, publishedOutputNames)');
+  });
+
+  it('both writers still guard the SECRET-bearing export name', () => {
+    // The collision guard was fenced first and the SECRET guard was not — and
+    // the secret guard is the one rule that actually diverged (the two sides
+    // disagreed in BOTH directions on a literal name for a full round). Each
+    // side keeps its own predicate here, because they answer the same question
+    // from different information: deploy resolves the name and asks what was
+    // substituted; the diff never substitutes and asks how the name is SPELLED,
+    // gated on the name being intrinsic. Losing either arm reds this.
+    const twin = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../src/analyzer/outputs-diff.ts'),
+      'utf8'
+    );
+    expect(source).toContain('exportNameSecretExposure(');
+    expect(source).toContain('secretBearingExportNameWarning(outputKey, exportName, exposure)');
+    expect(twin).toContain('declaredExportIsIntrinsic && isSecretDynamicReference(exportName)');
+    // ...and the undecidable LITERAL arm, which is what keeps the diff from
+    // publishing an alias deploy refuses without being able to see the secret.
+    expect(twin).toContain('!declaredExportIsIntrinsic && secretSourceKeys.size > 0');
   });
 
   it('deploy still skips a condition-false output', () => {
-    expect(source).toMatch(/output\.Condition !== undefined && conditions\?\.\[output\.Condition\] === false/);
+    // The predicate MOVED (issue #1919): the deploy engine now shares it with
+    // `cdkd scrub` through `outputs-export-alias.ts`, because the outputs bag
+    // has two key writers that must agree about which outputs are published.
+    // Behavior is unchanged — `outputs-diff.ts:283` still spells it inline, and
+    // this fence still watches exactly that parity — so the fence follows the
+    // predicate rather than being relaxed. BOTH halves are asserted: the rule
+    // itself, and that the deploy engine still calls it. Either one moving on
+    // its own is drift, and the single grep this replaces could only see the
+    // first.
+    const rules = readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../../src/deployment/outputs-export-alias.ts'
+      ),
+      'utf8'
+    );
+    expect(rules).toMatch(
+      /output\.Condition !== undefined && conditions\?\.\[output\.Condition\] === false/
+    );
+    expect(source).toContain('isOutputSuppressedByCondition(output, conditions)');
   });
 
   it('deploy still DEFINES its failure signal as an undefined bag value', () => {
