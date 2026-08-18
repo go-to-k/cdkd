@@ -1086,6 +1086,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "dynamodb-globaltable",
+        "dynamodb-gsi-update",
         "ec2-instance-fanout",
         "elasticache-replicationgroup-getatt",
         "export",

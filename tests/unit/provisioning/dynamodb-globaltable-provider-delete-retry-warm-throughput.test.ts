@@ -532,7 +532,20 @@ describe('DynamoDBGlobalTable index-busy delete retry: wall-clock budget (issue 
             },
           });
         }
-        return Promise.reject(new Error('AccessDeniedException: not authorized'));
+        // Shaped like the real thing: an SDK service exception carries the
+        // error CODE on `name` and puts the account id, the assumed-role ARN
+        // and the session name IN the message. A plain `new Error('...')`
+        // would leave `name` as 'Error' and the assertions below could not
+        // tell a redacted line from a useless one.
+        return Promise.reject(
+          Object.assign(
+            new Error(
+              'User: arn:aws:sts::123456789012:assumed-role/cdkd-deploy-role/cdkd-session is ' +
+                'not authorized to perform: dynamodb:DescribeTable'
+            ),
+            { name: 'AccessDeniedException', $metadata: { httpStatusCode: 400 } }
+          )
+        );
       }
       if (command instanceof DeleteTableCommand) {
         deleted = true;
@@ -554,9 +567,15 @@ describe('DynamoDBGlobalTable index-busy delete retry: wall-clock budget (issue 
     await drive(() => settled, 60);
 
     await expect(outcome).resolves.toBe('resolved');
-    const stopped = warnings().filter((w) => w.includes('DescribeTable failed while waiting'));
+    const stopped = warnings().filter((w) => w.includes('DescribeTable failed'));
     expect(stopped).toHaveLength(1);
-    expect(stopped[0]).toContain('not authorized');
+    // The CLASS, not AWS's sentence: the raw message embeds the account id,
+    // the assumed-role ARN and the session name, and this warning is wrapped
+    // into the persisted deployment-events store as well as the terminal. The
+    // detail moved to debug rather than being dropped.
+    expect(stopped[0]).toContain('AccessDeniedException');
+    expect(stopped[0]).not.toContain('123456789012');
+    expect(stopped[0]).not.toContain('assumed-role');
   });
 });
 
