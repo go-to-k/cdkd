@@ -9,7 +9,7 @@ import {
   recordSecretExpression,
   clearRecordedSecretExpressions,
   intrinsicSkeletonPattern,
-  TEMPLATE_SOURCED_READBACK_RULES,
+  TEMPLATE_SOURCED_RULES,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -463,7 +463,7 @@ describe('secret-redaction - intrinsic (Fn::Join / Fn::Sub) source leaf (issue #
       { SECRET_PASSWORD: 'masked-by-aws' },
       new Map([[SHARED, EXPR_STAGED]]),
       { SECRET_PASSWORD: SOURCE_PLAIN },
-      TEMPLATE_SOURCED_READBACK_RULES
+      TEMPLATE_SOURCED_RULES
     ) as Record<string, string>;
 
     expect(redacted['SECRET_PASSWORD']).toBe('masked-by-aws');
@@ -630,7 +630,7 @@ describe('secret-redaction - intrinsic (Fn::Join / Fn::Sub) source leaf (issue #
       { SECRET_PASSWORD: SHARED },
       new Map([[SHARED, EXPR_STAGED]]),
       { SECRET_PASSWORD: SOURCE_PLAIN },
-      TEMPLATE_SOURCED_READBACK_RULES
+      TEMPLATE_SOURCED_RULES
     ) as Record<string, string>;
 
     expect(redacted['SECRET_PASSWORD']).toBe(EXPR_PLAIN);

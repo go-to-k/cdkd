@@ -791,16 +791,22 @@ async function resolveReplayProps(
  * deploy reports a change that never converges — the same defect the four
  * deploy-side writers had, arriving here through the replay instead.
  *
- * It takes `STATE_DERIVED_RULES`, which is BOTH relaxations. The source is a
+ * It takes `STATE_DERIVED_RULES`, which is every relaxation. The source is a
  * persisted record, so it holds no PUBLIC expressions (a `String` ssm reference
  * is stored resolved) and any `{{resolve:...}}` in it is by construction a
  * secret — that is `trustAnyExpression`. And the bag WAS produced by resolving
  * that source (`resolveReplayProps` -> the provider's `effectiveProperties`),
  * so the two have identical structure and positional array descent is sound —
- * that is `descendArrays`. Using `STATE_SOURCED_READBACK_RULES` here reads
- * plausible and is wrong in the quiet direction: it turns array descent off, so
- * a secret nested in a `Tags[]` / ECS `secrets[]` element would still collapse
- * on the replay path.
+ * that is `descendArrays`. It is also the SAME generation, resolved one
+ * statement earlier in this call — that is `sourceIsSameGeneration`, and this
+ * writer is one of only two that can honestly claim it.
+ *
+ * Using `STATE_SOURCED_READBACK_RULES` here reads plausible and is wrong in the
+ * quiet direction: it turns positional array descent off. Since issue #1915 a
+ * `Tags[]` / ECS `Environment[]` element is reached by KEYED descent either
+ * way, so the concrete loss is narrower than it was — it is a list whose
+ * elements carry no `Name` / `Key` identity, which only positional descent can
+ * walk.
  *
  * No-op when the op resolved no secret.
  */

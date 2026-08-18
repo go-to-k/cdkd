@@ -2956,7 +2956,8 @@
         "local-start-alb",
         "local-start-alb-from-state",
         "local-start-service",
-        "local-start-service-watch-fast"
+        "local-start-service-watch-fast",
+        "secrets-array-nested"
       ],
       "signals": {
         "ecs-bluegreen": [
@@ -3005,6 +3006,10 @@
         ],
         "local-start-service-watch-fast": [
           "l2"
+        ],
+        "secrets-array-nested": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -5767,6 +5772,7 @@
         "lambda-esm-self-managed-kafka",
         "local-run-task-from-state",
         "replacement-immutable-name",
+        "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule"
       ],
@@ -5793,6 +5799,10 @@
           "literal"
         ],
         "replacement-immutable-name": [
+          "l2",
+          "literal"
+        ],
+        "secrets-array-nested": [
           "l2",
           "literal"
         ],

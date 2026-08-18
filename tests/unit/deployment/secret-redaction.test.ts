@@ -4,7 +4,7 @@ import {
   maskSecretsInText,
   scrubResourceRecord,
   STATE_SOURCED_READBACK_RULES,
-  TEMPLATE_SOURCED_READBACK_RULES,
+  TEMPLATE_SOURCED_RULES,
   SECRET_MASK,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
@@ -245,31 +245,60 @@ describe('secret-redaction - value-key collision (issue #1904, value-only bound)
   // not preserve list order (the reason drift-normalize.ts exists). Descending
   // arrays positionally there wrote the expression onto the WRONG element and
   // left the real secret in plaintext.
+  //
+  // WHAT MAKES THIS FIXTURE REACH THE POSITIONAL ARM, and why it is spelled the
+  // way it is (issue #1915): the elements are PLAIN STRINGS. An earlier version
+  // used `{Name, Value}` objects, and once #1915 added order-independent KEYED
+  // descent those paired by `Name` before positional was ever consulted — so
+  // the case still passed with `descendArrays` flipped to `true` and had
+  // silently stopped fencing the thing it is named for. Keyed descent needs an
+  // identity field; a list of bare strings has none, which is what leaves
+  // `descendArrays` as the only thing that could walk this list.
   it('does NOT map arrays positionally for an AWS readback (#1900 ordering)', () => {
+    // The template's order.
+    const source = { Env: [EXPR_PLAIN, 'public'] };
+    // AWS returned the list REVERSED, and echoed the secret's plaintext.
+    const observed = { Env: ['public', SHARED] };
+    const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PLAIN]]);
+
+    const redacted = redactSecretsForState(observed, secrets, source, TEMPLATE_SOURCED_RULES) as {
+      Env: string[];
+    };
+
+    // The value scan handled it: the secret is redacted where it actually is...
+    expect(redacted.Env[1]).toBe(EXPR_PLAIN);
+    // ...and the unrelated public element was NOT overwritten with an
+    // expression, which is exactly what positional descent would have done.
+    expect(redacted.Env[0]).toBe('public');
+    expect(JSON.stringify(redacted)).not.toContain(SHARED);
+  });
+
+  // The KEYED counterpart of the case above, so the pair documents the split
+  // rather than leaving it to be rediscovered: give the same reordered readback
+  // an identity field and it IS positioned — order-independently, by `Name` —
+  // which is the #1915 behavior and is NOT what `descendArrays` governs.
+  it('DOES position a reordered readback when its elements carry an identity', () => {
     const source = {
       Env: [
         { Name: 'SECRET', Value: EXPR_PLAIN },
         { Name: 'PLAIN', Value: 'public' },
       ],
     };
-    // AWS returned the list REVERSED, and echoed the secret's plaintext.
     const observed = {
       Env: [
         { Name: 'PLAIN', Value: 'public' },
         { Name: 'SECRET', Value: SHARED },
       ],
     };
-    const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PLAIN]]);
 
-    const redacted = redactSecretsForState(observed, secrets, source, TEMPLATE_SOURCED_READBACK_RULES) as {
+    // EMPTY map on purpose: with no needles the value scan cannot answer, so a
+    // redacted leaf here can only have come from the keyed pairing.
+    const redacted = redactSecretsForState(observed, new Map(), source, TEMPLATE_SOURCED_RULES) as {
       Env: Array<Record<string, string>>;
     };
 
-    // The value scan handled it: the secret is redacted where it actually is...
     expect(redacted.Env[1]!['Value']).toBe(EXPR_PLAIN);
-    // ...and the unrelated public element was NOT overwritten with an expression.
     expect(redacted.Env[0]!['Value']).toBe('public');
-    expect(JSON.stringify(redacted)).not.toContain(SHARED);
   });
 
   // BLOCKER from the RE-review: the array rule and the substitution rule are

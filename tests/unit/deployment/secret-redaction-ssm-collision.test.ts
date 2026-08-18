@@ -8,6 +8,7 @@ import {
   clearRecordedSecretExpressions,
   STATE_SOURCED_READBACK_RULES,
   STATE_DERIVED_RULES,
+  TEMPLATE_SOURCED_RULES,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 
@@ -130,6 +131,14 @@ describe('secret-redaction - SecureString ssm pair sharing one value (issue #191
   // source. `cdkd scrub`'s bag is PERSISTED STATE and its source is TODAY's
   // template, so an edited-but-undeployed template rewrote state onto an
   // expression AWS has never seen — and reported the record as "cleaned".
+  //
+  // The RULES here used to be `STATE_SOURCED_READBACK_RULES`, which was a
+  // stand-in rather than the constant this scenario reaches: the refusal was
+  // unconditional then, so ANY constant reproduced it. Issue #1917 keyed it on
+  // the source's GENERATION, and `cdkd scrub` positions its state bag against
+  // the template with `TEMPLATE_SOURCED_RULES`, whose source is a different
+  // generation by construction. Driving it through the readback constant now
+  // asserts the OPPOSITE of what that constant means (see the sibling below).
   it('never overwrites a bag leaf that is ALREADY an expression', () => {
     const stateBag = { Password: EXPR_B };
     const editedTemplate = { Password: EXPR_A };
@@ -138,12 +147,31 @@ describe('secret-redaction - SecureString ssm pair sharing one value (issue #191
       stateBag,
       new Map(),
       editedTemplate,
-      STATE_SOURCED_READBACK_RULES
+      TEMPLATE_SOURCED_RULES
     ) as Record<string, string>;
 
     // State keeps what it holds: there is no plaintext here to redact, so the
     // pass has nothing to contribute and must not "converge" the two.
     expect(redacted['Password']).toBe(EXPR_B);
+  });
+
+  // The sibling half of the split above (issue #1917). Under the READBACK
+  // constant the source is THIS record's own untouched properties — the same
+  // generation as the bag beside it — and the bag came back from AWS, which
+  // never echoes a `{{resolve:...}}` expression because cdkd hands the provider
+  // the RESOLVED value. So a token-shaped leaf there is a secret whose
+  // PLAINTEXT looks like an expression, and refusing the source would persist
+  // that plaintext with no redaction at all: this is the #1900 path, where the
+  // secrets map is EMPTY, so the value-scan fallback has no needles either.
+  it('DOES take the source for a token-shaped leaf on an AWS-readback bag', () => {
+    const redacted = redactSecretsForState(
+      { Password: EXPR_B },
+      new Map(),
+      { Password: EXPR_A },
+      STATE_SOURCED_READBACK_RULES
+    ) as Record<string, string>;
+
+    expect(redacted['Password']).toBe(EXPR_A);
   });
 
   it('still redacts a PLAINTEXT leaf from the same source (the guard is not a blanket skip)', () => {
