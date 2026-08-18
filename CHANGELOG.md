@@ -1,3 +1,10 @@
+## [0.283.27](https://github.com/go-to-k/cdkd/compare/v0.283.26...v0.283.27) (2026-08-18)
+
+
+### Bug Fixes
+
+* **diff:** report an Outputs-only change instead of "No changes detected" ([#1928](https://github.com/go-to-k/cdkd/issues/1928)) ([6cdd5da](https://github.com/go-to-k/cdkd/commit/6cdd5da98d3ae602f8f8b255d63a054cea3d3368))
+
 ## [0.283.26](https://github.com/go-to-k/cdkd/compare/v0.283.25...v0.283.26) (2026-08-18)
 
 
