@@ -84,6 +84,7 @@ import { withRetry } from './retry.js';
 import { isNameCollisionError, isRecreateRetryableError } from './retryable-errors.js';
 import { withResourceDeadline } from './resource-deadline.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
+import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
 import { findUnrewrittenAssetReferences, type AssetRedirectMap } from '../assets/asset-redirect.js';
 import {
   replayRollback,
@@ -388,6 +389,24 @@ interface DeleteSkipSignal {
 }
 
 /**
+ * The UPDATE-side twin of {@link DeleteSkipSignal} (issue #1819): the provider
+ * updated the resource but did NOT retire something the update owned.
+ *
+ * Carried separately from `deleteSkipped` for the same reason those two counters
+ * are separate: the row's own resource WAS updated here, so the wrapper still
+ * emits `RESOURCE_SUCCEEDED` for it and adds a `RESOURCE_SKIPPED` naming the
+ * survivor. Collapsing them would make the events store claim the updated
+ * resource was skipped.
+ */
+interface UpdatePartialSignal {
+  /** The provider's `ResourceUpdateResult.reason` — required on `'partial'`. */
+  updatePartial: string;
+}
+
+/** What `provisionResourceBody` can report upward about a non-clean outcome. */
+type ResourceOutcomeSignal = Partial<DeleteSkipSignal> & Partial<UpdatePartialSignal>;
+
+/**
  * Per-resource operation tallies threaded through `provisionResource`.
  *
  * `skipped` and `deleteSkipped` are NOT the same thing and must never be
@@ -404,6 +423,14 @@ interface ProvisionCounts {
   skipped: number;
   /** Provider reported `{ outcome: 'skipped' }` for a template DELETE. */
   deleteSkipped: number;
+  /**
+   * Provider reported `{ outcome: 'partial' }` for an UPDATE (issue #1819) —
+   * the resource WAS updated, but something the update owned survives and is
+   * no longer in state. Counted apart from `updated` because the row is not a
+   * clean success, and apart from `deleteSkipped` because the row's own
+   * resource is not the thing that survived.
+   */
+  updatePartial: number;
 }
 
 /**
@@ -438,6 +465,14 @@ export interface DeployResult {
    * because there is no next run to heal it).
    */
   deleteSkipped: number;
+  /**
+   * Resources whose UPDATE reported `{ outcome: 'partial' }` (issue #1819):
+   * updated, but something the update owned survives untracked. Separate from
+   * `updated` so a clean run and a run that orphaned a resource do not print
+   * the same summary, and separate from `deleteSkipped` because the surviving
+   * resource is not the row's own.
+   */
+  updatePartial: number;
   /** Number of resources unchanged */
   unchanged: number;
   /** Total deployment time in milliseconds */
@@ -1639,6 +1674,7 @@ export class DeployEngine {
           updated: 0,
           deleted: 0,
           deleteSkipped: 0,
+          updatePartial: 0,
           unchanged: Object.keys(currentState.resources).length,
           durationMs: Date.now() - startTime,
           outputs: this.buildDisplayOutputs(template, persistedOutputs),
@@ -1664,6 +1700,7 @@ export class DeployEngine {
           deleted: deleteChanges.length,
           // A dry run issues no provider call, so nothing can be skipped.
           deleteSkipped: 0,
+          updatePartial: 0,
           unchanged: this.diffCalculator.filterByType(changes, 'NO_CHANGE').length,
           durationMs: Date.now() - startTime,
           attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
@@ -1770,6 +1807,7 @@ export class DeployEngine {
         updated: actualCounts.updated,
         deleted: actualCounts.deleted,
         deleteSkipped: actualCounts.deleteSkipped,
+        updatePartial: actualCounts.updatePartial,
         unchanged: unchangedCount,
         durationMs,
         outputs: this.buildDisplayOutputs(template, newState.outputs ?? {}),
@@ -1834,6 +1872,7 @@ export class DeployEngine {
       deleted: 0,
       skipped: 0,
       deleteSkipped: 0,
+      updatePartial: 0,
     };
     const completedOperations: CompletedOperation[] = [];
     // #1198: the op(s) that FAILED mid-deploy (usually one; concurrent
@@ -2036,7 +2075,7 @@ export class DeployEngine {
                 ? { ...currentState.resources[logicalId] }
                 : undefined;
 
-              let deleteOutcome: DeleteSkipSignal | void;
+              let deleteOutcome: ResourceOutcomeSignal | void;
               try {
                 deleteOutcome = await this.provisionResource(
                   logicalId,
@@ -2593,7 +2632,7 @@ export class DeployEngine {
     conditions?: Record<string, boolean>,
     counts?: ProvisionCounts,
     progress?: { current: number; total: number }
-  ): Promise<DeleteSkipSignal | void> {
+  ): Promise<ResourceOutcomeSignal | void> {
     const resourceType = change.resourceType;
 
     const renderer = getLiveRenderer();
@@ -2690,6 +2729,10 @@ export class DeployEngine {
     // `deleteResult`) because the body's return value is otherwise swallowed
     // by `withResourceDeadline`.
     let deleteSkipped: string | undefined;
+    // Issue #1819: an UPDATE that left a resource behind. Unlike
+    // `deleteSkipped` this does NOT suppress `RESOURCE_SUCCEEDED` — the row's
+    // resource really was updated — it adds a second event naming the survivor.
+    let updatePartial: string | undefined;
     try {
       await withResourceDeadline(
         async () => {
@@ -2705,6 +2748,7 @@ export class DeployEngine {
             progress
           );
           deleteSkipped = bodyResult?.deleteSkipped;
+          updatePartial = bodyResult?.updatePartial;
         },
         {
           warnAfterMs,
@@ -2754,6 +2798,27 @@ export class DeployEngine {
           durationMs: Date.now() - resourceStartedAt,
         });
         return { deleteSkipped };
+      }
+      // Issue #1819 / #1922: the row's resource WAS updated, so it still gets
+      // `RESOURCE_SUCCEEDED` below. What did NOT happen is the retirement of
+      // the resource the update owned, so that gets its own `RESOURCE_SKIPPED`
+      // — whose documented invariant ("the resource this row names was not
+      // destroyed") is exactly true of the survivor, and false of the updated
+      // row. Emitting only the skip, as the issue first proposed, would have
+      // put the events store at odds with its own contract.
+      if (updatePartial !== undefined) {
+        this.recordEvent({
+          eventType: 'RESOURCE_SKIPPED',
+          stackName,
+          operation: eventOp,
+          logicalId,
+          resourceType,
+          ...(stateResources[logicalId]?.provisionedBy
+            ? { provisionedBy: stateResources[logicalId]?.provisionedBy }
+            : labelRouting && { provisionedBy: labelRouting }),
+          reason: updatePartial,
+          durationMs: Date.now() - resourceStartedAt,
+        });
       }
       // #808 best-effort event: per-resource op succeeded. Read the
       // freshly-stamped routing layer + physical id off the state record
@@ -3072,7 +3137,7 @@ export class DeployEngine {
     conditions?: Record<string, boolean>,
     counts?: ProvisionCounts,
     progress?: { current: number; total: number }
-  ): Promise<DeleteSkipSignal | void> {
+  ): Promise<ResourceOutcomeSignal | void> {
     const resourceType = change.resourceType;
     // Existing state record (UPDATE / DELETE) — load-bearing for the
     // sticky `provisionedBy` routing introduced in #614: a resource
@@ -4036,10 +4101,26 @@ export class DeployEngine {
             updateCaptureSiblings
           );
 
-          if (counts) counts.updated++;
+          // Issue #1819: the provider may have updated the resource and left
+          // something behind. The row still counts as an update for ordering
+          // and state purposes, but it is not a clean one, so it gets its own
+          // counter and its own status line rather than printing `updated`
+          // over a survivor the user is never told about.
+          const updatePartial = updatePartialReason(result);
+          if (counts) {
+            if (updatePartial !== undefined) counts.updatePartial++;
+            else counts.updated++;
+          }
           if (progress) progress.current++;
           const updatePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
           renderer.removeTask(logicalId);
+          if (updatePartial !== undefined) {
+            this.logger.warn(
+              `${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)} ` +
+                updatePartialMessage(updatePartial)
+            );
+            return { updatePartial };
+          }
           this.logger.info(
             `${updatePrefix}${formatResourceLine('updated', logicalId, resourceType)}`
           );

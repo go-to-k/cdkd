@@ -280,6 +280,81 @@ describe('ACMCertificateProvider', () => {
       expect(result.wasReplaced).toBe(true);
     });
 
+    // Issue #1922: the in-use rejection is the reported real-world failure.
+    // Before #1819 gave update() an outcome channel this was a bare
+    // logger.warn and the deploy exited 0 with the old certificate alive and
+    // out of state.
+    it('reports partial when the old certificate is still in use', async () => {
+      const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
+      mockSend.mockResolvedValueOnce({ CertificateArn: newArn }); // create
+      const inUse = new Error('Certificate is still in use by another resource');
+      inUse.name = 'ResourceInUseException';
+      mockSend.mockRejectedValueOnce(inUse); // delete refused
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        'AWS::CertificateManager::Certificate',
+        { DomainName: 'example.com', SubjectAlternativeNames: ['www.example.com'] },
+        { DomainName: 'example.com', SubjectAlternativeNames: ['api.example.com'] }
+      );
+
+      // The row itself still succeeded — the new certificate exists and is
+      // what state must point at.
+      expect(result.wasReplaced).toBe(true);
+      expect(result.physicalId).toBe(newArn);
+      // ...but the old one survived, and the reason names it, because state
+      // now points at the new ARN and nothing else downstream knows the old.
+      expect(result.outcome).toBe('partial');
+      expect(result.reason).toContain(ARN);
+      // Asserted on wording ONLY the classifier produces. The raw SDK message
+      // also contains "still in use", so a looser assertion here passes even
+      // with the classifier disabled -- it would be testing the error text
+      // rather than the branch.
+      expect(result.reason).toContain('is still in use by another resource and was not deleted');
+      expect(result.reason).not.toContain('could not be deleted');
+    });
+
+    it('reports partial with the raw cause for a non-in-use delete failure', async () => {
+      const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
+      mockSend.mockResolvedValueOnce({ CertificateArn: newArn });
+      mockSend.mockRejectedValueOnce(new Error('AccessDeniedException: no acm:DeleteCertificate'));
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        'AWS::CertificateManager::Certificate',
+        { DomainName: 'example.com', SubjectAlternativeNames: ['www.example.com'] },
+        { DomainName: 'example.com', SubjectAlternativeNames: ['api.example.com'] }
+      );
+
+      expect(result.outcome).toBe('partial');
+      expect(result.reason).toContain('AccessDeniedException');
+      // Not misreported as the in-use case, whose remediation is different.
+      expect(result.reason).not.toContain('still in use');
+    });
+
+    // The polarity that keeps the channel honest: a replacement whose delete
+    // succeeds must NOT carry an outcome, or every clean replacement would be
+    // counted and rendered as a partial.
+    it('reports no outcome when the old certificate is deleted cleanly', async () => {
+      const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
+      mockSend.mockResolvedValueOnce({ CertificateArn: newArn });
+      mockSend.mockResolvedValueOnce({}); // delete succeeds
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        'AWS::CertificateManager::Certificate',
+        { DomainName: 'example.com', SubjectAlternativeNames: ['www.example.com'] },
+        { DomainName: 'example.com', SubjectAlternativeNames: ['api.example.com'] }
+      );
+
+      expect(result.wasReplaced).toBe(true);
+      expect(result.outcome).toBeUndefined();
+      expect(result.reason).toBeUndefined();
+    });
+
     it('diffs and applies tag changes', async () => {
       mockSend.mockResolvedValue({});
 

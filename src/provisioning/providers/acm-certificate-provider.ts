@@ -53,6 +53,23 @@ import type {
  * ARN); `getAttribute('Arn')` / `getAttribute('CertificateArn')` also
  * return the ARN for any defensive call site.
  */
+/**
+ * True for ACM's refusal to delete a certificate a consumer still references
+ * (issue [#1922](https://github.com/go-to-k/cdkd/issues/1922)).
+ *
+ * Matched by error NAME first, with a message fallback: the SDK raises
+ * `ResourceInUseException`, but a wrapped / re-thrown error can lose the class
+ * while keeping the text. Deliberately narrow — this only picks the
+ * remediation wording and the reason phrasing, and every other failure still
+ * reaches the same `'partial'` outcome, so a miss degrades to a less specific
+ * message rather than to the pre-#1922 silence.
+ */
+function isCertificateInUseError(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : '';
+  const message = error instanceof Error ? error.message : String(error);
+  return name === 'ResourceInUseException' || /ResourceInUseException|still in use/i.test(message);
+}
+
 export class ACMCertificateProvider implements ResourceProvider {
   private acmClient: ACMClient;
   private logger = getLogger().child('ACMCertificateProvider');
@@ -219,6 +236,12 @@ export class ACMCertificateProvider implements ResourceProvider {
     if (changedImmutable) {
       this.logger.debug(`${changedImmutable} changed, replacing ACM certificate: ${physicalId}`);
       const createResult = await this.create(logicalId, resourceType, properties);
+      // What the inner delete left behind, if anything. `undefined` means the
+      // old certificate is genuinely gone; a string is the short reason that
+      // rides out on the update's `'partial'` outcome (issue #1819) so the
+      // deploy engine can record and count the survivor instead of the
+      // warn-only treatment that preceded it (issue #1922).
+      let orphanReason: string | undefined;
       try {
         const deleteResult = await this.delete(
           logicalId,
@@ -229,30 +252,46 @@ export class ACMCertificateProvider implements ResourceProvider {
         // Issue #1778: a SKIP is a non-throwing "I did not address this
         // resource", so it sails straight past the catch below — the one path
         // that would have told the user the old certificate is still there.
-        // The new certificate is already created at this point, so the
-        // replacement cannot be aborted and `ResourceUpdateResult` has no skip
-        // channel to raise it on; telling the user, in the same words the
-        // failure arm uses, is the whole remedy available here.
         if (deleteResult?.outcome === 'skipped') {
+          orphanReason = deleteResult.reason;
           this.logger.warn(
             `Skipped deleting old ACM certificate ${physicalId} during replacement: ${deleteResult.reason}. ` +
               `The old certificate may be orphaned and require manual cleanup.`
           );
         }
       } catch (error) {
+        // Issue #1922: the in-use rejection is the COMMON case here, not an
+        // anonymous failure. ACM refuses to delete a certificate a consumer
+        // still references — typically a CloudFront distribution in another
+        // stack not yet updated to the new certificate — so the rejection is
+        // usually an ordering artifact rather than a permanent block. Either
+        // way the new certificate already exists, so the replacement cannot be
+        // aborted: the honest outcome is "updated, and the old certificate
+        // survives", which is what `'partial'` says.
+        const inUse = isCertificateInUseError(error);
+        orphanReason = inUse
+          ? `old certificate ${physicalId} is still in use by another resource and was not deleted`
+          : `old certificate ${physicalId} could not be deleted: ${String(error)}`;
         this.logger.warn(
           `Failed to delete old ACM certificate ${physicalId} during replacement: ${String(error)}. ` +
+            (inUse
+              ? `This usually means a consumer (e.g. a CloudFront distribution) still references it; ` +
+                `it can be deleted once DescribeCertificate.InUseBy is empty. `
+              : '') +
             `The old certificate may be orphaned and require manual cleanup.`
         );
       }
-      const result: ResourceUpdateResult = {
+      const base = {
         physicalId: createResult.physicalId,
-        wasReplaced: true,
+        wasReplaced: true as const,
+        ...(createResult.attributes ? { attributes: createResult.attributes } : {}),
       };
-      if (createResult.attributes) {
-        result.attributes = createResult.attributes;
-      }
-      return result;
+      // The old physical id travels in the reason, because the state record
+      // now points at the NEW certificate — nothing else downstream still
+      // knows the ARN that survived.
+      return orphanReason !== undefined
+        ? { ...base, outcome: 'partial', reason: orphanReason }
+        : base;
     }
 
     try {
