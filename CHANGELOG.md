@@ -1,3 +1,10 @@
+## [0.283.32](https://github.com/go-to-k/cdkd/compare/v0.283.31...v0.283.32) (2026-08-18)
+
+
+### Bug Fixes
+
+* **deployment:** partition the outputs key space so a colliding Export.Name cannot store the wrong secret reference ([#1949](https://github.com/go-to-k/cdkd/issues/1949)) ([96ef25a](https://github.com/go-to-k/cdkd/commit/96ef25a9379f248e297df00847820a14ecd038b9))
+
 ## [0.283.31](https://github.com/go-to-k/cdkd/compare/v0.283.30...v0.283.31) (2026-08-18)
 
 
