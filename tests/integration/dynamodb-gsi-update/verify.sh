@@ -106,9 +106,10 @@ DESTROY_LOG="${TMPDIR:-/tmp}/cdkd-1931-destroy.$$.log"
 # `exit`, and that `exit` re-fires the EXIT trap — so without this flag every
 # Ctrl-C paid the teardown TWICE. That is not a cosmetic double echo: the
 # `state destroy` below now retries the same index-busy refusal this fixture
-# arms (up to ~9 min), and the delete loop under it is bounded at ~10 min, so a
-# second pass costs ~20 min of teardown after the user has already asked the run
-# to stop.
+# arms (up to ~18 min since issue #1950 raised this type's budget,
+# `TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`, to 14), and the delete loop under it is
+# bounded at ~19 min, so a second pass costs ~40 min of teardown after the user
+# has already asked the run to stop.
 CLEANED_UP=0
 
 cleanup() {

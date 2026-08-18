@@ -65,7 +65,11 @@ import {
   DynamoDBTableProvider,
   deleteTableRetryDelays,
 } from '../../../src/provisioning/providers/dynamodb-table-provider.js';
-import { DELETE_INDEX_WAIT_PROCEED_NOTE } from '../../../src/provisioning/dynamodb-index-busy-delete.js';
+import {
+  DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+  DELETE_INDEX_WAIT_PROCEED_NOTE,
+  TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
+} from '../../../src/provisioning/dynamodb-index-busy-delete.js';
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::Table';
 const LOGICAL_ID = 'Orders';
@@ -198,7 +202,8 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
     mockSend.mockReset();
     warnSpy.mockReset();
     debugSpy.mockReset();
-    // Skip `withRetry`'s real ~47s backoff. Set per-suite rather than per-test
+    // Skip `withRetry`'s real backoff — ~95s at this type's budget of 14 since
+    // issue #1950, not the ~47s of the default 8. Set per-suite rather than per-test
     // so no test can silently pay it if an expectation moves.
     deleteTableRetryDelays.sleep = () => Promise.resolve();
     provider = new DynamoDBTableProvider();
@@ -250,8 +255,8 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
     // The exception NAME and the "still in use" prefix are shared with
     // genuinely terminal conflicts, so the classifier keys on the message
     // clause. Pinned by its exact emitted shape, not by "it threw": a
-    // name-keyed classifier would also end up throwing here, just 47s later and
-    // after 9 sends.
+    // name-keyed classifier would also end up throwing here, just minutes later
+    // (a settle poll plus a backoff step per attempt) and after 15 sends.
     const stub = stubDeleteFailingTimes(Number.POSITIVE_INFINITY, terminalInUseError);
 
     await expect(provider.delete(LOGICAL_ID, TABLE_NAME, RESOURCE_TYPE, {})).rejects.toThrow(
@@ -275,8 +280,11 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
       `Failed to delete DynamoDB table ${LOGICAL_ID}: Attempt to change a resource which is ` +
         'still in use: Cannot delete table while indexes are being created, updated, or deleted.'
     );
-    // DELETE_INDEX_BUSY_MAX_RETRIES (8) retries after the first attempt.
-    expect(stub.attempts()).toBe(9);
+    // `TABLE_DELETE_INDEX_BUSY_MAX_RETRIES` retries after the first attempt.
+    // Derived from the constant, not from its value: issue #1950 raised THIS
+    // type's budget from 8 to 14 (the sibling type kept 8), and a literal 9
+    // here would have gone on asserting the old one.
+    expect(stub.attempts()).toBe(1 + TABLE_DELETE_INDEX_BUSY_MAX_RETRIES);
   });
 
   it('matches the refusal case-INSENSITIVELY (the classifier`s /i flag)', async () => {
@@ -321,15 +329,21 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
     expect(refusalWarnings[0]).not.toContain('GlobalTable');
     expect(refusalWarnings[0]).toContain(TABLE_NAME);
     expect(refusalWarnings[0]).toContain('global secondary index');
-    // It fires from inside attempt 2 of `1 + DELETE_INDEX_BUSY_MAX_RETRIES`
-    // (= 9), so 7 attempts are left, not 8 — the off-by-one the shared module
+    // It fires from inside attempt 2 of `1 + TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`, so
+    // one fewer than the budget is left — the off-by-one the shared module
     // derives rather than spells.
-    expect(refusalWarnings[0]).toContain('up to 7 more attempts');
+    expect(refusalWarnings[0]).toContain(
+      `up to ${TABLE_DELETE_INDEX_BUSY_MAX_RETRIES - 1} more attempts`
+    );
     // ...and the settle budget is stated as POLLS, not as seconds: the constant
     // is a DescribeTable count, and rendering it as `60s` claims a wall clock
-    // the loop does not have (each poll also pays a round trip).
-    expect(refusalWarnings[0]).toContain('up to 60 DescribeTable polls');
+    // the loop does not have (each poll also pays a round trip). The wall clock
+    // IS stated (issue #1950), separately and as a floor.
+    expect(refusalWarnings[0]).toContain(
+      `up to ${DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS} DescribeTable polls`
+    );
     expect(refusalWarnings[0]).not.toMatch(/\b60s\b/);
+    expect(refusalWarnings[0]).toMatch(/will not give up for at least ~\d+ more minutes/);
     // It must NOT carry AWS's own sentence: the integ arm greps the destroy log
     // for `Cannot delete table while indexes are being` to prove AWS really
     // refused, and a cdkd-authored copy would satisfy that grep without the
@@ -430,7 +444,7 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
   it('reads the sleep seam at CALL time, not when the retry options are built', async () => {
     // Set the seam from INSIDE the first refusal — i.e. after `delete()` has
     // already built `withRetry`'s options bag. A spread-at-construction seam
-    // captures `undefined` there and silently falls back to the real ~47s
+    // captures `undefined` there and silently falls back to the real ~95s
     // schedule; reading it per sleep picks the override up.
     delete deleteTableRetryDelays.sleep;
     const sleepSpy = vi.fn(() => Promise.resolve());

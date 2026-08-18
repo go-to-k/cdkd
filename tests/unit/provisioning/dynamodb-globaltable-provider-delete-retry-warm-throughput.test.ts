@@ -90,6 +90,13 @@ import {
   DynamoDBGlobalTableProvider,
   deleteTableRetryDelays,
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
+// The retry budget and the re-arm bound are the SHARED module's; issue #1950
+// moved the first of them, so every count derived from it is read from the
+// constant rather than written out.
+import {
+  DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+  GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
+} from '../../../src/provisioning/dynamodb-index-busy-delete.js';
 // The two WarmThroughput RULES live in a module both DynamoDB providers read,
 // so `AWS::DynamoDB::Table` (issue #1808) and `AWS::DynamoDB::GlobalTable`
 // (issue #1857) cannot answer the same question differently. The RULE is
@@ -262,8 +269,12 @@ describe('DynamoDBGlobalTable delete retry on the index-busy refusal (issue #183
       'Failed to delete DynamoDB GlobalTable Warm: Attempt to change a resource which is ' +
         'still in use: Cannot delete table while indexes are being created, updated, or deleted.'
     );
-    // DELETE_INDEX_BUSY_MAX_RETRIES (8) retries after the first attempt.
-    expect(stub.attempts()).toBe(9);
+    // `GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES` retries after the first
+    // attempt. Derived from the constant rather than written out: issue #1950
+    // raised the SIBLING type to 14 and deliberately left this one at 8, so a
+    // literal 9 here would pass today for the wrong reason and keep passing if
+    // the two were ever collapsed back together.
+    expect(stub.attempts()).toBe(1 + GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES);
   });
 
   it('matches the refusal case-INSENSITIVELY (the classifier`s /i flag)', async () => {
@@ -310,11 +321,11 @@ describe('DynamoDBGlobalTable delete retry on the index-busy refusal (issue #183
   });
 
   it('counts the REMAINING attempts in the warning, not the whole retry budget', async () => {
-    // The line fires from inside attempt 2 of `1 + DELETE_INDEX_BUSY_MAX_RETRIES`
-    // (= 9), so 7 attempts are left, not 8. It shipped saying 8 because the
-    // number was the raw `DELETE_INDEX_BUSY_MAX_RETRIES` constant — a promise
-    // of one more attempt than the loop can actually make. Pinned as an exact
-    // phrase: an off-by-one here is invisible to a reader and only ever
+    // The line fires from inside attempt 2 of `1 + GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`,
+    // so one fewer than the budget is left. It shipped saying the whole budget
+    // because the number was the raw budget constant —
+    // a promise of one more attempt than the loop can actually make. Pinned as
+    // an exact phrase: an off-by-one here is invisible to a reader and only ever
     // discovered by someone counting the retries in the log.
     stubDeleteFailingTimes(1, indexBusyError);
 
@@ -322,12 +333,18 @@ describe('DynamoDBGlobalTable delete retry on the index-busy refusal (issue #183
 
     const refusalWarnings = warnings().filter((w) => w.includes('AWS refused DeleteTable'));
     expect(refusalWarnings).toHaveLength(1);
-    expect(refusalWarnings[0]).toContain('up to 7 more attempts');
+    expect(refusalWarnings[0]).toContain(
+      `up to ${GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES - 1} more attempts`
+    );
     // ...and the settle budget is stated as POLLS, not as seconds: the
     // constant is a DescribeTable count, and rendering it as `60s` claimed a
     // wall clock the loop does not have (each poll also pays a round trip).
-    expect(refusalWarnings[0]).toContain('up to 60 DescribeTable polls');
+    // The wall clock IS stated (issue #1950), separately and as a floor.
+    expect(refusalWarnings[0]).toContain(
+      `up to ${DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS} DescribeTable polls`
+    );
     expect(refusalWarnings[0]).not.toMatch(/\b60s\b/);
+    expect(refusalWarnings[0]).toMatch(/will not give up for at least ~\d+ more minutes/);
   });
 
   it('does not warn when the delete succeeds first time', async () => {
@@ -405,13 +422,14 @@ describe('DynamoDBGlobalTable index-busy delete retry: wall-clock budget (issue 
   it('bounds the per-retry re-arm poll instead of re-running the 15-minute one', async () => {
     // The index NEVER settles after the first delete attempt, so every re-arm
     // poll runs to its cap. With the cap at `waitForIndexesActive`'s 15-minute
-    // default the budget is 8 x 900s ~= 2h — inside a call `destroy-runner.ts`
-    // caps at 30 min, so a genuinely stuck index produced a 30-minute wait and
-    // a generic `ResourceTimeoutError` that never mentions indexes, instead of
-    // AWS's own actionable sentence. Bounded, the whole sequence is
-    // 8 x 60s + `withRetry`'s backoff, so it SETTLES inside the window driven
-    // below; unbounded, the FIRST re-arm poll alone outlasts it and the
-    // promise is still pending when the drive gives up.
+    // default the budget would be `GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`
+    // x 900s — 2h — inside a call `destroy-runner.ts` caps at 30 min, so a
+    // genuinely stuck index produced a 30-minute wait and a generic
+    // `ResourceTimeoutError` that never mentions indexes, instead of AWS's own
+    // actionable sentence. Bounded, the whole sequence is that budget x 60s
+    // plus `withRetry`'s backoff, so it SETTLES inside the window driven below;
+    // unbounded, the FIRST re-arm poll alone outlasts it and the promise is
+    // still pending when the drive gives up.
     let deleteAttempts = 0;
     mockSend.mockImplementation((command: unknown) => {
       if (command instanceof DescribeTableCommand) {
@@ -445,14 +463,21 @@ describe('DynamoDBGlobalTable index-busy delete retry: wall-clock budget (issue 
         settled = true;
       });
 
-    // 700 virtual seconds: comfortably past the bounded 8 x 60s of polling,
-    // and well short of even ONE 900s poll.
-    await drive(() => settled, 700);
+    // Comfortably past the bounded polling (the suite zeroes `withRetry`'s
+    // backoff through the sleep seam), and still short of even ONE unbounded
+    // 900s poll — which is what makes the run DISCRIMINATE rather than merely
+    // finish. DERIVED from the budget rather than the literal 700 it used to
+    // be, so a future change to either constant moves the window with it
+    // instead of timing out for arithmetic reasons.
+    const driveSeconds =
+      GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES * (DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS + 8) + 60;
+    expect(driveSeconds).toBeLessThan(900);
+    await drive(() => settled, driveSeconds);
 
     expect(settled).toBe(true);
     await expect(outcome).resolves.toBe('rejected');
-    // 1 initial + DELETE_INDEX_BUSY_MAX_RETRIES (8).
-    expect(deleteAttempts).toBe(9);
+    // 1 initial + GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES.
+    expect(deleteAttempts).toBe(1 + GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES);
   });
 
   it('keeps waiting through a THROTTLED DescribeTable rather than treating it as settled', async () => {

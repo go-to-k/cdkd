@@ -68,6 +68,8 @@ import { withRetry } from '../../deployment/retry.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import {
   DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+  GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
+  INDEX_SETTLE_POLL_INTERVAL_MS,
   DELETE_INDEX_WAIT_PROCEED_NOTE,
   deleteTableWithIndexBusyRetry,
   hasTransitionalIndex,
@@ -4033,6 +4035,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         logicalId,
         physicalId,
         typeLabel: 'GlobalTable',
+        // THIS type's budget, deliberately UNCHANGED at 8 while issue #1950
+        // raised the sibling `AWS::DynamoDB::Table` to 14 — see the comment on
+        // the re-arm below, and the derivation on
+        // `GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`.
+        maxRetries: GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
         logger: this.logger,
         deleteTable: async () => {
           await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
@@ -4049,15 +4056,24 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // deadline across up to 4 `delete()` calls and for THIS refusal invokes
         // it exactly once (the message matches no
         // `RETRYABLE_ERROR_MESSAGE_PATTERNS` entry). The same call
-        // can already have spent the #1521 gate's full 900 polls (~15 min) just
-        // above, and up to 600 polls (~10 min) in `waitForReplicaGone` per
-        // non-local replica before that. So a replicated table whose index is
-        // transitioning can still reach roughly 15 + 10 + 8.8 ~= 34 min for a
-        // single replica and end in exactly the generic `ResourceTimeoutError`
-        // this bound exists to avoid. What the bound buys is that the RETRY is
-        // no longer the part that spends the budget; bringing the WHOLE
-        // `delete()` worst case under the deadline is a separate problem this
-        // change does not solve.
+        // can already have spent the #1521 gate's full 900 polls (~18 min at
+        // the measured ~1.2s per poll) just above, and up to 600 polls (~12
+        // min) in `waitForReplicaGone` per non-local replica before that. So a
+        // REPLICATED table whose index is transitioning still reaches roughly
+        // 18 + 12 + 10.4 ~= 40 min for a single replica and ends in exactly the
+        // generic `ResourceTimeoutError` this bound exists to avoid — a total
+        // that was already over the deadline before issue #1950 and is
+        // unchanged by it, tracked as issue #1955.
+        //
+        // Unchanged BECAUSE the budget stayed at 8 here. #1950 raised the
+        // sibling `AWS::DynamoDB::Table` to 14, and taking that raise on this
+        // type would have pushed the SINGLE-REGION shape over as well: gate +
+        // loop(8) is ~28.4 min and fits, gate + loop(14) is ~36.4 min and does
+        // not. That crossing would have been CREATED by the raise rather than
+        // inherited, on a common shape (a `TableV2` with no non-local replica),
+        // so the budget is per-type. What the bound buys is that the RETRY is
+        // not the part that spends the deadline; bringing the WHOLE `delete()`
+        // worst case under it is issue #1955's problem, not this one's.
         reArm: () =>
           this.waitForIndexesActive(physicalId, logicalId, {
             maxAttempts: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
@@ -5212,7 +5228,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     tableName: string,
     region: string,
     logicalId: string,
-    maxAttempts = 600
+    maxAttempts = REPLICA_GONE_WAIT_ATTEMPTS
   ): Promise<void> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -5221,7 +5237,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
         const replica = response.Table?.Replicas?.find((r) => r.RegionName === region);
         if (!replica) return;
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
       } catch (err) {
         if (err instanceof ResourceNotFoundException) return;
         throw err;
@@ -5249,12 +5265,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private async waitForTableGone(
     tableName: string,
     logicalId: string,
-    maxAttempts = 600
+    maxAttempts = TABLE_GONE_WAIT_ATTEMPTS
   ): Promise<void> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: tableName }));
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
       } catch (err) {
         if (err instanceof ResourceNotFoundException) return;
         throw err;
@@ -5439,10 +5455,35 @@ export function autoScalingResourceId(tableName: string, indexName?: string): st
 export const autoScalingRetryDelays: { sleep?: (ms: number) => Promise<void> } = {};
 
 /**
+ * Polls `waitForReplicaGone` spends waiting for a replica to disappear.
+ *
+ * Named rather than inlined because it is a TERM of the per-resource deadline
+ * arithmetic on this type's delete path (see
+ * `GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`), which prices it through
+ * {@link INDEX_SETTLE_POLL_INTERVAL_MS} — the sleep this loop now reads rather
+ * than spelling its own `1000`, so the two cannot drift while that arithmetic
+ * claims they agree.
+ */
+const REPLICA_GONE_WAIT_ATTEMPTS = 600;
+
+/**
+ * Polls `waitForTableGone` spends confirming the table is actually gone.
+ *
+ * EXPORTED, unlike its replica sibling, because the delete-path budget fence
+ * reads it: this wait runs AFTER the index-busy retry loop and only when that
+ * loop SUCCEEDS, which is what keeps it out of the loop's own worst case and
+ * puts it into the late-success one (both spelled out on
+ * `GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`).
+ */
+export const TABLE_GONE_WAIT_ATTEMPTS = 600;
+
+/**
  * Test seam for the index-busy `DeleteTable` retry's backoff (issue #1830),
  * mirroring {@link autoScalingRetryDelays}. Production leaves `sleep`
  * undefined so `withRetry`'s real schedule applies; a test injects a no-op so
- * the ~47s budget does not have to be waited out. Kept SEPARATE from the
+ * the ~47s of backoff at this type's budget
+ * (`GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`) does not have to be waited
+ * out. Kept SEPARATE from the
  * auto-scaling seam so a test can slow one path without silencing the other.
  */
 export const deleteTableRetryDelays: { sleep?: (ms: number) => Promise<void> } = {};
@@ -5628,7 +5669,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 const ON_DEMAND_LIMIT_RESET = -1;
 
 // The index-busy DELETE rule — `hasTransitionalIndex`, the message-keyed
-// `isIndexBusyDeleteError` classifier, `DELETE_INDEX_BUSY_MAX_RETRIES` /
+// `isIndexBusyDeleteError` classifier, the two per-type retry budgets /
 // `DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS`, `DELETE_INDEX_WAIT_PROCEED_NOTE`, the
 // settle poll and the retry loop itself — is IMPORTED from
 // `../dynamodb-index-busy-delete.ts` rather than spelled here. It shipped in
