@@ -159,7 +159,9 @@ function templateUsesSub(templateValue: unknown): boolean {
 }
 
 /**
- * True when `value` is a string carrying a CloudFormation dynamic reference.
+ * True when `value` is a string carrying a SECRET-BEARING CloudFormation
+ * dynamic reference — `{{resolve:secretsmanager:` or `{{resolve:ssm-secure:`,
+ * the two spellings that are secret regardless of what they point at.
  *
  * The diff resolves with `skipDynamicReferences`, so a secret-bearing output
  * arrives here as its unresolved `{{resolve:...}}` expression — which is also
@@ -357,10 +359,11 @@ export async function resolveTemplateOutputs(
  *
  * Two independent signals identify such a record, and BOTH are needed:
  *
- * - the desired side is still a `{{resolve:...}}` expression (this resolver
- *   runs with `skipDynamicReferences`) while the stored side is not; and
- * - `secretSourceKeys` — the template itself declares the key's value as a
- *   dynamic reference. This one reaches cases the first cannot: a
+ * - the desired side is still a secret-bearing expression per
+ *   {@link isSecretDynamicReference} (this resolver runs with
+ *   `skipDynamicReferences`) while the stored side is not; and
+ * - `secretSourceKeys` — the template itself declares the key's value as such a
+ *   reference. This one reaches cases the first cannot: a
  *   condition-skipped secret output, or one deleted from the template, has NO
  *   desired side at all and would otherwise print in full as a REMOVE row.
  *
