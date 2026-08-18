@@ -1925,6 +1925,18 @@ deliberately narrow:
   receives the concrete secret rather than the literal `{{resolve:...}}`
   token.
 
+**Known limitation.** cdkd cannot mask a value for a reference it never
+resolved, so for `{{resolve:ssm-secure:...}}` the protections above are not
+complete. The report masks by POSITION and the `--revert` payload declines to
+carry such a value, but if a provider echoes its own readback back to cdkd
+(`effectiveProperties`, which `--revert` persists as a narrowing) the resolved
+value can reach `state.json` with nothing able to recognise it. This predates
+the reconciliation described here — that write previously had no redaction at
+all — and closing it needs masking by SPAN rather than by value, which is
+tracked separately. If that matters for your stack, prefer a
+`secretsmanager` or plain `ssm` reference, both of which cdkd resolves and can
+therefore mask.
+
 A reference cdkd does not resolve at all — `{{resolve:ssm-secure:...}}` is the
 one such spelling today — is **not** an error, and is **not** compared: the
 property is reported as neither clean nor drifted, and a warning names the

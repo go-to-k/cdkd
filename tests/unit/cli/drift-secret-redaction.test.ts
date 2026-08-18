@@ -32,11 +32,14 @@ import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handle
 const errorSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
+// The retry logger's channel: `withRetry` echoes the failing AWS error here on
+// every attempt, and the payload it describes carries resolved secrets.
+const debugSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
-    debug: vi.fn(),
+    debug: debugSpy,
     info: infoSpy,
     warn: warnSpy,
     error: errorSpy,
@@ -287,6 +290,7 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     errorSpy.mockReset();
     warnSpy.mockReset();
     infoSpy.mockReset();
+    debugSpy.mockReset();
     // The resolved-value cache is module-global; clearing it keeps each test's
     // `mockSecretsManagerSend` call-count assertion honest.
     resetAccountInfoCache();
@@ -1465,12 +1469,52 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     // whole would put it there verbatim, because that leaf IS the substitution
     // `redactSecretsForState` writes in.
     expect(saved).not.toContain(SECRET_PLAINTEXT);
-    // Deliberately NOT asserted: the ssm-secure half. cdkd never resolved that
-    // reference, so it has no map entry, and a MIXED leaf cannot be positioned
-    // either (`redactByPath` needs a single whole token on the source side).
-    // That is a stated residual of an unresolvable reference sharing a leaf
-    // with a resolvable one — asserting it would pin behaviour the code does
-    // not have.
+    // The PAYLOAD no longer carries the ssm-secure half either — the
+    // whole-token preservation gate declines to copy the live value into a
+    // mixed leaf, so the mechanism cannot create an exposure it is unable to
+    // mask.
+    const sent = update.mock.calls[0]![3] as { Env: Record<string, unknown> };
+    expect(String(sent.Env['DSN'])).not.toContain(SECURE_PLAINTEXT);
+    expect(String(sent.Env['DSN'])).toContain(UNSUPPORTED_EXPR);
+    // Deliberately NOT asserted on `saved`: the ssm-secure plaintext still
+    // reaches state here, by a route that is NOT this mechanism — the provider
+    // echoed its own readback in `effectiveProperties`, and the #1644 narrowing
+    // persists that. cdkd cannot mask a value for a reference it never
+    // resolved, so no pass covers it; before this PR that delta was persisted
+    // with no redaction at all. See the note in `runRevert` and
+    // docs/cli-reference.md.
+  });
+
+  it('does not carry an unresolvable reference plaintext into the payload OR the logs', async () => {
+    // The two surfaces the preservation gate does close, kept apart from the
+    // provider-echo route above so a regression in either is attributable.
+    const update = vi
+      .fn()
+      .mockRejectedValue(new Error('ValidationException: rejected the DSN value'));
+    const mixed2 = UNSUPPORTED_EXPR + ':' + SECRET_EXPR;
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: {
+          physicalId: 'fn',
+          resourceType: LAMBDA_TYPE,
+          properties: { Env: { DSN: mixed2, LEVEL: 'info' } },
+          observedProperties: { Env: { DSN: mixed2, LEVEL: 'info' } },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Env: { DSN: SECURE_PLAINTEXT + ':' + SECRET_PLAINTEXT, LEVEL: 'debug' },
+      }),
+      update,
+    });
+
+    const { output } = await runDrift(['TestStack', '--revert', '--yes']);
+
+    const sent = update.mock.calls[0]![3] as { Env: Record<string, unknown> };
+    expect(String(sent.Env['DSN'])).not.toContain(SECURE_PLAINTEXT);
+    expect(output).not.toContain(SECURE_PLAINTEXT);
   });
 
   it('--revert does not make a NEEDLE out of a short live value', async () => {
@@ -1949,6 +1993,77 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     expect(warned).toContain(SECRET_MASK);
   });
 
+  it('masks the retry logger, which echoes the failing call verbatim', async () => {
+    // `withRetry`'s debug channel prints the AWS error on every attempt, and
+    // the payload it describes carries resolved secrets. Fenced separately from
+    // the final error report, which is a different call site.
+    // Retryable on purpose: `withRetry` logs its "Retrying ..." line only when
+    // it is actually going to retry, and that line is what carries the AWS
+    // message.
+    const throttled = Object.assign(
+      new Error(`Rate exceeded while setting '${SECRET_PLAINTEXT}'`),
+      { name: 'ThrottlingException' }
+    );
+    const update = vi.fn().mockRejectedValue(throttled);
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ PLAIN: 'edited' }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    const debugged = debugSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(debugged).toContain('Retrying');
+    expect(debugged).not.toContain(SECRET_PLAINTEXT);
+    expect(debugged).toContain(SECRET_MASK);
+  }, 60000);
+
+  it('masks a VALUE at a path whose name carries a secret', async () => {
+    // `nameCarriesSecret` feeds `secretBearing`, not just `maskedPaths`: a
+    // readback keyed BY a secret must have its VALUE masked too, or the entry
+    // reads `Environment.Variables.***: <real value>` and the pairing tells the
+    // reader which key it was.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ [SECRET_PLAINTEXT]: 'value-under-a-secret-key' }),
+    });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    expect(output).not.toContain(SECRET_PLAINTEXT);
+    expect(output).not.toContain('value-under-a-secret-key');
+  });
+
+  it('reports a revert it cannot perform, rather than silently skipping it', async () => {
+    // `buildRevertNewProperties` keys its overlay on the TOP-LEVEL segment, so
+    // a path whose first segment is the mask matches nothing and the subtree is
+    // never reverted — while the plan promised it and `--accept` pointed here.
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: lambdaResource({
+          FunctionName: 'fn',
+          [SECRET_PLAINTEXT]: { Nested: 'v' },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ FunctionName: 'fn', [SECRET_PLAINTEXT]: { Nested: 'w' } }),
+      update,
+    });
+
+    const { output } = await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(output).not.toContain(SECRET_PLAINTEXT);
+    expect(
+      warnSpy.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes('cannot revert'))
+    ).toBe(true);
+  });
+
   it('counts an unresolvable reference apart from an AWS update failure', async () => {
     mockSecretsManagerSend.mockImplementation(async () => {
       throw new Error('AccessDeniedException: not authorized');
@@ -2006,7 +2121,12 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     expect(sent.Environment.Variables['PLAIN']).toBe('ok');
     expect(
       warnSpy.mock.calls.some(
-        (c) => typeof c[0] === 'string' && c[0].includes(UNSUPPORTED_EXPR)
+        (c) =>
+          // The REVERT-side warning specifically. The detection-side one names
+          // the same token, so a grep for the token alone is satisfied by
+          // either and the revert message could be deleted with the suite
+          // still green.
+          typeof c[0] === 'string' && c[0].includes('[revert]') && c[0].includes(UNSUPPORTED_EXPR)
       )
     ).toBe(true);
   });

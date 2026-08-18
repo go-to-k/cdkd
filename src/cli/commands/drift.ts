@@ -586,16 +586,6 @@ function carriesRecordedSecret(value: string, secrets: RecordedSecretValues): bo
 }
 
 /**
- * Every `{{resolve:...}}` token still present in `value`.
- *
- * Used to NAME an unresolvable reference without quoting the string it sits in.
- * That string is a partially substituted leaf: `resolveDynamicReferences`
- * substitutes token by token, so a leaf holding two references comes back with
- * the resolvable one already replaced by its PLAINTEXT. Interpolating it into a
- * log line prints the secret — from the command whose purpose is not to. A
- * token is a reference NAME and carries no value, so it is always safe to show.
- */
-/**
  * Is this unresolvable token one whose value is a SECRET by definition?
  *
  * `ssm-secure` is the only such spelling, and it is decidable with no lookup:
@@ -615,6 +605,16 @@ function isSecretBySpelling(token: string): boolean {
   return token.startsWith('{{resolve:ssm-secure:');
 }
 
+/**
+ * Every `{{resolve:...}}` token still present in `value`.
+ *
+ * Used to NAME an unresolvable reference without quoting the string it sits in.
+ * That string is a partially substituted leaf: `resolveDynamicReferences`
+ * substitutes token by token, so a leaf holding two references comes back with
+ * the resolvable one already replaced by its PLAINTEXT. Interpolating it into a
+ * log line prints the secret — from the command whose purpose is not to. A
+ * token is a reference NAME and carries no value, so it is always safe to show.
+ */
 function survivingDynamicReferences(value: string): string[] {
   // `[^}]+`, matching `intrinsic-function-resolver.ts`'s own scan pattern
   // exactly. The two MUST agree or a token the resolver tried and left behind
@@ -936,6 +936,13 @@ function redactDriftChanges(
   const maskedPaths = new Set<string>();
   const redacted: PropertyDrift[] = [];
   for (const change of changes) {
+    // NOTE the asymmetry with `printRevertPlan`, which loudly WITHHOLDS its
+    // key lists when a resource's references could not be resolved: here the
+    // path is simply left as it is, because on that path `secrets` is empty and
+    // `maskSecretsInText` has nothing to match. Both are the same limit — a
+    // value cdkd never resolved cannot be recognised inside a KEY — but only
+    // the plan can withhold, since a drift entry without its path says nothing
+    // at all.
     const maskedPath = maskSecretsInText(change.path, secrets);
     // Two independent reasons a change is secret-bearing, and they are kept
     // apart because only one of them licenses the DROP below: the POSITION is
@@ -2105,6 +2112,142 @@ function mergeUntemplatedValue(awsValue: unknown, desiredValue: unknown): unknow
 }
 
 /**
+ * Replace every leaf of a revert payload that still holds a `{{resolve:...}}`
+ * token with the value AWS currently has at that position (issue #1914,
+ * round-3 review).
+ *
+ * The round-3 change downgraded an unresolvable reference from a per-resource
+ * failure to a warning, on the premise that `cdkd deploy` resolves through the
+ * resolver's same unsupported-service arm — so AWS already holds the literal
+ * and replaying it is a no-op. **That premise holds only for records cdkd
+ * deployed.** CloudFormation resolves `ssm-secure` SERVER-side, so a record
+ * adopted by `cdkd import --migrate-from-cloudformation` has the literal token
+ * in state while the live resource holds the PLAINTEXT. `diffAt` skips such a
+ * leaf, so it never drifts — but `buildRevertNewProperties` overlays the whole
+ * top-level subtree when any SIBLING key drifts, which would push the literal
+ * token over a resolved value. That is defect 1 of this issue surviving in a
+ * narrower case, on a live AWS write.
+ *
+ * Deciding by PROVENANCE would need a flag state does not carry. Deciding by
+ * what AWS actually holds needs nothing and is exact in both directions: for a
+ * cdkd-deployed record AWS holds the token, so copying it back is the same
+ * no-op the premise described; for a migrated record AWS holds the resolved
+ * value, which is left untouched.
+ *
+ * Falls back to KEEPING the token wherever AWS has nothing at that position —
+ * that is what `cdkd deploy` sends, so it is the safe residual rather than
+ * dropping a property the resource may require. Array descent is positional
+ * and bails to that same residual on any length mismatch, since a reordered
+ * readback cannot be positioned against.
+ */
+export function preserveLiveValuesAtUnresolvedTokens(
+  send: Record<string, unknown>,
+  awsProperties: Record<string, unknown>,
+  secrets: RecordedSecretValues
+): Record<string, unknown> {
+  const walk = (value: unknown, live: unknown): unknown => {
+    if (typeof value === 'string' && value.includes('{{resolve:')) {
+      // ONLY a whole token is preserved, and this gate is a disclosure boundary
+      // rather than a tidiness rule (issue #1914 round-6 review).
+      //
+      // A MIXED leaf (`{{ssm-secure:/host}}:{{secretsmanager:db}}`) arrives here
+      // already PARTIALLY resolved. Copying the live value in would move the
+      // ssm-secure plaintext into the payload — and the registration below
+      // correctly declines to register it, because the send string is not a
+      // token and would substitute the secretsmanager half's plaintext into
+      // state if it were. So the mechanism would CREATE an exposure it then
+      // cannot mask: unmaskable in the #1644 narrowing delta, the retry log and
+      // the AWS error text alike.
+      //
+      // Returning the send string unchanged restores the pre-#1914 behaviour
+      // for exactly that narrow shape — the literal token ships, which is what
+      // `cdkd deploy` does — and gives up the live-value preservation there.
+      // That trade is deliberate: a NEW disclosure is worse than a preserved
+      // pre-existing breakage, and the breakage is confined to a leaf mixing an
+      // unresolvable reference with a resolvable one. Masking by SPAN, which is
+      // what would let this case be both preserved and safe, is issue #1935.
+      if (!isWholeDynamicReference(value)) return value;
+      if (live === undefined) return value;
+      // REGISTER what was just moved. Nothing was recorded FOR THIS LEAF —
+      // that is what made the token a survivor — so copying the live value in
+      // and leaving the mask sets untouched hands a plaintext to three readers
+      // that would each have masked it:
+      //
+      // (`secrets` itself is NOT necessarily empty here: a resource can hold
+      // one resolvable `secretsmanager` reference AND one `ssm-secure`
+      // survivor, which is exactly the shape `referencesUnresolved` describes.
+      // Reading this header as "the map is empty" would make the guards below
+      // look unreachable, and they are not.) the retry logger, the AWS-error report, and the #1644
+      // narrowing delta (whose `descendArrays: false` rules cannot position an
+      // array-nested leaf and rely on the value scan finding it).
+      //
+      // The rule this is an instance of: a mechanism that deliberately moves
+      // plaintext into a bag must also register that plaintext with everything
+      // that masks. Moving the value and not the metadata is its own defect
+      // class.
+      //
+      // THREE conditions, each removing a different way of being wrong:
+      //
+      //  - `isWholeDynamicReference(value)` — the map's VALUE is what
+      //    `redactSecretsForState` substitutes IN, so it must be an expression
+      //    and nothing else. On a MIXED leaf
+      //    (`user:{{secretsmanager:...}}@{{ssm-secure:...}}`) the send string is
+      //    already PARTIALLY RESOLVED, so registering it whole would write the
+      //    secretsmanager half's plaintext into state — the GHSA class, through
+      //    the mechanism that exists to prevent it. That half is already
+      //    covered by its own map entry from the value scan.
+      //  - `isSecretBySpelling(value)` — the same rule the path marking uses
+      //    one function up. Registering a look-alike spelling's live value
+      //    makes a redaction NEEDLE out of ordinary data.
+      //  - the needle floor — `redactSecretsForState`'s whole-value branch
+      //    matches at ANY length, so a live `"1"` or `"prod"` would rewrite
+      //    every unrelated delta leaf equal to it into this token: the #1904
+      //    wrong-reference corruption, after which the next deploy ships the
+      //    literal token to AWS.
+      //
+      // A non-string live value is NOT registered, and is NOT reachable by the
+      // position pass either — `redactByPath`'s expression arm requires a
+      // string on both sides, so an object or a number lands in the value scan
+      // with no entry. It is still copied, because the alternative is sending
+      // the token over a live value; it is a stated residual, unmaskable if the
+      // provider later echoes it CHANGED.
+      // The whole-token condition is NOT repeated here: the gate above already
+      // returned for anything else, so a second copy would be a line no
+      // mutation can red.
+      //
+      // Two degenerate cases, both left alone deliberately. For a
+      // cdkd-DEPLOYED record `live === value`, so the entry is `token -> token`
+      // and every substitution it can drive is the identity. And `set`
+      // overwrites when a secretsmanager secret and an ssm-secure parameter
+      // share a value — in which case both expressions resolve to that same
+      // value, so either substitution is correct.
+      if (
+        typeof live === 'string' &&
+        live.length >= MIN_SECRET_NEEDLE_LENGTH &&
+        isSecretBySpelling(value)
+      ) {
+        secrets.set(live, value);
+      }
+      return live;
+    }
+    if (Array.isArray(value)) {
+      const liveItems = Array.isArray(live) && live.length === value.length ? live : undefined;
+      return value.map((item, i) => walk(item, liveItems?.[i]));
+    }
+    if (value !== null && typeof value === 'object') {
+      const liveObject = isPlainRecord(live) ? live : undefined;
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = walk(v, liveObject?.[k]);
+      }
+      return out;
+    }
+    return value;
+  };
+  return walk(send, awsProperties) as Record<string, unknown>;
+}
+
+/**
  * Build the `newProperties` object passed to `provider.update` during
  * `--revert`. Strategy:
  *
@@ -2154,108 +2297,6 @@ function mergeUntemplatedValue(awsValue: unknown, desiredValue: unknown): unknow
  * only baseline on which it is correct, and why the fix has to live on this
  * side rather than on `previousProperties`.
  */
-/**
- * Replace every leaf of a revert payload that still holds a `{{resolve:...}}`
- * token with the value AWS currently has at that position (issue #1914,
- * round-3 review).
- *
- * The round-3 change downgraded an unresolvable reference from a per-resource
- * failure to a warning, on the premise that `cdkd deploy` resolves through the
- * resolver's same unsupported-service arm — so AWS already holds the literal
- * and replaying it is a no-op. **That premise holds only for records cdkd
- * deployed.** CloudFormation resolves `ssm-secure` SERVER-side, so a record
- * adopted by `cdkd import --migrate-from-cloudformation` has the literal token
- * in state while the live resource holds the PLAINTEXT. `diffAt` skips such a
- * leaf, so it never drifts — but `buildRevertNewProperties` overlays the whole
- * top-level subtree when any SIBLING key drifts, which would push the literal
- * token over a resolved value. That is defect 1 of this issue surviving in a
- * narrower case, on a live AWS write.
- *
- * Deciding by PROVENANCE would need a flag state does not carry. Deciding by
- * what AWS actually holds needs nothing and is exact in both directions: for a
- * cdkd-deployed record AWS holds the token, so copying it back is the same
- * no-op the premise described; for a migrated record AWS holds the resolved
- * value, which is left untouched.
- *
- * Falls back to KEEPING the token wherever AWS has nothing at that position —
- * that is what `cdkd deploy` sends, so it is the safe residual rather than
- * dropping a property the resource may require. Array descent is positional
- * and bails to that same residual on any length mismatch, since a reordered
- * readback cannot be positioned against.
- */
-export function preserveLiveValuesAtUnresolvedTokens(
-  send: Record<string, unknown>,
-  awsProperties: Record<string, unknown>,
-  secrets: RecordedSecretValues
-): Record<string, unknown> {
-  const walk = (value: unknown, live: unknown): unknown => {
-    if (typeof value === 'string' && value.includes('{{resolve:')) {
-      if (live === undefined) return value;
-      // REGISTER what was just moved. `secrets` is empty by construction on
-      // this path — nothing was recorded, which is exactly what made the token
-      // a survivor — so copying the live value in and leaving the mask sets
-      // untouched hands a plaintext to three readers that would each have
-      // masked it: the retry logger, the AWS-error report, and the #1644
-      // narrowing delta (whose `descendArrays: false` rules cannot position an
-      // array-nested leaf and rely on the value scan finding it).
-      //
-      // The rule this is an instance of: a mechanism that deliberately moves
-      // plaintext into a bag must also register that plaintext with everything
-      // that masks. Moving the value and not the metadata is its own defect
-      // class.
-      //
-      // THREE conditions, each removing a different way of being wrong:
-      //
-      //  - `isWholeDynamicReference(value)` — the map's VALUE is what
-      //    `redactSecretsForState` substitutes IN, so it must be an expression
-      //    and nothing else. On a MIXED leaf
-      //    (`user:{{secretsmanager:...}}@{{ssm-secure:...}}`) the send string is
-      //    already PARTIALLY RESOLVED, so registering it whole would write the
-      //    secretsmanager half's plaintext into state — the GHSA class, through
-      //    the mechanism that exists to prevent it. That half is already
-      //    covered by its own map entry from the value scan.
-      //  - `isSecretBySpelling(value)` — the same rule the path marking uses
-      //    one function up. Registering a look-alike spelling's live value
-      //    makes a redaction NEEDLE out of ordinary data.
-      //  - the needle floor — `redactSecretsForState`'s whole-value branch
-      //    matches at ANY length, so a live `"1"` or `"prod"` would rewrite
-      //    every unrelated delta leaf equal to it into this token: the #1904
-      //    wrong-reference corruption, after which the next deploy ships the
-      //    literal token to AWS.
-      //
-      // A non-string live value is NOT registered, and is NOT reachable by the
-      // position pass either — `redactByPath`'s expression arm requires a
-      // string on both sides, so an object or a number lands in the value scan
-      // with no entry. It is still copied, because the alternative is sending
-      // the token over a live value; it is a stated residual, unmaskable if the
-      // provider later echoes it CHANGED.
-      if (
-        typeof live === 'string' &&
-        live.length >= MIN_SECRET_NEEDLE_LENGTH &&
-        isWholeDynamicReference(value) &&
-        isSecretBySpelling(value)
-      ) {
-        secrets.set(live, value);
-      }
-      return live;
-    }
-    if (Array.isArray(value)) {
-      const liveItems = Array.isArray(live) && live.length === value.length ? live : undefined;
-      return value.map((item, i) => walk(item, liveItems?.[i]));
-    }
-    if (value !== null && typeof value === 'object') {
-      const liveObject = isPlainRecord(live) ? live : undefined;
-      const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        out[k] = walk(v, liveObject?.[k]);
-      }
-      return out;
-    }
-    return value;
-  };
-  return walk(send, awsProperties) as Record<string, unknown>;
-}
-
 export function buildRevertNewProperties(
   drifts: readonly PropertyDrift[],
   desiredProperties: Record<string, unknown>,
@@ -2478,30 +2519,18 @@ async function runRevert(
         // state-recorded layer so a CC-managed resource is reverted via
         // Cloud Control.
         //
-        // Guarded (pre-existing gap found in the issue-#1914 review): a
-        // registry lookup for a type that is not registered THROWS, and this
-        // call sits outside the per-resource try below — so one unroutable
-        // resource aborted the whole revert run, including resources already
-        // queued behind it. Per-resource, like every other failure here.
-        let provider: ResourceProvider;
-        try {
-          provider = providerRegistry.getProviderFor({
-            resourceType: outcome.resourceType,
-            provisionedBy: stateResource.provisionedBy,
-          }).provider;
-        } catch (err) {
-          totalFailed++;
-          logger.error(
-            `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
-              // Unmasked, and that is not an oversight: this runs BEFORE any
-              // reference is resolved, so there is no secrets map yet, and a
-              // registry lookup failure quotes a resource TYPE rather than a
-              // property value.
-              `no provider available to revert this resource — ` +
-              `${err instanceof Error ? err.message : String(err)}`
-          );
-          return;
-        }
+        // NOT guarded, deliberately (issue #1914 review): a registry lookup
+        // that throws here cannot happen, because DETECTION performs the same
+        // lookup with the same inputs and routes a failure to an `unsupported`
+        // outcome — such a resource never becomes `drifted` and never reaches
+        // this loop. A catch here would be an arm no mutation can red, which is
+        // worse than none. The payload build below IS guarded, because that one
+        // is reachable: `readCurrentState` is provider-authored and its output
+        // is not vetted.
+        const provider: ResourceProvider = providerRegistry.getProviderFor({
+          resourceType: outcome.resourceType,
+          provisionedBy: stateResource.provisionedBy,
+        }).provider;
         // The baseline drift was computed against — `observedProperties`
         // when present, else `properties` — is the right "desired" value
         // to push back to AWS. Using `properties` alone would push the
@@ -2582,10 +2611,15 @@ async function runRevert(
           // BOTH cases is what `preserveLiveValuesAtUnresolvedTokens` makes
           // true — the live value at those positions is left exactly as it is.
           logger.warn(
-            `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): cdkd cannot ` +
-              `resolve ${maskSecretsInText([...unresolvedTokens].join(', '), secrets)} — the live ` +
-              `value at those properties is left UNCHANGED by this revert, since cdkd cannot tell ` +
-              `what it should be.`
+            // Deliberately worded so it cannot be confused with the
+            // DETECTION-side warning, which names the same tokens: a test that
+            // greps for the token alone is satisfied by either, so the two
+            // messages must differ in more than punctuation.
+            `  ! [revert] ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+              `cdkd cannot resolve ` +
+              `${maskSecretsInText([...unresolvedTokens].join(', '), secrets)} — the live value ` +
+              `at those properties is left UNCHANGED by this revert, since cdkd cannot tell what ` +
+              `it should be.`
           );
         }
         // AWS-current values for non-drifted top-level keys + desired
@@ -2620,9 +2654,15 @@ async function runRevert(
               ? preserveLiveValuesAtUnresolvedTokens(overlaid, outcome.awsProperties, secrets)
               : overlaid;
         } catch (err) {
-          // Same pre-existing gap as the provider lookup above: a provider
-          // handing back a cyclic or otherwise unwalkable bag threw out of the
-          // whole run rather than out of this resource.
+          // Reachability note (issue #1914 review): this arm is narrower than
+          // it looks, and is kept only because it is cheap. A bag so malformed
+          // that `buildRevertNewProperties` cannot walk it — a self-referential
+          // `readCurrentState` result, say — throws in DETECTION first, where
+          // `calculateResourceDrift` walks the same bags, so the resource never
+          // reaches this loop. What is left for it to catch is a provider whose
+          // output the comparator tolerates and the merge does not. The
+          // detection-side equivalent is NOT per-resource and aborts the run;
+          // that is pre-existing and out of scope here.
           totalFailed++;
           logger.error(
             `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
@@ -2681,6 +2721,18 @@ async function runRevert(
                 // just resolved secrets INTO, and it is persisted below — so
                 // this is a state-write surface, and fixing the revert without
                 // it would have moved the disclosure rather than closed it.
+                //
+                // RESIDUAL, stated here because this is where it lands: cdkd
+                // cannot mask a value for a reference it never RESOLVED. For an
+                // unresolvable one (`ssm-secure`) the provider can echo its own
+                // readback in `effectiveProperties`, and this write persists
+                // that echo — with no map entry to match and, on a MIXED leaf,
+                // no single token on the source side to position against
+                // either. It is not created by this command's own bags (the
+                // report masks by PATH, and the payload declines to copy a live
+                // value into a mixed leaf), and before this pass existed the
+                // delta was persisted with no redaction at all. Masking by SPAN
+                // is issue #1935.
                 //
                 // Positioned against `revertBaseline` — the SAME bag
                 // `desiredProperties` was resolved from — and not against

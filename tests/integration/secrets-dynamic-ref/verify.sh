@@ -751,6 +751,14 @@ echo "    OK: the stack is clean again after --revert"
 # and no extra deploy is needed to reach it.
 echo "==> Asserting an absent readback at a secret-bearing leaf is not drift"
 drop_live_env SECRET_PASSWORD
+# The setup must be PROVEN to have taken: a silent no-op here leaves a clean
+# stack and every assertion below passes for the wrong reason. Same guard the
+# pre-fix seed further down carries.
+if [ -n "$(drift_env SECRET_PASSWORD)" ]; then
+  echo "FAIL: could not drop SECRET_PASSWORD from the live Lambda — the assertions below would pass vacuously" >&2
+  exit 1
+fi
+echo "    OK: SECRET_PASSWORD is absent from the live Lambda"
 
 run_drift
 if [ "${DRIFT_RC}" -ne 0 ]; then
@@ -778,20 +786,31 @@ if [ "${ABSENT_ACCEPT_RC}" -ne 0 ]; then
 fi
 ABSENT_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json 2>/dev/null)
-ABSENT_TEMPLATE_PW=$(printf '%s' "${ABSENT_STATE}" \
-  | jq -r '.state.resources | to_entries[]
+ABSENT_ENV=$(printf '%s' "${ABSENT_STATE}" \
+  | jq -c '.state.resources | to_entries[]
              | select(.value.resourceType=="AWS::Lambda::Function")
-             | .value.properties.Environment.Variables.SECRET_PASSWORD // empty' | head -1)
-case "${ABSENT_TEMPLATE_PW}" in
+             | .value.observedProperties.Environment.Variables' | head -1)
+# The accept must have LANDED, or the reference below survives only because
+# nothing was written at all.
+if [ "$(printf '%s' "${ABSENT_ENV}" | jq -r '.DRIFT_ABSENT_PROBE // empty')" != "cdkd-absent-probe" ]; then
+  echo "FAIL: --accept did not record the probe key, so the reference assertion below is vacuous" >&2
+  exit 1
+fi
+# observedProperties, NOT properties: this record HAS an observed capture, so
+# that is the bag `--accept` rewrites (the `hasObserved` branch). Asserting
+# against `properties` reads a bag the command never touches, which passes
+# whether or not the fix is present.
+ABSENT_PW=$(printf '%s' "${ABSENT_ENV}" | jq -r '.SECRET_PASSWORD // empty')
+case "${ABSENT_PW}" in
   '{{resolve:secretsmanager:'*)
-    echo "    OK: --accept left the unreadable property's reference intact in state"
+    echo "    OK: --accept left the unreadable property's reference intact in the observed baseline"
     ;;
   '')
-    echo "FAIL: --accept ERASED the {{resolve:...}} reference from state.properties" >&2
+    echo "FAIL: --accept ERASED the {{resolve:...}} reference from state.observedProperties" >&2
     exit 1
     ;;
   *)
-    echo "FAIL: state SECRET_PASSWORD is no longer its {{resolve:...}} expression: $(mask "${ABSENT_TEMPLATE_PW}")" >&2
+    echo "FAIL: state SECRET_PASSWORD is no longer its {{resolve:...}} expression: $(mask "${ABSENT_PW}")" >&2
     exit 1
     ;;
 esac
