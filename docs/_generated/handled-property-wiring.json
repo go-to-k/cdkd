@@ -4890,11 +4890,9 @@
             "AWS::Cognito::UserPool"
           ],
           "evidence": [
-            "delegated",
             "element-read"
           ],
           "seededBy": [
-            "applyMfaConfig",
             "create",
             "update"
           ]
