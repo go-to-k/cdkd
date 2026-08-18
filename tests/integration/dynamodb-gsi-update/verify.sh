@@ -33,7 +33,9 @@
 #   3a. Race an out-of-band GSI CREATE into the table immediately before the
 #      destroy (issue #1931), so AWS refuses the DeleteTable with
 #      `Cannot delete table while indexes are being created, updated, or
-#      deleted` and cdkd has to absorb it.
+#      deleted` and cdkd has to absorb it. Armed up to twice: a destroy that
+#      exits 0 without the refusal means the window was missed, never that the
+#      retry broke (that case aborts the run at the destroy itself).
 #   3. Destroy + assert the table is gone and the cdkd state file is removed.
 #   3b. Assert (issue #1931): AWS really refused, cdkd really retried, and the
 #      destroy still succeeded.
@@ -100,7 +102,23 @@ DRIFT_JSON="${TMPDIR:-/tmp}/cdkd-1767-drift.$$.json"
 # reach Phase 3.
 DESTROY_LOG="${TMPDIR:-/tmp}/cdkd-1931-destroy.$$.log"
 
+# Re-entrancy guard for `cleanup`. The INT / TERM traps run `cleanup` and then
+# `exit`, and that `exit` re-fires the EXIT trap — so without this flag every
+# Ctrl-C paid the teardown TWICE. That is not a cosmetic double echo: the
+# `state destroy` below now retries the same index-busy refusal this fixture
+# arms (up to ~9 min), and the delete loop under it is bounded at ~10 min, so a
+# second pass costs ~20 min of teardown after the user has already asked the run
+# to stop.
+CLEANED_UP=0
+
 cleanup() {
+  # Every exit path still cleans up exactly ONCE: the first caller (EXIT, INT,
+  # TERM, or the explicit pre-run sweep) does the work and latches the flag; a
+  # re-entry returns immediately.
+  if [ "${CLEANED_UP:-0}" = "1" ]; then
+    return 0
+  fi
+  CLEANED_UP=1
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   rm -f "${DEPLOY_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}" "${DESTROY_LOG}"
@@ -111,8 +129,7 @@ cleanup() {
   # index mid-CREATE, and AWS refuses `DeleteTable` for as long as it builds. A
   # single `|| true` attempt against a transitioning index reports success to
   # nobody and LEAKS the table, which is the one outcome an integ must never
-  # produce. Bounded at ~10 min; a `DELETING` table keeps answering
-  # describe-table, so the loop exits on the describe rather than on the delete.
+  # produce. Bounded at ~10 min.
   # The loop keys on the DELETE's own outcome, never on a blind read: a probe
   # that treated any describe-table failure as "gone" would stop retrying on a
   # throttle and leak exactly the table it is here to reap. Only an explicit
@@ -151,6 +168,11 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+# The pre-run sweep is NOT this run's teardown, so hand the once-only budget
+# back to the traps. Without this the EXIT trap would see the latch already set
+# and skip the teardown entirely — the opposite failure from the double run the
+# latch exists to stop.
+CLEANED_UP=0
 
 # --- Phase 1: deploy baseline (no GSI) --------------------------------
 echo "==> Phase 1: deploy baseline table (pk only, no GSI)"
@@ -464,10 +486,11 @@ rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}"
 # That driver fires INSIDE `delete()` because the GlobalTable provider polls the
 # index state just before `DeleteTable` (the issue #1521 gate) and would
 # otherwise wait the race out — the arm would pass with the fix REVERTED. This
-# provider has no such gate: `delete()` issues `DeleteTable` with nothing ahead
-# of it, so an index that is transitioning when the destroy STARTS is still
-# transitioning when the call lands. Arming before the destroy is therefore both
-# sufficient and honest here.
+# provider has no such index-settle gate: the only thing that can precede its
+# `DeleteTable` is the `--remove-protection` flip (an `UpdateTable` plus a <=60s
+# wait for ACTIVE), which this destroy does not request — so an index that is
+# transitioning when the destroy STARTS is still transitioning when the call
+# lands. Arming before the destroy is therefore both sufficient and honest here.
 #
 # WHY A CREATE rather than a capacity change: measured on the sibling fixture
 # 2026-08-18, a provisioned-capacity `Update` on an empty index settles in well
@@ -483,47 +506,98 @@ rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}"
 # The index is never cleaned up on purpose — the table it hangs off is deleted
 # seconds later by the destroy under test (and `cleanup` retries that delete if
 # this run dies first).
-echo "==> Phase 3a (Issue #1931): create a GSI out of band so DeleteTable is refused"
-if ! RACE_ERR="$(aws dynamodb update-table \
-  --table-name "${TABLE_NAME}" \
-  --attribute-definitions AttributeName=raceKey,AttributeType=S \
-  --global-secondary-index-updates \
-  '[{"Create":{"IndexName":"raceIdx","KeySchema":[{"AttributeName":"raceKey","KeyType":"HASH"}],"Projection":{"ProjectionType":"KEYS_ONLY"}}}]' \
-  --region "${REGION}" 2>&1 >/dev/null)"; then
-  echo "FAIL: issue #1931 — AWS refused the out-of-band UpdateTable, so no index ever entered a transitional state and the retry path cannot be reached. AWS said: ${RACE_ERR}" >&2
-  exit 1
-fi
+#
+# WHY THE ARM IS RE-TRIED ONCE, and how a MISSED WINDOW is told apart from a
+# BROKEN RETRY. This is the load-bearing half: the arm is a race, so it can be
+# missed on a run where cdkd behaved perfectly, and reporting that as FAILED
+# marks a correct binary broken. The two outcomes are distinguished by the
+# destroy's EXIT STATUS, not by anything softer:
+#
+#   - RETRY GENUINELY BROKEN (the fix reverted): AWS refuses, the provider turns
+#     the refusal into a `ProvisioningError`, `cdkd destroy` exits non-zero with
+#     `PartialFailureError`, and `set -o pipefail` + `set -e` abort this script
+#     INSIDE the loop, at the destroy itself. The re-arm branch below is never
+#     reached, so it can never absorb this case.
+#   - RACE WINDOW MISSED: the destroy exits 0 AND AWS's refusal text is absent
+#     from the log. AWS accepting a `DeleteTable` is itself the observation that
+#     `raceIdx` had reached ACTIVE — that acceptance is exactly the rule the
+#     refusal enforces — and it is a stronger reading than a post-hoc
+#     describe-table, which by then races the table's own deletion.
+#
+# So the re-arm fires only on the second. It waits the table out, re-deploys the
+# Phase 1 baseline, rewrites the items and races the index CREATE once more; if
+# the second arm misses too, the run FAILS loudly. The assertion below is NOT
+# weakened — it still demands AWS's own refusal text, so a run with the retry
+# absent can never reach a PASS.
+ARM_MAX=2
+ARM_HIT=""
+RACE_INDEX_STATUS=""
+for ARM in $(seq 1 ${ARM_MAX}); do
+  echo "==> Phase 3a (Issue #1931), arm ${ARM}/${ARM_MAX}: create a GSI out of band so DeleteTable is refused"
+  if ! RACE_ERR="$(aws dynamodb update-table \
+    --table-name "${TABLE_NAME}" \
+    --attribute-definitions AttributeName=raceKey,AttributeType=S \
+    --global-secondary-index-updates \
+    '[{"Create":{"IndexName":"raceIdx","KeySchema":[{"AttributeName":"raceKey","KeyType":"HASH"}],"Projection":{"ProjectionType":"KEYS_ONLY"}}}]' \
+    --region "${REGION}" 2>&1 >/dev/null)"; then
+    echo "FAIL: issue #1931 — AWS refused the out-of-band UpdateTable, so no index ever entered a transitional state and the retry path cannot be reached. AWS said: ${RACE_ERR}" >&2
+    exit 1
+  fi
 
-# PRECONDITION, checked rather than assumed: if `raceIdx` is already ACTIVE the
-# destroy below would never be refused and the arm would pass with the fix
-# REVERTED — the vacuous outcome this whole block exists to avoid. Failing here
-# names the cause; failing at 3b would only say "AWS never refused".
-RACE_INDEX_STATUS="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-  --query 'Table.GlobalSecondaryIndexes[?IndexName==`raceIdx`].IndexStatus | [0]' --output text)"
-if [ "${RACE_INDEX_STATUS}" = "ACTIVE" ]; then
-  echo "FAIL: issue #1931 — raceIdx reached ACTIVE before the destroy even started, so AWS will not refuse the DeleteTable and this arm cannot discriminate. AWS is settling index creates faster than it did when this arm was written; the driver needs a slower-settling condition." >&2
-  exit 1
-fi
-echo "    raceIdx is ${RACE_INDEX_STATUS} — the DeleteTable below has to be refused"
+  # The index state as last observed BEFORE the destroy. Recorded rather than
+  # asserted on: an already-ACTIVE `raceIdx` here means this arm cannot be
+  # refused, which is the same missed-window outcome the loop already handles —
+  # one re-arm mechanism, not two. It is carried into the final failure message
+  # so a run that exhausts both arms still names the cause.
+  RACE_INDEX_STATUS="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.GlobalSecondaryIndexes[?IndexName==`raceIdx`].IndexStatus | [0]' --output text)"
+  echo "    raceIdx is ${RACE_INDEX_STATUS} — the DeleteTable below has to be refused"
 
-# --- Phase 3: destroy --------------------------------------------------
-echo "==> Phase 3: destroy"
-# `--verbose` and the tee are load-bearing for the 3b assertions: AWS's refusal
-# and cdkd's retry are announced through `withRetry`'s debug line. `set -o
-# pipefail` is already on, so a destroy that FAILS (which is exactly what the
-# pre-fix binary does here) still aborts this script.
-node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force --verbose 2>&1 | tee "${DESTROY_LOG}"
+  # --- Phase 3: destroy --------------------------------------------------
+  echo "==> Phase 3: destroy (arm ${ARM}/${ARM_MAX})"
+  # `--verbose` and the tee are load-bearing for the 3b assertions: AWS's refusal
+  # and cdkd's retry are announced through `withRetry`'s debug line. `set -o
+  # pipefail` is already on, so a destroy that FAILS (which is exactly what the
+  # pre-fix binary does here) still aborts this script — see the discrimination
+  # note above, which depends on that abort.
+  node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force --verbose 2>&1 | tee "${DESTROY_LOG}"
+
+  if grep -qF "Cannot delete table while indexes are being" "${DESTROY_LOG}"; then
+    ARM_HIT="yes"
+    break
+  fi
+
+  # Reaching here means the destroy exited 0 with no refusal: the window was
+  # missed (never a broken retry — that path aborted above).
+  if [ "${ARM}" -lt "${ARM_MAX}" ]; then
+    echo "    note: AWS accepted the DeleteTable, so raceIdx had reached ACTIVE before it landed (last status observed before the destroy: ${RACE_INDEX_STATUS}); re-arming"
+    # The delete is ASYNC, so the re-deploy has to wait the table out or its
+    # CreateTable races a still-DELETING table of the same name.
+    aws dynamodb wait table-not-exists --table-name "${TABLE_NAME}" --region "${REGION}"
+    env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+      --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+    # Same 5 items Phase 2b wrote, so the second arm is no weaker than the
+    # first. (They are not what holds the index in CREATING — AWS's own index
+    # build latency is — but a re-arm that silently changed the conditions
+    # would make the two attempts incomparable.)
+    for i in 1 2 3 4 5; do
+      aws dynamodb put-item --table-name "${TABLE_NAME}" --region "${REGION}" \
+        --item "{\"pk\":{\"S\":\"p${i}\"},\"gsipk\":{\"S\":\"g${i}\"},\"payload\":{\"S\":\"${ITEM_PAYLOAD}\"}}" \
+        >/dev/null
+    done
+  fi
+done
 
 echo "==> Phase 3b (Issue #1931): assert the destroy ABSORBED an index-busy DeleteTable refusal"
 # Discrimination, spelled out because it is the whole point of the arm:
 #   - with the fix REVERTED the refusal is a hard `ProvisioningError`, `cdkd
 #     destroy` exits non-zero with `PartialFailureError`, and `set -o pipefail`
 #     aborts this script at Phase 3 — the run cannot reach here;
-#   - with the fix present the destroy exits 0 AND both strings below are in the
+#   - with the fix present the destroy exits 0 AND every string below is in the
 #     log. Requiring AWS's own refusal text is what stops the arm passing
 #     vacuously on a run where the index settled before the delete landed.
-if ! grep -qF "Cannot delete table while indexes are being" "${DESTROY_LOG}"; then
-  echo "FAIL: issue #1931 — the out-of-band index CREATE landed but AWS never refused the DeleteTable, so the retry path was not exercised. Re-run; if it repeats, the index is settling before the destroy reaches DeleteTable and the arm needs a slower-settling condition." >&2
+if [ -z "${ARM_HIT}" ]; then
+  echo "FAIL: issue #1931 — ${ARM_MAX} armed destroys ran and AWS never refused a DeleteTable, so the retry path was not exercised (last raceIdx status observed before a destroy: ${RACE_INDEX_STATUS}). AWS is settling index creates faster than it did when this arm was written; the driver needs a slower-settling condition." >&2
   exit 1
 fi
 if ! grep -qF "Retrying GsiTable" "${DESTROY_LOG}"; then

@@ -4044,7 +4044,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // for the arithmetic and for the per-resource deadline it stays under.
         //
         // That figure is the LOOP's, not `delete()`'s, and the difference
-        // matters because the deadline is applied to `delete()`. The same call
+        // matters because the deadline is applied AROUND `delete()` — in fact
+        // around `destroy-runner.ts`'s outer retry loop, which shares one
+        // deadline across up to 4 `delete()` calls and for THIS refusal invokes
+        // it exactly once (the message matches no
+        // `RETRYABLE_ERROR_MESSAGE_PATTERNS` entry). The same call
         // can already have spent the #1521 gate's full 900 polls (~15 min) just
         // above, and up to 600 polls (~10 min) in `waitForReplicaGone` per
         // non-local replica before that. So a replicated table whose index is

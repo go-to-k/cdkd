@@ -30,9 +30,10 @@ import {
  * THIS provider's delete path.
  */
 
-const { mockSend, warnSpy } = vi.hoisted(() => ({
+const { mockSend, warnSpy, debugSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   warnSpy: vi.fn(),
+  debugSpy: vi.fn(),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -43,7 +44,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
-    debug: vi.fn(),
+    debug: debugSpy,
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
@@ -52,7 +53,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   return {
     getLogger: () => ({
       child: () => childLogger,
-      debug: vi.fn(),
+      debug: debugSpy,
       info: vi.fn(),
       warn: warnSpy,
       error: vi.fn(),
@@ -64,6 +65,7 @@ import {
   DynamoDBTableProvider,
   deleteTableRetryDelays,
 } from '../../../src/provisioning/providers/dynamodb-table-provider.js';
+import { DELETE_INDEX_WAIT_PROCEED_NOTE } from '../../../src/provisioning/dynamodb-index-busy-delete.js';
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::Table';
 const LOGICAL_ID = 'Orders';
@@ -102,6 +104,62 @@ function newRnf(): ResourceNotFoundException {
   return new ResourceNotFoundException({ message: 'not found', $metadata: {} });
 }
 
+/**
+ * A THROTTLED `DescribeTable`, shaped the way `isThrottlingError` reads one:
+ * the signal is the `name` (most AWS throttles are HTTP 400, not 429), so a
+ * mock that carried only a message would take the unclassified arm instead and
+ * this test would exercise the wrong branch.
+ */
+function throttleError(): Error {
+  return Object.assign(new Error('Rate exceeded'), {
+    name: 'ThrottlingException',
+    $metadata: { httpStatusCode: 400 },
+  });
+}
+
+/**
+ * An `AccessDeniedException` as AWS phrases it — the account id, the assumed
+ * role and the session name are all IN the message. That is why the warning
+ * this drives must name the class only (see the assertions below).
+ */
+function accessDeniedError(): Error {
+  return Object.assign(
+    new Error(
+      'User: arn:aws:sts::123456789012:assumed-role/cdkd-deploy-role/cdkd-session is not ' +
+        'authorized to perform: dynamodb:DescribeTable on resource: orders-table'
+    ),
+    { name: 'AccessDeniedException', $metadata: { httpStatusCode: 400 } }
+  );
+}
+
+/**
+ * `DeleteTable` refuses once with the index-busy message and then succeeds,
+ * while `DescribeTable` (the retry's re-arm poll) is driven by `describe`.
+ * Split out from `stubDeleteFailingTimes` because THESE tests are about what
+ * the poll does when the describe misbehaves, which that helper cannot express
+ * (it always serves the settled table).
+ */
+function stubOneRefusalWithPoll(describe: (n: number) => Promise<unknown>): {
+  deletes: () => number;
+  describes: () => number;
+} {
+  let deletes = 0;
+  let describes = 0;
+  mockSend.mockImplementation((command: unknown) => {
+    if (command instanceof DescribeTableCommand) {
+      describes += 1;
+      return describe(describes);
+    }
+    if (command instanceof DeleteTableCommand) {
+      deletes += 1;
+      if (deletes === 1) return Promise.reject(indexBusyError());
+      return Promise.resolve({});
+    }
+    return Promise.resolve({});
+  });
+  return { deletes: () => deletes, describes: () => describes };
+}
+
 const LIVE_TABLE = {
   TableName: TABLE_NAME,
   TableStatus: 'ACTIVE',
@@ -131,6 +189,7 @@ function stubDeleteFailingTimes(failures: number, error: () => Error): { attempt
 }
 
 const warnings = (): string[] => warnSpy.mock.calls.map((c) => String(c[0]));
+const debugs = (): string[] => debugSpy.mock.calls.map((c) => String(c[0]));
 
 describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', () => {
   let provider: DynamoDBTableProvider;
@@ -138,6 +197,7 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
   beforeEach(() => {
     mockSend.mockReset();
     warnSpy.mockReset();
+    debugSpy.mockReset();
     // Skip `withRetry`'s real ~47s backoff. Set per-suite rather than per-test
     // so no test can silently pay it if an expectation moves.
     deleteTableRetryDelays.sleep = () => Promise.resolve();
@@ -302,6 +362,69 @@ describe('DynamoDBTable delete retry on the index-busy refusal (issue #1931)', (
       provider.delete(LOGICAL_ID, TABLE_NAME, RESOURCE_TYPE, {})
     ).resolves.toBeUndefined();
     expect(attempts).toBe(1);
+  });
+
+  // The two tests below exist because every OTHER test in this file serves an
+  // `IndexStatus: 'ACTIVE'` DescribeTable, so the re-arm returns on poll 1 and
+  // no error arm of the settle poll is reached from THIS provider at all. They
+  // were covered only through the GlobalTable suite — a different caller, with
+  // a pre-delete gate this provider does not have — which is exactly the
+  // "one type answers for both" gap the shared module was lifted to close.
+
+  it(
+    'keeps the re-arm poll waiting through a THROTTLED DescribeTable',
+    { timeout: 15_000 },
+    async () => {
+      // A throttled describe says NOTHING about the indexes, so reading it as
+      // "settled" degrades the re-arm to no wait at all and every retry burns
+      // inside `withRetry`'s backoff grid against a condition that needs
+      // minutes. Two describes, not one, is the discriminator. (Real timers:
+      // the poll's own 1s spacing is the only real sleep here — the retry
+      // backoff is stubbed out per-suite.)
+      const stub = stubOneRefusalWithPoll((n) =>
+        n === 1 ? Promise.reject(throttleError()) : Promise.resolve({ Table: LIVE_TABLE })
+      );
+
+      await expect(
+        provider.delete(LOGICAL_ID, TABLE_NAME, RESOURCE_TYPE, {})
+      ).resolves.toBeUndefined();
+
+      expect(stub.deletes()).toBe(2);
+      expect(stub.describes()).toBe(2);
+      // A throttle is a routine, self-clearing condition: it belongs at debug,
+      // and warning on it would drown the ONE line this module prints at
+      // default verbosity.
+      expect(warnings().filter((w) => w.includes('DescribeTable failed'))).toHaveLength(0);
+      expect(debugs().some((d) => d.includes('DescribeTable throttled while waiting'))).toBe(true);
+    }
+  );
+
+  it('gives up the WAIT (never the delete) when the re-arm`s DescribeTable fails otherwise', async () => {
+    // The proceed-note path. Giving up the wait is right — a delete path must
+    // tolerate a stale read rather than fail fast, and throwing here would
+    // STRAND the table — but it has to be visible at default verbosity, and it
+    // has to say what proceeding costs.
+    const stub = stubOneRefusalWithPoll(() => Promise.reject(accessDeniedError()));
+
+    await expect(
+      provider.delete(LOGICAL_ID, TABLE_NAME, RESOURCE_TYPE, {})
+    ).resolves.toBeUndefined();
+
+    // The delete went ahead on the very next attempt: the wait was abandoned,
+    // the operation was not.
+    expect(stub.deletes()).toBe(2);
+    expect(stub.describes()).toBe(1);
+    const stopped = warnings().filter((w) => w.includes('DescribeTable failed'));
+    expect(stopped).toHaveLength(1);
+    expect(stopped[0]).toContain(DELETE_INDEX_WAIT_PROCEED_NOTE);
+    // The CLASS is named; AWS's raw sentence is not. That message carries the
+    // account id, the assumed-role ARN and the session name, and this warning
+    // also reaches the persisted deployment-events store.
+    expect(stopped[0]).toContain('AccessDeniedException');
+    expect(stopped[0]).not.toContain('123456789012');
+    expect(stopped[0]).not.toContain('assumed-role');
+    // ...and nothing is lost: it is one `--verbose` away.
+    expect(debugs().some((d) => d.includes('123456789012'))).toBe(true);
   });
 
   it('reads the sleep seam at CALL time, not when the retry options are built', async () => {

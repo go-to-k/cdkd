@@ -2178,11 +2178,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // come from `../dynamodb-index-busy-delete.ts`.
       //
       // Deliberately NO pre-delete describe / settle gate here (the sibling's
-      // #1521 gate). This provider's `delete()` issues `DeleteTable` with
-      // nothing between it and the caller, so there is no window of its own to
-      // close; adding a fresh describe would only shrink the race the retry
-      // exists to absorb — and the integ arm races exactly that window, so it
-      // would stop discriminating.
+      // #1521 gate). The only thing that can precede this `DeleteTable` is the
+      // `--remove-protection` flip above (an `UpdateTable` plus a <=60s wait
+      // for ACTIVE), and that wait watches the TABLE status, not the index
+      // ones — so nothing here closes the index-busy window, and there is no
+      // window of its own to close either. Adding a fresh index describe would
+      // only shrink the race the retry exists to absorb — and the integ arm
+      // races exactly that window, so it would stop discriminating.
       await deleteTableWithIndexBusyRetry({
         logicalId,
         physicalId,
@@ -2195,13 +2197,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // any fixed backoff grid, while this poll returns on its first
         // `DescribeTable` once the index has settled. BOUNDED — it runs per
         // retry, so the loop's wall clock is the product and
-        // `destroy-runner.ts` caps a single `delete()` at the per-resource
-        // deadline (30 min by default; this provider declares no
+        // `destroy-runner.ts` runs this delete under a per-resource deadline
+        // (30 min by default; this provider declares no
         // `getMinResourceTimeoutMs` to lift it). At
         // `DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS` the whole loop's worst case is
         // ~8.8 min, so a genuinely stuck index still ends in AWS's own
         // actionable sentence rather than a generic `ResourceTimeoutError` that
         // never mentions indexes.
+        //
+        // That deadline wraps `destroy-runner.ts`'s OUTER retry loop, not a
+        // single `delete()` — up to 4 calls share it. The budget survives that
+        // only because this refusal matches no `RETRYABLE_ERROR_MESSAGE_PATTERNS`
+        // entry, so the outer loop never re-invokes `delete()` for it; see the
+        // arithmetic on `DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS`.
         reArm: () =>
           waitForIndexesSettled({
             tableName: physicalId,

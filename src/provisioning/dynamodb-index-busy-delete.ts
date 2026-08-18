@@ -119,12 +119,24 @@ export const DELETE_INDEX_BUSY_MAX_RETRIES = 8;
  * gate uses, because THAT default is sized for a wait that runs once while
  * this one runs per retry: the caller's wall clock is
  * `DELETE_INDEX_BUSY_MAX_RETRIES x this + withRetry's ~47s of backoff`, and
- * `destroy-runner.ts` caps a single `delete()` at the per-resource deadline
- * (30 min by default; neither DynamoDB provider declares a
- * `getMinResourceTimeoutMs` to lift it). At 900 polls the product was ~2h, so
- * a genuinely stuck index produced a 30-minute wait ending in a generic
- * `ResourceTimeoutError` that never mentions indexes. At 60 the LOOP's worst
- * case is ~8.8 min and the user gets AWS's own actionable sentence instead.
+ * `destroy-runner.ts` runs the delete under a per-resource deadline (30 min by
+ * default; neither DynamoDB provider declares a `getMinResourceTimeoutMs` to
+ * lift it). At 900 polls the product was ~2h, so a genuinely stuck index
+ * produced a 30-minute wait ending in a generic `ResourceTimeoutError` that
+ * never mentions indexes. At 60 the LOOP's worst case is ~8.8 min and the user
+ * gets AWS's own actionable sentence instead.
+ *
+ * **What that deadline actually wraps**, since the arithmetic depends on it:
+ * NOT one `delete()` but `destroy-runner.ts`'s whole outer retry loop, which
+ * calls `delete()` up to 4 times (`maxAttempts = 3`) inside the one deadline.
+ * Four times ~8.8 min would blow straight through 30 min. It does not, and the
+ * reason is load-bearing rather than incidental: that outer loop only retries
+ * when `isRetryableTransientError` says so, and this refusal matches no entry
+ * in `RETRYABLE_ERROR_MESSAGE_PATTERNS` (verified against the real classifier —
+ * both AWS's raw sentence and the `Failed to delete DynamoDB table ...` wrap
+ * return false), so the outer loop runs `delete()` exactly ONCE for it and the
+ * budget below is not re-multiplied. Adding this message to those patterns
+ * would silently make the worst case ~35 min — over the deadline.
  *
  * The FIRST attempt is unaffected — it does not re-arm at all.
  */
@@ -209,9 +221,24 @@ export async function waitForIndexesSettled(opts: {
       // — this is the arm that silently turned a wait into a no-op, and a run
       // at default verbosity has to be able to see it. What proceeding COSTS
       // is the caller's to say (`proceedNote`).
+      //
+      // The warning names the error CLASS only; AWS's raw message goes to
+      // debug. That message is not neutral text: an `AccessDeniedException`
+      // here reads `User: arn:aws:sts::<account>:assumed-role/<role>/<session>
+      // is not authorized to perform: dynamodb:DescribeTable ...`, so the
+      // default-verbosity line would print the account id, the role name and
+      // the session name — and this warning is wrapped into the persisted
+      // deployment-events store, not just the terminal. Debug is opt-in and
+      // already the level the throttle arm above uses for the same reason.
+      // The control flow is unchanged: both spellings still proceed.
+      const errorName = err instanceof Error ? err.name : typeof err;
+      logger.debug(
+        `DescribeTable failed while waiting for indexes on ${tableName} (${logicalId}): ${message}`
+      );
       logger.warn(
-        `DescribeTable failed while waiting for indexes on ${tableName} (${logicalId}), so ` +
-          `cdkd stopped waiting; ${proceedNote} DescribeTable error: ${message}`
+        `DescribeTable failed (${errorName}) while waiting for indexes on ${tableName} ` +
+          `(${logicalId}), so cdkd stopped waiting; ${proceedNote} Re-run with --verbose for ` +
+          `AWS's own message.`
       );
       return;
     }
@@ -237,6 +264,11 @@ export async function waitForIndexesSettled(opts: {
  * runs `1 + maxRetries` attempts in total, and writing the number by hand is
  * how this line came to promise 8 further attempts when 7 were left.
  *
+ * The per-attempt settle budget is attached to "this attempt plus the N more"
+ * rather than to the N alone, because the re-arm runs before the attempt this
+ * very line announces too — 8 re-arms for 7 remaining attempts. Saying "N more
+ * attempts, each preceded by ..." made one sentence quote two different counts.
+ *
  * It must NOT carry AWS's own sentence: the `dynamodb-globaltable` integ greps
  * the destroy log for `Cannot delete table while indexes are being` to prove
  * AWS really refused, and a cdkd-authored copy would satisfy that grep without
@@ -254,9 +286,10 @@ export function indexBusyRetryWarning(opts: {
     `because a global secondary index is still being created, updated or ` +
     `deleted — application auto-scaling can start an index capacity change at ` +
     `any moment, including during this destroy. Waiting for the index to settle ` +
-    `and retrying (up to ${remainingAttempts} more attempts, each preceded by ` +
-    `up to ${DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS} DescribeTable polls ~1s ` +
-    `apart — a little over a minute of settling per attempt). Nothing is ` +
+    `and retrying (this attempt plus up to ${remainingAttempts} more attempts; ` +
+    `each one first waits up to ${DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS} ` +
+    `DescribeTable polls ~1s apart — a little over a minute of settling — ` +
+    `before its DeleteTable). Nothing is ` +
     `wrong with the table; a large index backfill can outlast this budget, in ` +
     `which case the destroy fails with AWS's own message and re-running it ` +
     `succeeds once the index is ACTIVE.`
