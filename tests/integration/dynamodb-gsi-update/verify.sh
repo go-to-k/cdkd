@@ -487,7 +487,7 @@ rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}"
 # index state just before `DeleteTable` (the issue #1521 gate) and would
 # otherwise wait the race out — the arm would pass with the fix REVERTED. This
 # provider has no such index-settle gate: the only thing that can precede its
-# `DeleteTable` is the `--remove-protection` flip (an `UpdateTable` plus a <=60s
+# `DeleteTable` is the remove-protection flip (an `UpdateTable` plus a <=60s
 # wait for ACTIVE), which this destroy does not request — so an index that is
 # transitioning when the destroy STARTS is still transitioning when the call
 # lands. Arming before the destroy is therefore both sufficient and honest here.
