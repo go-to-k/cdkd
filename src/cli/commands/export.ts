@@ -20,6 +20,12 @@ import {
   type Tag as CfnTag,
 } from '@aws-sdk/client-cloudformation';
 import {
+  DescribeSecurityGroupRulesCommand,
+  type DescribeSecurityGroupRulesResult,
+  type EC2Client,
+  type SecurityGroupRule,
+} from '@aws-sdk/client-ec2';
+import {
   appOptions,
   commonOptions,
   contextOptions,
@@ -29,7 +35,10 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import { describeTypeWithThrottleRetry } from '../../provisioning/describe-type.js';
+import { withRetry } from '../../deployment/retry.js';
+import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
@@ -1235,6 +1244,60 @@ export interface CompositePhysicalIdContext {
   readonly attributes: Record<string, unknown>;
 }
 
+/**
+ * The live-read seam a {@link CompositePhysicalIdIdentifier.backfill} may use.
+ *
+ * Separate from {@link CompositePhysicalIdContext} because the two answer
+ * different questions and only one of them is optional: the context is what
+ * cdkd RECORDED (always available), while these are the AWS clients needed to
+ * go and ASK (available only on the real command path — a unit test, or any
+ * caller that has none, simply gets the state-only refusal).
+ */
+export interface IdentifierBackfillDeps {
+  readonly ec2Client: EC2Client;
+  /**
+   * Memo of the `DescribeSecurityGroupRules` walk, keyed by GROUP id, so N
+   * rows sitting on one security group cost ONE paginated walk instead of N.
+   * That is the common shape — a stack's ingress rules cluster on a handful of
+   * groups — and every extra walk is also an extra chance to be throttled.
+   *
+   * Scoped to ONE {@link buildImportPlan} call by construction (see
+   * {@link createIdentifierBackfillDeps}), never module-global: a module-level
+   * cache would be shared across the stacks a `--concurrency > 1` run exports
+   * in parallel, and the walk's answer is per-account/per-region.
+   *
+   * That scope is also, deliberately, NARROWER than the whole export: a
+   * nested-stack tree runs one {@link buildImportPlan} per NODE (see
+   * `runPerStackImportLoop`), so a security group referenced by rows in two
+   * child stacks is walked once per child rather than once overall. That is
+   * accepted, not overlooked. Hoisting the map to the loop would deduplicate
+   * those few walks, but it would also keep every group's answer alive for the
+   * whole multi-stack run — and the value being cached is a LIVE READ of AWS,
+   * so the longer it lives the wider the window in which the rules it recorded
+   * no longer describe the group. The saving is a handful of describes on an
+   * uncommon shape; the cost is a stale answer feeding the exactly-one
+   * adoption, which is the one thing this lookup must not get wrong. The memo
+   * exists to stop the N-rows-on-one-group blowup, and that blowup is entirely
+   * within one stack, where this scope already covers it.
+   *
+   * Caches the OUTCOME rather than the rules, so a failed walk is paid once
+   * too, and caches a value that carries NO row identity — the per-row refusal
+   * message is built by the caller from its own `logicalId`, or the second row
+   * on a group would be refused in the first row's name.
+   */
+  readonly securityGroupRuleCache: Map<string, Promise<SecurityGroupRuleLookup>>;
+}
+
+/**
+ * Build the live-read seam for ONE {@link buildImportPlan} call, with a fresh
+ * memo. A factory rather than an inline object literal so the cache cannot be
+ * forgotten at a future call site (the field is required, so omitting it is a
+ * type error, and sharing one across calls has to be written deliberately).
+ */
+function createIdentifierBackfillDeps(ec2Client: EC2Client): IdentifierBackfillDeps {
+  return { ec2Client, securityGroupRuleCache: new Map() };
+}
+
 interface CompositePhysicalIdIdentifier {
   /**
    * The type's CFn `primaryIdentifier` field name. Cross-checked against the
@@ -1248,6 +1311,33 @@ interface CompositePhysicalIdIdentifier {
    * resource instead of sending CFn something wrong.
    */
   readonly resolve: (ctx: CompositePhysicalIdContext) => string;
+  /**
+   * Recover the identifier VALUE from AWS when {@link resolve} could not
+   * recover it from state (issue
+   * [#1791](https://github.com/go-to-k/cdkd/issues/1791)).
+   *
+   * Reached ONLY after `resolve` threw AND the caller supplied
+   * {@link IdentifierBackfillDeps} — see {@link resolveIdentifierValue}. That
+   * ordering is what makes "a row whose state already carries the value issues
+   * no AWS call" structural rather than a discipline each entry has to
+   * re-implement.
+   *
+   * Throws — with a message naming the ROW and what was ambiguous — rather than
+   * returning `undefined`, because the state-only refusal it replaces is a
+   * worse answer once a live read has been performed: it would send the user to
+   * a remedy (re-deploy) that this lookup has just proven irrelevant. A THROW
+   * here is the same class of outcome as `resolve`'s: the resource lands in
+   * `blocked` and the export aborts.
+   *
+   * Deliberately NOT a fallback that guesses: the SAME "exactly one match"
+   * discipline `EC2Provider` applies on its idempotent already-exists arm binds
+   * here, and for the same reason — adopting an ambiguous id records a state
+   * row that looks adopted and names the wrong AWS object.
+   */
+  readonly backfill?: (
+    ctx: CompositePhysicalIdContext,
+    deps: IdentifierBackfillDeps
+  ) => Promise<string>;
 }
 
 /**
@@ -1405,6 +1495,7 @@ function recordedRuleIdIdentifier(): CompositePhysicalIdIdentifier {
 
   return {
     field: 'Id',
+    backfill: backfillSecurityGroupIngressRuleId,
     resolve: ({ logicalId, physicalId, attributes }) => {
       // Trimmed on RETURN as well as in the guard, matching the ARN family: a
       // padded value is otherwise shipped with the whitespace and CFn rejects
@@ -1442,6 +1533,494 @@ function recordedRuleIdIdentifier(): CompositePhysicalIdIdentifier {
       );
     },
   };
+}
+
+/**
+ * Page ceiling for the {@link backfillSecurityGroupIngressRuleId} walk, and its
+ * `MaxResults`. The twins of `MAX_SG_RULE_PAGES` / `SG_RULE_PAGE_SIZE` in
+ * `src/provisioning/providers/ec2-provider.ts`, restated here for the same
+ * reason {@link SG_RULE_ID_PATTERN} is: neither module may pull the other's
+ * graph.
+ *
+ * 20 pages x 1000 rules covers 20,000 rules on ONE security group, far beyond
+ * any real one (AWS's default quota is 60 rules per SG, 1000 at the maximum
+ * increase). That arithmetic only holds because the request pins `MaxResults` —
+ * without it AWS applies its own page size and the bound would cap an unknown
+ * number of rules. Exhausting it is treated as "could not see the whole group",
+ * which is a REFUSAL here rather than the provider's silent `undefined`: the
+ * uniqueness verdict below is a statement about the whole group, so answering
+ * from a partial view is exactly how a genuine 2-match becomes a false
+ * "exactly one".
+ */
+const MAX_SG_RULE_PAGES = 20;
+const SG_RULE_PAGE_SIZE = 1000;
+
+/**
+ * The `(protocol, fromPort, toPort)` triple cdkd's composite physical id
+ * carries for an `AWS::EC2::SecurityGroupIngress`, plus the group it lives on.
+ */
+interface SecurityGroupIngressTuple {
+  readonly groupId: string;
+  readonly ipProtocol: string;
+  readonly fromPort: number;
+  readonly toPort: number;
+}
+
+/**
+ * Parse cdkd's `<groupId>|<ipProtocol>|<fromPort>|<toPort>` physical id, or
+ * `undefined` when it is not that shape.
+ *
+ * EXACTLY four segments, all non-blank. A longer id is the issue
+ * [#1672](https://github.com/go-to-k/cdkd/issues/1672) ambiguity — a segment
+ * carrying the separator — and decoding its first four parts would silently
+ * look up a DIFFERENT rule's tuple, so it is refused like any other unparseable
+ * shape.
+ *
+ * The ports are the `'-1'` AWS itself uses for "all ports", which is what
+ * `EC2Provider` packs when the template declares no `FromPort` / `ToPort`; a
+ * segment that is not a finite number yields `undefined` rather than `NaN`, so
+ * a malformed id refuses instead of matching nothing and blaming AWS.
+ *
+ * A BLANK port segment is refused EXPLICITLY, before `Number()` ever sees it,
+ * because `Number('')` is `0` rather than `NaN` — so `sg-x|tcp||443` would
+ * otherwise parse to `fromPort: 0` and go and look up a REAL tuple (ICMP type
+ * 0 is echo reply, a live rule shape), adopting an id for a rule the record
+ * does not name. That is also why the blank is not simply folded to `-1`: this
+ * module and `EC2Provider.cfnIngressPortValue` disagree about what a blank
+ * MEANS — the provider reads it as `-1` (all ports) because its input is a CFn
+ * property the template legitimately omits, while here it is a SEGMENT of an
+ * id cdkd itself wrote, and cdkd never writes an empty one. A blank segment is
+ * therefore evidence the id is damaged, not evidence of an absent port.
+ */
+function parseSecurityGroupIngressComposite(
+  physicalId: string
+): SecurityGroupIngressTuple | undefined {
+  const parts = physicalId.trim().split('|');
+  if (parts.length !== 4) return undefined;
+  const [groupId, ipProtocol, fromPort, toPort] = parts as [string, string, string, string];
+  if (!groupId.trim() || !ipProtocol.trim()) return undefined;
+  const fromRaw = fromPort.trim();
+  const toRaw = toPort.trim();
+  if (!fromRaw || !toRaw) return undefined;
+  const from = Number(fromRaw);
+  const to = Number(toRaw);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return undefined;
+  return { groupId: groupId.trim(), ipProtocol: ipProtocol.trim(), fromPort: from, toPort: to };
+}
+
+/**
+ * Does this `DescribeSecurityGroupRules` row describe the rule cdkd's composite
+ * physical id names?
+ *
+ * The protocol goes through {@link canonicalizeIpProtocolValue} on BOTH sides
+ * rather than a raw compare: EC2 rewrites the four protocol numbers it has a
+ * name for before storing the rule, so a record packed from `IpProtocol: 6`
+ * carries `'6'` while the readback says `'tcp'` and a raw compare would match
+ * nothing (the issue #1643 fold, at a fourth call site).
+ *
+ * An omitted port reads back as `-1`, which is the same spelling the composite
+ * carries for an absent one — so the two sides are directly comparable.
+ */
+function ruleMatchesIngressTuple(
+  rule: SecurityGroupRule,
+  tuple: SecurityGroupIngressTuple
+): boolean {
+  // `=== true`, not `!== false`: an ABSENT `IsEgress` counts as ingress. That
+  // asymmetry is deliberate and matches `EC2Provider.lookupIngressRuleId` —
+  // tightening it to `=== false` would make every rule AWS ever reports
+  // without the field unmatchable, turning a healable row into a permanent
+  // "found NO ingress rule" refusal. AWS populates the field today; the
+  // looser test costs nothing while it does, and keeps healing working if it
+  // ever stops.
+  if (rule.IsEgress === true) return false;
+  if (
+    canonicalizeIpProtocolValue(rule.IpProtocol) !== canonicalizeIpProtocolValue(tuple.ipProtocol)
+  )
+    return false;
+  if ((rule.FromPort ?? -1) !== tuple.fromPort) return false;
+  if ((rule.ToPort ?? -1) !== tuple.toPort) return false;
+  return true;
+}
+
+/**
+ * Outcome of ONE security group's paginated `DescribeSecurityGroupRules` walk.
+ *
+ * Carries NO row identity on purpose: it is what the per-group memo stores, so
+ * a second row on the same group must be able to build its own refusal from
+ * it. A cached `Error` would name whichever row happened to walk first.
+ */
+type SecurityGroupRuleLookup =
+  | { readonly ok: true; readonly rules: SecurityGroupRule[] }
+  | {
+      readonly ok: false;
+      /**
+       * The walk was still paginating at the page ceiling. Carries NO
+       * `detail`, unlike the failure kinds below: there is no AWS error text
+       * to quote, and the only other thing this arm could carry — the group
+       * id — is one the caller already holds on its own tuple. A copy here
+       * would be a second place for it to go stale and a field the message
+       * never reads.
+       */
+      readonly kind: 'truncated';
+    }
+  | {
+      readonly ok: false;
+      /** Which remedy the caller's message should prescribe. */
+      readonly kind: 'auth' | 'throttled' | 'failed';
+      /** The AWS failure text, quoted verbatim into the caller's refusal. */
+      readonly detail: string;
+    };
+
+/**
+ * Test seam: overriding `sleep` lets unit tests drive the throttle backoff
+ * without real waits. Mirrors `describeTypeRetryDelays` in
+ * `src/provisioning/describe-type.ts`, which this retry is modeled on.
+ */
+export const securityGroupRuleLookupRetryDelays: { sleep?: (ms: number) => Promise<void> } = {};
+
+/**
+ * Retries after the first attempt, THROTTLE-shaped failures only. At the
+ * default backoff (1s -> 2s -> 4s -> 8s) this adds at most ~15s of sleep,
+ * which is small next to what it prevents: `cdkd export` is all-or-nothing, so
+ * one `RequestLimitExceeded` — the commonest EC2 Describe failure there is —
+ * would otherwise abort the WHOLE run. A non-throttle failure (a missing
+ * `ec2:DescribeSecurityGroupRules` being the important one) is surfaced
+ * immediately, since it cannot heal by waiting.
+ */
+const MAX_SG_RULE_THROTTLE_RETRIES = 4;
+
+/**
+ * Does this failure say the CALLER lacks permission, as opposed to anything
+ * else AWS can fail with?
+ *
+ * Only these get the "Grant ec2:DescribeSecurityGroupRules" sentence. Sending
+ * every failure to that remedy is how a throttle got reported as a permissions
+ * problem: the user checks a policy that was correct all along, while the
+ * actual advice ("re-run it") goes unsaid.
+ */
+function isAuthorizationShapedError(err: unknown): boolean {
+  const name = err instanceof Error ? err.name : '';
+  const message = err instanceof Error ? err.message : String(err);
+  return /AccessDenied|UnauthorizedOperation|AuthFailure|not authorized to perform/i.test(
+    `${name} ${message}`
+  );
+}
+
+/**
+ * Walk EVERY ingress/egress rule AWS holds on one security group, retrying a
+ * throttled page (issue [#1791](https://github.com/go-to-k/cdkd/issues/1791)
+ * review).
+ *
+ * Returns the failure rather than throwing it, because the caller owns the
+ * message: every refusal here names the cdkd ROW that could not be resolved,
+ * and this function does not know which row (possibly rows, via the memo)
+ * asked.
+ */
+async function describeAllSecurityGroupRules(
+  groupId: string,
+  ec2Client: EC2Client
+): Promise<SecurityGroupRuleLookup> {
+  const rules: SecurityGroupRule[] = [];
+  let nextToken: string | undefined;
+  let pages = 0;
+  do {
+    if (pages >= MAX_SG_RULE_PAGES) {
+      return { ok: false, kind: 'truncated' };
+    }
+    let resp: DescribeSecurityGroupRulesResult;
+    try {
+      resp = await withRetry(
+        () =>
+          ec2Client.send(
+            new DescribeSecurityGroupRulesCommand({
+              Filters: [{ Name: 'group-id', Values: [groupId] }],
+              MaxResults: SG_RULE_PAGE_SIZE,
+              ...(nextToken && { NextToken: nextToken }),
+            })
+          ),
+        `DescribeSecurityGroupRules(${groupId})`,
+        {
+          maxRetries: MAX_SG_RULE_THROTTLE_RETRIES,
+          isRetryable: (_message, error) => isThrottlingError(error),
+          logger: getLogger().child('Export'),
+          ...(securityGroupRuleLookupRetryDelays.sleep
+            ? { sleep: securityGroupRuleLookupRetryDelays.sleep }
+            : {}),
+        }
+      );
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      const kind = isAuthorizationShapedError(err)
+        ? 'auth'
+        : isThrottlingError(err)
+          ? 'throttled'
+          : 'failed';
+      return { ok: false, kind, detail };
+    }
+    rules.push(...(resp.SecurityGroupRules ?? []));
+    nextToken = resp.NextToken;
+    pages += 1;
+  } while (nextToken);
+  return { ok: true, rules };
+}
+
+/**
+ * {@link describeAllSecurityGroupRules}, memoized per GROUP for the lifetime of
+ * one {@link buildImportPlan} call — see
+ * {@link IdentifierBackfillDeps.securityGroupRuleCache}.
+ *
+ * The PROMISE is cached, not its resolution, so rows resolved concurrently on
+ * one group also share a single walk rather than racing to start their own.
+ */
+function cachedSecurityGroupRules(
+  groupId: string,
+  { ec2Client, securityGroupRuleCache }: IdentifierBackfillDeps
+): Promise<SecurityGroupRuleLookup> {
+  const cached = securityGroupRuleCache.get(groupId);
+  if (cached) return cached;
+  const pending = describeAllSecurityGroupRules(groupId, ec2Client);
+  securityGroupRuleCache.set(groupId, pending);
+  return pending;
+}
+
+/**
+ * What to DO about a row more than one AWS rule matches — the part of the
+ * refusal that is about the ambiguity itself rather than about how cdkd
+ * noticed it.
+ *
+ * Written once because TWO arms below report a matched count above one: the
+ * plain `> 1` refusal, and the unusable-id refusal (whose own remedy is "open
+ * a cdkd issue" — right about the unreadable id, useless about the ambiguity).
+ * A row that hits the second arm has BOTH problems, and before this was shared
+ * it was the one row whose user never saw these two causes at all.
+ *
+ * Carries no row identity, so it can be appended to either message.
+ */
+const SG_INGRESS_AMBIGUITY_REMEDY =
+  `Two causes, with different remedies. (1) ONE resource declaring MORE THAN ONE source (e.g. ` +
+  `both CidrIp and CidrIpv6 on the same resource), for which AWS mints one rule per source: ` +
+  `split it into one AWS::EC2::SecurityGroupIngress resource per source, which is also the ` +
+  `shape CloudFormation will manage after the export. (2) TWO DISTINCT ` +
+  `AWS::EC2::SecurityGroupIngress resources that differ only by SOURCE — port 443 from a CIDR ` +
+  `and port 443 from a peer security group, say. cdkd's composite physical id carries no ` +
+  `source, so those two rows carry byte-identical ids and splitting is not their remedy: set ` +
+  `the row's attributes.Id to the 'sgr-...' id that belongs to it (cdkd then resolves from ` +
+  `state and issues no lookup at all), or remove the row from the stack before exporting. Then ` +
+  `re-run cdkd export.`;
+
+/** The remedy every refusal below ends with — one place, so they cannot drift. */
+function sgIngressExportEscapeHatch(logicalId: string): string {
+  return (
+    `You can instead remove '${logicalId}' from the stack before exporting — the rule stays in ` +
+    `AWS and can be re-declared in CloudFormation afterwards.`
+  );
+}
+
+/**
+ * Live-read backfill of the `sgr-...` rule id for an
+ * `AWS::EC2::SecurityGroupIngress` row that state does not carry one for
+ * (issue [#1791](https://github.com/go-to-k/cdkd/issues/1791)).
+ *
+ * ## Why a live read at all
+ *
+ * Every row written by a cdkd older than issue #1761 has `attributes: {}`, and
+ * `cdkd export` is ALL-OR-NOTHING — so ONE such row makes a whole stack
+ * un-exportable. The obvious workaround does not exist: AWS returns the id only
+ * from `AuthorizeSecurityGroupIngress`'s own response, so a no-op `cdkd deploy`
+ * records nothing and the row is exactly as unexportable afterwards. Only a
+ * re-authorization (a property change, or a destroy + deploy) heals it, which
+ * is a traffic interruption to pay for a read cdkd can perform itself.
+ *
+ * ## Why the match is on the composite's tuple, and why EXACTLY ONE
+ *
+ * The row's identity, as far as cdkd state is concerned, IS
+ * `<groupId>|<ipProtocol>|<fromPort>|<toPort>` — the tuple its own revoke call
+ * needs. So the tuple is the most cdkd can filter on, and two AWS rules sharing
+ * it are two rules cdkd's own physical id cannot tell apart either. Adopting
+ * one of them would record an identifier that names the wrong AWS object, which
+ * is the failure mode the #1761 already-exists arm's "exactly one" rule exists
+ * to prevent — so ambiguity REFUSES, naming the candidates.
+ *
+ * The commonest ambiguity is the multi-source rule the state-only message
+ * already describes: a resource declaring both `CidrIp` and `CidrIpv6` makes
+ * AWS mint one rule PER SOURCE, both with this exact tuple. Splitting the
+ * resource is the remedy in that case, and it is the same remedy CloudFormation
+ * will want after the export. It is NOT the only cause, which is why the
+ * refusal names two: TWO DISTINCT `AWS::EC2::SecurityGroupIngress` resources
+ * differing only by source share one tuple as well — cdkd's composite carries
+ * no source — and those are already one resource per source, so the remedy
+ * there is to repair the row's `attributes.Id` (or drop the row) instead.
+ *
+ * Deliberately NOT narrowed by the recorded SOURCE (`CidrIp` and friends) even
+ * though state carries it: {@link CompositePhysicalIdContext} does not carry
+ * `properties`, and widening it to make ONE ambiguous case resolvable would
+ * also make the export adopt a rule the physical id in state does not uniquely
+ * name — a row that looks adopted while `cdkd destroy` would revoke a different
+ * one. Refusing is the answer that keeps state and AWS agreeing.
+ */
+async function backfillSecurityGroupIngressRuleId(
+  { logicalId, physicalId }: CompositePhysicalIdContext,
+  deps: IdentifierBackfillDeps
+): Promise<string> {
+  const tuple = parseSecurityGroupIngressComposite(physicalId);
+  if (!tuple) {
+    throw new Error(
+      `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}', and its ` +
+        `physical id '${physicalId}' is not cdkd's ` +
+        `'<groupId>|<ipProtocol>|<fromPort>|<toPort>' composite either, so cdkd cannot look the ` +
+        `rule up in AWS to recover the id CloudFormation IMPORT needs. Repair the record's ` +
+        `physicalId (or its attributes.Id, which may be the 'sgr-...' id verbatim) and re-run ` +
+        `cdkd export. ${sgIngressExportEscapeHatch(logicalId)}`
+    );
+  }
+
+  const portRange =
+    tuple.fromPort === tuple.toPort ? `${tuple.fromPort}` : `${tuple.fromPort}-${tuple.toPort}`;
+  const tupleNote = `protocol '${tuple.ipProtocol}', ports ${portRange} on security group '${tuple.groupId}'`;
+
+  const lookup = await cachedSecurityGroupRules(tuple.groupId, deps);
+  if (!lookup.ok) {
+    if (lookup.kind === 'truncated') {
+      throw new Error(
+        `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}', and the ` +
+          `DescribeSecurityGroupRules lookup on '${tuple.groupId}' was still paginating after ` +
+          `${MAX_SG_RULE_PAGES} pages — cdkd cannot prove a match is unique without seeing the ` +
+          `whole group, and adopting an unproven id would name the wrong rule. ` +
+          `${sgIngressExportEscapeHatch(logicalId)}`
+      );
+    }
+    // One remedy per CAUSE. "Grant the permission" is right for exactly one of
+    // these three, and saying it for a throttle sends the user to audit a
+    // policy that was never the problem.
+    const remedy =
+      lookup.kind === 'auth'
+        ? `Grant ec2:DescribeSecurityGroupRules and re-run cdkd export.`
+        : lookup.kind === 'throttled'
+          ? `AWS throttled the lookup and cdkd retried it ${MAX_SG_RULE_THROTTLE_RETRIES} times ` +
+            `before giving up — no permission is missing. Re-run cdkd export once the account's ` +
+            `EC2 describe rate has recovered.`
+          : `Re-run cdkd export once that cause is resolved.`;
+    throw new Error(
+      `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}' (the rule was ` +
+        `deployed by a cdkd older than https://github.com/go-to-k/cdkd/issues/1761), and the ` +
+        `DescribeSecurityGroupRules lookup that would have recovered it failed: ` +
+        `${lookup.detail}. ${remedy} ${sgIngressExportEscapeHatch(logicalId)}`
+    );
+  }
+
+  // The MATCHES are counted BEFORE any is discarded for carrying an unusable
+  // id, because "exactly one" is a claim about how many rules match — not
+  // about how many usable ids survived a filter. Folding the two together
+  // collapses a genuine 2-match whose other candidate AWS reported without an
+  // id into `length === 1` and adopts the survivor, which is precisely the
+  // wrong-rule adoption this discipline exists to prevent (and it made the
+  // zero case report "found NO ingress rule matching <tuple>" when rules did
+  // in fact match).
+  const matched = lookup.rules.filter((rule) => ruleMatchesIngressTuple(rule, tuple));
+  const ids = matched
+    .map((rule) => rule.SecurityGroupRuleId)
+    .filter((id): id is string => typeof id === 'string' && SG_RULE_ID_PATTERN.test(id.trim()))
+    .map((id) => id.trim());
+
+  // No `matched.length > 0 &&` guard: `ids` is derived from `matched` by a
+  // filter, so an empty `matched` gives an empty `ids` and `0 < 0` is already
+  // false. The conjunct could not change the answer, and a reader who found it
+  // there would reasonably assume it could.
+  if (ids.length < matched.length) {
+    const unusable = matched
+      .filter(
+        (rule) =>
+          !(
+            typeof rule.SecurityGroupRuleId === 'string' &&
+            SG_RULE_ID_PATTERN.test(rule.SecurityGroupRuleId.trim())
+          )
+      )
+      .map((rule) =>
+        typeof rule.SecurityGroupRuleId === 'string' ? `'${rule.SecurityGroupRuleId}'` : '<absent>'
+      );
+    // A matched count above one means this row is ALSO the genuine ambiguity
+    // case, and the unreadable id is then the lesser of its two problems: even
+    // if AWS had reported every id, cdkd still could not say which rule the row
+    // is. Without this the user gets "open a cdkd issue" and never sees the
+    // remedy they can actually act on, because that remedy lives only in the
+    // `> 1` message this branch pre-empts.
+    // The remedy tells the user to set `attributes.Id` to the id that belongs
+    // to this row, so name the ids cdkd COULD read — otherwise it asks them to
+    // pick a value it saw and withheld.
+    const readableNote =
+      ids.length > 0
+        ? ` The readable candidates cdkd did see: ${ids.map((id) => `'${id}'`).join(', ')}.`
+        : '';
+    const ambiguityNote =
+      matched.length > 1
+        ? ` Note that ${matched.length} rules matching one row is an ambiguity in its own ` +
+          `right, which cdkd could not resolve even if every id were readable: ` +
+          `${SG_INGRESS_AMBIGUITY_REMEDY}${readableNote}`
+        : '';
+    throw new Error(
+      `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}', and a live ` +
+        `DescribeSecurityGroupRules lookup found ${matched.length} ingress rule(s) matching ` +
+        `${tupleNote}, but ${unusable.length} of them carry no usable 'sgr-...' rule id (AWS ` +
+        `reported ${unusable.join(', ')}). cdkd adopts an id only on an EXACTLY ONE match, and ` +
+        `that is a count of MATCHING RULES — so discarding the unreadable ones first would let ` +
+        `a genuine two-match pass as "exactly one" and record an identifier naming the wrong ` +
+        `rule. cdkd refuses instead. This is a DescribeSecurityGroupRules response shape cdkd ` +
+        `does not expect; please open a cdkd issue if it persists.${ambiguityNote} ` +
+        `${sgIngressExportEscapeHatch(logicalId)}`
+    );
+  }
+
+  if (ids.length === 1) return ids[0]!;
+
+  if (ids.length === 0) {
+    throw new Error(
+      `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}' (the rule was ` +
+        `deployed by a cdkd older than https://github.com/go-to-k/cdkd/issues/1761), and a live ` +
+        `DescribeSecurityGroupRules lookup found NO ingress rule matching ${tupleNote} — so ` +
+        `cdkd has no id to hand CloudFormation IMPORT. Either the rule was revoked outside cdkd, ` +
+        `or the group lives in a region other than the one this export is running against. Run ` +
+        `cdkd deploy to reconcile the stack, then re-run cdkd export. ` +
+        `${sgIngressExportEscapeHatch(logicalId)}`
+    );
+  }
+
+  throw new Error(
+    `cdkd state records no 'sgr-...' security-group rule id for '${logicalId}', and a live ` +
+      `DescribeSecurityGroupRules lookup found ${ids.length} ingress rules matching ${tupleNote} ` +
+      `(${ids.join(', ')}). cdkd's physical id identifies a rule only by group, protocol and ` +
+      `port range, so it cannot say which of them '${logicalId}' is, and CloudFormation IMPORT ` +
+      `needs exactly one — adopting either would record the wrong rule. ` +
+      `${SG_INGRESS_AMBIGUITY_REMEDY} ${sgIngressExportEscapeHatch(logicalId)}`
+  );
+}
+
+/**
+ * Resolve a registered type's CFn identifier VALUE, consulting AWS only when
+ * cdkd state could not answer (issue
+ * [#1791](https://github.com/go-to-k/cdkd/issues/1791)).
+ *
+ * The ordering is the whole design: `resolve` is tried FIRST and its throw is
+ * the only trigger for the live read, so a row whose state already carries the
+ * identifier — every row written by a current cdkd — issues no AWS call at all,
+ * and a caller with no {@link IdentifierBackfillDeps} keeps exactly the
+ * pre-#1791 behavior (the state-only refusal, verbatim).
+ *
+ * The backfill's own error REPLACES the state-only one when it fires: by then
+ * cdkd has asked AWS, so the state-only message's central remedy ("re-deploy so
+ * cdkd records the id") is not merely unhelpful but has been disproven for this
+ * row — the live read already found zero, or too many.
+ */
+async function resolveIdentifierValue(
+  entry: CompositePhysicalIdIdentifier,
+  ctx: CompositePhysicalIdContext,
+  deps: IdentifierBackfillDeps | undefined
+): Promise<string> {
+  try {
+    return entry.resolve(ctx);
+  } catch (stateOnlyError) {
+    if (!entry.backfill || !deps) throw stateOnlyError;
+    return await entry.backfill(ctx, deps);
+  }
 }
 
 /**
@@ -1553,6 +2132,13 @@ export function hasCompositePhysicalIdIdentifier(resourceType: string): boolean 
  * Exported for unit tests — resolve the CFn identifier value for a registered
  * composite-physicalId type from the given cdkd state. Throws when no entry is
  * registered (same shape as `splitCompositePhysicalId`'s no-splitter error).
+ *
+ * INSPECTION / TEST ONLY, and deliberately STATE-ONLY: it calls `entry.resolve`
+ * and never `entry.backfill`, so a row a live read could heal (issue #1791)
+ * throws here. Wiring this into a command path would silently lose the
+ * backfill — the command path goes through {@link resolveResourceIdentifier}
+ * (and thus {@link resolveIdentifierValue}), which is where the AWS clients are
+ * available to consult.
  */
 export function resolveCompositePhysicalIdIdentifier(
   resourceType: string,
@@ -1986,6 +2572,10 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       await buildImportPlan(state, template, awsClients.cloudFormation, resolvedStackName, {
         recreateImportUnsupported: options.recreateImportUnsupported,
         skipImportSupportPreflight: options.skipImportSupportPreflight,
+        // Consulted only for a row cdkd state cannot answer for (issue #1791).
+        // Same client family as `awsClients.cloudFormation` above, so the
+        // region assumption is the one the whole command already makes.
+        ec2Client: awsClients.ec2,
       });
 
     // `blocked` resources are genuinely unfixable (missing state, unknown
@@ -2116,6 +2706,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           rootParameters: rootParametersForNested,
           deps: {
             cfnClient: awsClients.cloudFormation,
+            ec2Client: awsClients.ec2,
             stateBackend,
             lockManager,
             uploadOpts: {
@@ -3156,7 +3747,19 @@ export async function buildImportPlan(
   template: Record<string, unknown>,
   cfnClient: AwsClients['cloudFormation'],
   parentStackName: string,
-  options: { recreateImportUnsupported: boolean; skipImportSupportPreflight?: boolean } = {
+  options: {
+    recreateImportUnsupported: boolean;
+    skipImportSupportPreflight?: boolean;
+    /**
+     * Live-read seam for the identifier BACKFILL (issue
+     * [#1791](https://github.com/go-to-k/cdkd/issues/1791)). Optional so a
+     * caller with no EC2 client keeps the pre-#1791 state-only behavior
+     * verbatim; the real command path always supplies it, and it is consulted
+     * ONLY for a row whose state could not answer — see
+     * {@link resolveIdentifierValue}.
+     */
+    ec2Client?: EC2Client;
+  } = {
     recreateImportUnsupported: true,
   }
 ): Promise<{
@@ -3181,6 +3784,14 @@ export async function buildImportPlan(
   const nestedStackRows: NestedStackRow[] = [];
   const blocked: BlockedResource[] = [];
   const identifierCache = new Map<string, PrimaryIdentifierCacheEntry>();
+  // Built ONCE per call, not per row: it carries the per-group
+  // DescribeSecurityGroupRules memo, so a per-row object would walk the same
+  // security group again for every rule sitting on it. Per CALL and not
+  // module-global for the reason the field's own docs give — a `--concurrency`
+  // run exports several stacks through separate invocations of this function.
+  const backfillDeps = options.ec2Client
+    ? createIdentifierBackfillDeps(options.ec2Client)
+    : undefined;
 
   for (const [logicalId, raw] of Object.entries(templateResources as Record<string, unknown>)) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
@@ -3317,13 +3928,14 @@ export async function buildImportPlan(
         });
         continue;
       }
-      resolved = resolveResourceIdentifier(
+      resolved = await resolveResourceIdentifier(
         resourceType,
         logicalId,
         stateEntry.physicalId,
         stateEntry.properties ?? {},
         stateEntry.attributes ?? {},
-        schemaInfo
+        schemaInfo,
+        backfillDeps
       );
     } catch (err) {
       blocked.push({
@@ -3449,14 +4061,15 @@ type PrimaryIdentifierCacheEntry = {
  * what keeps `buildImportPlan` to ONE DescribeType per type across both the
  * IMPORT pre-flight and this resolution.
  */
-function resolveResourceIdentifier(
+async function resolveResourceIdentifier(
   resourceType: string,
   logicalId: string,
   physicalId: string,
   properties: Record<string, unknown>,
   attributes: Record<string, unknown>,
-  entry: PrimaryIdentifierCacheEntry
-): CompositeIdResult {
+  entry: PrimaryIdentifierCacheEntry,
+  backfillDeps: IdentifierBackfillDeps | undefined
+): Promise<CompositeIdResult> {
   // Consulted on BOTH branches (i.e. before either can run): "cdkd's id is
   // composite" and "the CFn identifier is multi-field" are independent facts,
   // and conflating them is the #1659 defect.
@@ -3473,7 +4086,11 @@ function resolveResourceIdentifier(
           `its identifier is now composite too)`
       );
     }
-    const value = compositeIdentifier.resolve({ logicalId, physicalId, attributes });
+    const value = await resolveIdentifierValue(
+      compositeIdentifier,
+      { logicalId, physicalId, attributes },
+      backfillDeps
+    );
     return {
       resourceIdentifier: { [compositeIdentifier.field]: value },
       // Every registered field is `readOnlyProperties` (live DescribeType,
@@ -5093,6 +5710,12 @@ export interface PerStackImportLoopResult {
  */
 export interface RunPerStackImportLoopDeps {
   cfnClient: AwsClients['cloudFormation'];
+  /**
+   * Live-read seam for the identifier BACKFILL (issue #1791). Optional for the
+   * same reason `buildImportPlan`'s is: a caller without one keeps the
+   * state-only refusal.
+   */
+  ec2Client?: AwsClients['ec2'];
   stateBackend: S3StateBackend;
   lockManager: LockManager;
   uploadOpts: ChangeSetUploadOpts;
@@ -5261,6 +5884,8 @@ export async function runPerStackImportLoop(args: {
         // field optional, and `exactOptionalPropertyTypes` rejects an explicit
         // `undefined` for an optional target property.
         skipImportSupportPreflight: options.skipImportSupportPreflight === true,
+        // Same reason for the conditional spread (issue #1791).
+        ...(deps.ec2Client && { ec2Client: deps.ec2Client }),
       }
     );
     if (plan.blocked.length > 0) {
