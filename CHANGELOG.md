@@ -1,3 +1,10 @@
+## [0.283.33](https://github.com/go-to-k/cdkd/compare/v0.283.32...v0.283.33) (2026-08-18)
+
+
+### Bug Fixes
+
+* **drift:** reconcile the redacted state baseline with the resolved AWS snapshot ([#1946](https://github.com/go-to-k/cdkd/issues/1946)) ([6bf2811](https://github.com/go-to-k/cdkd/commit/6bf2811dc694cc9f4b2a244fc15f0cbd4fcafe41))
+
 ## [0.283.32](https://github.com/go-to-k/cdkd/compare/v0.283.31...v0.283.32) (2026-08-18)
 
 
