@@ -117,6 +117,34 @@ The index is therefore **not load-bearing for correctness** — it can
 disappear entirely without affecting cdkd's safety guarantees, only
 its performance.
 
+### An `Export.Name` that collides with an output NAME is skipped
+
+`state.outputs` — the bag the index is built from — is keyed by output
+NAME, and an output carrying `Export:` is additionally aliased under its
+export name in that same bag. So the two key spaces share one namespace,
+and a template whose `Export.Name` is spelled exactly like ANOTHER
+output's name asks cdkd to store two different values under one key.
+
+cdkd resolves that deterministically: the declared output name wins, the
+export alias is **skipped**, and the deploy logs a warning naming both
+outputs (issue
+[#1919](https://github.com/go-to-k/cdkd/issues/1919)). Nothing reachable
+is lost — a consumer resolving that export name reads the key the other
+output already owns — so the export was unreachable by name either way;
+the warning tells you to rename one of the two. Before this the surviving
+value depended on template ORDER, and the secret redaction
+(issue [#1910](https://github.com/go-to-k/cdkd/issues/1910)), which
+positions each persisted leaf by its own unresolved template value, could
+then store one output's `{{resolve:...}}` reference as the other's value.
+
+A condition-pruned output still owns its name for this purpose: it
+publishes no value this deploy, but it remains declared, so an alias
+landing on its name is skipped too. An output exporting under its OWN
+name is not a collision — the alias is the same key with the same value.
+
+CDK never generates a colliding shape; this is reachable only from a
+hand-written template.
+
 ---
 
 ## State schema v4

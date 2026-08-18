@@ -4527,13 +4527,55 @@ export class DeployEngine {
               ? output.Export.Name
               : await this.resolver.resolve(output.Export.Name, context);
           if (typeof exportName === 'string') {
-            outputs[exportName] = value;
-            // The alias is a SECOND key holding the same value, so it needs the
-            // same POSITION source or it falls to the value scan and collapses
-            // onto a sibling's expression (issue #1910 review). This bag feeds
-            // `updateForStack`, so a collapsed alias hands a downstream
-            // `Fn::ImportValue` consumer the WRONG reference.
-            this.outputsTemplateSource[exportName] = output.Value;
+            // COLLISION GUARD (issue #1919): an `Export.Name` spelled exactly
+            // like ANOTHER declared output's NAME must not be aliased at all.
+            //
+            // Two writers key this one bag: the alias below, and the post-loop
+            // pass at the end of this method that writes the POSITION source
+            // for every declared output NAME. On a collision they disagree —
+            // the alias puts THIS output's resolved value under key `A` while
+            // the post-loop pass puts output `A`'s UNRESOLVED value under the
+            // same key — and `redactByPath`'s expression arm then returns the
+            // source leaf verbatim, persisting A's `{{resolve:...}}` expression
+            // as THIS output's value into state and the exports index. That is
+            // the wrong-reference class issue #1910 exists to remove, one layer
+            // up. It is also ORDER-DEPENDENT: the corruption needs the
+            // exporting output to be iterated AFTER the colliding-name output,
+            // otherwise the latter's own write reclaims the key and only the
+            // alias is lost.
+            //
+            // Of the issue's two directions this takes SKIP-AND-WARN rather
+            // than re-keying the source pass by the alias rule. Matching the
+            // source pass to the alias's write order would keep the two bags
+            // consistent, but it would leave `outputs[A]` holding a DIFFERENT
+            // output's value — order-dependently — which is corruption of the
+            // output named `A` even once its expression is right. Skipping
+            // instead partitions the key space by construction: declared output
+            // NAMES belong to the post-loop pass, export aliases to this one,
+            // and no key is in both. Nothing reachable is lost, because a
+            // consumer resolving export `A` reads key `A` from the exports
+            // index, and that key is output `A`'s — so the export was
+            // unreachable by name either way. WARN, since that is a
+            // hand-written-template mistake cdkd cannot honour.
+            //
+            // A collision with the output's OWN name is not one: the alias
+            // rewrites the identical key with the identical value, and both
+            // writers then carry the same source.
+            if (exportName !== outputKey && Object.hasOwn(template.Outputs, exportName)) {
+              this.logger.warn(
+                `Output ${outputKey} exports as "${exportName}", which is also the name of another output in this stack — ` +
+                  `skipping the export alias so output ${exportName} keeps its own value. ` +
+                  `Rename the export (or that output) to make the export reachable.`
+              );
+            } else {
+              outputs[exportName] = value;
+              // The alias is a SECOND key holding the same value, so it needs the
+              // same POSITION source or it falls to the value scan and collapses
+              // onto a sibling's expression (issue #1910 review). This bag feeds
+              // `updateForStack`, so a collapsed alias hands a downstream
+              // `Fn::ImportValue` consumer the WRONG reference.
+              this.outputsTemplateSource[exportName] = output.Value;
+            }
           }
         }
       } catch (error) {
@@ -4580,6 +4622,12 @@ export class DeployEngine {
     // runs more than once per deploy (the no-change re-check re-resolves), and
     // a condition-pruned output is skipped by the loop above, so overwriting
     // would drop a source this run legitimately did not revisit.
+    //
+    // This pass owns every DECLARED output name — including a condition-pruned
+    // one, which still writes its source here while contributing no value. That
+    // is why the alias guard above tests the declared set rather than the
+    // surviving one: a pruned sibling would clobber an alias just the same
+    // (issue #1919).
     for (const [outputKey, output] of Object.entries(template.Outputs)) {
       this.outputsTemplateSource[outputKey] = output.Value;
     }
