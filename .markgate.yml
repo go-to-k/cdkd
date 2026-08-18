@@ -121,6 +121,27 @@ gates:
       # repo builds via vp/tsdown and lints/formats via Oxlint/Oxfmt,
       # all configured in vite.config.ts).
       - "vite.config.ts"
+      # .mise.toml pins the BINARY that runs those definitions (`vp`), so
+      # it has strictly more claim to this scope than the file describing
+      # them — and it was the only one missing (issue #1954, the #1592
+      # pattern again: enforcement input sitting outside the gate that
+      # guards it). A `vp` bump changes what typecheck / lint / build /
+      # test mean, so a marker recorded under the old toolchain must not
+      # keep reporting fresh.
+      #
+      # It pins `markgate` too, and that is deliberately NOT extended to
+      # the integ gates. Those markers attest to real-AWS behavior, which
+      # a tool upgrade does not change, so binding them here would force a
+      # deploy + destroy run on a version bump for no evidence gained.
+      # The one case that would matter — the marker's MEANING changing
+      # out from under it — markgate already self-detects: the 0.3.3 ->
+      # 0.4.x bump in #1956 moved integ-destroy from `hash: files` to
+      # `hash: diff`, and every existing marker reported
+      # `mismatch (hash type changed: files -> diff)` on its next verify
+      # rather than silently passing. What remains uncovered is a bump
+      # that changes behavior WITHIN one hash type; that is accepted here
+      # in exchange for not paying real AWS on every dependency bump.
+      - ".mise.toml"
 
   docs:
     hash: files
