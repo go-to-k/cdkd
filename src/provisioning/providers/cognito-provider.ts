@@ -39,7 +39,7 @@ import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/
 import { generateResourceName } from '../resource-name.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { replayWarn, requireConfigString } from '../config-shape.js';
+import { replayWarn, requireConfigString, type ConfigStringOptions } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -137,10 +137,59 @@ const MFA_FACTOR_EMAIL_OTP = 'EMAIL_OTP';
 
 /**
  * CFn path every `MfaConfiguration` shape refusal in this provider reports.
- * One constant so the three read sites (CreateUserPool, UpdateUserPool,
- * SetUserPoolMfaConfig) cannot word the same fault differently.
+ * One constant so the three sites that READ the property -- `create`,
+ * `update`, and `narrowMfaConfiguration` (the diff / effectiveProperties
+ * side) -- cannot word the same fault differently. `buildMfaConfigRequest`
+ * performs no read of its own; it is handed the already-guarded value.
  */
 const MFA_CONFIGURATION_PATH = 'AWS::Cognito::UserPool MfaConfiguration';
+
+/**
+ * How the template's `MfaConfiguration` reached us, for messages that must not
+ * describe the wrong input.
+ *
+ * `readDeclaredMfaConfiguration` folds `blank` and `refused` into the same
+ * empty string -- both take the default -- so the sent value alone can no
+ * longer tell them apart, and a message keyed on it would blame the wrong
+ * thing. Three arms, not two: `absent` means "add the property", while `blank`
+ * and `refused` both mean "repair the one you have", and only `refused`
+ * produced a shape-guard warning to refer back to.
+ */
+type DeclaredMfaConfigurationKind = 'absent' | 'blank' | 'refused' | 'usable';
+
+function classifyDeclaredMfaConfiguration(raw: unknown): DeclaredMfaConfigurationKind {
+  if (raw === undefined) return 'absent';
+  if (typeof raw !== 'string') return 'refused';
+  return raw.trim() === '' ? 'blank' : 'usable';
+}
+
+/**
+ * Read the template's `MfaConfiguration` through the shape guard AND fold a
+ * TRIMMED-BLANK value to absence.
+ *
+ * The fold is the load-bearing half. `requireConfigString` short-circuits on
+ * `fallback === '' && typeof value === 'string'` (config-shape.ts), so against
+ * the blank fallback this site uses it returns ANY string verbatim --
+ * including `'   '`. That value is truthy, so it rode the
+ * `if (mfaConfiguration && ...)` gates onto `CreateUserPool` / `UpdateUserPool`
+ * and the `|| default` in `buildMfaConfigRequest` onto `SetUserPoolMfaConfig`,
+ * where AWS rejects the enum and the deploy fails -- while the blank-value
+ * warning promised "the pool deploys with the default MFA configuration
+ * instead". Two spellings of blank behaved differently and the message
+ * described only one of them.
+ *
+ * Folding here rather than widening the guard keeps the change local to the
+ * one site whose fallback is blank, and makes the wire behavior match what the
+ * warning says: a blank declares nothing, so the default applies.
+ *
+ * Every read site MUST go through this, including `narrowMfaConfiguration` --
+ * a diff side that folded differently from the wire is the phantom drift this
+ * whole mechanism exists to remove.
+ */
+function readDeclaredMfaConfiguration(raw: unknown, options: ConfigStringOptions): string {
+  const value = requireConfigString(raw, '', MFA_CONFIGURATION_PATH, options);
+  return value.trim() === '' ? '' : value;
+}
 
 /**
  * Read `EnabledMfas` as the pair (recognized list, "the template asked for a
@@ -543,7 +592,7 @@ function narrowMfaConfiguration(properties: Record<string, unknown>): Record<str
   // diff must not throw, and must not warn either -- the provisioning path
   // announces the identical substitution, and warning here would emit it a
   // second time for a resource nothing is changing.
-  const declared = requireConfigString(raw, '', MFA_CONFIGURATION_PATH, { onUnusable: () => {} });
+  const declared = readDeclaredMfaConfiguration(raw, { onUnusable: () => {} });
   const sent = resolveSentMfaConfiguration(properties, declared);
   if (sent === raw) return properties;
   if (sent === undefined) {
@@ -638,9 +687,13 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * The twin of the blank-`EnabledMfas` warning one property over, and warned
    * for the same reason it is: the value stays absence ON THE WIRE (the
    * substitution is what CloudFormation's own default does), so only the
-   * silence is removed. `.trim()` so a whitespace-only value -- which
-   * `requireConfigString` also treats as blank against a non-blank fallback --
-   * is not a silent third spelling.
+   * silence is removed.
+   *
+   * `.trim()` matches the fold in {@link readDeclaredMfaConfiguration}, and the
+   * two must agree: `requireConfigString` does NOT treat whitespace-only as
+   * blank against the blank fallback this site uses, so before that fold a
+   * `'   '` was warned about here and then sent to AWS verbatim -- this message
+   * describing a default that never applied.
    */
   private warnOnBlankMfaConfiguration(raw: unknown): void {
     if (typeof raw !== 'string' || raw.trim() !== '') return;
@@ -736,10 +789,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     // runs before `CreateUserPool` — nothing to roll back.
     let mfaConfiguration: string;
     try {
-      mfaConfiguration = requireConfigString(
+      mfaConfiguration = readDeclaredMfaConfiguration(
         properties['MfaConfiguration'],
-        '',
-        MFA_CONFIGURATION_PATH,
         replayWarn(this.logger, context)
       );
       this.warnOnBlankMfaConfiguration(properties['MfaConfiguration']);
@@ -947,7 +998,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     physicalId: string,
     properties: Record<string, unknown>,
     declaredMfaConfiguration: string,
-    options: { liveMfaConfiguration?: string; mfaConfigurationWasDeclared?: boolean } = {}
+    options: {
+      liveMfaConfiguration?: string;
+      liveReadFailed?: boolean;
+      declaredKind?: DeclaredMfaConfigurationKind;
+    } = {}
   ): Promise<void> {
     const request = buildMfaConfigRequest(
       physicalId,
@@ -956,42 +1011,105 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       declaredMfaConfiguration
     );
     if (!request) return;
-    // The announcement decision keys on the BUILT request, so there is exactly
-    // one definition of "this deploy resolves to OFF". Only the live-value READ
-    // moves earlier (see `readLiveMfaConfiguration`'s call site in `update()`);
-    // `create()` passes no live value, so it can never warn -- correct, since a
-    // fresh pool has no value to downgrade.
-    //
-    // The live-value test is load-bearing in the SILENT direction too: without
-    // it this fires on every failed probe (`live value was undefined`) and on
-    // every pool already at OFF, which is not a downgrade at all.
-    if (
-      declaredMfaConfiguration === '' &&
-      request.MfaConfiguration === 'OFF' &&
-      (options.liveMfaConfiguration === 'ON' || options.liveMfaConfiguration === 'OPTIONAL')
-    ) {
-      // `declaredMfaConfiguration === ''` covers TWO different inputs and they
-      // need different sentences: the template omitted the property, or it
-      // declared one the shape guard REFUSED and substituted. Saying "declares
-      // no MfaConfiguration" in the second case is simply false -- one was
-      // declared -- and points the user at adding a property they already have.
-      const cause = options.mfaConfigurationWasDeclared
-        ? `the declared MfaConfiguration was refused as malformed (see the warning above), so ` +
-          `this update falls back to sending MfaConfiguration=OFF`
-        : `the template declares no MfaConfiguration, so this update sends ` +
-          `MfaConfiguration=OFF (CloudFormation's own default)`;
-      const remedy = options.mfaConfigurationWasDeclared
-        ? `Repair MfaConfiguration to a literal ${options.liveMfaConfiguration} to keep it.`
-        : `Declare MfaConfiguration: ${options.liveMfaConfiguration} in the template to keep it.`;
-      this.logger.warn(
-        `UserPool ${physicalId}: ${cause} to a pool whose live value was ` +
-          `${options.liveMfaConfiguration} — SetUserPoolMfaConfig is a full replace, so MFA is ` +
-          `turned OFF. ${remedy}`
-      );
-    }
+
     await this.retryOnTransientControlPlane(
       () => this.getClient().send(new SetUserPoolMfaConfigCommand(request)),
       `SetUserPoolMfaConfig(${physicalId})`
+    );
+
+    // Reported AFTER the call, so the past tense is true. Emitted before it,
+    // these lines asserted an OFF that never landed whenever
+    // SetUserPoolMfaConfig failed -- cosmetic, since the deploy then fails
+    // loudly, but a log line that describes a state AWS never reached is the
+    // kind of thing a later reader trusts.
+    this.reportMfaConfigurationOff(physicalId, request, declaredMfaConfiguration, options);
+  }
+
+  /**
+   * Say so when this deploy sends `MfaConfiguration=OFF` without the template
+   * having asked for OFF (issue #1925, third item).
+   *
+   * Everything here keys on the BUILT request, so there is exactly one
+   * definition of "this deploy resolves to OFF", and on `declaredMfaConfiguration
+   * === ''`, i.e. the template did not pin a usable value. `create()` passes
+   * neither a live value nor a `declaredKind`, so it reports nothing -- correct,
+   * since a fresh pool has no value to downgrade.
+   *
+   * Three outcomes rather than one, because the live value can be KNOWN,
+   * known-and-harmless, or UNAVAILABLE, and only the first is a downgrade that
+   * can be named:
+   *
+   *  - live `ON` / `OPTIONAL` -- a real downgrade; name the value being lost.
+   *  - live `OFF` -- not a downgrade at all; say nothing. This is the arm the
+   *    live-value test protects, and it is load-bearing in the SILENT
+   *    direction: without it every already-OFF pool and every failed probe
+   *    warned, the latter reading `live value was undefined`.
+   *  - live UNKNOWN (the probe failed) -- the case that made this necessary.
+   *    A malformed but TRUTHY value used to reach `UpdateUserPool`, AWS
+   *    rejected the enum, MFA stayed as it was and the deploy failed; now the
+   *    guard substitutes and the deploy exits 0 with MFA off. On a role lacking
+   *    `cognito-idp:GetUserPoolMfaConfig` -- exactly the role this arm exists
+   *    for -- the probe returns nothing, so without this the ONLY path that got
+   *    quieter than main would say nothing at all.
+   */
+  private reportMfaConfigurationOff(
+    physicalId: string,
+    request: SetUserPoolMfaConfigCommandInput,
+    declaredMfaConfiguration: string,
+    options: {
+      liveMfaConfiguration?: string;
+      liveReadFailed?: boolean;
+      declaredKind?: DeclaredMfaConfigurationKind;
+    }
+  ): void {
+    if (declaredMfaConfiguration !== '' || request.MfaConfiguration !== 'OFF') return;
+
+    // `declaredMfaConfiguration === ''` folds THREE different inputs and they
+    // need different sentences: the template omitted the property, declared a
+    // blank one, or declared one the shape guard REFUSED. Saying "declares no
+    // MfaConfiguration" for the latter two is false -- one WAS declared -- and
+    // points the user at adding a property they already have. Only `refused`
+    // emitted a shape-guard warning, so only it may refer back to one.
+    const kind = options.declaredKind ?? 'absent';
+    const cause =
+      kind === 'refused'
+        ? `the declared MfaConfiguration was refused as malformed (see the warning above), so ` +
+          `this update sent MfaConfiguration=OFF instead`
+        : kind === 'blank'
+          ? `the declared MfaConfiguration is blank, so it is treated as absent and this update ` +
+            `sent MfaConfiguration=OFF`
+          : `the template declares no MfaConfiguration, so this update sent ` +
+            `MfaConfiguration=OFF (CloudFormation's own default)`;
+    const remedy = (value: string) =>
+      kind === 'absent'
+        ? `Declare MfaConfiguration: ${value} in the template to keep it.`
+        : `Repair MfaConfiguration to a literal ${value} to keep it.`;
+
+    if (options.liveMfaConfiguration === 'ON' || options.liveMfaConfiguration === 'OPTIONAL') {
+      this.logger.warn(
+        `UserPool ${physicalId}: ${cause} to a pool whose live value was ` +
+          `${options.liveMfaConfiguration} — SetUserPoolMfaConfig is a full replace, so MFA is ` +
+          `now OFF. ${remedy(options.liveMfaConfiguration)}`
+      );
+      return;
+    }
+
+    if (options.liveReadFailed !== true) return;
+
+    // The live value could not be read, so whether this was a downgrade is
+    // unknowable -- but the OFF is not, and a DECLARED value that could not be
+    // used is the shape that turned a loud AWS rejection into a silent
+    // MFA-off deploy. Reported for an absent declaration too, one notch softer,
+    // since that path is unchanged from main.
+    const declaredClause =
+      kind === 'absent'
+        ? `the template declares no MfaConfiguration`
+        : `the declared MfaConfiguration could not be used`;
+    this.logger.warn(
+      `UserPool ${physicalId}: ${declaredClause}, so this update sent MfaConfiguration=OFF — ` +
+        `and the pool's previous MFA setting could not be read, so cdkd cannot say whether that ` +
+        `turned MFA off. Grant cognito-idp:GetUserPoolMfaConfig to the deploy role to have this ` +
+        `reported precisely. ${remedy('ON or OPTIONAL')}`
     );
   }
 
@@ -1031,37 +1149,40 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * **This adds `cognito-idp:GetUserPoolMfaConfig` to the permissions a deploy
    * role wants.** The action was previously needed only by `readCurrentState`
    * (drift / import), so a role scoped to deploying could legitimately lack it.
-   * That is exactly why the failure arm WARNS rather than logging at debug: on
-   * a least-privileged role the probe fails every time, and a debug-level note
-   * would leave the announcement silently inert on precisely the setups most
-   * likely to care about an MFA downgrade.
+   *
+   * A failure is REPORTED rather than swallowed, but not here: this method's
+   * gate is a deliberate SUPERSET of the announcement condition (see the call
+   * site in `update()`), so warning at the point of failure fired on templates
+   * that structurally cannot downgrade -- an `EnabledMfas` with no
+   * `MfaConfiguration` resolves to OPTIONAL, and a least-privileged role saw
+   * "cdkd cannot say whether it turns MFA off" on every deploy of it. The flag
+   * returned here is consumed by `reportMfaConfigurationOff`, which speaks only
+   * where the request actually resolves to OFF.
    */
-  private async readLiveMfaConfiguration(physicalId: string): Promise<string | undefined> {
+  private async readLiveMfaConfiguration(
+    physicalId: string
+  ): Promise<{ value?: string; failed: boolean }> {
     try {
       const live = await this.getClient().send(
         new GetUserPoolMfaConfigCommand({ UserPoolId: physicalId })
       );
-      return live.MfaConfiguration;
+      return live.MfaConfiguration !== undefined
+        ? { value: live.MfaConfiguration, failed: false }
+        : { failed: false };
     } catch (error) {
-      // Names the error CLASS only; AWS's raw message goes to debug. That
-      // message is not neutral text -- an `AccessDeniedException` here reads
-      // `User: arn:aws:sts::<account>:assumed-role/<role>/<session> is not
-      // authorized to perform: cognito-idp:GetUserPoolMfaConfig ...` -- so a
-      // default-verbosity line would print the account id, the role name and
-      // the session name. Same split as the `dynamodb-index-busy-delete`
-      // DescribeTable arm, for the same reason.
-      const errorName = error instanceof Error ? error.name : typeof error;
+      // The raw message stays at debug and never reaches the warning built from
+      // this flag. It is not neutral text -- an `AccessDeniedException` here
+      // reads `User: arn:aws:sts::<account>:assumed-role/<role>/<session> is
+      // not authorized to perform: cognito-idp:GetUserPoolMfaConfig ...` -- so
+      // a default-verbosity line would print the account id, the role name and
+      // the session name, into a warning that is persisted to the events store.
+      // Same split as the `dynamodb-index-busy-delete` DescribeTable arm.
       this.logger.debug(
-        `GetUserPoolMfaConfig failed for UserPool ${physicalId}: ` +
+        `GetUserPoolMfaConfig failed for UserPool ${physicalId} ` +
+          `(${error instanceof Error ? error.name : typeof error}): ` +
           `${error instanceof Error ? error.message : String(error)}`
       );
-      this.logger.warn(
-        `UserPool ${physicalId}: could not read the live MFA configuration (${errorName}), so ` +
-          `this deploy cannot report whether it turns MFA off. Grant ` +
-          `cognito-idp:GetUserPoolMfaConfig to the deploy role, or re-run with --verbose for ` +
-          `AWS's own message.`
-      );
-      return undefined;
+      return { failed: true };
     }
   }
 
@@ -1121,12 +1242,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     // would leave the resource not merely un-updatable but UN-ROLLBACKABLE,
     // with no template-side remedy. Same shape as `IAMAccessKeyProvider`'s
     // `Status` and `RDSDBProxyTargetGroupProvider`'s `TargetGroupName`.
-    const mfaConfiguration = requireConfigString(
-      properties['MfaConfiguration'],
-      '',
-      MFA_CONFIGURATION_PATH,
-      { onUnusable: (message) => this.logger.warn(message) }
-    );
+    const mfaConfiguration = readDeclaredMfaConfiguration(properties['MfaConfiguration'], {
+      onUnusable: (message) => this.logger.warn(message),
+    });
     this.warnOnBlankMfaConfiguration(properties['MfaConfiguration']);
 
     // Capture the live MFA configuration BEFORE `UpdateUserPool` can touch it
@@ -1139,7 +1257,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     // request, so the OPTIONAL/OFF default rule is never restated here -- the
     // cost of the looser gate is one extra read on an update that declares a
     // factor without an MfaConfiguration, and the result is simply unused.
-    const liveMfaConfiguration =
+    const liveMfa =
       mfaConfiguration === '' && hasMfaConfigProps(properties)
         ? await this.readLiveMfaConfiguration(physicalId)
         : undefined;
@@ -1273,8 +1391,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // UpdateUserPool — apply them via SetUserPoolMfaConfig after the main
       // update (no-op when none are present).
       await this.applyMfaConfig(physicalId, properties, mfaConfiguration, {
-        ...(liveMfaConfiguration !== undefined ? { liveMfaConfiguration } : {}),
-        mfaConfigurationWasDeclared: properties['MfaConfiguration'] !== undefined,
+        ...(liveMfa?.value !== undefined ? { liveMfaConfiguration: liveMfa.value } : {}),
+        ...(liveMfa?.failed === true ? { liveReadFailed: true } : {}),
+        declaredKind: classifyDeclaredMfaConfiguration(properties['MfaConfiguration']),
       });
 
       this.logger.debug(`Successfully updated Cognito User Pool ${logicalId}`);

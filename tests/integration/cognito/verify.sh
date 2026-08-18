@@ -477,8 +477,13 @@ echo "    OK: MFA-transition pool went OFF -> ON with SOFTWARE_TOKEN_MFA enabled
 # --- Assertion 10: the downgrade is ANNOUNCED (issue #1925 item 3) ----
 # The load-bearing half. Before the fix there was no message at all, so this
 # grep is what discriminates -- the wire behavior below is unchanged by design.
-if ! grep -q "the template declares no MfaConfiguration" "${UPDATE_LOG}"; then
-  echo "FAIL: the update turned MFA off on ${DOWNGRADE_POOL_ID} without announcing it (no 'the template declares no MfaConfiguration' warning in the deploy output)" >&2
+#
+# BOUND to this pool's id. The warning is emitted as `UserPool <id>: ...`, and
+# this stack deploys six pools whose MFA arms differ, so an unbound grep would
+# be satisfied by another pool's message and this assertion would pass without
+# the pool under test having warned at all.
+if ! grep -q "UserPool ${DOWNGRADE_POOL_ID}: the template declares no MfaConfiguration" "${UPDATE_LOG}"; then
+  echo "FAIL: the update turned MFA off on ${DOWNGRADE_POOL_ID} without announcing it (no 'UserPool ${DOWNGRADE_POOL_ID}: the template declares no MfaConfiguration' warning in the deploy output)" >&2
   exit 1
 fi
 # The message must name the value it is turning OFF, not just that it defaulted.
@@ -487,12 +492,12 @@ fi
 # us-east-1 2026-08-18, UpdateUserPool does not reset MfaConfiguration when the
 # field is omitted, so either ordering would report OPTIONAL here. The ordering
 # is defensive only -- see readLiveMfaConfiguration.)
-if ! grep -q "live value was OPTIONAL" "${UPDATE_LOG}"; then
-  echo "FAIL: the downgrade warning does not name the live value (expected 'live value was OPTIONAL' in the deploy output)" >&2
+if ! grep -q "UserPool ${DOWNGRADE_POOL_ID}: .*live value was OPTIONAL" "${UPDATE_LOG}"; then
+  echo "FAIL: the downgrade warning for ${DOWNGRADE_POOL_ID} does not name the live value (expected 'UserPool ${DOWNGRADE_POOL_ID}: ... live value was OPTIONAL' in the deploy output)" >&2
   grep -i "MfaConfiguration" "${UPDATE_LOG}" >&2 || true
   exit 1
 fi
-echo "    OK: the undeclared downgrade to OFF was announced, naming the live OPTIONAL"
+echo "    OK: the undeclared downgrade to OFF was announced for ${DOWNGRADE_POOL_ID}, naming the live OPTIONAL"
 
 # --- Assertion 11: the downgrade actually happened, unchanged ---------
 # Template-is-truth parity is DELIBERATELY not changed by #1925 item 3: the
