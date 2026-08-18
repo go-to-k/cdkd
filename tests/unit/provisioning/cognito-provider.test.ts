@@ -42,9 +42,11 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ResourceNotFoundException } from '@aws-sdk/client-cognito-identity-provider';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 describe('CognitoUserPoolProvider', () => {
   let provider: CognitoUserPoolProvider;
+
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -599,6 +601,10 @@ describe('CognitoUserPoolProvider', () => {
       });
 
       it('applies EnabledMfas via SetUserPoolMfaConfig on update', async () => {
+        // The undeclared-downgrade pre-read (#1925 item 3) runs first: its gate
+        // is a deliberate SUPERSET (no declared MfaConfiguration + some
+        // MFA-routed property), so it fires here and its result goes unused.
+        mockSend.mockResolvedValueOnce({ MfaConfiguration: 'OFF' }); // GetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:upd' } }); // DescribeUserPool
@@ -611,12 +617,13 @@ describe('CognitoUserPoolProvider', () => {
           {}
         );
 
-        expect(mockSend).toHaveBeenCalledTimes(3);
-        expect(mockSend.mock.calls[0][0].constructor.name).toBe('UpdateUserPoolCommand');
-        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mockSend).toHaveBeenCalledTimes(4);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('GetUserPoolMfaConfigCommand');
+        expect(mockSend.mock.calls[1][0].constructor.name).toBe('UpdateUserPoolCommand');
+        const mfaCall = mockSend.mock.calls[2][0];
         expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
         expect(mfaCall.input.SoftwareTokenMfaConfiguration).toEqual({ Enabled: true });
-        expect(mockSend.mock.calls[2][0].constructor.name).toBe('DescribeUserPoolCommand');
+        expect(mockSend.mock.calls[3][0].constructor.name).toBe('DescribeUserPoolCommand');
       });
     });
 
@@ -706,6 +713,10 @@ describe('CognitoUserPoolProvider', () => {
       });
 
       it('defaults to OFF for a WebAuthn-only pool on update too', async () => {
+        // GetUserPoolMfaConfig: the undeclared-OFF announcement probe (#1925
+        // item 3) reads the live value BEFORE UpdateUserPool can reset it. OFF
+        // here, so nothing is being downgraded and no warning is emitted.
+        mockSend.mockResolvedValueOnce({ MfaConfiguration: 'OFF' });
         mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
         mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:wa-upd' } }); // DescribeUserPool
@@ -718,9 +729,14 @@ describe('CognitoUserPoolProvider', () => {
           {}
         );
 
-        const mfaCall = mockSend.mock.calls[1][0];
+        const mfaCall = mockSend.mock.calls[2][0];
         expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
         expect(mfaCall.input.MfaConfiguration).toBe('OFF');
+        // Asserted, not merely claimed in the comment above: a live OFF is not
+        // a downgrade, and dropping the live-value test from the announcement
+        // condition would warn here (and on every failed probe) with nothing
+        // being turned off.
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toBe('');
       });
 
       it('still defaults to OPTIONAL when a real MFA factor is enabled', async () => {
@@ -1086,6 +1102,1125 @@ describe('CognitoUserPoolProvider', () => {
 
         const mfaCall = mockSend.mock.calls[1][0];
         expect(mfaCall.input.MfaConfiguration).toBe('ON');
+      });
+    });
+
+    // Issue #1925 item 1. `create()` has always withheld MfaConfiguration from
+    // CreateUserPool when a factor is applied post-create; `update()` forwarded
+    // it to UpdateUserPool unconditionally, which is the same AWS rejection one
+    // call over — and SetUserPoolMfaConfig overwrites the value in the same
+    // update anyway, so the forward bought nothing.
+    describe('MfaConfiguration gate on UpdateUserPool (#1925)', () => {
+      it('withholds MfaConfiguration from UpdateUserPool when an MFA factor is present', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:gate' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          // The enable-MFA-on-update transition: the pool has no factor yet, so
+          // UpdateUserPool with OPTIONAL is exactly what AWS refuses.
+          { MfaConfiguration: 'OPTIONAL', EnabledMfas: ['SOFTWARE_TOKEN_MFA'] },
+          {}
+        );
+
+        const updateCall = mockSend.mock.calls[0][0];
+        expect(updateCall.constructor.name).toBe('UpdateUserPoolCommand');
+        expect(updateCall.input.MfaConfiguration).toBeUndefined();
+
+        // The value is not lost — SetUserPoolMfaConfig owns it, and enables the
+        // factor in the same call so AWS accepts it.
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
+        expect(mfaCall.input.SoftwareTokenMfaConfiguration).toEqual({ Enabled: true });
+      });
+
+      it('withholds it for a mis-shaped EnabledMfas too (declaresFactor, no factor block)', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:gate-scalar' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { MfaConfiguration: 'ON', EnabledMfas: 'SOFTWARE_TOKEN_MFA' },
+          {}
+        );
+
+        // `hasMfaConfigProps` counts a mis-shaped declaration, so the gate must
+        // close here too — otherwise the loud SetUserPoolMfaConfig failure is
+        // preceded by an UpdateUserPool rejection that names the wrong thing.
+        expect(mockSend.mock.calls[0][0].input.MfaConfiguration).toBeUndefined();
+        expect(mockSend.mock.calls[1][0].input.MfaConfiguration).toBe('ON');
+      });
+
+      // The other polarity: with NO MFA-routed property there is no
+      // SetUserPoolMfaConfig call to own the value, so UpdateUserPool must
+      // still carry it or the change would be dropped entirely.
+      it('still forwards MfaConfiguration to UpdateUserPool when NO MFA factor is present', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:gate-off' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { MfaConfiguration: 'OFF' },
+          {}
+        );
+
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        const updateCall = mockSend.mock.calls[0][0];
+        expect(updateCall.constructor.name).toBe('UpdateUserPoolCommand');
+        expect(updateCall.input.MfaConfiguration).toBe('OFF');
+        expect(mockSend.mock.calls[1][0].constructor.name).toBe('DescribeUserPoolCommand');
+      });
+    });
+
+    // Issue #1925 item 2. The value used to be read as
+    // `properties['MfaConfiguration'] as UserPoolMfaType | undefined` and fed
+    // to `??` / a truthy gate, so a declared `null` (or an intrinsic that
+    // resolved to one) silently took the default — which for a pool declaring
+    // no factor is OFF, i.e. MFA DISABLED with nothing said anywhere.
+    describe('malformed MfaConfiguration (#1925)', () => {
+      it.each([
+        ['null', null],
+        ['an array', ['OPTIONAL']],
+        ['an unresolved intrinsic', { Ref: 'MfaParam' }],
+        ['a number', 1],
+      ])('refuses %s on a template-path create, before CreateUserPool', async (_label, value) => {
+        await expect(
+          provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+            MfaConfiguration: value,
+          })
+        ).rejects.toThrow('AWS::Cognito::UserPool MfaConfiguration must be a non-empty string');
+
+        // Refused BEFORE any AWS call, so there is no half-created pool.
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      // The guard runs OUTSIDE create()'s try, so the wrapper is hand-written
+      // and deleting it would leave a raw Error escaping untyped into the
+      // deploy engine's retry loop. Asserting only the message cannot see that.
+      it('wraps the refusal as a ProvisioningError, not a bare Error', async () => {
+        await expect(
+          provider.create('MyUserPool', 'AWS::Cognito::UserPool', { MfaConfiguration: null })
+        ).rejects.toBeInstanceOf(ProvisioningError);
+      });
+
+      // The hole the guard closes is widest with NO MFA-routed property:
+      // `buildMfaConfigRequest` returns undefined before it ever reads
+      // MfaConfiguration there, so nothing else in the provider could refuse
+      // it and a null silently deployed an SMS-configured pool with MFA off.
+      it('refuses a null even when no MFA-routed property is present', async () => {
+        await expect(
+          provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+            MfaConfiguration: null,
+            SmsConfiguration: { SnsCallerArn: 'arn:aws:iam::123456789012:role/sms' },
+          })
+        ).rejects.toThrow('AWS::Cognito::UserPool MfaConfiguration must be a non-empty string');
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      // Explicit non-replay. `replayWarn` keys on `replayingState === true`, so
+      // only `undefined` and `true` were covered -- a guard rewritten to key on
+      // the context's PRESENCE would pass both and silently downgrade an
+      // ordinary template-path create to a warning.
+      it('still refuses on a create whose context sets replayingState: false', async () => {
+        await expect(
+          provider.create(
+            'MyUserPool',
+            'AWS::Cognito::UserPool',
+            { MfaConfiguration: null },
+            { replayingState: false }
+          )
+        ).rejects.toBeInstanceOf(ProvisioningError);
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      // A reverse-replacement rollback creates from a STATE record, which the
+      // user cannot edit from the template — so the refusal downgrades to a
+      // warning there or the old resource becomes unrestorable.
+      it('warns instead of refusing on a state replay, and takes the default', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:replay' },
+        }); // CreateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+
+        await provider.create(
+          'MyUserPool',
+          'AWS::Cognito::UserPool',
+          { MfaConfiguration: null, EnabledMfas: ['SOFTWARE_TOKEN_MFA'] },
+          { replayingState: true }
+        );
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('AWS::Cognito::UserPool MfaConfiguration must be a non-empty');
+
+        // Falls back to the factor-aware default rather than sending the junk.
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
+      });
+
+      // `update()` has no context parameter, so it cannot tell a template push
+      // from the state-borne bag `drift --revert` / the rollback revert arm
+      // hand it. The downgrade is unconditional there.
+      it('warns instead of refusing on update, and drops it from UpdateUserPool', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:upd-null' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { MfaConfiguration: null },
+          {}
+        );
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('AWS::Cognito::UserPool MfaConfiguration must be a non-empty');
+        expect(mockSend.mock.calls[0][0].input.MfaConfiguration).toBeUndefined();
+      });
+
+      // A blank string is accepted as absence rather than refused (the guard's
+      // blank-fallback rule), but it must NOT reach the wire: the pre-fix `??`
+      // treated `''` as a declared value, so SetUserPoolMfaConfig carried an
+      // empty MfaConfiguration.
+      it('treats an empty-string MfaConfiguration as absent, not as a wire value', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:blank-mfa-config' },
+        }); // CreateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          MfaConfiguration: '',
+          EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+        });
+
+        expect(mockSend.mock.calls[0][0].input.MfaConfiguration).toBeUndefined();
+        expect(mockSend.mock.calls[1][0].input.MfaConfiguration).toBe('OPTIONAL');
+      });
+
+      // The other polarity for the whole guard: a well-formed value is
+      // untouched on both paths and no warning is emitted.
+      it('passes a well-formed value through silently', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:ok-mfa-config' },
+        }); // CreateUserPool only — no MFA-routed property
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          MfaConfiguration: 'OFF',
+        });
+
+        expect(mockSend.mock.calls[0][0].input.MfaConfiguration).toBe('OFF');
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toBe('');
+      });
+    });
+
+    // Issue #1925 third item (added by comment). SetUserPoolMfaConfig is a
+    // full replace re-issued on every update carrying an MFA-routed property,
+    // so a passkey-only template applied to a pool whose live MfaConfiguration
+    // is ON / OPTIONAL turns MFA off on the next unrelated change. That is
+    // template-is-truth parity and is NOT changed — only announced.
+    describe('undeclared downgrade to OFF on update (#1925)', () => {
+      it('reads the live value and warns when the update turns MFA off', async () => {
+        mockSend.mockResolvedValueOnce({ MfaConfiguration: 'ON' }); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:downgrade' } }); // DescribeUserPool
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { WebAuthnRelyingPartyID: 'auth.example.com' },
+          {}
+        );
+
+        // The read must come FIRST: AWS documents UpdateUserPool as resetting
+        // omitted parameters, so probing after it could read a value this same
+        // call already clobbered and the announcement would go silent.
+        const getCall = mockSend.mock.calls[0][0];
+        expect(getCall.constructor.name).toBe('GetUserPoolMfaConfigCommand');
+        expect(getCall.input.UserPoolId).toBe('us-east-1_abc123');
+        expect(mockSend.mock.calls[1][0].constructor.name).toBe('UpdateUserPoolCommand');
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('the template declares no MfaConfiguration');
+        expect(warned).toContain('live value was ON');
+
+        // The request itself is unchanged — this is an announcement, not a fix.
+        expect(mockSend.mock.calls[2][0].input.MfaConfiguration).toBe('OFF');
+      });
+
+      it('warns for a live OPTIONAL too', async () => {
+        mockSend.mockResolvedValueOnce({ MfaConfiguration: 'OPTIONAL' }); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:downgrade-opt' } }); // Describe
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { WebAuthnRelyingPartyID: 'auth.example.com' },
+          {}
+        );
+
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+          'live value was OPTIONAL'
+        );
+      });
+
+      // Silent polarity 1: the template PINNED OFF, so nothing is being
+      // defaulted and there is nothing to announce — the probe must not even
+      // run, since it costs an AWS call on every such deploy.
+      it('does not probe or warn when the template declares MfaConfiguration', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:pinned-off' } }); // Describe
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { WebAuthnRelyingPartyID: 'auth.example.com', MfaConfiguration: 'OFF' },
+          {}
+        );
+
+        expect(
+          mockSend.mock.calls.some((c) => c[0].constructor.name === 'GetUserPoolMfaConfigCommand')
+        ).toBe(false);
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+          'the template declares no MfaConfiguration'
+        );
+      });
+
+      // Silent polarity 2: on a fresh CREATE there is no live value, so nothing
+      // is being downgraded and a warning would fire on every passkey-only
+      // deploy — the noise the issue explicitly rules out.
+      it('never probes on the create path', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:create-no-probe' },
+        }); // CreateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          WebAuthnRelyingPartyID: 'auth.example.com',
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        expect(
+          mockSend.mock.calls.some((c) => c[0].constructor.name === 'GetUserPoolMfaConfigCommand')
+        ).toBe(false);
+      });
+
+      // Silent polarity 3: the resolved value is not OFF, so the update is not
+      // a downgrade at all. The pre-read's gate is a deliberate SUPERSET, so it
+      // DOES probe here — what must stay silent is the warning, decided off the
+      // built request. Asserted as "probed but did not warn" rather than "did
+      // not probe", because the latter would pin the over-read as if it were
+      // the contract.
+      it('does not warn when the update enables a factor, even though it probed', async () => {
+        mockSend.mockResolvedValueOnce({ MfaConfiguration: 'ON' }); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:no-downgrade' } }); // Describe
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { EnabledMfas: ['SOFTWARE_TOKEN_MFA'] },
+          {}
+        );
+
+        // A live ON is primed deliberately: the ONLY thing keeping this silent
+        // is the resolved value being OPTIONAL rather than OFF.
+        expect(mockSend.mock.calls[2][0].input.MfaConfiguration).toBe('OPTIONAL');
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+          'the template declares no MfaConfiguration'
+        );
+      });
+
+      // `declaredMfaConfiguration === ''` covers two different inputs: the
+      // template omitted the property, or it declared one the guard REFUSED.
+      // The message said "the template declares no MfaConfiguration" for both,
+      // which in the second case is simply false and tells the user to add a
+      // property they already have.
+      it('names the REFUSAL, not a missing declaration, when a declared value was rejected', async () => {
+        mockSend.mockResolvedValueOnce({ MfaConfiguration: 'ON' }); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:refused-announce' } }); // Describe
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          // Declared but malformed, alongside a WebAuthn config so the update
+          // still routes through SetUserPoolMfaConfig and resolves to OFF.
+          { MfaConfiguration: null, WebAuthnRelyingPartyID: 'auth.example.com' },
+          {}
+        );
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        // The downgrade is still announced, and still names the live value...
+        expect(warned).toContain('live value was ON');
+        // ...but attributes it to the refusal, not to a missing declaration.
+        expect(warned).toContain('the declared MfaConfiguration was refused as malformed');
+        expect(warned).not.toContain('the template declares no MfaConfiguration');
+        // The remedy must be "repair it", not "add it".
+        expect(warned).toContain('Repair MfaConfiguration');
+      });
+
+      // The message is PAST tense ("sent MfaConfiguration=OFF"), so emitting it
+      // before the call asserted a state AWS had not reached -- and on a failed
+      // SetUserPoolMfaConfig, never would. Ordering is captured at the moment
+      // the call runs rather than inferred afterwards, since "both happened"
+      // is true in either order and would pin nothing.
+      it('announces only AFTER SetUserPoolMfaConfig has landed', async () => {
+        let warnCountWhenSetRan = -1;
+        mockSend.mockResolvedValueOnce({ MfaConfiguration: 'ON' }); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockImplementationOnce(() => {
+          warnCountWhenSetRan = childLogger.warn.mock.calls.length;
+          return Promise.resolve({});
+        }); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:order' } }); // Describe
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { WebAuthnRelyingPartyID: 'auth.example.com' },
+          {}
+        );
+
+        const announcedAt = childLogger.warn.mock.calls.findIndex((c) =>
+          String(c[0]).includes('sent MfaConfiguration=OFF')
+        );
+        expect(announcedAt).toBeGreaterThanOrEqual(0);
+        // Not yet warned when the call ran, so the index must be at or past the
+        // count captured inside it.
+        expect(warnCountWhenSetRan).toBeGreaterThanOrEqual(0);
+        expect(announcedAt).toBeGreaterThanOrEqual(warnCountWhenSetRan);
+      });
+
+      // ...and nothing is announced at all when that call FAILS, since the OFF
+      // the message describes never landed.
+      it('announces nothing when SetUserPoolMfaConfig fails', async () => {
+        mockSend.mockResolvedValueOnce({ MfaConfiguration: 'ON' }); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockRejectedValueOnce(new Error('InvalidParameterException')); // Set
+
+        await expect(
+          provider.update(
+            'MyUserPool',
+            'us-east-1_abc123',
+            'AWS::Cognito::UserPool',
+            { WebAuthnRelyingPartyID: 'auth.example.com' },
+            {}
+          )
+        ).rejects.toThrow();
+
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+          'sent MfaConfiguration=OFF'
+        );
+      });
+
+      // A declared BLANK is neither absent nor refused: the shape guard
+      // ACCEPTED it, so there is no "warning above" to refer back to, and the
+      // wording that named a refusal was describing a rejection that never
+      // happened.
+      it('names a BLANK declaration as blank, not as a refusal', async () => {
+        mockSend.mockResolvedValueOnce({ MfaConfiguration: 'OPTIONAL' }); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:blank-announce' } }); // Describe
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { MfaConfiguration: '', WebAuthnRelyingPartyID: 'auth.example.com' },
+          {}
+        );
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('the declared MfaConfiguration is blank');
+        expect(warned).not.toContain('was refused as malformed');
+        // Still a repair, not an add -- the property exists.
+        expect(warned).toContain('Repair MfaConfiguration');
+        expect(warned).toContain('live value was OPTIONAL');
+      });
+
+      // The other polarity of the same branch: a genuinely ABSENT property
+      // must still get the original wording.
+      it('names the missing declaration when the template really declared none', async () => {
+        mockSend.mockResolvedValueOnce({ MfaConfiguration: 'ON' }); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:absent-announce' } }); // Describe
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { WebAuthnRelyingPartyID: 'auth.example.com' },
+          {}
+        );
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('the template declares no MfaConfiguration');
+        expect(warned).not.toContain('was refused as malformed');
+        expect(warned).toContain('Declare MfaConfiguration: ON');
+      });
+
+      // The probe exists only to ANNOUNCE, so its failure must not fail the
+      // update the user asked for.
+      it('is best-effort: a failed probe does not fail the update', async () => {
+        mockSend.mockRejectedValueOnce(new Error('AccessDenied')); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:probe-fail' } }); // Describe
+
+        const result = await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { WebAuthnRelyingPartyID: 'auth.example.com' },
+          {}
+        );
+
+        expect(result.physicalId).toBe('us-east-1_abc123');
+        expect(mockSend.mock.calls[2][0].constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        // An undetermined live value is never reported as a DOWNGRADE -- there
+        // is no value to name. Without the live-value test in the announcement
+        // condition this warned `live value was undefined` on every probe
+        // failure, which on a least-privileged role is every single deploy.
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).not.toContain('live value was');
+        expect(warned).not.toContain('undefined');
+      });
+
+      // Item 3. The probe's gate is a deliberate SUPERSET of the announcement
+      // condition, so a template that structurally CANNOT downgrade still
+      // probes. Warning at the point of failure therefore told a
+      // least-privileged role "cdkd cannot say whether it turns MFA off" on
+      // every deploy of an EnabledMfas-only template -- which resolves to
+      // OPTIONAL and turns nothing off.
+      it('stays silent about the failed probe when the request does not resolve to OFF', async () => {
+        const denied = new Error('not authorized to perform: cognito-idp:GetUserPoolMfaConfig');
+        denied.name = 'AccessDeniedException';
+        mockSend.mockRejectedValueOnce(denied); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:probe-denied-optional' } });
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { EnabledMfas: ['SOFTWARE_TOKEN_MFA'] },
+          {}
+        );
+
+        expect(mockSend.mock.calls[2][0].input.MfaConfiguration).toBe('OPTIONAL');
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toBe('');
+      });
+
+      // Item 2 -- the one path this PR made QUIETER than main. A malformed but
+      // TRUTHY value used to reach UpdateUserPool, AWS rejected the enum, MFA
+      // stayed as it was and the deploy FAILED. Now the guard substitutes and
+      // the deploy exits 0 with MFA off; on a role that cannot read the live
+      // value the downgrade announcement is suppressed, so without this arm
+      // nothing at all names the OFF.
+      it('reports the OFF when a declared value was refused and the live value is unreadable', async () => {
+        const denied = new Error('not authorized to perform: cognito-idp:GetUserPoolMfaConfig');
+        denied.name = 'AccessDeniedException';
+        mockSend.mockRejectedValueOnce(denied); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:quiet-path' } }); // Describe
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { MfaConfiguration: [], WebAuthnRelyingPartyID: 'auth.example.com' },
+          {}
+        );
+
+        expect(mockSend.mock.calls[2][0].input.MfaConfiguration).toBe('OFF');
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('the declared MfaConfiguration could not be used');
+        expect(warned).toContain('sent MfaConfiguration=OFF');
+        expect(warned).toContain('could not be read');
+        expect(warned).toContain('cognito-idp:GetUserPoolMfaConfig');
+        // No live value to name, so it must not invent one.
+        expect(warned).not.toContain('live value was');
+      });
+
+      // The same arm for a genuinely ABSENT declaration: still reported, since
+      // the OFF is real either way, but it must not claim a value was declared.
+      it('reports the OFF for an absent declaration with an unreadable live value', async () => {
+        mockSend.mockRejectedValueOnce(new Error('boom')); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:quiet-absent' } }); // Describe
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { WebAuthnRelyingPartyID: 'auth.example.com' },
+          {}
+        );
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('the template declares no MfaConfiguration');
+        expect(warned).toContain('could not be read');
+        expect(warned).not.toContain('could not be used');
+      });
+
+      // AWS's raw AccessDenied text names the account, role and session, and
+      // this warning is persisted into the deployment-events store -- so it
+      // must never reach a default-verbosity line. The raw message stays at
+      // debug for --verbose runs.
+      it('never puts AWS raw error text in the warning, only in debug', async () => {
+        const denied = new Error(
+          'User: arn:aws:sts::123456789012:assumed-role/deploy/sess is not authorized to perform: cognito-idp:GetUserPoolMfaConfig'
+        );
+        denied.name = 'AccessDeniedException';
+        mockSend.mockRejectedValueOnce(denied); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:probe-denied' } }); // Describe
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { WebAuthnRelyingPartyID: 'auth.example.com' },
+          {}
+        );
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).not.toContain('assumed-role');
+        expect(warned).not.toContain('123456789012');
+        const debugged = childLogger.debug.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(debugged).toContain('assumed-role');
+        expect(debugged).toContain('AccessDeniedException');
+      });
+    });
+
+    // Issue #1932 item 1. `readEnabledMfas` treats `''` as absence on purpose
+    // (counting it as intent would fire a spurious SetUserPoolMfaConfig and
+    // turn a working deploy into a hard AWS rejection) — but a mangled Fn::Join
+    // or an empty String parameter collapses to exactly this shape, and it was
+    // the one mis-shape that produced no message at all.
+    describe('empty-string EnabledMfas (#1932)', () => {
+      it('warns when another MFA-routed property is present', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:blank-warn' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: '',
+          WebAuthnRelyingPartyID: 'auth.example.com',
+        });
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('EnabledMfas is an empty string');
+        expect(warned).toContain('MfaConfiguration is OFF');
+      });
+
+      // Absence must stay absence ON THE WIRE — the warning is the only change.
+      it('changes nothing about the request', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:blank-wire' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: '',
+          WebAuthnRelyingPartyID: 'auth.example.com',
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.input.MfaConfiguration).toBe('OFF');
+        expect(mfaCall.input.SoftwareTokenMfaConfiguration).toBeUndefined();
+        expect(mfaCall.input.SmsMfaConfiguration).toBeUndefined();
+        expect(mfaCall.input.EmailMfaConfiguration).toBeUndefined();
+      });
+
+      it('issues no SetUserPoolMfaConfig, and no warning, for a blank EnabledMfas on its own', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:blank-only' },
+        });
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: '',
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toBe('');
+      });
+
+      // The two shapes the warning must NOT fire on. `null` is an explicit
+      // "nothing" (the resolver deletes AWS::NoValue keys rather than emitting
+      // null), and `[]` is a legitimately empty list that `readCurrentState`
+      // emits on every no-drift round-trip of an MFA-less pool.
+      it.each([
+        ['null', null],
+        ['an empty array', []],
+      ])('stays silent for %s', async (_label, value) => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:blank-negative' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: value,
+          WebAuthnRelyingPartyID: 'auth.example.com',
+        });
+
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+          'EnabledMfas is an empty string'
+        );
+      });
+    });
+
+    // Issue #1932 item 2. WARNING ONLY: sending OFF alongside a factor block is
+    // what CloudFormation does for this template, and whether AWS accepts the
+    // pairing is unverified (#1923) — so the guard must be correct under either
+    // answer, which it is precisely because it changes nothing on the wire.
+    describe('a declared factor pinned to MfaConfiguration OFF (#1932)', () => {
+      it('warns, and still sends the factor block plus OFF', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:pinned-off-factor' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+          MfaConfiguration: 'OFF',
+        });
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('MfaConfiguration is pinned to OFF');
+        expect(warned).toContain('an MFA factor block is configured');
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.input.MfaConfiguration).toBe('OFF');
+        expect(mfaCall.input.SoftwareTokenMfaConfiguration).toEqual({ Enabled: true });
+      });
+
+      // Silent polarity 3, and the reason this warn is keyed on the emitted
+      // BLOCK rather than on `declaresFactor`: a mis-shaped EnabledMfas also
+      // sets `declaresFactor`, so the wider condition fired here alongside the
+      // dropped-entry warning and CONTRADICTED it -- that one correctly reports
+      // the entry as enabling nothing, while this one would claim a factor is
+      // configured. #1932 item 2 scopes this arm to a RECOGNIZED factor.
+      it('stays silent for a MIS-SHAPED EnabledMfas pinned to OFF, leaving the dropped-entry warn to speak', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:malformed-off' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: 'SOFTWARE_TOKEN_MFA', // a scalar, not a list
+          MfaConfiguration: 'OFF',
+        });
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).not.toContain('MfaConfiguration is pinned to OFF');
+        // The dropped-entry warning still covers this shape, and says the
+        // accurate thing: nothing was enabled from it.
+        expect(warned).toContain('(not a list)');
+        expect(warned).toContain('deploys with MFA DISABLED');
+      });
+
+      // The second disjunct: a factor SUB-BLOCK with no EnabledMfas at all.
+      // EmailAuthenticationMessage alone emits EmailMfaConfiguration, which is
+      // the one block `declaresFactor` does not already imply.
+      it('warns for an emitted factor block with no EnabledMfas', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:pinned-off-block' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EmailAuthenticationMessage: 'Your code is {####}',
+          MfaConfiguration: 'OFF',
+        });
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('MfaConfiguration is pinned to OFF');
+        expect(warned).toContain('an MFA factor block is configured');
+        expect(mockSend.mock.calls[1][0].input.EmailMfaConfiguration).toBeDefined();
+      });
+
+      it('fires on the update path too', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:pinned-off-upd' } }); // Describe
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { EnabledMfas: ['SOFTWARE_TOKEN_MFA'], MfaConfiguration: 'OFF' },
+          {}
+        );
+
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+          'MfaConfiguration is pinned to OFF'
+        );
+      });
+
+      // Silent polarity 1: the same factor with no OFF pin. The default is
+      // OPTIONAL, so nothing is disabled and there is nothing to report.
+      it('stays silent when MfaConfiguration is not OFF', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:not-pinned' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+        });
+
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toBe('');
+      });
+
+      // Silent polarity 2: OFF with NO factor asked for. WebAuthn is not an MFA
+      // factor and emits no factor block, so the passkey-only pool — the shape
+      // #1920 made OFF the default for — must not warn on every deploy.
+      it('stays silent for a passkey-only pool, where OFF is correct', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:passkey-only' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          WebAuthnRelyingPartyID: 'auth.example.com',
+          MfaConfiguration: 'OFF',
+        });
+
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toBe('');
+      });
+    });
+
+    // Issue #1925 item 2, review round 2. `requireConfigString` accepts ANY
+    // string against a blank fallback, so `''` cleared the shape guard and was
+    // then substituted by the OPTIONAL/OFF default downstream -- the silent
+    // default the guard exists to kill, reached one shape further in.
+    describe('blank-string MfaConfiguration (#1925)', () => {
+      it('warns for a WebAuthn-only pool, which used to fail LOUDLY at AWS', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:blank-cfg-warn' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          MfaConfiguration: '',
+          WebAuthnRelyingPartyID: 'auth.example.com',
+        });
+
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+          'MfaConfiguration is an empty string'
+        );
+      });
+
+      // The security-relevant shape: `''` meaning ON silently becomes OPTIONAL.
+      it('warns when a blank value downgrades a declared factor to the OPTIONAL default', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:blank-cfg-factor' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          MfaConfiguration: '',
+          EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+        });
+
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+          'MfaConfiguration is an empty string'
+        );
+        // Wire behavior is unchanged -- the blank stays absence, so the default
+        // applies exactly as before. Only the silence is removed.
+        expect(mockSend.mock.calls[1][0].input.MfaConfiguration).toBe('OPTIONAL');
+      });
+
+      it('warns on the update path too', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:blank-cfg-upd' } }); // Describe
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { MfaConfiguration: '' },
+          {}
+        );
+
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+          'MfaConfiguration is an empty string'
+        );
+      });
+
+      // BOTH spellings must reach the SAME wire value, which is the half that
+      // was wrong: `requireConfigString` short-circuits on a blank fallback and
+      // returns any string verbatim, so `'   '` was truthy, rode the
+      // `if (mfaConfiguration && ...)` gates onto Create/UpdateUserPool and the
+      // `|| default` onto SetUserPoolMfaConfig, and AWS rejected the enum --
+      // while this very warning promised the default had been applied. Testing
+      // only the warning passed over the wrong wire value.
+      it.each([
+        ['an empty string', ''],
+        ['a whitespace-only string', '   '],
+        ['a tab', '\t'],
+      ])('warns for %s AND sends the default, not the blank, to AWS', async (_label, value) => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:blank-cfg-wire' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          MfaConfiguration: value,
+          WebAuthnRelyingPartyID: 'auth.example.com',
+        });
+
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+          'MfaConfiguration is an empty string'
+        );
+        // The default -- NOT the blank the template wrote.
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mfaCall.input.MfaConfiguration).toBe('OFF');
+      });
+
+      // The forward onto Create/UpdateUserPool is the OTHER wire path a blank
+      // could ride, reached when no MFA-routed property is present.
+      it.each([
+        ['an empty string', ''],
+        ['a whitespace-only string', '   '],
+      ])('keeps %s off CreateUserPool entirely', async (_label, value) => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:blank-cfg-create' },
+        });
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          MfaConfiguration: value,
+          UserPoolName: 'plain',
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend.mock.calls[0][0].input.MfaConfiguration).toBeUndefined();
+      });
+
+      it('keeps a whitespace-only value off UpdateUserPool too', async () => {
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:blank-cfg-upd-ws' } }); // Describe
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { MfaConfiguration: '   ' },
+          {}
+        );
+
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('UpdateUserPoolCommand');
+        expect(mockSend.mock.calls[0][0].input.MfaConfiguration).toBeUndefined();
+      });
+
+      // The diff side must fold identically, or state and template narrow to
+      // different values and the phantom drift comes back through the twin.
+      it('folds a whitespace-only value the same way on the diff side', () => {
+        expect(
+          provider.canonicalizeDesiredProperties('AWS::Cognito::UserPool', {
+            MfaConfiguration: '   ',
+            WebAuthnRelyingPartyID: 'auth.example.com',
+          })['MfaConfiguration']
+        ).toBe('OFF');
+      });
+
+      // Silent polarity: a well-formed value, and an ABSENT one, must not warn.
+      it.each([
+        ['a well-formed value', { MfaConfiguration: 'OFF' } as Record<string, unknown>],
+        ['an absent value', {} as Record<string, unknown>],
+      ])('stays silent for %s', async (_label, extra) => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:blank-cfg-negative' },
+        });
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          UserPoolName: 'plain',
+          ...extra,
+        });
+
+        expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+          'MfaConfiguration is an empty string'
+        );
+      });
+    });
+
+    // Issue #1925 item 2, review round 2. Every substitution arm sends a value
+    // the template did not declare, so without reporting it state recorded the
+    // declared `null` / `''` while AWS held OPTIONAL / OFF -- permanent phantom
+    // drift that `cdkd drift --revert` re-issues forever with nothing to apply.
+    describe('effectiveProperties for a substituted MfaConfiguration (#1925)', () => {
+      it('records the sent value on the replay-CREATE downgrade arm', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:eff-replay' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        const result = await provider.create(
+          'MyUserPool',
+          'AWS::Cognito::UserPool',
+          { MfaConfiguration: null, EnabledMfas: ['SOFTWARE_TOKEN_MFA'] },
+          { replayingState: true }
+        );
+
+        // The value on the wire, not the `null` the state record carried.
+        const sent = mockSend.mock.calls[1][0].input.MfaConfiguration;
+        expect(sent).toBe('OPTIONAL');
+        expect(result.effectiveProperties?.['MfaConfiguration']).toBe(sent);
+        // A COMPLETE replacement, not a patch: sibling keys must survive.
+        expect(result.effectiveProperties?.['EnabledMfas']).toEqual(['SOFTWARE_TOKEN_MFA']);
+      });
+
+      it('records the sent value on the update warn-and-default arm', async () => {
+        // A REFUSED value reads as `''`, which together with the MFA-routed
+        // EnabledMfas satisfies the announcement pre-read's superset gate, so
+        // the probe runs first here.
+        mockSend.mockResolvedValueOnce({ MfaConfiguration: 'OFF' }); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:eff-upd' } }); // Describe
+
+        const result = await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { MfaConfiguration: null, EnabledMfas: ['SOFTWARE_TOKEN_MFA'] },
+          {}
+        );
+
+        const sent = mockSend.mock.calls[2][0].input.MfaConfiguration;
+        expect(sent).toBe('OPTIONAL');
+        expect(result.effectiveProperties?.['MfaConfiguration']).toBe(sent);
+      });
+
+      it('records the sent value on the blank-string arm', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:eff-blank' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        const result = await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          MfaConfiguration: '',
+          WebAuthnRelyingPartyID: 'auth.example.com',
+        });
+
+        const sent = mockSend.mock.calls[1][0].input.MfaConfiguration;
+        expect(sent).toBe('OFF');
+        expect(result.effectiveProperties?.['MfaConfiguration']).toBe(sent);
+      });
+
+      // Nothing carries the field here, so recording a value AWS was never told
+      // would be a different lie. The key is DROPPED instead.
+      it('drops the key when a blank value means nothing is sent at all', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:eff-blank-nosend' },
+        });
+
+        const result = await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          MfaConfiguration: '',
+          UserPoolName: 'plain',
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend.mock.calls[0][0].input.MfaConfiguration).toBeUndefined();
+        expect(result.effectiveProperties).toBeDefined();
+        expect('MfaConfiguration' in result.effectiveProperties!).toBe(false);
+        expect(result.effectiveProperties?.['UserPoolName']).toBe('plain');
+      });
+
+      // The other polarity: nothing was substituted, so nothing is reported --
+      // an unconditional report would replace the desired bag on every deploy.
+      it.each([
+        ['a well-formed value', { MfaConfiguration: 'ON', EnabledMfas: ['SOFTWARE_TOKEN_MFA'] }],
+        ['an absent value', { EnabledMfas: ['SOFTWARE_TOKEN_MFA'] }],
+      ])('reports nothing for %s', async (_label, props) => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:eff-none' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        const result = await provider.create(
+          'MyUserPool',
+          'AWS::Cognito::UserPool',
+          props as Record<string, unknown>
+        );
+
+        expect(result.effectiveProperties).toBeUndefined();
+      });
+
+      // The DIFF-side half. Shipping the record without this makes the next
+      // deploy read the substitution back as a user-made change and re-run the
+      // update forever, which is worse than shipping neither.
+      describe('canonicalizeDesiredProperties', () => {
+        it('narrows the desired bag to the same value the wire got', () => {
+          const desired = provider.canonicalizeDesiredProperties('AWS::Cognito::UserPool', {
+            MfaConfiguration: null,
+            EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+          });
+          expect(desired['MfaConfiguration']).toBe('OPTIONAL');
+          expect(desired['EnabledMfas']).toEqual(['SOFTWARE_TOKEN_MFA']);
+        });
+
+        it('narrows a blank value the same way', () => {
+          expect(
+            provider.canonicalizeDesiredProperties('AWS::Cognito::UserPool', {
+              MfaConfiguration: '',
+              WebAuthnRelyingPartyID: 'auth.example.com',
+            })['MfaConfiguration']
+          ).toBe('OFF');
+        });
+
+        it('is silent -- the provisioning path already announced it', () => {
+          provider.canonicalizeDesiredProperties('AWS::Cognito::UserPool', {
+            MfaConfiguration: null,
+            EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
+          });
+          expect(childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n')).toBe('');
+        });
+
+        it.each([
+          ['a well-formed value', { MfaConfiguration: 'ON' }],
+          ['an absent value', { UserPoolName: 'plain' }],
+        ])('returns the input object unchanged for %s', (_label, props) => {
+          const input = props as Record<string, unknown>;
+          expect(provider.canonicalizeDesiredProperties('AWS::Cognito::UserPool', input)).toBe(
+            input
+          );
+        });
+
+        it('leaves another resource type alone', () => {
+          const input = { MfaConfiguration: null };
+          expect(provider.canonicalizeDesiredProperties('AWS::S3::Bucket', input)).toBe(input);
+        });
       });
     });
 
