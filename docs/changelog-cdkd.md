@@ -658,10 +658,14 @@ Three more review findings hardened the failure paths. The create-side registrat
   DECLARED rather than on what cdkd RECOGNIZES also keeps this
   forward-compatible with any factor AWS adds later, which is why an
   unrecognized entry WARNS rather than throwing. The warning is emitted AFTER
-  the default resolves and reports the value actually being sent, because the
-  one case where a dropped factor really does deploy MFA-disabled is an explicit
-  template `MfaConfiguration: OFF` — a warning written to predict the outcome
-  instead of reading it stated the opposite there. The
+  the default resolves and reports the value actually being sent, because a
+  warning written to PREDICT its outcome states the opposite in two branches: an
+  explicit template `MfaConfiguration: OFF` really does deploy MFA-disabled, and
+  a dropped entry riding alongside a recognized factor is simply ignored by an
+  AWS call that succeeds. Both are named explicitly now; predicting a rejection
+  on the silent-drop path is the worst of the three things the message could
+  say. Warn coverage is widened separately in issue
+  [#1932](https://github.com/go-to-k/cdkd/issues/1932). The
   sub-block half deliberately leaves the email-OTP message/subject shape on its
   existing `OPTIONAL` default: `EmailMfaConfiguration` is emitted for a bare
   `EmailAuthenticationMessage` / `Subject` customization too, and whether AWS
@@ -669,7 +673,7 @@ Three more review findings hardened the failure paths. The create-side registrat
   (email-OTP needs a verified SES sender), so it was not flipped on an untested
   wire assumption (issue [#1923](https://github.com/go-to-k/cdkd/issues/1923)).
   Applies to create and update alike (both route through `applyMfaConfig`).
-  18 new unit tests pin both polarities of the default (WebAuthn-only and an
+  20 new unit tests pin both polarities of the default (WebAuthn-only and an
   empty `EnabledMfas` -> `OFF`, on create AND update; a real factor, alone or
   alongside WebAuthn, and the SMS arm -> `OPTIONAL`), both polarities of the
   override (an explicit `OFF` beats the `OPTIONAL` default, an explicit `ON`

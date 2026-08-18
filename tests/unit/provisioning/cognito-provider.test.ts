@@ -817,11 +817,18 @@ describe('CognitoUserPoolProvider', () => {
         mockSend.mockResolvedValueOnce({});
 
         await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
-          EnabledMfas: ['SOFTWARE_TOKEN_MFA', 'SMS_MFA'],
+          // All three recognized factors, so dropping ANY of them from the
+          // recognized set is caught here, not just SMS / software-token.
+          EnabledMfas: ['SOFTWARE_TOKEN_MFA', 'SMS_MFA', 'EMAIL_OTP'],
+          SmsConfiguration: { SnsCallerArn: 'arn:aws:iam::123456789012:role/sms' },
         });
 
         const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
-        expect(warned).not.toContain('EnabledMfas contains');
+        // Asserted as EMPTY, not as "does not contain <phrase>". A phrase-based
+        // negative stops testing anything the moment the message is reworded --
+        // which is exactly what happened to the earlier version of this
+        // assertion, leaving `if (dropped.length > 0)` unpinned.
+        expect(warned).toBe('');
       });
 
       // The same silent-drop class as the misspelled entry, reached through the
@@ -958,6 +965,46 @@ describe('CognitoUserPoolProvider', () => {
 
         expect(mockSend).toHaveBeenCalledTimes(1);
         expect(mockSend.mock.calls[0][0].constructor.name).toBe('CreateUserPoolCommand');
+      });
+
+      // The malformed path's JSON quoting was untested: String({Ref:'P'}) is
+      // "[object Object]", naming nothing -- and an intrinsic that failed to
+      // resolve is the likeliest way to reach this warning at all.
+      it('names a non-list EnabledMfas by its JSON shape, not [object Object]', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:obj' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: { Ref: 'MfaParam' },
+          WebAuthnRelyingPartyID: 'auth.example.com',
+        });
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('{"Ref":"MfaParam"} (not a list)');
+        expect(warned).not.toContain('[object Object]');
+      });
+
+      // An unrecognized entry ALONGSIDE a working factor: AWS accepts and the
+      // entry is silently ignored. The warning must say that rather than
+      // predicting a rejection that never comes.
+      it('tells the user the call succeeds when a dropped entry rides with a real factor', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:mixed-warn' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: ['SOFTWARE_TOKEN', 'SOFTWARE_TOKEN_MFA'],
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
+        expect(mfaCall.input.SoftwareTokenMfaConfiguration).toEqual({ Enabled: true });
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('silently ignored');
+        expect(warned).not.toContain('AWS rejects');
       });
 
       it('defaults to OFF for an EMPTY EnabledMfas array alongside WebAuthn', async () => {

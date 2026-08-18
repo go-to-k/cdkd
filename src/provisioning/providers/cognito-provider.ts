@@ -143,8 +143,10 @@ const MFA_FACTOR_EMAIL_OTP = 'EMAIL_OTP';
  * parameter is a factor DECLARATION that happens to be mis-shaped. Treating it
  * as absence lets the MfaConfiguration default resolve to `OFF`, which AWS
  * ACCEPTS — so the pool ships with MFA disabled and the declared factor
- * dropped, silently. Treating it as intent keeps `OPTIONAL`, which AWS refuses
- * loudly, naming the problem. Same reasoning as the unrecognized-spelling case
+ * dropped, silently. Treating it as intent keeps the default at `OPTIONAL`
+ * instead, which AWS refuses loudly (unless the template pinned
+ * `MfaConfiguration` itself, or another factor is enabled — the warning in
+ * `buildMfaConfigRequest` reports which of those actually happened). Same reasoning as the unrecognized-spelling case
  * in `buildMfaConfigRequest`; this is that hole reached through the SHAPE
  * instead of the spelling.
  */
@@ -340,18 +342,39 @@ function buildMfaConfigRequest(
   // Warn rather than throw for an unrecognized SPELLING: that set is a
   // hardcoded mirror of an AWS enum, so refusing would break a valid template
   // the day AWS adds a factor. cdkd would still not know the new factor's
-  // sub-block; the point is that it fails legibly at AWS rather than dropping
-  // the factor silently, because such an entry keeps MfaConfiguration OPTIONAL.
+  // sub-block, so the entry is dropped either way -- the warning is what makes
+  // that visible, since the outcome varies (AWS refuses when nothing else is
+  // enabled, but accepts and ignores the entry when a sibling factor is).
+  // JSON.stringify, not `${f}` -- a non-string member would otherwise print as
+  // [object Object] and name nothing, and for the intrinsic shape this warning
+  // exists to surface (`EnabledMfas: {Ref: Param}`) that IS the likely member.
+  // The `?? String(f)` tail is not dead: JSON.stringify(undefined) returns
+  // undefined, which join() would render as an empty gap naming no entry at
+  // all. TypeScript types the call as returning `string`, so the tail looks
+  // unreachable to a reader or a lint autofix -- keep it.
   const dropped: string[] = unrecognizedFactors.map((f) => JSON.stringify(f) ?? String(f));
   if (enabledMfasMalformed) {
     dropped.push(`${JSON.stringify(properties['EnabledMfas'])} (not a list)`);
   }
   if (dropped.length > 0) {
+    // Three outcomes, not two. Splitting only on OFF made the second arm claim
+    // a rejection that does not happen whenever a RECOGNIZED factor rides
+    // alongside the dropped entry: the request carries that factor's block, AWS
+    // accepts, and the entry is simply ignored. That is the silent-drop case
+    // this warning exists to surface, so telling the user to expect a hard
+    // failure there is the worst of the three things it could say.
+    const anyFactorBlock =
+      request.SmsMfaConfiguration !== undefined ||
+      request.SoftwareTokenMfaConfiguration !== undefined ||
+      request.EmailMfaConfiguration !== undefined;
     const consequence =
       request.MfaConfiguration === 'OFF'
         ? `MfaConfiguration is OFF, so this pool deploys with MFA DISABLED`
-        : `MfaConfiguration is ${request.MfaConfiguration}, so AWS rejects this call rather ` +
-          `than deploying the pool with MFA disabled`;
+        : anyFactorBlock
+          ? `MfaConfiguration is ${request.MfaConfiguration} and another factor IS enabled, so ` +
+            `the call succeeds and these entries are silently ignored`
+          : `MfaConfiguration is ${request.MfaConfiguration} with no factor enabled, so AWS ` +
+            `rejects this call rather than deploying the pool with MFA disabled`;
     logger?.warn(
       `UserPool ${physicalId}: EnabledMfas entries ${dropped.join(', ')} do not map to an MFA ` +
         `factor block (known: ${MFA_FACTOR_SMS}, ${MFA_FACTOR_SOFTWARE_TOKEN}, ` +
