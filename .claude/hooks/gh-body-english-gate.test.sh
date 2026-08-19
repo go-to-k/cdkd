@@ -204,6 +204,32 @@ run "gh api unquoted field does not swallow a later argument" \
 run "gh api unquoted field stops at the command separator" \
   'gh api repos/o/r/issues -f body=ok ; echo done' 0
 
+# --- round-3 review regressions (issue #1993) --------------------------
+# `gh -R o/r <verb>` is THE shape section 10-c's cross-repo mirror flow
+# uses -- the very flow whose cdk-local incident this hook cites.
+run "gh -R <repo> before the verb blocks" \
+  'gh -R go-to-k/cdkd issue comment 5 --body "日本語"' 2
+run "gh --repo <repo> before the verb blocks" \
+  "gh --repo go-to-k/cdkd issue create --title x -F $JP_BODY" 2
+run "gh --repo=<repo> before the verb blocks" \
+  'gh --repo=go-to-k/cdkd issue create --title x --body "日本語"' 2
+
+# Short flags (-b / -t / -n) are common on OTHER commands, so scanning
+# the whole chained command hard-blocked legitimate shapes. These four
+# were a REGRESSION introduced by the round-2 fix.
+run "chained echo -n with non-English passes" \
+  "gh issue create --title x --body-file $EN_BODY && echo -n \"完了\"" 0
+run "chained grep -n with non-English passes" \
+  "gh issue create --title x --body-file $EN_BODY && grep -n \"日本語\" README.md" 0
+run "chained sed -n with non-English passes" \
+  "gh issue create --title x --body-file $EN_BODY && sed -n \"/日本語/p\" f" 0
+run "chained sort -t with non-English passes" \
+  "gh issue create --title x --body-file $EN_BODY && sort -t \"、\" f" 0
+
+# ...but a `&&` INSIDE the body must not end the segment early.
+run "a && inside the body does not truncate the scan" \
+  'gh issue comment 5 --body "run a && b then 日本語"' 2
+
 # --- each Unicode range in ISOLATION ----------------------------------
 # Without these, deleting any single range from the character class
 # still passed every case.

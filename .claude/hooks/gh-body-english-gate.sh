@@ -73,7 +73,12 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # where `\b` is a BACKSPACE, so the "stop following `cd`s at the verb"
 # guard silently never matched and a trailing `cd` hijacked the target
 # dir. Every other caller of the helper spells it this way.
-VERB_ERE='gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+(pr[[:space:]]+(create|edit|comment|review)|issue[[:space:]]+(create|comment|edit)|release[[:space:]]+(create|edit)|api)([[:space:]]|$|[|;&`)])'
+# `-R` / `--repo` must be tolerated between `gh` and the verb, not just
+# `-C`: `gh -R go-to-k/<target> issue create ...` is THE shape section
+# 10-c's cross-repo mirror flow uses, which is the very flow whose
+# cdk-local incident this hook was written for. Allowing only `-C` let
+# that case through silently.
+VERB_ERE='gh([[:space:]]+(-C|-R|--repo)([[:space:]]+|=)[^[:space:]]+)*[[:space:]]+(pr[[:space:]]+(create|edit|comment|review)|issue[[:space:]]+(create|comment|edit)|release[[:space:]]+(create|edit)|api)([[:space:]]|$|[|;&`)])'
 if ! cmd_matches_verb "$cmd" "$VERB_ERE"; then
   exit 0
 fi
@@ -149,6 +154,36 @@ while IFS= read -r -d '' val; do
   first=$(printf '%s' "$val" | tr '\n' ' ' | cut -c1-60)
   OFFENDERS+=("inline: $first")
 done < <(printf '%s' "$cmd" | perl -0777 -ne '
+    # Restrict the scan to the gh invocation itself: from the publish verb
+    # to the next TOP-LEVEL separator. Short flags are the reason -- `-b`,
+    # `-t` and `-n` are common on other commands (`echo -n`, `grep -n`,
+    # `sed -n`, `sort -t`), so matching them across a whole chained command
+    # made `gh issue create ... && echo -n "<non-English>"` a hard block
+    # with no bypass. The separator scan tracks quote state, so a `&&`
+    # INSIDE a body does not end the segment.
+    my $s = $_;
+    my $start = 0;
+    if ($s =~ /gh(?:\s+(?:-C|-R)\s+\S+|\s+--repo(?:\s+|=)\S+)*\s+(?:pr\s+(?:create|edit|comment|review)|issue\s+(?:create|comment|edit)|release\s+(?:create|edit)|api)\b/s) {
+      $start = $-[0];
+    }
+    my ($i, $q, $end) = ($start, "", length $s);
+    while ($i < length $s) {
+      my $c = substr($s, $i, 1);
+      # chr(34) / chr(39) rather than literal quotes: this whole perl
+      # program is inside a single-quoted bash string, so a literal
+      # apostrophe would terminate it.
+      if ($q ne "") {
+        if ($c eq "\\" && $q eq chr(34)) { $i += 2; next; }
+        $q = "" if $c eq $q;
+        $i++; next;
+      }
+      if ($c eq chr(34) || $c eq chr(39)) { $q = $c; $i++; next; }
+      my $two = substr($s, $i, 2);
+      if ($two eq "&&" || $two eq "||" || $c eq ";") { $end = $i; last; }
+      $i++;
+    }
+    $_ = substr($s, $start, $end - $start);
+
     # The flag must start at a word boundary that is not itself a dash,
     # so `-b` cannot match inside `--body-file`. `\\.` skips an escaped
     # quote so it does not terminate the span early; /s lets the value
