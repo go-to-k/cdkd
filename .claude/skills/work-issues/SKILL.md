@@ -495,6 +495,27 @@ effect. **Always add a unit test that fails without the fix and passes with it**
 carries per-hook `*.test.sh` suites run by `run-tests.sh` under its own
 `hooks.yml` workflow, which is not where you would look from `tests/unit/**`.
 
+**Run such a harness from BESIDE its subject, never from a scratch copy.** Every
+suite resolves the hook under test from its own script path, so a copy runs
+against a sibling that is not there and every case fails with exit 127 —
+reporting a regression your change did not cause. Measured here 2026-08-19:
+`branch-gate.test.sh` scores `Pass: 27  Fail: 0` from `.claude/hooks/`, and from a
+scratch directory exits 1 with `branch-gate.sh: No such file or directory`. Say
+`$0` / `${BASH_SOURCE[0]}`-relative rather than naming one spelling — 27 of the 33
+suites use `${BASH_SOURCE[0]}` and 6 use `$0`, so a rule naming only one is false
+for most of them. Two things here double the damage: `pr-review-gate.test.sh`
+derives the REPO ROOT the same way, so a copy misresolves twice; and
+`run-tests.sh` is itself `${BASH_SOURCE[0]}`-relative before it globs the suite
+directory, so a copied RUNNER cds to the wrong repo entirely.
+
+The trap is invited by the before/after comparison a hook change wants: to check
+the OLD suite against the NEW hook, the obvious move is
+`git show origin/main:<suite> > /tmp/x.sh && bash /tmp/x.sh`. Write the old copy
+next to the real one under a temporary name (`.claude/hooks/_old-<name>.test.sh`)
+and delete it after — otherwise the probe measures its own path resolution rather
+than the hook. This is the one place the scratch-copy idiom §8 recommends does NOT
+transfer: it is right for a data file and wrong for a runnable harness.
+
 **When the issue reports a stale ENTRY in an enumerated list, audit the whole
 list, in both directions, before fixing the named entry.** The defect class is
 "this list drifted from the repo", and drift almost never produces exactly the
