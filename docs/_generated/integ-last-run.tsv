@@ -61,7 +61,7 @@ cross-region-state-bucket	2026-08-01T09:42:37Z	PASS	29	verify.sh	0801 regression
 cross-stack-cfn-fallback	2026-08-12T10:36:46Z	PASS	170	verify.sh	re-run post-rebase + review fixes (typed miss + memoized lookups); clean
 cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip after review coercion fix; deploy+destroy clean
 custom-resource-getatt-data	2026-08-12T08:12:11Z	PASS	63	verify.sh	#1674 lane; CR invoke path, 6 del/0 err, 0 orph
-custom-resource-provider	2026-08-13T16:39:42Z	PASS	280	standard	#1815 SNS-vs-Lambda predicate; 17 created / 17 deleted 0 err; CR IAM-propagation retry fired and recovered; 4 auto-created log groups swept, 0 orphans
+custom-resource-provider	2026-08-19T17:51:00Z	PASS	358	standard	#2033 pre-delivery retry lane; 17 created / 17 deleted 0 err; async CR + waiter state machine exercised; 4 auto log groups swept, 0 orphans
 data-analytics	2026-08-10T11:31:18Z	PASS	87	verify.sh	#1479 SD-subtree merge re-verified after review fixes (OR-gate bag semantics)
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 deep-getatt-chains	2026-08-01T10:07:21Z	PASS	53	verify.sh	0801 regression sweep; SDK+CC chain ok, 0 orphans
