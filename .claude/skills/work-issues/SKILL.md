@@ -208,14 +208,15 @@ gh issue view <n> --json body -q .body | grep -i 'Session-fit:'
   Signals: a `security` label, a GHSA link, a private-report reference, or a title /
   body naming `secret`, `credential`, `token`, `redact`, `leak`, `privilege`,
   `injection`. Path signal: the issue names any surface the security add-on reviewer
-  covers — `src/utils/role-arn.ts`, `src/local/cognito-jwt.ts`,
-  `src/local/authorizer-resolver.ts`, `src/local/authorizer-cache.ts`,
-  `src/local/docker-runner.ts`, `src/local/docker-image-builder.ts`,
-  `src/local/ecr-puller.ts`, and `src/provisioning/providers/**` when the defect is
-  about what gets stored or exposed. (Issue #1972 reconciled the four copies of
-  this list — `CLAUDE.md`, `pr-review-gate.sh`, `/review-pr`, `pr-security-reviewer`
-  — after `src/local/lambda-authorizer.ts` outlived its move to cdk-local in
-  PR #691. When you touch one copy, grep the other three.)
+  covers. Do NOT re-list those paths here — the canonical list is the
+  security-surface bullet list in `/review-pr` (mirrored verbatim into
+  `pr-review-gate.sh`'s `UP_PATH_REGEX`, `pr-security-reviewer.md` and
+  `CLAUDE.md`, with `tests/unit/scripts/security-surface-list-sync.test.ts`
+  fencing the four against drift). A fifth copy here would be a fifth thing to
+  rot: issue #1972 was exactly that rot, where `src/local/lambda-authorizer.ts`
+  outlived its move to cdk-local in PR #691 and kept a dead entry in every copy.
+  Read the list there, and treat an issue naming any of those paths as security
+  when the defect is about what gets stored or exposed.
   When in doubt, treat it as security — the cost of ranking a normal bug first is
   one position in a queue.
   Two consequences that follow from rule 1 sitting above rule 2: a security issue

@@ -55,14 +55,24 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
 
    - Any path matches **security / process-launch surface**:
      - `src/utils/role-arn.ts`
+     - `src/utils/docker-cmd.ts`
      - `src/local/cognito-jwt.ts`
      - `src/local/authorizer-resolver.ts`
      - `src/local/authorizer-cache.ts`
+     - `src/local/sigv4-verify.ts`
+     - `src/local/agentcore-sigv4-sign.ts`
      - `src/local/docker-runner.ts`
      - `src/local/docker-image-builder.ts`
      - `src/local/ecr-puller.ts`
+     - `src/local/ecs-secrets-resolver.ts`
+     - `src/local/ecs-task-runner.ts`
 
-     Four of these (`cognito-jwt.ts`, `authorizer-resolver.ts`, `authorizer-cache.ts`, `docker-image-builder.ts`) are re-export shims whose implementation now lives in cdk-local. They stay listed on purpose: a shim edit changes WHICH implementation cdkd consumes, which is exactly the swap the up-bias exists to catch. What the list must NOT carry is a path that does not exist — a dead entry cannot fire, and its presence disguises the fact that the live surface went unlisted. Both known instances were found dead together (issue #1972): `src/local/lambda-authorizer.ts` stayed here after the logic moved to cdk-local in PR #691, and `src/local-invoke/docker-runner.ts` after the PR #228 rename to `src/local/`. Re-check existence when editing this list.
+     **What belongs here**: a file is on this list when it (a) verifies or mints authn material or loads credentials, (b) resolves secret material, or (c) launches a process or derives the executable path one is launched from. Consumers of those primitives are NOT listed — `container-pool.ts` and `rie-client.ts` drive containers through `docker-runner.ts`, which is listed, so listing them too would only blur what the up-bias means.
+
+     Several entries (`cognito-jwt.ts`, `authorizer-resolver.ts`, `authorizer-cache.ts`, `sigv4-verify.ts`, `agentcore-sigv4-sign.ts`) are thin re-export shims whose implementation now lives in cdk-local; `docker-image-builder.ts` is a wrapper that translates cdk-local's error class rather than a bare re-export. They stay listed on purpose: a shim edit changes WHICH implementation cdkd consumes, which is exactly the swap the up-bias exists to catch. Note this gates the CHOICE, not the logic — when the implementation itself changes, the review happens on the cdk-local bump PR.
+
+     Two ways this list rots, both silent and both seen in issue #1972: an entry stops existing (`src/local/lambda-authorizer.ts` outlived its move to cdk-local in PR #691; `src/local-invoke/docker-runner.ts` outlived the PR #228 rename), or a live surface never gets added (the `AWS_IAM` verifier `sigv4-verify.ts` and the `CDK_DOCKER` exec-path primitive `docker-cmd.ts` were both missing while their callers were listed). `tests/unit/scripts/security-surface-list-sync.test.ts` now fences the first failure mode and the four-copy sync; the second still needs judgment, so re-apply the (a)/(b)/(c) test above when this area changes.
+
    - Any path under `src/provisioning/providers/**` (deletion-sensitive — within the `integ-destroy` markgate scope; real-AWS regressions cost cleanup time)
    - Branch has > 1 fix-back commit (heuristic for "multiple sub-agents wrote the diff" — count commits whose message starts with `fix:` / `fix(` via `git log main..<branch> --oneline | grep -cE '^[a-f0-9]+ fix(\(|:)'`)
 

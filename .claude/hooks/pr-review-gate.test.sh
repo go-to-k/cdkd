@@ -73,6 +73,42 @@ EOF
 {"additions":150,"deletions":50,"changedFiles":3,"headRefOid":"sec1234567890","headRefName":"feat/docs-sec","files":[{"path":"docs/foo.md"},{"path":"src/local/cognito-jwt.ts"},{"path":"README.md"}]}
 EOF
     ;;
+  authorizer-surface)
+    # 200 LOC, 3 files: includes authorizer-resolver.ts. Base tier inline
+    # -> up-bias -> 1-reviewer. Guards issue #1972: this path replaced the
+    # dead `src/local/lambda-authorizer.ts`, and before that fix a PR
+    # touching cdkd's authorizer surface got no up-bias at all.
+    cat <<'EOF'
+{"additions":150,"deletions":50,"changedFiles":3,"headRefOid":"aut1234567890","headRefName":"feat/authorizer","files":[{"path":"docs/foo.md"},{"path":"src/local/authorizer-resolver.ts"},{"path":"README.md"}]}
+EOF
+    ;;
+  authorizer-cache-surface)
+    cat <<'EOF'
+{"additions":150,"deletions":50,"changedFiles":3,"headRefOid":"aut1234567890","headRefName":"feat/authorizer","files":[{"path":"docs/foo.md"},{"path":"src/local/authorizer-cache.ts"},{"path":"README.md"}]}
+EOF
+    ;;
+  sigv4-surface)
+    # The AWS_IAM verifier + credential loader. Its resolver was listed
+    # while it was not (issue #1972 review).
+    cat <<'EOF'
+{"additions":150,"deletions":50,"changedFiles":3,"headRefOid":"aut1234567890","headRefName":"feat/sigv4","files":[{"path":"docs/foo.md"},{"path":"src/local/sigv4-verify.ts"},{"path":"README.md"}]}
+EOF
+    ;;
+  docker-cmd-surface)
+    # `getDockerCmd()` resolves CDK_DOCKER into the spawned binary -- the
+    # process-launch primitive behind every listed docker file.
+    cat <<'EOF'
+{"additions":150,"deletions":50,"changedFiles":3,"headRefOid":"aut1234567890","headRefName":"feat/docker-cmd","files":[{"path":"docs/foo.md"},{"path":"src/utils/docker-cmd.ts"},{"path":"README.md"}]}
+EOF
+    ;;
+  dead-authorizer-path)
+    # The path retired by issue #1972. It cannot exist, so it must NOT
+    # up-bias: a dead alternative in UP_PATH_REGEX is the bug, not a
+    # safety net.
+    cat <<'EOF'
+{"additions":150,"deletions":50,"changedFiles":3,"headRefOid":"ded1234567890","headRefName":"feat/dead","files":[{"path":"docs/foo.md"},{"path":"src/local/lambda-authorizer.ts"},{"path":"README.md"}]}
+EOF
+    ;;
   tests-only-large)
     # 1500 LOC, 15 files, ALL under tests/ → down-bias to 1-reviewer.
     cat <<'EOF'
@@ -297,6 +333,34 @@ run_case "docs+security PR up-bias → block on stale" 2 \
 run_case "docs+security PR up-bias + fresh marker → pass" 0 \
   docs-with-security fresh "sec1234567890" \
   "gh pr merge 400"
+
+# 12-a. Security-surface up-bias for the paths issue #1972 added. Each is
+#       inline by size and must be pushed to 1-reviewer by the path alone,
+#       so a stale marker blocks. Before #1972 these three fired nothing:
+#       the authorizer entry named a file deleted in PR #691, and the
+#       sigv4 / docker-cmd primitives were never listed.
+run_case "authorizer-resolver up-bias -> block on stale" 2 \
+  authorizer-surface stale "" \
+  "gh pr merge 401"
+
+run_case "authorizer-cache up-bias -> block on stale" 2 \
+  authorizer-cache-surface stale "" \
+  "gh pr merge 402"
+
+run_case "sigv4-verify up-bias -> block on stale" 2 \
+  sigv4-surface stale "" \
+  "gh pr merge 403"
+
+run_case "docker-cmd up-bias -> block on stale" 2 \
+  docker-cmd-surface stale "" \
+  "gh pr merge 404"
+
+# 12-b. The retired dead path must NOT up-bias. This is the negative arm
+#       that keeps the fix honest: without it, re-adding a nonexistent
+#       path to UP_PATH_REGEX would still pass every other case here.
+run_case "retired lambda-authorizer path does NOT up-bias" 0 \
+  dead-authorizer-path stale "" \
+  "gh pr merge 405"
 
 # 13. Tests-only large PR: 1500 LOC, 15 files, all under tests/.
 #     Base = 3-axis → down-bias → 1-reviewer → still gated.
