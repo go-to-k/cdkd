@@ -70,6 +70,18 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => stateBackendMocks),
 }));
 
+// Same treatment for the S3 client: the command classes stay real (the
+// `instanceof` assertions depend on them), but the CLIENT is replaced so the
+// region it is constructed with is assertable (issue #1995 — this client backs
+// the bootstrap-marker read, and SDK endpoint resolution is case-sensitive).
+vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();
+  return {
+    ...actual,
+    S3Client: vi.fn().mockImplementation(() => ({ send: mockS3Send, destroy: vi.fn() })),
+  };
+});
+
 // Keep the real command classes (DeleteRepositoryCommand etc.) so
 // constructor-name assertions work; only the client is replaced.
 vi.mock('@aws-sdk/client-ecr', async (importOriginal) => {
@@ -99,6 +111,7 @@ vi.mock('node:readline/promises', () => ({
 }));
 
 import {
+  S3Client,
   HeadBucketCommand,
   ListObjectVersionsCommand,
   DeleteObjectsCommand,
@@ -109,6 +122,7 @@ import { DeleteRepositoryCommand, ECRClient } from '@aws-sdk/client-ecr';
 import { createBootstrapCommand } from '../../../src/cli/commands/bootstrap.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import { AwsClients } from '../../../src/utils/aws-clients.js';
+import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import { applyRoleArnIfSet } from '../../../src/utils/role-arn.js';
 
 const ACCOUNT = '123456789012';
@@ -611,6 +625,16 @@ describe('cdkd bootstrap --destroy', () => {
       expect(vi.mocked(applyRoleArnIfSet)).toHaveBeenCalledWith(
         expect.objectContaining({ region: REGION })
       );
+      // The marker-read client and the state backend, the two the test name
+      // was over-claiming until now. Both are separate constructions from the
+      // same variable, which is exactly how one gets missed.
+      const s3ClientRegions = vi.mocked(S3Client).mock.calls.map((c) => c[0]?.region);
+      expect(s3ClientRegions.length).toBeGreaterThanOrEqual(1);
+      for (const r of s3ClientRegions) expect(r).toBe(REGION);
+
+      const backendRegions = vi.mocked(S3StateBackend).mock.calls.map((c) => c[2]?.region);
+      expect(backendRegions.length).toBeGreaterThanOrEqual(1);
+      for (const r of backendRegions) expect(r).toBe(REGION);
     });
 
     it('DESTROYS the storage a canonical marker names, from an UPPER-cased --region', async () => {
@@ -653,6 +677,17 @@ describe('cdkd bootstrap --destroy', () => {
       ]);
       expect(stateBackendMocks.deleteRawObjects).toHaveBeenCalledWith([RAW_MARKER_KEY]);
       expect(infoLine('Deleted bootstrap marker')).toContain(RAW_MARKER_KEY);
+
+      // The PLAN line too, not only the deletion. It is printed through
+      // `logger.warn` even under `--yes`, and it is the user's one chance to
+      // see WHICH marker is about to go — so if it drifts back to the
+      // canonical key the user is told a different file than the one deleted,
+      // silently. Pinning `deleteRawObjects` alone leaves that half unfenced.
+      const planLine = loggerMocks.warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.includes('Bootstrap marker: s3://'));
+      expect(planLine).toContain(RAW_MARKER_KEY);
+      expect(planLine).not.toContain(MARKER_KEY);
     });
 
     it('does not probe a second key when the region is already canonical', async () => {
@@ -675,6 +710,107 @@ describe('cdkd bootstrap --destroy', () => {
         `(${MARKER_KEY}, ${RAW_MARKER_KEY})`
       );
       expectNothingDeleted();
+    });
+
+    it('does not treat the SAME region under another spelling as an "other" region', async () => {
+      // The regression the canonicalization itself introduced:
+      // `listOtherBootstrapRegions` compared RAW key segments against the now
+      // CANONICAL region, so `--include-state-bucket` refused with
+      // STATE_BUCKET_HOLDS_MARKERS naming the very region being torn down and
+      // telling the user to run the command they had just run. It aborts at
+      // step 3, BEFORE the teardown, so the bucket and repo survived too —
+      // which is why this asserts the deletions, not just the absence of a
+      // throw.
+      stateBackendMocks.getRawObject.mockImplementation(async (key: string) =>
+        key === RAW_MARKER_KEY ? MARKER_BODY : null
+      );
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        // The marker is keyed by the RAW spelling, as `cdkd bootstrap` wrote it.
+        if (prefix === 'cdkd-bootstrap/') return [RAW_MARKER_KEY];
+        if (prefix === '') return [RAW_MARKER_KEY];
+        return [];
+      });
+
+      await runDestroyInRegion(REGION_UPPER, ['--yes', '--include-state-bucket']);
+
+      expect(s3Inputs(DeleteBucketCommand.name)).toEqual([
+        { Bucket: ASSET_BUCKET, ExpectedBucketOwner: ACCOUNT },
+        { Bucket: `cdkd-state-${ACCOUNT}`, ExpectedBucketOwner: ACCOUNT },
+      ]);
+      expect(stateBackendMocks.deleteRawObjects).toHaveBeenCalledWith([RAW_MARKER_KEY]);
+    });
+
+    it('still refuses --include-state-bucket for a genuinely DIFFERENT region', async () => {
+      // The counter-case: the fold must not swallow real other regions. Without
+      // it the arm above could pass by disabling the guard entirely.
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === 'cdkd-bootstrap/') return [MARKER_KEY, 'cdkd-bootstrap/EU-WEST-1.json'];
+        if (prefix === '') return [MARKER_KEY];
+        return [];
+      });
+
+      await expect(
+        runDestroyInRegion(REGION_UPPER, ['--yes', '--include-state-bucket'])
+      ).rejects.toThrow(/EU-WEST-1/);
+    });
+
+    it('names the OTHER region by its RAW key spelling, not the folded one', async () => {
+      // The error tells the user to run `--destroy --region <r>` for each name
+      // it prints, and only the raw spelling reaches a raw-keyed marker:
+      // `--region eu-west-1` against `cdkd-bootstrap/EU-WEST-1.json` probes the
+      // canonical key, finds raw === canonical, skips the second probe and
+      // reports "nothing to delete". Folding the printed name hands the user a
+      // command that cannot work — which is what deduping by the folded value
+      // and returning THAT would have done.
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === 'cdkd-bootstrap/') {
+          // The same other region under BOTH spellings: one entry out, raw.
+          return [MARKER_KEY, 'cdkd-bootstrap/EU-WEST-1.json', 'cdkd-bootstrap/eu-west-1.json'];
+        }
+        if (prefix === '') return [MARKER_KEY];
+        return [];
+      });
+
+      let err: Error | undefined;
+      try {
+        await runDestroyInRegion(REGION_UPPER, ['--yes', '--include-state-bucket']);
+      } catch (e) {
+        err = e as Error;
+      }
+
+      expect(err).toBeInstanceOf(CdkdError);
+      // Reported once, and in the spelling that actually reaches the marker.
+      expect(err!.message).toContain('region(s) EU-WEST-1 are still opted in');
+      expect(err!.message).not.toContain('EU-WEST-1, eu-west-1');
+    });
+
+    it('warns about a surviving sibling marker instead of deleting it blind', async () => {
+      // Both spellings exist. Probe 1 wins, so the raw sibling survives naming
+      // storage this run did not destroy. Deleting it would orphan that bucket
+      // and repo namelessly (the marker is the only record of custom names),
+      // so the command warns and names the re-run.
+      stateBackendMocks.getRawObject.mockImplementation(async (key: string) =>
+        key === MARKER_KEY || key === RAW_MARKER_KEY ? MARKER_BODY : null
+      );
+
+      await runDestroyInRegion(REGION_UPPER, ['--yes']);
+
+      // Only the key actually read is deleted.
+      expect(stateBackendMocks.deleteRawObjects).toHaveBeenCalledWith([MARKER_KEY]);
+      expect(stateBackendMocks.deleteRawObjects).not.toHaveBeenCalledWith([RAW_MARKER_KEY]);
+      const warning = loggerMocks.warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.includes('second bootstrap marker'));
+      expect(warning).toContain(RAW_MARKER_KEY);
+      expect(warning).toContain('--destroy');
+    });
+
+    it('makes no sibling probe when the region is canonical', async () => {
+      // The extra read is scoped to the non-canonical path; the common path
+      // must still touch the marker exactly once.
+      await runDestroy(['--yes']);
+
+      expect(markerProbes()).toEqual([MARKER_KEY]);
     });
 
     it('blames the key the marker was actually READ from when it is corrupt', async () => {

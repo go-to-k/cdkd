@@ -1547,7 +1547,12 @@ the deletion is refused while ANY stack state exists — under any
 first; there is no `--force` override) or while any OTHER region still has
 a bootstrap marker in the bucket (tear those regions down first — deleting
 their markers with the bucket would silently flip them back to legacy
-mode).
+mode). "Other" is decided case-insensitively, so a region whose marker was
+written under a different spelling of its own name is not mistaken for a
+second region — but the refusal NAMES each one by the spelling its marker
+key actually uses, because that is the spelling
+`cdkd bootstrap --destroy --region <r>` needs in order to find it (issue
+[#1995](https://github.com/go-to-k/cdkd/issues/1995)).
 
 A region with no bootstrap marker is a no-op (nothing to delete); note the
 auto-create-on-first-deploy behavior above will re-create the storage on

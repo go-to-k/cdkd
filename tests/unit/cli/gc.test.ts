@@ -51,6 +51,18 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => stateBackendMocks),
 }));
 
+// Same treatment for the S3 client: the command classes stay real (the
+// `instanceof` assertions depend on them), but the CLIENT is replaced so the
+// region it is constructed with is assertable (issue #1995 — this client backs
+// the bootstrap-marker read, and SDK endpoint resolution is case-sensitive).
+vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-s3')>();
+  return {
+    ...actual,
+    S3Client: vi.fn().mockImplementation(() => ({ send: mockS3Send, destroy: vi.fn() })),
+  };
+});
+
 // Keep the real command classes (DescribeImagesCommand etc.) so
 // constructor-name assertions work; only the client is replaced.
 vi.mock('@aws-sdk/client-ecr', async (importOriginal) => {
@@ -79,7 +91,7 @@ vi.mock('node:readline/promises', () => ({
   },
 }));
 
-import { ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3';
+import { ListObjectsV2Command, DeleteObjectsCommand, S3Client } from '@aws-sdk/client-s3';
 import { DescribeImagesCommand, BatchDeleteImageCommand, ECRClient } from '@aws-sdk/client-ecr';
 import {
   createGcCommand,
@@ -89,6 +101,7 @@ import {
 } from '../../../src/cli/commands/gc.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import { AwsClients } from '../../../src/utils/aws-clients.js';
+import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import { applyRoleArnIfSet } from '../../../src/utils/role-arn.js';
 import { derivePartitionAndUrlSuffix, PARTITION_TABLE } from '../../../src/utils/aws-partition.js';
 import {
@@ -1658,6 +1671,16 @@ describe('cdkd gc', () => {
       expect(vi.mocked(applyRoleArnIfSet)).toHaveBeenCalledWith(
         expect.objectContaining({ region: REGION })
       );
+      // The marker-read client and the state backend, the two the test name
+      // was over-claiming until now. Both are separate constructions from the
+      // same variable, which is exactly how one gets missed.
+      const s3ClientRegions = vi.mocked(S3Client).mock.calls.map((c) => c[0]?.region);
+      expect(s3ClientRegions.length).toBeGreaterThanOrEqual(1);
+      for (const r of s3ClientRegions) expect(r).toBe(REGION);
+
+      const backendRegions = vi.mocked(S3StateBackend).mock.calls.map((c) => c[2]?.region);
+      expect(backendRegions.length).toBeGreaterThanOrEqual(1);
+      for (const r of backendRegions) expect(r).toBe(REGION);
     });
 
     it('finds the CANONICAL marker from an UPPER-cased --region', async () => {

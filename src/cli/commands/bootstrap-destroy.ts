@@ -247,16 +247,45 @@ async function deleteContainerRepo(
 /**
  * List OTHER regions that still have a bootstrap marker in the state
  * bucket (i.e. are still opted in to cdkd asset storage).
+ *
+ * `region` arrives CANONICAL (issue #1995) while the key segments are whatever
+ * `cdkd bootstrap` actually wrote, which is not folded (issue #1820) — so the
+ * two sides are compared through {@link canonicalizeRegion} rather than
+ * directly. A raw compare re-introduces this command's own bug in a different
+ * flag: with a marker at `cdkd-bootstrap/US-EAST-1.json`,
+ * `--destroy --region US-EAST-1 --include-state-bucket` would list `US-EAST-1`
+ * as an "other" region, refuse with `STATE_BUCKET_HOLDS_MARKERS` naming the
+ * very region being torn down, and tell the user to run the command they just
+ * ran. It aborts BEFORE the teardown, so the bucket and repo survive too.
+ *
+ * Both spellings of the SAME region are therefore one entry, deduplicated: a
+ * region bootstrapped twice under two spellings must not be reported twice.
+ *
+ * The comparison folds but the REPORTED value stays the RAW key segment, and
+ * that asymmetry is load-bearing. The error tells the user to run
+ * `cdkd bootstrap --destroy --region <r>` for each name printed, and only the
+ * raw spelling actually reaches the marker: `--region eu-west-1` against a
+ * marker at `cdkd-bootstrap/EU-WEST-1.json` probes the canonical key (absent),
+ * finds `rawMarkerKey === markerKey`, skips the second probe, and reports
+ * "nothing to delete". Printing the folded name would hand the user a command
+ * that cannot work.
  */
 async function listOtherBootstrapRegions(
   stateBackend: Pick<S3StateBackend, 'listRawKeys'>,
   region: string
 ): Promise<string[]> {
   const keys = await stateBackend.listRawKeys(BOOTSTRAP_MARKER_PREFIX);
-  return keys
+  const others = keys
     .filter((k) => k.endsWith('.json'))
     .map((k) => k.slice(BOOTSTRAP_MARKER_PREFIX.length, -'.json'.length))
-    .filter((r) => r.length > 0 && r !== region);
+    .filter((r) => r.length > 0 && canonicalizeRegion(r) !== region);
+  // Dedupe BY the folded name, keep the raw spelling as the value.
+  const byCanonical = new Map<string, string>();
+  for (const raw of others) {
+    const key = canonicalizeRegion(raw);
+    if (!byCanonical.has(key)) byCanonical.set(key, raw);
+  }
+  return [...byCanonical.values()];
 }
 
 /**
@@ -364,6 +393,14 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
       }
       throw error;
     }
+    // NOTE a marker that EXISTS at the canonical key but fails to parse still
+    // hard-errors below, and now masks a valid marker at the raw key (pre-#1995
+    // only the raw key was ever read for an upper-cased region). Same call as
+    // `gc.ts` makes, and safe for the same reason: `parseBootstrapMarker` sits
+    // outside the try above, so the command aborts with NOTHING deleted, and
+    // falling through to another key after finding a CORRUPT one would hide the
+    // corruption while the teardown acted on second-choice names — here that
+    // means deleting a bucket and repo the user did not mean to name.
     let marker: BootstrapMarker | undefined;
     if (markerBody === null) {
       const probed = rawMarkerKey === markerKey ? markerKey : `${markerKey}, ${rawMarkerKey}`;
@@ -474,6 +511,37 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
       await deleteContainerRepo(marker.containerRepo, region, options.profile, logger);
       await stateBackend.deleteRawObjects([resolvedMarkerKey]);
       logger.info(`✓ Deleted bootstrap marker (${resolvedMarkerKey})`);
+
+      // A region bootstrapped TWICE under two spellings has two markers. The
+      // read above takes the first one that exists, so the sibling survives —
+      // and it names asset storage this run did NOT destroy.
+      //
+      // WARN rather than delete, deliberately. The two markers may carry
+      // DIFFERENT custom names (issue #1011), and the marker is the only
+      // machine-readable record of them, so deleting one we never read would
+      // orphan its bucket and repo namelessly — the irreversible direction,
+      // and the same reasoning the integ fixture's cleanup uses when it
+      // refuses to drop a marker whose bucket still exists. The remedy is
+      // simply to run the command again: the canonical key is gone now, so
+      // the next run's second probe finds the sibling and tears it down.
+      //
+      // Scoped to the ONE case that can hide a sibling: a non-canonical
+      // --region whose CANONICAL key won probe 1, leaving the raw key unread.
+      // When probe 2 won, probe 1 already returned null for the canonical key,
+      // so re-reading it would be a wasted call for a known-absent object —
+      // and the canonical common path (`rawMarkerKey === markerKey`) still
+      // touches the marker exactly once.
+      if (resolvedMarkerKey === markerKey && rawMarkerKey !== markerKey) {
+        const siblingBody = await stateBackend.getRawObject(rawMarkerKey);
+        if (siblingBody !== null) {
+          logger.warn(
+            `A second bootstrap marker for this region remains at '${rawMarkerKey}' ` +
+              `(this region was bootstrapped under two spellings of its name). It ` +
+              `names asset storage that was NOT destroyed by this run — re-run ` +
+              `'cdkd bootstrap --destroy --region ${region}' to tear that one down too.`
+          );
+        }
+      }
       logger.info(
         `\ncdkd asset storage is now OFF for region ${region}: future deploys in this ` +
           `region fall back to legacy mode (CDK bootstrap destinations) unless the ` +
