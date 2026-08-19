@@ -236,7 +236,13 @@ up_bias=0
 down_bias=0
 
 # Up-bias path patterns. Sourced verbatim from the skill's list.
-UP_PATH_REGEX='^(src/utils/role-arn\.ts|src/local/cognito-jwt\.ts|src/local/lambda-authorizer\.ts|src/local/docker-runner\.ts|src/local-invoke/docker-runner\.ts|src/local/docker-image-builder\.ts|src/local/ecr-puller\.ts|src/provisioning/providers/.*)$'
+# Every CONCRETE-FILE alternative must name a file that EXISTS (the trailing
+# `src/provisioning/providers/.*` is a directory glob, not a file). A dead
+# path cannot fire, and it disguises the fact that the live surface went
+# unlisted -- issue #1972: lambda-authorizer.ts after PR #691, local-invoke/
+# after PR #228. Fenced by
+# tests/unit/scripts/security-surface-list-sync.test.ts.
+UP_PATH_REGEX='^(src/utils/role-arn\.ts|src/utils/docker-cmd\.ts|src/local/cognito-jwt\.ts|src/local/authorizer-resolver\.ts|src/local/authorizer-cache\.ts|src/local/sigv4-verify\.ts|src/local/agentcore-sigv4-sign\.ts|src/local/docker-runner\.ts|src/local/docker-image-builder\.ts|src/local/ecr-puller\.ts|src/local/ecs-secrets-resolver\.ts|src/local/ecs-task-runner\.ts|src/provisioning/providers/.*)$'
 
 # Down-bias buckets. Either ALL paths are docs/infra, or ALL paths
 # are tests. Mixed → no down-bias.

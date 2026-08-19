@@ -208,12 +208,15 @@ gh issue view <n> --json body -q .body | grep -i 'Session-fit:'
   Signals: a `security` label, a GHSA link, a private-report reference, or a title /
   body naming `secret`, `credential`, `token`, `redact`, `leak`, `privilege`,
   `injection`. Path signal: the issue names any surface the security add-on reviewer
-  covers — `src/utils/role-arn.ts`, `src/local/cognito-jwt.ts`,
-  `src/local/docker-runner.ts`, `src/local/docker-image-builder.ts`,
-  `src/local/ecr-puller.ts`, and `src/provisioning/providers/**` when the defect is
-  about what gets stored or exposed. (`CLAUDE.md`'s copy of that list still names
-  `src/local/lambda-authorizer.ts`, which moved to cdk-local in PR #691 — the
-  surviving files here are `authorizer-resolver.ts` / `authorizer-cache.ts`.)
+  covers. Do NOT re-list those paths here — the canonical list is the
+  security-surface bullet list in `/review-pr` (mirrored verbatim into
+  `pr-review-gate.sh`'s `UP_PATH_REGEX`, `pr-security-reviewer.md` and
+  `CLAUDE.md`, with `tests/unit/scripts/security-surface-list-sync.test.ts`
+  fencing the four against drift). A fifth copy here would be a fifth thing to
+  rot: issue #1972 was exactly that rot, where `src/local/lambda-authorizer.ts`
+  outlived its move to cdk-local in PR #691 and kept a dead entry in every copy.
+  Read the list there, and treat an issue naming any of those paths as security
+  when the defect is about what gets stored or exposed.
   When in doubt, treat it as security — the cost of ranking a normal bug first is
   one position in a queue.
   Two consequences that follow from rule 1 sitting above rule 2: a security issue
@@ -319,6 +322,23 @@ relative imports need the `.js` extension — even in TypeScript). After every s
 change, `vp run build` — the CLI runs from `dist/`, so an unbuilt change has no
 effect. **Always add a unit test that fails without the fix and passes with it**
 (under `tests/unit/**`, AWS SDK mocked via `vi.mock()`) — do not wait to be asked.
+**Check first whether the artifact already has a test harness** — `.claude/hooks/`
+carries per-hook `*.test.sh` suites run by `run-tests.sh` under its own
+`hooks.yml` workflow, which is not where you would look from `tests/unit/**`.
+
+**When the issue reports a stale ENTRY in an enumerated list, audit the whole
+list, in both directions, before fixing the named entry.** The defect class is
+"this list drifted from the repo", and drift almost never produces exactly the
+one instance someone happened to notice. Check both that every entry still
+resolves to something real AND that every real thing that belongs is present —
+the second half is the one that gets skipped, because the issue only names the
+first. On 2026-08-19 #1972 reported one dead path in the security-surface list;
+the audit found a second dead path (`src/local-invoke/docker-runner.ts`, stale
+since a PR #228 rename) and four live authn / credential / exec surfaces that
+had never been added, so the list under-protected far more than it
+over-claimed. Then ask what makes the recurrence mechanical: if the issue says
+a list must stay in sync with the repo, that is a test, not a sentence asking
+the next reader to remember.
 
 You may fan out **one subagent per lane** (disjoint files) to run them
 concurrently — give each agent its worktree path, its allowed files, and an
