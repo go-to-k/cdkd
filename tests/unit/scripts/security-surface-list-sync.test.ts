@@ -26,10 +26,10 @@ import { dirname, join } from 'node:path';
  *   - The fence itself goes blind (issue #2006). Two extractors used to compare
  *     as a SORTED SET, and the `pr-security-reviewer.md` one matched any code
  *     span in the section rather than only enumeration items. So an entry
- *     deleted from a list while a prose sentence in the same section still
- *     named it was still "found", and a list carrying an entry twice was
- *     indistinguishable from one carrying it once -- the fence reported green
- *     on exactly the drift it exists to catch.
+ *     deleted from a list while a prose sentence elsewhere still named it was
+ *     still "found", and a list carrying an entry twice was indistinguishable
+ *     from one carrying it once -- the fence reported green on exactly the
+ *     drift it exists to catch.
  *
  * NOT fenced, and no test here should be read as covering it: **a live security
  * surface that was never added to ANY copy**. All five spellings agreeing
@@ -52,6 +52,18 @@ import { dirname, join } from 'node:path';
  * dropped it would leave the entry that matters most unfenced. The hook spells
  * it as the regex `src/provisioning/providers/.*`; that is normalised to the
  * `/**` spelling the four prose copies use.
+ *
+ * HOW the prose copies are read, and why it is shaped this way. Every prose
+ * extractor validates that its whole region IS an enumeration -- a positive
+ * shape, `` `entry`, `entry`, ... `` end to end -- before pulling entries out
+ * of it. It does NOT scan a region for entry-shaped spans and hope the rest is
+ * harmless. That distinction is the whole defect: a scan can be refilled by a
+ * prose sentence sitting at the index of a deleted entry, and closing that off
+ * one bad spelling at a time is a race nobody wins (prose AFTER the list was
+ * closed first, prose BEFORE the first entry survived, and neither of those was
+ * the last one). Requiring the region to contain nothing but entries refuses
+ * every interleaving, including the ones not yet imagined -- an interleaved
+ * sentence makes the parse FAIL rather than contribute.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -61,18 +73,24 @@ const AGENT = join(repoRoot, '.claude', 'agents', 'pr-security-reviewer.md');
 const CLAUDE_MD = join(repoRoot, 'CLAUDE.md');
 
 /**
- * One spelling of a surface entry -- a concrete `src/**` file or a `/**` glob --
- * shared by every extractor so all five see the same alphabet.
+ * One spelling of a surface entry -- a concrete `src/**` file or a `/**` glob.
  *
- * Per-extractor charsets are how a copy silently stops being compared: an entry
- * with an underscore, an uppercase letter or a dotted basename would be visible
- * to the permissive extractors and invisible to the strict ones, and the fence
- * would report a drift that does not exist while hiding one that does.
+ * Every extractor that reads an entry uses this one alphabet, so all five see
+ * the same characters. Per-extractor charsets are how a copy silently stops
+ * being compared: an entry with an underscore, an uppercase letter or a dotted
+ * basename would be visible to the permissive extractors and invisible to the
+ * strict ones, and the fence would report a drift that does not exist while
+ * hiding one that does.
  */
 const ENTRY = 'src/[A-Za-z0-9_./-]+(?:\\*\\*)?';
 
-/** The literal that both ends the agent enumeration and is its last member. */
-const AGENT_TERMINATOR = '`src/provisioning/providers/**`:';
+/**
+ * CLAUDE.md's "PR review pattern" bullet additionally uses a per-directory
+ * brace spelling that expands to several entries: `src/local/{a,b}.ts`. It is a
+ * second spelling of the same alphabet, not a second alphabet -- the directory
+ * part admits `/` so a nested directory group is read rather than skipped.
+ */
+const BRACE_GROUP = '(src/[A-Za-z0-9_./-]+)/\\{([A-Za-z0-9_,.-]+)\\}\\.ts';
 
 /**
  * Floor for every extractor below, asserted INSIDE each one so no call site can
@@ -115,6 +133,48 @@ function duplicatesOf(entries: readonly string[]): string[] {
   return [...dupes];
 }
 
+/**
+ * Read a comma-separated enumeration of backticked items, refusing anything
+ * that is not one.
+ *
+ * `region` is flattened (the prose copies wrap across lines) and then required
+ * to match `item(, item)*` END TO END. Only then are the items pulled out. A
+ * sentence interleaved anywhere in the region -- before the first item, between
+ * two of them, after the last -- makes this throw instead of contributing an
+ * item, which is what stops a prose mention from standing in for an entry
+ * deleted from the list (issue #2006).
+ */
+function readEnumeration(region: string, itemSource: string, source: string): string[] {
+  const flat = region.replace(/\s+/g, ' ').trim();
+  const shape = new RegExp('^(?:' + itemSource + ', )*' + itemSource + '$');
+  expect(
+    shape.test(flat),
+    `${source}: this region must be an enumeration of surface entries and nothing else, ` +
+      `but it does not parse as one. Prose interleaved with the entries is refused rather ` +
+      `than read, because a sentence sitting where a deleted entry used to be would ` +
+      `silently refill it (issue #2006). Region as parsed:\n  ${flat}`,
+  ).toBe(true);
+  return [...flat.matchAll(new RegExp(itemSource, 'g'))].map((m) => m[0]);
+}
+
+/**
+ * One top-level CLAUDE.md bullet, so an extractor cannot pick up a same-shaped
+ * span from an unrelated part of a 300-line instruction file.
+ *
+ * The bullet ends at the next top-level `- ` rather than the next `- **`: the
+ * bolder boundary would silently widen this scope the day someone unbolds the
+ * following bullet.
+ */
+function claudeMdBullet(md: string, startsWith: string, source: string): string {
+  const at = md.indexOf(startsWith);
+  expect(at, `CLAUDE.md must carry the ${source} bullet, starting "${startsWith}"`).toBeGreaterThan(
+    -1,
+  );
+  const after = md.slice(at + 1);
+  const end = after.indexOf('\n- ');
+  return end > -1 ? after.slice(0, end) : after;
+}
+
 /** The hook's UP_PATH_REGEX alternations, in regex order. */
 function hookEntries(): string[] {
   const sh = readFileSync(HOOK, 'utf8');
@@ -122,10 +182,14 @@ function hookEntries(): string[] {
   expect(m, 'pr-review-gate.sh must define an anchored UP_PATH_REGEX').not.toBeNull();
   const entries = m![1]!
     .split('|')
-    .map((alt) => alt.replace(/\\\./g, '.'))
-    // `src/provisioning/providers/.*` is the regex spelling of the `/**` glob
-    // the four prose copies use -- normalise it rather than drop it.
-    .map((alt) => (alt.endsWith('/.*') ? `${alt.slice(0, -2)}**` : alt));
+    // Normalise the glob BEFORE unescaping, never after. `providers/.*` is the
+    // regex spelling of the `/**` the prose copies use; the escaped
+    // `providers/\.*` is a plausible slip (every sibling alternation
+    // escapes its dot) that matches only literal dots and therefore no real
+    // file. Unescaping first would collapse the two into the same string and
+    // pass a gate that had silently stopped up-biasing every provider PR.
+    .map((alt) => (alt.endsWith('/.*') ? `${alt.slice(0, -2)}**` : alt))
+    .map((alt) => alt.replace(/\\\./g, '.'));
   assertFloor(entries, 'pr-review-gate.sh UP_PATH_REGEX');
   return entries;
 }
@@ -143,11 +207,11 @@ function skillEntries(): string[] {
       'what bounds them; the providers/** bullet is INSIDE the list, not its terminator',
   ).toBeGreaterThan(-1);
 
-  // Two bullet shapes, both anchored at the start of a list item so prose in
-  // the same block cannot contribute an entry: the per-file bullets, whose line
-  // is nothing but the code span, and the `Any path under <glob>` bullet, which
-  // carries trailing prose. `[ \t]*$` rather than `$` so a stray trailing space
-  // does not silently drop an entry.
+  // Here the enumeration is one entry per LIST ITEM, so the positive shape is
+  // per line: the whole line must be a bullet and nothing but an entry. Prose
+  // cannot satisfy it, which is the same guarantee `readEnumeration` gives the
+  // inline copies. `[ \t]*$` rather than `$` so a stray trailing space does not
+  // silently drop an entry.
   const item = new RegExp(
     '^\\s+- `(' + ENTRY + ')`[ \\t]*$|^\\s+- Any path under `(' + ENTRY + ')`',
     'gm',
@@ -166,26 +230,52 @@ function agentEntries(): string[] {
   const end = rest.indexOf('### 5.');
   const section = end > -1 ? rest.slice(0, end) : rest;
 
-  // The section opens with a comma-separated enumeration and turns into prose
-  // after the providers glob. Scanning the WHOLE section would let a prose
-  // mention stand in for a deleted enumeration entry (issue #2006), so cut at
-  // the enumeration's end first. Anchor on the terminator LITERAL, not on the
-  // first code-span-then-colon: any earlier `` `x`: `` in the section would
-  // move a positional cut, and the failure would then name the wrong cause.
-  const termAt = section.indexOf(AGENT_TERMINATOR);
+  // The section is an enumeration followed by prose, with a colon marking the
+  // hand-off. The region is that enumeration's OWN paragraph: the blank line
+  // above it, the colon below.
+  //
+  // The boundary is the colon, NOT the providers glob that happens to carry it
+  // today -- pinning the literal would turn a legitimate consistent shrink
+  // (dropping that entry from all five copies at once) into a failure telling
+  // the maintainer to undo a correct edit.
+  //
+  // What `readEnumeration` guarantees, precisely: nothing inside the region
+  // that is not an entry can CONTRIBUTE an entry. It does NOT validate that the
+  // region is the right one. If an earlier `` `x`: `` in the section moves the
+  // colon, the outcome depends on what that region happens to contain -- a
+  // short one trips the floor, whose message does name the parse; a long enough
+  // one parses cleanly as an enumeration and is caught only by the SEQUENCE
+  // COMPARISON, whose message blames drift between the copies. Neither names
+  // the cut. That is the honest division of labour here: the shape check closes
+  // the refill class, the comparison is what catches a wrong region.
+  const headingEnd = section.indexOf('\n');
+  const colonAt = section.indexOf('`:', headingEnd);
   expect(
-    termAt,
-    'pr-security-reviewer.md section 4 must end its enumeration with the literal ' +
-      `${AGENT_TERMINATOR} -- that entry is both the last member of the list and the ` +
-      'boundary that keeps the prose after it from refilling a deleted entry.',
+    colonAt,
+    'pr-security-reviewer.md section 4 must end its entry enumeration with a colon ' +
+      '(`...`: <prose>), which is what separates the list from the description of what ' +
+      'to look for in it.',
   ).toBeGreaterThan(-1);
-  const enumeration = section.slice(0, termAt + AGENT_TERMINATOR.length);
 
-  // A LOOKAHEAD on the separator, not a consumed comma: whichever entry ends
-  // the enumeration is punctuated by the terminator's colon instead, so
-  // requiring a comma would make it invisible and blame the wrong list.
-  const item = new RegExp('`(' + ENTRY + ')`(?=[,:])', 'g');
-  const entries = [...enumeration.matchAll(item)].map((m) => m[1]!);
+  // Bounding at the HEADING instead would refuse any lead-in sentence, i.e. an
+  // ordinary documentation edit. A guard that reds on a legitimate change gets
+  // weakened by the next person who hits it, so it must not red on one.
+  //
+  // One lead-in shape still reds, and it is a residual rather than a design
+  // goal: a sentence that itself contains a `` `x`: `` moves `colonAt` onto it,
+  // and its paragraph then fails the shape. Deliberately not "fixed" by
+  // searching forward for the first colon whose paragraph happens to parse --
+  // that would silently choose a region, which is the class this whole file
+  // exists to close, and it would trade a loud red on a rare edit for a quiet
+  // wrong answer on a corrupted list.
+  const paragraphAt = section.lastIndexOf('\n\n', colonAt);
+  const regionStart = paragraphAt > -1 ? paragraphAt + 2 : headingEnd + 1;
+
+  const entries = readEnumeration(
+    section.slice(regionStart, colonAt + 1),
+    '`' + ENTRY + '`',
+    'pr-security-reviewer.md section 4 enumeration',
+  ).map((span) => span.slice(1, -1));
   assertFloor(entries, 'pr-security-reviewer.md section 4 enumeration');
   return entries;
 }
@@ -194,37 +284,65 @@ function agentEntries(): string[] {
  * CLAUDE.md carries the list twice in two different spellings: a
  * slash-separated form in the gate description and a brace-expansion form in
  * the "PR review pattern" bullet. Both must expand to the same sequence.
+ *
+ * Both are scoped to their own bullet first. An unscoped `md.match` takes the
+ * FIRST same-shaped span in a 300-line file, so an unrelated phrase elsewhere
+ * either injects entries or substitutes a fake list wholesale -- the same "a
+ * mention elsewhere contributes an entry" class as issue #2006.
  */
 function claudeMdEntrySequences(): [string[], string[]] {
   const md = readFileSync(CLAUDE_MD, 'utf8');
 
-  const slashForm = md.match(new RegExp('any path under (`' + ENTRY + '`(?: / `' + ENTRY + '`)+)'));
-  expect(slashForm, 'CLAUDE.md must carry the slash-separated surface list').not.toBeNull();
+  const gateBullet = claudeMdBullet(
+    md,
+    '- **Before merging large / security-sensitive PRs**',
+    'pr-review gate description',
+  );
+  // The CHAIN is its own positive shape -- a ` / `-joined run of entries matched
+  // end to end -- so no prose between two entries can contribute one. WHICH
+  // chain is a different question the anchor does not settle: this is a
+  // first-match `.match`, so a second `any path under `a` / `b`` phrase earlier
+  // in the same bullet would substitute its chain wholesale. What bounds that is
+  // the floor (a short decoy) and the sequence comparison against the hook (a
+  // long one), not the anchor.
+  const slashForm = gateBullet.match(
+    new RegExp('any path under (`' + ENTRY + '`(?: / `' + ENTRY + '`)+)'),
+  );
+  expect(slashForm, 'CLAUDE.md gate description must carry the slash-separated surface list')
+    .not.toBeNull();
   const slashEntries = [...slashForm![1]!.matchAll(new RegExp('`(' + ENTRY + ')`', 'g'))].map(
     (m) => m[1]!,
   );
   assertFloor(slashEntries, 'CLAUDE.md gate-description slash form');
 
-  // Scoped to the "PR review pattern" bullet. An unscoped sweep of the whole
-  // file would let any unrelated `src/<dir>/{a,b}.ts` span anywhere in
-  // CLAUDE.md inject entries and report a drift that does not exist -- the same
-  // "a mention elsewhere contributes an entry" class as issue #2006.
-  const patternAt = md.indexOf('- **PR review pattern**');
-  expect(patternAt, 'CLAUDE.md must carry the "PR review pattern" bullet').toBeGreaterThan(-1);
-  const afterPattern = md.slice(patternAt + 1);
-  const patternEnd = afterPattern.indexOf('\n- **');
-  const patternBullet = patternEnd > -1 ? afterPattern.slice(0, patternEnd) : afterPattern;
+  const patternBullet = claudeMdBullet(md, '- **PR review pattern**', 'PR review pattern');
+  const listOpen = 'security / process-launch surface is touched (';
+  const listAt = patternBullet.indexOf(listOpen);
+  expect(
+    listAt,
+    `CLAUDE.md "PR review pattern" must introduce the surface list with "${listOpen}"`,
+  ).toBeGreaterThan(-1);
+  // No paragraph bound to relax here, unlike the agent section: the list opens
+  // immediately after `touched (`, so there is no lead-in region a legitimate
+  // edit could add prose to. The only prose that can land inside these bounds is
+  // prose interleaved with the entries themselves -- exactly what the shape
+  // check exists to refuse -- so the strictness costs nothing here.
+  const parenFrom = patternBullet.slice(listAt + listOpen.length);
+  const parenEnd = parenFrom.indexOf(')');
+  expect(parenEnd, 'the "PR review pattern" surface list must be parenthesised').toBeGreaterThan(-1);
 
-  // The brace form is written per-directory (`src/utils/{a,b}.ts`), with the
-  // providers glob spelled out alongside them. Expand every group in document
-  // order rather than assuming one.
-  const braceItem = new RegExp(
-    '`(src/[A-Za-z0-9_.-]+)/\\{([A-Za-z0-9_,.-]+)\\}\\.ts`|`(src/[A-Za-z0-9_./-]+\\*\\*)`',
-    'g',
-  );
-  const braceEntries = [...patternBullet.matchAll(braceItem)].flatMap((m) =>
-    m[3] ? [m[3]] : m[2]!.split(',').map((n) => `${m[1]}/${n}.ts`),
-  );
+  // Two spellings share the enumeration: brace groups that expand to several
+  // entries, and plain entries (the providers glob today, a singleton file
+  // tomorrow). Both are read; a group with no plain-entry alternative would
+  // silently drop a singleton and blame CLAUDE.md for drift it does not have.
+  const braceEntries = readEnumeration(
+    parenFrom.slice(0, parenEnd),
+    '(?:`' + BRACE_GROUP + '`|`' + ENTRY + '`)',
+    'CLAUDE.md "PR review pattern" surface list',
+  ).flatMap((span) => {
+    const group = span.match(new RegExp('^`' + BRACE_GROUP + '`$'));
+    return group ? group[2]!.split(',').map((n) => `${group[1]}/${n}.ts`) : [span.slice(1, -1)];
+  });
   assertFloor(braceEntries, 'CLAUDE.md "PR review pattern" brace form');
 
   return [slashEntries, braceEntries];
@@ -274,9 +392,7 @@ describe('security-surface entry list', () => {
     expect(
       agentEntries(),
       'pr-security-reviewer.md section 4 lists a different surface sequence than the ' +
-        'gate, so the reviewer would be told to audit files the gate never flags. ' +
-        'Only the section-opening enumeration counts -- a prose mention elsewhere in ' +
-        'the section does not restore a deleted entry (issue #2006).',
+        'gate, so the reviewer would be told to audit files the gate never flags.',
     ).toEqual(hook);
   });
 
