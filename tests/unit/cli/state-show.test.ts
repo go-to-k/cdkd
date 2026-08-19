@@ -313,6 +313,106 @@ describe('cdkd state show', () => {
     expect(attrRow).toBe('    Arn: arn:aws:s3:::mybucket');
   });
 
+  it('strips control characters from Attribute and Property KEYS, not just values', async () => {
+    // The KEY strips were unfenced: the test above puts control characters only
+    // in VALUES, which `formatAttributeValue` already handles, so all three
+    // `stripControlChars(k)` call sites could be deleted with the suite green.
+    // A property NAME is template-authored and an attribute NAME is
+    // provider-returned; neither passed a CloudFormation validator.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilStack',
+        resources: {
+          R: makeResource({
+            resourceType: 'AWS::S3::Bucket',
+            physicalId: 'b',
+            properties: { 'Bucket\u001bName': 'plain-value' },
+            attributes: { 'A\u202ern': 'plain-arn' },
+          }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilStack']);
+
+    expect(out.split('\n').find((l) => l.includes('BucketName'))).toBe(
+      '    BucketName: plain-value'
+    );
+    expect(out.split('\n').find((l) => l.includes('Arn'))).toBe('    Arn: plain-arn');
+  });
+
+  it('renders an `undefined` attribute value instead of throwing', async () => {
+    // The `value === undefined` guard was unfenced: without it
+    // `stripControlChars(JSON.stringify(undefined))` throws a TypeError,
+    // because `JSON.stringify(undefined)` is `undefined` rather than a string.
+    // Distinct from the symbol case below — that one reaches the JSON branch,
+    // this one is caught before it.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilStack',
+        resources: {
+          R: makeResource({
+            resourceType: 'AWS::S3::Bucket',
+            physicalId: 'b',
+            attributes: { Missing: undefined as unknown as string },
+          }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilStack']);
+    expect(out).toContain('Missing: undefined');
+  });
+
+  it('strips control characters from the PhysicalID too (issue #1926 review)', async () => {
+    // A physical id is often COMPOSITE — built from template-authored segments —
+    // so it is the one field in this block that passed no CFn validator, and it
+    // was the last one still printing raw.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilStack',
+        resources: {
+          R: makeResource({ resourceType: 'AWS::S3::Bucket', physicalId: 'my\u001bbucket-123' }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilStack']);
+    const row = out.split('\n').find((l) => l.includes('PhysicalID'));
+    expect(row).toBe('  PhysicalID: mybucket-123');
+  });
+
+  it('renders an unserializable attribute value instead of throwing', async () => {
+    // `JSON.stringify` returns `undefined` — not a string — for a symbol or a
+    // function, so stripping its result directly threw. Unreachable from state
+    // read out of S3 (JSON has neither), reachable from an in-memory
+    // `attributes` bag, and a renderer that throws is worse than one that says
+    // what it could not print.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilStack',
+        resources: {
+          R: makeResource({
+            resourceType: 'AWS::S3::Bucket',
+            physicalId: 'b',
+            attributes: { Weird: Symbol('nope') as unknown as string },
+          }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilStack']);
+    expect(out).toContain('Weird: (unserializable)');
+  });
+
   it('strips a control character nested inside a STRUCTURED value', async () => {
     // The other arm of `formatAttributeValue`: a non-scalar is JSON-encoded,
     // and `JSON.stringify` escapes C0 INSIDE a string but passes C1 and the

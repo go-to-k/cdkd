@@ -517,7 +517,11 @@ async function stateResourcesCommand(
       for (const detail of details) {
         lines.push(detail.logicalId);
         lines.push(`  Type: ${detail.resourceType}`);
-        lines.push(`  PhysicalID: ${detail.physicalId}`);
+        // Stripped like every other value in this block (issue #1926 review):
+        // a physical id is often COMPOSITE, built from template-authored
+        // segments (a bucket name, a queue name, a rule name), so it is the one
+        // field here that passed no CloudFormation validator.
+        lines.push(`  PhysicalID: ${stripControlChars(detail.physicalId)}`);
         lines.push(
           `  Dependencies: ${detail.dependencies.length > 0 ? detail.dependencies.join(', ') : '(none)'}`
         );
@@ -588,7 +592,13 @@ function formatAttributeValue(value: unknown): string {
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
     return stripControlChars(String(value));
   }
-  return stripControlChars(JSON.stringify(value));
+  // `JSON.stringify` returns `undefined` — not a string — for a symbol or a
+  // function value, so stripping its result directly would throw. State read
+  // from S3 cannot hold either (JSON has neither), but this also renders
+  // in-memory `attributes` bags a provider populated, and a renderer that
+  // throws on an odd value is worse than one that names it.
+  const json = JSON.stringify(value);
+  return json === undefined ? '(unserializable)' : stripControlChars(json);
 }
 
 /**
@@ -779,7 +789,7 @@ function renderStateBlock(state: StackState, lockInfo: LockInfo | null): string[
     lines.push('');
     lines.push(logicalId);
     lines.push(`  Type: ${resource.resourceType}`);
-    lines.push(`  PhysicalID: ${resource.physicalId}`);
+    lines.push(`  PhysicalID: ${stripControlChars(resource.physicalId)}`);
     // v7+ (#614): show the provisioning layer so users can see which
     // resources took the Cloud Control auto-route. Absent on pre-v7
     // state — print "(sdk, legacy default)" so the absence is explicit.

@@ -3,7 +3,10 @@ import {
   redactSecretsForState,
   scrubResourceRecord,
   clearRecordedSecretExpressions,
+  recordSecretExpression,
   STATE_DERIVED_RULES,
+  STATE_SOURCED_READBACK_RULES,
+  STATE_SOURCED_CROSS_GENERATION_RULES,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
 
@@ -804,5 +807,149 @@ describe('secret-redaction - keyed array descent (issue #1915)', () => {
     >;
     expect(env[0]!['Value']).toBe('added-by-the-provider');
     expect(env[1]!['Value']).toBe(EXPR);
+  });
+});
+
+/**
+ * The readback REFUSAL added for issue #1926, and the two guards its review
+ * measured into it. Lives beside the #1915 fences on purpose: those fences are
+ * what rejected the first attempt at this pass, and both sets constrain the
+ * same walk from opposite directions — #1915 says do not GUESS a position,
+ * #1926 says do not PERSIST a plaintext, and the only way to satisfy both is to
+ * substitute exactly where the source can account for the leaf.
+ */
+describe('secret-redaction - readback refusal (issue #1926)', () => {
+  beforeEach(() => clearRecordedSecretExpressions());
+  afterEach(() => clearRecordedSecretExpressions());
+
+  const PUBLIC_SSM = '{{resolve:ssm:/app/public-host}}';
+  const SECURE_SSM = '{{resolve:ssm:/app/secure-token}}';
+
+  const refuse = (bag: unknown, source: unknown): unknown =>
+    redactSecretsForState(bag, new Map<string, string>(), source, STATE_SOURCED_READBACK_RULES);
+
+  it('substitutes a MIXED leaf the whole-token arm cannot reach', () => {
+    // The dominant CDK shape: an `Fn::Join` around a secret renders a leaf that
+    // CONTAINS the reference instead of BEING it, so `redactByPath`'s
+    // whole-token test never fires and — with an empty map — the value scan has
+    // no needle either.
+    const out = refuse(
+      { Url: `postgres://u:${PLAINTEXT}@host` },
+      { Url: `postgres://u:${EXPR}@host` }
+    );
+    expect((out as Record<string, unknown>)['Url']).toBe(`postgres://u:${EXPR}@host`);
+  });
+
+  it('does NOT write a scalar over a CONTAINER the readback reported', () => {
+    // The type guard. Without it a reference-shaped SOURCE returned its string
+    // whatever the bag was, so `{Foo: {a: 1}}` became `{Foo: '{{resolve:...}}'}`
+    // — fabricating a baseline AWS never reported, which `--revert` then writes
+    // back. Reachable when a provider structures a leaf the template spells as
+    // a reference.
+    expect(refuse({ Foo: { a: 1, b: 'plain' } }, { Foo: EXPR })).toEqual({
+      Foo: { a: 1, b: 'plain' },
+    });
+    expect(refuse({ Foo: [1, 2] }, { Foo: EXPR })).toEqual({ Foo: [1, 2] });
+    expect(refuse({ Foo: 42 }, { Foo: EXPR })).toEqual({ Foo: 42 });
+  });
+
+  it('keeps a PUBLIC ssm reference RESOLVED inside a mixed leaf (issue #1901)', () => {
+    // A plain `ssm:` reference is classified by the parameter's TYPE, and a
+    // `String` parameter is public config that state stores RESOLVED.
+    // Substituting the expression over it is phantom drift on ordinary config.
+    expect(refuse({ Url: 'pre-public-host-post' }, { Url: `pre-${PUBLIC_SSM}-post` })).toEqual({
+      Url: 'pre-public-host-post',
+    });
+  });
+
+  it('still refuses a mixed leaf whose ssm reference was RECORDED as secret', () => {
+    // The other polarity of the same rule: a `SecureString` is spelled exactly
+    // like the public one, so the verdict comes from what the resolver
+    // recorded. Losing this arm turns the #1901 fix into a blanket exemption.
+    recordSecretExpression(SECURE_SSM);
+    expect(refuse({ Url: 'pre-decrypted-post' }, { Url: `pre-${SECURE_SSM}-post` })).toEqual({
+      Url: `pre-${SECURE_SSM}-post`,
+    });
+  });
+
+  it('refuses a mixed `ssm-secure:` leaf, which the public test must not catch', () => {
+    // `{{resolve:ssm-secure:` does not start with `{{resolve:ssm:` — the next
+    // character is `-`. Pinned because a prefix test written one character
+    // looser would silently exempt every ssm-secure reference.
+    const secure = '{{resolve:ssm-secure:/app/token}}';
+    expect(refuse({ Url: 'pre-x-post' }, { Url: `pre-${secure}-post` })).toEqual({
+      Url: `pre-${secure}-post`,
+    });
+  });
+
+  it('applies on the DEPLOY path: scrubResourceRecord with an empty map and no template bag', () => {
+    // The coupling issue #1926 was hoisted for, and the reason it is a UNIT
+    // test: `DeployEngine.redactStateForPersist` calls exactly this for an
+    // UNCHANGED resource — no secrets (never resolved this deploy) and no
+    // template bag — so the observed walk derives
+    // `STATE_SOURCED_READBACK_RULES` and inherits the refusal with no
+    // deploy-engine change. Flipping that derivation drops the default-deploy
+    // redaction, and without this test only the real-AWS integ would notice.
+    const scrubbed = scrubResourceRecord(
+      {
+        properties: { Env: { Url: `postgres://u:${EXPR}@host` } },
+        observedProperties: { Env: { Url: `postgres://u:${PLAINTEXT}@host` } },
+      },
+      new Map<string, string>()
+    );
+
+    expect(scrubbed.observedProperties!['Env']).toEqual({ Url: `postgres://u:${EXPR}@host` });
+    expect(JSON.stringify(scrubbed)).not.toContain(PLAINTEXT);
+  });
+
+  it('RESIDUAL (issue #2012): an observed KEY the source does not carry keeps its plaintext', () => {
+    // Row 4 of the module's per-shape table, pinned like rows 1-3 are. There is
+    // no source leaf to position against and no needle to match, so the value
+    // is persisted as-is. It is NOT closed by refusing every unpaired key: an
+    // extra key is the NORM in an AWS readback (`FunctionName`, `MemorySize`,
+    // `LastModified`), so refusing them would empty the drift baseline of every
+    // secret-bearing resource.
+    //
+    // A residual we chose to ship is pinned as deliberately as one we fixed —
+    // a future fix has to flip this assertion on purpose.
+    const out = redactSecretsForState(
+      { Password: PLAINTEXT, MasterPassword: PLAINTEXT },
+      new Map<string, string>(),
+      { Password: EXPR },
+      STATE_SOURCED_READBACK_RULES
+    ) as Record<string, unknown>;
+
+    expect(out['Password']).toBe(EXPR);
+    expect(out['MasterPassword']).toBe(PLAINTEXT);
+  });
+
+  it('keeps an own `__proto__` key as DATA in the VALUE-SCAN walk too', () => {
+    // The third accumulator. Its two siblings (the path walk and the refusal
+    // walk) are fenced; this one — reached with NO source, so the value scan
+    // rather than the path pass — was not, and `out[k] = ...` on a normal
+    // object would drop the key onto the prototype instead of into the bag.
+    const secrets = new Map<string, string>([[PLAINTEXT, EXPR]]);
+    const out = redactSecretsForState(
+      JSON.parse(`{"Pw":"${PLAINTEXT}","__proto__":{"polluted":true}}`) as Record<string, unknown>,
+      secrets
+    );
+
+    expect(Object.hasOwn(out, '__proto__')).toBe(true);
+    expect((out as Record<string, unknown>)['Pw']).toBe(EXPR);
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+  });
+
+  it('does NOT apply to `cdkd scrub`s CROSS-GENERATION observed walk', () => {
+    // The gate's third conjunct, from the other side. Scrub has already
+    // repositioned `properties` onto TODAY's template, so its source is a
+    // different generation and substituting from it would rewrite a baseline
+    // onto a reference the stack may never have deployed (issue #1917).
+    const out = redactSecretsForState(
+      { Url: `postgres://u:${PLAINTEXT}@host` },
+      new Map<string, string>(),
+      { Url: `postgres://u:${EXPR}@host` },
+      STATE_SOURCED_CROSS_GENERATION_RULES
+    );
+    expect((out as Record<string, unknown>)['Url']).toBe(`postgres://u:${PLAINTEXT}@host`);
   });
 });

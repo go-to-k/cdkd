@@ -121,6 +121,12 @@ EXPECTED_SSM="cdkd-known-ssm-value"
 # stack's comment.
 EXPECTED_USERNAME="cdkd-user"
 EXPECTED_SECURE="cdkd-known-secure-value-456"
+# The MIXED leaf's persisted form, spelled out rather than globbed (issue #1926
+# review). A glob like '{{resolve:ssm:'*'@db.' passes under a sibling-expression
+# COLLAPSE — the #1904 / #1910 class this same file fences for the
+# secretsmanager pair — because any ssm expression satisfies it. Pinning the
+# parameter NAME is what makes the assertion about THIS reference.
+EXPECTED_DB_URL_EXPR="postgres://app-svc:{{resolve:ssm:${SECURE_PARAM_NAME}}}@db.${REGION}.internal:5432/app"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -395,11 +401,12 @@ esac
 # map, position only) is Phase 1g. Asserting both halves means a regression in
 # either is attributed to the right one.
 STATE_DB_URL=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.DB_URL // empty')
-case "${STATE_DB_URL}" in
-  'postgres://app-svc:{{resolve:ssm:'*'@db.'*'.internal:5432/app')
-    echo "    OK: state DB_URL kept the EMBEDDED expression: ${STATE_DB_URL}" ;;
-  *) echo "FAIL: state DB_URL is not the embedded {{resolve:...}} form: $(mask "${STATE_DB_URL}")" >&2; redaction_fail=1 ;;
-esac
+if [ "${STATE_DB_URL}" = "${EXPECTED_DB_URL_EXPR}" ]; then
+  echo "    OK: state DB_URL kept the EMBEDDED expression: ${STATE_DB_URL}"
+else
+  echo "FAIL: state DB_URL is not the expected embedded form: $(mask "${STATE_DB_URL}")" >&2
+  redaction_fail=1
+fi
 
 # Guard 3b (issue #1901): an ssm reference to a SECURESTRING parameter is a
 # secret too, so state must hold its expression — even though the SPELLING is
@@ -1187,9 +1194,12 @@ fi
 aws s3 cp "${RO_STAMP_AFTER}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
 rm -f "${RO_STAMP_BEFORE}" "${RO_STAMP_AFTER}"
 
-# rc is now ASSERTED, not tolerated. With the sentinel in place a per-resource
-# readback failure on this Lambda would leave it behind and fail the assertions
-# anyway, so tolerating a non-zero rc would only make the failure report worse.
+# No `set +e` window around this call. An earlier revision wrapped it to tolerate
+# a transient per-resource readback failure; the sentinel above makes that
+# tolerance harmful, because a refresh that skipped this Lambda would leave the
+# sentinel behind and the failure should be reported as what it is. Removing the
+# wrapper simply lets the script's own `set -euo pipefail` (line 63) do it —
+# there is no assertion added here beyond that.
 node "${LOCAL_DIST}" state refresh-observed "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -1353,16 +1363,38 @@ echo "    OK: the plain deploy re-captured the baseline"
 
 deploy_redaction_fail=0
 G_DB_URL=$(printf '%s' "${G_OBSERVED}" | jq -r '.DB_URL // empty')
-case "${G_DB_URL}" in
-  'postgres://app-svc:{{resolve:ssm:'*'@db.'*'.internal:5432/app')
-    echo "    OK: re-captured DB_URL kept the EMBEDDED expression: ${G_DB_URL}" ;;
-  *) echo "FAIL: re-captured observed DB_URL is not the embedded expression: $(mask "${G_DB_URL}")" >&2
-     deploy_redaction_fail=1 ;;
-esac
+if [ "${G_DB_URL}" = "${EXPECTED_DB_URL_EXPR}" ]; then
+  echo "    OK: re-captured DB_URL kept the EMBEDDED expression: ${G_DB_URL}"
+else
+  echo "FAIL: re-captured observed DB_URL is not the expected embedded expression: $(mask "${G_DB_URL}")" >&2
+  deploy_redaction_fail=1
+fi
 
-# The CONTROL, in the same arm: a PUBLIC ssm String must still be RESOLVED. A
-# blanket "redact everything that came back" bug passes the assertion above and
-# fails this one.
+# CONTROL 1: the persisted bag must still be AWS's READBACK, not a copy of the
+# record's own `properties`. This is the control that catches a blanket
+# "substitute the source wherever it carries a reference" regression, and it
+# works because source and bag genuinely DIFFER here: the template sets only
+# Code / Environment / Handler / Role / Runtime / Timeout, so `FunctionName` and
+# `MemorySize` exist ONLY on the AWS side. A take-source-wholesale bug drops
+# them; a mask/drop bug mangles them.
+#
+# The SSM_VALUE control below cannot do this job on its own, and the review was
+# right about why: that leaf is stored RESOLVED, so `source === bag` there and a
+# take-source bug writes back the identical string.
+G_FN_NAME=$(printf '%s' "${G_STATE}" \
+  | jq -r --arg lid "${G_LID}" '.state.resources[$lid].observedProperties.FunctionName // empty')
+G_MEM=$(printf '%s' "${G_STATE}" \
+  | jq -r --arg lid "${G_LID}" '.state.resources[$lid].observedProperties.MemorySize // empty')
+if [ "${G_FN_NAME}" = "${FN_NAME}" ] && [ -n "${G_MEM}" ]; then
+  echo "    OK: the persisted bag is AWS's readback (carries FunctionName + MemorySize, which the template never sets)"
+else
+  echo "FAIL: the re-captured bag lost AWS-only keys — FunctionName='${G_FN_NAME}' (want '${FN_NAME}'), MemorySize='${G_MEM}'" >&2
+  echo "      (a bag missing keys the template never set is the record's own properties, not a readback)" >&2
+  deploy_redaction_fail=1
+fi
+
+# CONTROL 2: a PUBLIC ssm String must still be RESOLVED — this one catches a
+# mask/drop regression at a leaf whose correct answer is the plaintext.
 G_SSM=$(printf '%s' "${G_OBSERVED}" | jq -r '.SSM_VALUE // empty')
 if [ "${G_SSM}" = "${EXPECTED_SSM}" ]; then
   echo "    OK: re-captured SSM_VALUE stayed RESOLVED (public config is not redacted)"

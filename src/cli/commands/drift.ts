@@ -2852,6 +2852,18 @@ async function runRevert(
                 // landed in `state.json` as plaintext.
                 narrowedByLogicalId.set(
                   outcome.logicalId,
+                  // Since issue #1926 this rules constant ALSO runs the
+                  // module's readback refusal, which substitutes a MIXED source
+                  // leaf (a reference embedded in surrounding text) over the
+                  // value this payload was about to persist. That is the right
+                  // default here for the same reason it is elsewhere — the
+                  // alternative is persisting a decrypted secret — but note
+                  // this site has no equivalent of the `--accept` arm's
+                  // post-write re-check above, so a leaf that a PUBLIC
+                  // reference reached through `cdkd import`'s warn path is
+                  // corrected silently rather than warned about. The refusal
+                  // declines a mixed leaf whose token is an unrecorded plain
+                  // `ssm:` precisely to keep that case narrow.
                   redactSecretsForState(
                     delta,
                     secrets,

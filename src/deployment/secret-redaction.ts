@@ -1172,6 +1172,54 @@ function subtreeHasDynamicReference(value: unknown): boolean {
   return false;
 }
 
+/** Every complete `{{resolve:...}}` token inside a string. */
+function dynamicReferenceTokens(value: string): string[] {
+  return value.match(/\{\{resolve:[^{}]*\}\}/g) ?? [];
+}
+
+/**
+ * Does this MIXED leaf embed a reference that may be PUBLIC config?
+ *
+ * A plain `{{resolve:ssm:...}}` is classified by the parameter's TYPE, not by
+ * its spelling (issue #1901): a `String` / `StringList` parameter is public and
+ * is legitimately persisted RESOLVED. Substituting the expression over it gives
+ * the drift baseline a value AWS does not hold, which is phantom drift on
+ * ordinary config — and `--revert` then pushes the literal expression.
+ *
+ * `trustAnyExpression` is what would otherwise wave this through, and its
+ * premise ("a persisted STATE bag holds no public expression") is documented as
+ * FALSE in one place: `cdkd import`'s warn path can leave one there. The
+ * whole-token arm accepts that risk knowingly and `cdkd drift --accept`
+ * re-checks its write; the MIXED arm added later has no such re-check, so it
+ * declines instead.
+ *
+ * A reference the resolver RECORDED as secret is kept: that is the ssm
+ * `SecureString` case, where the verdict came off the same `GetParameter`
+ * response that carried the value. `{{resolve:ssm-secure:` does not match this
+ * prefix at all (the next character is `-`), so it is never refused here.
+ *
+ * That makes this predicate depend on WHEN the verdict store is populated
+ * relative to the persist choke point, which is worth naming because the answer
+ * is not local to this module. It is populated in time, including for a
+ * resource this deploy does not touch: the engine's change detection resolves
+ * every template property with `skipDynamicReferences`, and that flag only
+ * flips `decrypt` on the ssm branch — the `GetParameter` still runs and
+ * `IntrinsicFunctionResolver` still records a definitive `SecureString`
+ * verdict. So an UNCHANGED secret-bearing resource has its token recorded
+ * before its auto-refreshed baseline is redacted. The same arm RETRACTS the
+ * memo for a parameter that comes back public, which is what makes "not
+ * recorded" an authoritative answer here rather than merely a cautious one.
+ *
+ * `tests/integration/secrets-dynamic-ref` Phase 1g is the end-to-end proof:
+ * its mixed leaf embeds exactly such a reference, and it asserts the embedded
+ * expression survives a plain `cdkd deploy`.
+ */
+function mixedLeafMayCarryPublicReference(source: string): boolean {
+  return dynamicReferenceTokens(source).some(
+    (token) => token.startsWith('{{resolve:ssm:') && !isRecordedSecretExpression(token)
+  );
+}
+
 /**
  * Refuse to persist a readback leaf the path pass could not CERTIFY, at any
  * position the STATE source proves is secret-bearing (issue #1926 review).
@@ -1183,7 +1231,9 @@ function subtreeHasDynamicReference(value: unknown): boolean {
  * against this module before this pass existed — three by `cdkd state
  * refresh-observed`, and the same three by a plain `cdkd deploy`, whose
  * `drainObservedCaptures` baseline reaches the persist choke point with exactly
- * this configuration:
+ * this configuration. `cdkd scrub` is NOT one of them: its observed walk is
+ * CROSS-generation, so {@link isReadbackProjectedFromState} excludes it by
+ * design:
  *
  * ```text
  *   source leaf in the STATE record                  before        now
@@ -1234,11 +1284,35 @@ function subtreeHasDynamicReference(value: unknown): boolean {
  * Tracked as issue [#2012](https://github.com/go-to-k/cdkd/issues/2012).
  */
 function refuseUncertifiedReadbackPositions(bag: unknown, source: unknown): unknown {
-  // A MIXED leaf lands here as well as a whole token; for a whole token this
-  // agrees with the pass that already ran. (A short-circuit: a string source
-  // would otherwise reach the fail-closed fallback at the bottom and return the
-  // same value.)
-  if (isDynamicReferenceString(source)) return source;
+  // The string arm, and BOTH of its guards were added after review measured
+  // what their absence did.
+  //
+  // `typeof bag === 'string'` mirrors the sibling test in `redactByPath`, and
+  // it is load-bearing rather than defensive: without it a source leaf of
+  // `{{resolve:...}}` whose BAG is a container returned the scalar string,
+  // turning `{Foo: {a: 1}}` into `{Foo: '{{resolve:...}}'}` — fabricating a
+  // baseline AWS never reported, which is the exact thing this function refuses
+  // to do at its own bottom and the principle this pass was built on. It is
+  // reachable whenever a provider structures a leaf the template spells as a
+  // reference, and the result is permanent phantom drift plus a `--revert` that
+  // writes a string where AWS holds an object. With the guard, such a leaf
+  // falls to the shape-divergence fallback and the bag is kept.
+  //
+  // NOT a no-op short-circuit, which an earlier revision of this comment
+  // claimed: the fallback returns `bag`, so deleting this arm changes the
+  // answer rather than reproducing it. (That claim WAS true when the fallback
+  // still returned the source, and it stopped being true when the fallback was
+  // narrowed. A comment asserting equivalence has to be re-measured whenever
+  // either side moves.)
+  if (isDynamicReferenceString(source) && typeof bag === 'string') {
+    // A WHOLE token: `redactByPath` already decided this leaf, and returning
+    // the source agrees with it.
+    if (isSingleDynamicReferenceToken(source)) return source;
+    // A MIXED leaf embedding something that may be PUBLIC config: keep the
+    // resolved value AWS actually holds. See the predicate's own doc.
+    if (mixedLeafMayCarryPublicReference(source)) return bag;
+    return source;
+  }
   // Nothing to protect in this subtree — return the bag by identity, which is
   // what keeps an ordinary readback (and any AWS-added element in it) intact.
   if (!subtreeHasDynamicReference(source)) return bag;
@@ -1326,7 +1400,14 @@ export function redactSecretsForState<T>(
     // caller of those paths inherits the refusal from here rather than
     // spelling it at the call site: `cdkd state refresh-observed`, the deploy's
     // own `drainObservedCaptures` baseline (through `scrubResourceRecord` at
-    // the persist choke point), `cdkd scrub`, and any future one.
+    // the persist choke point), and any future one.
+    //
+    // NOT `cdkd scrub`: its observed walk passes
+    // `STATE_SOURCED_CROSS_GENERATION_RULES`, whose `sourceIsSameGeneration:
+    // false` makes the gate above return false. That is deliberate — scrub has
+    // already repositioned `properties` onto TODAY's template — and it is
+    // stated here because two earlier revisions of this comment listed scrub as
+    // an inheritor, which the gate contradicts one screen away.
     return (
       isReadbackProjectedFromState(rules)
         ? refuseUncertifiedReadbackPositions(positioned, source)
