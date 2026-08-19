@@ -125,7 +125,9 @@ git -C .claude/worktrees/<w> show --stat HEAD      # the files that commit touch
 A worktree whose tip is still on `main` has committed nothing yet, which makes it look
 like residue and is exactly when it is most likely to be a lane writing right now. §9's
 owner probes apply here too — read them before concluding a worktree is idle, including
-the caveat that none of them can establish ABSENCE of an owner.
+the caveat that none of them can establish ABSENCE of an owner. The one that settles
+THIS case is the last of them: a worktree is NAMED for the issue its lane took, and
+that issue's thread is the only place a lane seconds old has left a mark.
 
 Read any "working on this" comments already on candidate issues. **A file another
 agent is editing is OFF-LIMITS.** In cdkd the naturally-disjoint work is
@@ -186,6 +188,31 @@ parallelized — bundle them into ONE lane (one worktree, one PR) or defer one.
   that had (go-to-k/cdkd#1980) having closed four minutes earlier. That grep costs
   one command at triage; the same discovery after claiming costs a worktree, a
   `pnpm install` and a gate round.
+- **A partly-worked issue's residue may be owned by an issue it SPAWNED — read its
+  thread to the end, then check the CLAIM STATE of every issue that thread names.**
+  A lane that works an issue and cannot close it files the remainder as a child
+  issue and says so in its closing comment, so the parent stays open while its
+  actual remaining work lives elsewhere. Claiming the parent then puts you in the
+  child's files without either lane's claim ever mentioning the other. On 2026-08-19
+  this run was invoked on go-to-k/cdkd#2018, whose 08:14Z closing comment named
+  go-to-k/cdkd#2026 as one of its two conditions for closing; go-to-k/cdkd#2026 had
+  been claimed at 08:30:39Z, and two of the parent's three admissible remedies land
+  in exactly the files that claim declared. The parent was left open on purpose —
+  which is a pointer to work, not an invitation to it.
+  It is also the collision shape §2's four probes cannot RESOLVE — not because they
+  miss the lane, but because what they return cannot be told apart from residue. At
+  08:31 the child lane had no pushed branch and no PR, so the two remote-facing
+  probes (`gh pr list`, `git for-each-ref refs/remotes/origin`) returned nothing.
+  The two local ones DID fire: `git worktree list` and `git branch -a` both showed
+  it — but at `main`'s exact tip, with no commits, a clean tree and no
+  `session-owner` sentinel, which is precisely what a finished lane looks like (§9
+  says so outright). So keep the two questions apart, because different probes
+  answer them: **which issue** is answered by the local probes, since the worktree
+  and branch are NAMED for it — that name is the pointer §9's probe consumes —
+  while **is it live** was answered, for a lane this young, by nothing but its
+  80-second-old claim comment.
+  When a worktree's NAME carries an issue number, that issue's comments are the
+  probe — see §9, which says the same thing from the cleanup side.
 
 Scale the count to the backlog and to how many cross-cutting files are free. 2–3
 clean lanes is typical; do not force a lane into a contested file just to raise the
@@ -538,6 +565,21 @@ handle apostrophes — and a marker containing a double quote needs different qu
 again, so prefer a phrase with neither. Remember `grep -c` exits 1 on zero matches —
 the very case you are hunting — so do not chain the two greps.
 
+**Pick a marker that sits on ONE LINE of the merged file.** These files are
+hard-wrapped prose and `grep` is line-based, so a perfectly verbatim phrase that spans
+a wrap scores 0 — the same false lost-content alarm a missing `-F` produces, from a
+marker that is not wrong at all. Measured in cdk-local on 2026-08-19: a phrase lifted
+verbatim from go-to-k/cdk-local#530's own merged text ("calibrate the detection rule
+against the PRE-FIX broken tree") scored 0 / rc=1 against the merge commit, because
+the merged file wraps after "calibrate the"; re-picked inside one line ("signature
+literally") it scored 1. Re-measured against THIS repo's own copy of the paragraph
+above the same day, because the wrap column differs per repo: the verbatim
+"no collision. Two lanes editing the SAME file" scored 0 / rc=1, while
+"SAME file merge without a conflict" — the very next words — scored 1 / rc=0. So
+before believing a 0, check the wrap —
+`git show origin/main:<file> | grep -n "<one short word from the phrase>"` prints the
+whole line, which shows where it actually breaks.
+
 Source YOUR marker from your own commit and THEIR marker from THEIR merge commit
 (`git show "$(gh pr view <n> --json mergeCommit -q .mergeCommit.oid):<file>"`), never
 from a draft you read earlier — a lane routinely rewords a sentence between the draft
@@ -742,16 +784,27 @@ records one:
 cat "$(git -C <worktree> rev-parse --git-dir)/session-owner"  # "<session id> <UTC claim>"
 git -C <worktree> status --porcelain                          # uncommitted work = live
 gh pr list --state all --head <its branch>                    # read the STATE column
+# The probe that works on a lane too young to have published anything else: a
+# worktree is NAMED for the issue its lane took, and §4 makes the claim comment the
+# first thing a lane that TOOK an issue writes. Read the WHOLE thread rather than
+# §4's filtered form — a lane that stood down retracts in a comment no
+# "Working on this" filter matches, so a matched claim can already be withdrawn.
+gh issue view <the number in the worktree's name> --json comments \
+  --jq '.comments[] | "\(.createdAt)\t\(.author.login)\t\(.body[0:80])"'
+# No number in the name (`chore/work-issues-retro-20260819`)? Then there is no
+# pointer — fall back to the probes above, and leave the worktree if they disagree.
 ```
 
 Read every one of those as evidence of LIFE only — none can establish absence. An
 **absent** `session-owner` is NO signal, never "unowned": the gate claims a worktree
 only on `Edit` / `Write` / `NotebookEdit` and fails open without a session id, so a
 lane driven entirely through Bash never writes one. (Measured 2026-08-19: the lane
-that wrote this paragraph had no sentinel while it was live.) A **MERGED** PR is not
-proof of death either — its owner may still be inside §9 or §10. And the stamp is
-CLAIM time, not last activity, so an age past the gate's 12h TTL is equally what a
-long-running live session looks like.
+that wrote this paragraph had no sentinel while it was live, and so did the
+`fix/2026-retry-early-termination` lane 80 seconds after it claimed — which is why
+the issue-comment probe is in the block above rather than a footnote to it.)
+A **MERGED** PR is not proof of death either — its owner may still be inside §9 or
+§10. And the stamp is CLAIM time, not last activity, so an age past the gate's 12h
+TTL is equally what a long-running live session looks like.
 
 A claim younger than that TTL means the owner is **presumed LIVE** — and never infer
 that an owning session is dead, since a live session and a dead one produce identical
@@ -981,11 +1034,14 @@ the run evidence behind it — or "no skill change" plus what held.
 - **Claiming is not winning.** Posting the comment does not end the race — read
   it back and yield to an earlier `createdAt` (§4). Claiming late, after the
   triage, is what makes the race winnable in the first place.
-- **A pushed branch with no PR is a live lane.** `gh pr list` / `git worktree list`
-  / issue comments all go blind during the window between a lane's first push and
-  its `gh pr create` — which is when it is writing hardest. `git for-each-ref
-  --sort=-committerdate refs/remotes/origin` after a `git fetch` is the only probe
-  that sees it (§2).
+- **A pushed branch with no PR is a live lane.** `gh pr list` goes blind during the
+  window between a lane's first push and its `gh pr create` — which is when it is
+  writing hardest — and `git worktree list` shows the lane without saying it is
+  alive. `git for-each-ref --sort=-committerdate refs/remotes/origin` after a
+  `git fetch` is what sees the push (§2). Issue comments are NOT blind here: §4
+  posts the claim before the first edit, so it already exists by the time anything
+  is pushed. The window that IS the claim comment's alone is the mirror of this one
+  — a lane with a worktree and nothing pushed at all (§3, §9).
 - **A fresh issue is someone's deferral, not free backlog** (§3-0). The author field
   proves nothing about which session filed it, so the 60-minute window is the whole
   defence — and §4 is its other half: claim what you FILE, not only what you take.
