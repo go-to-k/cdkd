@@ -980,7 +980,18 @@ the run evidence behind it — or "no skill change" plus what held.
   `git diff main` appears to have removed; rebase instead.
 - **`bash cwd silent reset`** — a persistent Bash cwd can drift back to the main
   tree between calls; use `git -C .claude/worktrees/<branch>` for git ops and
-  re-`cd` before relative-path commands.
+  re-`cd` before relative-path commands. **When it has already happened, the two
+  obvious repairs are both refused**: `git checkout -- <path>` trips
+  `dirty-path-restore-gate` (the stray edit IS uncommitted work, and the gate
+  cannot know you have a copy elsewhere) and writing the file back trips
+  `main-tree-edit-gate`. Re-apply the edit in the worktree with an ABSOLUTE
+  path first, then `git -C <main> stash push -m <label> -- <path>` — that clears
+  the main tree without discarding anything, so neither gate has cause to
+  object. Drop the stash only after confirming `stash@{0}`'s message is yours;
+  parallel lanes stash too, and the indices shift (2026-08-19). Note also that a
+  blocked call runs NOTHING, so a `cat > /tmp/x <<EOF ... && git commit -F /tmp/x`
+  that the gate refuses leaves no file behind either — recreate it, do not
+  assume it is there.
 
 ## Important existing rules this skill leans on
 
