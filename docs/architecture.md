@@ -1030,7 +1030,7 @@ Each layer has clear responsibilities
   whose parameter is a `SecureString` (issue
   [#1901](https://github.com/go-to-k/cdkd/issues/1901)). A `String` /
   `StringList` parameter is public config and stays resolved in state. See
-  [docs/cli-reference.md](cli-reference.md#cdkd-scrub-keep-resolved-secrets-out-of-state).
+  [docs/cli-reference.md](cli-reference.md#cdkd-scrub-state-secret-hygiene-clean--audit).
 
 ## Limitations and Future Extensions
 

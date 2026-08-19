@@ -1767,7 +1767,7 @@ Because this is the only command that prints a **stored** output value, two
 safeguards apply. A previous value that is legacy secret plaintext is withheld from
 both the text and `--json` output rather than printed into CI logs. Two signals
 identify such a record: the template side still being a `{{resolve:...}}`
-expression while state is not (exactly what [`cdkd scrub`](#cdkd-scrub) repairs),
+expression while state is not (exactly what [`cdkd scrub`](#cdkd-scrub-state-secret-hygiene-clean--audit) repairs),
 and the template declaring the output's value as a dynamic reference — the latter
 also covers an output that was condition-skipped, which has no template side left
 to compare. Because a record with any such key was written by a pre-redaction
@@ -1782,7 +1782,11 @@ whole bag). Deleting an output is an ordinary refactor, so those two gates are
 what keep the refusal off stacks that handle no secrets at all. For a nested
 child REMOVED from its parent's template there is no template left to account for
 anything, so the refusal applies to that child's whole stored bag whenever the
-parent's template proves a secret reference. Second, output / export names and
+parent's template proves a secret reference. That population is now REPAIRABLE by
+[`cdkd scrub`](#cdkd-scrub-state-secret-hygiene-clean--audit) (issue
+[#2005](https://github.com/go-to-k/cdkd/issues/2005)); the refusal here is
+unchanged, because `diff` still cannot decide from a stored string alone whether
+a value is a plaintext. Second, output / export names and
 rendered values are stripped of control and bidi characters before display: an
 `Export.Name` is a value cdkd resolved (from an `Fn::Sub`, a parameter, an SSM
 lookup), so unlike a CloudFormation logical ID it never passed a validator. The
@@ -2671,6 +2675,66 @@ declines to guess and both leaves persist the same expression again. The same
 applies to a pair of `{{resolve:ssm:...}}` references whose parameter `Type`
 AWS did not report. If you hit a spurious UPDATE on a resource holding two
 spellings of one secret, make the differing part a literal in the template.
+
+**Stack OUTPUTS are scrubbed too, including an output you have since DELETED**
+(issue [#2005](https://github.com/go-to-k/cdkd/issues/2005)). A stored output
+key today's template can still name — a declared output, or an `Export.Name`
+alias this run can fully resolve — is redacted by POSITION against that
+template, like any resource property. A key the template can no longer name is
+the population `cdkd scrub` is recommended for and used to be unable to repair:
+the set of secrets `scrub` matched the outputs bag against was built from
+today's DECLARED outputs, so an output removed in an ordinary refactor
+contributed nothing to it and its stored plaintext survived a scrub that
+reported success. Such a key is now repaired whenever its stored value MATCHES a
+secret plaintext recorded anywhere in this run — including one only a RESOURCE
+still references, which is the usual shape after deleting the output that used
+to expose it.
+
+A deleted output is the motivating case but not the whole population: **any
+stored key this run cannot COMPUTE** is repaired the same way. The standing
+example is a parameterized `Export.Name` — `scrub` takes no `--parameters`, so
+a name that resolves to a literal `prefix-${Foo}` here leaves the real alias key
+your deploy wrote unaccounted on every run, and that key is value-matched rather
+than positioned for as long as the parameter stays unresolvable. Declare the
+export name literally, or give the parameter a `Default` the template resolves
+from, if you want that key positioned instead.
+
+Two things `scrub` deliberately does NOT do here. `state.outputs` is re-applied
+VERBATIM to other stacks — cdkd's exports index and every `Fn::ImportValue` /
+`Fn::GetStackOutput` read it — so a value rewritten that was never a secret
+ships a literal `{{resolve:...}}` token into a CONSUMER stack's AWS call:
+
+- **It never guesses.** When nothing this run recorded that plaintext — the
+  secret was deleted, rotated away, or its reference is gone from the template
+  as well — the value is left exactly as it is, no key is invented, and no key
+  is removed. `ROTATE` the secret and redeploy; that rewrites the record. A
+  degenerately short plaintext (under 4 characters) is excluded from the WIDENED
+  match specifically: it is never used as a cross-resource needle, since it
+  would match unrelated values. A key the template still names is unaffected —
+  it is redacted by template POSITION, so a short secret stored there is still
+  repaired.
+- **It matches inside a value, and that has a stated cost.** A recorded
+  plaintext of 4 characters or more is repaired even when it is EMBEDDED in a
+  longer stored value — which is what repairs a connection string built around
+  a password, the shape this exists for. The consequence is that a short,
+  word-like secret (`admin` as a `secretValueFromJson('username')`) occurring
+  inside an unrelated key the template can no longer name is rewritten too, and
+  a consumer importing that key then receives a literal `{{resolve:...}}`
+  token. The trade is deliberate: that failure is loud and fixable on the next
+  deploy, whereas an unrepaired plaintext under a key no template declares is
+  silent and no redeploy ever clears it. If it bites, edit the key out of the
+  state record — and rotate the secret, which was exposed either way.
+- **It does not widen the match for a key the template still names.** Those
+  keep their template position, so one resource's secret value can never
+  rewrite a declared output's coinciding literal into that resource's
+  reference. The residual: a declared output whose template value no longer
+  resolves a secret but whose STORED value is still the stale plaintext of one
+  is not repaired by `scrub` either — a redeploy rewrites it.
+
+Until this shipped, such a record was correctly WITHHELD from `cdkd diff`'s
+display ([#1948](https://github.com/go-to-k/cdkd/issues/1948)) and not
+repairable; the diff-side refusal is unchanged, since it still cannot decide
+from a stored string alone whether a value is a plaintext.
 
 **Secrets inside a LIST are redacted too, including on a resource that did not
 change** (issue [#1915](https://github.com/go-to-k/cdkd/issues/1915)). A
