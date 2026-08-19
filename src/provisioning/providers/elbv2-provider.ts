@@ -46,7 +46,7 @@ import {
   type TargetDescription,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { getLogger } from '../../utils/logger.js';
-import { withRetry } from '../../deployment/retry.js';
+import { withRetry, type RetryLogger } from '../../deployment/retry.js';
 import {
   CdkdError,
   ProvisioningError,
@@ -57,12 +57,16 @@ import { isTruthyCfnBoolean } from '../data-delete-intent.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { createMaskedRetryLogger, maskerOrIdentity } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
+  UpdateContext,
+  SecretMasker,
 } from '../../types/resource.js';
 
 /**
@@ -73,6 +77,50 @@ import type {
 export const capacityReservationDelays = {
   sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 };
+
+/**
+ * Depth cap for {@link maskDeep}. Bounds a self-referential bag rather than
+ * hanging; `JSON.stringify` would throw on one anyway, and a throw is the
+ * better failure of the two.
+ */
+const MASK_WALK_MAX_DEPTH = 8;
+
+/**
+ * Mask every string LEAF and KEY of an arbitrary value, returning a structure
+ * safe to `JSON.stringify` into a log line (issue #2050).
+ *
+ * The ordering is the whole point. `maskSecretsInText` matches by literal
+ * occurrence, and `JSON.stringify` escapes `"`, `\` and newlines — so a Secrets
+ * Manager JSON document (the commonest real secret shape) does not occur in the
+ * stringified text and survives a mask applied afterwards. Masking the leaves
+ * first also hands the masker each RAW value, which reaches
+ * `maskSecretsInText`'s whole-value arm at any length instead of only the
+ * substring arm's 4-character floor. See the "three gaps" note in
+ * `src/deployment/secret-redaction.ts`.
+ *
+ * Keys are masked as well as values: `JSON.stringify` renders them into the
+ * same line, so a resolved secret used as a map key would otherwise escape.
+ *
+ * `cognito-provider.ts` carries an equivalent private walk for its own
+ * stringified warnings. Two copies is the current cost of keeping this a leaf;
+ * a THIRD site is the point at which this should move into
+ * `../masked-retry-logger.ts` (already the shared provider-side masking module)
+ * and all three converge on it.
+ */
+function maskDeep(value: unknown, mask: (text: string) => string, depth = 0): unknown {
+  if (typeof value === 'string') return mask(value);
+  if (depth >= MASK_WALK_MAX_DEPTH) return value;
+  if (Array.isArray(value)) return value.map((entry) => maskDeep(entry, mask, depth + 1));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+        mask(k),
+        maskDeep(v, mask, depth + 1),
+      ])
+    );
+  }
+  return value;
+}
 
 /** CFn shape of an `AWS::ElasticLoadBalancingV2::TargetGroup.Targets` entry. */
 interface CfnTargetDescription {
@@ -276,20 +324,78 @@ export class ELBv2Provider implements ResourceProvider {
     return this.elbv2Client;
   }
 
+  /**
+   * A {@link RetryLogger} for this provider's `withRetry` calls, bound to the
+   * caller's secret masker (issue #2050).
+   *
+   * Thin wrapper over the shared {@link createMaskedRetryLogger} so the two
+   * providers that need it cannot drift apart — see that module for why the
+   * factory is shared rather than hand-rolled per file, and for the full
+   * rationale on why `warn` is threaded rather than omitted.
+   *
+   * WHY NOT A `maskSecrets` OPTION ON `withRetry` (issue #2050 acceptance
+   * item 3): `RetryLogger` is a structural type any caller can already satisfy
+   * with a masking object — `drift.ts`'s revert has done exactly that since
+   * issue #1914 — so the option would be a SECOND spelling of one intent
+   * across ~50 existing call sites, and two spellings is how a later author
+   * reaches for the unmasked one.
+   */
+  private maskedRetryLogger(maskSecrets: SecretMasker | undefined): RetryLogger {
+    return createMaskedRetryLogger(this.logger, maskSecrets);
+  }
+
+  /**
+   * Mask a caught AWS error's message before it is interpolated into the
+   * `ProvisioningError` this provider throws (issue #2050, review round 2).
+   *
+   * NOT a duplicate of {@link maskedRetryLogger}, and strictly WIDER than it.
+   * `withRetry` rethrows the RAW error, and `deploy-engine.ts` prints the
+   * resulting message at ERROR — i.e. at DEFAULT verbosity — so a masked
+   * give-up `warn` was being followed one line later by the identical text
+   * unmasked. It is also the ONLY disclosure surface for a NON-RETRYABLE
+   * rejection, where `withRetry` emits nothing at all: its give-up summary is
+   * gated on `propagationRetries > 0 || serverErrorRetries > 0`, and a
+   * validation error that fails on attempt 0 satisfies neither.
+   *
+   * Masks `error.message` rather than the assembled sentence ON PURPOSE. The
+   * two are NOT equivalent: handing the masker the raw message can reach
+   * `maskSecretsInText`'s WHOLE-VALUE arm, which matches at ANY length, while
+   * a longer assembled sentence can only ever reach the SUBSTRING arm, which
+   * ignores needles below 4 characters. See `SecretMaskingContext` in
+   * `src/types/resource.ts`.
+   *
+   * The `cause` chain is deliberately left UNMASKED and unwrapped by every
+   * caller of this helper: `isRetryableTransientError` walks `cause` for
+   * `$metadata.httpStatusCode`, and rewriting or dropping it would silently
+   * change retry classification. Only the human-readable message is rewritten.
+   */
+  private maskErrorMessage(error: unknown, maskSecrets: SecretMasker | undefined): string {
+    const mask = maskerOrIdentity(maskSecrets);
+    return mask(error instanceof Error ? error.message : String(error));
+  }
+
   // ─── Dispatch ─────────────────────────────────────────────────────
 
+  /**
+   * `context` is read for ONE thing today: `maskSecrets` (issue #2050). The
+   * Listener create path runs a post-create `ModifyListenerAttributes` through
+   * `withRetry`, whose per-attempt `debug` line and give-up `warn` summary
+   * interpolate the AWS message verbatim — and that payload is built from
+   * RESOLVED template properties. See {@link maskedRetryLogger}.
+   */
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
         return this.createLoadBalancer(logicalId, resourceType, properties);
       case 'AWS::ElasticLoadBalancingV2::TargetGroup':
-        return this.createTargetGroup(logicalId, resourceType, properties);
+        return this.createTargetGroup(logicalId, resourceType, properties, context?.maskSecrets);
       case 'AWS::ElasticLoadBalancingV2::Listener':
-        return this.createListener(logicalId, resourceType, properties);
+        return this.createListener(logicalId, resourceType, properties, context?.maskSecrets);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -299,12 +405,17 @@ export class ELBv2Provider implements ResourceProvider {
     }
   }
 
+  /**
+   * `context` is read for ONE thing today: `maskSecrets` (issue #2050) — the
+   * update-path twin of the `create()` note above.
+   */
   async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     try {
       return await this.applyUpdate(
@@ -312,7 +423,8 @@ export class ELBv2Provider implements ResourceProvider {
         physicalId,
         resourceType,
         properties,
-        previousProperties
+        previousProperties,
+        context
       );
     } catch (error) {
       // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
@@ -335,7 +447,8 @@ export class ELBv2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
@@ -352,7 +465,8 @@ export class ELBv2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::ElasticLoadBalancingV2::Listener':
         return this.updateListener(
@@ -360,7 +474,8 @@ export class ELBv2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       default:
         throw new ProvisioningError(
@@ -970,7 +1085,8 @@ export class ELBv2Provider implements ResourceProvider {
   private async createTargetGroup(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating TargetGroup ${logicalId}`);
 
@@ -1053,7 +1169,7 @@ export class ELBv2Provider implements ResourceProvider {
           );
         }
 
-        const targets = this.convertTargets(properties['Targets']);
+        const targets = this.convertTargets(properties['Targets'], undefined, maskSecrets);
         if (targets.length > 0) {
           await this.getClient().send(
             new RegisterTargetsCommand({ TargetGroupArn: tgArn, Targets: targets })
@@ -1068,7 +1184,15 @@ export class ELBv2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created TargetGroup ${logicalId} (${tgArn}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws elbv2 delete-target-group --target-group-arn ${tgArn}`
+            // Masked for uniformity with the sibling lines in this same `try`
+            // (issue #2050). The cleanup call carries only a physical ARN, so a
+            // resolved property value reaching here would be surprising — but
+            // "surprising" is not "impossible", and an unmasked line sitting
+            // beside masked ones is what a later author copies.
+            `Failed to clean up partially-created TargetGroup ${logicalId} (${tgArn}): ` +
+              `${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be ` +
+              `required before the next deploy: aws elbv2 delete-target-group ` +
+              `--target-group-arn ${tgArn}`
           );
         }
         throw innerError;
@@ -1085,7 +1209,7 @@ export class ELBv2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create TargetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create TargetGroup ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
         resourceType,
         logicalId,
         undefined,
@@ -1099,7 +1223,8 @@ export class ELBv2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating TargetGroup ${logicalId}: ${physicalId}`);
 
@@ -1225,8 +1350,16 @@ export class ELBv2Provider implements ResourceProvider {
             ? TARGET_GROUP_ATTRIBUTE_DEFAULTS[key]
             : undefined;
           if (fallback === undefined) {
+            // `key` comes out of the RESOLVED `TargetGroupAttributes` bag, so a
+            // KEY can itself be a resolved secret — the same question
+            // `servicediscovery-provider.ts` answers for
+            // `DeleteServiceAttributes`, and the two files must not disagree
+            // about it. Masked as the raw value (not the finished sentence) so
+            // it reaches `maskSecretsInText`'s whole-value arm at any length.
             this.logger.warn(
-              `TargetGroup attribute ${key} was removed from the template but has no documented default cdkd can reset it to — the live value is retained. Set the attribute explicitly to change it.`
+              `TargetGroup attribute ${maskerOrIdentity(maskSecrets)(key)} was removed from the ` +
+                `template but has no documented default cdkd can reset it to — the live value is ` +
+                `retained. Set the attribute explicitly to change it.`
             );
             return undefined;
           }
@@ -1256,8 +1389,16 @@ export class ELBv2Provider implements ResourceProvider {
       // BOTH sides are normalized against the SAME group port so the keys are
       // comparable — see convertTargets' note on why the omitted-Port case is
       // a destructive diff rather than a cosmetic one.
-      const newTargets = this.convertTargets(properties['Targets'], properties['Port']);
-      const oldTargets = this.convertTargets(previousProperties['Targets'], properties['Port']);
+      const newTargets = this.convertTargets(
+        properties['Targets'],
+        properties['Port'],
+        maskSecrets
+      );
+      const oldTargets = this.convertTargets(
+        previousProperties['Targets'],
+        properties['Port'],
+        maskSecrets
+      );
       const targetKey = (t: TargetDescription) =>
         JSON.stringify([t.Id, t.Port ?? null, t.AvailabilityZone ?? null]);
       const oldTargetKeys = new Set(oldTargets.map(targetKey));
@@ -1307,7 +1448,7 @@ export class ELBv2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update TargetGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update TargetGroup ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1356,7 +1497,8 @@ export class ELBv2Provider implements ResourceProvider {
   private async createListener(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Listener ${logicalId}`);
 
@@ -1419,7 +1561,11 @@ export class ELBv2Provider implements ResourceProvider {
                 })
               ),
             logicalId,
-            { logger: this.logger }
+            // NOT `this.logger` (issue #2050): `Attributes` here is
+            // `properties['ListenerAttributes']`, already RESOLVED, and an AWS
+            // rejection quotes the offending value back into the message
+            // `withRetry` interpolates.
+            { logger: this.maskedRetryLogger(maskSecrets) }
           );
           this.logger.debug(
             `Applied ${listenerAttributes.length} ListenerAttribute(s) for ${logicalId}`
@@ -1433,7 +1579,12 @@ export class ELBv2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created Listener ${logicalId} (${listenerArn}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws elbv2 delete-listener --listener-arn ${listenerArn}`
+            // Masked for the same reason as the TargetGroup cleanup above
+            // (issue #2050).
+            `Failed to clean up partially-created Listener ${logicalId} (${listenerArn}): ` +
+              `${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be ` +
+              `required before the next deploy: aws elbv2 delete-listener ` +
+              `--listener-arn ${listenerArn}`
           );
         }
         throw innerError;
@@ -1446,9 +1597,12 @@ export class ELBv2Provider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // `cause` carries the ORIGINAL error untouched (issue #2050): the
+      // classifier walks it for `$metadata`, so only the human-readable
+      // message is masked.
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create Listener ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create Listener ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
         resourceType,
         logicalId,
         undefined,
@@ -1462,7 +1616,8 @@ export class ELBv2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Listener ${logicalId}: ${physicalId}`);
 
@@ -1527,7 +1682,10 @@ export class ELBv2Provider implements ResourceProvider {
               })
             ),
           logicalId,
-          { logger: this.logger }
+          // Masked for the same reason as the create path (issue #2050) — the
+          // submitted diff is built from `properties` / `previousProperties`,
+          // both RESOLVED.
+          { logger: this.maskedRetryLogger(maskSecrets) }
         );
         this.logger.debug(
           `Applied ${submittedAttrs.length} ListenerAttributes change(s) for ${logicalId}`
@@ -1554,9 +1712,11 @@ export class ELBv2Provider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // `cause` carries the ORIGINAL error untouched (issue #2050) — see the
+      // create path above.
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update Listener ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update Listener ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1754,7 +1914,27 @@ export class ELBv2Provider implements ResourceProvider {
    * Absent for a `lambda` target group (no port), where both sides stay
    * undefined and therefore still key identically.
    */
-  private convertTargets(raw: unknown, groupPort?: unknown): TargetDescription[] {
+  /**
+   * `maskSecrets` (issue #2050) exists for the drop-warning below, which
+   * stringifies a whole REJECTED `Targets` element at DEFAULT verbosity. That
+   * element came out of the resolved `properties` bag, so a
+   * `{{resolve:secretsmanager:...}}` scalar anywhere inside it — an `Id` built
+   * by `Fn::Sub` from a secret, say — is already plaintext by the time this
+   * runs.
+   *
+   * OPTIONAL, but all three call sites supply it today (`createTargetGroup` and
+   * both `updateTargetGroup` sides). It stays optional because that is the
+   * `SecretMaskingContext` contract — absent means unmasked — not because some
+   * caller is known to omit it. An earlier revision of this comment claimed it
+   * protected "the `readCurrentState` / diff callers that have no masker";
+   * there are no such callers, and describing a defence by a consumer that does
+   * not exist is how the next author concludes the parameter is dead.
+   */
+  private convertTargets(
+    raw: unknown,
+    groupPort?: unknown,
+    maskSecrets?: SecretMasker
+  ): TargetDescription[] {
     const defaultPort =
       groupPort === undefined || groupPort === null || Number.isNaN(Number(groupPort))
         ? undefined
@@ -1768,8 +1948,24 @@ export class ELBv2Provider implements ResourceProvider {
         typeof (entry as CfnTargetDescription).Id !== 'string' ||
         ((entry as CfnTargetDescription).Id as string).length === 0
       ) {
+        // Mask BEFORE stringifying, and mask NOTHING after. Both halves are
+        // load-bearing, and the first revision of this line got both wrong:
+        //
+        //  - BEFORE, because `JSON.stringify` escapes `"`, `\` and newlines. A
+        //    Secrets Manager JSON document — the commonest real secret shape —
+        //    therefore no longer OCCURS in the stringified text, and a masker
+        //    matching by literal occurrence passes it through verbatim. This is
+        //    the first of the three documented gaps in `secret-redaction.ts`
+        //    ("Mask before you stringify"), measured rather than theorised.
+        //  - NOTHING AFTER, because a second pass over the finished sentence
+        //    provably cannot change it: every string leaf and key is already
+        //    masked, and the only text the walk did not produce is this fixed
+        //    prefix. A call that cannot alter its input is not belt-and-braces,
+        //    it is a claim that misleads the next reader into thinking the
+        //    ordering above does not matter.
         this.logger.warn(
-          `Dropping malformed TargetGroup Targets entry (missing string Id): ${JSON.stringify(entry)}`
+          `Dropping malformed TargetGroup Targets entry (missing string Id): ` +
+            `${JSON.stringify(maskDeep(entry, maskerOrIdentity(maskSecrets)))}`
         );
         continue;
       }
