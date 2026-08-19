@@ -29,6 +29,18 @@ import type { Construct } from 'constructs';
  * outside the publisher — a hand-written L1 `Image` property or an imported
  * CloudFormation record is how it happens for real.
  *
+ * It carries the S3 SIBLING of that arm too (issue #1847). Five references
+ * name seeded objects in the custom asset bucket through case-varied HOSTS —
+ * an UPPER-cased and a mixed-case spelling of each of the two HTTPS shapes,
+ * plus the `S3://` scheme — and a sixth names an object through a case-variant
+ * of the BUCKET NAME. The sixth is the discriminator that separates gc's fix
+ * from the blanket `i` flag: the host segments fold, the bucket name does NOT,
+ * so that object must be DELETED while the other five survive. All six keys
+ * are deliberately NOT `<sha256>.<ext>`-shaped, because gc's name-independent
+ * content-hash pass collects such tokens out of ANY string regardless of host
+ * and would protect them without the matchers doing anything (issue #1781
+ * measured 71 of 72 objects accidentally protected that way).
+ *
  * covers: AWS::Lambda::Function
  * covers: AWS::IAM::Role
  */
@@ -50,6 +62,22 @@ export class GcCustomAssetNamesStack extends cdk.Stack {
         // `<acct>.dkr-ecr-fips.<region>.on.aws/<repo>:<tag>`
         GC_INTEG_DUALSTACK_FIPS_TAG_REF:
           process.env['GC_INTEG_DUALSTACK_FIPS_TAG_REF'] ?? 'unset',
+        // S3 host-case arm (issue #1847). The five below must all be COLLECTED
+        // as references, so their objects survive gc.
+        // `https://<bucket>.S3.<REGION>.AMAZONAWS.COM/<key>`
+        GC_INTEG_S3_VIRTUAL_UPPER_REF: process.env['GC_INTEG_S3_VIRTUAL_UPPER_REF'] ?? 'unset',
+        // `https://<bucket>.S3.<region>.AmAzOnAwS.CoM/<key>`
+        GC_INTEG_S3_VIRTUAL_MIXED_REF: process.env['GC_INTEG_S3_VIRTUAL_MIXED_REF'] ?? 'unset',
+        // `https://S3.<REGION>.AMAZONAWS.COM/<bucket>/<key>`
+        GC_INTEG_S3_PATH_UPPER_REF: process.env['GC_INTEG_S3_PATH_UPPER_REF'] ?? 'unset',
+        // `https://s3.<region>.AmAzOnAwS.CoM/<bucket>/<key>`
+        GC_INTEG_S3_PATH_MIXED_REF: process.env['GC_INTEG_S3_PATH_MIXED_REF'] ?? 'unset',
+        // `S3://<bucket>/<key>` — the scheme is this shape's only case-carrying
+        // segment (the bucket is the authority and stays exact).
+        GC_INTEG_S3_URI_UPPER_REF: process.env['GC_INTEG_S3_URI_UPPER_REF'] ?? 'unset',
+        // The NEGATIVE control: a case-variant of the BUCKET NAME, which must
+        // NOT be collected — its object is expected to be DELETED.
+        GC_INTEG_S3_BUCKETCASE_REF: process.env['GC_INTEG_S3_BUCKETCASE_REF'] ?? 'unset',
       },
     });
   }

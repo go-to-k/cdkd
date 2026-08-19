@@ -200,6 +200,48 @@ const AWS_URL_SUFFIXES = [
 ];
 
 /**
+ * Spell an ASCII literal so it matches case-INSENSITIVELY inside a
+ * case-SENSITIVE `RegExp`: `s3` → `[sS]3`, `amazonaws.com` →
+ * `[aA][mM][aA][zZ][oO][nN][aA][wW][sS]\.[cC][oO][mM]`. Non-letters go
+ * through {@link escapeRegExp}, so the result is exactly as strict as an
+ * escaped literal outside the letters it folds.
+ *
+ * This exists because gc must fold only PART of a pattern (issue #1847). DNS
+ * is case-insensitive, so `https://<assetBucket>.s3.<region>.AMAZONAWS.COM/<key>`
+ * in a state file names the same object as the lower-cased spelling — and a
+ * reference gc misses reads as UNREFERENCED, so the live object is DELETED.
+ * The obvious fix, the `i` flag the ECR matcher carries, is per-REGEX: on the
+ * S3 matchers it would fold the BUCKET NAME too, which the
+ * {@link AWS_URL_SUFFIXES} doc names as a real hazard rather than free
+ * over-protection — any string embedding a case-variant of the bucket name
+ * would then pin its keys forever, quietly turning gc into a no-op. That reach
+ * was assessed and accepted for ECR (issue #1792, where the repo segment is a
+ * lower-case-only docker name); it is a different call here, so the two
+ * matcher families spell the fold differently on purpose.
+ *
+ * Two further properties are load-bearing:
+ *
+ * - Folding by character class rather than by flag leaves
+ *   {@link URL_SUFFIX_ALTERNATION} — SHARED with the ECR matcher — untouched,
+ *   so widening the S3 side cannot silently re-decide the ECR side that
+ *   issues #1792 / #1793 settled.
+ * - A two-character class is not `/k/i`. Under a `u` flag the `i` flag
+ *   canonicalizes U+212A KELVIN SIGN onto ASCII `k` — the hazard
+ *   `src/utils/ecr-uri.ts` guards its region / suffix checks against —
+ *   whereas `[kK]` matches those two code points and nothing else, with or
+ *   without `u`. (Measured: `/k/iu` matches U+212A, `/[kK]/u` does not.)
+ */
+function caseFoldLiteral(literal: string): string {
+  // Escape FIRST, then fold: {@link escapeRegExp} only ever inserts backslashes,
+  // and a backslash is not `[A-Za-z]`, so the letters of the escaped string are
+  // exactly the letters of the input and the two passes cannot interfere.
+  return escapeRegExp(literal).replace(
+    /[A-Za-z]/g,
+    (ch) => `[${ch.toLowerCase()}${ch.toUpperCase()}]`
+  );
+}
+
+/**
  * `(?:amazonaws\.com\.cn|amazonaws\.com|...)` — {@link AWS_URL_SUFFIXES} as a
  * non-capturing alternation, LONGEST FIRST so `amazonaws.com.cn` is tried
  * before its own `amazonaws.com` prefix instead of relying on backtracking.
@@ -209,11 +251,47 @@ const AWS_URL_SUFFIXES = [
  * the ECR digest), and this alternation sits BEFORE those groups in all three
  * patterns. Making it capturing would shift every index by one and silently
  * collect the suffix as if it were a key.
+ *
+ * `spellSuffix` decides how each suffix is written out, so the SET, the
+ * longest-first order and the non-capturing property keep exactly one
+ * definition while the two consumers differ in case handling — see
+ * {@link URL_SUFFIX_ALTERNATION_CASE_FOLDED}.
  */
-const URL_SUFFIX_ALTERNATION = `(?:${[...AWS_URL_SUFFIXES]
-  .sort((a, b) => b.length - a.length)
-  .map(escapeRegExp)
-  .join('|')})`;
+function buildUrlSuffixAlternation(spellSuffix: (suffix: string) => string): string {
+  return `(?:${[...AWS_URL_SUFFIXES]
+    .sort((a, b) => b.length - a.length)
+    .map(spellSuffix)
+    .join('|')})`;
+}
+
+/**
+ * The case-SENSITIVE spelling, consumed by {@link ECR_REGISTRY_HOST}. The ECR
+ * matcher folds case with the `i` flag on the whole regex, so this copy must
+ * NOT be folded here as well — see {@link caseFoldLiteral} for why the two
+ * families widen differently.
+ */
+const URL_SUFFIX_ALTERNATION = buildUrlSuffixAlternation(escapeRegExp);
+
+/**
+ * The case-FOLDED spelling, consumed by the three S3 matchers (issue #1847).
+ * Same suffix set, same order, letters folded per {@link caseFoldLiteral} — so
+ * an upper-cased or mixed-case host suffix collects the key while the bucket
+ * name beside it stays matched EXACTLY.
+ */
+const URL_SUFFIX_ALTERNATION_CASE_FOLDED = buildUrlSuffixAlternation(caseFoldLiteral);
+
+/**
+ * `[sS]3` — the `s3://` URI scheme AND the `s3` host label of both HTTPS
+ * shapes, case-folded (issue #1847).
+ */
+const S3_LABEL_CASE_FOLDED = caseFoldLiteral('s3');
+
+/**
+ * `[hH][tT][tT][pP][sS]` — the URI scheme, case-folded (issue #1847). A scheme
+ * is case-insensitive by RFC 3986 §3.1, and folding a fixed literal that is
+ * neither the bucket name nor the key can only ever over-PROTECT.
+ */
+const HTTPS_SCHEME_CASE_FOLDED = caseFoldLiteral('https');
 
 /**
  * The HOST half of an ECR registry, built from the ONE authoritative FORM TABLE
@@ -311,22 +389,50 @@ function tryDecodeBase64Text(value: string): string | null {
  *   account's or region's URI can only over-protect (keep more), never
  *   delete more.
  *
- * `<urlSuffix>` in the two S3 shapes is {@link URL_SUFFIX_ALTERNATION}, i.e.
- * EVERY partition's suffix at once — see that constant for why a per-region
- * derived literal is the wrong shape here (issue #1781).
+ * `<urlSuffix>` in the two S3 shapes is
+ * {@link URL_SUFFIX_ALTERNATION_CASE_FOLDED}, i.e. EVERY partition's suffix at
+ * once — see {@link AWS_URL_SUFFIXES} for why a per-region derived literal is
+ * the wrong shape here (issue #1781). Every S3 HOST segment is matched
+ * case-insensitively and the bucket name EXACTLY (issue #1847); see
+ * {@link caseFoldLiteral} for that split.
  */
 function buildReferenceExtractors(marker: BootstrapMarker): {
   extractFromString: (value: string, refs: AssetReferences) => void;
 } {
   const bucket = escapeRegExp(marker.assetBucket);
   const repo = escapeRegExp(marker.containerRepo);
-  const s3UriRe = new RegExp(`s3://${bucket}/(${KEY_TERMINATORS}+)`, 'g');
+  // These three stay case-SENSITIVE regexes whose HOST segments are spelled
+  // case-folded, rather than becoming `i`-flagged ones (issue #1847). The flag
+  // is per-regex and would fold the BUCKET NAME with the host; see
+  // `caseFoldLiteral` for why that direction is a hazard here even though it
+  // was the right call on the ECR matcher below. Segment by segment:
+  //
+  // - The SCHEME (`s3` / `https`) and the `s3` host label are folded literals.
+  // - The region segment is already `[^/\s]*`, which accepts any case (and the
+  //   `s3.dualstack.<region>` / no-region variants with it).
+  // - The suffix is `URL_SUFFIX_ALTERNATION_CASE_FOLDED`, the folded twin of
+  //   the set the ECR matcher uses — still a CLOSED set, so a look-alike host
+  //   (`...s3.<region>.example.com`) is no more a match than before.
+  // - The BUCKET NAME is the escaped marker value, matched EXACTLY. This is the
+  //   property that separates this fix from the blanket flag: a case-variant of
+  //   the bucket name must NOT collect, or any string carrying one could pin an
+  //   object forever and turn gc into a no-op.
+  // - The KEY capture is not folded either, and must not be: S3 keys ARE
+  //   case-sensitive, so a folded capture would collect a spelling that can
+  //   never equal the `ListObjectsV2` key — collected yet INERT, i.e. the live
+  //   object is still deleted (the mirror of the ECR digest trap below).
+  const s3UriRe = new RegExp(
+    `${S3_LABEL_CASE_FOLDED}://${bucket}/(${KEY_TERMINATORS}+)`,
+    'g'
+  );
   const virtualHostedRe = new RegExp(
-    `https://${bucket}\\.s3[^/\\s]*\\.${URL_SUFFIX_ALTERNATION}/(${KEY_TERMINATORS}+)`,
+    `${HTTPS_SCHEME_CASE_FOLDED}://${bucket}\\.${S3_LABEL_CASE_FOLDED}[^/\\s]*\\.` +
+      `${URL_SUFFIX_ALTERNATION_CASE_FOLDED}/(${KEY_TERMINATORS}+)`,
     'g'
   );
   const pathStyleRe = new RegExp(
-    `https://s3[^/\\s]*\\.${URL_SUFFIX_ALTERNATION}/${bucket}/(${KEY_TERMINATORS}+)`,
+    `${HTTPS_SCHEME_CASE_FOLDED}://${S3_LABEL_CASE_FOLDED}[^/\\s]*\\.` +
+      `${URL_SUFFIX_ALTERNATION_CASE_FOLDED}/${bucket}/(${KEY_TERMINATORS}+)`,
     'g'
   );
   // The `i` flag is what makes the HOST match case-INSENSITIVELY (issue #1792).

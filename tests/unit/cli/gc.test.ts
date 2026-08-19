@@ -1300,4 +1300,232 @@ describe('cdkd gc', () => {
       expect(deletedDigests()).toEqual([WIDE_GARBAGE_DIGEST]);
     });
   });
+
+  // Issue #1847: all three S3 asset-reference matchers were case-SENSITIVE
+  // while DNS is not, so `https://<bucket>.s3.<region>.AMAZONAWS.COM/<key>` in
+  // a state file read as UNREFERENCED and gc DELETED the live object — the
+  // irreversible direction. The fix folds the HOST segments only; the blanket
+  // `i` flag would fold the BUCKET NAME with them, which is what the negative
+  // arm below exists to forbid.
+  describe('S3 host case-folding (issue #1847)', () => {
+    const MARKER: BootstrapMarker = {
+      assetBucket: ASSET_BUCKET,
+      containerRepo: CONTAINER_REPO,
+      assetSupportVersion: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+
+    /** Collect references out of ONE string, as a state document would carry it. */
+    function collect(value: string): AssetReferences {
+      const refs: AssetReferences = {
+        s3Keys: new Set(),
+        imageTags: new Set(),
+        imageDigests: new Set(),
+      };
+      collectAssetReferences({ SomeProperty: value }, MARKER, refs);
+      return refs;
+    }
+
+    const REGION_UPPER = REGION.toUpperCase();
+    // Bucket-name case variants, DERIVED from the real name so they cannot
+    // drift out of being variants of it.
+    const BUCKET_UPPER = ASSET_BUCKET.toUpperCase();
+    const BUCKET_MIXED = ASSET_BUCKET.replace(/^./, (c) => c.toUpperCase());
+
+    // Keys are deliberately NOT `<sha256>.<ext>`-shaped: the name-independent
+    // CONTENT_HASH_KEY_RE pass collects those out of ANY string regardless of
+    // host, which is exactly how #1781 measured 71 of 72 objects accidentally
+    // protected with the host matchers fully broken. A content-hash-shaped key
+    // here would make every arm below pass without the matchers doing anything.
+    it('collects an UPPER-cased and a mixed-case host for all three S3 shapes', () => {
+      // Virtual-hosted.
+      expect([
+        ...collect(`https://${ASSET_BUCKET}.S3.${REGION_UPPER}.AMAZONAWS.COM/upper-virtual.bin`)
+          .s3Keys,
+      ]).toEqual(['upper-virtual.bin']);
+      expect([
+        ...collect(`https://${ASSET_BUCKET}.S3.us-EAST-1.AmAzOnAwS.CoM/mixed-virtual.bin`).s3Keys,
+      ]).toEqual(['mixed-virtual.bin']);
+
+      // Path style.
+      expect([
+        ...collect(`https://S3.${REGION_UPPER}.AMAZONAWS.COM/${ASSET_BUCKET}/upper-path.bin`)
+          .s3Keys,
+      ]).toEqual(['upper-path.bin']);
+      expect([
+        ...collect(`https://s3.${REGION}.AmAzOnAwS.CoM/${ASSET_BUCKET}/mixed-path.bin`).s3Keys,
+      ]).toEqual(['mixed-path.bin']);
+
+      // `s3://` URI. The only case-carrying segment is the SCHEME (the bucket
+      // is the authority and stays exact), and a scheme is case-insensitive by
+      // RFC 3986 §3.1 — so `S3://` is the whole of what this shape can vary.
+      expect([...collect(`S3://${ASSET_BUCKET}/upper-scheme-uri.bin`).s3Keys]).toEqual([
+        'upper-scheme-uri.bin',
+      ]);
+
+      // The `https` scheme itself, for the same RFC reason.
+      expect([
+        ...collect(`HTTPS://${ASSET_BUCKET}.S3.${REGION_UPPER}.AMAZONAWS.COM/upper-scheme.bin`)
+          .s3Keys,
+      ]).toEqual(['upper-scheme.bin']);
+
+      // Lower-case counter-cases: byte-identical inputs still collect (the
+      // #1758 convention — a fold that BROKE the canonical spelling would
+      // otherwise pass every arm above).
+      expect([
+        ...collect(`https://${ASSET_BUCKET}.s3.${REGION}.amazonaws.com/lower-virtual.bin`).s3Keys,
+      ]).toEqual(['lower-virtual.bin']);
+      expect([
+        ...collect(`https://s3.${REGION}.amazonaws.com/${ASSET_BUCKET}/lower-path.bin`).s3Keys,
+      ]).toEqual(['lower-path.bin']);
+      expect([...collect(`s3://${ASSET_BUCKET}/lower-uri.bin`).s3Keys]).toEqual(['lower-uri.bin']);
+    });
+
+    it('folds EVERY partition suffix, not just the commercial one', () => {
+      // Driven off the exported table for the #1785 reason: a partition arm
+      // added there must arrive here on its own, or an upper-cased host in that
+      // partition silently goes back to reading as unreferenced. The count floor
+      // proves the loop saw its input.
+      expect(PARTITION_TABLE.length).toBeGreaterThanOrEqual(7);
+      for (const { urlSuffix } of PARTITION_TABLE) {
+        const shouted = urlSuffix.toUpperCase();
+        expect(
+          [...collect(`https://${ASSET_BUCKET}.S3.${REGION_UPPER}.${shouted}/live.bin`).s3Keys],
+          `virtual-hosted ${shouted}`
+        ).toEqual(['live.bin']);
+        expect(
+          [...collect(`https://S3.${REGION_UPPER}.${shouted}/${ASSET_BUCKET}/live-path.bin`).s3Keys],
+          `path-style ${shouted}`
+        ).toEqual(['live-path.bin']);
+      }
+    });
+
+    it('does NOT collect through a case-variant of the BUCKET name', () => {
+      // THE arm that separates this fix from the blanket `i` flag. Folding the
+      // bucket name would let any string embedding a case-variant of it pin
+      // those keys forever — the `AWS_URL_SUFFIXES` doc's "quietly turns gc
+      // into a no-op" direction, i.e. the opposite failure and not a free one.
+      // Asserted as the shape that regression emits: with `i` on these three
+      // regexes every string below collects its key.
+      const bucketCaseVariants = [
+        `https://${BUCKET_UPPER}.s3.${REGION}.amazonaws.com/bucketcase-virtual.bin`,
+        `https://${BUCKET_MIXED}.s3.${REGION}.amazonaws.com/bucketcase-virtual-mixed.bin`,
+        `https://${BUCKET_UPPER}.S3.${REGION_UPPER}.AMAZONAWS.COM/bucketcase-virtual-all.bin`,
+        `https://s3.${REGION}.amazonaws.com/${BUCKET_UPPER}/bucketcase-path.bin`,
+        `https://s3.${REGION}.amazonaws.com/${BUCKET_MIXED}/bucketcase-path-mixed.bin`,
+        `s3://${BUCKET_UPPER}/bucketcase-uri.bin`,
+        `s3://${BUCKET_MIXED}/bucketcase-uri-mixed.bin`,
+      ];
+      for (const value of bucketCaseVariants) {
+        expect([...collect(value).s3Keys], value).toEqual([]);
+      }
+    });
+
+    it('keeps refusing a look-alike host when the host is UPPER-cased', () => {
+      // The suffix set stays CLOSED under folding: `[eE][xX]...` is not one of
+      // its arms, and the ECR-only `on.aws` still does not reach the S3 shapes.
+      const lookAlikes = [
+        `https://${ASSET_BUCKET}.S3.${REGION_UPPER}.EXAMPLE.COM/lookalike.bin`,
+        `https://${ASSET_BUCKET}.S3.${REGION_UPPER}.AMAZONAWS.COM.EVIL.COM/lookalike.bin`,
+        `https://S3.${REGION_UPPER}.EXAMPLE.COM/${ASSET_BUCKET}/lookalike.bin`,
+        `https://${ASSET_BUCKET}.S3.${REGION_UPPER}.ON.AWS/leak.bin`,
+        `https://S3.${REGION_UPPER}.ON.AWS/${ASSET_BUCKET}/leak.bin`,
+      ];
+      for (const value of lookAlikes) {
+        expect([...collect(value).s3Keys], value).toEqual([]);
+      }
+    });
+
+    it('collects the KEY verbatim — S3 keys are case-sensitive', () => {
+      // The mirror of the ECR tag arm. Widening the HOST is safe; carrying the
+      // fold onto the collected KEY is not — the ECR digest is lower-cased on
+      // insert precisely because it must match a lower-case value, and copying
+      // that move here (`s3Keys.add(match[1].toLowerCase())`, the regression
+      // this arm is written against) would collect a spelling that can never
+      // equal the `ListObjectsV2` key: collected yet INERT, with the live
+      // object deleted anyway. The host is UPPER-cased so the fold is
+      // definitely in play while the key is asserted verbatim.
+      expect([
+        ...collect(`https://${ASSET_BUCKET}.S3.${REGION_UPPER}.AMAZONAWS.COM/Mixed-Key.BIN`).s3Keys,
+      ]).toEqual(['Mixed-Key.BIN']);
+      expect([
+        ...collect(`https://S3.${REGION_UPPER}.AMAZONAWS.COM/${ASSET_BUCKET}/Mixed-Path.BIN`)
+          .s3Keys,
+      ]).toEqual(['Mixed-Path.BIN']);
+    });
+
+    it('keeps live objects referenced by an UPPER-cased host and deletes the bucket-case look-alike', async () => {
+      // The end-to-end twin of the collect()-level arms, in the shape of the
+      // cn-north-1 / UPPER-host ECR tests: what the fix has to guarantee is
+      // that `cdkd gc` does NOT delete these objects, which a collection
+      // assertion cannot say on its own.
+      //
+      // The bucket-case object is the discriminator in BOTH directions: it must
+      // be DELETED, so the run cannot pass by gc doing nothing, and a blanket
+      // `i` flag would keep it alive and red this.
+      const CASE_STATE_KEY = `cdkd/CaseStack/${REGION}/state.json`;
+      const CASE_STATE_BODY = JSON.stringify({
+        version: 8,
+        stackName: 'CaseStack',
+        region: REGION,
+        resources: {
+          Fn: {
+            physicalId: 'case-fn',
+            resourceType: 'AWS::Lambda::Function',
+            properties: {
+              Environment: {
+                Variables: {
+                  UPPER_VIRTUAL: `https://${ASSET_BUCKET}.S3.${REGION_UPPER}.AMAZONAWS.COM/case-virtual.bin`,
+                  MIXED_PATH: `https://s3.${REGION}.AmAzOnAwS.CoM/${ASSET_BUCKET}/case-path.bin`,
+                  UPPER_URI: `S3://${ASSET_BUCKET}/case-uri.bin`,
+                  // Names a bucket that is NOT the marker's (S3 bucket names
+                  // are lower-case), so its key must NOT be protected.
+                  BUCKET_CASE: `https://${BUCKET_UPPER}.s3.${REGION}.amazonaws.com/case-bucketcase.bin`,
+                },
+              },
+            },
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        lastModified: Date.now(),
+      });
+
+      stateBackendMocks.getRawObject.mockImplementation(async (key: string) => {
+        if (key === MARKER_KEY) return MARKER_BODY;
+        if (key === CASE_STATE_KEY) return CASE_STATE_BODY;
+        return null;
+      });
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === '') return [MARKER_KEY, CASE_STATE_KEY];
+        return [];
+      });
+      mockS3Send.mockImplementation(async (command: object) => {
+        if (command instanceof ListObjectsV2Command) {
+          return {
+            Contents: [
+              { Key: 'case-virtual.bin', Size: 100, LastModified: OLD },
+              { Key: 'case-path.bin', Size: 100, LastModified: OLD },
+              { Key: 'case-uri.bin', Size: 100, LastModified: OLD },
+              { Key: 'case-bucketcase.bin', Size: 100, LastModified: OLD },
+            ],
+            IsTruncated: false,
+          };
+        }
+        return {};
+      });
+      mockEcrSend.mockImplementation(async (command: object) => {
+        if (command instanceof DescribeImagesCommand) return { imageDetails: [] };
+        return {};
+      });
+
+      await runGc(['--yes']);
+
+      // `toEqual` rather than a pair of absence assertions on purpose: a run
+      // that deleted NOTHING would satisfy those, so the bucket-case key has to
+      // be present for the three survivals to mean anything.
+      expect(deletedS3Keys()).toEqual(['case-bucketcase.bin']);
+    });
+  });
 });
