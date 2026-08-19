@@ -1,3 +1,10 @@
+## [0.284.6](https://github.com/go-to-k/cdkd/compare/v0.284.5...v0.284.6) (2026-08-19)
+
+
+### Bug Fixes
+
+* **deployment:** report what the IAM-propagation retry spent, so an exhausted budget stops reading as no retry at all ([#2030](https://github.com/go-to-k/cdkd/issues/2030)) ([57e6ee7](https://github.com/go-to-k/cdkd/commit/57e6ee7783f8f6f225dddea682278d1b945100b3)), closes [#2018](https://github.com/go-to-k/cdkd/issues/2018)
+
 ## [0.284.5](https://github.com/go-to-k/cdkd/compare/v0.284.4...v0.284.5) (2026-08-19)
 
 
