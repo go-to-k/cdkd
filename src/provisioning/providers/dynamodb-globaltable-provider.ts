@@ -78,10 +78,10 @@ import {
 import {
   AUTO_SCALING_TEARDOWN_MAX_RETRIES,
   DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS,
+  DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS as DELETE_BUDGET_REUSE_WINDOW_MS,
   autoScalingRetriesWithinDeleteBudget,
-  deleteBudgetExhaustedNote,
+  beginDeleteWait,
   deleteBudgetKey,
-  pollsWithinDeleteBudget,
   resolveDynamoDbDeleteBudgetClock,
   resolveDynamoDbDeleteBudgetMs,
 } from './dynamodb-delete-budget.js';
@@ -3420,14 +3420,21 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   ): Promise<void> {
     // Issue #1955: the DELETE path calls this in a BURST — table-level plus one
     // per GSI, per non-local replica, then again locally — BEFORE the first
-    // budgeted poll, and each call retries throttles on `withRetry`'s default
-    // schedule (~47s). Application-autoscaling throttles per account, so a
-    // throttled burst can spend longer than the whole per-resource deadline
-    // here, with nothing bounding it. The retry COUNT is what the allowance
-    // buys down; the call itself always still runs, because skipping it leaks a
-    // scalable target that a future table of the same name inherits (PR #403).
-    // See `autoScalingRetriesWithinDeleteBudget` for the full argument. Every
-    // CREATE / UPDATE caller passes no budget and keeps the default schedule.
+    // budgeted poll. Both branches below now retry throttles: the register one
+    // always did, and the TEARDOWN one (the only branch the delete path takes,
+    // since every delete-path caller passes `newSettings: undefined`) gained it
+    // with this change, because a swallowed throttle there leaves a scalable
+    // target silently REGISTERED — the PR #403 leak a future table of the same
+    // name inherits, the exact mirror of the never-registered gap the register
+    // branch's retry closes.
+    //
+    // Retrying on a path that shares one deadline with every wait after it is
+    // what makes the bound necessary. `asMaxRetries` is funded from the SURPLUS
+    // above a reserve, so a throttled burst cannot spend the allowance the
+    // delete itself needs, and at zero the call is still ISSUED once — the
+    // leak-prevention never depends on the retry. Every CREATE / UPDATE caller
+    // passes no budget and keeps `withRetry`'s default schedule.
+    // See `autoScalingRetriesWithinDeleteBudget` for the arithmetic.
     const asMaxRetries = autoScalingRetriesWithinDeleteBudget(
       budget,
       AUTO_SCALING_TEARDOWN_MAX_RETRIES
@@ -3602,13 +3609,33 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       );
     };
     try {
-      await asClient.send(
-        new DeleteScalingPolicyCommand({
-          PolicyName: policyName,
-          ServiceNamespace: 'dynamodb',
-          ResourceId: resourceId,
-          ScalableDimension: dimension,
-        })
+      // Throttle-only retry, the SYMMETRIC twin of the register branch's. That
+      // one retries because a swallowed `ThrottlingException` leaves a target
+      // silently UNregistered; a swallowed throttle HERE leaves one silently
+      // REGISTERED, which is the PR #403 leak a future table of the same name
+      // inherits. The teardown had no retry at all until issue #1955's review
+      // found the asymmetry. `maxRetries` is the caller's bound
+      // (`autoScalingRetriesWithinDeleteBudget`) rather than the default,
+      // because this runs before every budgeted wait on the delete path; an
+      // absent budget (every CREATE / UPDATE caller) gets the default schedule.
+      // `ObjectNotFoundException` is not a throttle, so the idempotent
+      // already-gone arm below still fires on the FIRST attempt.
+      await withRetry(
+        () =>
+          asClient.send(
+            new DeleteScalingPolicyCommand({
+              PolicyName: policyName,
+              ServiceNamespace: 'dynamodb',
+              ResourceId: resourceId,
+              ScalableDimension: dimension,
+            })
+          ),
+        `${resourceId} (${dimension})`,
+        {
+          isRetryable: (_message, error) => isThrottlingError(error),
+          maxRetries: asMaxRetries,
+          ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
+        }
       );
     } catch (err) {
       if (!isObjectNotFound(err)) {
@@ -3626,12 +3653,22 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // suppressed below).
     }
     try {
-      await asClient.send(
-        new DeregisterScalableTargetCommand({
-          ServiceNamespace: 'dynamodb',
-          ResourceId: resourceId,
-          ScalableDimension: dimension,
-        })
+      // Same throttle-only retry and the same bound as the policy delete above.
+      await withRetry(
+        () =>
+          asClient.send(
+            new DeregisterScalableTargetCommand({
+              ServiceNamespace: 'dynamodb',
+              ResourceId: resourceId,
+              ScalableDimension: dimension,
+            })
+          ),
+        `${resourceId} (${dimension})`,
+        {
+          isRetryable: (_message, error) => isThrottlingError(error),
+          maxRetries: asMaxRetries,
+          ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
+        }
       );
       this.logger.debug(`Deregistered auto-scaling target ${resourceId} (${dimension})`);
     } catch (err) {
@@ -3894,14 +3931,22 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // FIRST call, so the `--remove-protection` flip's ACTIVE wait is both
     // MEASURED by this clock and CLAMPED by it — the two are separate
     // properties and an earlier revision had only the first, which left that
-    // wait free to spend ~10 min of a budget it was nonetheless draining.
+    // wait free to spend ~12 min of a budget it was nonetheless draining.
     // Acquired from the registry so a re-entry after a throttle CONTINUES this
     // clock rather than restarting it — see the field's own note and
     // `./dynamodb-delete-budget.ts`.
     const budget = this.deleteBudgets.acquire(
       deleteBudgetKey(physicalId, context?.expectedRegion),
       resolveDynamoDbDeleteBudgetMs(),
-      resolveDynamoDbDeleteBudgetClock()
+      resolveDynamoDbDeleteBudgetClock(),
+      // Entries are retained on a throw so the outer loop's re-entry keeps
+      // spending this clock — but "retained" must not mean "forever". Past the
+      // deadline the allowance is sized against, that deadline has certainly
+      // fired, so any caller arriving now belongs to a NEW operation and gets a
+      // new allowance. Without this, a provider instance shared across
+      // operations (the deploy engine hands the same registry to
+      // `rollback-executor.ts`) could hand a fresh delete a spent budget.
+      DELETE_BUDGET_REUSE_WINDOW_MS
     );
 
     if (context?.removeProtection === true) {
@@ -5241,14 +5286,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // wait of four sharing one per-resource deadline, and it is the slowest
     // kind — it returns only when the table is ACTIVE *and* no index is
     // transitioning, i.e. exactly the condition the rest of the path is about,
-    // so it can spend its full ~10 min at t=0 and leave the #1521 gate and the
+    // so it can spend its full ~12 min at t=0 and leave the #1521 gate and the
     // index-busy loop nothing. Its `Table`-provider twin took the allowance in
     // the first revision of this change and this one did not, which is the
     // half-applied shape a paired clamp exists to prevent. Every CREATE /
     // UPDATE caller passes no budget and keeps the full cap.
-    const polls = pollsWithinDeleteBudget(maxAttempts, budget);
+    const wait = beginDeleteWait(maxAttempts, budget);
     let tableReachedActive = false;
-    for (let attempt = 1; attempt <= polls.attempts; attempt++) {
+    while (wait.nextPoll()) {
       const response = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: tableName })
       );
@@ -5258,21 +5303,21 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
-    // Both exits name WHICH clock ended the wait. Reporting the clamped count
-    // alone would say "the indexes were still transitioning after 1s" when cdkd
-    // had in fact been deleting for twenty-six minutes, and the two readings
-    // call for different actions from the user.
-    const budgetNote = polls.clampedByBudget ? deleteBudgetExhaustedNote(polls) : '';
+    // Both exits name WHICH clock ended the wait, and both count the polls
+    // actually RUN rather than the ones granted — the loop can also stop
+    // mid-way, when the allowance runs out under polls that cost more than the
+    // ~1.2s the grant assumed.
+    const budgetNote = wait.note();
     if (tableReachedActive) {
       this.logger.warn(
         `Indexes on ${tableName} (${logicalId}) were still transitioning after ` +
-          `${polls.attempts}s — a large index backfill can outlive this wait. Proceeding; ` +
+          `${wait.pollsRun}s — a large index backfill can outlive this wait. Proceeding; ` +
           `AWS rejects the next call if it is still too early.${budgetNote}`
       );
       return;
     }
     throw new ProvisioningError(
-      `Table ${tableName} did not reach ACTIVE within ${polls.attempts}s after UpdateTable${budgetNote}`,
+      `Table ${tableName} did not reach ACTIVE within ${wait.pollsRun}s after UpdateTable${budgetNote}`,
       'AWS::DynamoDB::GlobalTable',
       logicalId,
       tableName
@@ -5334,7 +5379,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // subtly wrong. This method keeps the DEFAULTS, which are this provider's:
     // the 900-poll cap and the auto-scaling proceed note both belong to the
     // caller that has no backstop, and neither is right for the delete path.
-    const gatePolls = pollsWithinDeleteBudget(opts?.maxAttempts ?? 900, opts?.budget);
+    const gateWait = beginDeleteWait(opts?.maxAttempts ?? 900, opts?.budget);
     await waitForIndexesSettled({
       tableName,
       logicalId,
@@ -5344,10 +5389,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // The cap is the SMALLER of this caller's own constant and what the
       // shared delete budget can still afford (issue #1955) — an absent budget
       // (every CREATE / UPDATE caller) leaves the constant untouched.
-      maxAttempts: gatePolls.attempts,
-      // ...and when the allowance is what cut it, the give-up warning has to
-      // say so rather than quote the clamped count as the wait AWS was given.
-      ...(gatePolls.clampedByBudget && { clampedFromCap: gatePolls.cap }),
+      maxAttempts: gateWait.grantedPolls,
+      // ...and the loop re-checks the allowance on every iteration, so a poll
+      // that costs more than the grant assumed cannot run the wait past it.
+      // The wait also owns its own give-up wording, so a budget-ended exit
+      // cannot read as AWS failing to settle.
+      budgetWait: gateWait,
       proceedNote:
         opts?.proceedNote ??
         `auto-scaling registration for a still-building index may have been skipped. The ` +
@@ -5357,7 +5404,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
   /**
    * Wait until a specific replica's `ReplicaStatus` flips to ACTIVE.
-   * Replica provisioning typically takes 1–5 min; cap at 10 min.
+   * Replica provisioning typically takes 1–5 min; capped at
+   * {@link REPLICA_GONE_WAIT_ATTEMPTS} polls — ~12 min at the MEASURED ~1.2s
+   * per poll (a sleep plus a `DescribeTable` round trip), not the ~10 min the
+   * `1 poll = 1s` reading gives. The delete-path arithmetic in
+   * `./dynamodb-delete-budget.ts` prices it at the measured figure, so the two
+   * have to agree.
    */
   private async waitForReplicaActive(
     tableName: string,
@@ -5387,7 +5439,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   /**
    * Wait until a specific replica disappears from `Replicas[]` after a
    * Delete replica update. Replica deletion typically takes 1–5 min;
-   * cap at 10 min.
+   * capped at {@link REPLICA_GONE_WAIT_ATTEMPTS} polls (~12 min at the
+   * measured ~1.2s per poll).
    */
   private async waitForReplicaGone(
     tableName: string,
@@ -5400,8 +5453,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // a single per-resource deadline, so it takes the smaller of its own cap
     // and what the shared budget can still afford. The partial-create cleanup
     // caller passes no budget and keeps the full cap.
-    const polls = pollsWithinDeleteBudget(maxAttempts, budget);
-    for (let attempt = 1; attempt <= polls.attempts; attempt++) {
+    const wait = beginDeleteWait(maxAttempts, budget);
+    while (wait.nextPoll()) {
       try {
         const response = await this.dynamoDBClient.send(
           new DescribeTableCommand({ TableName: tableName })
@@ -5414,9 +5467,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         throw err;
       }
     }
+    // Still THROWS even when the allowance ended it, unlike the gone-wait
+    // below, and the asymmetry is load-bearing: after this wait cdkd has yet to
+    // issue `DeleteTable`, which AWS refuses while a replica lives. Nothing has
+    // been accepted, so there is nothing to be optimistic about.
     throw new ProvisioningError(
-      `Replica ${region} for table ${tableName} did not disappear within ${polls.attempts}s` +
-        `${polls.clampedByBudget ? deleteBudgetExhaustedNote(polls) : ''}`,
+      `Replica ${region} for table ${tableName} did not disappear within ${wait.pollsRun}s` +
+        `${wait.note()}`,
       'AWS::DynamoDB::GlobalTable',
       logicalId,
       tableName
@@ -5431,8 +5488,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * wait, downstream observers (siblings deleted in the same destroy
    * run, integ scripts that re-check via `aws dynamodb describe-table`)
    * see "destroy succeeded" but the table is still listed by AWS.
-   * Typical small-table delete completes in 5–30s; cap at 10 min for
-   * worst-case large-table / replica-cascade scenarios.
+   * Typical small-table delete completes in 5–30s; capped at
+   * {@link TABLE_GONE_WAIT_ATTEMPTS} polls (~12 min at the measured ~1.2s per
+   * poll) for worst-case large-table / replica-cascade scenarios. That 5-30s
+   * figure is what {@link DELETE_SHORT_WAIT_POLLS} is calibrated against: past
+   * roughly twice the top of it, cdkd HAS given AWS a real wait.
    */
   private async waitForTableGone(
     tableName: string,
@@ -5444,8 +5504,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // only runs on a late loop SUCCESS — which is exactly why it was the term
     // that pushed the single-region shape to ~40.4 min. It draws from the same
     // shared budget as everything before it.
-    const polls = pollsWithinDeleteBudget(maxAttempts, budget);
-    for (let attempt = 1; attempt <= polls.attempts; attempt++) {
+    const wait = beginDeleteWait(maxAttempts, budget);
+    while (wait.nextPoll()) {
       try {
         await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: tableName }));
         await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
@@ -5454,29 +5514,33 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         throw err;
       }
     }
-    // A BUDGET-clamped exhaustion warns; a genuinely exhausted 600-poll cap
-    // still throws. The asymmetry is the point, and it is about who owns the
-    // outcome. `DeleteTable` has already been ACCEPTED by the time this wait
-    // runs — it returned 200 and the table is `DELETING` — so the deletion is
-    // no longer in cdkd's hands, and it WILL complete. Throwing here because
-    // cdkd's own allowance ran out turns an accepted delete into a reported
-    // FAILURE with state preserved, which is a worse outcome than the overshoot
-    // this whole change removes: the user re-runs a destroy for a table AWS
-    // already deleted, and the next run takes the `ResourceNotFoundException`
-    // skip arm anyway. Twelve real minutes of polling with the table still
-    // present is a different claim — something is actually wrong — and keeps
-    // its hard error, unchanged from before this change.
-    if (polls.clampedByBudget) {
+    // A wait the allowance CUT SHORT warns; a wait that was actually performed
+    // still throws. The line is {@link DELETE_SHORT_WAIT_POLLS}, not
+    // `granted < cap`, and the difference matters: with ~14 min of the
+    // allowance already spent this wait is still granted ~500 polls — ten real
+    // minutes of `DescribeTable` — and downgrading THAT to a warning would be a
+    // decision made by two minutes of arithmetic rather than by evidence.
+    //
+    // Below the floor, cdkd barely looked, and `DeleteTable` has already been
+    // ACCEPTED by the time this wait runs (it returned 200 and the table is
+    // `DELETING`, and this method's only caller sits after the retry helper
+    // resolved). The deletion is no longer in cdkd's hands and it WILL
+    // complete; failing there turns an accepted delete into a reported FAILURE
+    // with state preserved, and the user re-runs a destroy for a table AWS
+    // already deleted. Above the floor, cdkd DID give AWS a real wait, so a
+    // table still present is a signal about AWS and keeps the hard error the
+    // method has always had.
+    if (wait.cutShort) {
       this.logger.warn(
         `DynamoDB GlobalTable ${logicalId}: DeleteTable on ${tableName} was ACCEPTED by AWS but ` +
           `cdkd stopped waiting for the table to disappear` +
-          `${deleteBudgetExhaustedNote(polls)} The delete completes on AWS's side; a later ` +
+          `${wait.note()} The delete completes on AWS's side; a later ` +
           `describe (or a re-run of this destroy) sees it gone.`
       );
       return;
     }
     throw new ProvisioningError(
-      `Table ${tableName} did not disappear within ${polls.attempts}s`,
+      `Table ${tableName} did not disappear within ${wait.pollsRun}s${wait.note()}`,
       'AWS::DynamoDB::GlobalTable',
       logicalId,
       tableName

@@ -92,7 +92,9 @@ import {
   DYNAMODB_DELETE_DEADLINE_MARGIN_MS,
   DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS,
   DYNAMODB_DELETE_POLL_COST_MS,
+  DELETE_SHORT_WAIT_POLLS,
   autoScalingRetriesWithinDeleteBudget,
+  beginDeleteWait,
   deleteBudgetKey,
   dynamoDbDeleteBudgetOverride,
   pollsWithinDeleteBudget,
@@ -108,12 +110,17 @@ import {
 // The REAL deadline the budget has to fit inside. IMPORTED, not restated, so
 // lowering it reds this suite — a fence has to watch the field it claims.
 import { DEFAULT_RESOURCE_TIMEOUT_MS } from '../../../src/deployment/deploy-engine.js';
-import { ElapsedBudget, monotonicNowMs } from '../../../src/utils/elapsed-budget.js';
+import {
+  ElapsedBudget,
+  ElapsedBudgetRegistry,
+  monotonicNowMs,
+} from '../../../src/utils/elapsed-budget.js';
 import type { Logger } from '../../../src/types/config.js';
 import {
   DynamoDBGlobalTableProvider,
   GLOBAL_TABLE_ACTIVE_WAIT_ATTEMPTS,
   TABLE_GONE_WAIT_ATTEMPTS,
+  autoScalingRetryDelays,
   deleteTableRetryDelays as globalTableDeleteDelays,
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 import {
@@ -999,8 +1006,11 @@ describe('every wait on the DELETE path draws from the allowance (issue #1955)',
     await expect(pending).rejects.toThrow(/Replica us-west-2 .* did not disappear within 1s/);
     // BLOCKER 3(a): the count is the CLAMPED one, so the message has to say
     // which clock ended the wait. "did not disappear within 1s" alone reads as
-    // an AWS failure after cdkd waited twenty-six minutes.
-    await expect(pending).rejects.toThrow(/shared ~26-minute delete allowance ran out first/);
+    // an AWS failure after cdkd waited the whole allowance.
+    await expect(pending).rejects.toThrow(/delete allowance was already spent/);
+    // ...and it quotes the ACTUAL allowance (60s here), not the shipped 26-min
+    // constant, which the seam would otherwise make it misreport.
+    await expect(pending).rejects.toThrow(/~1-minute delete allowance/);
   });
 
   it('G1: ...and keeps its FULL cap when the allowance can afford it', async () => {
@@ -1084,9 +1094,9 @@ describe('every wait on the DELETE path draws from the allowance (issue #1955)',
       provider.delete('Warm', 'shared-table', 'AWS::DynamoDB::GlobalTable', {})
     ).resolves.toBeUndefined();
     expect(warns.some((w) => w.includes('was ACCEPTED by AWS'))).toBe(true);
-    expect(warns.some((w) => w.includes('shared ~26-minute delete allowance ran out first'))).toBe(
-      true
-    );
+    expect(
+      warns.some((w) => w.includes("shared ~26-minute delete allowance was already spent"))
+    ).toBe(true);
   });
 
   it('BLOCKER 3(b): ...while a gone-wait that spent its REAL cap still fails hard', async () => {
@@ -1170,9 +1180,12 @@ describe('every wait on the DELETE path draws from the allowance (issue #1955)',
     // A released (i.e. fresh) allowance would give the re-arm its full cap.
     expect(reArm?.maxAttempts).not.toBe(DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS);
     expect(reArm?.maxAttempts).toBe(Math.floor(30_000 / DYNAMODB_DELETE_POLL_COST_MS));
-    // BLOCKER 3(a): the clamped re-arm tells the settle wait what it was cut
-    // from, so its give-up warning cannot read as an AWS timeout.
-    expect(reArm?.clampedFromCap).toBe(DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS);
+    // BLOCKER 3(a): the re-arm hands the settle loop the WAIT, not just a
+    // count, so the loop re-checks the allowance per poll and owns its own
+    // give-up wording rather than reading as an AWS timeout.
+    expect(reArm?.budgetWait).toBeDefined();
+    expect(reArm?.budgetWait?.cap).toBe(DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS);
+    expect(reArm?.budgetWait?.note()).toContain('delete allowance');
   });
 
   it('G4: two tables through ONE provider instance get SEPARATE allowances', async () => {
@@ -1284,5 +1297,433 @@ describe('every wait on the DELETE path draws from the allowance (issue #1955)',
     expect(asCalls).toBeGreaterThan(0);
     // ...and the retry budget they were given is zero.
     expect(autoScalingRetriesWithinDeleteBudget(new ElapsedBudget(1, () => 0), 8)).toBe(0);
+  });
+});
+
+/**
+ * The allowance as an actual BOUND rather than a prediction, and the two places
+ * the previous round left it decided by arithmetic instead of by evidence.
+ */
+describe('the allowance is enforced per POLL, not only at wait entry (issue #1955)', () => {
+  let clock: { now: () => number; advance: (ms: number) => void };
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockAutoScalingSend.mockReset();
+    settleSpy.mockReset();
+    mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
+    tableDeleteDelays.sleep = () => Promise.resolve();
+    globalTableDeleteDelays.sleep = () => Promise.resolve();
+    autoScalingRetryDelays.sleep = () => Promise.resolve();
+
+    let t = 1_000_000;
+    clock = {
+      now: () => t,
+      advance: (ms: number) => {
+        t += ms;
+      },
+    };
+    dynamoDbDeleteBudgetOverride.clock = clock.now;
+  });
+
+  afterEach(() => {
+    delete tableDeleteDelays.sleep;
+    delete globalTableDeleteDelays.sleep;
+    delete autoScalingRetryDelays.sleep;
+    delete dynamoDbDeleteBudgetOverride.clock;
+    delete dynamoDbDeleteBudgetOverride.totalMs;
+  });
+
+  it('breaks out mid-loop when a poll costs MORE than the grant predicted', async () => {
+    // The defect this closes: `attemptsWithin` prices a poll at ~1.2s and the
+    // grant was then treated as a bound. It is not one. Under sustained
+    // `DescribeTable` throttling the SDK's own internal retries push a poll to
+    // ~3s, so a wait entered with 12.1 min of allowance left is granted its
+    // full 600 polls and runs for ~30 min — past the allowance AND past the
+    // margin, with `withResourceDeadline` firing behind it. That is term T2
+    // returning through the mechanism built to remove it.
+    //
+    // Here every poll costs 10x its prediction. The wait is granted many polls
+    // and must still stop after a handful, once the allowance is actually gone.
+    dynamoDbDeleteBudgetOverride.totalMs = 20 * DYNAMODB_DELETE_POLL_COST_MS;
+    let describes = 0;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        describes += 1;
+        // A poll that costs ten times what the grant assumed.
+        clock.advance(10 * DYNAMODB_DELETE_POLL_COST_MS);
+        return Promise.resolve({
+          Table: {
+            TableName: 'shared-table',
+            TableStatus: 'ACTIVE',
+            GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'ACTIVE' }],
+            Replicas: [
+              { RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' },
+              { RegionName: 'us-west-2', ReplicaStatus: 'ACTIVE' },
+            ],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    await expect(
+      new DynamoDBGlobalTableProvider().delete(
+        'Warm',
+        'shared-table',
+        'AWS::DynamoDB::GlobalTable',
+        {}
+      )
+    ).rejects.toThrow(/Replica us-west-2/);
+
+    // Entry granted 20 polls; the real cost stopped it at ~3 (the pre-delete
+    // describe, then two replica polls). WITHOUT the in-loop check this runs
+    // all 20 and burns ten times the allowance.
+    expect(describes).toBeLessThanOrEqual(5);
+    expect(describes).toBeGreaterThanOrEqual(2);
+  });
+
+  it('...but the one-poll FLOOR survives an allowance that is already spent', async () => {
+    // The in-loop check must not eat the floor: a loop that broke before its
+    // first probe would report "did not settle" without ever having looked.
+    dynamoDbDeleteBudgetOverride.totalMs = 60_000;
+    let replicaPolls = 0;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        replicaPolls += 1;
+        return Promise.resolve({
+          Table: {
+            TableName: 'shared-table',
+            TableStatus: 'ACTIVE',
+            GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'ACTIVE' }],
+            Replicas: [
+              { RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' },
+              { RegionName: 'us-west-2', ReplicaStatus: 'ACTIVE' },
+            ],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const pending = (async () => {
+      const p = new DynamoDBGlobalTableProvider().delete(
+        'Warm',
+        'shared-table',
+        'AWS::DynamoDB::GlobalTable',
+        {}
+      );
+      clock.advance(120_000);
+      return p;
+    })();
+    await expect(pending).rejects.toThrow(/did not disappear within 1s/);
+
+    // The pre-delete describe plus exactly ONE replica probe — not zero.
+    expect(replicaPolls).toBe(2);
+  });
+
+  it('the SETTLE loop re-checks it too, and reports the polls it RAN', async () => {
+    // The #1521 gate and the index-busy re-arm both go through
+    // `waitForIndexesSettled`, which lives in the shared module and takes the
+    // wait structurally. Its give-up warning must count polls RUN, since the
+    // loop can now stop before its grant.
+    dynamoDbDeleteBudgetOverride.totalMs = 30 * DYNAMODB_DELETE_POLL_COST_MS;
+    const warns: string[] = [];
+    const provider = new DynamoDBGlobalTableProvider();
+    (provider as unknown as { logger: Logger }).logger = {
+      debug: () => {},
+      info: () => {},
+      warn: (m: string) => warns.push(m),
+      error: () => {},
+    };
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        clock.advance(10 * DYNAMODB_DELETE_POLL_COST_MS);
+        // The index NEVER settles, so only the allowance can end this wait.
+        return Promise.resolve({
+          Table: {
+            TableName: 'shared-table',
+            TableStatus: 'ACTIVE',
+            GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'UPDATING' }],
+            Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    await provider.delete('Warm', 'shared-table', 'AWS::DynamoDB::GlobalTable', {});
+
+    const giveUp = warns.find((w) => w.includes('did not all reach ACTIVE'));
+    expect(giveUp).toBeDefined();
+    // It ran a couple of polls, not the 30 it was granted...
+    expect(giveUp).not.toContain('within 30 DescribeTable polls');
+    // ...and it says the allowance ended it, so this cannot read as AWS
+    // failing to settle.
+    expect(giveUp).toContain('delete allowance');
+  });
+
+  it('SHOULD-FIX: a LONG wait ended by the allowance still throws — the floor decides, not `attempts < cap`', async () => {
+    // Before the floor existed the split was `attempts < cap`, so with ~14 min
+    // of the allowance spent a 600-poll gone-wait was granted ~500 polls — ten
+    // real minutes of `DescribeTable` — and that WARNED and dropped state,
+    // while the code's own comment called twelve minutes "something is actually
+    // wrong". Two minutes of wall clock is not a principled line.
+    //
+    // Here the wait is granted more than the floor and runs it out, so it
+    // throws even though the allowance is what capped it.
+    const provider = new DynamoDBGlobalTableProvider();
+    const budget = new ElapsedBudget(
+      (DELETE_SHORT_WAIT_POLLS + 10) * DYNAMODB_DELETE_POLL_COST_MS,
+      () => 1_000_000
+    );
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        return Promise.resolve({
+          Table: { TableName: 'shared-table', TableStatus: 'ACTIVE', GlobalSecondaryIndexes: [] },
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    // FAKE timers: the wait must run PAST the 60-poll floor for this arm to be
+    // the arm under test, and 60+ real one-second sleeps would time the test
+    // out. The budget's own clock is the injected closure above, so it is
+    // unaffected by the fake timers and stays deliberately frozen — this arm is
+    // about the ENTRY grant (70 polls) being above the floor, not about the
+    // in-loop break.
+    vi.useFakeTimers();
+    try {
+      const pending = (
+        provider as unknown as {
+          waitForTableGone: (
+            t: string,
+            l: string,
+            m?: number,
+            b?: ElapsedBudget
+          ) => Promise<void>;
+        }
+      ).waitForTableGone('shared-table', 'Warm', 600, budget);
+      const settled = expect(pending).rejects.toThrow(/did not disappear/);
+      await vi.advanceTimersByTimeAsync((DELETE_SHORT_WAIT_POLLS + 20) * 1000);
+      await settled;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('SHOULD-FIX: ...while a wait cut BELOW the floor warns', async () => {
+    // The other side of the same line, driven through the same method so the
+    // pair differs only in how much wait the allowance actually bought.
+    const warns: string[] = [];
+    const provider = new DynamoDBGlobalTableProvider();
+    (provider as unknown as { logger: Logger }).logger = {
+      debug: () => {},
+      info: () => {},
+      warn: (m: string) => warns.push(m),
+      error: () => {},
+    };
+    let t = 1_000_000;
+    const budget = new ElapsedBudget(60_000, () => t);
+    t += 120_000;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeTableCommand) {
+        return Promise.resolve({
+          Table: { TableName: 'shared-table', TableStatus: 'ACTIVE', GlobalSecondaryIndexes: [] },
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    await expect(
+      (
+        provider as unknown as {
+          waitForTableGone: (
+            t: string,
+            l: string,
+            m?: number,
+            b?: ElapsedBudget
+          ) => Promise<void>;
+        }
+      ).waitForTableGone('shared-table', 'Warm', 600, budget)
+    ).resolves.toBeUndefined();
+    expect(warns.some((w) => w.includes('was ACCEPTED by AWS'))).toBe(true);
+  });
+
+  it('NIT: no "allowance was already spent" note on a wait that was actually performed', async () => {
+    // The strong note claims AWS was not given a real wait. On a 500-of-600
+    // wait that is false, and the note's own advice ("re-run the destroy") is
+    // wrong. Above the floor it degrades to a factual capped-at clause.
+    const longWait = beginDeleteWait(
+      600,
+      new ElapsedBudget((DELETE_SHORT_WAIT_POLLS + 10) * DYNAMODB_DELETE_POLL_COST_MS, () => 0)
+    );
+    while (longWait.nextPoll()) {
+      /* run it out */
+    }
+    expect(longWait.endedByBudget).toBe(true);
+    expect(longWait.cutShort).toBe(false);
+    expect(longWait.note()).not.toContain('was already spent');
+    expect(longWait.note()).not.toContain('re-run the destroy');
+    expect(longWait.note()).toContain('capped this wait');
+
+    let t = 0;
+    const drained = new ElapsedBudget(60_000, () => t);
+    t += 120_000;
+    const shortWait = beginDeleteWait(600, drained);
+    while (shortWait.nextPoll()) {
+      /* one poll, the floor */
+    }
+    expect(shortWait.cutShort).toBe(true);
+    expect(shortWait.note()).toContain('was already spent');
+    // ...and it quotes the REAL allowance, not the shipped constant.
+    expect(shortWait.note()).toContain('~1-minute');
+  });
+
+  it('BLOCKER 2 redo: the auto-scaling TEARDOWN retries throttles, bounded by the allowance', async () => {
+    // The delete path takes the teardown branch (`newSettings: undefined`), and
+    // until this round that branch had no retry at all while its register twin
+    // did — so a throttle left a scalable target silently REGISTERED, the
+    // PR #403 leak. The clamp added in the previous round was wired only to the
+    // register branch and was therefore inert on every delete.
+    dynamoDbDeleteBudgetOverride.totalMs = DYNAMODB_DELETE_BUDGET_MS;
+    let asAttempts = 0;
+    mockAutoScalingSend.mockImplementation(() => {
+      asAttempts += 1;
+      return Promise.reject(
+        Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' })
+      );
+    });
+    let deleted = false;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DeleteTableCommand) {
+        deleted = true;
+        return Promise.resolve({});
+      }
+      if (command instanceof DescribeTableCommand) {
+        if (deleted) {
+          return Promise.reject(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+        }
+        return Promise.resolve({
+          Table: {
+            TableName: 'shared-table',
+            TableStatus: 'ACTIVE',
+            // ONE index, so the teardown issues a bounded, countable number of
+            // calls: table read + table write + index write + index read.
+            GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'ACTIVE' }],
+            Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    await new DynamoDBGlobalTableProvider().delete(
+      'Warm',
+      'shared-table',
+      'AWS::DynamoDB::GlobalTable',
+      {}
+    );
+
+    // Each teardown call issues DeleteScalingPolicy + DeregisterScalableTarget,
+    // and with a healthy allowance each of those RETRIES the throttle. Without
+    // the wrap every send is a single attempt, so the count collapses to one
+    // per send — which is what makes this fail on the inert-clamp defect.
+    const sends = 4 /* dimensions */ * 2; /* policy + deregister */
+    expect(asAttempts).toBeGreaterThan(sends);
+    expect(asAttempts).toBeLessThanOrEqual(sends * (1 + AUTO_SCALING_TEARDOWN_MAX_RETRIES));
+  });
+
+  it('BLOCKER 2 redo: ...and a drained allowance issues each teardown call exactly ONCE', async () => {
+    // The leak-prevention must never depend on the retry: `withRetry` with
+    // `maxRetries: 0` still runs the operation once, so a spent allowance stops
+    // paying for retries without skipping the call.
+    dynamoDbDeleteBudgetOverride.totalMs = 60_000;
+    let asAttempts = 0;
+    mockAutoScalingSend.mockImplementation(() => {
+      asAttempts += 1;
+      return Promise.reject(
+        Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' })
+      );
+    });
+    let deleted = false;
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DeleteTableCommand) {
+        deleted = true;
+        return Promise.resolve({});
+      }
+      if (command instanceof DescribeTableCommand) {
+        if (deleted) {
+          return Promise.reject(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+        }
+        return Promise.resolve({
+          Table: {
+            TableName: 'shared-table',
+            TableStatus: 'ACTIVE',
+            GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'ACTIVE' }],
+            Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const pending = (async () => {
+      const p = new DynamoDBGlobalTableProvider().delete(
+        'Warm',
+        'shared-table',
+        'AWS::DynamoDB::GlobalTable',
+        {}
+      );
+      clock.advance(120_000);
+      return p;
+    })();
+    await pending;
+
+    expect(asAttempts).toBe(4 * 2);
+  });
+
+  it('BLOCKER 2 redo: the reserve keeps the teardown off the allowance the DELETE needs', async () => {
+    // Funding retries from the whole remaining allowance would bound the
+    // teardown (each call re-reads it) but would let a throttled burst spend
+    // the entire thing before `DeleteTable` is issued — turning a silent target
+    // leak into a destroy that fails on the first index-busy refusal because
+    // the retry loop has no allowance left.
+    const fresh = new ElapsedBudget(DYNAMODB_DELETE_BUDGET_MS, () => 0);
+    expect(autoScalingRetriesWithinDeleteBudget(fresh, AUTO_SCALING_TEARDOWN_MAX_RETRIES)).toBe(
+      AUTO_SCALING_TEARDOWN_MAX_RETRIES
+    );
+
+    // Past the reserve, retries stop even though minutes of allowance remain
+    // for the waits that actually delete the table.
+    let t = 0;
+    const mostlySpent = new ElapsedBudget(DYNAMODB_DELETE_BUDGET_MS, () => t);
+    t += DYNAMODB_DELETE_BUDGET_MS - 60_000; // a minute left: well under the reserve
+    expect(mostlySpent.remainingMs()).toBeGreaterThan(0);
+    expect(
+      autoScalingRetriesWithinDeleteBudget(mostlySpent, AUTO_SCALING_TEARDOWN_MAX_RETRIES)
+    ).toBe(0);
+  });
+
+  it('a RETAINED allowance goes stale once its deadline has certainly fired', async () => {
+    // Entries are retained on a throw so the outer loop's re-entry keeps
+    // spending the same clock. "Retained" must not mean "forever": the deploy
+    // engine hands the same provider instance to `rollback-executor.ts`, so a
+    // later operation with its OWN deadline could otherwise inherit a spent
+    // allowance. Past the deadline the allowance is sized against, that
+    // deadline has fired and the caller belongs to a new operation.
+    const registry = new ElapsedBudgetRegistry();
+    let t = 0;
+    const clockFn = (): number => t;
+
+    const first = registry.acquire('k', 26 * 60_000, clockFn, 30 * 60_000);
+    t += 10 * 60_000;
+    // Inside the window: the SAME allowance, still draining.
+    expect(registry.acquire('k', 26 * 60_000, clockFn, 30 * 60_000)).toBe(first);
+
+    t += 25 * 60_000; // 35 min in: past the 30-min deadline it was sized for
+    const afterDeadline = registry.acquire('k', 26 * 60_000, clockFn, 30 * 60_000);
+    expect(afterDeadline).not.toBe(first);
+    expect(afterDeadline.remainingMs()).toBe(26 * 60_000);
   });
 });

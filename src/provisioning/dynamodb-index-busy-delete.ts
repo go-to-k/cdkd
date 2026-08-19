@@ -333,20 +333,34 @@ export async function waitForIndexesSettled(opts: {
   maxAttempts: number;
   proceedNote: string;
   /**
-   * The cap `maxAttempts` was CUT DOWN FROM, when a caller's shared delete
-   * allowance — rather than this wait's own constant — is what decided it
-   * (issue #1955). Absent means `maxAttempts` IS the caller's own cap.
+   * The caller's shared delete allowance, as a poll-granting object (issue
+   * #1955). Absent means this wait is bounded by `maxAttempts` alone, which is
+   * what every CREATE / UPDATE caller wants.
    *
-   * Only the give-up warning reads it, and only to keep that warning true: at
-   * the one-poll floor the message otherwise reads `did not all reach ACTIVE
-   * within 1 DescribeTable poll` after cdkd had been deleting for twenty-six
-   * minutes, which states "AWS was slow" while meaning "cdkd stopped asking".
-   * The two need different actions from the user.
+   * Structural rather than an import of the provider-side `DeleteWait`: that
+   * type lives in `providers/dynamodb-delete-budget.ts`, which reads
+   * {@link INDEX_SETTLE_POLL_INTERVAL_MS} from HERE, and importing it back
+   * would close a module cycle for no gain.
+   *
+   * It does two things `maxAttempts` cannot. It re-checks the allowance on
+   * every iteration, so a poll that costs more than the ~1.2s the grant assumed
+   * cannot run this wait past the allowance — the grant is a PREDICTION and
+   * only the in-loop check is a bound. And it owns the give-up wording, so an
+   * exit caused by cdkd's clock cannot read as AWS failing to settle: at the
+   * one-poll floor the bare message says `did not all reach ACTIVE within 1
+   * DescribeTable poll` after cdkd had been deleting for twenty-six minutes.
    */
-  clampedFromCap?: number;
+  budgetWait?: {
+    nextPoll(): boolean;
+    readonly pollsRun: number;
+    note(): string;
+  };
 }): Promise<void> {
   const { tableName, logicalId, logger, describeTable, maxAttempts, proceedNote } = opts;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  const budgetWait = opts.budgetWait;
+  let attempt = 0;
+  while (budgetWait ? budgetWait.nextPoll() : attempt < maxAttempts) {
+    attempt += 1;
     try {
       const response = await describeTable();
       const indexes = response.Table?.GlobalSecondaryIndexes ?? [];
@@ -414,15 +428,13 @@ export async function waitForIndexesSettled(opts: {
   // used to be the literal `~1s` in this string while the total next to it was
   // derived, so moving the constant made one sentence disagree with itself.
   const pollSeconds = INDEX_SETTLE_POLL_INTERVAL_MS / 1000;
-  const clampNote =
-    opts.clampedFromCap !== undefined && opts.clampedFromCap > maxAttempts
-      ? ` This wait was cut from ${opts.clampedFromCap} polls because cdkd's shared delete ` +
-        `allowance ran out first, so AWS was NOT given the full wait;`
-      : '';
+  // Polls actually RUN, not granted: with a budget the loop can also stop
+  // mid-way. `note()` is empty unless the allowance is what ended it.
+  const pollsRun = budgetWait ? budgetWait.pollsRun : maxAttempts;
   logger.warn(
     `Indexes on ${tableName} (${logicalId}) did not all reach ACTIVE within ` +
-      `${maxAttempts} DescribeTable polls (~${pollSeconds}s apart, so a little over ` +
-      `${maxAttempts * pollSeconds}s of wall clock).${clampNote} ${proceedNote}`
+      `${pollsRun} DescribeTable polls (~${pollSeconds}s apart, so a little over ` +
+      `${pollsRun * pollSeconds}s of wall clock).${budgetWait?.note() ?? ''} ${proceedNote}`
   );
 }
 

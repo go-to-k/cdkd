@@ -8,22 +8,38 @@
  * ```
  *   --remove-protection     600 polls  ~12 min   GlobalTable, ACTIVE wait, FIRST
  *   ACTIVE wait              60 polls   ~72s     Table, ACTIVE wait, FIRST
- *   auto-scaling teardown   unbounded            GlobalTable, table + per GSI,
- *                                                per replica; ~47s of `withRetry`
- *                                                backoff EACH under AS throttling
+ *   auto-scaling teardown   see below            GlobalTable, table + per GSI,
+ *                                                per replica, BEFORE the first poll
  *   waitForReplicaGone      600 polls  ~12 min   per NON-LOCAL replica
  *   #1521 pre-delete gate   900 polls  ~18 min   (issue #1521)
  *   index-busy retry loop   ~10.4 min at 8 retries / ~18.4 at 14 (#1830/#1931/#1950)
  *   waitForTableGone        600 polls  ~12 min   (only on a late SUCCESS)
  * ```
  *
- * The first three terms are the ones a first pass at this fix missed, and the
- * `--remove-protection` one is the sharpest: it runs FIRST, its predicate is
- * `ACTIVE` *and* no transitional index — the very condition the rest of the
- * path is about — so on a `cdkd destroy --remove-protection` against a table
- * with a building GSI it spends its full ~12 min at t=0 and leaves the gate and
- * the loop the remainder. The auto-scaling teardown is worse in kind rather
- * than in size: it is not poll-bounded at all.
+ * Every poll figure is `polls x ~1.2s`, the MEASURED cost of a sleep plus a
+ * `DescribeTable` round trip — so a 600-poll wait is ~12 min, not the ~10 min
+ * its `1 poll = 1s` era comments used to say.
+ *
+ * The `--remove-protection` term is the sharpest of the ones a first pass at
+ * this fix missed: it runs FIRST, its predicate is `ACTIVE` *and* no
+ * transitional index — the very condition the rest of the path is about — so on
+ * a `cdkd destroy --remove-protection` against a table with a building GSI it
+ * spends its full ~12 min at t=0 and leaves the gate and the loop the
+ * remainder.
+ *
+ * The auto-scaling teardown is not poll-shaped at all, and its story changed in
+ * review. It was believed to inherit `withRetry`'s default schedule; it did
+ * not — the two `withRetry` sites in that method are both in the REGISTER
+ * branch, and every delete-path caller passes `newSettings: undefined`, which
+ * takes the bare-`send` teardown branch. So the term was single-attempt and
+ * fast, and a budget clamp on it was inert. What the correction exposed is a
+ * half-applied twin: the register branch retries throttles because an
+ * un-retried `ThrottlingException` leaves a target silently UNregistered, and
+ * the teardown has the exact symmetric hazard — a silently RETAINED target that
+ * a future table of the same name inherits (PR #403) — with no retry at all.
+ * The teardown is now wrapped in the same throttle-only retry, bounded by
+ * {@link autoScalingRetriesWithinDeleteBudget}, so the term is real, bounded,
+ * and no longer asymmetric.
  *
  * `destroy-runner.ts` runs the whole thing under ONE per-resource deadline
  * (`DEFAULT_RESOURCE_TIMEOUT_MS`, 30 min). A replicated GlobalTable whose index
@@ -236,53 +252,193 @@ export function pollsWithinDeleteBudget(
 }
 
 /**
- * The sentence a wait appends when the allowance — not AWS — ended it.
+ * Polls below which a wait is not EVIDENCE about AWS, only evidence that cdkd
+ * stopped asking.
  *
- * One spelling for every wait on the path, because the remedy is the same one
- * and a per-site paraphrase is how one of them ends up omitting it.
+ * The warn-versus-throw split on `waitForTableGone`, and the strong wording of
+ * the exhaustion note, both hang off this, and before it existed both hung off
+ * `attempts < cap` — which is arithmetic, not evidence. With ~14 min of the
+ * allowance already spent a 600-poll wait is still granted ~500 polls, i.e.
+ * ten real minutes of `DescribeTable`; calling that "cdkd's allowance ran out,
+ * AWS was not given a real wait" is false, and downgrading its failure to a
+ * warning is a decision made by two minutes of wall clock rather than by
+ * anything the user can act on.
+ *
+ * 60 polls (~72s) because the provider's own gone-wait note records that a
+ * typical small-table delete completes in 5-30s: past roughly twice the top of
+ * that range, cdkd HAS given AWS a real wait and a table still present is a
+ * signal about AWS. Below it, cdkd barely looked, and the honest report is
+ * about cdkd rather than about the table.
  */
-export function deleteBudgetExhaustedNote(polls: DeleteBudgetPolls): string {
-  const minutes = Math.round(DYNAMODB_DELETE_BUDGET_MS / 60_000);
-  return (
-    ` — cdkd's shared ~${minutes}-minute delete allowance ran out first, so this wait ran ` +
-    `${polls.attempts} of its ${polls.cap} polls and AWS was NOT given the full wait. ` +
-    `Nothing is necessarily wrong with the table; re-run the destroy.`
-  );
+export const DELETE_SHORT_WAIT_POLLS = 60;
+
+/**
+ * A wait's use of the shared allowance: how many polls it was granted at entry,
+ * how many it actually ran, and whether the allowance — rather than its own cap
+ * — is what ended it.
+ *
+ * **Why this is an object and not just a poll count.** Granting a count at
+ * entry PREDICTS the cost of a poll (~1.2s) and then treats the prediction as a
+ * bound. It is not one: under sustained `DescribeTable` throttling the SDK's
+ * own internal retries can push a poll to ~3s, so a wait entered with 12.1 min
+ * of allowance left is granted its full 600 polls and then runs for ~30 min —
+ * past the allowance AND past the margin, with `withResourceDeadline` firing
+ * behind it. That is the non-cancelling overshoot this whole module exists to
+ * remove, re-entering through the mechanism meant to remove it. So the
+ * allowance is consulted on EVERY iteration, not only at entry.
+ */
+export interface DeleteWait {
+  /** The wait's own constant. */
+  readonly cap: number;
+  /** Polls granted at entry: `min(cap, affordable)`, never below one. */
+  readonly grantedPolls: number;
+  /** Polls actually performed. */
+  readonly pollsRun: number;
+  /** The allowance, not the cap, ended this wait (at entry or mid-loop). */
+  readonly endedByBudget: boolean;
+  /** ...and it ended before the wait became evidence about AWS. */
+  readonly cutShort: boolean;
+  /**
+   * Call at the TOP of each iteration; `false` means stop.
+   *
+   * The FIRST poll is always granted even on a spent allowance — that is the
+   * one-poll floor, and a loop that broke before probing would report "did not
+   * settle" without ever having looked.
+   */
+  nextPoll(): boolean;
+  /** The clause to append to this wait's own message; `''` when the allowance played no part. */
+  note(): string;
+}
+
+class DeleteWaitImpl implements DeleteWait {
+  readonly cap: number;
+  readonly grantedPolls: number;
+  private ran = 0;
+  private brokeEarly = false;
+  private readonly entryClamped: boolean;
+  private readonly budget: ElapsedBudget | undefined;
+
+  constructor(cap: number, budget: ElapsedBudget | undefined) {
+    const polls = pollsWithinDeleteBudget(cap, budget);
+    this.cap = polls.cap;
+    this.grantedPolls = polls.attempts;
+    this.entryClamped = polls.clampedByBudget;
+    this.budget = budget;
+  }
+
+  nextPoll(): boolean {
+    if (this.ran >= this.grantedPolls) return false;
+    // Checked AFTER at least one probe, so the one-poll floor survives.
+    if (this.ran >= 1 && this.budget?.isExhausted() === true) {
+      this.brokeEarly = true;
+      return false;
+    }
+    this.ran += 1;
+    return true;
+  }
+
+  get pollsRun(): number {
+    return this.ran;
+  }
+
+  get endedByBudget(): boolean {
+    return this.brokeEarly || this.entryClamped;
+  }
+
+  get cutShort(): boolean {
+    return this.endedByBudget && this.ran < DELETE_SHORT_WAIT_POLLS;
+  }
+
+  note(): string {
+    if (!this.endedByBudget) return '';
+    // The ACTUAL allowance, not the shipped constant: under the test seam (and
+    // under any future per-type sizing) quoting the constant claims 26 minutes
+    // for a 60-second budget.
+    const minutes = Math.max(1, Math.round((this.budget?.totalMs ?? 0) / 60_000));
+    if (this.cutShort) {
+      return (
+        ` — cdkd's shared ~${minutes}-minute delete allowance was already spent, so this wait ` +
+        `made only ${this.ran} of its ${this.cap} polls and AWS was not given a real wait. ` +
+        `Nothing is necessarily wrong with the table; re-run the destroy.`
+      );
+    }
+    // Long, but still ended by the allowance. Factual, and deliberately WITHOUT
+    // the "re-run" advice: cdkd did give AWS a real wait here, so the table
+    // still being present is a signal about AWS rather than about cdkd.
+    return (
+      ` (cdkd's shared ~${minutes}-minute delete allowance capped this wait at ${this.ran} of ` +
+      `its ${this.cap} polls.)`
+    );
+  }
+}
+
+/** Begin a delete-path wait that draws on the shared allowance. */
+export function beginDeleteWait(cap: number, budget: ElapsedBudget | undefined): DeleteWait {
+  return new DeleteWaitImpl(cap, budget);
 }
 
 /**
  * `withRetry` retries the delete-path auto-scaling teardown may still fund.
  *
  * The teardown runs BEFORE the first budgeted poll — table-level plus one call
- * per GSI, per non-local replica, then again locally — and each call wraps its
- * application-autoscaling API in `withRetry` with the DEFAULT schedule and a
- * throttle-only classifier. Application-autoscaling throttles per ACCOUNT and
- * this loop is a burst, so a throttled account can spend ~47s per call: a
- * two-replica table with twenty indexes is ~44 calls, i.e. over half an hour of
- * backoff before the first `DescribeTable`. The allowance measures wall clock,
- * so it drains — but nothing STOPPED the teardown, and the deadline fired with
- * it still running. That is the same non-cancelling overshoot this module
- * exists to remove, reached before any of the waits it bounds.
+ * per GSI, per non-local replica, then again locally — and until this change it
+ * had NO retry at all: the two `withRetry` sites in `applyAutoScalingDiff` are
+ * both in the REGISTER branch, and every delete-path caller passes
+ * `newSettings: undefined`, which takes the bare-`send` teardown branch. (An
+ * earlier revision of this file claimed the teardown inherited `withRetry`'s
+ * default schedule and would therefore spend ~47s per call under account-wide
+ * throttling; that was false, and the clamp built on it was inert. The claim is
+ * recorded here because it is the kind of arithmetic a later reader would
+ * otherwise trust.)
+ *
+ * The teardown is now wrapped in the same throttle-only retry the register
+ * branch uses, for the symmetric reason: that branch retries because an
+ * un-retried `ThrottlingException` leaves a target silently UNregistered, and
+ * an un-retried throttle here leaves one silently REGISTERED — the PR #403 leak
+ * a future table of the same name inherits. Retrying is what makes a bound
+ * necessary, and the bound is what makes retrying safe on a path that shares
+ * one deadline with everything after it.
  *
  * Retries are bounded rather than the CALL being skipped, deliberately. The
  * teardown exists because a surviving scalable target is silently inherited by
  * a future table of the same name (PR #403), and skipping re-introduces that
- * leak — while the BACKOFF, not the single attempt, is what is unbounded (~8s
- * per retry against ~0.2s for one attempt). So a drained allowance still issues
- * every call once and still warns actionably on each failure; it just stops
- * paying to retry them.
+ * leak. So a drained allowance still issues every call once —
+ * `withRetry` with `maxRetries: 0` runs the operation exactly once — and still
+ * warns actionably on each failure; it just stops paying to retry them.
  */
 export function autoScalingRetriesWithinDeleteBudget(
   budget: ElapsedBudget | undefined,
   defaultMaxRetries: number
 ): number {
   if (!budget) return defaultMaxRetries;
+  // Funded from the SURPLUS above the reserve, not from the whole allowance.
+  // Bounding the teardown by the full remaining budget would bound it (the
+  // aggregate can never exceed the allowance, since each call re-reads it) but
+  // would let a throttled burst spend the entire thing before `DeleteTable` is
+  // even issued — converting a silent target leak into a destroy that fails on
+  // the first index-busy refusal because the retry loop has no allowance left.
+  // The teardown is defense-in-depth against a leak; the delete is the job. So
+  // it gets the surplus and nothing more.
+  const surplusMs = budget.remainingMs() - AUTO_SCALING_TEARDOWN_RESERVE_MS;
+  if (surplusMs <= 0) return 0;
   // `withRetry`'s schedule caps at 8s per step, so the LAST retry is the most
   // expensive one and pricing every retry at the cap is the conservative read.
-  // `minAttempts` is 0 here, unlike the polling waits: zero retries still runs
-  // the call once, so there is no observation being skipped.
-  return budget.attemptsWithin(defaultMaxRetries, AUTO_SCALING_RETRY_STEP_MS, 0);
+  return Math.max(
+    0,
+    Math.min(defaultMaxRetries, Math.floor(surplusMs / AUTO_SCALING_RETRY_STEP_MS))
+  );
 }
+
+/**
+ * The part of the allowance the auto-scaling teardown may NOT spend on retries.
+ *
+ * Sized so the terms that actually delete the table — the #1521 gate, the
+ * index-busy loop and the gone-wait — keep the bulk of the allowance no matter
+ * how throttled the teardown is. 20 of the 26 minutes, leaving the teardown up
+ * to ~6 min of retry backoff, which at ~8s a retry is ~45 retries spread across
+ * however many calls the table's index and replica count produce.
+ */
+const AUTO_SCALING_TEARDOWN_RESERVE_MS = 20 * 60_000;
 
 /** `withRetry`'s capped backoff step (`maxDelayMs`), the cost of one retry. */
 const AUTO_SCALING_RETRY_STEP_MS = 8_000;

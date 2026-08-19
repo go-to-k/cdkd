@@ -63,9 +63,9 @@ import {
 } from '../dynamodb-index-busy-delete.js';
 import {
   DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS,
-  deleteBudgetExhaustedNote,
+  DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS as DELETE_BUDGET_REUSE_WINDOW_MS,
+  beginDeleteWait,
   deleteBudgetKey,
-  pollsWithinDeleteBudget,
   resolveDynamoDbDeleteBudgetClock,
   resolveDynamoDbDeleteBudgetMs,
 } from './dynamodb-delete-budget.js';
@@ -2191,7 +2191,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
     const budget = this.deleteBudgets.acquire(
       deleteBudgetKey(physicalId, context?.expectedRegion),
       resolveDynamoDbDeleteBudgetMs(),
-      resolveDynamoDbDeleteBudgetClock()
+      resolveDynamoDbDeleteBudgetClock(),
+      // Entries are retained on a throw so the outer loop's re-entry keeps
+      // spending this clock — but "retained" must not mean "forever". Past the
+      // deadline the allowance is sized against, that deadline has certainly
+      // fired, so any caller arriving now belongs to a NEW operation.
+      DELETE_BUDGET_REUSE_WINDOW_MS
     );
 
     // `--remove-protection`: flip DeletionProtectionEnabled off before
@@ -2254,12 +2259,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // Recomputed per re-arm rather than once: the loop runs for minutes and
       // the allowance drains as it goes, so a value captured when the options
       // bag was built would hand the LAST retry the FIRST retry's budget.
-      const reArmPolls = (): { maxAttempts: number; clampedFromCap?: number } => {
-        const polls = pollsWithinDeleteBudget(DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS, budget);
-        return {
-          maxAttempts: polls.attempts,
-          ...(polls.clampedByBudget && { clampedFromCap: polls.cap }),
-        };
+      const reArmPolls = (): {
+        maxAttempts: number;
+        budgetWait: ReturnType<typeof beginDeleteWait>;
+      } => {
+        const wait = beginDeleteWait(DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS, budget);
+        return { maxAttempts: wait.grantedPolls, budgetWait: wait };
       };
       await deleteTableWithIndexBusyRetry({
         logicalId,
@@ -2945,8 +2950,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // with the index-busy retry loop that follows it, so it takes the smaller
     // of its own cap and what the shared budget can still afford. Every
     // CREATE / UPDATE caller passes no budget and keeps the full cap.
-    const polls = pollsWithinDeleteBudget(maxAttempts, budget);
-    for (let attempt = 1; attempt <= polls.attempts; attempt++) {
+    const wait = beginDeleteWait(maxAttempts, budget);
+    while (wait.nextPoll()) {
       const response = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: tableName })
       );
@@ -2965,8 +2970,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
       await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
     }
     throw new Error(
-      `Table ${tableName} did not reach ACTIVE status within ${polls.attempts} seconds after ` +
-        `UpdateTable${polls.clampedByBudget ? deleteBudgetExhaustedNote(polls) : ''}`
+      `Table ${tableName} did not reach ACTIVE status within ${wait.pollsRun} seconds after ` +
+        `UpdateTable${wait.note()}`
     );
   }
 

@@ -144,10 +144,27 @@ export class ElapsedBudgetRegistry {
    * The budget for `key`, creating it on first use and REUSING it on re-entry.
    * `totalMs` and `clock` are only read when the entry is CREATED — a re-entry
    * must not be able to grant itself a fresh allowance, nor a fresh clock.
+   *
+   * `reuseWithinMs` bounds how long an entry may be reused for, and exists
+   * because entries are deliberately RETAINED on failure: without it, a spent
+   * allowance would be inherited by any later operation that happens to reach
+   * the same key in the same process. The caller passes the wall clock of the
+   * DEADLINE the allowance is sized against — past that, the deadline has
+   * certainly fired and whoever is calling now belongs to a new operation with
+   * a new deadline, so reuse would be wrong rather than conservative.
    */
-  acquire(key: string, totalMs: number, clock: () => number = monotonicNowMs): ElapsedBudget {
+  acquire(
+    key: string,
+    totalMs: number,
+    clock: () => number = monotonicNowMs,
+    reuseWithinMs?: number
+  ): ElapsedBudget {
     const existing = this.budgets.get(key);
-    if (existing) return existing;
+    if (existing) {
+      const stale = reuseWithinMs !== undefined && existing.elapsedMs() > reuseWithinMs;
+      if (!stale) return existing;
+      this.budgets.delete(key);
+    }
     const created = new ElapsedBudget(totalMs, clock);
     this.budgets.set(key, created);
     return created;
