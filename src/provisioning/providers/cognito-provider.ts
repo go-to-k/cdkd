@@ -278,10 +278,17 @@ function hasMfaConfigProps(properties: Record<string, unknown>): boolean {
  * - `WebAuthnRelyingPartyID`/`WebAuthnUserVerification` -> `WebAuthnConfiguration`
  *
  * `MfaConfiguration` (ON/OFF/OPTIONAL) MUST be threaded into this request:
- * `SetUserPoolMfaConfig` is a full-replace of the pool's MFA state, and an
- * omitted `MfaConfiguration` defaults to OFF on the wire — which resets the
- * pool to MFA-disabled and makes AWS reject (or silently drop) the per-factor
- * sub-blocks we are trying to enable. Use the template's `MfaConfiguration`
+ * `SetUserPoolMfaConfig` is a full-replace of the pool's MFA state, and AWS
+ * reads an omitted `MfaConfiguration` as OFF. That splits into two MUTUALLY
+ * EXCLUSIVE arms — both MEASURED against THIS API, not read off
+ * `UpdateUserPool`'s blanket reset sentence, which holds only field by field:
+ *
+ * - WITH a per-factor sub-block in the request, AWS REJECTS the call: nothing
+ *   is reset, and the deploy FAILS.
+ * - WITHOUT one, AWS accepts the call and the pool is silently reset to
+ *   MFA-disabled.
+ *
+ * Use the template's `MfaConfiguration`
  * when present; when the template omitted it, default by whether this call
  * enables an MFA FACTOR — `OPTIONAL` if it does, `OFF` (CloudFormation's own
  * default) if it does not. The body comment on that decision explains why both
@@ -374,8 +381,30 @@ function buildMfaConfigRequest(
   }
 
   // SetUserPoolMfaConfig is a full-replace: an omitted MfaConfiguration resets
-  // the pool to OFF, which would disable the very factors we are enabling. So
-  // thread the template's value, and when the template omitted it, default by
+  // the pool to OFF, which would disable the very factors we are enabling.
+  //
+  // That is a property of THIS API, MEASURED (us-east-1, 2026-08-19, issue
+  // #1968) — it is NOT the `UpdateUserPool` blanket "unspecified parameters are
+  // set to their default value" sentence, which holds only field by field (the
+  // ledger is in `readLiveMfaConfiguration`). On a pool sitting at
+  // MfaConfiguration ON with software-token enabled: a bare
+  // SetUserPoolMfaConfig carrying only the pool id reset it to OFF and dropped
+  // SoftwareTokenMfaConfiguration, while the same omission WITH a factor
+  // sub-block was rejected outright — `InvalidParameterException: Invalid MFA
+  // configuration given, can't turn off MFA and configure an MFA together`,
+  // whose wording is AWS itself confirming it read the absent field as "turn
+  // off". The sub-block case therefore fails loudly rather than shipping a
+  // silently MFA-disabled pool; threading the value is what avoids both.
+  //
+  // Reproduced 2026-08-19 with an EXPLICIT `MfaConfiguration: OFF` instead of
+  // an omitted one -- same rejection, same message, for every member of
+  // `anyFactorBlock`. That transcript lives at the pinned-OFF warning below,
+  // which is the site it decides. `readLiveMfaConfiguration`'s ledger carries
+  // this API in a SECTION OF ITS OWN: `SetUserPoolMfaConfig` and
+  // `UpdateUserPool` are different APIs with different rules, and neither
+  // list licenses a claim about the other.
+  //
+  // So thread the template's value, and when the template omitted it, default by
   // whether this call enables an MFA FACTOR at all. OFF is CloudFormation's own
   // default, and it is REQUIRED for a passkey-only pool: WebAuthn is not an MFA
   // factor, so AWS rejects OPTIONAL there with "Invalid MFA Configuration given.
@@ -394,13 +423,16 @@ function buildMfaConfigRequest(
   //  - The EmailMfaConfiguration half keeps the email-OTP message/subject shape
   //    on its existing OPTIONAL default: that block is emitted for a bare
   //    EmailAuthenticationMessage/Subject customization with NO EnabledMfas, so
-  //    it is the one sub-block the first half does not already imply. Whether
-  //    AWS accepts it under OFF is UNVERIFIED — the integ cannot reach it
-  //    (email-OTP needs a verified SES sender; see the fixture note) — so that
-  //    shape is deliberately left unchanged rather than flipped on an untested
-  //    wire assumption. Issue #1920 proposed keying on EnabledMfas alone, which
-  //    WOULD have flipped it; issue #1923 tracks the SES-account verification
-  //    that would settle it.
+  //    it is the one sub-block the first half does not already imply. Keeping
+  //    it on OPTIONAL is now MEASURED-correct rather than merely untested:
+  //    `{MfaConfiguration: OFF, EmailMfaConfiguration: {...}}` is REJECTED by
+  //    AWS (2026-08-19, issue #1968 — the same exclusion message every other
+  //    factor block draws under OFF), so flipping this shape to OFF would turn
+  //    a deploy that works into one that fails. Issue #1920 proposed keying on
+  //    EnabledMfas alone, which WOULD have flipped it. Only the under-OFF
+  //    ACCEPTANCE question is settled; what issue #1923 still tracks is the
+  //    SES-account verification the INTEG needs to exercise email-OTP end to
+  //    end, which is unchanged.
   //
   // Note SmsMfaConfiguration / SoftwareTokenMfaConfiguration are deliberately
   // NOT tested here: both are only ever set inside a `factors.has(...)` guard,
@@ -460,18 +492,48 @@ function buildMfaConfigRequest(
   // OFF here can only have come from the template. No explicit "was it
   // declared" test is needed and adding one could not change any outcome.
   //
-  // WARNING ONLY, never a refusal: sending OFF alongside a factor block is
-  // CloudFormation's own behavior for this template (the template asked for
-  // OFF and CFn sends OFF), and whether AWS accepts the pairing at all is
-  // UNVERIFIED — issue #1923 tracks the EmailMfaConfiguration-under-OFF
-  // question. The guard is correct under either answer precisely because it
-  // changes nothing about the request.
+  // MEASURED us-east-1 2026-08-19 (issue #1968): AWS REJECTS every request in
+  // which a factor block rides alongside `MfaConfiguration: OFF`, with
+  // `InvalidParameterException: Invalid MFA configuration given, can't turn off
+  // MFA and configure an MFA together`:
+  //
+  //   {ON,  SoftwareTokenMfaConfiguration: {Enabled: true}}   -> ACCEPTED (control)
+  //   {OFF, SoftwareTokenMfaConfiguration: {Enabled: true}}   -> rejected
+  //   {OFF, SoftwareTokenMfaConfiguration: {Enabled: false}}  -> rejected
+  //   {OFF, EmailMfaConfiguration: {Message, Subject}}        -> rejected
+  //
+  // The `Enabled: false` arm is what settles the KEY: a block that enables
+  // nothing is still refused, so the rule is about the block's PRESENCE, which
+  // is exactly what `anyFactorBlock` tests. `anyFactorBlock` is precisely
+  // {Sms, SoftwareToken, Email}MfaConfiguration, so no accepted case survives.
+  //
+  // Qualifier, stated because it bounds the EmailMfaConfiguration arm: an
+  // OPTIONAL control with that block on the same pool failed with a DIFFERENT
+  // error ("Cannot set EmailMfaConfiguration when user pool EmailConfiguration
+  // contains an EmailSendingAccount of COGNITO_DEFAULT"), so there was no clean
+  // isolated control for it. That divergence is itself informative -- the
+  // exclusion rule is evaluated BEFORE the email-sending-account check, which
+  // is why the OFF rejection is the exclusion and not an email-config artifact
+  // -- but the arm rests on the shared message, not on a control of its own.
+  //
+  // So the outcome is a DEPLOY FAILURE, not a silently MFA-disabled pool. The
+  // earlier message claimed the latter; it was wrong, and issue #1968 replaced
+  // it with the line below.
+  //
+  // STILL A WARNING, never a refusal -- but no longer because it is "correct
+  // under either answer", since there is only one answer now. It earns its
+  // place by firing BEFORE the call and naming the one-line fix, which the raw
+  // AWS error does not, while leaving the request untouched so cdkd is not the
+  // thing deciding a template is invalid. Promoting it to a pre-flight refusal
+  // is a behavior change needing its own integ and review round, and is filed
+  // separately rather than done here.
   if (request.MfaConfiguration === 'OFF' && anyFactorBlock) {
     logger?.warn(
       `UserPool ${physicalId}: MfaConfiguration is pinned to OFF while an MFA factor block is ` +
-        `configured. The factor configuration is still sent, but the pool deploys with MFA ` +
-        `DISABLED. Remove MfaConfiguration (or set it to ON / OPTIONAL) to enable the ` +
-        `declared factor.`
+        `configured. AWS REJECTS that combination ("Invalid MFA configuration given, can't ` +
+        `turn off MFA and configure an MFA together"), so this deploy FAILS rather than ` +
+        `producing a pool with MFA disabled. Remove MfaConfiguration (or set it to ON / ` +
+        `OPTIONAL) to enable the declared factor.`
     );
   }
 
@@ -503,25 +565,36 @@ function buildMfaConfigRequest(
     dropped.push(`${JSON.stringify(properties['EnabledMfas'])} (not a list)`);
   }
   if (dropped.length > 0) {
-    // Three outcomes, not two. Splitting only on OFF made the second arm claim
+    // FOUR outcomes, not three. Splitting only on OFF made the second arm claim
     // a rejection that does not happen whenever a RECOGNIZED factor rides
     // alongside the dropped entry: the request carries that factor's block, so
     // the dropped entry is not what fails the call. That is the silent-drop
     // case this warning exists to surface, so telling the user to expect a hard
-    // failure there is the worst of the three things it could say. The arm says
+    // failure there is the worst thing it could say. The arm says
     // a block IS SENT rather than that a factor IS ENABLED, because that is all
     // this code knows -- e.g. SMS_MFA without SmsConfiguration sends a block
     // AWS then rejects. (`anyFactorBlock` is hoisted above, shared with the
     // pinned-OFF warning -- one definition of "a factor block IS sent" so the
     // two messages cannot disagree about the same request.)
+    // The OFF case splits again on that same flag, because its two halves have
+    // OPPOSITE outcomes and the measurement (2026-08-19, issue #1968) covers
+    // only one of them: OFF WITH a block is REJECTED by AWS, while OFF with no
+    // block is accepted and really does deploy an MFA-disabled pool. Unsplit,
+    // the OFF arm contradicted the pinned-OFF warning -- which fires on exactly
+    // the OFF-plus-block request and now says "rejected" -- and that
+    // disagreement is what sharing `anyFactorBlock` exists to prevent.
     const consequence =
-      request.MfaConfiguration === 'OFF'
-        ? `MfaConfiguration is OFF, so this pool deploys with MFA DISABLED`
-        : anyFactorBlock
-          ? `MfaConfiguration is ${request.MfaConfiguration} and another factor block IS sent, ` +
-            `so these entries are silently ignored rather than failing the call on their own`
-          : `MfaConfiguration is ${request.MfaConfiguration} with no factor enabled, so AWS ` +
-            `rejects this call rather than deploying the pool with MFA disabled`;
+      request.MfaConfiguration === 'OFF' && anyFactorBlock
+        ? `MfaConfiguration is OFF while another factor block IS sent, so AWS REJECTS this ` +
+          `call outright and the deploy fails`
+        : request.MfaConfiguration === 'OFF'
+          ? `MfaConfiguration is OFF, so this pool deploys with MFA DISABLED`
+          : anyFactorBlock
+            ? `MfaConfiguration is ${request.MfaConfiguration} and another factor block IS ` +
+              `sent, so these entries are silently ignored rather than failing the call on ` +
+              `their own`
+            : `MfaConfiguration is ${request.MfaConfiguration} with no factor enabled, so AWS ` +
+              `rejects this call rather than deploying the pool with MFA disabled`;
     logger?.warn(
       `UserPool ${physicalId}: EnabledMfas entries ${dropped.join(', ')} do not map to an MFA ` +
         `factor block (known: ${MFA_FACTOR_SMS}, ${MFA_FACTOR_SOFTWARE_TOKEN}, ` +
@@ -738,9 +811,52 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   /**
    * Build the SDK `Policies` input from the CFn `Policies` blob. Both
    * sub-keys must be forwarded: `SignInPolicy` (passwordless first-auth
-   * factors) was silently dropped before issue #1380, and UpdateUserPool
-   * resets omitted attributes to their defaults, so leaving it out also
-   * wipes an existing sign-in policy on every update.
+   * factors) was silently dropped before issue #1380, so a template that
+   * declared -- or later CHANGED -- the allowed first-auth factors never
+   * reached AWS at all.
+   *
+   * **Forwarding is what APPLIES a declared value; it is NOT what keeps an
+   * existing one alive.** The original rationale here was AWS's blanket "if
+   * you don't provide a value for an attribute, Amazon Cognito sets it to its
+   * default value", i.e. that omitting `SignInPolicy` would WIPE it. MEASURED
+   * us-east-1 2026-08-19 (issue #1968), on a pool created with
+   * `SignInPolicy.AllowedFirstAuthFactors = [PASSWORD, EMAIL_OTP]` on the
+   * default `ESSENTIALS` tier -- no explicit `UserPoolTier` was needed for the
+   * field to be settable:
+   *
+   * - `UpdateUserPool` sending `Policies` with ONLY `PasswordPolicy` left
+   *   `SignInPolicy` at `[PASSWORD, EMAIL_OTP]`. Control: that same call's
+   *   `--auto-verified-attributes email` applied, so the update really ran.
+   * - `UpdateUserPool` omitting `Policies` entirely left BOTH sub-keys intact
+   *   (a non-default `RequireSymbols: false` survived too), while
+   *   `AutoVerifiedAttributes` reset from `[email]` to none in that very call
+   *   -- the control proving the omission was processed, not ignored.
+   * - An explicit `SignInPolicy` write landed in both directions
+   *   (`[PASSWORD]`, then back to `[PASSWORD, EMAIL_OTP]`), so the field is
+   *   reachable and writable here rather than silently dropped.
+   * - The MIRROR image holds too, so the ledger entry is measured rather than
+   *   generalised from one sub-key: a container carrying ONLY `SignInPolicy`
+   *   updated it to `[PASSWORD, WEB_AUTHN]` while leaving a non-default
+   *   `PasswordPolicy` (`MinimumLength: 12`, `RequireSymbols: false`) intact,
+   *   with the same `--auto-verified-attributes` control.
+   *
+   * So the forwarding stays -- it is the only way a CHANGED sign-in policy is
+   * applied -- but on the measured reason, not the blanket sentence. Do not
+   * generalise that sentence to another field from this site: see
+   * `readLiveMfaConfiguration`'s docstring, which carries the one ledger of
+   * which fields were measured to reset and which were not.
+   *
+   * **Consequence of that measurement, NOT fixed here: there is no removal
+   * path.** This builder forwards only what the template DECLARES, so deleting
+   * `SignInPolicy` from a template sends nothing for it -- and nothing sent
+   * means nothing changed. A user tightening their auth by removing a
+   * passwordless first-auth factor therefore leaves it live on the pool
+   * indefinitely, and `readCurrentState` keeps reporting a drift that
+   * `cdkd drift --revert` cannot clear, since the revert routes through this
+   * same builder. Clearing it needs an explicit reset value on the wire, which
+   * is a behavior change with its own integ and is out of this lane's scope.
+   * Whether CloudFormation removes it on the same template edit is UNMEASURED
+   * -- do not assume parity in either direction.
    */
   private toSdkUserPoolPolicies(policies: Record<string, unknown>): UserPoolPolicyType | undefined {
     const result: UserPoolPolicyType = {};
@@ -1134,9 +1250,36 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * `--auto-verified-attributes` change in the same request applied) and that
    * the field is writable here rather than ignored (an explicit
    * `--mfa-configuration OFF` did reset it). So AWS's blanket "unspecified
-   * parameters are set to their default value" holds field by field —
-   * `AutoVerifiedAttributes` DOES reset, `MfaConfiguration` does not — and
+   * parameters are set to their default value" holds field by field — and
    * there is no MFA-OFF window to design around.
+   *
+   * **This paragraph is the single ledger of that field-by-field result; a
+   * per-field verdict belongs at that field's own site, pointing here.** Every
+   * line below was taken with a control proving the omitting call really ran.
+   *
+   * `UpdateUserPool`, on omission:
+   *
+   * - `AutoVerifiedAttributes` — DOES reset when omitted (2026-08-18).
+   * - `MfaConfiguration` — does NOT reset when omitted (2026-08-18, above).
+   * - `Policies` — neither sub-key resets, measured in BOTH directions
+   *   (2026-08-19, issue #1968; details at `toSdkUserPoolPolicies`): a
+   *   container sent without `SignInPolicy` left `SignInPolicy` intact, a
+   *   container sent without `PasswordPolicy` left `PasswordPolicy` intact,
+   *   and omitting the container outright left both. Forwarding is still
+   *   REQUIRED to APPLY a changed sub-key — preservation is not application —
+   *   and no omission can express a REMOVAL.
+   *
+   * `SetUserPoolMfaConfig` — a DIFFERENT API with a DIFFERENT rule, kept in
+   * its own section so neither list is read as evidence for the other:
+   *
+   * - `MfaConfiguration` — an omitted value is read as OFF. With a factor
+   *   sub-block in the request AWS REJECTS the call; with none it accepts and
+   *   resets the pool to MFA-disabled. An EXPLICIT OFF beside a block is
+   *   rejected the same way (2026-08-19, issue #1968; the transcript lives at
+   *   the pinned-OFF warning in `buildMfaConfigRequest`).
+   *
+   * Nothing here licenses a claim about a field on neither list, or about one
+   * API from the other's section. Measure it.
    *
    * The earlier ordering was reached from that doc sentence alone and is kept
    * only because it is strictly safer and already tested: reading first cannot
@@ -1278,6 +1421,10 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       if (properties['LambdaConfig']) {
         updateParams.LambdaConfig = properties['LambdaConfig'] as LambdaConfigType;
       }
+      // The one field measured to RESET when omitted -- see the ledger in
+      // `readLiveMfaConfiguration`. So a template that drops this property
+      // really does clear it at AWS, unlike `Policies` above, whose sub-keys
+      // survive their own omission.
       if (properties['AutoVerifiedAttributes']) {
         updateParams.AutoVerifiedAttributes = properties[
           'AutoVerifiedAttributes'
