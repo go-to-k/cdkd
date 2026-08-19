@@ -49,11 +49,30 @@ describe('isRetryableTransientError', () => {
       expect(isRetryableTransientError(err, 'Bad input')).toBe(false);
     });
 
-    it('does not retry on 500 (internal error) without a known message pattern', () => {
+    // Issue #2026 INVERTED this case. 500 was never asserted as terminal for a
+    // reason of its own -- it was standing in for "a status outside the set" --
+    // and it turned out to be the defect: SQS answered a mid-propagation
+    // `SetQueueAttributes` with a 500 whose body had no message, so no message
+    // pattern could match either and a healthy retry sequence died at 12% of
+    // its budget. Measured against real AWS on 2026-08-19 (us-east-1,
+    // requestId ebf581cc-6072-5ffc-943a-e33312488615).
+    it('retries on 500 (internal error) even with no known message pattern', () => {
       const err = Object.assign(new Error('Internal'), {
         $metadata: { httpStatusCode: 500 },
       });
-      expect(isRetryableTransientError(err, 'Internal')).toBe(false);
+      expect(isRetryableTransientError(err, 'Internal')).toBe(true);
+    });
+
+    // The fence the case above used to provide, re-pinned on a status that is
+    // genuinely outside the widened set. 501 rather than 400 so the boundary
+    // being tested is inside the 5xx range: "server error" is NOT the rule --
+    // the rule is the SDK's four transient statuses, and 501 Not Implemented is
+    // a permanent answer that no amount of retrying changes.
+    it('does not retry on 501 (not implemented) without a known message pattern', () => {
+      const err = Object.assign(new Error('Not implemented'), {
+        $metadata: { httpStatusCode: 501 },
+      });
+      expect(isRetryableTransientError(err, 'Not implemented')).toBe(false);
     });
   });
 
@@ -442,10 +461,24 @@ describe('isRetryableTransientError', () => {
       expect(isRetryableTransientError(outer, outer.message)).toBe(true);
     });
 
-    it('still does not retry a non-retryable status nested deep (500)', () => {
-      const inner = Object.assign(new Error('internal error'), {
-        name: 'SomeServiceException',
+    it('retries a 500 nested two cause-links deep (issue #2026)', () => {
+      // The production shape of the measured failure: the status sits below a
+      // provider wrapper whose interpolated message says only `UnknownError`.
+      const inner = Object.assign(new Error('UnknownError'), {
+        name: 'InternalFailure',
         $metadata: { httpStatusCode: 500 },
+      });
+      const middle = Object.assign(new Error('wrap'), { name: 'Wrap', cause: inner });
+      const outer = Object.assign(new Error('outer'), { name: 'ProvisioningError', cause: middle });
+      expect(isRetryableTransientError(outer, 'outer')).toBe(true);
+    });
+
+    it('still does not retry a non-retryable status nested deep (501)', () => {
+      // The depth fence itself is unchanged -- only its representative status
+      // moved, since 500 joined the set (see the sibling case above).
+      const inner = Object.assign(new Error('not implemented'), {
+        name: 'SomeServiceException',
+        $metadata: { httpStatusCode: 501 },
       });
       const middle = Object.assign(new Error('wrap'), { name: 'Wrap', cause: inner });
       const outer = Object.assign(new Error('outer'), { name: 'ProvisioningError', cause: middle });
