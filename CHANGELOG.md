@@ -1,3 +1,10 @@
+## [0.284.12](https://github.com/go-to-k/cdkd/compare/v0.284.11...v0.284.12) (2026-08-19)
+
+
+### Bug Fixes
+
+* **deployment:** mask the rollback replay's AWS error across every sink, including the cause chain ([#2066](https://github.com/go-to-k/cdkd/issues/2066)) ([f81786f](https://github.com/go-to-k/cdkd/commit/f81786ff2f8501aef2094a9f11edb1c506280373))
+
 ## [0.284.11](https://github.com/go-to-k/cdkd/compare/v0.284.10...v0.284.11) (2026-08-19)
 
 
