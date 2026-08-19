@@ -34,29 +34,39 @@ throwaway git repos and take ~6 minutes, which is the wrong cost for the inner
 dev loop. `.github/workflows/hooks.yml` runs it on `macos-latest` (the only
 runner image carrying bash 3.2) whenever a PR touches `.claude/hooks/**`.
 
-# Why the `Bash` matcher stays coarse
+# Why every Bash gate stays unconditional
 
 Every Bash-targeting `PreToolUse` entry in `.claude/settings.json` registers its
-gates under the bare `Bash` matcher, never a command-narrowed `Bash(git commit:*)`
-form. That is load-bearing rather than incidental: the coarse matcher hands every
-Bash call to every gate, and each gate parses the command itself -- which is why
-several of them below can advertise that they also catch the `cd <path> && ...`
-and `gh -C <path>` spellings.
+gates under the coarse `Bash` matcher AND with no per-hook `if:` condition. Both
+halves matter, and the second is the load-bearing one: the coarse matcher hands
+every Bash call to every gate, and the absent `if:` is what lets each gate then
+parse the command itself -- which is why several of them below can advertise that
+they also catch the `cd <path> && ...` and `gh -C <path>` spellings.
 
-Narrowing a matcher would silently reopen a real bypass. In go-to-k/cdk-real-drift
-four gates carried a `Bash(cd * && ...)` alternative while three did not, so
-`cd <wt> && git commit` ran UNGATED and `cd <wt> && gh pr create` skipped both the
-verify-pr and English-only gates (fixed in go-to-k/cdk-real-drift#1788). cdkd was
-audited for the same asymmetry under go-to-k/cdkd#2016 and does not carry it --
-both spellings reach `check-gate` and `verify-pr-gate` alike, measured rc=2 either
-way -- and this matters here because `/work-issues` instructs agents to write
-commands in exactly that `cd <worktree> && ...` form.
+The `if:` fields were removed for the reason documented under "The `if:` layer is
+GONE" below: they silently never fired (go-to-k/cdkd#1455 / go-to-k/cdkd#1476).
+That removal also, incidentally, makes cdkd immune to a SECOND failure of the same
+field. go-to-k/cdkd#2016 asked whether cdkd carries the gate bypass fixed in
+go-to-k/cdk-real-drift#1788, where `cd <wt> && git commit` ran ungated and
+`cd <wt> && gh pr create` skipped two gates. Measured 2026-08-19 against that
+repo's own pre-fix settings (`git show b6a4213^:.claude/settings.json`): its
+matcher is the coarse `"Bash"` too, identical to cdkd's, so the matcher was never
+the differentiator. The asymmetry was between per-hook `if:` conditions --
+`branch-gate` and `bughunt-clean-gate` spelled `Bash(cd * && git commit*)` while
+`check-gate` carried only `Bash(git commit*) or Bash(git -C * commit*)`. cdkd
+carries 0 `if:` fields across 32 Bash hooks, so it has no such condition to be
+asymmetric about, and both spellings reach every gate: measured by feeding them
+to the gates directly, `check-gate` and `verify-pr-gate` answer rc=2 for a bare
+`git commit` / `gh pr create` and rc=2 for the `cd <wt> && ...` twin alike.
 
-An ungated command is indistinguishable from one that passed, so the invariant is
-fenced by a test rather than by this paragraph:
-`tests/unit/scripts/settings-bash-matcher-coverage.test.ts` fails on any
-command-narrowed `Bash(...)` matcher, requires those gates to sit under a coarse
-one, and carries a parser floor so "found nothing" cannot pass as "everything
+This matters more here than it would elsewhere, because `/work-issues` instructs
+agents to write commands in exactly that `cd <worktree> && ...` form. An ungated
+command is indistinguishable from one that passed, so the invariant is fenced by a
+test rather than by this paragraph:
+`tests/unit/scripts/settings-bash-matcher-coverage.test.ts` fails on any per-hook
+`if:` (the primary arm), on any command-narrowed `Bash(...)` matcher, and on the
+removal of `check-gate` / `verify-pr-gate` / `non-english-text-gate` from the
+coarse entry, with a parser floor so "found nothing" cannot pass as "everything
 matches".
 
 # Other PreToolUse safety hooks
