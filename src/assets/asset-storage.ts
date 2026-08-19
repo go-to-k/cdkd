@@ -17,6 +17,7 @@ import { getLogger } from '../utils/logger.js';
 import { CdkdError, normalizeAwsError } from '../utils/error-handler.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import { buildDenyExternalAccessPolicy } from '../utils/deny-external-access-policy.js';
+import { canonicalizeRegion } from '../utils/aws-partition.js';
 
 /**
  * cdkd-owned asset storage — naming, bootstrap marker, and deploy-time
@@ -72,6 +73,95 @@ export function getCdkdContainerRepoName(accountId: string, region: string): str
  */
 export function getBootstrapMarkerKey(region: string): string {
   return `${BOOTSTRAP_MARKER_PREFIX}${region}.json`;
+}
+
+/**
+ * Outcome of {@link readBootstrapMarkerBody}.
+ */
+export interface BootstrapMarkerRead {
+  /** The marker body, or `null` when neither spelling of the key exists. */
+  body: string | null;
+  /**
+   * The key the body ACTUALLY came from. On a miss this is the canonical key.
+   *
+   * Every caller must follow it rather than re-deriving `getBootstrapMarkerKey`:
+   * `parseBootstrapMarker` names it in its error messages, `cdkd gc` prints it,
+   * and `cdkd bootstrap --destroy` DELETES it — deleting the canonical key when
+   * the body came from the raw one orphans the marker (a review catch on issue
+   * #1995's PR).
+   */
+  resolvedKey: string;
+}
+
+/**
+ * Read a region's bootstrap marker, probing the CANONICAL key first and the
+ * region's RAW spelling second (issues #1836 / #1995 / #2021).
+ *
+ * Why two probes: the READ side folds region case (SDK endpoint resolution is
+ * case-sensitive, and folding also keeps one region from occupying two cache
+ * slots), but the WRITE side does not — `cdkd bootstrap` derives its region as
+ * `options.region || AWS_REGION || 'us-east-1'` verbatim and uses that spelling
+ * for {@link getBootstrapMarkerKey}. Aligning the write side is issue #1820's
+ * lane; until then this read is independent of it.
+ *
+ * HOW REACHABLE the raw key actually is (measured for #2021, because this PR
+ * turns the probe into a SHARED contract for four callers and the earlier
+ * per-caller comments overstated it). A plain `AWS_REGION=US-EAST-1 cdkd
+ * bootstrap` CANNOT write `cdkd-bootstrap/US-EAST-1.json`: the marker is
+ * written LAST, and both resources have to be created first with names derived
+ * from that same raw region — `getCdkdAssetBucketName` yields
+ * `cdkd-assets-<acct>-US-EAST-1`, which S3 rejects as a bucket name, and
+ * `region !== 'us-east-1'` is true for `US-EAST-1` so `CreateBucket` is also
+ * handed `LocationConstraint: 'US-EAST-1'`, an invalid enum value. The
+ * conventional name is never run through `validateAssetBucketName` (that guards
+ * only `--asset-bucket`), so it fails at S3 rather than earlier. The raw key is
+ * therefore reachable only when ALL of these hold:
+ *
+ * 1. both `--asset-bucket` and `--container-repo` are given as valid lowercase
+ *    names, so neither conventional name is derived from the raw region; AND
+ * 2. the asset bucket ALREADY EXISTS and is owned by this account, so the
+ *    `CreateBucket` carrying the bad `LocationConstraint` is never issued;
+ *
+ * plus, outside that flow, a marker written by hand or by a cdkd predating
+ * those guards. Probe 2 is kept rather than dropped because that state is real
+ * and losing it silently re-points a bootstrapped region at `cdk gc`-collectable
+ * storage — the exact #2021 failure — while the cost is one extra `GetObject`
+ * on a non-canonical region only. It is skipped entirely when the region was
+ * already canonical, so the common path still costs exactly one `GetObject`.
+ * Both conditions are pinned by tests, so this claim cannot rot silently.
+ *
+ * This helper deliberately does NOT catch: each caller keeps its own policy on
+ * top (`cdkd gc` / `cdkd bootstrap --destroy` translate `NoSuchBucket` into a
+ * "never bootstrapped" message and hard-error on anything else;
+ * `loadBootstrapContainerRepo` is best-effort and warns-and-falls-back).
+ */
+export async function readBootstrapMarkerBody(
+  stateBackend: Pick<S3StateBackend, 'getRawObject'>,
+  rawRegion: string,
+  opts: { logPrefix?: string } = {}
+): Promise<BootstrapMarkerRead> {
+  const canonicalKey = getBootstrapMarkerKey(canonicalizeRegion(rawRegion));
+  const rawKey = getBootstrapMarkerKey(rawRegion);
+
+  const body = await stateBackend.getRawObject(canonicalKey);
+  if (body !== null || rawKey === canonicalKey) {
+    return { body, resolvedKey: canonicalKey };
+  }
+
+  const rawBody = await stateBackend.getRawObject(rawKey);
+  if (rawBody === null) {
+    // Neither spelling exists — report the CANONICAL key as the resolved one,
+    // so a caller's not-found message names the key a canonical-region
+    // `cdkd bootstrap` would write.
+    return { body: null, resolvedKey: canonicalKey };
+  }
+
+  const subject = opts.logPrefix ? `${opts.logPrefix}: bootstrap marker` : 'Bootstrap marker';
+  getLogger().debug(
+    `${subject} found at the un-folded key '${rawKey}' (none at '${canonicalKey}') — ` +
+      `an upper-cased region was used at 'cdkd bootstrap' time.`
+  );
+  return { body: rawBody, resolvedKey: rawKey };
 }
 
 /**
@@ -348,6 +438,16 @@ export async function ensureAssetStorage(
 
   // 0. Existing-marker read (issue #1011) — needed both to reuse a custom
   // name on plain re-bootstrap and to refuse a conflicting custom name.
+  //
+  // Deliberately NOT folded onto `readBootstrapMarkerBody` (issue #2021): this
+  // read is paired with the marker WRITE at the bottom of this function, and
+  // both use the same raw `region`. Folding the read alone would break that
+  // pairing — a bootstrap under `US-EAST-1` would read `cdkd-bootstrap/
+  // us-east-1.json` and then write `cdkd-bootstrap/US-EAST-1.json`, so a custom
+  // name recorded by an earlier run would stop being reused and a conflicting
+  // one would stop being refused. Aligning the WRITE side (and with it the
+  // asset bucket / ECR repo NAMES this same `region` builds) is issue #1820's
+  // lane; this read follows it, whichever spelling that lands on.
   const markerKey = getBootstrapMarkerKey(region);
   let existingMarker: BootstrapMarker | null = null;
   const existingBody = await stateBackend.getRawObject(markerKey);
@@ -591,6 +691,15 @@ export async function ensureAssetStorage(
 export class AssetModeResolver {
   private logger = getLogger().child('AssetMode');
   private cache = new Map<string, Promise<AssetMode>>();
+  /**
+   * NOT load-bearing today — defense-in-depth only. `resolve` sets `cache`
+   * synchronously before the first await, so `doResolve` runs at most once per
+   * canonical region, and the notice arm always returns successfully so the
+   * failure-eviction path cannot re-enter it. This Set was already ineffective
+   * BEFORE the issue #2021 fold (two spellings simply made two entries), so it
+   * is not a regression that fold introduced. Kept so removing or bypassing the
+   * cache cannot silently turn the notice into one line per resolve.
+   */
   private legacyNoticeShownRegions = new Set<string>();
   private stateBackend: S3StateBackend;
   private accountId: string;
@@ -649,16 +758,43 @@ export class AssetModeResolver {
   /**
    * Resolve the asset mode for a deploy region. Concurrent callers for the
    * same region share one in-flight resolution.
+   *
+   * The region arrives UNFOLDED (issue #2021): both deploy-time callers derive
+   * it as `options.region || AWS_REGION || 'us-east-1'` and then
+   * `stack.region || baseRegion`, so an env-agnostic stack under
+   * `--region US-EAST-1` (or `AWS_REGION=US-EAST-1`) hands an upper-cased
+   * spelling straight through. A stack whose `env.region` is pinned in CDK is
+   * unaffected — `stack.region` comes from the Cloud Assembly and is canonical.
+   *
+   * Folding at THIS boundary rather than at each caller fixes two things at
+   * once: the marker read below (which used to miss `cdkd-bootstrap/
+   * us-east-1.json` and silently downgrade the whole region to LEGACY —
+   * `cdk gc`-collectable — storage), and the CACHE, where `us-east-1` and
+   * `US-EAST-1` occupied two slots and each re-probed S3.
    */
-  resolve(region: string): Promise<AssetMode> {
+  resolve(rawRegion: string): Promise<AssetMode> {
     if (this.useCdkBootstrapAssets) {
       // Explicit per-app / per-invocation legacy pin: no marker read, no
       // notice — byte-identical to pre-#1002 behavior (design §4.2).
       return Promise.resolve({ mode: 'legacy' });
     }
+    const region = canonicalizeRegion(rawRegion);
+    // ASYMMETRY this fold introduces, stated rather than left to be found: the
+    // cache is keyed by the CANONICAL region, so the first spelling resolved in
+    // a run decides whether the raw key is ever probed. A canonical-region stack
+    // resolving first caches `legacy`, and a later `--region US-EAST-1` stack
+    // reuses that entry without ever probing `cdkd-bootstrap/US-EAST-1.json`.
+    // Accepted deliberately over probing per RAW spelling: that would restore
+    // the double-slot S3 re-probe this fold exists to remove, and it would buy
+    // a key reachable only under the narrow conditions enumerated on
+    // `readBootstrapMarkerBody`. The cheaper and permanent fix is #1820 aligning
+    // the write side, after which no raw key is written at all.
     const cached = this.cache.get(region);
     if (cached) return cached;
-    const inFlight = this.doResolve(region).catch((error: unknown) => {
+    // The RAW spelling still travels to `doResolve` — it is what the marker's
+    // second probe needs (see `readBootstrapMarkerBody`). Everything else,
+    // including every AWS client this resolver builds, uses the canonical one.
+    const inFlight = this.doResolve(region, rawRegion).catch((error: unknown) => {
       // Do not cache failures — a transient S3 error on the marker read
       // should not poison every later stack in the same run.
       this.cache.delete(region);
@@ -668,13 +804,16 @@ export class AssetModeResolver {
     return inFlight;
   }
 
-  private async doResolve(region: string): Promise<AssetMode> {
-    const markerKey = getBootstrapMarkerKey(region);
-    const body = await this.stateBackend.getRawObject(markerKey);
+  private async doResolve(region: string, rawRegion: string): Promise<AssetMode> {
+    const { body, resolvedKey } = await readBootstrapMarkerBody(this.stateBackend, rawRegion);
 
     if (body === null) {
       if (this.autoCreate) {
-        const created = await this.tryAutoCreate(region, markerKey);
+        // The auto-create WRITES through `ensureAssetStorage` with the
+        // CANONICAL region, so its post-create read-back must use the canonical
+        // key — not `resolvedKey`, which on a miss is the same value but is
+        // reported by the reader rather than chosen by the writer.
+        const created = await this.tryAutoCreate(region, getBootstrapMarkerKey(region));
         if (created) return created;
         // Declined or failed — fall through to legacy mode + the notice.
       }
@@ -693,7 +832,7 @@ export class AssetModeResolver {
       return { mode: 'legacy' };
     }
 
-    const marker = parseBootstrapMarker(body, markerKey);
+    const marker = parseBootstrapMarker(body, resolvedKey);
     await verifyAssetStorageExists(marker, this.accountId, region, {
       ...(this.profile && { profile: this.profile }),
     });

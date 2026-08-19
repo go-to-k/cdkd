@@ -21,6 +21,7 @@ import {
   BOOTSTRAP_MARKER_PREFIX,
   getBootstrapMarkerKey,
   parseBootstrapMarker,
+  readBootstrapMarkerBody,
   type BootstrapMarker,
 } from '../../assets/asset-storage.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -411,22 +412,17 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
     // really was read.
     let resolvedMarkerKey = markerKey;
     try {
-      markerBody = await stateBackend.getRawObject(markerKey);
-      if (markerBody === null && rawMarkerKey !== markerKey) {
-        // Second probe: the un-folded spelling an upper-cased `cdkd bootstrap`
-        // may have written (see the `rawRegion` note above). Skipped entirely
-        // when the region was already canonical, so the common path still costs
-        // exactly one read.
-        markerBody = await stateBackend.getRawObject(rawMarkerKey);
-        if (markerBody !== null) {
-          resolvedMarkerKey = rawMarkerKey;
-          logger.debug(
-            `Bootstrap marker found at the un-folded key '${rawMarkerKey}' ` +
-              `(none at '${markerKey}') — an upper-cased region was used at ` +
-              `'cdkd bootstrap' time.`
-          );
-        }
-      }
+      // Issue #2021 folded the canonical-then-raw probe (issue #1995) into
+      // `readBootstrapMarkerBody`. THIS caller's policy is unchanged, and it is
+      // the strictest of the three: the helper does not catch, so `NoSuchBucket`
+      // is still the never-bootstrapped early return below and every other
+      // failure still aborts with NOTHING deleted. The `resolvedKey` it reports
+      // is also load-bearing here beyond messaging — the teardown DELETES that
+      // key (see the plan line and the delete below), and deleting the canonical
+      // key when the body came from the raw one would orphan the marker.
+      const read = await readBootstrapMarkerBody(stateBackend, rawRegion);
+      markerBody = read.body;
+      resolvedMarkerKey = read.resolvedKey;
     } catch (error) {
       if ((error as { name?: string }).name === 'NoSuchBucket') {
         // Never-bootstrapped account: no state bucket means no marker, no

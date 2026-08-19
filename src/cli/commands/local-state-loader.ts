@@ -26,7 +26,11 @@ import { AwsClients, resetAwsClients, setAwsClients } from '../../utils/aws-clie
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
-import { getBootstrapMarkerKey, parseBootstrapMarker } from '../../assets/asset-storage.js';
+import {
+  getBootstrapMarkerKey,
+  parseBootstrapMarker,
+  readBootstrapMarkerBody,
+} from '../../assets/asset-storage.js';
 import type { StackState } from '../../types/state.js';
 import type { CrossStackResolver } from '../../local/state-resolver.js';
 
@@ -365,25 +369,20 @@ export async function loadBootstrapContainerRepo(
     // `getRawObject` takes a bucket-root-relative key; the marker lives
     // OUTSIDE the state prefix (see asset-storage.ts), so the key from
     // `getBootstrapMarkerKey` is used verbatim — no prefixing.
-    const markerKey = getBootstrapMarkerKey(region);
-    let resolvedKey = markerKey;
-    let body = await stateBackend.getRawObject(markerKey);
-    if (body === null && rawRegion !== region) {
-      // Issue #1836: the un-folded spelling `cdkd bootstrap` may have written
-      // (see the `rawRegion` note above). Best-effort second probe, so folding
-      // the read cannot LOSE a marker the pre-fold read found.
-      const rawKey = getBootstrapMarkerKey(rawRegion);
-      body = await stateBackend.getRawObject(rawKey);
-      if (body !== null) {
-        resolvedKey = rawKey;
-        logger.debug(
-          `${prefix}: bootstrap marker found at the un-folded key '${rawKey}' (no '${markerKey}') — an upper-cased region was used at 'cdkd bootstrap' time.`
-        );
-      }
-    }
+    //
+    // Issue #2021 folded the canonical-then-raw two-probe read (issue #1836)
+    // into `readBootstrapMarkerBody`. THIS caller's policy is unchanged and is
+    // the one that differs from its two siblings: best-effort throughout — the
+    // helper does not catch, so every failure still lands in this function's own
+    // catch, which warns at debug and falls back to the conventional
+    // asset-repo names rather than aborting the invoke.
+    const { body, resolvedKey } = await readBootstrapMarkerBody(stateBackend, rawRegion, {
+      logPrefix: prefix,
+    });
     if (body === null) {
+      const rawKey = getBootstrapMarkerKey(rawRegion);
       logger.debug(
-        `${prefix}: no bootstrap marker at '${markerKey}'${rawRegion !== region ? ` (nor '${getBootstrapMarkerKey(rawRegion)}')` : ''} in bucket '${stateBucket}' — assuming conventional asset-repo names.`
+        `${prefix}: no bootstrap marker at '${resolvedKey}'${rawKey !== resolvedKey ? ` (nor '${rawKey}')` : ''} in bucket '${stateBucket}' — assuming conventional asset-repo names.`
       );
       return undefined;
     }
