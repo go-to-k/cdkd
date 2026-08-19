@@ -113,6 +113,22 @@ I=$(write_file I.md "# Title
 Use the literal token \`#1\` in your config.
 ")
 
+# J: fully-qualified cross-repo refs, this repo and both siblings
+# (allowed). This is the form /work-issues section 10-c mandates.
+J=$(write_file J.md "# Title
+
+Mirrored from go-to-k/cdk-local#533 and go-to-k/cdk-real-drift#1792.
+Landed here as go-to-k/cdkd#1992.
+")
+
+# K: an item number written as a fraction (blocked). Pins that the
+# owner/repo arm did not widen into the failure the gate exists for --
+# 1/2 has no letter in either segment, so it is not a repo slug.
+K=$(write_file K.md "# Title
+
+step 1/2#3: the second half
+")
+
 # --- ALLOW cases ---
 
 # 1. PR create with bare-number body (A) → exit 0.
@@ -184,6 +200,14 @@ run_case "gh pr create with bare #N in prose blocked" 2 \
   "$(printf '{"tool_input":{"command":"gh pr create --body-file %s"}}' "$H")"
 
 # Extra: gh pr edit --body-file (deprecated form, but still possible) → exit 2.
+# Qualified cross-repo refs (owner/repo#N) are allowed -- go-to-k/cdkd#1992.
+run_case "gh pr create with qualified owner/repo#N allowed" 0 \
+  "$(printf '{"tool_input":{"command":"gh pr create --body-file %s"}}' "$J")"
+
+# ...and the arm did not widen: a fraction-shaped item number stays blocked.
+run_case "gh pr create with fraction-shaped item number still blocked" 2 \
+  "$(printf '{"tool_input":{"command":"gh pr create --body-file %s"}}' "$K")"
+
 run_case "gh pr edit with #N body-file blocked" 2 \
   "$(printf '{"tool_input":{"command":"gh pr edit 123 --body-file %s"}}' "$B")"
 

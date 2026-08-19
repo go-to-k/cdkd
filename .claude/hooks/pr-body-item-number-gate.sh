@@ -24,6 +24,9 @@
 #         close[s]? #N, closed #N, fix[es]? #N, resolve[s]? #N
 #       These are load-bearing for GitHub's auto-close behavior.
 #     - Soft references: refs: #N, ref: #N, references #N, see #N
+#     - Fully-qualified cross-repo refs: owner/repo#N. Unambiguous by
+#       construction, and the form /work-issues section 10-c mandates
+#       for every citation in the mirrored skill files.
 #     - Parenthetical: (#N)   — used by squash-merge commit messages
 #       like `feat(...): subject (#231)`.
 #     - Inside fenced code blocks (between matching ``` lines).
@@ -129,6 +132,16 @@ find_offender() {
       # ALLOWED: soft reference keywords.
       #   refs:, ref:, references, see
       next if $left =~ /(?i)(?:^|\s)(refs?:?|references|see)\s*$/;
+      # ALLOWED: a fully-qualified cross-repo reference whose left
+      # context ends in an owner/repo slug -- go-to-k/cdkd#1973. It
+      # names its repo explicitly, so it cannot auto-link to the wrong
+      # one, which is the exact opposite of the trap this gate exists
+      # for; and /work-issues section 10-c mandates this form for every
+      # citation the mirrored skill files carry, so blocking it put the
+      # hook and the skill in direct contradiction.
+      # Both slug segments must contain a letter, so an item number
+      # written as a fraction ("step 1/2#3") stays blocked.
+      next if $left =~ m{(?:^|\s)[A-Za-z0-9._-]*[A-Za-z][A-Za-z0-9._-]*/[A-Za-z0-9._-]*[A-Za-z][A-Za-z0-9._-]*$};
       # Otherwise: BLOCKED. Print the hit and the full line context.
       print "$hit\n";
       last;
@@ -179,6 +192,7 @@ fi
   echo "Fix:"
   echo "  - Item numbers: use bare numbers (e.g. 'Must-fix 1' not 'Must-fix #1')"
   echo "  - Real issue refs: keep 'closes #NNN' / '(#NNN)' / full URLs (allow-listed)"
+  echo "  - Cross-repo refs: use the qualified 'owner/repo#NNN' form (allow-listed)"
   echo
   echo "Memory: ~/.claude/projects/-Users-goto-pc-github-cdkd/memory/feedback_pr_body_no_hash_for_item_numbers.md"
 } >&2
