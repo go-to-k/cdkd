@@ -59,12 +59,37 @@ Failure events carry an `error` object: `{ name, message, awsErrorCode?,
 requestId? }`. The AWS error code + request id are extracted from the
 innermost AWS-SDK-shaped error in the thrown error's `.cause` chain.
 
-### Security: no resource properties
+### Security: no resource properties, and a MASKED error message
 
 Events carry **error + metadata only**. Resource properties are **never**
 recorded in events (they may contain secrets); properties already live in
 `state.json`. The error object is the outermost error's name/message plus
 the AWS error code / request id — no payloads.
+
+**Withholding the payload is not sufficient on its own**, which is the part
+this section used to leave unsaid. AWS validation errors routinely quote the
+offending property VALUE back inside the `message` — `Value 'hunter2' at
+'password' failed to satisfy constraint ...` — so a resolved Secrets Manager /
+SSM `SecureString` value can reach the event `message` without any property ever
+being recorded. Because `deployments/{runId}.jsonl` is a **durable S3 sink**,
+that is worse than a terminal line: it persists after the run.
+
+Every producer that has a resolved secret in scope therefore masks the message
+before it is recorded, substituting the `{{resolve:...}}` expression the way
+state redaction does (issue
+[#2031](https://github.com/go-to-k/cdkd/issues/2031)). The masking lives in the
+**rollback executor** rather than in each caller, because the rollback replay
+re-resolves journaled properties to plaintext and has two entry points that
+would otherwise diverge: the standalone `cdkd rollback` command recorded events
+with no masking at all, while a deploy's in-process auto-rollback masked with
+the DEPLOY's secrets bag — a different generation from the one the replay
+resolved from the journal, so a rotated secret or a reference only the previous
+generation carried was missed. Masking at the shared executor makes both callers
+equal; the deploy engine's own `maskSecretsInEvent` still runs and
+double-masking is a no-op.
+
+The `name`, `awsErrorCode` and `requestId` fields are NOT masked — they are AWS
+enum-shaped identifiers that never carry a caller-supplied value.
 
 ## Where it lives (S3 key layout)
 

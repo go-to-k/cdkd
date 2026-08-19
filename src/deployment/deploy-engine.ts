@@ -82,7 +82,7 @@ import {
   IMPLICIT_DELETE_DEPENDENCIES,
   computeImplicitDeleteEdges,
 } from '../analyzer/implicit-delete-deps.js';
-import { withRetry } from './retry.js';
+import { withRetry, type RetryLogger } from './retry.js';
 import { isNameCollisionError, isRecreateRetryableError } from './retryable-errors.js';
 import { withResourceDeadline } from './resource-deadline.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
@@ -3128,7 +3128,9 @@ export class DeployEngine {
           maxRetries: 8,
           initialDelayMs: 2_000,
           maxDelayMs: 10_000,
-          logger: this.logger,
+          // Issue #2038: `replaceProps` is RESOLVED, so mask the AWS message
+          // this retry echoes -- see {@link maskingRetryLogger}.
+          logger: this.maskingRetryLogger(logicalId),
           isInterrupted: () => this.interrupted,
           onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
           isRetryable: isRecreateRetryableError,
@@ -3607,7 +3609,8 @@ export class DeployEngine {
                 maxRetries: 8,
                 initialDelayMs: 2_000,
                 maxDelayMs: 10_000,
-                logger: this.logger,
+                // Issue #2038, same reason as the --replace fallback above.
+                logger: this.maskingRetryLogger(logicalId),
                 isInterrupted: () => this.interrupted,
                 onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
                 isRetryable: isRecreateRetryableError,
@@ -4631,10 +4634,44 @@ export class DeployEngine {
     return withRetry(operation, logicalId, {
       ...(maxRetries !== undefined && { maxRetries }),
       ...(initialDelayMs !== undefined && { initialDelayMs }),
-      logger: this.logger,
+      logger: this.maskingRetryLogger(logicalId),
       isInterrupted: () => this.interrupted,
       onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
     });
+  }
+
+  /**
+   * The `RetryLogger` every `withRetry` on this engine threads (issue
+   * [#2038](https://github.com/go-to-k/cdkd/issues/2038) acceptance item 1) —
+   * the same masking shape `drift.ts` and `rollback-executor.ts` install, bound
+   * to the resource's OWN recorded secrets.
+   *
+   * `retry.ts` interpolates the AWS message verbatim into both the per-attempt
+   * `debug` line and the give-up `warn` summary, and the bag this engine hands
+   * a provider is RESOLVED — `perResourceSecrets` is populated immediately after
+   * `resolver.resolve` and BEFORE the create / update call, so a secret is in
+   * scope at every retried provider call. An AWS validation error routinely
+   * quotes the offending value back, so the give-up summary could print it at
+   * DEFAULT verbosity: the same hole #2038 found on the rollback path, one
+   * caller over. The engine already masked its own error / reason text and its
+   * event store; the retry logger was the gap.
+   *
+   * Per-resource, never session-wide — see the `perResourceSecrets` field doc
+   * for why one resource's secret must not rewrite another's literal. A
+   * `logicalId` with no entry (or an empty bag) forwards verbatim, so every
+   * non-secret resource is byte-identical to before.
+   */
+  private maskingRetryLogger(logicalId: string): RetryLogger {
+    return {
+      debug: (msg) => {
+        const secrets = this.perResourceSecrets.get(logicalId);
+        this.logger.debug(secrets ? maskSecretsInText(msg, secrets) : msg);
+      },
+      warn: (msg) => {
+        const secrets = this.perResourceSecrets.get(logicalId);
+        this.logger.warn(secrets ? maskSecretsInText(msg, secrets) : msg);
+      },
+    };
   }
 
   /**
