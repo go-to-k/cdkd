@@ -336,7 +336,17 @@ export async function computeStackDiff(
   //
   // `effectiveTemplate` mirrors the deploy engine's no-change branch. Condition
   // pruning only rewrites `Resources`, so its `Outputs` are the raw template's.
-  const resolved = await resolveTemplateOutputs(effectiveTemplate, resolveFn, conditions);
+  // `currentState.outputs` is passed for ONE decision inside the resolver — the
+  // LITERAL `Export.Name` of a secret-bearing stack, which the preview cannot
+  // evaluate deploy's predicate for but state can answer (issue #1942): the bag
+  // holding that alias key proves a previous deploy published it. See the
+  // resolver's own note for the different-value / absent-key rows.
+  const resolved = await resolveTemplateOutputs(
+    effectiveTemplate,
+    resolveFn,
+    conditions,
+    currentState.outputs
+  );
   // A partially-resolved bag reports NO delta, exactly like the deploy engine's
   // NO-CHANGE branch declining to persist one (`resolutionFailed` there). That
   // branch is the one this preview stands in for; deploy's changed-resources
@@ -365,7 +375,11 @@ export async function computeStackDiff(
       currentState.outputs,
       resolved.outputs,
       resolved.exportNames,
-      resolved.secretSourceKeys
+      resolved.secretSourceKeys,
+      {
+        declaredKeys: resolved.declaredKeys,
+        templateHasSecretReference: resolved.templateHasSecretReference,
+      }
     ).filter((change) => !resolved.failedKeys.has(change.name));
     if (wouldHaveChanged.length > 0) {
       logger.warn(
@@ -379,7 +393,11 @@ export async function computeStackDiff(
       currentState.outputs,
       resolved.outputs,
       resolved.exportNames,
-      resolved.secretSourceKeys
+      resolved.secretSourceKeys,
+      {
+        declaredKeys: resolved.declaredKeys,
+        templateHasSecretReference: resolved.templateHasSecretReference,
+      }
     );
   }
 
@@ -1019,26 +1037,20 @@ export function renderChangeLines(
   return { create: createCount, update: updateCount, delete: deleteCount };
 }
 
-/** Stand-in printed instead of a withheld legacy-plaintext output value. */
-const REDACTED_LEGACY_PLAINTEXT = '<redacted: legacy plaintext in state — run `cdkd scrub`>';
+/**
+ * Stand-in printed instead of a withheld stored output value.
+ *
+ * Worded as a POSSIBILITY because both reasons the value is withheld are
+ * suspicions rather than detections — a record that LOOKS pre-GHSA, and a
+ * stored key today's template cannot account for (issue #1948), which is
+ * undecidable by construction. Stating it as a fact would be wrong on the
+ * benign half of each, and `cdkd scrub` finding nothing is the expected
+ * outcome there.
+ */
+const REDACTED_LEGACY_PLAINTEXT = '<redacted: may be legacy plaintext in state — run `cdkd scrub`>';
 
 /**
- * Strip characters that let a template-controlled string manipulate the
- * TERMINAL rather than merely appear in it: C0 (incl. ESC, so no ANSI sequence
- * survives), DEL, C1 (the 8-bit CSI forms some terminals still honor), and the
- * bidi / format overrides that visually reorder a rendered line.
- *
- * Applied only on the human-render path. The `--json` payload is deliberately
- * left byte-faithful: it is a machine interface, an export NAME is data a
- * consumer may match on, and silently mutating it there would trade a real
- * correctness regression for a display concern belonging to whatever renders
- * the JSON. `JSON.stringify` already escapes everything below 0x20.
- *
- * The helper itself now lives in `src/utils/regexp.ts` — `outputs-export-alias`
- * prints the same class of string and had grown a second copy.
- */
-/**
- * The same guard for an already-JSON-SERIALIZED value: C1 and the bidi marks
+ * The guard for an already-JSON-SERIALIZED value: C1 and the bidi marks
  * only, deliberately NOT C0.
  *
  * `JSON.stringify` escapes every character below 0x20 that occurs INSIDE a

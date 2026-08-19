@@ -39,9 +39,16 @@ export interface OutputChange {
    */
   isExport: boolean;
   /**
-   * True when {@link oldValue} was WITHHELD because it is legacy secret
+   * True when {@link oldValue} was WITHHELD because it MAY be legacy secret
    * plaintext (see {@link computeOutputsDiff}). Renderers and the `--json`
    * projection must not emit the value when this is set.
+   *
+   * Deliberately ONE boolean covering both reasons the value can be withheld —
+   * a record judged pre-GHSA, and a stored key today's template cannot account
+   * for (issue #1948). Every consumer does the same thing with it (do not print
+   * the value), so a reason code would add a `--json` field nothing branches on.
+   * "MAY be": both are SUSPICIONS by construction, which is why the rendered
+   * stand-in is worded as a possibility.
    */
   oldValueRedacted?: boolean;
 }
@@ -79,8 +86,45 @@ export interface ResolvedTemplateOutputs {
    * Collected for EVERY declared output including condition-skipped ones,
    * because a skipped output still appears on the stored side and would
    * otherwise print its value as a REMOVE row. See {@link computeOutputsDiff}.
+   *
+   * What it CANNOT cover — stated because an earlier revision of this comment
+   * claimed the opposite, and a false coverage claim is what lets a reader
+   * conclude the case is handled: an output DELETED from today's template
+   * contributes nothing to this set, since the set is built from declarations
+   * only. That case is answered by {@link declaredKeys} +
+   * {@link templateHasSecretReference} instead (issue #1948).
    */
   secretSourceKeys: Set<string>;
+  /**
+   * Every bag key today's template can ACCOUNT FOR: each declared output name
+   * plus each LITERAL `Export.Name`, over all declared outputs including
+   * condition-skipped and unresolvable ones.
+   *
+   * A stored key that is in neither this set nor the resolved bag is one the
+   * template no longer explains — a DELETED output. Whether its stored value is
+   * pre-GHSA secret plaintext is undecidable from the stored bag alone (a
+   * plaintext is just a string), so {@link computeOutputsDiff} withholds it
+   * when the template proves the stack handles secrets at all. See issue #1948.
+   *
+   * An INTRINSIC `Export.Name` is deliberately absent: its resolved alias is
+   * knowable only when resolution succeeded, and in that case the key is in
+   * {@link outputs} — which the consumer checks first — while a failed one is
+   * already in {@link failedKeys} and suppresses the whole section.
+   */
+  declaredKeys: Set<string>;
+  /**
+   * True when ANY string ANYWHERE in the template is a secret-bearing dynamic
+   * reference — `Resources` included, not just `Outputs`.
+   *
+   * This is the "does this stack handle secrets at all?" gate on the
+   * deleted-output withholding (issue #1948). Without it, every stack that ever
+   * deletes an output loses its REMOVE values; with it, only stacks whose
+   * template still proves a secret reference do. The residual is the stack
+   * whose ONLY secret reference WAS the deleted output — nothing in the stored
+   * bag or in today's template can then tell its plaintext from an ordinary
+   * string, and blanket withholding is worse than that gap.
+   */
+  templateHasSecretReference: boolean;
 }
 
 /**
@@ -264,17 +308,31 @@ function valuesEqual(a: unknown, b: unknown): boolean {
  * resolver runs with `skipDynamicReferences`, so a `{{resolve:...}}` reference
  * is never resolved to plaintext in the first place and the bag already holds
  * the expression that state stores post-redaction.
+ *
+ * `storedOutputs` is the bag currently in state. It is consulted for exactly
+ * one decision — the LITERAL `Export.Name` of a secret-bearing stack, see issue
+ * #1942 at that branch — and never merged into the result: everything else here
+ * previews what the template says, and reading state anywhere else would make
+ * the preview agree with the past instead of with the next deploy.
  */
 export async function resolveTemplateOutputs(
   template: CloudFormationTemplate,
   resolveFn: IntrinsicResolveFn,
-  conditions?: Record<string, boolean>
+  conditions?: Record<string, boolean>,
+  storedOutputs?: Record<string, unknown>
 ): Promise<ResolvedTemplateOutputs> {
   const logger = getLogger().child('OutputsDiff');
   const outputs: Record<string, unknown> = {};
   const exportNames = new Set<string>();
   const failedKeys = new Set<string>();
   const secretSourceKeys = new Set<string>();
+  const declaredKeys = new Set<string>();
+  // Walked over the WHOLE template, `Resources` included (issue #1948). The
+  // question this answers is "does this stack handle secrets at all?", and the
+  // deleted-output case it gates is precisely one where `Outputs` no longer
+  // mentions the secret — so an Outputs-only walk would answer `false` for
+  // every case the gate exists to catch.
+  const templateHasSecretReference = containsSecretDynamicReference(template);
   let resolutionFailed = false;
   // The deploy engine REFUSES an export alias whose name is another published
   // output's name, and refuses one carrying a secret (issue #1919). This module
@@ -286,7 +344,15 @@ export async function resolveTemplateOutputs(
   const publishedOutputNames = collectPublishedOutputNames(template.Outputs ?? {}, conditions);
 
   if (!template.Outputs) {
-    return { outputs, exportNames, failedKeys, secretSourceKeys, resolutionFailed };
+    return {
+      outputs,
+      exportNames,
+      failedKeys,
+      secretSourceKeys,
+      declaredKeys,
+      templateHasSecretReference,
+      resolutionFailed,
+    };
   }
 
   /**
@@ -312,6 +378,11 @@ export async function resolveTemplateOutputs(
   // REMOVE row. A literal `Export.Name` alias is recorded too, since the deploy
   // writes the same value under both keys.
   for (const [outputKey, output] of Object.entries(template.Outputs)) {
+    // Every declared key, secret-bearing or not (issue #1948): a stored key
+    // this set does NOT hold is one today's template cannot account for, which
+    // is the deleted-output signal `secretSourceKeys` structurally cannot give.
+    declaredKeys.add(outputKey);
+    if (typeof output.Export?.Name === 'string') declaredKeys.add(output.Export.Name);
     if (!containsSecretDynamicReference(output.Value)) continue;
     secretSourceKeys.add(outputKey);
     if (typeof output.Export?.Name === 'string') secretSourceKeys.add(output.Export.Name);
@@ -394,31 +465,69 @@ export async function resolveTemplateOutputs(
             `Diff skipping export alias ${stripControlChars(exportName)} of ${stripControlChars(outputKey)} — collides with an output name`
           );
         } else if (!declaredExportIsIntrinsic && secretSourceKeys.size > 0) {
-          // UNDECIDABLE, so suppress rather than guess. The deploy refuses a
-          // LITERAL name that CONTAINS a resolved secret plaintext — the
-          // `prod-<secret>-endpoint` shape — and this preview never substitutes
-          // a plaintext, so it cannot evaluate that predicate. Narrowed to
-          // stacks where the deploy actually records a secret: with no
-          // secret-bearing output there is nothing for a name to contain.
+          // The deploy refuses a LITERAL name that CONTAINS a resolved secret
+          // plaintext — the `prod-<secret>-endpoint` shape — and this preview
+          // never substitutes a plaintext, so it cannot evaluate that predicate
+          // directly. Narrowed to stacks where the deploy actually records a
+          // secret: with no secret-bearing output there is nothing for a name
+          // to contain.
           //
-          // Suppressing is this module's existing answer to "cannot reproduce
-          // what deploy will do", and it also avoids printing a row whose KEY
-          // may hold that plaintext into CI logs. The stronger fix — deciding
-          // the case from the stored bag — is deferred to issue
-          // [#1942](https://github.com/go-to-k/cdkd/issues/1942).
+          // STATE decides it (issue #1942). The stored bag holding this exact
+          // alias KEY is proof that a PREVIOUS deploy — which did hold the
+          // plaintext and did evaluate the predicate — published it, so this
+          // preview can publish it too: same literal name, same output, so the
+          // next deploy re-evaluates the same predicate over the same name. The
+          // preview is not guessing at the predicate; it is reading a verdict
+          // the apply already recorded.
           //
-          // Recording the ALIAS key is what keeps the suppression honest: it is
-          // absent from this bag but may well be PRESENT in state, and without
-          // recording it the warning downstream reads it as a REMOVE and blames
-          // "an output referencing a resource this deploy has yet to create" —
-          // the wrong cause, on every run, forever. `failedKeys.add` directly,
-          // NOT `recordFailure`: that helper also records `outputKey`, whose
-          // value resolved fine and belongs in the diff.
-          logger.debug(
-            `Diff cannot decide the export alias of ${stripControlChars(outputKey)} — a literal name may contain a resolved secret`
-          );
-          failedKeys.add(exportName);
-          resolutionFailed = true;
+          // Publishing regardless of the stored VALUE, deliberately. The
+          // refusal deploy makes is about the NAME, which is a template literal
+          // and unchanged between the two runs; the value is what the output
+          // resolves to today, and previewing a CHANGED one is exactly the #875
+          // case this whole section exists for. Requiring value equality would
+          // suppress the only row anyone needed.
+          //
+          // ABSENT key -> suppress, as before. Absence is not evidence: it means
+          // either a first deploy of this alias or a first deploy of the stack,
+          // and in both the apply's verdict does not exist yet. Guessing there
+          // would be guessing at the predicate, which is what this arm refuses
+          // to do.
+          //
+          // Two residuals, stated rather than papered over. (1) A secret that
+          // ROTATES to a value which is a substring of the literal export name
+          // flips deploy's verdict, so the preview would publish a row deploy
+          // now refuses — a phantom, and the row's KEY would carry that
+          // plaintext; the name is a fixed template literal and the value is
+          // high-entropy, so this needs a coincidence rather than a mistake.
+          // (2) A key stored by a PRE-#1919 binary records no verdict at all
+          // (the refusal did not exist then) — that is the same key
+          // `cdkd scrub` reports through `secretBearingStateKeyWarning`, and
+          // it prints today as a REMOVE row on any stack whose section is not
+          // suppressed, so publishing does not widen it.
+          const storedProvesPublished =
+            storedOutputs !== undefined && Object.hasOwn(storedOutputs, exportName);
+          if (storedProvesPublished) {
+            outputs[exportName] = value;
+            exportNames.add(exportName);
+          } else {
+            // Suppressing is this module's existing answer to "cannot reproduce
+            // what deploy will do", and it also avoids printing a row whose KEY
+            // may hold that plaintext into CI logs.
+            //
+            // Recording the ALIAS key is what keeps the suppression honest: it
+            // is absent from this bag but may well be PRESENT in state, and
+            // without recording it the warning downstream reads it as a REMOVE
+            // and blames "an output referencing a resource this deploy has yet
+            // to create" — the wrong cause, on every run, forever.
+            // `failedKeys.add` directly, NOT `recordFailure`: that helper also
+            // records `outputKey`, whose value resolved fine and belongs in the
+            // diff.
+            logger.debug(
+              `Diff cannot decide the export alias of ${stripControlChars(outputKey)} — a literal name may contain a resolved secret and state does not hold that key`
+            );
+            failedKeys.add(exportName);
+            resolutionFailed = true;
+          }
         } else {
           outputs[exportName] = value;
           exportNames.add(exportName);
@@ -432,7 +541,15 @@ export async function resolveTemplateOutputs(
     }
   }
 
-  return { outputs, exportNames, failedKeys, secretSourceKeys, resolutionFailed };
+  return {
+    outputs,
+    exportNames,
+    failedKeys,
+    secretSourceKeys,
+    declaredKeys,
+    templateHasSecretReference,
+    resolutionFailed,
+  };
 }
 
 /**
@@ -461,20 +578,62 @@ export async function resolveTemplateOutputs(
  *   {@link isSecretDynamicReference} (this resolver runs with
  *   `skipDynamicReferences`) while the stored side is not; and
  * - `secretSourceKeys` — the template itself declares the key's value as such a
- *   reference. This one reaches cases the first cannot: a
- *   condition-skipped secret output, or one deleted from the template, has NO
- *   desired side at all and would otherwise print in full as a REMOVE row.
+ *   reference. This one reaches a case the first cannot: a condition-skipped
+ *   secret output has NO desired side at all and would otherwise print in full
+ *   as a REMOVE row.
  *
  * A hit on either makes the WHOLE record suspect, not just that key: the
  * record was written by a pre-GHSA binary, so every value in it is unredacted.
  * Withholding is therefore record-level. The change is still REPORTED — only
  * the value is withheld — so `--fail` and the exports story are unaffected.
+ *
+ * ## The key today's template cannot account for (issue #1948)
+ *
+ * Neither signal above covers an output DELETED from the template, and an
+ * earlier revision of this note claimed `secretSourceKeys` did — a false
+ * coverage claim, which is exactly what lets a reader conclude the case is
+ * handled. It structurally cannot: that set is built from DECLARATIONS, and a
+ * deleted output declares nothing, so a record whose ONLY secret-bearing output
+ * has since been removed is judged not-legacy and its stored pre-GHSA plaintext
+ * renders as the `old:` side of a REMOVE row.
+ *
+ * The signal has to come from the STORED bag, and the honest statement about
+ * the stored bag is that the case is UNDECIDABLE there: post-GHSA a secret
+ * output stores its `{{resolve:...}}` EXPRESSION, but pre-GHSA it stores a
+ * plaintext, and a plaintext is indistinguishable from an ordinary string. So
+ * this is a REFUSAL rather than a detection — a stored key the template cannot
+ * account for has its value withheld — bounded by two gates that keep it off
+ * the common benign case (deleting an output is a normal refactor):
+ *
+ * - `templateHasSecretReference` — the template must still prove this stack
+ *   handles secrets AT ALL (anywhere, `Resources` included). An ordinary stack
+ *   with no secret reference keeps printing its REMOVE values.
+ * - no stored value is itself a secret-bearing expression. One that is proves
+ *   the LAST write was post-GHSA, and the bag is rewritten wholesale by
+ *   `resolveOutputs` on every deploy, so every other value in it is redacted
+ *   too. This exonerates the record.
+ *
+ * Withholding here is PER-KEY, unlike the record-level arms above, and the
+ * asymmetry follows from what each concludes: those conclude the record was
+ * written by a pre-GHSA binary (a claim about the whole bag), while this one
+ * concludes only that THIS key is undecidable. So a secret-handling stack that
+ * deletes an ordinary output withholds that one row's value and prints the
+ * rest.
+ *
+ * Residual, stated because the gate is what buys the low false-positive rate:
+ * a stack whose ONLY secret reference WAS the deleted output has no secret left
+ * in its template, so nothing here fires. Closing it would mean withholding
+ * every REMOVE value on every stack, which is a worse trade.
  */
 export function computeOutputsDiff(
   current: Record<string, unknown> | undefined,
   desired: Record<string, unknown>,
   exportNames: ReadonlySet<string>,
-  secretSourceKeys: ReadonlySet<string> = new Set()
+  secretSourceKeys: ReadonlySet<string> = new Set(),
+  unaccountableScan: {
+    declaredKeys?: ReadonlySet<string>;
+    templateHasSecretReference?: boolean;
+  } = {}
 ): OutputChange[] {
   const changes: OutputChange[] = [];
   const currentBag = current ?? {};
@@ -493,8 +652,23 @@ export function computeOutputsDiff(
     return containsSecretDynamicReference(desired[name]) || secretSourceKeys.has(name);
   });
 
+  // Pass 2: the issue #1948 exoneration, RECORD-level unlike the per-key veto
+  // above, and it has to be: the question is whether the LAST write redacted,
+  // and one redacted key answers it for the whole bag (`resolveOutputs`
+  // rewrites every key on every deploy). Same LEAF granularity, so a container
+  // holding an expression still does not earn it.
+  const recordProvesPostGhsa = Object.values(currentBag).some(
+    (v) => typeof v === 'string' && isSecretDynamicReference(v)
+  );
+  const declaredKeys = unaccountableScan.declaredKeys ?? new Set<string>();
+  const unaccountable = (name: string): boolean =>
+    unaccountableScan.templateHasSecretReference === true &&
+    !recordProvesPostGhsa &&
+    !declaredKeys.has(name) &&
+    !Object.prototype.hasOwnProperty.call(desired, name);
+
   const push = (change: OutputChange): void => {
-    if (legacyRecord && change.changeType !== 'ADD') {
+    if (change.changeType !== 'ADD' && (legacyRecord || unaccountable(change.name))) {
       const { oldValue: _dropped, ...rest } = change;
       changes.push({ ...rest, oldValueRedacted: true });
       return;

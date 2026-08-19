@@ -251,6 +251,36 @@ describe('cdkd state show', () => {
     expect(out).toContain('  Dependencies: (none)');
   });
 
+  it('STRIPS control characters from an Outputs row, key AND value (issue #1948)', async () => {
+    // An Outputs bag KEY can be an `Export.Name` cdkd RESOLVED from an
+    // `Fn::Sub` / parameter / SSM value, so unlike a CFn logical id it passed
+    // no validator; the VALUE has the same provenance. Both would otherwise
+    // carry an ANSI escape straight into the terminal that renders this block,
+    // which is the last human-render site for a stored outputs bag.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilStack',
+        outputs: {
+          // A bare ESC (what starts every ANSI sequence) plus a bidi override,
+          // one in the KEY and one in the VALUE. Deliberately NOT a full
+          // `\u001b[2J`: only the control character is removed, so the `[2J`
+          // tail would survive and an expectation written around it could not
+          // tell a strip from a rewrite.
+          'Api\u001bUrl\u202e': 'https://api\u001b.example.com',
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilStack']);
+
+    expect(out).toContain('  ApiUrl: https://api.example.com');
+    // Nothing from the C0 / C1 / bidi class survives on the rendered row.
+    expect(out).not.toContain('\u001b');
+    expect(out).not.toContain('\u202e');
+  });
+
   it('omits the Outputs section when outputs are empty', async () => {
     mockListStacks.mockResolvedValue(defaultListResponse('AnyStack'));
     mockGetState.mockResolvedValue(makeState({ outputs: {} }));

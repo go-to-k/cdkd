@@ -1919,6 +1919,100 @@ describe('Outputs-only change (issue #1921)', () => {
     expect(out).toContain('0 to create, 0 to update, 0 to delete');
   });
 
+  it('WIRING (issue #1942): the stored bag decides a literal export alias, so the section SURVIVES', async () => {
+    // End-to-end through `computeStackDiff`, which is what actually threads
+    // `currentState.outputs` into the resolver. Before this the whole Outputs
+    // section was suppressed for a stack shaped like this and a genuine export
+    // change went unreported (the #875 case).
+    //
+    // The secret uses the `Fn::Join` shape a CDK L2 renders: a plain string
+    // would pass the signal for the wrong reason (a shallow scan finds it),
+    // which is how the last defect in this file survived a round.
+    const secretJoin = {
+      'Fn::Join': ['', ['pre-', '{{resolve:secretsmanager:prod/db:SecretString:pw}}']],
+    };
+    const tpl: CloudFormationTemplate = {
+      Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+      Outputs: {
+        DbSecret: { Value: secretJoin },
+        Exporter: { Value: ARN, Export: { Name: 'S:Arn' } },
+      },
+    };
+
+    const { outputChanges } = await diffFor(
+      stateWith({ 'S:Arn': 'arn:aws:ssm:us-east-1:1:parameter/OLD', Exporter: ARN }),
+      tpl
+    );
+
+    const aliasRow = outputChanges.find((c) => c.name === 'S:Arn');
+    expect(aliasRow?.changeType).toBe('MODIFY');
+    expect(aliasRow?.isExport).toBe(true);
+    expect(aliasRow?.newValue).toBe(ARN);
+  });
+
+  it('WIRING (issue #1942): still suppressed when the stored bag lacks the alias key', async () => {
+    const secretJoin = {
+      'Fn::Join': ['', ['pre-', '{{resolve:secretsmanager:prod/db:SecretString:pw}}']],
+    };
+    const tpl: CloudFormationTemplate = {
+      Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+      Outputs: {
+        DbSecret: { Value: secretJoin },
+        Exporter: { Value: ARN, Export: { Name: 'S:Arn' } },
+      },
+    };
+
+    const { outputChanges } = await diffFor(stateWith({ Exporter: 'something-else' }), tpl);
+    expect(outputChanges).toEqual([]);
+  });
+
+  it('WIRING (issue #1948): a deleted secret output prints no stored plaintext', async () => {
+    // The template's ONLY remaining secret reference is in a RESOURCE, so
+    // `secretSourceKeys` is empty and the record reads as post-GHSA — which is
+    // exactly the shape whose stored plaintext used to render as a REMOVE row.
+    // This test is what proves `declaredKeys` / `templateHasSecretReference`
+    // actually reach `computeOutputsDiff`; the analyzer suite alone would pass
+    // with the arguments never threaded.
+    const tpl: CloudFormationTemplate = {
+      Resources: {
+        A: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Value: 'x',
+            Description: '{{resolve:secretsmanager:prod/db:SecretString:pw}}',
+          },
+        },
+      },
+      Outputs: { ApiUrl: { Value: 'https://new.example.com' } },
+    };
+
+    const { outputChanges } = await diffFor(
+      stateWith({ DbPassword: 'hunter2', ApiUrl: 'https://old.example.com' }),
+      tpl
+    );
+
+    const removed = outputChanges.find((c) => c.name === 'DbPassword');
+    expect(removed?.changeType).toBe('REMOVE');
+    expect(removed?.oldValueRedacted).toBe(true);
+    expect(removed?.oldValue).toBeUndefined();
+    // Per-key: the accountable row keeps its value.
+    const modified = outputChanges.find((c) => c.name === 'ApiUrl');
+    expect(modified?.oldValue).toBe('https://old.example.com');
+    expect(JSON.stringify(outputChanges)).not.toContain('hunter2');
+  });
+
+  it('WIRING (issue #1948): an ordinary stack still prints its REMOVE value', async () => {
+    // The control for the wiring above — without it the test could pass on a
+    // gate that fires for every stack.
+    const { outputChanges } = await diffFor(
+      stateWith({ Gone: 'arn:aws:s3:::gone', ApiUrl: 'https://old.example.com' }),
+      template({ ApiUrl: { Value: 'https://new.example.com' } })
+    );
+    const removed = outputChanges.find((c) => c.name === 'Gone');
+    expect(removed?.oldValue).toBe('arn:aws:s3:::gone');
+    expect(removed?.oldValueRedacted).toBeUndefined();
+  });
+
   it('renders a MODIFY row with both sides and the change count', () => {
     const lines: string[] = [];
     const counts = renderOutputChangeLines(
@@ -1947,7 +2041,7 @@ describe('Outputs-only change (issue #1921)', () => {
       (m) => lines.push(m)
     );
     const out = lines.join('\n');
-    expect(out).toContain('<redacted: legacy plaintext in state');
+    expect(out).toContain('<redacted: may be legacy plaintext in state');
     expect(out).not.toContain('hunter2');
   });
 

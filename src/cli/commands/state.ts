@@ -34,6 +34,12 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout-registry.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { withStackName } from '../../provisioning/resource-name.js';
+import {
+  redactSecretsForState,
+  STATE_SOURCED_READBACK_RULES,
+  type RecordedSecretValues,
+} from '../../deployment/secret-redaction.js';
+import { stripControlChars } from '../../utils/regexp.js';
 import { buildReadCurrentStateContext } from './drift.js';
 import { runDestroyForStack } from './destroy-runner.js';
 import { createStateMigrateCommand } from './state-migrate.js';
@@ -727,7 +733,21 @@ function renderStateBlock(state: StackState, lockInfo: LockInfo | null): string[
     lines.push('');
     lines.push('Outputs:');
     for (const [k, v] of outputEntries) {
-      lines.push(`  ${k}: ${formatAttributeValue(v)}`);
+      // Both sides are stripped (issue #1948). Unlike a resource logical id —
+      // which CloudFormation constrains to [A-Za-z0-9] — an Outputs bag KEY can
+      // be an `Export.Name` that cdkd RESOLVED from an `Fn::Sub` / parameter /
+      // SSM value, so it passed no CFn validator and may carry ANSI escapes or
+      // bidi overrides that rewrite the surrounding terminal output; the VALUE
+      // is a resolved template value with exactly the same provenance. This is
+      // the same guard `renderOutputChangeLines` applies to the diff's rows,
+      // which is the only other place a stored Outputs bag is rendered.
+      //
+      // The FULL class (C0 included), unlike `diff-recursive`'s
+      // `stripDisplayOnlyChars`: that narrower guard exists because its values
+      // are PRETTY-PRINTED JSON whose structural newlines must survive, while
+      // `formatAttributeValue` emits single-line JSON (or a bare scalar), so
+      // there is no newline here worth keeping.
+      lines.push(`  ${stripControlChars(k)}: ${stripControlChars(formatAttributeValue(v))}`);
     }
   }
 
@@ -1939,6 +1959,20 @@ async function stateRefreshObservedCommand(
 }
 
 /**
+ * The secrets map every redaction on this command's paths gets, and it is
+ * EMPTY by construction (issue #1926).
+ *
+ * `cdkd state refresh-observed` neither synthesizes a template nor resolves a
+ * dynamic reference, so no plaintext is ever recorded here and a VALUE scan
+ * would have no needles at all. That is the issue #1900 shape, and it is why
+ * the PATH pass has to carry the redaction on its own — see the call site.
+ *
+ * Shared rather than constructed per resource because nothing writes to it:
+ * `redactSecretsForState` only reads its argument.
+ */
+const NO_RECORDED_SECRETS: RecordedSecretValues = new Map();
+
+/**
  * Refresh the `observedProperties` of every resource in one stack
  * record. Returns counts so the caller can aggregate across `--all`.
  *
@@ -2048,7 +2082,45 @@ async function refreshObservedForStack(
             unsupported++;
             return;
           }
-          resource.observedProperties = observed;
+          // GHSA-p5qg-v9gv-hc7w (issue #1926). The readback is what AWS
+          // actually holds, so for a resource deployed from a
+          // `{{resolve:secretsmanager:...}}` reference — or a
+          // `{{resolve:ssm:...}}` naming a `SecureString` — it is the DECRYPTED
+          // value, and persisting it verbatim re-introduces the advisory's
+          // disclosure inside `state.json`. This writer reached the redaction
+          // module through NO path at all before this line, which is why the
+          // #1910 sweep (framed as "every writer passes a POSITION source")
+          // never surfaced it.
+          //
+          // The map is empty (see {@link NO_RECORDED_SECRETS}), so the PATH
+          // pass is the whole mechanism: the record's own `properties` already
+          // hold the unresolved expression at the very leaf the readback echoes
+          // in plaintext, so walking the observed bag against them rewrites
+          // that leaf back onto its expression with no secret fetch and no
+          // value matching.
+          //
+          // `STATE_SOURCED_READBACK_RULES` is the row this write site occupies
+          // in `secret-redaction.ts`'s generation table ("observed walk,
+          // own-record source"): the source is THIS record's own persisted bag,
+          // so it is the same GENERATION as the bag beside it and holds no
+          // PUBLIC ssm expression — a `String` parameter is stored resolved
+          // (issue #1901) — which is what lets a stored expression win over the
+          // plaintext AWS echoes back. POSITIONAL array descent stays off
+          // because AWS may reorder a list; the order-independent KEYED descent
+          // added by issue #1915 lives inside that pass and is inherited here
+          // rather than re-solved, so a secret nested in a `Tags[]` /
+          // `Environment[]` element is reached too.
+          //
+          // Inherited residual, not introduced here: `cdkd import`'s warn path
+          // can leave a PUBLIC expression in `properties`, and
+          // `trustAnyExpression` would then copy it over the observed value —
+          // the same trade every other caller of this rules constant makes.
+          resource.observedProperties = redactSecretsForState(
+            observed,
+            NO_RECORDED_SECRETS,
+            resource.properties ?? {},
+            STATE_SOURCED_READBACK_RULES
+          );
           refreshed++;
         } catch (err) {
           failed++;

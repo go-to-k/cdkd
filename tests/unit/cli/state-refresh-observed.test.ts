@@ -360,3 +360,169 @@ describe('cdkd state refresh-observed', () => {
     expect(mockSaveState).toHaveBeenCalledTimes(2);
   });
 });
+
+/**
+ * GHSA-p5qg-v9gv-hc7w residual (issue #1926).
+ *
+ * `refresh-observed` used to assign the provider readback straight into the
+ * record and save it, reaching the redaction module along NO path at all. A
+ * resource deployed from a `{{resolve:secretsmanager:...}}` reference is
+ * deployed with the RESOLVED value, so the readback IS the decrypted secret and
+ * persisting it verbatim re-opens the advisory's disclosure inside
+ * `state.json`.
+ *
+ * The redaction here has an EMPTY secrets map by construction (this command
+ * neither synthesizes nor resolves), so every assertion below is really about
+ * the PATH pass: the record's own `properties` position the observed bag, and a
+ * source leaf holding the expression wins over the plaintext AWS echoes back.
+ */
+describe('cdkd state refresh-observed — secret redaction (issue #1926)', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    errorSpy.mockReset();
+    infoSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    vi.clearAllMocks();
+  });
+
+  const SECRET_EXPR = '{{resolve:secretsmanager:prod/db:SecretString:password}}';
+  const SECRET_PLAINTEXT = 'hunter2-decrypted';
+
+  it('persists the EXPRESSION, not the decrypted value AWS reads back (scalar leaf)', async () => {
+    // The advisory's own shape, and the one #1915 could not reach because this
+    // writer had no redaction of any kind: a plain SCALAR leaf.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Fn: makeResource({
+          physicalId: 'fn',
+          resourceType: 'AWS::Lambda::Function',
+          properties: { Environment: { Variables: { DB_PASSWORD: SECRET_EXPR } } },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      // What AWS actually holds: the resolved value, because the deploy sent it.
+      readCurrentState: async () => ({
+        Environment: { Variables: { DB_PASSWORD: SECRET_PLAINTEXT } },
+      }),
+    });
+
+    const { error } = await runRefresh(['TestStack']);
+
+    expect(error).toBeUndefined();
+    const savedState = mockSaveState.mock.calls[0]?.[2] as StackState;
+    expect(savedState.resources['Fn']?.observedProperties).toEqual({
+      Environment: { Variables: { DB_PASSWORD: SECRET_EXPR } },
+    });
+    // Belt and braces: the plaintext must not survive ANYWHERE in the blob that
+    // reaches S3, not merely at the leaf asserted above.
+    expect(JSON.stringify(savedState)).not.toContain(SECRET_PLAINTEXT);
+  });
+
+  it('reaches a secret nested in an array AWS REORDERED (inherits #1915 keyed descent)', async () => {
+    // `STATE_SOURCED_READBACK_RULES` sets `descendArrays: false` because AWS may
+    // reorder a list, so the ONLY thing that can pair these elements is the
+    // order-independent keyed descent issue #1915 added inside the pass. The
+    // fixture reorders deliberately: with positional descent this would write
+    // the expression onto the WRONG element and leave the real secret in
+    // plaintext, so a green here also proves the pairing is by identity.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Task: makeResource({
+          physicalId: 'task',
+          resourceType: 'AWS::ECS::TaskDefinition',
+          properties: {
+            ContainerDefinitions: [
+              {
+                Name: 'app',
+                Environment: [
+                  { Name: 'DB_PASSWORD', Value: SECRET_EXPR },
+                  { Name: 'LOG_LEVEL', Value: 'debug' },
+                ],
+              },
+            ],
+          },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        ContainerDefinitions: [
+          {
+            Name: 'app',
+            Environment: [
+              { Name: 'LOG_LEVEL', Value: 'debug' },
+              { Name: 'DB_PASSWORD', Value: SECRET_PLAINTEXT },
+            ],
+          },
+        ],
+      }),
+    });
+
+    const { error } = await runRefresh(['TestStack']);
+
+    expect(error).toBeUndefined();
+    const savedState = mockSaveState.mock.calls[0]?.[2] as StackState;
+    const observed = savedState.resources['Task']?.observedProperties as {
+      ContainerDefinitions: Array<{ Environment: Array<{ Name: string; Value: string }> }>;
+    };
+    const env = observed.ContainerDefinitions[0]!.Environment;
+    // AWS's ORDER is preserved (this is a drift baseline, not a rewrite of the
+    // readback's shape) while the secret leaf carries the expression.
+    expect(env.map((e) => e.Name)).toEqual(['LOG_LEVEL', 'DB_PASSWORD']);
+    expect(env.find((e) => e.Name === 'DB_PASSWORD')?.Value).toBe(SECRET_EXPR);
+    expect(env.find((e) => e.Name === 'LOG_LEVEL')?.Value).toBe('debug');
+    expect(JSON.stringify(savedState)).not.toContain(SECRET_PLAINTEXT);
+  });
+
+  it('leaves an ordinary readback untouched, including keys the record does not carry', async () => {
+    // The other half, so the redaction cannot silently widen: with no
+    // expression in the source, the observed bag must reach state verbatim —
+    // including a key `properties` lacks entirely, which the pass reaches
+    // through its "source has no such key" arm.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Bucket1: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b' },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        BucketName: 'b',
+        VersioningConfiguration: { Status: 'Enabled' },
+        Tags: [{ Key: 'env', Value: 'prod' }],
+      }),
+    });
+
+    const { error } = await runRefresh(['TestStack']);
+
+    expect(error).toBeUndefined();
+    const savedState = mockSaveState.mock.calls[0]?.[2] as StackState;
+    expect(savedState.resources['Bucket1']?.observedProperties).toEqual({
+      BucketName: 'b',
+      VersioningConfiguration: { Status: 'Enabled' },
+      Tags: [{ Key: 'env', Value: 'prod' }],
+    });
+  });
+});

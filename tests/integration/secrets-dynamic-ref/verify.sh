@@ -1102,6 +1102,90 @@ if printf '%s' "${RB_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
 fi
 echo "    OK: post-rollback state carries no resolved plaintext (secret + SecureString)"
 
+# --- Phase 1f: `cdkd state refresh-observed` REDACTS (GHSA residual #1926) ---
+# `refresh-observed` writes the provider readback into `observedProperties` and
+# saves. The readback is what AWS actually holds — for this fixture's consumer
+# Lambda that is the DECRYPTED secret, because the deploy sent the resolved
+# value — so before issue #1926 this command persisted the plaintext into
+# state.json with no redaction pass of any kind. It is the only observed-writer
+# the #1910 sweep never reached, and unlike #1915 it leaked SCALARS too.
+#
+# Its secrets map is EMPTY by construction (the command neither synthesizes nor
+# resolves), so what this arm really exercises is the PATH pass: the record's
+# own `properties` still hold the expressions and position the observed bag
+# against them.
+#
+# ORDERING. This runs after Phase 1e and before Phase 2 because it WRITES
+# `observedProperties`. The drift phase (1d) reads that field as its baseline,
+# so placing this arm before it would change what drift compares; Phase 2
+# (a redeploy asserting AWS-side removal resets) and Phase 3 (destroy) read
+# only `properties` and the live AWS state, so neither is affected.
+echo "==> Phase 1f: cdkd state refresh-observed redacts the readback (issue #1926)"
+node "${LOCAL_DIST}" state refresh-observed "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+RO_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+RO_OBSERVED=$(printf '%s' "${RO_STATE}" \
+  | jq -c '.state.resources | to_entries[]
+             | select(.value.resourceType=="AWS::Lambda::Function")
+             | .value.observedProperties.Environment.Variables' | head -1)
+# A missing / null observed bag would make every assertion below vacuously
+# pass, so the run FAILS instead: `LambdaFunctionProvider.readCurrentState`
+# reports `Environment.Variables`, and if that ever stops being true this arm
+# stops testing anything.
+if [ -z "${RO_OBSERVED}" ] || [ "${RO_OBSERVED}" = "null" ]; then
+  echo "FAIL: refresh-observed wrote no observedProperties.Environment.Variables for the consumer Lambda" >&2
+  exit 1
+fi
+
+RO_PASSWORD=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SECRET_PASSWORD // empty')
+RO_SECURE=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SSM_SECURE_VALUE // empty')
+RO_SSM=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SSM_VALUE // empty')
+
+refresh_fail=0
+case "${RO_PASSWORD}" in
+  '{{resolve:secretsmanager:'*) echo "    OK: observed SECRET_PASSWORD kept the expression: ${RO_PASSWORD}" ;;
+  *) echo "FAIL: observed SECRET_PASSWORD is NOT the {{resolve:...}} expression: $(mask "${RO_PASSWORD}")" >&2; refresh_fail=1 ;;
+esac
+# The ssm/ssm discriminator, same pair as Guards 3b + 4 on `properties`: the
+# SecureString reference must be an expression while the plain String one must
+# stay RESOLVED. A redaction that keyed on the SPELLING would fail the second.
+case "${RO_SECURE}" in
+  '{{resolve:ssm:'*) echo "    OK: observed SSM_SECURE_VALUE kept the expression: ${RO_SECURE}" ;;
+  *) echo "FAIL: observed SSM_SECURE_VALUE is NOT the {{resolve:...}} expression: $(mask "${RO_SECURE}")" >&2; refresh_fail=1 ;;
+esac
+if [ "${RO_SSM}" = "${EXPECTED_SSM}" ]; then
+  echo "    OK: observed SSM_VALUE kept the resolved value (ssm String is public config)"
+else
+  echo "FAIL: observed SSM_VALUE should be the resolved '${EXPECTED_SSM}', got $(mask "${RO_SSM}")" >&2
+  refresh_fail=1
+fi
+
+# Same scoping split as Guard 5: the secret's own resource legitimately holds
+# the fixture's hardcoded password, so the password grep is scoped to the
+# consumer Lambda's observed bag, while the decrypted SecureString has no such
+# sibling and the WHOLE state document is scanned for it.
+if printf '%s' "${RO_OBSERVED}" | grep -qF "${EXPECTED_PASSWORD}"; then
+  echo "FAIL: refresh-observed persisted the DECRYPTED secret into observedProperties (#1926)" >&2
+  refresh_fail=1
+else
+  echo "    OK: no resolved secret plaintext in the refreshed observed bag"
+fi
+if printf '%s' "${RO_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+  echo "FAIL: refresh-observed persisted the decrypted SecureString into state (#1926)" >&2
+  refresh_fail=1
+else
+  echo "    OK: no decrypted SecureString anywhere in the refreshed state document"
+fi
+
+if [ "${refresh_fail}" -ne 0 ]; then
+  echo "FAIL: refresh-observed redaction assertions failed" >&2
+  exit 1
+fi
+
 # --- Phase 2: removal-reset redeploy (issue #1160 secretsmanager batch) ---
 echo "==> Phase 2: re-deploy dropping Description + KmsKeyId (removal reset)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
