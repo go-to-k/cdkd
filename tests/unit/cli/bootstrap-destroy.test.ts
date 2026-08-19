@@ -9,9 +9,17 @@ const {
   stateBackendMocks,
   callLog,
   loggerMocks,
+  deletedKeys,
 } = vi.hoisted(() => {
   const callLog: string[] = [];
+  // Keys removed by `deleteRawObjects`, so the backend mock can model the one
+  // thing a plain `mockImplementation` cannot: that a read AFTER a delete
+  // misses. Several orderings in this command are only correct because of that
+  // sequencing (read the marker, delete it, then look for siblings), and a
+  // deletion-blind fixture reports them all as fine.
+  const deletedKeys = new Set<string>();
   return {
+    deletedKeys,
     mockS3Send: vi.fn(),
     mockStsSend: vi.fn(),
     mockEcrSend: vi.fn(),
@@ -67,7 +75,26 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 }));
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
-  S3StateBackend: vi.fn().mockImplementation(() => stateBackendMocks),
+  // The spies stay the ones tests script and assert on; the wrapper only adds
+  // DELETION AWARENESS on top, so a key removed by `deleteRawObjects` stops
+  // being readable and stops being listed. The spy is still invoked on every
+  // read so `mock.calls` (and `markerProbes()`) record it — the result is
+  // masked afterwards, not skipped.
+  S3StateBackend: vi.fn().mockImplementation(() => ({
+    ...stateBackendMocks,
+    getRawObject: async (key: string): Promise<string | null> => {
+      const body = (await stateBackendMocks.getRawObject(key)) as string | null;
+      return deletedKeys.has(key) ? null : body;
+    },
+    listRawKeys: async (prefix: string): Promise<string[]> => {
+      const keys = (await stateBackendMocks.listRawKeys(prefix)) as string[];
+      return keys.filter((k) => !deletedKeys.has(k));
+    },
+    deleteRawObjects: async (keys: string[]): Promise<void> => {
+      for (const k of keys) deletedKeys.add(k);
+      await stateBackendMocks.deleteRawObjects(keys);
+    },
+  })),
 }));
 
 // Same treatment for the S3 client: the command classes stay real (the
@@ -144,6 +171,13 @@ async function runDestroy(extraArgs: string[] = []): Promise<void> {
   await runDestroyInRegion(REGION, extraArgs);
 }
 
+/** No `--region` at all — the AWS_REGION / SDK-chain path. */
+async function runDestroyNoRegionFlag(extraArgs: string[] = []): Promise<void> {
+  const cmd = createBootstrapCommand();
+  cmd.exitOverride();
+  await cmd.parseAsync(['--destroy', ...extraArgs], { from: 'user' });
+}
+
 async function runDestroyInRegion(region: string, extraArgs: string[] = []): Promise<void> {
   const cmd = createBootstrapCommand();
   cmd.exitOverride();
@@ -170,6 +204,7 @@ function expectNothingDeleted(): void {
 beforeEach(() => {
   vi.clearAllMocks();
   callLog.length = 0;
+  deletedKeys.clear();
   mockStsSend.mockResolvedValue({ Account: ACCOUNT });
   mockRebuildClient.mockResolvedValue(null);
 
@@ -752,6 +787,9 @@ describe('cdkd bootstrap --destroy', () => {
       await expect(
         runDestroyInRegion(REGION_UPPER, ['--yes', '--include-state-bucket'])
       ).rejects.toThrow(/EU-WEST-1/);
+      // A guard test that does not assert nothing was deleted is only half a
+      // guard — which is the exact shape the orphaning blocker below had.
+      expectNothingDeleted();
     });
 
     it('names the OTHER region by its RAW key spelling, not the folded one', async () => {
@@ -779,9 +817,67 @@ describe('cdkd bootstrap --destroy', () => {
       }
 
       expect(err).toBeInstanceOf(CdkdError);
+      // The CODE is the hook-facing contract, not the prose.
+      expect((err as CdkdError).code).toBe('STATE_BUCKET_HOLDS_MARKERS');
       // Reported once, and in the spelling that actually reaches the marker.
       expect(err!.message).toContain('region(s) EU-WEST-1 are still opted in');
       expect(err!.message).not.toContain('EU-WEST-1, eu-west-1');
+      expectNothingDeleted();
+    });
+
+    it('REFUSES --include-state-bucket while a same-region sibling marker survives', async () => {
+      // BLOCKER: folding the comparison drops a same-region sibling from the
+      // "other regions" guard, but nothing else deletes it — the teardown
+      // removes exactly ONE marker key. So the state bucket would be emptied
+      // with the sibling inside it while the asset bucket and ECR repo it names
+      // survive, nameless and unreachable. The RAW compare prevented this by
+      // accident before the fold; this arm makes it deliberate.
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === 'cdkd-bootstrap/') return [MARKER_KEY, RAW_MARKER_KEY];
+        if (prefix === '') return [MARKER_KEY];
+        return [];
+      });
+
+      let err: Error | undefined;
+      try {
+        // Canonical --region on purpose: `rawMarkerKey === markerKey`, so the
+        // teardown-time sibling logic never engages and only this guard stands
+        // between the user and an orphaned bucket.
+        await runDestroy(['--yes', '--include-state-bucket']);
+      } catch (e) {
+        err = e as Error;
+      }
+
+      expect(err).toBeInstanceOf(CdkdError);
+      expect((err as CdkdError).code).toBe('STATE_BUCKET_HOLDS_MARKERS');
+      expect(err!.message).toContain(RAW_MARKER_KEY);
+      // The remedy names the spelling that actually reaches that key.
+      expect(err!.message).toContain(`--region ${REGION_UPPER}`);
+      expectNothingDeleted();
+    });
+
+    it('finds a same-region sibling under a THIRD spelling, not just the two probed keys', async () => {
+      // Sibling detection comes from the marker LISTING, so a spelling neither
+      // probe would guess is still caught. A two-key probe leaves this one
+      // silently orphaned.
+      const THIRD_KEY = 'cdkd-bootstrap/Us-East-1.json';
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === 'cdkd-bootstrap/') return [MARKER_KEY, THIRD_KEY];
+        if (prefix === '') return [MARKER_KEY];
+        return [];
+      });
+
+      let err: Error | undefined;
+      try {
+        await runDestroy(['--yes', '--include-state-bucket']);
+      } catch (e) {
+        err = e as Error;
+      }
+
+      expect(err).toBeInstanceOf(CdkdError);
+      expect(err!.message).toContain(THIRD_KEY);
+      expect(err!.message).toContain('--region Us-East-1');
+      expectNothingDeleted();
     });
 
     it('warns about a surviving sibling marker instead of deleting it blind', async () => {
@@ -792,6 +888,11 @@ describe('cdkd bootstrap --destroy', () => {
       stateBackendMocks.getRawObject.mockImplementation(async (key: string) =>
         key === MARKER_KEY || key === RAW_MARKER_KEY ? MARKER_BODY : null
       );
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === 'cdkd-bootstrap/') return [MARKER_KEY, RAW_MARKER_KEY];
+        if (prefix === '') return [MARKER_KEY];
+        return [];
+      });
 
       await runDestroyInRegion(REGION_UPPER, ['--yes']);
 
@@ -800,14 +901,82 @@ describe('cdkd bootstrap --destroy', () => {
       expect(stateBackendMocks.deleteRawObjects).not.toHaveBeenCalledWith([RAW_MARKER_KEY]);
       const warning = loggerMocks.warn.mock.calls
         .map((c) => String(c[0]))
-        .find((line) => line.includes('second bootstrap marker'));
+        .find((line) => line.includes('further bootstrap marker'));
       expect(warning).toContain(RAW_MARKER_KEY);
-      expect(warning).toContain('--destroy');
+
+      // BLOCKER: the printed remedy must name the spelling that REACHES the
+      // survivor. The canonical key was just deleted, so a re-run with the
+      // canonical spelling probes it once, finds nothing and reports "nothing
+      // to delete" — the survivor would be unreachable by this command forever.
+      // Asserted in both directions, since `toContain('--destroy')` alone
+      // passed the broken message.
+      expect(warning).toContain(`--region ${REGION_UPPER}`);
+      expect(warning).not.toContain(`--region ${REGION}'`);
     });
 
-    it('makes no sibling probe when the region is canonical', async () => {
-      // The extra read is scoped to the non-canonical path; the common path
-      // must still touch the marker exactly once.
+    it('names each surviving sibling by its OWN spelling, not the invocation region', async () => {
+      // A third spelling reached through neither probe: the remedy must name
+      // `Us-East-1`, which is the only value that finds that key. Naming the
+      // invocation's raw region would be wrong for this one.
+      const THIRD_KEY = 'cdkd-bootstrap/Us-East-1.json';
+      stateBackendMocks.getRawObject.mockImplementation(async (key: string) =>
+        key === MARKER_KEY ? MARKER_BODY : null
+      );
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === 'cdkd-bootstrap/') return [MARKER_KEY, THIRD_KEY];
+        if (prefix === '') return [MARKER_KEY];
+        return [];
+      });
+
+      await runDestroyInRegion(REGION_UPPER, ['--yes']);
+
+      const warning = loggerMocks.warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.includes(THIRD_KEY));
+      expect(warning).toContain('--region Us-East-1');
+    });
+
+    it('folds an UPPER-cased AWS_REGION before it reaches a client', async () => {
+      // The env path, which the conditional client spread used to skip
+      // entirely — the SDK then read the raw env value itself and resolved the
+      // wrong partition. The flag path arm above cannot catch this: it passes
+      // `--region`, which took a different branch.
+      const prev = process.env['AWS_REGION'];
+      process.env['AWS_REGION'] = REGION_UPPER;
+      try {
+        await runDestroyNoRegionFlag(['--yes']);
+      } finally {
+        if (prev === undefined) delete process.env['AWS_REGION'];
+        else process.env['AWS_REGION'] = prev;
+      }
+
+      const awsClientRegions = vi.mocked(AwsClients).mock.calls.map((c) => c[0]?.region);
+      expect(awsClientRegions.length).toBeGreaterThanOrEqual(1);
+      for (const r of awsClientRegions) expect(r).toBe(REGION);
+      // And the marker was still found under the canonical key.
+      expect(stateBackendMocks.deleteRawObjects).toHaveBeenCalledWith([MARKER_KEY]);
+    });
+
+    it('leaves the client region ABSENT when no region is named at all', async () => {
+      // Deliberately NOT `gc.ts`'s unconditional pass: that variable falls back
+      // to the literal 'us-east-1', so passing it always would PIN us-east-1
+      // over a profile's own region from ~/.aws/config. Absent must stay
+      // absent so the SDK chain answers.
+      const prev = process.env['AWS_REGION'];
+      delete process.env['AWS_REGION'];
+      try {
+        await runDestroyNoRegionFlag(['--yes']);
+      } finally {
+        if (prev !== undefined) process.env['AWS_REGION'] = prev;
+      }
+
+      const awsClientConfigs = vi.mocked(AwsClients).mock.calls.map((c) => c[0]);
+      expect(awsClientConfigs.length).toBeGreaterThanOrEqual(1);
+      for (const cfg of awsClientConfigs) expect(cfg).not.toHaveProperty('region');
+    });
+
+    it('makes no extra marker read when the region is canonical', async () => {
+      // The common path must still touch the marker exactly once.
       await runDestroy(['--yes']);
 
       expect(markerProbes()).toEqual([MARKER_KEY]);

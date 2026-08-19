@@ -244,9 +244,25 @@ async function deleteContainerRepo(
   }
 }
 
+/** The region spelling a bootstrap marker key carries, e.g. `Us-East-1`. */
+function markerRegionOfKey(markerKey: string): string {
+  return markerKey.slice(BOOTSTRAP_MARKER_PREFIX.length, -'.json'.length);
+}
+
 /**
- * List OTHER regions that still have a bootstrap marker in the state
- * bucket (i.e. are still opted in to cdkd asset storage).
+ * Partition the state bucket's bootstrap markers, relative to the ONE this run
+ * resolved, into the two kinds that must not be silently destroyed with the
+ * bucket:
+ *
+ * - `otherRegions` — markers for a DIFFERENT region, still opted in.
+ * - `sameRegionKeys` — markers for THIS region under a different SPELLING of
+ *   its name. The teardown deletes exactly one key, so every other spelling
+ *   survives, naming asset storage this run did not touch.
+ *
+ * Both come from ONE listing, and the second kind is why the listing rather
+ * than a per-key probe is the source: a probe is only as deep as the keys it
+ * guesses (`us-east-1` / `US-EAST-1`), while a region can hold a marker under
+ * any spelling (`Us-East-1`), and the listing sees all of them.
  *
  * `region` arrives CANONICAL (issue #1995) while the key segments are whatever
  * `cdkd bootstrap` actually wrote, which is not folded (issue #1820) — so the
@@ -258,8 +274,8 @@ async function deleteContainerRepo(
  * very region being torn down, and tell the user to run the command they just
  * ran. It aborts BEFORE the teardown, so the bucket and repo survive too.
  *
- * Both spellings of the SAME region are therefore one entry, deduplicated: a
- * region bootstrapped twice under two spellings must not be reported twice.
+ * Other regions are deduplicated by the folded name, so a region bootstrapped
+ * twice under two spellings is reported once rather than twice.
  *
  * The comparison folds but the REPORTED value stays the RAW key segment, and
  * that asymmetry is load-bearing. The error tells the user to run
@@ -270,22 +286,32 @@ async function deleteContainerRepo(
  * "nothing to delete". Printing the folded name would hand the user a command
  * that cannot work.
  */
-async function listOtherBootstrapRegions(
+async function listBootstrapMarkerSiblings(
   stateBackend: Pick<S3StateBackend, 'listRawKeys'>,
-  region: string
-): Promise<string[]> {
+  region: string,
+  resolvedMarkerKey: string
+): Promise<{ otherRegions: string[]; sameRegionKeys: string[] }> {
   const keys = await stateBackend.listRawKeys(BOOTSTRAP_MARKER_PREFIX);
-  const others = keys
+  const segments = keys
     .filter((k) => k.endsWith('.json'))
-    .map((k) => k.slice(BOOTSTRAP_MARKER_PREFIX.length, -'.json'.length))
-    .filter((r) => r.length > 0 && canonicalizeRegion(r) !== region);
-  // Dedupe BY the folded name, keep the raw spelling as the value.
+    .map((k) => ({ key: k, raw: k.slice(BOOTSTRAP_MARKER_PREFIX.length, -'.json'.length) }))
+    .filter((e) => e.raw.length > 0);
+
+  // Dedupe OTHER regions BY the folded name, keeping the raw spelling.
   const byCanonical = new Map<string, string>();
-  for (const raw of others) {
-    const key = canonicalizeRegion(raw);
-    if (!byCanonical.has(key)) byCanonical.set(key, raw);
+  for (const { raw } of segments) {
+    if (canonicalizeRegion(raw) === region) continue;
+    const folded = canonicalizeRegion(raw);
+    if (!byCanonical.has(folded)) byCanonical.set(folded, raw);
   }
-  return [...byCanonical.values()];
+
+  // Same region, different KEY than the one this run resolved: every spelling
+  // of this region's own marker that the teardown will NOT delete.
+  const sameRegionKeys = segments
+    .filter((e) => canonicalizeRegion(e.raw) === region && e.key !== resolvedMarkerKey)
+    .map((e) => e.key);
+
+  return { otherRegions: [...byCanonical.values()], sameRegionKeys };
 }
 
 /**
@@ -327,8 +353,25 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
   const rawRegion = options.region || process.env['AWS_REGION'] || 'us-east-1';
   const region = canonicalizeRegion(rawRegion);
 
+  // Canonical when a region was NAMED (flag or env), absent when it was not.
+  //
+  // Deliberately NOT `region` unconditionally the way `gc.ts` passes it: that
+  // variable falls back to the literal `'us-east-1'`, so passing it always
+  // would PIN us-east-1 for a user who names no region and expects the SDK's
+  // own chain (`~/.aws/config` profile region) to answer — a behaviour change
+  // well outside this fix. What #1995 requires is only that a RAW spelling
+  // never reaches a client, and that holds here: the env path is folded too,
+  // which is the half the conditional spread used to miss
+  // (`AWS_REGION=CN-NORTH-1 cdkd bootstrap --destroy` previously let the SDK
+  // read the raw env value itself and resolve the wrong partition).
+  //
+  // Same shape as `loadBootstrapContainerRepo`'s `clientRegion`
+  // (`src/cli/commands/local-state-loader.ts`): fold, and let absent stay
+  // absent.
+  const clientRegion = canonicalizeRegion(options.region || process.env['AWS_REGION']) || undefined;
+
   const awsClients = new AwsClients({
-    ...(options.region && { region }),
+    ...(clientRegion !== undefined && { region: clientRegion }),
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);
@@ -419,6 +462,16 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
       marker = parseBootstrapMarker(markerBody, resolvedMarkerKey);
     }
 
+    // Every OTHER bootstrap marker in the bucket, relative to the one just
+    // resolved — used by the `--include-state-bucket` guard below AND by the
+    // surviving-sibling warning after the teardown, so both see the same,
+    // listing-derived set rather than two independently-guessed key probes.
+    const markerSiblings = await listBootstrapMarkerSiblings(
+      stateBackend,
+      region,
+      resolvedMarkerKey
+    );
+
     // 2. Safety scan: refuse while any DEPLOYED stack still references the
     //    asset bucket / repo (running Lambdas keep working after deletion,
     //    but any future re-deploy / rollback of those stacks breaks).
@@ -461,13 +514,34 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
           'STATE_BUCKET_NOT_EMPTY'
         );
       }
-      const otherRegions = await listOtherBootstrapRegions(stateBackend, region);
-      if (otherRegions.length > 0) {
+      if (markerSiblings.otherRegions.length > 0) {
         throw new CdkdError(
           `Refusing to delete state bucket '${bucketName}': region(s) ` +
-            `${otherRegions.join(', ')} are still opted in to cdkd asset storage ` +
-            `(their bootstrap markers live in this bucket). Run ` +
+            `${markerSiblings.otherRegions.join(', ')} are still opted in to cdkd asset ` +
+            `storage (their bootstrap markers live in this bucket). Run ` +
             `'cdkd bootstrap --destroy --region <r>' for each first.`,
+          'STATE_BUCKET_HOLDS_MARKERS'
+        );
+      }
+      if (markerSiblings.sameRegionKeys.length > 0) {
+        // Same region under another SPELLING. Folding the comparison above is
+        // what stops these being mis-reported as "other" regions — but dropping
+        // them from the guard without catching them here is worse than the bug
+        // it fixed: this run deletes exactly ONE marker key, so the siblings
+        // would go with the state bucket while the asset bucket and ECR repo
+        // they name survive, nameless and unreachable. The raw compare
+        // accidentally prevented that; this arm does it deliberately.
+        const listing = markerSiblings.sameRegionKeys
+          .map((k) => `  - ${k}  (cdkd bootstrap --destroy --region ${markerRegionOfKey(k)})`)
+          .join('\n');
+        throw new CdkdError(
+          `Refusing to delete state bucket '${bucketName}': region '${region}' has ` +
+            `${markerSiblings.sameRegionKeys.length} further bootstrap marker(s) under a ` +
+            `different spelling of its name, which this teardown does not delete:\n` +
+            `${listing}\n` +
+            `Destroy each one first — deleting the state bucket now would remove those ` +
+            `markers while the asset storage they name survives, with no record of its ` +
+            `names.`,
           'STATE_BUCKET_HOLDS_MARKERS'
         );
       }
@@ -525,22 +599,24 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
       // simply to run the command again: the canonical key is gone now, so
       // the next run's second probe finds the sibling and tears it down.
       //
-      // Scoped to the ONE case that can hide a sibling: a non-canonical
-      // --region whose CANONICAL key won probe 1, leaving the raw key unread.
-      // When probe 2 won, probe 1 already returned null for the canonical key,
-      // so re-reading it would be a wasted call for a known-absent object —
-      // and the canonical common path (`rawMarkerKey === markerKey`) still
-      // touches the marker exactly once.
-      if (resolvedMarkerKey === markerKey && rawMarkerKey !== markerKey) {
-        const siblingBody = await stateBackend.getRawObject(rawMarkerKey);
-        if (siblingBody !== null) {
-          logger.warn(
-            `A second bootstrap marker for this region remains at '${rawMarkerKey}' ` +
-              `(this region was bootstrapped under two spellings of its name). It ` +
-              `names asset storage that was NOT destroyed by this run — re-run ` +
-              `'cdkd bootstrap --destroy --region ${region}' to tear that one down too.`
-          );
-        }
+      // Derived from the marker LISTING, not from a probe of `rawMarkerKey`:
+      // a region can hold a marker under ANY spelling, so a probe that guesses
+      // two keys leaves a third (`Us-East-1.json`) unmentioned.
+      //
+      // Each remedy names the surviving key's OWN region spelling, which is the
+      // only one that reaches it: the canonical key is gone now, so a re-run
+      // with the canonical spelling probes it once, finds nothing, and reports
+      // "nothing to delete" — the same unreachable-marker trap this command's
+      // two-probe read exists to avoid, and one this warning would otherwise
+      // re-create in its own remediation.
+      for (const siblingKey of markerSiblings.sameRegionKeys) {
+        logger.warn(
+          `A further bootstrap marker for this region remains at '${siblingKey}' ` +
+            `(this region was bootstrapped under more than one spelling of its name). ` +
+            `It names asset storage that was NOT destroyed by this run — re-run ` +
+            `'cdkd bootstrap --destroy --region ${markerRegionOfKey(siblingKey)}' to ` +
+            `tear that one down too.`
+        );
       }
       logger.info(
         `\ncdkd asset storage is now OFF for region ${region}: future deploys in this ` +

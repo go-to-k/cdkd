@@ -1519,14 +1519,21 @@ delete-repository` / marker-delete sequence. It:
    leaves the region consistently opted in (deploys hard-error with a
    re-bootstrap hint rather than silently falling back to legacy mode).
 2. Reads the asset bucket / repo **names from the marker**, never from the
-   naming convention — compatible with custom asset-storage names. The region
-   is lower-cased before it reaches any AWS client or the marker key, and both
-   spellings of the key are probed, exactly as in `cdkd gc` (issue
+   naming convention — compatible with custom asset-storage names. A region
+   named by `--region` OR by `AWS_REGION` is lower-cased before it reaches any
+   AWS client or the marker key, and both spellings of the key are probed, as
+   in `cdkd gc` (issue
    [#1995](https://github.com/go-to-k/cdkd/issues/1995)) — with a sharper
    consequence here: an unmatched marker made this command report "nothing to
    delete" and exit 0 while the bucket and repo stayed alive. The marker
    deleted in step 1 is the key the marker was actually READ from, so the
-   teardown cannot leave the real marker behind.
+   teardown cannot delete the wrong one. A region bootstrapped under MORE than
+   one spelling of its name has more than one marker, and the teardown deletes
+   exactly one of them: each survivor is reported with a warning naming its own
+   key and the `--region` spelling that reaches it (only that spelling does —
+   the canonical key is gone by then). Their asset storage is left standing on
+   purpose, since two markers can name two different sets of custom names and
+   the marker is the only record of them.
 3. Refuses while any deployed stack's state still references the region's
    asset bucket / repo (running Lambdas keep working after deletion, but a
    future re-deploy / rollback of those stacks would break). The scan
@@ -1552,7 +1559,10 @@ written under a different spelling of its own name is not mistaken for a
 second region — but the refusal NAMES each one by the spelling its marker
 key actually uses, because that is the spelling
 `cdkd bootstrap --destroy --region <r>` needs in order to find it (issue
-[#1995](https://github.com/go-to-k/cdkd/issues/1995)).
+[#1995](https://github.com/go-to-k/cdkd/issues/1995)). The same refusal covers
+a marker for THIS region under another spelling: the teardown deletes one
+marker key, so deleting the state bucket while a sibling is still in it would
+remove that record while the asset storage it names survives, nameless.
 
 A region with no bootstrap marker is a no-op (nothing to delete); note the
 auto-create-on-first-deploy behavior above will re-create the storage on
