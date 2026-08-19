@@ -292,14 +292,22 @@ APOS="$TMP/apos-en.md"
 printf "It's fixed now.\n" > "$APOS"
 run "apostrophe in an English body file does not hide a non-English title" \
   "gh pr create --title \"バグ修正\" --body-file $APOS" 2
-# A LEADING `#` comment makes the shared `cmd_matches_verb` command-position
-# anchor miss the verb, so the gate never arms. That is a property of
-# `lib/command-match.sh` shared by all 16 sourcing gates, not of this hook --
-# asserted here as the known limit it is, so a future change to the shared
-# matcher shows up as this case flipping rather than as silence.
-run "known limit (shared matcher): a leading # comment stops the gate arming" \
+# An UNBALANCED APOSTROPHE anywhere earlier in the command (`don't` in a
+# comment or in prose) makes the shared `strip_noncommand_spans` treat the
+# rest of the command as one quoted span, so `cmd_matches_verb` never sees
+# the verb and the gate does not arm. It is the apostrophe-parity class
+# again, but living in `lib/command-match.sh`, shared by all 16 sourcing
+# gates -- NOT something deleting this hook's own scanner could fix.
+# Asserted so a change to the shared matcher shows up as these cases
+# flipping rather than as silence. The position of the comment is
+# irrelevant; the apostrophe is the whole mechanism -- the control below
+# proves it.
+run "known limit (shared matcher): an unbalanced apostrophe stops the gate arming" \
   "# don't
 gh issue create --title y --body \"日本語\"" 0
+run "control: the same comment WITHOUT an apostrophe blocks normally" \
+  "# file the issue
+gh issue create --title y --body \"日本語\"" 2
 
 # --- each Unicode range in ISOLATION ----------------------------------
 # Without these, deleting any single range from the character class

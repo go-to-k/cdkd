@@ -28,12 +28,21 @@
 # deliberately leaves inline as its escape hatch. That trade does not
 # apply here: there is no legitimate reason to publish Japanese in a body.
 #
-# Every flag above is one only gh defines, so a match anywhere in the
-# command belongs to the gh invocation and NO shell parsing is needed.
-# That is the whole design, and see the note in section 2 for what it
-# cost to learn.
+# The long flags above are ones no other common command defines, so a
+# match anywhere in the command can be attributed to the gh invocation
+# and NO shell parsing is needed. That is the whole design; section 2
+# records what it cost to learn. Two honest qualifications:
+#   - `-F` is NOT gh-unique (`git commit -F`, `awk -F`, `grep -F`,
+#     `curl -F`). What keeps that from false-blocking is the `[ -f "$f" ]`
+#     existence check plus the character-class test, not flag uniqueness;
+#   - the trade runs in the FALSE-POSITIVE direction, which is the safe
+#     one but is still a cost: a non-gh command later in the same chain
+#     that carries a literal `--body` / `--title` / `--notes` with
+#     non-English text blocks, e.g.
+#     `gh issue create ... && echo "use --body <non-English>"`.
+#     Loud and fixable, unlike a silent miss.
 #
-# Known limits, all measured rather than assumed:
+# Known limits (silent misses), all measured rather than assumed:
 #   - the SHORT flags `-b` / `-t` / `-n` are NOT scanned. They collide
 #     with other commands (`echo -n`, `grep -n`, `sed -n`, `sort -t`),
 #     so covering them requires attributing a flag to the right command
@@ -47,7 +56,15 @@
 #   - an unquoted inline value is matched, but one containing shell
 #     metacharacters may be truncated at the first;
 #   - adjacent quoted chunks (`--body "a"$'\''b'\''`) yield only the first;
-#   - `gh api --input <file>` and `--body-file -` (stdin) are not scanned.
+#   - `gh api --input <file>` and `--body-file -` (stdin) are not scanned;
+#   - a quoted path CONTAINING A SPACE (`--body-file "/a/b c/x.md"`) and the
+#     glued `gh api -fbody=<text>` shorthand are not extracted;
+#   - a gh call nested in a command substitution, a subshell, an `if`, a
+#     loop body, or behind `xargs` (`URL=$(gh issue create ...)`) never
+#     arms the gate at all -- that is the shared `cmd_matches_verb`
+#     command-position anchor, common to all 16 sourcing gates. So is an
+#     unbalanced apostrophe earlier in the command (`# don'\''t`), which
+#     makes the shared stripper swallow the rest as one quoted span.
 #
 # No bypass marker, matching non-english-text-gate.sh: the fix is to
 # translate the text, which is trivial and is the point.
@@ -133,7 +150,7 @@ while IFS= read -r f; do
   # shellcheck disable=SC2088
   case "$f" in
     /*) ;;
-    "~/"*) f="$HOME/${f#\~/}" ;;
+    "~/"*) f="${HOME:-/nonexistent}/${f#\~/}" ;;
     *) f="$target_dir/$f" ;;
   esac
   [ -f "$f" ] || continue
