@@ -545,6 +545,280 @@ export function isThrottlingError(error: unknown): boolean {
 }
 
 /**
+ * HTTP status codes that indicate a TRANSIENT SERVER-side failure worth
+ * retrying (issue #2026).
+ *
+ * Mirrors `@smithy/service-error-classification`'s own
+ * `TRANSIENT_ERROR_STATUS_CODES` (`[500, 502, 503, 504]`), which is what the
+ * AWS SDK's default retry strategy treats as transient. Deliberately a
+ * SEPARATE set from {@link RETRYABLE_HTTP_STATUS_CODES} rather than an
+ * extension of it, because that one is consumed by {@link isThrottlingError},
+ * which SEVEN call sites across four files pass as a deliberately NARROW
+ * `isRetryable`: `describe-type.ts:67` (which states the intent outright --
+ * "retry ONLY throttle-shaped failures"), `dynamodb-globaltable-provider.ts`
+ * (x4), `export.ts:1744`, and `intrinsic-function-resolver.ts:5216`. Widening
+ * the shared set would have silently converted every one of them from "retry
+ * throttles" into "retry throttles and server errors", which none of them
+ * asked for.
+ *
+ * Three FURTHER sites call it as a bare classification rather than as a retry
+ * filter -- `drift.ts:518`, `export.ts:1755`, `dynamodb-index-busy-delete.ts:381`
+ * -- and they make the case stronger, not weaker: `drift.ts` would have started
+ * returning `undefined` (reporting "cannot compare") for a resource whose read
+ * merely 500'd, and the index poll would have waited a server error out as
+ * though it were a throttle.
+ *
+ * Measured, not inferred. `tests/integration/iam-propagation-stress` against
+ * real AWS (us-east-1, 2026-08-19 08:57:30Z, round 11 of 11) produced:
+ *
+ *   StressQueuePolicyDC3E35C3: gave up after 5 IAM-propagation retries over
+ *   5.75s of propagation backoff - Failed to create SQS queue policy
+ *   StressQueuePolicyDC3E35C3: UnknownError
+ *   [name=InternalFailure http=500 requestId=ebf581cc-6072-5ffc-943a-e33312488615]
+ *
+ * SQS answered a `SetQueueAttributes` mid-propagation with HTTP 500
+ * `InternalFailure` and an empty message body -- hence the `UnknownError`
+ * placeholder, which matches no message pattern. With 500 absent from every
+ * status set, `withRetry` classified it non-retryable and threw at 5.75s of a
+ * 47.75s budget the sequence needed roughly 10s of.
+ *
+ * Why 502 and 504 come along rather than only the measured 500: they are the
+ * same class (a gateway or timeout between AWS's edge and the service), the
+ * SDK groups all four, and adding only the one status seen would leave the
+ * identical defect behind for its siblings.
+ *
+ * Note the SDK has ALREADY retried these before cdkd sees them (default
+ * `maxAttempts` is 3), so a 5xx reaching this classifier is one that persisted
+ * across the SDK's own attempts. That is an argument FOR retrying it here, not
+ * against: the eventual-consistency window this schedule exists to cover is
+ * measured in seconds, while the SDK's three attempts span well under one.
+ *
+ * ACCEPTED RISK, stated rather than discovered later: this makes a
+ * NON-IDEMPOTENT create retryable on a 500 that may have succeeded
+ * server-side. `EC2Provider.createInstance` issues `RunInstances` with no
+ * `ClientToken` (only four providers use one at all), and
+ * `IAMAccessKeyProvider` mints an unnamed key, so a replay can leave a
+ * resource that is absent from state and therefore from destroy. The class is
+ * PRE-EXISTING -- the SDK's own three attempts already reach it, and 503 was
+ * already retryable here -- but this widens the window from ~1s to the full
+ * schedule. Judged worth it because the alternative is the measured failure
+ * (a deploy that dies outright on a transient 500), and because the durable
+ * remedy is per-provider idempotency tokens rather than a blanket refusal to
+ * retry server errors. Tracked in issue #2039.
+ */
+export const TRANSIENT_SERVER_ERROR_STATUS_CODES: ReadonlySet<number> = new Set([
+  500, 502, 503, 504,
+]);
+
+/**
+ * Walk the error + its `.cause` chain (bounded, same depth 5 as
+ * {@link isThrottlingError}) looking for a transient SERVER-side HTTP status
+ * ({@link TRANSIENT_SERVER_ERROR_STATUS_CODES}) on `$metadata`.
+ *
+ * The walk is what makes it work in practice: providers wrap the AWS error in
+ * a `ProvisioningError`, so the `$metadata` carrying the status sits one link
+ * down, and the wrapper's interpolated message is all a message-based
+ * classifier can see. In the measured failure that message was the literal
+ * `UnknownError`, so the status was the ONLY usable evidence in the whole
+ * error.
+ */
+export function isTransientServerError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current != null; depth++) {
+    const status = (current as { $metadata?: { httpStatusCode?: number } }).$metadata
+      ?.httpStatusCode;
+    if (status !== undefined && TRANSIENT_SERVER_ERROR_STATUS_CODES.has(status)) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * The signals `isRetryableTransientError` had available when it classified an
+ * error, rendered for a log line (issue #2026).
+ *
+ * NOT a classification input — nothing in this file or in `withRetry` reads it
+ * back. It exists because the give-up summary added for issue #2018 reports the
+ * error's MESSAGE, and the message is precisely the field that had gone missing
+ * in the failure that motivated this: a sequence terminated on
+ * `UnknownError`, which is what the AWS SDK v3 `decorateServiceException`
+ * substitutes when a service response carries no message text at all
+ * (`@smithy/smithy-client`: `exception.message || exception.Message ||
+ * "UnknownError"`). With the message degenerate, the two fields that actually
+ * decide {@link isThrottlingError} — the error `name` and
+ * `$metadata.httpStatusCode` — were the only remaining evidence, and neither
+ * reached any log at any verbosity. Diagnosing the give-up therefore required
+ * a second real-AWS reproduction rather than a line from the first.
+ */
+export interface RetryClassificationSignals {
+  /** The name of the AWS-side error, or the deepest name when none carries `$metadata`. */
+  name?: string | undefined;
+  /**
+   * `$metadata.httpStatusCode` — the value both status sets are tested
+   * against: {@link RETRYABLE_HTTP_STATUS_CODES} via {@link isThrottlingError},
+   * and {@link TRANSIENT_SERVER_ERROR_STATUS_CODES} via
+   * {@link isTransientServerError}.
+   */
+  httpStatusCode?: number | undefined;
+  /** AWS request id, so a give-up can be taken to AWS support without a re-run. */
+  requestId?: string | undefined;
+  /**
+   * True when NO link in the cause chain carried a `$metadata` object.
+   *
+   * Load-bearing rather than cosmetic, and the reason absence is reported
+   * explicitly instead of as a missing field: a smithy `ServiceException` is
+   * built by `deserializeMetadata(output)`, which always populates
+   * `httpStatusCode` from the HTTP response, so its ABSENCE means the failure
+   * never reached error deserialization at all (a network / parse failure
+   * wrapped by a provider) — a different defect with a different fix from a
+   * status that is present but unlisted. A blank field cannot tell those apart
+   * from a truncated cause chain.
+   */
+  noMetadata: boolean;
+}
+
+/**
+ * Collect {@link RetryClassificationSignals} from an error and its bounded
+ * `.cause` chain — the SAME walk, to the same depth 5, that
+ * {@link isThrottlingError} performs, so the line reports what the classifier
+ * genuinely saw rather than a second opinion gathered differently.
+ *
+ * The signals are taken from the first link carrying a `$metadata` object,
+ * because that link IS the AWS SDK error by construction: `$metadata` is
+ * attached by the SDK's own `deserializeMetadata`, so nothing else can carry
+ * it. When no link has one, the fallback is the deepest name found BELOW depth
+ * 0 -- which keeps the field useful for the wrapped-network-error case, where
+ * the name is all that survives.
+ *
+ * Excluding depth 0 from that fallback is deliberate and is what stops the
+ * suffix from being noise. The error `withRetry` is handed is the provider's
+ * own wrapper by construction (every provider catches the AWS error and
+ * rethrows a `ProvisioningError`), so its `name` is a cdkd class name and says
+ * nothing about the service. Reporting it produced the actively misleading
+ * ` [name=ProvisioningError no-$metadata]` on a wrapper carrying no cause at
+ * all -- a suffix asserting the SDK never parsed a response, about an error
+ * that never came from the SDK.
+ *
+ * Nothing is lost in the case this helper exists for. A degenerate
+ * `UnknownError` message can only be produced by `decorateServiceException`,
+ * i.e. by a smithy `ServiceException`, and those always carry `$metadata` --
+ * so that case is answered by the FIRST branch and never reaches this
+ * fallback.
+ *
+ * Known narrowness: the first link with a NUMERIC status wins, so an outer
+ * link carrying a 400 that wraps a cause carrying a 500 reports the 400 while
+ * `isTransientServerError` retried on the 500. Left as-is because cdkd's own
+ * wrappers carry no `$metadata` at all, so producing that shape takes two
+ * stacked SDK errors -- but it is the same "must not contradict the
+ * classifier" case one link further out, and is the thing to revisit if such a
+ * chain is ever observed. A cdkd module deliberately importing no other module, this one
+ * cannot ask `error instanceof CdkdError` directly: `error-handler.ts` imports
+ * `markNonRetryable` from here, so the dependency only runs one way.
+ */
+export function describeRetryClassificationSignals(error: unknown): RetryClassificationSignals {
+  let current: unknown = error;
+  let deepestName: string | undefined;
+  // Retained from the FIRST link carrying a `$metadata` object, so a chain
+  // whose metadata has a request id but no status still reports the id.
+  let sawMetadata = false;
+  let metadataName: string | undefined;
+  let metadataRequestId: string | undefined;
+
+  for (let depth = 0; depth < 5 && current != null; depth++) {
+    const name = (current as { name?: unknown }).name;
+    // Depth 0 is the provider's wrapper -- see the note above on why its name
+    // is excluded from the no-$metadata fallback. It is still eligible via the
+    // `$metadata` branch below, where the metadata itself proves the link came
+    // from the SDK rather than from cdkd.
+    if (depth > 0 && typeof name === 'string' && name !== '') {
+      deepestName = name;
+    }
+
+    const metadata = (current as { $metadata?: unknown }).$metadata;
+    if (metadata != null && typeof metadata === 'object' && !Array.isArray(metadata)) {
+      const { httpStatusCode, requestId } = metadata as {
+        httpStatusCode?: unknown;
+        requestId?: unknown;
+      };
+      const linkName = typeof name === 'string' && name !== '' ? name : undefined;
+      if (!sawMetadata) {
+        sawMetadata = true;
+        metadataName = linkName;
+        metadataRequestId =
+          typeof requestId === 'string' && requestId !== '' ? requestId : undefined;
+      }
+      // Return only on a link that actually carries a STATUS. Returning on any
+      // `$metadata` object was wrong in a shape the AWS SDK really produces: a
+      // network failure carries `$metadata: { attempts, totalRetryDelay }` with
+      // no `httpStatusCode`, and wrapping a 500 below it. The walk stopped at
+      // the outer link and reported no `http=` at all -- while
+      // `isTransientServerError`, which walks past it, HAD found the 500 and
+      // retried on it. A line whose whole purpose is "what the classifier saw"
+      // must not contradict the classifier.
+      if (typeof httpStatusCode === 'number') {
+        return {
+          name: linkName ?? deepestName,
+          httpStatusCode,
+          // Falls back to an id retained from a SHALLOWER `$metadata` that had
+          // no status: a chain can carry the request id on the outer link and
+          // the status on the inner one, and dropping the id there loses the
+          // single field AWS support needs.
+          requestId:
+            (typeof requestId === 'string' && requestId !== '' ? requestId : undefined) ??
+            metadataRequestId,
+          noMetadata: false,
+        };
+      }
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+
+  return {
+    name: metadataName ?? deepestName,
+    requestId: metadataRequestId,
+    // FALSE when a `$metadata` was seen without a usable status: the response
+    // DID reach the SDK's error deserialization, so the "never got that far"
+    // reading the flag exists for would be a lie. Absent status and absent
+    // metadata are genuinely different findings.
+    noMetadata: !sawMetadata,
+  };
+}
+
+/**
+ * Render {@link describeRetryClassificationSignals} as a compact log suffix.
+ *
+ * Returns `''` when there is nothing to say (no name and no metadata), so a
+ * caller can append unconditionally without emitting an empty bracket pair.
+ */
+export function formatRetryClassificationSignals(error: unknown): string {
+  const signals = describeRetryClassificationSignals(error);
+  // Nothing identifiable in the chain -- no name, no status, no request id.
+  // Bail BEFORE the `no-$metadata` token below: on its own that token is not a
+  // finding but noise, because "the failure never reached error
+  // deserialization" is only informative about an error we can NAME. Emitting
+  // it unconditionally appended a content-free ` [no-$metadata]` to the
+  // give-up line for every non-AWS throw. A lone request id DOES count as
+  // identifying, since it is the one field that lets AWS support find the call.
+  if (
+    signals.name === undefined &&
+    signals.httpStatusCode === undefined &&
+    signals.requestId === undefined
+  ) {
+    return '';
+  }
+  const parts: string[] = [];
+  if (signals.name !== undefined) parts.push(`name=${signals.name}`);
+  if (signals.httpStatusCode !== undefined) parts.push(`http=${signals.httpStatusCode}`);
+  if (signals.requestId !== undefined) parts.push(`requestId=${signals.requestId}`);
+  // Reported as a POSITIVE token rather than by omission: "no $metadata" is a
+  // finding (the failure never reached error deserialization), and a reader
+  // scanning for a missing `http=` cannot distinguish it from a status the
+  // chain simply did not carry.
+  if (signals.noMetadata) parts.push('no-$metadata');
+  return ` [${parts.join(' ')}]`;
+}
+
+/**
  * Determine whether an AWS error should be retried.
  *
  * Checks (in order):
@@ -556,11 +830,21 @@ export function isThrottlingError(error: unknown): boolean {
  *      `name` or retryable HTTP status (most AWS throttles are HTTP 400, not
  *      429, so the name check carries most of the weight). See
  *      {@link isThrottlingError}.
- *   2. Substring match against {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}
+ *   2. Transient SERVER-side HTTP status (500 / 502 / 503 / 504) on the error
+ *      or any wrapped cause — see {@link isTransientServerError}. Ahead of the
+ *      message patterns because it is the only check that still works when the
+ *      response carried NO message (issue #2026).
+ *   3. Substring match against {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}
  */
 export function isRetryableTransientError(error: unknown, message: string): boolean {
   if (isMarkedNonRetryable(error)) return false;
   if (isThrottlingError(error)) return true;
+  // Issue #2026: a transient SERVER error (HTTP 500 / 502 / 503 / 504). Placed
+  // after the throttle check and before the message patterns because it is the
+  // check that survives an EMPTY message -- the measured failure carried the
+  // SDK's `UnknownError` placeholder, so every pattern below had nothing to
+  // match against and the sequence died at 12% of its budget.
+  if (isTransientServerError(error)) return true;
 
   return RETRYABLE_ERROR_MESSAGE_PATTERNS.some((p) => message.includes(p));
 }

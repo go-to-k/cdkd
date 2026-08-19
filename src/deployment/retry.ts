@@ -9,7 +9,9 @@
  */
 
 import {
+  formatRetryClassificationSignals,
   isIamPropagationError,
+  isTransientServerError,
   isMarkedNonRetryable,
   isRetryableTransientError,
 } from './retryable-errors.js';
@@ -214,6 +216,13 @@ export async function withRetry<T>(
   // and make "did we reach the cap?" unanswerable from the line.
   let propagationRetries = 0;
   let propagationSleptMs = 0;
+  // Issue #2026: retries this sequence spent on a transient SERVER error
+  // (HTTP 500/502/503/504). Counted separately from the propagation figures so
+  // the give-up line can REPORT the class this issue made retryable -- without
+  // it, a sequence retried purely on 5xx burns its whole budget and rethrows
+  // the raw AWS error with nothing printed, which is exactly the silence issue
+  // #2018 existed to remove for the propagation class. Reporting only.
+  let serverErrorRetries = 0;
 
   for (let attempt = 0; attempt <= attemptCeiling; attempt++) {
     try {
@@ -262,7 +271,7 @@ export async function withRetry<T>(
         //
         // Gated on having actually retried, so the overwhelmingly common case
         // (a non-propagation error failing fast on attempt 0) prints nothing.
-        if (propagationRetries > 0) {
+        if (propagationRetries > 0 || serverErrorRetries > 0) {
           // Whether the BUDGET ran out is a property of the loop's own exit
           // condition, NOT of the retry count. Keying it on
           // `propagationRetries >= IAM_PROPAGATION_MAX_RETRIES` was wrong in
@@ -280,18 +289,50 @@ export async function withRetry<T>(
           // folding in an 8s throttle step would make that comparison
           // meaningless. Saying "of propagation backoff" rather than a bare
           // "over Ns" is what keeps it from reading as total elapsed time.
-          const summary =
-            `${logicalId}: gave up after ${propagationRetries} IAM-propagation ` +
-            `${propagationRetries === 1 ? 'retry' : 'retries'} over ` +
-            `${(propagationSleptMs / 1000).toFixed(2)}s of propagation backoff` +
-            `${budgetExhausted ? ' (the full propagation budget)' : ''} - ${message}`;
+          //
+          // Issue #2026: the two fields the classifier actually decides on.
+          // The message alone is not always enough to say WHY a sequence
+          // ended, because the message is the field that can degenerate: the
+          // failure this came from ended on `UnknownError`, the placeholder
+          // the AWS SDK substitutes for a response carrying no message text,
+          // and at that point the `name` and `$metadata.httpStatusCode` were
+          // the only evidence left -- neither of which reached any log. This
+          // suffix is reporting only; nothing reads it back.
+          //
+          // A THUNK, not a string: `formatRetryClassificationSignals` reads
+          // `$metadata.requestId`, and nothing on this path has read that field
+          // before, so a hostile or exotic getter throws HERE -- outside the
+          // try/catch below, replacing the very error the summary exists to
+          // explain. Deferring the whole computation into the guarded call is
+          // what makes the guard cover it.
+          // Built from parts so a sequence that spent BOTH kinds of retry
+          // reports both. With only propagation retries the rendering is
+          // byte-identical to what issue #2018 shipped.
+          const spent: string[] = [];
+          if (propagationRetries > 0) {
+            spent.push(
+              `${propagationRetries} IAM-propagation ` +
+                `${propagationRetries === 1 ? 'retry' : 'retries'} over ` +
+                `${(propagationSleptMs / 1000).toFixed(2)}s of propagation backoff` +
+                `${budgetExhausted ? ' (the full propagation budget)' : ''}`
+            );
+          }
+          if (serverErrorRetries > 0) {
+            spent.push(
+              `${serverErrorRetries} transient server-error ` +
+                `${serverErrorRetries === 1 ? 'retry' : 'retries'} (HTTP 5xx)`
+            );
+          }
+          const summary = (): string =>
+            `${logicalId}: gave up after ${spent.join(' and ')} - ${message}` +
+            formatRetryClassificationSignals(error);
           // Best-effort: this is a diagnostic about an error we are ABOUT to
           // rethrow, so a throwing logger must not replace it. Losing the
           // summary degrades to the pre-fix behavior; losing the error loses
           // the diagnosis entirely. Mirrors the try/catch `deploy-engine.ts`
           // puts around its own best-effort side effects.
           try {
-            opts.logger?.warn?.(summary);
+            opts.logger?.warn?.(summary());
           } catch {
             // ignore -- the original error below is what matters
           }
@@ -341,6 +382,29 @@ export async function withRetry<T>(
       if (propagation) {
         propagationRetries++;
         propagationSleptMs = backoffThroughThisAttemptMs;
+      } else if (opts.isRetryable === undefined && isTransientServerError(error)) {
+        // `opts.isRetryable === undefined` is load-bearing, not symmetry with
+        // `defaultSchedule`. A caller with its OWN classifier is not using the
+        // arm this issue added, and counting there had two consequences:
+        //
+        //  - It printed a give-up summary where nothing was printed before.
+        //    `RETRYABLE_HTTP_STATUS_CODES` already contains 503, so the seven
+        //    throttle-only sites retry a 503 today; those are graceful-
+        //    degradation paths that swallow the failure and fall back
+        //    (`create-only-properties.ts`, `write-only-properties.ts`,
+        //    `export.ts`), so a new default-level `warn` there is pure noise --
+        //    and it would have mislabelled an 8-retry cooldown sequence that
+        //    saw one 503 as "gave up after 1 transient server-error retry".
+        //  - It read `$metadata` on a path where nothing had read it yet. The
+        //    message-only classifiers (`isNameCooldownError` /
+        //    `isRecreateRetryableError`) never touch the field, so a throwing
+        //    getter escaped here mid-loop and replaced the original error --
+        //    exactly the hazard the thunk below exists to prevent.
+        //
+        // The DELETE-shaped callers still count: they pass `maxRetries` /
+        // `initialDelayMs` but no classifier, so the default one ran and this
+        // arm is the class it just classified.
+        serverErrorRetries++;
       }
     }
   }
