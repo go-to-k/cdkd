@@ -1063,8 +1063,11 @@ describe('cdkd bootstrap --destroy', () => {
       const info = loggerMocks.info.mock.calls.map((c) => String(c[0]));
       // The unqualified hint must NOT appear...
       expect(info.some((l) => l.includes("re-run 'cdkd bootstrap --region"))).toBe(false);
-      // ...and the uncertainty must be stated instead of implied away.
-      const caveat = info.find((l) => l.includes('could not be made'));
+      // ...and the uncertainty must be stated instead of implied away. It is a
+      // WARN, not an info: the content is a caution about a DESTRUCTIVE
+      // follow-up (re-bootstrapping blind), matching its neighbours.
+      const warns = loggerMocks.warn.mock.calls.map((c) => String(c[0]));
+      const caveat = warns.find((l) => l.includes('could not be made'));
       expect(caveat).toBeDefined();
       expect(caveat).toContain('another spelling');
       expectNothingDeleted();

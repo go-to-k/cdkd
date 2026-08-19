@@ -531,7 +531,9 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
         // sibling survives untouched. When the listing could not be made, say
         // so instead of implying the absence was verified.
         if (!markerListingSucceeded) {
-          logger.info(
+          // WARN, not info, to match its neighbours: this is a caution about a
+          // DESTRUCTIVE follow-up (re-bootstrapping blind), not a hint.
+          logger.warn(
             `The bootstrap-marker listing could not be made, so it is NOT known whether ` +
               `this region has a marker under another spelling of its name. Check ` +
               `'s3://${bucketName}/${BOOTSTRAP_MARKER_PREFIX}' before re-bootstrapping — ` +
@@ -720,6 +722,16 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
             `It names asset storage that was NOT destroyed by this run — re-run ` +
             `'cdkd bootstrap --destroy --region ${markerRegionOfKey(siblingKey)}' to ` +
             `tear that one down too.`
+        );
+      }
+      if (!markerListingSucceeded) {
+        // The not-found path restates this (see the withheld-hint branch above);
+        // the teardown path must too, or "storage is now OFF" reads as verified
+        // when a sibling marker under another spelling may still be live.
+        logger.warn(
+          `The bootstrap-marker listing could not be made, so a marker under another ` +
+            `spelling of this region may still be live. Check ` +
+            `'s3://${bucketName}/${BOOTSTRAP_MARKER_PREFIX}'.`
         );
       }
       logger.info(
