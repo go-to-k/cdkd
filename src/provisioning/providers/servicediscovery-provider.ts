@@ -36,18 +36,22 @@ import {
 } from '@aws-sdk/client-servicediscovery';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
-import { withRetry } from '../../deployment/retry.js';
+import { withRetry, type RetryLogger } from '../../deployment/retry.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+import { createMaskedRetryLogger, maskerOrIdentity } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
+  UpdateContext,
+  SecretMasker,
 } from '../../types/resource.js';
 
 /**
@@ -133,12 +137,54 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     return this.stsClient;
   }
 
+  /**
+   * A {@link RetryLogger} for this provider's `withRetry` calls, bound to the
+   * caller's secret masker (issue #2050).
+   *
+   * Thin wrapper over the shared {@link createMaskedRetryLogger} — see that
+   * module for why the factory is shared with `elbv2-provider.ts` rather than
+   * hand-rolled per file, and for why `warn` is threaded rather than omitted.
+   *
+   * NOT applied to `deleteNamespace`'s retry: that one sends a
+   * `DeleteNamespaceCommand` carrying a physical id only, and `delete()` has no
+   * `maskSecrets` to thread anyway (`DeleteContext` deliberately carries none).
+   */
+  private maskedRetryLogger(maskSecrets: SecretMasker | undefined): RetryLogger {
+    return createMaskedRetryLogger(this.logger, maskSecrets);
+  }
+
+  /**
+   * Mask a caught AWS error's message before it is interpolated into the
+   * `ProvisioningError` this provider throws (issue #2050, review round 2).
+   *
+   * The twin of `ELBv2Provider.maskErrorMessage` — see that method for the full
+   * rationale. In short: `withRetry` rethrows the RAW error and the deploy
+   * engine prints the resulting message at ERROR (DEFAULT verbosity), so this
+   * is a wider disclosure surface than the retry logger, and the ONLY one for a
+   * NON-RETRYABLE rejection, where `withRetry` emits nothing at all.
+   *
+   * Masks `error.message` rather than the assembled sentence so the masker can
+   * reach `maskSecretsInText`'s WHOLE-VALUE arm (any length) instead of only
+   * the SUBSTRING arm (needles of 4+ characters). The `cause` chain is left
+   * untouched so `isRetryableTransientError`'s `$metadata` walk is unaffected.
+   */
+  private maskErrorMessage(error: unknown, maskSecrets: SecretMasker | undefined): string {
+    const mask = maskerOrIdentity(maskSecrets);
+    return mask(error instanceof Error ? error.message : String(error));
+  }
+
   // ─── Dispatch ─────────────────────────────────────────────────────
 
+  /**
+   * `context` is read for ONE thing today: `maskSecrets` (issue #2050). The
+   * Service create path runs a post-create `UpdateServiceAttributes` through
+   * `withRetry` — see {@link maskedRetryLogger}.
+   */
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
@@ -148,7 +194,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       case 'AWS::ServiceDiscovery::PublicDnsNamespace':
         return this.createPublicDnsNamespace(logicalId, resourceType, properties);
       case 'AWS::ServiceDiscovery::Service':
-        return this.createService(logicalId, resourceType, properties);
+        return this.createService(logicalId, resourceType, properties, context?.maskSecrets);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -158,12 +204,17 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * `context` is read for ONE thing today: `maskSecrets` (issue #2050) — the
+   * update-path twin of the `create()` note above.
+   */
   update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
@@ -196,7 +247,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       default:
         throw new ProvisioningError(
@@ -772,7 +824,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   private async createService(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating service discovery service ${logicalId}`);
     const client = this.getClient();
@@ -839,7 +892,11 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
                 new UpdateServiceAttributesCommand({ ServiceId: serviceId, Attributes: attrs })
               ),
             logicalId,
-            { logger: this.logger }
+            // NOT `this.logger` (issue #2050): `attrs` is
+            // `properties['ServiceAttributes']`, already RESOLVED, and an AWS
+            // rejection quotes the offending value back into the message
+            // `withRetry` interpolates.
+            { logger: this.maskedRetryLogger(maskSecrets) }
           );
           this.logger.debug(
             `Applied ${Object.keys(attrs).length} ServiceAttribute(s) for ${logicalId}`
@@ -868,9 +925,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // `cause` carries the ORIGINAL error untouched (issue #2050): the
+      // classifier walks it for `$metadata`, so only the human-readable
+      // message is masked.
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create service discovery service ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create service discovery service ${logicalId}: ` +
+          `${this.maskErrorMessage(error, maskSecrets)}`,
         resourceType,
         logicalId,
         undefined,
@@ -901,7 +962,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating service discovery service ${logicalId}: ${physicalId}`);
     const client = this.getClient();
@@ -970,7 +1032,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
               new UpdateServiceAttributesCommand({ ServiceId: physicalId, Attributes: upsertAttrs })
             ),
           logicalId,
-          { logger: this.logger }
+          // Masked for the same reason as the create path (issue #2050) — the
+          // upsert map is built from `properties`, already RESOLVED.
+          { logger: this.maskedRetryLogger(maskSecrets) }
         );
         this.logger.debug(
           `Applied ${Object.keys(upsertAttrs).length} ServiceAttribute change(s) for ${logicalId}`
@@ -987,7 +1051,10 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
               })
             ),
           logicalId,
-          { logger: this.logger }
+          // Masked too (issue #2050). The payload is attribute KEYS from
+          // `previousProperties`, not values — but a key can itself be a
+          // resolved secret, and AWS quotes the rejected key back.
+          { logger: this.maskedRetryLogger(maskSecrets) }
         );
         this.logger.debug(`Removed ${removedAttrKeys.length} ServiceAttribute(s) for ${logicalId}`);
       }
@@ -997,9 +1064,12 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
+      // `cause` carries the ORIGINAL error untouched (issue #2050) — see the
+      // create path above.
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update service discovery service ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update service discovery service ${logicalId}: ` +
+          `${this.maskErrorMessage(error, maskSecrets)}`,
         resourceType,
         logicalId,
         physicalId,
