@@ -1198,23 +1198,52 @@ function dynamicReferenceTokens(value: string): string[] {
  * response that carried the value. `{{resolve:ssm-secure:` does not match this
  * prefix at all (the next character is `-`), so it is never refused here.
  *
- * That makes this predicate depend on WHEN the verdict store is populated
- * relative to the persist choke point, which is worth naming because the answer
- * is not local to this module. It is populated in time, including for a
- * resource this deploy does not touch: the engine's change detection resolves
- * every template property with `skipDynamicReferences`, and that flag only
- * flips `decrypt` on the ssm branch — the `GetParameter` still runs and
- * `IntrinsicFunctionResolver` still records a definitive `SecureString`
- * verdict. So an UNCHANGED secret-bearing resource has its token recorded
- * before its auto-refreshed baseline is redacted. The same arm RETRACTS the
- * memo for a parameter that comes back public, which is what makes "not
- * recorded" an authoritative answer here rather than merely a cautious one.
+ * The verdict store only carries signal where something RESOLVED, so this
+ * splits on whether a secrets map exists at all.
  *
- * `tests/integration/secrets-dynamic-ref` Phase 1g is the end-to-end proof:
- * its mixed leaf embeds exactly such a reference, and it asserts the embedded
- * expression survives a plain `cdkd deploy`.
+ * WITH a map, a pass resolved this bag: the engine's change detection walks
+ * every template property with `skipDynamicReferences`, which only flips
+ * `decrypt` on the ssm branch — the `GetParameter` still runs, a definitive
+ * `SecureString` is recorded, and a parameter that comes back public has its
+ * memo RETRACTED. Absence from the store is then real evidence of a public
+ * parameter, and the resolved value is kept.
+ *
+ * WITHOUT one, nothing was resolved and nothing could have been recorded, so
+ * absence means only that the question was never asked. The leaf is treated as
+ * secret-bearing and refused. That is not merely the cautious branch, it is the
+ * SAME premise the whole-token arm one level up already acts on: a PUBLIC
+ * `String` / `StringList` reference is persisted RESOLVED (issue #1901), so a
+ * `{{resolve:ssm:` token that SURVIVES in a persisted state bag is a
+ * SecureString by construction. An earlier revision applied a stricter rule to
+ * a MIXED leaf than to a whole token on the identical source, and that
+ * inconsistency is what persisted a decrypted secret.
+ *
+ * ACCEPTED CONSEQUENCE, recorded rather than papered over: on the empty-map
+ * paths a genuinely PUBLIC ssm mixed leaf is now OVER-redacted, so the baseline
+ * no longer matches AWS and `cdkd drift` reports a phantom on it. That is
+ * reachable only through the one documented hole in the premise above — `cdkd
+ * import`'s warn path, which can leave a public expression in state. The trade
+ * is deliberate and asymmetric: under-redaction persists a decrypted secret,
+ * which is a disclosure and is what this lane exists to prevent, while
+ * over-redaction is visible, recoverable and discloses nothing. Closing it
+ * properly needs a real TYPE classification on these paths, which is issue
+ * [#2012](https://github.com/go-to-k/cdkd/issues/2012)'s mechanism; the
+ * over-redaction itself is tracked as issue
+ * [#2036](https://github.com/go-to-k/cdkd/issues/2036).
+ *
+ * `tests/integration/secrets-dynamic-ref` is the end-to-end proof on BOTH
+ * paths, and it is the only place the empty-map defect surfaced: Phase 1g
+ * covers the populated-map deploy and Phase 1f the empty-map command.
  */
-function mixedLeafMayCarryPublicReference(source: string): boolean {
+function mixedLeafMayCarryPublicReference(source: string, secrets: RecordedSecretValues): boolean {
+  // NO MAP, NO EVIDENCE — so this cannot answer, and it must not pretend to.
+  // `isRecordedSecretExpression` only ever says "yes" about a token some pass
+  // RESOLVED, and the empty-map paths resolve nothing by construction (issue
+  // #1926's own design decision). Reading absence as "public" there turned
+  // every `{{resolve:ssm:` mixed leaf into a public one and persisted the
+  // DECRYPTED SecureString — measured by the `secrets-dynamic-ref` integ, which
+  // is the only place it showed: every unit assertion passed.
+  if (secrets.size === 0) return false;
   return dynamicReferenceTokens(source).some(
     (token) => token.startsWith('{{resolve:ssm:') && !isRecordedSecretExpression(token)
   );
@@ -1246,7 +1275,16 @@ function mixedLeafMayCarryPublicReference(source: string): boolean {
  *   an observed KEY the source does not carry         LEAK          LEAK (#2012)
  *   whole `{{resolve:...}}` token                     ok            ok
  *   `Environment[]` keyed by `Name` (issue #1915)     ok            ok
+ *   PUBLIC ssm MIXED leaf, POPULATED map               ok            ok
+ *   PUBLIC ssm MIXED leaf, EMPTY map                   ok            over-redacts
  * ```
+ *
+ * The last row is the price of the row above it and is tracked as issue
+ * [#2036](https://github.com/go-to-k/cdkd/issues/2036): with no map nothing was
+ * resolved, so nothing distinguishes a public parameter from a `SecureString`
+ * and the leaf is refused. Phantom drift, not a disclosure — see
+ * {@link mixedLeafMayCarryPublicReference} for why that is the right way to be
+ * wrong here.
  *
  * What this pass closes is the row POSITION can actually justify: a leaf whose
  * KEY the source carries, where the source is the same generation and the only
@@ -1283,7 +1321,11 @@ function mixedLeafMayCarryPublicReference(source: string): boolean {
  * those would empty the drift baseline of every secret-bearing resource.
  * Tracked as issue [#2012](https://github.com/go-to-k/cdkd/issues/2012).
  */
-function refuseUncertifiedReadbackPositions(bag: unknown, source: unknown): unknown {
+function refuseUncertifiedReadbackPositions(
+  bag: unknown,
+  source: unknown,
+  secrets: RecordedSecretValues
+): unknown {
   // The string arm, and BOTH of its guards were added after review measured
   // what their absence did.
   //
@@ -1310,7 +1352,7 @@ function refuseUncertifiedReadbackPositions(bag: unknown, source: unknown): unkn
     if (isSingleDynamicReferenceToken(source)) return source;
     // A MIXED leaf embedding something that may be PUBLIC config: keep the
     // resolved value AWS actually holds. See the predicate's own doc.
-    if (mixedLeafMayCarryPublicReference(source)) return bag;
+    if (mixedLeafMayCarryPublicReference(source, secrets)) return bag;
     return source;
   }
   // Nothing to protect in this subtree — return the bag by identity, which is
@@ -1325,7 +1367,7 @@ function refuseUncertifiedReadbackPositions(bag: unknown, source: unknown): unkn
       // prototype hit would produce the same output. Consistency is the whole
       // claim being made here.
       out[k] = Object.hasOwn(source, k)
-        ? refuseUncertifiedReadbackPositions(v, source[k])
+        ? refuseUncertifiedReadbackPositions(v, source[k], secrets)
         : // The residual documented above: no source leaf, no needle.
           v;
     }
@@ -1361,7 +1403,9 @@ function refuseUncertifiedReadbackPositions(bag: unknown, source: unknown): unkn
     }
     return bag.map((item) => {
       const partner = sourceByIdentity.get((item as Record<string, unknown>)[key] as string);
-      return partner === undefined ? item : refuseUncertifiedReadbackPositions(item, partner);
+      return partner === undefined
+        ? item
+        : refuseUncertifiedReadbackPositions(item, partner, secrets);
     });
   }
   // Shapes diverged (a scalar where the source has a container, or the reverse)
@@ -1410,7 +1454,7 @@ export function redactSecretsForState<T>(
     // an inheritor, which the gate contradicts one screen away.
     return (
       isReadbackProjectedFromState(rules)
-        ? refuseUncertifiedReadbackPositions(positioned, source)
+        ? refuseUncertifiedReadbackPositions(positioned, source, secrets)
         : positioned
     ) as T;
   }

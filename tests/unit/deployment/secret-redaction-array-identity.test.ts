@@ -853,13 +853,70 @@ describe('secret-redaction - readback refusal (issue #1926)', () => {
     expect(refuse({ Foo: 42 }, { Foo: EXPR })).toEqual({ Foo: 42 });
   });
 
-  it('keeps a PUBLIC ssm reference RESOLVED inside a mixed leaf (issue #1901)', () => {
-    // A plain `ssm:` reference is classified by the parameter's TYPE, and a
-    // `String` parameter is public config that state stores RESOLVED.
-    // Substituting the expression over it is phantom drift on ordinary config.
-    expect(refuse({ Url: 'pre-public-host-post' }, { Url: `pre-${PUBLIC_SSM}-post` })).toEqual({
-      Url: 'pre-public-host-post',
-    });
+  it('EMPTY MAP: a mixed `{{resolve:ssm:` leaf is REFUSED, not read as public', () => {
+    // The regression the `secrets-dynamic-ref` integ caught and every unit
+    // assertion missed, which is why this test exists at all.
+    //
+    // `isRecordedSecretExpression` only ever says "yes" about a token some pass
+    // RESOLVED. `cdkd state refresh-observed` resolves nothing — its empty map
+    // is issue #1926's own design decision — so reading absence as "public"
+    // made EVERY ssm mixed leaf look public and persisted the DECRYPTED
+    // SecureString. The shape below is the fixture's `DB_URL` verbatim.
+    //
+    // Fail closed here is also the SAME premise the whole-token arm acts on: a
+    // public `String` parameter is stored RESOLVED (issue #1901), so a token
+    // that survives in a persisted state bag is a SecureString by construction.
+    const token = '{{resolve:ssm:cdkd-test-dynref-secure-123456789012}}';
+    const expr = `postgres://app-svc:${token}@db.us-east-1.internal:5432/app`;
+    const plain = 'postgres://app-svc:the-decrypted-value@db.us-east-1.internal:5432/app';
+
+    const out = redactSecretsForState(
+      { Url: plain },
+      new Map<string, string>(),
+      { Url: expr },
+      STATE_SOURCED_READBACK_RULES
+    ) as Record<string, unknown>;
+
+    expect(out['Url']).toBe(expr);
+    expect(JSON.stringify(out)).not.toContain('the-decrypted-value');
+  });
+
+  it('EMPTY MAP: the same leaf through scrubResourceRecord, as the commands reach it', () => {
+    // The call the CLI actually makes (`cdkd state refresh-observed`, and the
+    // deploy persist choke point for an UNCHANGED resource). Pinned separately
+    // from the direct call above because the rules are DERIVED here rather than
+    // passed, and it is that derivation the integ exercised.
+    const token = '{{resolve:ssm:/app/secure-token}}';
+    const expr = `postgres://u:${token}@host`;
+
+    const scrubbed = scrubResourceRecord(
+      {
+        properties: { Env: { Url: expr } },
+        observedProperties: { Env: { Url: 'postgres://u:decrypted-secret@host' } },
+      },
+      new Map<string, string>()
+    );
+
+    expect(scrubbed.observedProperties!['Env']).toEqual({ Url: expr });
+    expect(JSON.stringify(scrubbed)).not.toContain('decrypted-secret');
+  });
+
+  it('POPULATED MAP: a PUBLIC ssm reference stays RESOLVED inside a mixed leaf (issue #1901)', () => {
+    // The other side of the split. With a map, some pass DID resolve this bag,
+    // so absence from the verdict store is real evidence the parameter is
+    // public — a `String` parameter is legitimately stored RESOLVED, and
+    // substituting the expression over it is phantom drift on ordinary config.
+    //
+    // The map is deliberately non-empty and deliberately about a DIFFERENT
+    // secret: it is the presence of a resolution pass that licenses the
+    // inference, not anything about this leaf.
+    const out = redactSecretsForState(
+      { Url: 'pre-public-host-post' },
+      new Map<string, string>([['unrelated-secret', EXPR]]),
+      { Url: `pre-${PUBLIC_SSM}-post` },
+      STATE_SOURCED_READBACK_RULES
+    ) as Record<string, unknown>;
+    expect(out['Url']).toBe('pre-public-host-post');
   });
 
   it('still refuses a mixed leaf whose ssm reference was RECORDED as secret', () => {
@@ -867,9 +924,13 @@ describe('secret-redaction - readback refusal (issue #1926)', () => {
     // like the public one, so the verdict comes from what the resolver
     // recorded. Losing this arm turns the #1901 fix into a blanket exemption.
     recordSecretExpression(SECURE_SSM);
-    expect(refuse({ Url: 'pre-decrypted-post' }, { Url: `pre-${SECURE_SSM}-post` })).toEqual({
-      Url: `pre-${SECURE_SSM}-post`,
-    });
+    const out = redactSecretsForState(
+      { Url: 'pre-decrypted-post' },
+      new Map<string, string>([['unrelated-secret', EXPR]]),
+      { Url: `pre-${SECURE_SSM}-post` },
+      STATE_SOURCED_READBACK_RULES
+    ) as Record<string, unknown>;
+    expect(out['Url']).toBe(`pre-${SECURE_SSM}-post`);
   });
 
   it('refuses a mixed `ssm-secure:` leaf, which the public test must not catch', () => {
