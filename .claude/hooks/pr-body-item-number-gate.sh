@@ -24,6 +24,9 @@
 #         close[s]? #N, closed #N, fix[es]? #N, resolve[s]? #N
 #       These are load-bearing for GitHub's auto-close behavior.
 #     - Soft references: refs: #N, ref: #N, references #N, see #N
+#     - Fully-qualified cross-repo refs: owner/repo#N. Unambiguous by
+#       construction, and the form /work-issues section 10-c mandates
+#       for every citation in the mirrored skill files.
 #     - Parenthetical: (#N)   — used by squash-merge commit messages
 #       like `feat(...): subject (#231)`.
 #     - Inside fenced code blocks (between matching ``` lines).
@@ -104,11 +107,16 @@ find_offender() {
   # 1. Strip URLs that contain /issues/N, /pull/N, /commit/<sha>, or
   #    just any http(s)://... URL — those have no `#N` auto-link.
   local stripped
-  stripped=$(printf '%s' "$line" | perl -pe 's|https?://\S+||g')
+  stripped=$(printf '%s' "$line" | perl -pe 's|https?://\S+| |g')
 
   # 2. Strip backtick-quoted code spans: `...`. The content of code
-  #    spans isn't auto-linked by GitHub.
-  stripped=$(printf '%s' "$stripped" | perl -pe 's|`[^`]*`||g')
+  #    spans isn't auto-linked by GitHub. Replace with a SPACE rather
+  #    than deleting: a deleted span closes the gap between its
+  #    neighbours, so `analyzer/resolver` + `` `.ts` `` + `#2` collapses
+  #    into a slug-adjacent hit that the owner/repo arm below then
+  #    allows -- while GitHub still renders the raw text as a live link
+  #    to an unrelated PR. Same reason for the URL strip above.
+  stripped=$(printf '%s' "$stripped" | perl -pe 's|`[^`]*`| |g')
 
   # 3. Find the first `#N` that is NOT preceded by an allowed context.
   #    We use perl with a single pass that captures `#N` plus a few
@@ -129,6 +137,23 @@ find_offender() {
       # ALLOWED: soft reference keywords.
       #   refs:, ref:, references, see
       next if $left =~ /(?i)(?:^|\s)(refs?:?|references|see)\s*$/;
+      # ALLOWED: a fully-qualified cross-repo reference whose left
+      # context ends in an owner/repo slug -- go-to-k/cdkd#1992. It
+      # names its repo explicitly, so it cannot auto-link to the wrong
+      # REPO. (It can still name the wrong ITEM in the right repo --
+      # `review-fix go-to-k/cdkd#4` is allowed and does render a link --
+      # so this arm narrows the trap rather than eliminating it; and /work-issues section 10-c mandates this form for every
+      # citation the mirrored skill files carry, so blocking it put the
+      # hook and the skill in direct contradiction.
+      # Both slug segments must contain a letter, so an item number
+      # written as a fraction ("step 1/2#3") stays blocked. The leading
+      # boundary admits `(` and `[` as well as whitespace: a qualified ref
+      # is very often parenthesised or a markdown link label, and requiring
+      # whitespace rejected `(go-to-k/cdkd#1476)` -- found by writing the
+      # body of the very PR that ships this arm, against the patched hook.
+      # NOTE: no apostrophes in this block -- it sits inside a single-quoted
+      # shell string, so one would terminate the perl program.
+      next if $left =~ m{(?:^|[\s(\[])[A-Za-z0-9._-]*[A-Za-z][A-Za-z0-9._-]*/[A-Za-z0-9._-]*[A-Za-z][A-Za-z0-9._-]*$};
       # Otherwise: BLOCKED. Print the hit and the full line context.
       print "$hit\n";
       last;
@@ -179,6 +204,7 @@ fi
   echo "Fix:"
   echo "  - Item numbers: use bare numbers (e.g. 'Must-fix 1' not 'Must-fix #1')"
   echo "  - Real issue refs: keep 'closes #NNN' / '(#NNN)' / full URLs (allow-listed)"
+  echo "  - Cross-repo refs: use the qualified 'owner/repo#NNN' form (allow-listed)"
   echo
   echo "Memory: ~/.claude/projects/-Users-goto-pc-github-cdkd/memory/feedback_pr_body_no_hash_for_item_numbers.md"
 } >&2

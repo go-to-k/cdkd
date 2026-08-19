@@ -113,6 +113,36 @@ I=$(write_file I.md "# Title
 Use the literal token \`#1\` in your config.
 ")
 
+# J: fully-qualified cross-repo refs, this repo and both siblings
+# (allowed). This is the form /work-issues section 10-c mandates.
+J=$(write_file J.md "# Title
+
+Mirrored from go-to-k/cdk-local#533 and go-to-k/cdk-real-drift#1792.
+Landed here as go-to-k/cdkd#1992.
+The gate went inert (go-to-k/cdkd#1476) for that reason.
+See [go-to-k/cdk-local#533] for the mirror.
+")
+
+# K: an item number written as a fraction (blocked). Pins that the
+# owner/repo arm did not widen into the failure the gate exists for --
+# 1/2 has no letter in either segment, so it is not a repo slug.
+K=$(write_file K.md "# Title
+
+step 1/2#3: the second half
+")
+
+# L: a code span sitting BETWEEN a slug-shaped token and the hit (blocked).
+# Stripping the span must not close the gap and manufacture an adjacency the
+# raw text never had -- GitHub renders every one of these as a live link.
+# Found by the security review of go-to-k/cdkd#1992.
+L=$(write_file L.md "# Title
+
+Fixed the analyzer/resolver\`.ts\`#2 path.
+Both cdk-local/cdk-real-drift\`(mirrored)\`#3 need it.
+The lambda/vpc\`-deps\`#5 edge.
+Item x/y\`the code\`#7 remains open.
+")
+
 # --- ALLOW cases ---
 
 # 1. PR create with bare-number body (A) → exit 0.
@@ -152,6 +182,10 @@ run_case "gh pr create with inline --body not inspected" 0 \
 run_case "gh pr view not gated" 0 \
   '{"tool_input":{"command":"gh pr view 123"}}'
 
+# Qualified cross-repo refs (owner/repo#N) are allowed -- go-to-k/cdkd#1992.
+run_case "gh pr create with qualified owner/repo#N allowed" 0 \
+  "$(printf '{"tool_input":{"command":"gh pr create --body-file %s"}}' "$J")"
+
 # --- BLOCK cases ---
 
 # 2. PR create with #N body (B) → exit 2.
@@ -184,6 +218,14 @@ run_case "gh pr create with bare #N in prose blocked" 2 \
   "$(printf '{"tool_input":{"command":"gh pr create --body-file %s"}}' "$H")"
 
 # Extra: gh pr edit --body-file (deprecated form, but still possible) → exit 2.
+# ...and the arm did not widen: a fraction-shaped item number stays blocked.
+# A code span between a slug and the hit must not become an allow gadget.
+run_case "gh pr create with code-span slug gadget still blocked" 2 \
+  "$(printf '{"tool_input":{"command":"gh pr create --body-file %s"}}' "$L")"
+
+run_case "gh pr create with fraction-shaped item number still blocked" 2 \
+  "$(printf '{"tool_input":{"command":"gh pr create --body-file %s"}}' "$K")"
+
 run_case "gh pr edit with #N body-file blocked" 2 \
   "$(printf '{"tool_input":{"command":"gh pr edit 123 --body-file %s"}}' "$B")"
 

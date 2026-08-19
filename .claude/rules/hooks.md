@@ -34,6 +34,41 @@ throwaway git repos and take ~6 minutes, which is the wrong cost for the inner
 dev loop. `.github/workflows/hooks.yml` runs it on `macos-latest` (the only
 runner image carrying bash 3.2) whenever a PR touches `.claude/hooks/**`.
 
+# Why every Bash gate stays unconditional
+
+Every Bash-targeting `PreToolUse` entry in `.claude/settings.json` registers its
+gates under the coarse `Bash` matcher AND with no per-hook `if:` condition. Both
+halves matter, and the second is the load-bearing one: the coarse matcher hands
+every Bash call to every gate, and the absent `if:` is what lets each gate then
+parse the command itself -- which is why several of them below can advertise that
+they also catch the `cd <path> && ...` and `gh -C <path>` spellings.
+
+The `if:` fields were removed for the reason documented under "The `if:` layer is
+GONE" below: they silently never fired (go-to-k/cdkd#1455 / go-to-k/cdkd#1476).
+That removal also, incidentally, makes cdkd immune to a SECOND failure of the same
+field. go-to-k/cdkd#2016 asked whether cdkd carries the gate bypass fixed in
+go-to-k/cdk-real-drift#1788, where `cd <wt> && git commit` ran ungated and
+`cd <wt> && gh pr create` skipped two gates. Measured 2026-08-19 against that
+repo's own pre-fix settings (`git show b6a4213^:.claude/settings.json`): its
+matcher is the coarse `"Bash"` too, identical to cdkd's, so the matcher was never
+the differentiator. The asymmetry was between per-hook `if:` conditions --
+`branch-gate` and `bughunt-clean-gate` spelled `Bash(cd * && git commit*)` while
+`check-gate` carried only `Bash(git commit*) or Bash(git -C * commit*)`. cdkd
+carries 0 `if:` fields across 32 Bash hooks, so it has no such condition to be
+asymmetric about, and both spellings reach every gate: measured by feeding them
+to the gates directly, `check-gate` and `verify-pr-gate` answer rc=2 for a bare
+`git commit` / `gh pr create` and rc=2 for the `cd <wt> && ...` twin alike.
+
+This matters more here than it would elsewhere, because `/work-issues` instructs
+agents to write commands in exactly that `cd <worktree> && ...` form. An ungated
+command is indistinguishable from one that passed, so the invariant is fenced by a
+test rather than by this paragraph:
+`tests/unit/scripts/settings-bash-matcher-coverage.test.ts` fails on any per-hook
+`if:` (the primary arm), on any command-narrowed `Bash(...)` matcher, and on the
+removal of `check-gate` / `verify-pr-gate` / `non-english-text-gate` from the
+coarse entry, with a parser floor so "found nothing" cannot pass as "everything
+matches".
+
 # Other PreToolUse safety hooks
 
 Fourteen additional one-shot hooks block known foot-guns at the source.
@@ -46,7 +81,7 @@ Fourteen additional one-shot hooks block known foot-guns at the source.
 
 - **`.claude/hooks/provider-docs-gate.sh`** blocks `git commit` when staged `src/provisioning/register-providers.ts` introduces a new `registry.register('AWS::Service::Type', ...)` call but the resource type does NOT appear in **both** `docs/supported-resources.md` and `docs/import.md` — closes the docs gap that the v2 drift coverage push (PRs #210-#216) shipped 7 new types without docs entries until a post-merge audit caught it (#219).
 
-- **`.claude/hooks/pr-body-item-number-gate.sh`** blocks `gh pr create` / `gh pr edit` / `gh issue create` / `gh issue comment` / `gh api -X PATCH .../pulls|issues/...` invocations whose body file (`--body-file <FILE>` or `--field body=@<FILE>` / `-F body=@<FILE>`) contains `#N` patterns that GitHub auto-links to issue/PR `#N` — the "review-fix #4 → linked to unrelated PR #4" trap that hit PR #237. Allow-listed contexts (`closes #N` / `(#N)` / fenced code blocks / GitHub URLs / backtick code spans) pass through; bare `Must-fix #N` / `review-fix #N` / `step #N` / plain `#N` in prose are blocked with line-numbered offender output. Smoke test at `.claude/hooks/pr-body-item-number-gate.test.sh`.
+- **`.claude/hooks/pr-body-item-number-gate.sh`** blocks `gh pr create` / `gh pr edit` / `gh issue create` / `gh issue comment` / `gh api -X PATCH .../pulls|issues/...` invocations whose body file (`--body-file <FILE>` or `--field body=@<FILE>` / `-F body=@<FILE>`) contains `#N` patterns that GitHub auto-links to issue/PR `#N` — the "review-fix #4 → linked to unrelated PR #4" trap that hit PR #237. Allow-listed contexts (`closes #N` / `(#N)` / fenced code blocks / GitHub URLs / backtick code spans / the fully-qualified cross-repo form `owner/repo#N`) pass through; bare `Must-fix #N` / `review-fix #N` / `step #N` / plain `#N` in prose are blocked with line-numbered offender output. The `owner/repo#N` arm was added for go-to-k/cdkd#1992: that form names its repo explicitly so it cannot auto-link to the wrong one, and `/work-issues` section 10-c mandates it for every citation the mirrored skill files carry, so blocking it put the hook and the skill in direct contradiction. Both slug segments must contain a letter, so a fraction-shaped item number (`step 1/2#3`) stays blocked. Smoke test at `.claude/hooks/pr-body-item-number-gate.test.sh`.
 
 - **`.claude/hooks/internal-pr-labels-gate.sh`** is the complementary check for prose-style internal dev labels in user-facing source code — it blocks `git commit` when staged `README.md` or `docs/*.md` files contain `(PR 8b)` / `(PR 6 of #224)` / `(PR 6 of #224, issue #232)` patterns in added/modified diff lines. Closes the gap that PR #251 had to clean up after — agent dispatch prompts use "PR 8b" / "PR 6 of #224" internally and that prose can leak into user-facing doc bodies. `CLAUDE.md` (developer-facing) and `tests/integration/**/README.md` (integ fixture metadata) are excluded; fenced code blocks and backtick code spans are allow-listed. Smoke test at `.claude/hooks/internal-pr-labels-gate.test.sh`.
 
