@@ -9,7 +9,7 @@
 # the character-class test; their subjects are disjoint.
 #
 # The gap this closes (issue #1993): CLAUDE.md's English-only rule
-# enumerates committed artifacts and then narrows itself with "this
+# enumerated committed artifacts and then narrowed itself with "this
 # rule applies only to files that land in the repository". An issue
 # body is not a committed file, so it fell OUTSIDE the rule by that
 # clause rather than merely being unmentioned -- while `/work-issues`
@@ -19,40 +19,72 @@
 # `Session-fit` line glossed in the session's chat language, and had to
 # patch the body after creation because nothing caught it.
 #
-# Subject: the text handed to the command, from four shapes --
-#   --body-file <p> / --body-file=<p>     (gh pr create / gh issue create)
-#   -F body=@<p> / --field body=@<p>      (gh api, file form)
-#   --body <text> / -b <text>             (inline)
-#   --title <text> / -t <text>            (inline)
-# Inline forms ARE scanned here, unlike pr-body-item-number-gate.sh,
-# which deliberately leaves inline as its escape hatch. That trade does
-# not apply to this rule: there is no legitimate reason to publish
-# Japanese in a body, and leaving inline unscanned would leave the
-# commonest shape (`gh issue comment -b "..."`) uncovered.
+# Subject: the text handed to the command --
+#   --body-file <p> / =<p>, -F/--field body=@<p>, --notes-file <p>   (files)
+#   --body / -b, --title / -t, --notes                               (inline)
+#   -f/--field/--raw-field body=<text> / title=<text>                (inline)
+# Inline forms ARE scanned, unlike pr-body-item-number-gate.sh, which
+# deliberately leaves inline as its escape hatch. That trade does not
+# apply here: there is no legitimate reason to publish Japanese in a
+# body, and leaving inline unscanned would exempt the commonest shape
+# (`gh issue comment -b "..."`).
 #
-# Known limit: text assembled by the shell at run time is invisible to
-# a static scan of the command string -- `-b "$(cat jp.txt)"` passes.
-# The file and inline-literal forms are what an agent actually emits.
+# Known limits, all measured rather than assumed:
+#   - text the shell assembles at run time (`-b "$(cat jp.txt)"`) is
+#     invisible to a static scan, as is a body file a heredoc EARLIER
+#     IN THE SAME command has not written yet at PreToolUse time;
+#   - an unquoted inline value is matched, but one containing shell
+#     metacharacters may be truncated at the first;
+#   - `gh api --input <file>` is not scanned (arbitrary JSON shape).
 #
 # No bypass marker, matching non-english-text-gate.sh: the fix is to
 # translate the text, which is trivial and is the point.
 
 set -u
 
-cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
+__hook_dir="${BASH_SOURCE[0]%/*}"
+# `%/*` leaves the string unchanged when the path has no slash (invoked
+# as `bash gh-body-english-gate.sh` from inside the hooks dir).
+[ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
+# shellcheck source=lib/command-match.sh
+if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
+  || ! declare -F cmd_matches_verb >/dev/null \
+  || ! declare -F cmd_last_cd_target >/dev/null; then
+  # FAIL CLOSED: without the helper the verb guard below would see exit
+  # 127, take the `!` branch and exit 0 -- silently disabling the gate.
+  echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unloadable," >&2
+  echo "so gh-body-english-gate cannot evaluate the command. Restore the file;" >&2
+  echo "do not work around the gate." >&2
+  exit 2
+fi
 
-# Only gate gh invocations that PUBLISH text. `gh issue list`,
-# `gh pr view`, and a read-only `gh api ... --jq` are untouched.
-if ! printf '%s' "$cmd" | grep -qE '\bgh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+(pr[[:space:]]+(create|edit)|issue[[:space:]]+(create|comment|edit)|api)\b'; then
+input=$(cat 2>/dev/null || true)
+cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
+hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
+[ -n "$cmd" ] || exit 0
+
+# Only gate gh invocations that PUBLISH text. Matched through the shared
+# helper so a heredoc body or a quoted string that merely QUOTES one of
+# these commands does not fire the gate -- commit messages and PR bodies
+# routinely describe the commands they are about (.claude/rules/hooks.md,
+# "Command-position matching").
+VERB_ERE='gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+(pr[[:space:]]+(create|edit|comment|review)|issue[[:space:]]+(create|comment|edit)|release[[:space:]]+(create|edit)|api)\b'
+if ! cmd_matches_verb "$cmd" "$VERB_ERE"; then
   exit 0
 fi
 
-# ...and only when a body / title is actually being sent. This keeps
-# `gh api repos/{owner}/{repo}/issues/5 --jq .body` (a READ whose flag
-# merely names the field) out of scope.
-if ! printf '%s' "$cmd" | grep -qE '(--body-file|--body|-b[[:space:]]|--title|-t[[:space:]]|body=@|body=)'; then
+# ...and only when a body / title / notes is actually being sent. This
+# keeps `gh api repos/{owner}/{repo}/issues/5 --jq .body` (a READ whose
+# flag merely names the field) out of scope.
+if ! printf '%s' "$cmd" | grep -qE '(--body|-b[[:space:]=]|--title|-t[[:space:]=]|--notes|body=|title=|notes=)'; then
   exit 0
 fi
+
+# Resolve the directory a relative --body-file is written against: the
+# payload cwd, then any `cd` in command position before the verb.
+target_dir="${hook_cwd:-$PWD}"
+cd_target=$(cmd_last_cd_target "$cmd" "$target_dir" "$VERB_ERE" 2>/dev/null || true)
+[ -n "$cd_target" ] && target_dir="$cd_target"
 
 # U+3000-303F CJK punctuation, U+3040-309F hiragana, U+30A0-30FF
 # katakana, U+4E00-9FFF kanji / Chinese, U+AC00-D7AF hangul.
@@ -71,35 +103,56 @@ MAX_REPORT=10
 
 # --- 1. file-borne bodies ---------------------------------------------
 while IFS= read -r f; do
-  [[ -z "$f" ]] && continue
-  [[ -f "$f" ]] || continue
+  [ -n "$f" ] || continue
+  # The `~/` branch matches a LITERAL tilde in the command string: the
+  # shell would have expanded a real one before gh ran, so what survives
+  # here is text to match, not something to expand. SC2088's warning is
+  # inverted for that case.
+  # shellcheck disable=SC2088
+  case "$f" in
+    /*) ;;
+    "~/"*) f="$HOME/${f#\~/}" ;;
+    *) f="$target_dir/$f" ;;
+  esac
+  [ -f "$f" ] || continue
   while IFS= read -r hit; do
-    [[ -z "$hit" ]] && continue
+    [ -n "$hit" ] || continue
     OFFENDERS+=("$f:$hit")
   done < <(perl -CSD -ne "print \"\$.: \$_\" if /$NON_ENGLISH_RE/" "$f" 2>/dev/null | head -"$MAX_REPORT")
-done < <(printf '%s' "$cmd" | perl -ne '
-    while (/--body-file[=[:space:]]+(["\x27]?)([^"\x27[:space:]]+)\1/g) { print "$2\n"; }
-    while (/(?:--field|-F)[[:space:]]+(["\x27]?)body=@([^"\x27[:space:]]+)\1/g) { print "$2\n"; }
+done < <(printf '%s' "$cmd" | perl -0777 -ne '
+    while (/--(?:body|notes)-file[=\s]+(["\x27]?)([^"\x27\s]+)\1/g) { print "$2\n"; }
+    while (/(?:--field|--raw-field|-F)[=\s]+(["\x27]?)(?:body|title|notes)=\@([^"\x27\s]+)\1/g) { print "$2\n"; }
   ' 2>/dev/null)
 
-# --- 2. inline bodies and titles --------------------------------------
-# Pull the quoted value that follows an inline text flag, then test
-# just that value. Scanning the whole command would flag a Japanese
-# PATH or an unrelated argument.
-while IFS= read -r val; do
-  [[ -z "$val" ]] && continue
-  matched=$(printf '%s' "$val" | perl -CSD -ne "print 'x' if /$NON_ENGLISH_RE/" 2>/dev/null)
-  [[ -z "$matched" ]] && continue
-  OFFENDERS+=("inline: $(printf '%s' "$val" | cut -c1-60)")
-done < <(printf '%s' "$cmd" | perl -ne '
+# --- 2. inline bodies, titles and notes --------------------------------
+# Pull the value that follows an inline text flag, then test just that
+# value. Scanning the whole command would flag a Japanese PATH or an
+# unrelated argument. `-0777` slurps the WHOLE command so a multi-line
+# quoted body -- the normal inline shape -- is matched; a line-by-line
+# `perl -ne` cannot span the newline and silently passed every one.
+# Values are NUL-separated on output so an embedded newline does not
+# split one value into two.
+while IFS= read -r -d '' val; do
+  [ -n "$val" ] || continue
+  matched=$(printf '%s' "$val" | perl -CSD -0777 -ne "print 'x' if /$NON_ENGLISH_RE/" 2>/dev/null)
+  [ -n "$matched" ] || continue
+  first=$(printf '%s' "$val" | tr '\n' ' ' | cut -c1-60)
+  OFFENDERS+=("inline: $first")
+done < <(printf '%s' "$cmd" | perl -0777 -ne '
     # The flag must start at a word boundary that is not itself a dash,
-    # so the `-b` alternative cannot match inside `--body`.
-    while (/(?:^|\s)(?:--body|--title|-b|-t)[=\s]+"([^"]*)"/g)         { print "$1\n"; }
-    while (/(?:^|\s)(?:--body|--title|-b|-t)[=\s]+\x27([^\x27]*)\x27/g) { print "$1\n"; }
-    while (/(?:^|\s)(?:--field|-F|-f)\s+(["\x27]?)(?:body|title)=([^"\x27@][^"\x27]*)\1/g) { print "$2\n"; }
+    # so `-b` cannot match inside `--body-file`. `\\.` skips an escaped
+    # quote so it does not terminate the span early; /s lets the value
+    # span newlines.
+    while (/(?:^|\s)(?:--body|--title|--notes|-b|-t)[=\s]*"((?:[^"\\]|\\.)*)"/gs) { print "$1\0"; }
+    while (/(?:^|\s)(?:--body|--title|--notes|-b|-t)[=\s]*\x27([^\x27]*)\x27/gs)  { print "$1\0"; }
+    # Unquoted value: stops at whitespace, which is all the shell would
+    # have passed as one argument anyway.
+    while (/(?:^|\s)(?:--body|--title|--notes)[=\s]+([^\s"\x27-][^\s]*)/g)        { print "$1\0"; }
+    # gh api field forms carrying a literal (not @file) value.
+    while (/(?:--field|--raw-field|-F|-f)[=\s]+(["\x27]?)(?:body|title|notes)=([^"\x27@\s][^"\x27]*)\1/gs) { print "$2\0"; }
   ' 2>/dev/null)
 
-if [[ ${#OFFENDERS[@]} -eq 0 ]]; then
+if [ ${#OFFENDERS[@]} -eq 0 ]; then
   exit 0
 fi
 
@@ -107,8 +160,8 @@ fi
   echo "Blocked by gh-body-english-gate:"
   echo
   echo "This command publishes non-English text to GitHub. Issue and PR"
-  echo "bodies, titles and comments are public OSS artifacts and must be"
-  echo "English, exactly like the files in the repo."
+  echo "bodies, titles, comments and release notes are public OSS"
+  echo "artifacts and must be English, exactly like the files in the repo."
   echo
   echo "Found:"
   for entry in "${OFFENDERS[@]}"; do
