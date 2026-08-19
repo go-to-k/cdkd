@@ -29,14 +29,35 @@
  * global fake clock would freeze them too).
  */
 
-/** A monotonic-ish wall-clock allowance, started when the object is created. */
+/**
+ * The default clock: MONOTONIC, not `Date.now()`.
+ *
+ * `Date.now()` follows wall clock, so an NTP correction moves it in either
+ * direction mid-operation — and the two directions fail differently. Backwards
+ * would hand the path MORE than its total (guarded below by clamping elapsed at
+ * zero); FORWARDS instantly drains the allowance, which cuts every remaining
+ * wait to its one-poll floor and makes the whole path report "cdkd's allowance
+ * ran out" for something that never happened. A 30-minute delete is long enough
+ * to sit across a correction.
+ *
+ * `performance.now()` is monotonic and millisecond-denominated (a float, which
+ * only matters to a consumer dividing by a poll cost — flooring already handles
+ * it). Guarded rather than assumed present, so a runtime without it degrades to
+ * the old behaviour instead of throwing.
+ */
+export const monotonicNowMs: () => number =
+  typeof globalThis.performance?.now === 'function'
+    ? () => globalThis.performance.now()
+    : () => Date.now();
+
+/** A monotonic wall-clock allowance, started when the object is created. */
 export class ElapsedBudget {
   /** Total wall clock this budget may spend, in milliseconds. */
   readonly totalMs: number;
   private readonly clock: () => number;
   private readonly startedAt: number;
 
-  constructor(totalMs: number, clock: () => number = Date.now) {
+  constructor(totalMs: number, clock: () => number = monotonicNowMs) {
     if (!Number.isFinite(totalMs) || totalMs <= 0) {
       throw new RangeError(
         `ElapsedBudget: totalMs must be a positive finite number (got ${totalMs})`
@@ -50,7 +71,9 @@ export class ElapsedBudget {
   /** Wall clock spent since the budget started. */
   elapsedMs(): number {
     // Clamped at zero: a clock that steps backwards must never hand back MORE
-    // budget than the total.
+    // budget than the total. The default clock is monotonic so this should be
+    // unreachable, but the clock is INJECTABLE — the guard belongs to the type,
+    // not to the default.
     return Math.max(0, this.clock() - this.startedAt);
   }
 
@@ -77,7 +100,16 @@ export class ElapsedBudget {
    */
   attemptsWithin(cap: number, perAttemptMs: number, minAttempts = 1): number {
     if (!Number.isFinite(cap) || cap <= 0) return 0;
-    if (!Number.isFinite(perAttemptMs) || perAttemptMs <= 0) return cap;
+    // An unusable per-attempt cost fails CLOSED — the floor, not the cap.
+    // Returning `cap` reads as the safe direction and is the opposite of it:
+    // `Infinity` means an infinitely expensive poll, `NaN` means the cost is
+    // unknown, and both would grant the caller its full unclamped budget, i.e.
+    // exactly the pre-fix behaviour this type exists to remove. Unreachable
+    // today (every consumer passes a compile-time positive constant), which is
+    // why the direction has to be argued rather than observed.
+    if (!Number.isFinite(perAttemptMs) || perAttemptMs <= 0) {
+      return Math.min(minAttempts, cap);
+    }
     const affordable = Math.floor(this.remainingMs() / perAttemptMs);
     return Math.max(Math.min(minAttempts, cap), Math.min(cap, affordable));
   }
@@ -97,6 +129,13 @@ export class ElapsedBudget {
  * Entries are RETAINED on failure (that is the point) and released by the
  * caller on a terminal outcome, so the map holds at most one entry per
  * in-flight resource.
+ *
+ * **The key must identify the resource, not just name it.** A registry holding
+ * bare names collides whenever two distinct resources share one — for AWS that
+ * is any name-scoped-by-region identifier — and the collision is silent: the
+ * second resource inherits the first's spent allowance. Callers are expected to
+ * qualify the key themselves (see `providers/dynamodb-delete-budget.ts`'s
+ * `deleteBudgetKey`), because only the caller knows what the name is scoped by.
  */
 export class ElapsedBudgetRegistry {
   private readonly budgets = new Map<string, ElapsedBudget>();
@@ -106,7 +145,7 @@ export class ElapsedBudgetRegistry {
    * `totalMs` and `clock` are only read when the entry is CREATED — a re-entry
    * must not be able to grant itself a fresh allowance, nor a fresh clock.
    */
-  acquire(key: string, totalMs: number, clock: () => number = Date.now): ElapsedBudget {
+  acquire(key: string, totalMs: number, clock: () => number = monotonicNowMs): ElapsedBudget {
     const existing = this.budgets.get(key);
     if (existing) return existing;
     const created = new ElapsedBudget(totalMs, clock);

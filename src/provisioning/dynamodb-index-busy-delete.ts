@@ -332,6 +332,18 @@ export async function waitForIndexesSettled(opts: {
   describeTable: () => Promise<DescribeTableCommandOutput>;
   maxAttempts: number;
   proceedNote: string;
+  /**
+   * The cap `maxAttempts` was CUT DOWN FROM, when a caller's shared delete
+   * allowance — rather than this wait's own constant — is what decided it
+   * (issue #1955). Absent means `maxAttempts` IS the caller's own cap.
+   *
+   * Only the give-up warning reads it, and only to keep that warning true: at
+   * the one-poll floor the message otherwise reads `did not all reach ACTIVE
+   * within 1 DescribeTable poll` after cdkd had been deleting for twenty-six
+   * minutes, which states "AWS was slow" while meaning "cdkd stopped asking".
+   * The two need different actions from the user.
+   */
+  clampedFromCap?: number;
 }): Promise<void> {
   const { tableName, logicalId, logger, describeTable, maxAttempts, proceedNote } = opts;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -402,10 +414,15 @@ export async function waitForIndexesSettled(opts: {
   // used to be the literal `~1s` in this string while the total next to it was
   // derived, so moving the constant made one sentence disagree with itself.
   const pollSeconds = INDEX_SETTLE_POLL_INTERVAL_MS / 1000;
+  const clampNote =
+    opts.clampedFromCap !== undefined && opts.clampedFromCap > maxAttempts
+      ? ` This wait was cut from ${opts.clampedFromCap} polls because cdkd's shared delete ` +
+        `allowance ran out first, so AWS was NOT given the full wait;`
+      : '';
   logger.warn(
     `Indexes on ${tableName} (${logicalId}) did not all reach ACTIVE within ` +
       `${maxAttempts} DescribeTable polls (~${pollSeconds}s apart, so a little over ` +
-      `${maxAttempts * pollSeconds}s of wall clock); ${proceedNote}`
+      `${maxAttempts * pollSeconds}s of wall clock).${clampNote} ${proceedNote}`
   );
 }
 

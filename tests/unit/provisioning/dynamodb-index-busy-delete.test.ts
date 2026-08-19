@@ -110,6 +110,7 @@ import {
   DYNAMODB_DELETE_BUDGET_MS,
   DYNAMODB_DELETE_DEADLINE_MARGIN_MS,
 } from '../../../src/provisioning/providers/dynamodb-delete-budget.js';
+import { ElapsedBudget } from '../../../src/utils/elapsed-budget.js';
 import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
 import type { Logger } from '../../../src/types/config.js';
 import {
@@ -436,7 +437,15 @@ describe('the two per-type budget constants (issue #1950)', () => {
    * argument on a private method, and a fence that restated it would keep
    * asserting 900 after the provider moved to something else.
    */
-  async function observeGlobalTablePreDeleteGatePolls(): Promise<number> {
+  /** An allowance with nothing left, for the wiring half of the fence below. */
+  function drainedBudget(): ElapsedBudget {
+    let t = 0;
+    const budget = new ElapsedBudget(60_000, () => t);
+    t += 120_000;
+    return budget;
+  }
+
+  async function observeGlobalTablePreDeleteGatePolls(budget?: ElapsedBudget): Promise<number> {
     mockSend.mockReset();
     settleSpy.mockReset();
     mockSend.mockImplementation(() =>
@@ -446,9 +455,13 @@ describe('the two per-type budget constants (issue #1950)', () => {
     );
     await (
       new DynamoDBGlobalTableProvider() as unknown as {
-        waitForIndexesActive: (physicalId: string, logicalId: string) => Promise<void>;
+        waitForIndexesActive: (
+          physicalId: string,
+          logicalId: string,
+          opts?: { budget?: ElapsedBudget }
+        ) => Promise<void>;
       }
-    ).waitForIndexesActive('shared-table', 'Warm');
+    ).waitForIndexesActive('shared-table', 'Warm', ...(budget ? [{ budget }] : []));
     const polls = settleSpy.mock.calls.at(-1)?.[0]?.maxAttempts as number | undefined;
     // Never let the fence below multiply an `undefined` into a passing 0.
     expect(polls).toBeGreaterThan(0);
@@ -571,13 +584,19 @@ describe('the two per-type budget constants (issue #1950)', () => {
       TABLE_GONE_WAIT_ATTEMPTS * (INDEX_SETTLE_POLL_INTERVAL_MS + MEASURED_POLL_RTT_MS);
     expect(exhaustedBudgetWorstCaseMs + goneWaitMs).toBeGreaterThan(DEFAULT_RESOURCE_TIMEOUT_MS);
     // ...and the allowance the path may actually SPEND is under it, with the
-    // margin the non-cancelling `withResourceDeadline` needs. Without this
-    // second line the first one still reads as the tracked overshoot it used to
-    // be, and a change that deleted the budget would leave the file green.
+    // margin the non-cancelling `withResourceDeadline` needs.
     expect(DYNAMODB_DELETE_BUDGET_MS).toBeLessThan(exhaustedBudgetWorstCaseMs + goneWaitMs);
     expect(DYNAMODB_DELETE_BUDGET_MS + DYNAMODB_DELETE_DEADLINE_MARGIN_MS).toBeLessThanOrEqual(
       DEFAULT_RESOURCE_TIMEOUT_MS
     );
+
+    // Those two are CONSTANT RELATIONS, and on their own they do not discharge
+    // the claim: a budget that is defined but never WIRED satisfies both, so a
+    // `pollsWithinDeleteBudget` returning `cap` unconditionally would leave
+    // this file green while the path went back to spending the raw caps above.
+    // So the fence also drives the REAL gate with a drained allowance and reads
+    // the cap the provider actually handed it.
+    expect(await observeGlobalTablePreDeleteGatePolls(drainedBudget())).toBeLessThan(gatePolls);
 
     // ...and the sibling's budget would NOT fit here, which is the whole reason
     // the two constants exist. Asserted as a PREMISE, so the fence above cannot

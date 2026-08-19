@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { ElapsedBudget, ElapsedBudgetRegistry } from '../../../src/utils/elapsed-budget.js';
+import {
+  ElapsedBudget,
+  ElapsedBudgetRegistry,
+  monotonicNowMs,
+} from '../../../src/utils/elapsed-budget.js';
 
 /**
  * The shared wall-clock allowance behind issue #1955.
@@ -112,13 +116,32 @@ describe('ElapsedBudget', () => {
       expect(budget.attemptsWithin(0, 1_200)).toBe(0);
     });
 
-    it('falls back to the cap when the per-attempt cost is unusable', () => {
-      // A zero / NaN cost cannot divide, and answering 0 there would silently
-      // disable every wait on the path. The safe direction is the pre-budget
-      // behaviour: the caller's own cap.
+    it('fails CLOSED on an unusable per-attempt cost — the floor, not the cap', () => {
+      // The direction has to be argued rather than observed, because no
+      // consumer can reach it today. Returning `cap` reads as the safe answer
+      // and is the opposite of it: `Infinity` means an infinitely expensive
+      // poll and `NaN` means the cost is unknown, and both would hand the
+      // caller its full UNCLAMPED budget — i.e. exactly the pre-fix behaviour
+      // this type exists to remove, restored silently by a guard that looks
+      // defensive.
       const budget = new ElapsedBudget(60_000, fakeClock().now);
-      expect(budget.attemptsWithin(900, 0)).toBe(900);
-      expect(budget.attemptsWithin(900, Number.NaN)).toBe(900);
+      expect(budget.attemptsWithin(900, 0)).toBe(1);
+      expect(budget.attemptsWithin(900, Number.NaN)).toBe(1);
+      expect(budget.attemptsWithin(900, Number.POSITIVE_INFINITY)).toBe(1);
+      expect(budget.attemptsWithin(900, -5)).toBe(1);
+      // ...and the floor is still clamped BY the cap.
+      expect(budget.attemptsWithin(0, Number.NaN)).toBe(0);
+    });
+
+    it('defaults to a MONOTONIC clock rather than the wall clock', () => {
+      // `Date.now()` follows wall clock, so a forward NTP correction mid-delete
+      // drains the allowance instantly and every wait after it reports an
+      // exhausted budget for something that never happened. The backwards clamp
+      // above covers the other direction; this covers the one that fires.
+      expect(monotonicNowMs).not.toBe(Date.now);
+      const before = monotonicNowMs();
+      expect(Number.isFinite(before)).toBe(true);
+      expect(monotonicNowMs()).toBeGreaterThanOrEqual(before);
     });
   });
 });
