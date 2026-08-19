@@ -465,7 +465,17 @@ describe('replayRollback', () => {
     ];
     const state: Record<string, ResourceState> = { B: res({ physicalId: 'phys-B', properties: { a: 2 } }) };
     await replayRollback(ops, state, 'S', ctx);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'AWS::S3::Bucket', { a: 1 }, { a: 2 });
+    // 6th arg: the `UpdateContext` issue #1932 item 3 added, carrying the
+    // masker so a provider warn cannot echo a re-resolved secret. Matched by
+    // shape so this stays an assertion about the five that were here before.
+    expect(update).toHaveBeenCalledWith(
+      'B',
+      'phys-B',
+      'AWS::S3::Bucket',
+      { a: 1 },
+      { a: 2 },
+      { maskSecrets: expect.any(Function) }
+    );
     expect(state.B).toBe(prev);
   });
 
@@ -663,7 +673,13 @@ describe('replayRollback', () => {
     };
     const afterOp = vi.fn();
     const result = await replayRollback(ops, state, 'S', ctx, { afterOp });
-    expect(create).toHaveBeenCalledWith('B', 'AWS::SQS::Queue', { a: 1 }, { replayingState: true });
+    // `replayingState` must survive the spread that adds the per-op masker
+    // (issue #1932 item 3) -- dropping it would stop a provider's pre-flight
+    // refusal downgrading to a warning and leave the old resource unrestorable.
+    expect(create).toHaveBeenCalledWith('B', 'AWS::SQS::Queue', { a: 1 }, {
+      replayingState: true,
+      maskSecrets: expect.any(Function),
+    });
     expect(del).toHaveBeenCalledWith('B', 'phys-new', 'AWS::SQS::Queue', { a: 2 }, { expectedRegion: 'us-east-1' });
     expect(state.B).toMatchObject({ physicalId: 'phys-old-2', properties: { a: 1 }, attributes: { Arn: 'arn:old' } });
     expect(result.failures).toBe(0);
@@ -763,7 +779,10 @@ describe('replayRollback', () => {
     expect(result.failures).toBe(0);
     expect(create).toHaveBeenCalledTimes(2);
     for (const call of create.mock.calls) {
-      expect(call[3]).toEqual({ replayingState: true });
+      // Exact key set, so a future field added to the rollback create context
+      // still trips this fence -- but `maskSecrets` is admitted, since issue
+      // #1932 item 3 makes it universal across every create call site.
+      expect(call[3]).toEqual({ replayingState: true, maskSecrets: expect.any(Function) });
     }
   });
 
@@ -788,7 +807,7 @@ describe('replayRollback', () => {
     const result = await replayRollback(ops, state, 'S', ctx);
 
     expect(result.failures).toBe(0);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function) });
     // The update went THROUGH withRetry, not around it.
     expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
@@ -1335,7 +1354,14 @@ describe('replayFailedOperations (#1198)', () => {
     const result = await replayFailedOperations(failedOps, state, 'S', ctx, { afterOp });
     // Diff sides: desired = previous props, previous = ATTEMPTED props, so a
     // patch-based provider generates ops undoing the half-applied update.
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'AWS::S3::Bucket', { a: 1 }, { a: 2 });
+    expect(update).toHaveBeenCalledWith(
+      'B',
+      'phys-B',
+      'AWS::S3::Bucket',
+      { a: 1 },
+      { a: 2 },
+      { maskSecrets: expect.any(Function) }
+    );
     expect(state.B).toBe(prev);
     expect(result.failures).toBe(0);
     expect(afterOp).toHaveBeenCalledWith('B');
@@ -1356,7 +1382,7 @@ describe('replayFailedOperations (#1198)', () => {
     const result = await replayFailedOperations(failedOps, state, 'S', ctx);
 
     expect(result.failures).toBe(0);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function) });
     expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
   });
@@ -1437,7 +1463,7 @@ describe('replayFailedOperations (#1198)', () => {
     ];
     const state = { B: res({ physicalId: 'phys-B', properties: { a: 1 } }) };
     await replayFailedOperations(failedOps, state, 'S', ctx);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 1 });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 1 }, { maskSecrets: expect.any(Function) });
   });
 
   it('deletes a partially-recorded failed CREATE and drops it from state', async () => {

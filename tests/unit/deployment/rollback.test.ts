@@ -206,9 +206,24 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
     expect(deleteCalls).toEqual(['A']);
     // B failed mid-create — provider.create was called but no rollback delete on B
     // (failed resource has no physicalId in completedOperations)
-    expect(mockProvider.create).toHaveBeenCalledWith('B', 'AWS::S3::Bucket', expect.any(Object));
-    // C was never started (skipped due to B failure)
-    expect(mockProvider.create).not.toHaveBeenCalledWith('C', expect.any(String), expect.any(Object));
+    expect(mockProvider.create).toHaveBeenCalledWith(
+      'B',
+      'AWS::S3::Bucket',
+      expect.any(Object),
+      // EXACT object, not `objectContaining`: `toHaveBeenCalledWith(a, b, c)`
+      // was itself an ARITY-STRICT #1463 fence (no 4th argument at all), and
+      // `objectContaining` would admit `replayingState: true` — the exact leak
+      // those fences exist to catch. This site and the property-driven
+      // replacement are the ONLY fences covering the main CREATE path, so the
+      // loose form would have removed cover from the most-travelled site.
+      { maskSecrets: expect.any(Function) }
+    );
+    // C was never started (skipped due to B failure). Asserted on the logical
+    // ids rather than as a `not.toHaveBeenCalledWith(...)`: that form is
+    // arity-sensitive, so it would go vacuously true the moment the create
+    // signature grows an argument -- which is exactly what issue #1932 item 3
+    // did to it.
+    expect(mockProvider.create.mock.calls.map((c) => c[0])).not.toContain('C');
   });
 
   it('rolls back deeper successes in dependency order (dependents deleted before deps)', async () => {
@@ -419,12 +434,15 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
     expect(ccProvider.create).toHaveBeenCalledWith(
       'CcRouted',
       'AWS::Lambda::Function',
-      expect.any(Object)
+      expect.any(Object),
+      // 4th arg: the `CreateContext` carrying issue #1932 item 3's masker.
+      { maskSecrets: expect.any(Function) }
     );
     expect(sdkProvider.create).toHaveBeenCalledWith(
       'Failing',
       'AWS::S3::Bucket',
-      expect.any(Object)
+      expect.any(Object),
+      { maskSecrets: expect.any(Function) }
     );
 
     // The rollback delete for CcRouted MUST have gone through the CC

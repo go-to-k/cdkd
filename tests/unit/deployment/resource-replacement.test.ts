@@ -200,7 +200,14 @@ describe('DeployEngine - Resource Replacement', () => {
     expect(mockProvider.create).toHaveBeenCalledWith(
       'MyBucket',
       'AWS::S3::Bucket',
-      expect.objectContaining({ BucketName: 'new-bucket-name' })
+      expect.objectContaining({ BucketName: 'new-bucket-name' }),
+      // EXACT object, not `objectContaining`: `toHaveBeenCalledWith(a, b, c)`
+      // was itself an ARITY-STRICT #1463 fence (no 4th argument at all), and
+      // `objectContaining` would admit `replayingState: true` — the exact leak
+      // those fences exist to catch. This site and the property-driven
+      // replacement are the ONLY fences covering the main CREATE path, so the
+      // loose form would have removed cover from the most-travelled site.
+      { maskSecrets: expect.any(Function) }
     );
 
     // 2. provider.delete() should be called second (old resource)

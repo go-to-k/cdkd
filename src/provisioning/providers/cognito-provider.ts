@@ -47,6 +47,8 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
+  UpdateContext,
+  SecretMasker,
 } from '../../types/resource.js';
 
 /**
@@ -192,6 +194,16 @@ function readDeclaredMfaConfiguration(raw: unknown, options: ConfigStringOptions
 }
 
 /**
+ * Depth cap for the pre-stringify secret walk in {@link buildMfaConfigRequest}.
+ *
+ * Only a guard against a self-referential bag, not a real bound: a resolved
+ * `EnabledMfas` is a list of factor-name scalars, so the walk never reaches
+ * depth 2 on any shape this warning exists to describe. Deliberately generous
+ * so no plausible mis-shape is left unmasked by it.
+ */
+const MASK_WALK_MAX_DEPTH = 8;
+
+/**
  * Read `EnabledMfas` as the pair (recognized list, "the template asked for a
  * factor at all").
  *
@@ -301,12 +313,34 @@ function hasMfaConfigProps(properties: Record<string, unknown>): boolean {
  * is also needed for the `CreateUserPool` / `UpdateUserPool` forward — and so
  * the create path can REFUSE a malformed value while the update path only
  * warns, which is the split `requireConfigString`'s `onUnusable` encodes.
+ *
+ * `maskSecrets` is the caller's secret masker (issue #1932 item 3), threaded
+ * from `CreateContext` / `UpdateContext` — see `SecretMaskingContext` in
+ * `src/types/resource.ts`. Every warning below is routed through it because
+ * they name RESOLVED property values: by the time a provider is called a
+ * `{{resolve:secretsmanager:...}}` scalar is already plaintext, and cdkd's
+ * other two masking boundaries (the deploy engine's error/reason text and the
+ * resolver's debug line) do not cover a provider's own `logger.warn`.
+ *
+ * Typed as the contract's own `SecretMasker`, imported from
+ * `src/types/resource.ts` (which re-exports it for exactly this reason, the
+ * same way it re-exports `DeleteContext`). An earlier draft re-declared it
+ * structurally as `(text: string) => string` on a layering argument — keeping
+ * `src/provisioning/**` clear of `src/deployment/secret-redaction.ts` — but
+ * `types/resource.ts` already crosses that boundary with a type-only import,
+ * so the re-declaration bought nothing and left the provider's parameter type
+ * free to drift from the contract. The layering argument survives where it is
+ * still true: providers import from `types/resource.ts`, never from the
+ * deployment module, and never the secrets BAG. It defaults to IDENTITY so the
+ * diff-side caller (`resolveSentMfaConfiguration`) and every unit test keep
+ * working unchanged.
  */
 function buildMfaConfigRequest(
   physicalId: string,
   properties: Record<string, unknown>,
   logger?: { warn: (message: string) => void },
-  declaredMfaConfiguration = ''
+  declaredMfaConfiguration = '',
+  maskSecrets: SecretMasker = (text) => text
 ): SetUserPoolMfaConfigCommandInput | undefined {
   const {
     factors: enabledMfas,
@@ -314,6 +348,21 @@ function buildMfaConfigRequest(
     malformed: enabledMfasMalformed,
     blank: enabledMfasBlank,
   } = readEnabledMfas(properties);
+  // ONE masked sink for every warning in this function (issue #1932 item 3),
+  // rather than a `maskSecrets(...)` at each `logger?.warn` call: a warning
+  // added later is then masked by construction instead of by the author
+  // remembering.
+  //
+  // This is the OUTER of two layers, and it is deliberately not the only one.
+  // A finished message is always longer than the value inside it, so it can
+  // only ever reach `maskSecretsInText`'s SUBSTRING arm, which ignores needles
+  // below `MIN_NEEDLE_LENGTH` (4). A 1-3 character secret therefore survives
+  // this sink. `maskLeaf` below is the inner layer: it hands the masker the raw
+  // string, which reaches the WHOLE-VALUE arm at any length. Neither layer
+  // subsumes the other — the sink catches a secret embedded in a structure and
+  // any interpolation added later, the leaf pass catches the short ones — and
+  // the mask is idempotent, so applying both is free.
+  const warn = (message: string): void => logger?.warn(maskSecrets(message));
   // Truthy (non-empty) gating — NOT `!== undefined` — because
   // `readCurrentState` ALWAYS emits these as empty-string / empty-array
   // placeholders (so a console-side ADD surfaces as drift). A `!== undefined`
@@ -456,7 +505,7 @@ function buildMfaConfigRequest(
   // warning to. Placed after the line above so the message can state the value
   // actually being sent, matching the dropped-entry warning below.
   if (enabledMfasBlank) {
-    logger?.warn(
+    warn(
       `UserPool ${physicalId}: EnabledMfas is an empty string, which declares no MFA factor and ` +
         `is treated as absent — a mangled Fn::Join or an empty String parameter collapses to ` +
         `this shape. Nothing is enabled from it and MfaConfiguration is ` +
@@ -528,7 +577,7 @@ function buildMfaConfigRequest(
   // is a behavior change needing its own integ and review round, and is filed
   // separately rather than done here.
   if (request.MfaConfiguration === 'OFF' && anyFactorBlock) {
-    logger?.warn(
+    warn(
       `UserPool ${physicalId}: MfaConfiguration is pinned to OFF while an MFA factor block is ` +
         `configured. AWS REJECTS that combination ("Invalid MFA configuration given, can't ` +
         `turn off MFA and configure an MFA together"), so this deploy FAILS rather than ` +
@@ -560,9 +609,70 @@ function buildMfaConfigRequest(
   // but TypeScript types JSON.stringify as returning `string`, which makes the
   // tail look unreachable to a reader or a lint autofix. A unit test passes
   // [undefined] directly so deleting it fails rather than going unnoticed.
-  const dropped: string[] = unrecognizedFactors.map((f) => JSON.stringify(f) ?? String(f));
+  //
+  // Both halves of `dropped` are RESOLVED property values -- the unrecognized
+  // members come out of `EnabledMfas`, and the `(not a list)` entry is the
+  // whole property -- so both are masked, by the shared `warn` sink at the
+  // bottom of this block rather than here (issue #1932 item 3).
+  //
+  // NO LENGTH CAP, and that is a decision rather than an omission: the issue
+  // offered a cap as an alternative to (or alongside) the mask, and it buys
+  // nothing here. A cap is not a confidentiality control -- a SHORT secret
+  // survives it untouched, which is the realistic content of an MFA-factor
+  // enum field, while a LONG value it truncates was one the masker already
+  // judged not to be a secret. What it does cost is exactly this warning's
+  // job: naming the offending entry so the user can find it in the template.
+  // Truncating the one string the message exists to show, to guard against a
+  // log-volume problem that an enum-valued field does not have, is a net loss.
+  // If a cap is ever wanted it belongs at the logger, applied to every line,
+  // not hand-rolled into one provider's warning.
+  //
+  // `maskDeep` runs BEFORE `JSON.stringify`, and that ordering is the whole
+  // point rather than a tidiness preference. The `warn` sink alone CANNOT mask
+  // these, for two independent reasons:
+  //
+  //  1. ESCAPING. `JSON.stringify` escapes `"`, `\` and newlines, so a secret
+  //     containing any of them no longer OCCURS in the finished line and the
+  //     sink's substring scan cannot find it. That is not an exotic case: it
+  //     is every Secrets Manager JSON document, the commonest real secret
+  //     shape. Measured on the pre-fix code: a plaintext of
+  //     `super"secret-plaintext-value` came through the sink completely
+  //     unchanged.
+  //  2. LENGTH. The sink only ever sees a string longer than the value inside
+  //     it, so it can only reach `maskSecretsInText`'s SUBSTRING arm, which
+  //     ignores needles below `MIN_NEEDLE_LENGTH` (4). Handing the masker the
+  //     RAW value reaches the WHOLE-VALUE arm, which has no floor.
+  //
+  // So the sink is the fallback and this is the primary pass; neither subsumes
+  // the other (the sink still covers interpolations added later, and text this
+  // walk never sees).
+  //
+  // It WALKS rather than testing `typeof v === 'string'` at the top level,
+  // because `EnabledMfas` can be an object or an array of them and a secret
+  // nested inside one is stringified — and therefore escaped — exactly the
+  // same way. Keys are masked too: they are stringified into the message
+  // alongside the values. The depth cap keeps a self-referential bag from
+  // hanging here; `JSON.stringify` below would throw on one anyway, and a hang
+  // is a worse failure than the throw this preserves.
+  const maskDeep = (v: unknown, depth = 0): unknown => {
+    if (typeof v === 'string') return maskSecrets(v);
+    if (depth >= MASK_WALK_MAX_DEPTH) return v;
+    if (Array.isArray(v)) return v.map((e) => maskDeep(e, depth + 1));
+    if (v !== null && typeof v === 'object') {
+      return Object.fromEntries(
+        Object.entries(v as Record<string, unknown>).map(([k, x]) => [
+          maskSecrets(k),
+          maskDeep(x, depth + 1),
+        ])
+      );
+    }
+    return v;
+  };
+  const dropped: string[] = unrecognizedFactors.map(
+    (f) => JSON.stringify(maskDeep(f)) ?? String(f)
+  );
   if (enabledMfasMalformed) {
-    dropped.push(`${JSON.stringify(properties['EnabledMfas'])} (not a list)`);
+    dropped.push(`${JSON.stringify(maskDeep(properties['EnabledMfas']))} (not a list)`);
   }
   if (dropped.length > 0) {
     // FOUR outcomes, not three. Splitting only on OFF made the second arm claim
@@ -595,7 +705,7 @@ function buildMfaConfigRequest(
               `their own`
             : `MfaConfiguration is ${request.MfaConfiguration} with no factor enabled, so AWS ` +
               `rejects this call rather than deploying the pool with MFA disabled`;
-    logger?.warn(
+    warn(
       `UserPool ${physicalId}: EnabledMfas entries ${dropped.join(', ')} do not map to an MFA ` +
         `factor block (known: ${MFA_FACTOR_SMS}, ${MFA_FACTOR_SOFTWARE_TOKEN}, ` +
         `${MFA_FACTOR_EMAIL_OTP}); no factor is enabled from them. ${consequence}.`
@@ -1055,7 +1165,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // on CreateUserPool — they go through the SetUserPoolMfaConfig
       // post-create control-plane API. Skip the extra call when none of them
       // are present.
-      await this.applyMfaConfig(userPoolId, properties, mfaConfiguration);
+      await this.applyMfaConfig(userPoolId, properties, mfaConfiguration, {
+        // Issue #1932 item 3. Conditional spread because
+        // `exactOptionalPropertyTypes` rejects an explicit `undefined` here.
+        ...(context?.maskSecrets && { maskSecrets: context.maskSecrets }),
+      });
 
       this.logger.debug(`Successfully created Cognito User Pool ${logicalId}: ${userPoolId}`);
 
@@ -1109,6 +1223,13 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * present. Wrapped in a transient-error retry because back-to-back
    * control-plane writes on a freshly-created pool can briefly conflict
    * (mirrors DynamoDBTableProvider.retryOnTransientControlPlane).
+   *
+   * `options.maskSecrets` is the caller's secret masker (issue #1932 item 3),
+   * forwarded straight to {@link buildMfaConfigRequest} where every warning is
+   * routed through it. Both `create()` and `update()` supply it from their own
+   * context, so the two paths cannot diverge on whether a resolved value is
+   * masked. Absent (an older caller, a test, a provider invoked directly) means
+   * unmasked, exactly as before.
    */
   private async applyMfaConfig(
     physicalId: string,
@@ -1118,13 +1239,18 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       liveMfaConfiguration?: string;
       liveReadFailed?: boolean;
       declaredKind?: DeclaredMfaConfigurationKind;
+      maskSecrets?: SecretMasker;
     } = {}
   ): Promise<void> {
     const request = buildMfaConfigRequest(
       physicalId,
       properties,
       this.logger,
-      declaredMfaConfiguration
+      declaredMfaConfiguration,
+      // `?? identity` rather than a conditional spread on the call: the
+      // parameter has a default, but passing `undefined` explicitly would
+      // ALSO take it, so this is belt-and-braces and reads at the call site.
+      options.maskSecrets ?? ((text) => text)
     );
     if (!request) return;
 
@@ -1367,24 +1493,40 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * ADDING new custom attributes in place via AddCustomAttributes, but cannot
    * modify or remove an existing attribute — those changes require replacement
    * and are rejected with ResourceUpdateNotSupportedError.
+   *
+   * The `context` parameter is read for ONE thing today: `maskSecrets` (issue
+   * #1932 item 3), forwarded to `applyMfaConfig` so the MFA warnings mask a
+   * resolved secret the same way they do on the create path. It deliberately
+   * does NOT consult `desiredFromAwsReadback` -- this provider has no
+   * empty-collection-means-delete shape, so reading that flag would be a
+   * behavior change with no motivating case, and the `MfaConfiguration`
+   * refusal below stays UNCONDITIONALLY downgraded for the reason its own
+   * comment gives (a refusal against a state-borne bag leaves the resource
+   * un-rollbackable). Accepting the context does not change that.
    */
   async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Cognito User Pool ${logicalId}: ${physicalId}`);
 
     // The update-path twin of `create()`'s guard (issue #1925 item 2). The
-    // downgrade is UNCONDITIONAL here rather than gated on a replay context:
-    // `update()` has no context parameter, so it cannot tell a template push
-    // from the state-borne bag `cdkd drift --revert` and the rollback executor's
-    // revert arm hand it — and a refusal against a historical state record
-    // would leave the resource not merely un-updatable but UN-ROLLBACKABLE,
-    // with no template-side remedy. Same shape as `IAMAccessKeyProvider`'s
-    // `Status` and `RDSDBProxyTargetGroupProvider`'s `TargetGroupName`.
+    // downgrade is UNCONDITIONAL here rather than gated on a replay context —
+    // and it stays that way now that `update()` DOES take a context (issue
+    // #1932 item 3 added one for `maskSecrets`). Nothing on `UpdateContext`
+    // distinguishes a template push from the state-borne bag `cdkd drift
+    // --revert` and the rollback executor's revert arm hand it:
+    // `desiredFromAwsReadback` is set by `drift --revert` ALONE and is
+    // deliberately NOT set by the rollback arms (see its own doc), so gating on
+    // it would re-introduce the refusal on exactly the rollback path — and a
+    // refusal against a historical state record leaves the resource not merely
+    // un-updatable but UN-ROLLBACKABLE, with no template-side remedy. Same
+    // shape as `IAMAccessKeyProvider`'s `Status` and
+    // `RDSDBProxyTargetGroupProvider`'s `TargetGroupName`.
     const mfaConfiguration = readDeclaredMfaConfiguration(properties['MfaConfiguration'], {
       onUnusable: (message) => this.logger.warn(message),
     });
@@ -1541,6 +1683,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         ...(liveMfa?.value !== undefined ? { liveMfaConfiguration: liveMfa.value } : {}),
         ...(liveMfa?.failed === true ? { liveReadFailed: true } : {}),
         declaredKind: classifyDeclaredMfaConfiguration(properties['MfaConfiguration']),
+        // The UPDATE twin of the masker `create()` passes (issue #1932 item 3).
+        // The two paths reach the SAME `buildMfaConfigRequest` warnings with the
+        // same resolved bag, so masking one and not the other would leave the
+        // fix conditional on which path a given deploy happens to take.
+        ...(context?.maskSecrets && { maskSecrets: context.maskSecrets }),
       });
 
       this.logger.debug(`Successfully updated Cognito User Pool ${logicalId}`);

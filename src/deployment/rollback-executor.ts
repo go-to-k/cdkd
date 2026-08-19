@@ -73,6 +73,7 @@ import { IntrinsicFunctionResolver, type ResolverContext } from './intrinsic-fun
 import {
   scrubResourceRecord,
   redactSecretsForState,
+  createSecretMasker,
   STATE_DERIVED_RULES,
   type RecordedSecretValues,
 } from './secret-redaction.js';
@@ -125,20 +126,49 @@ const SKIP_FINAL_SNAPSHOT_FLAG = '--skip-final-snapshot';
  * engine's five sites (CREATE, the property-driven replacement, the
  * `--recreate-via-*` destroy-then-create, the `--replace` delete-first
  * fallback, and the update-failure replacement) are all driven by freshly
- * resolved TEMPLATE properties, so they deliberately pass no context and the
- * refusal stands where the user can edit the input.
+ * resolved TEMPLATE properties, so they never set THIS FLAG and the refusal
+ * stands where the user can edit the input. They DO pass a context — since
+ * issue #1932 every create site REACHED FROM THE ENGINE carries a
+ * `maskSecrets` capability — so the invariant is "no `replayingState`", not
+ * "no context object". (A provider that re-creates inside its own `update()`
+ * still passes none; see `CreateContext`.)
  *
  * The remaining call sites are the providers that re-create inside their own
  * `update()` (`this.create(...)` in ACM certificate / IAM managed policy / IAM
  * role / Lambda permission / SNS subscription). Those are NOT template-driven
  * — this executor's `revert` arm calls `provider.update(...)` with
  * `previousState.properties`, so they forward a STATE record on a replay — but
- * they CANNOT receive a context, because `update()` has no context parameter.
+ * they CANNOT receive a `CreateContext`: `update()`'s own context is an
+ * `UpdateContext`, which carries no `replayingState` to forward.
  * The constraint that follows is on providers, not on this constant: a
  * provider with a create-side pre-flight refusal must not re-create inside
  * `update()`. See `CreateContext` in `src/types/resource.ts`.
  */
 const REPLAYING_STATE_CREATE_CONTEXT: CreateContext = { replayingState: true };
+
+/**
+ * The rollback arms' {@link CreateContext}, with this op's secret masker bound
+ * in (issue #1932 item 3).
+ *
+ * The rollback path needs this MORE than the forward deploy does, not less:
+ * {@link resolveReplayProps} deliberately re-resolves every redacted
+ * `{{resolve:...}}` expression back to plaintext before handing the bag to a
+ * provider, so a replayed bag is guaranteed to carry the concrete secret
+ * whenever the resource has one. Leaving the masker off here would have left
+ * the contract applied at one caller and absent at the one whose bag is
+ * provably plaintext.
+ *
+ * Spreads the shared constant rather than mutating it: `maskSecrets` is
+ * per-op, and a module-level object is shared by every op in the run.
+ *
+ * Called AFTER `resolveReplayProps` has filled `secrets` at every call site, so
+ * the masker sees this op's re-resolved values. `createSecretMasker` reads the
+ * bag by reference on every call and so does not depend on that ordering, but
+ * the ordering is what makes it correct here without relying on that.
+ */
+function replayingStateCreateContext(secrets: RecordedSecretValues): CreateContext {
+  return { ...REPLAYING_STATE_CREATE_CONTEXT, maskSecrets: createSecretMasker(secrets) };
+}
 
 /**
  * Which provisioning layer a delete must be judged against: the CURRENT
@@ -1270,7 +1300,7 @@ async function replaySingle(
                 op.logicalId,
                 op.resourceType,
                 { ...resolvedPrevProps },
-                REPLAYING_STATE_CREATE_CONTEXT
+                replayingStateCreateContext(secrets)
               ),
             op.logicalId,
             {
@@ -1331,7 +1361,7 @@ async function replaySingle(
                   op.logicalId,
                   op.resourceType,
                   { ...resolvedPrevProps },
-                  REPLAYING_STATE_CREATE_CONTEXT
+                  replayingStateCreateContext(secrets)
                 ),
               op.logicalId,
               {
@@ -1528,6 +1558,11 @@ async function replaySingle(
             op.resourceType,
             desiredProps ?? {},
             currentProps ?? {},
+            // Issue #1932 item 3: the UPDATE twin of the re-create arms above.
+            // No `desiredFromAwsReadback` — this bag is `previousState.properties`,
+            // a TEMPLATE recorded earlier, and setting that flag here would delete
+            // a live configuration on rollback (see `UpdateContext`'s own doc).
+            { maskSecrets: createSecretMasker(secrets) },
           ],
           op.logicalId,
           logger,
@@ -1838,6 +1873,8 @@ export async function replayFailedOperations(
               op.resourceType,
               desiredProps ?? {},
               attemptedProps ?? {},
+              // Same as the `revert` arm: masker only, no readback flag.
+              { maskSecrets: createSecretMasker(secrets) },
             ],
             op.logicalId,
             logger,

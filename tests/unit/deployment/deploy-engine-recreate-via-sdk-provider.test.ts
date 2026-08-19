@@ -233,24 +233,31 @@ describe('DeployEngine — --recreate-via-sdk-provider wire-through (#651)', () 
     expect(callOrder).toEqual(['cc.delete', 'sdk.create']);
   });
 
-  it('the destroy-then-create re-create passes NO CreateContext (#1463 inverse fence)', async () => {
+  it('the destroy-then-create re-create passes a masker-ONLY context, never replayingState (#1463 inverse fence)', async () => {
     // `CreateContext.replayingState` is the rollback executor's signal that a
     // create replays a cdkd STATE record, and a provider pre-flight refusal
     // DOWNGRADES to a warning when it is set. `--recreate-via-*` re-creates
     // from freshly resolved TEMPLATE properties, so it must never set it —
     // the refusal has to stand where the user can fix the input.
     //
-    // Arity, not just value: a reviewer injected `{ replayingState: true }`
-    // at each deploy-engine create site and the full 9270-test suite stayed
-    // green, so nothing pinned this direction. Asserting `call.length === 3`
-    // fails on ANY 4th argument, including a future context with some other
-    // field.
+    // Pinned by the context's EXACT key set, not by value: a reviewer injected
+    // `{ replayingState: true }` at each deploy-engine create site and the full
+    // suite stayed green, so nothing pinned this direction. This used to assert
+    // `call.length === 3` — no 4th argument at all — which issue #1932 item 3
+    // made impossible: every create site now carries a `maskSecrets` capability
+    // so a provider warn cannot echo a resolved secret. Asserting the key set is
+    // EXACTLY `['maskSecrets']` keeps the original fence's power (it fails on
+    // `replayingState`, and on any OTHER field a future edit adds) while
+    // admitting the one field that is deliberately universal.
     const engine = makeEngine();
     await invokeProvision(engine, makeUpdateChange(), makeState(), makeTemplate());
     const calls = vi.mocked(sdkProvider.create).mock.calls;
     expect(calls).toHaveLength(1);
     for (const call of calls) {
-      expect(call).toHaveLength(3);
+      expect(call).toHaveLength(4);
+      // Exactly the masker, nothing else. `replayingState` in here would mean a
+      // template-driven replacement had started claiming to be a state replay.
+      expect(Object.keys((call[3] ?? {}) as Record<string, unknown>)).toEqual(['maskSecrets']);
     }
   });
 

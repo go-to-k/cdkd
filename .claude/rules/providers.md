@@ -9,6 +9,10 @@ paths:
 ```typescript
 interface ResourceProvider {
   create(logicalId: string, resourceType: string, properties: Record<string, unknown>, context?: CreateContext): Promise<ResourceCreateResult>;
+  // `CreateContext` and `UpdateContext` both extend `SecretMaskingContext`
+  // (issue #1932): an optional `maskSecrets?: (text: string) => string` that a
+  // provider MUST apply to any log line interpolating a RESOLVED property
+  // value. See "Masking a resolved property value in a provider log line".
   update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>, previousProperties: Record<string, unknown>): Promise<ResourceUpdateResult>;
   delete(logicalId: string, physicalId: string, resourceType: string, properties?: Record<string, unknown>, context?: DeleteContext): Promise<void | ResourceDeleteResult>;
   getAttribute(physicalId: string, resourceType: string, attributeName: string): Promise<unknown>;
@@ -150,7 +154,8 @@ strict, each differently):
 - **WARN and keep the pre-refusal behavior** — `EC2Provider`'s Route
   multi-destination guard (issue #1566). `updateRoute` DELETES the route before
   re-creating it, so a throw on the re-create would strand a deleted route with
-  no template-side remedy; and because `update()` has no context parameter, it
+  no template-side remedy; and because nothing on `UpdateContext` distinguishes
+  the callers (it carries no `replayingState`), it
   cannot tell a template update from the state-borne replay that
   `rollback-executor.ts` / `drift --revert` drive. So the downgrade is
   UNCONDITIONAL on that path and the pre-fix precedence still applies — the
@@ -948,17 +953,25 @@ right for ALL of them.
 **That is what `UpdateContext` is for** (issue #1732) — the `update()` sibling of
 `CreateContext`, added because this class has no per-site workaround: the bags
 are byte-identical and only the CALLER knows which it is. It is optional, so
-none of the 77 providers implementing `update()` changed. Its one field today,
+none of the 77 providers implementing `update()` changed. Its own field,
 `desiredFromAwsReadback`, is named for what it asserts rather than for
 "state-borne", and that distinction is load-bearing: the rollback executor's
 revert arms ARE state-borne, but their desired bag is
 `previousState.properties` — a TEMPLATE recorded earlier — so `{Rules: []}`
 there means what the template meant and the template answer (SKIP) is correct.
-Those arms deliberately pass NO context, and widening the flag to `stateBorne`
+Those arms deliberately never set that FLAG (they do pass a context, carrying
+only the `maskSecrets` capability below), and widening the flag to `stateBorne`
 would sweep them in and delete a live configuration during a rollback. Only
-`src/cli/commands/drift.ts`'s revert call passes it. When adding a field here,
+`src/cli/commands/drift.ts`'s revert call sets it. When adding a field here,
 ask what the flag lets a provider CONCLUDE, not merely where the call came
 from.
+
+**The other field is inherited, not its own** — `UpdateContext` and
+`CreateContext` both extend `SecretMaskingContext`, which supplies
+`maskSecrets?: (text: string) => string` (issue #1932). See the section below;
+the reason it lives on a shared base rather than being declared twice is that a
+masker present on one path and absent on the other is not a partial fix, it is
+a fix with a hole in the shape of whichever path a given deploy takes.
 
 Two things that are easy to get wrong and were both caught by review:
 **normalize BOTH comparison sides**, not just the desired one — a record written BEFORE the provider started narrowing still carries every key, so a one-sided pass flips the same difference to a REMOVAL and breaks exactly the population the narrowing exists for; and **wire `cdkd diff` too**, since a preview that narrows differently from the apply forecasts a change the deploy will never make. `makeCanonicalizePropertiesFn` in `src/provisioning/canonicalize-properties.ts` is the one builder both commands use, so they cannot drift.
@@ -982,13 +995,103 @@ where `DeleteContext` lives — that type belongs there because its
 Several providers call `this.create(logicalId, resourceType, properties)` from
 their own `update()` (ACM certificate, IAM managed policy, IAM role, Lambda
 permission, SNS subscription). Those internal re-creates CANNOT receive a
-context — `update()` has no context parameter — and the `properties` they
+`CreateContext` — `update()`'s own context is an `UpdateContext`, which
+carries no `replayingState` — and the `properties` they
 forward ARE a state record during a rollback replay (`rollback-executor.ts`'s
 `revert` arm calls `provider.update(..., previousState.properties, ...)`, as
 does `drift --revert`). So a provider that both refuses on create AND
 re-creates inside `update()` would fire that refusal on a replay with no way
 to detect it. None of the five does today (required-field validation only,
 which correctly stays a hard error).
+
+### Masking a resolved property value in a provider log line
+
+A provider's `properties` bag arrives RESOLVED, so a
+`{{resolve:secretsmanager:...}}` scalar is already PLAINTEXT by the time
+`create()` / `update()` sees it. cdkd's masking historically lived at two
+boundaries only — the deploy engine's error / reason text
+(`maskSecretsInText` in `deploy-engine.ts`) and the intrinsic resolver's own
+debug line — so a provider that interpolated one of those values into its OWN
+`logger.warn` sat outside all of it. `NoEcho` redaction has the same shape: it
+covers the resolver's debug output, not the value handed to the provider.
+
+Issue #1932 item 3 closes that with a capability on the context rather than a
+new global:
+
+```typescript
+export interface SecretMaskingContext {
+  maskSecrets?: (text: string) => string;
+}
+export interface CreateContext extends SecretMaskingContext { /* ... */ }
+export interface UpdateContext extends SecretMaskingContext { /* ... */ }
+```
+
+Threaded by all three EXTERNAL callers — `deploy-engine.ts` (CREATE, UPDATE and
+every replacement create), `rollback-executor.ts` (both re-creates, both UPDATE
+arms) and `drift --revert` — each bound to the bag its own resolution pass
+filled. The five providers that re-create inside their own `update()` pass no
+context, because they forward the outer call's `properties` and have none.
+
+Rules for a provider:
+
+- **Apply it to any line interpolating a value from `properties`.** The unhappy
+  path is usually the one that prints — a warning about a mis-shaped value
+  exists precisely to name that value.
+- **Mask the VALUE before stringifying it; the message is a fallback.** Two
+  independent reasons, and the first is the one that bites:
+  - **Escaping.** A masker matches by literal occurrence. `JSON.stringify`
+    escapes `"`, `\` and newlines, so a secret containing any of them no
+    longer OCCURS in the finished line. That is every Secrets Manager JSON
+    document — measured: `super"secret-plaintext-value` came through a
+    message-level mask completely unchanged.
+  - **Length.** `maskSecretsInText` masks an exact whole-value match at ANY
+    length but only scans for SUBSTRING needles of >= `MIN_NEEDLE_LENGTH` (4).
+    A message is always longer than the value inside it, so it reaches only the
+    scan and a 1-3 character secret survives.
+
+  Do both: walk the value masking every string leaf (and key) before
+  interpolating, AND route the assembled message through the masker. Walk
+  rather than test the top level, since a secret nested in an object leaf is
+  stringified — and escaped — identically.
+- **Read it defensively.** `context?.maskSecrets ?? ((t: string) => t)`.
+  Absent means unmasked, which is the back-compatible default that let this
+  ship without editing ~130 providers. `create()` / `update()` are also called
+  by `cdkd drift --revert`, the import path, and tests.
+- **Never cache it on `this`.** Providers are registered as SINGLETONS and
+  serve concurrent resources, so a stashed masker is the wrong deploy's.
+- **Prefer ONE masked sink over per-value masking.** `buildMfaConfigRequest` in
+  `cognito-provider.ts` builds
+  `const warn = (m: string) => logger?.warn(maskSecrets(m));` once and routes
+  every warning through it, so a warning added later is masked by construction.
+
+Why a FUNCTION and not the `RecordedSecretValues` bag: the bag is keyed by
+PLAINTEXT, so handing it to ~130 providers makes every one of them a place a
+`[...secrets.keys()]` can leak from; the function grants the capability with no
+read path back to the values, keeps `src/provisioning/**` free of a
+`src/deployment/secret-redaction.ts` import, and can be WIDENED later (to cover
+`NoEcho` parameters, say) by changing the callers alone. The codebase already
+had this shape — `drift.ts` hands `withRetry` a masking `logger.debug` rather
+than the bag.
+
+What it does NOT cover: cdkd's dynamic-reference secret model only
+(`{{resolve:secretsmanager:...}}`, `SecureString` ssm). A `NoEcho: true`
+template PARAMETER is outside that model — the resolver redacts it in its own
+debug line but never RECORDS the value, and no masker built from a
+`RecordedSecretValues` bag can reach it. That residual is PERSISTED, not
+log-only: a `NoEcho` value quoted back inside an AWS error reaches
+`deployments/*.jsonl`, since the event masker reads the same bag (issue #1998).
+
+**`delete()` deliberately has no masker, and the reason is about PROVIDERS, not
+about the bag.** A delete bag CAN carry plaintext: the in-process rollback hands
+`replayRollback` the IN-MEMORY `stateResources`, whose `properties` a CREATE set
+to the resolved plaintext, and redaction happens at the save choke point on a
+COPY. What is true is that no provider `delete()` interpolates a property value
+today. Threading one correctly is not mechanical either — that plaintext was
+resolved by the DEPLOY, whose bag lives in `DeployEngine.perResourceSecrets`,
+while the executor's own per-op map is re-resolved from the PREVIOUS generation,
+so a masker bound to it would miss exactly the value it exists to catch. Before
+adding any delete-side log line that names a property value, thread the
+capability first. Filed as issue #2007.
 
 `EC2Provider.createRoute` IS such a provider since issue #1566 — it refuses a
 multi-destination template on create AND is re-created from `updateRoute` — and

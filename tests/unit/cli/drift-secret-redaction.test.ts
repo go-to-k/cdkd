@@ -773,6 +773,40 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     expect(JSON.stringify(sent)).not.toContain('{{resolve:');
   });
 
+  // Issue #1932 item 3. `--revert` is the THIRD caller that hands a provider a
+  // bag re-resolved back to plaintext (the other two are the deploy engine and
+  // the rollback executor), so it must offer the same masking capability or a
+  // provider warning naming a mis-shaped property value prints the secret --
+  // on the one command a user reaches for when something is already wrong.
+  // The bag is provably plaintext here: the test above asserts exactly that.
+  it('--revert hands provider.update a WORKING secret masker (issue #1932 item 3)', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ SECRET_PASSWORD: 'tampered-in-the-console' }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    const context = update.mock.calls[0]![5] as {
+      desiredFromAwsReadback?: boolean;
+      maskSecrets?: (text: string) => string;
+    };
+    expect(typeof context?.maskSecrets).toBe('function');
+    // Bound to the bag THIS revert resolved into, not merely present: a masker
+    // built from an empty map would satisfy a presence check and mask nothing,
+    // which is the likeliest way this threading regresses.
+    expect(context.maskSecrets!(`AWS rejected "${SECRET_PLAINTEXT}"`)).toBe(
+      `AWS rejected "${SECRET_MASK}"`
+    );
+    expect(context.maskSecrets!('AWS rejected "PLAIN"')).toBe('AWS rejected "PLAIN"');
+    // The masker rides ALONGSIDE the readback flag rather than replacing it --
+    // dropping that flag would change which arm a provider takes on a revert.
+    expect(context.desiredFromAwsReadback).toBe(true);
+  });
+
   it('--revert does not persist the plaintext a provider echoes back in effectiveProperties', async () => {
     // A narrowing (#1644): the provider drops the env var it was not able to
     // deliver and echoes the rest — including the secret cdkd had just resolved

@@ -1253,3 +1253,114 @@ export function maskSecretsInText(text: string, secrets: RecordedSecretValues): 
   if (!regex) return text;
   return text.replace(regex, SECRET_MASK);
 }
+
+/**
+ * A caller-supplied capability that masks any secret this deploy resolved out
+ * of an arbitrary string (issue #1932 item 3).
+ *
+ * This is the PROVIDER-FACING half of {@link maskSecretsInText}. Masking has
+ * historically lived at two boundaries only — the deploy engine's error /
+ * reason text and the resolver's own debug line — so a provider that
+ * interpolates a RESOLVED property value into its own `logger.warn` sat
+ * outside all of it. A provider cannot close that itself: `maskSecretsInText`
+ * needs a {@link RecordedSecretValues} bag, and a provider has no way to reach
+ * the one its caller's resolution pass produced.
+ *
+ * **Why a FUNCTION and not the bag itself.** The bag was the obvious threading
+ * and was rejected on four counts:
+ *
+ * 1. **Precedent.** The codebase already answers "the callee needs masked
+ *    output" by injecting the masked capability rather than the secrets:
+ *    `src/cli/commands/drift.ts` hands `withRetry` a
+ *    `{ logger: { debug: (msg) => logger.debug(maskSecretsInText(msg, secrets)) } }`,
+ *    and `buildMfaConfigRequest` in the Cognito provider already takes an
+ *    injected `logger?: { warn }`. This follows that shape instead of adding a
+ *    second one.
+ * 2. **Blast radius.** {@link RecordedSecretValues} is keyed by PLAINTEXT, so
+ *    handing it over gives every one of ~130 providers the pass's secrets as
+ *    iterable DATA — one `[...context.secrets.keys()]` in any of them is a
+ *    leak strictly worse than the one being fixed. A `(text) => string` grants
+ *    the capability with no read path back to the values.
+ * 3. **Layering.** The bag would put a `src/deployment/**` VALUE import and
+ *    the `RecordedSecretValues` type into `src/provisioning/**`. The function
+ *    keeps both out: a provider imports the {@link SecretMasker} alias from
+ *    `src/types/resource.ts` (which re-exports it, as it does `DeleteContext`)
+ *    and never names the bag. Stated precisely because an earlier draft
+ *    claimed the provider "needs no new import at all", which stopped being
+ *    true once the provider took the masker as a helper parameter — and a
+ *    structurally re-declared `(text: string) => string` was the wrong way to
+ *    keep it true, since it only bought a way to drift from the contract.
+ * 4. **It can be WIDENED without touching a provider.** What a masker covers
+ *    is the caller's decision, so growing cdkd's notion of "sensitive" — see
+ *    the `NoEcho` gap below — changes the deploy engine alone. Threading the
+ *    bag would freeze the provider contract to today's secret model.
+ *
+ * A masked LOGGER (injecting `{ warn }` that masks) was rejected too: providers
+ * are registered as SINGLETONS (`registry.register(type, new XProvider())`) and
+ * serve concurrent resources, so there is no per-call logger seam to replace
+ * and no safe place to stash one. The masker is per-CALL for exactly that
+ * reason, which is also why a provider must never cache it on `this`.
+ *
+ * **What it does NOT cover — THREE gaps, not one.** The first is about which
+ * values are known; the other two are about how a caller USES the masker, and
+ * both are why {@link SecretMaskingContext} tells providers to mask the VALUE
+ * rather than the finished line:
+ *
+ * 1. **Escaping / stringification.** A masker matches by literal occurrence,
+ *    so anything that TRANSFORMS the value before it lands in the text defeats
+ *    it. `JSON.stringify` escapes `"`, `\` and newlines — so a Secrets
+ *    Manager JSON document, the commonest real secret shape, no longer occurs
+ *    in the string being masked and passes through verbatim. Measured, not
+ *    theorised. Mask before you stringify.
+ * 2. **The needle floor.** {@link maskSecretsInText} masks an exact
+ *    whole-value match at any length, but only SCANS for substrings of at
+ *    least {@link MIN_NEEDLE_LENGTH} characters. Masking a finished message
+ *    can only reach the scan, so a 1-3 character secret survives it.
+ * 3. **`NoEcho` parameters**, below.
+ *
+ * On the model itself: it covers only what cdkd's dynamic-reference secret
+ * model records: `{{resolve:secretsmanager:...}}` and `{{resolve:ssm-secure:...}}` /
+ * `SecureString` ssm resolutions. A `NoEcho: true` template PARAMETER is
+ * outside that model by construction — the resolver redacts it in its own
+ * debug line (`stringifyParameterForLog`) but never records the value, and the
+ * same limit is already documented at `outputs-export-alias.ts`. So
+ * `EnabledMfas: {Ref: SomeNoEchoParam}` is NOT masked by this, and no masker
+ * built from a {@link RecordedSecretValues} bag could be: that map exists to
+ * rewrite a plaintext back onto the `{{resolve:...}}` expression it came from,
+ * and a `Ref` has no such expression. Recording `NoEcho` values into it would
+ * therefore also change what {@link redactSecretsForState} PERSISTS, which is
+ * a separate behavior change and is filed on its own (issue #1998).
+ *
+ * That residual is NOT log-only, which is worth stating because the obvious
+ * assumption is that it is: a `NoEcho` value quoted back inside an AWS ERROR
+ * reaches `deployments/*.jsonl`, because the event masker works from this same
+ * bag and the bag never holds a `NoEcho` value. So it is PERSISTED exposure.
+ * The dynamic-reference case this contract fixes really is log-only — that
+ * path's errors already pass through {@link maskSecretsInText} — so do not
+ * carry the log-only framing across to the `NoEcho` one.
+ */
+export type SecretMasker = (text: string) => string;
+
+/**
+ * Bind a {@link RecordedSecretValues} bag into a {@link SecretMasker} for a
+ * caller to hand to a provider.
+ *
+ * The bag is captured BY REFERENCE and read on every call, and there is
+ * deliberately NO `secrets.size === 0` short-circuit here: collapsing an empty
+ * bag to the identity function at BIND time would go permanently blind to
+ * everything added afterwards. {@link maskSecretsInText} makes that check at
+ * CALL time, where it is correct and costs a `Map.size` read.
+ *
+ * Stated as a property rather than a live requirement, because it is worth
+ * being exact about: every caller today FILLS its bag before binding — the
+ * rollback executor's arms run `resolveReplayProps` first and only then build
+ * the masker, and the deploy engine resolves before it calls the provider — so
+ * a bind-time short-circuit would pass every existing integration. It is the
+ * ORDER, not the reference capture, that makes them work now, and the order is
+ * the kind of thing a later refactor reverses without noticing. The unit test
+ * `masks values added to the bag AFTER the masker was built` is what holds the
+ * property up on its own.
+ */
+export function createSecretMasker(secrets: RecordedSecretValues): SecretMasker {
+  return (text: string) => maskSecretsInText(text, secrets);
+}
