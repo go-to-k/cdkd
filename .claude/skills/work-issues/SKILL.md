@@ -549,6 +549,32 @@ almost never it. And run the probe: a test added because a reviewer asked, which
 still passes under the mutation that motivated it, converts an open gap into a
 false assurance and is worse than no test.
 
+**Choose the probe's INPUT to discriminate too, not only its mutation.** The
+mutation decides which code changes; the input decides whether that change is
+observable at all. On 2026-08-20 a mask-before-`JSON.stringify` fix (PR
+go-to-k/cdkd#2067) was probed with a SCALAR secret and the probe came back GREEN
+under the very mutation it was written for — `stringify` escapes a JSON
+document's quotes, so only a JSON-DOCUMENT secret makes the needle stop
+occurring in the finished line. Both probes ran the same mutation; only one could
+see it. Before trusting a green, ask what property of the INPUT the defect
+depends on.
+
+**Run probes with `vp test run <path>`, never `vp run test <path>`.** The
+latter goes through the Vite+ task runner, where `test` is CACHED: a repeat
+invocation prints `◉ cache hit, replaying` and re-reports the previous run's
+counts and duration without executing. A probe edits a file the task hash does
+not cover, so the replayed verdict is the PRE-mutation one and the probe reports
+PASS having run nothing. Measured 2026-08-20 in this repo, and a reviewer on
+that same run had FOUR probes report PASS without executing. `vp test run` is
+the command the task delegates to, invoked directly, so it always executes.
+`.claude/hooks/vp-run-test-path-gate.sh` blocks the cached form; a bare
+`vp run test` (whole suite) is unaffected. Two further false greens ride the
+same command and are not fixed by the hook, so read the OUTPUT as well as the
+rc: a suite can report `skipped` rather than `passed` (the `version` test
+`skipIf`s itself when `dist/` is absent, which is the normal state of a fresh
+worktree), and a run whose every test passes can still exit non-zero — see the
+rc rule in section 6.
+
 **A repo-wide SCANNER test is calibrated against the PRE-FIX tree, not written
 from the issue's wording.** When the test globs the tree — `git ls-files`, a
 `readdirSync`, a markdown scan — the issue's description of the signature is what
@@ -572,6 +598,25 @@ explicit "do NOT touch <the other lanes' / other agents' files>; STOP and report
 if the fix needs a forbidden file" guardrail. Note: a subagent's Bash **bypasses
 the PreToolUse gate hooks**, so it can `gh pr create` past `verify-pr-gate` —
 enforce quality yourself; you (the orchestrator) still gate the MERGE.
+
+**Forbid the lane agents the FULL SUITE and run it yourself, serially.** Fanning
+out is right for editing and for targeted probes, and wrong for `vp run test`:
+on 2026-08-20 three lane agents plus two peer sessions each started one, machine
+load reached 195, a single test FILE took 607s against a 5s per-test timeout, and
+all three agents were killed by the 600s watchdog mid-run. The five resulting
+failures were `Test timed out` in files none of the diffs touched — indistinguishable
+by inspection from a real regression, and expensive to disprove. Serialized
+afterwards, the same trees were green. Tell each agent to run only
+`vp test run <its own suite>` and say that the authoritative full suite is yours;
+then run one lane's at a time.
+
+Two costs of the fan-out that are worth budgeting for rather than discovering:
+a lane agent that waits inside a tool call is killed at 600s of silence (have it
+launch long runs backgrounded with a log redirect and poll with short `tail`
+calls), and any fix round that re-touches `src/provisioning/providers/**` or
+another `integ-*` scope invalidates that gate's marker — so a late review finding
+buys another real-AWS run. That is the gate working; budget the run rather than
+arguing the code "cannot have changed behaviour".
 
 **Three guardrails every lane prompt must carry, all learned the hard way on
 2026-08-19:**
@@ -635,6 +680,19 @@ opened carrying only its review section, with no `Closes` line, and silently los
 the issue auto-close. Write the body file in one call, run the gated command in the
 next, and re-create rather than append after any refusal.
 
+**"All green" is the EXIT CODE, not the summary.** A run can report every test
+passing and still exit non-zero, and this repo's runner prints the two facts on
+ADJACENT lines with opposite polarity: on 2026-08-20 a lane finished
+`Tests 14371 passed (14371)` / `Type Errors  no errors` and exited **1**, with
+`Errors  20 errors` in between — twenty type errors in the test file. Capture the
+rc explicitly (`vp run test > /tmp/out 2>&1; rc=$?`) rather than reading the tail.
+
+The same lane is why `typecheck:test` is listed separately in `/check` step 2:
+`vp run typecheck` covers `tsconfig.json` (src + types) and NOT `**/*.test.ts`,
+so that agent reported "typecheck ✅" twice, truthfully, while the errors sat in
+a file that task never reads. For any diff touching `tests/**`, run
+`vp run typecheck:test` and read ITS rc.
+
 All green, then commit (conventional-commit; `fix:` for a user-visible provider /
 deploy fix, `chore:` for `.claude/**` / tooling — the `commit-prefix-scope-gate`
 hook blocks a `fix:`/`feat:` commit with no `src/**` change). The `check-gate` hook
@@ -654,6 +712,18 @@ git -C .claude/worktrees/<branch> rebase origin/main                    # clean 
 ```
 
 Re-run gates, `git push --force-with-lease`.
+
+**Re-run the SUITE after the rebase, not just the gates — and rebuild first.**
+A pre-rebase green attests to a tree that no longer exists: the rebase pulls in
+every peer commit merged since the fork, including test files your run never
+executed. Measured 2026-08-20 across three lanes: two were green before and after,
+one was green before and RED after. That one turned out to be `dist/` staleness
+rather than a peer's code (the `version` test compares `node dist/cli.js --version`
+against `package.json`, and the release bump that rode in with the peer merges
+moved the latter), which is exactly why the order is **rebuild, then run** — a
+rebase that crosses a `chore(release)` commit desynchronises them by construction.
+The lesson survives the benign diagnosis: without re-running, all three lanes would
+have opened PRs on the untested claim that the pre-rebase green still held.
 
 **A clean merge is not evidence that there was no collision** — and the collision
 does not have to be content-vs-content. Two lanes editing the SAME file merge
@@ -1281,7 +1351,15 @@ the run evidence behind it — or "no skill change" plus what held.
   `git diff main` appears to have removed; rebase instead.
 - **`bash cwd silent reset`** — a persistent Bash cwd can drift back to the main
   tree between calls; use `git -C .claude/worktrees/<branch>` for git ops and
-  re-`cd` before relative-path commands. **When it has already happened, the two
+  re-`cd` before relative-path commands. **Its worst form is not a misplaced
+  edit but a FALSE GREEN on a verification command**, because a gate run from
+  the main tree verifies unmodified `main` and passes: on 2026-08-20 a lane
+  reported `vp run typecheck:test` RC=0 twice while its own worktree held 20
+  type errors, and the same command with an explicit `cd` returned RC=1. The
+  tell was a COUNT, not an error — 123 tests without the `cd` against 143 with
+  it — so a run that only reads rc cannot detect it. Prefix every verification
+  command with `cd <worktree> &&`, and when a result is surprisingly clean,
+  check `pwd` before believing it. **When it has already happened, the two
   obvious repairs are both refused**: `git checkout -- <path>` trips
   `dirty-path-restore-gate` (the stray edit IS uncommitted work, and the gate
   cannot know you have a copy elsewhere) and writing the file back trips
