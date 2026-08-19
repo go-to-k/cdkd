@@ -1088,6 +1088,16 @@ cdkd includes built-in retry logic for CREATE operations, with the backoff shape
 - **Throttling and other transient errors** (rate limits, a resource still leaving `Pending`, an async delete releasing a dependency): exponential backoff `1s->2s->4s->8s->8s->8s->8s->8s`, capped at 8s, up to 8 retries (47s of sleep). Hammering a throttled API is counter-productive, so this class deliberately backs off hard.
 - **IAM propagation** (`Invalid IAM Instance Profile`, `cannot be assumed`, `not authorized to perform`, `Policy Error: PrincipalNotFound`, ...): a denser `0.25s->0.5s->1s->2s->2s...` schedule over 26 retries (47.75s of sleep). This class resolves in single-digit seconds — cdkd creates an IAM entity and consumes it ~1-3s later, faster than IAM propagates — so cdkd re-probes roughly every 2s instead of idling through a 4s or 8s step. The total window is at least as long as the generic one, so nothing that used to recover still recovers.
 
+  If the window is not enough, cdkd says so rather than silently re-raising the AWS error. A propagation retry that gives up prints one line at the DEFAULT log level:
+
+  ```text
+  WARN  MyFunction: gave up after 26 IAM-propagation retries over 47.75s (the full propagation budget) - The role defined for the function cannot be assumed by Lambda.
+  ```
+
+  That line is how you tell the three cases apart without reading cdkd's source. `(the full propagation budget)` means the retry ran to exhaustion and IAM genuinely took longer than 47.75s in that account — re-running usually succeeds, and if it recurs, please [open an issue](https://github.com/go-to-k/cdkd/issues) with the line, since the budget's shape is the thing that needs changing. A LOWER retry count means something else ended the sequence (a throttle, or a non-retryable error such as an explicit deny). NO such line at all means the failure was never classified as propagation, so the retry never engaged — that is a missing pattern in `retryable-errors.ts` and is worth reporting.
+
+  Add `--verbose` to see each attempt with its running total (`attempt 15/26, 25.75s slept so far`), which is what turns "it failed" into a measurement.
+
 CC API polling uses its own `1s->2s->4s->8s->10s cap` schedule. If rate limit errors persist, consider reducing parallelism or staggering deployments.
 
 **2. Use SDK Provider**

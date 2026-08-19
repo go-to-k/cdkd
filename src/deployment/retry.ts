@@ -16,6 +16,14 @@ import {
 
 export interface RetryLogger {
   debug(message: string): void;
+  /**
+   * Issue #2018: the one line that survives a run without `--verbose`.
+   *
+   * Optional so the many callers passing a bare `{ debug }` keep compiling; every
+   * PRODUCTION caller threads a real `Logger`, which has it. A logger without it
+   * loses only the give-up summary -- the retry behavior is unchanged.
+   */
+  warn?(message: string): void;
 }
 
 /**
@@ -147,6 +155,15 @@ const defaultSleep = (ms: number): Promise<void> =>
  * by `markNonRetryable`, which is rethrown ahead of either, so a deliberate
  * cdkd refusal cannot be turned back into a retry by a custom classifier
  * (issue #1778).
+ *
+ * REPORTING (issue #2018). A propagation sequence that gives up emits ONE
+ * `warn` line naming how many retries it spent and how much of the budget it
+ * slept, and the per-attempt `debug` lines carry the running total. Before
+ * this, an exhausted retry rethrew the raw AWS error and nothing in a
+ * default-verbosity run distinguished "cdkd retried for 47.75s" from "cdkd
+ * has no retry for this at all" — which is why a field report of exactly this
+ * failure could only be diagnosed by reading the source and diffing two
+ * releases. Neither counter feeds a control decision; they are reporting only.
  */
 export async function withRetry<T>(
   operation: () => Promise<T>,
@@ -179,6 +196,17 @@ export async function withRetry<T>(
   // schedule it is supposed to be a superset of. A sequence that never sees
   // a propagation error keeps the generic 8.
   let sawPropagation = false;
+  // Issue #2018: the retry's own work has to be READABLE from a normal run.
+  // Both counters are for reporting only -- neither feeds a control decision,
+  // so a mis-count can never change how long the loop runs.
+  //
+  // `propagationSleptMs` accumulates the INTENDED delay rather than measured
+  // wall-clock: it is the budget the schedule spent, which is the number the
+  // 47.75s cap is expressed in and therefore the one a reader compares against
+  // it. Measured elapsed would additionally carry each attempt's API latency
+  // and make "did we reach the cap?" unanswerable from the line.
+  let propagationRetries = 0;
+  let propagationSleptMs = 0;
 
   for (let attempt = 0; attempt <= attemptCeiling; attempt++) {
     try {
@@ -210,6 +238,34 @@ export async function withRetry<T>(
       }
       const attemptLimit = sawPropagation ? IAM_PROPAGATION_MAX_RETRIES : maxRetries;
       if (!retryable || attempt >= attemptLimit) {
+        // Issue #2018: a propagation sequence that gives up must SAY so, at
+        // the default log level. Until this line the exhaustion was entirely
+        // silent -- the user saw only the raw AWS sentence ("The role defined
+        // for the function cannot be assumed by Lambda."), identical to what a
+        // build with no retry at all would print. That is what made the
+        // reported failure undiagnosable from the outside: establishing that
+        // cdkd had retried at all took reading the source and diffing two
+        // releases, and the three candidate explanations (budget too short /
+        // budget exhausted / the retry never engaged) are indistinguishable
+        // without these two numbers.
+        //
+        // `warn`, not `debug`: the whole point is that it survives a run with
+        // no `--verbose`. The per-attempt lines below stay at debug -- 27 of
+        // them is a log flood, while this summary is one line.
+        //
+        // Gated on having actually retried, so the overwhelmingly common case
+        // (a non-propagation error failing fast on attempt 0) prints nothing.
+        if (propagationRetries > 0) {
+          opts.logger?.warn?.(
+            `${logicalId}: gave up after ${propagationRetries} IAM-propagation ${
+              propagationRetries === 1 ? 'retry' : 'retries'
+            } over ${(propagationSleptMs / 1000).toFixed(2)}s${
+              propagationRetries >= IAM_PROPAGATION_MAX_RETRIES
+                ? ' (the full propagation budget)'
+                : ''
+            } - ${message}`
+          );
+        }
         throw error;
       }
 
@@ -219,8 +275,19 @@ export async function withRetry<T>(
             IAM_PROPAGATION_MAX_DELAY_MS
           )
         : Math.min(initialDelayMs * Math.pow(2, attempt), maxDelayMs);
+      if (propagation) {
+        propagationRetries++;
+        propagationSleptMs += delay;
+      }
+      // Issue #2018: the cumulative figure is what makes a single line
+      // answerable on its own ("how far into the 47.75s budget was this?").
+      // Reading it off the attempt number instead requires the reader to know
+      // and re-sum the schedule, which is the inference this issue asked to
+      // replace with a measurement.
       opts.logger?.debug(
-        `  ⏳ Retrying ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${attemptLimit}) - ${message}`
+        `  ⏳ Retrying ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${attemptLimit}${
+          propagation ? `, ${(propagationSleptMs / 1000).toFixed(2)}s slept so far` : ''
+        }) - ${message}`
       );
 
       // Interruptible sleep: check for SIGINT every second during delay.
