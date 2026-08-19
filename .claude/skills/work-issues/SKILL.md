@@ -575,9 +575,11 @@ one moment: `markgate status` in the main checkout printed
 `check  mismatch  22h36m ago  digest differs` while the same command in this lane's
 worktree printed `check  no marker  -  (configured)`.
 
-**A gated command must be the ONLY thing in its Bash call.** `check-gate`,
-`verify-pr-gate` and the `integ-*` gates are **PreToolUse** hooks, so they judge the
-call BEFORE any of it runs, and a denial aborts the whole string. Two consequences:
+**A gated command carries no SIDE-EFFECTING preamble in its Bash call.** The
+leading `cd <worktree> &&` above is fine — the gates resolve it themselves — but
+nothing that WRITES may share the call. `check-gate`, `verify-pr-gate` and the
+`integ-*` gates are **PreToolUse** hooks, so they judge the call BEFORE any of it
+runs, and a denial aborts the whole string. Two consequences:
 `markgate set check && markgate set docs && git commit …` is refused in full,
 including the two `set`s that would have satisfied the gate; and a call whose
 preamble has a side effect — `cat > body.md <<'EOF' … EOF` then `gh pr create
@@ -624,9 +626,9 @@ file took ten merges on 2026-08-19 alone (go-to-k/cdkd#1969 through
 go-to-k/cdkd#2035) — any of them opened before the scanner and merged after it
 would have been judged by a check its own CI never ran. So when a peer merges, read
 WHAT it added, not only which files it touched — then rebase and RUN its check over
-your own diff before merging yours. After a merge that lands in a file another PR touched in
-the same window, grep `main` for a marker string from EACH side before believing
-both survived:
+your own diff before merging yours. After a merge that lands in a file another PR
+touched in the same window, grep `main` for a marker string from EACH side before
+believing both survived:
 
 ```bash
 git fetch origin main
@@ -721,28 +723,32 @@ AWS:
     is not the universal answer — it reads neither `ci.yml` nor any hook, and its
     lint is scoped to `src/**`, so running it for a hook diff is a probe that cannot
     fail.
-    - **Run it more than once, BEFORE and AFTER — and clear the task cache between
-      runs with `vp cache clean && vp run check`.** `run.cache.tasks` is true in
+    - **Run it more than once, BEFORE and AFTER — as `vp run --no-cache check`,
+      with the flag BEFORE the task name.** `run.cache.tasks` is true in
       `vite.config.ts` and the `check` task does not opt out of it (unlike
       `typecheck:test`, `build` and the codegen tasks, which each set
       `cache: false`), so a bare repeat replays instead of re-running: measured
-      2026-08-19, `vp run check` a second time printed
+      2026-08-19, a second `vp run check` printed
       `$ vp check ◉ cache hit, replaying` / `vp run: cache hit, 4.61s saved.`.
-      There is **no `--no-cache` flag** — `vp run --help` offers only `-r`, `-t`,
-      `-w`, `-F`, `--ignore-depends-on`, `-v`, `--last-details`, and passing it
-      exits **1** with `error: unexpected argument '--no-cache' found` from a
-      command that never ran the check at all. That rc is exactly the signal this
-      paragraph primes you to read as a real failure, which is why the remedy is
-      spelled out rather than guessed (go-to-k/cdkd#2017). `vp cache clean` is what
-      actually re-runs it, verified twice back to back the same day: both
-      invocations printed zero `cache hit` lines and finished
-      `Found 0 errors and 6 warnings in 318 files` at 4.2s then 3.4s, rc=0 each —
-      different timings because each genuinely re-ran — and the very next
-      un-cleaned `vp run check` was back to `vp run: cache hit`. Do not silently
-      substitute a bare `vp check` for `vp run check` here: this section already
-      records that the two are NOT equivalent, so swapping them changes what is
-      being attested. A replay cannot surface what repeats are for — an rc that
-      differs across identical runs. That failure is not hypothetical:
+      **Flag order is the whole trap**, and it is why this instruction is worth
+      spelling out (go-to-k/cdkd#2017): `vp run check --no-cache` puts the flag
+      after the task, so `vp run` forwards it to `vp check`, which rejects it —
+      exit **1**, `error: unexpected argument '--no-cache' found`, from a command
+      that never ran the check at all. That rc is exactly the signal this
+      paragraph primes you to read as a real failure. `--no-cache` is also
+      **undocumented** — `vp run --help` on vp 0.2.5 lists only `-r`, `-t`, `-w`,
+      `-F`, `--ignore-depends-on`, `-v`, `--last-details` and says nothing about
+      caching — so confirm it still works rather than assuming, the way this
+      paragraph's previous wording did not. Verified twice back to back the same
+      day: `vp run --no-cache check` printed zero `cache hit` lines on both runs,
+      rc=0 each, and the next plain `vp run check` was straight back to
+      `vp run: cache hit, 1.54s saved.` — the flag skips the cache for that run
+      without invalidating the stored entry, so use `vp cache clean` instead when
+      you want the entry itself gone. Do not silently substitute a bare
+      `vp check` for `vp run check` here: `/check` step 1 records that the two are
+      NOT equivalent, so swapping them changes what is being attested. A replay
+      cannot surface what repeats are for — an rc that differs across identical
+      runs. That failure is not hypothetical:
       go-to-k/cdk-real-drift#1761 had `vp run check` abort with
       rc=134 (a Vite+ stdout EAGAIN panic while writing a long warning list) while
       reporting 0 errors, and cdkd runs the same bare `vp run check` in `ci.yml`
@@ -926,9 +932,12 @@ doubt leave the worktree and say so in the wrap.
 
 On 2026-08-19 this run met exactly that shape:
 `.claude/worktrees/1987-mirror-duplicate-detection` sat at `ae283ee4`, identical to
-`main`'s tip, with no commits of its own, no pushed branch and no PR — so every probe
-short of the sentinel read it as residue. It was a peer session's live lane, holding
+`main`'s tip, with no commits of its own, no pushed branch and no PR — so every
+COMMITTED-state probe read it as residue. It was a peer session's live lane, holding
 uncommitted edits to this same file under a `session-owner` claim 12 minutes old.
+Two things would have named it: the sentinel, and §2's `status --porcelain`, which
+was added afterwards precisely because a lane's dirty tree is the one place its work
+is visible before it commits.
 
 Finally, comment the outcome on each issue if it was not auto-closed. Do NOT stop
 here: what the run taught you is still only in this session's context, so go on to
@@ -980,10 +989,12 @@ is where §9 and §10 live.
 
 ### 10-b. Where the fix belongs — pick ONE
 
-- **A hook** (`.claude/hooks/`) when the failure is mechanically detectable.
-  Strongest, and the RIGHT answer whenever the rule was ALREADY in the text and got
-  violated anyway: that proves the sentence is not load-bearing, and another
-  sentence will not make it so. Escalate rather than restate.
+- **A hook** (`.claude/hooks/`) — or a test under `tests/unit/**` when the subject
+  is a committed file rather than a command — whenever the failure is mechanically
+  detectable. Strongest, and the RIGHT answer whenever the rule was ALREADY in the
+  text and got violated anyway: that proves the sentence is not load-bearing, and
+  another sentence will not make it so. Escalate rather than restate. A hook fires
+  on the action, a test fires in CI; pick by what the rule is about.
 - **This SKILL.md** when the lesson is about running THIS flow (triage, claiming,
   fan-out, ship order).
 - **Another skill**, but only one this run actually exercised (`/run-integ`,
@@ -1038,13 +1049,15 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   - **A lane WORKING a mirror issue does not mirror onward.** This is the clause
     that actually stops the generator: the originating session already owns all
     three landings, so re-filing the received lesson into the siblings creates a
-    second and third copy of work already accounted for. Only the ADAPTATION-
-    specific lessons this lane learns are new — a gate that behaves differently
+    second and third copy of work already accounted for. Only the lessons this
+    lane learns from the ADAPTATION itself are new — a gate that behaves differently
     here, a claim that turned out false in this repo — and those are new findings,
     so the first rule applies to them in turn.
   - **Batch a run's lessons into ONE PR per repo**, not one PR per lesson. The gate
     cycle is the per-PR cost, so a run that learned five things ships three PRs
-    total. This PR is the shape: seven issues, one file, one gate round.
+    total. The PR that landed these four clauses is the shape: seven issues, one
+    skill file plus the test that mechanizes one of them, one gate round.
+
   **Before filing into a target repo, resolve the lesson against that repo's
   CURRENT state — the merged FILE, then open PRs, then open issues — and file only
   what none of the three already carries.** This mirror rule is a duplicate
@@ -1118,10 +1131,13 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   go-to-k/cdkd#1973 verbatim on 2026-08-19 would have pointed its one bare ref at
   go-to-k/cdkd#1761 — an EC2 export attribute — as the evidence for a toolchain
   incident, a working link to the wrong thing. The rule was stated here and
-  violated 13 times in this same file, so per §10-b it is now a TEST rather than a
-  sentence: `tests/unit/scripts/work-issues-skill-refs.test.ts` fails on any bare
-  `#N` in this file's plain prose, exempting the frontmatter, fenced blocks and
-  inline code spans so a paragraph can still show one as a counter-example.
+  violated 13 times in this same file, so per §10-b each repo now enforces it with
+  a TEST rather than a sentence — in cdkd,
+  `tests/unit/scripts/work-issues-skill-refs.test.ts`; the siblings carry their own
+  under their own layouts, so a mirror lane WRITES one rather than citing this
+  path. It fails on any reference in this file's plain prose that is not
+  `go-to-k/<repo>#N`, exempting the frontmatter, fenced blocks and inline code
+  spans so a paragraph can still show a bare one as a counter-example.
 
 ### 10-d. Ship it like any other change
 

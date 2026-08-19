@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
  * travels: GitHub renders `#N` against whichever repo is READING it, and that
  * number almost always exists there and is unrelated. Section 10-c states the
  * rule ("write `go-to-k/cdkd#1973`, never a bare `#1973`") and the same file
- * carried 20 bare references in plain prose across 15 distinct issues on
+ * carried 13 bare references in plain prose across 10 distinct issues on
  * 2026-08-19 (go-to-k/cdkd#1990) -- so the rule was stated and violated in one
  * document. Section 10-b: a rule already in the text that got violated anyway
  * is not fixed by another sentence, it is escalated to a test.
@@ -19,31 +19,36 @@ import { dirname, join } from 'node:path';
  * `/run-integ`, ...) is never mirrored, so its bare refs are correct where they
  * are and a repo-wide rule would be pure churn.
  *
+ * WHAT COUNTS AS QUALIFIED: `go-to-k/<repo>#N` and nothing else. GitHub
+ * autolinks only the `owner/repo#N` form, so `cdk-local#525` (owner dropped --
+ * the likeliest typo, since the doc is full of `go-to-k/cdk-local#...`) renders
+ * as dead text in EVERY repo, and `someone-else/cdkd#5` renders as a working
+ * link to a stranger's tracker. Both are the breakage this test exists to
+ * prevent, so both fail.
+ *
  * EXEMPT CONTEXTS, so a paragraph can still SHOW a bare `#N` as its own
  * counter-example and the YAML `argument-hint` can still demonstrate what a
- * user types: the frontmatter block, fenced code blocks, and inline code spans
- * (including ones that WRAP a line, which this hard-wrapped file produces --
- * the stripper works on the whole text and re-derives line numbers, rather than
- * pairing one span's closing backtick with the next span's opening backtick the
- * way a per-line scan does).
+ * user types: the frontmatter block, fenced code blocks (``` or ~~~, indented
+ * or not, closed or running to EOF), and inline code spans -- including ones
+ * that WRAP a line, which this hard-wrapped file produces.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 const MIRRORED_DOC = join('.claude', 'skills', 'work-issues', 'SKILL.md');
 
 /**
- * A bare reference: a `#` followed by digits whose preceding character is not
- * part of an `owner/repo` qualifier. `go-to-k/cdkd#1990` has a word character
- * directly before the `#`; ` #1990`, `(#1990)` and `(PR #1990)` do not.
+ * Every `#N`, together with the `owner/repo`-ish run of characters glued to its
+ * left (empty when there is none). The qualifier is judged separately rather
+ * than excluded by a lookbehind, so `issue#1990`, `cdk-local#525` and
+ * `someone-else/cdkd#5` are all seen instead of silently passing.
  */
-const BARE_REF = /(?<![\w/-])#\d+/g;
-
-/** A fully-qualified reference, used only to prove the scanner sees its input. */
-const QUALIFIED_REF = /[\w.-]+\/[\w.-]+#\d+/g;
+const ANY_REF = /([A-Za-z0-9._/-]*)#(\d+)/g;
+const QUALIFIER = /^go-to-k\/[A-Za-z0-9._-]+$/;
 
 export interface RefViolation {
   line: number;
   ref: string;
+  reason: 'bare' | 'not-go-to-k';
   text: string;
 }
 
@@ -54,14 +59,31 @@ export interface RefViolation {
  */
 function proseOnly(markdown: string): string {
   const blank = (s: string) => s.replace(/[^\n]/g, ' ');
-  let text = markdown;
-  // YAML frontmatter: only when it opens on the very first line.
-  text = text.replace(/^---\n[\s\S]*?\n---(?=\n)/, blank);
-  // Fenced code blocks (``` or ~~~), including unterminated trailing fences.
-  text = text.replace(/^(```|~~~)[\s\S]*?^\1[^\n]*$/gm, blank);
+
+  // YAML frontmatter, only when it opens on the very first line. `\r?` so a
+  // CRLF checkout of a mirrored copy is stripped too.
+  let text = markdown.replace(/^---\r?\n[\s\S]*?\r?\n---(?=\r?\n)/, blank);
+
+  // Fenced blocks, line-based because a fence IS line-delimited: this handles
+  // an indented fence inside a list, a `~~~` fence, and a fence that never
+  // closes (it then runs to EOF, which is what a renderer does too).
+  const lines = text.split('\n');
+  let fence: string | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const marker = /^[ \t]*(```+|~~~+)/.exec(lines[i]!)?.[1];
+    if (fence === null) {
+      if (marker) fence = marker[0]!.repeat(3);
+      if (marker) lines[i] = blank(lines[i]!);
+    } else {
+      const closes = marker !== undefined && marker.startsWith(fence);
+      lines[i] = blank(lines[i]!);
+      if (closes) fence = null;
+    }
+  }
+  text = lines.join('\n');
+
   // Inline code spans, which in this hard-wrapped file may span a line break.
-  text = text.replace(/`[^`]*`/g, blank);
-  return text;
+  return text.replace(/`[^`]*`/g, blank);
 }
 
 export function findBareIssueRefs(markdown: string): RefViolation[] {
@@ -76,7 +98,9 @@ export function findBareIssueRefs(markdown: string): RefViolation[] {
   }
 
   const violations: RefViolation[] = [];
-  for (const m of prose.matchAll(BARE_REF)) {
+  for (const m of prose.matchAll(ANY_REF)) {
+    const qualifier = m[1]!;
+    if (QUALIFIER.test(qualifier)) continue;
     let lo = 0;
     let hi = lineStarts.length - 1;
     while (lo < hi) {
@@ -84,38 +108,68 @@ export function findBareIssueRefs(markdown: string): RefViolation[] {
       if (lineStarts[mid]! <= m.index) lo = mid;
       else hi = mid - 1;
     }
-    violations.push({ line: lo + 1, ref: m[0], text: lines[lo]!.trim() });
+    violations.push({
+      line: lo + 1,
+      ref: `${qualifier}#${m[2]}`,
+      reason: qualifier === '' ? 'bare' : 'not-go-to-k',
+      text: lines[lo]!.trim(),
+    });
   }
   return violations;
+}
+
+/** Every `go-to-k/<repo>#N` in the text, used only to size the stripper's output. */
+function qualifiedRefs(text: string): string[] {
+  return [...text.matchAll(ANY_REF)].filter((m) => QUALIFIER.test(m[1]!)).map((m) => m[0]);
 }
 
 describe('work-issues SKILL.md qualifies every issue reference (go-to-k/cdkd#1990)', () => {
   const markdown = readFileSync(join(repoRoot, MIRRORED_DOC), 'utf8');
 
-  it('has no bare #N reference in plain prose', () => {
+  it('has no bare or wrongly-qualified #N reference in plain prose', () => {
     const violations = findBareIssueRefs(markdown);
-    const detail = violations.map((v) => `  L${v.line}: ${v.ref} -- ${v.text}`).join('\n');
+    const detail = violations.map((v) => `  L${v.line}: ${v.ref} (${v.reason}) -- ${v.text}`).join('\n');
     expect(
       violations,
       `Unqualified issue reference(s) in ${MIRRORED_DOC}. This file is mirrored ` +
         `into ../cdk-local and ../cdk-real-drift (section 10-c), where a bare #N ` +
-        `resolves against the READING repo -- write go-to-k/<repo>#N instead, or ` +
-        `wrap a deliberate counter-example in a backtick span:\n${detail}`
+        `resolves against the READING repo and a half-qualified cdk-local#N does ` +
+        `not autolink anywhere -- write go-to-k/<repo>#N, or wrap a deliberate ` +
+        `counter-example in a backtick span:\n${detail}`
     ).toEqual([]);
   });
 
-  it('sees its input: the doc carries many qualified refs the scanner leaves alone', () => {
-    const qualified = [...proseOnly(markdown).matchAll(QUALIFIED_REF)];
-    // Floor, not an exact count -- a scanner whose stripper blanked the whole
-    // file would otherwise pass the assertion above by reading nothing.
+  it('every inline code span is closed, so the stripper cannot blank live prose', () => {
+    // Load-bearing, not hygiene: one unbalanced backtick flips inline-span
+    // parity for the whole REST of the file, and every bare ref after it then
+    // sits inside what the stripper thinks is a code span. The assertion above
+    // would go green while missing exactly what it exists to catch, so this is
+    // the guard on the guard. Counted after fences are blanked, since a fence
+    // body legitimately holds odd backticks.
+    const ticksOutsideFences = countTicksOutsideFences(markdown);
     expect(
-      qualified.length,
-      `${MIRRORED_DOC} has almost no qualified refs in prose -- the stripper is ` +
-        `probably blanking real content`
-    ).toBeGreaterThanOrEqual(25);
+      ticksOutsideFences % 2,
+      `${MIRRORED_DOC} has an odd number (${ticksOutsideFences}) of backticks ` +
+        `outside fenced blocks -- an unclosed inline span silently exempts every ` +
+        `issue reference after it`
+    ).toBe(0);
   });
 
-  it('flags prose but not frontmatter / fences / code spans, incl. a wrapped span', () => {
+  it('the stripper keeps essentially all of the prose refs (it is not blanking the file)', () => {
+    const inProse = qualifiedRefs(proseOnly(markdown)).length;
+    const inRaw = qualifiedRefs(markdown).length;
+    // Self-calibrating rather than a magic constant: the only qualified refs
+    // the stripper legitimately removes are the handful sitting inside code
+    // spans / fences. A stripper that blanks a whole region loses far more.
+    expect(inRaw, `${MIRRORED_DOC} has almost no qualified refs at all`).toBeGreaterThanOrEqual(40);
+    expect(
+      inProse,
+      `stripper kept only ${inProse} of ${inRaw} qualified refs -- it is blanking ` +
+        `live prose, which would also hide violations`
+    ).toBeGreaterThanOrEqual(inRaw - 3);
+  });
+
+  it('flags prose but not frontmatter / fences / code spans (self-test)', () => {
     const fixture = [
       '---',
       "argument-hint: \"[optional focus, e.g. '#651 #650']\"",
@@ -124,16 +178,49 @@ describe('work-issues SKILL.md qualifies every issue reference (go-to-k/cdkd#199
       'A counter-example span like `#1992` is exempt, and so is a span that',
       'wraps: `never a bare',
       '#1993` stays quiet.',
-      '```bash',
-      'gh issue view 1994   # refs #1994 freely inside a fence',
-      '```',
-      'But (PR #1995) and see #1996 are both bare.',
+      '~~~',
+      'a tilde fence with an odd ` backtick and #1994 inside',
+      '~~~',
+      '- a list item with an indented fence:',
+      '  ```bash',
+      '  gh issue view 1995   # refs #1995 freely',
+      '  ```',
+      'But (PR #1996), see #1997, issue#1998, cdk-local#1999 and evil/cdkd#2000',
+      'are all wrong.',
     ].join('\n');
-    const violations = findBareIssueRefs(fixture);
-    expect(violations.map((v) => `L${v.line}:${v.ref}`)).toEqual([
-      'L4:#1991',
-      'L11:#1995',
-      'L11:#1996',
+    expect(findBareIssueRefs(fixture).map((v) => `L${v.line}:${v.ref}:${v.reason}`)).toEqual([
+      'L4:#1991:bare',
+      'L15:#1996:bare',
+      'L15:#1997:bare',
+      'L15:issue#1998:not-go-to-k',
+      'L15:cdk-local#1999:not-go-to-k',
+      'L15:evil/cdkd#2000:not-go-to-k',
     ]);
   });
+
+  it('an unterminated fence runs to EOF rather than leaking its body (self-test)', () => {
+    const fixture = ['prose with go-to-k/cdkd#1 is fine', '```bash', 'gh issue view 2 # ref #2'].join(
+      '\n'
+    );
+    expect(findBareIssueRefs(fixture)).toEqual([]);
+  });
 });
+
+/** Backticks that live outside fenced blocks, where span parity has to hold. */
+function countTicksOutsideFences(markdown: string): number {
+  let ticks = 0;
+  let fence: string | null = null;
+  for (const line of markdown.split('\n')) {
+    const marker = /^[ \t]*(```+|~~~+)/.exec(line)?.[1];
+    if (fence === null) {
+      if (marker) {
+        fence = marker[0]!.repeat(3);
+        continue;
+      }
+      ticks += (line.match(/`/g) ?? []).length;
+    } else if (marker !== undefined && marker.startsWith(fence)) {
+      fence = null;
+    }
+  }
+  return ticks;
+}
