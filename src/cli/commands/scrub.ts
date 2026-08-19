@@ -28,6 +28,7 @@ import {
   redactSecretsForState,
   TEMPLATE_SOURCED_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
+  MIN_NEEDLE_LENGTH,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
 import type { StackState } from '../../types/state.js';
@@ -111,12 +112,32 @@ export interface ScrubOptions {
  * OUTPUTS: `state.outputs` is scrubbed alongside the resource records, and its
  * repair scope is WIDER than today's declared outputs (issue #2005). A stored
  * output key the template can still name is redacted BY POSITION against that
- * template; a key it cannot name — the output was DELETED, which is an ordinary
- * refactor — is repaired when its stored value MATCHES a secret plaintext
- * recorded anywhere this run, including one only a RESOURCE still references.
- * When nothing recorded that plaintext the value is left exactly as it is: a
- * scrub that cannot identify the needle must not guess, because `cdkd drift
- * --revert` pushes the state baseline to AWS. See `redactUnaccountedOutputs`.
+ * template; a key it cannot name is repaired when its stored value MATCHES a
+ * secret plaintext recorded anywhere this run, including one only a RESOURCE
+ * still references. The motivating member of that population is an output
+ * DELETED in an ordinary refactor, but it is not the only one — a key this run
+ * cannot COMPUTE is in it too, and a parameterized `Export.Name` (scrub has
+ * only template defaults) leaves the deploy's real alias key unaccounted on
+ * EVERY run. When nothing recorded the plaintext the value is left exactly as
+ * it is: a scrub that cannot identify the needle must not guess, because
+ * `state.outputs` is re-applied VERBATIM to consumer stacks — by the exports
+ * index (`src/state/export-index-store.ts`) and by `Fn::ImportValue` /
+ * `Fn::GetStackOutput` (`src/deployment/intrinsic-function-resolver.ts`) — so a
+ * fabricated redaction ships a literal `{{resolve:...}}` token into a
+ * consumer's own AWS call. (`cdkd drift` is NOT one of those readers: it reads
+ * `state.resources`, never `state.outputs`.) See `redactUnaccountedOutputs`.
+ *
+ * A FOURTH re-apply reader exists and is recorded here so the next audit does
+ * not have to re-derive it: `NestedStackProvider.buildOutputsAttributes`
+ * projects a CHILD record's `state.outputs` into the PARENT's
+ * `Fn::GetAtt Outputs.X` attributes, i.e. into a parent resource property. It
+ * is OUT of this command's reach, not exempt from the hazard — `scrubCommand`
+ * targets synth STACK ARTIFACTS, and a nested child is a `nestedTemplates`
+ * entry on its parent's `StackInfo` rather than an `aws:cloudformation:stack`
+ * artifact of its own (`src/synthesis/assembly-reader.ts`), so the
+ * `{parent}~{Child}` record this walk reads is never a stack scrub writes. If
+ * scrub ever gains nested-child targets, this reader joins the list above and
+ * the fabrication bound has to be re-argued for it.
  *
  * ORDERING: scrub matches the CURRENT resolved secret value against what state
  * holds, so run it BEFORE rotating. Once the secret is rotated, the value in
@@ -290,7 +311,8 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
 
 /**
  * Every secret plaintext this run recorded, from ANY position in the template
- * (issue #2005) — the outputs' own map plus every resource's.
+ * (issue #2005) — the outputs' own map plus every resource's, filtered to the
+ * values long enough to be a safe needle.
  *
  * Used ONLY by {@link redactUnaccountedOutputs}, which is why the union is built
  * here rather than kept as the pass's input everywhere: `outputSecrets` and
@@ -303,7 +325,83 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
  * output KEY is the closest kin of the bag this map is scanned against. Both
  * expressions resolve to the same plaintext by construction (that is what makes
  * them collide), so the choice costs precision, not correctness — the residual
- * documented for the ambiguous-key fallback one screen up.
+ * documented for the ambiguous-key fallback one screen up. A resource-vs-
+ * resource collision is NOT ordered by anything: `perResourceSecrets` is
+ * iterated in map order and the LAST logical id wins, so between two resources
+ * resolving one plaintext the surviving expression is whichever the walk
+ * reached last. Same trade as above (both resolve to the same value), stated
+ * because only the outputs-vs-resource half used to be.
+ *
+ * **The needle floor is the security half, and it looks like it contradicts
+ * repo policy without doing so.** `redactSecretsForState`'s no-source arm
+ * matches a WHOLE VALUE at ANY length; only its substring arm honors
+ * {@link MIN_NEEDLE_LENGTH}. That is sound for a POSITION-SCOPED bag, where the
+ * candidate leaf is already known to belong to the reference. This union has no
+ * position source at all, so an unfiltered 1-3 character plaintext recorded by
+ * ANY resource would whole-value-match an unrelated stored output and rewrite
+ * it onto that resource's expression. Issues #2012 / #2036 do say that with no
+ * evidence OVER-redaction is the right failure, because it is "visible,
+ * recoverable, and not a disclosure" — but that asymmetry is about a DRIFT
+ * BASELINE, and it does not transfer here: `state.outputs` is re-applied
+ * VERBATIM to consumer stacks by the exports index
+ * (`src/state/export-index-store.ts`) and by `Fn::ImportValue` /
+ * `Fn::GetStackOutput` (`src/deployment/intrinsic-function-resolver.ts`), so a
+ * false redaction ships a literal `{{resolve:...}}` token into a consumer's own
+ * AWS call — the #1934 class, a BREAK rather than a recoverable mismatch. (Two
+ * readers, not the whole list: the module doc records a third that is out of
+ * this command's reach, with the derivation.)
+ *
+ * The floor is applied to the WHOLE union, `outputSecrets` included, and that
+ * narrows NOTHING that worked before. The positioning pass still runs FIRST
+ * over the same bag with the UNFILTERED `outputSecrets`, whole-value-matching
+ * at any length, and {@link redactUnaccountedOutputs} scans the STORED value —
+ * so a sub-floor output secret it cannot see compares equal, falls through, and
+ * the positioned leaf survives into `repaired ?? positioned`. Pinned by the
+ * suite's "still repairs a SCALAR unaccounted key holding a sub-floor OUTPUT
+ * secret" case (`ab1` -> its expression — the exact shape the false note
+ * described) and by its non-scalar sibling "keeps the POSITIONED value". The
+ * floor's effect is therefore confined to CROSS-RESOURCE needles: a sub-floor
+ * plaintext recorded only by a RESOURCE never becomes a needle for the outputs
+ * bag. Stated because an earlier revision claimed a narrowing here, and a false
+ * "we gave this up" note is how a capability gets removed for real later.
+ *
+ * **What the floor does NOT bound, stated plainly because it is the residual a
+ * reader will otherwise assume away.** `redactSecretsForState`'s SUBSTRING arm
+ * runs over this union too, so a recorded plaintext of {@link
+ * MIN_NEEDLE_LENGTH} characters or more occurring ANYWHERE inside an unrelated
+ * unaccounted output WILL be rewritten. `secretValueFromJson('username')`
+ * resolving `admin` turns a stored `https://admin.example.com` into
+ * `https://{{resolve:secretsmanager:...}}.example.com`, which the exports index
+ * republishes and a consumer's `Fn::ImportValue` then ships to AWS as a literal
+ * token — the #1934 BREAK class, from a value that was never a secret.
+ *
+ * That arm is kept, and raising the floor for this union alone was considered
+ * and REJECTED, on three grounds:
+ *
+ * - **Substring matching is what makes the repair work at all.** A connection
+ *   string embedding a password is #2005's own target shape and this suite's
+ *   own `DbUrl` case; gutting the arm would leave the motivating population
+ *   unrepairable, which is the disclosure the command exists to remove.
+ * - **Length is a weak proxy for the hazard, in both directions.** The values
+ *   that collide with unrelated text are common tokens — `admin`, `prod`,
+ *   `root` — and raising the bar to 8 admits `password`, `postgres`,
+ *   `localhost`, which are longer AND likelier to occur inside a stored URL. A
+ *   higher floor would refuse genuine short secrets while still admitting the
+ *   colliding ones.
+ * - **4 is the repo's ONE answer, and a second number would have no
+ *   derivation.** `secret-redaction.ts`'s own needles, `stateKeySecretExposure`
+ *   (#1919) and `drift.ts`'s `carriesRecordedSecret` all use it. A union-only 8
+ *   would be the only such constant in the tree justified by taste, and a later
+ *   reader could not tell which is authoritative.
+ *
+ * The trade is right for a GHSA repair command because the two failure
+ * directions differ on REVERSIBILITY, not on likelihood. A fabricated rewrite
+ * is loud and remediable: the consumer's next deploy fails on an unresolvable
+ * token, and the operator fixes the template or edits the key out of state. An
+ * unrepaired plaintext is silent and permanent — the key is one today's
+ * template does not declare, so no redeploy ever rewrites it, and no other
+ * command can. Refusing the substring arm here would trade the irreversible
+ * failure for the reversible one in the wrong direction.
  */
 function allRecordedSecrets(
   outputSecrets: RecordedSecretValues,
@@ -314,6 +412,9 @@ function allRecordedSecrets(
     for (const [value, expression] of recorded) union.set(value, expression);
   }
   for (const [value, expression] of outputSecrets) union.set(value, expression);
+  for (const value of union.keys()) {
+    if (value.length < MIN_NEEDLE_LENGTH) union.delete(value);
+  }
   return union;
 }
 
@@ -349,43 +450,105 @@ function allRecordedSecrets(
  *
  * 2. **WHAT may be rewritten.** Only a value that genuinely MATCHES a recorded
  *    plaintext — `redactSecretsForState`'s value scan with no source, i.e. a
- *    whole-value match always and an embedded one at or above its needle
- *    length. When the plaintext is not recoverable (nothing recorded this run
- *    — the secret was deleted, rotated away, or the reference is gone from the
- *    template too) the union is empty, the scan is the identity, and the value
- *    is LEFT ALONE. A scrub that cannot identify the needle must not guess:
- *    `cdkd drift --revert` pushes the state baseline to AWS, so a fabricated
- *    redaction — a value rewritten that was never a secret — would be APPLIED
- *    to the live resource. No key is invented and no key is removed for the
- *    same reason.
+ *    whole-value match and an embedded one, both bounded at
+ *    {@link MIN_NEEDLE_LENGTH} by {@link allRecordedSecrets}. A scrub that
+ *    cannot identify the needle must not guess: `state.outputs` is re-applied
+ *    VERBATIM to consumer stacks by the exports index and by `Fn::ImportValue`
+ *    / `Fn::GetStackOutput` (and by one more reader out of this command's
+ *    reach — see the module doc), so a fabricated redaction ships a literal
+ *    `{{resolve:...}}` token into a consumer's AWS call. No key is invented and
+ *    no key is removed for the same reason. When nothing this run recorded the
+ *    plaintext (the secret was deleted, rotated away, or the reference is gone
+ *    from the template too) the value is LEFT ALONE — but note that behavior
+ *    does NOT live in this function's `secrets.size === 0` guard, which is one
+ *    of three redundant reasons and fences none of them; see the guard's own
+ *    comment for what actually reaches it.
  *
- * Returns the input by IDENTITY when nothing changed, so the caller's
- * `outputsChanged` comparison stays cheap and a no-op scrub still reports
- * "nothing to scrub".
+ * **The scanned VALUE is the STORED one, never the positioned pass's output**
+ * (blocker found in review). Scanning an already-positioned leaf means scanning
+ * an expression the first pass just INSERTED, and `redactSecretsForState`'s
+ * token guard protects only a WHOLE-VALUE token — so a MIXED leaf
+ * (`postgres://admin:{{resolve:secretsmanager:prod/db:...}}@app-db`, the
+ * `Fn::Join` shape CDK emits) gets re-scanned and any union needle occurring
+ * INSIDE the inserted reference is spliced into it, corrupting the expression
+ * into one no service can resolve (the corruption `secret-redaction.ts`'s own
+ * token guard documents). A single union scan of the STORED value subsumes the
+ * first pass for these keys rather than composing with it: the union is a
+ * superset of `outputSecrets` with the outputs' expression winning a collision,
+ * and an unaccounted key by construction has no position source in
+ * `outputsTemplateSource` (every key that bag carries — a declared output name
+ * or a literal `Export.Name` — is in `accountedKeys`), so the first pass could
+ * only ever have value-scanned it too.
+ *
+ * **The repaired population is WIDER than "an output you deleted."** Any stored
+ * key today's template cannot COMPUTE is in it, and a parameterized
+ * `Export.Name` is the standing example: `scrub` has only template defaults, so
+ * a name resolving to the literal `prefix-${Foo}` leaves the REAL alias key the
+ * deploy wrote unaccounted on EVERY run, and that key gets cross-resource value
+ * matching for as long as the parameter stays unresolvable here. That is the
+ * accepted cost of not being able to reproduce the key — the alternative is
+ * leaving a permanently unrepairable key — but it is a standing exposure to the
+ * fabrication risk above rather than a one-off after a refactor.
+ *
+ * Returns the input by IDENTITY when nothing changed. That is worth doing on
+ * its own terms (no churn, no needless clone), but it is NOT what keeps the
+ * caller honest: the caller compares with `JSON.stringify` unconditionally, so
+ * an identity return cannot make it cheaper and a fresh-but-equal object could
+ * not make it report a repair it did not perform.
  */
 function redactUnaccountedOutputs(
-  outputs: Record<string, unknown>,
+  positioned: Record<string, unknown> | undefined,
+  stored: Record<string, unknown> | undefined,
   accountedKeys: ReadonlySet<string>,
   secrets: RecordedSecretValues
-): Record<string, unknown> {
+): Record<string, unknown> | undefined {
   // `?? {}` nowhere: this must be able to return its input by identity, and
   // every other consumer treats the field as optional, so an absent bag is
-  // returned untouched rather than materialized into an empty object.
-  if (secrets.size === 0 || !outputs) return outputs;
+  // returned untouched rather than materialized into an empty object. The
+  // parameter and return types say `| undefined` because that is what the
+  // runtime accepts and returns — `state.outputs` is optional in practice on a
+  // state file that simply has no outputs.
+  //
+  // `!stored` cannot fire independently of `!positioned` and is a TYPE
+  // narrowing rather than a second guard: `positioned` is DERIVED from
+  // `stored`, and `redactSecretsForState` returns `undefined` for an absent bag
+  // on both its arms (measured, with and without a position source). Stated so
+  // nobody reads it as covering a case the other half does not.
+  //
+  // `secrets.size === 0` IS reachable, and its trigger is narrower than
+  // "nothing was recorded this run". `scrubStack` early-returns at
+  // `totalSecrets === 0`, but `totalSecrets` counts the RAW maps while this
+  // union is additionally filtered to {@link MIN_NEEDLE_LENGTH} — so a stack
+  // whose every recorded plaintext is SUB-FLOOR (a SecureString holding `ab1`
+  // gives `totalSecrets === 1`) walks past that return and arrives here with an
+  // empty union. That is the line's real trigger; an earlier revision of this
+  // comment called it unreachable, which was true only before the floor existed
+  // and which would have suppressed the retest that found this shape.
+  //
+  // It is still not the thing that protects an unrecoverable needle, and that
+  // part is measured rather than assumed: delete this guard, or delete the
+  // early return, and the record still comes out byte-identical, because an
+  // empty secrets map makes every scan the identity. Three redundant reasons,
+  // no single fence — stated because a comment claiming one would suppress the
+  // next retest.
+  if (secrets.size === 0 || !positioned || !stored) return positioned;
   let repaired: Record<string, unknown> | undefined;
-  for (const [key, value] of Object.entries(outputs)) {
+  for (const [key, value] of Object.entries(stored)) {
     if (accountedKeys.has(key)) continue;
     const next = redactSecretsForState(value, secrets);
     // NOT `next === value`: the value scan returns a string by identity when
     // nothing matched, but it CLONES every object / array it walks (an output
     // can hold a JSON array — a list-valued `Fn::GetAtt`), so an identity test
-    // would report a rewrite for every non-scalar output and make this pass
-    // look like it repaired a record it did not touch.
+    // would rewrite `repaired[key]` for every non-scalar output. Harmless for
+    // the reported COUNT (the caller re-compares by value), but it would
+    // replace the positioned bag's clone with this pass's clone for keys this
+    // pass did not change — churn in the persisted record for no reason, and a
+    // needless divergence between two bags that should stay the same object.
     if (JSON.stringify(next) === JSON.stringify(value)) continue;
-    repaired ??= { ...outputs };
+    repaired ??= { ...positioned };
     repaired[key] = next;
   }
-  return repaired ?? outputs;
+  return repaired ?? positioned;
 }
 
 /**
@@ -548,12 +711,14 @@ export async function scrubStack(
     const declaredOutputNames = collectDeclaredOutputNames(templateOutputs);
     // Which `state.outputs` KEYS today's template can account for (issue #2005).
     // Every declared output name, plus every `Export.Name` this run could
-    // compute — the literal ones AND the best-effort resolutions of the
-    // intrinsic ones, which is deliberately WIDER than the set that gets a
-    // position source below (only a LITERAL export name may be written under).
+    // FULLY compute — the literal ones AND the intrinsic ones whose best-effort
+    // resolution actually landed. That is still wider than the set that gets a
+    // position source below (only a LITERAL export name may be written under),
+    // but NOT wider than what the template can name: a name that did not fully
+    // resolve is excluded, because over-approximating there SUPPRESSES the
+    // repair rather than merely widening it (see the per-name comment below).
     // The widened outputs pass at the end of this function fires ONLY on keys
-    // that are in NEITHER, and over-approximating here is the safe direction:
-    // an accounted key keeps exactly the behavior it has today.
+    // that are in NEITHER set.
     const accountedOutputKeys = new Set<string>(declaredOutputNames);
     const ambiguousKeys = new Set<string>();
     const collisions: Array<[outputKey: string, exportName: string]> = [];
@@ -597,15 +762,6 @@ export async function scrubStack(
         // a name scrub cannot reproduce.
         outputsSourceUntrusted = true;
       }
-      // ACCOUNTED regardless of what the two checks below decide about trusting
-      // it as a position SOURCE (issue #2005): the question here is only
-      // "could today's template have produced this state key", and a name that
-      // resolved is a name the deploy could have keyed under. A name that did
-      // NOT fully resolve is added too and that is inert — the literal `${Foo}`
-      // is not a key any deploy wrote, while the key it actually wrote is one
-      // this run cannot compute and therefore stays unaccounted, which is the
-      // bucket that now gets repaired.
-      if (typeof exportName === 'string') accountedOutputKeys.add(exportName);
       // A resolution that came BACK is not the same as one that SUCCEEDED:
       // `resolveSub` does not throw on an unresolvable placeholder, it warns and
       // keeps `${Foo}` in the string. Scrub takes no `--parameters`, so that is
@@ -614,11 +770,32 @@ export async function scrubStack(
       // reproduce, re-enabling the wrong-secret rewrite in the remediation
       // command. Same rule the diff twin applies, imported rather than
       // re-spelled.
-      if (
+      const exportNameUnresolved =
         declaredExportName !== undefined &&
         typeof exportName === 'string' &&
-        isUnresolvedValue(exportName, templateUsesSub(declaredExportName))
-      ) {
+        isUnresolvedValue(exportName, templateUsesSub(declaredExportName));
+      // ACCOUNTED regardless of what the collision check below decides about
+      // trusting it as a position SOURCE (issue #2005): the question here is
+      // only "could today's template have produced this state key", and a name
+      // that FULLY resolved is a name the deploy could have keyed under.
+      //
+      // A name that did NOT fully resolve is deliberately NOT added, and the
+      // first cut of this got it backwards on a premise that is false: it added
+      // the literal `${Foo}` too, calling it inert because "that is not a key
+      // any deploy wrote". It can be — `deploy-engine.ts`'s alias write guards
+      // only on `typeof exportName !== 'string'`, with no `isUnresolvedValue`
+      // test, so a deploy whose `Fn::Sub` warn-and-KEPT `${Foo}` writes that
+      // literal into `state.outputs` as a key. Marking it accounted then
+      // EXCLUDES it from the widened pass while the positioned pass runs
+      // source-less against `outputSecrets` alone — so a secret living only in
+      // `perResourceSecrets`, which is exactly issue #2005's population, is
+      // never repaired and `--dry-run --fail` exits clean over surviving
+      // plaintext. Not adding it is strictly narrowing: the key it could not
+      // compute was already unaccounted, and now the literal one is too.
+      if (typeof exportName === 'string' && !exportNameUnresolved) {
+        accountedOutputKeys.add(exportName);
+      }
+      if (exportNameUnresolved) {
         outputsSourceUntrusted = true;
         logger.warn(
           `Export.Name of output ${name} did not fully resolve during scrub — ` +
@@ -812,9 +989,12 @@ export async function scrubStack(
         : state.outputs;
     // The widened pass (issue #2005): repair a stored output key today's
     // template cannot account for. See `redactUnaccountedOutputs` for both
-    // halves of the scope decision.
+    // halves of the scope decision, and for why the values it scans come from
+    // `state.outputs` (the STORED bag) while its result is written over
+    // `positionedOutputs`.
     const newOutputs = redactUnaccountedOutputs(
       positionedOutputs,
+      state.outputs,
       accountedOutputKeys,
       allRecordedSecrets(outputSecrets, perResourceSecrets)
     );
@@ -825,7 +1005,13 @@ export async function scrubStack(
       const nextState: StackState = {
         ...state,
         resources: newResources,
-        outputs: newOutputs,
+        // The cast restates what `StackState` already gets wrong rather than
+        // introducing a lie: `outputs` is TYPED as required while every
+        // consumer treats it as optional, and a state file that simply has no
+        // outputs must round-trip WITHOUT gaining an empty bag — materializing
+        // `{}` here would be a write this command never intended to make.
+        // `newOutputs` IS `state.outputs`, unchanged, in exactly that case.
+        outputs: newOutputs as StackState['outputs'],
         lastModified: Date.now(),
       };
       await stateBackend.saveState(stack.stackName, region, nextState, {

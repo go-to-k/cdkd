@@ -149,8 +149,16 @@ export function clearRecordedSecretExpressions(): void {
  * value is still masked at the exact leaf where it was the WHOLE value (handled
  * by the caller), but is not scanned for as a substring. Real secrets are far
  * longer than this, so the bound only excludes degenerate cases.
+ *
+ * EXPORTED because a caller assembling its own secrets bag may need the same
+ * bound on the WHOLE-VALUE arm, which this module deliberately does not apply
+ * (the no-source arm below matches a whole value at ANY length, which is right
+ * for a POSITION-SCOPED bag). `cdkd scrub`'s cross-resource union has no
+ * position source at all, so it filters itself here before scanning — see
+ * `allRecordedSecrets` in `src/cli/commands/scrub.ts`. Read-only: no behavior
+ * in this module changes with the export.
  */
-const MIN_NEEDLE_LENGTH = 4;
+export const MIN_NEEDLE_LENGTH = 4;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

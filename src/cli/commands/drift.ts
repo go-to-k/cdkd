@@ -46,6 +46,7 @@ import {
 import {
   createSecretMasker,
   maskSecretsInText,
+  MIN_NEEDLE_LENGTH,
   redactSecretsForState,
   SECRET_MASK,
   STATE_SOURCED_READBACK_RULES,
@@ -553,13 +554,14 @@ function containsDynamicReference(value: unknown): boolean {
 type SecretPathSet = Set<string>;
 
 /**
- * Byte-for-byte the threshold `secret-redaction.ts` applies when it builds its
- * substring needles (`MIN_NEEDLE_LENGTH`). Copied rather than imported because
- * that constant is module-private there and this file may not widen its
- * exports; the two must agree or this function would call a leaf secret-bearing
- * that `redactSecretsForState` will not redact.
+ * The threshold `secret-redaction.ts` applies when it builds its substring
+ * needles. IMPORTED rather than copied since issue #2005 exported it (`cdkd
+ * scrub` needed the same constant to bound its cross-resource union), so the
+ * two can no longer disagree — and they must not, or this function would call a
+ * leaf secret-bearing that `redactSecretsForState` will not redact. The local
+ * alias is kept so the call sites below read unchanged.
  */
-const MIN_SECRET_NEEDLE_LENGTH = 4;
+const MIN_SECRET_NEEDLE_LENGTH = MIN_NEEDLE_LENGTH;
 
 /**
  * Does `value` hold a plaintext this pass has recorded as a secret?
