@@ -61,6 +61,13 @@ import {
   deleteTableWithIndexBusyRetry,
   waitForIndexesSettled,
 } from '../dynamodb-index-busy-delete.js';
+import {
+  DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS,
+  pollsWithinDeleteBudget,
+  resolveDynamoDbDeleteBudgetClock,
+  resolveDynamoDbDeleteBudgetMs,
+} from './dynamodb-delete-budget.js';
+import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -838,9 +845,38 @@ export class DynamoDBTableProvider implements ResourceProvider {
     ],
   ]);
 
+  /**
+   * The ONE wall-clock allowance each `delete()` spends, keyed by physical id
+   * (issue #1955). Keyed rather than per-call because `destroy-runner.ts` can
+   * RE-ENTER `delete()` from the top: a THROTTLED `DeleteTable` is not retried
+   * by the index-busy loop below — that classifier is message-scoped by design
+   * — so it escapes to the outer loop, which DOES class throttles as retryable
+   * and pays the whole settle-and-retry sequence a second time inside the same
+   * per-resource deadline (2 x ~19.6 min ~= ~39 min after issue #1950 raised
+   * this type's retry budget to 14). A per-call budget would hand that second
+   * pass a fresh allowance; this one does not. Keyed rather than per-instance
+   * because a destroy level deletes its resources CONCURRENTLY through one
+   * provider instance.
+   */
+  private readonly deleteBudgets = new ElapsedBudgetRegistry();
+
   constructor() {
     const awsClients = getAwsClients();
     this.dynamoDBClient = awsClients.dynamoDB;
+  }
+
+  /**
+   * Self-reported minimum per-resource deadline (issue #1955).
+   *
+   * The engine resolves the deadline as
+   * `perTypeCliOverride ?? max(getMinResourceTimeoutMs(), globalCliDefault)`,
+   * so declaring this is what turns "the shared delete budget fits inside the
+   * deadline" from an assumption about the CLI default into a guarantee. It
+   * equals today's `DEFAULT_RESOURCE_TIMEOUT_MS`, so at default settings this
+   * changes nothing; a per-type override still wins.
+   */
+  getMinResourceTimeoutMs(): number {
+    return DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS;
   }
 
   /**
@@ -2136,6 +2172,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting DynamoDB table ${logicalId}: ${physicalId}`);
 
+    // ONE allowance for every wait below (issue #1955). Acquired before the
+    // FIRST call so the `--remove-protection` ACTIVE wait is inside it too, and
+    // acquired from the registry so a re-entry after a throttle CONTINUES this
+    // clock rather than restarting it — see the field's own note and
+    // `./dynamodb-delete-budget.ts`.
+    const budget = this.deleteBudgets.acquire(
+      physicalId,
+      resolveDynamoDbDeleteBudgetMs(),
+      resolveDynamoDbDeleteBudgetClock()
+    );
+
     // `--remove-protection`: flip DeletionProtectionEnabled off before
     // delete. UpdateTable is async — wait for ACTIVE before issuing
     // DeleteTable so the delete doesn't race the still-UPDATING table.
@@ -2154,7 +2201,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
           `Disabled DeletionProtectionEnabled on DynamoDB table ${logicalId}, waiting for ACTIVE`
         );
         try {
-          await this.waitForTableActiveAfterUpdate(physicalId);
+          await this.waitForTableActiveAfterUpdate(
+            physicalId,
+            TABLE_ACTIVE_WAIT_ATTEMPTS,
+            budget
+          );
         } catch (waitErr) {
           this.logger.debug(
             `Could not wait for table ${physicalId} ACTIVE after disabling protection: ${waitErr instanceof Error ? waitErr.message : String(waitErr)}`
@@ -2212,10 +2263,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // `DescribeTable` once the index has settled. BOUNDED — it runs per
         // retry, so the loop's wall clock is the product and
         // `destroy-runner.ts` runs this delete under a per-resource deadline
-        // (30 min by default; this provider declares no
-        // `getMinResourceTimeoutMs` to lift it). At
-        // `DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS` the whole loop's worst case is
-        // ~18.4 min (issue #1950 raised THIS type's retry budget to 14; the
+        // (30 min by default, and since issue #1955 this provider self-reports
+        // that same figure so a lowered `--resource-timeout` cannot shrink it).
+        // At `DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS` the whole loop's worst case
+        // is ~18.4 min (issue #1950 raised THIS type's retry budget to 14; the
         // full arithmetic is on `TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`), so a
         // genuinely stuck index still ends in AWS's own actionable sentence
         // rather than a generic `ResourceTimeoutError` that never mentions
@@ -2225,10 +2276,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // ~19.6 min against the 30-min deadline, two thirds of it.
         //
         // That deadline wraps `destroy-runner.ts`'s OUTER retry loop, not a
-        // single `delete()` — up to 4 calls share it. The budget survives that
-        // only because this refusal matches no `RETRYABLE_ERROR_MESSAGE_PATTERNS`
-        // entry, so the outer loop never re-invokes `delete()` for it; see the
-        // arithmetic on `DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS`.
+        // single `delete()` — up to 4 calls share it. This refusal matches no
+        // `RETRYABLE_ERROR_MESSAGE_PATTERNS` entry, so the outer loop never
+        // re-invokes `delete()` for IT — but a THROTTLED `DeleteTable` on the
+        // same call is a different message and DOES re-enter, paying the whole
+        // sequence twice inside one deadline (2 x ~19.6 min ~= ~39 min after
+        // #1950). That is issue #1955's third term, and the `budget` below is
+        // what bounds it: it is keyed by physical id, so the second pass
+        // CONTINUES the first pass's clock instead of restarting it.
         reArm: () =>
           waitForIndexesSettled({
             tableName: physicalId,
@@ -2236,12 +2291,34 @@ export class DynamoDBTableProvider implements ResourceProvider {
             logger: this.logger,
             describeTable: () =>
               this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId })),
-            maxAttempts: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+            // The smaller of this loop's own re-arm cap and what the shared
+            // delete budget can still afford (issue #1955).
+            maxAttempts: pollsWithinDeleteBudget(DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS, budget),
             proceedNote: DELETE_INDEX_WAIT_PROCEED_NOTE,
           }),
+        // The wall-clock half of the loop's bound, and the term that closes the
+        // throttle-compounding case: the budget is shared with the re-entry, so
+        // a second pass inherits what the first one already spent and the pair
+        // can no longer reach ~39 min inside a 30-minute deadline.
+        // `isRetryable` ANDs this with the index-busy classifier, so an
+        // exhausted budget makes AWS's refusal terminal — which is what
+        // surfaces its actionable message instead of the deadline's generic
+        // one, with nothing still polling behind the failed run.
+        shouldKeepRetrying: () => {
+          if (!budget.isExhausted()) return true;
+          this.logger.warn(
+            `DynamoDB table ${logicalId}: giving up the index-busy DeleteTable retry on ` +
+              `${physicalId} — the delete path has spent its whole ` +
+              `${Math.round(budget.totalMs / 60_000)}-minute budget. AWS's own message follows; ` +
+              `re-running the destroy succeeds once the index is ACTIVE.`
+          );
+          return false;
+        },
         sleepSeam: deleteTableRetryDelays,
       });
       this.logger.debug(`Successfully deleted DynamoDB table ${logicalId}`);
+      // TERMINAL success — the allowance has no second pass to fund.
+      this.deleteBudgets.release(physicalId);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
         const clientRegion = await this.dynamoDBClient.config.region();
@@ -2253,8 +2330,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
           physicalId
         );
         this.logger.debug(`DynamoDB table ${physicalId} does not exist, skipping deletion`);
+        this.deleteBudgets.release(physicalId);
         return;
       }
+      // Deliberately NOT released on a throw: the outer retry loop may re-enter
+      // `delete()` inside the SAME deadline (it classes throttles as
+      // retryable), and that second pass has to keep spending this allowance
+      // rather than start a fresh one. That is the compounding term of issue
+      // #1955.
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to delete DynamoDB table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -2836,9 +2919,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
    */
   private async waitForTableActiveAfterUpdate(
     tableName: string,
-    maxAttempts = TABLE_ACTIVE_WAIT_ATTEMPTS
+    maxAttempts = TABLE_ACTIVE_WAIT_ATTEMPTS,
+    budget?: ElapsedBudget
   ): Promise<void> {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // Issue #1955: on the DELETE path this wait shares a per-resource deadline
+    // with the index-busy retry loop that follows it, so it takes the smaller
+    // of its own cap and what the shared budget can still afford. Every
+    // CREATE / UPDATE caller passes no budget and keeps the full cap.
+    const attempts = pollsWithinDeleteBudget(maxAttempts, budget);
+    for (let attempt = 1; attempt <= attempts; attempt++) {
       const response = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: tableName })
       );
@@ -2857,7 +2946,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
     }
     throw new Error(
-      `Table ${tableName} did not reach ACTIVE status within ${maxAttempts} seconds after UpdateTable`
+      `Table ${tableName} did not reach ACTIVE status within ${attempts} seconds after UpdateTable`
     );
   }
 

@@ -208,23 +208,28 @@ export const TABLE_DELETE_INDEX_BUSY_MAX_RETRIES = 14;
  *
  * **What that table does NOT cover, stated rather than implied**: the case
  * where the loop SUCCEEDS on a late attempt. Then `waitForTableGone`'s 600
- * polls (~12 min) DO run, and the same single-region shape reaches ~40.4 min —
- * over the deadline at the CURRENT budget, so it is not a consequence of any
- * calibration here and not something 8 can fix. It is the same overshoot the
- * replicated shape has, and it is issue #1955's. The two cases are exclusive:
- * an exhausted budget ends in a throw, a late success ends in the gone-wait,
- * and no run pays both. The budget below is sized against the first, which is
- * the only one it controls; the fence in the unit suite models that case and
- * asserts the second as a known, tracked overshoot.
+ * polls (~12 min) DO run, and the same single-region shape reaches ~40.4 min in
+ * RAW cap terms — over the deadline, so it was never something 8 could fix. It
+ * is the same overshoot the replicated shape has, and it WAS issue #1955's. The
+ * two cases are exclusive: an exhausted budget ends in a throw, a late success
+ * ends in the gone-wait, and no run pays both. The budget below is sized
+ * against the first, which is the only one it controls.
+ *
+ * Since #1955 the second case is bounded by a mechanism OUTSIDE this constant:
+ * every wait on the delete path draws polls from ONE shared elapsed budget
+ * (`providers/dynamodb-delete-budget.ts`), so the raw caps still sum past the
+ * deadline while the PATH cannot spend them. That is what makes the derivation
+ * here about how the allowance is SPENT rather than about staying inside the
+ * deadline; the unit suite fences both statements.
  *
  * It also honors what issue #1950 asked for: moving a shipped type's
  * wall-clock destroy behaviour is its own change with its own review and its
  * own real-AWS run, not something a sibling type's calibration carries along.
  *
- * The REPLICATED shape stays where it already was — gate + 600 polls (~12 min)
- * per non-local replica + loop(8), plus the gone-wait on a late success, is
- * ~40 min or more, over the deadline before this change and unaffected by it.
- * That pre-existing overshoot is issue #1955 too.
+ * The REPLICATED shape stays where it already was in RAW cap terms — gate + 600
+ * polls (~12 min) per non-local replica + loop(8), plus the gone-wait on a late
+ * success, is ~40 min or more. That pre-existing overshoot was issue #1955, and
+ * the shared delete budget is what now stops the path spending it.
  */
 export const GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES = 8;
 
@@ -237,8 +242,10 @@ export const GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES = 8;
  * gate uses, because THAT default is sized for a wait that runs once while
  * this one runs per retry: the caller's wall clock is
  * `its retry budget x this x ~1.2s per poll + withRetry's backoff`, and `destroy-runner.ts` runs the delete under a per-resource
- * deadline (30 min by default; neither DynamoDB provider declares a
- * `getMinResourceTimeoutMs` to lift it). At 900 polls the product would be
+ * deadline (30 min by default; since issue #1955 both DynamoDB providers
+ * self-report that same 30 min through `getMinResourceTimeoutMs`, so a lowered
+ * `--resource-timeout` cannot shrink it below what the shared delete budget in
+ * `providers/dynamodb-delete-budget.ts` assumes). At 900 polls the product would be
  * ~4.2h, so a genuinely stuck index would produce a 30-minute wait ending in a
  * generic `ResourceTimeoutError` that never mentions indexes. At 60 the LOOP's
  * worst case is ~18.4 min on `AWS::DynamoDB::Table` and ~10.4 min on
@@ -549,6 +556,24 @@ export async function deleteTableWithIndexBusyRetry(opts: {
   sleepSeam: { sleep?: (ms: number) => Promise<void> };
   /** The caller's retry budget — see the two per-type constants above. */
   maxRetries: number;
+  /**
+   * A second, WALL-CLOCK stop condition, consulted on each refusal (issue
+   * #1955). Absent (or `true`) leaves the loop exactly as it was: bounded by
+   * `maxRetries` alone.
+   *
+   * The attempt count is not by itself a bound on wall clock. Each retry
+   * re-arms with a poll whose own cap is the caller's, and the caller shares a
+   * per-resource deadline with everything else its `delete()` does — so a
+   * budget that is right at the loop can still be wrong for the PATH. When the
+   * caller says stop, the refusal is treated as terminal and AWS's own
+   * sentence — `Cannot delete table while indexes are being ...`, the one thing
+   * here that tells the user what to do — is what propagates. That is the
+   * whole point of stopping ourselves rather than letting the deadline fire:
+   * `withResourceDeadline` does NOT cancel, so its generic
+   * `ResourceTimeoutError` would both replace this message and leave the loop
+   * running behind the failed run.
+   */
+  shouldKeepRetrying?: () => boolean;
 }): Promise<void> {
   let deleteAttempts = 0;
   await withRetry(
@@ -580,7 +605,13 @@ export async function deleteTableWithIndexBusyRetry(opts: {
       // message-only on purpose — AWS wraps the condition in a generic
       // `ResourceInUseException`, whose NAME is shared with genuinely
       // terminal conflicts, so the message is the only discriminator.
-      isRetryable: (message) => isIndexBusyDeleteError(message),
+      // The wall-clock stop is ANDed with the classifier rather than replacing
+      // it: a non-index-busy error must stay terminal no matter how much budget
+      // is left, and an index-busy one must stop being retried once there is
+      // none. Order matters only for cost — classify first so a terminal error
+      // never consults the caller's clock.
+      isRetryable: (message) =>
+        isIndexBusyDeleteError(message) && (opts.shouldKeepRetrying?.() ?? true),
       logger: opts.logger,
       sleep: (ms: number) =>
         opts.sleepSeam.sleep
