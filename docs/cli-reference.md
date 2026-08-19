@@ -1533,7 +1533,18 @@ delete-repository` / marker-delete sequence. It:
    key and the `--region` spelling that reaches it (only that spelling does —
    the canonical key is gone by then). Their asset storage is left standing on
    purpose, since two markers can name two different sets of custom names and
-   the marker is the only record of them.
+   the marker is the only record of them. The same listing runs when NO marker
+   is found under either probed spelling, so a region whose only marker carries
+   a third spelling is reported rather than dismissed with "nothing to delete";
+   in that case the "re-run `cdkd bootstrap`" hint is withheld, because
+   re-bootstrapping would write a second marker with DEFAULT names and the next
+   teardown would destroy that storage while the existing marker's survives.
+   The listing needs `s3:ListBucket` on the state bucket, which a plain
+   `--destroy` did not previously require: without it the teardown still
+   proceeds and warns that the check could not be made, while
+   `--include-state-bucket` refuses outright
+   (`STATE_BUCKET_MARKER_SCAN_FAILED`), since there the listing is the only
+   thing preventing sibling markers from being deleted with the bucket.
 3. Refuses while any deployed stack's state still references the region's
    asset bucket / repo (running Lambdas keep working after deletion, but a
    future re-deploy / rollback of those stacks would break). The scan

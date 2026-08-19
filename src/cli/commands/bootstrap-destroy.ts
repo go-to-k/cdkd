@@ -472,9 +472,17 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
       otherRegions: [],
       sameRegionKeys: [],
     };
+    // Whether the set above is a MEASUREMENT or just a default. An empty
+    // `sameRegionKeys` means "no sibling" only when the listing succeeded; on
+    // the fail-open arm it means "could not look", and conflating the two
+    // re-opens the very case this scan exists to catch — the sibling-only
+    // teardown would print "nothing to delete" plus the harmful re-bootstrap
+    // hint and exit 0, exactly as it did before the scan was added.
+    let markerListingSucceeded = true;
     try {
       markerSiblings = await listBootstrapMarkerSiblings(stateBackend, region, resolvedMarkerKey);
     } catch (error) {
+      markerListingSucceeded = false;
       if (options.includeStateBucket) {
         throw new CdkdError(
           `Cannot verify which bootstrap markers the state bucket '${bucketName}' still ` +
@@ -515,13 +523,23 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
         }
       }
       if (!options.includeStateBucket) {
-        // Only suggest re-bootstrapping when no marker for this region exists
-        // at all: with a sibling present it is actively harmful advice, since
+        // Only suggest re-bootstrapping when a successful listing PROVED there
+        // is no sibling: with one present the advice is actively harmful, since
         // `cdkd bootstrap` would write a SECOND marker at the canonical key
         // with DEFAULT names, and the next destroy would tear down that
         // default-named storage while the custom-named storage behind the
-        // sibling survives untouched.
-        if (markerSiblings.sameRegionKeys.length === 0) {
+        // sibling survives untouched. When the listing could not be made, say
+        // so instead of implying the absence was verified.
+        if (!markerListingSucceeded) {
+          logger.info(
+            `The bootstrap-marker listing could not be made, so it is NOT known whether ` +
+              `this region has a marker under another spelling of its name. Check ` +
+              `'s3://${bucketName}/${BOOTSTRAP_MARKER_PREFIX}' before re-bootstrapping — ` +
+              `re-running 'cdkd bootstrap' while one exists writes a SECOND marker with ` +
+              `DEFAULT names, and the next destroy would then tear down that storage ` +
+              `while the storage the existing marker names survives.`
+          );
+        } else if (markerSiblings.sameRegionKeys.length === 0) {
           logger.info(
             `If the asset bucket / ECR repo still exist without a marker, re-run ` +
               `'cdkd bootstrap --region ${region}' to recreate the marker, then destroy again.`
@@ -608,10 +626,13 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
           .join('\n');
         const remedy = canonicalStillPresent
           ? `Run 'cdkd bootstrap --destroy --region ${region}' WITHOUT ` +
-            `--include-state-bucket and repeat until this refusal stops: each run tears ` +
-            `down the first marker it resolves, starting with '${resolvedMarkerKey}'. ` +
-            `(A per-marker --region spelling is not given here because that key still ` +
-            `exists and would be resolved first.)`
+            `--include-state-bucket ONCE: it tears down '${resolvedMarkerKey}' and then ` +
+            `prints the exact --region spelling for each marker still standing. Follow ` +
+            `those, then re-run with --include-state-bucket. (No per-marker spelling is ` +
+            `given here because '${resolvedMarkerKey}' still exists and would be resolved ` +
+            `first — and simply repeating this same command would not clear the rest, ` +
+            `since once it is gone this region's canonical key no longer resolves ` +
+            `anything.)`
           : `Run the command shown against each marker above, then re-run with ` +
             `--include-state-bucket.`;
         throw new CdkdError(
