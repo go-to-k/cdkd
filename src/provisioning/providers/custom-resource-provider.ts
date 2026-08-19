@@ -23,8 +23,13 @@ import {
   withRetry,
   IAM_PROPAGATION_INITIAL_DELAY_MS,
   IAM_PROPAGATION_MAX_DELAY_MS,
+  IAM_PROPAGATION_MAX_RETRIES,
 } from '../../deployment/retry.js';
-import { isIamPropagationError } from '../../deployment/retryable-errors.js';
+import {
+  isIamPropagationError,
+  isMarkedNonRetryable,
+  markNonRetryable,
+} from '../../deployment/retryable-errors.js';
 import { type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
@@ -51,6 +56,35 @@ export const CR_NO_PROPERTIES_SKIP_REASON = 'no properties in state — Delete h
  */
 export const CR_NO_SERVICE_TOKEN_SKIP_REASON =
   'no ServiceToken in state — Delete handler not invoked';
+
+/**
+ * Third sibling of the two above, for the arm where cdkd HAD everything it
+ * needed and the Delete request still could not be completed — a permanent
+ * `lambda:InvokeFunction` denial, an exhausted readiness waiter, a response
+ * that never arrived.
+ *
+ * That arm used to swallow the error and return `undefined`, which
+ * `deleteSkipReason` reads as DELETED: `cdkd destroy` printed `✓ … deleted`,
+ * dropped the state record and exited 0 over a handler that never received a
+ * `Delete` — silently orphaning everything that handler manages. It is the
+ * same silent-orphan class issue
+ * [#1752](https://github.com/go-to-k/cdkd/issues/1752) removed from the two
+ * arms above, reached through the catch rather than through a guard.
+ *
+ * **Fixed wording, no interpolation.** The underlying AWS message goes out on
+ * the `logger.warn` beside it and NOT into the reason, because a `reason` is
+ * rendered into the `Error` the deploy-side replacement sites throw, whose
+ * catch classifies an already-deleted resource by SUBSTRING — an AWS message
+ * carrying `does not exist` / `not found` would make a skip read as "already
+ * gone" and drop the record again, one layer further out. Same rule the
+ * `sns-subscription` abort follows.
+ *
+ * The premise is "the resource was NOT destroyed", not "no AWS call was
+ * issued": the handler may have run and failed, or run and had its response
+ * lost. Both leave the resource unproven, which is what a skip asserts.
+ */
+export const CR_DELETE_INVOKE_FAILED_SKIP_REASON =
+  'Delete request to the handler did not complete — resource unproven';
 
 /**
  * The deploy-side caveat both skip warnings in this file carry (issue
@@ -178,6 +212,68 @@ function decodeInvokeLogTail(logResult: string | undefined): string | undefined 
 }
 
 /**
+ * Recover the backing function's own STATUS fields from an
+ * `@smithy/util-waiter` failure message, or `undefined` when they are not
+ * there (issue #2033).
+ *
+ * The message is `JSON.stringify(result)` and `result.reason` is, for both
+ * Lambda readiness waiters, the ENTIRE `GetFunction` response. Only these
+ * AWS-authored status fields are lifted out of it — never the whole payload,
+ * which carries `Configuration.Environment.Variables` into a durable store.
+ *
+ * Best-effort by construction: a non-JSON message, a different waiter shape, or
+ * a payload with no `Configuration` all yield `undefined`, and the caller falls
+ * back to a fixed sentence.
+ */
+function extractWaiterFunctionStatus(message: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(message);
+  } catch {
+    return undefined;
+  }
+  const reason = (parsed as { reason?: unknown } | null)?.reason;
+  const config = (reason as { Configuration?: unknown } | null)?.Configuration;
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) return undefined;
+  const fields = config as Record<string, unknown>;
+  const parts: string[] = [];
+  for (const key of [
+    'State',
+    'StateReasonCode',
+    'StateReason',
+    'LastUpdateStatus',
+    'LastUpdateStatusReasonCode',
+    'LastUpdateStatusReason',
+  ]) {
+    const value = fields[key];
+    if (typeof value === 'string' && value !== '') parts.push(`${key}=${value}`);
+  }
+  return parts.length > 0 ? parts.join(', ') : undefined;
+}
+
+/**
+ * Render a Lambda readiness-waiter failure for a message that is persisted
+ * (issue #2033) — see `waitForBackingLambdaReady` for the whole argument.
+ *
+ * TIMEOUT / ABORT keep the waiter's own message: its `observedResponses` keys
+ * are status lines `@smithy/util-waiter` builds itself (`403: <AWS message>`),
+ * which is exactly the diagnostic a stalled waiter needs and carries no
+ * response body. Every other state serialized the full `GetFunction` response,
+ * so that arm reports the error NAME plus the function's own status fields.
+ */
+function describeWaiterFailure(error: unknown): string {
+  const name = error instanceof Error ? error.name : 'Error';
+  const message = error instanceof Error ? error.message : String(error);
+  if (name === 'TimeoutError' || name === 'AbortError') return message;
+  const status = extractWaiterFunctionStatus(message);
+  return (
+    `${name} (${status ?? 'no function status reported'}). ` +
+    `The waiter's raw payload is withheld because it embeds the whole GetFunction ` +
+    `response, environment variables included; run \`aws lambda get-function\` for the detail.`
+  );
+}
+
+/**
  * IAM-authorization-propagation signals in a custom resource FAILED reason that
  * indicate the backing Lambda's freshly-attached execution-role policy has not
  * yet taken effect for its assumed-role session (so a recycle + retry will
@@ -185,11 +281,27 @@ function decodeInvokeLogTail(logResult: string | undefined): string | undefined 
  * are the IAM-permission-not-yet-effective phrases only, NOT generic transient
  * errors (throttling / timeouts), which must not trigger a CR re-invoke.
  *
- * **This set is a deliberate SUBSET of `IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS`
- * (`src/deployment/retryable-errors.ts`), and it stays one** (issue
+ * **This set is deliberately NARROWER than
+ * `IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS` (`src/deployment/retryable-errors.ts`)
+ * and stays that way** (issue
  * [#2033](https://github.com/go-to-k/cdkd/issues/2033), which asked whether the
- * subsetting was still intended or a list that had stopped tracking its
- * superset). It is intended, because the two lists are consumed under different
+ * narrowing was still intended or a list that had stopped tracking its
+ * counterpart).
+ *
+ * "Narrower", not "a subset" — an earlier revision of this comment said SUBSET
+ * and that was FALSE of the list beside it. Three of these six entries appear
+ * in no form in the shared list (`no identity-based policy allows`, both
+ * `not in the state functionActive` spellings), and a fourth appears there only
+ * ANCHORED: the shared list carries `Firehose is unable to assume role` /
+ * `is unable to assume provided role` / `is unable to assume the role` and
+ * deliberately refuses the bare `is unable to assume` this list uses, so that a
+ * permanent `... is unable to assume role X because of an explicit deny` cannot
+ * burn a retry budget. The bare spelling is right HERE — the text is the
+ * handler's own reason about the race cdkd created — and wrong for AWS-authored
+ * text about a call cdkd made, which is why
+ * {@link CR_THROWN_AUTHZ_EXTRA_SIGNALS} does not re-export it.
+ *
+ * The narrowing is intended, because the two lists are consumed under different
  * COSTS and classify text with different AUTHORS:
  *
  *  - This set is matched against the HANDLER's own FAILED `Reason` (and, since
@@ -209,10 +321,11 @@ function decodeInvokeLogTail(logResult: string | undefined): string | undefined 
  *    a handler-authored reason, and the first two are ALREADY covered here in
  *    the spelling that matters (`cannot be assumed` / `is unable to assume` are
  *    what Lambda emits for an unassumable execution role).
- *  - The superset is matched against text AWS wrote about a call CDKD made. It
- *    is used, in full, by {@link CustomResourceProvider.isTransientAuthzThrow}
- *    for a THROWN error from one of the provider's OWN SDK calls — see that
- *    method for why the wider list is correct there and costs nothing extra.
+ *  - The shared list is matched against text AWS wrote about a call CDKD made.
+ *    It is used, in full, by
+ *    {@link CustomResourceProvider.isTransientAuthzThrow} for a THROWN error
+ *    from one of the provider's OWN SDK calls — see that method for why the
+ *    wider list is correct there and costs nothing extra.
  *
  * So the answer to "should these converge" is no; what was genuinely missing was
  * the second consumer, not a wider first one.
@@ -224,6 +337,31 @@ const CR_TRANSIENT_AUTHZ_SIGNALS: readonly string[] = [
   'not in the state functionactive',
   'cannot be assumed',
   'is unable to assume',
+];
+
+/**
+ * The CR-specific spellings {@link CustomResourceProvider.isTransientAuthzThrow}
+ * adds ON TOP of `IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS` — i.e. exactly the
+ * phrases the shared list does not carry in any form (issue #2033).
+ *
+ * Deliberately NOT `CR_TRANSIENT_AUTHZ_SIGNALS` itself, which is what the first
+ * cut of the fix used. Three of that list's entries are already covered by the
+ * shared list (`not authorized to perform` / `cannot be assumed`, plus the three
+ * ANCHORED `unable to assume` spellings), so re-uniting the whole thing bought
+ * nothing except the bare, UN-anchored `is unable to assume` — which the shared
+ * list refuses on purpose so a permanent explicit-deny cannot spend a 47.75s
+ * budget before failing. This list is the difference, and only the difference.
+ *
+ * Lower-cased substrings, matched against a lower-cased message (the shared list
+ * is mixed-case and matched verbatim by `isIamPropagationError`).
+ *
+ * `is not in the state functionactive` from the sibling list is omitted as a
+ * pure superstring of the entry below it: any message matching it matches this
+ * one too.
+ */
+const CR_THROWN_AUTHZ_EXTRA_SIGNALS: readonly string[] = [
+  'no identity-based policy allows',
+  'not in the state functionactive',
 ];
 
 /**
@@ -288,6 +426,63 @@ const CR_TRANSIENT_AUTHZ_LOG_SIGNALS: readonly string[] = [
  * at 4 KB regardless, so this only trims the extreme case.
  */
 const CR_LOG_TAIL_WARN_MAX_CHARS = 2000;
+
+/** Default for `CDKD_CR_AUTHZ_MAX_RETRIES` — see `transientAuthzMaxRetries`. */
+const CR_AUTHZ_MAX_RETRIES_DEFAULT = 2;
+
+/**
+ * Hard ceiling for `CDKD_CR_AUTHZ_MAX_RETRIES`.
+ *
+ * The knob's units are RE-INVOCATIONS OF THE USER'S HANDLER, each one also
+ * paying a `recycleBackingFunctionExecEnv` (an `UpdateFunctionConfiguration`
+ * plus a 120s waiter). Ten of those is already far past the point where an
+ * IAM-propagation race would have settled, so anything above it is a typo or a
+ * misunderstanding rather than a preference — and left unclamped a `1e9`
+ * passes the finite / `>= 0` gate and re-invokes until the deploy engine's
+ * per-resource deadline fires an hour later.
+ */
+const CR_AUTHZ_MAX_RETRIES_CEILING = 10;
+
+/**
+ * Bound for the `.cause` walks in this file, matching the depth
+ * `isMarkedNonRetryable` / `isThrottlingError` use in
+ * `src/deployment/retryable-errors.ts`. Bounded rather than unbounded so a
+ * cyclic chain cannot hang the classifier.
+ */
+const CR_ERROR_CAUSE_MAX_DEPTH = 5;
+
+/**
+ * Sleep seam for this provider's hand-rolled waits (the pre-delivery retry
+ * backoff and the S3 response poll).
+ *
+ * Mutable module state ONLY so tests can run a 47.75s retry schedule without
+ * spending 47.75s; production never reassigns it. Mirrors the
+ * `deleteTableRetryDelays.sleep` seam the DynamoDB providers use, and the
+ * `sleep` option `withRetry` already exposes for the same reason.
+ */
+export const customResourceRetryDelays = {
+  sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/**
+ * SIGINT watch shared by the pre-delivery retry backoff and the placeholder
+ * `PutObject`'s `withRetry` (issue #2033 / `docs/provider-development.md`).
+ *
+ * Ctrl-C during a 47.75s backoff has to abort, not sit out the schedule. The
+ * provider already had exactly this shape locally — `pollS3Response` installs
+ * its own SIGINT handler — so this is that pattern lifted into something the
+ * two new wait sites can share and `withRetry` can consume directly through its
+ * `isInterrupted` / `onInterrupted` options.
+ *
+ * Per-INVOCATION rather than per-provider: providers are registered as
+ * SINGLETONS and serve concurrent resources, so a flag on `this` would be the
+ * wrong resource's.
+ */
+interface InterruptWatch {
+  isInterrupted: () => boolean;
+  onInterrupted: () => Error;
+  dispose: () => void;
+}
 
 /**
  * Lines Lambda emits for EVERY invocation regardless of what the handler logged.
@@ -451,9 +646,9 @@ export class CustomResourceProvider implements ResourceProvider {
    *
    * | call | retried on a throw? | why |
    * |---|---|---|
-   * | S3 `PutObject` (response-key placeholder) | YES, own `withRetry` (the standard dense propagation schedule, 47.75s) | idempotent PUT of an empty object at a key cdkd just minted; touches no response-URL lifecycle, so a replay is free |
-   * | Lambda `Invoke` / SNS `Publish` | YES, but only PRE-DELIVERY and only against the SAME `transientAuthzMaxRetries` budget as the FAILED-response arm | a replay re-delivers the request, which is the hazard this flag exists for — see {@link CustomResourceProvider.isTransientAuthzThrow} |
-   * | `waitUntilFunctionActiveV2` / `waitUntilFunctionUpdatedV2` | ALREADY, by the SDK waiter | measured against `@aws-sdk/client-lambda`: the generated `checkState` catches EVERY exception and returns `RETRY`, so a mid-propagation 403 on `lambda:GetFunction` is polled out to `maxWaitTime` (600s). Wrapping them again would only stack a second budget on top |
+   * | S3 `PutObject` (response-key placeholder) | YES, own `withRetry` (the standard dense propagation schedule, 47.75s) — and its exhausted throw is `markNonRetryable`d so the loop below cannot spend a SECOND budget on it | idempotent PUT of an empty object at a key cdkd just minted; touches no response-URL lifecycle, so a replay is free |
+   * | Lambda `Invoke` / SNS `Publish` | YES, but only PRE-DELIVERY, on {@link CustomResourceProvider.preDeliveryAuthzMaxRetries} — its OWN budget, the same dense 47.75s schedule every other resource type gets | a replay re-delivers the request, which is the hazard this flag exists for, so the PRE-delivery fence is what makes the budget affordable: nothing has been delivered, so a replay re-invokes NOTHING — see {@link CustomResourceProvider.isTransientAuthzThrow} |
+   * | `waitUntilFunctionActiveV2` / `waitUntilFunctionUpdatedV2` | ALREADY, by the SDK waiter — and their wrapped failure is `markNonRetryable`d, so the loop below does not replay it either | measured against `@aws-sdk/client-lambda`: the generated `checkState` catches EVERY exception and returns `RETRY`, so a mid-propagation 403 on `lambda:GetFunction` is polled out to `maxWaitTime` (600s). Wrapping them again would only stack a second budget on top — and `@smithy/util-waiter` serializes its `observedResponses` into the TIMEOUT message, whose keys read `403: User: … is not authorized to perform: lambda:GetFunction …`, so a classifier reading that message would have replayed a PERMANENT denial for 3 x 600s |
    * | `GetFunction` (delete-path backing-Lambda probe) | NO, deliberately | it already fails OPEN — anything but a definitive `ResourceNotFoundException` falls through to the normal invoke path, whose waiters cover the same propagation window one call later. Retrying would only delay that fall-through by up to 47.75s on a genuine permission denial |
    * | anything AFTER delivery (`pollS3Response`, the `FunctionError` throw, `cleanupResponseObject`) | NO, deliberately | the handler is running and will PUT to the URL of THIS attempt; a replay strands it at a key nobody polls, which is precisely the bug `disableOuterRetry` prevents |
    */
@@ -471,11 +666,13 @@ export class CustomResourceProvider implements ResourceProvider {
   private readonly MAX_POLL_INTERVAL_MS = 30_000;
 
   /**
-   * How many extra times to re-invoke a custom resource whose invocation hit a
-   * *transient IAM-authorization* race.
+   * How many extra times to RE-INVOKE a custom resource whose handler returned
+   * FAILED with a *transient IAM-authorization* reason.
    *
-   * ONE budget, TWO error shapes, deliberately (issue #2033). The original shape
-   * is a handler that returned FAILED with a transient-authz reason (e.g. the CDK Provider
+   * TWO error shapes, TWO budgets, deliberately (issue #2033) — this one and
+   * {@link CustomResourceProvider.preDeliveryAuthzMaxRetries}. This budget
+   * governs the shape where the handler ALREADY RAN: it returned FAILED with a
+   * transient-authz reason (e.g. the CDK Provider
    * framework's `lambda:GetFunction` / "not in the state functionActive" 403
    * when the framework role's freshly-attached inline policy has not yet
    * propagated to the assumed-role session). cdkd's fast SDK path invokes the
@@ -488,36 +685,79 @@ export class CustomResourceProvider implements ResourceProvider {
    * retry HERE instead, deriving a fresh response URL + RequestId per attempt
    * and recycling the backing function's execution environment between tries).
    *
-   * The SECOND shape is a transient IAM-authorization error THROWN by the
-   * `Invoke` / `Publish` itself before the request was delivered — an
-   * `AccessDeniedException` on `lambda:InvokeFunction` while the DEPLOYING
-   * principal's own freshly-attached policy is still propagating. That was
-   * single-shot until issue #2033. It counts against THIS budget rather than
-   * getting one of its own, because the corrective action is identical (a fresh
-   * response URL + RequestId, then re-issue) and because a separate budget would
-   * multiply the worst-case number of times a handler can be invoked. The only
-   * differences are that a thrown error skips the exec-env recycle (the denial
-   * is on CDKD's principal, not on the function's role, so there is no warm
-   * container to invalidate) and takes a short backoff instead —
-   * {@link IAM_PROPAGATION_INITIAL_DELAY_MS} doubling to
-   * {@link IAM_PROPAGATION_MAX_DELAY_MS}, the same cadence `withRetry` uses for
-   * this class.
+   * **It is SMALL (2) because every retry it authorises RE-RUNS THE USER'S
+   * HANDLER**, and that is the whole reason the second shape does not share it:
+   * a pre-delivery throw invokes the handler ZERO times, so the argument that
+   * bounds this number does not apply there at all. Sharing it was measured
+   * wrong — 2 retries on the dense schedule is 250ms + 500ms of coverage, i.e.
+   * 0.75s against an IAM-propagation window this repo has measured at 7-12s, so
+   * issue #2033's own scenario still failed with the fix in place.
    *
-   * Override via `CDKD_CR_AUTHZ_MAX_RETRIES`. `0` disables the RETRY only —
+   * Override via `CDKD_CR_AUTHZ_MAX_RETRIES` (clamped to
+   * {@link CR_AUTHZ_MAX_RETRIES_CEILING}). `0` disables the RE-INVOKE only —
    * the issue-#1674 log-tail scan and the reason annotation it produces still
-   * run, because they describe the failure rather than react to it — and it
-   * disables BOTH shapes, since they share this budget. It does NOT disable the
-   * response-placeholder `PutObject` retry in `generateResponseURL`: that call
-   * cannot reach the handler, so it is not what this knob exists to bound, and
-   * a user turning off re-invokes should not thereby lose the propagation
-   * coverage every other resource type has.
+   * run, because they describe the failure rather than react to it.
+   *
+   * It does NOT disable either of the two retries that cannot reach the
+   * handler: the response-placeholder `PutObject` retry in
+   * `generateResponseURL`, and the pre-delivery arm above. Neither is what this
+   * knob exists to bound — it bounds how many times a user's handler may be
+   * re-run — and a user turning off re-invokes should not thereby lose the
+   * propagation coverage every other resource type gets for free.
    */
   private readonly transientAuthzMaxRetries: number = (() => {
     const raw = process.env['CDKD_CR_AUTHZ_MAX_RETRIES'];
-    if (raw === undefined || raw === '') return 2;
+    if (raw === undefined || raw === '') return CR_AUTHZ_MAX_RETRIES_DEFAULT;
     const n = Number(raw);
-    return Number.isFinite(n) && n >= 0 ? n : 2;
+    if (!Number.isFinite(n) || n < 0) return CR_AUTHZ_MAX_RETRIES_DEFAULT;
+    // Clamp, do not trust. Every unit of this budget costs one re-invoke of the
+    // user's handler PLUS a `recycleBackingFunctionExecEnv` (an
+    // `UpdateFunctionConfiguration` and a waiter), so an unbounded value —
+    // `1e9` is finite and `>= 0`, so it passed — re-invokes until the deploy
+    // engine's 1h per-resource deadline fires, with a non-idempotent handler
+    // repeating its partial work every time.
+    const clamped = Math.min(Math.floor(n), CR_AUTHZ_MAX_RETRIES_CEILING);
+    if (clamped !== n) {
+      this.logger.warn(
+        `CDKD_CR_AUTHZ_MAX_RETRIES=${raw} is out of range; using ${clamped} ` +
+          `(whole numbers, at most ${CR_AUTHZ_MAX_RETRIES_CEILING} — each retry re-invokes the ` +
+          `custom resource handler).`
+      );
+    }
+    return clamped;
   })();
+
+  /**
+   * Budget for the PRE-DELIVERY thrown arm — a transient IAM-authorization
+   * error thrown by the `Invoke` / `Publish` itself BEFORE the request reached
+   * the handler (issue #2033). The reported shape is an `AccessDeniedException`
+   * on `lambda:InvokeFunction` while the DEPLOYING principal's own
+   * freshly-attached policy is still propagating.
+   *
+   * It is {@link IAM_PROPAGATION_MAX_RETRIES} — the same 26 retries over 47.75s
+   * that `withRetry` gives every other resource type for the identical wording,
+   * on the same dense schedule ({@link IAM_PROPAGATION_INITIAL_DELAY_MS}
+   * doubling to {@link IAM_PROPAGATION_MAX_DELAY_MS}). The measured window this
+   * has to cover is 7-12s; the FAILED-response budget's 0.75s does not.
+   *
+   * **Why it can afford that while its sibling cannot**: it fires only when
+   * `delivered === false`, so the handler has been invoked ZERO times and a
+   * replay re-runs NOTHING — no partial work repeated, no second physical
+   * resource from a Provider-framework `onEvent`, no stranded response URL. The
+   * only cost of a retry here is one `PutObject` + one presign, and the
+   * abandoned placeholder is swept before the next attempt. So the constraint
+   * that keeps `transientAuthzMaxRetries` at 2 is simply absent, and matching
+   * every other resource type is the correct answer instead.
+   *
+   * A thrown retry also skips the exec-env recycle: the denial is on CDKD's own
+   * principal, not on the backing function's role, so there is no warm
+   * container holding stale credentials to invalidate.
+   *
+   * Deliberately NOT overridable by an env var. It bounds no handler
+   * invocation, so there is nothing for a user to trade off — the same reason
+   * the placeholder `PutObject`'s `withRetry` takes no knob either.
+   */
+  private readonly preDeliveryAuthzMaxRetries: number = IAM_PROPAGATION_MAX_RETRIES;
 
   constructor(config?: CustomResourceProviderConfig) {
     const awsClients = getAwsClients();
@@ -899,10 +1139,31 @@ export class CustomResourceProvider implements ResourceProvider {
         this.logger.debug(`Successfully deleted custom resource ${logicalId}`);
       }
     } catch (error) {
-      // For deletion, we should be more lenient with errors
+      // Issue #2033: lenient, but NOT silent. This catch used to swallow the
+      // error and fall through to `return undefined`, which `deleteSkipReason`
+      // reads as DELETED — so `cdkd destroy` printed `✓ … deleted`, dropped the
+      // state record and exited 0 over a handler that never received a
+      // `Delete`. A permanent `lambda:InvokeFunction` denial therefore silently
+      // ORPHANED everything that handler manages, with the id needed to reach
+      // it deleted in the same breath.
+      //
+      // It is the same silent-orphan class the two guard arms above already
+      // report as `'skipped'` (issue #1752); the only difference is that this
+      // one is reached through a throw. Continuing to warn-and-continue is
+      // still right — a destroy must not abort on one custom resource — but the
+      // OUTCOME has to say the resource is unproven, so the runner keeps the
+      // record, counts it apart and exits 2.
+      //
+      // The AWS message goes in the WARNING, never in the `reason`: a reason is
+      // rendered into the `Error` the deploy-side replacement sites throw, and
+      // their catch classifies "already deleted" by substring, so an AWS text
+      // carrying `does not exist` would put the record right back in the bin.
       this.logger.warn(
-        `Failed to delete custom resource ${logicalId}, but continuing: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to delete custom resource ${logicalId}, but continuing: ${error instanceof Error ? error.message : String(error)}. ` +
+          `The Delete handler did not complete, so anything this custom resource manages may still ` +
+          `be LIVE — cdkd is KEEPING the state record so a re-run can retry it. ${DEPLOY_SKIP_CAVEAT}`
       );
+      return { outcome: 'skipped', reason: CR_DELETE_INVOKE_FAILED_SKIP_REASON };
     }
   }
 
@@ -997,167 +1258,195 @@ export class CustomResourceProvider implements ResourceProvider {
       responseURL: string;
     }) => Record<string, unknown>
   ): Promise<CfnCustomResourceResponse> {
-    for (let attempt = 0; ; attempt++) {
-      // Flipped by `sendRequest` the instant `Invoke` / `Publish` returns. Read
-      // ONLY by the catch below, and re-declared per attempt so a previous
-      // attempt can never vouch for this one.
-      let delivered = false;
-      let cfnResponse: CfnCustomResourceResponse;
-      let logResult: string | undefined;
+    // One watch for the whole invocation, disposed in the `finally` below, so
+    // Ctrl-C aborts a 47.75s pre-delivery backoff and the placeholder
+    // `PutObject`'s own retry schedule instead of sitting them out.
+    const watch = this.startInterruptWatch(logicalId);
+    try {
+      // Two budgets, counted SEPARATELY (issue #2033). Sharing the loop counter
+      // would let a pre-delivery throw consume the FAILED-response arm's budget
+      // — with the arms on 26 and 2, three thrown retries would silently leave
+      // the handler's own transient-authz FAILED un-retried, which is the
+      // behavior this provider shipped with before the thrown arm existed.
+      let preDeliveryRetries = 0;
+      let failedResponseRetries = 0;
 
-      try {
-        const invocation = await this.prepareInvocation(logicalId);
-        const request = buildRequest(invocation);
+      for (let attempt = 0; ; attempt++) {
+        // Flipped by `sendRequest` the instant `Invoke` / `Publish` returns. Read
+        // ONLY by the catch below, and re-declared per attempt so a previous
+        // attempt can never vouch for this one.
+        let delivered = false;
+        let cfnResponse: CfnCustomResourceResponse;
+        let logResult: string | undefined;
+        // Hoisted out of the `try` so the catch can sweep the placeholder object
+        // this attempt minted. Without it every replayed attempt leaves an empty
+        // object behind in the state bucket, and nothing else collects them —
+        // `cdkd gc` scans the ASSET bucket, not this prefix.
+        let invocation: { requestId: string; responseKey: string; responseURL: string } | undefined;
 
-        this.logger.debug(
-          `Sending custom resource ${operation.toLowerCase()} request: ${serviceToken}`
-        );
+        try {
+          invocation = await this.prepareInvocation(logicalId, watch);
+          const request = buildRequest(invocation);
 
-        const sent = await this.sendRequest(
-          serviceToken,
-          request,
-          invocation.responseKey,
-          logicalId,
-          operation,
-          () => {
-            delivered = true;
+          this.logger.debug(
+            `Sending custom resource ${operation.toLowerCase()} request: ${serviceToken}`
+          );
+
+          const sent = await this.sendRequest(
+            serviceToken,
+            request,
+            invocation.responseKey,
+            logicalId,
+            operation,
+            () => {
+              delivered = true;
+            }
+          );
+          cfnResponse = sent.response;
+          logResult = sent.logResult;
+        } catch (error) {
+          if (
+            delivered ||
+            preDeliveryRetries >= this.preDeliveryAuthzMaxRetries ||
+            !this.isTransientAuthzThrow(error)
+          ) {
+            throw error;
           }
-        );
-        cfnResponse = sent.response;
-        logResult = sent.logResult;
-      } catch (error) {
-        if (
-          delivered ||
-          attempt >= this.transientAuthzMaxRetries ||
-          !this.isTransientAuthzThrow(error)
-        ) {
-          throw error;
+          // No exec-env recycle here, unlike the FAILED-response arm: the denial
+          // is on CDKD's OWN principal (the deploying role's `lambda:InvokeFunction`
+          // / `s3:PutObject`), not on the backing function's execution role, so
+          // there is no warm container holding stale credentials to invalidate —
+          // and `UpdateFunctionConfiguration` would need the very permissions that
+          // are still propagating.
+          const delayMs = Math.min(
+            IAM_PROPAGATION_INITIAL_DELAY_MS * Math.pow(2, preDeliveryRetries),
+            IAM_PROPAGATION_MAX_DELAY_MS
+          );
+          this.logger.warn(
+            `Custom resource ${operation} for ${logicalId} hit a transient IAM-authorization error ` +
+              `before the request was delivered (attempt ${attempt + 1}/${this.preDeliveryAuthzMaxRetries + 1}): ` +
+              `${this.truncateReason(error instanceof Error ? error.message : String(error))}. ` +
+              `Retrying in ${delayMs / 1000}s with a fresh response URL and RequestId.`
+          );
+          // Best-effort, and BEFORE the sleep so an interrupt cannot skip it.
+          // The next attempt signs a fresh key, so this one is unreachable.
+          if (invocation !== undefined) {
+            await this.cleanupResponseObject(invocation.responseKey);
+          }
+          preDeliveryRetries += 1;
+          await this.sleepInterruptibly(delayMs, watch);
+          continue;
         }
-        // No exec-env recycle here, unlike the FAILED-response arm: the denial
-        // is on CDKD's OWN principal (the deploying role's `lambda:InvokeFunction`
-        // / `s3:PutObject`), not on the backing function's execution role, so
-        // there is no warm container holding stale credentials to invalidate —
-        // and `UpdateFunctionConfiguration` would need the very permissions that
-        // are still propagating.
-        const delayMs = Math.min(
-          IAM_PROPAGATION_INITIAL_DELAY_MS * Math.pow(2, attempt),
-          IAM_PROPAGATION_MAX_DELAY_MS
-        );
-        this.logger.warn(
-          `Custom resource ${operation} for ${logicalId} hit a transient IAM-authorization error ` +
-            `before the request was delivered (attempt ${attempt + 1}/${this.transientAuthzMaxRetries + 1}): ` +
-            `${this.truncateReason(error instanceof Error ? error.message : String(error))}. ` +
-            `Retrying in ${delayMs / 1000}s with a fresh response URL and RequestId.`
-        );
-        await this.sleep(delayMs);
-        continue;
+
+        // The reason string is the primary signal; the invocation log tail is the
+        // fallback for a handler that swallowed the authz wording (issue #1674).
+        // Only scanned on FAILED — the happy path must not pay for it.
+        const reasonIsAuthz =
+          cfnResponse.Status === 'FAILED' && this.isTransientAuthzFailure(cfnResponse.Reason);
+        // Decoded ONCE and only on the branch that can consume it: both the signal
+        // scan below and the unexplained-failure arm further down read this.
+        const logTail =
+          cfnResponse.Status === 'FAILED' && !reasonIsAuthz
+            ? decodeInvokeLogTail(logResult)
+            : undefined;
+        const logAuthzMatch =
+          logTail === undefined ? undefined : this.findTransientAuthzLogLine(logTail);
+
+        if (
+          cfnResponse.Status === 'FAILED' &&
+          failedResponseRetries < this.transientAuthzMaxRetries &&
+          (reasonIsAuthz || logAuthzMatch !== undefined)
+        ) {
+          failedResponseRetries += 1;
+          this.logger.warn(
+            `Custom resource ${operation} for ${logicalId} returned a transient IAM-authorization FAILED ` +
+              `(attempt ${attempt + 1}/${this.transientAuthzMaxRetries + 1}): ${this.truncateReason(cfnResponse.Reason)}. ` +
+              (logAuthzMatch === undefined
+                ? ''
+                : `The handler's reason carried no authorization wording; the denial was found in the backing function's log: ${this.truncateReason(logAuthzMatch.line)}. `) +
+              `Recycling the backing function's execution environment and retrying so its next cold start picks up the propagated policy.`
+          );
+          await this.recycleBackingFunctionExecEnv(serviceToken, logicalId);
+          continue;
+        }
+
+        // Terminal FAILED whose reason hides an authorization denial: annotate the
+        // reason so the finding reaches every consumer — the create / update
+        // throw, the delete warn-and-continue, and the `deployments/` record
+        // `cdkd events` replays. Surfacing it only in a log line would leave the
+        // post-mortem record pointing at CloudWatch, which is the complaint issue
+        // #1674 filed.
+        //
+        // What is folded in is the matched SIGNAL PHRASE — one of the fixed
+        // `CR_TRANSIENT_AUTHZ_LOG_SIGNALS` strings, authored by cdkd — and NOT the
+        // verbatim log line. Two reviewers independently rejected the verbatim
+        // form and were right: a `Reason` reaches `extractDeploymentEventError`
+        // and is persisted to `deployments/{runId}.jsonl`, which outlives
+        // `cdkd destroy` and is contractually error + metadata, never anything
+        // that may carry secrets. An ordinary handler line such as
+        // `logger.error(f"AccessDenied writing {event}")` is arbitrary handler
+        // stdout, and truncating it to 200 chars bounds the VOLUME, not the
+        // CLASS — 200 chars is precisely where a dumped `ResourceProperties`
+        // begins. The earlier "the reason is already handler-authored text"
+        // defence does not transfer either: a reason is text the handler CHOSE to
+        // hand to CloudFormation, a log line is text it wrote for itself.
+        // The verbatim line still reaches the operator, in the ephemeral warn
+        // above and in the `FunctionError` arm's warn.
+        if (cfnResponse.Status === 'FAILED' && logAuthzMatch !== undefined) {
+          return {
+            ...cfnResponse,
+            Reason:
+              `${cfnResponse.Reason ?? 'Unknown reason'} ` +
+              `[cdkd: the reason carried no authorization wording, but the backing function's ` +
+              `invocation log matched the IAM-authorization signal "${logAuthzMatch.signal}" — ` +
+              `see the cdkd warning for the log line, or the function's CloudWatch log group]`,
+          };
+        }
+
+        // Terminal FAILED that NOTHING explained (issue #1687): the reason carried
+        // no authz wording and the log matched no signal either, so this is the
+        // 404 / traceback / JSON-decode class. #1674 fixed the diagnostic only for
+        // the authz subset; for everything else cdkd had decoded the tail and then
+        // thrown it away, leaving the user with `returned non-zero exit status 1.`
+        // and a trip to CloudWatch — literally the second half of what #1674
+        // reported.
+        //
+        // EPHEMERAL and capped, never folded into the reason: a reason is
+        // persisted to `deployments/{runId}.jsonl`, which outlives `cdkd destroy`
+        // and is contractually free of anything that may carry secrets, and a log
+        // tail is arbitrary handler stdout. That is the same data-class split the
+        // `FunctionError` arm makes — this is its FAILED-path twin.
+        // `reasonIsAuthz` is excluded on purpose: there the reason ALREADY names
+        // the cause (that is the #756 path), so dumping the tail beside it is
+        // noise on a failure that is already explained. The `logAuthzMatch` case
+        // has returned above for the same reason.
+        //
+        // Two things the WORDING has to be honest about, because this arm asserts
+        // a causal link the signal arm does not:
+        //   - cdkd only knows the reason matched no authz signal. The reason may
+        //     be perfectly informative, so this does not claim it was useless.
+        //   - the tail belongs to the DISPATCH invoke. For a handler that works
+        //     inline that IS where the failure happened, but for the CDK Provider
+        //     framework's async pattern the FAILED arrives from `pollS3Response`
+        //     and was authored by a LATER Step-Functions-driven execution, whose
+        //     log this is not. On the signal path that mismatch costs only a
+        //     redundant retry; here it would present an unrelated log as THE
+        //     explanation, so the message names which invocation it came from and
+        //     lets the reader judge.
+        if (logTail !== undefined && hasHandlerLogOutput(logTail)) {
+          this.logger.warn(
+            `Custom resource ${operation} for ${logicalId} failed and cdkd could not classify ` +
+              `the reason. Log tail from the DISPATCH invocation (for the CDK Provider ` +
+              `framework's async pattern the failure may have occurred in a later execution, ` +
+              `whose log this is not):\n` +
+              this.truncateReason(logTail, CR_LOG_TAIL_WARN_MAX_CHARS)
+          );
+        }
+
+        return cfnResponse;
       }
-
-      // The reason string is the primary signal; the invocation log tail is the
-      // fallback for a handler that swallowed the authz wording (issue #1674).
-      // Only scanned on FAILED — the happy path must not pay for it.
-      const reasonIsAuthz =
-        cfnResponse.Status === 'FAILED' && this.isTransientAuthzFailure(cfnResponse.Reason);
-      // Decoded ONCE and only on the branch that can consume it: both the signal
-      // scan below and the unexplained-failure arm further down read this.
-      const logTail =
-        cfnResponse.Status === 'FAILED' && !reasonIsAuthz
-          ? decodeInvokeLogTail(logResult)
-          : undefined;
-      const logAuthzMatch =
-        logTail === undefined ? undefined : this.findTransientAuthzLogLine(logTail);
-
-      if (
-        cfnResponse.Status === 'FAILED' &&
-        attempt < this.transientAuthzMaxRetries &&
-        (reasonIsAuthz || logAuthzMatch !== undefined)
-      ) {
-        this.logger.warn(
-          `Custom resource ${operation} for ${logicalId} returned a transient IAM-authorization FAILED ` +
-            `(attempt ${attempt + 1}/${this.transientAuthzMaxRetries + 1}): ${this.truncateReason(cfnResponse.Reason)}. ` +
-            (logAuthzMatch === undefined
-              ? ''
-              : `The handler's reason carried no authorization wording; the denial was found in the backing function's log: ${this.truncateReason(logAuthzMatch.line)}. `) +
-            `Recycling the backing function's execution environment and retrying so its next cold start picks up the propagated policy.`
-        );
-        await this.recycleBackingFunctionExecEnv(serviceToken, logicalId);
-        continue;
-      }
-
-      // Terminal FAILED whose reason hides an authorization denial: annotate the
-      // reason so the finding reaches every consumer — the create / update
-      // throw, the delete warn-and-continue, and the `deployments/` record
-      // `cdkd events` replays. Surfacing it only in a log line would leave the
-      // post-mortem record pointing at CloudWatch, which is the complaint issue
-      // #1674 filed.
-      //
-      // What is folded in is the matched SIGNAL PHRASE — one of the fixed
-      // `CR_TRANSIENT_AUTHZ_LOG_SIGNALS` strings, authored by cdkd — and NOT the
-      // verbatim log line. Two reviewers independently rejected the verbatim
-      // form and were right: a `Reason` reaches `extractDeploymentEventError`
-      // and is persisted to `deployments/{runId}.jsonl`, which outlives
-      // `cdkd destroy` and is contractually error + metadata, never anything
-      // that may carry secrets. An ordinary handler line such as
-      // `logger.error(f"AccessDenied writing {event}")` is arbitrary handler
-      // stdout, and truncating it to 200 chars bounds the VOLUME, not the
-      // CLASS — 200 chars is precisely where a dumped `ResourceProperties`
-      // begins. The earlier "the reason is already handler-authored text"
-      // defence does not transfer either: a reason is text the handler CHOSE to
-      // hand to CloudFormation, a log line is text it wrote for itself.
-      // The verbatim line still reaches the operator, in the ephemeral warn
-      // above and in the `FunctionError` arm's warn.
-      if (cfnResponse.Status === 'FAILED' && logAuthzMatch !== undefined) {
-        return {
-          ...cfnResponse,
-          Reason:
-            `${cfnResponse.Reason ?? 'Unknown reason'} ` +
-            `[cdkd: the reason carried no authorization wording, but the backing function's ` +
-            `invocation log matched the IAM-authorization signal "${logAuthzMatch.signal}" — ` +
-            `see the cdkd warning for the log line, or the function's CloudWatch log group]`,
-        };
-      }
-
-      // Terminal FAILED that NOTHING explained (issue #1687): the reason carried
-      // no authz wording and the log matched no signal either, so this is the
-      // 404 / traceback / JSON-decode class. #1674 fixed the diagnostic only for
-      // the authz subset; for everything else cdkd had decoded the tail and then
-      // thrown it away, leaving the user with `returned non-zero exit status 1.`
-      // and a trip to CloudWatch — literally the second half of what #1674
-      // reported.
-      //
-      // EPHEMERAL and capped, never folded into the reason: a reason is
-      // persisted to `deployments/{runId}.jsonl`, which outlives `cdkd destroy`
-      // and is contractually free of anything that may carry secrets, and a log
-      // tail is arbitrary handler stdout. That is the same data-class split the
-      // `FunctionError` arm makes — this is its FAILED-path twin.
-      // `reasonIsAuthz` is excluded on purpose: there the reason ALREADY names
-      // the cause (that is the #756 path), so dumping the tail beside it is
-      // noise on a failure that is already explained. The `logAuthzMatch` case
-      // has returned above for the same reason.
-      //
-      // Two things the WORDING has to be honest about, because this arm asserts
-      // a causal link the signal arm does not:
-      //   - cdkd only knows the reason matched no authz signal. The reason may
-      //     be perfectly informative, so this does not claim it was useless.
-      //   - the tail belongs to the DISPATCH invoke. For a handler that works
-      //     inline that IS where the failure happened, but for the CDK Provider
-      //     framework's async pattern the FAILED arrives from `pollS3Response`
-      //     and was authored by a LATER Step-Functions-driven execution, whose
-      //     log this is not. On the signal path that mismatch costs only a
-      //     redundant retry; here it would present an unrelated log as THE
-      //     explanation, so the message names which invocation it came from and
-      //     lets the reader judge.
-      if (logTail !== undefined && hasHandlerLogOutput(logTail)) {
-        this.logger.warn(
-          `Custom resource ${operation} for ${logicalId} failed and cdkd could not classify ` +
-            `the reason. Log tail from the DISPATCH invocation (for the CDK Provider ` +
-            `framework's async pattern the failure may have occurred in a later execution, ` +
-            `whose log this is not):\n` +
-            this.truncateReason(logTail, CR_LOG_TAIL_WARN_MAX_CHARS)
-        );
-      }
-
-      return cfnResponse;
+    } finally {
+      watch.dispose();
     }
   }
 
@@ -1184,15 +1473,34 @@ export class CustomResourceProvider implements ResourceProvider {
    * Classify an error THROWN by one of the provider's own SDK calls as a
    * transient IAM-authorization race worth replaying (issue #2033).
    *
-   * The list is the UNION of cdkd's shared
-   * `IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS` — the same one every other resource
-   * type is classified with, via `withRetry` — and the CR-specific spellings in
-   * {@link CR_TRANSIENT_AUTHZ_SIGNALS} that the shared list does not carry
-   * (`no identity-based policy allows`, `not in the state functionActive`). That
-   * is deliberately WIDER than the FAILED-reason classifier, and the asymmetry
-   * is the whole point: this text was written by AWS about a call CDKD made,
-   * whereas a FAILED reason was written by the user's handler about a call IT
-   * made. See {@link CR_TRANSIENT_AUTHZ_SIGNALS} for the full argument.
+   * The list is cdkd's shared `IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS` — the
+   * same one every other resource type is classified with, via `withRetry` —
+   * plus {@link CR_THROWN_AUTHZ_EXTRA_SIGNALS}, the two CR-specific spellings
+   * the shared list does not carry in any form. That is deliberately WIDER than
+   * the FAILED-reason classifier, and the asymmetry is the whole point: this
+   * text was written by AWS about a call CDKD made, whereas a FAILED reason was
+   * written by the user's handler about a call IT made. See
+   * {@link CR_TRANSIENT_AUTHZ_SIGNALS} for the full argument, including why the
+   * bare `is unable to assume` spelling stays on that side of the line.
+   *
+   * **Two REFUSALS come before any pattern**, and each closes a way for a
+   * single call to be given two retry budgets:
+   *
+   *  - `isMarkedNonRetryable` — cdkd's own declaration that this raising cannot
+   *    succeed on a replay. Both of the provider's already-retried calls stamp
+   *    it: the placeholder `PutObject` after its `withRetry` is exhausted, and
+   *    `waitForBackingLambdaReady` after the SDK waiter has polled for its full
+   *    600s. The marker rather than the wording is what makes the second one
+   *    sound: `@smithy/util-waiter` serializes `observedResponses` into its
+   *    TIMEOUT message and those keys read
+   *    `403: User: … is not authorized to perform: lambda:GetFunction …`, so a
+   *    PERMANENT denial matched every pattern here and a message-shaped fence
+   *    would be one AWS wording change from failing open. It also refuses a
+   *    cdkd-authored REFUSAL whose text happens to carry an authz phrase.
+   *  - the `.cause` chain is WALKED (bounded), matching `isThrottlingError` /
+   *    `isMarkedNonRetryable`. cdkd wraps SDK errors routinely, and issue #2040
+   *    documents the drop-`cause` class in this very directory; a top-level-only
+   *    read would silently un-retry a wrapped propagation denial.
    *
    * **Every pattern in that union is an AUTHORIZATION or REQUEST-VALIDATION
    * rejection, and that is what makes replaying an `Invoke` safe here.** Such a
@@ -1206,9 +1514,29 @@ export class CustomResourceProvider implements ResourceProvider {
    * design, and the caller's `delivered` flag is the second, independent fence.
    */
   private isTransientAuthzThrow(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message === '') return false;
-    return isIamPropagationError(message) || this.isTransientAuthzFailure(message);
+    if (isMarkedNonRetryable(error)) return false;
+
+    let current: unknown = error;
+    for (let depth = 0; depth < CR_ERROR_CAUSE_MAX_DEPTH && current != null; depth++) {
+      // Only an `Error`'s message or a thrown string is text cdkd can
+      // classify. Anything else stringifies to `[object Object]`, which
+      // matches no pattern anyway, so it is skipped rather than coerced.
+      const message =
+        current instanceof Error ? current.message : typeof current === 'string' ? current : '';
+      if (message !== '') {
+        // The shared list is mixed-case and matched verbatim; the CR extras are
+        // lower-cased substrings and matched against a lower-cased message.
+        const lower = message.toLowerCase();
+        if (
+          isIamPropagationError(message) ||
+          CR_THROWN_AUTHZ_EXTRA_SIGNALS.some((p) => lower.includes(p))
+        ) {
+          return true;
+        }
+      }
+      current = (current as { cause?: unknown }).cause;
+    }
+    return false;
   }
 
   /**
@@ -1387,6 +1715,37 @@ export class CustomResourceProvider implements ResourceProvider {
    * deploy engine's per-resource `--resource-timeout` (default 30 min)
    * still bounds the outer Custom Resource provisioning attempt, so
    * this waiter cap is layered defense, not the only timeout.
+   *
+   * **The wrapped failure is `markNonRetryable`d, and its message is NOT the
+   * waiter's** (issue #2033). Both halves are about `@smithy/util-waiter`'s
+   * `checkExceptions`, which serializes its whole result into the `Error`
+   * message:
+   *
+   *  - On TIMEOUT that includes `observedResponses`, whose keys read
+   *    `403: User: … is not authorized to perform: lambda:GetFunction on
+   *    resource: …`. The waiter's generated `checkState` catches EVERY
+   *    exception and returns `RETRY`, so reaching here means a 600s budget was
+   *    already spent — yet the message matched
+   *    {@link CustomResourceProvider.isTransientAuthzThrow} exactly, so a
+   *    PERMANENT `lambda:GetFunction` denial was replayed for 3 x 600s instead
+   *    of 10 minutes, blowing any `--resource-timeout
+   *    AWS::CloudFormation::CustomResource=15m`. The marker is a property of
+   *    the error object, so unlike a wording test it cannot be defeated by AWS
+   *    rephrasing the denial.
+   *  - On the non-TIMEOUT arm (`State: Failed`, i.e. an ENI / VPC failure) the
+   *    serialized result carries `reason` and `final`, which for this waiter
+   *    are the ENTIRE `GetFunction` response — `Configuration.Environment.
+   *    Variables` included. That message reached `ProvisioningError.message`
+   *    and `extractDeploymentEventError` persisted it to
+   *    `deployments/{runId}.jsonl`, a durable store that outlives
+   *    `cdkd destroy` and is contractually "error + metadata only, never
+   *    resource properties, because they may contain secrets"
+   *    (`docs/deployment-events.md`). So this arm interpolates the error NAME
+   *    plus a fixed sentence, and recovers only the function's own
+   *    `State` / `StateReason` / `StateReasonCode` — AWS-authored status
+   *    fields — from the serialized payload. The TIMEOUT / ABORT arms keep
+   *    their message: `observedResponses` keys are status lines built by
+   *    `createMessageFromResponse`, never a response body.
    */
   private async waitForBackingLambdaReady(serviceToken: string, logicalId: string): Promise<void> {
     try {
@@ -1403,10 +1762,13 @@ export class CustomResourceProvider implements ResourceProvider {
         { FunctionName: serviceToken }
       );
     } catch (error) {
-      throw new Error(
-        `Lambda backing custom resource ${logicalId} (${serviceToken}) did not reach a ready state for Invoke: ${
-          error instanceof Error ? error.message : String(error)
-        }`
+      throw markNonRetryable(
+        new Error(
+          `Lambda backing custom resource ${logicalId} (${serviceToken}) did not reach a ready state for Invoke: ${describeWaiterFailure(
+            error
+          )}`,
+          { cause: error }
+        )
       );
     }
   }
@@ -1598,21 +1960,28 @@ export class CustomResourceProvider implements ResourceProvider {
    * Centralising this in one helper makes that invariant impossible to
    * violate at the call sites.
    */
-  private async prepareInvocation(logicalId: string): Promise<{
+  private async prepareInvocation(
+    logicalId: string,
+    watch: InterruptWatch
+  ): Promise<{
     requestId: string;
     responseKey: string;
     responseURL: string;
   }> {
     const requestId = `cdkd-${Date.now()}-${Math.random().toString(36).substring(7)}`;
     const responseKey = this.getResponseKey(requestId);
-    const responseURL = await this.generateResponseURL(responseKey, logicalId);
+    const responseURL = await this.generateResponseURL(responseKey, logicalId, watch);
     return { requestId, responseKey, responseURL };
   }
 
   /**
    * Generate a pre-signed S3 PUT URL for Lambda to send its response
    */
-  private async generateResponseURL(responseKey: string, logicalId: string): Promise<string> {
+  private async generateResponseURL(
+    responseKey: string,
+    logicalId: string,
+    watch: InterruptWatch
+  ): Promise<string> {
     if (!this.responseBucket) {
       // Fallback: return a dummy URL (legacy behavior)
       return 'https://localhost/cfn-response-not-configured';
@@ -1631,25 +2000,40 @@ export class CustomResourceProvider implements ResourceProvider {
     // (0.25s -> 0.5s -> 1s -> 2s ..., 47.75s) every other resource type gets.
     // Until issue #2033 it was single-shot: a `s3:PutObject` denial while the
     // deploying principal's freshly-attached state-bucket policy was still
-    // propagating failed the resource on attempt 0. Its OWN budget is correct
-    // here rather than a share of `transientAuthzMaxRetries`, precisely because
-    // a replay cannot reach the handler — the constraint that forces the
-    // Invoke arm to share.
+    // propagating failed the resource on attempt 0.
+    //
+    // The exhausted throw is `markNonRetryable`d so the invoke loop's own
+    // pre-delivery arm does NOT re-enter with a second budget: without that,
+    // one `s3:PutObject` denial cost 26 retries here x 26 attempts out there,
+    // while this JSDoc claimed the call had "its OWN budget".
+    //
+    // `isInterrupted` / `onInterrupted` are threaded per
+    // `docs/provider-development.md`: a new `withRetry` that omits them leaves
+    // Ctrl-C dead for the whole 47.75s schedule.
     const bucket = this.responseBucket;
-    await withRetry(
-      () =>
-        this.s3Client.send(
-          new PutObjectCommand({
-            Bucket: bucket,
-            Key: responseKey,
-            Body: '',
-            ContentLength: 0,
-            ContentType: 'application/json',
-          })
-        ),
-      `${logicalId} (custom-resource response placeholder)`,
-      { logger: this.logger }
-    );
+    try {
+      await withRetry(
+        () =>
+          this.s3Client.send(
+            new PutObjectCommand({
+              Bucket: bucket,
+              Key: responseKey,
+              Body: '',
+              ContentLength: 0,
+              ContentType: 'application/json',
+            })
+          ),
+        `${logicalId} (custom-resource response placeholder)`,
+        {
+          logger: this.logger,
+          isInterrupted: watch.isInterrupted,
+          onInterrupted: watch.onInterrupted,
+          sleep: customResourceRetryDelays.sleep,
+        }
+      );
+    } catch (error) {
+      throw markNonRetryable(error instanceof Error ? error : new Error(String(error)));
+    }
 
     // Generate pre-signed PUT URL (valid for 2 hours to accommodate async Provider framework
     // patterns where Step Functions may poll isCompleteHandler for up to 1 hour)
@@ -1826,7 +2210,52 @@ export class CustomResourceProvider implements ResourceProvider {
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return customResourceRetryDelays.sleep(ms);
+  }
+
+  /**
+   * Install a SIGINT watch for one custom-resource invocation (issue #2033).
+   *
+   * `docs/provider-development.md` requires a new `withRetry` to thread
+   * `isInterrupted` / `onInterrupted`, and a hand-rolled backoff to be
+   * interruptible for the same reason: without it Ctrl-C is dead for the whole
+   * 47.75s schedule. The provider already had the shape — `pollS3Response`
+   * installs its own handler — so this is that pattern, lifted so the two new
+   * wait sites share one flag and one disposal.
+   *
+   * The caller MUST `dispose()` in a `finally`; a leaked listener would
+   * accumulate one per resource across a deploy.
+   */
+  private startInterruptWatch(logicalId: string): InterruptWatch {
+    let interrupted = false;
+    const handler = (): void => {
+      interrupted = true;
+    };
+    process.on('SIGINT', handler);
+    return {
+      isInterrupted: () => interrupted,
+      onInterrupted: () => new Error(`Custom resource ${logicalId} interrupted by user`),
+      dispose: () => {
+        process.removeListener('SIGINT', handler);
+      },
+    };
+  }
+
+  /**
+   * `sleep` that checks the interrupt watch at most a second apart, mirroring
+   * `withRetry`'s own once-per-second probe. Throws the watch's error when the
+   * user has hit Ctrl-C, so the retry loop unwinds instead of sitting out the
+   * remaining backoff.
+   */
+  private async sleepInterruptibly(ms: number, watch: InterruptWatch): Promise<void> {
+    let remaining = ms;
+    while (remaining > 0) {
+      if (watch.isInterrupted()) throw watch.onInterrupted();
+      const chunk = Math.min(1_000, remaining);
+      await this.sleep(chunk);
+      remaining -= chunk;
+    }
+    if (watch.isInterrupted()) throw watch.onInterrupted();
   }
 
   /**
