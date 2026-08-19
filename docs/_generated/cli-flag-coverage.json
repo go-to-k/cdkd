@@ -1118,6 +1118,7 @@
         "export",
         "export-nested-stack",
         "iam-managed-policy",
+        "iam-propagation-stress",
         "import-attributes",
         "import-auto-mode",
         "import-nested-stack",
