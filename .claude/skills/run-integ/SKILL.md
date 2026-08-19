@@ -77,6 +77,27 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
 
 6. **Verify cleanup**:
    - Check `aws s3 ls s3://<bucket>/cdkd/ --region us-east-1` to confirm no leftover state
+   - **The state bucket is VERSIONED** (`cdkd bootstrap` enables it), so that
+     listing shows nothing while every prior version is still readable: `aws s3
+     rm` writes a DELETE MARKER, it does not remove content. For any fixture that
+     WRITES a secret into state — the redaction / scrub / drift fixtures do it
+     deliberately, to simulate a pre-GHSA binary — "the object is gone" is not
+     "the content is gone", and the difference is a disclosure. Check versions,
+     not just the current object:
+     ```bash
+     # Per state/lock key the fixture touched. Non-empty = content still readable.
+     aws s3api list-object-versions --bucket <bucket> --prefix "cdkd/<Stack>/<region>/state.json" \
+       --query "([Versions, DeleteMarkers][])[?Key=='cdkd/<Stack>/<region>/state.json'].VersionId" \
+       --output text
+     ```
+     Two bugs of this shape shipped on 2026-08-19 and BOTH survived a green run:
+     a fixture's version sweep lived only in `cleanup`, which runs from the trap
+     the success path DISARMS (so on the normal path it never ran — one key had
+     accumulated 30 versions), and the sweep itself iterated with `printf '%s' |
+     tr | while read`, which drops the LAST field because there is no trailing
+     newline. Neither is visible from reading the script; both are obvious the
+     moment you COUNT what S3 holds afterwards. If a fixture seeded a secret,
+     grep the surviving versions for it rather than assuming the sweep worked.
    - Also verify actual AWS resources are gone by checking with stack name prefix filters. Get stack names from the synth output, then for each stack name query AWS APIs filtered by that prefix:
      - `aws iam list-roles --query 'Roles[?contains(RoleName, \`{StackName}\`)].RoleName'`
      - `aws lambda list-functions --region us-east-1 --query 'Functions[?contains(FunctionName, \`{StackName}\`)].FunctionName'`

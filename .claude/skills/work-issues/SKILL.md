@@ -454,6 +454,25 @@ over-claimed. Then ask what makes the recurrence mechanical: if the issue says
 a list must stay in sync with the repo, that is a test, not a sentence asking
 the next reader to remember.
 
+**A mutation probe proves a test discriminates only if it changes the value the
+test READS.** Four vacuous tests shipped across three lanes on 2026-08-19, and
+every one had the same shape: the assertion targeted an observable that the
+BROKEN code also produces — a confluence point of the fixed and the broken path,
+not a discriminator. Two "released the allowance" cases asserted a poll count
+that a second `delete()` never reached, so `.at(-1)` re-read the FIRST call's
+value and the test passed with the release deleted. A "canonicalizes case" test
+asserted "the ambient client was reused", which is also what the reject-unsafe
+arm produces, so deleting the canonicalization left it green. A fourth asserted
+`ambient.ssm !== instances.at(-1)` while `ambient.ssm` is a LAZY getter that
+constructs at assertion time — it was measuring its own side effect.
+
+So when you write the probe, name the discriminator first and assert THAT:
+which client was constructed and with what region, which call the stub actually
+received, what the second invocation saw. "The happy path still happens" is
+almost never it. And run the probe: a test added because a reviewer asked, which
+still passes under the mutation that motivated it, converts an open gap into a
+false assurance and is worse than no test.
+
 You may fan out **one subagent per lane** (disjoint files) to run them
 concurrently — give each agent its worktree path, its allowed files, and an
 explicit "do NOT touch <the other lanes' / other agents' files>; STOP and report
@@ -635,6 +654,25 @@ direct AWS API call before doing anything else.
 the `integ-*` markers — together they unblock `gh pr merge`.
 
 ## 9. Ship: merge → pull → release → rebuild → cleanup
+
+**Before you watch CI, read the PR's merge state** — `/verify-pr` step 3 already
+says why, and the failure mode is silent, so it is worth the pointer here: a PR
+at `mergeable=CONFLICTING state=DIRTY` never fires CI at all, and
+`gh pr checks --watch` on one blocks forever reporting "no checks reported". In a
+fan-out run this is the likeliest PR state you will meet, because peer lanes keep
+merging while yours sits open — on 2026-08-19 both remaining lanes went
+CONFLICTING on `docs/changelog-cdkd.md` between `gh pr create` and the first
+check. Rebase, force-push, and CI fires within ~30s.
+
+The changelog conflicts on nearly every parallel-lane rebase, and a
+commit-by-commit rebase re-conflicts on each one. Since the repo squash-merges,
+flattening first is cheaper and loses nothing: `git reset --soft $(git merge-base
+origin/main HEAD)`, one commit, then rebase — at most one conflict to resolve.
+Resolve `docs/changelog-cdkd.md` by keeping BOTH entries, but never reflexively
+keep-both a SHARED paragraph: `.claude/rules/code-layout.md` conflicted on one
+bullet that both sides had edited, where main's version described this lane's own
+issue as still open. A word-level diff of the two sides is what shows whether you
+are looking at two additions or one contested sentence.
 
 ```bash
 gh pr merge <n> --squash --delete-branch     # squash is the repo's only method
