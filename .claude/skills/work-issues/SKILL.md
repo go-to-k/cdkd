@@ -735,11 +735,12 @@ AWS:
       after the task, so `vp run` forwards it to `vp check`, which rejects it —
       exit **1**, `error: unexpected argument '--no-cache' found`, from a command
       that never ran the check at all. That rc is exactly the signal this
-      paragraph primes you to read as a real failure. `--no-cache` is also
-      **undocumented** — `vp run --help` on vp 0.2.5 lists only `-r`, `-t`, `-w`,
-      `-F`, `--ignore-depends-on`, `-v`, `--last-details` and says nothing about
-      caching — so confirm it still works rather than assuming, the way this
-      paragraph's previous wording did not. Verified twice back to back the same
+      paragraph primes you to read as a real failure. **Read that help through
+      `mise exec`, not the bare binary**: the pinned vp documents both `--cache`
+      and `--no-cache` under `vp run --help`, while the unpinned global `vp` on
+      this machine is an older build whose help lists neither — measuring with it
+      is how this very paragraph first shipped the claim that the flag is
+      undocumented. A stale global CLI reads as a missing feature. Verified twice back to back the same
       day: `vp run --no-cache check` printed zero `cache hit` lines on both runs,
       rc=0 each, and the next plain `vp run check` was straight back to
       `vp run: cache hit, 1.54s saved.` — the flag skips the cache for that run
@@ -1060,10 +1061,12 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
 
   **Before filing into a target repo, resolve the lesson against that repo's
   CURRENT state — the merged FILE, then open PRs, then open issues — and file only
-  what none of the three already carries.** This mirror rule is a duplicate
-  GENERATOR, structurally rather than by bad luck: the chain runs A -> B -> C, so
-  two hops file into the same target repo independently and neither can see the
-  other. All three windows are needed because a lesson MOVES between them while it
+  what none of the three already carries.** The clauses above are what STOPPED
+  this rule generating duplicates -- one session owning all three landings leaves
+  no second hop to collide with -- but the check still earns its place, because a
+  lesson can already be carried by work you did not do: a sibling repo may have
+  found it first, or an earlier run may have landed it. All three windows are
+  needed because a lesson MOVES between them while it
   is being worked — an hour after a rival hop files, its issue is closed and its PR
   is merged, and the file is the only place left that shows the work was done. Each
   hit takes a different action: already in the file, do not file at all; in an open
@@ -1208,10 +1211,12 @@ the run evidence behind it — or "no skill change" plus what held.
   lanes — was claimed, and had to be retracted after the deep read showed the
   legacy-state fixture arm plus export integ its body had already named. The line
   was in the body the whole time; nothing but a grep stood between the run and it.
-- **A mirror issue is a duplicate more often than it looks.** §10-c's three-repo
-  rule files one lesson into one repo from two hops, so resolve it against the file,
-  open PRs and open issues before filing one (§10-c) or claiming one (§3). Which of
-  the three finds it depends only on how long ago the rival hop ran.
+- **A mirror issue may already be carried elsewhere.** Historically §10-c's
+  hop-by-hop mirroring filed one lesson into one repo twice; the same-session
+  three-repo clauses removed that source, but a lesson can still already sit in a
+  target repo because a sibling found it first. Resolve it against the file, open
+  PRs and open issues before filing one (§10-c) or claiming one (§3). Which of the
+  three finds it depends only on how long ago the other work landed.
 - **One lane per cross-cutting file.** `deploy-engine.ts` / `intrinsic-function-resolver.ts`
   / `dag-builder.ts` / `register-providers.ts` absorb most non-trivial fixes; you
   cannot parallelize two issues that both land there. Per-provider fixes ARE

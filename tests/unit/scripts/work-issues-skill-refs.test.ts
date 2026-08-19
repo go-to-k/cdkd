@@ -72,10 +72,17 @@ function proseOnly(markdown: string): string {
   for (let i = 0; i < lines.length; i++) {
     const marker = /^[ \t]*(```+|~~~+)/.exec(lines[i]!)?.[1];
     if (fence === null) {
-      if (marker) fence = marker[0]!.repeat(3);
-      if (marker) lines[i] = blank(lines[i]!);
+      if (marker) {
+        // Keep the marker VERBATIM. Collapsing it to three characters loses the
+        // fence length, and CommonMark closes a fence only on a run of the same
+        // character at least as long -- so a ``` inside a ```` block would end it
+        // early and expose the rest of the file as prose.
+        fence = marker;
+        lines[i] = blank(lines[i]!);
+      }
     } else {
-      const closes = marker !== undefined && marker.startsWith(fence);
+      const closes =
+        marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length;
       lines[i] = blank(lines[i]!);
       if (closes) fence = null;
     }
@@ -162,11 +169,15 @@ describe('work-issues SKILL.md qualifies every issue reference (go-to-k/cdkd#199
     // the stripper legitimately removes are the handful sitting inside code
     // spans / fences. A stripper that blanks a whole region loses far more.
     expect(inRaw, `${MIRRORED_DOC} has almost no qualified refs at all`).toBeGreaterThanOrEqual(40);
+    // Proportional rather than a fixed slack: qualified refs legitimately appear
+    // inside code spans and fences, and every one added there widens the gap. A
+    // fixed tolerance of 3 was already within 1 of failing. What this must catch
+    // is WHOLESALE blanking, which drives the ratio to about zero.
     expect(
       inProse,
       `stripper kept only ${inProse} of ${inRaw} qualified refs -- it is blanking ` +
         `live prose, which would also hide violations`
-    ).toBeGreaterThanOrEqual(inRaw - 3);
+    ).toBeGreaterThanOrEqual(Math.floor(inRaw * 0.8));
   });
 
   it('flags prose but not frontmatter / fences / code spans (self-test)', () => {
@@ -214,11 +225,11 @@ function countTicksOutsideFences(markdown: string): number {
     const marker = /^[ \t]*(```+|~~~+)/.exec(line)?.[1];
     if (fence === null) {
       if (marker) {
-        fence = marker[0]!.repeat(3);
+        fence = marker;
         continue;
       }
       ticks += (line.match(/`/g) ?? []).length;
-    } else if (marker !== undefined && marker.startsWith(fence)) {
+    } else if (marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length) {
       fence = null;
     }
   }
