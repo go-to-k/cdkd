@@ -55,7 +55,14 @@ export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  *   `cdkd destroy` / `cdkd state destroy` AND, since issue
  *   [#1762](https://github.com/go-to-k/cdkd/issues/1762), by the `cdkd deploy`
  *   DELETE branch for a resource removed from the template.
- *   Three producers today: a malformed composite physicalId; a state record
+ *   Since issue [#1819](https://github.com/go-to-k/cdkd/issues/1819) it is ALSO
+ *   emitted for a PARTIAL UPDATE — a replacement whose inner delete left the
+ *   OLD resource alive. That is the one case where this event sits NEXT TO a
+ *   `RESOURCE_SUCCEEDED` for the same logical id rather than replacing it: the
+ *   SUCCEEDED row names the resource that WAS updated, and this row names the
+ *   predecessor that survived (its `physicalId` is the OLD one). The invariant
+ *   still holds — the row this event describes was not destroyed.
+ *   Producers on the DELETE side: a malformed composite physicalId; a state record
  *   missing the id or the property the delete is addressed BY — Lambda layer /
  *   permission, Custom Resource, IAM policy / user-group (issue
  *   [#1770](https://github.com/go-to-k/cdkd/issues/1770)) — both of which issue
@@ -130,7 +137,14 @@ export interface DeploymentEvent {
   logicalId?: string;
   /** Per-resource events: CloudFormation resource type. */
   resourceType?: string;
-  /** RESOURCE_SUCCEEDED: the AWS physical id (when known). */
+  /**
+   * `RESOURCE_SUCCEEDED`: the AWS physical id (when known).
+   *
+   * `RESOURCE_SKIPPED`: the id of the resource that was NOT addressed. For a
+   * partial UPDATE (issue #1819) that is the SURVIVOR's id — the predecessor a
+   * replacement failed to retire — NOT the row's current one, which the
+   * accompanying `RESOURCE_SUCCEEDED` carries.
+   */
   physicalId?: string;
   /** Per-resource events: routing layer (#614), when known. */
   provisionedBy?: 'sdk' | 'cc-api';
@@ -146,7 +160,9 @@ export interface DeploymentEvent {
      * Resources cdkd could NOT address (issue
      * [#1752](https://github.com/go-to-k/cdkd/issues/1752)) — destroy-side, and
      * since issue [#1762](https://github.com/go-to-k/cdkd/issues/1762) the
-     * deploy side's template-DELETE skips too. Omitted when zero.
+     * deploy side's template-DELETE skips too, and since issue
+     * [#1819](https://github.com/go-to-k/cdkd/issues/1819) its partial UPDATEs
+     * (a replacement whose predecessor survived). Omitted when zero.
      * On DESTROY, without it a skip-only run records `result: 'FAILED'` with
      * `deleted: N` and no `failed`, so `cdkd events` would show a failed run
      * naming nothing that failed. On DEPLOY the run is `SUCCEEDED` (the state

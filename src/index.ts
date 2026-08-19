@@ -21,6 +21,7 @@ export type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceUpdateOutcome,
   ResourceDeleteResult,
 } from './types/resource.js';
 export type {

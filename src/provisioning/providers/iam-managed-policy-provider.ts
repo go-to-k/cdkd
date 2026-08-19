@@ -244,6 +244,13 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       );
 
       const createResult = await this.create(logicalId, resourceType, properties);
+      // What the inner delete left behind, if anything (issue #1819). The new
+      // policy already exists, so the replacement cannot be aborted — the
+      // honest outcome is "updated, and the old policy survives", which is what
+      // the update's `'partial'` arm says. Before that channel existed this was
+      // a `logger.warn` and the deploy exited 0 with the old policy alive and
+      // no longer in cdkd state.
+      let orphanReason: string | undefined;
       try {
         const deleteResult = await this.delete(
           logicalId,
@@ -253,32 +260,32 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         );
         // Issue #1778: a SKIP is a non-throwing "I did not address this
         // resource", so it sails straight past the catch below — the one path
-        // that would have told the user the old policy is still there. The new
-        // policy is already created at this point, so the replacement cannot
-        // be aborted and `ResourceUpdateResult` has no skip channel to raise it
-        // on; telling the user, in the same words the failure arm uses, is the
-        // whole remedy available here.
+        // that would have told the user the old policy is still there.
         if (deleteResult?.outcome === 'skipped') {
+          orphanReason = `old managed policy ${physicalId} was not deleted: ${deleteResult.reason}`;
           this.logger.warn(
             `Skipped deleting old managed policy ${physicalId} during replacement: ${deleteResult.reason}. ` +
               `The old policy may be orphaned and require manual cleanup.`
           );
         }
       } catch (error) {
+        orphanReason = `old managed policy ${physicalId} could not be deleted: ${String(error)}`;
         this.logger.warn(
           `Failed to delete old managed policy ${physicalId} during replacement: ${String(error)}. ` +
             `The old policy may be orphaned and require manual cleanup.`
         );
       }
 
-      const result: ResourceUpdateResult = {
+      const base = {
         physicalId: createResult.physicalId,
-        wasReplaced: true,
+        wasReplaced: true as const,
+        ...(createResult.attributes ? { attributes: createResult.attributes } : {}),
       };
-      if (createResult.attributes) {
-        result.attributes = createResult.attributes;
-      }
-      return result;
+      // The old physical id travels in the reason: state now points at the NEW
+      // policy and nothing else downstream still knows the one that survived.
+      return orphanReason !== undefined
+        ? { ...base, outcome: 'partial' as const, reason: orphanReason }
+        : base;
     }
 
     try {

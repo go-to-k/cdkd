@@ -18,6 +18,7 @@ import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend
 import { LockManager } from '../../state/lock-manager.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
+import { updatePartialMessage, updatePartialReason } from '../../deployment/update-outcome.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import {
@@ -2724,9 +2725,23 @@ async function runRevert(
             { logger: { debug: (msg) => logger.debug(maskSecretsInText(msg, secrets)) } }
           );
           totalSucceeded++;
-          logger.info(
-            `  ✓ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted.`
-          );
+          // Issue #1819: the revert landed, but the provider may have left
+          // something behind (a replacement whose old resource survives). The
+          // revert still counts as succeeded — the resource IS at the desired
+          // state — so this annotates the line rather than failing it; dropping
+          // the reason would put `drift --revert` back where the deploy path
+          // was before the channel existed.
+          const revertPartial = updatePartialReason(updateResult);
+          if (revertPartial !== undefined) {
+            logger.warn(
+              `  ✓ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, ` +
+                `${maskSecretsInText(updatePartialMessage(revertPartial), secrets)}`
+            );
+          } else {
+            logger.info(
+              `  ✓ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted.`
+            );
+          }
           // Issue #1644: keep whatever the provider says it ACTUALLY delivered,
           // so a narrowing does not re-surface as drift on the next run.
           //

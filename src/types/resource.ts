@@ -121,9 +121,10 @@ export interface ResourceCreateResult extends EffectivePropertiesResult {
 }
 
 /**
- * Resource update result
+ * The data half of {@link ResourceUpdateResult}, split out only so the outcome
+ * can be a discriminated union intersected onto it.
  */
-export interface ResourceUpdateResult extends EffectivePropertiesResult {
+interface ResourceUpdateResultBase extends EffectivePropertiesResult {
   /** Physical resource ID (may be different if resource was replaced) */
   physicalId: string;
   /** Whether the resource was replaced (new physical ID) */
@@ -131,6 +132,81 @@ export interface ResourceUpdateResult extends EffectivePropertiesResult {
   /** Updated resource attributes */
   attributes?: Record<string, unknown>;
 }
+
+/**
+ * What a provider's `update` actually LEFT BEHIND (issue
+ * [#1819](https://github.com/go-to-k/cdkd/issues/1819)).
+ *
+ * The mirror of {@link ResourceDeleteResult}, and deliberately NOT the same
+ * shape, because the two verbs fail differently:
+ *
+ * - `delete` can decline the whole job, so its union says whether the resource
+ *   is gone (`'deleted'` / `'skipped'`).
+ * - `update` cannot. Four providers implement a REPLACEMENT inside `update()`
+ *   by pairing create and delete (`acm-certificate`, `iam-managed-policy`,
+ *   `iam-role` create-then-delete; `sns-subscription` delete-then-create), and
+ *   by the time the inner delete is attempted the NEW resource already exists.
+ *   Aborting there would strand an untracked resource, which is worse than the
+ *   residue. So the resource under management IS updated — what is in doubt is
+ *   the OLD one the replacement was supposed to retire.
+ *
+ * Hence `'partial'` rather than a second `'skipped'`: the row is not a failure
+ * and must not be counted as one, but it is not a clean `'updated'` either.
+ * Before this existed the honest verdict had nowhere to go, so the three
+ * create-then-delete providers emitted a `logger.warn` and the deploy exited 0
+ * with the old resource alive and no longer in cdkd state — discoverable only
+ * by reading the log.
+ *
+ * `'partial'` means: **the resource named by this result was updated, and
+ * something the update was responsible for retiring was NOT retired.** The
+ * `reason` carries what, in the same short form the destroy path prints.
+ *
+ * Returning no `outcome` means `'updated'`, so the ~80 providers that already
+ * return a bare `{ physicalId, wasReplaced }` need no change.
+ *
+ * There is deliberately no `'skipped'` member: an `update()` that cannot touch
+ * the resource at all throws (`ResourceUpdateNotSupportedError` and friends),
+ * and adding a value no producer emits would be an unreachable enum member
+ * inviting mis-wiring. Widening the union later is a one-line change — the
+ * same call the delete side made when it dropped `'already-absent'`.
+ */
+export type ResourceUpdateOutcome =
+  | {
+      /** The update completed with nothing left behind. Same as omitting it. */
+      readonly outcome?: 'updated';
+      /**
+       * Never set on this arm. Present as `never` so a `reason` handed in
+       * WITHOUT an `outcome: 'partial'` is a compile error rather than a
+       * silently ignored field.
+       */
+      readonly reason?: never;
+    }
+  | {
+      /**
+       * The resource was updated, but something the update was responsible for
+       * retiring survives and is no longer tracked by cdkd.
+       */
+      readonly outcome: 'partial';
+      /**
+       * One line saying what survived, rendered inline on the per-resource
+       * status line and carried into the `RESOURCE_SKIPPED` deployment event.
+       * Providers normally also `logger.warn` the full remediation text; this
+       * is the short form.
+       *
+       * A DISCRIMINATED union rather than an optional `reason`, so "required on
+       * partial" is enforced by the compiler instead of only asserted in a doc
+       * comment — a row reading a bare `partial` with no cause is barely better
+       * than the `updated` it replaced. Same reasoning as
+       * {@link ResourceDeleteResult}.
+       */
+      readonly reason: string;
+    };
+
+/**
+ * Resource update result: the data the caller needs, plus what the update left
+ * behind (see {@link ResourceUpdateOutcome}).
+ */
+export type ResourceUpdateResult = ResourceUpdateResultBase & ResourceUpdateOutcome;
 
 /**
  * What a provider's `delete` actually DID (issue

@@ -1118,9 +1118,12 @@ every time the delegate grows an arm, and it fails LOUDLY on a case the
 delegate considers merely unaddressable. The REPLACE case splits on ORDERING,
 because a skip does not throw and therefore bypasses exactly the `catch` that
 would have told the user: **create-then-delete** (ACM certificate, IAM managed
-policy, IAM role) cannot abort — the new resource exists and
-`ResourceUpdateResult` has no skip channel — so it WARNS in the same orphan
-wording the failure arm uses; **delete-then-create** (SNS subscription) ABORTS
+policy, IAM role, and the API Gateway Resource PathPart replacement) cannot
+abort — the new resource exists — so each WARNS in the same orphan wording the
+failure arm uses AND, since issue
+[#1819](https://github.com/go-to-k/cdkd/issues/1819), reports
+`{ outcome: 'partial', reason }` on its `ResourceUpdateResult` so the deploy
+engine can count and record the survivor; **delete-then-create** (SNS subscription) ABORTS
 with a `ProvisioningError` before creating the replacement, since continuing
 would leave two subscriptions delivering every message twice and that duplicate
 is exactly what the CREATE would add. State the premise as **"the resource was

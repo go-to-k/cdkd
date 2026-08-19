@@ -888,9 +888,13 @@ async function deployCommand(
         logger.info(
           `  Created: ${deployResult.created > 0 ? green(deployResult.created) : gray(deployResult.created)}`
         );
-        logger.info(
-          `  Updated: ${deployResult.updated > 0 ? yellow(deployResult.updated) : gray(deployResult.updated)}`
-        );
+        // Issue #1819: partials are INCLUDED here and broken out below, so the
+        // console and `RUN_FINISHED.counts.updated` report the same number. A
+        // partial IS an update that happened -- excluding it here while the
+        // events store counted it made the two disagree by exactly the partial
+        // count, with nothing on either side saying so.
+        const updatedTotal = deployResult.updated + deployResult.updatePartial;
+        logger.info(`  Updated: ${updatedTotal > 0 ? yellow(updatedTotal) : gray(updatedTotal)}`);
         logger.info(
           `  Deleted: ${deployResult.deleted > 0 ? red(deployResult.deleted) : gray(deployResult.deleted)}`
         );
@@ -899,6 +903,18 @@ async function deployCommand(
         // `Skipped: 0` row would train the reader to ignore it.
         if (deployResult.deleteSkipped > 0) {
           logger.info(`  Skipped (not deleted): ${yellow(deployResult.deleteSkipped)}`);
+        }
+        // Issue #1819: same only-when-non-zero rule and the same reason. Worded
+        // as what SURVIVED rather than as "partial", because the row the user
+        // is looking at was updated fine — the number counts resources the
+        // update was supposed to retire and did not.
+        if (deployResult.updatePartial > 0) {
+          // Worded as a SUBSET of the line above ("of which"), because it is
+          // one: the same resources are counted in both, and a reader adding
+          // the two would otherwise double-count them.
+          logger.info(
+            `    of which left an orphaned predecessor: ${yellow(deployResult.updatePartial)}`
+          );
         }
         logger.info(`  Unchanged: ${gray(deployResult.unchanged)}`);
         logger.info(`  Duration: ${cyan((deployResult.durationMs / 1000).toFixed(2) + 's')}`);
@@ -931,7 +947,12 @@ async function deployCommand(
           stackInfo.stackName,
           {
             created: deployResult.created,
-            updated: deployResult.updated,
+            // Issue #1819: a partial update still UPDATED the resource, unlike a
+            // skipped DELETE which did nothing. Counting it only under
+            // `skipped` would make the durable record say `~0` for a run whose
+            // own RESOURCE_SUCCEEDED events show an UPDATE, so it counts in
+            // BOTH: `updated` for what happened, `skipped` for what did not.
+            updated: deployResult.updated + deployResult.updatePartial,
             deleted: deployResult.deleted,
             // Issue #1762: the run-level counterpart of the summary row above.
             // `cdkd events` renders `RunCounts.skipped` as `⚠N`, and destroy
@@ -939,7 +960,15 @@ async function deployCommand(
             // skipped a DELETE records a run summary that says only what it
             // DID delete, so the durable post-mortem understates the run in
             // exactly the direction this change exists to correct.
-            ...(deployResult.deleteSkipped > 0 && { skipped: deployResult.deleteSkipped }),
+            // Issue #1819 rides the SAME run-level counter as #1762's skipped
+            // DELETE: `cdkd events` renders `RunCounts.skipped` as `⚠N`, and
+            // both cases mean "cdkd did not address a resource it was
+            // responsible for". Splitting them at the run level would need a
+            // schema field for a number the per-resource events already carry
+            // — each survivor has its own RESOURCE_SKIPPED with the reason.
+            ...(deployResult.deleteSkipped + deployResult.updatePartial > 0 && {
+              skipped: deployResult.deleteSkipped + deployResult.updatePartial,
+            }),
           },
           deployResult.durationMs
         );

@@ -366,6 +366,78 @@ describe('IAMRoleProvider', () => {
   });
 
   describe('update', () => {
+    // Issue #1819: a RoleName change is immutable, so the provider replaces --
+    // create the new role, then delete the old. When that delete fails the old
+    // role survives untracked, and before the outcome channel that was a bare
+    // logger.warn with the deploy exiting 0.
+    it('reports partial when the old role cannot be deleted during a replacement', async () => {
+      mockSend.mockResolvedValueOnce({
+        Role: { RoleName: 'new-role', Arn: 'arn:aws:iam::0:role/new-role', RoleId: 'r2' },
+      }); // create()
+      mockSend.mockRejectedValueOnce(new Error('DeleteConflict: role has attached entities'));
+
+      const result = await provider.update(
+        'L',
+        'old-role',
+        'AWS::IAM::Role',
+        { RoleName: 'new-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } },
+        { RoleName: 'old-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } }
+      );
+
+      // The row succeeded: the new role exists and is what state points at.
+      expect(result.wasReplaced).toBe(true);
+      expect(result.outcome).toBe('partial');
+      // Names the OLD physical id -- the only place it still exists once state
+      // has been re-pointed.
+      expect(result.reason).toContain('old-role');
+      expect(result.reason).toContain('DeleteConflict');
+    });
+
+    // The #1778 SKIP class: non-throwing, so it sails past the catch that would
+    // otherwise have reported it.
+    it('reports partial when the inner delete SKIPS rather than throws', async () => {
+      mockSend.mockResolvedValueOnce({
+        Role: { RoleName: 'new-role', Arn: 'arn:aws:iam::0:role/new-role', RoleId: 'r2' },
+      });
+      vi.spyOn(provider, 'delete').mockResolvedValue({
+        outcome: 'skipped',
+        reason: 'malformed physicalId in state — no delete issued',
+      });
+
+      const result = await provider.update(
+        'L',
+        'old-role',
+        'AWS::IAM::Role',
+        { RoleName: 'new-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } },
+        { RoleName: 'old-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } }
+      );
+
+      expect(result.outcome).toBe('partial');
+      expect(result.reason).toContain('old-role');
+      expect(result.reason).toContain('no delete issued');
+    });
+
+    // The clean control: a replacement whose delete SUCCEEDS must carry no
+    // outcome, or every replacement would render and count as a partial.
+    it('reports no outcome when the old role is deleted cleanly', async () => {
+      mockSend.mockResolvedValueOnce({
+        Role: { RoleName: 'new-role', Arn: 'arn:aws:iam::0:role/new-role', RoleId: 'r2' },
+      }); // create()
+      mockSend.mockResolvedValue({}); // the delete()'s cleanup calls all succeed
+
+      const result = await provider.update(
+        'L',
+        'old-role',
+        'AWS::IAM::Role',
+        { RoleName: 'new-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } },
+        { RoleName: 'old-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } }
+      );
+
+      expect(result.wasReplaced).toBe(true);
+      expect(result.outcome).toBeUndefined();
+      expect(result.reason).toBeUndefined();
+    });
+
     it('sends UpdateRoleCommand with Description="" so AWS clears the existing description (not silently dropped by truthy gate)', async () => {
       // Regression for the `cdkd drift --revert` "✓ reverted but next
       // drift re-detects the same drift" symptom on IAM Role

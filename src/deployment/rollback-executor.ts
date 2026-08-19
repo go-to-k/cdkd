@@ -82,6 +82,7 @@ import {
   isNameCooldownError,
   isRecreateRetryableError,
 } from './retryable-errors.js';
+import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
 
 /**
@@ -1537,7 +1538,28 @@ async function replaySingle(
           secrets,
           previousState.properties
         );
-        logger.info(`  Rollback: ${op.logicalId} restored successfully`);
+        // Issue #1819: the rollback restored the resource, but the provider may
+        // have left something behind (a replacement whose old resource
+        // survives). Saying "restored successfully" over that is the same
+        // silence the channel exists to end — and a rollback is exactly when a
+        // user is least able to go looking for an untracked resource.
+        const rollbackPartial = updatePartialReason(revertResult);
+        if (rollbackPartial !== undefined) {
+          logger.warn(
+            `  Rollback: ${op.logicalId} restored, ${updatePartialMessage(rollbackPartial)}`
+          );
+          // Deliberately NOT `result.warnings++`, matching this file's own
+          // precedent for the stateful reverse-replacement advisory: warnings
+          // map to `PartialFailureError` and exit 2, and the rollback op ITSELF
+          // succeeded -- the resource is back at its previous state. Reporting
+          // a fully-successful rollback as "skipped/unrecoverable" would be
+          // false, and inventing an exit-code rule here for "left something
+          // behind" is the decision issue #1960 exists to make across deploy
+          // and rollback together. The survivor is still announced on the warn
+          // line and, unlike a log line, durably on the event below.
+        } else {
+          logger.info(`  Rollback: ${op.logicalId} restored successfully`);
+        }
         await afterOp?.(op.logicalId);
         ctx.recordEvent?.({
           eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
@@ -1546,6 +1568,11 @@ async function replaySingle(
           logicalId: op.logicalId,
           resourceType: op.resourceType,
           ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+          // Carry the survivor into the DURABLE record. A rollback runs during
+          // an already-failing deploy, so a log line is the least likely thing
+          // a user still has; without this the orphan's id dies with the
+          // terminal.
+          ...(rollbackPartial !== undefined && { reason: rollbackPartial }),
         });
         return;
       }
@@ -1821,7 +1848,20 @@ export async function replayFailedOperations(
             secrets,
             prev.properties
           );
-          logger.info(`  Rollback: ${op.logicalId} reverted successfully`);
+          // Issue #1819: the FOURTH `provider.update()` call site -- the
+          // `--revert-failed` arm. Missing it left `cdkd rollback
+          // --revert-failed` printing "reverted successfully" over a stranded
+          // resource: the exact pre-#1819 silence, on the command a user
+          // reaches for when a deploy has already gone wrong.
+          const revertFailedPartial = updatePartialReason(revertFailedResult);
+          if (revertFailedPartial !== undefined) {
+            logger.warn(
+              `  Rollback: ${op.logicalId} reverted, ${updatePartialMessage(revertFailedPartial)}`
+            );
+            // Not counted, for the same reason as the revert arm above.
+          } else {
+            logger.info(`  Rollback: ${op.logicalId} reverted successfully`);
+          }
           await options.afterOp?.(op.logicalId);
           ctx.recordEvent?.({
             eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
@@ -1830,6 +1870,7 @@ export async function replayFailedOperations(
             logicalId: op.logicalId,
             resourceType: op.resourceType,
             ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+            ...(revertFailedPartial !== undefined && { reason: revertFailedPartial }),
           });
           break;
         }
