@@ -634,6 +634,44 @@ and `feedback_umbrella_issue_row_can_be_already_fixed`.
 
 User-facing writeup in [docs/testing.md](../../docs/testing.md).
 
+### A fixture that greps cdkd's OWN output must fail loudly when the format drifts
+
+A `verify.sh` that measures something by grepping the deploy log is a CONSUMER
+of a string the same PR may be CHANGING. When the producer's wording moves, the
+grep matches nothing — and a zero match is indistinguishable from "the condition
+did not occur", which is exactly the reading a measurement fixture prints.
+
+This is the sibling of "A checker must prove it sees its input" below, one layer
+out: there the parser reads repo FILES, here it reads the binary's own runtime
+output, so the input can change without any file the fixture names being touched.
+
+Found 2026-08-19 on issue [#2018](https://github.com/go-to-k/cdkd/issues/2018).
+The fixture parsed `Ns slept so far` out of the retry's debug line. PR review
+then corrected that label to `Ns backoff through this attempt` — the string was
+wrong, so the fix was right — and the fixture's three greps silently became 0,
+`0s`, and 0. Its own output would have read `the race did not fire this run -
+IAM had already propagated`: a confident, wrong CAUSE printed over a broken
+parse. Nothing in the unit suite could catch it (the fixture is a shell script),
+and the run still exits 0.
+
+Two rules follow:
+
+- **Carry a sentinel that distinguishes "absent" from "unparsed."** Pick a
+  second, independent marker in the same line that is stable across the wording
+  you are likely to change, and hard-fail when it is present while the parsed
+  marker is not. The #2018 fixture greps `attempt [0-9]*/26` — the propagation
+  attempt limit appears only on those lines — and exits 1 naming the drift when
+  those lines exist but the measured marker does not. A sentinel keyed on the
+  SAME substring you are parsing is worthless; it has to fail independently.
+- **Re-run the fixture after ANY edit to a string it greps**, including one that
+  arrives from code review late in the PR. The relabel above landed after the
+  measuring run had already passed, so the green run on record was measuring the
+  OLD binary. This is the fixture-facing half of
+  `feedback_integ_after_final_rebase` / `feedback_review_fixes_stale_integ_marker`:
+  those cover the marker going stale, this covers the ASSERTIONS going blind
+  while the marker is still fresh, since a `verify.sh` edit is in no integ gate's
+  digest scope.
+
 ### A checker must prove it sees its input
 
 When writing a lint or codegen that SCANS files (verify.sh scripts, templates,

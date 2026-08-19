@@ -1088,6 +1088,22 @@ cdkd includes built-in retry logic for CREATE operations, with the backoff shape
 - **Throttling and other transient errors** (rate limits, a resource still leaving `Pending`, an async delete releasing a dependency): exponential backoff `1s->2s->4s->8s->8s->8s->8s->8s`, capped at 8s, up to 8 retries (47s of sleep). Hammering a throttled API is counter-productive, so this class deliberately backs off hard.
 - **IAM propagation** (`Invalid IAM Instance Profile`, `cannot be assumed`, `not authorized to perform`, `Policy Error: PrincipalNotFound`, ...): a denser `0.25s->0.5s->1s->2s->2s...` schedule over 26 retries (47.75s of sleep). This class resolves in single-digit seconds — cdkd creates an IAM entity and consumes it ~1-3s later, faster than IAM propagates — so cdkd re-probes roughly every 2s instead of idling through a 4s or 8s step. The total window is at least as long as the generic one, so nothing that used to recover still recovers.
 
+  If the window is not enough, cdkd says so rather than silently re-raising the AWS error. A propagation retry that gives up prints one line at the DEFAULT log level (`--verbose` additionally prefixes a timestamp and `WARN`):
+
+  ```text
+  MyFunction: gave up after 26 IAM-propagation retries over 47.75s of propagation backoff (the full propagation budget) - The role defined for the function cannot be assumed by Lambda.
+  ```
+
+  That line is how you tell the cases apart without reading cdkd's source:
+
+  - **`(the full propagation budget)` present** — the retry ran to exhaustion and IAM genuinely took longer than 47.75s in that account. Re-running usually succeeds; if it recurs, please [open an issue](https://github.com/go-to-k/cdkd/issues) with the line, since the budget's shape is then the thing that needs changing. Note the retry COUNT on such a line can be below 26: a throttle mid-race consumes an attempt without counting as a propagation retry, so the budget can run out at 25 or fewer.
+  - **No budget note, and a low count** — something terminal ended the race early: a non-retryable error such as an explicit deny, or an error cdkd's classifier could not read. The seconds figure tells you how much of the 47.75s was actually spent, which is what distinguishes "IAM was too slow" from "the retry was cut short".
+  - **No such line at all** — the retry never engaged, and there are two reasons, which need different responses. Either the failure was never classified as propagation (a missing pattern in `retryable-errors.ts`, worth reporting), OR the failing resource is served by a provider that opts out of the outer retry by design — `Custom::*` / `AWS::CloudFormation::CustomResource` and `AWS::CloudFormation::Stack` set `disableOuterRetry`, so their `create()` is invoked exactly once. A custom resource's Lambda HANDLER is an ordinary `AWS::Lambda::Function` and does retry; the custom resource itself does not. Check which of the two the failing logical id is before filing.
+
+  The seconds count PROPAGATION backoff only, so an interleaved throttle's own wait is excluded — the figure is meant to be compared against the 47.75s budget, not read as total elapsed time.
+
+  Add `--verbose` to see each attempt with its running total (`attempt 15/26, 25.75s backoff through this attempt`), which is what turns "it failed" into a measurement.
+
 CC API polling uses its own `1s->2s->4s->8s->10s cap` schedule. If rate limit errors persist, consider reducing parallelism or staggering deployments.
 
 **2. Use SDK Provider**

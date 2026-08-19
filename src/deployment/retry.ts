@@ -16,6 +16,21 @@ import {
 
 export interface RetryLogger {
   debug(message: string): void;
+  /**
+   * Issue #2018: the one line that survives a run without `--verbose`.
+   *
+   * OPTIONAL because a caller may need to TRANSFORM the message rather than
+   * forward it -- `drift.ts`'s revert threads a masking `debug` so a resolved
+   * secret quoted back by an AWS error cannot reach the log (issue #1914), and
+   * a required `warn` would have been silently satisfied by an unmasked
+   * `logger.warn`. A caller that omits it loses only the give-up summary; the
+   * retry behavior is identical either way.
+   *
+   * Do NOT describe every production caller as threading a real `Logger` -- an
+   * earlier revision of this comment did, and it was false for exactly the
+   * masking caller above.
+   */
+  warn?(message: string): void;
 }
 
 /**
@@ -147,6 +162,15 @@ const defaultSleep = (ms: number): Promise<void> =>
  * by `markNonRetryable`, which is rethrown ahead of either, so a deliberate
  * cdkd refusal cannot be turned back into a retry by a custom classifier
  * (issue #1778).
+ *
+ * REPORTING (issue #2018). A propagation sequence that gives up emits ONE
+ * `warn` line naming how many retries it spent and how much of the budget it
+ * slept, and the per-attempt `debug` lines carry the running total. Before
+ * this, an exhausted retry rethrew the raw AWS error and nothing in a
+ * default-verbosity run distinguished "cdkd retried for 47.75s" from "cdkd
+ * has no retry for this at all" — which is why a field report of exactly this
+ * failure could only be diagnosed by reading the source and diffing two
+ * releases. Neither counter feeds a control decision; they are reporting only.
  */
 export async function withRetry<T>(
   operation: () => Promise<T>,
@@ -179,6 +203,17 @@ export async function withRetry<T>(
   // schedule it is supposed to be a superset of. A sequence that never sees
   // a propagation error keeps the generic 8.
   let sawPropagation = false;
+  // Issue #2018: the retry's own work has to be READABLE from a normal run.
+  // Both counters are for reporting only -- neither feeds a control decision,
+  // so a mis-count can never change how long the loop runs.
+  //
+  // `propagationSleptMs` accumulates the INTENDED delay rather than measured
+  // wall-clock: it is the budget the schedule spent, which is the number the
+  // 47.75s cap is expressed in and therefore the one a reader compares against
+  // it. Measured elapsed would additionally carry each attempt's API latency
+  // and make "did we reach the cap?" unanswerable from the line.
+  let propagationRetries = 0;
+  let propagationSleptMs = 0;
 
   for (let attempt = 0; attempt <= attemptCeiling; attempt++) {
     try {
@@ -210,6 +245,57 @@ export async function withRetry<T>(
       }
       const attemptLimit = sawPropagation ? IAM_PROPAGATION_MAX_RETRIES : maxRetries;
       if (!retryable || attempt >= attemptLimit) {
+        // Issue #2018: a propagation sequence that gives up must SAY so, at
+        // the default log level. Until this line the exhaustion was entirely
+        // silent -- the user saw only the raw AWS sentence ("The role defined
+        // for the function cannot be assumed by Lambda."), identical to what a
+        // build with no retry at all would print. That is what made the
+        // reported failure undiagnosable from the outside: establishing that
+        // cdkd had retried at all took reading the source and diffing two
+        // releases, and the three candidate explanations (budget too short /
+        // budget exhausted / the retry never engaged) are indistinguishable
+        // without these two numbers.
+        //
+        // `warn`, not `debug`: the whole point is that it survives a run with
+        // no `--verbose`. The per-attempt lines below stay at debug -- 27 of
+        // them is a log flood, while this summary is one line.
+        //
+        // Gated on having actually retried, so the overwhelmingly common case
+        // (a non-propagation error failing fast on attempt 0) prints nothing.
+        if (propagationRetries > 0) {
+          // Whether the BUDGET ran out is a property of the loop's own exit
+          // condition, NOT of the retry count. Keying it on
+          // `propagationRetries >= IAM_PROPAGATION_MAX_RETRIES` was wrong in
+          // exactly the case the `sawPropagation` latch above exists for: one
+          // interleaved throttle classifies non-propagation, so the counter
+          // reaches 25 while the sequence still exhausts all 26 attempts, and
+          // the summary would report a genuine exhaustion as "something else
+          // ended it" -- inverting the branch the reader uses to decide
+          // whether the budget needs widening. False positives were never
+          // possible; this false NEGATIVE was.
+          const budgetExhausted = sawPropagation && attempt >= attemptLimit;
+          // The seconds figure counts PROPAGATION backoff only, so a mixed
+          // sequence's throttle waits are deliberately excluded -- the number
+          // exists to be compared against the 47.75s propagation budget, and
+          // folding in an 8s throttle step would make that comparison
+          // meaningless. Saying "of propagation backoff" rather than a bare
+          // "over Ns" is what keeps it from reading as total elapsed time.
+          const summary =
+            `${logicalId}: gave up after ${propagationRetries} IAM-propagation ` +
+            `${propagationRetries === 1 ? 'retry' : 'retries'} over ` +
+            `${(propagationSleptMs / 1000).toFixed(2)}s of propagation backoff` +
+            `${budgetExhausted ? ' (the full propagation budget)' : ''} - ${message}`;
+          // Best-effort: this is a diagnostic about an error we are ABOUT to
+          // rethrow, so a throwing logger must not replace it. Losing the
+          // summary degrades to the pre-fix behavior; losing the error loses
+          // the diagnosis entirely. Mirrors the try/catch `deploy-engine.ts`
+          // puts around its own best-effort side effects.
+          try {
+            opts.logger?.warn?.(summary);
+          } catch {
+            // ignore -- the original error below is what matters
+          }
+        }
         throw error;
       }
 
@@ -219,8 +305,27 @@ export async function withRetry<T>(
             IAM_PROPAGATION_MAX_DELAY_MS
           )
         : Math.min(initialDelayMs * Math.pow(2, attempt), maxDelayMs);
+      // Issue #2018: the cumulative figure is what makes a single line
+      // answerable on its own ("how far into the 47.75s budget was this?").
+      // Reading it off the attempt number instead requires the reader to know
+      // and re-sum the schedule, which is the inference this issue asked to
+      // replace with a measurement.
+      //
+      // The line is printed BEFORE the wait it announces, so any figure on it
+      // is either behind by one delay or includes the pending one. It includes
+      // it -- "through this attempt" says so -- because a reader comparing
+      // against the 47.75s cap wants the total this attempt reaches, and a
+      // trailing "slept so far" would have claimed 0.25s slept while nothing
+      // had been slept yet.
+      const backoffThroughThisAttemptMs = propagation
+        ? propagationSleptMs + delay
+        : propagationSleptMs;
       opts.logger?.debug(
-        `  ⏳ Retrying ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${attemptLimit}) - ${message}`
+        `  ⏳ Retrying ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${attemptLimit}${
+          propagation
+            ? `, ${(backoffThroughThisAttemptMs / 1000).toFixed(2)}s backoff through this attempt`
+            : ''
+        }) - ${message}`
       );
 
       // Interruptible sleep: check for SIGINT every second during delay.
@@ -229,6 +334,13 @@ export async function withRetry<T>(
           throw opts.onInterrupted ? opts.onInterrupted() : new Error('Interrupted');
         }
         await sleep(Math.min(1000, delay - waited));
+      }
+
+      // Advanced only after the wait COMPLETED, so an interrupt mid-sleep
+      // cannot inflate the summary with a wait that never happened.
+      if (propagation) {
+        propagationRetries++;
+        propagationSleptMs = backoffThroughThisAttemptMs;
       }
     }
   }

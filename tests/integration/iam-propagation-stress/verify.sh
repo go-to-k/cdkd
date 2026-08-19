@@ -116,6 +116,13 @@ report_deploy_failure() {
   echo "This integ is a race detector: a deploy failure is a REAL cdkd finding." >&2
   echo "Below is the deploy output + per-resource state so triage is trivial." >&2
   echo "" >&2
+  # Surfaced FIRST and separately because this run deploys with `--verbose`
+  # (issue #2018): the tail below is then dominated by per-attempt debug lines,
+  # and the one line that actually says how the retry ended would scroll past.
+  echo "---- IAM-propagation give-up summaries (issue #2018) ----" >&2
+  grep 'IAM-propagation retr' "${DEPLOY_LOG:-/dev/null}" >&2 2>/dev/null \
+    || echo "(none - no propagation sequence gave up; the failure is elsewhere)" >&2
+  echo "" >&2
   echo "---- deploy output (tail) ----" >&2
   tail -n 60 "${DEPLOY_LOG:-/dev/null}" >&2 2>/dev/null || true
   echo "" >&2
@@ -169,18 +176,86 @@ trap 'rm -f "${DEPLOY_LOG}"; (exit 130); cleanup; exit 130' INT
 trap 'rm -f "${DEPLOY_LOG}"; (exit 143); cleanup; exit 143' TERM
 
 deploy_rc=0
+# `--verbose` is load-bearing here, not diagnostic noise (issue #2018): the
+# per-attempt retry lines are debug-level, and they are the ONLY place the
+# attempt count and the slept budget appear. Without them this fixture can
+# report that the deploy passed but not how close it came to failing -- which
+# is exactly the inference the issue asked to replace with a measurement.
+DEPLOY_STARTED_AT=$(date +%s)
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --verbose \
   --yes 2>&1 | tee "${DEPLOY_LOG}" || deploy_rc=$?
 # `tee` masks the real exit code; recover it from PIPESTATUS[0] (the node side).
 if [ "${deploy_rc}" -eq 0 ]; then
   deploy_rc="${PIPESTATUS[0]}"
 fi
+DEPLOY_ELAPSED=$(( $(date +%s) - DEPLOY_STARTED_AT ))
+
+# --- Phase 1a-measure: MEASURE the propagation race (issue #2018) ----------
+# Recorded whether the deploy passed or failed, and printed BEFORE the
+# pass/fail branch below, because the numbers are the point of this fixture:
+# a run that passes has not proved the race is absent, only that this run won
+# it. What is worth comparing across runs is how deep into the 47.75s budget
+# the retry actually went.
+#
+# Every number here is READ OUT of the deploy log rather than inferred from
+# the schedule. `|| true` on each grep: `grep -c` exits 1 on zero matches,
+# which is a legitimate result here, and `set -e` would otherwise abort.
+#
+# SCOPE: the counts below are for the WHOLE DEPLOY, summed across every
+# resource that raced. The 26 / 47.75s budget is PER RESOURCE, so the total
+# retry count is deliberately NOT compared against 26 — only the per-line
+# deepest figure is comparable to 47.75s, and the exhaustion verdict comes
+# from the binary's own summary line rather than from either number.
+RETRY_LINES=$(grep -c 'backoff through this attempt' "${DEPLOY_LOG}" 2>/dev/null || true)
+RETRY_LINES=${RETRY_LINES:-0}
+DEEPEST_BACKOFF=$(grep -o '[0-9.]*s backoff through this attempt' "${DEPLOY_LOG}" 2>/dev/null \
+  | grep -o '^[0-9.]*' | sort -g | tail -1 || true)
+# Any give-up (may be a terminal non-retryable error partway through)...
+GAVE_UP=$(grep -c 'IAM-propagation retr' "${DEPLOY_LOG}" 2>/dev/null || true)
+GAVE_UP=${GAVE_UP:-0}
+# ...versus the budget actually running out, which the binary states outright.
+# Deriving this from GAVE_UP instead reported "budget exhausted: YES" for a
+# sequence that died on an UnknownError after 5.75s of a 47.75s budget - the
+# exact conflation this fixture exists to measure away.
+EXHAUSTED=$(grep -c 'the full propagation budget' "${DEPLOY_LOG}" 2>/dev/null || true)
+EXHAUSTED=${EXHAUSTED:-0}
+
+# Sentinel: a propagation-classified retry line is the only place the 26-attempt
+# limit appears, so if those lines exist while the parsed marker does not, the
+# LOG FORMAT drifted and every number above is silently zero. Without this the
+# fixture would print "the race did not fire this run" - an actively wrong cause
+# for a broken grep, and the failure mode that makes a measurement worthless.
+FORMAT_PROBE=$(grep -c 'attempt [0-9]*/26' "${DEPLOY_LOG}" 2>/dev/null || true)
+FORMAT_PROBE=${FORMAT_PROBE:-0}
+if [ "${FORMAT_PROBE}" -gt 0 ] && [ "${RETRY_LINES}" -eq 0 ]; then
+  echo "FAIL: deploy log shows ${FORMAT_PROBE} propagation retry line(s) but none matched" >&2
+  echo "      'backoff through this attempt' - the retry log format changed and this" >&2
+  echo "      fixture's measurement is parsing nothing. Update verify.sh's greps." >&2
+  exit 1
+fi
+
+echo "==> [measure] IAM-propagation race (issue #2018)"
+echo "[measure] deploy wall clock:          ${DEPLOY_ELAPSED}s"
+echo "[measure] propagation retries:        ${RETRY_LINES} (all resources combined)"
+echo "[measure] deepest single-resource:    ${DEEPEST_BACKOFF:-0}s of the 47.75s per-resource budget"
+echo "[measure] sequences that gave up:     ${GAVE_UP}"
+echo "[measure] of those, budget exhausted: ${EXHAUSTED}"
+if [ "${GAVE_UP}" -gt 0 ] && [ "${EXHAUSTED}" -eq 0 ]; then
+  echo "[measure] NOTE: a sequence gave up WITHOUT exhausting its budget - it hit a"
+  echo "[measure]       terminal or unclassifiable error mid-race. See the WARN line."
+fi
+if [ "${RETRY_LINES}" -eq 0 ]; then
+  echo "[measure] NOTE: the race did not fire this run - IAM had already propagated."
+  echo "[measure]       This is NOT evidence the bug is absent; it is one sample."
+fi
 
 if [ "${deploy_rc}" -ne 0 ]; then
   report_deploy_failure
   echo "FAIL: cdkd deploy exited ${deploy_rc} - a role-consuming resource likely raced IAM propagation (see triage above)" >&2
+  echo "FAIL: measured ${RETRY_LINES} propagation retries; deepest reached ${DEEPEST_BACKOFF:-0}s of the 47.75s per-resource budget" >&2
   exit 1
 fi
 
