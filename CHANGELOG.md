@@ -1,3 +1,10 @@
+## [0.284.11](https://github.com/go-to-k/cdkd/compare/v0.284.10...v0.284.11) (2026-08-19)
+
+
+### Bug Fixes
+
+* **provisioning:** give the custom resource's pre-delivery throw its own dense retry budget ([#2062](https://github.com/go-to-k/cdkd/issues/2062)) ([b30c225](https://github.com/go-to-k/cdkd/commit/b30c225edaec9d28bae313f8c9150efbf69fa299))
+
 ## [0.284.10](https://github.com/go-to-k/cdkd/compare/v0.284.9...v0.284.10) (2026-08-19)
 
 
