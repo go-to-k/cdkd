@@ -83,10 +83,20 @@ cleanup() {
   # still listed at cleanup time and gone moments later. A warning that fires
   # on every clean run is worse than no warning, because the next reader learns
   # to ignore it.
-  local leftover sweep_rc attempt
+  # `tr`, not `${STACK,,}`: the lowercase expansion needs bash >= 4. Under the
+  # macOS system bash (3.2, still the default `/bin/bash`) it fails at RUNTIME
+  # with `bad substitution` -- `bash -n` accepts it, so the problem is invisible
+  # to a syntax check. It sits inside the EXIT trap, after the two hand
+  # retirements, so it would abort the trap's tail and leave the script exiting
+  # on the substitution error instead of the run's real status: a passing integ
+  # reported as failed, or a failing one losing its reason. This is the only
+  # such expansion in the repo's integ scripts, so nothing else establishes a
+  # bash-4 floor for them.
+  local leftover sweep_rc attempt stack_lc
+  stack_lc=$(printf '%s' "${STACK}" | tr '[:upper:]' '[:lower:]')
   for attempt in 1 2 3 4 5; do
     leftover=$(aws acm list-certificates --region "${REGION}" \
-      --query "CertificateSummaryList[?contains(DomainName, 'cdkd-integ-${STACK,,}')].CertificateArn" \
+      --query "CertificateSummaryList[?contains(DomainName, 'cdkd-integ-${stack_lc}')].CertificateArn" \
       --output text 2>&1) && sweep_rc=0 || sweep_rc=$?
     # Stop early on a probe ERROR too: retrying an AccessDenied five times just
     # delays the same verdict, and the tri-state branch below reports it.

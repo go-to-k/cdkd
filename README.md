@@ -918,10 +918,13 @@ resource(s) were left unaddressed` warning instead, and records
 `result: 'FAILED'` in `cdkd events` (matching destroy). **A pipeline grepping
 the log for the success string breaks on this independently of the exit code.**
 
-Pass `--allow-unaddressed` to exit `0` instead. It suppresses **only the exit
-code** — the summary rows, the per-resource warnings, the switched banner and
-the `FAILED` run record are all unchanged, because they record what happened
-rather than what the operator chose to tolerate. The flag exists because the
+Pass `--allow-unaddressed` to exit `0` instead. The summary rows, the
+per-resource warnings, the `⚠` banner and the `FAILED` run record all survive
+it, because they record what happened rather than what the operator chose to
+tolerate. It does suppress the run-level error message along with the exit code
+— that message is the only place the "delete it by hand" remedy appears — and
+the banner's closing sentence changes to say the flag was passed. See
+[docs/cli-reference.md](docs/cli-reference.md#--allow-unaddressed-deploy). The flag exists because the
 orphaned-predecessor case can be temporarily unfixable (an ACM replacement
 blocked on `DescribeCertificate.InUseBy` clears once the consumer finishes
 updating). Prefer it over a shell `|| [ $? -eq 2 ]` wrapper, which would also

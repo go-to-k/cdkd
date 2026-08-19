@@ -1029,7 +1029,7 @@ async function deployCommand(
         // `recordRunFailed` is deliberately NOT used: it carries error metadata
         // and no counts, and `skipped` is the only figure in the summary that
         // says a resource survived.
-        if (stackUnaddressed > 0) runResult = 'FAILED';
+        if (!options.dryRun && stackUnaddressed > 0) runResult = 'FAILED';
         recordRunOutcome(
           eventRecorder,
           stackInfo.stackName,
@@ -1069,6 +1069,17 @@ async function deployCommand(
         // the plain `return` the pre-lock version of the check used).
         if (deployError instanceof DeployCancelledError) {
           cancelledStacks++;
+          // `runResult` stays SUCCEEDED, so `finalize` below records this stack
+          // as a successful run in the events index. That is a KNOWN exemption
+          // from this issue's "the record must not contradict the run" rule,
+          // not an oversight: `DeploymentRunResult` has only SUCCEEDED and
+          // FAILED, and neither describes a stack the user deliberately
+          // declined -- FAILED would newly report user-initiated cancellations
+          // as failures, which is its own mis-report. Recording the honest
+          // answer needs a third value on the event schema, which is a schema
+          // change and out of scope here. Pre-existing behavior, unchanged;
+          // what this PR adds is the run-level message that now SAYS how many
+          // stacks never deployed, so the omission is no longer silent.
           return;
         }
         // Issue [#808] — record the run-level failure event before

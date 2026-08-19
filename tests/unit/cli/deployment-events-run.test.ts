@@ -103,6 +103,32 @@ describe('deployment-events run-level bracket helpers (#808)', () => {
     expect(index.runs[0].result).toBe('SUCCEEDED');
   });
 
+  it('persists a FAILED result with its skipped count (issue #1960)', async () => {
+    // Pins the `result` PARAMETER at the layer that actually writes it. Every
+    // other call in this file passes 'SUCCEEDED', and the deploy-side tests
+    // `vi.mock` this module -- so they assert what deploy PASSES, never what
+    // the store RECORDS. Hard-coding `result: 'SUCCEEDED'` inside
+    // `recordRunOutcome` passed the entire unit suite before this case existed.
+    const { backend, objects } = makeFakeBackend();
+    const recorder = startRunRecorder({
+      backend,
+      stackName: 'S',
+      region: 'us-east-1',
+      command: 'deploy',
+      runId: 'r-unaddressed',
+    })!;
+    recordRunOutcome(recorder, 'S', 'FAILED', { created: 0, updated: 1, deleted: 0, skipped: 1 }, 7);
+    await recorder.finalize('FAILED');
+
+    const finished = eventsOf(objects, 'r-unaddressed').find(
+      (e) => e.eventType === 'RUN_FINISHED'
+    )!;
+    expect(finished.result).toBe('FAILED');
+    // The survivor count must ride along: it is the only figure in the summary
+    // that says a resource is still alive, and `recordRunFailed` drops it.
+    expect(finished.counts).toEqual({ created: 0, updated: 1, deleted: 0, skipped: 1 });
+  });
+
   it('failure path: RUN_FINISHED carries FAILED + extracted error metadata (no properties)', async () => {
     const { backend, objects } = makeFakeBackend();
     const recorder = startRunRecorder({

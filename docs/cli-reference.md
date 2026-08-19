@@ -1185,12 +1185,21 @@ cdkd deploy MyStack                       # exit 2 if either row is non-zero
 cdkd deploy MyStack --allow-unaddressed   # exit 0 for the same run
 ```
 
-The flag suppresses **only the exit code**. The summary rows, each resource's
-own warning (which names the cause and the remedy), the switched banner, the
-`skipped` figure in `cdkd events` and the `RUN_FINISHED` `result: 'FAILED'`
-record are all emitted either way, so a run that used the flag still says — in
-its log and in its durable post-mortem — that a resource survived. The events
-store records what happened, not what the operator chose to tolerate.
+The flag changes the **exit code**, and with it the run-level error message.
+What survives it: the summary rows, each resource's own warning (naming its
+cause and remedy), the switched banner, the `skipped` figure in `cdkd events`,
+and the `RUN_FINISHED` `result: 'FAILED'` record. So a run that used the flag
+still says — in its log and in its durable post-mortem — that a resource
+survived. The events store records what happened, not what the operator chose
+to tolerate.
+
+What it DOES take away, beyond the exit code: the `PartialFailureError` message
+is not raised at all, and that message is the only place the run-level
+remediation text appears ("a skipped DELETE keeps its state record… a
+replacement's survivor is not tracked — delete it by hand") along with the count
+of stacks that were cancelled and never deployed. The banner's closing sentence
+also differs. If you set the flag in CI, the per-resource warnings remain your
+route to the cause.
 
 It exists because the orphaned-predecessor case has a legitimate
 not-yet-fixable window. The commonest instance is an ACM certificate
@@ -2785,12 +2794,15 @@ unaddressed no longer claims to have completed successfully:
 
 ```text
 ✓ Deployment completed successfully                                                  # exit 0
-⚠ Stack X deployed, but N resource(s) were left unaddressed — they may still exist in AWS. This deploy will exit 2 (pass --allow-unaddressed to exit 0).   # exit 2
+⚠ Stack X deployed, but N resource(s) were left unaddressed — they may still exist in AWS. This counts toward a non-zero exit (2 unless something else fails; pass --allow-unaddressed to exit 0).   # exit 2
 ⚠ Stack X deployed, but N resource(s) were left unaddressed — they may still exist in AWS. Exiting 0 because --allow-unaddressed was passed.               # exit 0
 ```
 
-The warning is printed in all three cases where a resource survived; only the
-exit code differs. See [`--allow-unaddressed` (deploy)](#--allow-unaddressed-deploy)
+Note the second line does not promise exit `2`: in a multi-stack run a later
+stack can still FAIL, and a real failure takes precedence with exit `1`.
+
+The warning is printed in both cases where a resource survived — the second and
+third lines above; only the exit code differs between them. See [`--allow-unaddressed` (deploy)](#--allow-unaddressed-deploy)
 for which two cases produce it and how they differ in recoverability.
 
 ### Skipped resources on destroy (issue #1752)

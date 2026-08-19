@@ -245,6 +245,9 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
 
   afterEach(() => {
     vi.clearAllMocks();
+    // Vitest reuses a worker across files; leaving this set would silently
+    // disable the live renderer for whatever runs next in the same process.
+    delete process.env['CDKD_NO_LIVE'];
   });
 
   it('exits 0 on a clean deploy that leaves nothing unaddressed', async () => {
@@ -359,19 +362,42 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
   });
 
   it('reports the per-stack count, not the run total, in each stack banner', async () => {
-    // The banner reads `stackUnaddressed`; swapping it for the run-level
-    // `totalUnaddressed` still passes every other case, but would print
-    // "0 resource(s) were left unaddressed" over a CLEAN stack in a mixed run.
+    // TWO DIRTY stacks with DIFFERENT counts, deliberately. The obvious shape
+    // -- one dirty stack plus one clean one -- cannot falsify the interpolation:
+    // a clean stack never enters the warn arm at all (the guard reads
+    // `stackUnaddressed`), so swapping the interpolated value for the run-level
+    // `totalUnaddressed` would still print nothing over it and the assertion
+    // would pass. With 1 and 2, the run total is 3 and neither banner may say
+    // it.
     synthStacks.value = [makeStack('StackA'), makeStack('StackB')];
     engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
-    // StackB is clean and must keep its success banner.
+    engineResults.set('StackB', { deleteSkipped: 0, updatePartial: 2 });
+    const code = await runDeploy(['--all', '--yes']);
+    expect(code).toBe(2);
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('1 resource(s) were left unaddressed');
+    expect(warned).toContain('2 resource(s) were left unaddressed');
+    expect(warned).not.toContain('3 resource(s) were left unaddressed');
+  });
+
+  it('keeps a clean stack in a mixed run on its success banner', async () => {
+    // The other half of the mixed-run case: the dirty stack must not drag the
+    // clean one's verdict with it.
+    synthStacks.value = [makeStack('StackA'), makeStack('StackB')];
+    engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
     const code = await runDeploy(['--all', '--yes']);
     expect(code).toBe(2);
     const printed = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(printed).toContain('Deployment completed successfully');
-    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(warned).toContain('1 resource(s) were left unaddressed');
-    expect(warned).not.toContain('0 resource(s) were left unaddressed');
+  });
+
+  it('does not count unaddressed resources under --dry-run', async () => {
+    // The engine hard-codes both counters to 0 on its dry-run returns, so this
+    // pins the CLI-side guard rather than the engine's invariant: a future dry
+    // run that PREVIEWED "would be skipped" must not make --dry-run exit 2.
+    engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 1 });
+    const code = await runDeploy(['--yes', '--dry-run']);
+    expect(code).toBeUndefined();
   });
 
   it("records the run as FAILED in the events store, not SUCCEEDED", async () => {
