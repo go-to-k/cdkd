@@ -122,6 +122,11 @@ git -C .claude/worktrees/<w> log --oneline -1     # its own commit subject → t
 git -C .claude/worktrees/<w> show --stat HEAD      # the files that commit touches
 ```
 
+A worktree whose tip is still on `main` has committed nothing yet, which makes it look
+like residue and is exactly when it is most likely to be a lane writing right now. §9's
+owner probes apply here too — read them before concluding a worktree is idle, including
+the caveat that none of them can establish ABSENCE of an owner.
+
 Read any "working on this" comments already on candidate issues. **A file another
 agent is editing is OFF-LIMITS.** In cdkd the naturally-disjoint work is
 per-resource-type: each provider lives in its own file
@@ -485,6 +490,56 @@ git -C .claude/worktrees/<branch> rebase origin/main                    # clean 
 
 Re-run gates, `git push --force-with-lease`.
 
+**A clean merge is not evidence that there was no collision.** Two lanes editing the
+SAME file merge without a conflict whenever their hunks fall in disjoint SECTIONS, so
+§3's one-lane-per-file rule fails **silently** — unlike the rebase conflict above,
+which at least announces itself. After a merge that lands in a file another PR
+touched in the same window, grep `main` for a marker string from EACH side before
+believing both survived:
+
+```bash
+git fetch origin main
+# Grep what LANDED, not your working copy: in a lane worktree the two differ, and a
+# grep of <file> passes happily while main is missing the lines you are checking for.
+git show origin/main:<file> | grep -cF "<a distinctive phrase from YOUR change>"
+git show origin/main:<file> | grep -cF "<a distinctive phrase from THEIR change>"
+```
+
+Do NOT reach for `git pull` here. `pull.rebase` is unset in this repo, so in a lane
+worktree on its feature branch it aborts on divergent branches, and configured the
+other way it MERGES main into your branch — the opposite of the rebase prescribed at
+the top of this section, in a squash-only repo; in the shared main tree it fails
+outright on any dirty file. `git fetch` + `git show` reads main without touching a
+working tree.
+
+`-F` is load-bearing: prose markers are full of regex metacharacters (`.`, `[`, `*`),
+and without it a marker silently fails to match and reports the false lost-content
+alarm this whole check exists to prevent. It is the double quotes, not `-F`, that
+handle apostrophes — and a marker containing a double quote needs different quoting
+again, so prefer a phrase with neither. Remember `grep -c` exits 1 on zero matches —
+the very case you are hunting — so do not chain the two greps.
+
+Source YOUR marker from your own commit and THEIR marker from THEIR merge commit
+(`git show "$(gh pr view <n> --json mergeCommit -q .mergeCommit.oid):<file>"`), never
+from a draft you read earlier — a lane routinely rewords a sentence between the draft
+you saw and the commit it merges, so a marker lifted from the draft comes back 0 and
+reads as lost content. When one does come back 0, settle it from your lane worktree
+with `diff <(git show origin/main:<file>) <file>`: the lines YOUR commit removed
+should be exactly the ones you meant to replace.
+
+Read the two counts asymmetrically: whichever lane merged LAST has its marker read
+back out of what is now the tip, so that arm is tautological. The load-bearing one is
+the EARLIER-merged lane's marker — two `1`s are one real confirmation plus one
+tautology, never two independent ones.
+
+On 2026-08-19 go-to-k/cdkd#1984 and go-to-k/cdkd#1985 both rewrote
+`.claude/skills/work-issues/SKILL.md` and merged 2m46s apart (04:27:29Z and
+04:30:15Z). Both survived — not because §3 held, but because their hunks landed in
+different sections, the closest pair about 25 lines apart. Design would have
+serialized them into one lane; this was luck. The lane that added this paragraph then
+ran the check against go-to-k/cdkd#2000 and got a false 0 from a draft-sourced marker,
+which is why the sourcing rule above is stated.
+
 ## 8. Verify before merge (`/verify-pr` + `/run-integ`)
 
 Run `/verify-pr`. It layers CI status, docs consistency, AWS-resource cleanup, code
@@ -593,6 +648,11 @@ still merges it when the files are disjoint.
 git checkout main && git pull origin main    # bring the merges local
 ```
 
+That `git pull` fails outright if the shared main tree is dirty, which it routinely is
+when another lane's write lands there (§7). It fails loudly rather than silently, so
+read the error rather than working around it — and do NOT restore the offending path:
+it is another session's uncommitted work, and `dirty-path-restore-gate` refuses it.
+
 **Release** is automated (semantic-release via `.github/workflows/`) — merging a
 `fix:` / `feat:` commit to `main` produces a `chore(release): <ver> [skip ci]` bump
 commit on `main` a minute or two later. Poll for it:
@@ -610,14 +670,48 @@ this repo's `dist/cli.js` (see `/use-cdkd`), so **a fresh `vp run build` on upda
 vp run build
 ```
 
-**Remove every worktree you created** (a left-behind worktree is the silent
-residue of this flow):
+**Remove every worktree YOU created** — and only those (a left-behind worktree is
+the silent residue of this flow):
 
 ```bash
 git worktree remove .claude/worktrees/<branch>   # --force if it refuses on artifacts
 git worktree prune
-git worktree list                                 # only the main checkout should remain
+git worktree list                                # every worktree THIS run added is gone
 ```
+
+The closing check is "every worktree THIS run added is gone", **never "only the
+main checkout remains"** — that phrasing points the run at a peer's live lane.
+`git worktree list` cannot say whose a worktree is, and a tip already on `main` is
+not evidence of a finished lane: a worktree branched from `origin/main` carries that
+exact tip until its first commit. Before removing one you do not recognise, identify
+its owner — here the DIRECT signal comes first, because `worktree-owner-gate.sh`
+records one:
+
+```bash
+cat "$(git -C <worktree> rev-parse --git-dir)/session-owner"  # "<session id> <UTC claim>"
+git -C <worktree> status --porcelain                          # uncommitted work = live
+gh pr list --state all --head <its branch>                    # read the STATE column
+```
+
+Read every one of those as evidence of LIFE only — none can establish absence. An
+**absent** `session-owner` is NO signal, never "unowned": the gate claims a worktree
+only on `Edit` / `Write` / `NotebookEdit` and fails open without a session id, so a
+lane driven entirely through Bash never writes one. (Measured 2026-08-19: the lane
+that wrote this paragraph had no sentinel while it was live.) A **MERGED** PR is not
+proof of death either — its owner may still be inside §9 or §10. And the stamp is
+CLAIM time, not last activity, so an age past the gate's 12h TTL is equally what a
+long-running live session looks like.
+
+A claim younger than that TTL means the owner is **presumed LIVE** — and never infer
+that an owning session is dead, since a live session and a dead one produce identical
+evidence (`.claude/rules/hooks.md`, and the 2026-08-10 trespass it records). When in
+doubt leave the worktree and say so in the wrap.
+
+On 2026-08-19 this run met exactly that shape:
+`.claude/worktrees/1987-mirror-duplicate-detection` sat at `ae283ee4`, identical to
+`main`'s tip, with no commits of its own, no pushed branch and no PR — so every probe
+short of the sentinel read it as residue. It was a peer session's live lane, holding
+uncommitted edits to this same file under a `session-owner` claim 12 minutes old.
 
 Finally, comment the outcome on each issue if it was not auto-closed. Do NOT stop
 here: what the run taught you is still only in this session's context, so go on to
@@ -787,7 +881,7 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
 
 ### 10-d. Ship it like any other change
 
-Every worktree is gone by §9 and you are back on `main`, where
+Every worktree THIS run added is gone by §9 and you are back on `main`, where
 `main-tree-edit-gate` blocks editing a tracked file. So the retro gets its own
 worktree:
 
@@ -819,8 +913,8 @@ pnpm install                  # worktrees have no node_modules
   heuristic — a wrong rule here propagates into every future session — so take the
   tier the heuristic gives and do not argue it down.
 - **Merge it before the wrap report, then remove the worktree** (`git worktree
-  remove .claude/worktrees/<name> && git worktree prune` — §9 ends with "only the
-  main checkout should remain", and §10 must not undo that). This is
+  remove .claude/worktrees/<name> && git worktree prune` — §9's closing check is
+  "every worktree THIS run added is gone", and §10 must not undo that). This is
   `Session-fit: now` on the criterion that deferring leaves main self-inconsistent:
   the skill would keep telling the next run to do the thing this run just proved it
   gets wrong. Its evidence also dies with this session's context, and leaving the PR
