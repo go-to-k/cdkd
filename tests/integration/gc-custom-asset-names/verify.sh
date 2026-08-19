@@ -651,12 +651,24 @@ fi
 echo "    OK: stack + state gone; content-addressed asset object persists (by design)"
 
 echo "==> Phase 4b: cdkd bootstrap --destroy (names read from the marker, no --force)"
+# --region is spelled UPPER-CASED here on purpose (issue #1995), and it costs
+# nothing: the marker was written by Phase 1 under the canonical spelling, so
+# this run exercises the canonicalize-then-probe path against real AWS through
+# the teardown this fixture already performs. Pre-fix it found no marker at
+# `cdkd-bootstrap/US-EAST-1.json`, printed "nothing to delete", exited 0 — and
+# left the bucket and repository alive, which the three assert_gone probes
+# below now catch.
+#
+# The OTHER arm — a marker written under a raw upper-cased region — cannot be
+# reached from here without a second real bootstrap cycle, which is not worth a
+# whole extra bucket + repo + push; it is covered by unit test instead
+# ("destroys the storage a RAW upper-cased marker names, and deletes THAT key").
 node "${LOCAL_DIST}" bootstrap --destroy --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" --yes
+  --region "${REGION_UPPER}" --yes
 
 assert_gone "custom asset bucket ${ASSET_BUCKET} still exists after bootstrap --destroy" aws s3api head-bucket --bucket "${ASSET_BUCKET}"
 assert_gone "custom container repo ${CONTAINER_REPO} still exists after bootstrap --destroy" aws ecr describe-repositories --repository-names "${CONTAINER_REPO}" --region "${REGION}"
 assert_gone "bootstrap marker ${MARKER_KEY} still exists after bootstrap --destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"
-echo "    OK: custom bucket gone, custom repo gone, marker gone — zero residue"
+echo "    OK: custom bucket gone, custom repo gone, marker gone — zero residue (teardown driven by an UPPER-cased --region, issue #1995)"
 
 echo "[verify] PASS — custom-named asset storage bootstrap, publish-to-custom-bucket, gc dry-run/delete precision (incl. the ECR and S3 case-varied host arms and the bucket-name-exactness control), and marker-driven teardown all verified"

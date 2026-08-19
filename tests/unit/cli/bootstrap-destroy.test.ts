@@ -8,6 +8,7 @@ const {
   mockQuestion,
   stateBackendMocks,
   callLog,
+  loggerMocks,
 } = vi.hoisted(() => {
   const callLog: string[] = [];
   return {
@@ -22,6 +23,17 @@ const {
       deleteRawObjects: vi.fn(),
     },
     callLog,
+    // Hoisted rather than per-`getLogger()` so what the command PRINTS is
+    // assertable: with the two-probe marker read (issue #1995) the
+    // nothing-to-delete message is the user's only signal about which keys
+    // were looked at.
+    loggerMocks: {
+      setLevel: vi.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    },
   };
 });
 
@@ -31,12 +43,8 @@ vi.mock('../../../src/utils/bucket-region-client.js', () => ({
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
-    setLevel: vi.fn(),
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+    ...loggerMocks,
+    child: () => loggerMocks,
   }),
 }));
 
@@ -97,9 +105,11 @@ import {
   DeleteBucketCommand,
   CreateBucketCommand,
 } from '@aws-sdk/client-s3';
-import { DeleteRepositoryCommand } from '@aws-sdk/client-ecr';
+import { DeleteRepositoryCommand, ECRClient } from '@aws-sdk/client-ecr';
 import { createBootstrapCommand } from '../../../src/cli/commands/bootstrap.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
+import { AwsClients } from '../../../src/utils/aws-clients.js';
+import { applyRoleArnIfSet } from '../../../src/utils/role-arn.js';
 
 const ACCOUNT = '123456789012';
 const REGION = 'us-east-1';
@@ -117,9 +127,13 @@ const MARKER_BODY = JSON.stringify({
 });
 
 async function runDestroy(extraArgs: string[] = []): Promise<void> {
+  await runDestroyInRegion(REGION, extraArgs);
+}
+
+async function runDestroyInRegion(region: string, extraArgs: string[] = []): Promise<void> {
   const cmd = createBootstrapCommand();
   cmd.exitOverride();
-  await cmd.parseAsync(['--destroy', '--region', REGION, ...extraArgs], { from: 'user' });
+  await cmd.parseAsync(['--destroy', '--region', region, ...extraArgs], { from: 'user' });
 }
 
 function s3CommandNames(): string[] {
@@ -552,6 +566,123 @@ describe('cdkd bootstrap --destroy', () => {
       await expect(runDestroy(['--yes', '--no-assets'])).rejects.toThrow(
         /--no-assets cannot be combined with --destroy/
       );
+      expectNothingDeleted();
+    });
+  });
+  // Issue #1995, the second instance of one defect. `--region US-EAST-1` used
+  // the raw spelling for BOTH the AWS clients and the marker key, so this
+  // command found no marker and reported "nothing to delete" — while the asset
+  // bucket and the ECR repository stayed alive and billable. That is strictly
+  // worse than gc's version of the same bug, which merely collects nothing.
+  describe('--region case (issue #1995)', () => {
+    const REGION_UPPER = REGION.toUpperCase();
+    const RAW_MARKER_KEY = `cdkd-bootstrap/${REGION_UPPER}.json`;
+
+    /** Every bootstrap-marker key the command probed, in order. */
+    function markerProbes(): string[] {
+      return stateBackendMocks.getRawObject.mock.calls
+        .map((c) => c[0] as string)
+        .filter((key) => key.startsWith('cdkd-bootstrap/'));
+    }
+
+    function infoLine(needle: string): string | undefined {
+      return loggerMocks.info.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.includes(needle));
+    }
+
+    it('uses fixture spellings that actually differ', () => {
+      expect(REGION_UPPER).not.toBe(REGION);
+      expect(RAW_MARKER_KEY).not.toBe(MARKER_KEY);
+    });
+
+    it('canonicalizes the region before building EVERY AWS client', async () => {
+      await runDestroyInRegion(REGION_UPPER, ['--yes']);
+
+      const awsClientRegions = vi.mocked(AwsClients).mock.calls.map((c) => c[0]?.region);
+      expect(awsClientRegions.length).toBeGreaterThanOrEqual(1);
+      for (const r of awsClientRegions) expect(r).toBe(REGION);
+
+      const ecrRegions = vi.mocked(ECRClient).mock.calls.map((c) => c[0]?.region);
+      expect(ecrRegions.length).toBeGreaterThanOrEqual(1);
+      for (const r of ecrRegions) expect(r).toBe(REGION);
+
+      // Happens before any client is built and takes its own region argument.
+      expect(vi.mocked(applyRoleArnIfSet)).toHaveBeenCalledWith(
+        expect.objectContaining({ region: REGION })
+      );
+    });
+
+    it('DESTROYS the storage a canonical marker names, from an UPPER-cased --region', async () => {
+      // The load-bearing arm. Pre-fix this run printed "nothing to delete" and
+      // left both resources alive; the assertion is therefore that the teardown
+      // really happened, not merely that a marker was found.
+      await runDestroyInRegion(REGION_UPPER, ['--yes']);
+
+      expect(s3Inputs(DeleteBucketCommand.name)).toEqual([
+        { Bucket: ASSET_BUCKET, ExpectedBucketOwner: ACCOUNT },
+      ]);
+      const ecrCall = mockEcrSend.mock.calls[0]![0] as {
+        input: { repositoryName: string; force: boolean };
+      };
+      expect(ecrCall.input).toEqual({ repositoryName: CONTAINER_REPO, force: true });
+      expect(stateBackendMocks.deleteRawObjects).toHaveBeenCalledWith([MARKER_KEY]);
+    });
+
+    it('destroys the storage a RAW upper-cased marker names, and deletes THAT key', async () => {
+      // The pre-#1820 population: `AWS_REGION=US-EAST-1 cdkd bootstrap` wrote
+      // the marker un-folded. Two properties matter here, and the second is the
+      // one the two-probe read introduces: the marker must be FOUND at the raw
+      // key, and the teardown must delete the key it was actually read from.
+      // Deleting the canonical key instead is a silent no-op that leaves a
+      // marker pointing at storage that no longer exists.
+      stateBackendMocks.getRawObject.mockImplementation(async (key: string) =>
+        key === RAW_MARKER_KEY ? MARKER_BODY : null
+      );
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === 'cdkd-bootstrap/') return [RAW_MARKER_KEY];
+        if (prefix === '') return [RAW_MARKER_KEY];
+        return [];
+      });
+
+      await runDestroyInRegion(REGION_UPPER, ['--yes']);
+
+      expect(markerProbes()).toEqual([MARKER_KEY, RAW_MARKER_KEY]);
+      expect(s3Inputs(DeleteBucketCommand.name)).toEqual([
+        { Bucket: ASSET_BUCKET, ExpectedBucketOwner: ACCOUNT },
+      ]);
+      expect(stateBackendMocks.deleteRawObjects).toHaveBeenCalledWith([RAW_MARKER_KEY]);
+      expect(infoLine('Deleted bootstrap marker')).toContain(RAW_MARKER_KEY);
+    });
+
+    it('does not probe a second key when the region is already canonical', async () => {
+      stateBackendMocks.getRawObject.mockResolvedValue(null);
+
+      await runDestroy(['--yes']);
+
+      expect(markerProbes()).toEqual([MARKER_KEY]);
+      expect(infoLine('No bootstrap marker for region')).toContain(`(${MARKER_KEY})`);
+      expectNothingDeleted();
+    });
+
+    it('names BOTH probed keys when neither holds a marker', async () => {
+      stateBackendMocks.getRawObject.mockResolvedValue(null);
+
+      await runDestroyInRegion(REGION_UPPER, ['--yes']);
+
+      expect(markerProbes()).toEqual([MARKER_KEY, RAW_MARKER_KEY]);
+      expect(infoLine('No bootstrap marker for region')).toContain(
+        `(${MARKER_KEY}, ${RAW_MARKER_KEY})`
+      );
+      expectNothingDeleted();
+    });
+
+    it('blames the key the marker was actually READ from when it is corrupt', async () => {
+      stateBackendMocks.getRawObject.mockImplementation(async (key: string) =>
+        key === RAW_MARKER_KEY ? '{ not json' : null
+      );
+
+      await expect(runDestroyInRegion(REGION_UPPER, ['--yes'])).rejects.toThrow(RAW_MARKER_KEY);
       expectNothingDeleted();
     });
   });

@@ -16,6 +16,7 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
   BOOTSTRAP_MARKER_PREFIX,
   getBootstrapMarkerKey,
@@ -273,15 +274,35 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
   logger.debug('Options:', options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call (create-side parity).
-  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+  await applyRoleArnIfSet({
+    roleArn: options.roleArn,
+    region: canonicalizeRegion(options.region),
+  });
+
+  // Issue #1995, same split as `cdkd gc` (`src/cli/commands/gc.ts`) — this
+  // command had the identical defect, with a WORSE failure direction. gc's
+  // version merely collects nothing; here `--region US-EAST-1` found no marker
+  // and reported "nothing to delete" while the asset bucket and the ECR
+  // repository stayed alive, so a user who believes they tore their storage
+  // down keeps paying for it.
+  //
+  // - The CLIENTS need the region CANONICAL: SDK endpoint resolution is
+  //   case-sensitive (`derivePartitionAndUrlSuffix`'s note measures `CN-NORTH-1`
+  //   resolving to the COMMERCIAL suffix).
+  // - The marker KEY needs BOTH spellings probed, canonical first. `cdkd
+  //   bootstrap` still derives its own region verbatim (issue #1820), so
+  //   `AWS_REGION=US-EAST-1 cdkd bootstrap` really wrote
+  //   `cdkd-bootstrap/US-EAST-1.json`; a fold-and-stop read would MISS that
+  //   marker where the pre-fold read HIT it, which for THIS command means
+  //   refusing to destroy storage that exists.
+  const rawRegion = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const region = canonicalizeRegion(rawRegion);
 
   const awsClients = new AwsClients({
-    ...(options.region && { region: options.region }),
+    ...(options.region && { region }),
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);
-
-  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
 
   // Account id is needed for the default bucket name AND for the
   // ExpectedBucketOwner pin on every S3 call, so always resolve it.
@@ -308,9 +329,29 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
     //    asset bucket / repo names (never recompute the naming convention;
     //    custom-name compatibility, issue #1011).
     const markerKey = getBootstrapMarkerKey(region);
+    const rawMarkerKey = getBootstrapMarkerKey(rawRegion);
     let markerBody: string | null;
+    // Which key the body actually came from — `parseBootstrapMarker` names it
+    // in its error messages, so a malformed marker must point at the file that
+    // really was read.
+    let resolvedMarkerKey = markerKey;
     try {
       markerBody = await stateBackend.getRawObject(markerKey);
+      if (markerBody === null && rawMarkerKey !== markerKey) {
+        // Second probe: the un-folded spelling an upper-cased `cdkd bootstrap`
+        // may have written (see the `rawRegion` note above). Skipped entirely
+        // when the region was already canonical, so the common path still costs
+        // exactly one read.
+        markerBody = await stateBackend.getRawObject(rawMarkerKey);
+        if (markerBody !== null) {
+          resolvedMarkerKey = rawMarkerKey;
+          logger.debug(
+            `Bootstrap marker found at the un-folded key '${rawMarkerKey}' ` +
+              `(none at '${markerKey}') — an upper-cased region was used at ` +
+              `'cdkd bootstrap' time.`
+          );
+        }
+      }
     } catch (error) {
       if ((error as { name?: string }).name === 'NoSuchBucket') {
         // Never-bootstrapped account: no state bucket means no marker, no
@@ -325,8 +366,9 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
     }
     let marker: BootstrapMarker | undefined;
     if (markerBody === null) {
+      const probed = rawMarkerKey === markerKey ? markerKey : `${markerKey}, ${rawMarkerKey}`;
       logger.info(
-        `No bootstrap marker for region '${region}' (${markerKey}) — asset storage ` +
+        `No bootstrap marker for region '${region}' (${probed}) — asset storage ` +
           `is not opted in for this region (or was already destroyed); nothing to delete.`
       );
       if (!options.includeStateBucket) {
@@ -337,7 +379,7 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
         return;
       }
     } else {
-      marker = parseBootstrapMarker(markerBody, markerKey);
+      marker = parseBootstrapMarker(markerBody, resolvedMarkerKey);
     }
 
     // 2. Safety scan: refuse while any DEPLOYED stack still references the
@@ -401,7 +443,13 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
       planLines.push(
         `Container-asset ECR repository: ${marker.containerRepo} (region ${region}, all images)`
       );
-      planLines.push(`Bootstrap marker: s3://${bucketName}/${markerKey} (deleted last)`);
+      // `resolvedMarkerKey`, NOT `markerKey`: with the two-probe read (issue
+      // #1995) the marker may have come from the un-folded key, and deleting
+      // the canonical one would be a silent no-op — the bucket and repo gone
+      // while the marker survives, pointing every later command at storage
+      // that no longer exists. The plan line has to name the same file the
+      // teardown will actually remove.
+      planLines.push(`Bootstrap marker: s3://${bucketName}/${resolvedMarkerKey} (deleted last)`);
     }
     if (options.includeStateBucket) {
       planLines.push(`State bucket: s3://${bucketName} (ALL contents, including all versions)`);
@@ -424,8 +472,8 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
         logger
       );
       await deleteContainerRepo(marker.containerRepo, region, options.profile, logger);
-      await stateBackend.deleteRawObjects([markerKey]);
-      logger.info(`✓ Deleted bootstrap marker (${markerKey})`);
+      await stateBackend.deleteRawObjects([resolvedMarkerKey]);
+      logger.info(`✓ Deleted bootstrap marker (${resolvedMarkerKey})`);
       logger.info(
         `\ncdkd asset storage is now OFF for region ${region}: future deploys in this ` +
           `region fall back to legacy mode (CDK bootstrap destinations) unless the ` +

@@ -442,10 +442,13 @@ function buildReferenceExtractors(marker: BootstrapMarker): {
   //
   // - `s3://<bucket>/<key>` — the bucket is the URI AUTHORITY of an SDK/CLI
   //   style URI that is never resolved through DNS; the SDK sends the name as
-  //   given. `S3://MYBUCKET/<key>` therefore addresses a bucket that cannot
-  //   exist (S3 rejects upper case in a bucket name, which
-  //   `validateAssetBucketName` also holds cdkd's own storage to), so it is not
-  //   a reference to anything. Matched EXACTLY.
+  //   given. `S3://MYBUCKET/<key>` therefore addresses a DIFFERENT bucket than
+  //   the marker's. Note the reason is the MARKER, not S3's naming rules:
+  //   legacy pre-2018 `us-east-1` buckets could carry upper case, so
+  //   "S3 forbids it" would be false — but the name gc compares against comes
+  //   from the bootstrap marker, and `validateAssetBucketName` holds that to
+  //   lower case, so an upper-cased spelling in a byte-compared position is
+  //   never this bucket. Matched EXACTLY.
   // - path-style `https://s3.<region>.<suffix>/<bucket>/<key>` — the bucket is
   //   a PATH segment, and S3 compares those byte for byte. Same conclusion, so
   //   also matched EXACTLY.
@@ -461,9 +464,16 @@ function buildReferenceExtractors(marker: BootstrapMarker): {
   // here still requires the whole anchored shape
   // `https://<name>.s3<...>.<one of the closed suffix set>/<key>` — and a
   // string of that shape IS a reference to the object, so protecting it is
-  // correct rather than spurious. Nor can the folded label name a DIFFERENT
-  // bucket: bucket names are globally unique and lower-case only, so a
-  // case-variant of one can only be that same bucket.
+  // correct rather than spurious.
+  //
+  // The folded label also cannot silently protect the WRONG bucket's keys.
+  // Again the reason is the marker rather than a claim about every S3 bucket
+  // that has ever existed: the label is matched against the marker's name,
+  // which is lower case by construction, so the only spellings it accepts are
+  // case-variants of that one name — and a virtual-hosted host resolves
+  // case-insensitively, so each of them addresses this same bucket. (A legacy
+  // upper-case bucket name could not be reached this way at all: AWS does not
+  // serve virtual-hosted-style requests for names that are not DNS-compliant.)
   const s3UriRe = new RegExp(
     `${S3_SEGMENT_CASE_FOLDED}://${bucketExact}/(${KEY_TERMINATORS}+)`,
     'g'
@@ -1025,6 +1035,13 @@ export async function gcCommand(options: GcOptions): Promise<void> {
       }
       throw error;
     }
+    // NOTE a marker that EXISTS at the canonical key but fails to parse still
+    // hard-errors below, and now masks a valid marker at the raw key (pre-#1995
+    // only the raw key was ever read for an upper-cased region). That is the
+    // safe direction and deliberately not smoothed over: gc deletes nothing on
+    // a throw, and silently falling through to another key after finding a
+    // CORRUPT one would hide the corruption while gc acted on second-choice
+    // names. The remedy is the one the parse error already prints.
     if (markerBody === null) {
       const probed = rawMarkerKey === markerKey ? markerKey : `${markerKey}, ${rawMarkerKey}`;
       logger.info(

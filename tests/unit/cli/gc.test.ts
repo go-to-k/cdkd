@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const { mockS3Send, mockStsSend, mockEcrSend, mockQuestion, stateBackendMocks } = vi.hoisted(
-  () => ({
+const { mockS3Send, mockStsSend, mockEcrSend, mockQuestion, stateBackendMocks, loggerMocks } =
+  vi.hoisted(() => ({
     mockS3Send: vi.fn(),
     mockStsSend: vi.fn(),
     mockEcrSend: vi.fn(),
@@ -10,17 +10,22 @@ const { mockS3Send, mockStsSend, mockEcrSend, mockQuestion, stateBackendMocks } 
       getRawObject: vi.fn(),
       listRawKeys: vi.fn(),
     },
-  })
-);
+    // Hoisted rather than created per `getLogger()` call so what gc PRINTS is
+    // assertable: the not-opted-in message is the whole user-visible outcome of
+    // the marker probe (issue #1995), and a fresh spy per call cannot see it.
+    loggerMocks: {
+      setLevel: vi.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    },
+  }));
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
-    setLevel: vi.fn(),
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+    ...loggerMocks,
+    child: () => loggerMocks,
   }),
 }));
 
@@ -83,6 +88,8 @@ import {
   type AssetReferences,
 } from '../../../src/cli/commands/gc.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
+import { AwsClients } from '../../../src/utils/aws-clients.js';
+import { applyRoleArnIfSet } from '../../../src/utils/role-arn.js';
 import { derivePartitionAndUrlSuffix, PARTITION_TABLE } from '../../../src/utils/aws-partition.js';
 import {
   ECR_REGISTRY_HOST_FORMS,
@@ -1622,11 +1629,35 @@ describe('cdkd gc', () => {
         .filter((key) => key.startsWith('cdkd-bootstrap/'));
     }
 
-    it('canonicalizes the region before building AWS clients', () => {
-      // Guards the fixture itself: the arms below run with an upper-cased
+    it('uses fixture spellings that actually differ', () => {
+      // Guards the fixture itself: every arm below runs with an upper-cased
       // region, and if the two spellings were equal they would prove nothing.
       expect(REGION_UPPER).not.toBe(REGION);
       expect(RAW_MARKER_KEY).not.toBe(MARKER_KEY);
+    });
+
+    it('canonicalizes the region before building EVERY AWS client', async () => {
+      await runGcInRegion(REGION_UPPER, ['--yes']);
+
+      // SDK endpoint resolution is case-sensitive, so `US-EAST-1` reaching any
+      // of these resolves the wrong partition. Asserted per client rather than
+      // once: they are three separate constructions from the same variable, and
+      // a future edit can canonicalize one and miss the others.
+      const ecrRegions = vi.mocked(ECRClient).mock.calls.map((c) => c[0]?.region);
+      expect(ecrRegions.length).toBeGreaterThanOrEqual(1);
+      for (const r of ecrRegions) expect(r).toBe(REGION);
+
+      const awsClientRegions = vi.mocked(AwsClients).mock.calls.map((c) => c[0]?.region);
+      expect(awsClientRegions.length).toBeGreaterThanOrEqual(1);
+      for (const r of awsClientRegions) expect(r).toBe(REGION);
+
+      // The role-arn assumption happens BEFORE any client is built and takes
+      // its own region argument, so it is a separate call site with no test
+      // until now — and an STS client for the wrong partition fails the assume
+      // outright.
+      expect(vi.mocked(applyRoleArnIfSet)).toHaveBeenCalledWith(
+        expect.objectContaining({ region: REGION })
+      );
     });
 
     it('finds the CANONICAL marker from an UPPER-cased --region', async () => {
@@ -1636,12 +1667,6 @@ describe('cdkd gc', () => {
       // not-opted-in no-op — the same outcome the canonical-region run has.
       expect(deletedS3Keys()).toEqual(['garbage-old.zip']);
       expect(markerProbes()[0]).toBe(MARKER_KEY);
-
-      // The clients got the folded spelling: SDK endpoint resolution is
-      // case-sensitive, so `US-EAST-1` would resolve the wrong partition.
-      const ecrRegions = vi.mocked(ECRClient).mock.calls.map((c) => c[0]?.region);
-      expect(ecrRegions.length).toBeGreaterThanOrEqual(1);
-      for (const r of ecrRegions) expect(r).toBe(REGION);
     });
 
     it('still finds a marker written under the RAW upper-cased region', async () => {
@@ -1674,6 +1699,41 @@ describe('cdkd gc', () => {
       await runGc([]);
 
       expect(markerProbes()).toEqual([MARKER_KEY]);
+      expectNothingDeleted();
+
+      // ...and the not-opted-in message names the ONE key it looked at, with no
+      // stray separator from the two-key branch.
+      const notOptedIn = loggerMocks.info.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.includes('No bootstrap marker for region'));
+      expect(notOptedIn).toContain(`(${MARKER_KEY})`);
+    });
+
+    it('names BOTH probed keys when neither holds a marker', async () => {
+      // The user's next move is to look for the marker themselves, so the
+      // message has to say which keys were actually read — with an upper-cased
+      // region that is two, not one.
+      stateBackendMocks.getRawObject.mockResolvedValue(null);
+
+      await runGcInRegion(REGION_UPPER, []);
+
+      expect(markerProbes()).toEqual([MARKER_KEY, RAW_MARKER_KEY]);
+      const notOptedIn = loggerMocks.info.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.includes('No bootstrap marker for region'));
+      expect(notOptedIn).toContain(`(${MARKER_KEY}, ${RAW_MARKER_KEY})`);
+      expectNothingDeleted();
+    });
+
+    it('blames the key the marker was actually READ from when it is corrupt', async () => {
+      // `resolvedMarkerKey` exists only so this message is true. With a corrupt
+      // marker at the RAW key, naming the canonical one would send the user to
+      // a file that does not exist.
+      stateBackendMocks.getRawObject.mockImplementation(async (key: string) =>
+        key === RAW_MARKER_KEY ? '{ not json' : null
+      );
+
+      await expect(runGcInRegion(REGION_UPPER, ['--yes'])).rejects.toThrow(RAW_MARKER_KEY);
       expectNothingDeleted();
     });
   });
