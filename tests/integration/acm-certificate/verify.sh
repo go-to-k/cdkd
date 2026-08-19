@@ -41,6 +41,10 @@ echo "State bucket: ${BUCKET}"
 # is the orphan class the feature under test exists to REPORT; leaving one
 # behind here would be the fixture committing the bug it verifies.
 ORIGINAL_ARN=""
+# Phase 3 repeats the trick, so the certificate phase 2's replacement created is
+# stranded in turn. Tracked separately and retired the same way -- a fixture
+# that verifies orphan REPORTING must not itself leave orphans behind.
+STRANDED_ARN=""
 
 cleanup() {
   # Seed from the incoming status and restore it on the way out: the destroy
@@ -54,6 +58,62 @@ cleanup() {
     echo "=== Retiring the deliberately-stranded original certificate ==="
     aws acm delete-certificate --certificate-arn "${ORIGINAL_ARN}" --region "${REGION}" \
       >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${STRANDED_ARN}" ]]; then
+    echo "=== Retiring the certificate phase 3 stranded ==="
+    aws acm delete-certificate --certificate-arn "${STRANDED_ARN}" --region "${REGION}" \
+      >/dev/null 2>&1 || true
+  fi
+  # Both hand-retirements above are best-effort (`|| true`), which is right --
+  # a cleanup failure must not mask the assertion result -- but silent. With
+  # two deliberately-stranded certificates now, sweep for survivors so a failed
+  # retirement is VISIBLE rather than discovered later on the bill. Reported,
+  # not fatal: the run's own verdict is already decided by `rc`.
+  #
+  # TRI-STATE, not two: `|| true` here would let a throttle / AccessDenied
+  # answer read as "no certificates found" and print the clean line over a real
+  # leak -- the sweep would then be worse than none, because it asserts absence
+  # it never established. Consume the probe status explicitly and report
+  # "could not determine" as its own outcome.
+  #
+  # POLLED, not a single probe. `DeleteCertificate` returns before
+  # `ListCertificates` stops listing the certificate, so a one-shot check
+  # immediately after the retirements above reports a survivor that is already
+  # being deleted -- measured on this fixture: the arn phase 3 stranded was
+  # still listed at cleanup time and gone moments later. A warning that fires
+  # on every clean run is worse than no warning, because the next reader learns
+  # to ignore it.
+  # `tr`, not `${STACK,,}`: the lowercase expansion needs bash >= 4. Under the
+  # macOS system bash (3.2, still the default `/bin/bash`) it fails at RUNTIME
+  # with `bad substitution` -- `bash -n` accepts it, so the problem is invisible
+  # to a syntax check. It sits inside the EXIT trap, after the two hand
+  # retirements, so it would abort the trap's tail and leave the script exiting
+  # on the substitution error instead of the run's real status: a passing integ
+  # reported as failed, or a failing one losing its reason. This is the only
+  # such expansion in the repo's integ scripts, so nothing else establishes a
+  # bash-4 floor for them.
+  local leftover sweep_rc attempt stack_lc
+  stack_lc=$(printf '%s' "${STACK}" | tr '[:upper:]' '[:lower:]')
+  for attempt in 1 2 3 4 5; do
+    leftover=$(aws acm list-certificates --region "${REGION}" \
+      --query "CertificateSummaryList[?contains(DomainName, 'cdkd-integ-${stack_lc}')].CertificateArn" \
+      --output text 2>&1) && sweep_rc=0 || sweep_rc=$?
+    # Stop early on a probe ERROR too: retrying an AccessDenied five times just
+    # delays the same verdict, and the tri-state branch below reports it.
+    [[ "${sweep_rc}" -ne 0 || -z "${leftover}" ]] && break
+    [[ "${attempt}" -lt 5 ]] && sleep 6
+  done
+  if [[ "${sweep_rc}" -ne 0 ]]; then
+    echo "WARNING: the ACM leak sweep could not run (aws exited ${sweep_rc}); a surviving"
+    echo "         certificate would be INVISIBLE. Check by hand:"
+    echo "         aws acm list-certificates --region ${REGION}"
+    echo "${leftover}"
+  elif [[ -n "${leftover}" ]]; then
+    echo "WARNING: ACM certificates for this fixture survived cleanup (still listed after ~30s):"
+    echo "${leftover}"
+    echo "Retire them with: aws acm delete-certificate --certificate-arn <arn> --region ${REGION}"
+  else
+    echo "=== ACM sweep clean: no fixture certificates remain ==="
   fi
   exit "${rc}"
 }
@@ -162,11 +222,32 @@ echo "${deploy_out}"
 # exactly how this arm reported a missing row that was printed correctly.
 deploy_txt=$(printf '%s' "${deploy_out}" | sed $'s/\033\[[0-9;]*m//g')
 
-if [[ "${deploy_rc}" -ne 0 ]]; then
-  echo "FAIL: the replacement deploy exited ${deploy_rc}; a partial update must not fail the run"
+# Issue #1960 REVERSED this assertion. It used to require rc 0 on the grounds
+# that a partial update must not fail the run -- but the run left an AWS
+# resource cdkd owned alive and untracked, and reporting success for that is
+# precisely the mis-report #1960 was filed for. `cdkd destroy` has exited 2 for
+# the identical outcome since #1752; deploy now matches. The resource still
+# WAS updated (the RESOURCE_SUCCEEDED assertion below is unchanged) -- what
+# changed is the run-level verdict, not the row's.
+if [[ "${deploy_rc}" -ne 2 ]]; then
+  echo "FAIL: the replacement deploy exited ${deploy_rc}; a run that left an orphaned"
+  echo "      predecessor must exit 2 (issue #1960)"
   exit 1
 fi
-echo "PASS: deploy still succeeded (the resource WAS updated)"
+echo "PASS: deploy exited 2 for the orphaned predecessor (issue #1960)"
+
+# The banner must not claim success either -- the exit code was only half the
+# mis-report. A run still printing "Deployment completed successfully" while a
+# resource survived would leave the human-readable half wrong.
+if echo "${deploy_txt}" | grep -q "Deployment completed successfully"; then
+  echo "FAIL: the run still claims it completed successfully (issue #1960)"
+  exit 1
+fi
+if ! echo "${deploy_txt}" | grep -q "were left unaddressed"; then
+  echo "FAIL: no unaddressed-resource verdict line in the summary (issue #1960)"
+  exit 1
+fi
+echo "PASS: the verdict line names the survivor instead of claiming success"
 
 # The status line names the cause instead of printing a bare `updated`.
 if ! echo "${deploy_txt}" | grep -q "partial ("; then
@@ -233,6 +314,17 @@ if ! echo "${events_out}" | grep -q "RUN_FINISHED.*⚠1"; then
   echo "${events_out}" | grep RUN_FINISHED || true
   exit 1
 fi
+# ...and the run RESULT must agree with the exit code (issue #1960). Deploy used
+# to record SUCCEEDED here, on the grounds that the kept state record makes the
+# next deploy re-attempt the delete -- but the same run exits 2, so the durable
+# post-mortem said one thing and the process said another. Asserted through a
+# real S3 round-trip rather than only in the unit test, because what is being
+# checked is that the value PERSISTS and RENDERS, not that it was passed.
+if ! echo "${events_out}" | grep -q "RUN_FINISHED.*FAILED.*⚠1"; then
+  echo "FAIL: RUN_FINISHED does not record the run as FAILED (issue #1960)"
+  echo "${events_out}" | grep RUN_FINISHED || true
+  exit 1
+fi
 echo "PASS: events store carries the success, the survivor skip, and the run count"
 
 # State must now point at the NEW certificate, so the destroy below is clean.
@@ -250,5 +342,69 @@ if [[ "${new_arn}" == "${malformed}" || "${new_arn}" != arn:aws:acm:* ]]; then
   exit 1
 fi
 echo "PASS: state re-pointed to the replacement cert ${new_arn}"
+
+# --- Phase 3: --allow-unaddressed forces exit 0 for the SAME outcome (#1960) --
+#
+# The opposite polarity of phase 2's assertion. Without an arm that actually
+# reaches exit 0 through the flag, a bug that ignored the flag entirely -- or
+# one that never raised the error in the first place -- would look identical to
+# a pass here: phase 2 alone cannot tell "exit 2 because the flag was honored"
+# from "exit 2 because the flag is unread".
+#
+# Induced the same way, with the ValidationMethod toggle running in REVERSE:
+# phase 2 deployed with CDKD_TEST_UPDATE=validation (DNS -> EMAIL), so omitting
+# it here flips EMAIL -> DNS, which is another change reaching `update()` and
+# therefore another provider-side replacement.
+echo "=== Phase 3: --allow-unaddressed forces exit 0 (issue #1960) ==="
+STRANDED_ARN="${new_arn}"
+
+echo "${new_state}" | python3 -c "
+import json, sys
+s = json.load(sys.stdin)
+for v in s['resources'].values():
+    if v['resourceType'] == 'AWS::CertificateManager::Certificate':
+        v['physicalId'] = sys.argv[1]
+print(json.dumps(s))
+" "${malformed}" > /tmp/cdkd-acm-state-3.json
+aws s3 cp /tmp/cdkd-acm-state-3.json "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" \
+  --region "${REGION}" >/dev/null
+echo "  state physicalId rewritten to ${malformed} again"
+
+set +e
+allow_out=$(CDKD_NO_WAIT=true $CDKD deploy \
+  --region "${REGION}" --state-bucket "${BUCKET}" --allow-unaddressed 2>&1)
+allow_rc=$?
+set -e
+echo "${allow_out}"
+allow_txt=$(printf '%s' "${allow_out}" | sed $'s/\033\[[0-9;]*m//g')
+
+# The arm is only meaningful if this deploy actually reproduced the partial
+# outcome. Checked FIRST: a run that quietly made no change would exit 0 too,
+# and would then "pass" the flag assertion below while proving nothing.
+if ! echo "${allow_txt}" | grep -q "of which left an orphaned predecessor: 1"; then
+  echo "FAIL: phase 3 did not reproduce the partial update, so the flag is untested"
+  echo "${allow_txt}" | grep -iE "updated|skipped|unaddressed" || true
+  exit 1
+fi
+echo "PASS: phase 3 reproduced the orphaned predecessor"
+
+if [[ "${allow_rc}" -ne 0 ]]; then
+  echo "FAIL: --allow-unaddressed must force exit 0; got ${allow_rc} (issue #1960)"
+  exit 1
+fi
+echo "PASS: --allow-unaddressed exited 0 for an outcome that otherwise exits 2"
+
+# The flag suppresses the EXIT CODE only. If it also silenced the warning the
+# operator would have no signal at all, which is the failure mode the flag must
+# not create.
+if ! echo "${allow_txt}" | grep -q "were left unaddressed"; then
+  echo "FAIL: --allow-unaddressed silenced the survivor warning as well as the exit code"
+  exit 1
+fi
+if ! echo "${allow_txt}" | grep -q "allow-unaddressed was passed"; then
+  echo "FAIL: the verdict line does not say the exit code was suppressed by the flag"
+  exit 1
+fi
+echo "PASS: the survivor warning is still printed under --allow-unaddressed"
 
 # trap will run destroy

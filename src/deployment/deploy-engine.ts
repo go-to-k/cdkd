@@ -461,8 +461,12 @@ export interface DeployResult {
    * The state record is deliberately KEPT for these, so the next deploy still
    * sees the resource as a pending DELETE and re-attempts it. That
    * self-healing is why a skip here is a warning rather than a failed
-   * resource, and why the deploy still exits 0 (`cdkd destroy` exits 2,
-   * because there is no next run to heal it).
+   * RESOURCE -- but it is NOT why the RUN succeeds, and since issue
+   * [#1960](https://github.com/go-to-k/cdkd/issues/1960) it no longer does:
+   * the deploy exits 2, as `cdkd destroy` has for the identical outcome since
+   * #1752. Self-healing means the next run can fix it; it does not mean this
+   * run applied the template it was given. (`--allow-unaddressed` opts back
+   * out of the exit code, not out of the warning.)
    */
   deleteSkipped: number;
   /**

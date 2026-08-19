@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
 import {
   startRunRecorder,
-  recordRunSucceeded,
+  recordRunOutcome,
   recordRunFailed,
 } from '../../../src/cli/commands/deployment-events-run.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
@@ -55,7 +55,7 @@ describe('deployment-events run-level bracket helpers (#808)', () => {
     });
     expect(recorder).toBeUndefined();
     // The helpers must tolerate an undefined recorder (no-op).
-    recordRunSucceeded(recorder, 'S', { created: 1, updated: 0, deleted: 0 }, 10);
+    recordRunOutcome(recorder, 'S', 'SUCCEEDED', { created: 1, updated: 0, deleted: 0 }, 10);
     recordRunFailed(recorder, 'S', new Error('boom'));
     expect(objects.size).toBe(0);
   });
@@ -88,7 +88,7 @@ describe('deployment-events run-level bracket helpers (#808)', () => {
       command: 'deploy',
       runId: 'r-ok',
     })!;
-    recordRunSucceeded(recorder, 'S', { created: 3, updated: 1, deleted: 2 }, 1234);
+    recordRunOutcome(recorder, 'S', 'SUCCEEDED', { created: 3, updated: 1, deleted: 2 }, 1234);
     await recorder.finalize('SUCCEEDED');
 
     const events = eventsOf(objects, 'r-ok');
@@ -101,6 +101,32 @@ describe('deployment-events run-level bracket helpers (#808)', () => {
     // The index summary records SUCCEEDED.
     const index = JSON.parse(objects.get('cdkd/S/us-east-1/deployments/index.json')!);
     expect(index.runs[0].result).toBe('SUCCEEDED');
+  });
+
+  it('persists a FAILED result with its skipped count (issue #1960)', async () => {
+    // Pins the `result` PARAMETER at the layer that actually writes it. Every
+    // other call in this file passes 'SUCCEEDED', and the deploy-side tests
+    // `vi.mock` this module -- so they assert what deploy PASSES, never what
+    // the store RECORDS. Hard-coding `result: 'SUCCEEDED'` inside
+    // `recordRunOutcome` passed the entire unit suite before this case existed.
+    const { backend, objects } = makeFakeBackend();
+    const recorder = startRunRecorder({
+      backend,
+      stackName: 'S',
+      region: 'us-east-1',
+      command: 'deploy',
+      runId: 'r-unaddressed',
+    })!;
+    recordRunOutcome(recorder, 'S', 'FAILED', { created: 0, updated: 1, deleted: 0, skipped: 1 }, 7);
+    await recorder.finalize('FAILED');
+
+    const finished = eventsOf(objects, 'r-unaddressed').find(
+      (e) => e.eventType === 'RUN_FINISHED'
+    )!;
+    expect(finished.result).toBe('FAILED');
+    // The survivor count must ride along: it is the only figure in the summary
+    // that says a resource is still alive, and `recordRunFailed` drops it.
+    expect(finished.counts).toEqual({ created: 0, updated: 1, deleted: 0, skipped: 1 });
   });
 
   it('failure path: RUN_FINISHED carries FAILED + extracted error metadata (no properties)', async () => {
@@ -151,7 +177,7 @@ describe('deployment-events run-level bracket helpers (#808)', () => {
     expect(index.runs[0].result).toBe('FAILED');
   });
 
-  it('recordRunSucceeded omits durationMs when not supplied (destroy run-level shape)', async () => {
+  it('recordRunOutcome omits durationMs when not supplied (destroy run-level shape)', async () => {
     const { backend, objects } = makeFakeBackend();
     const recorder = startRunRecorder({
       backend,
@@ -160,7 +186,7 @@ describe('deployment-events run-level bracket helpers (#808)', () => {
       command: 'destroy',
       runId: 'r-destroy',
     })!;
-    recordRunSucceeded(recorder, 'S', { created: 0, updated: 0, deleted: 4 });
+    recordRunOutcome(recorder, 'S', 'SUCCEEDED', { created: 0, updated: 0, deleted: 4 });
     await recorder.finalize('SUCCEEDED');
     const events = eventsOf(objects, 'r-destroy');
     const finished = events.find((e) => e.eventType === 'RUN_FINISHED')!;

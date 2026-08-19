@@ -1,5 +1,6 @@
 {
   "declaredFlags": [
+    "--allow-unaddressed",
     "--allow-unsupported-properties",
     "--allow-unsupported-types",
     "--app",
@@ -43,6 +44,12 @@
     "--yes"
   ],
   "covered": [
+    {
+      "flag": "--allow-unaddressed",
+      "integs": [
+        "acm-certificate"
+      ]
+    },
     {
       "flag": "--allow-unsupported-properties",
       "integs": [

@@ -18,7 +18,12 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { bold, cyan, gray, green, red, yellow } from '../../utils/colors.js';
-import { withErrorHandling, CdkdError, DeployCancelledError } from '../../utils/error-handler.js';
+import {
+  withErrorHandling,
+  CdkdError,
+  DeployCancelledError,
+  PartialFailureError,
+} from '../../utils/error-handler.js';
 import {
   validateRecreateTargets,
   renderRecreateTargetsErrors,
@@ -43,7 +48,7 @@ import {
 } from '../../assets/asset-redirect.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { DeploymentRunResult } from '../../types/deployment-events.js';
-import { startRunRecorder, recordRunSucceeded, recordRunFailed } from './deployment-events-run.js';
+import { startRunRecorder, recordRunOutcome, recordRunFailed } from './deployment-events-run.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
@@ -114,6 +119,7 @@ async function deployCommand(
     strict?: boolean;
     ignoreErrors?: boolean;
     strictGetatt?: boolean;
+    allowUnaddressed?: boolean;
     cfnFallback?: boolean;
     useCdkBootstrapAssets?: boolean;
     autoAssetStorage?: boolean;
@@ -618,6 +624,33 @@ async function deployCommand(
     // stack and flushes it as one block — clean per-stack groups.
     const bufferStackOutput = targetStacks.length > 1;
 
+    // Issue #1960: resources this deploy left unaddressed, summed across every
+    // stack in the run — a DELETE the provider refused to issue (#1762) plus a
+    // replacement whose predecessor survived (#1819). Accumulated here rather
+    // than thrown per stack so a multi-stack deploy still runs its remaining
+    // stacks: neither case is a resource FAILURE, and stopping the run would
+    // be a bigger behavior change than the exit code this counter feeds.
+    // Mirrors `totalSkipped` in src/cli/commands/destroy.ts, which has driven
+    // destroy's exit 2 for the identical outcome since #1752.
+    //
+    // Known blind spot (issue #1989): `NestedStackProvider.runChildDeploy`
+    // discards the child engine's `DeployResult`, so a nested CHILD's own
+    // skips never reach these counters and a deploy whose only unaddressed
+    // resources live inside a nested stack still exits 0. Pre-existing — the
+    // parent's summary rows under-report the same way — and NOT closed here:
+    // the fix needs a propagation channel through the provider boundary that
+    // `ResourceCreateResult` does not currently have.
+    let totalUnaddressed = 0;
+    // Stacks that never ran: the user declined the prefix-migration gate, or an
+    // interrupt landed before the stack started. Both unwind through
+    // `DeployCancelledError` with a bare `return`, so the work-graph node
+    // COMPLETES and the run reaches the unaddressed check below. Counted so the
+    // message cannot imply the deploy otherwise finished -- before #1960 the run
+    // exited 0 and was equally silent about it, but a message that now says
+    // "Deploy left N resource(s) unaddressed" and nothing else actively reads as
+    // "everything else was applied".
+    let cancelledStacks = 0;
+
     const runStack = async (stackInfo: (typeof targetStacks)[0]): Promise<void> => {
       // Wrap the entire per-stack deploy body in withSkipPrefix so every
       // `generateResourceName(name, { userSupplied: true })` call inside
@@ -916,6 +949,26 @@ async function deployCommand(
             `    of which left an orphaned predecessor: ${yellow(deployResult.updatePartial)}`
           );
         }
+        // Issue #1960: the two rows above are the deploy-side twin of what
+        // makes `cdkd destroy` exit 2 (#1752) — a resource cdkd was
+        // responsible for may still be alive in AWS. Feed the run-level
+        // counter and say what it costs HERE, beside the counts: the throw
+        // fires after every stack has finished and so cannot name which stack
+        // contributed, while this line can.
+        //
+        // The two cases are NOT equally recoverable and the wording must not
+        // flatten them. A skipped DELETE keeps its state record on purpose
+        // (see the `deleteSkipped` arm in deploy-engine.ts), so the next
+        // `cdkd deploy` re-attempts it — that one self-heals. A partial
+        // UPDATE's survivor is untracked, because the record now points at
+        // the replacement, so nothing will ever retry it.
+        const stackUnaddressed = deployResult.deleteSkipped + deployResult.updatePartial;
+        // Guarded on dryRun even though the engine hard-codes both counters to
+        // 0 on its two dry-run returns: that invariant lives in the engine, and
+        // a future dry run that PREVIEWED "would be skipped" would otherwise
+        // make `cdkd deploy --dry-run` exit 2 while printing "Dry run
+        // completed" -- a run that changed nothing reporting a survivor.
+        if (!options.dryRun) totalUnaddressed += stackUnaddressed;
         logger.info(`  Unchanged: ${gray(deployResult.unchanged)}`);
         logger.info(`  Duration: ${cyan((deployResult.durationMs / 1000).toFixed(2) + 's')}`);
 
@@ -938,13 +991,49 @@ async function deployCommand(
 
         if (options.dryRun) {
           logger.info(`\n${green('✓')} ${bold('Dry run completed')} - no actual changes made`);
+        } else if (stackUnaddressed > 0) {
+          // Issue #1960: the exit code was only half the mis-report — this
+          // line said "completed successfully" for a run that left an AWS
+          // resource cdkd owned alive. Mirrors the marker `cdkd destroy`
+          // switches to for the identical outcome ("⚠ Stack X partially
+          // destroyed"), so the visual verdict and the exit code agree.
+          //
+          // Printed even under --allow-unaddressed: that flag suppresses the
+          // exit code, not the finding. A run whose operator opted out still
+          // has to be able to see, in its own log, that something survived.
+          logger.warn(
+            `\n⚠ ${bold(
+              `Stack ${deployResult.stackName} deployed, but ${stackUnaddressed} ` +
+                `resource(s) were left unaddressed`
+            )} — they may still exist in AWS. ` +
+              (options.allowUnaddressed
+                ? `Exiting 0 because --allow-unaddressed was passed.`
+                : // Not "will exit 2": in a multi-stack run another stack can
+                  // still FAIL after this line prints, and a real failure takes
+                  // precedence with exit 1. This counts TOWARD exit 2 rather
+                  // than promising it.
+                  `This counts toward a non-zero exit (2 unless something else fails; ` +
+                  `pass --allow-unaddressed to exit 0).`)
+          );
         } else {
           logger.info(`\n${green('✓')} ${bold('Deployment completed successfully')}`);
         }
 
-        recordRunSucceeded(
+        // Issue #1960: a run that left a resource unaddressed exits 2, so
+        // recording it as SUCCEEDED here would make the durable post-mortem
+        // contradict the exit code the same run returned -- the split verdict
+        // this issue closed for the console banner, reopened in the events
+        // store. `cdkd destroy` already records FAILED for the identical
+        // outcome (its `skippedCount > 0` arm), so this is parity.
+        //
+        // `recordRunFailed` is deliberately NOT used: it carries error metadata
+        // and no counts, and `skipped` is the only figure in the summary that
+        // says a resource survived.
+        if (!options.dryRun && stackUnaddressed > 0) runResult = 'FAILED';
+        recordRunOutcome(
           eventRecorder,
           stackInfo.stackName,
+          runResult,
           {
             created: deployResult.created,
             // Issue #1819: a partial update still UPDATED the resource, unlike a
@@ -979,6 +1068,18 @@ async function deployCommand(
         // NOT a deploy failure and must not be recorded as one (matches
         // the plain `return` the pre-lock version of the check used).
         if (deployError instanceof DeployCancelledError) {
+          cancelledStacks++;
+          // `runResult` stays SUCCEEDED, so `finalize` below records this stack
+          // as a successful run in the events index. That is a KNOWN exemption
+          // from this issue's "the record must not contradict the run" rule,
+          // not an oversight: `DeploymentRunResult` has only SUCCEEDED and
+          // FAILED, and neither describes a stack the user deliberately
+          // declined -- FAILED would newly report user-initiated cancellations
+          // as failures, which is its own mis-report. Recording the honest
+          // answer needs a third value on the event schema, which is a schema
+          // change and out of scope here. Pre-existing behavior, unchanged;
+          // what this PR adds is the run-level message that now SAYS how many
+          // stacks never deployed, so the omission is no longer silent.
           return;
         }
         // Issue [#808] — record the run-level failure event before
@@ -1026,6 +1127,30 @@ async function deployCommand(
         }
       }
     );
+
+    // Issue #1960: every stack deployed without a resource FAILING, but at
+    // least one resource cdkd was responsible for went unaddressed. Exiting 0
+    // here is the mis-report this issue was filed for — `cdkd destroy` has
+    // exited 2 for the identical outcome since #1752, and a pipeline reading
+    // only the exit code would be told the template was applied when it was
+    // not. Placed AFTER `workGraph.execute` so a genuine deploy failure (which
+    // rejects out of `execute` and exits 1) keeps precedence: the same order
+    // destroy.ts uses, where `totalErrors` is checked before `totalSkipped`.
+    if (totalUnaddressed > 0 && !options.allowUnaddressed) {
+      throw new PartialFailureError(
+        `Deploy left ${totalUnaddressed} resource(s) unaddressed, so they may still exist in ` +
+          `AWS. The two cases differ in what happens next: a DELETE the provider could not ` +
+          `issue KEEPS its state record, so the next 'cdkd deploy' re-attempts it, while a ` +
+          `replacement's surviving predecessor is NOT tracked and will never be retried — ` +
+          `delete it by hand. The per-stack summaries above give the breakdown, and each ` +
+          `resource's own warning names its cause and remedy. ` +
+          (cancelledStacks > 0
+            ? `Note ${cancelledStacks} stack(s) were also cancelled and never deployed, so the ` +
+              `template is not fully applied beyond the resources named above. `
+            : '') +
+          `Pass --allow-unaddressed to exit 0 instead.`
+      );
+    }
   } finally {
     unforwardSigterm();
     process.removeListener('SIGINT', topLevelSigintHandler);
