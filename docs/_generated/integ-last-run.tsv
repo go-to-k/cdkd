@@ -80,7 +80,7 @@ drift-revert	2026-08-13T08:34:06Z	PASS	215	verify.sh	broad set; 13 deleted 0 err
 drift-revert-arrays	2026-08-13T08:30:39Z	PASS	230	verify.sh	issue 1783/1784 seams; 19 deleted 0 errors 0 orphans
 drift-revert-vpc	2026-08-11T15:53:33Z	PASS	314	verify.sh	#1591 final: both-sides canonicalizer + cdkd diff wiring; 21 del/0 err, 0 orph
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
-dynamic-ref-cross-region	2026-08-18T15:55:42Z	PASS	200	verify.sh	#1933 post-review re-run: new phase 3b-2 proves the CACHE-HIT resource takes its own region's secret (embedded shape, so redaction runs via the value scan); 6 deleted 0 errors 0 orphans both regions
+dynamic-ref-cross-region	2026-08-19T06:47:00Z	PASS	150	verify.sh	#1957 scrub arm (AC3) reached and green; seeded plaintext purged from every version; success-path version sweep verified leaving 0
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
 dynamodb-globaltable	2026-08-19T05:08:48Z	PASS	1389	verify.sh	#1955 shared delete allowance; 12 deleted 0 errors, all scalable targets deregistered, 0 orphans all regions
 dynamodb-gsi-update	2026-08-19T05:28:23Z	PASS	1135	verify.sh	#1955 shared delete allowance; GSI add in-place, no phantom drift, destroy absorbed the index-busy refusal; 0 orphans
@@ -116,7 +116,7 @@ eventbridge-pipes	2026-08-10T11:50:46Z	PASS	179	verify.sh	0810 P0/P1 sweep b2; 6
 eventbridge-scheduler	2026-08-01T10:00:06Z	PASS	46	verify.sh	0801 regression sweep; ok, 0 orphans
 eventbus-policy	2026-08-11T10:54:05Z	PASS	56	verify.sh	new fixture (issue 1608): deploy/diff/update/destroy clean, 0 orphans
 eventsourcemapping-race	2026-08-13T16:32:07Z	PASS	89	verify.sh	#1815 partition predicates; ESM create+process+no-orphan destroy, 5 del 0 err 0 orph
-export	2026-08-18T10:15:56Z	PASS	222	verify.sh	#1919 broad gate: outputs key-space guard + diff twin; 6 steps ok, 0 err, 0 orphans
+export	2026-08-19T06:52:00Z	PASS	227	verify.sh	#1957 broad arm (intrinsic-function-resolver in integ-broad scope); 6 steps ok, post-export cdk diff clean, CFn stack deleted, 0 orphans
 export-nested-stack	2026-08-10T04:45:42Z	PASS	153	verify.sh	0810 sweep b3; export->CFn nested adopt + CFn delete clean, 0 orph
 fifo-sqs-event-source	2026-07-27T06:44:00Z	PASS	111	verify.sh	final-tree gate refresh for #1256; destroy 6/0 errors, 0 orphans
 fsx-lustre	2026-08-02T05:30:54Z	PASS	899	verify.sh	0802 heavy TTL sweep; deploy+update+destroy ok, 0 orphans, no final backup

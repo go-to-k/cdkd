@@ -16,6 +16,16 @@ export interface DynamicRefCrossRegionStackProps extends cdk.StackProps {
    * REFERENCES it — the same shape `secrets-dynamic-ref` uses.
    */
   readonly secureSourceParameterName: string;
+  /**
+   * A THIRD shared name whose TYPE differs between the regions: a plain
+   * `String` in region A and a `SecureString` in region B (issue
+   * [#1957](https://github.com/go-to-k/cdkd/issues/1957) acceptance criterion
+   * 3). The two arms above share a TYPE across regions, so a lookup answered by
+   * the wrong region still produces a value of the right KIND and only the
+   * value is wrong; here the wrong region also produces the wrong CLASSIFICATION,
+   * which is what decides whether the resolved value is persisted in plaintext.
+   */
+  readonly mixedTypeSourceParameterName: string;
 }
 
 /**
@@ -98,5 +108,30 @@ export class DynamicRefCrossRegionStack extends cdk.Stack {
         'Echoes the SecureString value EMBEDDED in a larger string, resolved on a cache hit (cdkd issue #1933)',
     });
     embeddedEcho.addResourceDependency(secureEcho);
+
+    // The MIXED-TYPE arm (issue #1957 acceptance criterion 3), and the only one
+    // whose failure mode is a DISCLOSURE rather than a wrong value.
+    //
+    // `verify.sh` seeds this one name as a plain `String` in region A and as a
+    // `SecureString` in region B. Because secret-ness is decided by the
+    // parameter's TYPE rather than by the reference's spelling (issue #1901),
+    // a lookup answered by the WRONG region misclassifies as well as
+    // mis-resolves: region B's reference, answered by region A, reports `String`
+    // — so cdkd treats the value as public config and persists it RESOLVED
+    // instead of persisting the expression. That is the shape `cdkd scrub --all`
+    // hits (it installs its clients once and then resolves stacks in several
+    // regions) and it is the reason #1957 is a security defect rather than only
+    // a correctness one.
+    //
+    // The other two arms cannot show it: they are `SecureString` in BOTH
+    // regions, so a cross-region answer still classifies as secret and the
+    // redaction path runs either way.
+    new ssm.CfnParameter(this, 'MixedTypeEchoParameter', {
+      type: 'String',
+      name: `${this.stackName}-mixed-echo`,
+      value: `{{resolve:ssm:${props.mixedTypeSourceParameterName}}}`,
+      description:
+        'Echoes a name that is String in region A and SecureString in region B (cdkd issue #1957)',
+    });
   }
 }

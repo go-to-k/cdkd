@@ -1042,18 +1042,32 @@ async function runDriftForStack(
     // per process) and one stack's resolved value can no longer be handed to
     // another stack's — or another region's — records.
     //
-    // What is NOT fixed by that, and is the surviving hazard for a cross-region
-    // `--all` run: the lookup itself still goes through the AMBIENT
-    // `getAwsClients()` rather than through the `region` handed to this
-    // constructor, and this command installs its clients ONCE (see the
-    // `setAwsClients` call at the top of `runDrift`) while looping over stacks
-    // in several regions. So every stack's expression resolves against the CLI
-    // region, and `--all --revert` can still push one region's secret into
-    // another region's resource. Filed as issue
-    // [#1957](https://github.com/go-to-k/cdkd/issues/1957) and deliberately not
-    // papered over here: region-pinned lookup clients are a credentials
-    // decision that belongs in the resolver, where every caller inherits it,
-    // not in one command's private workaround.
+    // The other half — the LOOKUP reaching for the ambient `getAwsClients()`
+    // singleton rather than the `region` handed to this constructor — was the
+    // surviving hazard for a cross-region `--all` run, because this command
+    // installs its clients ONCE (see the `setAwsClients` call at the top of
+    // `runDrift`) while looping over stacks in several regions. Issue
+    // [#1957](https://github.com/go-to-k/cdkd/issues/1957) CLOSED it, and
+    // deliberately not here: the resolver now derives region-scoped lookup
+    // clients from the region it is CONSTRUCTED with, carrying the ambient
+    // profile / assume-role credentials while overriding only the region.
+    // (Constructed-with, not `resolverRegion` — the two differ only when no
+    // region was passed, where the seam declines to override; this command
+    // always passes one.) That is a credentials decision, so it belongs where
+    // every caller inherits it rather than in one command's private
+    // workaround — which is why the `region` passed just below is now
+    // load-bearing for VALUE correctness and not only for cache scoping. Do
+    // not reintroduce a `setAwsClients` dance here to compensate for the
+    // LOOKUP.
+    //
+    // Scope note, because the paragraph above is easy to over-read: #1957
+    // fixed what this resolver READS. It did NOT fix what `--revert` WRITES.
+    // The `providerRegistry` handed to `runRevert` is built once from the
+    // ambient clients at the top of `runDrift`, so a cross-region
+    // `--all --revert` still issues its write through the CLI region's
+    // clients. That is the provisioning half of the same ambient-singleton
+    // problem, filed as issue
+    // [#1981](https://github.com/go-to-k/cdkd/issues/1981).
     const secretResolver = new IntrinsicFunctionResolver(region);
     const entries = Object.entries(state.resources ?? {}).sort(([a], [b]) => a.localeCompare(b));
 

@@ -14,11 +14,12 @@ import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
-import { getAwsClients } from '../utils/aws-clients.js';
+import { getAwsClients, type AwsClients } from '../utils/aws-clients.js';
 import { stringifyValue, stringifyAttributeForLog } from '../utils/stringify.js';
 import { assumeRoleForCrossAccountStateRead, parseIamRoleArn } from '../utils/role-arn.js';
 import { resolveCrossAccountStateBucket } from '../utils/aws-region-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
+import { stripControlChars } from '../utils/regexp.js';
 import {
   s3BucketArn,
   s3BucketDomainName,
@@ -985,6 +986,45 @@ const MAX_DYNAMIC_REFERENCE_THROTTLE_RETRIES = 4;
  */
 export const dynamicReferenceRetryDelays: { sleep?: (ms: number) => Promise<void> } = {};
 
+/**
+ * Is `region` safe to build an AWS SDK client from?
+ *
+ * This is a SECURITY gate, not an AWS region registry, and the distinction
+ * decides how strict it is. The SDK turns a region into a hostname by
+ * substitution — `https://ssm.{region}.amazonaws.com` — so a value carrying a
+ * host delimiter escapes the label and re-points the endpoint: the measured
+ * case is `evil.example.com#`, which yields
+ * `https://ssm.evil.example.com/#.amazonaws.com` and sends a SigV4-SIGNED
+ * request (access key id + signature) to an attacker-controlled host.
+ *
+ * The reachable input is `Fn::GetAZs`, whose argument is TEMPLATE-DERIVED and
+ * can arrive through an `Fn::ImportValue` or a parameter — i.e. it is not
+ * necessarily written by whoever runs the deploy. Before issue #1957 that value
+ * only fed the `region-name` FILTER of a `DescribeAvailabilityZones` call and
+ * never built a client, so binding lookups to a region is exactly what made it
+ * reachable; the gate ships with the binding.
+ *
+ * So the predicate is CHARSET-based rather than shape-based: lowercase
+ * alphanumerics and hyphens only, which cannot express `.`, `/`, `:`, `@`, `?`
+ * or `#` and therefore cannot leave the hostname label. It deliberately does
+ * NOT try to enumerate real regions — AWS keeps adding them
+ * (`ap-southeast-7`, `il-central-1`, `mx-central-1`, `eusc-de-east-1`), and a
+ * pattern tight enough to reject `----` would also reject the next one. A
+ * region-shaped-but-nonexistent value is not a security problem: it resolves to
+ * a hostname that does not exist and the SDK fails loudly.
+ *
+ * Note the sibling pattern in `src/cli/commands/state-file-keys.ts` is NOT
+ * reusable here: it requires `^[a-z]{2}(-[a-z]+)+-\d+$`, which rejects
+ * `eusc-de-east-1` (the European Sovereign Cloud partition's four-letter
+ * prefix).
+ *
+ * Callers must {@link canonicalizeRegion} first — `US-EAST-1` is a documented
+ * input and is lowercase-canonical, not invalid.
+ */
+export function isClientSafeRegion(region: string): boolean {
+  return /^[a-z0-9][a-z0-9-]{0,30}$/.test(region);
+}
+
 /** Test seam for {@link FABRICATED_ACCOUNT_INFO_TTL_MS} expiry. */
 export const accountInfoClock = { now: (): number => Date.now() };
 
@@ -1268,6 +1308,63 @@ export interface IntrinsicFunctionResolverOptions {
 export class IntrinsicFunctionResolver {
   private logger = getLogger().child('IntrinsicFunctionResolver');
   private readonly resolverRegion: string;
+  /**
+   * The region the CONSTRUCTOR was given, or `undefined` when it was called
+   * without one — unlike {@link resolverRegion}, which substitutes
+   * `AWS_REGION` / `us-east-1` so every consumer has a string to work with.
+   *
+   * The distinction is load-bearing for {@link clientsForRegion} and for
+   * nothing else: re-pointing an AWS lookup away from the ambient clients is
+   * only safe when a caller SAID which region this resolver stands for.
+   *
+   * IN PRODUCTION THIS IS ALWAYS SET, and saying so matters more than the
+   * guard it enables. Every construction site defaults the region BEFORE the
+   * constructor and passes a `string` — `deploy.ts`, `scrub.ts`, `drift.ts`,
+   * `import.ts`, `export.ts`, `diff-recursive.ts`, `rollback-executor.ts` —
+   * so the `undefined` arm is reachable only through the no-argument
+   * constructor, which nothing but tests uses. It is kept because the
+   * parameter is optional and the arm must therefore exist, not because a
+   * shipped path depends on it.
+   *
+   * That has a USER-VISIBLE consequence, deliberately accepted (issue #1957
+   * review). For a REGION-AGNOSTIC stack (no `env.region`) run with neither
+   * `--region` nor `AWS_REGION`, the region those callers compute is the
+   * hard-coded `us-east-1` fallback, so the lookup now goes there — where
+   * before it followed the ambient clients to whatever `~/.aws/config` said.
+   * The new behaviour is the consistent one: `us-east-1` is already the region
+   * cdkd keys that stack's state file, its lock and its export index under, so
+   * the resolved value and the record that stores it now agree. Previously
+   * they did not, which is the same class of defect this issue is about, one
+   * layer up. A stack WITH an explicit `env.region` is unaffected — every
+   * caller prefers it (`scrub.ts` does `stack.region || region`).
+   */
+  private readonly explicitRegion: string | undefined;
+  /**
+   * AWS clients pinned to a region OTHER than the ambient singleton's, built
+   * lazily on first mismatch and keyed by region (issue #1957).
+   *
+   * Lifetime is deliberately the resolver's own, matching {@link cfnClients}
+   * two fields down: both are per-region SDK clients this instance builds for
+   * itself, and neither is destroyed, because `IntrinsicFunctionResolver` has
+   * no teardown hook and every construction site (`DeployEngine`, `scrub`,
+   * `drift`, `import`, `diff-recursive`, `export`, `rollback-executor`) would
+   * have to grow one. The bound on what that costs is small and worth stating:
+   * an entry exists only when a resolver's region DIFFERS from the ambient
+   * one — i.e. only on a genuinely cross-region run — and at most one per
+   * foreign region per resolver, versus the ambient clients which are already
+   * created and destroyed per stack by `deploy.ts`.
+   *
+   * KEYED BY REGION ALONE, which means an entry also pins the CREDENTIAL
+   * configuration of whichever ambient instance was current at the first
+   * mismatch for that region. That is sound today because the credential half
+   * is process-wide rather than per-stack: `--profile` comes from one CLI
+   * option and `--role-arn` lands in `process.env`, so every ambient instance
+   * a run installs carries the same one. Widen the key to include
+   * {@link AwsClients.credentialConfig} the moment that stops being true —
+   * per-stack credentials would otherwise let one stack's lookups run under
+   * another's identity, which is a worse bug than the one this cache serves.
+   */
+  private readonly regionScopedClients = new Map<string, AwsClients>();
   private readonly strictGetAtt: boolean;
   private readonly cfnFallback: boolean;
   /**
@@ -1362,24 +1459,17 @@ export class IntrinsicFunctionResolver {
    * nested stacks ship or that pass starts recording secrets; a resolver per
    * node is the fix then, not a wider key here.
    *
-   * What this does NOT settle — issue
-   * [#1957](https://github.com/go-to-k/cdkd/issues/1957) owns it: the lookups
-   * themselves still go through the process-ambient `getAwsClients()` singleton
-   * (see `resolveSecretsManagerReference` / `resolveSSMReference`), whose region
-   * is whichever the process installed last. So a resolver constructed for
-   * region B while the ambient clients point at region A still reads A on its
-   * FIRST resolution — no cache involved, so nothing here can prevent it.
-   * `cdkd deploy` re-pins the singleton per stack, which makes a SERIAL
-   * multi-region deploy correct end to end, but the default
-   * `--stack-concurrency 4` races for it (a hazard `deploy.ts` already
-   * documents) and `cdkd scrub` installs its clients once while resolving
-   * stacks in several regions. The split of ownership is therefore: THIS field
-   * closes the cache as a cross-region / cross-stack carrier, while #1957 owns
-   * the wrong-region READ — which is the outcome #1933's title names, so #1933
-   * is not fully resolved until #1957 lands. Pinning the lookup to
-   * {@link resolverRegion} means constructing region-scoped clients, which is a
-   * credentials decision (a bare `new SSMClient({ region })` drops the ambient
-   * profile / assume-role config) and belongs to #1957 rather than here.
+   * The OTHER half of the same outcome — the lookups themselves reading the
+   * process-ambient `getAwsClients()` singleton, whose region is whichever the
+   * process installed last — was issue
+   * [#1957](https://github.com/go-to-k/cdkd/issues/1957) and is now closed by
+   * {@link clientsForRegion}: a resolver whose region differs from the ambient
+   * one builds its own region-pinned clients (carrying the ambient profile /
+   * credentials) instead of reading whatever the singleton currently holds.
+   * The two halves remain SEPARATE mechanisms and both are needed — this field
+   * stops a resolved value from travelling between regions or stacks, while
+   * the scoped clients stop the FIRST resolution from reading the wrong region
+   * (no cache involved, so nothing here could ever have prevented it).
    */
   private readonly cachedDynamicReferences = new Map<string, CachedDynamicReference>();
 
@@ -1407,6 +1497,7 @@ export class IntrinsicFunctionResolver {
 
   constructor(region?: string, options?: IntrinsicFunctionResolverOptions) {
     this.resolverRegion = region || process.env['AWS_REGION'] || 'us-east-1';
+    this.explicitRegion = region || undefined;
     this.strictGetAtt = options?.strictGetAtt ?? false;
     this.cfnFallback = options?.cfnFallback ?? true;
   }
@@ -1419,6 +1510,149 @@ export class IntrinsicFunctionResolver {
   /** Reset the per-run fallback counter (called at the start of each deploy). */
   resetPhysicalIdFallbackCount(): void {
     this.physicalIdFallbackCount = 0;
+  }
+
+  /**
+   * AWS clients for a REGION-SENSITIVE lookup, pinned to `targetRegion`
+   * (issue [#1957](https://github.com/go-to-k/cdkd/issues/1957)).
+   *
+   * Every lookup in this class used to read `getAwsClients()` — the
+   * PROCESS-GLOBAL singleton, whose region is whichever one the process
+   * installed last. That is not the same thing as the region this resolver
+   * stands for, and the gap is reachable on main:
+   *
+   * - `cdkd deploy` defaults to `--stack-concurrency 4` and re-points the
+   *   singleton per stack, so two stacks in different regions race for one
+   *   mutable global and stack B's `GetSecretValue` / `GetParameter` can run
+   *   against stack A's client. The resolved value is redacted on its way into
+   *   state, so nothing downstream records which region answered.
+   * - `cdkd scrub --all` installs the clients ONCE while resolving per-stack
+   *   regions, so a region-B `SecureString` whose region-A namesake is a plain
+   *   `String` is classified PUBLIC and left in PLAINTEXT in state.json — the
+   *   same disclosure class as GHSA-p5qg-v9gv-hc7w, not merely a wrong value.
+   * - `cdkd drift --revert` WRITES the resolved value to a live resource, so
+   *   there the wrong region is a wrong write rather than a wrong report.
+   *
+   * Fixing it here rather than at the ~10 `setAwsClients` call sites is what
+   * makes it one mechanism instead of a per-command patch: this class already
+   * knows its own region, and every construction site already passes the
+   * per-stack one.
+   *
+   * REUSING THE AMBIENT CLIENTS REQUIRES PROOF THAT THEY ALREADY POINT AT
+   * `targetRegion`, and the direction of that test is the whole correctness
+   * argument. CloudFormation semantics say a stack's dynamic references resolve
+   * in the STACK's region, and every construction site passes exactly that — so
+   * once a region has been named, sending the lookup there is not an
+   * optimisation to be justified, it is the requirement. Whether the ambient
+   * singleton happens to agree only decides whether an object allocation can be
+   * skipped.
+   *
+   * An earlier revision had this backwards twice over, and both failures are
+   * worth naming because each looks reasonable in isolation.
+   *
+   * It first declined to override whenever the ambient region was UNKNOWN,
+   * reasoning that overriding on an unproven mismatch might re-point a lookup
+   * that works today. That fails OPEN, on the COMMON configuration: `aws
+   * configure` writes the region to `~/.aws/config`, and `cdkd scrub` sets a
+   * client region only when `--region` is passed. The disclosure this issue
+   * exists to close stayed reachable — profile region `us-east-1`, stack B in
+   * `ap-northeast-1`, a name that is `String` in A and `SecureString` in B,
+   * `cdkd scrub --all` with no flags: B's reference answered by A, classified
+   * public, plaintext left in `state.json`.
+   *
+   * It then determined the ambient region by reading `process.env` here, which
+   * is worse than not knowing: the SDK memoizes a region-less client's region
+   * at its first resolution while `deploy.ts`'s `switchRegion` keeps mutating
+   * `AWS_REGION` per stack and restores it in each stack's `finally`, so the
+   * environment could say `baseRegion` for a client long since pinned
+   * elsewhere — and this method would conclude MATCH and hand back clients
+   * pointing somewhere else.
+   *
+   * The fix for THAT was to ask the SDK (`ssm.config.region()`), and it was
+   * still wrong, in a way worth writing down because it looks airtight. An
+   * unconfigured `AwsClients` is not a bag of clients, it is a bag of DEFERRED
+   * client constructions: `clientOptions` omits `region`, the getters are lazy,
+   * and each member therefore samples the mutating environment at its own
+   * instant and memoizes a possibly DIFFERENT region. Asking `ssm` measures one
+   * member and says nothing about `secretsManager`, so the seam could short-
+   * circuit on a us-west-2 `ssm` and then hand out a bag whose `secretsManager`
+   * pins us-east-1 a moment later — issue #1957's Site 1 surviving inside the
+   * arm meant to fix it.
+   *
+   * So the short-circuit is taken ONLY when the ambient's region is
+   * CONFIGURED. That is not a heuristic: a configured bag passes `region` to
+   * every member ({@link AwsClients.clientOptions}), so its members agree by
+   * construction, and {@link AwsClients.withRegion} always sets one, so every
+   * derived bag is internally consistent too. An unconfigured ambient is not
+   * "of unknown region", it is "of not-yet-decided region", and there is
+   * nothing to compare against — so it SCOPES. That is the same "unknown means
+   * SCOPE, not skip" rule as above, applied one level deeper.
+   *
+   * Three arms return the ambient instance, each for a reason that is not
+   * "we could not prove a mismatch":
+   *
+   * 1. No `targetRegion` — no region was ever named (see
+   *    {@link explicitRegion}), so there is nothing to bind to.
+   * 2. `targetRegion` is not safe to build a client from (see
+   *    {@link isClientSafeRegion}) — which THROWS. An earlier revision warned
+   *    and fell back to the ambient clients, reasoning that a malformed region
+   *    reaching here is a cdkd bug and failing every lookup would turn it into
+   *    an outage. That put this arm on the wrong side of the two-severity
+   *    design: falling back to the ambient means READING ANOTHER REGION, which
+   *    for `scrub` / `drift` / `import` — whose region is state-derived — is
+   *    the disclosure this issue exists to close (a region-B `SecureString`
+   *    classified against a region-A `String`). A stopped command is strictly
+   *    better than a silent wrong-region read. The `Fn::GetAZs` entry still
+   *    validates EARLIER so it can give a message naming the template
+   *    construct; this arm is the backstop that guarantees no call site,
+   *    present or future, routes unvalidated input into an SDK endpoint.
+   * 3. The installed clients cannot DERIVE a sibling — `withRegion` is absent.
+   *    In production that never happens: `getAwsClients()` returns an
+   *    `AwsClients`. It is true only of a test double, and it is checked
+   *    EXPLICITLY rather than left to emerge, for a reason the review of this
+   *    change made concrete. The ~260 suites that stub `getAwsClients()` with a
+   *    plain object used to stay on the ambient path as a side effect of the
+   *    `undefined`-region guard above — the very guard that made the disclosure
+   *    reachable. Removing that guard without putting something deliberate in
+   *    its place would have traded a security hole for ~260 `TypeError`s, so
+   *    the test-double case is now its own named arm and the security arm no
+   *    longer has a testing job to do. Suites that are ABOUT region scoping use
+   *    a real `AwsClients` and are unaffected by it.
+   *
+   * Regions are canonicalised on both sides before comparing, because
+   * `--region US-EAST-1` is a documented input and the repo lowercases
+   * elsewhere (`canonicalizeRegion`, issues #1795 / #1850). Without it an
+   * uppercase spelling would build a second client for the same physical
+   * region — benign, but wasteful and confusing in a debug log.
+   */
+  private clientsForRegion(targetRegion: string | undefined): AwsClients {
+    const ambient = getAwsClients();
+    if (!targetRegion) return ambient;
+
+    const target = canonicalizeRegion(targetRegion);
+    if (!isClientSafeRegion(target)) {
+      throw new Error(
+        `Refusing to build AWS clients for the region ` +
+          `'${stripControlChars(target).slice(0, 64)}': it is not a valid AWS region name, and a ` +
+          `region is substituted into the AWS service hostname.`
+      );
+    }
+
+    // Ordered first among the reuse arms: a test double can answer none of the
+    // questions below, and asking would be the TypeError this arm prevents.
+    if (typeof ambient.withRegion !== 'function') return ambient;
+
+    const cached = this.regionScopedClients.get(target);
+    if (cached) return cached;
+
+    // ONLY a CONFIGURED ambient can be reused — see the note above on why a
+    // region-less bag cannot answer for itself.
+    if (canonicalizeRegion(ambient.configuredRegion) === target) return ambient;
+
+    const scoped = ambient.withRegion(target);
+    this.regionScopedClients.set(target, scoped);
+    this.logger.debug(`Using region-scoped AWS clients for ${target}`);
+    return scoped;
   }
 
   /**
@@ -1511,7 +1745,9 @@ export class IntrinsicFunctionResolver {
    * Used for parameters with type AWS::SSM::Parameter::Value<...>.
    */
   private async resolveSSMParameter(parameterName: string): Promise<string> {
-    const client = getAwsClients().ssm;
+    // Region-sensitive: SSM parameters are regional and independent, so the
+    // same path in two regions is two different values (issue #1957).
+    const client = this.clientsForRegion(this.explicitRegion).ssm;
     const response = await client.send(new GetParameterCommand({ Name: parameterName }));
     return response.Parameter?.Value ?? '';
   }
@@ -2744,7 +2980,11 @@ export class IntrinsicFunctionResolver {
             return cached;
           }
           try {
-            const clients = getAwsClients();
+            // Region-sensitive: an instance id only resolves in its own region,
+            // and a foreign-region client answers `InvalidInstanceID.NotFound`,
+            // which lands in the catch below and degrades to the physical-id
+            // fallback this branch exists to avoid (issue #1957).
+            const clients = this.clientsForRegion(this.explicitRegion);
             const response = await clients.ec2.send(
               new DescribeInstancesCommand({ InstanceIds: [physicalId] })
             );
@@ -2797,7 +3037,9 @@ export class IntrinsicFunctionResolver {
     if (resourceType === 'AWS::EC2::LaunchTemplate') {
       if (attributeName === 'LatestVersionNumber' || attributeName === 'DefaultVersionNumber') {
         try {
-          const clients = getAwsClients();
+          // Region-sensitive for the same reason as `DescribeInstances` above:
+          // a launch-template id is regional (issue #1957).
+          const clients = this.clientsForRegion(this.explicitRegion);
           const response = await clients.ec2.send(
             new DescribeLaunchTemplatesCommand({ LaunchTemplateIds: [physicalId] })
           );
@@ -3898,7 +4140,36 @@ export class IntrinsicFunctionResolver {
           `Fn::GetStackOutput: Region must resolve to a non-empty string, got ${typeof resolvedRegion}`
         );
       }
-      region = resolvedRegion;
+      // Region-shape gate (issue #1957 review). This value is TEMPLATE-derived
+      // — `{"Region": {"Ref": "SomeParam"}}` resolves through `resolveValue`
+      // above — and it reaches TWO sinks that both treat it as trusted:
+      //
+      //   1. an SDK client region, via `lookupCfnStackOutputs` ->
+      //      `getCfnClient(region)` -> `new CloudFormationClient({ region })`.
+      //      A region is substituted into the service hostname, so
+      //      `evil.example.com#` yields a SigV4-SIGNED `DescribeStacks` to
+      //      `https://cloudformation.evil.example.com/#.amazonaws.com`.
+      //   2. an S3 STATE-KEY segment, via `getState(stackName, region)` ->
+      //      `cdkd/{stack}/{region}/state.json`. A `../` there traverses within
+      //      the state bucket and reads a key the template never named.
+      //
+      // Older than this PR — the client has always been built from it — but the
+      // gate is one call away and the sink list is exactly this PR's subject,
+      // so it is closed here. THROW rather than fall back to the resolver's own
+      // region, for the same reason as `Fn::GetAZs` and one more: silently
+      // substituting a different region would read ANOTHER region's stack
+      // outputs and hand them to the consumer as if they were the requested
+      // ones. The CANONICAL form is what flows onward, so the client and the
+      // state key agree on one spelling.
+      const requestedRegion = canonicalizeRegion(resolvedRegion);
+      if (!isClientSafeRegion(requestedRegion)) {
+        throw new Error(
+          `Fn::GetStackOutput: '${stripControlChars(resolvedRegion).slice(0, 64)}' is not a ` +
+            `valid AWS region name. The region selects both the AWS endpoint and the state-file ` +
+            `key, so cdkd will not use it.`
+        );
+      }
+      region = requestedRegion;
     }
 
     // RoleArn must be a LITERAL string in the template — we check the raw
@@ -4260,12 +4531,58 @@ export class IntrinsicFunctionResolver {
     const resolvedValue = await this.resolveValue(value, context);
 
     let region: string;
+    /**
+     * Which region's clients answer the `DescribeAvailabilityZones` below.
+     *
+     * `DescribeAvailabilityZones` lists the AZs of the region the CLIENT is
+     * pointed at; the `region-name` filter narrows that listing, it does not
+     * widen it to another region. So a foreign-region client returns an EMPTY
+     * list, which this method then caches and hands back as the resolved value
+     * of `Fn::GetAZs` — silently, since an empty list is not an error here
+     * (issue #1957).
+     *
+     * When the template names a region explicitly, THAT is the region to talk
+     * to. Otherwise fall back to the resolver's own — but only when it was
+     * given explicitly (see {@link explicitRegion}).
+     */
+    let clientRegion: string | undefined;
     if (typeof resolvedValue === 'string' && resolvedValue !== '') {
-      region = resolvedValue;
+      // REFUSE a template-derived region that is not region-shaped, BEFORE it
+      // can reach `clientsForRegion` (issue #1957 review).
+      //
+      // This argument is the only attacker-influenceable value in this class
+      // that now selects an SDK ENDPOINT: it is template-derived and can arrive
+      // through an `Fn::ImportValue` or a parameter, so it is not necessarily
+      // written by whoever runs the deploy. Before dynamic-reference lookups
+      // were bound to a region it only fed the `region-name` FILTER below and
+      // could not build a client; binding made it reachable, so the gate ships
+      // with the binding. The measured escape is `evil.example.com#`, which the
+      // SSM endpoint ruleset turns into
+      // `https://ssm.evil.example.com/#.amazonaws.com` — a SigV4-SIGNED request
+      // (access key id + signature) to an attacker-controlled host.
+      //
+      // THROW rather than fall back to the resolver's own region. Substituting
+      // a different region's AZ names would be a silent wrong answer that
+      // propagates into subnet placement, which is worse than a stopped deploy;
+      // and a template asking for the AZs of a non-region is a bug or an
+      // attack, never something to paper over. `clientsForRegion` keeps its own
+      // softer backstop for any FUTURE caller, but this path is the one that is
+      // reachable today and it fails loudly.
+      const requested = canonicalizeRegion(resolvedValue);
+      if (!isClientSafeRegion(requested)) {
+        throw new Error(
+          `Fn::GetAZs: '${stripControlChars(resolvedValue).slice(0, 64)}' is not a valid AWS ` +
+            `region name. A region is substituted into the AWS service hostname, so cdkd will ` +
+            `not build a client from it.`
+        );
+      }
+      region = requested;
+      clientRegion = requested;
     } else {
       // Empty string or non-string: use current region
       const accountInfo = await getAccountInfo(this.resolverRegion);
       region = accountInfo.region;
+      clientRegion = this.explicitRegion;
     }
 
     // Check cache
@@ -4276,9 +4593,13 @@ export class IntrinsicFunctionResolver {
     }
 
     // Call EC2 DescribeAvailabilityZones
-    const awsClients = getAwsClients();
-    const ec2Client = awsClients.ec2;
+    const ec2Client = this.clientsForRegion(clientRegion).ec2;
 
+    // The try wraps ONLY the call. The empty-list refusal below deliberately
+    // sits outside it: inside, the catch would rewrap it into
+    // `failed to describe ...: no availability zones returned ...` — a doubled
+    // prefix, and a "failed to describe" on a call that SUCCEEDED.
+    let azNames: string[];
     try {
       const response = await ec2Client.send(
         new DescribeAvailabilityZonesCommand({
@@ -4295,19 +4616,35 @@ export class IntrinsicFunctionResolver {
         })
       );
 
-      const azNames = (response.AvailabilityZones || [])
+      azNames = (response.AvailabilityZones || [])
         .map((az) => az.ZoneName)
         .filter((name): name is string => name !== undefined)
         .sort();
-
-      cachedAvailabilityZones[region] = azNames;
-      this.logger.debug(`Resolved Fn::GetAZs: ${region} -> ${JSON.stringify(azNames)}`);
-      return azNames;
     } catch (error) {
       throw new Error(
         `Fn::GetAZs: failed to describe availability zones for region '${region}': ${error instanceof Error ? error.message : String(error)}`
       );
     }
+
+    // An EMPTY list is never a legitimate answer: every enabled AWS region has
+    // at least one availability zone. It means the call was answered by the
+    // wrong region's endpoint (the `region-name` filter narrows a listing, it
+    // does not redirect one), or the region is opt-in and not enabled on this
+    // account. Neither is a value to hand back — and it must certainly not be
+    // CACHED, because `cachedAvailabilityZones` is module-global, so one
+    // degenerate answer would be replayed as the resolved value of every later
+    // `Fn::GetAZs` for that region in the process (issue #1957 review).
+    if (azNames.length === 0) {
+      throw new Error(
+        `Fn::GetAZs: no availability zones returned for region '${region}'. Either the region ` +
+          `is not enabled on this account (opt-in regions must be enabled before use), or the ` +
+          `request was answered by a different region's endpoint.`
+      );
+    }
+
+    cachedAvailabilityZones[region] = azNames;
+    this.logger.debug(`Resolved Fn::GetAZs: ${region} -> ${JSON.stringify(azNames)}`);
+    return azNames;
   }
 
   /**
@@ -4668,8 +5005,10 @@ export class IntrinsicFunctionResolver {
       `Resolving dynamic reference: secretsmanager:${secretId}:SecretString:${jsonKey}:${versionStage}:${versionId}`
     );
 
-    const awsClients = getAwsClients();
-    const client = awsClients.secretsManager;
+    // Region-sensitive, and the reason issue #1957 is a security defect rather
+    // than only a correctness one: the same secret NAME in two regions is two
+    // different credentials.
+    const client = this.clientsForRegion(this.explicitRegion).secretsManager;
 
     const command = new GetSecretValueCommand({
       SecretId: secretId,
@@ -4863,10 +5202,13 @@ export class IntrinsicFunctionResolver {
    * - It says NOTHING about concurrency. The client is captured before the
    *   first attempt, so a sibling stack's teardown (`stackAwsClients.destroy()`
    *   in `deploy.ts`) during a backoff surfaces as a raw, non-throttle-shaped
-   *   failure on the next attempt. That is a property of the ambient-singleton
-   *   design this PR deliberately does not touch (issue
-   *   [#1957](https://github.com/go-to-k/cdkd/issues/1957)), not something the
-   *   retry makes safe.
+   *   failure on the next attempt, and the retry does not make that safe. Issue
+   *   [#1957](https://github.com/go-to-k/cdkd/issues/1957) NARROWED this rather
+   *   than removing it: a lookup whose region differs from the ambient one now
+   *   runs on {@link clientsForRegion}'s own clients, which no sibling stack can
+   *   destroy because nothing else in the process holds a reference to them. A
+   *   sibling in the SAME region still shares the ambient instance, so the
+   *   window survives exactly where the two stacks agree on the region.
    */
   private sendWithThrottleRetry<T>(operation: () => Promise<T>, label: string): Promise<T> {
     return withRetry(operation, label, {
@@ -4904,8 +5246,10 @@ export class IntrinsicFunctionResolver {
 
     this.logger.debug(`Resolving dynamic reference: ssm:${parameterName}`);
 
-    const awsClients = getAwsClients();
-    const client = awsClients.ssm;
+    // Region-sensitive in BOTH of its outputs: the value, and the `Type` this
+    // method reports back. A region-B `SecureString` classified against a
+    // region-A `String` namesake is persisted in PLAINTEXT (issue #1957).
+    const client = this.clientsForRegion(this.explicitRegion).ssm;
 
     const command = new GetParameterCommand({
       Name: parameterName,

@@ -13,12 +13,17 @@ const sourceParameterName =
   process.env['CDKD_IT_DYNREF_SOURCE_PARAM'] ?? '/cdkd-test/dynref-cross-region';
 const secureSourceParameterName =
   process.env['CDKD_IT_DYNREF_SECURE_PARAM'] ?? '/cdkd-test/dynref-cross-region-secure';
+// The MIXED-TYPE name: a plain `String` in region A and a `SecureString` in
+// region B (issue #1957 acceptance criterion 3). Seeded by `verify.sh`.
+const mixedTypeSourceParameterName =
+  process.env['CDKD_IT_DYNREF_MIXED_PARAM'] ?? '/cdkd-test/dynref-cross-region-mixed';
 
 new DynamicRefCrossRegionStack(app, 'CdkdDynamicRefCrossRegionAStack', {
   description: 'Resolves a shared {{resolve:ssm:...}} expression in region A (cdkd issue #1933)',
   env: { region: regionA },
   sourceParameterName,
   secureSourceParameterName,
+  mixedTypeSourceParameterName,
 });
 
 new DynamicRefCrossRegionStack(app, 'CdkdDynamicRefCrossRegionBStack', {
@@ -26,4 +31,5 @@ new DynamicRefCrossRegionStack(app, 'CdkdDynamicRefCrossRegionBStack', {
   env: { region: regionB },
   sourceParameterName,
   secureSourceParameterName,
+  mixedTypeSourceParameterName,
 });
