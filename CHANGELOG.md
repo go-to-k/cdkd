@@ -1,3 +1,10 @@
+## [0.284.10](https://github.com/go-to-k/cdkd/compare/v0.284.9...v0.284.10) (2026-08-19)
+
+
+### Bug Fixes
+
+* **scrub:** repair a stored output plaintext the template no longer declares ([#2060](https://github.com/go-to-k/cdkd/issues/2060)) ([547b723](https://github.com/go-to-k/cdkd/commit/547b723d093235a1d2077ee189568f37abf1e272))
+
 ## [0.284.9](https://github.com/go-to-k/cdkd/compare/v0.284.8...v0.284.9) (2026-08-19)
 
 
