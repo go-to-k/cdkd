@@ -1987,6 +1987,24 @@ describe('CognitoUserPoolProvider', () => {
 
         expect(error).toBeInstanceOf(ProvisioningError);
         expect(error.message).toContain('MfaConfiguration is OFF');
+        // The UPDATE twin of the create-path re-wrap negative -- kept as
+        // defence in depth, and labelled honestly as REDUNDANT today rather
+        // than sold as a fence, because a false fence claim is what stops the
+        // next reader re-checking.
+        //
+        // MEASURED: no mutation makes this line fail on its own. Two guards
+        // already stand in front of it. The seam sits OUTSIDE update()'s try,
+        // so a throw never reaches the catch that could re-word it; and
+        // update()'s catch re-throws a ProvisioningError UNCHANGED anyway
+        // (unlike create()'s, which rebuilds the message unconditionally --
+        // which is why the create-path twin IS load-bearing there). Moving the
+        // seam inside the try is caught by `not.toHaveBeenCalled` below, and
+        // throwing a plain Error is caught by the `toBeInstanceOf` above.
+        //
+        // It earns its place only against a FUTURE change to that catch: if the
+        // ProvisioningError pass-through were ever dropped, this becomes the
+        // line that notices.
+        expect(error.message).not.toContain('Failed to update Cognito User Pool');
         // The DISCRIMINATOR: UpdateUserPool never went out, so there is no
         // half-applied update to unwind. `not.toHaveBeenCalled` rather than a
         // per-command check because it is the strongest available statement and
@@ -2086,6 +2104,25 @@ describe('CognitoUserPoolProvider', () => {
         );
 
         expect(error).toBeInstanceOf(ProvisioningError);
+        expect(error.message).toContain('AllowedFirstAuthFactors allows EMAIL_OTP');
+        // The UPDATE twin of the create-path re-wrap negative -- kept as
+        // defence in depth, and labelled honestly as REDUNDANT today rather
+        // than sold as a fence, because a false fence claim is what stops the
+        // next reader re-checking.
+        //
+        // MEASURED: no mutation makes this line fail on its own. Two guards
+        // already stand in front of it. The seam sits OUTSIDE update()'s try,
+        // so a throw never reaches the catch that could re-word it; and
+        // update()'s catch re-throws a ProvisioningError UNCHANGED anyway
+        // (unlike create()'s, which rebuilds the message unconditionally --
+        // which is why the create-path twin IS load-bearing there). Moving the
+        // seam inside the try is caught by `not.toHaveBeenCalled` below, and
+        // throwing a plain Error is caught by the `toBeInstanceOf` above.
+        //
+        // It earns its place only against a FUTURE change to that catch: if the
+        // ProvisioningError pass-through were ever dropped, this becomes the
+        // line that notices.
+        expect(error.message).not.toContain('Failed to update Cognito User Pool');
         // The DISCRIMINATOR: the sign-in policy never reached AWS, so there is
         // no half-applied update to unwind.
         expect(mockSend).not.toHaveBeenCalled();
@@ -2239,27 +2276,40 @@ describe('CognitoUserPoolProvider', () => {
       // MUST-STILL-DEPLOY 2: EMAIL_OTP with MFA OFF. Nothing about the sign-in
       // policy is wrong on its own -- passwordless email OTP is exactly what
       // the property is for -- so the refusal must be about the COMBINATION.
+      //
+      // `WebAuthnRelyingPartyID`, not `EnabledMfas`, is what makes this REACH
+      // rule 2: a SetUserPoolMfaConfig request must be BUILT or the scope limit
+      // exits first and the OFF-ness fences nothing (that was this test's
+      // earlier shape). WebAuthn is the one MFA-routed property that builds a
+      // request WITHOUT a factor block, so rule 1 stays silent and rule 2 is
+      // reached and declines on the MfaConfiguration value alone -- which is
+      // exactly the claim in the paragraph above.
       it('still deploys EMAIL_OTP when MfaConfiguration is OFF', async () => {
         mockSend.mockResolvedValueOnce({
           UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:email-otp-off' },
         });
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
 
         await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
           Policies: emailOtpPolicies,
+          WebAuthnRelyingPartyID: 'auth.example.com',
           MfaConfiguration: 'OFF',
         });
 
-        expect(mockSend).toHaveBeenCalledTimes(1);
-        expect(mockSend.mock.calls[0][0].input.MfaConfiguration).toBe('OFF');
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        expect(mockSend.mock.calls[1][0].constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mockSend.mock.calls[1][0].input.MfaConfiguration).toBe('OFF');
       });
 
-      // MUST-STILL-DEPLOY 3, and the reason the rule is NOT `!== 'OFF'`:
-      // OPTIONAL is UNMEASURED. Whether AWS reads it as "MFA is enabled" for
-      // this check was never probed, and refusing a combination AWS accepts
-      // blocks a working deploy, while missing one only leaves the pre-#1975
-      // behaviour in place. Widening the rule to OPTIONAL requires a probe --
-      // this case is what makes that a deliberate change rather than a drift.
-      it('still deploys EMAIL_OTP under OPTIONAL, which is UNMEASURED', async () => {
+      // MUST-STILL-DEPLOY 3, and the reason the rule is NOT `!== 'OFF'`.
+      // MEASURED us-east-1 2026-08-19: `{[PASSWORD, EMAIL_OTP], OPTIONAL}` is
+      // ACCEPTED by AWS (and `{[PASSWORD, SMS_OTP], OPTIONAL}` with it), so
+      // widening rule 2 to `!== 'OFF'` would REFUSE A WORKING DEPLOY. The
+      // narrowing to `=== 'ON'` is measured-correct, not merely conservative --
+      // see the transcript at `describeUnsupportedMfaCombination`, and
+      // `tests/integration/cognito/verify.sh` assertion 14, which pins the same
+      // acceptance against real AWS.
+      it('still deploys EMAIL_OTP under OPTIONAL, which AWS ACCEPTS', async () => {
         mockSend.mockResolvedValueOnce({
           UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:email-otp-optional' },
         });
@@ -2274,27 +2324,41 @@ describe('CognitoUserPoolProvider', () => {
         expect(mockSend.mock.calls[1][0].input.MfaConfiguration).toBe('OPTIONAL');
       });
 
-      // MUST-STILL-DEPLOY 4, and the ONLY case that discriminates the DENY-list
-      // from the allow-list the AWS message states: a factor AWS adds after
-      // this code was written. Written from the allow-list, cdkd would refuse
-      // it on the day it starts working -- the same reason the
-      // unrecognized-EnabledMfas case warns rather than throws. Written from
-      // the deny-list, it is simply not pre-flighted, which is the pre-#1975
-      // behaviour (a loud AWS rejection) rather than a regression.
+      // MUST-STILL-DEPLOY 4, and the only case that discriminates the SHAPE of
+      // the rule -- a DENY-list of known-incompatible factors vs an ALLOW-list
+      // of {PASSWORD, WEB_AUTHN} -- using a factor AWS adds after this code was
+      // written. Written from the allow-list, cdkd would refuse it on the day
+      // it starts working, the same reason the unrecognized-EnabledMfas case
+      // warns rather than throws. Written from the deny-list it is simply not
+      // pre-flighted, which is the pre-#1975 behaviour (a loud AWS rejection)
+      // rather than a regression.
+      //
+      // `EnabledMfas` is REQUIRED, not incidental. Without it `hasMfaConfigProps`
+      // is false, no SetUserPoolMfaConfig request is built, and rule 2's scope
+      // limit exits BEFORE the deny-list is ever consulted -- so the bag deploys
+      // for a reason that has nothing to do with the allow/deny decision, and
+      // the test passes identically for `EMAIL_OTP`, which IS on the deny-list.
+      // Measured: it was that shape, and rewriting rule 2 from the allow-list
+      // failed NO test. The membership of the deny-list is fenced elsewhere (the
+      // SMS_OTP cases); this case exists for its SHAPE alone.
       it('still deploys a factor cdkd does not know, rather than assuming the allow-list', async () => {
         mockSend.mockResolvedValueOnce({
           UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:future-factor' },
         });
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
 
         await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
           Policies: {
             SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'FUTURE_AWS_FACTOR'] },
           },
+          EnabledMfas: ['SOFTWARE_TOKEN_MFA'],
           MfaConfiguration: 'ON',
         });
 
-        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend).toHaveBeenCalledTimes(2);
         expect(mockSend.mock.calls[0][0].constructor.name).toBe('CreateUserPoolCommand');
+        expect(mockSend.mock.calls[1][0].constructor.name).toBe('SetUserPoolMfaConfigCommand');
+        expect(mockSend.mock.calls[1][0].input.MfaConfiguration).toBe('ON');
       });
 
       // MUST-STILL-DEPLOY 5: an unresolved / mis-shaped SignInPolicy is AWS's
