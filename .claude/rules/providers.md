@@ -1088,7 +1088,10 @@ engine's DELETE path — so a failing child now fails the DEPLOY and triggers it
 rollback. That asymmetry is worth internalizing before adding a throw anywhere:
 a `{ outcome: 'skipped' }` return value reaches the deploy-side call sites too
 since issue #1762, but WEAKER there (the template-removal DELETE warns and keeps
-the record), whereas a throw fails the resource at every one of them.
+the record rather than failing the ROW), whereas a throw fails the resource at
+every one of them. "Weaker" is about the row, not about the RUN: since issue
+[#1960](https://github.com/go-to-k/cdkd/issues/1960) the skip still makes the
+deploy exit 2 at the end, unless `--allow-unaddressed` is passed.
 
 Three more details generalize to any provider that recurses:
 

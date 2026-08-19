@@ -1166,6 +1166,43 @@ physical ID that genuinely is the attribute value for a type cdkd has not
 enriched yet) is acceptable. Nested-stack child deploys inherit the flag
 from the parent deploy.
 
+## `--allow-unaddressed` (deploy)
+
+A deploy that finishes without a single resource FAILING can still leave a
+resource cdkd was responsible for alive in AWS. Since issue
+[#1960](https://github.com/go-to-k/cdkd/issues/1960) that outcome exits `2`,
+matching what `cdkd destroy` has done for the identical case since
+[#1752](https://github.com/go-to-k/cdkd/issues/1752). Two cases produce it, and
+they differ in whether they heal themselves:
+
+| Summary row | Cause | Next `cdkd deploy` retries it? |
+|---|---|---|
+| `Skipped (not deleted): N` | a resource removed from the template whose provider could not issue the delete — typically a malformed `physicalId` in state (issue [#1762](https://github.com/go-to-k/cdkd/issues/1762)) | **Yes.** The state record is deliberately KEPT, so the resource is still diffed as a DELETE next run |
+| `of which left an orphaned predecessor: N` | a replacement whose new resource was created and whose OLD one could not be deleted (issue [#1819](https://github.com/go-to-k/cdkd/issues/1819)) | **No.** State now points at the replacement, so the survivor is untracked — delete it by hand |
+
+```bash
+cdkd deploy MyStack                       # exit 2 if either row is non-zero
+cdkd deploy MyStack --allow-unaddressed   # exit 0 for the same run
+```
+
+The flag suppresses **only the exit code**. The summary rows, each resource's
+own warning (which names the cause and the remedy), and the `skipped` figure in
+`cdkd events` are emitted either way, so a run that used the flag still says in
+its log that a resource survived.
+
+It exists because the orphaned-predecessor case has a legitimate
+not-yet-fixable window. The commonest instance is an ACM certificate
+replacement rejected because a consumer — often a CloudFront distribution in
+another stack not yet updated — still references the old certificate; the
+delete succeeds on its own once `DescribeCertificate.InUseBy` is empty. Until
+then a pipeline would be red for a cause it cannot act on.
+
+Prefer the flag over wrapping the command in a shell exit-code test. `cdkd
+deploy` also exits `2` for `MacroExpansionError` (a synth-time macro failure)
+and `ResourceUpdateNotSupportedError`, so `cdkd deploy || [ $? -eq 2 ]` would
+silence those unrelated real failures; `--allow-unaddressed` is scoped to this
+one cause.
+
 ## `--no-cfn-fallback` (deploy / diff)
 
 By default (issue
@@ -2724,7 +2761,7 @@ CI / bench scripts can react without grepping log output:
 | --- | --- | --- |
 | `0` | Success — command completed and no resources are in an error state | All commands |
 | `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception. **`cdkd drift` also exits `1` when drift is detected**, and **`cdkd diff --fail` exits `1` when any change is detected** (the operative meaning is "non-zero outcome", not "command crashed") | All commands (default for any thrown error) |
-| `2` | **Partial failure** — work completed but one or more resources failed OR was SKIPPED; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (per-resource delete failures, and per-resource **skips** — issue #1752), `cdkd publish-assets` (per-stack asset publish failures), `cdkd rollback` (per-op failures / skipped-with-warning ops; the journal is kept for re-run) |
+| `2` | **Partial failure** — work completed but one or more resources failed OR was SKIPPED; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (per-resource delete failures, and per-resource **skips** — issue #1752), `cdkd deploy` (resources left UNADDRESSED — a skipped DELETE or a replacement's surviving predecessor; issue [#1960](https://github.com/go-to-k/cdkd/issues/1960), suppressible with `--allow-unaddressed`), `cdkd publish-assets` (per-stack asset publish failures), `cdkd rollback` (per-op failures / skipped-with-warning ops; the journal is kept for re-run) |
 
 The implementation hangs off a `PartialFailureError` class in
 `src/utils/error-handler.ts`. `handleError` reads the error's
@@ -2740,6 +2777,19 @@ also switches glyphs:
 ⚠ Stack X partially destroyed (N deleted, M errors). State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up.   # exit 2
 ⚠ Stack X partially destroyed (N deleted, S skipped, 0 errors). cdkd could not address the skipped resource(s) ...   # exit 2
 ```
+
+`cdkd deploy` switches the same way (issue #1960) — a run that left a resource
+unaddressed no longer claims to have completed successfully:
+
+```text
+✓ Deployment completed successfully                                                  # exit 0
+⚠ Stack X deployed, but N resource(s) were left unaddressed — they may still exist in AWS. This deploy will exit 2 (pass --allow-unaddressed to exit 0).   # exit 2
+⚠ Stack X deployed, but N resource(s) were left unaddressed — they may still exist in AWS. Exiting 0 because --allow-unaddressed was passed.               # exit 0
+```
+
+The warning is printed in all three cases where a resource survived; only the
+exit code differs. See [`--allow-unaddressed` (deploy)](#--allow-unaddressed-deploy)
+for which two cases produce it and how they differ in recoverability.
 
 ### Skipped resources on destroy (issue #1752)
 
@@ -2803,13 +2853,20 @@ replacement. Each site handles it in the way that resource's situation allows:
 
 | Deploy-side site | On a skip |
 | --- | --- |
-| a resource removed from the template | warns, prints `⚠ <id> (<type>) skipped (<reason>)`, **keeps the state record**, and counts it under `Skipped (not deleted)` in the summary. The deploy still exits `0`: the record is kept, so the resource is still a pending DELETE and the next `cdkd deploy` re-attempts it |
+| a resource removed from the template | warns, prints `⚠ <id> (<type>) skipped (<reason>)`, **keeps the state record**, and counts it under `Skipped (not deleted)` in the summary. Because the record is kept, the resource is still a pending DELETE and the next `cdkd deploy` re-attempts it — but the run exits `2` (issue #1960), since the template as written was not applied |
 | the old resource of a replacement (`--replace`, `--recreate-via-*`, an UPDATE the type does not support in place) | **fails the resource** — the replacement create would otherwise run beside a live old one, or collide with its name |
 | the cleanup delete after a create-first replacement | warns; the new resource is already created and recorded, so the old one is untracked whether the delete failed or was skipped. Delete it by hand |
 | a rollback delete (automatic, or `cdkd rollback`) | counted as a per-op **failure** at four of the five arms, so the journal segment is kept and re-running `cdkd rollback` re-attempts it. The exception is the delete of the NEW resource AFTER the old one was re-created: that arm's delete is already best-effort (the revert itself succeeded and state points at the old resource), so a skip warns and counts as a warning — the new resource is left untracked and must be deleted by hand |
 
-Unlike destroy, a deploy-side skip does not change the exit code — `cdkd
-destroy` has no next run to heal it, whereas a kept record on deploy does.
+A deploy-side skip changes the exit code too, since issue
+[#1960](https://github.com/go-to-k/cdkd/issues/1960). This reverses the earlier
+rule recorded here — that a skip on deploy stayed exit `0` because a kept record
+means the next run heals it, while `cdkd destroy` has no next run. Self-healing
+is still the real difference between the two verbs, and the table above keeps
+it; what it does not justify is reporting SUCCESS in the meantime. The deploy
+did not apply the template it was given, and a pipeline reading only the exit
+code was being told it had. `--allow-unaddressed` restores exit `0` for callers
+who accept that (see [`--allow-unaddressed` (deploy)](#--allow-unaddressed-deploy)).
 
 #### A nested stack whose child FAILED is an error, not a skip (issue #1777)
 

@@ -880,6 +880,44 @@ export const strictGetattOption = new Option(
 ).default(false);
 
 /**
+ * Issue [#1960](https://github.com/go-to-k/cdkd/issues/1960) —
+ * `--allow-unaddressed` (deploy only). A deploy that finishes having left a
+ * resource cdkd was responsible for ALIVE in AWS and no longer in state exits
+ * 2 (partial failure), matching what `cdkd destroy` has done for the identical
+ * outcome since issue #1752. Two cases produce it:
+ *
+ *  - a skipped DELETE (issue #1762) — a resource removed from the template
+ *    whose provider could not issue the delete, typically because the state
+ *    record is malformed (see `src/provisioning/composite-id.ts`);
+ *  - a partial UPDATE (issue #1819) — a replacement whose new resource was
+ *    created and whose OLD one survives untracked, most commonly an ACM
+ *    certificate a consumer still references.
+ *
+ * This flag forces exit 0 for both. It exists because the partial-UPDATE case
+ * has a legitimate not-yet-fixable window: an ACM replacement blocked on
+ * `DescribeCertificate.InUseBy` clears itself once the consumer (e.g. a
+ * CloudFront distribution in another stack) finishes updating, so a pipeline
+ * can be red for a cause it cannot act on. Wrapping the command in a shell
+ * exit-code test is NOT an equivalent workaround — `cdkd deploy` also exits 2
+ * for `MacroExpansionError` and `ResourceUpdateNotSupportedError`, so a
+ * `|| [ $? -eq 2 ]` wrapper silences unrelated real failures; this flag is
+ * scoped to the one cause.
+ *
+ * The flag suppresses only the EXIT CODE. The summary rows
+ * (`Skipped (not deleted)` / `of which left an orphaned predecessor`), the
+ * per-resource warnings, and the `RunCounts.skipped` figure in `cdkd events`
+ * are all emitted unchanged, so a run that used it still says in its log that
+ * a resource survived.
+ */
+export const allowUnaddressedOption = new Option(
+  '--allow-unaddressed',
+  'Exit 0 even when the deploy left a resource unaddressed — a DELETE the provider could ' +
+    'not issue, or a replacement whose old resource survives untracked (default: exit 2, ' +
+    'matching cdkd destroy). The summary rows and warnings are printed either way; only the ' +
+    'exit code changes.'
+).default(false);
+
+/**
  * Issue #1697 — `--no-cfn-fallback` (deploy + diff). By default, a
  * cross-stack reference (`Fn::ImportValue` / `Fn::GetStackOutput`) that is
  * not found in cdkd state falls back to CloudFormation (`ListExports` /
@@ -995,6 +1033,7 @@ export const deployOptions = [
   useCdkBootstrapAssetsOption,
   strictGetattOption,
   noCfnFallbackOption,
+  allowUnaddressedOption,
   ...resourceTimeoutOptions,
 ];
 

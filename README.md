@@ -890,7 +890,7 @@ CI / bench scripts can react without grepping log output:
 | `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception |
 | `2` | **Partial failure** — work completed but one or more resources failed or was SKIPPED (state.json is preserved, re-running typically resolves it) |
 
-Exit `2` is currently emitted by `cdkd destroy` and `cdkd state
+Exit `2` is emitted by `cdkd destroy` and `cdkd state
 destroy` when one or more per-resource deletes fail. The summary line
 also switches from `✓ Stack X destroyed` to `⚠ Stack X partially
 destroyed (...). State preserved — re-run 'cdkd destroy' / 'cdkd
@@ -902,6 +902,24 @@ skipped (...)` plus `(4 deleted, 1 skipped, 0 errors)` means cdkd could not
 address that resource, issued no AWS call, and therefore left it in place —
 so the state record is deliberately KEPT rather than dropped. See
 [docs/cli-reference.md](docs/cli-reference.md#skipped-resources-on-destroy-issue-1752).
+
+`cdkd deploy` exits `2` for the same class of outcome (issue
+[#1960](https://github.com/go-to-k/cdkd/issues/1960)) — it finished, nothing
+failed, and yet a resource cdkd was responsible for may still be alive in AWS:
+
+| Summary row | What survived | Recovers on its own? |
+|---|---|---|
+| `Skipped (not deleted): N` | a resource removed from the template whose provider could not issue the delete | **Yes** — the state record is kept, so the next `cdkd deploy` re-attempts it |
+| `of which left an orphaned predecessor: N` | the OLD resource of a replacement (e.g. an ACM certificate a CloudFront distribution still references) | **No** — state now points at the replacement, so nothing will retry it; delete it by hand |
+
+Pass `--allow-unaddressed` to exit `0` instead. It suppresses only the exit
+code — the summary rows, the per-resource warnings, and the `skipped` count in
+`cdkd events` are printed either way. The flag exists because the
+orphaned-predecessor case can be temporarily unfixable (an ACM replacement
+blocked on `DescribeCertificate.InUseBy` clears once the consumer finishes
+updating). Prefer it over a shell `|| [ $? -eq 2 ]` wrapper, which would also
+swallow the unrelated failures that exit `2` — macro expansion errors and
+unsupported in-place updates.
 
 ## Local execution
 
