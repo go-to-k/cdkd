@@ -31,6 +31,7 @@ import {
   redactSecretsForState,
   scrubResourceRecord,
   maskSecretsInText,
+  maskSecretsInError,
   createSecretMasker,
   type RecordedSecretValues,
 } from './secret-redaction.js';
@@ -83,6 +84,7 @@ import {
   computeImplicitDeleteEdges,
 } from '../analyzer/implicit-delete-deps.js';
 import { withRetry, type RetryLogger } from './retry.js';
+import { maskingRetryLogger } from './masking-retry-logger.js';
 import { isNameCollisionError, isRecreateRetryableError } from './retryable-errors.js';
 import { withResourceDeadline } from './resource-deadline.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
@@ -96,6 +98,15 @@ import {
 } from './rollback-executor.js';
 import { getCdkdVersion } from '../state/deployment-events-store.js';
 import type { RollbackJournalSegment } from '../types/rollback-journal.js';
+
+/**
+ * The bag a resource with no recorded secret masks against (issue #2038).
+ * Shared so the "no entry" path allocates nothing and — more usefully — so
+ * every masking site takes the SAME branch: `maskSecretsInText` /
+ * `maskSecretsInError` both return their input unchanged for an empty bag, so
+ * an absent entry and an empty one cannot behave differently. Never written to.
+ */
+const EMPTY_SECRETS: RecordedSecretValues = new Map();
 
 /**
  * Default per-resource warn threshold: warn the user when a single
@@ -2858,7 +2869,24 @@ export class DeployEngine {
     } catch (error) {
       renderer.removeTask(logicalId);
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Failed to ${change.changeType.toLowerCase()} ${logicalId}: ${message}`);
+      // Issue #2038: MASKED, and at a strictly higher log level than the retry
+      // give-up summary one statement below it. `perResourceSecrets` is
+      // populated right after `resolver.resolve` and BEFORE the provider call
+      // on both the CREATE and the UPDATE path, so whenever this resource
+      // resolved a `{{resolve:...}}` reference the bag handed to the provider
+      // was PLAINTEXT — and an AWS validation error routinely quotes the
+      // offending value back (`Value '<secret>' at 'clientSecret' failed to
+      // satisfy constraint ...`). The `recordEvent` below already masked (via
+      // `maskSecretsInEvent`); this `error` line did not, so the durable sink
+      // was clean while the terminal printed the secret at DEFAULT verbosity.
+      // Masks the CONCATENATED line, matching `maskingRetryLogger`; forwards
+      // verbatim for a resource with no recorded secret.
+      this.logger.error(
+        this.maskForResource(
+          logicalId,
+          `Failed to ${change.changeType.toLowerCase()} ${logicalId}: ${message}`
+        )
+      );
 
       // #808 best-effort event: per-resource op failed. Error metadata
       // only — no resource properties.
@@ -2875,12 +2903,26 @@ export class DeployEngine {
         error: extractDeploymentEventError(error),
       });
 
+      // Issue #2038 review: the CAUSE is masked too, and that is a THIRD sink
+      // rather than a belt-and-braces repeat of the two above. `formatError`
+      // renders a `CdkdError`'s cause as `Caused by: <cause.message>` and
+      // `handleError` logs it at `error` level, so a deploy that fails on a
+      // secret-bearing resource printed the plaintext at the CLI boundary even
+      // with both log sites masked — the sink reads the error OBJECT, not the
+      // text this method formatted. `maskSecretsInError` clones with every own
+      // property descriptor (symbols included), so `markNonRetryable`'s marker,
+      // `$metadata` and any nested `cause` survive for the classifiers, and it
+      // returns the original by identity when nothing matched. Deliberately
+      // AFTER `extractDeploymentEventError` above, which masks separately via
+      // `recordEvent` and would otherwise mask twice for no benefit.
       throw new ProvisioningError(
         `Failed to ${change.changeType.toLowerCase()} resource ${logicalId}`,
         resourceType,
         logicalId,
         stateResources[logicalId]?.physicalId,
-        error instanceof Error ? error : undefined
+        error instanceof Error
+          ? maskSecretsInError(error, this.perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS)
+          : undefined
       );
     } finally {
       // Safety net for early-break paths (UPDATE skip, DeletionPolicy: Retain).
@@ -3043,9 +3085,17 @@ export class DeployEngine {
     // would bind the masker to a map looked up by logical id rather than to
     // the bag the caller actually resolved with, which is a different (and
     // silently wrong under concurrency) thing.
-    createContext: CreateContext,
+    //
+    // Issue #2038 review: it is the BAG, not the finished `CreateContext`, for
+    // exactly that reason. The retry logger and the two wrap messages below
+    // need the same bag the masker is built from, and re-deriving it from
+    // `perResourceSecrets` inside this method would have made the file state
+    // the rule above and then break it three lines on. The `CreateContext` is
+    // built here from this argument, so the provider call is unchanged.
+    secrets: RecordedSecretValues,
     updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'
   ): Promise<Awaited<ReturnType<ResourceProvider['create']>>> {
+    const createContext: CreateContext = { maskSecrets: createSecretMasker(secrets) };
     // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the OLD
     // resource before the replacement delete, exactly like the destroy
     // paths honor `DeletionPolicy: Snapshot`. Deliberately OUTSIDE the
@@ -3077,10 +3127,29 @@ export class DeployEngine {
     } catch (deleteError) {
       // Mirror the recreate-flagged path's wrapping: the delete is
       // load-bearing here (without it the re-create collides again).
+      //
+      // Issue #2038: masked at CONSTRUCTION, not only where it is logged. This
+      // message lands in `provisionResource`'s `error` line, in the durable
+      // `RESOURCE_FAILED` event, and in the `ProvisioningError` cause — all
+      // three of which mask it again, so double-masking is a no-op. Masking
+      // here means the plaintext never exists inside a thrown `Error` at all,
+      // so a future reader of the `cause` chain cannot re-open the hole. The
+      // delete's own payload is the STATE record, which is redacted; the wrap
+      // is masked because a provider re-creating from `replaceProps` can echo
+      // the resolved value back through this catch.
+      //
+      // MEASURED UNFENCEABLE, deliberately kept: removing this mask (and the
+      // twin on the re-create wrap below) leaves the whole unit suite green,
+      // because every reader downstream masks independently. It is
+      // defense-in-depth against a future change to one of those readers, not
+      // a fence — do not record it in a PR body as a tested behavior.
       throw new Error(
-        `Failed to delete old resource ${logicalId} (${currentResource.physicalId}) ` +
-          `during the --replace delete-first fallback: ` +
-          `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+        maskSecretsInText(
+          `Failed to delete old resource ${logicalId} (${currentResource.physicalId}) ` +
+            `during the --replace delete-first fallback: ` +
+            `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`,
+          secrets
+        )
       );
     }
     // Issue #1762: a skip here FAILS the resource, unlike the template-DELETE
@@ -3129,8 +3198,10 @@ export class DeployEngine {
           initialDelayMs: 2_000,
           maxDelayMs: 10_000,
           // Issue #2038: `replaceProps` is RESOLVED, so mask the AWS message
-          // this retry echoes -- see {@link maskingRetryLogger}.
-          logger: this.maskingRetryLogger(logicalId),
+          // this retry echoes. Bound to the CALLER's bag (the `secrets`
+          // parameter above), not looked up by logical id -- see
+          // {@link maskingRetryLoggerFor}.
+          logger: this.maskingRetryLoggerFor(secrets),
           isInterrupted: () => this.interrupted,
           onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
           isRetryable: isRecreateRetryableError,
@@ -3140,11 +3211,18 @@ export class DeployEngine {
       // The old resource is ALREADY deleted at this point — say so,
       // because state still records it and the next deploy's UPDATE
       // would otherwise chase a resource that no longer exists.
+      //
+      // Issue #2038: masked at construction, same reason as the delete wrap
+      // above — and more acutely, since THIS one wraps a create that was
+      // handed the RESOLVED `replaceProps`.
       throw new Error(
-        `Failed to re-create ${logicalId} after the --replace delete-first fallback ` +
-          `already deleted the old resource (${currentResource.physicalId}): ` +
-          `${recreateError instanceof Error ? recreateError.message : String(recreateError)}. ` +
-          `Re-run the deploy to create it fresh.`
+        maskSecretsInText(
+          `Failed to re-create ${logicalId} after the --replace delete-first fallback ` +
+            `already deleted the old resource (${currentResource.physicalId}): ` +
+            `${recreateError instanceof Error ? recreateError.message : String(recreateError)}. ` +
+            `Re-run the deploy to create it fresh.`,
+          secrets
+        )
       );
     }
   }
@@ -3191,13 +3269,31 @@ export class DeployEngine {
           stackName
         );
 
+        // Store the secrets substituted during THIS resource's resolution so the
+        // save choke point (and the async observed-capture drain) redact this
+        // record only with its own secrets (GHSA fix — see perResourceSecrets).
+        //
+        // Issue #2038 review: registered BEFORE `resolve`, not after. The
+        // resolver MUTATES `context.recordedSecretValues` in place, so the map
+        // this line publishes is the very one the resolution fills — but a
+        // throw from INSIDE `resolve()`, after a secret was already
+        // substituted, used to reach the catch in this method with NO entry for
+        // this resource, so the error line, the durable event and the
+        // `ProvisioningError` cause all masked against an EMPTY bag. No
+        // resolver throw is known to inline a resolved value, so this closes a
+        // WINDOW rather than a demonstrated leak. The hoist cannot expose a
+        // STALE bag: the map is keyed by logical id, `deploy()` resets it per
+        // run, and each logical id is provisioned once — so this key has no
+        // prior entry and the only thing another reader can observe earlier is
+        // this resource's own map, empty, which every masking site treats
+        // identically to an absent entry.
+        if (context.recordedSecretValues) {
+          this.perResourceSecrets.set(logicalId, context.recordedSecretValues);
+        }
         const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
           string,
           unknown
         >;
-        // Store the secrets substituted during THIS resource's resolution so the
-        // save choke point (and the async observed-capture drain) redact this
-        // record only with its own secrets (GHSA fix — see perResourceSecrets).
         // Capture the UNRESOLVED bag as the redaction position source (#1904).
         this.perResourceTemplateProps.set(logicalId, desiredProps);
         // Named so the provider call below can bind the SAME bag into its
@@ -3207,9 +3303,6 @@ export class DeployEngine {
         // but a masker bound to a real map is what keeps the provider call
         // shape identical on both paths.
         const createSecrets = context.recordedSecretValues ?? new Map<string, string>();
-        if (context.recordedSecretValues) {
-          this.perResourceSecrets.set(logicalId, context.recordedSecretValues);
-        }
 
         this.auditResolvedAssetReferences(logicalId, resourceType, resolvedProps);
 
@@ -3314,12 +3407,16 @@ export class DeployEngine {
           stackName
         );
 
+        // Issue #2038 review: registered BEFORE `resolve`, same reason as the
+        // CREATE path above — the resolver fills this map in place, and a throw
+        // from inside `resolve()` after a substitution otherwise reaches the
+        // shared catch with an empty bag.
+        const updateSecrets = context.recordedSecretValues ?? new Map<string, string>();
+        this.perResourceSecrets.set(logicalId, updateSecrets);
         const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
           string,
           unknown
         >;
-        const updateSecrets = context.recordedSecretValues ?? new Map<string, string>();
-        this.perResourceSecrets.set(logicalId, updateSecrets);
         // Same position source on the UPDATE path (#1904).
         this.perResourceTemplateProps.set(logicalId, desiredProps);
 
@@ -3609,8 +3706,11 @@ export class DeployEngine {
                 maxRetries: 8,
                 initialDelayMs: 2_000,
                 maxDelayMs: 10_000,
-                // Issue #2038, same reason as the --replace fallback above.
-                logger: this.maskingRetryLogger(logicalId),
+                // Issue #2038, same reason as the --replace fallback above --
+                // and bound to `updateSecrets`, the bag this UPDATE resolved
+                // with and the very one the `createSecretMasker` one statement
+                // up is built from, rather than looked up by logical id.
+                logger: this.maskingRetryLoggerFor(updateSecrets),
                 isInterrupted: () => this.interrupted,
                 onInterrupted: () => new InterruptedError(this.interruptCause ?? 'user'),
                 isRetryable: isRecreateRetryableError,
@@ -3726,7 +3826,7 @@ export class DeployEngine {
                 oldDeleteProvider,
                 replaceProvider,
                 replaceProps,
-                { maskSecrets: createSecretMasker(updateSecrets) },
+                updateSecrets,
                 updateReplacePolicy
               );
             }
@@ -3795,7 +3895,7 @@ export class DeployEngine {
                 oldDeleteProvider,
                 replaceProvider,
                 replaceProps,
-                { maskSecrets: createSecretMasker(updateSecrets) },
+                updateSecrets,
                 updateReplacePolicy
               );
             }
@@ -4641,10 +4741,23 @@ export class DeployEngine {
   }
 
   /**
-   * The `RetryLogger` every `withRetry` on this engine threads (issue
-   * [#2038](https://github.com/go-to-k/cdkd/issues/2038) acceptance item 1) —
-   * the same masking shape `drift.ts` and `rollback-executor.ts` install, bound
-   * to the resource's OWN recorded secrets.
+   * Mask one line of engine-authored text with a resource's OWN recorded
+   * secrets (issue [#2038](https://github.com/go-to-k/cdkd/issues/2038)).
+   *
+   * Per-resource, never session-wide — see the `perResourceSecrets` field doc
+   * for why one resource's secret must not rewrite another's literal. A
+   * `logicalId` with no entry (or an empty bag) forwards verbatim, so every
+   * non-secret resource is byte-identical to before.
+   */
+  private maskForResource(logicalId: string, text: string): string {
+    return maskSecretsInText(text, this.perResourceSecrets.get(logicalId) ?? EMPTY_SECRETS);
+  }
+
+  /**
+   * The LAZY `RetryLogger` the engine's generic `withRetry` wrapper threads
+   * (issue [#2038](https://github.com/go-to-k/cdkd/issues/2038) acceptance
+   * item 1) — the same masking shape `drift.ts` and `rollback-executor.ts`
+   * install, bound to the resource's OWN recorded secrets.
    *
    * `retry.ts` interpolates the AWS message verbatim into both the per-attempt
    * `debug` line and the give-up `warn` summary, and the bag this engine hands
@@ -4653,25 +4766,43 @@ export class DeployEngine {
    * scope at every retried provider call. An AWS validation error routinely
    * quotes the offending value back, so the give-up summary could print it at
    * DEFAULT verbosity: the same hole #2038 found on the rollback path, one
-   * caller over. The engine already masked its own error / reason text and its
-   * event store; the retry logger was the gap.
+   * caller over.
    *
-   * Per-resource, never session-wide — see the `perResourceSecrets` field doc
-   * for why one resource's secret must not rewrite another's literal. A
-   * `logicalId` with no entry (or an empty bag) forwards verbatim, so every
-   * non-secret resource is byte-identical to before.
+   * The bag is resolved PER LINE rather than captured, because `withRetry`
+   * (the private wrapper below) is reached from call sites that hold no bag —
+   * DELETE, the observed-capture drain, the Outputs pass — and a
+   * `logicalId`-keyed read is the only thing available there. The two
+   * `--replace` sites do hold their caller's bag and use
+   * {@link maskingRetryLoggerFor} instead; see the note on
+   * {@link replaceDeleteFirstAndRecreate}'s `secrets` parameter for why binding
+   * the bag beats looking it up whenever the bag is in scope.
+   *
+   * Do NOT restate that the engine "already masked its own error text" — an
+   * earlier revision of this comment did, and it was FALSE: `provisionResource`
+   * logged the raw AWS message at `error` level (a HIGHER level than this
+   * summary) until #2038's review round. Only the EVENT store was masked.
    */
   private maskingRetryLogger(logicalId: string): RetryLogger {
     return {
-      debug: (msg) => {
-        const secrets = this.perResourceSecrets.get(logicalId);
-        this.logger.debug(secrets ? maskSecretsInText(msg, secrets) : msg);
-      },
-      warn: (msg) => {
-        const secrets = this.perResourceSecrets.get(logicalId);
-        this.logger.warn(secrets ? maskSecretsInText(msg, secrets) : msg);
-      },
+      debug: (msg) => this.logger.debug(this.maskForResource(logicalId, msg)),
+      warn: (msg) => this.logger.warn(this.maskForResource(logicalId, msg)),
     };
+  }
+
+  /**
+   * The EAGER `RetryLogger`, bound to the bag the caller actually resolved
+   * with (issue [#2038](https://github.com/go-to-k/cdkd/issues/2038)).
+   *
+   * Preferred over {@link maskingRetryLogger} wherever the resolution pass's
+   * own `RecordedSecretValues` is in scope, for the reason
+   * {@link replaceDeleteFirstAndRecreate}'s parameter list already states about
+   * the masker it threads: a map looked up by logical id is a DIFFERENT thing
+   * from the bag this call resolved with, and one file must not argue both
+   * sides. It delegates to the shared `masking-retry-logger.ts` so the deploy
+   * engine, `rollback-executor.ts` and `drift.ts` cannot drift apart.
+   */
+  private maskingRetryLoggerFor(secrets: RecordedSecretValues): RetryLogger {
+    return maskingRetryLogger(this.logger, secrets);
   }
 
   /**

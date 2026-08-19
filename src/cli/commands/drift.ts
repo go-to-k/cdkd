@@ -38,6 +38,7 @@ import { CloudControlProvider } from '../../provisioning/cloud-control-provider.
 import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withRetry } from '../../deployment/retry.js';
+import { maskingRetryLogger } from '../../deployment/masking-retry-logger.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import {
   IntrinsicFunctionResolver,
@@ -2766,12 +2767,10 @@ async function runRevert(
             // summary interpolates the AWS message verbatim, so an unmasked
             // forward would defeat the #1914 fence at a HIGHER log level than
             // the one that fence was written for.
-            {
-              logger: {
-                debug: (msg) => logger.debug(maskSecretsInText(msg, secrets)),
-                warn: (msg) => logger.warn(maskSecretsInText(msg, secrets)),
-              },
-            }
+            //
+            // The object itself now comes from `masking-retry-logger.ts` — this
+            // was one of three byte-identical eager copies (issue #2038).
+            { logger: maskingRetryLogger(logger, secrets) }
           );
           totalSucceeded++;
           // Issue #1819: the revert landed, but the provider may have left

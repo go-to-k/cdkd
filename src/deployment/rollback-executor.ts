@@ -78,7 +78,12 @@ import {
   STATE_DERIVED_RULES,
   type RecordedSecretValues,
 } from './secret-redaction.js';
-import { withRetry, type RetryLogger } from './retry.js';
+import { withRetry } from './retry.js';
+// Issue #2038: the masking `RetryLogger` this file threads at all three of its
+// `withRetry` sites. Shared with `drift.ts` and the deploy engine's two
+// `--replace` sites rather than hand-copied — see that module's header for why
+// it is not in the no-import leaf `secret-redaction.ts`.
+import { maskingRetryLogger } from './masking-retry-logger.js';
 import {
   isNameCollisionError,
   isNameCooldownError,
@@ -169,41 +174,6 @@ const REPLAYING_STATE_CREATE_CONTEXT: CreateContext = { replayingState: true };
  */
 function replayingStateCreateContext(secrets: RecordedSecretValues): CreateContext {
   return { ...REPLAYING_STATE_CREATE_CONTEXT, maskSecrets: createSecretMasker(secrets) };
-}
-
-/**
- * The {@link RetryLogger} every replay arm threads into `withRetry` (issue
- * [#2038](https://github.com/go-to-k/cdkd/issues/2038)) — the same shape
- * `drift.ts`'s revert already installs (issue #1914 for `debug`, #2018 for
- * `warn`), factored because THIS file has three `withRetry` sites and a
- * hand-copied object at each is three chances for one of them to keep the raw
- * logger.
- *
- * It masks the CONCATENATED string, not the interpolated value: `retry.ts`
- * builds the give-up summary and the per-attempt line by embedding the AWS
- * message verbatim, and an AWS validation error routinely quotes the offending
- * property VALUE back (`Value 'hunter2' at 'password' failed to satisfy
- * constraint ...`). The bag this replay hands the provider was re-resolved to
- * PLAINTEXT by {@link resolveReplayProps}, so that value provably IS the secret
- * whenever the resource has one.
- *
- * `warn` matters more than `debug` here, which is why `RetryLogger.warn` is
- * optional in the first place: the give-up summary prints at DEFAULT verbosity,
- * so forwarding it unmasked would defeat the #1914 fence at a HIGHER log level
- * than the one that fence was written for. A required `warn` would have been
- * silently satisfied by a raw `logger.warn`.
- *
- * No-op when the op resolved no secret (`maskSecretsInText` returns the text
- * unchanged for an empty bag), so the non-secret rollback path is unchanged.
- */
-function maskingRetryLogger(
-  logger: RollbackExecutorContext['logger'],
-  secrets: RecordedSecretValues
-): RetryLogger {
-  return {
-    debug: (msg) => logger.debug(maskSecretsInText(msg, secrets)),
-    warn: (msg) => logger.warn(maskSecretsInText(msg, secrets)),
-  };
 }
 
 /**
@@ -1468,11 +1438,31 @@ async function replaySingle(
           } catch (recreateError) {
             // The new resource is already gone — say so, because the resource
             // is now absent from both AWS and state.
+            //
+            // Issue #2038: masked at CONSTRUCTION, the byte-identical twin of
+            // the deploy engine's two `--replace` wraps. The create this catch
+            // wraps was handed `resolvedPrevProps`, which `resolveReplayProps`
+            // re-resolved to PLAINTEXT, so the AWS message can quote the secret
+            // back. Every downstream reader already masks (the `~1694` catch
+            // through `maskSecretsInText`, and `maskedRollbackEventError` for
+            // the durable event), so this is defense-in-depth, not a live leak
+            // — but leaving the rollback twin bare while arguing the deploy
+            // engine's copies deserve the same treatment is the inconsistency,
+            // and masking here means the plaintext never exists inside a thrown
+            // `Error` for a future reader of the chain to re-open.
+            //
+            // MEASURED UNFENCEABLE, deliberately kept: deleting this mask
+            // leaves the whole unit suite green, exactly as the deploy engine's
+            // twins do, because every reader masks independently. Do not record
+            // it in a PR body as a tested behavior.
             throw new Error(
-              `Failed to re-create the old ${op.logicalId} after the new resource ` +
-                `(${current.physicalId}) was already deleted: ` +
-                `${recreateError instanceof Error ? recreateError.message : String(recreateError)}. ` +
-                `The resource is now absent — fix forward with 'cdkd deploy'.`
+              maskSecretsInText(
+                `Failed to re-create the old ${op.logicalId} after the new resource ` +
+                  `(${current.physicalId}) was already deleted: ` +
+                  `${recreateError instanceof Error ? recreateError.message : String(recreateError)}. ` +
+                  `The resource is now absent — fix forward with 'cdkd deploy'.`,
+                secrets
+              )
             );
           }
         }
