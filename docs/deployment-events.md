@@ -29,13 +29,19 @@ Each deploy / destroy run appends one **JSONL** line per lifecycle event:
 
 A `RUN_FINISHED` additionally carries `counts.skipped` when non-zero, on
 destroy AND — since issue
-[#1762](https://github.com/go-to-k/cdkd/issues/1762) — on deploy. The two
-differ in the run RESULT, not in the count: a skip-only DESTROY records
-`result: 'FAILED'` (the stack was not destroyed, so `--purge-events` correctly
-leaves the history in place), while a deploy that skipped a template-DELETE
-records `SUCCEEDED` with the `⚠N` marker — the state record was kept, so the
-next deploy re-attempts the delete. `cdkd
-events` renders it as `⚠N` after the `+created/~updated/-deleted` triple:
+[#1762](https://github.com/go-to-k/cdkd/issues/1762) — on deploy. **Both verbs
+record `result: 'FAILED'` for it**, since issue
+[#1960](https://github.com/go-to-k/cdkd/issues/1960). Deploy previously recorded
+`SUCCEEDED` on the grounds that the state record was kept and the next deploy
+re-attempts the delete — but that run now exits 2, and a post-mortem saying a
+run succeeded while the same run returned 2 is a split verdict, not a nuance.
+(Self-healing is still real, and is why the resource is a warning rather than a
+failed ROW; it is not why the RUN would have succeeded.) `--allow-unaddressed`
+changes the exit code only — the run is still recorded `FAILED`, because what
+the events store records is what happened, not what the operator chose to
+tolerate. On destroy the `FAILED` result also keeps `--purge-events` from
+discarding the history. `cdkd
+events` renders the count as `⚠N` after the `+created/~updated/-deleted` triple:
 
 ```text
 2026-08-13T05:15:35Z  RUN_FINISHED  destroy  us-east-1  FAILED  +0/~0/-1  ⚠1

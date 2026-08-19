@@ -92,7 +92,7 @@ vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
     finalize: vi.fn(async () => {}),
   })),
   recordRunFailed: vi.fn(),
-  recordRunSucceeded: vi.fn(),
+  recordRunOutcome: vi.fn(),
 }));
 
 // Mock the synthesizer so we can return arbitrary StackInfo[] (including

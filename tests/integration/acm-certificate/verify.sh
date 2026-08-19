@@ -64,6 +64,47 @@ cleanup() {
     aws acm delete-certificate --certificate-arn "${STRANDED_ARN}" --region "${REGION}" \
       >/dev/null 2>&1 || true
   fi
+  # Both hand-retirements above are best-effort (`|| true`), which is right --
+  # a cleanup failure must not mask the assertion result -- but silent. With
+  # two deliberately-stranded certificates now, sweep for survivors so a failed
+  # retirement is VISIBLE rather than discovered later on the bill. Reported,
+  # not fatal: the run's own verdict is already decided by `rc`.
+  #
+  # TRI-STATE, not two: `|| true` here would let a throttle / AccessDenied
+  # answer read as "no certificates found" and print the clean line over a real
+  # leak -- the sweep would then be worse than none, because it asserts absence
+  # it never established. Consume the probe status explicitly and report
+  # "could not determine" as its own outcome.
+  #
+  # POLLED, not a single probe. `DeleteCertificate` returns before
+  # `ListCertificates` stops listing the certificate, so a one-shot check
+  # immediately after the retirements above reports a survivor that is already
+  # being deleted -- measured on this fixture: the arn phase 3 stranded was
+  # still listed at cleanup time and gone moments later. A warning that fires
+  # on every clean run is worse than no warning, because the next reader learns
+  # to ignore it.
+  local leftover sweep_rc attempt
+  for attempt in 1 2 3 4 5; do
+    leftover=$(aws acm list-certificates --region "${REGION}" \
+      --query "CertificateSummaryList[?contains(DomainName, 'cdkd-integ-${STACK,,}')].CertificateArn" \
+      --output text 2>&1) && sweep_rc=0 || sweep_rc=$?
+    # Stop early on a probe ERROR too: retrying an AccessDenied five times just
+    # delays the same verdict, and the tri-state branch below reports it.
+    [[ "${sweep_rc}" -ne 0 || -z "${leftover}" ]] && break
+    [[ "${attempt}" -lt 5 ]] && sleep 6
+  done
+  if [[ "${sweep_rc}" -ne 0 ]]; then
+    echo "WARNING: the ACM leak sweep could not run (aws exited ${sweep_rc}); a surviving"
+    echo "         certificate would be INVISIBLE. Check by hand:"
+    echo "         aws acm list-certificates --region ${REGION}"
+    echo "${leftover}"
+  elif [[ -n "${leftover}" ]]; then
+    echo "WARNING: ACM certificates for this fixture survived cleanup (still listed after ~30s):"
+    echo "${leftover}"
+    echo "Retire them with: aws acm delete-certificate --certificate-arn <arn> --region ${REGION}"
+  else
+    echo "=== ACM sweep clean: no fixture certificates remain ==="
+  fi
   exit "${rc}"
 }
 trap cleanup EXIT
@@ -260,6 +301,17 @@ fi
 # The run-level counter cdkd events renders as the warn badge.
 if ! echo "${events_out}" | grep -q "RUN_FINISHED.*⚠1"; then
   echo "FAIL: RUN_FINISHED does not carry the run-level skipped count"
+  echo "${events_out}" | grep RUN_FINISHED || true
+  exit 1
+fi
+# ...and the run RESULT must agree with the exit code (issue #1960). Deploy used
+# to record SUCCEEDED here, on the grounds that the kept state record makes the
+# next deploy re-attempt the delete -- but the same run exits 2, so the durable
+# post-mortem said one thing and the process said another. Asserted through a
+# real S3 round-trip rather than only in the unit test, because what is being
+# checked is that the value PERSISTS and RENDERS, not that it was passed.
+if ! echo "${events_out}" | grep -q "RUN_FINISHED.*FAILED.*⚠1"; then
+  echo "FAIL: RUN_FINISHED does not record the run as FAILED (issue #1960)"
   echo "${events_out}" | grep RUN_FINISHED || true
   exit 1
 fi

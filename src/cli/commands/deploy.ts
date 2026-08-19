@@ -48,7 +48,7 @@ import {
 } from '../../assets/asset-redirect.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { DeploymentRunResult } from '../../types/deployment-events.js';
-import { startRunRecorder, recordRunSucceeded, recordRunFailed } from './deployment-events-run.js';
+import { startRunRecorder, recordRunOutcome, recordRunFailed } from './deployment-events-run.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
@@ -954,7 +954,12 @@ async function deployCommand(
         // UPDATE's survivor is untracked, because the record now points at
         // the replacement, so nothing will ever retry it.
         const stackUnaddressed = deployResult.deleteSkipped + deployResult.updatePartial;
-        totalUnaddressed += stackUnaddressed;
+        // Guarded on dryRun even though the engine hard-codes both counters to
+        // 0 on its two dry-run returns: that invariant lives in the engine, and
+        // a future dry run that PREVIEWED "would be skipped" would otherwise
+        // make `cdkd deploy --dry-run` exit 2 while printing "Dry run
+        // completed" -- a run that changed nothing reporting a survivor.
+        if (!options.dryRun) totalUnaddressed += stackUnaddressed;
         logger.info(`  Unchanged: ${gray(deployResult.unchanged)}`);
         logger.info(`  Duration: ${cyan((deployResult.durationMs / 1000).toFixed(2) + 's')}`);
 
@@ -994,15 +999,32 @@ async function deployCommand(
             )} — they may still exist in AWS. ` +
               (options.allowUnaddressed
                 ? `Exiting 0 because --allow-unaddressed was passed.`
-                : `This deploy will exit 2 (pass --allow-unaddressed to exit 0).`)
+                : // Not "will exit 2": in a multi-stack run another stack can
+                  // still FAIL after this line prints, and a real failure takes
+                  // precedence with exit 1. This counts TOWARD exit 2 rather
+                  // than promising it.
+                  `This counts toward a non-zero exit (2 unless something else fails; ` +
+                  `pass --allow-unaddressed to exit 0).`)
           );
         } else {
           logger.info(`\n${green('✓')} ${bold('Deployment completed successfully')}`);
         }
 
-        recordRunSucceeded(
+        // Issue #1960: a run that left a resource unaddressed exits 2, so
+        // recording it as SUCCEEDED here would make the durable post-mortem
+        // contradict the exit code the same run returned -- the split verdict
+        // this issue closed for the console banner, reopened in the events
+        // store. `cdkd destroy` already records FAILED for the identical
+        // outcome (its `skippedCount > 0` arm), so this is parity.
+        //
+        // `recordRunFailed` is deliberately NOT used: it carries error metadata
+        // and no counts, and `skipped` is the only figure in the summary that
+        // says a resource survived.
+        if (stackUnaddressed > 0) runResult = 'FAILED';
+        recordRunOutcome(
           eventRecorder,
           stackInfo.stackName,
+          runResult,
           {
             created: deployResult.created,
             // Issue #1819: a partial update still UPDATED the resource, unlike a

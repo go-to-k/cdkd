@@ -16,6 +16,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  */
 
 const errorSpy = vi.hoisted(() => vi.fn());
+/** Observable so the RUN_FINISHED result can be asserted, not just the exit code. */
+const runOutcomeSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
 
@@ -132,7 +134,7 @@ vi.mock('../../../src/cli/commands/prefix-migration-check.js', () => ({
 
 vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
   startRunRecorder: vi.fn(() => undefined),
-  recordRunSucceeded: vi.fn(),
+  recordRunOutcome: runOutcomeSpy,
   recordRunFailed: vi.fn(),
 }));
 
@@ -229,6 +231,7 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     errorSpy.mockClear();
     warnSpy.mockClear();
     infoSpy.mockClear();
+    runOutcomeSpy.mockClear();
     process.env['CDKD_NO_LIVE'] = '1';
   });
 
@@ -288,7 +291,11 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
     await runDeploy(['--yes']);
     const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(warned).toContain('will exit 2');
+    // Deliberately NOT a promise that the run "will exit 2": in a multi-stack
+    // run a later stack can still FAIL, and a real failure takes precedence
+    // with exit 1.
+    expect(warned).toContain('counts toward a non-zero exit');
+    expect(warned).toContain('--allow-unaddressed');
   });
 
   it('does not claim the deploy completed successfully when a resource survived', async () => {
@@ -297,6 +304,9 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
     await runDeploy(['--yes']);
     const printed = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    // Positive anchor: without it, a mutation that threw BEFORE the summary
+    // block would satisfy the absence assertion while printing nothing at all.
+    expect(printed).toContain('Deployment Summary:');
     expect(printed).not.toContain('Deployment completed successfully');
   });
 
@@ -307,6 +317,7 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
     await runDeploy(['--yes', '--allow-unaddressed']);
     const printed = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(printed).toContain('Deployment Summary:');
     expect(printed).not.toContain('Deployment completed successfully');
   });
 
@@ -321,6 +332,77 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     failingStacks.add('StackB');
     const code = await runDeploy(['--all', '--yes']);
     expect(code).toBe(1);
+    // Pin that StackA actually contributed. Without this the case passes
+    // vacuously if the counter never incremented -- exit 1 would then be
+    // proving nothing about precedence.
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('1 resource(s) were left unaddressed');
+  });
+
+  it('keeps exit 1 for a failing stack even under --allow-unaddressed', async () => {
+    // The flag opts out of the NEW throw only. If it were read as a blanket
+    // "do not fail this deploy", a real provisioning failure would start
+    // reporting success -- far worse than the mis-report this issue fixed.
+    synthStacks.value = [makeStack('StackA'), makeStack('StackB')];
+    engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
+    failingStacks.add('StackB');
+    const code = await runDeploy(['--all', '--yes', '--allow-unaddressed']);
+    expect(code).toBe(1);
+  });
+
+  it('reports the per-stack count, not the run total, in each stack banner', async () => {
+    // The banner reads `stackUnaddressed`; swapping it for the run-level
+    // `totalUnaddressed` still passes every other case, but would print
+    // "0 resource(s) were left unaddressed" over a CLEAN stack in a mixed run.
+    synthStacks.value = [makeStack('StackA'), makeStack('StackB')];
+    engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
+    // StackB is clean and must keep its success banner.
+    const code = await runDeploy(['--all', '--yes']);
+    expect(code).toBe(2);
+    const printed = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(printed).toContain('Deployment completed successfully');
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('1 resource(s) were left unaddressed');
+    expect(warned).not.toContain('0 resource(s) were left unaddressed');
+  });
+
+  it("records the run as FAILED in the events store, not SUCCEEDED", async () => {
+    // The durable post-mortem must agree with the exit code. Recording
+    // SUCCEEDED for a run that returned 2 is the same split verdict this issue
+    // closed for the console banner. `cdkd destroy` already records FAILED for
+    // the identical outcome.
+    engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
+    await runDeploy(['--yes']);
+    // Asserted positionally rather than with toHaveBeenCalledWith, so the case
+    // pins the RESULT and the survivor count without also pinning the recorder
+    // handle and duration, which belong to the mock rather than to this change.
+    const [, stackName, result, counts] = runOutcomeSpy.mock.calls[0] ?? [];
+    expect(stackName).toBe('StackA');
+    expect(result).toBe('FAILED');
+    expect(counts).toMatchObject({ skipped: 1 });
+  });
+
+  it('records FAILED under --allow-unaddressed too', async () => {
+    // The flag opts out of the exit code, not out of what happened. An events
+    // store that flipped to SUCCEEDED with the flag would make the durable
+    // record depend on the caller's tolerance rather than on the run.
+    engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
+    await runDeploy(['--yes', '--allow-unaddressed']);
+    const [, , result, counts] = runOutcomeSpy.mock.calls[0] ?? [];
+    expect(result).toBe('FAILED');
+    expect(counts).toMatchObject({ skipped: 1 });
+  });
+
+  it('records a clean run as SUCCEEDED', async () => {
+    // Positive control for the two cases above: without it, a mutation that
+    // hard-coded FAILED everywhere would satisfy both.
+    await runDeploy(['--yes']);
+    const [, , result, counts] = runOutcomeSpy.mock.calls[0] ?? [];
+    expect(result).toBe('SUCCEEDED');
+    // A clean run must not carry the survivor counter at all — `skipped` is
+    // omitted when zero, and an always-present `skipped: 0` would train the
+    // reader of `cdkd events` to ignore the field.
+    expect(counts).not.toHaveProperty('skipped');
   });
 
   it('still prints the success banner on a clean deploy', async () => {

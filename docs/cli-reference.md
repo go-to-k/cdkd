@@ -1186,9 +1186,11 @@ cdkd deploy MyStack --allow-unaddressed   # exit 0 for the same run
 ```
 
 The flag suppresses **only the exit code**. The summary rows, each resource's
-own warning (which names the cause and the remedy), and the `skipped` figure in
-`cdkd events` are emitted either way, so a run that used the flag still says in
-its log that a resource survived.
+own warning (which names the cause and the remedy), the switched banner, the
+`skipped` figure in `cdkd events` and the `RUN_FINISHED` `result: 'FAILED'`
+record are all emitted either way, so a run that used the flag still says — in
+its log and in its durable post-mortem — that a resource survived. The events
+store records what happened, not what the operator chose to tolerate.
 
 It exists because the orphaned-predecessor case has a legitimate
 not-yet-fixable window. The commonest instance is an ACM certificate

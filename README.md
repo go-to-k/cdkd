@@ -912,9 +912,16 @@ failed, and yet a resource cdkd was responsible for may still be alive in AWS:
 | `Skipped (not deleted): N` | a resource removed from the template whose provider could not issue the delete | **Yes** — the state record is kept, so the next `cdkd deploy` re-attempts it |
 | `of which left an orphaned predecessor: N` | the OLD resource of a replacement (e.g. an ACM certificate a CloudFront distribution still references) | **No** — state now points at the replacement, so nothing will retry it; delete it by hand |
 
-Pass `--allow-unaddressed` to exit `0` instead. It suppresses only the exit
-code — the summary rows, the per-resource warnings, and the `skipped` count in
-`cdkd events` are printed either way. The flag exists because the
+A run that left a resource unaddressed also stops printing
+`✓ Deployment completed successfully` — it prints a `⚠ Stack X deployed, but N
+resource(s) were left unaddressed` warning instead, and records
+`result: 'FAILED'` in `cdkd events` (matching destroy). **A pipeline grepping
+the log for the success string breaks on this independently of the exit code.**
+
+Pass `--allow-unaddressed` to exit `0` instead. It suppresses **only the exit
+code** — the summary rows, the per-resource warnings, the switched banner and
+the `FAILED` run record are all unchanged, because they record what happened
+rather than what the operator chose to tolerate. The flag exists because the
 orphaned-predecessor case can be temporarily unfixable (an ACM replacement
 blocked on `DescribeCertificate.InUseBy` clears once the consumer finishes
 updating). Prefer it over a shell `|| [ $? -eq 2 ]` wrapper, which would also

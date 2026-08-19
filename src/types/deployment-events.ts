@@ -163,11 +163,15 @@ export interface DeploymentEvent {
      * deploy side's template-DELETE skips too, and since issue
      * [#1819](https://github.com/go-to-k/cdkd/issues/1819) its partial UPDATEs
      * (a replacement whose predecessor survived). Omitted when zero.
-     * On DESTROY, without it a skip-only run records `result: 'FAILED'` with
-     * `deleted: N` and no `failed`, so `cdkd events` would show a failed run
-     * naming nothing that failed. On DEPLOY the run is `SUCCEEDED` (the state
-     * record was kept, so the next deploy re-attempts the delete) and this
-     * count is the ONLY thing in the summary saying a resource survived.
+     * Without it a skip-only run records `result: 'FAILED'` with `deleted: N`
+     * and no `failed`, so `cdkd events` would show a failed run naming nothing
+     * that failed — this count is the ONLY thing in the summary saying a
+     * resource survived. That applies to BOTH verbs since issue
+     * [#1960](https://github.com/go-to-k/cdkd/issues/1960): deploy used to
+     * record `SUCCEEDED` here on the grounds that the kept state record makes
+     * the next deploy re-attempt the delete, but the run still exits 2, and a
+     * post-mortem saying SUCCEEDED for a run that returned 2 is the same split
+     * verdict the console banner had. Deploy now records `FAILED` too.
      * Rendered by `printRunEvents` as ` ⚠N` alongside the
      * `+created/~updated/-deleted` triple, so the claim holds for the text
      * surface and not only for `--json`.

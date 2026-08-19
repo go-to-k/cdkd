@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
 import {
   startRunRecorder,
-  recordRunSucceeded,
+  recordRunOutcome,
   recordRunFailed,
 } from '../../../src/cli/commands/deployment-events-run.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
@@ -55,7 +55,7 @@ describe('deployment-events run-level bracket helpers (#808)', () => {
     });
     expect(recorder).toBeUndefined();
     // The helpers must tolerate an undefined recorder (no-op).
-    recordRunSucceeded(recorder, 'S', { created: 1, updated: 0, deleted: 0 }, 10);
+    recordRunOutcome(recorder, 'S', 'SUCCEEDED', { created: 1, updated: 0, deleted: 0 }, 10);
     recordRunFailed(recorder, 'S', new Error('boom'));
     expect(objects.size).toBe(0);
   });
@@ -88,7 +88,7 @@ describe('deployment-events run-level bracket helpers (#808)', () => {
       command: 'deploy',
       runId: 'r-ok',
     })!;
-    recordRunSucceeded(recorder, 'S', { created: 3, updated: 1, deleted: 2 }, 1234);
+    recordRunOutcome(recorder, 'S', 'SUCCEEDED', { created: 3, updated: 1, deleted: 2 }, 1234);
     await recorder.finalize('SUCCEEDED');
 
     const events = eventsOf(objects, 'r-ok');
@@ -151,7 +151,7 @@ describe('deployment-events run-level bracket helpers (#808)', () => {
     expect(index.runs[0].result).toBe('FAILED');
   });
 
-  it('recordRunSucceeded omits durationMs when not supplied (destroy run-level shape)', async () => {
+  it('recordRunOutcome omits durationMs when not supplied (destroy run-level shape)', async () => {
     const { backend, objects } = makeFakeBackend();
     const recorder = startRunRecorder({
       backend,
@@ -160,7 +160,7 @@ describe('deployment-events run-level bracket helpers (#808)', () => {
       command: 'destroy',
       runId: 'r-destroy',
     })!;
-    recordRunSucceeded(recorder, 'S', { created: 0, updated: 0, deleted: 4 });
+    recordRunOutcome(recorder, 'S', 'SUCCEEDED', { created: 0, updated: 0, deleted: 4 });
     await recorder.finalize('SUCCEEDED');
     const events = eventsOf(objects, 'r-destroy');
     const finished = events.find((e) => e.eventType === 'RUN_FINISHED')!;
