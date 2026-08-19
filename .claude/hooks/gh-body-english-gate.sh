@@ -20,22 +20,34 @@
 # patch the body after creation because nothing caught it.
 #
 # Subject: the text handed to the command --
-#   --body-file <p> / =<p>, -F/--field body=@<p>, --notes-file <p>   (files)
-#   --body / -b, --title / -t, --notes                               (inline)
+#   --body-file <p> / =<p>, -F <p>, -F/--field body=@<p>,
+#   --notes-file <p>                                                 (files)
+#   --body, --title, --notes                                         (inline)
 #   -f/--field/--raw-field body=<text> / title=<text>                (inline)
 # Inline forms ARE scanned, unlike pr-body-item-number-gate.sh, which
 # deliberately leaves inline as its escape hatch. That trade does not
-# apply here: there is no legitimate reason to publish Japanese in a
-# body, and leaving inline unscanned would exempt the commonest shape
-# (`gh issue comment -b "..."`).
+# apply here: there is no legitimate reason to publish Japanese in a body.
+#
+# Every flag above is one only gh defines, so a match anywhere in the
+# command belongs to the gh invocation and NO shell parsing is needed.
+# That is the whole design, and see the note in section 2 for what it
+# cost to learn.
 #
 # Known limits, all measured rather than assumed:
-#   - text the shell assembles at run time (`-b "$(cat jp.txt)"`) is
+#   - the SHORT flags `-b` / `-t` / `-n` are NOT scanned. They collide
+#     with other commands (`echo -n`, `grep -n`, `sed -n`, `sort -t`),
+#     so covering them requires attributing a flag to the right command
+#     in a chain, and every attempt at that shell parsing shipped a
+#     worse bug than the gap it closed (section 2). `gh issue comment
+#     -b "..."` therefore passes; `--body` is caught. Agent-authored
+#     commands in this repo use `--body-file` or the long flags;
+#   - text the shell assembles at run time (`--body "$(cat jp.txt)"`) is
 #     invisible to a static scan, as is a body file a heredoc EARLIER
 #     IN THE SAME command has not written yet at PreToolUse time;
 #   - an unquoted inline value is matched, but one containing shell
 #     metacharacters may be truncated at the first;
-#   - `gh api --input <file>` is not scanned (arbitrary JSON shape).
+#   - adjacent quoted chunks (`--body "a"$'\''b'\''`) yield only the first;
+#   - `gh api --input <file>` and `--body-file -` (stdin) are not scanned.
 #
 # No bypass marker, matching non-english-text-gate.sh: the fix is to
 # translate the text, which is trivial and is the point.
@@ -86,7 +98,7 @@ fi
 # ...and only when a body / title / notes is actually being sent. This
 # keeps `gh api repos/{owner}/{repo}/issues/5 --jq .body` (a READ whose
 # flag merely names the field) out of scope.
-if ! printf '%s' "$cmd" | grep -qE '(--body|--title|--notes|-b[[:space:]=]|-t[[:space:]=]|-n[[:space:]=]|-F[[:space:]=]|-f[[:space:]=]|body=|title=|notes=)'; then
+if ! printf '%s' "$cmd" | grep -qE '(--body|--title|--notes|-F[[:space:]=]|-f[[:space:]=]|body=|title=|notes=)'; then
   exit 0
 fi
 
@@ -147,99 +159,51 @@ done < <(printf '%s' "$cmd" | perl -0777 -ne '
 # `perl -ne` cannot span the newline and silently passed every one.
 # Values are NUL-separated on output so an embedded newline does not
 # split one value into two.
+# The character-class test runs INSIDE the extraction perl, so only
+# offending values cross the pipe. Testing each value with its own
+# `perl -CSD` spawn instead cost 3.8 s for 500 values and would pass the
+# hook's own 15 s timeout -- a timeout being, for a gate, a silent pass.
 while IFS= read -r -d '' val; do
   [ -n "$val" ] || continue
-  matched=$(printf '%s' "$val" | perl -CSD -0777 -ne "print 'x' if /$NON_ENGLISH_RE/" 2>/dev/null)
-  [ -n "$matched" ] || continue
   first=$(printf '%s' "$val" | tr '\n' ' ' | cut -c1-60)
   OFFENDERS+=("inline: $first")
-done < <(printf '%s' "$cmd" | perl -0777 -ne '
-    # Restrict the scan to the gh invocation itself: from the publish verb
-    # to the next TOP-LEVEL separator. Short flags are the reason -- `-b`,
-    # `-t` and `-n` are common on other commands (`echo -n`, `grep -n`,
-    # `sed -n`, `sort -t`), so matching them across a whole chained command
-    # made `gh issue create ... && echo -n "<non-English>"` a hard block
-    # with no bypass. The separator scan tracks quote state, so a `&&`
-    # INSIDE a body does not end the segment.
-    # EVERY gh publish invocation gets its own segment, not just the
-    # first: a chained `gh -R A issue create ... && gh -R B issue create
-    # ...` is the three-repo mirror flow section 10-c prescribes, and
-    # scanning only the first left the second silently unchecked.
-    # The flag spelling here is kept identical to VERB_ERE above -- when
-    # the two disagreed (`-R=x` matched there but not here), the gate
-    # armed while this regex fell back to offset 0, so the segment
-    # covered the PRECEDING command instead.
-    my $s = $_;
-    # ONE left-to-right pass over the whole command records (a) which
-    # offsets sit inside a quoted span and (b) where the top-level
-    # separators are. Scanning per match instead, seeded at the match
-    # offset, got the quote polarity INVERTED whenever the first match
-    # was a quoted MENTION of one of these commands in an earlier
-    # argument -- which is precisely the shape the shared stripper
-    # exists for, and which this perl cannot use because it needs the
-    # RAW offsets.
-    # chr(34) / chr(39) rather than literal quotes: this whole perl
-    # program is inside a single-quoted bash string, so a literal
-    # apostrophe would terminate it.
-    my @inq = (0) x (length($s) + 2);
-    my @seps;
-    {
-      my ($i, $q) = (0, "");
-      while ($i < length $s) {
-        my $c = substr($s, $i, 1);
-        if ($q ne "") {
-          $inq[$i] = 1;
-          if ($c eq "\\" && $q eq chr(34)) { $inq[$i + 1] = 1; $i += 2; next; }
-          $q = "" if $c eq $q;
-          $i++; next;
-        }
-        # A backslash escapes the NEXT character, including a newline.
-        # Without this, a `\`-continued `gh issue create \<nl> --body
-        # "..."` ended at the continuation and its body went unscanned.
-        if ($c eq "\\") { $i += 2; next; }
-        if ($c eq chr(34) || $c eq chr(39)) { $q = $c; $inq[$i] = 1; $i++; next; }
-        my $two = substr($s, $i, 2);
-        # A newline and a bare `|` end a command just as `&&` does;
-        # omitting them left the short-flag false positive alive in
-        # multi-line blocks and pipelines.
-        if ($two eq "&&" || $two eq "||" || $c eq ";" || $c eq "|" || $c eq "\n") {
-          push @seps, $i; $i++; next;
-        }
-        $i++;
-      }
-    }
-    my @segs;
-    while ($s =~ /gh(?:\s+(?:-C|-R|--repo)(?:\s+|=)\S+)*\s+(?:pr\s+(?:create|edit|comment|review)|issue\s+(?:create|comment|edit)|release\s+(?:create|edit)|api)\b/gs) {
-      my $start = $-[0];
-      # A match inside a quoted span is prose describing the command,
-      # not an invocation of it.
-      next if $inq[$start];
-      my $end = length $s;
-      for my $p (@seps) { if ($p > $start) { $end = $p; last; } }
-      push @segs, substr($s, $start, $end - $start);
-    }
-    for my $seg (@segs) {
-    local $_ = $seg;
-
-    # The flag must start at a word boundary that is not itself a dash,
-    # so `-b` cannot match inside `--body-file`. `\\.` skips an escaped
-    # quote so it does not terminate the span early; /s lets the value
-    # span newlines.
-    while (/(?:^|\s)(?:--body|--title|--notes|-b|-t|-n)[=\s]*"((?:[^"\\]|\\.)*)"/gs) { print "$1\0"; }
-    while (/(?:^|\s)(?:--body|--title|--notes|-b|-t|-n)[=\s]*\x27([^\x27]*)\x27/gs)  { print "$1\0"; }
+done < <(printf '%s' "$cmd" | NER="$NON_ENGLISH_RE" perl -CSD -0777 -ne '
+    my $re = qr/$ENV{NER}/;
+    sub emit { my $v = shift; print "$v\0" if $v =~ $re; }
+    # NO shell parsing. Every flag matched here is one that only gh
+    # defines, so a match anywhere in the command belongs to the gh
+    # invocation and needs no segment bounding.
+    #
+    # This is deliberate and was arrived at the hard way. An earlier
+    # version also matched the SHORT flags `-b` / `-t` / `-n`, which are
+    # common on other commands (`echo -n`, `grep -n`, `sed -n`,
+    # `sort -t`), so a chained command needed the flag attributed to the
+    # right invocation. That attribution required bounding each gh
+    # invocation with a hand-rolled quote / separator scanner, and four
+    # review rounds each found a new shell-parsing case it got wrong --
+    # three of them regressions introduced by the previous round"s fix
+    # (a `\`-continued line, a quoted MENTION of one of these commands in
+    # an earlier argument inverting the quote polarity, and finally an
+    # apostrophe in a heredoc body or `#` comment leaving the quote state
+    # open so every later invocation was discarded as prose -- which
+    # silently defeated `heredoc -> file -> --body-file`, this repo"s
+    # commonest publishing shape).
+    #
+    # Dropping the short flags deletes that entire class. What it costs
+    # is stated in the header as a known limit rather than hidden.
+    while (/(?:^|\s)(?:--body|--title|--notes)[=\s]*"((?:[^"\\]|\\.)*)"/gs) { emit($1); }
+    while (/(?:^|\s)(?:--body|--title|--notes)[=\s]*\x27([^\x27]*)\x27/gs)  { emit($1); }
     # Unquoted value: stops at whitespace, which is all the shell would
-    # have passed as one argument anyway. Short flags are listed here too --
-    # omitting them let `-b <unquoted>` through while `--body <unquoted>`
-    # was caught.
-    while (/(?:^|\s)(?:--body|--title|--notes|-b|-t|-n)[=\s]+([^\s"\x27-][^\s]*)/g)  { print "$1\0"; }
-    # gh api field forms carrying a literal (not @file) value. Split in two:
+    # have passed as one argument anyway.
+    while (/(?:^|\s)(?:--body|--title|--notes)[=\s]+([^\s"\x27-][^\s]*)/g)  { emit($1); }
+    # gh api field forms carrying a literal (not @file) value. Three arms:
     # the quote may wrap the WHOLE `body=...` or follow the `=`, and the
-    # unquoted branch must stop at whitespace -- a single `[^"\x27]*` arm ran
-    # away to the next quote or end of command and swallowed later arguments.
-    while (/(?:--field|--raw-field|-F|-f)[=\s]+["\x27](?:body|title|notes)=([^"\x27]*)["\x27]/gs) { print "$1\0"; }
-    while (/(?:--field|--raw-field|-F|-f)[=\s]+(?:body|title|notes)=(["\x27])([^"\x27]*)\1/gs)    { print "$2\0"; }
-    while (/(?:--field|--raw-field|-F|-f)[=\s]+(?:body|title|notes)=([^\s"\x27@][^\s]*)/g)        { print "$1\0"; }
-    }
+    # unquoted branch must stop at whitespace -- a single `[^"\x27]*` arm
+    # ran away to the next quote or end of command and swallowed later
+    # arguments.
+    while (/(?:--field|--raw-field|-F|-f)[=\s]+["\x27](?:body|title|notes)=([^"\x27]*)["\x27]/gs) { emit($1); }
+    while (/(?:--field|--raw-field|-F|-f)[=\s]+(?:body|title|notes)=(["\x27])([^"\x27]*)\1/gs)    { emit($2); }
+    while (/(?:--field|--raw-field|-F|-f)[=\s]+(?:body|title|notes)=([^\s"\x27@][^\s]*)/g)        { emit($1); }
   ' 2>/dev/null)
 
 if [ ${#OFFENDERS[@]} -eq 0 ]; then
