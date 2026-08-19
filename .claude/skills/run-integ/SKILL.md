@@ -384,5 +384,19 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
 - Always use `--region us-east-1` for integration tests
 - Always destroy after deploy to avoid leftover resources
 - If deploy fails, still attempt destroy to clean up partial state
+- **A run blocked BEFORE its assertions is not a test failure — say which it was.**
+  `cdkd gc` refuses while ANY stack in the state bucket holds a lock (an
+  account-wide guard, deliberate and documented at its site), so on an account
+  with parallel agent sessions a gc fixture can be stopped before it reaches a
+  single gc assertion. That happened twice in a row on 2026-08-19, from two
+  different foreign stacks in a different region than the one under test. Both
+  are recorded as `FAIL` rows because the bar is exit-code-based, and both notes
+  say plainly that the fix was not at fault.
+  When a run dies before its assertions, do all three: clean up as usual (an
+  aborted run still leaks — one of these left a state file, a Lambda and an IAM
+  role behind), write the ledger note so it names the blocker rather than
+  implying the change is broken, and WAIT for the blocker to clear rather than
+  forcing past it. Never `cdkd force-unlock` a lock you did not take: it belongs
+  to another session's in-flight deploy.
 - **Never report success based on a successful deploy alone** — destroy must complete and orphan check must pass
 - **Never bypass this skill** by calling `cdkd deploy` / `cdkd destroy` directly from a shell — the orphan-cleanup contract above is part of the integration test, not optional

@@ -69,7 +69,9 @@ extra=$(printf '%s\n' "$dirty" | wc -l | tr -d ' ')
 msg="WARNING (main-tree-dirty-detector): the MAIN worktree ($main_tree) is on \`$branch\` and now has uncommitted changes to $extra tracked file(s): $files. "
 msg+="This is the gap the PreToolUse main-tree-edit-gate cannot catch (variable-indirected Bash writes like \`mv \\\"\$tmp\\\" \\\"\$LEDGER\\\"\`). "
 msg+="Tracked files must NOT be edited in the main tree on \`$branch\` — uncommitted edits there block \`git pull --ff-only\` and are a shared-resource hazard for parallel agents. "
-msg+="Fix NOW: move the change into a feature worktree (git worktree add .claude/worktrees/<b> -b <b> origin/main), copy the edited file(s) over, then \`git -C $main_tree checkout -- <file>\` to restore the main tree. For /run-integ specifically, point the ledger write at the worktree copy of docs/_generated/integ-last-run.tsv."
+msg+="FIRST establish whose edit this is: parallel agents share this tree, and restoring someone else's in-flight work destroys it irreversibly. "
+msg+="Run \`git -C $main_tree diff -- <file>\` and \`git -C $main_tree log -S<distinctive-string> --oneline\`; if the content references an issue, branch or feature you are not working on, it is NOT yours — leave it alone and tell the maintainer. "
+msg+="If it IS yours: move the change into a feature worktree (git worktree add .claude/worktrees/<b> -b <b> origin/main), copy the edited file(s) over, then \`git -C $main_tree checkout -- <file>\` to restore the main tree. For /run-integ specifically, point the ledger write at the worktree copy of docs/_generated/integ-last-run.tsv."
 
 # Emit non-blocking additionalContext (jq -Rs to JSON-encode safely).
 ctx=$(printf '%s' "$msg" | jq -Rs .)

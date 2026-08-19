@@ -552,6 +552,31 @@ if the fix needs a forbidden file" guardrail. Note: a subagent's Bash **bypasses
 the PreToolUse gate hooks**, so it can `gh pr create` past `verify-pr-gate` —
 enforce quality yourself; you (the orchestrator) still gate the MERGE.
 
+**Three guardrails every lane prompt must carry, all learned the hard way on
+2026-08-19:**
+
+- **Never force-push over a commit you did not author.** A lane agent resumed
+  with edits predating four commits the orchestrator had landed on its branch,
+  and force-pushed. Nothing was lost that time only because the rebase preserved
+  them — the same agent later caught the second occurrence itself, by noticing an
+  unfamiliar string in a file it thought it owned and running `git log -S`. Say
+  in the prompt: re-`git fetch` and inspect the branch before any force-push, and
+  if the branch carries work you did not write, STOP and report.
+- **A new fixture literal must not collide with an existing assertion needle.**
+  A `DB_URL` added to the secrets fixture hard-coded `cdkd-user` as its URL user
+  component — which is exactly `EXPECTED_USERNAME`, the needle grepped over the
+  whole persisted env to prove a whole-secret resolution did not land there. The
+  run reported a secret LEAK that had not happened. A false leak report is worse
+  than a missing assertion: it is indistinguishable from the real thing, and the
+  natural response is to go hunting in the redaction code.
+- **Execute every read expression you write.** Two integ runs were lost to
+  fixture code, not product defects: the literal collision above, and a `jq`
+  assignment written through `to_entries[]`, which builds a new array and is not
+  a path back into the document. The same file already had the correct shape one
+  phase away. jq / JMESPath / AWS CLI `--query` are untested code; run each
+  against real output shape before finishing, in both directions where the
+  expression carries a guard.
+
 ## 6. Gates + PR (per lane)
 
 From inside the worktree, run the local quality checks and record the markers:
