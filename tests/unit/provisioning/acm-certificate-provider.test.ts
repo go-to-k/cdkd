@@ -361,6 +361,32 @@ describe('ACMCertificateProvider', () => {
       expect(result.reason).toContain('is still in use by another resource and was not deleted');
     });
 
+    // The #1778 SKIP class: a non-throwing "I did not address this resource",
+    // which sails straight past the catch. Every producer's throw arm was
+    // tested and this one was not, at all three providers.
+    it('reports partial when the inner delete SKIPS rather than throws', async () => {
+      const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
+      mockSend.mockResolvedValueOnce({ CertificateArn: newArn });
+      vi.spyOn(provider, 'delete').mockResolvedValue({
+        outcome: 'skipped',
+        reason: 'malformed physicalId in state — no delete issued',
+      });
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        'AWS::CertificateManager::Certificate',
+        { DomainName: 'example.com', SubjectAlternativeNames: ['www.example.com'] },
+        { DomainName: 'example.com', SubjectAlternativeNames: ['api.example.com'] }
+      );
+
+      expect(result.outcome).toBe('partial');
+      // Prefixed with the OLD arn: the skip's own reason does not carry it, and
+      // state now points at the replacement.
+      expect(result.reason).toContain(ARN);
+      expect(result.reason).toContain('no delete issued');
+    });
+
     it('reports partial with the raw cause for a non-in-use delete failure', async () => {
       const newArn = 'arn:aws:acm:us-east-1:123456789012:certificate/new';
       mockSend.mockResolvedValueOnce({ CertificateArn: newArn });

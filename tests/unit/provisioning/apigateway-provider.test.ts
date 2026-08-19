@@ -338,6 +338,30 @@ describe('ApiGatewayProvider', () => {
 
         expect(result.physicalId).toBe('new-id');
         expect(result.wasReplaced).toBe(true);
+        // Issue #1819: the old resource survives, and its survival is not
+        // inert -- the OLD PathPart stays routable on the deployed API while
+        // state points only at the new one. Reported, not just logged.
+        expect(result.outcome).toBe('partial');
+        expect(result.reason).toContain('old-id');
+        expect(result.reason).toContain('delete failed');
+      });
+
+      // The clean control: a replacement whose delete SUCCEEDS must carry no
+      // outcome, or every replacement would count and render as a partial.
+      it('reports no outcome when the old resource is deleted cleanly', async () => {
+        mockSend.mockResolvedValueOnce({ id: 'new-id' });
+        mockSend.mockResolvedValueOnce({});
+
+        const result = await provider.update(
+          'MyResource',
+          'old-id',
+          resourceType,
+          { RestApiId: 'api-id', ParentId: 'parent-id', PathPart: 'orders' },
+          { RestApiId: 'api-id', ParentId: 'parent-id', PathPart: 'users' }
+        );
+
+        expect(result.wasReplaced).toBe(true);
+        expect(result.outcome).toBeUndefined();
       });
     });
 

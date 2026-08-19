@@ -279,6 +279,28 @@ describe('IAMManagedPolicyProvider', () => {
       expect(result.reason).toContain('DeleteConflict');
     });
 
+    // The #1778 SKIP class: non-throwing, so it bypasses the catch entirely.
+    it('reports partial when the inner delete SKIPS rather than throws', async () => {
+      const newArn = 'arn:aws:iam::123456789012:policy/new/MyManagedPolicy';
+      mockSend.mockResolvedValueOnce({ Policy: { Arn: newArn, PolicyName: 'MyManagedPolicy' } });
+      vi.spyOn(provider, 'delete').mockResolvedValue({
+        outcome: 'skipped',
+        reason: 'malformed physicalId in state — no delete issued',
+      });
+
+      const result = await provider.update(
+        'MyManagedPolicy',
+        ARN,
+        'AWS::IAM::ManagedPolicy',
+        { PolicyDocument: POLICY_DOC, Path: '/new/' },
+        { PolicyDocument: POLICY_DOC, Path: '/' }
+      );
+
+      expect(result.outcome).toBe('partial');
+      expect(result.reason).toContain(ARN);
+      expect(result.reason).toContain('no delete issued');
+    });
+
     it('replaces the policy when Description changes (Description is immutable)', async () => {
       const newArn = 'arn:aws:iam::123456789012:policy/MyManagedPolicy';
       mockSend.mockResolvedValueOnce({ Policy: { Arn: newArn, PolicyName: 'MyManagedPolicy' } });

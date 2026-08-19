@@ -238,7 +238,13 @@ describe('DeployEngine — a provider-reported partial update (#1819)', () => {
 
     // The reason is the whole point of the durable record: it carries the
     // identity of the resource that survived, which state no longer holds.
-    expect(events.find((e) => e.eventType === 'RESOURCE_SKIPPED')?.reason).toBe(PARTIAL_REASON);
+    const skip = events.find((e) => e.eventType === 'RESOURCE_SKIPPED');
+    expect(skip?.reason).toBe(PARTIAL_REASON);
+    // ...and the id rides as a FIELD, which is the half the integ structurally
+    // cannot check: `cdkd events` does not render `physicalId`, so its grep
+    // matches the reason text and would pass with this deleted. It must be the
+    // OLD id -- the state record now points at the replacement.
+    expect((skip as { physicalId?: string } | undefined)?.physicalId).toBe('old-pid');
   });
 
   it('emits no RESOURCE_SKIPPED for a clean update', async () => {

@@ -393,6 +393,30 @@ describe('IAMRoleProvider', () => {
       expect(result.reason).toContain('DeleteConflict');
     });
 
+    // The #1778 SKIP class: non-throwing, so it sails past the catch that would
+    // otherwise have reported it.
+    it('reports partial when the inner delete SKIPS rather than throws', async () => {
+      mockSend.mockResolvedValueOnce({
+        Role: { RoleName: 'new-role', Arn: 'arn:aws:iam::0:role/new-role', RoleId: 'r2' },
+      });
+      vi.spyOn(provider, 'delete').mockResolvedValue({
+        outcome: 'skipped',
+        reason: 'malformed physicalId in state — no delete issued',
+      });
+
+      const result = await provider.update(
+        'L',
+        'old-role',
+        'AWS::IAM::Role',
+        { RoleName: 'new-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } },
+        { RoleName: 'old-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } }
+      );
+
+      expect(result.outcome).toBe('partial');
+      expect(result.reason).toContain('old-role');
+      expect(result.reason).toContain('no delete issued');
+    });
+
     // The clean control: a replacement whose delete SUCCEEDS must carry no
     // outcome, or every replacement would render and count as a partial.
     it('reports no outcome when the old role is deleted cleanly', async () => {
