@@ -1,3 +1,10 @@
+## [0.284.5](https://github.com/go-to-k/cdkd/compare/v0.284.4...v0.284.5) (2026-08-19)
+
+
+### Bug Fixes
+
+* **deployment:** give providers a secret masker, and mask the VALUE before stringifying ([#2024](https://github.com/go-to-k/cdkd/issues/2024)) ([8497b41](https://github.com/go-to-k/cdkd/commit/8497b41e9962f75e4c84e6d86265ae241cd923cb))
+
 ## [0.284.4](https://github.com/go-to-k/cdkd/compare/v0.284.3...v0.284.4) (2026-08-19)
 
 
