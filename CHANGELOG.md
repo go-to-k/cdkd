@@ -1,3 +1,10 @@
+## [0.284.3](https://github.com/go-to-k/cdkd/compare/v0.284.2...v0.284.3) (2026-08-19)
+
+
+### Bug Fixes
+
+* **deploy:** exit 2 when a deploy leaves a resource unaddressed, and stop three surfaces calling that run a success ([#2010](https://github.com/go-to-k/cdkd/issues/2010)) ([ed0c4f9](https://github.com/go-to-k/cdkd/commit/ed0c4f933e911b6bf3c6c4ff75d6435834ee2060))
+
 ## [0.284.2](https://github.com/go-to-k/cdkd/compare/v0.284.1...v0.284.2) (2026-08-19)
 
 
