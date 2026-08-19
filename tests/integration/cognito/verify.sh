@@ -77,8 +77,14 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 cd "$(dirname "$0")"
 
 STACK="CognitoStack"
+# The MFA pre-flight refusal arms (issues #1975 / #1977) live in their OWN
+# stack: those arms need an UPDATE deploy that FAILS, while ${STACK}'s
+# CDKD_TEST_UPDATE phase needs one that SUCCEEDS. See
+# lib/cognito-preflight-stack.ts for why they cannot share a deploy.
+PREFLIGHT_STACK="CognitoPreflightStack"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+PREFLIGHT_STATE_KEY="cdkd/${PREFLIGHT_STACK}/${REGION}/state.json"
 
 # Resolve a pool by its AWS-assigned NAME, paginating ListUserPools.
 #
@@ -128,6 +134,7 @@ pool_id_by_name() { # usage: pool_id_by_name <exact pool name>
 # rather than deleting a pool named "cdkd-test-mfa-transition-".
 ACCOUNT_ID=""
 UPDATE_LOG=""
+PREFLIGHT_LOG=""
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -146,6 +153,10 @@ cleanup() {
     rm -f "${UPDATE_LOG}"
     UPDATE_LOG=""
   fi
+  if [ -n "${PREFLIGHT_LOG}" ]; then
+    rm -f "${PREFLIGHT_LOG}"
+    PREFLIGHT_LOG=""
+  fi
   local destroy_rc=1
   if [ -x "${LOCAL_DIST}" ]; then
     # `state destroy` rejects `--force`; the confirmation skip flag is `--yes`.
@@ -159,13 +170,38 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  # Same treatment for the pre-flight stack (#1975 / #1977). Its own key, and
+  # its own `state destroy` rc gate -- a shared rc would let one stack's failure
+  # suppress the other's object sweep. The rollback journal is swept explicitly
+  # because this stack's phases deliberately FAIL a deploy, which is exactly
+  # when a journal is written; `cdkd destroy` removes it on the happy path, but
+  # cleanup also runs on the paths where destroy never got there.
+  local preflight_destroy_rc=1
+  if [ -x "${LOCAL_DIST}" ]; then
+    node "${LOCAL_DIST}" state destroy "${PREFLIGHT_STACK}" \
+      --yes \
+      --state-bucket "${STATE_BUCKET:-}" \
+      --region "${REGION}" >/dev/null 2>&1
+    preflight_destroy_rc=$?
+  fi
+  if [ -n "${STATE_BUCKET:-}" ] && [ "${preflight_destroy_rc}" -eq 0 ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/${PREFLIGHT_STATE_KEY}" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${PREFLIGHT_STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${PREFLIGHT_STACK}/${REGION}/rollback-journal.json" >/dev/null 2>&1 || true
+  fi
   # Name-based sweep for the two CDKD_TEST_UPDATE pools. `state destroy` drops
   # cdkd's record, not the AWS resource, so a run that died between the update
   # deploy and the destroy phase would otherwise strand them -- and their names
   # are fixed, so the next run would collide instead of failing cleanly.
+  # The pre-flight pools (#1975 / #1977) are swept the same way and for a
+  # sharper reason: two of this stack's phases END in a FAILED deploy on
+  # purpose, so a run killed between them leaves pools behind that `state
+  # destroy` would orphan rather than delete.
   if [ -n "${ACCOUNT_ID}" ]; then
     local stray
-    for name in "cdkd-test-mfa-transition-${ACCOUNT_ID}" "cdkd-test-mfa-downgrade-${ACCOUNT_ID}"; do
+    for name in "cdkd-test-mfa-transition-${ACCOUNT_ID}" "cdkd-test-mfa-downgrade-${ACCOUNT_ID}" \
+      "cdkd-test-mfa-preflight-off-${ACCOUNT_ID}" "cdkd-test-mfa-preflight-signin-${ACCOUNT_ID}" \
+      "cdkd-test-mfa-preflight-optional-${ACCOUNT_ID}" "cdkd-test-mfa-preflight-webauthn-${ACCOUNT_ID}"; do
       stray="$(pool_id_by_name "${name}")"
       if [ -n "${stray}" ] && [ "${stray}" != "None" ]; then
         aws cognito-idp delete-user-pool --user-pool-id "${stray}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -552,5 +588,322 @@ echo "    OK: MFA-downgrade UserPool is gone"
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
+# =====================================================================
+# Phases 4-6: the MFA pre-flight refusal arms (issues #1975 / #1977)
+# =====================================================================
+# What is under test is a REFUSAL raised BEFORE the first AWS call on the
+# UPDATE path. A create-only fixture cannot reach it: the harm it prevents is a
+# PARTIAL APPLY, which only exists because `UpdateUserPool` lands before
+# `SetUserPoolMfaConfig` is rejected. So each arm needs a real base deploy and
+# then a real update deploy that must FAIL.
+#
+# The load-bearing assertion in each arm is NOT the message -- it is the CANARY
+# read back from AWS. A message proves cdkd said something; only an unchanged
+# canary proves nothing was SENT. Pre-fix, both canaries land at AWS and stay
+# there (nothing unwinds a failed UPDATE: the failed op is journaled for
+# `cdkd rollback --revert-failed`, and the engine's automatic rollback covers
+# COMPLETED operations only).
+#
+# Each refusing arm gets its OWN deploy, selected by CDKD_TEST_PREFLIGHT_ARM.
+# The engine cancels pending siblings on the first resource failure, so one
+# deploy carrying both mutations could legitimately log one refusal and never
+# attempt the other -- and would then "pass" with an arm unexercised.
+
+echo "==> Phase 4: base deploy of ${PREFLIGHT_STACK} (pre-flight arms #1975 / #1977)"
+# `env -u` both switches: an inherited CDKD_TEST_PREFLIGHT_ARM would deploy a
+# refusing arm as the BASE, which fails here and collapses the whole sequence.
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_PREFLIGHT_ARM node "${LOCAL_DIST}" deploy "${PREFLIGHT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+PREFLIGHT_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${PREFLIGHT_STATE_KEY}" - 2>/dev/null)
+if [ -z "${PREFLIGHT_STATE}" ]; then
+  echo "FAIL: no state file at s3://${STATE_BUCKET}/${PREFLIGHT_STATE_KEY} after the pre-flight base deploy" >&2
+  exit 1
+fi
+
+# Resolved by AWS-assigned NAME, like the #1925 arms above: a provider that
+# wrote cdkd state without reaching AWS must not be able to satisfy these.
+OFF_POOL_NAME="cdkd-test-mfa-preflight-off-${ACCOUNT_ID}"
+SIGNIN_POOL_NAME="cdkd-test-mfa-preflight-signin-${ACCOUNT_ID}"
+OPTIONAL_POOL_NAME="cdkd-test-mfa-preflight-optional-${ACCOUNT_ID}"
+WEBAUTHN_POOL_NAME="cdkd-test-mfa-preflight-webauthn-${ACCOUNT_ID}"
+
+OFF_POOL_ID="$(pool_id_by_name "${OFF_POOL_NAME}")"
+SIGNIN_POOL_ID="$(pool_id_by_name "${SIGNIN_POOL_NAME}")"
+OPTIONAL_POOL_ID="$(pool_id_by_name "${OPTIONAL_POOL_NAME}")"
+WEBAUTHN_POOL_ID="$(pool_id_by_name "${WEBAUTHN_POOL_NAME}")"
+for pair in "${OFF_POOL_NAME}=${OFF_POOL_ID}" "${SIGNIN_POOL_NAME}=${SIGNIN_POOL_ID}" \
+  "${OPTIONAL_POOL_NAME}=${OPTIONAL_POOL_ID}" "${WEBAUTHN_POOL_NAME}=${WEBAUTHN_POOL_ID}"; do
+  if [ -z "${pair#*=}" ]; then
+    echo "FAIL: no user pool named '${pair%%=*}' after the pre-flight base deploy" >&2
+    exit 1
+  fi
+done
+echo "    Arm A (#1977) pool: ${OFF_POOL_ID}"
+echo "    Arm B (#1975) pool: ${SIGNIN_POOL_ID}"
+echo "    Arm C2 (OPTIONAL + EMAIL_OTP) pool: ${OPTIONAL_POOL_ID}"
+echo "    Arm C3 (WEB_AUTHN) pool: ${WEBAUTHN_POOL_ID}"
+
+# --- Assertion 12: arm A baseline -------------------------------------
+# MFA really on, and the CANARY field genuinely absent. Both halves are
+# load-bearing: without the first the update is not the OPTIONAL -> OFF
+# transition the refusal is about, and without the second an
+# AutoVerifiedAttributes seen after the refused update could have predated it.
+ARM_A_MFA=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${OFF_POOL_ID}" --region "${REGION}" --output json)
+ARM_A_MFA_BEFORE=$(echo "${ARM_A_MFA}" \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+ARM_A_SOFTWARE_BEFORE=$(echo "${ARM_A_MFA}" \
+  | jq -r 'if (.SoftwareTokenMfaConfiguration|has("Enabled")) then .SoftwareTokenMfaConfiguration.Enabled|tostring else "null" end')
+if [ "${ARM_A_MFA_BEFORE}" != "OPTIONAL" ] || [ "${ARM_A_SOFTWARE_BEFORE}" != "true" ]; then
+  echo "FAIL: arm A baseline is MfaConfiguration='${ARM_A_MFA_BEFORE}' / SoftwareTokenMfaConfiguration.Enabled='${ARM_A_SOFTWARE_BEFORE}', expected 'OPTIONAL' / 'true'" >&2
+  echo "${ARM_A_MFA}" | jq . >&2 || true
+  exit 1
+fi
+ARM_A_CANARY_BEFORE=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${OFF_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.AutoVerifiedAttributes' --output json)
+if ! echo "${ARM_A_CANARY_BEFORE}" | jq -e '(. // []) | length == 0' >/dev/null; then
+  echo "FAIL: arm A canary baseline AutoVerifiedAttributes is ${ARM_A_CANARY_BEFORE}, expected empty (the base template declares none)" >&2
+  exit 1
+fi
+echo "    OK: arm A baseline == MfaConfiguration OPTIONAL + SOFTWARE_TOKEN_MFA, AutoVerifiedAttributes empty"
+
+# --- Assertion 13: arm B baseline, and negative control C1 ------------
+# This IS the C1 negative control: `MfaConfiguration` resolves to ON and a
+# `SignInPolicy` is present, so the #1975 rule EVALUATES here -- and must not
+# fire, because PASSWORD is an allowed member. A refusal keyed on "ON plus any
+# SignInPolicy" fails this deploy instead of reaching this line.
+ARM_B_FACTORS_BEFORE=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${SIGNIN_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors' --output json)
+if ! echo "${ARM_B_FACTORS_BEFORE}" | jq -e '. == ["PASSWORD"]' >/dev/null; then
+  echo "FAIL: arm B baseline AllowedFirstAuthFactors is ${ARM_B_FACTORS_BEFORE}, expected exactly [\"PASSWORD\"]" >&2
+  exit 1
+fi
+ARM_B_MFA_BEFORE=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${SIGNIN_POOL_ID}" --region "${REGION}" --output json \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+if [ "${ARM_B_MFA_BEFORE}" != "ON" ]; then
+  echo "FAIL: arm B baseline MfaConfiguration is '${ARM_B_MFA_BEFORE}', expected 'ON'" >&2
+  exit 1
+fi
+echo "    OK: arm B baseline == AllowedFirstAuthFactors [PASSWORD] + MfaConfiguration ON (negative control C1: the #1975 rule evaluates here and does NOT fire)"
+
+# --- Assertion 14: negative control C2 --------------------------------
+# A DENY-LISTED member (EMAIL_OTP) beside MfaConfiguration OPTIONAL. AWS
+# ACCEPTS this (measured us-east-1 2026-08-19), which is why the rule is
+# narrowed to `=== 'ON'`. Widening it to `!== 'OFF'` -- the obvious "be safe"
+# edit -- refuses a template that deploys, and this assertion is what catches
+# that: the deploy above would already have failed.
+C2_FACTORS=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${OPTIONAL_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors' --output json)
+if ! echo "${C2_FACTORS}" | jq -e 'index("EMAIL_OTP") != null and index("PASSWORD") != null' >/dev/null; then
+  echo "FAIL: negative control C2 AllowedFirstAuthFactors is ${C2_FACTORS}, expected to contain PASSWORD and EMAIL_OTP" >&2
+  exit 1
+fi
+C2_MFA=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${OPTIONAL_POOL_ID}" --region "${REGION}" --output json \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+if [ "${C2_MFA}" != "OPTIONAL" ]; then
+  echo "FAIL: negative control C2 MfaConfiguration is '${C2_MFA}', expected 'OPTIONAL'" >&2
+  exit 1
+fi
+echo "    OK: negative control C2 deployed clean (EMAIL_OTP allowed under MfaConfiguration OPTIONAL)"
+
+# --- Assertion 15: negative control C3 --------------------------------
+# WEB_AUTHN must not be treated as a denied member. MfaConfiguration is
+# OPTIONAL rather than ON here, and that is an AWS limit, not a softened
+# assertion: MEASURED us-east-1 2026-08-20, a pool whose sign-in policy allows
+# WEB_AUTHN rejects SetUserPoolMfaConfig(ON) with "Cannot set WebAuthn factor
+# configuration to SINGLE_FACTOR if MFA is required and WebAuthn is an allowed
+# first auth factor" unless WebAuthnConfiguration.FactorConfiguration is
+# MULTI_FACTOR_WITH_USER_VERIFICATION -- a field the pinned SDK does not have
+# and the provider lists as unhandled-by-design. So ON + WEB_AUTHN is
+# undeployable through cdkd today for a reason unrelated to this pre-flight.
+C3_FACTORS=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${WEBAUTHN_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors' --output json)
+if ! echo "${C3_FACTORS}" | jq -e 'index("WEB_AUTHN") != null and index("PASSWORD") != null' >/dev/null; then
+  echo "FAIL: negative control C3 AllowedFirstAuthFactors is ${C3_FACTORS}, expected to contain PASSWORD and WEB_AUTHN" >&2
+  exit 1
+fi
+C3_MFA_JSON=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${WEBAUTHN_POOL_ID}" --region "${REGION}" --output json)
+C3_MFA=$(echo "${C3_MFA_JSON}" \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+C3_WA_RP=$(echo "${C3_MFA_JSON}" \
+  | jq -r 'if (.WebAuthnConfiguration|has("RelyingPartyId")) then .WebAuthnConfiguration.RelyingPartyId else "null" end')
+if [ "${C3_MFA}" != "OPTIONAL" ] || [ "${C3_WA_RP}" != "preflight.cdkd.example.com" ]; then
+  echo "FAIL: negative control C3 is MfaConfiguration='${C3_MFA}' / WebAuthn RelyingPartyId='${C3_WA_RP}', expected 'OPTIONAL' / 'preflight.cdkd.example.com'" >&2
+  echo "${C3_MFA_JSON}" | jq . >&2 || true
+  exit 1
+fi
+echo "    OK: negative control C3 deployed clean (WEB_AUTHN allowed alongside a real MFA factor)"
+
+# --- Phase 5: arm A (issue #1977) -- the update MUST be refused -------
+echo "==> Phase 5: arm A (#1977) -- MfaConfiguration OFF beside a declared factor must be REFUSED"
+PREFLIGHT_LOG="$(mktemp -t cdkd-cognito-preflight.XXXXXX)"
+# The rc is captured EXPLICITLY rather than being left to `!` or a pipeline:
+# a non-zero exit IS the assertion here, and reading it off a `tee` would
+# report the pipe's status instead. (`set -e` is suspended for exactly this
+# command, then restored -- an unguarded failing command would abort the run
+# and report the expected failure as an error.)
+set +e
+CDKD_TEST_PREFLIGHT_ARM=A node "${LOCAL_DIST}" deploy "${PREFLIGHT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes >"${PREFLIGHT_LOG}" 2>&1
+ARM_A_RC=$?
+set -e
+cat "${PREFLIGHT_LOG}"
+
+# --- Assertion 16: the deploy failed ----------------------------------
+if [ "${ARM_A_RC}" -eq 0 ]; then
+  echo "FAIL: arm A deploy exited 0 -- MfaConfiguration OFF beside EnabledMfas [SOFTWARE_TOKEN_MFA] must be REFUSED (issue #1977)" >&2
+  exit 1
+fi
+echo "    OK: arm A deploy exited ${ARM_A_RC}"
+
+# --- Assertion 17: the message is cdkd's own, and names both props ----
+# Bound to the logical id, because the engine logs `Failed to update <id>: <msg>`
+# on one line and this stack holds four pools whose MFA arms differ.
+if ! grep -q "Failed to update PreflightOffPool: AWS::Cognito::UserPool MfaConfiguration is OFF while an MFA factor is configured" "${PREFLIGHT_LOG}"; then
+  echo "FAIL: arm A did not produce cdkd's own pre-flight refusal for PreflightOffPool" >&2
+  exit 1
+fi
+# It must name the OTHER property too -- a message naming only MfaConfiguration
+# sends the user looking at the field they did change, not at the pair.
+if ! grep -q "PreflightOffPool: .*SoftwareTokenMfaConfiguration.*EnabledMfas" "${PREFLIGHT_LOG}"; then
+  echo "FAIL: arm A refusal does not name the factor block / EnabledMfas alongside MfaConfiguration" >&2
+  grep -i "PreflightOffPool" "${PREFLIGHT_LOG}" >&2 || true
+  exit 1
+fi
+# ... and it must be a PRE-FLIGHT refusal, not AWS's rejection relayed. AWS's
+# own sentence is quoted INSIDE cdkd's message, so its presence proves nothing;
+# the exception NAME is what only a real API round trip produces.
+if grep -q "InvalidParameterException" "${PREFLIGHT_LOG}"; then
+  echo "FAIL: arm A log contains InvalidParameterException -- the request reached AWS instead of being refused before the first call" >&2
+  grep -n "InvalidParameterException" "${PREFLIGHT_LOG}" >&2 || true
+  exit 1
+fi
+echo "    OK: arm A refused by cdkd before any AWS call, naming both properties"
+
+# --- Assertion 18: THE CANARY -- no AWS call went out ------------------
+# The load-bearing one. Pre-fix the ordering is UpdateUserPool (which carries
+# AutoVerifiedAttributes) and only THEN SetUserPoolMfaConfig, so the canary
+# would be sitting at AWS right now with nothing having unwound it.
+ARM_A_CANARY_AFTER=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${OFF_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.AutoVerifiedAttributes' --output json)
+if ! echo "${ARM_A_CANARY_AFTER}" | jq -e '(. // []) | length == 0' >/dev/null; then
+  echo "FAIL: arm A canary AutoVerifiedAttributes is ${ARM_A_CANARY_AFTER} after the refused update, expected still empty -- UpdateUserPool WENT OUT and the update partly applied (issue #1977)" >&2
+  exit 1
+fi
+echo "    OK: arm A canary AutoVerifiedAttributes still empty -- UpdateUserPool never went out"
+
+# The MFA half must be untouched too: the pool still has MFA on, so the refusal
+# did not half-disable it on the way past.
+ARM_A_MFA_AFTER=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${OFF_POOL_ID}" --region "${REGION}" --output json)
+ARM_A_MFA_CONFIG_AFTER=$(echo "${ARM_A_MFA_AFTER}" \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+ARM_A_SOFTWARE_AFTER=$(echo "${ARM_A_MFA_AFTER}" \
+  | jq -r 'if (.SoftwareTokenMfaConfiguration|has("Enabled")) then .SoftwareTokenMfaConfiguration.Enabled|tostring else "null" end')
+if [ "${ARM_A_MFA_CONFIG_AFTER}" != "OPTIONAL" ] || [ "${ARM_A_SOFTWARE_AFTER}" != "true" ]; then
+  echo "FAIL: arm A MFA config after the refused update is '${ARM_A_MFA_CONFIG_AFTER}' / '${ARM_A_SOFTWARE_AFTER}', expected the untouched baseline 'OPTIONAL' / 'true'" >&2
+  echo "${ARM_A_MFA_AFTER}" | jq . >&2 || true
+  exit 1
+fi
+echo "    OK: arm A MFA config untouched (OPTIONAL + SOFTWARE_TOKEN_MFA)"
+
+rm -f "${PREFLIGHT_LOG}"
+PREFLIGHT_LOG=""
+
+# --- Phase 6: arm B (issue #1975) -- the update MUST be refused -------
+echo "==> Phase 6: arm B (#1975) -- EMAIL_OTP added to the sign-in policy under MfaConfiguration ON must be REFUSED"
+PREFLIGHT_LOG="$(mktemp -t cdkd-cognito-preflight.XXXXXX)"
+set +e
+CDKD_TEST_PREFLIGHT_ARM=B node "${LOCAL_DIST}" deploy "${PREFLIGHT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes >"${PREFLIGHT_LOG}" 2>&1
+ARM_B_RC=$?
+set -e
+cat "${PREFLIGHT_LOG}"
+
+# --- Assertion 19: the deploy failed ----------------------------------
+if [ "${ARM_B_RC}" -eq 0 ]; then
+  echo "FAIL: arm B deploy exited 0 -- EMAIL_OTP in AllowedFirstAuthFactors under MfaConfiguration ON must be REFUSED (issue #1975)" >&2
+  exit 1
+fi
+echo "    OK: arm B deploy exited ${ARM_B_RC}"
+
+# --- Assertion 20: cdkd's own message, naming both properties ---------
+if ! grep -q "Failed to update PreflightSignInPool: AWS::Cognito::UserPool MfaConfiguration is ON while Policies.SignInPolicy.AllowedFirstAuthFactors allows EMAIL_OTP" "${PREFLIGHT_LOG}"; then
+  echo "FAIL: arm B did not produce cdkd's own pre-flight refusal for PreflightSignInPool" >&2
+  exit 1
+fi
+if grep -q "InvalidParameterException" "${PREFLIGHT_LOG}"; then
+  echo "FAIL: arm B log contains InvalidParameterException -- the request reached AWS instead of being refused before the first call" >&2
+  grep -n "InvalidParameterException" "${PREFLIGHT_LOG}" >&2 || true
+  exit 1
+fi
+echo "    OK: arm B refused by cdkd before any AWS call, naming both properties"
+
+# --- Assertion 21: THE CANARY -- the loosened policy never landed -----
+# Here the canary IS the payload: `Policies.SignInPolicy` is what
+# `UpdateUserPool` carries, and pre-fix it landed while `SetUserPoolMfaConfig`
+# was rejected -- the pool left with authentication loosened and MFA not
+# tightened. Nothing unwinds it: a FAILED update is journaled for
+# `cdkd rollback --revert-failed`, not auto-reverted.
+ARM_B_FACTORS_AFTER=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${SIGNIN_POOL_ID}" --region "${REGION}" \
+  --query 'UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors' --output json)
+if ! echo "${ARM_B_FACTORS_AFTER}" | jq -e '. == ["PASSWORD"]' >/dev/null; then
+  echo "FAIL: arm B canary AllowedFirstAuthFactors is ${ARM_B_FACTORS_AFTER} after the refused update, expected still exactly [\"PASSWORD\"] -- UpdateUserPool WENT OUT and the sign-in policy partly applied (issue #1975)" >&2
+  exit 1
+fi
+echo "    OK: arm B canary AllowedFirstAuthFactors still [PASSWORD] -- UpdateUserPool never went out"
+
+ARM_B_MFA_AFTER=$(aws cognito-idp get-user-pool-mfa-config \
+  --user-pool-id "${SIGNIN_POOL_ID}" --region "${REGION}" --output json \
+  | jq -r 'if has("MfaConfiguration") then .MfaConfiguration else "null" end')
+if [ "${ARM_B_MFA_AFTER}" != "ON" ]; then
+  echo "FAIL: arm B MfaConfiguration after the refused update is '${ARM_B_MFA_AFTER}', expected the untouched baseline 'ON'" >&2
+  exit 1
+fi
+echo "    OK: arm B MFA config untouched (ON)"
+
+rm -f "${PREFLIGHT_LOG}"
+PREFLIGHT_LOG=""
+
+# --- Phase 7: destroy the pre-flight stack ----------------------------
+# Two of the phases above END in a failed deploy, so this also exercises the
+# destroy path on a stack carrying a rollback journal.
+echo "==> Phase 7: destroy ${PREFLIGHT_STACK}"
+node "${LOCAL_DIST}" destroy "${PREFLIGHT_STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force
+
+assert_gone "arm A UserPool ${OFF_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${OFF_POOL_ID}" --region "${REGION}"
+assert_gone "arm B UserPool ${SIGNIN_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${SIGNIN_POOL_ID}" --region "${REGION}"
+assert_gone "control C2 UserPool ${OPTIONAL_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${OPTIONAL_POOL_ID}" --region "${REGION}"
+assert_gone "control C3 UserPool ${WEBAUTHN_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${WEBAUTHN_POOL_ID}" --region "${REGION}"
+echo "    OK: all four pre-flight UserPools are gone"
+
+assert_gone "state file s3://${STATE_BUCKET}/${PREFLIGHT_STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${PREFLIGHT_STATE_KEY}"
+echo "    OK: pre-flight state file is gone"
+
+# The journal is a state-file SIBLING written by the two failed deploys above,
+# and `cdkd destroy` is what sweeps it. Asserting it explicitly is what keeps
+# "the run left nothing behind" honest for a fixture that fails on purpose.
+assert_gone "rollback journal s3://${STATE_BUCKET}/cdkd/${PREFLIGHT_STACK}/${REGION}/rollback-journal.json still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${PREFLIGHT_STACK}/${REGION}/rollback-journal.json"
+echo "    OK: rollback journal is gone"
+
 echo ""
-echo "==> cognito test passed (SignInPolicy #1380 / UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP-as-MFA unit-only) / MfaConfiguration defaulting both arms OFF+OPTIONAL #1920 / MFA update transitions: enable-on-update + announced undeclared downgrade #1925 + clean destroy)"
+echo "==> cognito test passed (SignInPolicy #1380 / UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP-as-MFA unit-only) / MfaConfiguration defaulting both arms OFF+OPTIONAL #1920 / MFA update transitions: enable-on-update + announced undeclared downgrade #1925 / MFA pre-flight refusals on the UPDATE path with canaries proving no API call went out #1977 + #1975, plus three negative controls / clean destroy)"
