@@ -108,6 +108,12 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/gh-body-english-gate.sh",
+            "timeout": 15,
+            "statusMessage": "Checking the issue / PR text for non-English content..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/gh-label-validity-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking gh label validity..."
