@@ -230,6 +230,33 @@ run "chained sort -t with non-English passes" \
 run "a && inside the body does not truncate the scan" \
   'gh issue comment 5 --body "run a && b then 日本語"' 2
 
+# --- round-4 review regressions (issue #1993) --------------------------
+# EVERY gh publish invocation must be scanned, not just the first. The
+# last case is the three-repo mirror flow itself.
+run "second chained gh invocation is scanned" \
+  'gh issue create -t x -b "ok" && gh issue comment 5 -b "日本語です"' 2
+run "second gh after a semicolon is scanned" \
+  'gh issue create -t x -b "ok"; gh pr comment 5 -b "日本語です"' 2
+run "second gh after || is scanned" \
+  'gh issue create -t x -b "ok" || gh issue create -t x -b "日本語"' 2
+run "cross-repo mirror: the SECOND repo's body is scanned" \
+  'gh -R go-to-k/cdkd issue create -t x -b "ok" && gh -R go-to-k/cdk-local issue create -t x -b "日本語です"' 2
+
+# A newline and a bare `|` end a command just like `&&`.
+run "newline-separated echo -n with non-English passes" \
+  'gh issue create -t x -b "ok"
+echo -n "日本語"' 0
+run "piped grep -n with non-English passes" \
+  'gh api repos/o/r/issues --jq ".[].title" | grep -n 日本語' 0
+
+# VERB_ERE and the segment regex must spell the flags identically.
+run "gh -R=<repo> equals form blocks" \
+  'echo hi && gh -R=o/r issue create -t x -b "日本語"' 2
+run "gh -C=<path> equals form blocks" \
+  'echo hi && gh -C=/tmp issue create -t x -b "日本語"' 2
+run "preceding sort -t with non-English does not false-block" \
+  'sort -t 日 f.txt && gh -R=o/r issue create -t x -b ok' 0
+
 # --- each Unicode range in ISOLATION ----------------------------------
 # Without these, deleting any single range from the character class
 # still passed every case.

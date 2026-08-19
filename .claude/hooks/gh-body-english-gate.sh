@@ -161,28 +161,42 @@ done < <(printf '%s' "$cmd" | perl -0777 -ne '
     # made `gh issue create ... && echo -n "<non-English>"` a hard block
     # with no bypass. The separator scan tracks quote state, so a `&&`
     # INSIDE a body does not end the segment.
+    # EVERY gh publish invocation gets its own segment, not just the
+    # first: a chained `gh -R A issue create ... && gh -R B issue create
+    # ...` is the three-repo mirror flow section 10-c prescribes, and
+    # scanning only the first left the second silently unchecked.
+    # The flag spelling here is kept identical to VERB_ERE above -- when
+    # the two disagreed (`-R=x` matched there but not here), the gate
+    # armed while this regex fell back to offset 0, so the segment
+    # covered the PRECEDING command instead.
     my $s = $_;
-    my $start = 0;
-    if ($s =~ /gh(?:\s+(?:-C|-R)\s+\S+|\s+--repo(?:\s+|=)\S+)*\s+(?:pr\s+(?:create|edit|comment|review)|issue\s+(?:create|comment|edit)|release\s+(?:create|edit)|api)\b/s) {
-      $start = $-[0];
-    }
-    my ($i, $q, $end) = ($start, "", length $s);
-    while ($i < length $s) {
-      my $c = substr($s, $i, 1);
-      # chr(34) / chr(39) rather than literal quotes: this whole perl
-      # program is inside a single-quoted bash string, so a literal
-      # apostrophe would terminate it.
-      if ($q ne "") {
-        if ($c eq "\\" && $q eq chr(34)) { $i += 2; next; }
-        $q = "" if $c eq $q;
-        $i++; next;
+    my @segs;
+    while ($s =~ /gh(?:\s+(?:-C|-R|--repo)(?:\s+|=)\S+)*\s+(?:pr\s+(?:create|edit|comment|review)|issue\s+(?:create|comment|edit)|release\s+(?:create|edit)|api)\b/gs) {
+      my $start = $-[0];
+      my ($i, $q, $end) = ($start, "", length $s);
+      while ($i < length $s) {
+        my $c = substr($s, $i, 1);
+        # chr(34) / chr(39) rather than literal quotes: this whole perl
+        # program is inside a single-quoted bash string, so a literal
+        # apostrophe would terminate it.
+        if ($q ne "") {
+          if ($c eq "\\" && $q eq chr(34)) { $i += 2; next; }
+          $q = "" if $c eq $q;
+          $i++; next;
+        }
+        if ($c eq chr(34) || $c eq chr(39)) { $q = $c; $i++; next; }
+        my $two = substr($s, $i, 2);
+        # A newline and a bare `|` end a command just as `&&` does;
+        # omitting them left the short-flag false positive alive in
+        # multi-line blocks and pipelines.
+        if ($two eq "&&" || $two eq "||" || $c eq ";" || $c eq "|" || $c eq "\n") { $end = $i; last; }
+        $i++;
       }
-      if ($c eq chr(34) || $c eq chr(39)) { $q = $c; $i++; next; }
-      my $two = substr($s, $i, 2);
-      if ($two eq "&&" || $two eq "||" || $c eq ";") { $end = $i; last; }
-      $i++;
+      push @segs, substr($s, $start, $end - $start);
+      pos($s) = ($end > $start) ? $end : $start + 1;
     }
-    $_ = substr($s, $start, $end - $start);
+    for my $seg (@segs) {
+    local $_ = $seg;
 
     # The flag must start at a word boundary that is not itself a dash,
     # so `-b` cannot match inside `--body-file`. `\\.` skips an escaped
@@ -202,6 +216,7 @@ done < <(printf '%s' "$cmd" | perl -0777 -ne '
     while (/(?:--field|--raw-field|-F|-f)[=\s]+["\x27](?:body|title|notes)=([^"\x27]*)["\x27]/gs) { print "$1\0"; }
     while (/(?:--field|--raw-field|-F|-f)[=\s]+(?:body|title|notes)=(["\x27])([^"\x27]*)\1/gs)    { print "$2\0"; }
     while (/(?:--field|--raw-field|-F|-f)[=\s]+(?:body|title|notes)=([^\s"\x27@][^\s]*)/g)        { print "$1\0"; }
+    }
   ' 2>/dev/null)
 
 if [ ${#OFFENDERS[@]} -eq 0 ]; then
