@@ -144,9 +144,15 @@ const engineResults = vi.hoisted(
   () => new Map<string, { deleteSkipped: number; updatePartial: number }>()
 );
 
+/** Stack names whose deploy should throw, for the failure-precedence case. */
+const failingStacks = vi.hoisted(() => new Set<string>());
+
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
   DeployEngine: vi.fn().mockImplementation(() => ({
     deploy: vi.fn(async (stackName: string) => {
+      if (failingStacks.has(stackName)) {
+        throw new Error(`synthetic provisioning failure in ${stackName}`);
+      }
       const counts = engineResults.get(stackName) ?? { deleteSkipped: 0, updatePartial: 0 };
       return {
         stackName,
@@ -218,6 +224,7 @@ async function runDeploy(argv: string[]): Promise<number | undefined> {
 describe('deploy exit code when resources are left unaddressed (issue #1960)', () => {
   beforeEach(() => {
     engineResults.clear();
+    failingStacks.clear();
     synthStacks.value = [makeStack('StackA')];
     errorSpy.mockClear();
     warnSpy.mockClear();
@@ -301,6 +308,19 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     await runDeploy(['--yes', '--allow-unaddressed']);
     const printed = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(printed).not.toContain('Deployment completed successfully');
+  });
+
+  it('lets a genuine deploy failure keep the exit code (1, not 2)', async () => {
+    // Precedence: the unaddressed throw sits AFTER `workGraph.execute`, so a
+    // stack that actually FAILED rejects out of execute first and exits 1.
+    // Reporting 2 here would tell CI "completed, some resources survived" for a
+    // run that did not complete — the opposite of what this change is for.
+    // Mirrors destroy.ts, which checks `totalErrors` before `totalSkipped`.
+    synthStacks.value = [makeStack('StackA'), makeStack('StackB')];
+    engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
+    failingStacks.add('StackB');
+    const code = await runDeploy(['--all', '--yes']);
+    expect(code).toBe(1);
   });
 
   it('still prints the success banner on a clean deploy', async () => {
