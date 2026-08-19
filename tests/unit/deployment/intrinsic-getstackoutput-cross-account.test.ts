@@ -65,6 +65,38 @@ vi.mock('@aws-sdk/client-cloudformation', async () => {
   };
 });
 
+// Issue #1934: a producer output persisted REDACTED is re-resolved before it
+// reaches the consumer — EXCEPT on this path, where the only credentials in
+// hand are the consumer's and they would answer from a same-named secret in
+// the WRONG account. The mock is what turns "cdkd refused" into an assertable
+// fact: without it a regression that resolves would attempt a live
+// GetSecretValue instead of failing a `not.toHaveBeenCalled()`.
+//
+// The fake carries a `config.region()` and resolves a REAL `GetSecretValue`
+// payload, deliberately. A bare `{ send, destroy }` whose `send` resolves
+// `undefined` is non-vacuous only for as long as nothing touches the client
+// before sending: the moment a readback consults `client.config.region()` — the
+// shape the region-scoped clients of issue #1957 already use one file over —
+// the resolution would die on a TypeError and the `not.toHaveBeenCalled()`
+// assertion below would pass for the WRONG reason, i.e. it would stop
+// discriminating exactly when the code it guards changes.
+const secretsMockSend = vi.fn().mockResolvedValue({
+  SecretString: JSON.stringify({ password: 'producer-account-password' }),
+});
+vi.mock('@aws-sdk/client-secrets-manager', async () => {
+  const actual = await vi.importActual<typeof import('@aws-sdk/client-secrets-manager')>(
+    '@aws-sdk/client-secrets-manager',
+  );
+  return {
+    ...actual,
+    SecretsManagerClient: vi.fn().mockImplementation((cfg: unknown) => ({
+      send: secretsMockSend,
+      destroy: vi.fn(),
+      config: { region: async () => (cfg as { region?: string })?.region ?? 'us-east-1' },
+    })),
+  };
+});
+
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
@@ -87,6 +119,11 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { ResolverContext } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
+import {
+  isMarkedNonRetryable,
+  isRetryableTransientError,
+} from '../../../src/deployment/retryable-errors.js';
 import { clearCrossAccountCredentialsCache } from '../../../src/utils/role-arn.js';
 import { clearBucketRegionCache } from '../../../src/utils/aws-region-resolver.js';
 
@@ -135,6 +172,13 @@ describe('Fn::GetStackOutput cross-account RoleArn', () => {
     mockStsSend.mockReset();
     mockS3Send.mockReset();
     s3ClientFactory.mockReset();
+    // Re-primed after the reset (which drops the implementation, not just the
+    // call record) so every test keeps a fake that would SUCCEED if reached —
+    // which is what makes "it was never called" a real finding.
+    secretsMockSend.mockReset();
+    secretsMockSend.mockResolvedValue({
+      SecretString: JSON.stringify({ password: 'producer-account-password' }),
+    });
     clearCrossAccountCredentialsCache();
     clearBucketRegionCache();
   });
@@ -649,5 +693,236 @@ describe('Fn::GetStackOutput cross-account RoleArn', () => {
     );
 
     expect(result).toBe('cross-acct-same-name');
+  });
+
+  it('REFUSES a redacted secret output rather than resolving it with the consumer identity (issue #1934)', async () => {
+    // Since PR #1899 a secret-bearing output is persisted as its
+    // `{{resolve:...}}` expression. Same-account reads re-resolve it before
+    // handing it on; this path CANNOT, because the secret lives in the
+    // PRODUCER's account and the only credentials available for a lookup are
+    // the consumer's — which would answer from a same-named secret in the
+    // wrong account (the issue #1957 disclosure shape). Refusing also beats
+    // the pre-#1934 behaviour of returning the token verbatim: a
+    // `{{resolve:...}}` string reaching AWS as a password is a PREDICTABLE
+    // credential, not merely a broken value.
+    mockStsSend.mockResolvedValueOnce({
+      Credentials: {
+        AccessKeyId: 'ASIA-redacted',
+        SecretAccessKey: 'secret',
+        SessionToken: 'token',
+      },
+    });
+    mockS3Send.mockResolvedValueOnce({ LocationConstraint: PRODUCER_BUCKET_REGION });
+    mockS3Send.mockResolvedValueOnce({
+      Body: bodyOf(
+        happyPathState('Producer', 'us-east-1', {
+          DbPassword: '{{resolve:secretsmanager:prod/db/cred:SecretString:password}}',
+        }),
+      ),
+      ETag: '"e"',
+    });
+
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    await expect(
+      resolver.resolve(
+        {
+          'Fn::GetStackOutput': {
+            StackName: 'Producer',
+            OutputName: 'DbPassword',
+            Region: 'us-east-1',
+            RoleArn: PRODUCER_ROLE,
+          },
+        },
+        buildContext(),
+      ),
+    ).rejects.toThrow(IntrinsicResolutionRefusalError);
+
+    // The load-bearing assertion: NO secret was fetched. A test that only
+    // checked the throw would still pass if the lookup happened first and the
+    // refusal came afterwards.
+    expect(secretsMockSend).not.toHaveBeenCalled();
+  });
+
+  it('marks that refusal NON-RETRYABLE, so the retry loop cannot burn its budget on it', async () => {
+    // The message interpolates a template-controlled `OutputName` / `StackName`
+    // and a `RoleArn`, and the retry classifiers match by SUBSTRING (issue
+    // #1838) — so an output named for a retryable pattern would otherwise buy
+    // ~47s of backoff on a decision no retry can change (a persisted state
+    // record plus a literal `RoleArn`). The class alone does not carry the
+    // marker: `IntrinsicResolutionRefusalError` is deliberately unmarked in its
+    // constructor so the #1730 fabricated-account arm can still heal, which is
+    // why this has to be asserted at the SITE.
+    mockStsSend.mockResolvedValueOnce({
+      Credentials: {
+        AccessKeyId: 'ASIA-terminal',
+        SecretAccessKey: 'secret',
+        SessionToken: 'token',
+      },
+    });
+    mockS3Send.mockResolvedValueOnce({ LocationConstraint: PRODUCER_BUCKET_REGION });
+    mockS3Send.mockResolvedValueOnce({
+      Body: bodyOf(
+        happyPathState('Producer', 'us-east-1', {
+          DependencyViolationPassword:
+            '{{resolve:secretsmanager:prod/db/cred:SecretString:password}}',
+        }),
+      ),
+      ETag: '"e"',
+    });
+
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    let thrown: Error | undefined;
+    try {
+      await resolver.resolve(
+        {
+          'Fn::GetStackOutput': {
+            StackName: 'Producer',
+            OutputName: 'DependencyViolationPassword',
+            Region: 'us-east-1',
+            RoleArn: PRODUCER_ROLE,
+          },
+        },
+        buildContext(),
+      );
+    } catch (error) {
+      thrown = error as Error;
+    }
+
+    expect(thrown).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    // The message really does carry a retryable substring...
+    expect(thrown?.message).toContain('DependencyViolation');
+    // ...so the marker is what has to win. Assert the OUTCOME, not the wording.
+    expect(isMarkedNonRetryable(thrown!)).toBe(true);
+    expect(isRetryableTransientError(thrown!, thrown!.message)).toBe(false);
+  });
+
+  it('is RE-RAISED out of an Fn::Sub instead of being laundered into a literal', async () => {
+    // Why the refusal is an `IntrinsicResolutionRefusalError` and not a plain
+    // `Error`. `Fn::Sub` catches a failed `${...}` resolution and KEEPS the raw
+    // placeholder — the right answer for a genuinely unknown variable, and
+    // catastrophic for a deliberate refusal, which would ship
+    // `${...}` to AWS from a green deploy (the #1740 class).
+    //
+    // Asserting the CLASS of a constructed error proves nothing about this
+    // site: it cannot fail for any change in this lane. Driving the refusal
+    // through a real `Fn::Sub` is what discriminates.
+    mockStsSend.mockResolvedValueOnce({
+      Credentials: {
+        AccessKeyId: 'ASIA-sub',
+        SecretAccessKey: 'secret',
+        SessionToken: 'token',
+      },
+    });
+    mockS3Send.mockResolvedValueOnce({ LocationConstraint: PRODUCER_BUCKET_REGION });
+    mockS3Send.mockResolvedValueOnce({
+      Body: bodyOf(
+        happyPathState('Producer', 'us-east-1', {
+          DbPassword: '{{resolve:secretsmanager:prod/db/cred:SecretString:password}}',
+        }),
+      ),
+      ETag: '"e"',
+    });
+
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    await expect(
+      resolver.resolve(
+        {
+          'Fn::Sub': [
+            'postgres://admin:${Password}@db.example.com',
+            {
+              Password: {
+                'Fn::GetStackOutput': {
+                  StackName: 'Producer',
+                  OutputName: 'DbPassword',
+                  Region: 'us-east-1',
+                  RoleArn: PRODUCER_ROLE,
+                },
+              },
+            },
+          ],
+        },
+        buildContext(),
+      ),
+    ).rejects.toThrow(IntrinsicResolutionRefusalError);
+
+    expect(secretsMockSend).not.toHaveBeenCalled();
+  });
+
+  it('does NOT refuse on the DIFF path, where nothing would be fetched anyway', async () => {
+    // `skipDynamicReferences` leaves a secret reference unresolved by design,
+    // so there is no wrong-account read to refuse. Refusing anyway made
+    // `cdkd diff` degrade (through the diff calculator's best-effort catch) to
+    // the raw intrinsic for a template that deploys fine — and the comparison
+    // wants exactly what it gets here: the expression, compared against the
+    // expression state holds.
+    mockStsSend.mockResolvedValueOnce({
+      Credentials: {
+        AccessKeyId: 'ASIA-diff',
+        SecretAccessKey: 'secret',
+        SessionToken: 'token',
+      },
+    });
+    mockS3Send.mockResolvedValueOnce({ LocationConstraint: PRODUCER_BUCKET_REGION });
+    mockS3Send.mockResolvedValueOnce({
+      Body: bodyOf(
+        happyPathState('Producer', 'us-east-1', {
+          DbPassword: '{{resolve:secretsmanager:prod/db/cred:SecretString:password}}',
+        }),
+      ),
+      ETag: '"e"',
+    });
+
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const result = await resolver.resolve(
+      {
+        'Fn::GetStackOutput': {
+          StackName: 'Producer',
+          OutputName: 'DbPassword',
+          Region: 'us-east-1',
+          RoleArn: PRODUCER_ROLE,
+        },
+      },
+      buildContext({ skipDynamicReferences: true }),
+    );
+
+    expect(result).toBe('{{resolve:secretsmanager:prod/db/cred:SecretString:password}}');
+    expect(secretsMockSend).not.toHaveBeenCalled();
+  });
+
+  it('is unaffected when the cross-account output carries no dynamic reference', async () => {
+    // Discriminates the refusal from "cross-account is refused wholesale":
+    // an ordinary value on the very same path still resolves.
+    mockStsSend.mockResolvedValueOnce({
+      Credentials: {
+        AccessKeyId: 'ASIA-plain',
+        SecretAccessKey: 'secret',
+        SessionToken: 'token',
+      },
+    });
+    mockS3Send.mockResolvedValueOnce({ LocationConstraint: PRODUCER_BUCKET_REGION });
+    mockS3Send.mockResolvedValueOnce({
+      Body: bodyOf(
+        happyPathState('Producer', 'us-east-1', {
+          DbEndpoint: 'db.producer.example.com',
+        }),
+      ),
+      ETag: '"e"',
+    });
+
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const result = await resolver.resolve(
+      {
+        'Fn::GetStackOutput': {
+          StackName: 'Producer',
+          OutputName: 'DbEndpoint',
+          Region: 'us-east-1',
+          RoleArn: PRODUCER_ROLE,
+        },
+      },
+      buildContext(),
+    );
+
+    expect(result).toBe('db.producer.example.com');
+    expect(secretsMockSend).not.toHaveBeenCalled();
   });
 });

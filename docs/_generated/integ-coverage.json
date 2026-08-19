@@ -5509,6 +5509,7 @@
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
         "cross-stack-references",
+        "cross-stack-secret-import",
         "custom-resource-getatt-data",
         "deep-getatt-chains",
         "deletion-policy-retain",
@@ -5583,6 +5584,9 @@
         ],
         "cross-stack-references": [
           "l1"
+        ],
+        "cross-stack-secret-import": [
+          "l2"
         ],
         "custom-resource-getatt-data": [
           "l2"
@@ -5770,6 +5774,7 @@
       "resourceType": "AWS::SecretsManager::Secret",
       "integs": [
         "composite-stack",
+        "cross-stack-secret-import",
         "event-driven",
         "full-stack-demo",
         "iam-access-key",
@@ -5784,6 +5789,9 @@
         "composite-stack": [
           "l2",
           "literal"
+        ],
+        "cross-stack-secret-import": [
+          "l2"
         ],
         "event-driven": [
           "l2"

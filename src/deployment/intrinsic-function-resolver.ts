@@ -9,7 +9,9 @@ import {
   DescribeAvailabilityZonesCommand,
   DescribeInstancesCommand,
   DescribeLaunchTemplatesCommand,
+  DescribeVpcsCommand,
 } from '@aws-sdk/client-ec2';
+import type { ServiceDiscoveryClient } from '@aws-sdk/client-servicediscovery';
 import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { S3Client } from '@aws-sdk/client-s3';
@@ -648,6 +650,28 @@ function buildUnknownIntrinsicError(key: string): Error {
       `Deploying this template would produce a broken value. ` +
       `Please request support by opening an issue: ${issueUrl}`
   );
+}
+
+/**
+ * Does `value` carry a CloudFormation dynamic reference anywhere inside it?
+ *
+ * Used as the identity fast path of {@link
+ * IntrinsicFunctionResolver.reresolveCrossStackValue}: a cross-stack value that
+ * carries none is returned untouched, so every ordinary import keeps its
+ * pre-#1934 behaviour with no walk, no AWS call and no allocation.
+ *
+ * The walk descends arrays and objects because `state.outputs` is typed
+ * `Record<string, unknown>` and deliberately NOT coerced to string — a
+ * list-valued `Fn::GetAtt` persists a JSON array — so a secret-bearing output
+ * is not always a bare string.
+ */
+function carriesDynamicReference(value: unknown): boolean {
+  if (typeof value === 'string') return value.includes('{{resolve:');
+  if (Array.isArray(value)) return value.some(carriesDynamicReference);
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(carriesDynamicReference);
+  }
+  return false;
 }
 
 /**
@@ -1365,6 +1389,55 @@ export class IntrinsicFunctionResolver {
    * another's identity, which is a worse bug than the one this cache serves.
    */
   private readonly regionScopedClients = new Map<string, AwsClients>();
+  /**
+   * ServiceDiscovery clients keyed by the region {@link clientsForRegion}
+   * selected (`''` when it selected none). See {@link serviceDiscoveryClient}
+   * for why this one service is not read off an `AwsClients` bag, and why the
+   * PROMISE rather than the client is what is stored.
+   */
+  private readonly serviceDiscoveryClients = new Map<string, Promise<ServiceDiscoveryClient>>();
+  /**
+   * Resolvers pinned to a PRODUCER stack's region, for re-resolving a
+   * cross-stack imported value that was persisted REDACTED (issue
+   * [#1934](https://github.com/go-to-k/cdkd/issues/1934)); see
+   * {@link reresolveCrossStackValue}.
+   *
+   * A whole resolver rather than a client bag, because what has to be
+   * region-scoped is not only the lookup but the VALUE CACHE behind it:
+   * {@link cachedDynamicReferences} is keyed by the expression alone and is
+   * sound only because one resolver stands for one stack in one region (issue
+   * #1933). Resolving a producer's expression inside THIS resolver would put a
+   * foreign region's answer under a key the consumer's own lookups read — the
+   * exact cross-region leak that field's instance scope closed. A separate
+   * resolver per producer region keeps that invariant by construction.
+   *
+   * WHAT THAT DOES *NOT* BUY, stated because an earlier revision of this note
+   * implied it did: a separate instance isolates only the state this class
+   * OWNS. The `{{resolve:...}}` SECRET VERDICT store lives in
+   * `secret-redaction.ts`, is process-global and is keyed by the expression
+   * string alone, so a guest's resolution would still pin a foreign region's
+   * verdict for every later reader. That half is closed at the WRITE instead —
+   * see {@link pinSecretVerdict} and {@link producerRegionGuest}, which also
+   * record why re-keying that store is not available from this lane.
+   *
+   * Bounded like {@link regionScopedClients}: an entry exists only for a
+   * producer region that DIFFERS from this resolver's own, and at most one per
+   * such region. Same lifetime too — the resolver's own, with no teardown.
+   */
+  private readonly producerRegionResolvers = new Map<string, IntrinsicFunctionResolver>();
+  /**
+   * True on a resolver built by {@link resolverForProducerRegion} to answer for
+   * ANOTHER stack's region — a read-only guest of this deploy.
+   *
+   * Its one consequence is {@link pinSecretVerdict}: a guest never writes the
+   * PROCESS-GLOBAL secret-verdict store, because a verdict keyed by the
+   * expression string alone would carry a foreign region's answer into the
+   * consumer's own next pass. Deliberately NOT on
+   * {@link IntrinsicFunctionResolverOptions} — no caller outside this class may
+   * declare itself a guest, and the flag is set by the one line that builds
+   * one.
+   */
+  private producerRegionGuest = false;
   private readonly strictGetAtt: boolean;
   private readonly cfnFallback: boolean;
   /**
@@ -1653,6 +1726,60 @@ export class IntrinsicFunctionResolver {
     this.regionScopedClients.set(target, scoped);
     this.logger.debug(`Using region-scoped AWS clients for ${target}`);
     return scoped;
+  }
+
+  /**
+   * The ServiceDiscovery client for the `HostedZoneId` namespace lookup, in the
+   * region {@link clientsForRegion} selects (issue
+   * [#1994](https://github.com/go-to-k/cdkd/issues/1994)).
+   *
+   * It is BUILT here rather than read off the bag for one reason: `AwsClients`
+   * carries no `serviceDiscovery` member, and adding one would put a static
+   * `@aws-sdk/client-servicediscovery` import into a module every command
+   * loads. So the REGION DECISION is still `clientsForRegion`'s — including its
+   * ambient-reuse rule and its refusal of a region that is not client-safe —
+   * and only the construction is local: the chosen bag's
+   * {@link AwsClients.credentialConfig} carries `--profile` / explicit
+   * credentials across, and its {@link AwsClients.configuredRegion} is the
+   * region to pin. An UNCONFIGURED bag (no region was ever named, i.e. the
+   * no-argument constructor) pins nothing and lets the SDK's own chain
+   * resolve — the same arm-1 answer `clientsForRegion` gives, and strictly
+   * better than the `resolverRegion` this site used to read, which substitutes
+   * `AWS_REGION` and then a hard-coded `us-east-1`.
+   *
+   * The PROMISE is memoized, not the client: the dynamic import makes this
+   * async, so two callers arriving from different await depths can both be
+   * inside the seam and would each construct (and leak) their own client. That
+   * is defensive rather than measured — the unit case dispatching ten lookups
+   * together produces ONE client either way, because they serialize on
+   * `getAccountInfo`'s in-flight promise and reach here one at a time, which
+   * the case says out loud. A REJECTED import is evicted
+   * so a transient failure does not poison the rest of the deploy, mirroring
+   * `cfnExportsPromise`. Lifetime is the resolver's own, like
+   * {@link regionScopedClients} and {@link cfnClients}: at most one per region
+   * per resolver, versus the one-per-CALL this replaces.
+   */
+  private async serviceDiscoveryClient(): Promise<ServiceDiscoveryClient> {
+    const scoped = this.clientsForRegion(this.explicitRegion);
+    const region = scoped.configuredRegion;
+    const key = region ?? '';
+    const cached = this.serviceDiscoveryClients.get(key);
+    if (cached) return cached;
+
+    const building = (async () => {
+      const { ServiceDiscoveryClient } = await import('@aws-sdk/client-servicediscovery');
+      return new ServiceDiscoveryClient({
+        ...(scoped.credentialConfig ?? {}),
+        ...(region ? { region } : {}),
+      });
+    })();
+    this.serviceDiscoveryClients.set(key, building);
+    building.catch(() => {
+      if (this.serviceDiscoveryClients.get(key) === building) {
+        this.serviceDiscoveryClients.delete(key);
+      }
+    });
+    return building;
   }
 
   /**
@@ -2464,8 +2591,18 @@ export class IntrinsicFunctionResolver {
           // After CC API reports VPCCidrBlock CREATE success, the CIDR may still be in
           // 'associating' state. Retry up to 30s waiting for 'associated'.
           try {
-            const { EC2Client, DescribeVpcsCommand } = await import('@aws-sdk/client-ec2');
-            const ec2 = new EC2Client({ region: this.resolverRegion });
+            // Region-sensitive for the same reason as the `DescribeInstances`
+            // / `DescribeLaunchTemplates` siblings below: a VPC id only
+            // resolves in its own region, and a foreign-region client answers
+            // `InvalidVpcID.NotFound`, which lands in the catch below and
+            // degrades to an EMPTY list — a downstream `Fn::Select` on it then
+            // fails, or a list-valued property ships empty. Routed through
+            // `clientsForRegion` (issue #1994) rather than built here: the
+            // per-call construction leaked one client + socket pool per
+            // lookup and read `resolverRegion`, whose `AWS_REGION` /
+            // `us-east-1` substitution is the FAIL-OPEN shape issue #1957
+            // removed from the dynamic-reference lookups.
+            const ec2 = this.clientsForRegion(this.explicitRegion).ec2;
             const maxAttempts = 15;
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               const resp = await ec2.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
@@ -2704,9 +2841,11 @@ export class IntrinsicFunctionResolver {
           return physicalId;
         case 'HostedZoneId': {
           try {
-            const { ServiceDiscoveryClient, GetNamespaceCommand } =
-              await import('@aws-sdk/client-servicediscovery');
-            const sd = new ServiceDiscoveryClient({ region: this.resolverRegion });
+            const { GetNamespaceCommand } = await import('@aws-sdk/client-servicediscovery');
+            // Region-sensitive: a namespace id only resolves in its own region
+            // (issue #1994). See {@link serviceDiscoveryClient} for why this
+            // one service is built here instead of read off the bag.
+            const sd = await this.serviceDiscoveryClient();
             const resp = await sd.send(new GetNamespaceCommand({ Id: physicalId }));
             return resp.Namespace?.Properties?.DnsProperties?.HostedZoneId;
           } catch (error) {
@@ -3739,6 +3878,201 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Re-resolve the dynamic references in a value read out of a PRODUCER
+   * stack's persisted outputs, before it is handed to the consumer (issue
+   * [#1934](https://github.com/go-to-k/cdkd/issues/1934)).
+   *
+   * Since PR #1899 a secret-bearing output is stored REDACTED: `state.outputs`
+   * and the exports index hold `{{resolve:secretsmanager:X:SecretString:pw}}`
+   * rather than the resolved value. A consumer resolving `Fn::ImportValue` /
+   * `Fn::GetStackOutput` got that string back VERBATIM and shipped the literal
+   * token to AWS as the property value — the GHSA-p5qg-v9gv-hc7w class one
+   * more time, and the same shape `resolveReplayProps` fixed for the rollback
+   * replay and #1914 fixed for `cdkd drift --revert`. Every place that reads a
+   * REDACTED bag and hands it onward has to re-resolve first; the cross-stack
+   * import edge was the one that was missed, because the redaction and the
+   * consumption live in different stacks and often different runs.
+   *
+   * `{{resolve:` re-resolution in {@link resolveValue} could not cover it: that
+   * arm fires for a leaf INPUT string, and an intrinsic's RETURN value is never
+   * fed back through it.
+   *
+   * WHICH REGION RESOLVES IT — the producer's, via {@link
+   * resolverForProducerRegion}. The expression was resolved BY the producer IN
+   * the producer's region, so that is the only region whose answer reproduces
+   * the value the producer exported; a Secrets Manager secret or an SSM
+   * parameter of the same NAME in two regions is two independent values (issue
+   * #1933). The index hit carries `entry.producerRegion` (a required field) and
+   * `Fn::GetStackOutput` carries the reference's own resolved `Region`, so both
+   * of those are recorded rather than inferred.
+   *
+   * THE SCAN ARM IS THE EXCEPTION, and it is one this method inherits rather
+   * than introduces: a pre-v2 state record has no `region` field, so the scan
+   * reads it as `refRegion ?? this.resolverRegion` — the consumer's own region,
+   * itself defaulted through `AWS_REGION` and then `us-east-1`. Where that
+   * guess is wrong the re-resolution asks the wrong region and either misses
+   * the secret (a hard failure naming the lookup, since issue #1934's
+   * restructure surfaces it rather than degrading to `export not found`) or
+   * resolves a same-named secret in the consumer's region. What bounds it is
+   * that the guess is the SAME one the state READ just used, so this method
+   * cannot disagree with the record it was handed — a region-less record was
+   * already being read from that region or not found at all. The honest fix is
+   * a region on the record, which is what schema v2 did for every record
+   * written since.
+   *
+   * WHICH CREDENTIALS — the consumer's, which are the producer's too for every
+   * path that reaches here. `Fn::ImportValue` reads the account-scoped state
+   * bucket / exports index, so a producer it can see is in this account by
+   * construction, and the cross-ACCOUNT `Fn::GetStackOutput` path deliberately
+   * never calls this (see the refusal at its call site) rather than resolving a
+   * producer's expression under the consumer's identity — which would answer
+   * from a same-named secret in the WRONG account, the #1957 disclosure shape.
+   *
+   * The CONSUMER's `context` is passed through, which is what keeps the
+   * consumer's own state redacted: each resolved plaintext is recorded into its
+   * `recordedSecretValues`, so the deploy engine's save choke point rewrites it
+   * back to the expression on the way into `state.json`. It also means
+   * `skipDynamicReferences` is honoured, so the diff / no-op path keeps
+   * comparing expression-vs-expression instead of fetching a secret to print.
+   *
+   * Identity-returns a value carrying no `{{resolve:` at all, so an ordinary
+   * import is untouched.
+   *
+   * THE WALK BELOW IS A THIRD COPY, and that is recorded rather than fixed.
+   * `rollback-executor.ts`'s `resolveReplayProps` carries the same descent, and
+   * `drift.ts`'s `resolveStateSecretExpressions` the same idea. Extracting one
+   * helper is the right end state and is NOT this change's to make: the natural
+   * home is beside those callers, in files a parallel lane owns, and a
+   * cross-module extraction done from here would edit them. Two things a future
+   * extractor needs that a mechanical merge would drop: this copy rebuilds
+   * objects with `Object.create(null)` (the `__proto__` hazard below), and it
+   * takes the RESOLVER as a parameter because the region it must answer for is
+   * the producer's rather than the caller's — which is exactly what issue #2057
+   * says the other two copies get wrong.
+   */
+  private async reresolveCrossStackValue(
+    value: unknown,
+    producerRegion: string | undefined,
+    context: ResolverContext,
+    origin: string
+  ): Promise<unknown> {
+    if (!carriesDynamicReference(value)) return value;
+
+    const resolver = this.resolverForProducerRegion(producerRegion);
+    const walk = async (v: unknown): Promise<unknown> => {
+      if (typeof v === 'string') {
+        return v.includes('{{resolve:') ? await resolver.resolveDynamicReferences(v, context) : v;
+      }
+      if (Array.isArray(v)) {
+        const out: unknown[] = new Array(v.length) as unknown[];
+        for (let i = 0; i < v.length; i++) out[i] = await walk(v[i]);
+        return out;
+      }
+      if (v !== null && typeof v === 'object') {
+        // `Object.create(null)` rather than `{}`, matching `secret-redaction.ts`'s
+        // `redactByPath` / `redactSecretsForState` (the #1943 class) so the
+        // codebase carries ONE answer to this hazard. A JSON-parsed
+        // `state.outputs` can hold an OWN key named `__proto__`; assigning it
+        // onto a normal object literal neither creates the key nor keeps the
+        // value — it walks the prototype setter, so the key VANISHES from the
+        // rebuilt bag and the object's prototype changes with it. A null-
+        // prototype object has no such setter, so the assignment is an ordinary
+        // own-property write. Do not "simplify" this back to `{}`.
+        const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+        for (const [k, val] of Object.entries(v)) out[k] = await walk(val);
+        return out;
+      }
+      return v;
+    };
+
+    // Names the reference only — never the value, resolved or otherwise.
+    this.logger.debug(`Re-resolving dynamic reference(s) in ${origin}`);
+    return await walk(value);
+  }
+
+  /**
+   * The resolver that must answer for a PRODUCER region — `this` when the
+   * producer shares this resolver's own region, otherwise the pinned sibling
+   * from {@link producerRegionResolvers}.
+   *
+   * The comparison is against {@link explicitRegion}, NOT {@link
+   * resolverRegion}: the latter substitutes `AWS_REGION` and then a hard-coded
+   * `us-east-1`, so comparing against it would answer "same region" on the
+   * strength of a guess and resolve the producer's expression against whatever
+   * the ambient clients happen to point at. When no region was named, a producer
+   * region that IS named still binds — "unknown means SCOPE, not skip", the same
+   * rule {@link clientsForRegion} applies, and the same one `Fn::GetAZs` already
+   * follows for its template-named region.
+   */
+  /**
+   * Pin (or retract) a `{{resolve:...}}` secret verdict in the PROCESS-GLOBAL
+   * store — unless this resolver is a producer-region GUEST, which writes
+   * nothing there.
+   *
+   * The guest suppression is the correction the review of issue #1934 forced,
+   * and the isolation note on {@link producerRegionResolvers} used to overstate
+   * what a per-region resolver bought. The value cache is per-instance, but the
+   * VERDICT store is not this class's — it lives in `secret-redaction.ts` and is
+   * keyed by the expression STRING alone, so a producer-region resolution would
+   * pin a FOREIGN region's answer for the whole process. The consequence is
+   * concrete, and it lands on the consumer's very next pass: `isKnownSecret`
+   * consults that store, and on the `skipDynamicReferences` (diff / no-op) path
+   * a `true` verdict SKIPS the lookup and leaves the expression unresolved — so
+   * a consumer-region parameter that is a plain `String`, and which state
+   * therefore holds RESOLVED, would be compared as an expression and report a
+   * spurious change on every run. That is issue #1901's perpetual-UPDATE class,
+   * arriving through a region boundary the store cannot see.
+   *
+   * KEYING THE STORE BY REGION IS THE BETTER FIX AND IS NOT AVAILABLE FROM
+   * HERE. `secret-redaction.ts` reads its own store internally with the BARE
+   * expression (`isKnownSecretExpression`, and the mixed-leaf public-reference
+   * test), so a region-qualified key would silently stop matching for the
+   * redaction path — losing the #1910 losing-member arm and changing the #1926
+   * empty-map verdict — and that file is owned by another lane in this run.
+   * Suppressing the WRITE is the half that is correct on its own: it removes
+   * the new cross-region reachability without changing the key, and the
+   * consumer's own resolver keeps pinning its own region's verdicts exactly as
+   * before.
+   *
+   * READS are deliberately NOT suppressed. A guest reading the consumer's
+   * verdict can only seed `isKnownSecret`, which for `ssm` is OVERWRITTEN by
+   * the fresh `GetParameter` response, and on the skip path it produces the
+   * unresolved expression the diff wants anyway. Only the write direction
+   * carried the defect.
+   *
+   * The cost of suppressing is one `GetParameter` per foreign expression per
+   * later pass, since the guest's OWN instance cache still carries the verdict
+   * alongside the value (issue #1933's design) and answers every repeat within
+   * the deploy.
+   */
+  private pinSecretVerdict(expression: string, secret: boolean): void {
+    if (this.producerRegionGuest) return;
+    if (secret) recordedSecretExpressions.add(expression);
+    else recordedSecretExpressions.delete(expression);
+  }
+
+  private resolverForProducerRegion(producerRegion: string | undefined): IntrinsicFunctionResolver {
+    if (!producerRegion) return this;
+    const target = canonicalizeRegion(producerRegion);
+    if (target === canonicalizeRegion(this.explicitRegion)) return this;
+
+    const cached = this.producerRegionResolvers.get(target);
+    if (cached) return cached;
+
+    const scoped = new IntrinsicFunctionResolver(target, {
+      strictGetAtt: this.strictGetAtt,
+      cfnFallback: this.cfnFallback,
+    });
+    // Set after construction rather than through the options bag: this is an
+    // INTERNAL mode with exactly one producer (the line above), and nothing
+    // outside this class may declare itself a guest.
+    scoped.producerRegionGuest = true;
+    this.producerRegionResolvers.set(target, scoped);
+    this.logger.debug(`Using a producer-region resolver for ${target}`);
+    return scoped;
+  }
+
+  /**
    * Resolve Fn::ImportValue (cross-stack references)
    *
    * Searches all other stacks for an exported output with the given name.
@@ -3767,18 +4101,36 @@ export class IntrinsicFunctionResolver {
     // Skip self-references (a stack importing its own export) so the
     // fallback scan below can apply the same exclusion.
     if (context.exportIndex) {
+      // The LOOKUP is what this catch degrades from — deliberately narrowed to
+      // it (issue #1934). The re-resolution below can fail for real reasons
+      // (an `AccessDenied` on `GetSecretValue`, a producer region that is not
+      // client-safe), and inside this try those would have been swallowed as
+      // "index lookup failed", re-scanned, found again, and finally reported
+      // as `export not found in any stack` — an error naming neither the
+      // cause nor the export that WAS found.
+      let entry: Awaited<ReturnType<ExportIndexStore['lookup']>>;
       try {
-        const entry = await context.exportIndex.lookup(exportName);
-        if (entry && (!context.stackName || entry.producerStack !== context.stackName)) {
-          this.recordImport(context, exportName, entry.producerStack, entry.producerRegion);
-          this.logger.info(
-            `Resolved Fn::ImportValue: ${exportName} = ${JSON.stringify(entry.value)} (from index: ${entry.producerStack} / ${entry.producerRegion})`
-          );
-          return entry.value;
-        }
+        entry = await context.exportIndex.lookup(exportName);
       } catch (err) {
         this.logger.warn(
           `Exports index lookup failed for '${exportName}': ${err instanceof Error ? err.message : String(err)}; falling back to state.json scan`
+        );
+        entry = undefined;
+      }
+      if (entry && (!context.stackName || entry.producerStack !== context.stackName)) {
+        this.recordImport(context, exportName, entry.producerStack, entry.producerRegion);
+        // Logged BEFORE the re-resolution, deliberately: what the index holds
+        // for a secret-bearing export is the `{{resolve:...}}` EXPRESSION, so
+        // this line stays non-disclosing (issue #1934's own note). Never move
+        // it after the call below.
+        this.logger.info(
+          `Resolved Fn::ImportValue: ${exportName} = ${JSON.stringify(entry.value)} (from index: ${entry.producerStack} / ${entry.producerRegion})`
+        );
+        return await this.reresolveCrossStackValue(
+          entry.value,
+          entry.producerRegion,
+          context,
+          `Fn::ImportValue '${exportName}' (producer ${entry.producerStack} / ${entry.producerRegion})`
         );
       }
     }
@@ -3789,6 +4141,13 @@ export class IntrinsicFunctionResolver {
     this.logger.debug(
       `Found ${allStacks.length} state record(s) to search for export: ${exportName}`
     );
+
+    // Hoisted out of the loop so the re-resolution happens OUTSIDE the
+    // per-stack catch (issue #1934). Inside it, a failing `GetSecretValue`
+    // would have been logged as `Failed to read state for stack X`, the scan
+    // would have continued past the record it had just matched, and the caller
+    // would have been told the export exists nowhere.
+    let found: { value: unknown; refStack: string; lookupRegion: string } | undefined;
 
     for (const ref of allStacks) {
       const { stackName: refStack, region: refRegion } = ref;
@@ -3835,7 +4194,8 @@ export class IntrinsicFunctionResolver {
               });
           }
           this.recordImport(context, exportName, refStack, lookupRegion);
-          return value;
+          found = { value, refStack, lookupRegion };
+          break;
         }
       } catch (error) {
         this.logger.warn(
@@ -3843,6 +4203,18 @@ export class IntrinsicFunctionResolver {
         );
         continue;
       }
+    }
+
+    if (found) {
+      // Same as the index arm above: the patched index entry and the log line
+      // both carry the STORED (redacted) value; only what is handed to the
+      // consumer is re-resolved (issue #1934).
+      return await this.reresolveCrossStackValue(
+        found.value,
+        found.lookupRegion,
+        context,
+        `Fn::ImportValue '${exportName}' (producer ${found.refStack} / ${found.lookupRegion})`
+      );
     }
 
     // CloudFormation fallback (issue #1697): the export is in no cdkd state
@@ -3864,6 +4236,13 @@ export class IntrinsicFunctionResolver {
               cfnExport.exportingStackId ? `; exporting stack: ${cfnExport.exportingStackId}` : ''
             }; weak reference — producer is not cdkd-managed)`
         );
+        // Deliberately NOT re-resolved (issue #1934). The re-resolution exists
+        // to undo cdkd's OWN redaction, and this value never passed through it:
+        // it is whatever CloudFormation holds for the export. CFn does not
+        // resolve dynamic references in an export value either, so a
+        // `{{resolve:...}}` here is a LITERAL the producer chose to publish, and
+        // resolving it would diverge from what a CloudFormation consumer of the
+        // same export receives.
         return cfnExport.value;
       }
     }
@@ -4247,7 +4626,9 @@ export class IntrinsicFunctionResolver {
           // Deliberately NOT recorded into `recordedOutputReads` —
           // `state.outputReads` names cdkd-managed producers so recreate
           // warnings can list downstream consumers; a CFn-managed producer
-          // is never recreated by cdkd.
+          // is never recreated by cdkd. And deliberately NOT re-resolved, for
+          // the same reason as the `Fn::ImportValue` CloudFormation fallback
+          // (issue #1934): this value never passed through cdkd's redaction.
           return value;
         }
       }
@@ -4273,6 +4654,9 @@ export class IntrinsicFunctionResolver {
     }
 
     const value = outputs[outputName];
+    // Logged BEFORE the re-resolution below: what a producer's state holds for
+    // a secret-bearing output is the `{{resolve:...}}` EXPRESSION, so this line
+    // stays non-disclosing (issue #1934). Never move it after that call.
     this.logger.info(
       `Resolved Fn::GetStackOutput: StackName=${stackName}, Region=${region}, OutputName=${outputName}${
         roleArn ? `, RoleArn=${roleArn}` : ''
@@ -4288,7 +4672,56 @@ export class IntrinsicFunctionResolver {
     if (!roleArn) {
       this.recordOutputRead(context, stackName, region, outputName);
     }
-    return value;
+
+    // The SIBLING read path of `Fn::ImportValue`, reading the same persisted
+    // `state.outputs` bag, so it carries the same redacted expressions and
+    // needs the same re-resolution (issue #1934 Direction item 2).
+    //
+    // Except CROSS-ACCOUNT, where cdkd REFUSES rather than resolving. The
+    // expression names a secret in the PRODUCER's account; the only credentials
+    // in hand for a lookup are the consumer's, and resolving under them would
+    // silently answer from a same-named secret in the WRONG account — the
+    // disclosure shape issue #1957 exists to close, and strictly worse than
+    // stopping. (The `RoleArn` credentials are assumed for a state READ and
+    // carry no promise of `secretsmanager:GetSecretValue` / `ssm:GetParameter`;
+    // resolving through them is a real option, but it is a permission-model
+    // change that belongs in its own issue rather than smuggled in behind a
+    // silent fallback.) Refusing is also better than the pre-#1934 behaviour of
+    // shipping the literal token: a `{{resolve:...}}` string reaching AWS as a
+    // password is a PREDICTABLE credential, not merely a broken value.
+    //
+    // `IntrinsicResolutionRefusalError` so an `Fn::Sub` re-raises it instead of
+    // laundering it into a literal `${...}`, and non-retryable because the
+    // inputs (a persisted state record, a template's literal `RoleArn`) are
+    // ones no retry can change.
+    //
+    // GATED ON THE DEPLOY PATH. Under `skipDynamicReferences` (the diff / no-op
+    // comparison) nothing would be fetched from any account — a secret
+    // reference is left unresolved by design — so there is no wrong-account
+    // read to refuse, and refusing anyway would make `cdkd diff` fail (or, via
+    // the diff calculator's best-effort catch, degrade to the raw intrinsic)
+    // for a template that deploys fine everywhere except this one cross-account
+    // output. The comparison then does what it does for every other secret:
+    // compares expression against expression.
+    if (roleArn && !context.skipDynamicReferences && carriesDynamicReference(value)) {
+      throw markNonRetryable(
+        new IntrinsicResolutionRefusalError(
+          `Fn::GetStackOutput: output '${outputName}' of stack '${stackName}' (${region}) is a ` +
+            `redacted dynamic reference, and this is a CROSS-ACCOUNT reference (RoleArn ` +
+            `${roleArn}). cdkd will not resolve a producer account's secret with the consumer's ` +
+            `credentials — a same-named secret in the consumer account would answer instead. ` +
+            `Export a non-secret value (e.g. the secret's ARN) and resolve it in the consumer ` +
+            `stack, or reference the producer stack from within its own account.`
+        )
+      );
+    }
+
+    return await this.reresolveCrossStackValue(
+      value,
+      region,
+      context,
+      `Fn::GetStackOutput '${outputName}' (producer ${stackName} / ${region})`
+    );
   }
 
   /**
@@ -4868,9 +5301,9 @@ export class IntrinsicFunctionResolver {
         // treated as secret for THIS resolution but deliberately not pinned,
         // so the next pass re-asks instead of inheriting a transient answer.
         if (param.type === 'SecureString') {
-          recordedSecretExpressions.add(fullMatch);
+          this.pinSecretVerdict(fullMatch, true);
         } else if (!param.secure) {
-          recordedSecretExpressions.delete(fullMatch);
+          this.pinSecretVerdict(fullMatch, false);
         } else {
           // Secret, but from a `Type` too anomalous to memoize — so the VALUE is
           // not memoized either. See `cacheable`'s doc above.
@@ -4914,7 +5347,7 @@ export class IntrinsicFunctionResolver {
         // answer — recording it here would pin it for the process and undo
         // exactly that (issue #1901). Such a pair therefore still falls back to
         // the value scan, i.e. to today's behavior.
-        if (service === 'secretsmanager') recordedSecretExpressions.add(fullMatch);
+        if (service === 'secretsmanager') this.pinSecretVerdict(fullMatch, true);
       }
       // Replacer FUNCTION — see the cache-hit arm above for why a replacement
       // STRING is unsafe here.

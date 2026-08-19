@@ -55,9 +55,11 @@ const {
   secretsInstances,
   ec2Instances,
   stsInstances,
+  serviceDiscoveryInstances,
   ssmSends,
   secretSends,
   ec2Sends,
+  serviceDiscoverySends,
   makeFakeClientClass,
 } = vi.hoisted(() => {
   const responses = new Map<string, unknown>();
@@ -138,9 +140,11 @@ const {
     secretsInstances: [] as FakeClient[],
     ec2Instances: [] as FakeClient[],
     stsInstances: [] as FakeClient[],
+    serviceDiscoveryInstances: [] as FakeClient[],
     ssmSends: [] as FakeSend[],
     secretSends: [] as FakeSend[],
     ec2Sends: [] as FakeSend[],
+    serviceDiscoverySends: [] as FakeSend[],
     makeFakeClientClass,
   };
 });
@@ -166,6 +170,18 @@ vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
 vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
   return { ...actual, STSClient: makeFakeClientClass(stsInstances, [], 'sts') };
+});
+
+vi.mock('@aws-sdk/client-servicediscovery', async (importOriginal) => {
+  const actual = (await importOriginal()) as object;
+  return {
+    ...actual,
+    ServiceDiscoveryClient: makeFakeClientClass(
+      serviceDiscoveryInstances,
+      serviceDiscoverySends,
+      'servicediscovery'
+    ),
+  };
 });
 
 import { AwsClients, setAwsClients, resetAwsClients } from '../../../src/utils/aws-clients.js';
@@ -200,10 +216,16 @@ describe('IntrinsicFunctionResolver — region-scoped lookup clients (issue #195
     delete process.env['AWS_DEFAULT_REGION'];
     responses.clear();
     delete profileRegion.value;
-    for (const bag of [ssmInstances, secretsInstances, ec2Instances, stsInstances]) {
+    for (const bag of [
+      ssmInstances,
+      secretsInstances,
+      ec2Instances,
+      stsInstances,
+      serviceDiscoveryInstances,
+    ]) {
       bag.length = 0;
     }
-    for (const bag of [ssmSends, secretSends, ec2Sends]) bag.length = 0;
+    for (const bag of [ssmSends, secretSends, ec2Sends, serviceDiscoverySends]) bag.length = 0;
     resetAccountInfoCache();
     // Every region resolves the same account; only the region is under test.
     for (const region of [AMBIENT_REGION, STACK_REGION, OTHER_REGION, 'us-west-2', 'undefined']) {
@@ -386,6 +408,174 @@ describe('IntrinsicFunctionResolver — region-scoped lookup clients (issue #195
       expect(result).toBe('7');
       expect(ec2Sends.map((s) => s.region)).toEqual([STACK_REGION]);
       expect(ec2Instances[0]?.ctorConfig).toEqual({ region: STACK_REGION, profile: PROFILE });
+    });
+  });
+
+  describe('the two lookups that used to build their own client (issue #1994)', () => {
+    /** `Fn::GetAtt` against a VPC / namespace resource, with an empty state. */
+    function getAtt(
+      resolver: IntrinsicFunctionResolver,
+      logicalId: string,
+      resourceType: string,
+      physicalId: string,
+      attributeName: string
+    ): Promise<unknown> {
+      return resolver.resolve(
+        { 'Fn::GetAtt': [logicalId, attributeName] },
+        {
+          template: { Resources: {} },
+          resources: { [logicalId]: { physicalId, resourceType, properties: {} } },
+        }
+      );
+    }
+
+    const associatedVpc = {
+      Vpcs: [
+        {
+          Ipv6CidrBlockAssociationSet: [
+            { Ipv6CidrBlock: '2600:1f18::/56', Ipv6CidrBlockState: { State: 'associated' } },
+          ],
+        },
+      ],
+    };
+
+    describe('AWS::EC2::VPC Ipv6CidrBlocks', () => {
+      it('carries the credential configuration and reuses ONE client across lookups', async () => {
+        // Both halves of issue #1994 in one case. The old
+        // `new EC2Client({ region: this.resolverRegion })` carried NO profile
+        // (so a `--profile` run reached the wrong account's VPC) and built a
+        // fresh client — with its own socket pool, never destroyed — on EVERY
+        // lookup, so a template with N dual-stack VPCs leaked N of them.
+        installAmbient(AMBIENT_REGION);
+        prime(STACK_REGION, 'DescribeVpcsCommand', associatedVpc);
+
+        const resolver = new IntrinsicFunctionResolver(STACK_REGION);
+        await expect(
+          getAtt(resolver, 'VpcA', 'AWS::EC2::VPC', 'vpc-0aaa1994', 'Ipv6CidrBlocks')
+        ).resolves.toEqual(['2600:1f18::/56']);
+        await expect(
+          getAtt(resolver, 'VpcB', 'AWS::EC2::VPC', 'vpc-0bbb1994', 'Ipv6CidrBlocks')
+        ).resolves.toEqual(['2600:1f18::/56']);
+
+        expect(ec2Sends.map((s) => s.command)).toEqual([
+          'DescribeVpcsCommand',
+          'DescribeVpcsCommand',
+        ]);
+        expect(ec2Instances).toHaveLength(1);
+        expect(ec2Instances[0]?.ctorConfig).toEqual({ region: STACK_REGION, profile: PROFILE });
+      });
+
+      it('follows the AMBIENT region when the resolver was given none, not the us-east-1 guess', async () => {
+        // The FAIL-OPEN half: `resolverRegion` substitutes `AWS_REGION` and
+        // then a hard-coded `us-east-1`, so with neither set the lookup went to
+        // us-east-1 while the ambient clients pointed elsewhere —
+        // `InvalidVpcID.NotFound`, swallowed by the branch's catch, and an
+        // EMPTY list handed to whatever consumed the attribute. Priming ONLY
+        // the ambient's region is what makes this discriminating.
+        installAmbient(OTHER_REGION);
+        prime(OTHER_REGION, 'DescribeVpcsCommand', associatedVpc);
+
+        const resolver = new IntrinsicFunctionResolver();
+        await expect(
+          getAtt(resolver, 'Vpc', 'AWS::EC2::VPC', 'vpc-0ccc1994', 'Ipv6CidrBlocks')
+        ).resolves.toEqual(['2600:1f18::/56']);
+
+        expect(ec2Sends.map((s) => s.region)).toEqual([OTHER_REGION]);
+      });
+    });
+
+    describe('AWS::ServiceDiscovery::*Namespace HostedZoneId', () => {
+      it('carries the credential configuration and reuses ONE client across lookups', async () => {
+        installAmbient(AMBIENT_REGION);
+        prime(STACK_REGION, 'GetNamespaceCommand', {
+          Namespace: { Properties: { DnsProperties: { HostedZoneId: 'Z01994TOKYO' } } },
+        });
+
+        const resolver = new IntrinsicFunctionResolver(STACK_REGION);
+        await expect(
+          getAtt(
+            resolver,
+            'NsA',
+            'AWS::ServiceDiscovery::PrivateDnsNamespace',
+            'ns-aaa1994',
+            'HostedZoneId'
+          )
+        ).resolves.toBe('Z01994TOKYO');
+        await expect(
+          getAtt(
+            resolver,
+            'NsB',
+            'AWS::ServiceDiscovery::PublicDnsNamespace',
+            'ns-bbb1994',
+            'HostedZoneId'
+          )
+        ).resolves.toBe('Z01994TOKYO');
+
+        expect(serviceDiscoverySends.map((s) => s.command)).toEqual([
+          'GetNamespaceCommand',
+          'GetNamespaceCommand',
+        ]);
+        expect(serviceDiscoveryInstances).toHaveLength(1);
+        expect(serviceDiscoveryInstances[0]?.ctorConfig).toEqual({
+          region: STACK_REGION,
+          profile: PROFILE,
+        });
+      });
+
+      it('follows the AMBIENT region when the resolver was given none, not the us-east-1 guess', async () => {
+        // Same fail-open as the VPC sibling, with a worse degradation: this
+        // branch returns `undefined` on a miss, which is a `Fn::GetAtt` that
+        // silently disappears from the consuming property.
+        installAmbient(OTHER_REGION);
+        prime(OTHER_REGION, 'GetNamespaceCommand', {
+          Namespace: { Properties: { DnsProperties: { HostedZoneId: 'Z01994IRELAND' } } },
+        });
+
+        const resolver = new IntrinsicFunctionResolver();
+        await expect(
+          getAtt(
+            resolver,
+            'Ns',
+            'AWS::ServiceDiscovery::PrivateDnsNamespace',
+            'ns-ccc1994',
+            'HostedZoneId'
+          )
+        ).resolves.toBe('Z01994IRELAND');
+
+        expect(serviceDiscoverySends.map((s) => s.region)).toEqual([OTHER_REGION]);
+      });
+
+      it('builds ONE client across ten lookups dispatched together', async () => {
+        // SCOPE NOTE, measured rather than assumed: this case reds when the
+        // cache is removed (ten clients, ten socket pools), but it does NOT
+        // discriminate memoizing the PROMISE from memoizing the client — a
+        // probe that awaited before the cache write still produced exactly one
+        // client, because these ten callers serialize on `getAccountInfo`'s own
+        // in-flight promise and reach the seam one at a time. The promise
+        // memoization stays because the seam IS async and a caller that gets
+        // there from a different await depth can interleave; this case is not
+        // what proves it.
+        installAmbient(AMBIENT_REGION);
+        prime(STACK_REGION, 'GetNamespaceCommand', {
+          Namespace: { Properties: { DnsProperties: { HostedZoneId: 'Z01994CONC' } } },
+        });
+
+        const resolver = new IntrinsicFunctionResolver(STACK_REGION);
+        await Promise.all(
+          Array.from({ length: 10 }, (_unused, i) =>
+            getAtt(
+              resolver,
+              `Ns${i}`,
+              'AWS::ServiceDiscovery::HttpNamespace',
+              `ns-conc${i}`,
+              'HostedZoneId'
+            )
+          )
+        );
+
+        expect(serviceDiscoverySends).toHaveLength(10);
+        expect(serviceDiscoveryInstances).toHaveLength(1);
+      });
     });
   });
 
