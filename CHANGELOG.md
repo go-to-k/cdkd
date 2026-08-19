@@ -1,3 +1,10 @@
+## [0.284.7](https://github.com/go-to-k/cdkd/compare/v0.284.6...v0.284.7) (2026-08-19)
+
+
+### Bug Fixes
+
+* **gc,bootstrap:** fold the S3 asset-reference host segments and the virtual-hosted bucket LABEL, and canonicalize the region for gc and bootstrap --destroy ([#2014](https://github.com/go-to-k/cdkd/issues/2014)) ([4d3f253](https://github.com/go-to-k/cdkd/commit/4d3f2531ec9a2201f42ae88ebd8faab3db67d4f7))
+
 ## [0.284.6](https://github.com/go-to-k/cdkd/compare/v0.284.5...v0.284.6) (2026-08-19)
 
 
