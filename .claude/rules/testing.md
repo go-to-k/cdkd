@@ -109,6 +109,42 @@ Two more design points are decisions, not accidents:
   a drained suite can never be flagged by the detector again, which re-creates
   the grandfathering the ratchet exists to remove.
 
+## Mutation probes: mutate every site the value reaches, not the first one
+
+A probe that flips one use of a value proves that ONE use is pinned. When the
+same value appears in a guard AND in the thing the guard produces, a probe on
+the guard passes while the produced value stays unfenced — and the test looks
+alive, which is worse than an obviously missing one.
+
+Found 2026-08-19 on PR #2010. A banner read `stackUnaddressed` twice: once in
+`} else if (stackUnaddressed > 0)` and once interpolated into the message. The
+probe flipped the GUARD to the run-level total and the test failed, so the case
+was recorded as discriminating. Swapping the INTERPOLATION instead passed all
+18 tests. The fixture could not have caught it: it paired one dirty stack with a
+clean one, and a clean stack never enters the warn arm at all, so nothing is
+printed over it under either version — the `not.toContain('0 resource(s)')`
+assertion was unfalsifiable by construction.
+
+Two rules follow, and the second is the one that is easy to skip:
+
+- **Enumerate the value's uses before probing** (`grep` the identifier in the
+  changed hunk). One probe per use.
+- **A negative assertion needs a case where the wrong value would actually be
+  EMITTED.** "Assert the bad string is absent" is worth nothing if no arm can
+  produce it. Here the fix was two DIRTY stacks with different counts (1 and 2),
+  asserting the total 3 appears in neither banner — now the wrong value has a
+  place to show up.
+
+The same shape hides behind mocks. `recordRunOutcome`'s `result` parameter was
+asserted only in tests that `vi.mock` the module, so they pinned what the caller
+PASSES and never what the store WRITES; hard-coding `'SUCCEEDED'` inside the
+function passed all 2261 unit tests. When a value crosses a module boundary,
+one case must exercise the far side unmocked.
+
+**Do not report a mutation result you did not run.** Every claim in that PR's
+mutation table was executed against a scratch copy of the worktree by the
+reviewer, which is how the false one surfaced.
+
 ## Integration Tests
 
 - `tests/integration/**`
