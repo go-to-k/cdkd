@@ -384,4 +384,34 @@ describe('ServiceDiscoveryProvider ServiceAttributes secret masking (#2050)', ()
       expect(cause.message).toContain(SECRET_PLAINTEXT);
     });
   });
+
+  describe('partial-create cleanup warn is secret-masked (#2050 round 3)', () => {
+    it('masks the DeleteService cleanup failure message', async () => {
+      // The cleanup call carries only a physical id, so this is a low-risk
+      // line — but it sits in the same `try` as lines that ARE masked, and an
+      // unmasked line beside masked ones is what a later author copies.
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof CreateServiceCommand) {
+          return Promise.resolve({ Service: { Id: 'srv-1', Arn: 'arn:srv-1', Name: 'mysvc' } });
+        }
+        if (command instanceof UpdateServiceAttributesCommand) {
+          return Promise.reject(nonRetryableAwsError());
+        }
+        if (command instanceof DeleteServiceCommand) {
+          return Promise.reject(
+            new Error(`AccessDenied: role "${SECRET_PLAINTEXT}" may not delete this service`)
+          );
+        }
+        return Promise.resolve({});
+      });
+
+      await expect(createService({ maskSecrets })).rejects.toThrow();
+
+      const warned = warnLines();
+      // Non-vacuity: the cleanup-failure branch really did fire.
+      expect(warned).toContain('Failed to clean up partially-created ServiceDiscovery Service');
+      expect(warned).toContain(SECRET_MASK);
+      expect(warned).not.toContain(SECRET_PLAINTEXT);
+    });
+  });
 });

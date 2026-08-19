@@ -3,8 +3,11 @@ import {
   CreateListenerCommand,
   CreateTargetGroupCommand,
   DeleteListenerCommand,
+  DeleteTargetGroupCommand,
   ModifyListenerCommand,
   ModifyListenerAttributesCommand,
+  ModifyTargetGroupCommand,
+  ModifyTargetGroupAttributesCommand,
   RegisterTargetsCommand,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { SECRET_MASK, createSecretMasker } from '../../../src/deployment/secret-redaction.js';
@@ -113,6 +116,23 @@ const SECRET_EXPR = '{{resolve:secretsmanager:alb-attrs:SecretString:token::}}';
 
 /** The masker a real caller (deploy engine / rollback / drift) would thread. */
 const maskSecrets = createSecretMasker(new Map([[SECRET_PLAINTEXT, SECRET_EXPR]]));
+
+/**
+ * A JSON-DOCUMENT secret — the commonest real Secrets Manager shape, and the
+ * ONLY fixture that can discriminate mask-before-stringify from
+ * mask-after-stringify. `JSON.stringify` escapes the inner quotes, so the
+ * document no longer OCCURS in the stringified text and a mask applied
+ * afterwards passes it through verbatim. A scalar secret passes under BOTH
+ * orderings and would give a false green.
+ *
+ * The assertions below therefore key on {@link SECRET_JSON_INNER}, not on the
+ * whole document: after the escaping, the document itself is absent from the
+ * leaked text while the password inside it is plainly readable.
+ */
+const SECRET_JSON_INNER = 'tg-target-json-secret-a71f';
+const SECRET_JSON_DOC = `{"password":"${SECRET_JSON_INNER}","user":"admin"}`;
+const SECRET_JSON_EXPR = '{{resolve:secretsmanager:prod/db:SecretString::}}';
+const maskSecretsJson = createSecretMasker(new Map([[SECRET_JSON_DOC, SECRET_JSON_EXPR]]));
 
 const ATTR_KEY = 'routing.http.request.x_amzn_mtls_clientcert.header_name';
 
@@ -450,6 +470,213 @@ describe('ELBv2Provider ModifyListenerAttributes retry logging is secret-masked 
       const warned = warnLines();
       expect(warned).toContain('Dropping malformed TargetGroup Targets entry');
       expect(warned).toContain(SECRET_PLAINTEXT);
+    });
+
+    it('masks a JSON-DOCUMENT secret, which only mask-BEFORE-stringify catches', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof CreateTargetGroupCommand) {
+          return Promise.resolve({ TargetGroups: [{ TargetGroupArn: TG_ARN }] });
+        }
+        return Promise.resolve({});
+      });
+
+      await provider.create(
+        'TG',
+        TARGET_GROUP_TYPE,
+        {
+          Name: 'my-tg',
+          Port: 80,
+          Protocol: 'HTTP',
+          VpcId: 'vpc-1',
+          Targets: [{ Id: 12345, AvailabilityZone: SECRET_JSON_DOC }],
+        },
+        { maskSecrets: maskSecretsJson }
+      );
+
+      const warned = warnLines();
+      // Non-vacuity: the drop branch really did fire.
+      expect(warned).toContain('Dropping malformed TargetGroup Targets entry');
+      expect(warned).toContain(SECRET_MASK);
+      // THE discriminator. Masking after `JSON.stringify` leaves the escaped
+      // document in place, and the password inside it is readable even though
+      // the document as a literal is not — so assert on the inner token.
+      expect(warned).not.toContain(SECRET_JSON_INNER);
+    });
+  });
+
+  describe('TargetGroup thrown ProvisioningError is secret-masked (#2050 round 3)', () => {
+    // The concrete leak: a Tag VALUE resolved from Secrets Manager, quoted back
+    // by an AWS rejection, printed at ERROR (default verbosity) by the deploy
+    // engine. Same mechanism as the Listener path, one method over.
+    const TAGGED_TG_PROPS = {
+      Name: 'my-tg',
+      Port: 80,
+      Protocol: 'HTTP',
+      VpcId: 'vpc-1',
+      Tags: [{ Key: 'db', Value: SECRET_PLAINTEXT }],
+    };
+
+    it('masks the AWS message on the create path', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof CreateTargetGroupCommand) {
+          return Promise.reject(nonRetryableAwsError());
+        }
+        return Promise.resolve({});
+      });
+
+      const thrown = await captureThrow(() =>
+        provider.create('TG', TARGET_GROUP_TYPE, TAGGED_TG_PROPS, { maskSecrets })
+      );
+
+      // Non-vacuity: nothing was retried, so the throw is the only surface.
+      expect(warnLines()).not.toContain('gave up after');
+      expect(thrown.message).toContain('Failed to create TargetGroup TG');
+      expect(thrown.message).toContain(SECRET_MASK);
+      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+    });
+
+    it('masks the AWS message on the update path', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof ModifyTargetGroupCommand) {
+          return Promise.reject(nonRetryableAwsError());
+        }
+        return Promise.resolve({});
+      });
+
+      const thrown = await captureThrow(() =>
+        provider.update(
+          'TG',
+          TG_ARN,
+          TARGET_GROUP_TYPE,
+          { ...TAGGED_TG_PROPS, HealthCheckPath: '/new' },
+          { ...TAGGED_TG_PROPS, HealthCheckPath: '/old' },
+          { maskSecrets }
+        )
+      );
+
+      expect(thrown.message).toContain('Failed to update TargetGroup TG');
+      expect(thrown.message).toContain(SECRET_MASK);
+      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+    });
+
+    it('leaves the message untouched when the caller threads no masker', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof CreateTargetGroupCommand) {
+          return Promise.reject(nonRetryableAwsError());
+        }
+        return Promise.resolve({});
+      });
+
+      const thrown = await captureThrow(() =>
+        provider.create('TG', TARGET_GROUP_TYPE, TAGGED_TG_PROPS)
+      );
+
+      expect(thrown.message).toContain(SECRET_PLAINTEXT);
+    });
+  });
+
+  describe('TargetGroup attribute-removal warn masks the KEY (#2050 round 3)', () => {
+    // A removed attribute whose key has no documented default warns at DEFAULT
+    // verbosity naming the key — and the key comes out of the RESOLVED
+    // `TargetGroupAttributes` bag, so it can itself be a secret. The
+    // ServiceDiscovery provider already answers this question for
+    // `DeleteServiceAttributes`; the two files must not disagree.
+    function removeSecretKeyedAttribute(context?: {
+      maskSecrets: typeof maskSecrets;
+    }): Promise<unknown> {
+      return provider.update(
+        'TG',
+        TG_ARN,
+        TARGET_GROUP_TYPE,
+        { Name: 'my-tg', TargetGroupAttributes: [] },
+        {
+          Name: 'my-tg',
+          TargetGroupAttributes: [{ Key: SECRET_PLAINTEXT, Value: 'v' }],
+        },
+        context
+      );
+    }
+
+    it('masks the key', async () => {
+      mockSend.mockImplementation(() => Promise.resolve({}));
+
+      await removeSecretKeyedAttribute({ maskSecrets });
+
+      const warned = warnLines();
+      // Non-vacuity: the no-documented-default branch really did fire.
+      expect(warned).toContain('was removed from the template but has no documented default');
+      expect(warned).toContain(SECRET_MASK);
+      expect(warned).not.toContain(SECRET_PLAINTEXT);
+    });
+
+    it('leaves the key untouched when the caller threads no masker', async () => {
+      mockSend.mockImplementation(() => Promise.resolve({}));
+
+      await removeSecretKeyedAttribute();
+
+      const warned = warnLines();
+      expect(warned).toContain('was removed from the template but has no documented default');
+      expect(warned).toContain(SECRET_PLAINTEXT);
+    });
+  });
+
+  describe('partial-create cleanup warns are secret-masked (#2050 round 3)', () => {
+    /** An error carrying the secret, for the CLEANUP call rather than the main one. */
+    function cleanupFailure(): Error {
+      return new Error(`AccessDenied: role "${SECRET_PLAINTEXT}" may not delete this resource`);
+    }
+
+    it('masks the Listener cleanup warn', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof CreateListenerCommand) {
+          return Promise.resolve({ Listeners: [{ ListenerArn: LISTENER_ARN }] });
+        }
+        if (command instanceof ModifyListenerAttributesCommand) {
+          return Promise.reject(nonRetryableAwsError());
+        }
+        if (command instanceof DeleteListenerCommand) return Promise.reject(cleanupFailure());
+        return Promise.resolve({});
+      });
+
+      await expect(createListener({ maskSecrets })).rejects.toThrow();
+
+      const warned = warnLines();
+      expect(warned).toContain('Failed to clean up partially-created Listener');
+      expect(warned).toContain(SECRET_MASK);
+      expect(warned).not.toContain(SECRET_PLAINTEXT);
+    });
+
+    it('masks the TargetGroup cleanup warn', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof CreateTargetGroupCommand) {
+          return Promise.resolve({ TargetGroups: [{ TargetGroupArn: TG_ARN }] });
+        }
+        if (command instanceof ModifyTargetGroupAttributesCommand) {
+          return Promise.reject(nonRetryableAwsError());
+        }
+        if (command instanceof DeleteTargetGroupCommand) return Promise.reject(cleanupFailure());
+        return Promise.resolve({});
+      });
+
+      await expect(
+        provider.create(
+          'TG',
+          TARGET_GROUP_TYPE,
+          {
+            Name: 'my-tg',
+            Port: 80,
+            Protocol: 'HTTP',
+            VpcId: 'vpc-1',
+            TargetGroupAttributes: [{ Key: 'deregistration_delay.timeout_seconds', Value: '30' }],
+          },
+          { maskSecrets }
+        )
+      ).rejects.toThrow();
+
+      const warned = warnLines();
+      expect(warned).toContain('Failed to clean up partially-created TargetGroup');
+      expect(warned).toContain(SECRET_MASK);
+      expect(warned).not.toContain(SECRET_PLAINTEXT);
     });
   });
 });

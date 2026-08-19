@@ -910,7 +910,16 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created ServiceDiscovery Service ${logicalId} (${serviceId}) after ServiceAttributes wiring failure: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws servicediscovery delete-service --id ${serviceId}`
+            // Masked for uniformity with the sibling lines in this same `try`
+            // (issue #2050). The cleanup call carries only a physical id, so a
+            // resolved property value reaching here would be surprising — but
+            // "surprising" is not "impossible", and an unmasked line sitting
+            // beside masked ones is what a later author copies.
+            `Failed to clean up partially-created ServiceDiscovery Service ${logicalId} ` +
+              `(${serviceId}) after ServiceAttributes wiring failure: ` +
+              `${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be ` +
+              `required before the next deploy: aws servicediscovery delete-service ` +
+              `--id ${serviceId}`
           );
         }
         throw innerError;
