@@ -1437,18 +1437,65 @@ implementation. Three details are worth copying:
     five create sites (CREATE, the property-driven replacement, the
     `--recreate-via-*` destroy-then-create, the `--replace` delete-first
     fallback, the update-failure replacement) are driven by freshly resolved
-    TEMPLATE properties and pass no context, so the refusal stands where the
-    user can actually act on it.
+    TEMPLATE properties and never set `replayingState`, so the refusal stands
+    where the user can actually act on it. (They DO pass a context — every
+    provider call now carries `maskSecrets`, see the `maskSecrets` bullet below — so the test
+    fences for this read the context's key set rather than the call's arity.)
   - **Do not re-create inside `update()` if you have a create-side refusal.**
     Several providers call `this.create(logicalId, resourceType, properties)`
     from their own `update()` (ACM certificate, IAM managed policy, IAM role,
     Lambda permission, SNS subscription). Those internal re-creates CANNOT
-    receive a context — `update()` has no context parameter — and the
+    receive a `CreateContext` — `update()`'s own context is an `UpdateContext`,
+    which carries no `replayingState` — and the
     `properties` they forward ARE a state record during a rollback replay. So
     the refusal would fire on a replay with no way to detect it. None of those
     providers has a pre-flight refusal today (they validate required fields
     only, which correctly stays a hard error), so there is no live gap; this is
     a constraint on the NEXT provider, not a description of the current tree.
+
+  - **`maskSecrets` — mask a resolved property value before you log it.**
+    Both `CreateContext` and `UpdateContext` extend a shared
+    `SecretMaskingContext`, whose one optional field is
+    `maskSecrets?: (text: string) => string` (issue
+    [#1932](https://github.com/go-to-k/cdkd/issues/1932)). Any provider log
+    line that interpolates a value from the `properties` bag MUST run through
+    it: those values arrive RESOLVED, so a
+    `{{resolve:secretsmanager:...}}` property is already plaintext by the time
+    a provider sees it, and cdkd's other masking boundaries (the deploy
+    engine's error / reason text, the resolver's own debug line) do not cover a
+    provider's own `logger.warn`. Read it defensively —
+    `const mask = context?.maskSecrets ?? ((t: string) => t)` — since `create()`
+    / `update()` are also called by `cdkd drift --revert`, by the import path,
+    and by tests. It is per-CALL, so never cache it on `this`: providers are
+    registered as singletons and serve concurrent resources.
+    **Mask the VALUE before it is stringified or interpolated; the finished
+    message is a FALLBACK, not an equivalent.** Two independent reasons:
+    (1) *escaping* — a masker matches by literal occurrence, and
+    `JSON.stringify` escapes `"`, `\` and newlines, so a secret containing any
+    of them (i.e. any Secrets Manager JSON document, the commonest real secret
+    shape) no longer occurs in the finished line and passes through verbatim;
+    (2) *length* — `maskSecretsInText` masks an exact whole-value match at ANY
+    length but only scans for SUBSTRING needles of at least
+    `MIN_NEEDLE_LENGTH` (4) characters, and a message is always longer than the
+    value inside it, so a 1-3 character secret survives. Do BOTH: mask each
+    string leaf before interpolating (catches escaped and short secrets), and
+    route the assembled message through the masker too (catches interpolations
+    added later, and text the leaf pass never sees). The mask is idempotent, so
+    the layers compose.
+    It covers cdkd's
+    dynamic-reference secret model only — a `NoEcho: true` template PARAMETER
+    is outside that model and is not masked by it, and that residual is
+    PERSISTED rather than log-only (a `NoEcho` value quoted inside an AWS error
+    reaches `deployments/*.jsonl`; issue
+    [#1998](https://github.com/go-to-k/cdkd/issues/1998)). `delete()` has no
+    masker — see `SecretMaskingContext` for why that is a statement about
+    providers rather than about the bag, and why you must thread the capability
+    BEFORE adding any delete-side log line that names a property value.
+    The reference implementation
+    is `buildMfaConfigRequest` in
+    [src/provisioning/providers/cognito-provider.ts](../src/provisioning/providers/cognito-provider.ts),
+    which routes every warning through one masked sink rather than masking at
+    each call.
 
   The parameter is optional, so a provider with no pre-flight needs no change.
   A provider that HAS one threads `context` from `create()` to its check and

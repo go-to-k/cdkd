@@ -468,7 +468,25 @@ describe('rollback replay - secret re-resolution + state redaction (GHSA #1899)'
     // provider still receives the (structurally-equal) previous props.
     expect(mockSMSend).not.toHaveBeenCalled();
     expect(mockSSMSend).not.toHaveBeenCalled();
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'AWS::S3::Bucket', { a: 1 }, { a: 2 });
+    // The 6th argument is the `UpdateContext` issue #1932 item 3 added; it is
+    // present even on a no-secret op (the masker is bound to an EMPTY bag and
+    // is therefore an identity, which is what lets a provider use it
+    // unconditionally). Matched by shape so this stays an assertion about the
+    // first five arguments, which is what it was written to check.
+    expect(update).toHaveBeenCalledWith(
+      'B',
+      'phys-B',
+      'AWS::S3::Bucket',
+      { a: 1 },
+      { a: 2 },
+      { maskSecrets: expect.any(Function) }
+    );
+    // The empty-bag masker really is an identity, so a provider warn on a
+    // no-secret op is byte-identical to before this contract existed.
+    const context = update.mock.calls[0]![5] as { maskSecrets: (t: string) => string };
+    expect(context.maskSecrets('AWS rejected "some-plain-value"')).toBe(
+      'AWS rejected "some-plain-value"'
+    );
   });
 
   // Issue #1901 makes a SecureString `{{resolve:ssm:...}}` a SECOND value class

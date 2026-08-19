@@ -314,7 +314,14 @@ describe('rollbackCommand', () => {
       'phys-Q',
       'AWS::SQS::Queue',
       { a: 1 }, // desired = previous properties
-      { a: 2 } // previous side of the diff = ATTEMPTED properties
+      { a: 2 }, // previous side of the diff = ATTEMPTED properties
+      // EXACT object, not `objectContaining`: `toHaveBeenCalledWith(a, b, c)`
+      // was itself an ARITY-STRICT #1463-style fence (no 6th argument at all), and
+      // `objectContaining` would admit `replayingState: true` — the exact leak
+      // those fences exist to catch. This site and the property-driven
+      // replacement are the ONLY fences covering the main CREATE path, so the
+      // loose form would have removed cover from the most-travelled site.
+      { maskSecrets: expect.any(Function) }
     );
     expect(backend.saveState).toHaveBeenCalled();
     expect(backend.popRollbackJournalSegment).toHaveBeenCalled();

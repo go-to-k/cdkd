@@ -44,6 +44,7 @@ import {
   type ResolverContext,
 } from '../../deployment/intrinsic-function-resolver.js';
 import {
+  createSecretMasker,
   maskSecretsInText,
   redactSecretsForState,
   SECRET_MASK,
@@ -2714,7 +2715,25 @@ async function runRevert(
                 // provider cannot tell "restore the unset state" (delete) from
                 // a template's condition-collapsed array (leave the live value
                 // alone), and picking either arm breaks the other caller.
-                { desiredFromAwsReadback: true }
+                //
+                // `maskSecrets` (issue #1932 item 3) is the THIRD caller of the
+                // provider masking contract, alongside `deploy-engine.ts` and
+                // `rollback-executor.ts`, and it is not optional here: the bag
+                // this call carries was re-resolved from state back to
+                // PLAINTEXT a few hundred lines up (`resolveStateSecretExpressions`,
+                // the counterpart of the rollback replay's `resolveReplayProps`),
+                // so it provably holds the concrete secret whenever the resource
+                // has one. Without it, a provider warning that names a
+                // mis-shaped property value — e.g. a state record holding
+                // `EnabledMfas: "{{resolve:secretsmanager:...}}"`, which
+                // re-resolves to a plaintext string and so is `not a list` —
+                // prints that plaintext on `cdkd drift --revert`.
+                //
+                // Bound to `secrets`, the SAME map `resolveStateSecretExpressions`
+                // resolved into and the retry logger below masks with, so the
+                // masker and that logger can never disagree about what this call
+                // considers secret.
+                { desiredFromAwsReadback: true, maskSecrets: createSecretMasker(secrets) }
               ),
             outcome.logicalId,
             // Issue #1914: the retry logger echoes the failing call's AWS error

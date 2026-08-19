@@ -241,18 +241,22 @@ describe('DeployEngine — custom-named replacement collision', () => {
     );
   });
 
-  it('neither the create-first attempt nor the --replace delete-first re-create passes a CreateContext (#1463 inverse fence)', async () => {
+  it('neither the create-first attempt nor the --replace delete-first re-create sets replayingState; both pass a masker-ONLY context (#1463 inverse fence)', async () => {
     // `CreateContext.replayingState` is the rollback executor's signal that a
     // create replays a cdkd STATE record, and a provider pre-flight refusal
     // DOWNGRADES to a warning when it is set. Both creates on this path are
     // template-driven, so neither may set it — the refusal has to stand where
     // the user can fix the input.
     //
-    // Arity, not just value: a reviewer injected `{ replayingState: true }`
-    // at each deploy-engine create site and the full 9270-test suite stayed
-    // green, so nothing pinned this direction. Asserting `call.length === 3`
-    // fails on ANY 4th argument, including a future context with some other
-    // field.
+    // Pinned by the context's EXACT key set, not by value: a reviewer injected
+    // `{ replayingState: true }` at each deploy-engine create site and the full
+    // suite stayed green, so nothing pinned this direction. This used to assert
+    // `call.length === 3` — no 4th argument at all — which issue #1932 item 3
+    // made impossible: every create site now carries a `maskSecrets` capability
+    // so a provider warn cannot echo a resolved secret. Asserting the key set is
+    // EXACTLY `['maskSecrets']` keeps the original fence's power (it fails on
+    // `replayingState`, and on any OTHER field a future edit adds) while
+    // admitting the one field that is deliberately universal.
     createFailures = [alreadyExists()];
 
     await invokeProvision(makeEngine({ replace: true }));
@@ -261,7 +265,10 @@ describe('DeployEngine — custom-named replacement collision', () => {
     // The collided create-first AND the post-delete re-create.
     expect(calls).toHaveLength(2);
     for (const call of calls) {
-      expect(call).toHaveLength(3);
+      expect(call).toHaveLength(4);
+      // Exactly the masker, nothing else. `replayingState` in here would mean a
+      // template-driven replacement had started claiming to be a state replay.
+      expect(Object.keys((call[3] ?? {}) as Record<string, unknown>)).toEqual(['maskSecrets']);
     }
   });
 

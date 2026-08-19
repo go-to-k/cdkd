@@ -31,11 +31,13 @@ import {
   redactSecretsForState,
   scrubResourceRecord,
   maskSecretsInText,
+  createSecretMasker,
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import { DagExecutor } from './dag-executor.js';
 import type {
   CloudFormationTemplate,
+  CreateContext,
   EffectivePropertiesResult,
   ResourceDeleteResult,
   ResourceProvider,
@@ -3034,6 +3036,14 @@ export class DeployEngine {
     oldDeleteProvider: ResourceProvider,
     replaceProvider: ResourceProvider,
     replaceProps: Record<string, unknown>,
+    // Issue #1932 item 3. A PARAMETER rather than a field read inside the
+    // method: this helper is shared by both --replace escape hatches, and both
+    // call it from the UPDATE case where the resolution pass's own bag is in
+    // scope. Reading `perResourceSecrets` here instead would work today but
+    // would bind the masker to a map looked up by logical id rather than to
+    // the bag the caller actually resolved with, which is a different (and
+    // silently wrong under concurrency) thing.
+    createContext: CreateContext,
     updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'
   ): Promise<Awaited<ReturnType<ResourceProvider['create']>>> {
     // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the OLD
@@ -3107,7 +3117,7 @@ export class DeployEngine {
       return await withRetry(
         () =>
           this.withRetry(
-            () => replaceProvider.create(logicalId, resourceType, replaceProps),
+            () => replaceProvider.create(logicalId, resourceType, replaceProps, createContext),
             logicalId,
             undefined,
             undefined,
@@ -3188,6 +3198,13 @@ export class DeployEngine {
         // record only with its own secrets (GHSA fix — see perResourceSecrets).
         // Capture the UNRESOLVED bag as the redaction position source (#1904).
         this.perResourceTemplateProps.set(logicalId, desiredProps);
+        // Named so the provider call below can bind the SAME bag into its
+        // masker (issue #1932 item 3), mirroring `updateSecrets` on the UPDATE
+        // path. `?? new Map()` rather than a conditional: `buildResolverContext`
+        // always sets the field, so the fallback is unreachable in practice,
+        // but a masker bound to a real map is what keeps the provider call
+        // shape identical on both paths.
+        const createSecrets = context.recordedSecretValues ?? new Map<string, string>();
         if (context.recordedSecretValues) {
           this.perResourceSecrets.set(logicalId, context.recordedSecretValues);
         }
@@ -3215,7 +3232,16 @@ export class DeployEngine {
             : resolvedProps;
 
         const result = await this.withRetry(
-          () => createProvider.create(logicalId, resourceType, createProps),
+          () =>
+            createProvider.create(logicalId, resourceType, createProps, {
+              // Issue #1932 item 3. The bag handed to the provider is RESOLVED,
+              // so a `{{resolve:secretsmanager:...}}` property is plaintext by
+              // now; a provider that echoes one into its own warn is outside
+              // both existing masking boundaries (this engine's error/reason
+              // text and the resolver's debug line). Give it the capability
+              // rather than the bag — see `SecretMaskingContext`.
+              maskSecrets: createSecretMasker(createSecrets),
+            }),
           logicalId,
           undefined,
           undefined,
@@ -3567,7 +3593,10 @@ export class DeployEngine {
             createResult = await withRetry(
               () =>
                 this.withRetry(
-                  () => replaceProvider.create(logicalId, resourceType, replaceProps),
+                  () =>
+                    replaceProvider.create(logicalId, resourceType, replaceProps, {
+                      maskSecrets: createSecretMasker(updateSecrets),
+                    }),
                   logicalId,
                   undefined,
                   undefined,
@@ -3616,7 +3645,10 @@ export class DeployEngine {
             let deletedOldFirst = false;
             try {
               createResult = await this.withRetry(
-                () => replaceProvider.create(logicalId, resourceType, replaceProps),
+                () =>
+                  replaceProvider.create(logicalId, resourceType, replaceProps, {
+                    maskSecrets: createSecretMasker(updateSecrets),
+                  }),
                 logicalId,
                 undefined,
                 undefined,
@@ -3691,6 +3723,7 @@ export class DeployEngine {
                 oldDeleteProvider,
                 replaceProvider,
                 replaceProps,
+                { maskSecrets: createSecretMasker(updateSecrets) },
                 updateReplacePolicy
               );
             }
@@ -3759,6 +3792,7 @@ export class DeployEngine {
                 oldDeleteProvider,
                 replaceProvider,
                 replaceProps,
+                { maskSecrets: createSecretMasker(updateSecrets) },
                 updateReplacePolicy
               );
             }
@@ -3912,7 +3946,12 @@ export class DeployEngine {
                   currentResource.physicalId,
                   resourceType,
                   updateProps,
-                  currentProps
+                  currentProps,
+                  // The UPDATE twin of the CREATE call's masker (issue #1932
+                  // item 3): same resolved bag, same exposure, so the contract
+                  // is applied on both or it has a hole in the shape of
+                  // whichever path a given deploy takes.
+                  { maskSecrets: createSecretMasker(updateSecrets) }
                 ),
               logicalId,
               undefined,
@@ -4036,7 +4075,10 @@ export class DeployEngine {
                   ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
                   : resolvedProps;
               const createResult = await this.withRetry(
-                () => replProvider.create(logicalId, resourceType, replProps),
+                () =>
+                  replProvider.create(logicalId, resourceType, replProps, {
+                    maskSecrets: createSecretMasker(updateSecrets),
+                  }),
                 logicalId,
                 undefined,
                 undefined,

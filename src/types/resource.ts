@@ -332,6 +332,130 @@ export interface ResourceImportResult {
   attributes?: Record<string, unknown>;
 }
 
+// Type-only, and safe against a cycle: `secret-redaction.ts` is a LEAF (it
+// imports nothing), which its own module doc states as a deliberate property
+// because both the resolver and the deploy engine sit on a dense import ring.
+// Placed here rather than at the top of the file to match how `DeleteContext`
+// is imported below — next to what uses it.
+import type { SecretMasker } from '../deployment/secret-redaction.js';
+// Re-exported for the same reason `DeleteContext` is re-exported below: a
+// provider implementing this interface should only ever import from
+// `src/types/resource.ts`. A provider that needs to NAME the masker type (to
+// take it as a helper parameter, say) must use THIS alias rather than
+// re-declaring `(text: string) => string` structurally — a re-declaration
+// compiles identically today and is free to drift from the contract tomorrow.
+export type { SecretMasker } from '../deployment/secret-redaction.js';
+
+/**
+ * The masked-warning capability a caller may hand a provider (issue #1932
+ * item 3), shared by {@link CreateContext} and {@link UpdateContext}.
+ *
+ * **Declared ONCE and inherited by both on purpose.** The gap this closes is a
+ * provider echoing a RESOLVED property value into its own log line, and
+ * `create()` and `update()` are handed the SAME resolved bag by the same
+ * callers — so a masker present on one and absent on the other is not a
+ * partial fix, it is a fix with a hole in the shape of whichever path the
+ * template happens to take on a given deploy. Putting the field on a shared
+ * base makes the twin structural rather than a convention two doc comments
+ * have to keep agreeing about.
+ *
+ * **`DeleteContext` does NOT extend this, and the reason is a statement about
+ * PROVIDERS, not about the bag.** An earlier version of this paragraph claimed
+ * every `delete()` call site hands the provider a bag read from cdkd STATE,
+ * which holds the redacted `{{resolve:...}}` expression rather than the
+ * plaintext. That is FALSE, and the counter-example is the IN-PROCESS rollback:
+ * a CREATE writes `properties: this.propertiesToRecord(resolvedProps, result)`
+ * into the in-memory `stateResources` map (`deploy-engine.ts`), and redaction
+ * happens at the SAVE choke point — `redactStateForPersist` builds a NEW
+ * record via `scrubResourceRecord` and never mutates the in-memory one. So the
+ * map `performRollback` hands `replayRollback` holds RESOLVED PLAINTEXT, and
+ * the reverse-replacement delete arms read `current.properties` straight off
+ * it. A delete bag CAN carry a secret.
+ *
+ * What is true is the narrower claim: **no provider `delete()` interpolates a
+ * property value into a log line today**, so there is nothing to mask rather
+ * than a masker that would find nothing.
+ *
+ * **Why the capability was not added here anyway** (issue #1932 review; the
+ * reasoning is correctness, not effort). The plaintext in `current.properties`
+ * on that path was resolved by the DEPLOY, whose bag lives in
+ * `DeployEngine.perResourceSecrets`. `RollbackExecutorContext` has no secrets
+ * field, and the executor's own per-op map is built by re-resolving
+ * `previousState.properties` — the PREVIOUS generation. Binding a delete-side
+ * masker to that map would produce one that misses exactly the value it exists
+ * to catch whenever the two generations differ (a rotated secret, or a property
+ * only the new generation carries): protection that fences nothing, which is
+ * worse than none because it stops the next author looking. Doing it properly
+ * needs a new field on `RollbackExecutorContext` plumbed from the engine, which
+ * is its own change, filed as issue #2007.
+ *
+ * **So the rule for the next author is a MUST, not an option:** before adding
+ * any `delete()` log line that interpolates a property value, thread the
+ * capability first. Do not read the absence of `maskSecrets` on
+ * `DeleteContext` as evidence that a delete bag is safe to print.
+ */
+export interface SecretMaskingContext {
+  /**
+   * Mask any secret THIS deploy resolved out of `text`, for a message the
+   * provider is about to log.
+   *
+   * **When a provider must use it.** Whenever a log / warn / info line
+   * interpolates a value that came out of the `properties` bag. Those values
+   * arrive RESOLVED — a `{{resolve:secretsmanager:...}}` scalar is already
+   * plaintext by the time a provider sees it — and cdkd's masking otherwise
+   * lives only at the deploy engine's error/reason text and the resolver's own
+   * debug line, so a provider's own line is outside all of it. The unhappy
+   * path is usually the one that prints, because a warning about a mis-shaped
+   * value exists precisely to name that value.
+   *
+   * **Absent means unmasked, and that is the back-compatible default.** A
+   * provider that never reads this behaves exactly as before, which is what
+   * lets the field ship without editing the ~130 registered providers. Read it
+   * defensively — `const mask = context?.maskSecrets ?? ((t: string) => t)` —
+   * rather than making it required: `create()` / `update()` are also called by
+   * `cdkd drift --revert`, by the import path, and by tests, and a provider
+   * must not care which caller it got.
+   *
+   * **Mask the VALUE when you have it in hand; mask the finished message only
+   * as a fallback. These are NOT equivalent.** `maskSecretsInText` has two
+   * arms, and which one a call can reach depends on what you hand it:
+   *
+   * - Given a string that IS a recorded secret exactly, it takes the
+   *   WHOLE-VALUE arm and masks it at ANY length.
+   * - Given a longer string that merely CONTAINS one, it takes the substring
+   *   arm, which only considers needles of at least `MIN_NEEDLE_LENGTH` (4)
+   *   characters — short needles are excluded deliberately, because a 1-3
+   *   character plaintext would match incidental text everywhere.
+   *
+   * A finished message is always longer than the value inside it, so masking
+   * the message can only ever reach the SUBSTRING arm: a 1-3 character secret
+   * (a short token, a PIN, a single-character flag value someone put in
+   * Secrets Manager) survives it, while masking the raw value would have
+   * caught it. An earlier version of this paragraph said "applying it to the
+   * whole line is never worse than applying it to the parts" — that is exactly
+   * backwards below the floor, and it is this paragraph that every future
+   * provider copies.
+   *
+   * Doing BOTH is the belt-and-braces shape and is what the reference
+   * implementation uses: mask each string leaf before interpolating it (so
+   * short secrets are caught), and route the assembled message through the
+   * masker too (so a value embedded in a structure, or an interpolation added
+   * later, is still caught at the substring arm). The mask is idempotent and
+   * matches by value rather than position, so the two layers compose.
+   *
+   * **It is per-CALL. Never cache it on `this`.** Providers are registered as
+   * singletons and serve concurrent resources, so a masker stashed on the
+   * instance would be the wrong deploy's within one stack.
+   *
+   * **Scope.** It covers cdkd's dynamic-reference secret model only
+   * (`{{resolve:secretsmanager:...}}`, `SecureString` ssm). A `NoEcho: true`
+   * template parameter is outside that model and is NOT masked by this — see
+   * `SecretMasker` in `src/deployment/secret-redaction.ts` for why, and why
+   * fixing that is a change to the caller rather than to any provider.
+   */
+  maskSecrets?: SecretMasker;
+}
+
 /**
  * Where the DESIRED bag handed to `update()` came from (issue #1732).
  *
@@ -356,9 +480,15 @@ export interface ResourceImportResult {
  * revert arms are state-borne too, but their desired bag is
  * `previousState.properties` — a TEMPLATE recorded earlier — so a `{Rules: []}`
  * there means what the template meant and the template answer (SKIP) is the
- * right one. Those arms therefore deliberately pass NO context. Widening this
- * to `stateBorne` would silently sweep them in and delete a configuration on a
- * rollback.
+ * right one. Those arms therefore never set THIS FLAG. (They do pass a
+ * context — since issue #1932 all three EXTERNAL callers (`deploy-engine.ts`,
+ * `rollback-executor.ts` and `drift --revert`) pass one carrying the inherited
+ * `maskSecrets` capability — so read the invariant as "the flag is unset",
+ * not as "the context is absent", which is how this paragraph used to read.
+ * The five providers that re-create inside their own `update()` still pass
+ * nothing, so "every provider call" would be too strong.)
+ * Widening this to `stateBorne` would silently sweep them in and delete a
+ * configuration on a rollback.
  *
  * **One bounded caveat on "a TEMPLATE recorded earlier"** (found in review):
  * `cdkd drift --accept` writes the AWS readback into `properties` for a
@@ -369,7 +499,7 @@ export interface ResourceImportResult {
  * predates this type, but the sentence above is a strong generalization rather
  * than an invariant, so do not build a data-destroying decision on it.
  */
-export interface UpdateContext {
+export interface UpdateContext extends SecretMaskingContext {
   /**
    * `true` when the desired properties are an AWS-current snapshot produced by
    * `readCurrentState` rather than by a template or a state record — today
@@ -406,7 +536,7 @@ export interface UpdateContext {
  * answer: is this call provisioning from the user's TEMPLATE, or replaying a
  * historical cdkd STATE record?
  */
-export interface CreateContext {
+export interface CreateContext extends SecretMaskingContext {
   /**
    * `true` when the properties handed to `create()` come from a cdkd STATE
    * record rather than from the synthesized template — today that is the
@@ -442,9 +572,14 @@ export interface CreateContext {
    * **Constraint this places on providers.** A provider that re-creates inside
    * its own `update()` (`this.create(logicalId, resourceType, properties)` —
    * ACM certificate, IAM managed policy, IAM role, Lambda permission, SNS
-   * subscription today) CANNOT receive a context: `update()` has no context
-   * parameter to thread, and during a rollback replay the `properties` it
-   * forwards ARE a state record. So a provider with a create-side pre-flight
+   * subscription today) CANNOT receive one: `update()`'s own context is an
+   * {@link UpdateContext}, which carries no `replayingState` and so has
+   * nothing to thread here — and during a rollback replay the `properties` it
+   * forwards ARE a state record. (Read that as "no such FLAG", not "no
+   * context parameter", which is how this sentence used to read: `update()`
+   * has taken a context since issue #1732, and since issue #1932 both context
+   * types share {@link SecretMaskingContext}. Neither carries the replay flag,
+   * so the constraint below is unchanged.) So a provider with a create-side pre-flight
    * refusal MUST NOT re-create inside `update()` — the refusal would fire on a
    * replay with no way to detect it. None of the five listed above has such a
    * refusal (they validate required fields only, which stays a hard error by
@@ -629,7 +764,9 @@ export interface ResourceProvider {
    *   must downgrade to a warning in that case, because the user has no
    *   template-side remedy (issue #1463). See `CreateContext` in
    *   this file for the full contract, and `docs/provider-development.md` §1a
-   *   for when a refusal is allowed at all.
+   *   for when a refusal is allowed at all. It ALSO carries `maskSecrets` (see
+   *   {@link SecretMaskingContext}) — a provider that interpolates a resolved
+   *   property value into a log line MUST run the message through it.
    * @returns Physical resource ID and attributes
    */
   create(
@@ -647,6 +784,10 @@ export interface ResourceProvider {
    * @param properties Updated properties
    * @param previousProperties Previous properties (for comparison)
    * @param context Where the DESIRED bag came from — see {@link UpdateContext}
+   *   — plus `maskSecrets` (see {@link SecretMaskingContext}), which a provider
+   *   that interpolates a resolved property value into a log line MUST run the
+   *   message through. The update path carries the same resolved bag as
+   *   `create()`, so the requirement is identical on both.
    * @returns Updated physical ID and attributes
    */
   update(
