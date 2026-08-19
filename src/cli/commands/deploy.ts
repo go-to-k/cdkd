@@ -641,6 +641,15 @@ async function deployCommand(
     // the fix needs a propagation channel through the provider boundary that
     // `ResourceCreateResult` does not currently have.
     let totalUnaddressed = 0;
+    // Stacks that never ran: the user declined the prefix-migration gate, or an
+    // interrupt landed before the stack started. Both unwind through
+    // `DeployCancelledError` with a bare `return`, so the work-graph node
+    // COMPLETES and the run reaches the unaddressed check below. Counted so the
+    // message cannot imply the deploy otherwise finished -- before #1960 the run
+    // exited 0 and was equally silent about it, but a message that now says
+    // "Deploy left N resource(s) unaddressed" and nothing else actively reads as
+    // "everything else was applied".
+    let cancelledStacks = 0;
 
     const runStack = async (stackInfo: (typeof targetStacks)[0]): Promise<void> => {
       // Wrap the entire per-stack deploy body in withSkipPrefix so every
@@ -1059,6 +1068,7 @@ async function deployCommand(
         // NOT a deploy failure and must not be recorded as one (matches
         // the plain `return` the pre-lock version of the check used).
         if (deployError instanceof DeployCancelledError) {
+          cancelledStacks++;
           return;
         }
         // Issue [#808] — record the run-level failure event before
@@ -1123,6 +1133,10 @@ async function deployCommand(
           `replacement's surviving predecessor is NOT tracked and will never be retried — ` +
           `delete it by hand. The per-stack summaries above give the breakdown, and each ` +
           `resource's own warning names its cause and remedy. ` +
+          (cancelledStacks > 0
+            ? `Note ${cancelledStacks} stack(s) were also cancelled and never deployed, so the ` +
+              `template is not fully applied beyond the resources named above. `
+            : '') +
           `Pass --allow-unaddressed to exit 0 instead.`
       );
     }

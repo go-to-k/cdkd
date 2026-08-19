@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { DeployCancelledError } from '../../../src/utils/error-handler.js';
 
 /**
  * Issue [#1960](https://github.com/go-to-k/cdkd/issues/1960) — `cdkd deploy`
@@ -149,9 +150,15 @@ const engineResults = vi.hoisted(
 /** Stack names whose deploy should throw, for the failure-precedence case. */
 const failingStacks = vi.hoisted(() => new Set<string>());
 
+/** Stack names whose deploy should unwind as a user cancellation. */
+const cancelledStacks = vi.hoisted(() => new Set<string>());
+
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
   DeployEngine: vi.fn().mockImplementation(() => ({
     deploy: vi.fn(async (stackName: string) => {
+      if (cancelledStacks.has(stackName)) {
+        throw new DeployCancelledError(`cancelled ${stackName}`);
+      }
       if (failingStacks.has(stackName)) {
         throw new Error(`synthetic provisioning failure in ${stackName}`);
       }
@@ -227,6 +234,7 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
   beforeEach(() => {
     engineResults.clear();
     failingStacks.clear();
+    cancelledStacks.clear();
     synthStacks.value = [makeStack('StackA')];
     errorSpy.mockClear();
     warnSpy.mockClear();
@@ -403,6 +411,26 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     // omitted when zero, and an always-present `skipped: 0` would train the
     // reader of `cdkd events` to ignore the field.
     expect(counts).not.toHaveProperty('skipped');
+  });
+
+  it('says a cancelled stack never deployed instead of implying the rest applied', async () => {
+    // A cancelled stack unwinds with a bare `return`, so its work-graph node
+    // COMPLETES and the run reaches the unaddressed throw. A message naming
+    // only the survivors would read as "everything else was applied".
+    synthStacks.value = [makeStack('StackA'), makeStack('StackB')];
+    engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
+    cancelledStacks.add('StackB');
+    const code = await runDeploy(['--all', '--yes']);
+    expect(code).toBe(2);
+    const message = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(message).toContain('1 stack(s) were also cancelled and never deployed');
+  });
+
+  it('omits the cancellation note when nothing was cancelled', async () => {
+    engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
+    await runDeploy(['--yes']);
+    const message = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(message).not.toContain('never deployed');
   });
 
   it('still prints the success banner on a clean deploy', async () => {

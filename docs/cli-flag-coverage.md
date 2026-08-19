@@ -4,7 +4,7 @@
 
 Run `vp run cli-flag-coverage` to regenerate.
 
-**31 / 41 declared CLI flags** appear in at least one `tests/integration/<name>/verify.sh` script. 10 flags are not exercised by any integ verify.sh.
+**32 / 42 declared CLI flags** appear in at least one `tests/integration/<name>/verify.sh` script. 10 flags are not exercised by any integ verify.sh.
 
 ## Important: this is a VISIBILITY report, not a CI gate
 
@@ -27,10 +27,11 @@ Reviewer judgment required per flag — many of these are pure-logic flags adequ
 - `--stack`
 - `--strict`
 
-## Flags exercised by integ verify.sh (31)
+## Flags exercised by integ verify.sh (32)
 
 | Flag | Integ Fixture(s) |
 |---|---|
+| `--allow-unaddressed` | [`acm-certificate`](../tests/integration/acm-certificate/) |
 | `--allow-unsupported-properties` | [`cc-api-fallback-transitions`](../tests/integration/cc-api-fallback-transitions/) |
 | `--app` | [`intrinsics-torture-2`](../tests/integration/intrinsics-torture-2/) |
 | `--concurrency` | [`throttle-wide-dag`](../tests/integration/throttle-wide-dag/) |
