@@ -1,3 +1,10 @@
+# [0.284.0](https://github.com/go-to-k/cdkd/compare/v0.283.36...v0.284.0) (2026-08-19)
+
+
+### Features
+
+* **provisioning:** give update() a partial-outcome channel, and stop the ACM replacement orphan being invisible ([#1963](https://github.com/go-to-k/cdkd/issues/1963)) ([9208b90](https://github.com/go-to-k/cdkd/commit/9208b90c0fe743bb8929db8ce80bbff06ff185db))
+
 ## [0.283.36](https://github.com/go-to-k/cdkd/compare/v0.283.35...v0.283.36) (2026-08-18)
 
 
