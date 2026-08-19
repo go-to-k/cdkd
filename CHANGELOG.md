@@ -1,3 +1,10 @@
+## [0.284.13](https://github.com/go-to-k/cdkd/compare/v0.284.12...v0.284.13) (2026-08-19)
+
+
+### Bug Fixes
+
+* **provisioning:** stop ELBv2 and ServiceDiscovery leaking a resolved secret through retry logs and thrown errors ([#2067](https://github.com/go-to-k/cdkd/issues/2067)) ([c318d6d](https://github.com/go-to-k/cdkd/commit/c318d6d74d46eb7ab458d471efa10ac852b2f81b))
+
 ## [0.284.12](https://github.com/go-to-k/cdkd/compare/v0.284.11...v0.284.12) (2026-08-19)
 
 
