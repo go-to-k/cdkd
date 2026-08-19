@@ -1,3 +1,10 @@
+## [0.284.1](https://github.com/go-to-k/cdkd/compare/v0.284.0...v0.284.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* **cognito:** replace the blanket UpdateUserPool reset rationale with measured per-field results, and correct a warning that promised a deploy AWS rejects ([#1982](https://github.com/go-to-k/cdkd/issues/1982)) ([4fd9513](https://github.com/go-to-k/cdkd/commit/4fd9513ddb95721325f441ebd0752a80f274f244))
+
 # [0.284.0](https://github.com/go-to-k/cdkd/compare/v0.283.36...v0.284.0) (2026-08-19)
 
 
