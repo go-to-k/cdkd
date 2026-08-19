@@ -2160,6 +2160,104 @@ describe('Outputs-only change (issue #1921)', () => {
     ]);
   });
 
+  it('WITHHOLDS a deleted nested child\'s stored values when the PARENT proves a secret (issue #1948 review)', async () => {
+    // The child is diffed against an EMPTY template, so it can compute nothing
+    // about secrets from its own input: `templateHasSecretReference` is false,
+    // `declaredKeys` and `desired` are empty, and none of the three withholding
+    // arms can fire — a pre-GHSA child's WHOLE stored bag rendered with values,
+    // one level up from the #1948 top-level case. The parent's template is the
+    // evidence, threaded down by `buildDeletedSubtree`.
+    const backend = fakeBackend({
+      P: st('P', { Gone: res(NESTED, {}) }),
+      'P~Gone': stateWith({ DbPassword: 'hunter2', ApiUrl: 'https://old.example.com' }),
+    });
+    const node = await buildDiffTree({
+      stackName: 'P',
+      displayName: 'P',
+      region: 'us-east-1',
+      template: {
+        Resources: {
+          Fn: {
+            Type: 'AWS::Lambda::Function',
+            Properties: {
+              Environment: {
+                Variables: { PW: '{{resolve:secretsmanager:prod/db:SecretString:pw}}' },
+              },
+            },
+          },
+        },
+      },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+
+    const rows = node.children[0]!.outputChanges;
+    expect(rows.map((c) => c.name).sort()).toEqual(['ApiUrl', 'DbPassword']);
+    // Both rows are still REPORTED — only the values are withheld.
+    for (const row of rows) {
+      expect(row.changeType).toBe('REMOVE');
+      expect(row.oldValueRedacted).toBe(true);
+      expect(row.oldValue).toBeUndefined();
+    }
+    expect(JSON.stringify(rows)).not.toContain('hunter2');
+  });
+
+  it('a deleted nested child in an ORDINARY parent still prints its values', async () => {
+    // The control. Without it the assertion above would pass on a rule that
+    // withholds every deleted child's bag on every stack.
+    const backend = fakeBackend({
+      P: st('P', { Gone: res(NESTED, {}) }),
+      'P~Gone': stateWith({ ApiUrl: 'https://old.example.com' }),
+    });
+    const node = await buildDiffTree({
+      stackName: 'P',
+      displayName: 'P',
+      region: 'us-east-1',
+      template: { Resources: {} },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+    expect(node.children[0]!.outputChanges).toEqual([
+      { name: 'ApiUrl', changeType: 'REMOVE', oldValue: 'https://old.example.com', isExport: false },
+    ]);
+  });
+
+  it('propagates the parent signal to a deleted GRANDchild', async () => {
+    // The recursion re-passes the flag rather than recomputing it: a
+    // grandchild's template is gone for the same reason its parent's is.
+    const backend = fakeBackend({
+      P: st('P', { Gone: res(NESTED, {}) }),
+      'P~Gone': { ...st('P~Gone', { Deeper: res(NESTED, {}) }), outputs: {} },
+      'P~Gone~Deeper': stateWith({ DbPassword: 'hunter2' }),
+    });
+    const node = await buildDiffTree({
+      stackName: 'P',
+      displayName: 'P',
+      region: 'us-east-1',
+      template: {
+        Resources: {
+          Fn: {
+            Type: 'AWS::Lambda::Function',
+            Properties: { Pw: '{{resolve:secretsmanager:prod/db:SecretString:pw}}' },
+          },
+        },
+      },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+
+    const grandchild = node.children[0]!.children[0]!;
+    expect(grandchild.stackName).toBe('P~Gone~Deeper');
+    expect(grandchild.outputChanges[0]!.oldValueRedacted).toBe(true);
+    expect(JSON.stringify(grandchild.outputChanges)).not.toContain('hunter2');
+  });
+
   it('does NOT warn when the suppressed delta is only the pending output itself', async () => {
     // The regression this pins: this resolver DROPS an unresolved key (deploy
     // keeps it as `undefined`), so a naive diff reads it as a REMOVE and the

@@ -275,10 +275,68 @@ describe('cdkd state show', () => {
 
     const out = await runStateShow(['show', 'EvilStack']);
 
-    expect(out).toContain('  ApiUrl: https://api.example.com');
-    // Nothing from the C0 / C1 / bidi class survives on the rendered row.
-    expect(out).not.toContain('\u001b');
-    expect(out).not.toContain('\u202e');
+    const outputsRow = out.split('\n').find((l) => l.includes('ApiUrl'));
+    expect(outputsRow).toBe('  ApiUrl: https://api.example.com');
+    // Scoped to the ROW, not the whole document: a whole-output assertion would
+    // hold today only because this renderer happens to use no color helper, so
+    // it would silently stop discriminating the moment one is added.
+    expect(outputsRow).not.toContain('\u001b');
+    expect(outputsRow).not.toContain('\u202e');
+  });
+
+  it('STRIPS control characters from Attributes and Properties rows too (issue #1948 review)', async () => {
+    // Same provenance as the Outputs row and the same terminal: a resource
+    // PROPERTY is a resolved template value and an ATTRIBUTE is a provider
+    // readback, neither of which passed a CloudFormation validator. The guard
+    // lives inside `formatAttributeValue` so every row in the block gets it.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilStack',
+        resources: {
+          R: makeResource({
+            resourceType: 'AWS::S3::Bucket',
+            physicalId: 'b',
+            properties: { BucketName: 'my\u001bbucket' },
+            attributes: { Arn: 'arn:aws:s3:::my\u202ebucket' },
+          }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilStack']);
+
+    const propRow = out.split('\n').find((l) => l.includes('BucketName'));
+    const attrRow = out.split('\n').find((l) => l.includes('Arn:'));
+    expect(propRow).toBe('    BucketName: mybucket');
+    expect(attrRow).toBe('    Arn: arn:aws:s3:::mybucket');
+  });
+
+  it('strips a control character nested inside a STRUCTURED value', async () => {
+    // The other arm of `formatAttributeValue`: a non-scalar is JSON-encoded,
+    // and `JSON.stringify` escapes C0 INSIDE a string but passes C1 and the
+    // bidi marks through unchanged — so the strip has to run on the encoded
+    // text, not only on the scalar branch.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilStack',
+        resources: {
+          R: makeResource({
+            resourceType: 'AWS::S3::Bucket',
+            physicalId: 'b',
+            properties: { Tags: [{ Key: 'env', Value: 'pr\u202eod' }] },
+          }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilStack']);
+
+    const row = out.split('\n').find((l) => l.includes('Tags'));
+    expect(row).toBe('    Tags: [{"Key":"env","Value":"prod"}]');
   });
 
   it('omits the Outputs section when outputs are empty', async () => {

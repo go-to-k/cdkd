@@ -558,13 +558,31 @@ async function stateResourcesCommand(
  *
  * Scalar values render as-is; objects/arrays are JSON-encoded inline so a
  * resource block stays compact even when an attribute is structured.
+ *
+ * Control characters are stripped HERE rather than at each call site (issue
+ * #1948 review), because every caller has the same provenance problem and the
+ * same answer: an Outputs value, a resource PROPERTY and a provider-returned
+ * ATTRIBUTE are all values cdkd resolved or read back, none of them passed a
+ * CloudFormation validator, and all three land in the same terminal. Doing it
+ * once means a future caller cannot forget — the half-applied version of this
+ * guard is what the review caught.
+ *
+ * The FULL class (C0 included), unlike `diff-recursive`'s
+ * `stripDisplayOnlyChars`: that narrower guard exists to protect a
+ * PRETTY-PRINTED payload's structural newlines, and this function never
+ * pretty-prints — `JSON.stringify` is called without an indent, so a newline
+ * here is content injected by the value, not layout.
+ *
+ * Only the human path routes through this; `--json` serializes the state
+ * record directly and stays byte-faithful, which is the same split
+ * `renderOutputChangeLines` makes.
  */
 function formatAttributeValue(value: unknown): string {
   if (value === null) return 'null';
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return String(value);
+    return stripControlChars(String(value));
   }
-  return JSON.stringify(value);
+  return stripControlChars(JSON.stringify(value));
 }
 
 /**
@@ -733,21 +751,16 @@ function renderStateBlock(state: StackState, lockInfo: LockInfo | null): string[
     lines.push('');
     lines.push('Outputs:');
     for (const [k, v] of outputEntries) {
-      // Both sides are stripped (issue #1948). Unlike a resource logical id —
-      // which CloudFormation constrains to [A-Za-z0-9] — an Outputs bag KEY can
-      // be an `Export.Name` that cdkd RESOLVED from an `Fn::Sub` / parameter /
-      // SSM value, so it passed no CFn validator and may carry ANSI escapes or
-      // bidi overrides that rewrite the surrounding terminal output; the VALUE
-      // is a resolved template value with exactly the same provenance. This is
-      // the same guard `renderOutputChangeLines` applies to the diff's rows,
-      // which is the only other place a stored Outputs bag is rendered.
-      //
-      // The FULL class (C0 included), unlike `diff-recursive`'s
-      // `stripDisplayOnlyChars`: that narrower guard exists because its values
-      // are PRETTY-PRINTED JSON whose structural newlines must survive, while
-      // `formatAttributeValue` emits single-line JSON (or a bare scalar), so
-      // there is no newline here worth keeping.
-      lines.push(`  ${stripControlChars(k)}: ${stripControlChars(formatAttributeValue(v))}`);
+      // The KEY is stripped here; the VALUE by `formatAttributeValue`, which
+      // every other row in this block also goes through (issue #1948). Unlike
+      // a resource logical id — which CloudFormation constrains to
+      // [A-Za-z0-9] — an Outputs bag KEY can be an `Export.Name` that cdkd
+      // RESOLVED from an `Fn::Sub` / parameter / SSM value, so it passed no
+      // CFn validator and may carry ANSI escapes or bidi overrides that
+      // rewrite the surrounding terminal output. Same guard
+      // `renderOutputChangeLines` applies to the diff's rows, which is the
+      // only other place a stored Outputs bag is rendered.
+      lines.push(`  ${stripControlChars(k)}: ${formatAttributeValue(v)}`);
     }
   }
 
@@ -1972,6 +1985,114 @@ async function stateRefreshObservedCommand(
  */
 const NO_RECORDED_SECRETS: RecordedSecretValues = new Map();
 
+/** A STATE leaf that still carries an unresolved dynamic reference. */
+function isDynamicReferenceLeaf(value: unknown): value is string {
+  return typeof value === 'string' && value.includes('{{resolve:');
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Every dynamic-reference-bearing STRING anywhere in a subtree. */
+function collectDynamicReferenceStrings(value: unknown, out: Set<string>): Set<string> {
+  if (isDynamicReferenceLeaf(value)) out.add(value);
+  else if (Array.isArray(value)) for (const v of value) collectDynamicReferenceStrings(v, out);
+  else if (isPlainRecord(value)) {
+    for (const v of Object.values(value)) collectDynamicReferenceStrings(v, out);
+  }
+  return out;
+}
+
+/**
+ * Refuse to persist an observed leaf that sits at a SECRET-BEARING position of
+ * the state record, wherever `redactSecretsForState`'s path pass could not
+ * certify it (issue #1926 review).
+ *
+ * That pass only substitutes when the source leaf is a WHOLE `{{resolve:...}}`
+ * token, and with an EMPTY secrets map its value-scan fallback is a no-op — so
+ * four shapes reached `state.json` in PLAINTEXT, three of which this closes.
+ * Measured against the module before this existed:
+ *
+ * ```text
+ *   source leaf in `properties`                     verdict before  now
+ *   ----------------------------------------------  --------------  --------------
+ *   `postgres://u:{{resolve:...}}@h` (MIXED string)  LEAK            take source
+ *   `['--pw', '{{resolve:...}}']` (plain strings)    LEAK            take source
+ *   `[{Field, Val: '{{resolve:...}}'}]` (no Name)    LEAK            take source
+ *   key ABSENT from `properties`                     LEAK            LEAK (below)
+ *   whole `{{resolve:...}}` token                    ok              ok
+ *   `Environment[]` keyed by `Name` (issue #1915)    ok              ok
+ * ```
+ *
+ * Row 1 is the shape `secret-redaction.ts` itself calls DOMINANT for CDK — an
+ * `Fn::Join` around `secret.secretValueFromJson(...)` — so the narrow reading
+ * ("the record's own properties hold the expression at the very leaf") was
+ * false for the commonest case, not an edge.
+ *
+ * TAKE SOURCE rather than a `***` mask, for the same reason the whole-token arm
+ * does: the mask is not a value `cdkd drift` can re-resolve, so it would report
+ * a permanent phantom on every run, while the expression is exactly what drift
+ * already knows how to re-resolve (issue #1914).
+ *
+ * ANY `{{resolve:` in the source is treated as secret-bearing, including a
+ * plain `ssm:` spelling. That is the same claim `trustAnyExpression` rests on
+ * and it is sound for this source specifically: this is a persisted STATE bag,
+ * and a PUBLIC `String` / `StringList` ssm reference is stored RESOLVED
+ * (issue #1901), so a surviving token here is by construction a secret.
+ *
+ * Runs AFTER the redaction pass, and deliberately does NOT reimplement it. The
+ * array arm asks only whether every reference the source carries SURVIVED into
+ * the already-redacted bag: when issue #1915's keyed descent paired the
+ * elements it did, so the bag is returned untouched and AWS's own ordering and
+ * extra elements are preserved; when nothing could pair, the reference is
+ * missing and the source array is taken wholesale. So this can only ever
+ * refuse — it cannot override a pairing that worked.
+ *
+ * KNOWN RESIDUAL, row 4: an observed key the record's `properties` do not carry
+ * has NO source leaf to take and no plaintext needle to match, so it is
+ * undecidable here and is persisted verbatim. Reachable when a provider's
+ * `readCurrentState` normalises a key the template spells differently. Named
+ * rather than papered over, and tracked as issue
+ * [#2012](https://github.com/go-to-k/cdkd/issues/2012) — the real home for it
+ * is the redaction module, beside the same MIXED-leaf span masking of issue
+ * #1935.
+ */
+function takeStateSourceAtSecretPositions(bag: unknown, source: unknown): unknown {
+  // A MIXED source leaf lands here as well as a whole token, which is the whole
+  // point: for a whole token this agrees with the pass that already ran.
+  //
+  // It is a SHORT-CIRCUIT, not a distinct rule, and saying so is what keeps a
+  // future reader from mistaking the probe result for a coverage gap: with this
+  // arm deleted a string source still reaches the fail-closed fallback at the
+  // bottom and returns the same value, so removing it is an EQUIVALENT mutant
+  // (measured: the row 1-3 tests stay green). It earns its place by naming the
+  // primary rule where a reader looks for it, and by not building a Set for the
+  // commonest shape.
+  if (isDynamicReferenceLeaf(source)) return source;
+  const needed = collectDynamicReferenceStrings(source, new Set());
+  // Nothing to protect in this subtree — return by identity so an ordinary
+  // readback reaches state byte-for-byte.
+  if (needed.size === 0) return bag;
+  if (isPlainRecord(bag) && isPlainRecord(source)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(bag)) {
+      // `Object.hasOwn`, not `k in source`: the prototype chain would answer
+      // for `constructor` / `toString` and hand the walk a function as source.
+      out[k] = Object.hasOwn(source, k) ? takeStateSourceAtSecretPositions(v, source[k]) : v;
+    }
+    return out;
+  }
+  if (Array.isArray(bag) && Array.isArray(source)) {
+    const have = collectDynamicReferenceStrings(bag, new Set());
+    if ([...needed].every((s) => have.has(s))) return bag;
+    return source;
+  }
+  // Shapes diverged while the source subtree still carries a reference (a
+  // scalar where the source has a container, or the reverse). Fail closed.
+  return source;
+}
+
 /**
  * Refresh the `observedProperties` of every resource in one stack
  * record. Returns counts so the caller can aggregate across `--all`.
@@ -2092,12 +2213,21 @@ async function refreshObservedForStack(
           // #1910 sweep (framed as "every writer passes a POSITION source")
           // never surfaced it.
           //
-          // The map is empty (see {@link NO_RECORDED_SECRETS}), so the PATH
-          // pass is the whole mechanism: the record's own `properties` already
-          // hold the unresolved expression at the very leaf the readback echoes
-          // in plaintext, so walking the observed bag against them rewrites
-          // that leaf back onto its expression with no secret fetch and no
-          // value matching.
+          // The map is empty (see {@link NO_RECORDED_SECRETS}), so POSITION is
+          // the whole mechanism: the record's own `properties` hold the
+          // unresolved expression, and walking the observed bag against them
+          // rewrites the plaintext AWS echoes back onto that expression with no
+          // secret fetch and no value matching.
+          //
+          // TWO passes, and the second is not decoration. The module's path
+          // pass only substitutes where the source leaf is a WHOLE
+          // `{{resolve:...}}` token; with an empty map its value-scan fallback
+          // is a no-op, so a MIXED source leaf — the dominant CDK
+          // `Fn::Join`-around-`secretValueFromJson` shape — and an array that
+          // cannot pair by identity both fell through and persisted the
+          // plaintext. `takeStateSourceAtSecretPositions` refuses those
+          // positions; its doc carries the measured per-shape table and the one
+          // residual it does NOT close.
           //
           // `STATE_SOURCED_READBACK_RULES` is the row this write site occupies
           // in `secret-redaction.ts`'s generation table ("observed walk,
@@ -2115,12 +2245,21 @@ async function refreshObservedForStack(
           // can leave a PUBLIC expression in `properties`, and
           // `trustAnyExpression` would then copy it over the observed value —
           // the same trade every other caller of this rules constant makes.
-          resource.observedProperties = redactSecretsForState(
-            observed,
-            NO_RECORDED_SECRETS,
-            resource.properties ?? {},
-            STATE_SOURCED_READBACK_RULES
-          );
+          //
+          // A PRE-GHSA record is not repaired by either pass and cannot be:
+          // its `properties` hold the plaintext too, so the position source
+          // carries no expression to take. `cdkd scrub` is what repairs that,
+          // and the command's own description says to run it first.
+          const sourceProperties = resource.properties ?? {};
+          resource.observedProperties = takeStateSourceAtSecretPositions(
+            redactSecretsForState(
+              observed,
+              NO_RECORDED_SECRETS,
+              sourceProperties,
+              STATE_SOURCED_READBACK_RULES
+            ),
+            sourceProperties
+          ) as Record<string, unknown>;
           refreshed++;
         } catch (err) {
           failed++;
@@ -2174,7 +2313,10 @@ function createStateRefreshObservedCommand(): Command {
     .description(
       'Refresh observedProperties for every resource in a stack by ' +
         'calling provider.readCurrentState — populates the drift baseline ' +
-        'for stacks deployed before state schema v3, without redeploying.'
+        'for stacks deployed before state schema v3, without redeploying. ' +
+        'Run cdkd scrub first on state written by a pre-GHSA binary: the ' +
+        'readback is redacted by POSITION against the record, so a record ' +
+        'whose own properties still hold plaintext has nothing to redact from.'
     )
     .argument('[stacks...]', 'Stack name(s) to refresh (physical CloudFormation names)')
     .option('--all', 'Refresh every stack in the state bucket', false)

@@ -801,11 +801,14 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
     // ...and the LITERAL arm, which is what keeps the diff from publishing an
     // alias deploy refuses without being able to see the secret.
     expect(twin).toContain('!declaredExportIsIntrinsic && secretSourceKeys.size > 0');
-    // That arm no longer suppresses unconditionally: it reads the verdict a
-    // previous deploy recorded (issue #1942). Pinned because losing this line
-    // silently restores the suppression — a green section that simply stops
-    // reporting export changes, which is the #875 bug wearing the fix's shape.
-    expect(twin).toContain('Object.hasOwn(storedOutputs, exportName)');
+    // No source grep for that arm's stored-bag decision (issue #1942), and the
+    // absence is deliberate. This describe fences CROSS-FILE parity — a claim
+    // about the deploy engine that the twin's own behavioral tests cannot
+    // make — and the deploy side has no counterpart line to compare against
+    // there: it evaluates the predicate directly, holding the plaintext. A
+    // grep of `twin` from `twin`'s own suite pins a spelling, not a parity, and
+    // reds on a rename while the behavior is intact. The publish / suppress
+    // pair above covers it behaviorally, and both are mutation-proven.
   });
 
   it('deploy still skips a condition-false output', () => {
@@ -952,9 +955,15 @@ describe('literal Export.Name decided from the stored bag (issue #1942)', () => 
   });
 
   it('does NOT widen to an INTRINSIC name carrying a secret spelling, even when state holds the key', async () => {
-    // The refusal order is secret-first, so the stored-bag arm is never reached
-    // for an intrinsic name — deploy WILL substitute a plaintext into that key
-    // and refuse, whatever state happens to hold.
+    // The intrinsic name is refused before any stored-bag question arises —
+    // deploy WILL substitute a plaintext into that key and refuse, whatever
+    // state happens to hold. Two independent things keep the alias out here,
+    // and only the first is what this case demonstrates: the secret-spelling
+    // arm matches, AND the stored-bag arm's own `!declaredExportIsIntrinsic`
+    // excludes an intrinsic name anyway (this fixture declares no
+    // secret-bearing OUTPUT, so `secretSourceKeys` is empty and that arm could
+    // not fire regardless). An earlier version of this comment credited the
+    // refusal ORDER, which overstates what the fixture shows.
     const template: CloudFormationTemplate = {
       Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
       Outputs: {
@@ -1015,6 +1024,33 @@ describe('literal Export.Name decided from the stored bag (issue #1942)', () => 
  * indistinguishable from an ordinary string), gated so it stays off the common
  * benign case of deleting an ordinary output.
  */
+describe('prototype-polluting Export.Name (issue #1943 class)', () => {
+  it('stores a literal __proto__ export alias as DATA, not on the prototype', async () => {
+    // The alias key is a template-controlled RESOLVED value, so it can be
+    // `__proto__`. On a `{}` bag that write either mutates the prototype or is
+    // silently dropped — and a dropped write reads downstream as a phantom
+    // REMOVE of a key state actually holds.
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        Exporter: { Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] }, Export: { Name: '__proto__' } },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+
+    expect(Object.hasOwn(r.outputs, '__proto__')).toBe(true);
+    expect(r.outputs['__proto__']).toBe(ARN);
+    expect([...r.exportNames]).toContain('__proto__');
+    // Nothing reached the prototype of an ordinary object.
+    expect(Object.getPrototypeOf({}) as unknown).toBe(Object.prototype);
+    expect(({} as Record<string, unknown>)['Fn::GetAtt']).toBeUndefined();
+    // ...and the key survives the comparison, so it does not become a phantom.
+    const changes = computeOutputsDiff({}, r.outputs, r.exportNames);
+    expect(changes.map((c) => c.name)).toContain('__proto__');
+  });
+});
+
 describe('unaccountable stored key withholding (issue #1948)', () => {
   const PLAINTEXT = 'hunter2';
   const SECRET_EXPR = '{{resolve:secretsmanager:prod/db:SecretString:password}}';

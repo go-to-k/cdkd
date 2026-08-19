@@ -384,6 +384,10 @@ break a consumer — was hidden the same way.
   is undecidable, not that the record predates redaction. A stack whose only
   secret reference *was* the deleted output leaves nothing to gate on, and
   withholding every `REMOVE` value on every stack would be the worse trade.
+  A nested child REMOVED from its parent's template is the same case one level
+  up — it diffs against an *empty* template, so nothing is declared and nothing
+  is resolved — and it takes the parent's answer, propagated unchanged to a
+  deleted grandchild.
 - One row the preview cannot decide from the template is a **literal**
   `Export.Name` in a stack that resolves a secret: the deploy refuses such a
   name when it contains a resolved plaintext, and the preview never substitutes

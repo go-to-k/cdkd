@@ -11,6 +11,7 @@ import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-r
 import {
   computeOutputsDiff,
   resolveTemplateOutputs,
+  templateHasSecretDynamicReference,
   type OutputChange,
 } from '../../analyzer/outputs-diff.js';
 import { getLogger } from '../../utils/logger.js';
@@ -215,7 +216,19 @@ export async function computeStackDiff(
    * CloudFormation fallback for cross-stack references, mirroring the
    * deploy engine's option so preview and apply resolve identically.
    */
-  cfnFallback?: boolean
+  cfnFallback?: boolean,
+  /**
+   * Force the issue #1948 "stored key the template cannot account for"
+   * withholding ON, regardless of what THIS template proves.
+   *
+   * Exactly one caller needs it and the reason is structural: a DELETED nested
+   * child is diffed against an EMPTY template, so `templateHasSecretReference`
+   * is false, `declaredKeys` and `desired` are empty, and NONE of the three
+   * withholding arms can fire — a pre-GHSA child's whole stored bag would
+   * render with values. The PARENT's template is the evidence available, and
+   * `buildDeletedSubtree` passes it down.
+   */
+  inheritSecretBearingTemplate?: boolean
 ): Promise<StackDiffResult> {
   const intrinsicResolver = new IntrinsicFunctionResolver(region, {
     cfnFallback: cfnFallback ?? true,
@@ -378,7 +391,8 @@ export async function computeStackDiff(
       resolved.secretSourceKeys,
       {
         declaredKeys: resolved.declaredKeys,
-        templateHasSecretReference: resolved.templateHasSecretReference,
+        templateHasSecretReference:
+          resolved.templateHasSecretReference || inheritSecretBearingTemplate === true,
       }
     ).filter((change) => !resolved.failedKeys.has(change.name));
     if (wouldHaveChanged.length > 0) {
@@ -396,7 +410,8 @@ export async function computeStackDiff(
       resolved.secretSourceKeys,
       {
         declaredKeys: resolved.declaredKeys,
-        templateHasSecretReference: resolved.templateHasSecretReference,
+        templateHasSecretReference:
+          resolved.templateHasSecretReference || inheritSecretBearingTemplate === true,
       }
     );
   }
@@ -617,7 +632,16 @@ export async function buildDiffTree(args: {
     if (resource.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
     if (templateChildIds.has(logicalId)) continue;
     node.children.push(
-      await buildDeletedSubtree(`${stackName}~${logicalId}`, region, stateBackend, diffCalculator)
+      await buildDeletedSubtree(
+        `${stackName}~${logicalId}`,
+        region,
+        stateBackend,
+        diffCalculator,
+        // THIS node's template is the evidence the deleted child cannot supply
+        // for itself (issue #1948 review): the child diffs against an empty
+        // template, so without this its whole stored bag renders with values.
+        templateHasSecretDynamicReference(template)
+      )
     );
   }
 
@@ -634,7 +658,8 @@ async function buildDeletedSubtree(
   stackName: string,
   region: string,
   stateBackend: S3StateBackend,
-  diffCalculator: DiffCalculator
+  diffCalculator: DiffCalculator,
+  parentHasSecretReference: boolean
 ): Promise<DiffTreeNode> {
   const state = await loadStateOrEmpty(stackName, region, stateBackend);
   const { changes, outputChanges } = await computeStackDiff(
@@ -643,7 +668,11 @@ async function buildDeletedSubtree(
     region,
     stackName,
     stateBackend,
-    diffCalculator
+    diffCalculator,
+    undefined,
+    undefined,
+    undefined,
+    parentHasSecretReference
   );
   const node: DiffTreeNode = {
     stackName,
@@ -656,15 +685,31 @@ async function buildDeletedSubtree(
     ccApiRoutes: new Map(),
     // The empty template carries no `Outputs`, so every persisted key diffs as
     // REMOVE — which is accurate: destroying the child drops its whole state
-    // record, and any export it published stops resolving for consumers. No
-    // special case, so this node obeys the same rule as every other.
+    // record, and any export it published stops resolving for consumers.
+    //
+    // Their VALUES are withheld whenever the parent's template proves a secret
+    // reference (issue #1948 review). An empty template accounts for no key at
+    // all, so the withholding is necessarily all-or-nothing here rather than
+    // the per-key split a live template affords — an ordinary child in a
+    // secret-handling tree therefore loses its printed values too. Fail-closed
+    // is the right side to err on: the rows themselves are still reported, and
+    // a bag with any secret expression in it still exonerates the record.
     outputChanges,
     children: [],
   };
   for (const [logicalId, resource] of Object.entries(state.resources)) {
     if (resource.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
     node.children.push(
-      await buildDeletedSubtree(`${stackName}~${logicalId}`, region, stateBackend, diffCalculator)
+      // Propagated, not recomputed: a grandchild's template is gone for the
+      // same reason its parent's is, so the evidence stays the nearest LIVE
+      // template in the tree.
+      await buildDeletedSubtree(
+        `${stackName}~${logicalId}`,
+        region,
+        stateBackend,
+        diffCalculator,
+        parentHasSecretReference
+      )
     );
   }
   return node;

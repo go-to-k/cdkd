@@ -1121,10 +1121,22 @@ echo "    OK: post-rollback state carries no resolved plaintext (secret + Secure
 # (a redeploy asserting AWS-side removal resets) and Phase 3 (destroy) read
 # only `properties` and the live AWS state, so neither is affected.
 echo "==> Phase 1f: cdkd state refresh-observed redacts the readback (issue #1926)"
+# `set +e` around the command itself: ONE transient `readCurrentState` failure
+# raises PartialFailureError -> exit 2, which under `set -e` would fail the
+# whole fixture on an unrelated AWS blip. The assertions below are what decide
+# this phase, and they run against whatever state was saved — the command
+# persists the successful refreshes either way. A non-zero rc is reported so a
+# systematic failure is still visible rather than silently tolerated.
+set +e
 node "${LOCAL_DIST}" state refresh-observed "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
+RO_RC=$?
+set -e
+if [ "${RO_RC}" -ne 0 ]; then
+  echo "    NOTE: refresh-observed exited ${RO_RC} (per-resource readback failure); asserting on the state it saved"
+fi
 
 RO_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json 2>/dev/null)
@@ -1145,10 +1157,30 @@ RO_PASSWORD=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SECRET_PASSWORD // empty')
 RO_SECURE=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SSM_SECURE_VALUE // empty')
 RO_SSM=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SSM_VALUE // empty')
 
+RO_PASSWORD_STAGED=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SECRET_PASSWORD_STAGED // empty')
+
 refresh_fail=0
 case "${RO_PASSWORD}" in
   '{{resolve:secretsmanager:'*) echo "    OK: observed SECRET_PASSWORD kept the expression: ${RO_PASSWORD}" ;;
   *) echo "FAIL: observed SECRET_PASSWORD is NOT the {{resolve:...}} expression: $(mask "${RO_PASSWORD}")" >&2; refresh_fail=1 ;;
+esac
+# The COLLAPSE pair, exactly as Guard 3 spells it on `properties`. The prefix
+# check above accepts ANY secretsmanager expression, so on its own it passes on
+# the collapsed state (#1904 / #1910): SECRET_PASSWORD and its staged sibling
+# resolve to ONE value, so a value-keyed rewrite hands this leaf the OTHER
+# one's expression and the prefix still matches. `refresh-observed` is a NEW
+# writer of this bag, so it needs both directions fenced here too — and the
+# plaintext greps below cannot see this one, since both spellings are valid
+# expressions carrying no plaintext at all.
+case "${RO_PASSWORD}" in
+  *':AWSCURRENT}}')
+    echo "FAIL: observed SECRET_PASSWORD took the STAGED expression — the colliding pair collapsed (#1910)" >&2
+    refresh_fail=1
+    ;;
+esac
+case "${RO_PASSWORD_STAGED}" in
+  '{{resolve:secretsmanager:'*':AWSCURRENT}}') echo "    OK: observed SECRET_PASSWORD_STAGED kept its OWN staged expression: ${RO_PASSWORD_STAGED}" ;;
+  *) echo "FAIL: observed SECRET_PASSWORD_STAGED is NOT its own {{resolve:...:AWSCURRENT}} expression: $(mask "${RO_PASSWORD_STAGED}")" >&2; refresh_fail=1 ;;
 esac
 # The ssm/ssm discriminator, same pair as Guards 3b + 4 on `properties`: the
 # SecureString reference must be an expression while the plain String one must

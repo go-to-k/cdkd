@@ -492,6 +492,184 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
     expect(JSON.stringify(savedState)).not.toContain(SECRET_PLAINTEXT);
   });
 
+  /**
+   * The four shapes the module's PATH pass cannot certify (issue #1926
+   * review). It substitutes only where the source leaf is a WHOLE
+   * `{{resolve:...}}` token, and with an EMPTY secrets map its value-scan
+   * fallback is a no-op — so each of these persisted the plaintext. Executed
+   * against `redactSecretsForState` directly before the fix: rows 1-3 and 4 all
+   * printed LEAK, the whole-token control and the keyed array printed ok.
+   */
+  async function refreshWith(
+    properties: Record<string, unknown>,
+    observed: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        R: makeResource({ physicalId: 'r', resourceType: 'AWS::Lambda::Function', properties }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => observed });
+    const { error } = await runRefresh(['TestStack']);
+    expect(error).toBeUndefined();
+    const saved = mockSaveState.mock.calls[0]?.[2] as StackState;
+    return saved.resources['R']?.observedProperties as Record<string, unknown>;
+  }
+
+  it('LEAK ROW 1: a MIXED source leaf takes the source, not the resolved value', async () => {
+    // The dominant CDK shape — `Fn::Join` around `secret.secretValueFromJson`
+    // renders a connection string with the reference EMBEDDED, so the leaf is
+    // not a whole token and the path pass returned the bag leaf untouched.
+    const mixed = `postgres://u:${SECRET_EXPR}@h:5432/db`;
+    const observed = await refreshWith(
+      { Environment: { Variables: { DB_URL: mixed } } },
+      { Environment: { Variables: { DB_URL: `postgres://u:${SECRET_PLAINTEXT}@h:5432/db` } } }
+    );
+    expect(observed).toEqual({ Environment: { Variables: { DB_URL: mixed } } });
+  });
+
+  it('LEAK ROW 2: an array of plain strings the readback cannot pair takes the source', async () => {
+    // No identity field on either side, and `descendArrays` is off for a
+    // readback, so nothing paired and every element fell to the no-op scan.
+    const observed = await refreshWith(
+      { Command: ['--pw', SECRET_EXPR, '--verbose'] },
+      { Command: ['--pw', SECRET_PLAINTEXT, '--verbose'] }
+    );
+    expect(observed).toEqual({ Command: ['--pw', SECRET_EXPR, '--verbose'] });
+  });
+
+  it('LEAK ROW 3: an array of objects with no Name/Key identity takes the source', async () => {
+    // `identityKeyFor` tries `Name` then `Key`; an element keyed by neither
+    // cannot pair, which is the same fall-through as row 2 one level down.
+    const observed = await refreshWith(
+      { Fields: [{ Field: 'pw', Val: SECRET_EXPR }] },
+      { Fields: [{ Field: 'pw', Val: SECRET_PLAINTEXT }] }
+    );
+    expect(observed).toEqual({ Fields: [{ Field: 'pw', Val: SECRET_EXPR }] });
+  });
+
+  it('LEAK ROW 4 (RESIDUAL, issue #2012): a key the record lacks is persisted verbatim', async () => {
+    // Pinned as the RESIDUAL it is, not as desired behavior. There is no source
+    // leaf to take and no plaintext needle to match, so the position mechanism
+    // has nothing to decide with — reachable when a provider's readback
+    // normalises a key the template spells differently. A future fix (the real
+    // home is `secret-redaction.ts`, beside issue #1935's span masking) must
+    // flip this assertion DELIBERATELY rather than discover it.
+    const observed = await refreshWith(
+      { Other: 'x', Password: SECRET_EXPR },
+      { Other: 'x', Password: SECRET_PLAINTEXT, MasterPassword: SECRET_PLAINTEXT }
+    );
+    // The positioned leaf IS protected...
+    expect(observed['Password']).toBe(SECRET_EXPR);
+    // ...while the unpositionable sibling is not. This is the residual.
+    expect(observed['MasterPassword']).toBe(SECRET_PLAINTEXT);
+  });
+
+  it('does not disturb a keyed array the redaction pass already paired (#1915 preserved)', async () => {
+    // The refusal must only ever REFUSE: where issue #1915's keyed descent
+    // worked, AWS's own ordering and any AWS-added element survive. Without
+    // this the second pass could quietly replace a live baseline with the
+    // template's list and make drift blind to a console edit.
+    const observed = await refreshWith(
+      {
+        Environment: [
+          { Name: 'DB_PASSWORD', Value: SECRET_EXPR },
+          { Name: 'LOG_LEVEL', Value: 'debug' },
+        ],
+      },
+      {
+        Environment: [
+          { Name: 'LOG_LEVEL', Value: 'debug' },
+          { Name: 'DB_PASSWORD', Value: SECRET_PLAINTEXT },
+          { Name: 'AWS_ADDED', Value: 'by-aws' },
+        ],
+      }
+    );
+    expect(observed).toEqual({
+      Environment: [
+        { Name: 'LOG_LEVEL', Value: 'debug' },
+        { Name: 'DB_PASSWORD', Value: SECRET_EXPR },
+        { Name: 'AWS_ADDED', Value: 'by-aws' },
+      ],
+    });
+  });
+
+  it('tolerates a record with NO properties at all (the `?? {}` source)', async () => {
+    // A resource record whose `properties` key is absent — reachable on hand-
+    // edited or very old state. What this pins is that the new passes do not
+    // THROW on it, which would turn a missing optional field into a
+    // per-resource refresh failure.
+    //
+    // It does NOT pin the `?? {}` spelling: measured, replacing it with a bare
+    // `properties!` keeps this green, because both passes treat an `undefined`
+    // source and an empty one identically (the module returns the bag when
+    // there are no secrets and no source; the second pass collects an empty
+    // needle set). Said out loud so the equivalence is a known property rather
+    // than a probe gap someone re-discovers.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    const withoutProperties = {
+      physicalId: 'p',
+      resourceType: 'AWS::S3::Bucket',
+    } as unknown as ResourceState;
+    mockGetState.mockResolvedValueOnce(makeState({ R: withoutProperties }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ BucketName: 'b' }),
+    });
+
+    const { error } = await runRefresh(['TestStack']);
+
+    expect(error).toBeUndefined();
+    const saved = mockSaveState.mock.calls[0]?.[2] as StackState;
+    expect(saved.resources['R']?.observedProperties).toEqual({ BucketName: 'b' });
+  });
+
+  it('counts a redaction failure as a per-resource failure instead of aborting the run', async () => {
+    // The redaction now runs INSIDE the same try/catch as `readCurrentState`,
+    // so a throw from it must behave like a readback failure: that resource
+    // keeps its previous observed bag, the others still refresh, and the run
+    // reports a partial failure. A readback whose property is a throwing getter
+    // is the reachable shape — both passes walk values with `Object.values`.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Good: makeResource({ physicalId: 'g', properties: { BucketName: 'g' } }),
+        Bad: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::Lambda::Function',
+          properties: { Pw: SECRET_EXPR },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((t: string) => {
+      if (t === 'AWS::S3::Bucket') {
+        return { readCurrentState: async () => ({ BucketName: 'g' }) };
+      }
+      return {
+        readCurrentState: async () => {
+          const hostile: Record<string, unknown> = {};
+          Object.defineProperty(hostile, 'Pw', {
+            enumerable: true,
+            get() {
+              throw new Error('exploding getter');
+            },
+          });
+          return hostile;
+        },
+      };
+    });
+
+    const { error } = await runRefresh(['TestStack']);
+
+    // PartialFailureError -> withErrorHandling -> process.exit(2), same as a
+    // readback failure.
+    expect((error as Error).message).toBe('__exit__');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const saved = mockSaveState.mock.calls[0]?.[2] as StackState;
+    expect(saved.resources['Good']?.observedProperties).toEqual({ BucketName: 'g' });
+    expect(saved.resources['Bad']?.observedProperties).toBeUndefined();
+  });
+
   it('leaves an ordinary readback untouched, including keys the record does not carry', async () => {
     // The other half, so the redaction cannot silently widen: with no
     // expression in the source, the observed bag must reach state verbatim —

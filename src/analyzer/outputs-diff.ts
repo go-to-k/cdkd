@@ -106,10 +106,19 @@ export interface ResolvedTemplateOutputs {
    * plaintext is just a string), so {@link computeOutputsDiff} withholds it
    * when the template proves the stack handles secrets at all. See issue #1948.
    *
-   * An INTRINSIC `Export.Name` is deliberately absent: its resolved alias is
-   * knowable only when resolution succeeded, and in that case the key is in
-   * {@link outputs} — which the consumer checks first — while a failed one is
-   * already in {@link failedKeys} and suppresses the whole section.
+   * An INTRINSIC `Export.Name` is deliberately absent: the alias it resolves to
+   * is knowable only when resolution succeeded, and in that case the key is in
+   * {@link outputs}, which the consumer checks first.
+   *
+   * When it does NOT resolve the key is simply unknown, and the arms that give
+   * up on it do NOT all record it in {@link failedKeys} — the resolve-failure,
+   * secret-spelling and collision arms each skip the alias without adding one.
+   * (An earlier revision of this note claimed they did.) The consequence is
+   * benign and worth stating rather than fixing: such a key is absent from
+   * BOTH sets, so a stored copy of it is treated as unaccountable and has its
+   * value withheld — the conservative side, and unreachable in the ordinary
+   * case anyway because those arms also set `resolutionFailed`, which
+   * suppresses the whole section.
    */
   declaredKeys: Set<string>;
   /**
@@ -258,6 +267,19 @@ function containsSecretDynamicReference(value: unknown): boolean {
   return false;
 }
 
+/**
+ * Does this template carry a secret-bearing dynamic reference ANYWHERE?
+ *
+ * Exported for the DELETED nested-child path (issue #1948 review): that node
+ * diffs its state against an EMPTY template, so it can compute nothing about
+ * secrets from its own input and would render a pre-GHSA child's whole stored
+ * bag in full. The caller passes the PARENT's answer instead — see
+ * `diff-recursive.ts`'s `buildDeletedSubtree`.
+ */
+export function templateHasSecretDynamicReference(template: CloudFormationTemplate): boolean {
+  return containsSecretDynamicReference(template);
+}
+
 /** Structural equality, mirroring the deploy engine's `outputMapsEqual` leaf rule. */
 function valuesEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -322,7 +344,15 @@ export async function resolveTemplateOutputs(
   storedOutputs?: Record<string, unknown>
 ): Promise<ResolvedTemplateOutputs> {
   const logger = getLogger().child('OutputsDiff');
-  const outputs: Record<string, unknown> = {};
+  // `Object.create(null)`, not `{}` (issue #1943's class). Two writes below
+  // key this bag by a template-controlled RESOLVED `Export.Name`, so a stack
+  // exporting the name `__proto__` would either mutate the prototype or have
+  // its write silently dropped on a normal object — and a dropped write then
+  // reads downstream as a phantom REMOVE of a key state actually holds. A
+  // null-prototype bag has no `__proto__` setter, so the key lands as data.
+  // `JSON.stringify` and `Object.entries` treat it identically, and the value
+  // is only ever consumed through those.
+  const outputs: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   const exportNames = new Set<string>();
   const failedKeys = new Set<string>();
   const secretSourceKeys = new Set<string>();
@@ -505,7 +535,8 @@ export async function resolveTemplateOutputs(
           // it prints today as a REMOVE row on any stack whose section is not
           // suppressed, so publishing does not widen it.
           const storedProvesPublished =
-            storedOutputs !== undefined && Object.hasOwn(storedOutputs, exportName);
+            storedOutputs !== undefined &&
+            Object.prototype.hasOwnProperty.call(storedOutputs, exportName);
           if (storedProvesPublished) {
             outputs[exportName] = value;
             exportNames.add(exportName);
@@ -612,6 +643,14 @@ export async function resolveTemplateOutputs(
  *   the LAST write was post-GHSA, and the bag is rewritten wholesale by
  *   `resolveOutputs` on every deploy, so every other value in it is redacted
  *   too. This exonerates the record.
+ *
+ *   That reasoning holds for a DEPLOY write and is weaker for a `cdkd scrub`
+ *   one, which rewrites `state.outputs` IN PLACE: scrub redacts what it has a
+ *   needle or a template position for, and its own docs admit it can leave a
+ *   plaintext it has neither for — so a scrubbed bag holding one redacted key
+ *   can exonerate a deleted key's surviving plaintext. Recorded rather than
+ *   closed: removing the exoneration would withhold values on every clean
+ *   post-GHSA record in a secret-handling stack, which is the larger harm.
  *
  * Withholding here is PER-KEY, unlike the record-level arms above, and the
  * asymmetry follows from what each concludes: those conclude the record was
