@@ -180,7 +180,7 @@ next only to break a tie:
 | # | Rule | Why |
 |---|---|---|
 | 1 | **Security issues come FIRST**, ahead of every other rule below | A security defect is the one class where the cost keeps growing while it sits: the vulnerable behavior is already shipped, already running in users' accounts, and the report may be public. Every other rule orders work by how much value a fix adds; this one orders it by how much a delay costs |
-| 2 | **Umbrella issues sort LAST**, whatever else they score | They cannot be finished in one lane, so a lane leaves the issue open with ambiguous residue, and their many sites collide with everything |
+| 2 | **Umbrella issues sort LAST**, whatever else they score (except rule 1) | They cannot be finished in one lane, so a lane leaves the issue open with ambiguous residue, and their many sites collide with everything |
 | 3 | **`fix:` outranks everything else** (`feat:` / `test:` / `docs:` / `audit:` / `chore:`) | A `fix:` is a defect in shipped behavior a user can hit today; the rest are improvements to behavior that is not wrong |
 | 4 | **Area: `deploy` > `diff` = `destroy` > everything else** | Deploy is the tool's primary function — it is what cdkd exists to do, so a deploy defect costs more than an equally-sized defect elsewhere. `diff` and `destroy` rank equally behind it |
 | 5 | **Prefer issues landing in ONE isolated file** over cross-cutting ones | Not just collision-avoidance for this run: a cross-cutting file admits only one lane at a time, so taking it blocks the widest set of future parallel work. Among equals, spend the contested files last |
@@ -208,11 +208,14 @@ gh issue view <n> --json body -q .body | grep -i 'Session-fit:'
   Signals: a `security` label, a GHSA link, a private-report reference, or a title /
   body naming `secret`, `credential`, `token`, `redact`, `leak`, `privilege`,
   `injection`. Path signal: the issue names any surface the security add-on reviewer
-  covers (`src/utils/role-arn.ts`, `src/local/{cognito-jwt,lambda-authorizer,`
-  `docker-runner,docker-image-builder,ecr-puller}.ts`,
-  `src/provisioning/providers/**` when the defect is about what gets stored or
-  exposed). When in doubt, treat it as security — the cost of ranking a normal bug
-  first is one position in a queue.
+  covers — `src/utils/role-arn.ts`, `src/local/cognito-jwt.ts`,
+  `src/local/docker-runner.ts`, `src/local/docker-image-builder.ts`,
+  `src/local/ecr-puller.ts`, and `src/provisioning/providers/**` when the defect is
+  about what gets stored or exposed. (`CLAUDE.md`'s copy of that list still names
+  `src/local/lambda-authorizer.ts`, which moved to cdk-local in PR #691 — the
+  surviving files here are `authorizer-resolver.ts` / `authorizer-cache.ts`.)
+  When in doubt, treat it as security — the cost of ranking a normal bug first is
+  one position in a queue.
   Two consequences that follow from rule 1 sitting above rule 2: a security issue
   that is ALSO an umbrella is not deferred by the umbrella rule — split it, take the
   concrete sites this lane can close now, and file the remainder. And a security
@@ -244,8 +247,9 @@ before:
 
 - **A user-reported breakage outranks the rest of the table** (but not rule 1 —
   nothing outranks a security issue). If an issue reports a currently-broken
-  user-facing path, take it first regardless of type, area or age. The ranking exists to order a backlog of self-filed findings, not to make
-  someone wait behind a `fix(deploy)` because their bug is filed as `fix(state)`.
+  user-facing path, take it first regardless of type, area or age. The ranking
+  exists to order a backlog of self-filed findings, not to make someone wait behind
+  a `fix(deploy)` because their bug is filed as `fix(state)`.
 - **Ranking never lowers verification depth.** A rank-1 issue and a rank-9 issue
   get the same review tier, the same integs and the same live test — priority
   decides ORDER, never rigor (see CLAUDE.md → "Cost is not a tiebreaker"). A
