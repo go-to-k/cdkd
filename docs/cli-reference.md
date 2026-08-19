@@ -618,6 +618,18 @@ self-reported cap, pass an explicit per-type override
 overrides always win over the provider's self-report — they're the
 documented escape hatch.
 
+Both DynamoDB types (`AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable`)
+self-report 30 minutes for the same reason — their DELETE path stacks
+several polling waits (replica removal, an index-settle gate, an
+index-busy `DeleteTable` retry, a confirm-gone wait) that share ONE
+allowance sized to fit inside it. At the default `--resource-timeout 30m`
+this changes nothing. Note the self-report is per TYPE, not per
+operation, so lowering the global default below 30m for fail-fast CI
+(`--resource-timeout 5m`) does NOT shorten these types' CREATE or UPDATE
+deadline either; the per-type override
+(`--resource-timeout AWS::DynamoDB::Table=5m`) is the way to get the
+shorter deadline back.
+
 A handful of resource types are ALSO known to be slow to create or
 delete regardless of provider — an `AWS::OpenSearchService::Domain`
 deletion routinely runs 15-30 minutes, and Redshift / ElastiCache / RDS

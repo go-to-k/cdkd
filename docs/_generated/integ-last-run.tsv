@@ -82,8 +82,8 @@ drift-revert-vpc	2026-08-11T15:53:33Z	PASS	314	verify.sh	#1591 final: both-sides
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-08-18T15:55:42Z	PASS	200	verify.sh	#1933 post-review re-run: new phase 3b-2 proves the CACHE-HIT resource takes its own region's secret (embedded shape, so redaction runs via the value scan); 6 deleted 0 errors 0 orphans both regions
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
-dynamodb-globaltable	2026-08-18T15:51:37Z	PASS	900	verify.sh	#1950 post-review re-run: GlobalTable still bounded at N/8 while Table runs N/14; 12 deleted 0 errors 0 orphans in all replica regions
-dynamodb-gsi-update	2026-08-18T15:51:37Z	PASS	1080	verify.sh	#1950 post-review re-run: Table budget 14 live, same 5-item backfill used 7 of 14; 1 deleted 0 errors 0 orphans
+dynamodb-globaltable	2026-08-19T05:08:48Z	PASS	1389	verify.sh	#1955 shared delete allowance; 12 deleted 0 errors, all scalable targets deregistered, 0 orphans all regions
+dynamodb-gsi-update	2026-08-19T05:28:23Z	PASS	1135	verify.sh	#1955 shared delete allowance; GSI add in-place, no phantom drift, destroy absorbed the index-busy refusal; 0 orphans
 dynamodb-ondemand	2026-08-13T06:15:30Z	PASS	580	verify.sh	#1760 Table drift/WarmThroughput provider change; 4 del 0 err, orph clean
 dynamodb-sse	2026-08-01T10:07:21Z	PASS	40	verify.sh	0801 regression sweep; SSE mapping ok, 0 orphans
 dynamodb-stream-filter	2026-08-10T05:13:55Z	PASS	57	verify.sh	0810 sweep b5; stream filter criteria, 0 err 0 orph
@@ -228,7 +228,7 @@ recreate-mixed-direction	2026-08-08T16:42:21Z	PASS	92	verify.sh	P1 post-#1360 re
 recreate-via-cc-api	2026-08-01T10:00:06Z	PASS	93	verify.sh	0801 regression sweep; SDK->CC mid-life migration ok, 0 orphans
 recreate-via-sdk-provider	2026-08-08T16:40:35Z	PASS	78	verify.sh	P1 post-#1360 replacement-rules touch; CC->SDK mid-life recreate ok, 2 del/0 err, 0 orphans
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-08-10T11:50:46Z	PASS	1364	verify.sh	0810 P0/P1 sweep b5 BROAD; --remove-protection destroy ok, ASG instance terminated (#796 guard)
+remove-protection	2026-08-19T05:52:12Z	PASS	1408	verify.sh	#1955 broad arm: protected LogGroup/Table/UserPool refused without the flag then deleted with it; 12 deleted 0 errors, ASG instance terminated, 0 orphans
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replacement-fanout	2026-08-08T16:39:04Z	PASS	83	verify.sh	P1 post-#1360 replacement-rules touch; SNS replacement fanout to 10 dependents, 12 del/0 err, 0 orphans
 replacement-immutable-name	2026-08-01T09:51:12Z	PASS	113	verify.sh	0801 regression sweep; 6 types x 3 phases ok, 0 orphans

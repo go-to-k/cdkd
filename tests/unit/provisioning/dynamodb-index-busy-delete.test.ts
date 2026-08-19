@@ -103,6 +103,14 @@ import {
 // Imported rather than restated so lowering it reds this suite — a fence has to
 // watch the field it claims to watch.
 import { DEFAULT_RESOURCE_TIMEOUT_MS } from '../../../src/deployment/deploy-engine.js';
+// The shared allowance issue #1955 bounds the whole delete path with. The
+// per-type retry budgets below still decide how it is SPENT; this decides how
+// much there is. Its own behaviour is pinned in `dynamodb-delete-budget.test.ts`.
+import {
+  DYNAMODB_DELETE_BUDGET_MS,
+  DYNAMODB_DELETE_DEADLINE_MARGIN_MS,
+} from '../../../src/provisioning/providers/dynamodb-delete-budget.js';
+import { ElapsedBudget } from '../../../src/utils/elapsed-budget.js';
 import { isRetryableTransientError } from '../../../src/deployment/retryable-errors.js';
 import type { Logger } from '../../../src/types/config.js';
 import {
@@ -429,7 +437,15 @@ describe('the two per-type budget constants (issue #1950)', () => {
    * argument on a private method, and a fence that restated it would keep
    * asserting 900 after the provider moved to something else.
    */
-  async function observeGlobalTablePreDeleteGatePolls(): Promise<number> {
+  /** An allowance with nothing left, for the wiring half of the fence below. */
+  function drainedBudget(): ElapsedBudget {
+    let t = 0;
+    const budget = new ElapsedBudget(60_000, () => t);
+    t += 120_000;
+    return budget;
+  }
+
+  async function observeGlobalTablePreDeleteGatePolls(budget?: ElapsedBudget): Promise<number> {
     mockSend.mockReset();
     settleSpy.mockReset();
     mockSend.mockImplementation(() =>
@@ -439,9 +455,13 @@ describe('the two per-type budget constants (issue #1950)', () => {
     );
     await (
       new DynamoDBGlobalTableProvider() as unknown as {
-        waitForIndexesActive: (physicalId: string, logicalId: string) => Promise<void>;
+        waitForIndexesActive: (
+          physicalId: string,
+          logicalId: string,
+          opts?: { budget?: ElapsedBudget }
+        ) => Promise<void>;
       }
-    ).waitForIndexesActive('shared-table', 'Warm');
+    ).waitForIndexesActive('shared-table', 'Warm', ...(budget ? [{ budget }] : []));
     const polls = settleSpy.mock.calls.at(-1)?.[0]?.maxAttempts as number | undefined;
     // Never let the fence below multiply an `undefined` into a passing 0.
     expect(polls).toBeGreaterThan(0);
@@ -475,10 +495,11 @@ describe('the two per-type budget constants (issue #1950)', () => {
 
   it('Table: the whole DELETE path stays under the per-resource deadline', async () => {
     // `destroy-runner.ts` caps the whole `delete()` CALL at
-    // `DEFAULT_RESOURCE_TIMEOUT_MS` and neither provider declares a
-    // `getMinResourceTimeoutMs` to lift it. Asserting against the IMPORTED
-    // constant (not a copy of its value) is what makes lowering the real
-    // deadline red this test.
+    // `DEFAULT_RESOURCE_TIMEOUT_MS`; since issue #1955 both providers
+    // self-report that same figure through `getMinResourceTimeoutMs`, so a
+    // lowered `--resource-timeout` cannot shrink it either. Asserting against
+    // the IMPORTED constant (not a copy of its value) is what makes lowering
+    // the real deadline red this test.
     //
     // On THIS type the only thing sharing the deadline is the
     // `--remove-protection` ACTIVE wait, which is why it can afford 14.
@@ -554,14 +575,28 @@ describe('the two per-type budget constants (issue #1950)', () => {
 
     // The other path, asserted rather than left implied: when the loop succeeds
     // late, the gone-wait DOES run and the same single-region shape reaches
-    // ~40.4 min — already over the deadline at the CURRENT budget, so it is not
-    // a consequence of any calibration here and 8 cannot fix it. Asserted as
-    // GREATER so it documents the live overshoot: if a later change brings this
-    // path back under the deadline (issue #1955), this reds and the comments
-    // claiming an overshoot have to be revisited — which is the point.
+    // ~40.4 min in RAW cap terms — over the deadline, so it was never something
+    // this constant could fix. Issue #1955 closed it OUTSIDE the constants, by
+    // making every wait on the delete path draw polls from ONE shared elapsed
+    // budget, so BOTH halves are asserted here and they say different things:
+    // the raw caps still sum past the deadline (nothing was shrunk)...
     const goneWaitMs =
       TABLE_GONE_WAIT_ATTEMPTS * (INDEX_SETTLE_POLL_INTERVAL_MS + MEASURED_POLL_RTT_MS);
     expect(exhaustedBudgetWorstCaseMs + goneWaitMs).toBeGreaterThan(DEFAULT_RESOURCE_TIMEOUT_MS);
+    // ...and the allowance the path may actually SPEND is under it, with the
+    // margin the non-cancelling `withResourceDeadline` needs.
+    expect(DYNAMODB_DELETE_BUDGET_MS).toBeLessThan(exhaustedBudgetWorstCaseMs + goneWaitMs);
+    expect(DYNAMODB_DELETE_BUDGET_MS + DYNAMODB_DELETE_DEADLINE_MARGIN_MS).toBeLessThanOrEqual(
+      DEFAULT_RESOURCE_TIMEOUT_MS
+    );
+
+    // Those two are CONSTANT RELATIONS, and on their own they do not discharge
+    // the claim: a budget that is defined but never WIRED satisfies both, so a
+    // `pollsWithinDeleteBudget` returning `cap` unconditionally would leave
+    // this file green while the path went back to spending the raw caps above.
+    // So the fence also drives the REAL gate with a drained allowance and reads
+    // the cap the provider actually handed it.
+    expect(await observeGlobalTablePreDeleteGatePolls(drainedBudget())).toBeLessThan(gatePolls);
 
     // ...and the sibling's budget would NOT fit here, which is the whole reason
     // the two constants exist. Asserted as a PREMISE, so the fence above cannot
