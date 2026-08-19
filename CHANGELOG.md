@@ -1,3 +1,10 @@
+## [0.284.8](https://github.com/go-to-k/cdkd/compare/v0.284.7...v0.284.8) (2026-08-19)
+
+
+### Bug Fixes
+
+* **state,diff:** redact the readback in the redaction module, so the default deploy path inherits it too ([#2025](https://github.com/go-to-k/cdkd/issues/2025)) ([2d929d6](https://github.com/go-to-k/cdkd/commit/2d929d6c9992ee149270e569c0a0f4a8cc707ce9))
+
 ## [0.284.7](https://github.com/go-to-k/cdkd/compare/v0.284.6...v0.284.7) (2026-08-19)
 
 
