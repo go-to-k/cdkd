@@ -57,53 +57,86 @@ if ! cmd_matches_verb "$cmd" 'vp[[:space:]]+run[[:space:]]+test([[:space:]]|$)';
   exit 0
 fi
 
-# Re-read the matched invocation from the RAW command: the neutralised
-# text replaces quoted spans with a placeholder, and a quoted path would
-# then look like a bare token. Take the text after the LAST occurrence,
-# which is the one a chained command ends on.
-tail_text=${cmd##*vp run test}
+# Parse the NEUTRALISED text, not the raw command: a heredoc body routinely
+# describes the very command it is about (this repo's own commit messages do),
+# and re-reading the raw text would undo the neutralisation the matcher just
+# performed and fire on prose. The cost is a quoted path (`vp run test
+# "tests/x.test.ts"`) becoming a placeholder and NOT being recognised — a false
+# NEGATIVE, i.e. the pre-hook status quo, which is the direction to err in here.
+neutralised=$(strip_noncommand_spans "$cmd")
 
-# The split above can land inside a LONGER task name (`vp run test:once-leak`
-# splits to `:once-leak`), so anything not starting with whitespace is a
-# different task and never this gate's business.
-case "$tail_text" in
-  '' | [[:space:]]*) ;;
-  *) exit 0 ;;
-esac
+# Collapse runs of spaces / tabs so the literal split below agrees with the ERE
+# above, which accepts `[[:space:]]+`. NEWLINES are preserved: they end an
+# argument list and are relied on as a separator further down.
+neutralised=$(printf '%s' "$neutralised" | tr '\t' ' ' | sed 's/  */ /g')
 
-# Stop at the first control operator so a following command's arguments
-# are not mistaken for this one's.
-tail_text=${tail_text%%&&*}
-tail_text=${tail_text%%||*}
-tail_text=${tail_text%%;*}
-tail_text=${tail_text%%|*}
+# Walk EVERY occurrence rather than only the last. Taking the last one lets a
+# later SIBLING task hide a real hit (`vp run test tests/a.test.ts && vp run
+# test:hooks` splits inside `:hooks` and bails), which is a false negative but
+# a needless one.
+rest=$neutralised
+found_path=0
+while [ "${rest#*vp run test}" != "$rest" ]; do
+  tail_text=${rest#*vp run test}
+  rest=$tail_text
 
-# A PATH argument is any token that is not a flag and not a flag VALUE.
-# `--reporter json` must not read `json` as a path, so a token following
-# a value-taking flag is skipped.
-has_path=0
-skip_next=0
-for tok in $tail_text; do
-  if [ "$skip_next" = "1" ]; then
-    skip_next=0
-    continue
-  fi
-  case "$tok" in
-    --*=*) ;;
-    -*)
-      # Conservatively assume a long flag may take a separate value.
-      case "$tok" in
-        --reporter | --outputFile | --config | --root | --shard | --project) skip_next=1 ;;
-      esac
-      ;;
-    *)
-      has_path=1
-      break
-      ;;
+  # The split can land inside a LONGER task name (`vp run test:once-leak` ->
+  # `:once-leak`), so anything not starting with whitespace is a different task.
+  case "$tail_text" in
+    '' | [[:space:]]*) ;;
+    *) continue ;;
   esac
+
+  # Truncate at anything that ENDS this command's argument list. A NEWLINE is a
+  # separator too — a multi-line Bash call is the norm here, and omitting it
+  # read the next line's command as this one's arguments. `#` starts a comment.
+  tail_text=${tail_text%%&&*}
+  tail_text=${tail_text%%||*}
+  tail_text=${tail_text%%;*}
+  tail_text=${tail_text%%|*}
+  tail_text=${tail_text%%$'\n'*}
+  tail_text=${tail_text%%#*}
+
+# **A token counts as a path only if it looks like a TEST path.** The inverse
+# rule ("anything that is not a flag") loses a race it cannot win: redirections,
+# backgrounding, comments and every value-taking flag not on a hand-kept list
+# all present as bare tokens, so the whole-suite form blocked — including
+# `vp run test > /tmp/out 2>&1; rc=$?`, the shape this repo's own skills
+# instruct. A hand-kept flag list cannot close that, because the next unlisted
+# flag re-opens it.
+#
+# The positive test is available because the argument this gate cares about has
+# exactly one meaning: `vp run test <path>` filters the suite, so its path is a
+# `tests/**` entry or a `*.test.ts` file. Requiring THAT rather than "not a
+# flag" makes every other token — a redirect target, a reporter name, an output
+# file, a comment word — a non-match by construction rather than by enumeration,
+# and the residual failure direction is a false NEGATIVE.
+#
+# `set -f` because the loop is unquoted: without it a token containing a glob is
+# expanded against the hook's cwd.
+  set -f
+  skip_next=0
+  for tok in $tail_text; do
+    if [ "$skip_next" = "1" ]; then
+      skip_next=0
+      continue
+    fi
+    case "$tok" in
+      # A bare redirection operator takes the NEXT token as its target; skip it
+      # so a target that happens to sit under `tests/` cannot arm the gate.
+      '>' | '>>' | '<' | '2>' | '&>' | '1>' | '2>>') skip_next=1 ;;
+      tests/* | ./tests/* | */tests/* | *.test.ts | *.test.tsx | *.test-d.ts)
+        found_path=1
+        break
+        ;;
+    esac
+  done
+  set +f
+
+  [ "$found_path" = "1" ] && break
 done
 
-[ "$has_path" = "1" ] || exit 0
+[ "$found_path" = "1" ] || exit 0
 
 cat >&2 <<'EOF'
 Blocked by vp-run-test-path-gate: `vp run test <path>` REPLAYS a cached

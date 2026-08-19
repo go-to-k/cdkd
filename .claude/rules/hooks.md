@@ -12,8 +12,8 @@ paths:
 vp run test:hooks     # or: bash .claude/hooks/run-tests.sh
 ```
 
-Most hooks in this file ship a `*.test.sh` smoke suite next to them (33 suites
-for 37 hooks as of issue #1993, counting `run-tests.sh` as the runner rather
+Most hooks in this file ship a `*.test.sh` smoke suite next to them (34 suites
+for 38 hooks as of issue #2050, counting `run-tests.sh` as the runner rather
 than a hook — `gh-label-validity-gate`, `gh-pr-edit-deprecation-gate`,
 `post-merge-sync-reminder`, and `stop-warn` have none), and the runner executes
 every suite that exists under **every bash on the machine** — `bash` from PATH (Homebrew 5.x on a dev Mac) and `/bin/bash`
@@ -224,7 +224,7 @@ Consequently the `cd <path> &&` special case disappears from the patterns — it
 
 The shared matcher has its own smoke test at `.claude/hooks/lib/command-match.test.sh` (47 cases — every command-position shape, every quoted-span false positive, and the heredoc cases above), so a regression in it is reported once and precisely instead of as a scatter of failures across thirteen hook tests.
 
-Sixteen hooks share the helper — the seven markgate gates plus `ci-green-gate`, `bughunt-clean-gate`, `pr-title-prefix-scope-gate` (2 sites), `integ-local-gate` (2 sites), `gh-body-english-gate`, the branch / push / main-tree-branch / post-merge-orphan-push hooks, and the two non-blocking ones (`restore-backup.sh`, `post-merge-sync-reminder.sh`). Two smoke-test cases that previously asserted the chained shape was an "accepted false-negative" (`branch-gate.test.sh`, `pr-review-gate.test.sh`) now assert it is CAUGHT.
+Seventeen hooks share the helper — the seven markgate gates plus `ci-green-gate`, `bughunt-clean-gate`, `pr-title-prefix-scope-gate` (2 sites), `integ-local-gate` (2 sites), `gh-body-english-gate`, the branch / push / main-tree-branch / post-merge-orphan-push hooks, and the two non-blocking ones (`restore-backup.sh`, `post-merge-sync-reminder.sh`). Two smoke-test cases that previously asserted the chained shape was an "accepted false-negative" (`branch-gate.test.sh`, `pr-review-gate.test.sh`) now assert it is CAUGHT.
 
 **Sourcing fails CLOSED.** Without the helper, `cmd_matches_verb` is undefined, the `if ! cmd_matches_verb ...` guard sees exit 127 (truthy for `!`), and the hook would `exit 0` — silently disabling every gate at once. Each blocking gate therefore refuses with exit 2 when the library is missing or unloadable; the two non-blocking hooks skip instead, since a missed backup or reminder is a smaller harm than refusing an operation they only observe. The path is derived with pure-bash `${BASH_SOURCE[0]%/*}` rather than `dirname`, so a hook never needs a PATH lookup to find its own library — with a `.` fallback for the no-slash case (`bash verify-pr-gate.sh` from inside the hooks dir), where `%/*` leaves the string unchanged. The liveness check covers all three exported functions, since a truncated library could define one and not the others.
 

@@ -59,6 +59,51 @@ run 0 'quoted in a gh body' 'gh issue create --body "do not use vp run test test
 run 0 'quoted in an echo' 'echo "vp run test tests/unit/foo.test.ts is cached"'
 run 0 'quoted in a commit message' 'git commit -m "docs: explain why vp run test tests/x.test.ts replays"'
 
+# --- PASS: the whole-suite form with SHELL PLUMBING attached ---
+# Every one of these blocked under the first cut's "a token that is not a flag
+# is a path" rule. The first is the exact command this repo's own skills
+# instruct for capturing the rc, so the hook was refusing its own documentation.
+run 0 'redirect to a file, then read rc' 'vp run test > /tmp/out 2>&1; rc=$?'
+run 0 'redirect merged into a pipe' 'vp run test 2>&1 | tail -40'
+run 0 'append redirect' 'vp run test >> /tmp/out'
+run 0 'backgrounded' 'vp run test &'
+run 0 'trailing comment' 'vp run test # runs the whole suite'
+run 0 'env prefix' 'CDKD_ONCE_LEAK_DETECT=1 vp run test'
+run 0 'value-taking flag not on any list' 'vp run test -t "some name"'
+run 0 'another unlisted value flag' 'vp run test --testNamePattern foo'
+run 0 'output file under a path' 'vp run test --outputFile /tmp/out.json'
+
+# --- PASS: a NEWLINE ends the argument list ---
+# A multi-line Bash call is the norm here; without newline truncation the next
+# line's command was read as this one's arguments.
+run 0 'bare run, next line is another command' 'vp run test
+vp run build'
+run 0 'bare run between two other lines' 'cd /repo
+vp run test
+echo done'
+
+# --- BLOCK: a real path still caught across those same shapes ---
+run 2 'path then redirect' 'vp run test tests/unit/foo.test.ts > /tmp/out 2>&1'
+run 2 'path on a line of its own' 'cd /repo
+vp run test tests/unit/foo.test.ts
+echo done'
+run 2 'multiple spaces between words' 'vp   run   test   tests/unit/foo.test.ts'
+run 2 'earlier occurrence, sibling task last' 'vp run test tests/unit/a.test.ts && vp run test:hooks'
+run 2 'nested tests dir' 'vp run test packages/x/tests/unit/foo.test.ts'
+run 2 'relative tests dir' 'vp run test ./tests/unit'
+
+# --- PASS: heredoc bodies are prose, not commands ---
+run 0 'command named inside a heredoc body' "vp run test && git commit -F - <<'EOF'
+note: vp run test tests/x.test.ts is cached
+EOF"
+
+# --- Known limit, asserted so it cannot widen silently ---
+# A fully quoted path is neutralised to a placeholder and is NOT recognised.
+# This is a false NEGATIVE (the pre-hook status quo), which is the safe
+# direction; the control below proves the unquoted twin IS caught.
+run 0 'KNOWN LIMIT: fully quoted path' 'vp run test "tests/unit/foo.test.ts"'
+run 2 'control for the limit above: unquoted' 'vp run test tests/unit/foo.test.ts'
+
 # --- PASS: nothing to inspect ---
 run 0 'empty command' ''
 
