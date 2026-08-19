@@ -209,11 +209,13 @@ gh issue view <n> --json body -q .body | grep -i 'Session-fit:'
   body naming `secret`, `credential`, `token`, `redact`, `leak`, `privilege`,
   `injection`. Path signal: the issue names any surface the security add-on reviewer
   covers — `src/utils/role-arn.ts`, `src/local/cognito-jwt.ts`,
+  `src/local/authorizer-resolver.ts`, `src/local/authorizer-cache.ts`,
   `src/local/docker-runner.ts`, `src/local/docker-image-builder.ts`,
   `src/local/ecr-puller.ts`, and `src/provisioning/providers/**` when the defect is
-  about what gets stored or exposed. (`CLAUDE.md`'s copy of that list still names
-  `src/local/lambda-authorizer.ts`, which moved to cdk-local in PR #691 — the
-  surviving files here are `authorizer-resolver.ts` / `authorizer-cache.ts`.)
+  about what gets stored or exposed. (Issue #1972 reconciled the four copies of
+  this list — `CLAUDE.md`, `pr-review-gate.sh`, `/review-pr`, `pr-security-reviewer`
+  — after `src/local/lambda-authorizer.ts` outlived its move to cdk-local in
+  PR #691. When you touch one copy, grep the other three.)
   When in doubt, treat it as security — the cost of ranking a normal bug first is
   one position in a queue.
   Two consequences that follow from rule 1 sitting above rule 2: a security issue

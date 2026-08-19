@@ -62,11 +62,11 @@ the integ proves it.
 ### 4. AuthZ / authn + process-launch / credential surfaces
 
 `src/utils/role-arn.ts`, `src/local/cognito-jwt.ts`,
-`src/local/lambda-authorizer.ts`, `src/local/docker-runner.ts`,
-`src/local/docker-image-builder.ts`, `src/local/ecr-puller.ts`,
-`src/provisioning/providers/**`: privilege boundaries, token validation, a
-cross-account role assumption that trusts unvalidated input, a credential passed
-where it need not be.
+`src/local/authorizer-resolver.ts`, `src/local/authorizer-cache.ts`,
+`src/local/docker-runner.ts`, `src/local/docker-image-builder.ts`,
+`src/local/ecr-puller.ts`, `src/provisioning/providers/**`: privilege
+boundaries, token validation, a cross-account role assumption that trusts
+unvalidated input, a credential passed where it need not be.
 
 ### 5. Injection
 

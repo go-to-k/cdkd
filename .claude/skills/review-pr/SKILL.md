@@ -56,11 +56,13 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
    - Any path matches **security / process-launch surface**:
      - `src/utils/role-arn.ts`
      - `src/local/cognito-jwt.ts`
-     - `src/local/lambda-authorizer.ts`
+     - `src/local/authorizer-resolver.ts`
+     - `src/local/authorizer-cache.ts`
      - `src/local/docker-runner.ts`
-     - `src/local-invoke/docker-runner.ts`
      - `src/local/docker-image-builder.ts`
      - `src/local/ecr-puller.ts`
+
+     Four of these (`cognito-jwt.ts`, `authorizer-resolver.ts`, `authorizer-cache.ts`, `docker-image-builder.ts`) are re-export shims whose implementation now lives in cdk-local. They stay listed on purpose: a shim edit changes WHICH implementation cdkd consumes, which is exactly the swap the up-bias exists to catch. What the list must NOT carry is a path that does not exist — a dead entry cannot fire, and its presence disguises the fact that the live surface went unlisted. Both known instances were found dead together (issue #1972): `src/local/lambda-authorizer.ts` stayed here after the logic moved to cdk-local in PR #691, and `src/local-invoke/docker-runner.ts` after the PR #228 rename to `src/local/`. Re-check existence when editing this list.
    - Any path under `src/provisioning/providers/**` (deletion-sensitive — within the `integ-destroy` markgate scope; real-AWS regressions cost cleanup time)
    - Branch has > 1 fix-back commit (heuristic for "multiple sub-agents wrote the diff" — count commits whose message starts with `fix:` / `fix(` via `git log main..<branch> --oneline | grep -cE '^[a-f0-9]+ fix(\(|:)'`)
 
