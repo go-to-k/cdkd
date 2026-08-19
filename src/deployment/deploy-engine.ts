@@ -2737,6 +2737,7 @@ export class DeployEngine {
     // to the NEW physical id, so by the time the event is built the survivor's
     // id is gone from state and only the free-text reason would still carry it.
     const physicalIdBeforeUpdate = stateResources[logicalId]?.physicalId;
+    const provisionedByBeforeUpdate = stateResources[logicalId]?.provisionedBy;
     try {
       await withResourceDeadline(
         async () => {
@@ -2817,8 +2818,11 @@ export class DeployEngine {
           operation: eventOp,
           logicalId,
           resourceType,
-          ...(stateResources[logicalId]?.provisionedBy
-            ? { provisionedBy: stateResources[logicalId]?.provisionedBy }
+          // The SURVIVOR's routing layer, snapshotted with its id below: the
+          // post-update record describes the NEW resource, so a replacement
+          // that re-routed would label the survivor with the wrong layer.
+          ...(provisionedByBeforeUpdate
+            ? { provisionedBy: provisionedByBeforeUpdate }
             : labelRouting && { provisionedBy: labelRouting }),
           // The SURVIVOR's id as a FIELD, not only inside `reason`: a `--json`
           // consumer should not have to parse prose, and this is the one datum

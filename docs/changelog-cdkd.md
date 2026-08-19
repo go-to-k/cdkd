@@ -705,7 +705,7 @@ Three more review findings hardened the failure paths. The create-side registrat
   stops being invisible** — `src/types/resource.ts`,
   `src/deployment/update-outcome.ts`, `src/deployment/deploy-engine.ts`,
   `src/cli/commands/{deploy,drift}.ts`, `src/deployment/rollback-executor.ts`,
-  the ACM + two IAM providers. **Gap (issue
+  the ACM, two IAM and API Gateway providers. **Gap (issue
   [#1819](https://github.com/go-to-k/cdkd/issues/1819)):** `delete` gained a skip
   channel in #1752; `update` had none, so an update that discovered it could not
   finish had two options — return normally (a lie) or throw (fail the resource).
@@ -740,11 +740,16 @@ Three more review findings hardened the failure paths. The create-side registrat
   sit on a dense import ring), a counter kept apart from both `updated` and
   `deleteSkipped`, a `partial (<reason>)` status line at warn level, a
   summary row shown only when non-zero, and the shared run-level `skipped`
-  counter `cdkd events` renders as `⚠N`. All three `update()` call sites
-  consume it, so no entry point silently drops what another reports.
-  `sns-subscription` is deliberately untouched — it is delete-then-create and
-  correctly ABORTS, because the alternative is a second live subscription
-  delivering every message twice. **Not included:** the exit-code half of #1922
+  counter `cdkd events` renders as `⚠N`. All FOUR `update()` call sites consume
+  it — the deploy engine, `drift --revert`, and BOTH rollback-executor arms
+  (`replayRollback` and the `--revert-failed` `replayFailedOperations`, the
+  latter found only in review) — so no entry point silently drops what another
+  reports. `sns-subscription` is NOT wired: it is delete-then-create and aborts
+  on a SKIPPED delete, but a THROWN one is still caught and it creates anyway,
+  leaving two live subscriptions delivering every message twice. That is a
+  behavior change (a currently-succeeding deploy would start failing) and is
+  filed as [#1967](https://github.com/go-to-k/cdkd/issues/1967) rather than
+  bundled here. **Not included:** the exit-code half of #1922
   step 3. Deploy does not exit non-zero for its own skipped-DELETE case either,
   so making a partial UPDATE do so would be arbitrary, and making both do so is
   a behavior change to every deploy that skips a delete — filed separately.

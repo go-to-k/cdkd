@@ -888,9 +888,13 @@ async function deployCommand(
         logger.info(
           `  Created: ${deployResult.created > 0 ? green(deployResult.created) : gray(deployResult.created)}`
         );
-        logger.info(
-          `  Updated: ${deployResult.updated > 0 ? yellow(deployResult.updated) : gray(deployResult.updated)}`
-        );
+        // Issue #1819: partials are INCLUDED here and broken out below, so the
+        // console and `RUN_FINISHED.counts.updated` report the same number. A
+        // partial IS an update that happened -- excluding it here while the
+        // events store counted it made the two disagree by exactly the partial
+        // count, with nothing on either side saying so.
+        const updatedTotal = deployResult.updated + deployResult.updatePartial;
+        logger.info(`  Updated: ${updatedTotal > 0 ? yellow(updatedTotal) : gray(updatedTotal)}`);
         logger.info(
           `  Deleted: ${deployResult.deleted > 0 ? red(deployResult.deleted) : gray(deployResult.deleted)}`
         );
@@ -905,8 +909,11 @@ async function deployCommand(
         // is looking at was updated fine — the number counts resources the
         // update was supposed to retire and did not.
         if (deployResult.updatePartial > 0) {
+          // Worded as a SUBSET of the line above ("of which"), because it is
+          // one: the same resources are counted in both, and a reader adding
+          // the two would otherwise double-count them.
           logger.info(
-            `  Updated with an orphaned predecessor: ${yellow(deployResult.updatePartial)}`
+            `    of which left an orphaned predecessor: ${yellow(deployResult.updatePartial)}`
           );
         }
         logger.info(`  Unchanged: ${gray(deployResult.unchanged)}`);

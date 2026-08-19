@@ -1548,10 +1548,15 @@ async function replaySingle(
           logger.warn(
             `  Rollback: ${op.logicalId} restored, ${updatePartialMessage(rollbackPartial)}`
           );
-          // Counted like every other warn-and-continue arm in this file: the
-          // rollback did not fail, but it did not fully address the resource
-          // either, and the summary is what tells the user to look.
-          result.warnings++;
+          // Deliberately NOT `result.warnings++`, matching this file's own
+          // precedent for the stateful reverse-replacement advisory: warnings
+          // map to `PartialFailureError` and exit 2, and the rollback op ITSELF
+          // succeeded -- the resource is back at its previous state. Reporting
+          // a fully-successful rollback as "skipped/unrecoverable" would be
+          // false, and inventing an exit-code rule here for "left something
+          // behind" is the decision issue #1960 exists to make across deploy
+          // and rollback together. The survivor is still announced on the warn
+          // line and, unlike a log line, durably on the event below.
         } else {
           logger.info(`  Rollback: ${op.logicalId} restored successfully`);
         }
@@ -1853,7 +1858,7 @@ export async function replayFailedOperations(
             logger.warn(
               `  Rollback: ${op.logicalId} reverted, ${updatePartialMessage(revertFailedPartial)}`
             );
-            result.warnings++;
+            // Not counted, for the same reason as the revert arm above.
           } else {
             logger.info(`  Rollback: ${op.logicalId} reverted successfully`);
           }

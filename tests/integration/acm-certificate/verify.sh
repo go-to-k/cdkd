@@ -157,7 +157,7 @@ set -e
 echo "${deploy_out}"
 
 # Assert against a COLOR-STRIPPED copy. cdkd colorizes the summary numbers, so
-# `Updated with an orphaned predecessor: 1` is really `...: <ESC>[33m1<ESC>[0m`
+# `of which left an orphaned predecessor: 1` is really `...: <ESC>[33m1<ESC>[0m`
 # on the wire and a literal grep for the row silently never matches -- which is
 # exactly how this arm reported a missing row that was printed correctly.
 deploy_txt=$(printf '%s' "${deploy_out}" | sed $'s/\033\[[0-9;]*m//g')
@@ -176,7 +176,7 @@ fi
 echo "PASS: status line reports the partial outcome"
 
 # The summary counts it apart from a clean update.
-if ! echo "${deploy_txt}" | grep -q "Updated with an orphaned predecessor: 1"; then
+if ! echo "${deploy_txt}" | grep -q "of which left an orphaned predecessor: 1"; then
   echo "FAIL: summary has no orphaned-predecessor row"
   echo "${deploy_txt}" | grep -iE "updated|skipped" || true
   exit 1

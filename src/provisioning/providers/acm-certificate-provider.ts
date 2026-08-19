@@ -27,6 +27,43 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * True for ACM's refusal to delete a certificate a consumer still references
+ * (issue [#1922](https://github.com/go-to-k/cdkd/issues/1922)).
+ *
+ * Matched by error NAME first, with a message fallback: the SDK raises
+ * `ResourceInUseException`, but a wrapped / re-thrown error can lose the class
+ * while keeping the text. Deliberately narrow — this only picks the
+ * remediation wording and the reason phrasing, and every other failure still
+ * reaches the same `'partial'` outcome, so a miss degrades to a less specific
+ * message rather than to the pre-#1922 silence.
+ */
+function isCertificateInUseError(error: unknown): boolean {
+  // Walk the CAUSE CHAIN, not just the top error. `delete()` wraps every
+  // non-not-found failure in a `ProvisioningError`, so by the time the
+  // replacement's catch sees it the SDK class is one level down and the top
+  // `name` is always `ProvisioningError`. Checking only the top is how the
+  // first version of this classifier could never fire on the real path -- and
+  // its unit test still passed, because that test's fixture message had been
+  // hand-authored to contain the phrase the regex looked for.
+  // Depth-BOUNDED, like both walks in `retryable-errors.ts`: a cyclic `.cause`
+  // chain would spin synchronously and never yield, so `withResourceDeadline`'s
+  // timer could not fire and the deploy would hang at 100% CPU rather than time
+  // out. Five levels is far more than any real wrap depth here (provider ->
+  // ProvisioningError is one).
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth++) {
+    if (current.name === 'ResourceInUseException') return true;
+    current = current.cause;
+  }
+  // Message fallback for a re-thrown error that kept the text but lost the
+  // class. `/in use/i`, NOT `/still in use/`: ACM's own wording is
+  // `Certificate arn:... is in use.` -- the stricter phrase matched nothing AWS
+  // actually sends.
+  const message = error instanceof Error ? error.message : String(error);
+  return /ResourceInUseException|in use/i.test(message);
+}
+
+/**
  * AWS ACM Certificate Provider
  *
  * Implements `AWS::CertificateManager::Certificate` using the ACM SDK.
@@ -53,36 +90,6 @@ import type {
  * ARN); `getAttribute('Arn')` / `getAttribute('CertificateArn')` also
  * return the ARN for any defensive call site.
  */
-/**
- * True for ACM's refusal to delete a certificate a consumer still references
- * (issue [#1922](https://github.com/go-to-k/cdkd/issues/1922)).
- *
- * Matched by error NAME first, with a message fallback: the SDK raises
- * `ResourceInUseException`, but a wrapped / re-thrown error can lose the class
- * while keeping the text. Deliberately narrow — this only picks the
- * remediation wording and the reason phrasing, and every other failure still
- * reaches the same `'partial'` outcome, so a miss degrades to a less specific
- * message rather than to the pre-#1922 silence.
- */
-function isCertificateInUseError(error: unknown): boolean {
-  // Walk the CAUSE CHAIN, not just the top error. `delete()` wraps every
-  // non-not-found failure in a `ProvisioningError`, so by the time the
-  // replacement's catch sees it the SDK class is one level down and the top
-  // `name` is always `ProvisioningError`. Checking only the top is how the
-  // first version of this classifier could never fire on the real path -- and
-  // its unit test still passed, because that test's fixture message had been
-  // hand-authored to contain the phrase the regex looked for.
-  for (let current: unknown = error; current instanceof Error; current = current.cause) {
-    if (current.name === 'ResourceInUseException') return true;
-  }
-  // Message fallback for a re-thrown error that kept the text but lost the
-  // class. `/in use/i`, NOT `/still in use/`: ACM's own wording is
-  // `Certificate arn:... is in use.` -- the stricter phrase matched nothing AWS
-  // actually sends.
-  const message = error instanceof Error ? error.message : String(error);
-  return /ResourceInUseException|in use/i.test(message);
-}
-
 export class ACMCertificateProvider implements ResourceProvider {
   private acmClient: ACMClient;
   private logger = getLogger().child('ACMCertificateProvider');

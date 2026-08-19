@@ -118,10 +118,16 @@ describe('rollback executor — a provider-reported partial update (#1819)', () 
     // stop popping over a rollback that actually happened.
     expect(result.failures).toBe(0);
     expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
-    // ...but the survivor is announced, counted, and DURABLE. A rollback runs
-    // during a failing deploy, so the log line is the least likely thing the
-    // user still has.
-    expect(result.warnings).toBe(1);
+    // ...and the survivor is announced and DURABLE. A rollback runs during a
+    // failing deploy, so the log line is the least likely thing the user keeps.
+    //
+    // Deliberately NOT counted in `result.warnings`: that maps to
+    // PartialFailureError and exit 2, and this rollback fully succeeded --
+    // calling it "skipped/unrecoverable" would be false. Matches the file's own
+    // precedent for the stateful reverse-replacement advisory. The exit-code
+    // rule for "left something behind" is issue #1960's to make, across deploy
+    // and rollback together.
+    expect(result.warnings).toBe(0);
     expect(warnings.join('\n')).toContain('partial (');
     expect(warnings.join('\n')).toContain(PARTIAL_REASON);
     expect(events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED')?.reason).toBe(
@@ -164,7 +170,8 @@ describe('rollback executor — a provider-reported partial update (#1819)', () 
     // --revert-failed` printed "reverted successfully" over a stranded
     // resource -- on the command a user reaches for when things already broke.
     expect(warnings.join('\n')).toContain('partial (');
-    expect(result.warnings).toBe(1);
+    // Same call as the revert arm above: reported, not counted.
+    expect(result.warnings).toBe(0);
     expect(events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED')?.reason).toBe(
       PARTIAL_REASON
     );
