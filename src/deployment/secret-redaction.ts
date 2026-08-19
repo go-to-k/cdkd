@@ -1208,8 +1208,11 @@ function dynamicReferenceTokens(value: string): string[] {
  * memo RETRACTED. Absence from the store is then real evidence of a public
  * parameter, and the resolved value is kept.
  *
- * WITHOUT one, nothing was resolved and nothing could have been recorded, so
- * absence means only that the question was never asked. The leaf is treated as
+ * WITHOUT one, absence means only that the question was never asked HERE. It
+ * does not mean nothing was resolved: the deploy path resolves every template
+ * property with `skipDynamicReferences`, which records or retracts the
+ * `SecureString` verdict even for an UNCHANGED resource -- that bag simply is
+ * not the one this call receives. The leaf is treated as
  * secret-bearing and refused. That is not merely the cautious branch, it is the
  * SAME premise the whole-token arm one level up already acts on: a PUBLIC
  * `String` / `StringList` reference is persisted RESOLVED (issue #1901), so a

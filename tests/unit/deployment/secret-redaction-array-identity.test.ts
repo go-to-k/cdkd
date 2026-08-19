@@ -901,6 +901,38 @@ describe('secret-redaction - readback refusal (issue #1926)', () => {
     expect(JSON.stringify(scrubbed)).not.toContain('decrypted-secret');
   });
 
+  it('EMPTY MAP: threads the map through the KEYED-ARRAY arm, not just the object one', () => {
+    // The object arm and the keyed-array arm each recurse with `secrets`, and
+    // only the object one was covered. That asymmetry is how the empty-map
+    // regression shipped one level up: a predicate reading a store some paths
+    // never populate, with no test on the path that does not.
+    //
+    // The integ cannot backstop this shape either — its fixture puts DB_URL in
+    // a Lambda `Environment.Variables` OBJECT, so the array arm is unexercised
+    // end to end. Verified against the shipped code before writing: the
+    // expression survives, so this pins working behaviour rather than
+    // describing a leak.
+    const mixed = `postgres://u:${SECURE_SSM}@host`;
+    const out = redactSecretsForState(
+      {
+        ContainerDefinitions: [
+          { Name: 'app', Environment: [{ Name: 'DB_URL', Value: 'postgres://u:decrypted-secret@host' }] },
+        ],
+      },
+      new Map<string, string>(),
+      { ContainerDefinitions: [{ Name: 'app', Environment: [{ Name: 'DB_URL', Value: mixed }] }] },
+      STATE_SOURCED_READBACK_RULES
+    ) as Record<string, unknown>;
+    const env = (
+      (out['ContainerDefinitions'] as Record<string, unknown>[])[0]!['Environment'] as Record<
+        string,
+        unknown
+      >[]
+    )[0]!;
+    expect(env['Value']).toBe(mixed);
+    expect(JSON.stringify(out)).not.toContain('decrypted-secret');
+  });
+
   it('POPULATED MAP: a PUBLIC ssm reference stays RESOLVED inside a mixed leaf (issue #1901)', () => {
     // The other side of the split. With a map, some pass DID resolve this bag,
     // so absence from the verdict store is real evidence the parameter is

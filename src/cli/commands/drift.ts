@@ -2861,9 +2861,12 @@ async function runRevert(
                   // this site has no equivalent of the `--accept` arm's
                   // post-write re-check above, so a leaf that a PUBLIC
                   // reference reached through `cdkd import`'s warn path is
-                  // corrected silently rather than warned about. The refusal
-                  // declines a mixed leaf whose token is an unrecorded plain
-                  // `ssm:` precisely to keep that case narrow.
+                  // corrected silently rather than warned about. That case is
+                  // NOT narrow here: the decline for an unrecorded plain `ssm:`
+                  // token only holds with a POPULATED map, and `secrets` at this
+                  // site stays empty for a resource carrying no secret
+                  // reference -- which is the common shape. With an empty map
+                  // the source expression silently wins (issue #2036).
                   redactSecretsForState(
                     delta,
                     secrets,
