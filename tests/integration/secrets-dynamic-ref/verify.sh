@@ -1121,22 +1121,37 @@ echo "    OK: post-rollback state carries no resolved plaintext (secret + Secure
 # (a redeploy asserting AWS-side removal resets) and Phase 3 (destroy) read
 # only `properties` and the live AWS state, so neither is affected.
 echo "==> Phase 1f: cdkd state refresh-observed redacts the readback (issue #1926)"
-# `set +e` around the command itself: ONE transient `readCurrentState` failure
-# raises PartialFailureError -> exit 2, which under `set -e` would fail the
-# whole fixture on an unrelated AWS blip. The assertions below are what decide
-# this phase, and they run against whatever state was saved — the command
-# persists the successful refreshes either way. A non-zero rc is reported so a
-# systematic failure is still visible rather than silently tolerated.
-set +e
+# STALENESS GUARD. The deploy ALREADY wrote a correctly-redacted
+# `observedProperties` for this Lambda, so every assertion below is satisfied by
+# the pre-existing bag — a `refresh-observed` that wrote nothing at all would
+# pass this phase. Stamp a sentinel into the persisted bag first, and require it
+# to be GONE afterwards: only an actual refresh can remove it.
+#
+# Written directly to S3 rather than through the CLI because no command edits
+# `observedProperties` in place — that is the point. Safe here: nothing else
+# holds the lock between phases, and the next `saveState` reads its own etag.
+echo "    stamping a staleness sentinel into the persisted observedProperties"
+RO_STAMP_BEFORE=$(mktemp)
+RO_STAMP_AFTER=$(mktemp)
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${RO_STAMP_BEFORE}" --quiet
+jq '(.resources | to_entries[] | select(.value.resourceType=="AWS::Lambda::Function")
+       | .value.observedProperties.Environment.Variables.SSM_VALUE) = "STALE-SENTINEL"' \
+  "${RO_STAMP_BEFORE}" > "${RO_STAMP_AFTER}"
+if ! grep -q 'STALE-SENTINEL' "${RO_STAMP_AFTER}"; then
+  echo "FAIL: could not stamp the sentinel — the Lambda has no persisted observedProperties.Environment.Variables to stamp" >&2
+  echo "      (the deploy-time capture is expected to have written one; without it this phase cannot prove freshness)" >&2
+  exit 1
+fi
+aws s3 cp "${RO_STAMP_AFTER}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+rm -f "${RO_STAMP_BEFORE}" "${RO_STAMP_AFTER}"
+
+# rc is now ASSERTED, not tolerated. With the sentinel in place a per-resource
+# readback failure on this Lambda would leave it behind and fail the assertions
+# anyway, so tolerating a non-zero rc would only make the failure report worse.
 node "${LOCAL_DIST}" state refresh-observed "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
-RO_RC=$?
-set -e
-if [ "${RO_RC}" -ne 0 ]; then
-  echo "    NOTE: refresh-observed exited ${RO_RC} (per-resource readback failure); asserting on the state it saved"
-fi
 
 RO_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json 2>/dev/null)
@@ -1160,6 +1175,15 @@ RO_SSM=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SSM_VALUE // empty')
 RO_PASSWORD_STAGED=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SECRET_PASSWORD_STAGED // empty')
 
 refresh_fail=0
+# The staleness guard's payoff: the sentinel is only gone if this command
+# actually re-read AWS and rewrote the bag.
+if printf '%s' "${RO_OBSERVED}" | grep -q 'STALE-SENTINEL'; then
+  echo "FAIL: refresh-observed did not rewrite observedProperties — the staleness sentinel survived" >&2
+  echo "      (every redaction assertion below would have passed on the deploy-time bag)" >&2
+  refresh_fail=1
+else
+  echo "    OK: the staleness sentinel is gone — this bag was written by refresh-observed"
+fi
 case "${RO_PASSWORD}" in
   '{{resolve:secretsmanager:'*) echo "    OK: observed SECRET_PASSWORD kept the expression: ${RO_PASSWORD}" ;;
   *) echo "FAIL: observed SECRET_PASSWORD is NOT the {{resolve:...}} expression: $(mask "${RO_PASSWORD}")" >&2; refresh_fail=1 ;;

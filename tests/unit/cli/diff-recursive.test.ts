@@ -640,8 +640,10 @@ describe('computeStackDiff / buildDiffTree canonicalizer wiring (#1591)', () => 
       'S',
       fakeBackend({}),
       new DiffCalculator(),
-      undefined,
-      canonicalize
+      {
+        parameters: undefined,
+        canonicalizeProperties: canonicalize,
+      }
     );
     expect(withFn.get('R')!.changeType).toBe('NO_CHANGE');
 
@@ -768,9 +770,7 @@ describe('computeStackDiff / buildDiffTree cfnFallback threading (#1697)', () =>
       'S',
       fbBackend({ S: resolvedState() }),
       new DiffCalculator(),
-      undefined,
-      undefined,
-      false
+      { cfnFallback: false }
     );
     expect(changes.get('P')!.changeType).toBe('UPDATE');
     expect(cfnMockSend).not.toHaveBeenCalled();
@@ -1022,7 +1022,7 @@ describe('computeStackDiff', () => {
         'S',
         fakeBackend({}),
         new DiffCalculator(),
-        { Req: 'given' }
+        { parameters: { Req: 'given' } }
       );
       expect(changes.get('A')!.changeType).toBe('NO_CHANGE');
     });
@@ -1745,7 +1745,7 @@ describe('buildDiffTree — down-passed nested-stack Parameters (spurious-change
       'S',
       fakeBackend({}),
       new DiffCalculator(),
-      { [PARAM]: 'my-topic' }
+      { parameters: { [PARAM]: 'my-topic' } }
     );
     expect(changes.get('A')!.changeType).toBe('NO_CHANGE');
   });
@@ -2256,6 +2256,55 @@ describe('Outputs-only change (issue #1921)', () => {
     expect(grandchild.stackName).toBe('P~Gone~Deeper');
     expect(grandchild.outputChanges[0]!.oldValueRedacted).toBe(true);
     expect(JSON.stringify(grandchild.outputChanges)).not.toContain('hunter2');
+  });
+
+  it('an INTERMEDIATE live template without a secret does not break the chain (issue #1948 review)', async () => {
+    // The per-level version of this was wrong: each `buildDiffTree` armed its
+    // own deleted children from its OWN template only. Root references a
+    // secret, the live middle child does not, and the deleted GRANDchild holds
+    // a pre-GHSA bag — so the level that mattered answered `false` and the
+    // stored plaintext printed. The flag now accumulates with OR down the walk.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-1948-'));
+    const midPath = join(dir, 'mid.template.json');
+    writeFileSync(
+      midPath,
+      // `Gone` is deliberately ABSENT here while state still carries it — that
+      // is what makes it a DELETED grandchild. No secret reference either.
+      JSON.stringify({
+        Resources: { MidRes: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'ordinary' } } },
+      })
+    );
+    const backend = fakeBackend({
+      P: st('P', { Mid: res(NESTED, {}) }),
+      'P~Mid': st('P~Mid', { Gone: res(NESTED, {}) }),
+      'P~Mid~Gone': stateWith({ DbPassword: 'hunter2' }),
+    });
+    const node = await buildDiffTree({
+      stackName: 'P',
+      displayName: 'P',
+      region: 'us-east-1',
+      // The ROOT carries the only secret reference in the tree.
+      template: {
+        Resources: {
+          Mid: { Type: NESTED, Properties: {} },
+          Fn: {
+            Type: 'AWS::Lambda::Function',
+            Properties: { Pw: '{{resolve:secretsmanager:prod/db:SecretString:pw}}' },
+          },
+        },
+      },
+      // The intermediate child's own template has NO secret reference.
+      nestedTemplates: { Mid: midPath },
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+
+    const deletedGrandchild = node.children[0]!.children[0]!;
+    expect(deletedGrandchild.stackName).toBe('P~Mid~Gone');
+    expect(deletedGrandchild.outputChanges[0]!.oldValueRedacted).toBe(true);
+    expect(JSON.stringify(deletedGrandchild.outputChanges)).not.toContain('hunter2');
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it('does NOT warn when the suppressed delta is only the pending output itself', async () => {

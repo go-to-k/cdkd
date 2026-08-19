@@ -204,32 +204,41 @@ export async function computeStackDiff(
   stackName: string,
   stateBackend: S3StateBackend,
   diffCalculator: DiffCalculator,
-  parameters?: Record<string, unknown>,
   /**
-   * Same per-type normalization the deploy engine applies (issue #1591).
-   * Without it `cdkd diff` forecasts a change `cdkd deploy` will never make —
-   * the preview and the apply must narrow identically.
+   * The optional knobs, as ONE object rather than four trailing positionals
+   * (issue #1926 review): the fourth arrival pushed this to ten parameters and
+   * made `buildDeletedSubtree` pad with three `undefined`s to reach the one it
+   * needed, which is exactly the call shape a wrong-slot bug hides in.
    */
-  canonicalizeProperties?: CanonicalizePropertiesFn,
-  /**
-   * `--no-cfn-fallback` (issue #1697): false disables the resolver's
-   * CloudFormation fallback for cross-stack references, mirroring the
-   * deploy engine's option so preview and apply resolve identically.
-   */
-  cfnFallback?: boolean,
-  /**
-   * Force the issue #1948 "stored key the template cannot account for"
-   * withholding ON, regardless of what THIS template proves.
-   *
-   * Exactly one caller needs it and the reason is structural: a DELETED nested
-   * child is diffed against an EMPTY template, so `templateHasSecretReference`
-   * is false, `declaredKeys` and `desired` are empty, and NONE of the three
-   * withholding arms can fire — a pre-GHSA child's whole stored bag would
-   * render with values. The PARENT's template is the evidence available, and
-   * `buildDeletedSubtree` passes it down.
-   */
-  inheritSecretBearingTemplate?: boolean
+  options: {
+    parameters?: Record<string, unknown>;
+    /**
+     * Same per-type normalization the deploy engine applies (issue #1591).
+     * Without it `cdkd diff` forecasts a change `cdkd deploy` will never make —
+     * the preview and the apply must narrow identically.
+     */
+    canonicalizeProperties?: CanonicalizePropertiesFn;
+    /**
+     * `--no-cfn-fallback` (issue #1697): false disables the resolver's
+     * CloudFormation fallback for cross-stack references, mirroring the
+     * deploy engine's option so preview and apply resolve identically.
+     */
+    cfnFallback?: boolean;
+    /**
+     * Force the issue #1948 "stored key the template cannot account for"
+     * withholding ON, regardless of what THIS template proves.
+     *
+     * Exactly one caller needs it and the reason is structural: a DELETED nested
+     * child is diffed against an EMPTY template, so `templateHasSecretReference`
+     * is false, `declaredKeys` and `desired` are empty, and NONE of the three
+     * withholding arms can fire — a pre-GHSA child's whole stored bag would
+     * render with values. The PARENT's template is the evidence available, and
+     * `buildDeletedSubtree` passes it down.
+     */
+    inheritSecretBearingTemplate?: boolean;
+  } = {}
 ): Promise<StackDiffResult> {
+  const { parameters, canonicalizeProperties, cfnFallback, inheritSecretBearingTemplate } = options;
   const intrinsicResolver = new IntrinsicFunctionResolver(region, {
     cfnFallback: cfnFallback ?? true,
   });
@@ -535,6 +544,19 @@ export async function buildDiffTree(args: {
    * the deploy engine's option. Default (undefined) = fallback enabled.
    */
   cfnFallback?: boolean;
+  /**
+   * Does any template ABOVE this node in the tree carry a secret-bearing
+   * dynamic reference (issue #1948 review)?
+   *
+   * Threaded rather than recomputed per level, because a DELETED child takes
+   * its evidence from the nearest LIVE template and "nearest" is not the same
+   * as "immediate parent": with a root that references a secret, an
+   * intermediate child whose own template does not, and a deleted GRANDchild
+   * holding a pre-GHSA bag, a per-level answer is `false` at the level that
+   * matters and the stored plaintext prints. The flag accumulates with OR down
+   * the walk so no intermediate level can break the chain.
+   */
+  parentHasSecretReference?: boolean;
 }): Promise<DiffTreeNode> {
   const {
     stackName,
@@ -545,6 +567,7 @@ export async function buildDiffTree(args: {
     recursive,
     stateBackend,
     diffCalculator,
+    parentHasSecretReference,
     parameters,
     canonicalizeProperties,
     assetRedirect,
@@ -552,6 +575,9 @@ export async function buildDiffTree(args: {
   } = args;
 
   const state = await loadStateOrEmpty(stackName, region, stateBackend);
+  // Accumulated, not replaced: see `parentHasSecretReference`'s doc.
+  const secretBearingAbove =
+    parentHasSecretReference === true || templateHasSecretDynamicReference(template);
   const { changes, outputChanges } = await computeStackDiff(
     state,
     template,
@@ -559,9 +585,14 @@ export async function buildDiffTree(args: {
     stackName,
     stateBackend,
     diffCalculator,
-    parameters,
-    canonicalizeProperties,
-    cfnFallback
+    {
+      ...(parameters && { parameters }),
+      ...(canonicalizeProperties && { canonicalizeProperties }),
+      ...(cfnFallback !== undefined && { cfnFallback }),
+      // A live template of its own, so this node decides for itself; the
+      // inherited flag only matters for the DELETED children below.
+      inheritSecretBearingTemplate: false,
+    }
   );
   const ccApiRoutes = collectCcApiRoutes(template, state);
   const node: DiffTreeNode = {
@@ -623,6 +654,7 @@ export async function buildDiffTree(args: {
         ...(canonicalizeProperties && { canonicalizeProperties }),
         ...(assetRedirect && { assetRedirect }),
         ...(cfnFallback !== undefined && { cfnFallback }),
+        parentHasSecretReference: secretBearingAbove,
       })
     );
   }
@@ -637,10 +669,12 @@ export async function buildDiffTree(args: {
         region,
         stateBackend,
         diffCalculator,
-        // THIS node's template is the evidence the deleted child cannot supply
-        // for itself (issue #1948 review): the child diffs against an empty
-        // template, so without this its whole stored bag renders with values.
-        templateHasSecretDynamicReference(template)
+        // The nearest LIVE template is the evidence the deleted child cannot
+        // supply for itself (issue #1948 review): the child diffs against an
+        // empty template, so without this its whole stored bag renders with
+        // values. Accumulated from above, so an intermediate template that
+        // happens to carry no reference cannot break the chain.
+        secretBearingAbove
       )
     );
   }
@@ -669,10 +703,7 @@ async function buildDeletedSubtree(
     stackName,
     stateBackend,
     diffCalculator,
-    undefined,
-    undefined,
-    undefined,
-    parentHasSecretReference
+    { inheritSecretBearingTemplate: parentHasSecretReference }
   );
   const node: DiffTreeNode = {
     stackName,
