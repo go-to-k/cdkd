@@ -1519,7 +1519,32 @@ delete-repository` / marker-delete sequence. It:
    leaves the region consistently opted in (deploys hard-error with a
    re-bootstrap hint rather than silently falling back to legacy mode).
 2. Reads the asset bucket / repo **names from the marker**, never from the
-   naming convention — compatible with custom asset-storage names.
+   naming convention — compatible with custom asset-storage names. A region
+   named by `--region` OR by `AWS_REGION` is lower-cased before it reaches any
+   AWS client or the marker key, and both spellings of the key are probed, as
+   in `cdkd gc` (issue
+   [#1995](https://github.com/go-to-k/cdkd/issues/1995)) — with a sharper
+   consequence here: an unmatched marker made this command report "nothing to
+   delete" and exit 0 while the bucket and repo stayed alive. The marker
+   deleted in step 1 is the key the marker was actually READ from, so the
+   teardown cannot delete the wrong one. A region bootstrapped under MORE than
+   one spelling of its name has more than one marker, and the teardown deletes
+   exactly one of them: each survivor is reported with a warning naming its own
+   key and the `--region` spelling that reaches it (only that spelling does —
+   the canonical key is gone by then). Their asset storage is left standing on
+   purpose, since two markers can name two different sets of custom names and
+   the marker is the only record of them. The same listing runs when NO marker
+   is found under either probed spelling, so a region whose only marker carries
+   a third spelling is reported rather than dismissed with "nothing to delete";
+   in that case the "re-run `cdkd bootstrap`" hint is withheld, because
+   re-bootstrapping would write a second marker with DEFAULT names and the next
+   teardown would destroy that storage while the existing marker's survives.
+   The listing needs `s3:ListBucket` on the state bucket, which a plain
+   `--destroy` did not previously require: without it the teardown still
+   proceeds and warns that the check could not be made, while
+   `--include-state-bucket` refuses outright
+   (`STATE_BUCKET_MARKER_SCAN_FAILED`), since there the listing is the only
+   thing preventing sibling markers from being deleted with the bucket.
 3. Refuses while any deployed stack's state still references the region's
    asset bucket / repo (running Lambdas keep working after deletion, but a
    future re-deploy / rollback of those stacks would break). The scan
@@ -1540,7 +1565,15 @@ the deletion is refused while ANY stack state exists — under any
 first; there is no `--force` override) or while any OTHER region still has
 a bootstrap marker in the bucket (tear those regions down first — deleting
 their markers with the bucket would silently flip them back to legacy
-mode).
+mode). "Other" is decided case-insensitively, so a region whose marker was
+written under a different spelling of its own name is not mistaken for a
+second region — but the refusal NAMES each one by the spelling its marker
+key actually uses, because that is the spelling
+`cdkd bootstrap --destroy --region <r>` needs in order to find it (issue
+[#1995](https://github.com/go-to-k/cdkd/issues/1995)). The same refusal covers
+a marker for THIS region under another spelling: the teardown deletes one
+marker key, so deleting the state bucket while a sibling is still in it would
+remove that record while the asset storage it names survives, nameless.
 
 A region with no bootstrap marker is a no-op (nothing to delete); note the
 auto-create-on-first-deploy behavior above will re-create the storage on
@@ -1559,10 +1592,15 @@ it by design. cdkd can gc it *precisely* because its state files record
 exactly which assets are in use.
 
 **Scope**: one region per invocation (`--region`, same resolution as
-`bootstrap`: flag → `AWS_REGION` → `us-east-1`). The asset bucket / repo
-names are read from the region's bootstrap marker, never recomputed from
-the naming convention (custom-name compatible). A region with no marker is
-a friendly no-op. **CDK bootstrap storage (`cdk-hnb659fds-*`) is never
+`bootstrap`: flag → `AWS_REGION` → `us-east-1`). The resolved region is
+lower-cased before it reaches any AWS client or the marker key, and the marker
+is looked up under the canonical spelling first and the spelling you passed
+second, so `--region US-EAST-1` finds the marker either way (issue
+[#1995](https://github.com/go-to-k/cdkd/issues/1995)); the second probe exists
+because `cdkd bootstrap` still keys the marker off its region verbatim. The
+asset bucket / repo names are read from the region's bootstrap marker, never
+recomputed from the naming convention (custom-name compatible). A region with
+no marker is a friendly no-op. **CDK bootstrap storage (`cdk-hnb659fds-*`) is never
 touched** — that stays `cdk gc`'s job.
 
 **Reference collection**: every state file in the state bucket is scanned
@@ -1593,6 +1631,18 @@ for EXACT equality against ECR's always-lower-case `imageDigest`, so an
 upper-cased reference would be collected yet unmatchable and the live image
 would still be deleted. The `:tag` is deliberately kept verbatim, because ECR
 tags ARE case-sensitive.
+
+The three S3 shapes are matched case-insensitively across the HOST too, for the
+same DNS reason (issue
+[#1847](https://github.com/go-to-k/cdkd/issues/1847)): the `s3://` / `https`
+scheme, the `s3` label, the region and the `<urlSuffix>` all fold. The BUCKET
+name folds only where it is a DNS label — the virtual-hosted
+`https://<bucket>.s3.<region>.<urlSuffix>/<key>` shape, where an upper-cased
+spelling reaches the same live object. It stays EXACT in path style (a PATH
+segment) and in an `s3://` URI (the AUTHORITY), which S3 compares byte for byte
+and where a case-variant therefore names a different bucket. The object KEY is
+kept verbatim in every shape, since S3 keys ARE case-sensitive — the same
+collected-yet-unmatchable trap the ECR digest note above describes, in reverse.
 
 **Guards** (this command deletes data — every ambiguity is biased toward
 NOT deleting):

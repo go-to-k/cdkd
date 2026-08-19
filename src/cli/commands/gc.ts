@@ -16,7 +16,7 @@ import {
   type BootstrapMarker,
 } from '../../assets/asset-storage.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
-import { PARTITION_TABLE } from '../../utils/aws-partition.js';
+import { PARTITION_TABLE, canonicalizeRegion } from '../../utils/aws-partition.js';
 import { ecrRegistryHostPattern } from '../../utils/ecr-uri.js';
 import { escapeRegExp } from '../../utils/regexp.js';
 import {
@@ -200,6 +200,50 @@ const AWS_URL_SUFFIXES = [
 ];
 
 /**
+ * Spell an ASCII literal so it matches case-INSENSITIVELY inside a
+ * case-SENSITIVE `RegExp`: `s3` → `[sS]3`, `amazonaws.com` →
+ * `[aA][mM][aA][zZ][oO][nN][aA][wW][sS]\.[cC][oO][mM]`. EVERY character goes
+ * through {@link escapeRegExp} first and the ASCII letters are folded after,
+ * so the result is exactly as strict as an escaped literal outside the letters
+ * it folds.
+ *
+ * This exists because gc must fold only PART of a pattern (issue #1847). Host
+ * names are case-insensitive, so
+ * `https://<assetBucket>.s3.<region>.AMAZONAWS.COM/<key>` in a state file names
+ * the same object as the lower-cased spelling — and a reference gc misses reads
+ * as UNREFERENCED, so the live object is DELETED. The obvious fix, the `i` flag
+ * the ECR matcher carries, is per-REGEX and therefore all-or-nothing: it cannot
+ * fold the host while leaving a KEY or a path-segment bucket exact, and those
+ * segments are genuinely case-sensitive at S3. Which segment gets folded is
+ * decided per shape at the matchers themselves — see the block above
+ * `s3UriRe` for the authority / path-segment / DNS-label split.
+ *
+ * Two further properties are load-bearing:
+ *
+ * - Folding by character class rather than by flag leaves
+ *   {@link URL_SUFFIX_ALTERNATION} — SHARED with the ECR matcher — spelled
+ *   exactly as that matcher's own review settled it, so the S3 side cannot
+ *   quietly redefine the constant the ECR side reads (issues #1792 / #1793).
+ * - A two-character class is not `/k/i`. Under a `u` flag the `i` flag
+ *   canonicalizes U+212A KELVIN SIGN onto ASCII `k` — the hazard
+ *   `src/utils/ecr-uri.ts` guards its region / suffix checks against —
+ *   whereas `[kK]` matches those two code points and nothing else, with or
+ *   without `u`. (Measured, and pinned by `tests/unit/cli/gc.test.ts`:
+ *   `/k/iu` matches U+212A, `/[kK]/u` does not.) The matchers below carry no
+ *   `u` flag today, so this is about what adding one later could silently
+ *   widen: with classes, nothing.
+ */
+function caseFoldLiteral(literal: string): string {
+  // Escape FIRST, then fold: {@link escapeRegExp} only ever inserts backslashes,
+  // and a backslash is not `[A-Za-z]`, so the letters of the escaped string are
+  // exactly the letters of the input and the two passes cannot interfere.
+  return escapeRegExp(literal).replace(
+    /[A-Za-z]/g,
+    (ch) => `[${ch.toLowerCase()}${ch.toUpperCase()}]`
+  );
+}
+
+/**
  * `(?:amazonaws\.com\.cn|amazonaws\.com|...)` — {@link AWS_URL_SUFFIXES} as a
  * non-capturing alternation, LONGEST FIRST so `amazonaws.com.cn` is tried
  * before its own `amazonaws.com` prefix instead of relying on backtracking.
@@ -209,11 +253,55 @@ const AWS_URL_SUFFIXES = [
  * the ECR digest), and this alternation sits BEFORE those groups in all three
  * patterns. Making it capturing would shift every index by one and silently
  * collect the suffix as if it were a key.
+ *
+ * `spellSuffix` decides how each suffix is written out, so the SET, the
+ * longest-first order and the non-capturing property keep exactly one
+ * definition while the two consumers differ in case handling — see
+ * {@link URL_SUFFIX_ALTERNATION_CASE_FOLDED}.
  */
-const URL_SUFFIX_ALTERNATION = `(?:${[...AWS_URL_SUFFIXES]
-  .sort((a, b) => b.length - a.length)
-  .map(escapeRegExp)
-  .join('|')})`;
+function buildUrlSuffixAlternation(spellSuffix: (suffix: string) => string): string {
+  return `(?:${[...AWS_URL_SUFFIXES]
+    .sort((a, b) => b.length - a.length)
+    .map(spellSuffix)
+    .join('|')})`;
+}
+
+/**
+ * The case-SENSITIVE spelling, consumed by {@link ECR_REGISTRY_HOST}.
+ *
+ * Folding THIS constant would be inert for its only consumer — the ECR matcher
+ * carries the `i` flag, so it already matches an upper-cased suffix either way.
+ * The constraint is the other direction: this is the spelling the ECR side's
+ * own review settled on (issues #1792 / #1793), and the S3 matchers must widen
+ * through their own {@link URL_SUFFIX_ALTERNATION_CASE_FOLDED} copy rather than
+ * by editing the shared one, so an S3-side change can never reach the ECR
+ * grammar.
+ */
+const URL_SUFFIX_ALTERNATION = buildUrlSuffixAlternation(escapeRegExp);
+
+/**
+ * The case-FOLDED spelling, consumed by the three S3 matchers (issue #1847).
+ * Same suffix set, same order, letters folded per {@link caseFoldLiteral} — so
+ * an upper-cased or mixed-case host suffix collects the key. Still a CLOSED
+ * set: folding widens the SPELLING of each suffix, never which suffixes count.
+ */
+const URL_SUFFIX_ALTERNATION_CASE_FOLDED = buildUrlSuffixAlternation(caseFoldLiteral);
+
+/**
+ * `[sS]3`, case-folded (issue #1847). One constant for BOTH places the literal
+ * `s3` appears: the `s3://` URI SCHEME and the `s3` HOST LABEL of the two HTTPS
+ * shapes. The two roles differ but the spelling and the fold argument are the
+ * same, and a single constant is what stops the three matchers drifting into
+ * two different spellings of it.
+ */
+const S3_SEGMENT_CASE_FOLDED = caseFoldLiteral('s3');
+
+/**
+ * `[hH][tT][tT][pP][sS]` — the URI scheme, case-folded (issue #1847). A scheme
+ * is case-insensitive by RFC 3986 §3.1, and folding a fixed literal that is
+ * neither the bucket name nor the key can only ever over-PROTECT.
+ */
+const HTTPS_SCHEME_CASE_FOLDED = caseFoldLiteral('https');
 
 /**
  * The HOST half of an ECR registry, built from the ONE authoritative FORM TABLE
@@ -311,22 +399,93 @@ function tryDecodeBase64Text(value: string): string | null {
  *   account's or region's URI can only over-protect (keep more), never
  *   delete more.
  *
- * `<urlSuffix>` in the two S3 shapes is {@link URL_SUFFIX_ALTERNATION}, i.e.
- * EVERY partition's suffix at once — see that constant for why a per-region
- * derived literal is the wrong shape here (issue #1781).
+ * `<urlSuffix>` in the two S3 shapes is
+ * {@link URL_SUFFIX_ALTERNATION_CASE_FOLDED}, i.e. EVERY partition's suffix at
+ * once — see {@link AWS_URL_SUFFIXES} for why a per-region derived literal is
+ * the wrong shape here (issue #1781). Every S3 HOST segment is matched
+ * case-insensitively, including the bucket label of the virtual-hosted shape,
+ * while the KEY and the bucket in the other two shapes stay EXACT (issue
+ * #1847); the per-shape reasoning is in the block above `s3UriRe`.
  */
 function buildReferenceExtractors(marker: BootstrapMarker): {
   extractFromString: (value: string, refs: AssetReferences) => void;
 } {
-  const bucket = escapeRegExp(marker.assetBucket);
+  // The bucket name in TWO spellings, because the right answer differs per URL
+  // shape — see the segment notes below.
+  const bucketExact = escapeRegExp(marker.assetBucket);
+  const bucketFolded = caseFoldLiteral(marker.assetBucket);
   const repo = escapeRegExp(marker.containerRepo);
-  const s3UriRe = new RegExp(`s3://${bucket}/(${KEY_TERMINATORS}+)`, 'g');
+  // These three stay case-SENSITIVE regexes whose segments are spelled folded
+  // where folding is CORRECT, rather than becoming `i`-flagged ones (issue
+  // #1847). The flag is per-regex and so all-or-nothing: it cannot fold a host
+  // while leaving a key or a path-segment bucket exact.
+  //
+  // FOLDED in every shape, none of these being a case-sensitive identifier:
+  //
+  // - The SCHEME (`s3` / `https`) — case-insensitive by RFC 3986 3.1.
+  // - The `s3` HOST LABEL.
+  // - The SUFFIX (`URL_SUFFIX_ALTERNATION_CASE_FOLDED`) — still a CLOSED set,
+  //   so a look-alike host (`...s3.<region>.example.com`) is no more a match
+  //   than before; only each suffix's SPELLING widened.
+  // - The REGION segment needed nothing: `[^/\s]*` already accepts any case
+  //   (and the `s3.dualstack.<region>` / no-region variants with it).
+  //
+  // NOT FOLDED in any shape: the KEY capture. S3 object keys ARE
+  // case-sensitive, so a folded key would be collected in a spelling that can
+  // never equal the `ListObjectsV2` key — collected yet INERT, i.e. the live
+  // object is still deleted (the mirror of the ECR digest trap below).
+  //
+  // The BUCKET NAME is the one segment whose answer DIFFERS per shape, because
+  // the same name plays a different ROLE in each URL. Reading it as "the bucket
+  // is an identifier, so keep it exact everywhere" is wrong on the third shape,
+  // and wrong in the deleting direction:
+  //
+  // - `s3://<bucket>/<key>` — the bucket is the URI AUTHORITY of an SDK/CLI
+  //   style URI that is never resolved through DNS; the SDK sends the name as
+  //   given. `S3://MYBUCKET/<key>` therefore addresses a DIFFERENT bucket than
+  //   the marker's. Note the reason is the MARKER, not S3's naming rules:
+  //   legacy pre-2018 `us-east-1` buckets could carry upper case, so
+  //   "S3 forbids it" would be false — but the name gc compares against comes
+  //   from the bootstrap marker, and `validateAssetBucketName` holds that to
+  //   lower case, so an upper-cased spelling in a byte-compared position is
+  //   never this bucket. Matched EXACTLY.
+  // - path-style `https://s3.<region>.<suffix>/<bucket>/<key>` — the bucket is
+  //   a PATH segment, and S3 compares those byte for byte. Same conclusion, so
+  //   also matched EXACTLY.
+  // - virtual-hosted `https://<bucket>.s3.<region>.<suffix>/<key>` — the bucket
+  //   is the leftmost label of the HOST, and host names are case-insensitive,
+  //   so `https://MYBUCKET.s3.<region>.<suffix>/<key>` reaches the SAME live
+  //   object as the lower-cased spelling. Missing it is exactly the
+  //   irreversible delete issue #1847 exists to close, so this one is FOLDED.
+  //
+  // Folding the label here does NOT reintroduce the {@link AWS_URL_SUFFIXES}
+  // doc's "pin an object forever" hazard. That warning is about a WILDCARD
+  // suffix, which would make any look-alike host count as a reference. A match
+  // here still requires the whole anchored shape
+  // `https://<name>.s3<...>.<one of the closed suffix set>/<key>` — and a
+  // string of that shape IS a reference to the object, so protecting it is
+  // correct rather than spurious.
+  //
+  // The folded label also cannot silently protect the WRONG bucket's keys.
+  // Again the reason is the marker rather than a claim about every S3 bucket
+  // that has ever existed: the label is matched against the marker's name,
+  // which is lower case by construction, so the only spellings it accepts are
+  // case-variants of that one name — and a virtual-hosted host resolves
+  // case-insensitively, so each of them addresses this same bucket. (A legacy
+  // upper-case bucket name could not be reached this way at all: AWS does not
+  // serve virtual-hosted-style requests for names that are not DNS-compliant.)
+  const s3UriRe = new RegExp(
+    `${S3_SEGMENT_CASE_FOLDED}://${bucketExact}/(${KEY_TERMINATORS}+)`,
+    'g'
+  );
   const virtualHostedRe = new RegExp(
-    `https://${bucket}\\.s3[^/\\s]*\\.${URL_SUFFIX_ALTERNATION}/(${KEY_TERMINATORS}+)`,
+    `${HTTPS_SCHEME_CASE_FOLDED}://${bucketFolded}\\.${S3_SEGMENT_CASE_FOLDED}[^/\\s]*\\.` +
+      `${URL_SUFFIX_ALTERNATION_CASE_FOLDED}/(${KEY_TERMINATORS}+)`,
     'g'
   );
   const pathStyleRe = new RegExp(
-    `https://s3[^/\\s]*\\.${URL_SUFFIX_ALTERNATION}/${bucket}/(${KEY_TERMINATORS}+)`,
+    `${HTTPS_SCHEME_CASE_FOLDED}://${S3_SEGMENT_CASE_FOLDED}[^/\\s]*\\.` +
+      `${URL_SUFFIX_ALTERNATION_CASE_FOLDED}/${bucketExact}/(${KEY_TERMINATORS}+)`,
     'g'
   );
   // The `i` flag is what makes the HOST match case-INSENSITIVELY (issue #1792).
@@ -778,9 +937,33 @@ export async function gcCommand(options: GcOptions): Promise<void> {
   logger.debug('Options:', options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
-  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+  await applyRoleArnIfSet({
+    roleArn: options.roleArn,
+    region: canonicalizeRegion(options.region),
+  });
 
-  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  // Issue #1995. `region` picks BOTH the AWS clients' endpoints and the
+  // bootstrap marker KEY, and the two want different treatment of case:
+  //
+  // - The CLIENTS need it CANONICAL. SDK endpoint resolution is case-sensitive
+  //   (measured in `derivePartitionAndUrlSuffix`'s note: `CN-NORTH-1` resolves
+  //   to the COMMERCIAL suffix), so an upper-cased `--region` builds clients
+  //   pointing at the wrong partition.
+  // - The marker KEY needs BOTH spellings probed. `cdkd bootstrap` derives its
+  //   own region verbatim (issue #1820), so `AWS_REGION=US-EAST-1 cdkd
+  //   bootstrap` really wrote `cdkd-bootstrap/US-EAST-1.json`. Folding the read
+  //   and stopping would MISS that marker where the pre-fold read HIT it, and
+  //   gc would report the region as not opted in. The probe below therefore
+  //   tries the canonical key first and the raw spelling second — the same
+  //   shape `loadBootstrapContainerRepo` uses (`src/cli/commands/
+  //   local-state-loader.ts`), and what makes this read independent of when
+  //   #1820 aligns the write side.
+  //
+  // The failure direction here is the SAFE one either way — a missed marker
+  // deletes nothing, it just reports "not opted in" for a region that has
+  // assets — which is why this is a usability fix rather than a data one.
+  const rawRegion = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const region = canonicalizeRegion(rawRegion);
 
   const awsClients = new AwsClients({
     region,
@@ -819,9 +1002,29 @@ export async function gcCommand(options: GcOptions): Promise<void> {
     //    is not opted in to cdkd asset storage; nothing to gc. CDK
     //    bootstrap storage is deliberately out of scope — `cdk gc` owns it.
     const markerKey = getBootstrapMarkerKey(region);
+    const rawMarkerKey = getBootstrapMarkerKey(rawRegion);
     let markerBody: string | null;
+    // Which key the body actually came from — `parseBootstrapMarker` names it
+    // in its error messages, so a malformed marker must point at the file that
+    // really was read.
+    let resolvedMarkerKey = markerKey;
     try {
       markerBody = await stateBackend.getRawObject(markerKey);
+      if (markerBody === null && rawMarkerKey !== markerKey) {
+        // Second probe: the un-folded spelling an upper-cased `cdkd bootstrap`
+        // may have written (see the `rawRegion` note above). Skipped entirely
+        // when the region was already canonical, so the common path still costs
+        // exactly one read.
+        markerBody = await stateBackend.getRawObject(rawMarkerKey);
+        if (markerBody !== null) {
+          resolvedMarkerKey = rawMarkerKey;
+          logger.debug(
+            `Bootstrap marker found at the un-folded key '${rawMarkerKey}' ` +
+              `(none at '${markerKey}') — an upper-cased region was used at ` +
+              `'cdkd bootstrap' time.`
+          );
+        }
+      }
     } catch (error) {
       if ((error as { name?: string }).name === 'NoSuchBucket') {
         logger.info(
@@ -832,15 +1035,23 @@ export async function gcCommand(options: GcOptions): Promise<void> {
       }
       throw error;
     }
+    // NOTE a marker that EXISTS at the canonical key but fails to parse still
+    // hard-errors below, and now masks a valid marker at the raw key (pre-#1995
+    // only the raw key was ever read for an upper-cased region). That is the
+    // safe direction and deliberately not smoothed over: gc deletes nothing on
+    // a throw, and silently falling through to another key after finding a
+    // CORRUPT one would hide the corruption while gc acted on second-choice
+    // names. The remedy is the one the parse error already prints.
     if (markerBody === null) {
+      const probed = rawMarkerKey === markerKey ? markerKey : `${markerKey}, ${rawMarkerKey}`;
       logger.info(
-        `No bootstrap marker for region '${region}' (${markerKey}) — the region is not ` +
+        `No bootstrap marker for region '${region}' (${probed}) — the region is not ` +
           `opted in to cdkd asset storage; nothing to garbage-collect. ` +
           `(CDK bootstrap storage is 'cdk gc' territory.)`
       );
       return;
     }
-    const marker = parseBootstrapMarker(markerBody, markerKey);
+    const marker = parseBootstrapMarker(markerBody, resolvedMarkerKey);
 
     // 2. Lock guard: ANY stack lock in the bucket aborts — a deploy in
     //    flight may have published assets whose state write has not landed

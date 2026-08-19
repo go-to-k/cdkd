@@ -17,13 +17,16 @@
 #            them are then referenced from the deployed stack's state through
 #            the WIDENED host forms of issues #1792 / #1793 (see Phase 3);
 #            the third is left unreferenced as gc's ECR deletion control.
-#   Phase 3: seed one unreferenced object into the custom bucket ->
-#            `cdkd gc --dry-run --older-than 0.0002h` lists ONLY the seeded
-#            garbage object + the ONE unreferenced image (never the
-#            deploy-referenced asset, never either widened-form-referenced
-#            image) and deletes nothing;
-#            `cdkd gc --yes --older-than 0.0002h` deletes those two while the
-#            referenced asset object and BOTH referenced images survive.
+#   Phase 3: seed unreferenced + case-referenced objects into the custom
+#            bucket ->
+#            `cdkd gc --dry-run --older-than 0.0002h` lists ONLY the two
+#            genuinely unreferenced objects + the ONE unreferenced image
+#            (never the deploy-referenced asset, never either widened-form-
+#            referenced image, never any of the five case-host-referenced
+#            objects) and deletes nothing;
+#            `cdkd gc --yes --older-than 0.0002h` deletes those three while
+#            the referenced asset object, BOTH referenced images and all five
+#            case-host-referenced objects survive.
 #
 #            The two widened references are what make the ECR arm
 #            DISCRIMINATING rather than a re-run of the plain path (issues
@@ -37,6 +40,29 @@
 #            `<acct>.dkr-ecr-fips.<region>.on.aws` form, which the grammar
 #            missed entirely. Both assertions are about what SURVIVES, since
 #            deletion is the irreversible direction.
+#
+#            The S3 arm is that arm's sibling (issue #1847), and the same two
+#            things make it discriminating. Six references name seeded objects
+#            that must SURVIVE: four vary the HOST (an UPPER-cased and a
+#            mixed-case spelling of each HTTPS shape), one uses the `S3://`
+#            scheme, and one spells the BUCKET itself upper-cased in the
+#            VIRTUAL-HOSTED shape, where the bucket is the leftmost DNS label
+#            and therefore names the same live object. None of these can be
+#            emitted by cdkd's own publisher.
+#
+#            Two further references spell the bucket upper-cased where it is
+#            NOT a DNS label — a path-style PATH segment and an `s3://` URI
+#            authority, both compared byte-for-byte by S3 — so they address a
+#            bucket that cannot exist and their objects must be DELETED. That
+#            pair is the property separating the shipped fix (fold the host,
+#            including the virtual-hosted bucket LABEL, but not a path segment
+#            or authority) from the blanket `i` flag, which would keep them
+#            alive and let any string embedding a case-variant of the bucket
+#            name pin its keys forever. Every seeded key is deliberately NOT
+#            `<sha256>.<ext>`-shaped, since gc's name-independent content-hash
+#            pass protects such keys regardless of host — the accidental
+#            rescue #1781 measured at 71 of 72 objects — and would make the
+#            whole arm pass without the matchers doing anything.
 #   Phase 4: `cdkd destroy` the stack (referenced asset object persists by
 #            design — content-addressed storage), then
 #            `cdkd bootstrap --destroy --yes` (names read from the marker,
@@ -112,6 +138,35 @@ if [ "${#ASSET_BUCKET}" -gt 63 ]; then
 fi
 
 GARBAGE_KEY="integ-gc-seeded-garbage.bin"
+
+# S3 host-case arm (issue #1847). The first group is referenced from state
+# through a spelling that DOES name the live object and must SURVIVE gc; the
+# second is referenced through a bucket-name case variant in a position where
+# it names nothing, and must be DELETED.
+#
+# The split is by the bucket's ROLE in each URL, not by "is it upper-cased":
+# in the virtual-hosted shape the bucket is the leftmost label of the HOST and
+# host names are case-insensitive, while in path style it is a PATH segment and
+# in an `s3://` URI it is the AUTHORITY sent verbatim by the SDK — and S3
+# compares both of those byte-for-byte, where an upper-cased bucket name cannot
+# even exist.
+#
+# None of these keys is `<sha256>.<ext>`-shaped on purpose: gc's
+# name-independent content-hash pass collects such tokens out of ANY string
+# regardless of host, so a content-hash-shaped key would be protected with the
+# host matchers completely broken and the whole arm would prove nothing.
+S3_CASE_SURVIVOR_KEYS=(
+  "gc-integ-s3-virtual-upper.bin"
+  "gc-integ-s3-virtual-mixed.bin"
+  "gc-integ-s3-path-upper.bin"
+  "gc-integ-s3-path-mixed.bin"
+  "gc-integ-s3-uri-upper.bin"
+  "gc-integ-s3-virtual-bucketcase.bin"
+)
+S3_BUCKETCASE_DELETED_KEYS=(
+  "gc-integ-s3-path-bucketcase.bin"
+  "gc-integ-s3-uri-bucketcase.bin"
+)
 
 # The plain registry endpoint — the only host `docker login` / `docker push`
 # ever use here. The WIDENED spellings below are references in state, not push
@@ -331,6 +386,39 @@ export GC_INTEG_DUALSTACK_FIPS_TAG_REF="${ACCOUNT_ID}.dkr-ecr-fips.${REGION}.on.
 echo "    widened refs: ${GC_INTEG_UPPER_DIGEST_REF}"
 echo "                  ${GC_INTEG_DUALSTACK_FIPS_TAG_REF}"
 
+# The S3 host-case references (issue #1847), exported for the same reason as
+# the ECR pair above: they enter the TEMPLATE, so cdkd's own deploy writes them
+# into `state.properties` and gc's reference scan reads them from exactly where
+# it would read a real one. Unlike the ECR digests these are knowable up front
+# (they name keys this fixture seeds itself), but they stay here so both
+# widened-reference blocks live together.
+#
+# The first four vary only the HOST around a verbatim bucket name.
+BUCKET_UPPER="$(printf '%s' "${ASSET_BUCKET}" | tr '[:lower:]' '[:upper:]')"
+export GC_INTEG_S3_VIRTUAL_UPPER_REF="https://${ASSET_BUCKET}.S3.${REGION_UPPER}.AMAZONAWS.COM/${S3_CASE_SURVIVOR_KEYS[0]}"
+export GC_INTEG_S3_VIRTUAL_MIXED_REF="https://${ASSET_BUCKET}.S3.${REGION}.AmAzOnAwS.CoM/${S3_CASE_SURVIVOR_KEYS[1]}"
+export GC_INTEG_S3_PATH_UPPER_REF="https://S3.${REGION_UPPER}.AMAZONAWS.COM/${ASSET_BUCKET}/${S3_CASE_SURVIVOR_KEYS[2]}"
+export GC_INTEG_S3_PATH_MIXED_REF="https://s3.${REGION}.AmAzOnAwS.CoM/${ASSET_BUCKET}/${S3_CASE_SURVIVOR_KEYS[3]}"
+export GC_INTEG_S3_URI_UPPER_REF="S3://${ASSET_BUCKET}/${S3_CASE_SURVIVOR_KEYS[4]}"
+# Bucket upper-cased where it IS a DNS label. Host names are case-insensitive,
+# so this URL reaches the same live object and its key must SURVIVE.
+export GC_INTEG_S3_VIRTUAL_BUCKETCASE_REF="https://${BUCKET_UPPER}.s3.${REGION}.amazonaws.com/${S3_CASE_SURVIVOR_KEYS[5]}"
+# The two NEGATIVE controls. Everything but the BUCKET NAME is spelled
+# canonically, and in these positions the name is compared byte-for-byte, so
+# the only thing that could protect these objects is a case-INSENSITIVE bucket
+# match where the bucket is not a host label — which the fix deliberately does
+# not do.
+export GC_INTEG_S3_PATH_BUCKETCASE_REF="https://s3.${REGION}.amazonaws.com/${BUCKET_UPPER}/${S3_BUCKETCASE_DELETED_KEYS[0]}"
+export GC_INTEG_S3_URI_BUCKETCASE_REF="s3://${BUCKET_UPPER}/${S3_BUCKETCASE_DELETED_KEYS[1]}"
+echo "    S3 case refs (must SURVIVE): ${GC_INTEG_S3_VIRTUAL_UPPER_REF}"
+echo "                                 ${GC_INTEG_S3_VIRTUAL_MIXED_REF}"
+echo "                                 ${GC_INTEG_S3_PATH_UPPER_REF}"
+echo "                                 ${GC_INTEG_S3_PATH_MIXED_REF}"
+echo "                                 ${GC_INTEG_S3_URI_UPPER_REF}"
+echo "                                 ${GC_INTEG_S3_VIRTUAL_BUCKETCASE_REF}"
+echo "    S3 bucket-case controls (must be DELETED): ${GC_INTEG_S3_PATH_BUCKETCASE_REF}"
+echo "                                               ${GC_INTEG_S3_URI_BUCKETCASE_REF}"
+
 # --- Phase 2: deploy — FILE asset must land in the CUSTOM bucket ------------
 echo "==> Phase 2: deploy (file asset publish -> custom bucket)"
 node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -370,14 +458,18 @@ echo "    OK: state Code points at s3://${ASSET_BUCKET}/${CODE_KEY} and the obje
 # about them. Without this, a broken env-var hand-off would leave the survival
 # assertions passing vacuously: an image nothing references at all also
 # "survives" whenever the age guard or the repo scan silently no-ops.
-for ref in "${GC_INTEG_UPPER_DIGEST_REF}" "${GC_INTEG_DUALSTACK_FIPS_TAG_REF}"; do
+for ref in "${GC_INTEG_UPPER_DIGEST_REF}" "${GC_INTEG_DUALSTACK_FIPS_TAG_REF}" \
+  "${GC_INTEG_S3_VIRTUAL_UPPER_REF}" "${GC_INTEG_S3_VIRTUAL_MIXED_REF}" \
+  "${GC_INTEG_S3_PATH_UPPER_REF}" "${GC_INTEG_S3_PATH_MIXED_REF}" \
+  "${GC_INTEG_S3_URI_UPPER_REF}" "${GC_INTEG_S3_VIRTUAL_BUCKETCASE_REF}" \
+  "${GC_INTEG_S3_PATH_BUCKETCASE_REF}" "${GC_INTEG_S3_URI_BUCKETCASE_REF}"; do
   if ! printf '%s' "${STATE}" | grep -qF "${ref}"; then
-    echo "FAIL: widened ECR reference is not in the deployed state: ${ref}" >&2
+    echo "FAIL: widened reference is not in the deployed state: ${ref}" >&2
     printf '%s' "${STATE}" | jq '.resources' >&2
     exit 1
   fi
 done
-echo "    OK: both widened-form ECR references are recorded in cdkd state"
+echo "    OK: both widened-form ECR references and all eight S3 case references are recorded in cdkd state"
 
 # Functional assertion: the deployed Lambda actually runs the uploaded asset.
 OUT_FILE="$(mktemp)"
@@ -401,6 +493,15 @@ echo "    OK: Lambda invoke returned the asset marker (uploaded ZIP is the runni
 echo "==> Phase 3: seed unreferenced object + cdkd gc"
 printf 'seeded unreferenced garbage for the cdkd gc integ\n' |
   aws s3 cp - "s3://${ASSET_BUCKET}/${GARBAGE_KEY}"
+# The S3 host-case objects (issue #1847). These are seeded HERE, alongside the
+# garbage object and BEFORE the sleep below, so every one of them is strictly
+# older than the age cutoff when gc lists the bucket — an object newer than the
+# cutoff is kept by the age guard alone, which would make every survival
+# assertion below pass without the matchers being consulted at all.
+for key in "${S3_CASE_SURVIVOR_KEYS[@]}" "${S3_BUCKETCASE_DELETED_KEYS[@]}"; do
+  printf 'seeded object for the cdkd gc S3 host-case arm (issue #1847)\n' |
+    aws s3 cp - "s3://${ASSET_BUCKET}/${key}"
+done
 # --older-than 0.0002h (~0.72s) age guard: sleep so the seeded object is
 # strictly older than the cutoff when gc lists the bucket. 5s (not 2s)
 # keeps the margin clock-skew-proof — gc compares local Date.now()
@@ -425,11 +526,29 @@ if echo "${DRY_OUT}" | grep -qF "${CODE_KEY}"; then
   echo "${DRY_OUT}" >&2
   exit 1
 fi
-if ! echo "${DRY_OUT}" | grep -qF "Total: 1 S3 object(s)"; then
-  echo "FAIL: gc --dry-run plan should contain exactly 1 S3 candidate (the seeded garbage). Output:" >&2
+if ! echo "${DRY_OUT}" | grep -qF "Total: 3 S3 object(s)"; then
+  echo "FAIL: gc --dry-run plan should contain exactly 3 S3 candidates (the seeded garbage + the two bucket-case controls). Output:" >&2
   echo "${DRY_OUT}" >&2
   exit 1
 fi
+# The S3 host-case arm, in the plan (issue #1847). The six objects named by a
+# spelling that really reaches them must not be candidates at all, and the two
+# named through a bucket-case variant in a byte-compared position MUST be — a
+# run that simply protected everything would satisfy the six survivals alone.
+for key in "${S3_CASE_SURVIVOR_KEYS[@]}"; do
+  if echo "${DRY_OUT}" | grep -qF "${key}"; then
+    echo "FAIL: gc --dry-run plan lists ${key}, which IS referenced by a spelling that names the live object (issue #1847) — it would delete it. Output:" >&2
+    echo "${DRY_OUT}" >&2
+    exit 1
+  fi
+done
+for key in "${S3_BUCKETCASE_DELETED_KEYS[@]}"; do
+  if ! echo "${DRY_OUT}" | grep -qF "${key}"; then
+    echo "FAIL: gc --dry-run plan does not list ${key}, whose only reference spells the BUCKET upper-cased where S3 compares it byte-for-byte — folding the bucket name there would pin any object forever (issue #1847). Output:" >&2
+    echo "${DRY_OUT}" >&2
+    exit 1
+  fi
+done
 # ONE ECR candidate: the unreferenced image. The two images referenced through
 # the WIDENED host forms must not be candidates at all.
 if ! echo "${DRY_OUT}" | grep -qF "1 ECR image(s)"; then
@@ -462,7 +581,7 @@ if ! aws s3api head-object --bucket "${ASSET_BUCKET}" --key "${GARBAGE_KEY}" >/d
   echo "FAIL: gc --dry-run DELETED the seeded object (dry run must not delete)" >&2
   exit 1
 fi
-echo "    OK: dry-run plan lists ONLY the unreferenced pair (1 S3 object, 1 ECR image) and deleted nothing"
+echo "    OK: dry-run plan lists ONLY the unreferenced set (3 S3 objects, 1 ECR image) and deleted nothing"
 
 echo "==> Phase 3b: cdkd gc --yes (real deletion)"
 node "${LOCAL_DIST}" gc --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
@@ -496,7 +615,22 @@ assert_widened_ref_survived "${UPPER_REF_DIGEST}" \
   "UPPER-cased host + UPPER-cased digest (issue #1792)"
 assert_widened_ref_survived "${FIPS_REF_DIGEST}" \
   "dual-stack FIPS on.aws host + tag (issue #1793)"
-echo "    OK: gc deleted the unreferenced object + image, and KEPT both images referenced through widened host forms"
+
+# The S3 host-case arm, after the real deletion (issue #1847). Same posture as
+# the ECR pair: the load-bearing assertions are about what SURVIVES, and the
+# two bucket-case controls' DELETION is what stops the six survivals from being
+# satisfiable by a gc that deleted nothing.
+for key in "${S3_CASE_SURVIVOR_KEYS[@]}"; do
+  if ! aws s3api head-object --bucket "${ASSET_BUCKET}" --key "${key}" >/dev/null 2>&1; then
+    echo "FAIL: gc DELETED a live object whose reference really names it (issue #1847): s3://${ASSET_BUCKET}/${key}" >&2
+    exit 1
+  fi
+done
+for key in "${S3_BUCKETCASE_DELETED_KEYS[@]}"; do
+  assert_gone "object ${key} still exists after gc --yes — its only reference spells the BUCKET upper-cased where S3 compares it byte-for-byte, so folding the bucket name there has turned gc into a no-op for it (issue #1847)" \
+    aws s3api head-object --bucket "${ASSET_BUCKET}" --key "${key}"
+done
+echo "    OK: gc deleted the unreferenced object + image + both bucket-case controls, and KEPT both widened-form images and all six really-referenced objects"
 
 # --- Phase 4: destroy stack, then bootstrap --destroy ------------------------
 echo "==> Phase 4: destroy"
@@ -517,12 +651,24 @@ fi
 echo "    OK: stack + state gone; content-addressed asset object persists (by design)"
 
 echo "==> Phase 4b: cdkd bootstrap --destroy (names read from the marker, no --force)"
+# --region is spelled UPPER-CASED here on purpose (issue #1995), and it costs
+# nothing: the marker was written by Phase 1 under the canonical spelling, so
+# this run exercises the canonicalize-then-probe path against real AWS through
+# the teardown this fixture already performs. Pre-fix it found no marker at
+# `cdkd-bootstrap/US-EAST-1.json`, printed "nothing to delete", exited 0 — and
+# left the bucket and repository alive, which the three assert_gone probes
+# below now catch.
+#
+# The OTHER arm — a marker written under a raw upper-cased region — cannot be
+# reached from here without a second real bootstrap cycle, which is not worth a
+# whole extra bucket + repo + push; it is covered by unit test instead
+# ("destroys the storage a RAW upper-cased marker names, and deletes THAT key").
 node "${LOCAL_DIST}" bootstrap --destroy --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" --yes
+  --region "${REGION_UPPER}" --yes
 
 assert_gone "custom asset bucket ${ASSET_BUCKET} still exists after bootstrap --destroy" aws s3api head-bucket --bucket "${ASSET_BUCKET}"
 assert_gone "custom container repo ${CONTAINER_REPO} still exists after bootstrap --destroy" aws ecr describe-repositories --repository-names "${CONTAINER_REPO}" --region "${REGION}"
 assert_gone "bootstrap marker ${MARKER_KEY} still exists after bootstrap --destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"
-echo "    OK: custom bucket gone, custom repo gone, marker gone — zero residue"
+echo "    OK: custom bucket gone, custom repo gone, marker gone — zero residue (teardown driven by an UPPER-cased --region, issue #1995)"
 
-echo "[verify] PASS — custom-named asset storage bootstrap, publish-to-custom-bucket, gc dry-run/delete precision, and marker-driven teardown all verified"
+echo "[verify] PASS — custom-named asset storage bootstrap, publish-to-custom-bucket, gc dry-run/delete precision (incl. the ECR and S3 case-varied host arms and the bucket-name-exactness control), and marker-driven teardown all verified"
