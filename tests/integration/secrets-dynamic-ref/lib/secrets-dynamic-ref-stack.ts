@@ -163,7 +163,13 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         // (unlike the secret's own `SecretString`, which the DynRefSecret
         // resource legitimately holds), which is what lets Phase 1g grep the
         // WHOLE state document for it rather than one key.
-        DB_URL: `postgres://cdkd-user:{{resolve:ssm:${secureParamName}}}@db.${cdk.Aws.REGION}.internal:5432/app`,
+        // The user component is deliberately NOT `cdkd-user`: that is the secret's
+        // OWN username, and `EXPECTED_USERNAME` is grepped against the whole
+        // persisted env to prove SECRET_FULL's whole-secret resolution did not
+        // land there. A literal equal to that needle makes this env var itself
+        // trip the guard -- a FALSE leak report that looks exactly like a real
+        // one. Any literal added here must not collide with an assertion needle.
+        DB_URL: `postgres://app-svc:{{resolve:ssm:${secureParamName}}}@db.${cdk.Aws.REGION}.internal:5432/app`,
         // Rollback-probe-only extra (forces a Lambda UPDATE this phase; the
         // rollback removes it). NOT gated as a mode-gated CREATE — the env var
         // is added to an existing resource, and the fixture reverts it via

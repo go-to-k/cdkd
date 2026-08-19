@@ -305,7 +305,7 @@ check_equals "SSM_VALUE (ssm:<name> plaintext param)" \
 # unless state redacts it. Without this assertion Phase 1g could pass because
 # nothing was ever resolved.
 check_equals "DB_URL (Fn::Join embedding an ssm SecureString)" \
-  "${ENV_DB_URL}" "postgres://cdkd-user:${EXPECTED_SECURE}@db.${REGION}.internal:5432/app"
+  "${ENV_DB_URL}" "postgres://app-svc:${EXPECTED_SECURE}@db.${REGION}.internal:5432/app"
 # The SecureString still has to REACH AWS decrypted — issue #1901 changes what
 # STATE holds, never what the provider is handed.
 check_equals "SSM_SECURE_VALUE (ssm:<name> SecureString param, decrypted)" \
@@ -396,7 +396,7 @@ esac
 # either is attributed to the right one.
 STATE_DB_URL=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.DB_URL // empty')
 case "${STATE_DB_URL}" in
-  'postgres://cdkd-user:{{resolve:ssm:'*'@db.'*'.internal:5432/app')
+  'postgres://app-svc:{{resolve:ssm:'*'@db.'*'.internal:5432/app')
     echo "    OK: state DB_URL kept the EMBEDDED expression: ${STATE_DB_URL}" ;;
   *) echo "FAIL: state DB_URL is not the embedded {{resolve:...}} form: $(mask "${STATE_DB_URL}")" >&2; redaction_fail=1 ;;
 esac
@@ -1334,7 +1334,7 @@ echo "    OK: the plain deploy re-captured the baseline"
 deploy_redaction_fail=0
 G_DB_URL=$(printf '%s' "${G_OBSERVED}" | jq -r '.DB_URL // empty')
 case "${G_DB_URL}" in
-  'postgres://cdkd-user:{{resolve:ssm:'*'@db.'*'.internal:5432/app')
+  'postgres://app-svc:{{resolve:ssm:'*'@db.'*'.internal:5432/app')
     echo "    OK: re-captured DB_URL kept the EMBEDDED expression: ${G_DB_URL}" ;;
   *) echo "FAIL: re-captured observed DB_URL is not the embedded expression: $(mask "${G_DB_URL}")" >&2
      deploy_redaction_fail=1 ;;
@@ -1356,7 +1356,7 @@ fi
 G_PROPS_DB_URL=$(printf '%s' "${G_STATE}" \
   | jq -r --arg lid "${G_LID}" '.state.resources[$lid].properties.Environment.Variables.DB_URL // empty')
 case "${G_PROPS_DB_URL}" in
-  'postgres://cdkd-user:{{resolve:ssm:'*'@db.'*'.internal:5432/app')
+  'postgres://app-svc:{{resolve:ssm:'*'@db.'*'.internal:5432/app')
     echo "    OK: properties DB_URL still holds the embedded expression" ;;
   *) echo "FAIL: properties DB_URL is not the embedded expression: $(mask "${G_PROPS_DB_URL}")" >&2
      deploy_redaction_fail=1 ;;
