@@ -640,9 +640,20 @@ the `integ-*` markers — together they unblock `gh pr merge`.
 gh pr merge <n> --squash --delete-branch     # squash is the repo's only method
 ```
 
-(Local branch delete fails while its worktree exists — expected; the worktree
-removal below clears it.) Merge each verified PR. If a later PR is behind, GitHub
-still merges it when the files are disjoint.
+(`--delete-branch` removes the REMOTE branch but fails on the local one while its
+worktree exists — expected. The worktree removal below does NOT then clear it:
+`git worktree remove` deletes the worktree, never the branch, so the local ref
+survives both steps and you must finish with an explicit `git branch -D <branch>`.
+It has to be `-D`: this repo squash-merges, so the branch tip is never an ancestor of
+`main` and `-d` refuses it as "not fully merged" (verified 2026-08-19 — git's own hint
+is to use `-D`). Read that refusal as the expected squash artifact, not as a warning
+that the work is unmerged; confirm the PR is MERGED first, and the `-D` is safe.
+Measured 2026-08-19, after this sentence had claimed otherwise for months: the repo
+held a dozen stale local branches — `chore/1987-mirror-duplicate-detection`,
+`chore/1973-work-issues-no-src-tier`, `chore/1593-work-issues-author-association`
+and more — every one merged, every worktree long gone, every branch left behind by
+believing this line.) Merge each verified PR. If a later PR is behind, GitHub still
+merges it when the files are disjoint.
 
 ```bash
 git checkout main && git pull origin main    # bring the merges local
@@ -676,7 +687,9 @@ the silent residue of this flow):
 ```bash
 git worktree remove .claude/worktrees/<branch>   # --force if it refuses on artifacts
 git worktree prune
+git branch -D <branch>                           # -D, not -d (squash) - see §9 above
 git worktree list                                # every worktree THIS run added is gone
+git branch --list '<your prefix>*'               # ...and so is every branch it added
 ```
 
 The closing check is "every worktree THIS run added is gone", **never "only the
