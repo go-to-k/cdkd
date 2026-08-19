@@ -292,23 +292,26 @@ async function listBootstrapMarkerSiblings(
   resolvedMarkerKey: string
 ): Promise<{ otherRegions: string[]; sameRegionKeys: string[] }> {
   const keys = await stateBackend.listRawKeys(BOOTSTRAP_MARKER_PREFIX);
+  // Fold ONCE per entry — it was recomputed three times per key.
   const segments = keys
     .filter((k) => k.endsWith('.json'))
-    .map((k) => ({ key: k, raw: k.slice(BOOTSTRAP_MARKER_PREFIX.length, -'.json'.length) }))
+    .map((k) => {
+      const raw = k.slice(BOOTSTRAP_MARKER_PREFIX.length, -'.json'.length);
+      return { key: k, raw, folded: canonicalizeRegion(raw) };
+    })
     .filter((e) => e.raw.length > 0);
 
   // Dedupe OTHER regions BY the folded name, keeping the raw spelling.
   const byCanonical = new Map<string, string>();
-  for (const { raw } of segments) {
-    if (canonicalizeRegion(raw) === region) continue;
-    const folded = canonicalizeRegion(raw);
+  for (const { raw, folded } of segments) {
+    if (folded === region) continue;
     if (!byCanonical.has(folded)) byCanonical.set(folded, raw);
   }
 
   // Same region, different KEY than the one this run resolved: every spelling
   // of this region's own marker that the teardown will NOT delete.
   const sameRegionKeys = segments
-    .filter((e) => canonicalizeRegion(e.raw) === region && e.key !== resolvedMarkerKey)
+    .filter((e) => e.folded === region && e.key !== resolvedMarkerKey)
     .map((e) => e.key);
 
   return { otherRegions: [...byCanonical.values()], sameRegionKeys };
@@ -444,6 +447,51 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
     // falling through to another key after finding a CORRUPT one would hide the
     // corruption while the teardown acted on second-choice names — here that
     // means deleting a bucket and repo the user did not mean to name.
+    // Every OTHER bootstrap marker in the bucket, relative to the one just
+    // resolved. Used by the `--include-state-bucket` guards, by the
+    // surviving-sibling warning after the teardown, AND by the not-found
+    // message below — so all three see the same listing-derived set rather
+    // than independently-guessed key probes.
+    //
+    // Taken BEFORE the `markerBody === null` early return, which is the whole
+    // point: with only `cdkd-bootstrap/Us-East-1.json` present, both probes
+    // miss, and a listing taken after the return never happens — the command
+    // reported "nothing to delete" and exited 0 while that marker's asset
+    // bucket and ECR repository kept billing. That is the failure direction
+    // this file's header calls the worse one, reached through the not-found
+    // door instead of the teardown door.
+    //
+    // Failure policy is split on purpose. The listing needs `s3:ListBucket`,
+    // which a plain `--destroy` never used to require, so a policy without it
+    // must not turn a working teardown into a hard failure: warn and continue
+    // with an empty set. Under `--include-state-bucket` the same listing is
+    // load-bearing — it is the ONLY thing standing between the user and a
+    // deleted state bucket whose sibling markers named surviving storage — so
+    // there it stays fatal.
+    let markerSiblings: { otherRegions: string[]; sameRegionKeys: string[] } = {
+      otherRegions: [],
+      sameRegionKeys: [],
+    };
+    try {
+      markerSiblings = await listBootstrapMarkerSiblings(stateBackend, region, resolvedMarkerKey);
+    } catch (error) {
+      if (options.includeStateBucket) {
+        throw new CdkdError(
+          `Cannot verify which bootstrap markers the state bucket '${bucketName}' still ` +
+            `holds (listing '${BOOTSTRAP_MARKER_PREFIX}' failed), and --include-state-bucket ` +
+            `deletes every one of them. Grant s3:ListBucket on this bucket and re-run.`,
+          'STATE_BUCKET_MARKER_SCAN_FAILED',
+          error as Error
+        );
+      }
+      logger.warn(
+        `Could not list bootstrap markers under '${BOOTSTRAP_MARKER_PREFIX}' ` +
+          `(${error instanceof Error ? error.message : String(error)}). Continuing — this ` +
+          `only means a marker for this region under another spelling of its name would ` +
+          `not be reported.`
+      );
+    }
+
     let marker: BootstrapMarker | undefined;
     if (markerBody === null) {
       const probed = rawMarkerKey === markerKey ? markerKey : `${markerKey}, ${rawMarkerKey}`;
@@ -451,26 +499,39 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
         `No bootstrap marker for region '${region}' (${probed}) — asset storage ` +
           `is not opted in for this region (or was already destroyed); nothing to delete.`
       );
+      if (markerSiblings.sameRegionKeys.length > 0) {
+        // The door this early return used to slam. These markers name asset
+        // storage that is still alive and still billing, and neither probe
+        // spelled their key — so without this the run exits 0 having said
+        // nothing about them.
+        for (const siblingKey of markerSiblings.sameRegionKeys) {
+          logger.warn(
+            `A bootstrap marker for this region DOES exist at '${siblingKey}', under a ` +
+              `different spelling of the region name — its asset bucket and ECR ` +
+              `repository are still alive. Re-run ` +
+              `'cdkd bootstrap --destroy --region ${markerRegionOfKey(siblingKey)}' to tear ` +
+              `it down.`
+          );
+        }
+      }
       if (!options.includeStateBucket) {
-        logger.info(
-          `If the asset bucket / ECR repo still exist without a marker, re-run ` +
-            `'cdkd bootstrap --region ${region}' to recreate the marker, then destroy again.`
-        );
+        // Only suggest re-bootstrapping when no marker for this region exists
+        // at all: with a sibling present it is actively harmful advice, since
+        // `cdkd bootstrap` would write a SECOND marker at the canonical key
+        // with DEFAULT names, and the next destroy would tear down that
+        // default-named storage while the custom-named storage behind the
+        // sibling survives untouched.
+        if (markerSiblings.sameRegionKeys.length === 0) {
+          logger.info(
+            `If the asset bucket / ECR repo still exist without a marker, re-run ` +
+              `'cdkd bootstrap --region ${region}' to recreate the marker, then destroy again.`
+          );
+        }
         return;
       }
     } else {
       marker = parseBootstrapMarker(markerBody, resolvedMarkerKey);
     }
-
-    // Every OTHER bootstrap marker in the bucket, relative to the one just
-    // resolved — used by the `--include-state-bucket` guard below AND by the
-    // surviving-sibling warning after the teardown, so both see the same,
-    // listing-derived set rather than two independently-guessed key probes.
-    const markerSiblings = await listBootstrapMarkerSiblings(
-      stateBackend,
-      region,
-      resolvedMarkerKey
-    );
 
     // 2. Safety scan: refuse while any DEPLOYED stack still references the
     //    asset bucket / repo (running Lambdas keep working after deletion,
@@ -531,18 +592,40 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
         // would go with the state bucket while the asset bucket and ECR repo
         // they name survive, nameless and unreachable. The raw compare
         // accidentally prevented that; this arm does it deliberately.
+        // Nothing has been deleted on this path, so — unlike the post-teardown
+        // warning, where the canonical key is already gone — a per-key
+        // `--region <spelling>` can be actively WRONG: while the canonical key
+        // still exists, probe 1 resolves IT first, and the run would tear down
+        // the canonical marker's storage rather than the one the message named.
+        // So the remedy is only per-key when the canonical key is absent.
+        const canonicalStillPresent = markerBody !== null && resolvedMarkerKey === markerKey;
         const listing = markerSiblings.sameRegionKeys
-          .map((k) => `  - ${k}  (cdkd bootstrap --destroy --region ${markerRegionOfKey(k)})`)
+          .map((k) =>
+            canonicalStillPresent
+              ? `  - ${k}`
+              : `  - ${k}  (cdkd bootstrap --destroy --region ${markerRegionOfKey(k)})`
+          )
           .join('\n');
+        const remedy = canonicalStillPresent
+          ? `Run 'cdkd bootstrap --destroy --region ${region}' WITHOUT ` +
+            `--include-state-bucket and repeat until this refusal stops: each run tears ` +
+            `down the first marker it resolves, starting with '${resolvedMarkerKey}'. ` +
+            `(A per-marker --region spelling is not given here because that key still ` +
+            `exists and would be resolved first.)`
+          : `Run the command shown against each marker above, then re-run with ` +
+            `--include-state-bucket.`;
         throw new CdkdError(
           `Refusing to delete state bucket '${bucketName}': region '${region}' has ` +
             `${markerSiblings.sameRegionKeys.length} further bootstrap marker(s) under a ` +
             `different spelling of its name, which this teardown does not delete:\n` +
-            `${listing}\n` +
+            `${listing}\n${remedy}\n` +
             `Destroy each one first — deleting the state bucket now would remove those ` +
             `markers while the asset storage they name survives, with no record of its ` +
             `names.`,
-          'STATE_BUCKET_HOLDS_MARKERS'
+          // Distinct from the other-region refusal above: same bucket, but a
+          // different situation and a different remedy, and a consumer that
+          // cannot tell them apart cannot act on either.
+          'STATE_BUCKET_HOLDS_SIBLING_MARKERS'
         );
       }
     }

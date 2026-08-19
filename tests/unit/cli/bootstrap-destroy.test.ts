@@ -12,11 +12,16 @@ const {
   deletedKeys,
 } = vi.hoisted(() => {
   const callLog: string[] = [];
-  // Keys removed by `deleteRawObjects`, so the backend mock can model the one
-  // thing a plain `mockImplementation` cannot: that a read AFTER a delete
-  // misses. Several orderings in this command are only correct because of that
-  // sequencing (read the marker, delete it, then look for siblings), and a
-  // deletion-blind fixture reports them all as fine.
+  // Keys removed by `deleteRawObjects`, so a read or listing AFTER a delete
+  // misses the way S3 would.
+  //
+  // Stated honestly: NO current test exercises this, and no shipped path
+  // depends on it — the sibling listing now happens BEFORE the marker delete,
+  // so the command makes no read-after-delete at all. Reverting this wrapper
+  // to a passthrough leaves the whole suite green. It is kept as fidelity, not
+  // as coverage: the ordering it models is exactly what a future change here
+  // would get wrong, and a deletion-blind backend would call that fine. Do not
+  // read this comment as a claim that something is pinned by it.
   const deletedKeys = new Set<string>();
   return {
     deletedKeys,
@@ -76,10 +81,10 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   // The spies stay the ones tests script and assert on; the wrapper only adds
-  // DELETION AWARENESS on top, so a key removed by `deleteRawObjects` stops
-  // being readable and stops being listed. The spy is still invoked on every
-  // read so `mock.calls` (and `markerProbes()`) record it — the result is
-  // masked afterwards, not skipped.
+  // DELETION AWARENESS on top (see the `deletedKeys` note above for what that
+  // does and does not buy today). The spy is still invoked on every read so
+  // `mock.calls` (and `markerProbes()`) record it — the result is masked
+  // afterwards, not skipped.
   S3StateBackend: vi.fn().mockImplementation(() => ({
     ...stateBackendMocks,
     getRawObject: async (key: string): Promise<string | null> => {
@@ -849,10 +854,45 @@ describe('cdkd bootstrap --destroy', () => {
       }
 
       expect(err).toBeInstanceOf(CdkdError);
-      expect((err as CdkdError).code).toBe('STATE_BUCKET_HOLDS_MARKERS');
+      // Distinct from the other-region refusal: different situation, different
+      // remedy, so a consumer can tell them apart.
+      expect((err as CdkdError).code).toBe('STATE_BUCKET_HOLDS_SIBLING_MARKERS');
       expect(err!.message).toContain(RAW_MARKER_KEY);
-      // The remedy names the spelling that actually reaches that key.
-      expect(err!.message).toContain(`--region ${REGION_UPPER}`);
+
+      // The canonical key STILL EXISTS on this path (nothing is deleted before
+      // a refusal), so a per-key `--region US-EAST-1` would be wrong: probe 1
+      // resolves the canonical key first and would tear down THAT storage
+      // instead — under custom names, a bucket the message never named. The
+      // remedy must therefore be the repeat-until-clear form.
+      expect(err!.message).not.toContain(`--region ${REGION_UPPER}`);
+      expect(err!.message).toContain('repeat until this refusal stops');
+      expect(err!.message).toContain(MARKER_KEY);
+      expectNothingDeleted();
+    });
+
+    it('gives a per-marker --region only when the canonical key is absent', async () => {
+      // The other branch: with no canonical marker, probe 1 misses and each
+      // sibling's own spelling really does reach it — so the concrete command
+      // is correct here and is what the user needs.
+      const ODD_KEY = 'cdkd-bootstrap/Us-East-1.json';
+      stateBackendMocks.getRawObject.mockResolvedValue(null);
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === 'cdkd-bootstrap/') return [ODD_KEY];
+        if (prefix === '') return [];
+        return [];
+      });
+
+      let err: Error | undefined;
+      try {
+        await runDestroy(['--yes', '--include-state-bucket']);
+      } catch (e) {
+        err = e as Error;
+      }
+
+      expect(err).toBeInstanceOf(CdkdError);
+      expect((err as CdkdError).code).toBe('STATE_BUCKET_HOLDS_SIBLING_MARKERS');
+      expect(err!.message).toContain('--region Us-East-1');
+      expect(err!.message).not.toContain('repeat until this refusal stops');
       expectNothingDeleted();
     });
 
@@ -875,8 +915,11 @@ describe('cdkd bootstrap --destroy', () => {
       }
 
       expect(err).toBeInstanceOf(CdkdError);
+      expect((err as CdkdError).code).toBe('STATE_BUCKET_HOLDS_SIBLING_MARKERS');
+      // The KEY is always named; the concrete per-key command is withheld here
+      // because the canonical marker still exists (see the arm above).
       expect(err!.message).toContain(THIRD_KEY);
-      expect(err!.message).toContain('--region Us-East-1');
+      expect(err!.message).toContain('repeat until this refusal stops');
       expectNothingDeleted();
     });
 
@@ -934,6 +977,107 @@ describe('cdkd bootstrap --destroy', () => {
         .map((c) => String(c[0]))
         .find((line) => line.includes(THIRD_KEY));
       expect(warning).toContain('--region Us-East-1');
+    });
+
+    it('reports a sibling-only marker instead of exiting 0 with "nothing to delete"', async () => {
+      // BLOCKER: the not-found early return ran BEFORE the sibling listing, so
+      // with only an oddly-spelled marker present the command said "nothing to
+      // delete", exited 0, and left the asset bucket and ECR repository alive
+      // and billing. Both probes miss this key by construction.
+      const ODD_KEY = 'cdkd-bootstrap/Us-East-1.json';
+      stateBackendMocks.getRawObject.mockResolvedValue(null);
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === 'cdkd-bootstrap/') return [ODD_KEY];
+        if (prefix === '') return [];
+        return [];
+      });
+
+      await runDestroy(['--yes']);
+
+      const warning = loggerMocks.warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.includes(ODD_KEY));
+      expect(warning).toBeDefined();
+      expect(warning).toContain('still alive');
+      // Reachable spelling, for the same reason as every other remedy here.
+      expect(warning).toContain('--region Us-East-1');
+      expectNothingDeleted();
+    });
+
+    it('suppresses the re-bootstrap hint when a sibling marker exists', async () => {
+      // The old hint is actively harmful with a sibling present: `cdkd
+      // bootstrap` would write a SECOND marker at the canonical key with
+      // DEFAULT names, so the next destroy tears down default-named storage
+      // while the custom-named storage behind the sibling survives untouched.
+      const ODD_KEY = 'cdkd-bootstrap/Us-East-1.json';
+      stateBackendMocks.getRawObject.mockResolvedValue(null);
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) =>
+        prefix === 'cdkd-bootstrap/' ? [ODD_KEY] : []
+      );
+
+      await runDestroy(['--yes']);
+
+      const hint = loggerMocks.info.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.includes("re-run 'cdkd bootstrap --region"));
+      expect(hint).toBeUndefined();
+    });
+
+    it('still gives the re-bootstrap hint when NO marker for the region exists', async () => {
+      // Counter-case: suppressing the hint unconditionally would remove real
+      // guidance from the ordinary not-bootstrapped case.
+      stateBackendMocks.getRawObject.mockResolvedValue(null);
+      stateBackendMocks.listRawKeys.mockResolvedValue([]);
+
+      await runDestroy(['--yes']);
+
+      const hint = loggerMocks.info.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.includes("re-run 'cdkd bootstrap --region"));
+      expect(hint).toBeDefined();
+      expectNothingDeleted();
+    });
+
+    it('a --force destroy survives a marker listing it is not allowed to make', async () => {
+      // The listing needs s3:ListBucket, which a plain --destroy never used to
+      // require. A policy without it must not turn a working teardown into a
+      // hard failure.
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === 'cdkd-bootstrap/') throw new Error('AccessDenied: s3:ListBucket');
+        return [];
+      });
+
+      await runDestroy(['--yes', '--force']);
+
+      expect(s3Inputs(DeleteBucketCommand.name)).toEqual([
+        { Bucket: ASSET_BUCKET, ExpectedBucketOwner: ACCOUNT },
+      ]);
+      expect(stateBackendMocks.deleteRawObjects).toHaveBeenCalledWith([MARKER_KEY]);
+      const warning = loggerMocks.warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.includes('Could not list bootstrap markers'));
+      expect(warning).toBeDefined();
+    });
+
+    it('REFUSES --include-state-bucket when the marker listing cannot be made', async () => {
+      // Same failure, opposite policy: here the listing is the only thing
+      // standing between the user and a deleted state bucket whose sibling
+      // markers named surviving storage, so it must be fatal.
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === 'cdkd-bootstrap/') throw new Error('AccessDenied: s3:ListBucket');
+        return [];
+      });
+
+      let err: Error | undefined;
+      try {
+        await runDestroy(['--yes', '--include-state-bucket']);
+      } catch (e) {
+        err = e as Error;
+      }
+
+      expect(err).toBeInstanceOf(CdkdError);
+      expect((err as CdkdError).code).toBe('STATE_BUCKET_MARKER_SCAN_FAILED');
+      expectNothingDeleted();
     });
 
     it('folds an UPPER-cased AWS_REGION before it reaches a client', async () => {
