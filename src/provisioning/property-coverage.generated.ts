@@ -718,7 +718,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['KeyConfiguration', 'not yet implemented by cdkd'],
         [
           'WebAuthnFactorConfiguration',
-          'No SDK wire path: @aws-sdk/client-cognito-identity-provider has no field accepting SINGLE_FACTOR | MULTI_FACTOR_WITH_USER_VERIFICATION (not on CreateUserPool/UpdateUserPool, nor SetUserPoolMfaConfig.WebAuthnConfiguration which only carries RelyingPartyId/UserVerification); CC-API-registry-only property',
+          'No wire path in the PINNED SDK (@aws-sdk/client-cognito-identity-provider 3.1018.0): WebAuthnConfigurationType is {RelyingPartyId?, UserVerification?} and no CreateUserPool/UpdateUserPool field accepts SINGLE_FACTOR | MULTI_FACTOR_WITH_USER_VERIFICATION. This is an SDK-VERSION limit, NOT an API one -- the live API does honour FactorConfiguration (measured us-east-1 2026-08-20: SetUserPoolMfaConfig(ON) on a pool allowing WEB_AUTHN as a first auth factor is rejected with "Cannot set WebAuthn factor configuration to SINGLE_FACTOR if MFA is required and WebAuthn is an allowed first auth factor", i.e. the service reads a field the SDK cannot send). RE-EVALUATE THIS ENTRY ON AN SDK BUMP: if WebAuthnConfigurationType gains FactorConfiguration, the property becomes handleable and this entry must go',
         ],
       ]),
     },

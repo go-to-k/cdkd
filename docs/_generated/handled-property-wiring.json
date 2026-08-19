@@ -4791,6 +4791,7 @@
           ],
           "seededBy": [
             "applyMfaConfig",
+            "assertMfaCombinationApplicable",
             "canonicalizeDesiredProperties",
             "create",
             "update"
@@ -4808,6 +4809,7 @@
           ],
           "seededBy": [
             "applyMfaConfig",
+            "assertMfaCombinationApplicable",
             "canonicalizeDesiredProperties",
             "create",
             "update"
@@ -4867,6 +4869,7 @@
           ],
           "seededBy": [
             "applyMfaConfig",
+            "assertMfaCombinationApplicable",
             "canonicalizeDesiredProperties",
             "create",
             "update"
@@ -4909,9 +4912,11 @@
             "AWS::Cognito::UserPool"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
+            "assertMfaCombinationApplicable",
             "create",
             "update"
           ]
@@ -4956,6 +4961,7 @@
           ],
           "seededBy": [
             "applyMfaConfig",
+            "assertMfaCombinationApplicable",
             "canonicalizeDesiredProperties",
             "create",
             "update"
@@ -5096,6 +5102,7 @@
           ],
           "seededBy": [
             "applyMfaConfig",
+            "assertMfaCombinationApplicable",
             "canonicalizeDesiredProperties",
             "create",
             "update"
@@ -5113,6 +5120,7 @@
           ],
           "seededBy": [
             "applyMfaConfig",
+            "assertMfaCombinationApplicable",
             "canonicalizeDesiredProperties",
             "create",
             "update"

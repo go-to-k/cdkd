@@ -33,7 +33,26 @@ NOTHING else — it says nothing about the properties' content, is not a
 dry-run signal, and must not relax data-safety guards or the validation that
 protects the AWS call itself. Absent / `false` = an ordinary template-path
 create (`cdkd deploy`, the replacement / `--replace` / `--recreate-via-*`
-creates), where the refusal stands. Consumers today come in THREE shapes, and
+creates), where the refusal stands.
+
+**The MUST has exactly one stated exception, and its own reasoning is what
+licenses it** (issues [#1975](https://github.com/go-to-k/cdkd/issues/1975) /
+[#1977](https://github.com/go-to-k/cdkd/issues/1977),
+`CognitoUserPoolProvider`'s MFA pre-flight). The downgrade exists because a
+refusal against a STATE record leaves a resource un-rollbackable with no
+template-side remedy — which presupposes the replay could otherwise SUCCEED.
+Where the refused combination is rejected by AWS 100% of the time, it cannot:
+downgrading trades a clear cdkd-worded refusal for the same AWS failure a
+moment later, and on the update path for a PARTIAL APPLY as well. A state
+record cannot legitimately hold such a combination either, since state is
+written only after a successful apply. So the test is not "is this a replay"
+but **"could the replay have succeeded"**, and a provider taking the exception
+must say so AT the refusal, naming this rule and the measurement that settles
+the 100% claim — an unconditional refusal with no such note reads as an
+oversight, and the next reader cannot tell the two apart. Do NOT generalize
+this to "my guard is probably right anyway": the measurement is the licence.
+
+Consumers today come in THREE shapes, and
 the count is worth knowing because the spread is exactly the drift the shared
 helper exists to stop:
 

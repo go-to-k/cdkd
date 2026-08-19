@@ -12,6 +12,7 @@ import {
   type VerifiedAttributeType,
   type UsernameAttributeType,
   type AliasAttributeType,
+  type AuthFactorType,
   type UserPoolMfaType,
   type DeletionProtectionType,
   type SchemaAttributeType,
@@ -447,8 +448,10 @@ function buildMfaConfigRequest(
   //
   // Reproduced 2026-08-19 with an EXPLICIT `MfaConfiguration: OFF` instead of
   // an omitted one -- same rejection, same message, for every member of
-  // `anyFactorBlock`. That transcript lives at the pinned-OFF warning below,
-  // which is the site it decides. `readLiveMfaConfiguration`'s ledger carries
+  // `anyFactorBlock`. That transcript lives at
+  // `describeUnsupportedMfaCombination`, the PRE-FLIGHT REFUSAL it decides
+  // (issue #1977; it used to decide a warning at this same site, which the
+  // refusal replaced). `readLiveMfaConfiguration`'s ledger carries
   // this API in a SECTION OF ITS OWN: `SetUserPoolMfaConfig` and
   // `UpdateUserPool` are different APIs with different rules, and neither
   // list licenses a claim about the other.
@@ -514,77 +517,17 @@ function buildMfaConfigRequest(
     );
   }
 
-  const anyFactorBlock =
-    request.SmsMfaConfiguration !== undefined ||
-    request.SoftwareTokenMfaConfiguration !== undefined ||
-    request.EmailMfaConfiguration !== undefined;
+  const anyFactorBlock = hasAnyMfaFactorBlock(request);
 
-  // Issue #1932 item 2: a RECOGNIZED factor is configured AND MfaConfiguration
-  // is OFF, so the pool ships with the factor set up and MFA disabled — the
-  // same "declared a factor, got no MFA" surprise the dropped-entry warning
-  // below exists to surface, reached through a template that is otherwise
-  // valid.
+  // The OFF-plus-factor-block combination that USED to be warned about here
+  // (issue #1932 item 2, reworded by issue #1968) is now a PRE-FLIGHT REFUSAL
+  // raised by {@link describeUnsupportedMfaCombination} before the first AWS
+  // call (issue #1977). The warning is gone rather than kept alongside it: the
+  // refusal fires strictly earlier, carries the same remedy, and leaving both
+  // would print a warning about a request that is never built.
   //
-  // Keyed on `anyFactorBlock` ALONE, deliberately, and NOT on `declaresFactor`.
-  // The issue scopes this arm to a RECOGNIZED factor, and `declaresFactor` is
-  // also true for a MIS-SHAPED `EnabledMfas` (a YAML scalar / String-param
-  // ref), which emits no block: including it made this fire alongside the
-  // dropped-entry warning below and CONTRADICT it, since that one correctly
-  // reports the entry as enabling nothing. `anyFactorBlock` is exactly the
-  // recognized set — every factor sub-block is set inside a `factors.has(...)`
-  // guard, and `EmailMfaConfiguration` additionally covers a bare
-  // message/subject customization — so the two warnings now partition the
-  // cases instead of overlapping.
-  //
-  // It also still implies the value was PINNED rather than defaulted: an
-  // emitted block makes `enablesMfaFactor` true, whose default is OPTIONAL, so
-  // OFF here can only have come from the template. No explicit "was it
-  // declared" test is needed and adding one could not change any outcome.
-  //
-  // MEASURED us-east-1 2026-08-19 (issue #1968): AWS REJECTS every request in
-  // which a factor block rides alongside `MfaConfiguration: OFF`, with
-  // `InvalidParameterException: Invalid MFA configuration given, can't turn off
-  // MFA and configure an MFA together`:
-  //
-  //   {ON,  SoftwareTokenMfaConfiguration: {Enabled: true}}   -> ACCEPTED (control)
-  //   {OFF, SoftwareTokenMfaConfiguration: {Enabled: true}}   -> rejected
-  //   {OFF, SoftwareTokenMfaConfiguration: {Enabled: false}}  -> rejected
-  //   {OFF, EmailMfaConfiguration: {Message, Subject}}        -> rejected
-  //
-  // The `Enabled: false` arm is what settles the KEY: a block that enables
-  // nothing is still refused, so the rule is about the block's PRESENCE, which
-  // is exactly what `anyFactorBlock` tests. `anyFactorBlock` is precisely
-  // {Sms, SoftwareToken, Email}MfaConfiguration, so no accepted case survives.
-  //
-  // Qualifier, stated because it bounds the EmailMfaConfiguration arm: an
-  // OPTIONAL control with that block on the same pool failed with a DIFFERENT
-  // error ("Cannot set EmailMfaConfiguration when user pool EmailConfiguration
-  // contains an EmailSendingAccount of COGNITO_DEFAULT"), so there was no clean
-  // isolated control for it. That divergence is itself informative -- the
-  // exclusion rule is evaluated BEFORE the email-sending-account check, which
-  // is why the OFF rejection is the exclusion and not an email-config artifact
-  // -- but the arm rests on the shared message, not on a control of its own.
-  //
-  // So the outcome is a DEPLOY FAILURE, not a silently MFA-disabled pool. The
-  // earlier message claimed the latter; it was wrong, and issue #1968 replaced
-  // it with the line below.
-  //
-  // STILL A WARNING, never a refusal -- but no longer because it is "correct
-  // under either answer", since there is only one answer now. It earns its
-  // place by firing BEFORE the call and naming the one-line fix, which the raw
-  // AWS error does not, while leaving the request untouched so cdkd is not the
-  // thing deciding a template is invalid. Promoting it to a pre-flight refusal
-  // is a behavior change needing its own integ and review round, and is filed
-  // separately rather than done here.
-  if (request.MfaConfiguration === 'OFF' && anyFactorBlock) {
-    warn(
-      `UserPool ${physicalId}: MfaConfiguration is pinned to OFF while an MFA factor block is ` +
-        `configured. AWS REJECTS that combination ("Invalid MFA configuration given, can't ` +
-        `turn off MFA and configure an MFA together"), so this deploy FAILS rather than ` +
-        `producing a pool with MFA disabled. Remove MfaConfiguration (or set it to ON / ` +
-        `OPTIONAL) to enable the declared factor.`
-    );
-  }
+  // The MEASUREMENT that decided it stays recorded at the refusal, not here,
+  // so there is exactly one place stating why the combination cannot ship.
 
   // Warn about a factor declaration that enables nothing — AFTER the line
   // above, so the message can state the value actually being sent instead of
@@ -675,36 +618,36 @@ function buildMfaConfigRequest(
     dropped.push(`${JSON.stringify(maskDeep(properties['EnabledMfas']))} (not a list)`);
   }
   if (dropped.length > 0) {
-    // FOUR outcomes, not three. Splitting only on OFF made the second arm claim
-    // a rejection that does not happen whenever a RECOGNIZED factor rides
-    // alongside the dropped entry: the request carries that factor's block, so
-    // the dropped entry is not what fails the call. That is the silent-drop
-    // case this warning exists to surface, so telling the user to expect a hard
-    // failure there is the worst thing it could say. The arm says
-    // a block IS SENT rather than that a factor IS ENABLED, because that is all
-    // this code knows -- e.g. SMS_MFA without SmsConfiguration sends a block
-    // AWS then rejects. (`anyFactorBlock` is hoisted above, shared with the
-    // pinned-OFF warning -- one definition of "a factor block IS sent" so the
-    // two messages cannot disagree about the same request.)
-    // The OFF case splits again on that same flag, because its two halves have
-    // OPPOSITE outcomes and the measurement (2026-08-19, issue #1968) covers
-    // only one of them: OFF WITH a block is REJECTED by AWS, while OFF with no
-    // block is accepted and really does deploy an MFA-disabled pool. Unsplit,
-    // the OFF arm contradicted the pinned-OFF warning -- which fires on exactly
-    // the OFF-plus-block request and now says "rejected" -- and that
-    // disagreement is what sharing `anyFactorBlock` exists to prevent.
+    // THREE outcomes. It was four until issue #1977 made OFF-plus-a-factor-block
+    // a pre-flight REFUSAL: `create` / `update` run
+    // {@link describeUnsupportedMfaCombination} before their first AWS call, so
+    // by the time a LOGGER reaches this function the OFF arm can no longer be
+    // carrying a factor block, and the fourth arm ("AWS REJECTS this call
+    // outright") was unreachable rather than merely rare. Deleting it is what
+    // keeps the surviving OFF arm TRUE: with the refusal in front, OFF here
+    // really does mean no factor block and really does deploy an MFA-disabled
+    // pool.
+    //
+    // That reachability argument is the pre-flight's, not this function's:
+    // `buildMfaConfigRequest` stays a pure builder and its diff-side caller
+    // (`resolveSentMfaConfiguration`) passes no logger, so nothing here fires
+    // for it. A future caller that reaches `applyMfaConfig` WITHOUT running the
+    // pre-flight would re-open the gap -- keep the two together.
+    //
+    // The non-OFF split stands unchanged: the arm says a block IS SENT rather
+    // than that a factor IS ENABLED, because that is all this code knows --
+    // e.g. SMS_MFA without SmsConfiguration sends a block AWS then rejects.
+    // (`anyFactorBlock` is hoisted above and shared with the pre-flight, so
+    // "a factor block IS sent" has one definition.)
     const consequence =
-      request.MfaConfiguration === 'OFF' && anyFactorBlock
-        ? `MfaConfiguration is OFF while another factor block IS sent, so AWS REJECTS this ` +
-          `call outright and the deploy fails`
-        : request.MfaConfiguration === 'OFF'
-          ? `MfaConfiguration is OFF, so this pool deploys with MFA DISABLED`
-          : anyFactorBlock
-            ? `MfaConfiguration is ${request.MfaConfiguration} and another factor block IS ` +
-              `sent, so these entries are silently ignored rather than failing the call on ` +
-              `their own`
-            : `MfaConfiguration is ${request.MfaConfiguration} with no factor enabled, so AWS ` +
-              `rejects this call rather than deploying the pool with MFA disabled`;
+      request.MfaConfiguration === 'OFF'
+        ? `MfaConfiguration is OFF, so this pool deploys with MFA DISABLED`
+        : anyFactorBlock
+          ? `MfaConfiguration is ${request.MfaConfiguration} and another factor block IS ` +
+            `sent, so these entries are silently ignored rather than failing the call on ` +
+            `their own`
+          : `MfaConfiguration is ${request.MfaConfiguration} with no factor enabled, so AWS ` +
+            `rejects this call rather than deploying the pool with MFA disabled`;
     warn(
       `UserPool ${physicalId}: EnabledMfas entries ${dropped.join(', ')} do not map to an MFA ` +
         `factor block (known: ${MFA_FACTOR_SMS}, ${MFA_FACTOR_SOFTWARE_TOKEN}, ` +
@@ -740,6 +683,314 @@ function resolveSentMfaConfiguration(
   const request = buildMfaConfigRequest('', properties, undefined, declaredMfaConfiguration);
   if (request) return request.MfaConfiguration;
   return declaredMfaConfiguration || undefined;
+}
+
+/**
+ * "This `SetUserPoolMfaConfig` request carries an MFA FACTOR sub-block."
+ *
+ * ONE definition, shared by `buildMfaConfigRequest`'s dropped-entry warning and
+ * by the pre-flight refusal below, so the message and the refusal cannot
+ * disagree about the same request. It is precisely
+ * `{Sms, SoftwareToken, Email}MfaConfiguration` -- `WebAuthnConfiguration` is
+ * deliberately NOT a member, because WebAuthn is not an MFA factor and rides
+ * alongside `MfaConfiguration: OFF` on every passkey-only pool (issue #1920).
+ */
+function hasAnyMfaFactorBlock(request: SetUserPoolMfaConfigCommandInput): boolean {
+  return (
+    request.SmsMfaConfiguration !== undefined ||
+    request.SoftwareTokenMfaConfiguration !== undefined ||
+    request.EmailMfaConfiguration !== undefined
+  );
+}
+
+/**
+ * The `Policies.SignInPolicy.AllowedFirstAuthFactors` members AWS refuses to
+ * combine with MFA (issue #1975).
+ *
+ * A DENY-list, deliberately, even though the AWS message states an ALLOW-list
+ * ("Only PASSWORD and WEB_AUTHN (if configured) can be enabled as an auth
+ * factor if MFA is enabled"). Written from the allow-list, a member AWS adds
+ * LATER would be refused by cdkd on the day it starts working -- the same
+ * reason the unrecognized-`EnabledMfas` case in `buildMfaConfigRequest` warns
+ * rather than throws, since that set is a hardcoded mirror of an AWS enum. The
+ * cost of the deny-list is the reverse and is the cheaper one: a future
+ * incompatible factor is simply not pre-flighted, which is the pre-#1975
+ * behavior (a loud AWS rejection), not a regression.
+ *
+ * The two members ARE the whole of today's `AuthFactorType` enum outside the
+ * allowed pair (`EMAIL_OTP`, `PASSWORD`, `SMS_OTP`, `WEB_AUTHN` --
+ * `@aws-sdk/client-cognito-identity-provider`), so the deny-list and the
+ * allow-list agree on every value that exists right now.
+ *
+ * BOTH members are MEASURED (us-east-1, 2026-08-19, issue #1975) -- neither is
+ * extrapolated from the other, which is the failure mode this file's own
+ * unrecognized-factor comment warns about:
+ *
+ *   [PASSWORD, EMAIL_OTP] + SetUserPoolMfaConfig(ON) -> REJECTED
+ *   [PASSWORD, SMS_OTP]   + SetUserPoolMfaConfig(ON) -> REJECTED, same message
+ *
+ * The `SMS_OTP` probe needed a precondition worth recording, because without it
+ * the interesting call is never reached: on a pool with NO `SmsConfiguration`,
+ * `CreateUserPool` refuses the factor outright ("SMS_OTP can not be configured
+ * as AuthFactor as user pool is missing valid SMS configuration"), so the probe
+ * had to stand up an SNS-caller IAM role + ExternalId first. That earlier,
+ * different refusal is AWS's own and is NOT something this pre-flight
+ * duplicates.
+ *
+ * Typed `satisfies AuthFactorType[]` rather than left as `string[]`: the values
+ * mirror an SDK enum, so a rename upstream should be a COMPILE error here
+ * rather than a silently-never-matching deny-list.
+ */
+const MFA_INCOMPATIBLE_FIRST_AUTH_FACTORS = [
+  'EMAIL_OTP',
+  'SMS_OTP',
+] as const satisfies AuthFactorType[];
+
+/**
+ * `Policies.SignInPolicy.AllowedFirstAuthFactors` as a list of STRINGS, or an
+ * empty list when the template declares nothing usable there.
+ *
+ * Every mis-shape reads as ABSENT rather than as a violation: this feeds a
+ * REFUSAL, so guessing at a container cdkd could not read would block a deploy
+ * over a value it never understood. A genuinely broken `Policies` blob is AWS's
+ * to reject, with its own message.
+ *
+ * The two containers are traversed with `?.` rather than with the
+ * `typeof x === 'object' && !Array.isArray(x)` guard `config-shape.ts` uses,
+ * and that is deliberate rather than sloppy: those guards are load-bearing
+ * THERE because the helper REFUSES a non-object, while here the only outcome is
+ * "no factors", which is exactly what indexing a string / number / array
+ * already yields. The version carrying them was written first and MEASURED
+ * inert -- deleting either clause failed no test and could not be made to,
+ * since no template value indexes to anything at those keys. `?.` keeps the one
+ * behaviour that is real (a declared `null` throws on a bare index) and leaves
+ * nothing unfalsifiable behind.
+ *
+ * The two filters below are NOT the same kind of thing, and saying so matters
+ * because an earlier revision of this comment claimed both were load-bearing and
+ * "each fenced by a test" -- which was false for one of them, and a false fence
+ * claim is what stops the next reader re-checking.
+ *
+ *  - `Array.isArray` is a RUNTIME guard and IS fenced: without it a scalar
+ *    `AllowedFirstAuthFactors: 'EMAIL_OTP'` is read as a declaration and
+ *    refused, and the test for that shape reds when it is dropped.
+ *  - The string filter is a TYPE NARROWING and is INERT at runtime. `includes`
+ *    compares by SameValueZero, so a non-string member can never equal a
+ *    deny-list entry however it is spelled; deleting the filter fails NO test,
+ *    and no test could be written that it would fail. It earns its place by
+ *    giving the caller a `string[]`, and by keeping this function honest if a
+ *    future caller ever COERCES a member instead of comparing it. The
+ *    nested-list case in the suite fences that hypothetical `String(member)`
+ *    implementation -- i.e. the mistake, not this code.
+ */
+function readAllowedFirstAuthFactors(properties: Record<string, unknown>): string[] {
+  const signInPolicy = (properties['Policies'] as Record<string, unknown> | undefined)?.[
+    'SignInPolicy'
+  ] as Record<string, unknown> | undefined;
+  const factors = signInPolicy?.['AllowedFirstAuthFactors'];
+  if (!Array.isArray(factors)) return [];
+  return factors.filter((factor): factor is string => typeof factor === 'string');
+}
+
+/**
+ * The PRE-FLIGHT: the reason this user-pool configuration cannot be applied at
+ * all, or `undefined` when nothing is known to refuse it.
+ *
+ * Two rules, both for combinations AWS rejects 100% of the time, and both
+ * raised BEFORE the first AWS call on BOTH the create and the update path. The
+ * ordering is what makes them worth refusing rather than warning about: on the
+ * UPDATE path `UpdateUserPool` lands FIRST and `SetUserPoolMfaConfig` is
+ * refused afterwards, so sending the request leaves a PARTIAL APPLY behind --
+ * with the security-relevant half being the half that did NOT apply (the MFA
+ * configuration), while the half that did is the one loosening authentication.
+ * Nothing unwinds it, and a retry cannot succeed until the user reverse-engineers
+ * an AWS-worded error about a field they did not think they were changing.
+ *
+ * Rule 1 (issue #1977) -- `MfaConfiguration` resolves to OFF while the request
+ * carries an MFA factor block. MEASURED us-east-1 2026-08-19 (issue #1968):
+ *
+ *   {ON,  SoftwareTokenMfaConfiguration: {Enabled: true}}   -> ACCEPTED (control)
+ *   {OFF, SoftwareTokenMfaConfiguration: {Enabled: true}}   -> rejected
+ *   {OFF, SoftwareTokenMfaConfiguration: {Enabled: false}}  -> rejected
+ *   {OFF, EmailMfaConfiguration: {Message, Subject}}        -> rejected
+ *
+ * all with `InvalidParameterException: Invalid MFA configuration given, can't
+ * turn off MFA and configure an MFA together`. The `Enabled: false` arm settles
+ * the KEY: a block that enables NOTHING is still refused, so the rule is about
+ * the block's PRESENCE -- exactly what `hasAnyMfaFactorBlock` tests -- and
+ * since that predicate is precisely the three factor sub-blocks, no accepted
+ * case survives. (Bound on the Email arm: an OPTIONAL control with that block
+ * failed with a DIFFERENT error, "Cannot set EmailMfaConfiguration when user
+ * pool EmailConfiguration contains an EmailSendingAccount of COGNITO_DEFAULT",
+ * so it has no isolated control of its own -- informative in itself, since it
+ * shows the exclusion is evaluated BEFORE the email-sending-account check.)
+ *
+ * Rule 2 (issue #1975) -- the `SetUserPoolMfaConfig` request resolves
+ * `MfaConfiguration` to ON while `Policies.SignInPolicy.AllowedFirstAuthFactors`
+ * allows `EMAIL_OTP` or `SMS_OTP`. AWS refuses with `Only PASSWORD and WEB_AUTHN
+ * (if configured) can be enabled as an auth factor if MFA is enabled`. MEASURED
+ * us-east-1 2026-08-19, both members and both MFA modes:
+ *
+ *   {[PASSWORD, EMAIL_OTP], ON}       -> rejected
+ *   {[PASSWORD, EMAIL_OTP], OPTIONAL} -> ACCEPTED
+ *   {[PASSWORD, SMS_OTP],   ON}       -> rejected (pool WITH a valid SmsConfiguration)
+ *   {[PASSWORD, SMS_OTP],   OPTIONAL} -> ACCEPTED
+ *
+ * So `=== 'ON'` is MEASURED-CORRECT rather than merely conservative: OPTIONAL is
+ * ACCEPTED, and widening this to `!== 'OFF'` would REFUSE A WORKING DEPLOY. An
+ * earlier revision of this comment called OPTIONAL unmeasured; it is not, and
+ * the measurement is what settles the narrowing rather than a cost argument.
+ *
+ * WHY THE MESSAGE DOES NOT OFFER `WEB_AUTHN` AS THE ESCAPE HATCH, even though
+ * AWS's own error text names it as accepted. MEASURED us-east-1 2026-08-20: a
+ * pool allowing `WEB_AUTHN` as a first auth factor is REJECTED by
+ * `SetUserPoolMfaConfig(ON, SoftwareTokenMfa)` --
+ *
+ *   InvalidParameterException: Cannot set WebAuthn factor configuration to
+ *   SINGLE_FACTOR if MFA is required and WebAuthn is an allowed first auth factor
+ *
+ * -- with NO WebAuthn block at all, with `UserVerification: preferred`, and with
+ * `required`. The only accepted shape is
+ * `WebAuthnConfiguration.FactorConfiguration = MULTI_FACTOR_WITH_USER_VERIFICATION`,
+ * and the PINNED SDK (`@aws-sdk/client-cognito-identity-provider` 3.1018.0)
+ * does not carry that field -- `WebAuthnConfigurationType` is exactly
+ * `{RelyingPartyId?, UserVerification?}` -- so cdkd cannot reach it today.
+ * Telling the user to switch to `WEB_AUTHN` would therefore be advice that
+ * cannot be followed, which is why the remedy names removing the factor or
+ * lowering `MfaConfiguration` instead.
+ *
+ * That same measurement means `WEB_AUTHN` + ON reproduces this very
+ * partial-apply shape while NOT being on the deny-list. Deliberately left
+ * uncovered: the correct rule there is CONDITIONAL on
+ * `WebAuthnConfiguration.FactorConfiguration`, which the pinned SDK cannot
+ * express, so a flat deny-list entry would be an OVER-REFUSAL of the shape that
+ * becomes valid the moment the SDK gains the field. Tracked as issue #2064.
+ *
+ * SCOPE LIMIT, deliberate and load-bearing: rule 2 fires only when a
+ * `SetUserPoolMfaConfig` request is actually BUILT (`hasMfaConfigProps`), i.e.
+ * the template declares `EnabledMfas` / an email-OTP message or subject /
+ * WebAuthn. With NONE of those, `MfaConfiguration` rides on the SINGLE
+ * `CreateUserPool` / `UpdateUserPool` call and no second call follows -- so
+ * there is no two-call window and structurally NOTHING to partly apply, which
+ * is the entire harm this pre-flight exists to prevent. Refusing there would
+ * ALSO be an over-refusal on a shape AWS accepts: a pool created with
+ * `AllowedFirstAuthFactors: [PASSWORD, EMAIL_OTP]` and no MFA configuration
+ * call at all is ACCEPTED (measured, same session -- the pool came up fine and
+ * only the later `SetUserPoolMfaConfig(ON)` failed). Such a template is left to
+ * AWS, which answers it atomically.
+ *
+ * CLOUDFORMATION PARITY, settled by A/B rather than assumed -- both issues made
+ * this an explicit precondition. CloudFormation hits the SAME rejections and
+ * rolls the stack back:
+ *
+ *   {MfaConfiguration: OFF, EnabledMfas: [SOFTWARE_TOKEN_MFA]}
+ *     -> ROLLBACK_COMPLETE, "Invalid MFA configuration given, can't turn off
+ *        MFA and configure an MFA together"
+ *   {MfaConfiguration: ON, EnabledMfas: [SOFTWARE_TOKEN_MFA],
+ *    AllowedFirstAuthFactors: [PASSWORD, EMAIL_OTP]}  (ESSENTIALS tier)
+ *     -> ROLLBACK_COMPLETE, "Only PASSWORD and WEB_AUTHN..."
+ *
+ * So refusing is PARITY-PRESERVING, not a divergence: cdkd refuses the same SET
+ * of templates CloudFormation refuses, only EARLIER (before the first API call
+ * instead of after a partial apply) and in cdkd's own wording. Nothing that
+ * deploys under CloudFormation is blocked here.
+ *
+ * Both rules read the value cdkd would SEND rather than the raw template value,
+ * from ONE `buildMfaConfigRequest` call, so the refusal and the request can
+ * never disagree about what OFF / ON means for a given bag. The build runs with
+ * NO logger, so the pre-flight is silent and `applyMfaConfig`'s own warnings
+ * still fire exactly once.
+ *
+ * WHAT THIS CANNOT SEE, stated because the message says "refuses it before
+ * sending anything" and that reads as a completeness claim: the pre-flight
+ * inspects the TEMPLATE, never the live pool, so two template edits reach the
+ * same partial apply without tripping it -- DELETING the `SignInPolicy` block
+ * while setting `MfaConfiguration: ON`, and OMITTING `MfaConfiguration` while
+ * adding `EMAIL_OTP` to a pool whose live MFA is already ON. Both need a
+ * live-state guard and are tracked in #2051.
+ *
+ * Deliberately UNCONDITIONAL -- no `CreateContext.replayingState` downgrade.
+ * `.claude/rules/providers.md` says a create-path pre-flight refusal MUST
+ * downgrade on a replay, so this is a STATED EXCEPTION rather than an
+ * oversight, and the rule's own reasoning is what licenses it: the downgrade
+ * exists because a refusal against a STATE record leaves a resource
+ * un-rollbackable with no template-side remedy. That presupposes the replay
+ * could otherwise SUCCEED. Here it cannot -- both combinations are rejected by
+ * AWS 100% of the time (measured above, and CloudFormation rolls back on the
+ * same templates), so downgrading would trade a clear cdkd-worded refusal for
+ * the identical failure arriving later from AWS, on the create path with a
+ * pool to roll back and on the update path with a partial apply. A state record
+ * additionally cannot legitimately HOLD either combination: state is written
+ * only after a SUCCESSFUL apply, and neither can be applied. Revisit this if
+ * AWS ever starts accepting one of them.
+ */
+function describeUnsupportedMfaCombination(
+  properties: Record<string, unknown>,
+  declaredMfaConfiguration: string
+): string | undefined {
+  // ONE build, reused by both rules -- an earlier revision called
+  // `resolveSentMfaConfiguration` for rule 2, which rebuilt the same request a
+  // second (and, inside that helper, a third) time for the same bag.
+  const request = buildMfaConfigRequest('', properties, undefined, declaredMfaConfiguration);
+
+  if (request && request.MfaConfiguration === 'OFF' && hasAnyMfaFactorBlock(request)) {
+    const blocks = [
+      ...(request.SmsMfaConfiguration !== undefined ? ['SmsMfaConfiguration'] : []),
+      ...(request.SoftwareTokenMfaConfiguration !== undefined
+        ? ['SoftwareTokenMfaConfiguration']
+        : []),
+      ...(request.EmailMfaConfiguration !== undefined ? ['EmailMfaConfiguration'] : []),
+    ];
+    return (
+      `${MFA_CONFIGURATION_PATH} is OFF while an MFA factor is configured ` +
+      `(SetUserPoolMfaConfig would carry ${blocks.join(', ')}, built from EnabledMfas / ` +
+      `EmailAuthenticationMessage / EmailAuthenticationSubject). AWS rejects that combination ` +
+      `("Invalid MFA configuration given, can't turn off MFA and configure an MFA together"), ` +
+      `so cdkd refuses it before sending anything rather than leaving a partly-applied update ` +
+      `behind. Set MfaConfiguration to ON or OPTIONAL (or remove it) to enable the declared ` +
+      `factor. (If MFA is genuinely not wanted, remove EnabledMfas / ` +
+      `EmailAuthenticationMessage / EmailAuthenticationSubject instead.)`
+    );
+  }
+
+  // `request &&` is the SCOPE LIMIT from the docstring, not defensive noise: with
+  // no MFA-routed property there is no second call, so no partial apply is
+  // possible and the combination is AWS's to answer atomically -- which it does,
+  // by ACCEPTING a pool whose sign-in policy allows EMAIL_OTP.
+  //
+  // Reading `request.MfaConfiguration` (the value that will be SENT) rather than
+  // `declaredMfaConfiguration` (what the template wrote) keeps this rule on the
+  // same footing as rule 1. The two agree for every input today -- the default
+  // resolves to OPTIONAL or OFF and never to ON, so only a declared ON reaches
+  // here -- and that is exactly why the SENT value is the right one to read: it
+  // stays correct if the default rule ever changes, and it cannot disagree with
+  // what `applyMfaConfig` puts on the wire.
+  if (request && request.MfaConfiguration === 'ON') {
+    // Widened to `readonly string[]` for the membership test ONLY: the constant
+    // is `as const satisfies AuthFactorType[]`, so the SDK-enum fence is applied
+    // at its declaration and this cast cannot weaken it. Without the widening
+    // `includes` demands an `AuthFactorType`, which is the one type this list
+    // deliberately does NOT accept -- every member of it is a candidate.
+    const denied: readonly string[] = MFA_INCOMPATIBLE_FIRST_AUTH_FACTORS;
+    const offending = readAllowedFirstAuthFactors(properties).filter((factor) =>
+      denied.includes(factor)
+    );
+    if (offending.length > 0) {
+      return (
+        `${MFA_CONFIGURATION_PATH} is ON while ` +
+        `Policies.SignInPolicy.AllowedFirstAuthFactors allows ` +
+        `${offending.join(', ')}. AWS rejects that combination ("Only PASSWORD and WEB_AUTHN ` +
+        `(if configured) can be enabled as an auth factor if MFA is enabled"), and on an ` +
+        `update the sign-in policy has already been applied by the time it does, so cdkd ` +
+        `refuses it before sending anything rather than leaving a partly-applied update ` +
+        `behind. Remove ${offending.join(', ')} from ` +
+        `Policies.SignInPolicy.AllowedFirstAuthFactors, leaving PASSWORD. (Setting ` +
+        `MfaConfiguration to OPTIONAL or OFF also clears the conflict, but weakens MFA.)`
+      );
+    }
+  }
+
+  return undefined;
 }
 
 /**
@@ -849,7 +1100,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       new Map<string, string>([
         [
           'WebAuthnFactorConfiguration',
-          'No SDK wire path: @aws-sdk/client-cognito-identity-provider has no field accepting SINGLE_FACTOR | MULTI_FACTOR_WITH_USER_VERIFICATION (not on CreateUserPool/UpdateUserPool, nor SetUserPoolMfaConfig.WebAuthnConfiguration which only carries RelyingPartyId/UserVerification); CC-API-registry-only property',
+          'No wire path in the PINNED SDK (@aws-sdk/client-cognito-identity-provider 3.1018.0): WebAuthnConfigurationType is {RelyingPartyId?, UserVerification?} and no CreateUserPool/UpdateUserPool field accepts SINGLE_FACTOR | MULTI_FACTOR_WITH_USER_VERIFICATION. This is an SDK-VERSION limit, NOT an API one -- the live API does honour FactorConfiguration (measured us-east-1 2026-08-20: SetUserPoolMfaConfig(ON) on a pool allowing WEB_AUTHN as a first auth factor is rejected with "Cannot set WebAuthn factor configuration to SINGLE_FACTOR if MFA is required and WebAuthn is an allowed first auth factor", i.e. the service reads a field the SDK cannot send). RE-EVALUATE THIS ENTRY ON AN SDK BUMP: if WebAuthnConfigurationType gains FactorConfiguration, the property becomes handleable and this entry must go',
         ],
       ]),
     ],
@@ -886,6 +1137,33 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         `produces this shape. The pool deploys with the default MFA configuration instead; ` +
         `declare ON / OPTIONAL / OFF explicitly, or omit the property, to say which was meant.`
     );
+  }
+
+  /**
+   * Raise {@link describeUnsupportedMfaCombination}'s verdict as a typed
+   * refusal, or return silently when there is nothing to refuse.
+   *
+   * A `ProvisioningError` so both call sites behave the way each already does
+   * with the sibling `MfaConfiguration` shape refusal: on the create path it
+   * surfaces as the provider's own error rather than an AWS one, and on the
+   * update path `update()`'s catch re-throws an already-wrapped
+   * `ProvisioningError` unchanged, so it is not double-wrapped. Both call sites
+   * are OUTSIDE their method's try, so the throw travels untouched either way.
+   *
+   * `target` is the pool NAME on create (there is no physical id yet) and the
+   * physical id on update, matching what each path passes to its other
+   * `ProvisioningError`s.
+   */
+  private assertMfaCombinationApplicable(
+    logicalId: string,
+    resourceType: string,
+    target: string,
+    properties: Record<string, unknown>,
+    declaredMfaConfiguration: string
+  ): void {
+    const reason = describeUnsupportedMfaCombination(properties, declaredMfaConfiguration);
+    if (reason === undefined) return;
+    throw new ProvisioningError(reason, resourceType, logicalId, target);
   }
 
   /**
@@ -1029,6 +1307,21 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         error instanceof Error ? error : undefined
       );
     }
+
+    // The pre-flight (issues #1975 / #1977). It sits OUTSIDE the try below so a
+    // refusal cannot be re-wrapped as an AWS creation failure, and BEFORE
+    // `CreateUserPool` -- the create path's first AWS call of any kind -- so
+    // nothing is applied when it refuses. On CREATE the partial apply is
+    // already caught by the `createdUserPoolId` rollback, so what this buys
+    // here is the cdkd-worded message and the saved round trip; the UPDATE
+    // twin below is where it is load-bearing.
+    this.assertMfaCombinationApplicable(
+      logicalId,
+      resourceType,
+      poolName,
+      properties,
+      mfaConfiguration
+    );
 
     // Tracks whether CreateUserPool succeeded this call, so the catch can roll
     // back a pool whose post-create MFA-config step (SetUserPoolMfaConfig)
@@ -1402,7 +1695,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    *   sub-block in the request AWS REJECTS the call; with none it accepts and
    *   resets the pool to MFA-disabled. An EXPLICIT OFF beside a block is
    *   rejected the same way (2026-08-19, issue #1968; the transcript lives at
-   *   the pinned-OFF warning in `buildMfaConfigRequest`).
+   *   `describeUnsupportedMfaCombination`, which since issue #1977 REFUSES that
+   *   combination before any call rather than warning about it).
    *
    * Nothing here licenses a claim about a field on neither list, or about one
    * API from the other's section. Measure it.
@@ -1531,6 +1825,27 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       onUnusable: (message) => this.logger.warn(message),
     });
     this.warnOnBlankMfaConfiguration(properties['MfaConfiguration']);
+
+    // The pre-flight (issues #1975 / #1977), and THIS is the path it exists
+    // for. Placed ahead of `readLiveMfaConfiguration` below -- a READ, not a
+    // mutation, but the requirement is "before the first API call", and a
+    // refused combination has no reason to spend a round trip. Everything
+    // mutating (`UpdateUserPool`, `AddCustomAttributes`,
+    // `SetUserPoolMfaConfig`) is further down still, inside the try.
+    //
+    // Without it the update PARTIAL-APPLIES: `UpdateUserPool` carries the new
+    // `Policies.SignInPolicy` (and every other mutable field) and lands, then
+    // `applyMfaConfig` -> `SetUserPoolMfaConfig` is refused by AWS and
+    // `update()` throws with no provider-side unwind -- leaving the pool with
+    // the new sign-in policy and the OLD MFA state, i.e. the loosening half
+    // applied and the tightening half not.
+    this.assertMfaCombinationApplicable(
+      logicalId,
+      resourceType,
+      physicalId,
+      properties,
+      mfaConfiguration
+    );
 
     // Capture the live MFA configuration BEFORE `UpdateUserPool` can touch it
     // (issue #1925, third item) -- see `readLiveMfaConfiguration` for why the
