@@ -68,7 +68,12 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # these commands does not fire the gate -- commit messages and PR bodies
 # routinely describe the commands they are about (.claude/rules/hooks.md,
 # "Command-position matching").
-VERB_ERE='gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+(pr[[:space:]]+(create|edit|comment|review)|issue[[:space:]]+(create|comment|edit)|release[[:space:]]+(create|edit)|api)\b'
+# The terminator is spelled out rather than `\b`: `cmd_matches_verb` greps
+# (where `\b` works) but `cmd_last_cd_target` feeds the same ERE to AWK,
+# where `\b` is a BACKSPACE, so the "stop following `cd`s at the verb"
+# guard silently never matched and a trailing `cd` hijacked the target
+# dir. Every other caller of the helper spells it this way.
+VERB_ERE='gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+(pr[[:space:]]+(create|edit|comment|review)|issue[[:space:]]+(create|comment|edit)|release[[:space:]]+(create|edit)|api)([[:space:]]|$|[|;&`)])'
 if ! cmd_matches_verb "$cmd" "$VERB_ERE"; then
   exit 0
 fi
@@ -76,7 +81,7 @@ fi
 # ...and only when a body / title / notes is actually being sent. This
 # keeps `gh api repos/{owner}/{repo}/issues/5 --jq .body` (a READ whose
 # flag merely names the field) out of scope.
-if ! printf '%s' "$cmd" | grep -qE '(--body|-b[[:space:]=]|--title|-t[[:space:]=]|--notes|body=|title=|notes=)'; then
+if ! printf '%s' "$cmd" | grep -qE '(--body|--title|--notes|-b[[:space:]=]|-t[[:space:]=]|-n[[:space:]=]|-F[[:space:]=]|-f[[:space:]=]|body=|title=|notes=)'; then
   exit 0
 fi
 
@@ -122,6 +127,11 @@ while IFS= read -r f; do
 done < <(printf '%s' "$cmd" | perl -0777 -ne '
     while (/--(?:body|notes)-file[=\s]+(["\x27]?)([^"\x27\s]+)\1/g) { print "$2\n"; }
     while (/(?:--field|--raw-field|-F)[=\s]+(["\x27]?)(?:body|title|notes)=\@([^"\x27\s]+)\1/g) { print "$2\n"; }
+    # `-F <path>` is gh subcommand shorthand for --body-file / --notes-file
+    # (and is this repo`s preferred shape). A bare -F whose value carries no
+    # `key=` is a FILE, which distinguishes it from the gh api `-F body=@p`
+    # form handled above.
+    while (/(?:^|\s)-F[=\s]+(["\x27]?)([^"\x27\s=]+)\1(?=\s|$)/g) { print "$2\n"; }
   ' 2>/dev/null)
 
 # --- 2. inline bodies, titles and notes --------------------------------
@@ -143,13 +153,20 @@ done < <(printf '%s' "$cmd" | perl -0777 -ne '
     # so `-b` cannot match inside `--body-file`. `\\.` skips an escaped
     # quote so it does not terminate the span early; /s lets the value
     # span newlines.
-    while (/(?:^|\s)(?:--body|--title|--notes|-b|-t)[=\s]*"((?:[^"\\]|\\.)*)"/gs) { print "$1\0"; }
-    while (/(?:^|\s)(?:--body|--title|--notes|-b|-t)[=\s]*\x27([^\x27]*)\x27/gs)  { print "$1\0"; }
+    while (/(?:^|\s)(?:--body|--title|--notes|-b|-t|-n)[=\s]*"((?:[^"\\]|\\.)*)"/gs) { print "$1\0"; }
+    while (/(?:^|\s)(?:--body|--title|--notes|-b|-t|-n)[=\s]*\x27([^\x27]*)\x27/gs)  { print "$1\0"; }
     # Unquoted value: stops at whitespace, which is all the shell would
-    # have passed as one argument anyway.
-    while (/(?:^|\s)(?:--body|--title|--notes)[=\s]+([^\s"\x27-][^\s]*)/g)        { print "$1\0"; }
-    # gh api field forms carrying a literal (not @file) value.
-    while (/(?:--field|--raw-field|-F|-f)[=\s]+(["\x27]?)(?:body|title|notes)=([^"\x27@\s][^"\x27]*)\1/gs) { print "$2\0"; }
+    # have passed as one argument anyway. Short flags are listed here too --
+    # omitting them let `-b <unquoted>` through while `--body <unquoted>`
+    # was caught.
+    while (/(?:^|\s)(?:--body|--title|--notes|-b|-t|-n)[=\s]+([^\s"\x27-][^\s]*)/g)  { print "$1\0"; }
+    # gh api field forms carrying a literal (not @file) value. Split in two:
+    # the quote may wrap the WHOLE `body=...` or follow the `=`, and the
+    # unquoted branch must stop at whitespace -- a single `[^"\x27]*` arm ran
+    # away to the next quote or end of command and swallowed later arguments.
+    while (/(?:--field|--raw-field|-F|-f)[=\s]+["\x27](?:body|title|notes)=([^"\x27]*)["\x27]/gs) { print "$1\0"; }
+    while (/(?:--field|--raw-field|-F|-f)[=\s]+(?:body|title|notes)=(["\x27])([^"\x27]*)\1/gs)    { print "$2\0"; }
+    while (/(?:--field|--raw-field|-F|-f)[=\s]+(?:body|title|notes)=([^\s"\x27@][^\s]*)/g)        { print "$1\0"; }
   ' 2>/dev/null)
 
 if [ ${#OFFENDERS[@]} -eq 0 ]; then

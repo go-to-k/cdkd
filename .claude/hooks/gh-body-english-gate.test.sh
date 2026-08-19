@@ -153,6 +153,57 @@ else
 fi
 rm -rf "$REL"
 
+# --- round-2 review regressions (issue #1993) --------------------------
+# `-F <file>` is gh's OWN short form for --body-file / --notes-file, and
+# is this repo's preferred shape ("gh body-file over heredoc").
+run "-F <file> short form blocks (gh's own --body-file alias)" \
+  "gh issue create --title x -F $JP_BODY" 2
+run "-F <file> on pr create blocks" \
+  "gh pr create --title x -F $JP_BODY" 2
+run "-F <file> on issue comment blocks" \
+  "gh issue comment 5 -F $JP_BODY" 2
+run "-F <file> on release create blocks (--notes-file alias)" \
+  "gh release create v1 -F $JP_BODY" 2
+
+# The quote after `=` is the COMMON gh api shape; only the whole-arg
+# quoting was matched.
+run "gh api -f body=\"...\" (quote after =) blocks" \
+  'gh api repos/o/r/issues/5/comments -f body="これはテスト"' 2
+run "gh api -f title=\"...\" blocks (the blessed title-edit form)" \
+  'gh api -X PATCH repos/o/r/pulls/5 -f title="タイトル"' 2
+run "gh api -F body=\"...\" blocks" \
+  'gh api repos/o/r/issues -F body="日本語"' 2
+
+# Short flags were absent from the UNQUOTED arm, so `--body x` was
+# caught while `-b x` was not.
+run "unquoted -b blocks" 'gh issue comment 5 -b 対応しました' 2
+run "unquoted -t blocks" 'gh issue create -t バグ修正 -b "english"' 2
+run "-n release notes short form blocks" \
+  'gh release create v1 -n "リリースノート"' 2
+
+# A `cd` AFTER the verb must not hijack the target dir. VERB_ERE ended in
+# `\b`, which grep honours but AWK reads as a backspace -- so the helper's
+# stop-at-the-verb guard never fired and the relative body file was looked
+# for in the wrong directory.
+CDDIR=$(mktemp -d); OTHER=$(mktemp -d)
+printf 'これは日本語\n' > "$CDDIR/body.md"
+cdin=$(jq -nc --arg c "cd $CDDIR && gh issue create --title x --body-file body.md && cd $OTHER && git pull" --arg d "$OTHER" \
+  '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}')
+cdrc=0; echo "$cdin" | "$HOOK" >/dev/null 2>&1 || cdrc=$?
+if [[ "$cdrc" -eq 2 ]]; then
+  echo "PASS: a trailing cd does not hijack the body-file lookup (exit 2)"; PASS=$((PASS+1))
+else
+  echo "FAIL: a trailing cd does not hijack the body-file lookup (exit $cdrc, expected 2)"; FAIL=$((FAIL+1))
+fi
+rm -rf "$CDDIR" "$OTHER"
+
+# The unquoted gh api field arm ran to the next quote / end of command,
+# swallowing later arguments into the "body" and reporting the wrong one.
+run "gh api unquoted field does not swallow a later argument" \
+  'gh api repos/o/r/issues -f body=ok -f label=日本語' 0
+run "gh api unquoted field stops at the command separator" \
+  'gh api repos/o/r/issues -f body=ok ; echo done' 0
+
 # --- each Unicode range in ISOLATION ----------------------------------
 # Without these, deleting any single range from the character class
 # still passed every case.
