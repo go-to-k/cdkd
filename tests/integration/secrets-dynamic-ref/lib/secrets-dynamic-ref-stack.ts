@@ -140,6 +140,36 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         // be persisted as the unresolved expression — exactly like a
         // secretsmanager reference, and unlike SSM_VALUE above.
         SSM_SECURE_VALUE: `{{resolve:ssm:${secureParamName}}}`,
+        // MIXED leaf (issue #1926 review): the reference sits INSIDE surrounding
+        // text instead of being the WHOLE value. That distinction is the whole
+        // point — `redactByPath` substitutes a source leaf only when it is a
+        // COMPLETE `{{resolve:...}}` token, so on any path whose secrets map is
+        // empty (an UNCHANGED resource; `cdkd state refresh-observed`) this
+        // shape fell through to a value scan with no needles and the DECRYPTED
+        // value was persisted. It is also the dominant CDK shape: an
+        // `Fn::Join` around `secret.secretValueFromJson(...)`.
+        //
+        // `cdk.Aws.REGION` is interpolated to FORCE that `Fn::Join`. Every other
+        // env var here is a plain literal (the names are synth-time strings), so
+        // without a token in the string CDK would constant-fold this one too and
+        // the template would never carry the intrinsic.
+        //
+        // Built on the SECURE ssm parameter rather than the secret's password
+        // deliberately, for two independent reasons: the password already
+        // participates in the SECRET_PASSWORD / _STAGED collision that Guard 3
+        // exists to fence, and a third reference resolving to the same value
+        // would perturb which expression the value-keyed map keeps; and the
+        // SecureString's plaintext has NO legitimate home anywhere in state
+        // (unlike the secret's own `SecretString`, which the DynRefSecret
+        // resource legitimately holds), which is what lets Phase 1g grep the
+        // WHOLE state document for it rather than one key.
+        // The user component is deliberately NOT `cdkd-user`: that is the secret's
+        // OWN username, and `EXPECTED_USERNAME` is grepped against the whole
+        // persisted env to prove SECRET_FULL's whole-secret resolution did not
+        // land there. A literal equal to that needle makes this env var itself
+        // trip the guard -- a FALSE leak report that looks exactly like a real
+        // one. Any literal added here must not collide with an assertion needle.
+        DB_URL: `postgres://app-svc:{{resolve:ssm:${secureParamName}}}@db.${cdk.Aws.REGION}.internal:5432/app`,
         // Rollback-probe-only extra (forces a Lambda UPDATE this phase; the
         // rollback removes it). NOT gated as a mode-gated CREATE — the env var
         // is added to an existing resource, and the fixture reverts it via

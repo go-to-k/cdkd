@@ -38,7 +38,7 @@
  * | intrinsic, substitutes a secretsmanager ref    | refuse (exact)    | refuse (spelling) |
  * | intrinsic, substitutes a PINNED SecureString   | refuse (exact)    | publish (residual)|
  * | LITERAL, spelled as a `{{resolve:...}}` token | publish           | publish           |
- * | LITERAL, contains a recorded plaintext        | refuse            | SUPPRESS delta    |
+ * | LITERAL, contains a recorded plaintext        | refuse            | decide from STATE |
  * | intrinsic/literal, unpinned `ssm:` plaintext  | refuse if recorded| publish (residual)|
  * | collides with a published output name         | refuse            | refuse            |
  *
@@ -58,18 +58,20 @@
  *   is substituted and the key holds the EXPRESSION — which is what state
  *   stores post-redaction anyway. Refusing it on the diff side alone produced a
  *   phantom REMOVE on every run.
- * - A LITERAL name in a stack that resolves a secret makes the DIFF suppress its
- *   whole outputs delta, and RECORD the alias key as failed so the suppression
- *   warning cannot blame the wrong cause. Deploy refuses such a name only when
- *   it CONTAINS a resolved plaintext, and the preview never substitutes one, so
- *   it cannot decide; suppressing is this module's twin's existing answer to
- *   "cannot reproduce what deploy will do", and it also avoids printing a
- *   plaintext-bearing key into CI logs. It is deliberately the WEAKER of the two
- *   fixes considered: deciding the case from the stored bag (state holding the
- *   key proves a previous deploy published it) would keep the outputs delta
- *   working, but it is a new positive arm and belongs in its own review rather
- *   than in a fix round — issue
- *   [#1942](https://github.com/go-to-k/cdkd/issues/1942).
+ * - A LITERAL name in a stack that resolves a secret is decided by the DIFF from
+ *   the STORED bag (issue [#1942](https://github.com/go-to-k/cdkd/issues/1942)).
+ *   Deploy refuses such a name only when it CONTAINS a resolved plaintext, and
+ *   the preview never substitutes one, so it cannot evaluate that predicate —
+ *   but state holding the alias KEY proves a previous deploy already evaluated
+ *   it and published, over the same literal name, so the preview publishes the
+ *   same key with today's value. When the key is ABSENT (a first deploy of the
+ *   alias or of the stack) there is no recorded verdict, so the diff falls back
+ *   to suppressing its whole outputs delta and RECORDING the alias key as
+ *   failed, which is this module's twin's existing answer to "cannot reproduce
+ *   what deploy will do" and also avoids printing a plaintext-bearing key into
+ *   CI logs. The `outputs-diff.ts` branch carries the two residuals (a rotation
+ *   flipping deploy's verdict; a key stored by a pre-#1919 binary, which
+ *   records no verdict).
  *
  * The message builders live here for the reason
  * `src/provisioning/nested-stack-messages.ts` gives: a test that pins behavior

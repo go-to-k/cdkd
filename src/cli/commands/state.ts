@@ -34,6 +34,12 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout-registry.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { withStackName } from '../../provisioning/resource-name.js';
+import {
+  redactSecretsForState,
+  STATE_SOURCED_READBACK_RULES,
+  type RecordedSecretValues,
+} from '../../deployment/secret-redaction.js';
+import { stripControlChars } from '../../utils/regexp.js';
 import { buildReadCurrentStateContext } from './drift.js';
 import { runDestroyForStack } from './destroy-runner.js';
 import { createStateMigrateCommand } from './state-migrate.js';
@@ -511,7 +517,11 @@ async function stateResourcesCommand(
       for (const detail of details) {
         lines.push(detail.logicalId);
         lines.push(`  Type: ${detail.resourceType}`);
-        lines.push(`  PhysicalID: ${detail.physicalId}`);
+        // Stripped like every other value in this block (issue #1926 review):
+        // a physical id is often COMPOSITE, built from template-authored
+        // segments (a bucket name, a queue name, a rule name), so it is the one
+        // field here that passed no CloudFormation validator.
+        lines.push(`  PhysicalID: ${stripControlChars(detail.physicalId)}`);
         lines.push(
           `  Dependencies: ${detail.dependencies.length > 0 ? detail.dependencies.join(', ') : '(none)'}`
         );
@@ -521,7 +531,7 @@ async function stateResourcesCommand(
         } else {
           lines.push('  Attributes:');
           for (const [k, v] of attrEntries) {
-            lines.push(`    ${k}: ${formatAttributeValue(v)}`);
+            lines.push(`    ${stripControlChars(k)}: ${formatAttributeValue(v)}`);
           }
         }
         lines.push('');
@@ -552,13 +562,43 @@ async function stateResourcesCommand(
  *
  * Scalar values render as-is; objects/arrays are JSON-encoded inline so a
  * resource block stays compact even when an attribute is structured.
+ *
+ * Control characters are stripped HERE rather than at each call site (issue
+ * #1948 review), because every caller has the same provenance problem and the
+ * same answer: an Outputs value, a resource PROPERTY and a provider-returned
+ * ATTRIBUTE are all values cdkd resolved or read back, none of them passed a
+ * CloudFormation validator, and all three land in the same terminal. Doing it
+ * once means a future caller cannot forget — the half-applied version of this
+ * guard is what the review caught.
+ *
+ * The FULL class (C0 included), unlike `diff-recursive`'s
+ * `stripDisplayOnlyChars`: that narrower guard exists to protect a
+ * PRETTY-PRINTED payload's structural newlines, and this function never
+ * pretty-prints — `JSON.stringify` is called without an indent, so a newline
+ * here is content injected by the value, not layout.
+ *
+ * Only the human path routes through this; `--json` serializes the state
+ * record directly and stays byte-faithful, which is the same split
+ * `renderOutputChangeLines` makes.
  */
 function formatAttributeValue(value: unknown): string {
   if (value === null) return 'null';
+  // `undefined` BEFORE the JSON branch: `JSON.stringify(undefined)` returns
+  // `undefined`, not a string, so the strip below would throw on it. A state
+  // record read from S3 cannot hold one (JSON has no `undefined`), but this is
+  // also called on hand-built records in tests and on `attributes` bags a
+  // provider populated in memory.
+  if (value === undefined) return 'undefined';
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return String(value);
+    return stripControlChars(String(value));
   }
-  return JSON.stringify(value);
+  // `JSON.stringify` returns `undefined` — not a string — for a symbol or a
+  // function value, so stripping its result directly would throw. State read
+  // from S3 cannot hold either (JSON has neither), but this also renders
+  // in-memory `attributes` bags a provider populated, and a renderer that
+  // throws on an odd value is worse than one that names it.
+  const json = JSON.stringify(value);
+  return json === undefined ? '(unserializable)' : stripControlChars(json);
 }
 
 /**
@@ -727,7 +767,16 @@ function renderStateBlock(state: StackState, lockInfo: LockInfo | null): string[
     lines.push('');
     lines.push('Outputs:');
     for (const [k, v] of outputEntries) {
-      lines.push(`  ${k}: ${formatAttributeValue(v)}`);
+      // The KEY is stripped here; the VALUE by `formatAttributeValue`, which
+      // every other row in this block also goes through (issue #1948). Unlike
+      // a resource logical id — which CloudFormation constrains to
+      // [A-Za-z0-9] — an Outputs bag KEY can be an `Export.Name` that cdkd
+      // RESOLVED from an `Fn::Sub` / parameter / SSM value, so it passed no
+      // CFn validator and may carry ANSI escapes or bidi overrides that
+      // rewrite the surrounding terminal output. Same guard
+      // `renderOutputChangeLines` applies to the diff's rows, which is the
+      // only other place a stored Outputs bag is rendered.
+      lines.push(`  ${stripControlChars(k)}: ${formatAttributeValue(v)}`);
     }
   }
 
@@ -740,7 +789,7 @@ function renderStateBlock(state: StackState, lockInfo: LockInfo | null): string[
     lines.push('');
     lines.push(logicalId);
     lines.push(`  Type: ${resource.resourceType}`);
-    lines.push(`  PhysicalID: ${resource.physicalId}`);
+    lines.push(`  PhysicalID: ${stripControlChars(resource.physicalId)}`);
     // v7+ (#614): show the provisioning layer so users can see which
     // resources took the Cloud Control auto-route. Absent on pre-v7
     // state — print "(sdk, legacy default)" so the absence is explicit.
@@ -755,7 +804,10 @@ function renderStateBlock(state: StackState, lockInfo: LockInfo | null): string[
     } else {
       lines.push('  Attributes:');
       for (const [k, v] of attrEntries) {
-        lines.push(`    ${k}: ${formatAttributeValue(v)}`);
+        // The KEY is stripped for the same reason the Outputs key is: a
+        // provider-returned attribute name and a template-authored property
+        // name both reach here without passing a CloudFormation validator.
+        lines.push(`    ${stripControlChars(k)}: ${formatAttributeValue(v)}`);
       }
     }
 
@@ -765,7 +817,7 @@ function renderStateBlock(state: StackState, lockInfo: LockInfo | null): string[
     } else {
       lines.push('  Properties:');
       for (const [k, v] of propEntries) {
-        lines.push(`    ${k}: ${formatAttributeValue(v)}`);
+        lines.push(`    ${stripControlChars(k)}: ${formatAttributeValue(v)}`);
       }
     }
   }
@@ -1939,6 +1991,20 @@ async function stateRefreshObservedCommand(
 }
 
 /**
+ * The secrets map every redaction on this command's paths gets, and it is
+ * EMPTY by construction (issue #1926).
+ *
+ * `cdkd state refresh-observed` neither synthesizes a template nor resolves a
+ * dynamic reference, so no plaintext is ever recorded here and a VALUE scan
+ * would have no needles at all. That is the issue #1900 shape, and it is why
+ * the PATH pass has to carry the redaction on its own — see the call site.
+ *
+ * Shared rather than constructed per resource because nothing writes to it:
+ * `redactSecretsForState` only reads its argument.
+ */
+const NO_RECORDED_SECRETS: RecordedSecretValues = new Map();
+
+/**
  * Refresh the `observedProperties` of every resource in one stack
  * record. Returns counts so the caller can aggregate across `--all`.
  *
@@ -2048,7 +2114,59 @@ async function refreshObservedForStack(
             unsupported++;
             return;
           }
-          resource.observedProperties = observed;
+          // GHSA-p5qg-v9gv-hc7w (issue #1926). The readback is what AWS
+          // actually holds, so for a resource deployed from a
+          // `{{resolve:secretsmanager:...}}` reference — or a
+          // `{{resolve:ssm:...}}` naming a `SecureString` — it is the DECRYPTED
+          // value, and persisting it verbatim re-introduces the advisory's
+          // disclosure inside `state.json`. This writer reached the redaction
+          // module through NO path at all before this line, which is why the
+          // #1910 sweep (framed as "every writer passes a POSITION source")
+          // never surfaced it.
+          //
+          // The map is empty (see {@link NO_RECORDED_SECRETS}), so POSITION is
+          // the whole mechanism: the record's own `properties` hold the
+          // unresolved expression, and walking the observed bag against them
+          // rewrites the plaintext AWS echoes back onto that expression with no
+          // secret fetch and no value matching.
+          //
+          // The MIXED-leaf and unpairable-array refusals live in
+          // `secret-redaction.ts`, NOT here (issue #1926 review). This command
+          // is not the only writer with an empty map and a state-bag source — a
+          // plain `cdkd deploy` reaches the same configuration through
+          // `drainObservedCaptures` and the persist choke point — so a remedy
+          // spelled at this call site would have left the DEFAULT path leaking.
+          // That module's `refuseUncertifiedReadbackPositions` carries the
+          // measured per-shape table and the one residual it does not close
+          // (issue #2012).
+          //
+          // `STATE_SOURCED_READBACK_RULES` is the row this write site occupies
+          // in `secret-redaction.ts`'s generation table ("observed walk,
+          // own-record source"): the source is THIS record's own persisted bag,
+          // so it is the same GENERATION as the bag beside it and holds no
+          // PUBLIC ssm expression — a `String` parameter is stored resolved
+          // (issue #1901) — which is what lets a stored expression win over the
+          // plaintext AWS echoes back. POSITIONAL array descent stays off
+          // because AWS may reorder a list; the order-independent KEYED descent
+          // added by issue #1915 lives inside that pass and is inherited here
+          // rather than re-solved, so a secret nested in a `Tags[]` /
+          // `Environment[]` element is reached too.
+          //
+          // Inherited residual, not introduced here: `cdkd import`'s warn path
+          // can leave a PUBLIC expression in `properties`, and
+          // `trustAnyExpression` would then copy it over the observed value —
+          // the same trade every other caller of this rules constant makes.
+          //
+          // A PRE-GHSA record is not repaired by either pass and cannot be:
+          // its `properties` hold the plaintext too, so the position source
+          // carries no expression to take. `cdkd scrub` is what repairs that,
+          // and the command's own description says to run it first.
+          resource.observedProperties = redactSecretsForState(
+            observed,
+            NO_RECORDED_SECRETS,
+            resource.properties ?? {},
+            STATE_SOURCED_READBACK_RULES
+          );
           refreshed++;
         } catch (err) {
           failed++;
@@ -2102,7 +2220,10 @@ function createStateRefreshObservedCommand(): Command {
     .description(
       'Refresh observedProperties for every resource in a stack by ' +
         'calling provider.readCurrentState — populates the drift baseline ' +
-        'for stacks deployed before state schema v3, without redeploying.'
+        'for stacks deployed before state schema v3, without redeploying. ' +
+        'Run cdkd scrub first on state written by a pre-GHSA binary: the ' +
+        'readback is redacted by POSITION against the record, so a record ' +
+        'whose own properties still hold plaintext has nothing to redact from.'
     )
     .argument('[stacks...]', 'Stack name(s) to refresh (physical CloudFormation names)')
     .option('--all', 'Refresh every stack in the state bucket', false)

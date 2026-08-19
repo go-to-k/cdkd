@@ -640,8 +640,10 @@ describe('computeStackDiff / buildDiffTree canonicalizer wiring (#1591)', () => 
       'S',
       fakeBackend({}),
       new DiffCalculator(),
-      undefined,
-      canonicalize
+      {
+        parameters: undefined,
+        canonicalizeProperties: canonicalize,
+      }
     );
     expect(withFn.get('R')!.changeType).toBe('NO_CHANGE');
 
@@ -768,9 +770,7 @@ describe('computeStackDiff / buildDiffTree cfnFallback threading (#1697)', () =>
       'S',
       fbBackend({ S: resolvedState() }),
       new DiffCalculator(),
-      undefined,
-      undefined,
-      false
+      { cfnFallback: false }
     );
     expect(changes.get('P')!.changeType).toBe('UPDATE');
     expect(cfnMockSend).not.toHaveBeenCalled();
@@ -1022,7 +1022,7 @@ describe('computeStackDiff', () => {
         'S',
         fakeBackend({}),
         new DiffCalculator(),
-        { Req: 'given' }
+        { parameters: { Req: 'given' } }
       );
       expect(changes.get('A')!.changeType).toBe('NO_CHANGE');
     });
@@ -1745,7 +1745,7 @@ describe('buildDiffTree — down-passed nested-stack Parameters (spurious-change
       'S',
       fakeBackend({}),
       new DiffCalculator(),
-      { [PARAM]: 'my-topic' }
+      { parameters: { [PARAM]: 'my-topic' } }
     );
     expect(changes.get('A')!.changeType).toBe('NO_CHANGE');
   });
@@ -1919,6 +1919,100 @@ describe('Outputs-only change (issue #1921)', () => {
     expect(out).toContain('0 to create, 0 to update, 0 to delete');
   });
 
+  it('WIRING (issue #1942): the stored bag decides a literal export alias, so the section SURVIVES', async () => {
+    // End-to-end through `computeStackDiff`, which is what actually threads
+    // `currentState.outputs` into the resolver. Before this the whole Outputs
+    // section was suppressed for a stack shaped like this and a genuine export
+    // change went unreported (the #875 case).
+    //
+    // The secret uses the `Fn::Join` shape a CDK L2 renders: a plain string
+    // would pass the signal for the wrong reason (a shallow scan finds it),
+    // which is how the last defect in this file survived a round.
+    const secretJoin = {
+      'Fn::Join': ['', ['pre-', '{{resolve:secretsmanager:prod/db:SecretString:pw}}']],
+    };
+    const tpl: CloudFormationTemplate = {
+      Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+      Outputs: {
+        DbSecret: { Value: secretJoin },
+        Exporter: { Value: ARN, Export: { Name: 'S:Arn' } },
+      },
+    };
+
+    const { outputChanges } = await diffFor(
+      stateWith({ 'S:Arn': 'arn:aws:ssm:us-east-1:1:parameter/OLD', Exporter: ARN }),
+      tpl
+    );
+
+    const aliasRow = outputChanges.find((c) => c.name === 'S:Arn');
+    expect(aliasRow?.changeType).toBe('MODIFY');
+    expect(aliasRow?.isExport).toBe(true);
+    expect(aliasRow?.newValue).toBe(ARN);
+  });
+
+  it('WIRING (issue #1942): still suppressed when the stored bag lacks the alias key', async () => {
+    const secretJoin = {
+      'Fn::Join': ['', ['pre-', '{{resolve:secretsmanager:prod/db:SecretString:pw}}']],
+    };
+    const tpl: CloudFormationTemplate = {
+      Resources: { A: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'x' } } },
+      Outputs: {
+        DbSecret: { Value: secretJoin },
+        Exporter: { Value: ARN, Export: { Name: 'S:Arn' } },
+      },
+    };
+
+    const { outputChanges } = await diffFor(stateWith({ Exporter: 'something-else' }), tpl);
+    expect(outputChanges).toEqual([]);
+  });
+
+  it('WIRING (issue #1948): a deleted secret output prints no stored plaintext', async () => {
+    // The template's ONLY remaining secret reference is in a RESOURCE, so
+    // `secretSourceKeys` is empty and the record reads as post-GHSA — which is
+    // exactly the shape whose stored plaintext used to render as a REMOVE row.
+    // This test is what proves `declaredKeys` / `templateHasSecretReference`
+    // actually reach `computeOutputsDiff`; the analyzer suite alone would pass
+    // with the arguments never threaded.
+    const tpl: CloudFormationTemplate = {
+      Resources: {
+        A: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Value: 'x',
+            Description: '{{resolve:secretsmanager:prod/db:SecretString:pw}}',
+          },
+        },
+      },
+      Outputs: { ApiUrl: { Value: 'https://new.example.com' } },
+    };
+
+    const { outputChanges } = await diffFor(
+      stateWith({ DbPassword: 'hunter2', ApiUrl: 'https://old.example.com' }),
+      tpl
+    );
+
+    const removed = outputChanges.find((c) => c.name === 'DbPassword');
+    expect(removed?.changeType).toBe('REMOVE');
+    expect(removed?.oldValueRedacted).toBe(true);
+    expect(removed?.oldValue).toBeUndefined();
+    // Per-key: the accountable row keeps its value.
+    const modified = outputChanges.find((c) => c.name === 'ApiUrl');
+    expect(modified?.oldValue).toBe('https://old.example.com');
+    expect(JSON.stringify(outputChanges)).not.toContain('hunter2');
+  });
+
+  it('WIRING (issue #1948): an ordinary stack still prints its REMOVE value', async () => {
+    // The control for the wiring above — without it the test could pass on a
+    // gate that fires for every stack.
+    const { outputChanges } = await diffFor(
+      stateWith({ Gone: 'arn:aws:s3:::gone', ApiUrl: 'https://old.example.com' }),
+      template({ ApiUrl: { Value: 'https://new.example.com' } })
+    );
+    const removed = outputChanges.find((c) => c.name === 'Gone');
+    expect(removed?.oldValue).toBe('arn:aws:s3:::gone');
+    expect(removed?.oldValueRedacted).toBeUndefined();
+  });
+
   it('renders a MODIFY row with both sides and the change count', () => {
     const lines: string[] = [];
     const counts = renderOutputChangeLines(
@@ -1947,7 +2041,7 @@ describe('Outputs-only change (issue #1921)', () => {
       (m) => lines.push(m)
     );
     const out = lines.join('\n');
-    expect(out).toContain('<redacted: legacy plaintext in state');
+    expect(out).toContain('<redacted: may be legacy plaintext in state');
     expect(out).not.toContain('hunter2');
   });
 
@@ -2064,6 +2158,153 @@ describe('Outputs-only change (issue #1921)', () => {
     expect(node.children[0]!.outputChanges).toEqual([
       { name: 'OldOut', changeType: 'REMOVE', oldValue: 'v', isExport: false },
     ]);
+  });
+
+  it('WITHHOLDS a deleted nested child\'s stored values when the PARENT proves a secret (issue #1948 review)', async () => {
+    // The child is diffed against an EMPTY template, so it can compute nothing
+    // about secrets from its own input: `templateHasSecretReference` is false,
+    // `declaredKeys` and `desired` are empty, and none of the three withholding
+    // arms can fire — a pre-GHSA child's WHOLE stored bag rendered with values,
+    // one level up from the #1948 top-level case. The parent's template is the
+    // evidence, threaded down by `buildDeletedSubtree`.
+    const backend = fakeBackend({
+      P: st('P', { Gone: res(NESTED, {}) }),
+      'P~Gone': stateWith({ DbPassword: 'hunter2', ApiUrl: 'https://old.example.com' }),
+    });
+    const node = await buildDiffTree({
+      stackName: 'P',
+      displayName: 'P',
+      region: 'us-east-1',
+      template: {
+        Resources: {
+          Fn: {
+            Type: 'AWS::Lambda::Function',
+            Properties: {
+              Environment: {
+                Variables: { PW: '{{resolve:secretsmanager:prod/db:SecretString:pw}}' },
+              },
+            },
+          },
+        },
+      },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+
+    const rows = node.children[0]!.outputChanges;
+    expect(rows.map((c) => c.name).sort()).toEqual(['ApiUrl', 'DbPassword']);
+    // Both rows are still REPORTED — only the values are withheld.
+    for (const row of rows) {
+      expect(row.changeType).toBe('REMOVE');
+      expect(row.oldValueRedacted).toBe(true);
+      expect(row.oldValue).toBeUndefined();
+    }
+    expect(JSON.stringify(rows)).not.toContain('hunter2');
+  });
+
+  it('a deleted nested child in an ORDINARY parent still prints its values', async () => {
+    // The control. Without it the assertion above would pass on a rule that
+    // withholds every deleted child's bag on every stack.
+    const backend = fakeBackend({
+      P: st('P', { Gone: res(NESTED, {}) }),
+      'P~Gone': stateWith({ ApiUrl: 'https://old.example.com' }),
+    });
+    const node = await buildDiffTree({
+      stackName: 'P',
+      displayName: 'P',
+      region: 'us-east-1',
+      template: { Resources: {} },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+    expect(node.children[0]!.outputChanges).toEqual([
+      { name: 'ApiUrl', changeType: 'REMOVE', oldValue: 'https://old.example.com', isExport: false },
+    ]);
+  });
+
+  it('propagates the parent signal to a deleted GRANDchild', async () => {
+    // The recursion re-passes the flag rather than recomputing it: a
+    // grandchild's template is gone for the same reason its parent's is.
+    const backend = fakeBackend({
+      P: st('P', { Gone: res(NESTED, {}) }),
+      'P~Gone': { ...st('P~Gone', { Deeper: res(NESTED, {}) }), outputs: {} },
+      'P~Gone~Deeper': stateWith({ DbPassword: 'hunter2' }),
+    });
+    const node = await buildDiffTree({
+      stackName: 'P',
+      displayName: 'P',
+      region: 'us-east-1',
+      template: {
+        Resources: {
+          Fn: {
+            Type: 'AWS::Lambda::Function',
+            Properties: { Pw: '{{resolve:secretsmanager:prod/db:SecretString:pw}}' },
+          },
+        },
+      },
+      nestedTemplates: {},
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+
+    const grandchild = node.children[0]!.children[0]!;
+    expect(grandchild.stackName).toBe('P~Gone~Deeper');
+    expect(grandchild.outputChanges[0]!.oldValueRedacted).toBe(true);
+    expect(JSON.stringify(grandchild.outputChanges)).not.toContain('hunter2');
+  });
+
+  it('an INTERMEDIATE live template without a secret does not break the chain (issue #1948 review)', async () => {
+    // The per-level version of this was wrong: each `buildDiffTree` armed its
+    // own deleted children from its OWN template only. Root references a
+    // secret, the live middle child does not, and the deleted GRANDchild holds
+    // a pre-GHSA bag — so the level that mattered answered `false` and the
+    // stored plaintext printed. The flag now accumulates with OR down the walk.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-1948-'));
+    const midPath = join(dir, 'mid.template.json');
+    writeFileSync(
+      midPath,
+      // `Gone` is deliberately ABSENT here while state still carries it — that
+      // is what makes it a DELETED grandchild. No secret reference either.
+      JSON.stringify({
+        Resources: { MidRes: { Type: 'AWS::SSM::Parameter', Properties: { Value: 'ordinary' } } },
+      })
+    );
+    const backend = fakeBackend({
+      P: st('P', { Mid: res(NESTED, {}) }),
+      'P~Mid': st('P~Mid', { Gone: res(NESTED, {}) }),
+      'P~Mid~Gone': stateWith({ DbPassword: 'hunter2' }),
+    });
+    const node = await buildDiffTree({
+      stackName: 'P',
+      displayName: 'P',
+      region: 'us-east-1',
+      // The ROOT carries the only secret reference in the tree.
+      template: {
+        Resources: {
+          Mid: { Type: NESTED, Properties: {} },
+          Fn: {
+            Type: 'AWS::Lambda::Function',
+            Properties: { Pw: '{{resolve:secretsmanager:prod/db:SecretString:pw}}' },
+          },
+        },
+      },
+      // The intermediate child's own template has NO secret reference.
+      nestedTemplates: { Mid: midPath },
+      recursive: true,
+      stateBackend: backend,
+      diffCalculator: new DiffCalculator(),
+    });
+
+    const deletedGrandchild = node.children[0]!.children[0]!;
+    expect(deletedGrandchild.stackName).toBe('P~Mid~Gone');
+    expect(deletedGrandchild.outputChanges[0]!.oldValueRedacted).toBe(true);
+    expect(JSON.stringify(deletedGrandchild.outputChanges)).not.toContain('hunter2');
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it('does NOT warn when the suppressed delta is only the pending output itself', async () => {

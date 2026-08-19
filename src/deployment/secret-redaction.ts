@@ -275,10 +275,30 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   `cdkd scrub` `properties` / `outputs`      TODAY's template     TEMPLATE_SOURCED_RULES                VALUE SCAN
  *   `cdkd scrub` observed walk                 REPOSITIONED props   STATE_SOURCED_CROSS_GENERATION_RULES  VALUE SCAN
  *   observed walk, own-record source           the record itself    STATE_SOURCED_READBACK_RULES          TAKE SOURCE
+ *   `cdkd state refresh-observed`              the record itself    STATE_SOURCED_READBACK_RULES          TAKE SOURCE
+ *   `cdkd drift --accept` new baseline         the record itself    STATE_SOURCED_READBACK_RULES          TAKE SOURCE
+ *   `cdkd drift --revert` narrowed delta       revert baseline      STATE_SOURCED_READBACK_RULES          TAKE SOURCE
  *   deploy journal `previousState`             the record itself    STATE_SOURCED_READBACK_RULES          TAKE SOURCE
  *   rollback replay trailing record scrub      the record itself    STATE_SOURCED_READBACK_RULES          TAKE SOURCE
  *   rollback replay `properties`               journaled record     STATE_DERIVED_RULES                   TAKE SOURCE
  * ```
+ *
+ * Three rows were added by the issue
+ * [#2004](https://github.com/go-to-k/cdkd/issues/2004) audit, which walked the
+ * table in BOTH directions — every row to a call site, and every call site
+ * passing a position source back to a row. `cdkd state refresh-observed` was
+ * the one that prompted it (it reached this module along no path at all until
+ * issue #1926), and the two `cdkd drift` writers turned up the same way: they
+ * are distinct WRITE SITES sharing a rules constant with the deploy-time
+ * observed walk, and a table claiming one row per write site cannot fold them
+ * into it. The reverse direction found no orphan rows.
+ *
+ * The `verdict` column answers ONLY the "bag leaf is a single complete
+ * `{{resolve:...}}` token" question the table poses. The two
+ * `STATE_SOURCED_*` readback constants additionally run
+ * {@link refuseUncertifiedReadbackPositions} after the path pass, which is what
+ * answers the shapes that question does not reach — a MIXED leaf, an array
+ * that cannot pair, an unpaired element. See that function's own table.
  *
  * The two `the record itself` rows added last reach this through
  * `scrubResourceRecord` with NO `sourceProperties`, so they take the derived
@@ -1080,7 +1100,12 @@ function redactByPath(
     }
   }
   if (isPlainObject(bag) && isPlainObject(source)) {
-    const out: Record<string, unknown> = {};
+    // `Object.create(null)` (issue #1943's class): `JSON.parse` of an AWS
+    // readback can produce an OWN `__proto__` key, and `out[k] = ...` on a
+    // normal object invokes the prototype setter instead of defining it — so
+    // the key would be silently dropped from the persisted bag and read as
+    // phantom drift ever after.
+    const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const [k, v] of Object.entries(bag)) {
       // `Object.hasOwn`, not `k in source`: the prototype chain would answer for
       // `constructor` / `toString` and hand the walk a function as the source.
@@ -1094,6 +1119,305 @@ function redactByPath(
   // has an object, a key the source lacks): fall back to the value scan, which
   // is strictly better than leaving the subtree unredacted.
   return redactSecretsForState(bag, secrets);
+}
+
+/**
+ * Is this rules constant one whose BAG is an AWS readback and whose SOURCE is a
+ * persisted STATE bag?
+ *
+ * Today that is {@link STATE_SOURCED_READBACK_RULES} alone: the path where the
+ * secrets map can be EMPTY by construction (nothing was resolved), so the value
+ * scan has no needles and POSITION is the only mechanism left. Derived from the
+ * flags rather than compared against the constant so a future one with the same
+ * shape is covered automatically. `trustAnyExpression` says the source is a
+ * persisted record (holding no PUBLIC reference, so any `{{resolve:...}}` in it
+ * is by construction a secret); `!descendArrays` says the bag came back from
+ * AWS and may be reordered.
+ *
+ * `sourceIsSameGeneration` is the third conjunct and it is the one that took a
+ * measurement to get right. Without it this also selected
+ * {@link STATE_SOURCED_CROSS_GENERATION_RULES} — `cdkd scrub`'s observed walk,
+ * whose `properties` have ALREADY been repositioned onto TODAY's template — and
+ * taking a source subtree there rewrote a baseline holding the DEPLOYED
+ * `:AWSPREVIOUS` reference onto the template's edited `:AWSCURRENT` one. That
+ * is precisely the issue #1917 hazard, and `cdkd drift --revert` pushes the
+ * baseline to AWS, so it would have applied a reference the stack never
+ * deployed. A refusal may only take a source that is the same generation as the
+ * bag beside it.
+ *
+ * A TEMPLATE-sourced caller is deliberately excluded: its source can carry a
+ * public `ssm:` reference whose resolved value must STAY resolved (issue
+ * #1901), and it always has a populated map, so the value scan already covers
+ * the shapes below. So is the rollback replay
+ * ({@link STATE_DERIVED_RULES}) — full map, and its bag descends positionally
+ * because it was produced by resolving the source.
+ */
+function isReadbackProjectedFromState(rules: PathSourceRules): boolean {
+  return rules.trustAnyExpression && !rules.descendArrays && rules.sourceIsSameGeneration;
+}
+
+/**
+ * Does this subtree carry a dynamic reference anywhere?
+ *
+ * A BOOLEAN, not the occurrence COUNTS an earlier revision collected. The
+ * counts existed to decide whether a bag "covered" every reference its source
+ * carried, which was the vouching rule for taking a source array wholesale —
+ * and that rule is gone (see the array arm), so counting would be a
+ * measurement nothing reads.
+ */
+function subtreeHasDynamicReference(value: unknown): boolean {
+  if (isDynamicReferenceString(value)) return true;
+  if (Array.isArray(value)) return value.some(subtreeHasDynamicReference);
+  if (isPlainObject(value)) return Object.values(value).some(subtreeHasDynamicReference);
+  return false;
+}
+
+/** Every complete `{{resolve:...}}` token inside a string. */
+function dynamicReferenceTokens(value: string): string[] {
+  return value.match(/\{\{resolve:[^{}]*\}\}/g) ?? [];
+}
+
+/**
+ * Does this MIXED leaf embed a reference that may be PUBLIC config?
+ *
+ * A plain `{{resolve:ssm:...}}` is classified by the parameter's TYPE, not by
+ * its spelling (issue #1901): a `String` / `StringList` parameter is public and
+ * is legitimately persisted RESOLVED. Substituting the expression over it gives
+ * the drift baseline a value AWS does not hold, which is phantom drift on
+ * ordinary config — and `--revert` then pushes the literal expression.
+ *
+ * `trustAnyExpression` is what would otherwise wave this through, and its
+ * premise ("a persisted STATE bag holds no public expression") is documented as
+ * FALSE in one place: `cdkd import`'s warn path can leave one there. The
+ * whole-token arm accepts that risk knowingly and `cdkd drift --accept`
+ * re-checks its write; the MIXED arm added later has no such re-check, so it
+ * declines instead.
+ *
+ * A reference the resolver RECORDED as secret is kept: that is the ssm
+ * `SecureString` case, where the verdict came off the same `GetParameter`
+ * response that carried the value. `{{resolve:ssm-secure:` does not match this
+ * prefix at all (the next character is `-`), so it is never refused here.
+ *
+ * The verdict store only carries signal where something RESOLVED, so this
+ * splits on whether a secrets map exists at all.
+ *
+ * WITH a map, a pass resolved this bag: the engine's change detection walks
+ * every template property with `skipDynamicReferences`, which only flips
+ * `decrypt` on the ssm branch — the `GetParameter` still runs, a definitive
+ * `SecureString` is recorded, and a parameter that comes back public has its
+ * memo RETRACTED. Absence from the store is then real evidence of a public
+ * parameter, and the resolved value is kept.
+ *
+ * WITHOUT one, absence means only that the question was never asked HERE. It
+ * does not mean nothing was resolved: the deploy path resolves every template
+ * property with `skipDynamicReferences`, which records or retracts the
+ * `SecureString` verdict even for an UNCHANGED resource -- that bag simply is
+ * not the one this call receives. The leaf is treated as
+ * secret-bearing and refused. That is not merely the cautious branch, it is the
+ * SAME premise the whole-token arm one level up already acts on: a PUBLIC
+ * `String` / `StringList` reference is persisted RESOLVED (issue #1901), so a
+ * `{{resolve:ssm:` token that SURVIVES in a persisted state bag is a
+ * SecureString by construction. An earlier revision applied a stricter rule to
+ * a MIXED leaf than to a whole token on the identical source, and that
+ * inconsistency is what persisted a decrypted secret.
+ *
+ * ACCEPTED CONSEQUENCE, recorded rather than papered over: on the empty-map
+ * paths a genuinely PUBLIC ssm mixed leaf is now OVER-redacted, so the baseline
+ * no longer matches AWS and `cdkd drift` reports a phantom on it. That is
+ * reachable only through the one documented hole in the premise above — `cdkd
+ * import`'s warn path, which can leave a public expression in state. The trade
+ * is deliberate and asymmetric: under-redaction persists a decrypted secret,
+ * which is a disclosure and is what this lane exists to prevent, while
+ * over-redaction is visible, recoverable and discloses nothing. Closing it
+ * properly needs a real TYPE classification on these paths, which is issue
+ * [#2012](https://github.com/go-to-k/cdkd/issues/2012)'s mechanism; the
+ * over-redaction itself is tracked as issue
+ * [#2036](https://github.com/go-to-k/cdkd/issues/2036).
+ *
+ * `tests/integration/secrets-dynamic-ref` is the end-to-end proof on BOTH
+ * paths, and it is the only place the empty-map defect surfaced: Phase 1g
+ * covers the populated-map deploy and Phase 1f the empty-map command.
+ */
+function mixedLeafMayCarryPublicReference(source: string, secrets: RecordedSecretValues): boolean {
+  // NO MAP, NO EVIDENCE — so this cannot answer, and it must not pretend to.
+  // `isRecordedSecretExpression` only ever says "yes" about a token some pass
+  // RESOLVED, and the empty-map paths resolve nothing by construction (issue
+  // #1926's own design decision). Reading absence as "public" there turned
+  // every `{{resolve:ssm:` mixed leaf into a public one and persisted the
+  // DECRYPTED SecureString — measured by the `secrets-dynamic-ref` integ, which
+  // is the only place it showed: every unit assertion passed.
+  if (secrets.size === 0) return false;
+  return dynamicReferenceTokens(source).some(
+    (token) => token.startsWith('{{resolve:ssm:') && !isRecordedSecretExpression(token)
+  );
+}
+
+/**
+ * Refuse to persist a readback leaf the path pass could not CERTIFY, at any
+ * position the STATE source proves is secret-bearing (issue #1926 review).
+ *
+ * {@link redactByPath} substitutes only where the source leaf is a WHOLE
+ * `{{resolve:...}}` token. On the paths {@link isReadbackProjectedFromState}
+ * selects the secrets map may be EMPTY, so its value-scan fallback is a no-op,
+ * and four shapes reached `state.json` holding the DECRYPTED value. Measured
+ * against this module before this pass existed — three by `cdkd state
+ * refresh-observed`, and the same three by a plain `cdkd deploy`, whose
+ * `drainObservedCaptures` baseline reaches the persist choke point with exactly
+ * this configuration. `cdkd scrub` is NOT one of them: its observed walk is
+ * CROSS-generation, so {@link isReadbackProjectedFromState} excludes it by
+ * design:
+ *
+ * ```text
+ *   source leaf in the STATE record                  before        now
+ *   -----------------------------------------------  ------------  ---------------
+ *   `postgres://u:{{resolve:...}}@h` (MIXED string)   LEAK          take source
+ *   ...the same MIXED leaf inside a PAIRED element    LEAK          take source
+ *   `['--pw', '{{resolve:...}}']` (no identity key)   LEAK          LEAK (#2012)
+ *   `[{Field, Val: '{{resolve:...}}'}]` (no `Name`)   LEAK          LEAK (#2012)
+ *   an UNPAIRED element beside a paired one           LEAK          LEAK (#2012)
+ *   an observed KEY the source does not carry         LEAK          LEAK (#2012)
+ *   whole `{{resolve:...}}` token                     ok            ok
+ *   `Environment[]` keyed by `Name` (issue #1915)     ok            ok
+ *   PUBLIC ssm MIXED leaf, POPULATED map               ok            ok
+ *   PUBLIC ssm MIXED leaf, EMPTY map                   ok            over-redacts
+ * ```
+ *
+ * The last row is the price of the row above it and is tracked as issue
+ * [#2036](https://github.com/go-to-k/cdkd/issues/2036): with no map nothing was
+ * resolved, so nothing distinguishes a public parameter from a `SecureString`
+ * and the leaf is refused. Phantom drift, not a disclosure — see
+ * {@link mixedLeafMayCarryPublicReference} for why that is the right way to be
+ * wrong here.
+ *
+ * What this pass closes is the row POSITION can actually justify: a leaf whose
+ * KEY the source carries, where the source is the same generation and the only
+ * thing the older code lacked was the willingness to substitute a leaf that was
+ * not a WHOLE token. Everything it takes is the record's own value at the
+ * record's own path.
+ *
+ * The four residual rows are one root cause, not four: no needle and no
+ * position, so nothing distinguishes a resolved secret from an ordinary
+ * literal. They are NOT closed by taking the source subtree, which an earlier
+ * revision did and the issue #1915 fences correctly rejected — measured, it
+ * rewrote `{Name:'', Value:'an-unrelated-literal'}` onto the expression and
+ * turned an AWS-reported `[{Value:'x'}]` into `[{Name:'db', Value:<expr>}]`,
+ * fabricating drift-baseline content AWS never reported that `cdkd drift
+ * --revert` then pushes to the live resource. Redaction may not buy itself a
+ * fabricated baseline.
+ *
+ * The MIXED row is the shape this module itself calls DOMINANT for CDK — an
+ * `Fn::Join` around `secret.secretValueFromJson(...)`.
+ *
+ * TAKE SOURCE rather than a {@link SECRET_MASK} on the rows it does close, for
+ * the same reason the whole-token arm does: a mask is not a value `cdkd drift`
+ * can re-resolve, so it would report a permanent phantom — and `cdkd drift
+ * --revert` pushes the BASELINE to AWS, so a masked baseline would write the
+ * literal `***` onto the live resource (the issue #1498 / #1501 class).
+ *
+ * KNOWN RESIDUAL, the last row: an observed KEY the source object does not
+ * carry has no source leaf to take and no needle to match. It is NOT refused
+ * the way an unpaired array ELEMENT is, and the asymmetry is deliberate rather
+ * than an oversight — an extra array element is a PEER of the secret-bearing
+ * ones (another `Environment` entry), so suspicion is warranted and extras are
+ * rare, while an extra object KEY is a different FIELD entirely (`Runtime`,
+ * `FunctionArn`, `LastModified`) and is the NORM in an AWS readback. Refusing
+ * those would empty the drift baseline of every secret-bearing resource.
+ * Tracked as issue [#2012](https://github.com/go-to-k/cdkd/issues/2012).
+ */
+function refuseUncertifiedReadbackPositions(
+  bag: unknown,
+  source: unknown,
+  secrets: RecordedSecretValues
+): unknown {
+  // The string arm, and BOTH of its guards were added after review measured
+  // what their absence did.
+  //
+  // `typeof bag === 'string'` mirrors the sibling test in `redactByPath`, and
+  // it is load-bearing rather than defensive: without it a source leaf of
+  // `{{resolve:...}}` whose BAG is a container returned the scalar string,
+  // turning `{Foo: {a: 1}}` into `{Foo: '{{resolve:...}}'}` — fabricating a
+  // baseline AWS never reported, which is the exact thing this function refuses
+  // to do at its own bottom and the principle this pass was built on. It is
+  // reachable whenever a provider structures a leaf the template spells as a
+  // reference, and the result is permanent phantom drift plus a `--revert` that
+  // writes a string where AWS holds an object. With the guard, such a leaf
+  // falls to the shape-divergence fallback and the bag is kept.
+  //
+  // NOT a no-op short-circuit, which an earlier revision of this comment
+  // claimed: the fallback returns `bag`, so deleting this arm changes the
+  // answer rather than reproducing it. (That claim WAS true when the fallback
+  // still returned the source, and it stopped being true when the fallback was
+  // narrowed. A comment asserting equivalence has to be re-measured whenever
+  // either side moves.)
+  if (isDynamicReferenceString(source) && typeof bag === 'string') {
+    // A WHOLE token: `redactByPath` already decided this leaf, and returning
+    // the source agrees with it.
+    if (isSingleDynamicReferenceToken(source)) return source;
+    // A MIXED leaf embedding something that may be PUBLIC config: keep the
+    // resolved value AWS actually holds. See the predicate's own doc.
+    if (mixedLeafMayCarryPublicReference(source, secrets)) return bag;
+    return source;
+  }
+  // Nothing to protect in this subtree — return the bag by identity, which is
+  // what keeps an ordinary readback (and any AWS-added element in it) intact.
+  if (!subtreeHasDynamicReference(source)) return bag;
+  if (isPlainObject(bag) && isPlainObject(source)) {
+    const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(bag)) {
+      // `Object.hasOwn` rather than `k in source` keeps this walk consistent
+      // with the two beside it; unlike there, no test can pin the difference —
+      // both arms of this one return a value rather than a function, so a
+      // prototype hit would produce the same output. Consistency is the whole
+      // claim being made here.
+      out[k] = Object.hasOwn(source, k)
+        ? refuseUncertifiedReadbackPositions(v, source[k], secrets)
+        : // The residual documented above: no source leaf, no needle.
+          v;
+    }
+    return out;
+  }
+  if (Array.isArray(bag) && Array.isArray(source)) {
+    // DESCEND ONLY. An element that pairs by identity (issue #1915) is walked
+    // so a MIXED leaf inside it is still refused; an element that does NOT pair
+    // is returned untouched.
+    //
+    // An earlier revision of this pass instead took the SOURCE array wholesale
+    // whenever it could not vouch for the bag, which closed two more leak
+    // shapes and was WRONG — the existing issue #1915 fences caught it, and
+    // they are right. Measured, it rewrote `{Name:'', Value:'an-unrelated-
+    // literal'}` into `Value: <expression>` (a FALSE redaction of a value that
+    // was never a secret) and turned an AWS-reported `[{Value:'x'}]` into
+    // `[{Name:'db', Value:<expression>}]` — fabricating baseline content AWS
+    // never reported, which `cdkd drift --revert` then pushes to the live
+    // resource. That is the issue #1917 / #1498 class this module already
+    // refuses to commit elsewhere.
+    //
+    // So an UNPAIRABLE array keeps its plaintext, and that is a genuine
+    // residual rather than an oversight: with an empty secrets map there is no
+    // needle, and with no identity there is no position, so nothing can
+    // distinguish a resolved secret from an ordinary literal. It is the
+    // array-shaped twin of the unpaired-KEY residual below and is tracked with
+    // it in issue [#2012](https://github.com/go-to-k/cdkd/issues/2012).
+    const key = identityKeyFor(bag, source);
+    if (key === undefined) return bag;
+    const sourceByIdentity = new Map<string, unknown>();
+    for (const item of source) {
+      sourceByIdentity.set((item as Record<string, unknown>)[key] as string, item);
+    }
+    return bag.map((item) => {
+      const partner = sourceByIdentity.get((item as Record<string, unknown>)[key] as string);
+      return partner === undefined
+        ? item
+        : refuseUncertifiedReadbackPositions(item, partner, secrets);
+    });
+  }
+  // Shapes diverged (a scalar where the source has a container, or the reverse)
+  // while the source subtree still carries a reference. The bag is returned
+  // UNCHANGED for the same reason the unpairable array is: substituting the
+  // source here would fabricate a baseline AWS never reported. The one shape
+  // that IS substituted is the string leaf at the top of this function, where
+  // the position is exact and the source is the same generation.
+  return bag;
 }
 
 /**
@@ -1116,7 +1440,26 @@ export function redactSecretsForState<T>(
   // because it was never resolved this deploy (issue #1900).
   if (secrets.size === 0 && source === undefined) return bag;
   if (source !== undefined) {
-    return redactByPath(bag, source, secrets, rules, new Set(secrets.values())) as T;
+    const positioned = redactByPath(bag, source, secrets, rules, new Set(secrets.values()));
+    // The path pass certifies a WHOLE-TOKEN source leaf and nothing else, so on
+    // the readback paths — where the map can be empty and the value scan is a
+    // no-op — a MIXED leaf or an unpairable array still held plaintext. Every
+    // caller of those paths inherits the refusal from here rather than
+    // spelling it at the call site: `cdkd state refresh-observed`, the deploy's
+    // own `drainObservedCaptures` baseline (through `scrubResourceRecord` at
+    // the persist choke point), and any future one.
+    //
+    // NOT `cdkd scrub`: its observed walk passes
+    // `STATE_SOURCED_CROSS_GENERATION_RULES`, whose `sourceIsSameGeneration:
+    // false` makes the gate above return false. That is deliberate — scrub has
+    // already repositioned `properties` onto TODAY's template — and it is
+    // stated here because two earlier revisions of this comment listed scrub as
+    // an inheritor, which the gate contradicts one screen away.
+    return (
+      isReadbackProjectedFromState(rules)
+        ? refuseUncertifiedReadbackPositions(positioned, source, secrets)
+        : positioned
+    ) as T;
   }
   const regex = buildNeedleRegex(secrets.keys());
   // Even below the needle threshold, a NON-EMPTY whole-value match must still be
@@ -1150,7 +1493,9 @@ export function redactSecretsForState<T>(
       return value.map(walk);
     }
     if (value !== null && typeof value === 'object') {
-      const out: Record<string, unknown> = {};
+      // Null-prototype for the same reason the path walk uses one: an own
+      // `__proto__` key must land as DATA, not on the prototype.
+      const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
         out[k] = walk(v);
       }

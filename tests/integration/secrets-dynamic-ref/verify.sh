@@ -121,6 +121,12 @@ EXPECTED_SSM="cdkd-known-ssm-value"
 # stack's comment.
 EXPECTED_USERNAME="cdkd-user"
 EXPECTED_SECURE="cdkd-known-secure-value-456"
+# The MIXED leaf's persisted form, spelled out rather than globbed (issue #1926
+# review). A glob like '{{resolve:ssm:'*'@db.' passes under a sibling-expression
+# COLLAPSE — the #1904 / #1910 class this same file fences for the
+# secretsmanager pair — because any ssm expression satisfies it. Pinning the
+# parameter NAME is what makes the assertion about THIS reference.
+EXPECTED_DB_URL_EXPR="postgres://app-svc:{{resolve:ssm:${SECURE_PARAM_NAME}}}@db.${REGION}.internal:5432/app"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -253,6 +259,7 @@ ENV_SECRET_FULL=$(get_env SECRET_FULL)
 ENV_SECRET_PASSWORD_STAGED=$(get_env SECRET_PASSWORD_STAGED)
 ENV_SSM_VALUE=$(get_env SSM_VALUE)
 ENV_SSM_SECURE_VALUE=$(get_env SSM_SECURE_VALUE)
+ENV_DB_URL=$(get_env DB_URL)
 
 fail_count=0
 
@@ -285,6 +292,7 @@ check_not_literal SECRET_FULL "${ENV_SECRET_FULL}"
 check_not_literal SECRET_PASSWORD_STAGED "${ENV_SECRET_PASSWORD_STAGED}"
 check_not_literal SSM_VALUE "${ENV_SSM_VALUE}"
 check_not_literal SSM_SECURE_VALUE "${ENV_SSM_SECURE_VALUE}"
+check_not_literal DB_URL "${ENV_DB_URL}"
 
 check_equals "SECRET_PASSWORD (secretsmanager :SecretString:<jsonkey>)" \
   "${ENV_SECRET_PASSWORD}" "${EXPECTED_PASSWORD}"
@@ -297,6 +305,13 @@ check_equals "SECRET_PASSWORD_STAGED (secretsmanager :SecretString:<jsonkey>:AWS
   "${ENV_SECRET_PASSWORD_STAGED}" "${EXPECTED_PASSWORD}"
 check_equals "SSM_VALUE (ssm:<name> plaintext param)" \
   "${ENV_SSM_VALUE}" "${EXPECTED_SSM}"
+# The MIXED leaf must reach AWS with the reference SUBSTITUTED INTO the
+# surrounding text (issue #1926 review). This is the PREMISE of Phase 1g: the
+# live resource holds the decrypted value, so a readback of it is a disclosure
+# unless state redacts it. Without this assertion Phase 1g could pass because
+# nothing was ever resolved.
+check_equals "DB_URL (Fn::Join embedding an ssm SecureString)" \
+  "${ENV_DB_URL}" "postgres://app-svc:${EXPECTED_SECURE}@db.${REGION}.internal:5432/app"
 # The SecureString still has to REACH AWS decrypted — issue #1901 changes what
 # STATE holds, never what the provider is handed.
 check_equals "SSM_SECURE_VALUE (ssm:<name> SecureString param, decrypted)" \
@@ -378,6 +393,20 @@ case "${STATE_SECRET_PASSWORD_STAGED}" in
   '{{resolve:secretsmanager:'*':AWSCURRENT}}') echo "    OK: state SECRET_PASSWORD_STAGED kept its OWN staged expression: ${STATE_SECRET_PASSWORD_STAGED}" ;;
   *) echo "FAIL: state SECRET_PASSWORD_STAGED is NOT its own {{resolve:...:AWSCURRENT}} expression: $(mask "${STATE_SECRET_PASSWORD_STAGED}")" >&2; redaction_fail=1 ;;
 esac
+
+# Guard 3a-mixed (issue #1926 review): the MIXED leaf — the reference EMBEDDED
+# in surrounding text rather than being the whole value, which is what an
+# `Fn::Join` around a secret renders. On the CREATE path the secrets map is
+# populated, so the value SCAN redacts the embedded span; the harder path (empty
+# map, position only) is Phase 1g. Asserting both halves means a regression in
+# either is attributed to the right one.
+STATE_DB_URL=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.DB_URL // empty')
+if [ "${STATE_DB_URL}" = "${EXPECTED_DB_URL_EXPR}" ]; then
+  echo "    OK: state DB_URL kept the EMBEDDED expression: ${STATE_DB_URL}"
+else
+  echo "FAIL: state DB_URL is not the expected embedded form: $(mask "${STATE_DB_URL}")" >&2
+  redaction_fail=1
+fi
 
 # Guard 3b (issue #1901): an ssm reference to a SECURESTRING parameter is a
 # secret too, so state must hold its expression — even though the SPELLING is
@@ -1101,6 +1130,306 @@ if printf '%s' "${RB_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
   exit 1
 fi
 echo "    OK: post-rollback state carries no resolved plaintext (secret + SecureString)"
+
+# --- Phase 1f: `cdkd state refresh-observed` REDACTS (GHSA residual #1926) ---
+# `refresh-observed` writes the provider readback into `observedProperties` and
+# saves. The readback is what AWS actually holds — for this fixture's consumer
+# Lambda that is the DECRYPTED secret, because the deploy sent the resolved
+# value — so before issue #1926 this command persisted the plaintext into
+# state.json with no redaction pass of any kind. It is the only observed-writer
+# the #1910 sweep never reached, and unlike #1915 it leaked SCALARS too.
+#
+# Its secrets map is EMPTY by construction (the command neither synthesizes nor
+# resolves), so what this arm really exercises is the PATH pass: the record's
+# own `properties` still hold the expressions and position the observed bag
+# against them.
+#
+# ORDERING. This runs after Phase 1e and before Phase 2 because it WRITES
+# `observedProperties`. The drift phase (1d) reads that field as its baseline,
+# so placing this arm before it would change what drift compares; Phase 2
+# (a redeploy asserting AWS-side removal resets) and Phase 3 (destroy) read
+# only `properties` and the live AWS state, so neither is affected.
+echo "==> Phase 1f: cdkd state refresh-observed redacts the readback (issue #1926)"
+# STALENESS GUARD. The deploy ALREADY wrote a correctly-redacted
+# `observedProperties` for this Lambda, so every assertion below is satisfied by
+# the pre-existing bag — a `refresh-observed` that wrote nothing at all would
+# pass this phase. Stamp a sentinel into the persisted bag first, and require it
+# to be GONE afterwards: only an actual refresh can remove it.
+#
+# Written directly to S3 rather than through the CLI because no command edits
+# `observedProperties` in place — that is the point. Safe here: nothing else
+# holds the lock between phases, and the next `saveState` reads its own etag.
+echo "    stamping a staleness sentinel into the persisted observedProperties"
+RO_STAMP_BEFORE=$(mktemp)
+RO_STAMP_AFTER=$(mktemp)
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${RO_STAMP_BEFORE}" --quiet
+# Resolve the logical id FIRST. An assignment cannot be written THROUGH
+# `to_entries[]`: that builds a new array rather than a path back into the
+# document, and jq rejects it with "Invalid path expression". Phase 1g below
+# already uses this shape; Phase 1f now matches it.
+RO_LID=$(jq -r '.resources | to_entries[]
+                  | select(.value.resourceType=="AWS::Lambda::Function")
+                  | .key' "${RO_STAMP_BEFORE}" | head -1)
+if [ -z "${RO_LID}" ]; then
+  echo "FAIL: no AWS::Lambda::Function record in state — Phase 1f cannot stamp" >&2
+  exit 1
+fi
+# Assert the bag EXISTS before stamping. A plain assignment would CREATE the
+# path, so the post-stamp grep would succeed on a record that never had a
+# deploy-time capture — turning the freshness guard into a no-op.
+if ! jq -e --arg lid "${RO_LID}" \
+     '.resources[$lid].observedProperties.Environment.Variables | objects | has("SSM_VALUE")' \
+     "${RO_STAMP_BEFORE}" >/dev/null; then
+  echo "FAIL: the Lambda has no persisted observedProperties.Environment.Variables to stamp" >&2
+  echo "      (the deploy-time capture is expected to have written one; without it this phase cannot prove freshness)" >&2
+  exit 1
+fi
+jq --arg lid "${RO_LID}" \
+  '.resources[$lid].observedProperties.Environment.Variables.SSM_VALUE = "STALE-SENTINEL"' \
+  "${RO_STAMP_BEFORE}" > "${RO_STAMP_AFTER}"
+if ! grep -q 'STALE-SENTINEL' "${RO_STAMP_AFTER}"; then
+  echo "FAIL: the sentinel stamp produced no sentinel — jq path expression is wrong" >&2
+  exit 1
+fi
+aws s3 cp "${RO_STAMP_AFTER}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+rm -f "${RO_STAMP_BEFORE}" "${RO_STAMP_AFTER}"
+
+# No `set +e` window around this call. An earlier revision wrapped it to tolerate
+# a transient per-resource readback failure; the sentinel above makes that
+# tolerance harmful, because a refresh that skipped this Lambda would leave the
+# sentinel behind and the failure should be reported as what it is. Removing the
+# wrapper simply lets the script's own `set -euo pipefail` (line 63) do it —
+# there is no assertion added here beyond that.
+node "${LOCAL_DIST}" state refresh-observed "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+RO_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+RO_OBSERVED=$(printf '%s' "${RO_STATE}" \
+  | jq -c '.state.resources | to_entries[]
+             | select(.value.resourceType=="AWS::Lambda::Function")
+             | .value.observedProperties.Environment.Variables' | head -1)
+# A missing / null observed bag would make every assertion below vacuously
+# pass, so the run FAILS instead: `LambdaFunctionProvider.readCurrentState`
+# reports `Environment.Variables`, and if that ever stops being true this arm
+# stops testing anything.
+if [ -z "${RO_OBSERVED}" ] || [ "${RO_OBSERVED}" = "null" ]; then
+  echo "FAIL: refresh-observed wrote no observedProperties.Environment.Variables for the consumer Lambda" >&2
+  exit 1
+fi
+
+RO_PASSWORD=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SECRET_PASSWORD // empty')
+RO_SECURE=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SSM_SECURE_VALUE // empty')
+RO_SSM=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SSM_VALUE // empty')
+
+RO_PASSWORD_STAGED=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SECRET_PASSWORD_STAGED // empty')
+
+refresh_fail=0
+# The staleness guard's payoff: the sentinel is only gone if this command
+# actually re-read AWS and rewrote the bag.
+if printf '%s' "${RO_OBSERVED}" | grep -q 'STALE-SENTINEL'; then
+  echo "FAIL: refresh-observed did not rewrite observedProperties — the staleness sentinel survived" >&2
+  echo "      (every redaction assertion below would have passed on the deploy-time bag)" >&2
+  refresh_fail=1
+else
+  echo "    OK: the staleness sentinel is gone — this bag was written by refresh-observed"
+fi
+case "${RO_PASSWORD}" in
+  '{{resolve:secretsmanager:'*) echo "    OK: observed SECRET_PASSWORD kept the expression: ${RO_PASSWORD}" ;;
+  *) echo "FAIL: observed SECRET_PASSWORD is NOT the {{resolve:...}} expression: $(mask "${RO_PASSWORD}")" >&2; refresh_fail=1 ;;
+esac
+# The COLLAPSE pair, exactly as Guard 3 spells it on `properties`. The prefix
+# check above accepts ANY secretsmanager expression, so on its own it passes on
+# the collapsed state (#1904 / #1910): SECRET_PASSWORD and its staged sibling
+# resolve to ONE value, so a value-keyed rewrite hands this leaf the OTHER
+# one's expression and the prefix still matches. `refresh-observed` is a NEW
+# writer of this bag, so it needs both directions fenced here too — and the
+# plaintext greps below cannot see this one, since both spellings are valid
+# expressions carrying no plaintext at all.
+case "${RO_PASSWORD}" in
+  *':AWSCURRENT}}')
+    echo "FAIL: observed SECRET_PASSWORD took the STAGED expression — the colliding pair collapsed (#1910)" >&2
+    refresh_fail=1
+    ;;
+esac
+case "${RO_PASSWORD_STAGED}" in
+  '{{resolve:secretsmanager:'*':AWSCURRENT}}') echo "    OK: observed SECRET_PASSWORD_STAGED kept its OWN staged expression: ${RO_PASSWORD_STAGED}" ;;
+  *) echo "FAIL: observed SECRET_PASSWORD_STAGED is NOT its own {{resolve:...:AWSCURRENT}} expression: $(mask "${RO_PASSWORD_STAGED}")" >&2; refresh_fail=1 ;;
+esac
+# The ssm/ssm discriminator, same pair as Guards 3b + 4 on `properties`: the
+# SecureString reference must be an expression while the plain String one must
+# stay RESOLVED. A redaction that keyed on the SPELLING would fail the second.
+case "${RO_SECURE}" in
+  '{{resolve:ssm:'*) echo "    OK: observed SSM_SECURE_VALUE kept the expression: ${RO_SECURE}" ;;
+  *) echo "FAIL: observed SSM_SECURE_VALUE is NOT the {{resolve:...}} expression: $(mask "${RO_SECURE}")" >&2; refresh_fail=1 ;;
+esac
+if [ "${RO_SSM}" = "${EXPECTED_SSM}" ]; then
+  echo "    OK: observed SSM_VALUE kept the resolved value (ssm String is public config)"
+else
+  echo "FAIL: observed SSM_VALUE should be the resolved '${EXPECTED_SSM}', got $(mask "${RO_SSM}")" >&2
+  refresh_fail=1
+fi
+
+# Same scoping split as Guard 5: the secret's own resource legitimately holds
+# the fixture's hardcoded password, so the password grep is scoped to the
+# consumer Lambda's observed bag, while the decrypted SecureString has no such
+# sibling and the WHOLE state document is scanned for it.
+if printf '%s' "${RO_OBSERVED}" | grep -qF "${EXPECTED_PASSWORD}"; then
+  echo "FAIL: refresh-observed persisted the DECRYPTED secret into observedProperties (#1926)" >&2
+  refresh_fail=1
+else
+  echo "    OK: no resolved secret plaintext in the refreshed observed bag"
+fi
+if printf '%s' "${RO_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+  echo "FAIL: refresh-observed persisted the decrypted SecureString into state (#1926)" >&2
+  refresh_fail=1
+else
+  echo "    OK: no decrypted SecureString anywhere in the refreshed state document"
+fi
+
+if [ "${refresh_fail}" -ne 0 ]; then
+  echo "FAIL: refresh-observed redaction assertions failed" >&2
+  exit 1
+fi
+
+# --- Phase 1g: the DEFAULT `cdkd deploy` path redacts a MIXED leaf (#1926 review) ---
+# Phase 1f drives the command; this drives the path that matters more. The
+# refusal was hoisted into `secret-redaction.ts` precisely because the leak is
+# NOT specific to `cdkd state refresh-observed`: a plain `cdkd deploy`
+# auto-refreshes the baseline of any resource whose `observedProperties` is
+# ABSENT (`DeployEngine.kickOffAutoRefreshObservedProperties`, on by default via
+# `captureObservedState`). Such a resource is UNCHANGED this deploy, so it has
+# no secrets map and no template bag, and its readback drains through the
+# persist choke point with exactly the configuration Phase 1f exercises by hand.
+# Verifying only the command would leave the default path on unit tests alone.
+#
+# Reaching that path needs the bag ABSENT, which after Phase 1 it is not — so
+# this arm clears it, then runs an ordinary deploy with no template change.
+echo "==> Phase 1g: a plain deploy re-captures the baseline WITHOUT the plaintext (issue #1926)"
+
+PRE_G_STATE=$(mktemp)
+POST_G_STATE=$(mktemp)
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${PRE_G_STATE}" --quiet
+
+# ASSERT, do not assume, that the deploy captures a baseline at all: a silently
+# empty bag would make every assertion below vacuous. `captureObservedState`
+# defaults ON, and Phase 1f has just refreshed it, so absence here means the
+# capture broke rather than that this fixture opted out.
+G_LID=$(jq -r '.resources | to_entries[]
+                 | select(.value.resourceType=="AWS::Lambda::Function")
+                 | .key' "${PRE_G_STATE}" | head -1)
+if [ -z "${G_LID}" ]; then
+  echo "FAIL: no AWS::Lambda::Function record in state — Phase 1g cannot run" >&2
+  exit 1
+fi
+G_HAD_OBSERVED=$(jq -r --arg lid "${G_LID}" \
+  '.resources[$lid].observedProperties.Environment.Variables.DB_URL // empty' "${PRE_G_STATE}")
+if [ -z "${G_HAD_OBSERVED}" ]; then
+  echo "FAIL: the deploy captured no observedProperties.Environment.Variables.DB_URL for ${G_LID}" >&2
+  echo "      (captureObservedState is ON by default; an empty bag makes this phase vacuous)" >&2
+  exit 1
+fi
+echo "    OK: a baseline exists to re-capture (${G_LID})"
+
+# Clear ONLY that resource's observed bag — the auto-refresh keys on its absence.
+jq --arg lid "${G_LID}" 'del(.resources[$lid].observedProperties)' "${PRE_G_STATE}" > "${POST_G_STATE}"
+if jq -e --arg lid "${G_LID}" 'has("resources") and (.resources[$lid] | has("observedProperties"))' \
+     "${POST_G_STATE}" >/dev/null; then
+  echo "FAIL: could not clear observedProperties for ${G_LID}" >&2
+  exit 1
+fi
+aws s3 cp "${POST_G_STATE}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+rm -f "${PRE_G_STATE}" "${POST_G_STATE}"
+
+# A PLAIN deploy: no CDKD_TEST_* mode, no template change. Every resource is
+# NO_CHANGE, which is the point — an unchanged resource has no secrets map.
+node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+G_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+G_OBSERVED=$(printf '%s' "${G_STATE}" \
+  | jq -c --arg lid "${G_LID}" '.state.resources[$lid].observedProperties.Environment.Variables')
+if [ -z "${G_OBSERVED}" ] || [ "${G_OBSERVED}" = "null" ]; then
+  echo "FAIL: the plain deploy did NOT re-capture observedProperties for ${G_LID}" >&2
+  echo "      (this phase cleared the bag; a deploy that leaves it empty proves nothing)" >&2
+  exit 1
+fi
+echo "    OK: the plain deploy re-captured the baseline"
+
+deploy_redaction_fail=0
+G_DB_URL=$(printf '%s' "${G_OBSERVED}" | jq -r '.DB_URL // empty')
+if [ "${G_DB_URL}" = "${EXPECTED_DB_URL_EXPR}" ]; then
+  echo "    OK: re-captured DB_URL kept the EMBEDDED expression: ${G_DB_URL}"
+else
+  echo "FAIL: re-captured observed DB_URL is not the expected embedded expression: $(mask "${G_DB_URL}")" >&2
+  deploy_redaction_fail=1
+fi
+
+# CONTROL 1: the persisted bag must still be AWS's READBACK, not a copy of the
+# record's own `properties`. This is the control that catches a blanket
+# "substitute the source wherever it carries a reference" regression, and it
+# works because source and bag genuinely DIFFER here: the template sets only
+# Code / Environment / Handler / Role / Runtime / Timeout, so `FunctionName` and
+# `MemorySize` exist ONLY on the AWS side. A take-source-wholesale bug drops
+# them; a mask/drop bug mangles them.
+#
+# The SSM_VALUE control below cannot do this job on its own, and the review was
+# right about why: that leaf is stored RESOLVED, so `source === bag` there and a
+# take-source bug writes back the identical string.
+G_FN_NAME=$(printf '%s' "${G_STATE}" \
+  | jq -r --arg lid "${G_LID}" '.state.resources[$lid].observedProperties.FunctionName // empty')
+G_MEM=$(printf '%s' "${G_STATE}" \
+  | jq -r --arg lid "${G_LID}" '.state.resources[$lid].observedProperties.MemorySize // empty')
+if [ "${G_FN_NAME}" = "${FN_NAME}" ] && [ -n "${G_MEM}" ]; then
+  echo "    OK: the persisted bag is AWS's readback (carries FunctionName + MemorySize, which the template never sets)"
+else
+  echo "FAIL: the re-captured bag lost AWS-only keys — FunctionName='${G_FN_NAME}' (want '${FN_NAME}'), MemorySize='${G_MEM}'" >&2
+  echo "      (a bag missing keys the template never set is the record's own properties, not a readback)" >&2
+  deploy_redaction_fail=1
+fi
+
+# CONTROL 2: a PUBLIC ssm String must still be RESOLVED — this one catches a
+# mask/drop regression at a leaf whose correct answer is the plaintext.
+G_SSM=$(printf '%s' "${G_OBSERVED}" | jq -r '.SSM_VALUE // empty')
+if [ "${G_SSM}" = "${EXPECTED_SSM}" ]; then
+  echo "    OK: re-captured SSM_VALUE stayed RESOLVED (public config is not redacted)"
+else
+  echo "FAIL: re-captured SSM_VALUE should be the resolved '${EXPECTED_SSM}', got $(mask "${G_SSM}")" >&2
+  deploy_redaction_fail=1
+fi
+
+# ...and the properties half, unchanged by this deploy, so a regression that
+# rewrote `properties` instead of `observedProperties` cannot hide.
+G_PROPS_DB_URL=$(printf '%s' "${G_STATE}" \
+  | jq -r --arg lid "${G_LID}" '.state.resources[$lid].properties.Environment.Variables.DB_URL // empty')
+case "${G_PROPS_DB_URL}" in
+  'postgres://app-svc:{{resolve:ssm:'*'@db.'*'.internal:5432/app')
+    echo "    OK: properties DB_URL still holds the embedded expression" ;;
+  *) echo "FAIL: properties DB_URL is not the embedded expression: $(mask "${G_PROPS_DB_URL}")" >&2
+     deploy_redaction_fail=1 ;;
+esac
+
+# WHOLE-DOCUMENT, not just the key. The SecureString's decrypted value has no
+# legitimate home anywhere in state — unlike the secret's own `SecretString`,
+# which the DynRefSecret resource genuinely holds (the reason Guard 5 scopes ITS
+# password grep to the Lambda's env). That is why the MIXED leaf was built on
+# the SecureString: it makes this assertion available.
+if printf '%s' "${G_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+  echo "FAIL: a plain deploy persisted the decrypted SecureString into state (#1926)" >&2
+  deploy_redaction_fail=1
+else
+  echo "    OK: the decrypted SecureString is absent from the WHOLE state document"
+fi
+
+if [ "${deploy_redaction_fail}" -ne 0 ]; then
+  echo "FAIL: default-deploy redaction assertions failed" >&2
+  exit 1
+fi
 
 # --- Phase 2: removal-reset redeploy (issue #1160 secretsmanager batch) ---
 echo "==> Phase 2: re-deploy dropping Description + KmsKeyId (removal reset)"

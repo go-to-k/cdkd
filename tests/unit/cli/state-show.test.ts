@@ -251,6 +251,194 @@ describe('cdkd state show', () => {
     expect(out).toContain('  Dependencies: (none)');
   });
 
+  it('STRIPS control characters from an Outputs row, key AND value (issue #1948)', async () => {
+    // An Outputs bag KEY can be an `Export.Name` cdkd RESOLVED from an
+    // `Fn::Sub` / parameter / SSM value, so unlike a CFn logical id it passed
+    // no validator; the VALUE has the same provenance. Both would otherwise
+    // carry an ANSI escape straight into the terminal that renders this block,
+    // which is the last human-render site for a stored outputs bag.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilStack',
+        outputs: {
+          // A bare ESC (what starts every ANSI sequence) plus a bidi override,
+          // one in the KEY and one in the VALUE. Deliberately NOT a full
+          // `\u001b[2J`: only the control character is removed, so the `[2J`
+          // tail would survive and an expectation written around it could not
+          // tell a strip from a rewrite.
+          'Api\u001bUrl\u202e': 'https://api\u001b.example.com',
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilStack']);
+
+    const outputsRow = out.split('\n').find((l) => l.includes('ApiUrl'));
+    expect(outputsRow).toBe('  ApiUrl: https://api.example.com');
+    // Scoped to the ROW, not the whole document: a whole-output assertion would
+    // hold today only because this renderer happens to use no color helper, so
+    // it would silently stop discriminating the moment one is added.
+    expect(outputsRow).not.toContain('\u001b');
+    expect(outputsRow).not.toContain('\u202e');
+  });
+
+  it('STRIPS control characters from Attributes and Properties rows too (issue #1948 review)', async () => {
+    // Same provenance as the Outputs row and the same terminal: a resource
+    // PROPERTY is a resolved template value and an ATTRIBUTE is a provider
+    // readback, neither of which passed a CloudFormation validator. The guard
+    // lives inside `formatAttributeValue` so every row in the block gets it.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilStack',
+        resources: {
+          R: makeResource({
+            resourceType: 'AWS::S3::Bucket',
+            physicalId: 'b',
+            properties: { BucketName: 'my\u001bbucket' },
+            attributes: { Arn: 'arn:aws:s3:::my\u202ebucket' },
+          }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilStack']);
+
+    const propRow = out.split('\n').find((l) => l.includes('BucketName'));
+    const attrRow = out.split('\n').find((l) => l.includes('Arn:'));
+    expect(propRow).toBe('    BucketName: mybucket');
+    expect(attrRow).toBe('    Arn: arn:aws:s3:::mybucket');
+  });
+
+  it('strips control characters from Attribute and Property KEYS, not just values', async () => {
+    // The KEY strips were unfenced: the test above puts control characters only
+    // in VALUES, which `formatAttributeValue` already handles, so all three
+    // `stripControlChars(k)` call sites could be deleted with the suite green.
+    // A property NAME is template-authored and an attribute NAME is
+    // provider-returned; neither passed a CloudFormation validator.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilStack',
+        resources: {
+          R: makeResource({
+            resourceType: 'AWS::S3::Bucket',
+            physicalId: 'b',
+            properties: { 'Bucket\u001bName': 'plain-value' },
+            attributes: { 'A\u202ern': 'plain-arn' },
+          }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilStack']);
+
+    expect(out.split('\n').find((l) => l.includes('BucketName'))).toBe(
+      '    BucketName: plain-value'
+    );
+    expect(out.split('\n').find((l) => l.includes('Arn'))).toBe('    Arn: plain-arn');
+  });
+
+  it('renders an `undefined` attribute value instead of throwing', async () => {
+    // The `value === undefined` guard was unfenced: without it
+    // `stripControlChars(JSON.stringify(undefined))` throws a TypeError,
+    // because `JSON.stringify(undefined)` is `undefined` rather than a string.
+    // Distinct from the symbol case below — that one reaches the JSON branch,
+    // this one is caught before it.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilStack',
+        resources: {
+          R: makeResource({
+            resourceType: 'AWS::S3::Bucket',
+            physicalId: 'b',
+            attributes: { Missing: undefined as unknown as string },
+          }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilStack']);
+    expect(out).toContain('Missing: undefined');
+  });
+
+  it('strips control characters from the PhysicalID too (issue #1926 review)', async () => {
+    // A physical id is often COMPOSITE — built from template-authored segments —
+    // so it is the one field in this block that passed no CFn validator, and it
+    // was the last one still printing raw.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilStack',
+        resources: {
+          R: makeResource({ resourceType: 'AWS::S3::Bucket', physicalId: 'my\u001bbucket-123' }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilStack']);
+    const row = out.split('\n').find((l) => l.includes('PhysicalID'));
+    expect(row).toBe('  PhysicalID: mybucket-123');
+  });
+
+  it('renders an unserializable attribute value instead of throwing', async () => {
+    // `JSON.stringify` returns `undefined` — not a string — for a symbol or a
+    // function, so stripping its result directly threw. Unreachable from state
+    // read out of S3 (JSON has neither), reachable from an in-memory
+    // `attributes` bag, and a renderer that throws is worse than one that says
+    // what it could not print.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilStack',
+        resources: {
+          R: makeResource({
+            resourceType: 'AWS::S3::Bucket',
+            physicalId: 'b',
+            attributes: { Weird: Symbol('nope') as unknown as string },
+          }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilStack']);
+    expect(out).toContain('Weird: (unserializable)');
+  });
+
+  it('strips a control character nested inside a STRUCTURED value', async () => {
+    // The other arm of `formatAttributeValue`: a non-scalar is JSON-encoded,
+    // and `JSON.stringify` escapes C0 INSIDE a string but passes C1 and the
+    // bidi marks through unchanged — so the strip has to run on the encoded
+    // text, not only on the scalar branch.
+    mockListStacks.mockResolvedValue(defaultListResponse('EvilStack'));
+    mockGetState.mockResolvedValue(
+      makeState({
+        stackName: 'EvilStack',
+        resources: {
+          R: makeResource({
+            resourceType: 'AWS::S3::Bucket',
+            physicalId: 'b',
+            properties: { Tags: [{ Key: 'env', Value: 'pr\u202eod' }] },
+          }),
+        },
+      })
+    );
+    mockGetLockInfo.mockResolvedValue(null);
+
+    const out = await runStateShow(['show', 'EvilStack']);
+
+    const row = out.split('\n').find((l) => l.includes('Tags'));
+    expect(row).toBe('    Tags: [{"Key":"env","Value":"prod"}]');
+  });
+
   it('omits the Outputs section when outputs are empty', async () => {
     mockListStacks.mockResolvedValue(defaultListResponse('AnyStack'));
     mockGetState.mockResolvedValue(makeState({ outputs: {} }));

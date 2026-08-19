@@ -798,9 +798,17 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
     expect(source).toContain('exportNameSecretExposure(');
     expect(source).toContain('secretBearingExportNameWarning(outputKey, exportName, exposure)');
     expect(twin).toContain('declaredExportIsIntrinsic && isSecretDynamicReference(exportName)');
-    // ...and the undecidable LITERAL arm, which is what keeps the diff from
-    // publishing an alias deploy refuses without being able to see the secret.
+    // ...and the LITERAL arm, which is what keeps the diff from publishing an
+    // alias deploy refuses without being able to see the secret.
     expect(twin).toContain('!declaredExportIsIntrinsic && secretSourceKeys.size > 0');
+    // No source grep for that arm's stored-bag decision (issue #1942), and the
+    // absence is deliberate. This describe fences CROSS-FILE parity — a claim
+    // about the deploy engine that the twin's own behavioral tests cannot
+    // make — and the deploy side has no counterpart line to compare against
+    // there: it evaluates the predicate directly, holding the plaintext. A
+    // grep of `twin` from `twin`'s own suite pins a spelling, not a parity, and
+    // reds on a rename while the behavior is intact. The publish / suppress
+    // pair above covers it behaviorally, and both are mutation-proven.
   });
 
   it('deploy still skips a condition-false output', () => {
@@ -838,5 +846,370 @@ describe('anti-drift fence vs DeployEngine.resolveOutputs (issue #1921)', () => 
 
   it('deploy still declines to persist when that signal is set', () => {
     expect(source).toMatch(/!resolutionFailed && !outputMapsEqual\(/);
+  });
+});
+
+/**
+ * Deciding a LITERAL `Export.Name` from the STORED bag (issue #1942).
+ *
+ * Deploy refuses a literal name that CONTAINS a resolved secret plaintext; the
+ * preview never resolves a plaintext, so it cannot evaluate that predicate. It
+ * used to suppress the whole Outputs section for such a stack, which is the
+ * #875 case going unreported. It now reads the verdict a previous deploy
+ * already recorded: state holding the alias KEY proves that deploy published
+ * it, over the same literal name.
+ *
+ * Every fixture below builds its secret on the `Fn::Join`-around-a-`Ref` shape
+ * `secret.secretValueFromJson(...)` renders. A plain-string secret cannot
+ * discriminate this class — `containsSecretDynamicReference` is what arms the
+ * whole branch, and a shallow scan of a plain string passes for the wrong
+ * reason.
+ */
+describe('literal Export.Name decided from the stored bag (issue #1942)', () => {
+  /** A stack that resolves a secret AND publishes a literal export alias. */
+  function secretStackWithLiteralAlias(): CloudFormationTemplate {
+    return {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        DbSecret: {
+          Value: {
+            'Fn::Join': [
+              '',
+              ['{{resolve:secretsmanager:', { Ref: 'Sec' }, ':SecretString:password::}}'],
+            ],
+          },
+        },
+        Exporter: {
+          Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
+          Export: { Name: 'MyStack:BucketArn' },
+        },
+      },
+    };
+  }
+
+  it('PUBLISHES the alias when state holds that key — the previous deploy already decided', async () => {
+    const r = await resolveTemplateOutputs(secretStackWithLiteralAlias(), RESOLVER, undefined, {
+      'MyStack:BucketArn': ARN,
+      Exporter: ARN,
+    });
+
+    expect(r.outputs['MyStack:BucketArn']).toBe(ARN);
+    expect([...r.exportNames]).toEqual(['MyStack:BucketArn']);
+    // No suppression: the section is reportable again, which is the whole point.
+    expect(r.resolutionFailed).toBe(false);
+    expect(r.failedKeys.has('MyStack:BucketArn')).toBe(false);
+  });
+
+  it('publishes on a DIFFERENT stored value too, so a real export change is SHOWN (#875)', async () => {
+    // The row that motivated the issue. The refusal deploy makes is about the
+    // NAME — an unchanged template literal — so the stored VALUE is not part of
+    // the evidence; requiring equality would suppress exactly the row someone
+    // needed to see.
+    const stored = { 'MyStack:BucketArn': 'arn:aws:s3:::previously-published', Exporter: ARN };
+    const r = await resolveTemplateOutputs(secretStackWithLiteralAlias(), RESOLVER, undefined, stored);
+
+    expect(r.resolutionFailed).toBe(false);
+    const changes = computeOutputsDiff(stored, r.outputs, r.exportNames, r.secretSourceKeys, {
+      declaredKeys: r.declaredKeys,
+      templateHasSecretReference: r.templateHasSecretReference,
+    });
+    const aliasRow = changes.find((c) => c.name === 'MyStack:BucketArn');
+    expect(aliasRow?.changeType).toBe('MODIFY');
+    expect(aliasRow?.isExport).toBe(true);
+    expect(aliasRow?.newValue).toBe(ARN);
+    // The stored side is an ordinary ARN in a record whose secret output is
+    // already stored as its expression, so nothing is withheld here.
+    expect(aliasRow?.oldValueRedacted).toBeUndefined();
+  });
+
+  it('SUPPRESSES when the stored bag lacks the key — absence records no verdict', async () => {
+    // A first deploy of this alias. State has other keys, so this is the
+    // "bag present, key absent" row rather than the no-state one below.
+    const r = await resolveTemplateOutputs(secretStackWithLiteralAlias(), RESOLVER, undefined, {
+      Exporter: ARN,
+    });
+
+    expect(Object.hasOwn(r.outputs, 'MyStack:BucketArn')).toBe(false);
+    expect([...r.exportNames]).toEqual([]);
+    expect(r.resolutionFailed).toBe(true);
+    // Still recorded, so the downstream warning cannot blame the wrong cause.
+    expect(r.failedKeys.has('MyStack:BucketArn')).toBe(true);
+  });
+
+  it('SUPPRESSES with no stored bag at all — a never-deployed stack, or a caller with none', async () => {
+    // Both spellings, because they arrive by different routes: an EMPTY bag is
+    // a state record with no outputs yet, while ABSENT is the pre-#1942 caller
+    // shape (`resolveTemplateOutputs` still has three required parameters).
+    const empty = await resolveTemplateOutputs(
+      secretStackWithLiteralAlias(),
+      RESOLVER,
+      undefined,
+      {}
+    );
+    expect(empty.resolutionFailed).toBe(true);
+    expect(empty.failedKeys.has('MyStack:BucketArn')).toBe(true);
+
+    const absent = await resolveTemplateOutputs(secretStackWithLiteralAlias(), RESOLVER);
+    expect(absent.resolutionFailed).toBe(true);
+    expect(absent.failedKeys.has('MyStack:BucketArn')).toBe(true);
+  });
+
+  it('does NOT widen to an INTRINSIC name carrying a secret spelling, even when state holds the key', async () => {
+    // The intrinsic name is refused before any stored-bag question arises —
+    // deploy WILL substitute a plaintext into that key and refuse, whatever
+    // state happens to hold. Two independent things keep the alias out here,
+    // and only the first is what this case demonstrates: the secret-spelling
+    // arm matches, AND the stored-bag arm's own `!declaredExportIsIntrinsic`
+    // excludes an intrinsic name anyway (this fixture declares no
+    // secret-bearing OUTPUT, so `secretSourceKeys` is empty and that arm could
+    // not fire regardless). An earlier version of this comment credited the
+    // refusal ORDER, which overstates what the fixture shows.
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        Exporter: {
+          Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
+          Export: { Name: { 'Fn::GetAtt': ['Bucket', 'SecretishName'] } as never },
+        },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER, undefined, {
+      'pre-{{resolve:secretsmanager:db:SecretString:pw}}': ARN,
+    });
+
+    expect([...r.exportNames]).toEqual([]);
+    expect(Object.hasOwn(r.outputs, 'pre-{{resolve:secretsmanager:db:SecretString:pw}}')).toBe(
+      false
+    );
+  });
+
+  it('does NOT widen to a COLLIDING alias, even when state holds the key', async () => {
+    // Deploy skips a colliding alias and keeps the output's own value, so
+    // publishing it would be a permanent phantom regardless of what state has.
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        DbSecret: {
+          Value: {
+            'Fn::Join': [
+              '',
+              ['{{resolve:secretsmanager:', { Ref: 'Sec' }, ':SecretString:password::}}'],
+            ],
+          },
+        },
+        Other: { Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] } },
+        Exporter: {
+          Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
+          Export: { Name: 'Other' },
+        },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER, undefined, { Other: ARN });
+    expect([...r.exportNames]).toEqual([]);
+  });
+});
+
+/**
+ * A stored key today's template cannot ACCOUNT FOR (issue #1948).
+ *
+ * `secretSourceKeys` is built from DECLARATIONS, so an output DELETED from the
+ * template contributes nothing to it — a record whose only secret-bearing
+ * output has since been removed was judged not-legacy and printed its stored
+ * pre-GHSA plaintext as the `old:` side of a REMOVE row, into the terminal and
+ * into CI logs.
+ *
+ * The replacement is a REFUSAL, not a detection (a stored plaintext is
+ * indistinguishable from an ordinary string), gated so it stays off the common
+ * benign case of deleting an ordinary output.
+ */
+describe('prototype-polluting Export.Name (issue #1943 class)', () => {
+  it('stores a literal __proto__ export alias as DATA, not on the prototype', async () => {
+    // The alias key is a template-controlled RESOLVED value, so it can be
+    // `__proto__`. On a `{}` bag that write either mutates the prototype or is
+    // silently dropped — and a dropped write reads downstream as a phantom
+    // REMOVE of a key state actually holds.
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Outputs: {
+        Exporter: { Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] }, Export: { Name: '__proto__' } },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+
+    expect(Object.hasOwn(r.outputs, '__proto__')).toBe(true);
+    expect(r.outputs['__proto__']).toBe(ARN);
+    expect([...r.exportNames]).toContain('__proto__');
+    // Nothing reached the prototype of an ordinary object.
+    expect(Object.getPrototypeOf({}) as unknown).toBe(Object.prototype);
+    expect(({} as Record<string, unknown>)['Fn::GetAtt']).toBeUndefined();
+    // ...and the key survives the comparison, so it does not become a phantom.
+    const changes = computeOutputsDiff({}, r.outputs, r.exportNames);
+    expect(changes.map((c) => c.name)).toContain('__proto__');
+  });
+});
+
+describe('unaccountable stored key withholding (issue #1948)', () => {
+  const PLAINTEXT = 'hunter2';
+  const SECRET_EXPR = '{{resolve:secretsmanager:prod/db:SecretString:password}}';
+
+  it('WITHHOLDS the REMOVE value of a secret output deleted from the template', () => {
+    // The motivating case: the ONLY secret-bearing output was deleted, so
+    // `secretSourceKeys` is empty and the record reads as post-GHSA.
+    const changes = computeOutputsDiff(
+      { DbPassword: PLAINTEXT, ApiUrl: 'https://old.example.com' },
+      { ApiUrl: 'https://new.example.com' },
+      new Set(),
+      new Set(),
+      { declaredKeys: new Set(['ApiUrl']), templateHasSecretReference: true }
+    );
+
+    const removed = changes.find((c) => c.name === 'DbPassword');
+    expect(removed?.changeType).toBe('REMOVE');
+    expect(removed?.oldValueRedacted).toBe(true);
+    expect(removed?.oldValue).toBeUndefined();
+  });
+
+  it('withholds PER KEY, not record-wide — the accountable rows keep their values', () => {
+    // The asymmetry with the legacy-record arms above, and it follows from what
+    // each concludes: those claim the whole bag is unredacted, this one claims
+    // only that ONE key is undecidable.
+    const changes = computeOutputsDiff(
+      { DbPassword: PLAINTEXT, ApiUrl: 'https://old.example.com' },
+      { ApiUrl: 'https://new.example.com' },
+      new Set(),
+      new Set(),
+      { declaredKeys: new Set(['ApiUrl']), templateHasSecretReference: true }
+    );
+
+    const modified = changes.find((c) => c.name === 'ApiUrl');
+    expect(modified?.changeType).toBe('MODIFY');
+    expect(modified?.oldValue).toBe('https://old.example.com');
+    expect(modified?.oldValueRedacted).toBeUndefined();
+  });
+
+  it('does NOTHING when the template proves no secret reference anywhere', () => {
+    // Deleting an output is a normal refactor, so without this gate every
+    // ordinary stack would lose its REMOVE values.
+    const changes = computeOutputsDiff(
+      { Removed: 'arn:aws:s3:::gone', ApiUrl: 'https://old.example.com' },
+      { ApiUrl: 'https://old.example.com' },
+      new Set(),
+      new Set(),
+      { declaredKeys: new Set(['ApiUrl']), templateHasSecretReference: false }
+    );
+
+    const removed = changes.find((c) => c.name === 'Removed');
+    expect(removed?.oldValue).toBe('arn:aws:s3:::gone');
+    expect(removed?.oldValueRedacted).toBeUndefined();
+  });
+
+  it('is EXONERATED when any stored value is a secret expression (the last write redacted)', () => {
+    // `resolveOutputs` rewrites the whole bag on every deploy, so one redacted
+    // key proves the bag as a whole is post-GHSA — including the deleted key's
+    // value, which is therefore an ordinary string.
+    const changes = computeOutputsDiff(
+      { Removed: 'arn:aws:s3:::gone', DbPassword: SECRET_EXPR },
+      { DbPassword: SECRET_EXPR },
+      new Set(),
+      new Set(),
+      { declaredKeys: new Set(['DbPassword']), templateHasSecretReference: true }
+    );
+
+    const removed = changes.find((c) => c.name === 'Removed');
+    expect(removed?.oldValue).toBe('arn:aws:s3:::gone');
+    expect(removed?.oldValueRedacted).toBeUndefined();
+  });
+
+  it('leaves a DECLARED-but-condition-skipped key alone — the template accounts for it', () => {
+    // Such a key is absent from `desired` but present in `declaredKeys`, which
+    // is exactly the distinction the set exists to draw. (If it were also
+    // secret-bearing, `secretSourceKeys` covers it record-wide.)
+    const changes = computeOutputsDiff(
+      { MaybeOut: 'arn:aws:s3:::conditional' },
+      {},
+      new Set(),
+      new Set(),
+      { declaredKeys: new Set(['MaybeOut']), templateHasSecretReference: true }
+    );
+
+    expect(changes[0]?.changeType).toBe('REMOVE');
+    expect(changes[0]?.oldValue).toBe('arn:aws:s3:::conditional');
+    expect(changes[0]?.oldValueRedacted).toBeUndefined();
+  });
+
+  it('withholds nothing when the caller passes no scan at all (default arg)', () => {
+    // `computeOutputsDiff` keeps working for callers that never supply the new
+    // information — the arm is opt-in on the data, not on a flag.
+    const changes = computeOutputsDiff({ Removed: PLAINTEXT }, {}, new Set());
+    expect(changes[0]?.oldValue).toBe(PLAINTEXT);
+    expect(changes[0]?.oldValueRedacted).toBeUndefined();
+  });
+
+  it('an ADD is never withheld — it has no stored side to withhold', () => {
+    const changes = computeOutputsDiff({}, { Fresh: 'v' }, new Set(), new Set(), {
+      declaredKeys: new Set(),
+      templateHasSecretReference: true,
+    });
+    expect(changes[0]?.changeType).toBe('ADD');
+    expect(changes[0]?.newValue).toBe('v');
+    expect(changes[0]?.oldValueRedacted).toBeUndefined();
+  });
+});
+
+describe('declaredKeys + templateHasSecretReference (issue #1948 inputs)', () => {
+  it('declares every output name AND every literal Export.Name, condition-skipped included', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
+      Conditions: {},
+      Outputs: {
+        Skipped: { Value: 'x', Condition: 'Never', Export: { Name: 'Skipped:Alias' } },
+        Exporter: {
+          Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
+          Export: { Name: 'MyStack:BucketArn' },
+        },
+      },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER, { Never: false });
+
+    // A condition-skipped output never reaches the resolve loop, so only pass 1
+    // can record it — and its stored key is exactly the shape that would
+    // otherwise be judged unaccountable.
+    expect([...r.declaredKeys].sort()).toEqual(
+      ['Exporter', 'MyStack:BucketArn', 'Skipped', 'Skipped:Alias'].sort()
+    );
+  });
+
+  it('sees a secret reference in RESOURCES, not just in Outputs', async () => {
+    // The #1948 case is precisely one where `Outputs` no longer mentions the
+    // secret, so an Outputs-only walk would answer false for every case the
+    // gate exists to catch.
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Environment: {
+              Variables: { PW: '{{resolve:secretsmanager:prod/db:SecretString:password}}' },
+            },
+          },
+        },
+      },
+      Outputs: { ApiUrl: { Value: 'https://example.com' } },
+    };
+
+    const r = await resolveTemplateOutputs(template, RESOLVER);
+    expect(r.templateHasSecretReference).toBe(true);
+    // ...and the Outputs-only signal is genuinely empty, which is what makes
+    // this fixture the #1948 shape rather than a case the old signals covered.
+    expect(r.secretSourceKeys.size).toBe(0);
+  });
+
+  it('answers false for a stack with no secret reference anywhere', async () => {
+    const r = await resolveTemplateOutputs(templateWithExport(), RESOLVER);
+    expect(r.templateHasSecretReference).toBe(false);
   });
 });

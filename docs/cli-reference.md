@@ -1769,10 +1769,20 @@ both the text and `--json` output rather than printed into CI logs. Two signals
 identify such a record: the template side still being a `{{resolve:...}}`
 expression while state is not (exactly what [`cdkd scrub`](#cdkd-scrub) repairs),
 and the template declaring the output's value as a dynamic reference — the latter
-also covers an output that was condition-skipped or deleted, which has no
-template side left to compare. Because a record with any such key was written by
-a pre-redaction binary, the withholding applies to every previous value in that
-record; the change itself is still reported. Second, output / export names and
+also covers an output that was condition-skipped, which has no template side left
+to compare. Because a record with any such key was written by a pre-redaction
+binary, both of those withhold **record-wide**: every previous value in that
+record is withheld, and the change itself is still reported.
+A third, **per-key** refusal covers an output DELETED from the template: a stored
+key today's template cannot account for (no declared output name, no literal
+`Export.Name`, not in the resolved bag) has its value withheld — only when the
+template still proves a secret reference anywhere, and not when any stored value
+is itself a secret expression (which shows the last write already redacted the
+whole bag). Deleting an output is an ordinary refactor, so those two gates are
+what keep the refusal off stacks that handle no secrets at all. For a nested
+child REMOVED from its parent's template there is no template left to account for
+anything, so the refusal applies to that child's whole stored bag whenever the
+parent's template proves a secret reference. Second, output / export names and
 rendered values are stripped of control and bidi characters before display: an
 `Export.Name` is a value cdkd resolved (from an `Fn::Sub`, a parameter, an SSM
 lookup), so unlike a CloudFormation logical ID it never passed a validator. The

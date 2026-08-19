@@ -11,6 +11,7 @@ import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-r
 import {
   computeOutputsDiff,
   resolveTemplateOutputs,
+  templateHasSecretDynamicReference,
   type OutputChange,
 } from '../../analyzer/outputs-diff.js';
 import { getLogger } from '../../utils/logger.js';
@@ -203,20 +204,41 @@ export async function computeStackDiff(
   stackName: string,
   stateBackend: S3StateBackend,
   diffCalculator: DiffCalculator,
-  parameters?: Record<string, unknown>,
   /**
-   * Same per-type normalization the deploy engine applies (issue #1591).
-   * Without it `cdkd diff` forecasts a change `cdkd deploy` will never make —
-   * the preview and the apply must narrow identically.
+   * The optional knobs, as ONE object rather than four trailing positionals
+   * (issue #1926 review): the fourth arrival pushed this to ten parameters and
+   * made `buildDeletedSubtree` pad with three `undefined`s to reach the one it
+   * needed, which is exactly the call shape a wrong-slot bug hides in.
    */
-  canonicalizeProperties?: CanonicalizePropertiesFn,
-  /**
-   * `--no-cfn-fallback` (issue #1697): false disables the resolver's
-   * CloudFormation fallback for cross-stack references, mirroring the
-   * deploy engine's option so preview and apply resolve identically.
-   */
-  cfnFallback?: boolean
+  options: {
+    parameters?: Record<string, unknown>;
+    /**
+     * Same per-type normalization the deploy engine applies (issue #1591).
+     * Without it `cdkd diff` forecasts a change `cdkd deploy` will never make —
+     * the preview and the apply must narrow identically.
+     */
+    canonicalizeProperties?: CanonicalizePropertiesFn;
+    /**
+     * `--no-cfn-fallback` (issue #1697): false disables the resolver's
+     * CloudFormation fallback for cross-stack references, mirroring the
+     * deploy engine's option so preview and apply resolve identically.
+     */
+    cfnFallback?: boolean;
+    /**
+     * Force the issue #1948 "stored key the template cannot account for"
+     * withholding ON, regardless of what THIS template proves.
+     *
+     * Exactly one caller needs it and the reason is structural: a DELETED nested
+     * child is diffed against an EMPTY template, so `templateHasSecretReference`
+     * is false, `declaredKeys` and `desired` are empty, and NONE of the three
+     * withholding arms can fire — a pre-GHSA child's whole stored bag would
+     * render with values. The PARENT's template is the evidence available, and
+     * `buildDeletedSubtree` passes it down.
+     */
+    inheritSecretBearingTemplate?: boolean;
+  } = {}
 ): Promise<StackDiffResult> {
+  const { parameters, canonicalizeProperties, cfnFallback, inheritSecretBearingTemplate } = options;
   const intrinsicResolver = new IntrinsicFunctionResolver(region, {
     cfnFallback: cfnFallback ?? true,
   });
@@ -336,7 +358,17 @@ export async function computeStackDiff(
   //
   // `effectiveTemplate` mirrors the deploy engine's no-change branch. Condition
   // pruning only rewrites `Resources`, so its `Outputs` are the raw template's.
-  const resolved = await resolveTemplateOutputs(effectiveTemplate, resolveFn, conditions);
+  // `currentState.outputs` is passed for ONE decision inside the resolver — the
+  // LITERAL `Export.Name` of a secret-bearing stack, which the preview cannot
+  // evaluate deploy's predicate for but state can answer (issue #1942): the bag
+  // holding that alias key proves a previous deploy published it. See the
+  // resolver's own note for the different-value / absent-key rows.
+  const resolved = await resolveTemplateOutputs(
+    effectiveTemplate,
+    resolveFn,
+    conditions,
+    currentState.outputs
+  );
   // A partially-resolved bag reports NO delta, exactly like the deploy engine's
   // NO-CHANGE branch declining to persist one (`resolutionFailed` there). That
   // branch is the one this preview stands in for; deploy's changed-resources
@@ -365,7 +397,12 @@ export async function computeStackDiff(
       currentState.outputs,
       resolved.outputs,
       resolved.exportNames,
-      resolved.secretSourceKeys
+      resolved.secretSourceKeys,
+      {
+        declaredKeys: resolved.declaredKeys,
+        templateHasSecretReference:
+          resolved.templateHasSecretReference || inheritSecretBearingTemplate === true,
+      }
     ).filter((change) => !resolved.failedKeys.has(change.name));
     if (wouldHaveChanged.length > 0) {
       logger.warn(
@@ -379,7 +416,12 @@ export async function computeStackDiff(
       currentState.outputs,
       resolved.outputs,
       resolved.exportNames,
-      resolved.secretSourceKeys
+      resolved.secretSourceKeys,
+      {
+        declaredKeys: resolved.declaredKeys,
+        templateHasSecretReference:
+          resolved.templateHasSecretReference || inheritSecretBearingTemplate === true,
+      }
     );
   }
 
@@ -502,6 +544,19 @@ export async function buildDiffTree(args: {
    * the deploy engine's option. Default (undefined) = fallback enabled.
    */
   cfnFallback?: boolean;
+  /**
+   * Does any template ABOVE this node in the tree carry a secret-bearing
+   * dynamic reference (issue #1948 review)?
+   *
+   * Threaded rather than recomputed per level, because a DELETED child takes
+   * its evidence from the nearest LIVE template and "nearest" is not the same
+   * as "immediate parent": with a root that references a secret, an
+   * intermediate child whose own template does not, and a deleted GRANDchild
+   * holding a pre-GHSA bag, a per-level answer is `false` at the level that
+   * matters and the stored plaintext prints. The flag accumulates with OR down
+   * the walk so no intermediate level can break the chain.
+   */
+  parentHasSecretReference?: boolean;
 }): Promise<DiffTreeNode> {
   const {
     stackName,
@@ -512,6 +567,7 @@ export async function buildDiffTree(args: {
     recursive,
     stateBackend,
     diffCalculator,
+    parentHasSecretReference,
     parameters,
     canonicalizeProperties,
     assetRedirect,
@@ -519,6 +575,9 @@ export async function buildDiffTree(args: {
   } = args;
 
   const state = await loadStateOrEmpty(stackName, region, stateBackend);
+  // Accumulated, not replaced: see `parentHasSecretReference`'s doc.
+  const secretBearingAbove =
+    parentHasSecretReference === true || templateHasSecretDynamicReference(template);
   const { changes, outputChanges } = await computeStackDiff(
     state,
     template,
@@ -526,9 +585,14 @@ export async function buildDiffTree(args: {
     stackName,
     stateBackend,
     diffCalculator,
-    parameters,
-    canonicalizeProperties,
-    cfnFallback
+    {
+      ...(parameters && { parameters }),
+      ...(canonicalizeProperties && { canonicalizeProperties }),
+      ...(cfnFallback !== undefined && { cfnFallback }),
+      // A live template of its own, so this node decides for itself; the
+      // inherited flag only matters for the DELETED children below.
+      inheritSecretBearingTemplate: false,
+    }
   );
   const ccApiRoutes = collectCcApiRoutes(template, state);
   const node: DiffTreeNode = {
@@ -590,6 +654,7 @@ export async function buildDiffTree(args: {
         ...(canonicalizeProperties && { canonicalizeProperties }),
         ...(assetRedirect && { assetRedirect }),
         ...(cfnFallback !== undefined && { cfnFallback }),
+        parentHasSecretReference: secretBearingAbove,
       })
     );
   }
@@ -599,7 +664,18 @@ export async function buildDiffTree(args: {
     if (resource.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
     if (templateChildIds.has(logicalId)) continue;
     node.children.push(
-      await buildDeletedSubtree(`${stackName}~${logicalId}`, region, stateBackend, diffCalculator)
+      await buildDeletedSubtree(
+        `${stackName}~${logicalId}`,
+        region,
+        stateBackend,
+        diffCalculator,
+        // The nearest LIVE template is the evidence the deleted child cannot
+        // supply for itself (issue #1948 review): the child diffs against an
+        // empty template, so without this its whole stored bag renders with
+        // values. Accumulated from above, so an intermediate template that
+        // happens to carry no reference cannot break the chain.
+        secretBearingAbove
+      )
     );
   }
 
@@ -616,7 +692,8 @@ async function buildDeletedSubtree(
   stackName: string,
   region: string,
   stateBackend: S3StateBackend,
-  diffCalculator: DiffCalculator
+  diffCalculator: DiffCalculator,
+  parentHasSecretReference: boolean
 ): Promise<DiffTreeNode> {
   const state = await loadStateOrEmpty(stackName, region, stateBackend);
   const { changes, outputChanges } = await computeStackDiff(
@@ -625,7 +702,8 @@ async function buildDeletedSubtree(
     region,
     stackName,
     stateBackend,
-    diffCalculator
+    diffCalculator,
+    { inheritSecretBearingTemplate: parentHasSecretReference }
   );
   const node: DiffTreeNode = {
     stackName,
@@ -638,15 +716,31 @@ async function buildDeletedSubtree(
     ccApiRoutes: new Map(),
     // The empty template carries no `Outputs`, so every persisted key diffs as
     // REMOVE — which is accurate: destroying the child drops its whole state
-    // record, and any export it published stops resolving for consumers. No
-    // special case, so this node obeys the same rule as every other.
+    // record, and any export it published stops resolving for consumers.
+    //
+    // Their VALUES are withheld whenever the parent's template proves a secret
+    // reference (issue #1948 review). An empty template accounts for no key at
+    // all, so the withholding is necessarily all-or-nothing here rather than
+    // the per-key split a live template affords — an ordinary child in a
+    // secret-handling tree therefore loses its printed values too. Fail-closed
+    // is the right side to err on: the rows themselves are still reported, and
+    // a bag with any secret expression in it still exonerates the record.
     outputChanges,
     children: [],
   };
   for (const [logicalId, resource] of Object.entries(state.resources)) {
     if (resource.resourceType !== NESTED_STACK_RESOURCE_TYPE) continue;
     node.children.push(
-      await buildDeletedSubtree(`${stackName}~${logicalId}`, region, stateBackend, diffCalculator)
+      // Propagated, not recomputed: a grandchild's template is gone for the
+      // same reason its parent's is, so the evidence stays the nearest LIVE
+      // template in the tree.
+      await buildDeletedSubtree(
+        `${stackName}~${logicalId}`,
+        region,
+        stateBackend,
+        diffCalculator,
+        parentHasSecretReference
+      )
     );
   }
   return node;
@@ -1019,26 +1113,20 @@ export function renderChangeLines(
   return { create: createCount, update: updateCount, delete: deleteCount };
 }
 
-/** Stand-in printed instead of a withheld legacy-plaintext output value. */
-const REDACTED_LEGACY_PLAINTEXT = '<redacted: legacy plaintext in state — run `cdkd scrub`>';
+/**
+ * Stand-in printed instead of a withheld stored output value.
+ *
+ * Worded as a POSSIBILITY because both reasons the value is withheld are
+ * suspicions rather than detections — a record that LOOKS pre-GHSA, and a
+ * stored key today's template cannot account for (issue #1948), which is
+ * undecidable by construction. Stating it as a fact would be wrong on the
+ * benign half of each, and `cdkd scrub` finding nothing is the expected
+ * outcome there.
+ */
+const REDACTED_LEGACY_PLAINTEXT = '<redacted: may be legacy plaintext in state — run `cdkd scrub`>';
 
 /**
- * Strip characters that let a template-controlled string manipulate the
- * TERMINAL rather than merely appear in it: C0 (incl. ESC, so no ANSI sequence
- * survives), DEL, C1 (the 8-bit CSI forms some terminals still honor), and the
- * bidi / format overrides that visually reorder a rendered line.
- *
- * Applied only on the human-render path. The `--json` payload is deliberately
- * left byte-faithful: it is a machine interface, an export NAME is data a
- * consumer may match on, and silently mutating it there would trade a real
- * correctness regression for a display concern belonging to whatever renders
- * the JSON. `JSON.stringify` already escapes everything below 0x20.
- *
- * The helper itself now lives in `src/utils/regexp.ts` — `outputs-export-alias`
- * prints the same class of string and had grown a second copy.
- */
-/**
- * The same guard for an already-JSON-SERIALIZED value: C1 and the bidi marks
+ * The guard for an already-JSON-SERIALIZED value: C1 and the bidi marks
  * only, deliberately NOT C0.
  *
  * `JSON.stringify` escapes every character below 0x20 that occurs INSIDE a

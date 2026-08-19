@@ -369,6 +369,35 @@ break a consumer — was hidden the same way.
   full as a `REMOVE` row. A hit on either makes the whole record suspect (it was
   written by a pre-GHSA binary), so the withholding is record-level; the change
   is still reported, only the value is withheld.
+- Neither signal reaches an output **deleted** from the template — both are built
+  from what the template declares, and a deleted output declares nothing (issue
+  [#1948](https://github.com/go-to-k/cdkd/issues/1948)). A third signal answers
+  that from the stored bag, and as a *refusal* rather than a detection, because
+  it is undecidable there: a stored plaintext is indistinguishable from an
+  ordinary string. A stored key present in neither the declared keys (every
+  output name plus every literal `Export.Name`) nor the resolved bag has its
+  value withheld — gated on the template still proving a secret reference
+  *anywhere*, `Resources` included, and exonerated when any stored value is
+  itself a secret expression (which proves the last write redacted the whole
+  bag, since `resolveOutputs` rewrites every key). This arm withholds per KEY
+  rather than record-wide: unlike the two above it concludes only that one key
+  is undecidable, not that the record predates redaction. A stack whose only
+  secret reference *was* the deleted output leaves nothing to gate on, and
+  withholding every `REMOVE` value on every stack would be the worse trade.
+  A nested child REMOVED from its parent's template is the same case one level
+  up — it diffs against an *empty* template, so nothing is declared and nothing
+  is resolved — and it takes the parent's answer, propagated unchanged to a
+  deleted grandchild.
+- One row the preview cannot decide from the template is a **literal**
+  `Export.Name` in a stack that resolves a secret: the deploy refuses such a
+  name when it contains a resolved plaintext, and the preview never substitutes
+  one. It reads the verdict the apply already recorded (issue
+  [#1942](https://github.com/go-to-k/cdkd/issues/1942)): state holding that
+  alias key proves a previous deploy published it over the same literal name, so
+  the preview publishes the same key with today's value — which is what keeps a
+  genuine export change visible instead of suppressing the whole section. An
+  absent key records no verdict (a first deploy of the alias, or of the stack)
+  and still suppresses.
 - It also strips control and bidi characters from template-controlled output /
   export names and rendered values before they reach the terminal — an
   `Export.Name` is a value cdkd *resolved*, so unlike a CFn logical ID it never
