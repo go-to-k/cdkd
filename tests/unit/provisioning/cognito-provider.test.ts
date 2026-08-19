@@ -225,12 +225,12 @@ describe('CognitoUserPoolProvider', () => {
     });
 
     it('should forward Policies.SignInPolicy on update (#1380)', async () => {
-      // Forwarding is what APPLIES a declared change: this case CHANGES the
-      // allowed first-auth factors, and dropping SignInPolicy from the request
-      // would leave the pool on its previous value. It is NOT about omission
-      // resetting the field -- measured us-east-1 2026-08-19 (issue #1968), an
-      // UpdateUserPool omitting SignInPolicy leaves it intact; see
-      // `toSdkUserPoolPolicies` in the provider.
+      // Forwarding is what APPLIES a declared value. `previousProperties` here
+      // declares no SignInPolicy, so this case ADDS one; dropping it from the
+      // request would leave the pool with no sign-in policy at all. It is NOT
+      // about omission resetting the field -- measured us-east-1 2026-08-19
+      // (issue #1968), an UpdateUserPool omitting SignInPolicy leaves it
+      // intact; see `toSdkUserPoolPolicies` in the provider.
       mockSend.mockResolvedValueOnce({});
       mockSend.mockResolvedValueOnce({
         UserPool: {
@@ -539,9 +539,13 @@ describe('CognitoUserPoolProvider', () => {
         const mfaCall = mockSend.mock.calls[1][0];
         expect(mfaCall.constructor.name).toBe('SetUserPoolMfaConfigCommand');
         expect(mfaCall.input.UserPoolId).toBe('us-east-1_abc123');
-        // SetUserPoolMfaConfig is a full-replace: MfaConfiguration MUST be set
-        // (an omitted value resets the pool to OFF and drops the factors below).
-        // Defaults to OPTIONAL when the template omits it but enables factors.
+        // SetUserPoolMfaConfig is a full-replace: MfaConfiguration MUST be set.
+        // Measured 2026-08-19 (issue #1968), the two arms differ: omitting it
+        // WITH factor blocks in the request makes AWS REJECT the call, and
+        // omitting it with none resets the pool to OFF. See the
+        // SetUserPoolMfaConfig section of the ledger in
+        // `readLiveMfaConfiguration`. Defaults to OPTIONAL when the template
+        // omits it but enables factors.
         expect(mfaCall.input.MfaConfiguration).toBe('OPTIONAL');
         expect(mfaCall.input.SoftwareTokenMfaConfiguration).toEqual({ Enabled: true });
         expect(mfaCall.input.SmsMfaConfiguration).toEqual({
@@ -1042,6 +1046,35 @@ describe('CognitoUserPoolProvider', () => {
           expect(warned).not.toContain('AWS rejects');
         }
       );
+
+      // The OFF arm of the consequence, split on `anyFactorBlock` by issue
+      // #1968. A dropped entry NEXT TO a recognized factor under an explicit
+      // OFF is the one shape where both warnings fire on the same request, and
+      // before the split they contradicted each other: this one promised a
+      // deployed-but-MFA-disabled pool while the pinned-OFF warning promised a
+      // rejection. Measured 2026-08-19, the rejection is what happens.
+      it('says the call is REJECTED when a dropped entry rides beside a factor block under OFF', async () => {
+        mockSend.mockResolvedValueOnce({
+          UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:dropped-off-with-block' },
+        });
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyUserPool', 'AWS::Cognito::UserPool', {
+          EnabledMfas: ['SOFTWARE_TOKEN_MFA', 'NOT_A_FACTOR'],
+          MfaConfiguration: 'OFF',
+        });
+
+        const mfaCall = mockSend.mock.calls[1][0];
+        expect(mfaCall.input.MfaConfiguration).toBe('OFF');
+        expect(mfaCall.input.SoftwareTokenMfaConfiguration).toEqual({ Enabled: true });
+
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('"NOT_A_FACTOR"');
+        expect(warned).toContain('AWS REJECTS this call outright');
+        // The two warnings must now AGREE about this one request.
+        expect(warned).toContain('MfaConfiguration is pinned to OFF');
+        expect(warned).not.toContain('deploys with MFA DISABLED');
+      });
 
       // Pins the `?? String(f)` fallback. A template cannot produce an
       // undefined member, but JSON.stringify(undefined) returns undefined and
@@ -1807,10 +1840,13 @@ describe('CognitoUserPoolProvider', () => {
       });
     });
 
-    // Issue #1932 item 2. WARNING ONLY: sending OFF alongside a factor block is
-    // what CloudFormation does for this template, and whether AWS accepts the
-    // pairing is unverified (#1923) — so the guard must be correct under either
-    // answer, which it is precisely because it changes nothing on the wire.
+    // Issue #1932 item 2, with the open question settled by issue #1968.
+    // MEASURED 2026-08-19: AWS REJECTS OFF alongside a factor block, so the
+    // deploy FAILS -- it never produces a pool with MFA disabled, which is what
+    // the message used to promise. Still WARNING ONLY: it fires before the call
+    // and names the one-line fix, and leaves the request untouched. Promoting
+    // it to a pre-flight refusal is a separate behavior change, filed on its
+    // own rather than made here.
     describe('a declared factor pinned to MfaConfiguration OFF (#1932)', () => {
       it('warns, and still sends the factor block plus OFF', async () => {
         mockSend.mockResolvedValueOnce({
@@ -1826,7 +1862,16 @@ describe('CognitoUserPoolProvider', () => {
         const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
         expect(warned).toContain('MfaConfiguration is pinned to OFF');
         expect(warned).toContain('an MFA factor block is configured');
+        // The measured outcome (issue #1968): AWS refuses the pairing, so the
+        // deploy fails. The old message promised a deployed-but-MFA-disabled
+        // pool, an outcome this branch never reaches -- pinned as a negative so
+        // reintroducing that claim fails here rather than shipping again.
+        expect(warned).toContain('AWS REJECTS that combination');
+        expect(warned).toContain('this deploy FAILS');
+        expect(warned).not.toContain('deploys with MFA');
 
+        // The request is still sent unchanged: this is an announcement, not a
+        // pre-flight refusal.
         const mfaCall = mockSend.mock.calls[1][0];
         expect(mfaCall.input.MfaConfiguration).toBe('OFF');
         expect(mfaCall.input.SoftwareTokenMfaConfiguration).toEqual({ Enabled: true });
