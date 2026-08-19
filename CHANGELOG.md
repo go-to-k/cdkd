@@ -1,3 +1,10 @@
+## [0.284.4](https://github.com/go-to-k/cdkd/compare/v0.284.3...v0.284.4) (2026-08-19)
+
+
+### Bug Fixes
+
+* **deployment:** resolve dynamic references against the stack's own region, and gate the two template-derived regions that reach a client constructor ([#2022](https://github.com/go-to-k/cdkd/issues/2022)) ([7036b0b](https://github.com/go-to-k/cdkd/commit/7036b0b95883d2adc2585d1619ff3dfa7982e15c))
+
 ## [0.284.3](https://github.com/go-to-k/cdkd/compare/v0.284.2...v0.284.3) (2026-08-19)
 
 
