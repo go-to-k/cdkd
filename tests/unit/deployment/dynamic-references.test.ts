@@ -867,9 +867,11 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
     // region dimension is SIMULATED — these cases prove per-RESOLVER isolation,
     // not region-correct lookup. A hypothetical global cache keyed by
     // `expression + region` would satisfy every assertion below. The lookup
-    // genuinely going to the resolver's own region is only observable against
-    // real AWS: `tests/integration/dynamic-ref-cross-region` is that cover, and
-    // the ambient-client half it cannot fix is issue #1957.
+    // genuinely going to the resolver's own region is the subject of
+    // `dynamic-reference-region-scoped-clients.test.ts` (issue #1957), which
+    // fakes the SDK client CLASSES rather than `getAwsClients()` precisely so
+    // that the region a client was built with becomes observable; the real-AWS
+    // cover is `tests/integration/dynamic-ref-cross-region`.
 
     it('does not serve one region resolution to a resolver built for another region', async () => {
       // Secrets Manager secrets are REGIONAL: the same NAME in two regions is

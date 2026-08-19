@@ -75,6 +75,87 @@ export class AwsClients {
   }
 
   /**
+   * The region this instance was EXPLICITLY configured with, or `undefined`.
+   *
+   * Deliberately reads only `config.region` and consults NO environment
+   * variable, which is the opposite of what an earlier revision did and the
+   * difference matters (issue #1957). An env read here is not merely
+   * incomplete, it is UNSTABLE in the one direction that is dangerous: the SDK
+   * memoizes a region-less client's region at its first resolution
+   * (`@smithy/node-config-provider`'s `loadConfig` wraps the provider chain in
+   * `memoize`), while `deploy.ts`'s `switchRegion` keeps mutating
+   * `process.env.AWS_REGION` per stack and restores it in each stack's
+   * `finally`. So an env-derived answer can report region X for a client that
+   * long ago pinned itself to region P — letting a caller conclude "these
+   * clients already point at my region" and use the WRONG ones, which is worse
+   * than not knowing.
+   *
+   * When this returns `undefined` the region is not merely unknown to us, it is
+   * NOT YET DECIDED — and that is the important part. {@link clientOptions}
+   * omits `region` entirely in that case, so each service client resolves and
+   * MEMOIZES its own region independently, at its own first construction, from
+   * an environment `deploy.ts`'s `switchRegion` is actively mutating. The
+   * members of one region-less bag can therefore disagree with each other:
+   * `ssm` can pin `us-west-2` and `secretsManager` pin `us-east-1` a moment
+   * later, because the getters are lazy and each samples a different instant.
+   *
+   * So there is deliberately NO method here that reports "the region of these
+   * clients" for an unconfigured instance. An earlier revision had one — it
+   * asked `this.ssm.config.region()` — and it was unsound for exactly this
+   * reason: it measured ONE member of a bag whose members need not agree, and
+   * the caller then reused the whole bag on the strength of it. A caller that
+   * needs a region it can rely on must build a CONFIGURED bag
+   * ({@link withRegion} always sets `region`, so every member of a derived bag
+   * agrees by construction).
+   */
+  get configuredRegion(): string | undefined {
+    return this.config.region || undefined;
+  }
+
+  /**
+   * The CREDENTIAL half of this instance's configuration — `profile` plus any
+   * explicitly supplied `credentials` — deliberately WITHOUT `region`.
+   *
+   * This is the half that must survive a region override. Note what it is and
+   * is NOT worth: `--profile` ALSO reaches a freshly constructed client through
+   * the environment, because `src/cli/program.ts` sets `process.env.AWS_PROFILE`
+   * in a `preAction` hook for every command — so carrying `profile` here is
+   * belt-and-braces rather than the thing standing between a user and the wrong
+   * account. What genuinely has no environment path is an explicit
+   * `credentials` object: nothing exports it, so a sibling built without it
+   * falls back to the default chain. The same is true of any library caller
+   * that constructs `AwsClients` directly and therefore never runs the CLI's
+   * `preAction` hook. `--role-arn` needs nothing carried at all —
+   * `applyRoleArnIfSet` exports `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+   * `AWS_SESSION_TOKEN` into the process environment.
+   *
+   * The `credentials` object is CLONED rather than aliased: the returned bag is
+   * handed to every derived sibling, and sharing one mutable object would let a
+   * caller reach through it and rewrite the ambient instance's credentials.
+   */
+  get credentialConfig(): Omit<AwsClientConfig, 'region'> {
+    return {
+      ...(this.config.profile && { profile: this.config.profile }),
+      ...(this.config.credentials && { credentials: { ...this.config.credentials } }),
+    };
+  }
+
+  /**
+   * Derive a sibling bound to `region`, carrying this instance's credential
+   * configuration (see {@link credentialConfig}) and overriding ONLY the region.
+   *
+   * Used by {@link IntrinsicFunctionResolver} to pin a dynamic-reference lookup
+   * (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}`) to the stack's own
+   * region instead of whichever region the process-global singleton happens to
+   * hold at that moment (issue #1957). The returned instance owns its own lazily
+   * constructed clients and its own `destroy()`; it is NOT registered as the
+   * global, so nothing else in the process can observe it.
+   */
+  withRegion(region: string): AwsClients {
+    return new AwsClients({ ...this.credentialConfig, region });
+  }
+
+  /**
    * Get S3 client
    *
    * Note: If region and credentials are not provided, AWS SDK will use:
