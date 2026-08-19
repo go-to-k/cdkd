@@ -12,11 +12,11 @@ paths:
 vp run test:hooks     # or: bash .claude/hooks/run-tests.sh
 ```
 
-Most hooks in this file ship a `*.test.sh` smoke suite next to them (31 suites
-for 35 hooks as of issue #1477 — `gh-label-validity-gate`,
-`gh-pr-edit-deprecation-gate`, `post-merge-sync-reminder`, and `stop-warn` have
-none), and the runner executes every suite that exists under **every bash on
-the machine** — `bash` from PATH (Homebrew 5.x on a dev Mac) and `/bin/bash`
+Most hooks in this file ship a `*.test.sh` smoke suite next to them (33 suites
+for 37 hooks as of issue #1993, counting `run-tests.sh` as the runner rather
+than a hook — `gh-label-validity-gate`, `gh-pr-edit-deprecation-gate`,
+`post-merge-sync-reminder`, and `stop-warn` have none), and the runner executes
+every suite that exists under **every bash on the machine** — `bash` from PATH (Homebrew 5.x on a dev Mac) and `/bin/bash`
 (macOS's system **3.2**).
 Both matter because the hooks are `#!/usr/bin/env bash`: on a machine without a
 newer bash first on PATH they execute under 3.2, where bash 4+ syntax
@@ -36,7 +36,7 @@ runner image carrying bash 3.2) whenever a PR touches `.claude/hooks/**`.
 
 # Other PreToolUse safety hooks
 
-Thirteen additional one-shot hooks block known foot-guns at the source.
+Fourteen additional one-shot hooks block known foot-guns at the source.
 
 - **`.claude/hooks/commit-msg-heredoc-gate.sh`** blocks `git commit -m "$(cat <<'EOF' ... EOF)"`-style invocations because outer-shell quote tracking miscounts when the body contains apostrophes / backticks; use `git commit -F <file>` instead.
 
@@ -64,7 +64,9 @@ Thirteen additional one-shot hooks block known foot-guns at the source.
 
 - **`.claude/hooks/ref-segment-audit-gate.sh`** blocks `git commit` when staged `src/deployment/intrinsic-function-resolver.ts` adds a NEW bare `'AWS::Service::Type'` string-literal entry to the `REF_RETURNS_SEGMENT_AFTER_PIPE` Set without a matching unit test (any staged-or-tracked file under `tests/unit/deployment/` that references the type literal). That Set lists Cloud-Control-provisioned types whose compound physicalId (`<parent>|<child>`) must have its CFn `Ref` resolved to the trailing `<child>` segment; a wrong / omitted entry ships a latent bug where `Ref` leaks the whole compound id and AWS rejects the downstream resource (the `AWS::Cognito::UserPoolResourceServer` bug, PR #930, found by `/hunt-bugs`). The Set's maintenance comment already says "AUDIT THE WHOLE SERVICE FAMILY ... pin each addition with a unit test" — this hook mechanically enforces the unit-test half (the only half a hook can check) and the block message re-states the family-audit half (`describe-type primaryIdentifier` + AWS-docs `Ref` classification, excluding synthetic-Ref attachment types) which is judgmental. Detection is on the bare-array-element line shape (`^+  'AWS::Foo::Bar',`) so code uses of a type literal elsewhere in the file don't false-positive; refactor-only diffs (remove + re-add the same type) pass through (net-new computed via `comm -23`). git-cwd resolution mirrors `provider-integ-gate.sh`. Smoke test at `.claude/hooks/ref-segment-audit-gate.test.sh` (8 cases — add-without-test block / add-with-staged-test pass / add-with-tracked-test pass / no-net-new pass / resolver-untouched pass / two-added-one-uncovered block / non-commit pass / quoted-body false-positive pass). No bypass marker — the fix is to add the unit test. Mirrors the `provider-integ-gate.sh` "new registration needs coverage" pattern, applied to the intrinsic resolver's compound-id Set.
 
-All thirteen produce actionable error messages with the exact replacement command.
+- **`.claude/hooks/gh-body-english-gate.sh`** blocks `gh pr create` / `gh pr edit` / `gh issue create` / `gh issue comment` / `gh issue edit` / `gh api` when the BODY or TITLE being published contains non-English writing-system characters. It is the body-side twin of `non-english-text-gate.sh`, and the two are complements rather than overlaps: that hook's subject is the PR **diff** (`gh pr diff <N> --name-only`, then a scan of the changed FILES), so it structurally cannot see a body or a title, which are never files in the repo. They share only the Unicode character class, kept character-for-character identical in both. Closes the gap issue #1993 named: `CLAUDE.md`'s English-only rule used to end "this rule applies only to files that land in the repository", which put an issue body OUTSIDE the rule by its own terms — while `/work-issues` (the `Session-fit` deferral issue) and `/hunt-bugs` both FILE issues as a normal step, making those bodies the artifacts the flow produces most. Seen live in cdk-local, where a run filed its follow-up with both halves of the `Session-fit` line glossed in the session's chat language and had to patch the body after creation. Four input shapes are scanned: `--body-file <p>` / `--body-file=<p>`, `-F body=@<p>` / `--field body=@<p>`, inline `--body <text>` / `-b <text>`, and inline `--title <text>` / `-t <text>`. **Inline forms ARE scanned**, unlike `pr-body-item-number-gate.sh`, which deliberately leaves inline as its escape hatch — that trade does not transfer, because there is no legitimate reason to publish Japanese in a body and leaving inline unscanned would exempt the commonest shape (`gh issue comment -b "..."`). Scope guards keep reads out: the verb must be a publishing one AND a body/title flag must be present, so `gh api repos/{owner}/{repo}/issues/5 --jq .body` (a READ whose flag merely names the field) and `gh issue list --search '<non-English>'` both pass. Known limit: text the shell assembles at run time (`-b "$(cat jp.txt)"`) is invisible to a static scan of the command string; the file and inline-literal forms are what an agent actually emits. Detection is `perl -CSD` (not `grep -P` — BSD grep on macOS lacks PCRE), and the `-CSD` is load-bearing rather than stylistic: **without it perl decodes the input as latin-1 and the `\x{3000}`-style ranges never match, so the gate silently passes everything it exists to catch**. That failure is invisible from the pass-cases alone — every PASS case still passes — which is why the suite drives the BLOCK direction and why a mutation probe (disabling the gate) is part of its evidence. No bypass marker, matching `non-english-text-gate.sh`: the fix is to translate the text. Smoke test at `.claude/hooks/gh-body-english-gate.test.sh` (15 cases — Japanese via body-file / inline `--body` / inline `-b` / `--title` / `gh api -f body=` / a localized `Session-fit` gloss / `pr create` body-file, plus English pass-throughs in each shape, the read-shaped `gh api --jq .body`, `gh issue list --search`, `gh pr view`, a missing body file, and a non-`gh` command). Verified green under BOTH bash 5.x and macOS system bash 3.2.
+
+All fourteen produce actionable error messages with the exact replacement command.
 
 ## Bug-hunt cleanup safety
 
