@@ -1156,12 +1156,32 @@ echo "    stamping a staleness sentinel into the persisted observedProperties"
 RO_STAMP_BEFORE=$(mktemp)
 RO_STAMP_AFTER=$(mktemp)
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${RO_STAMP_BEFORE}" --quiet
-jq '(.resources | to_entries[] | select(.value.resourceType=="AWS::Lambda::Function")
-       | .value.observedProperties.Environment.Variables.SSM_VALUE) = "STALE-SENTINEL"' \
+# Resolve the logical id FIRST. An assignment cannot be written THROUGH
+# `to_entries[]`: that builds a new array rather than a path back into the
+# document, and jq rejects it with "Invalid path expression". Phase 1g below
+# already uses this shape; Phase 1f now matches it.
+RO_LID=$(jq -r '.resources | to_entries[]
+                  | select(.value.resourceType=="AWS::Lambda::Function")
+                  | .key' "${RO_STAMP_BEFORE}" | head -1)
+if [ -z "${RO_LID}" ]; then
+  echo "FAIL: no AWS::Lambda::Function record in state — Phase 1f cannot stamp" >&2
+  exit 1
+fi
+# Assert the bag EXISTS before stamping. A plain assignment would CREATE the
+# path, so the post-stamp grep would succeed on a record that never had a
+# deploy-time capture — turning the freshness guard into a no-op.
+if ! jq -e --arg lid "${RO_LID}" \
+     '.resources[$lid].observedProperties.Environment.Variables | objects | has("SSM_VALUE")' \
+     "${RO_STAMP_BEFORE}" >/dev/null; then
+  echo "FAIL: the Lambda has no persisted observedProperties.Environment.Variables to stamp" >&2
+  echo "      (the deploy-time capture is expected to have written one; without it this phase cannot prove freshness)" >&2
+  exit 1
+fi
+jq --arg lid "${RO_LID}" \
+  '.resources[$lid].observedProperties.Environment.Variables.SSM_VALUE = "STALE-SENTINEL"' \
   "${RO_STAMP_BEFORE}" > "${RO_STAMP_AFTER}"
 if ! grep -q 'STALE-SENTINEL' "${RO_STAMP_AFTER}"; then
-  echo "FAIL: could not stamp the sentinel — the Lambda has no persisted observedProperties.Environment.Variables to stamp" >&2
-  echo "      (the deploy-time capture is expected to have written one; without it this phase cannot prove freshness)" >&2
+  echo "FAIL: the sentinel stamp produced no sentinel — jq path expression is wrong" >&2
   exit 1
 fi
 aws s3 cp "${RO_STAMP_AFTER}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
