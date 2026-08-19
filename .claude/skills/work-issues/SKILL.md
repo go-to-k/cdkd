@@ -394,8 +394,67 @@ AWS:
 - **Non-deletion source change** → still live-test the fixed path end-to-end
   (deploy → the redeploy-with-a-change that reproduced the bug → destroy) with a
   fresh fixture, or via `/run-integ` against an existing one that covers it.
-- **Docs / tooling-only PR (no `src/**`)** → EXEMPT from the live-test; `check` +
-  `docs` markers suffice.
+- **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills, tests,
+  config) → EXEMPT from the deploy / destroy live-test tiers above, never from
+  `/verify-pr` step 9, and never from `verify-pr` itself — that gate sits on top of
+  `check` + `docs` with no diff-shape carve-out. This is the easy tier to
+  under-verify: with no fixture and no integ that can fail, "the gates are green"
+  reads as "nothing left to check". What SATISFIES step 9 depends on what the diff
+  changes, and a diff that does both takes BOTH arms.
+  - **It changes what a command or gate DOES** (a build / lint config, a CI
+    workflow, hook logic, a `vite.config.ts` task) → the verification IS that
+    command, and those runs ARE `/verify-pr` step 9's live test rather than an
+    exemption from it. Run *the command your own diff changes*:
+    `.claude/hooks/run-tests.sh` (or the single `.claude/hooks/<name>.test.sh`) for
+    a hook, the workflow step's own command for CI, the changed task for
+    `vite.config.ts`, `vp run check` for the lint / typecheck config. `vp run check`
+    is not the universal answer — it reads neither `ci.yml` nor any hook, and its
+    lint is scoped to `src/**`, so running it for a hook diff is a probe that cannot
+    fail.
+    - **Run it more than once, BEFORE and AFTER — and pass `--no-cache`.**
+      `run.cache.tasks` is true in `vite.config.ts` and the `check` task does not
+      opt out of it, so repeats replay instead of re-running: measured 2026-08-19,
+      three consecutive `vp run check` in a clean worktree each printed
+      `cache hit, replaying` with byte-identical output. A replay cannot surface
+      what repeats are for — an rc that differs across identical runs. That failure
+      is not hypothetical: go-to-k/cdk-real-drift#1761 had `vp run check` abort with
+      rc=134 (a Vite+ stdout EAGAIN panic while writing a long warning list) while
+      reporting 0 errors, and cdkd runs the same bare `vp run check` in `ci.yml`
+      with none of the redirect workaround that repo added, so the mode is reachable
+      here once the warning list grows. For the BEFORE tree use a scratch copy or a
+      sed-swap you re-apply — not `git checkout -- <path>` / `git restore <path>`,
+      which `dirty-path-restore-gate` blocks on a dirty path because undoing a probe
+      that way discarded ~200 lines of unrelated uncommitted work in the same file
+      (go-to-k/cdkd#1700).
+    - **Drive the FAILURE direction too**, since a config change that swallows an
+      exit code also turns a red tree green, and only the failure arm tells a fix
+      apart from that. For the lint gate, append an unused variable to a `src/**`
+      file and do not name it `_*`: `lint.ignorePatterns` is
+      `['**/*', '!src', '!src/**']`, so a probe under `tests/**` is never linted at
+      all, and `no-unused-vars` ignores `^_` for vars and args alike. Verified
+      2026-08-19 — that probe does take `vp run check` to rc=1
+      (`eslint(no-unused-vars)`). **Then revert the probe before committing**: left in,
+      it makes this a `src/**` PR under a different §8 bullet and a different commit
+      prefix. Revert by re-applying your scratch copy, which restores the exact
+      pre-probe content — `check` is `hash: files`, so a marker recorded before the
+      probe verifies fresh again once the bytes match. Re-run `/check` anyway if the
+      fix itself landed after you recorded it.
+    - **Then guard the SHAPE of the fix with a test**, since nothing else re-reads a
+      build-config or workflow line. `vite.config.ts` / `scripts/**` / `ci.yml` →
+      `tests/unit/scripts/*.test.ts`, with `matrix-regen-coverage.test.ts` as the
+      pattern to copy: it parses a task block out of `vite.config.ts`, asserts both
+      directions against `ci.yml`, and carries a parser floor so "found nothing"
+      cannot pass as "everything matches". `.claude/hooks/**` → add a case to the
+      hook's own `<name>.test.sh`, which §5 already tells you to look for and
+      `.claude/rules/hooks.md` documents; create one for the few hooks that still
+      have none. When the artifact has no harness that can read it — a `.mise.toml`
+      pin, an action SHA bump — say so in the PR body instead of inventing one.
+  - **It changes PROSE only** (a skill, a rule, a doc — including this file) → there
+    is no command to re-run, so the CLAIMS are the artifact. Resolve every gate,
+    hook, skill, path, task and command the new text names against this repo's own
+    files, and RUN each command the text will send the next agent to run, confirming
+    its output matches what the text promises. That is §10-c's claim-by-claim pass,
+    owed whether or not the text came from a sibling repo.
 
 **Fresh deploys: UNIQUE stack names only** (e.g. `Cdkd<Issue>Verify`), never a
 shared fixed name and never a real prod stack — the account may hold the
@@ -554,6 +613,23 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   caught them. Checking in the rule here rather than in agent memory is deliberate:
   memory is per-project-path and per-machine, so it would not load in the very repos
   this bullet sends you to.
+  **Read the BODY of every incident the copy cites, not just the number.** A
+  mechanism claim is the one that survives a careless check, because the issue
+  number resolves and the sentence therefore looks sourced. On 2026-08-19 the
+  section mirrored here blamed an rc flap on a "tsgolint budget cascade" citing
+  go-to-k/cdk-real-drift#1761; that issue documents `vp run check` aborting rc=134
+  from a Vite+ stdout EAGAIN panic on a long warning write, with 0 errors. The
+  phrase appears in neither repo's issues. A mirrored diagnosis sends the next agent
+  hunting the wrong failure, so name the mechanism the cited issue actually
+  describes, or drop it.
+  **Fully qualify every issue / PR reference the copy carries** — including this
+  section's own, since it is itself mirrored: write `go-to-k/cdkd#1973`, never a
+  bare `#1973`. A bare `#N` renders against whichever repo is reading it, where
+  that number almost always exists and is unrelated. On 2026-08-19, mirroring
+  go-to-k/cdkd#1973 verbatim would have pointed its one bare ref at
+  go-to-k/cdkd#1761 — an EC2 export attribute — as the evidence for a toolchain
+  incident, rendering as a working link to the wrong thing. Its companion reference
+  survived only because that issue happened to spell it in full.
 
 ### 10-d. Ship it like any other change
 
@@ -580,7 +656,11 @@ pnpm install                  # worktrees have no node_modules
   with none, so a `work-issues`-only edit still needs them. `/verify-pr` sets all
   three in one pass (and `gh pr create` is gated on the third), so run it before the
   commit. It is a tooling-only PR with no `src/**` change, so §8's live-test
-  exemption applies.
+  exemption applies — take the arm matching what the retro actually changed: the
+  prose arm for a SKILL.md / rule edit, the command arm (run the suite, drive the
+  failure direction, add the test case) as soon as it lands in `.claude/hooks/**`,
+  which §10-b says is the RIGHT place whenever a rule was already written and got
+  violated anyway.
 - Agent-instruction files are deliberately NOT down-biased in `/review-pr`'s tier
   heuristic — a wrong rule here propagates into every future session — so take the
   tier the heuristic gives and do not argue it down.
