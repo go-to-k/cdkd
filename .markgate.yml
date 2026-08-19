@@ -107,6 +107,17 @@ gates:
       - ".claude/skills/pick-integ/**"
       - ".claude/skills/run-integ/**"
       - ".claude/skills/verify-pr/**"
+      # work-issues joins them for the same reason, from the other direction:
+      # it is not a checker, it is a checker's INPUT. tests/unit/scripts/
+      # work-issues-skill-refs.test.ts reads its SKILL.md and fails on any
+      # issue reference in plain prose that is not go-to-k/<repo>#N. Without
+      # this entry a lane could introduce a bare reference there and commit
+      # against a marker that still verifies fresh, because nothing in the
+      # digest changed -- #1592's shape again, with the enforcement input
+      # rather than the enforcement logic sitting outside the gate. CI still
+      # catches it; what this restores is the LOCAL signal, before the commit
+      # rather than minutes later (issue #2041).
+      - ".claude/skills/work-issues/**"
       # CLAUDE.md is a pattern-scanned target of the same checker, so
       # reintroducing banned wording there must stale `check` as well.
       - "CLAUDE.md"
