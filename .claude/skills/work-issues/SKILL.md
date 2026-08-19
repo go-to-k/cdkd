@@ -167,6 +167,20 @@ parallelized — bundle them into ONE lane (one worktree, one PR) or defer one.
   exactly the re-litigation the classification exists to prevent (CLAUDE.md →
   "Session-fit classification") — the call was made when the evidence for it was
   still in hand, and that evidence is gone by the time you are triaging.
+- **A MIRROR issue may already be done — resolve it against the repo before you
+  claim it.** A body saying it is mirroring a lesson from a sibling repo comes from
+  the duplicate generator §10-c describes, so run that section's three-window check
+  from the reading side — but at triage the order INVERTS: read the FILE first.
+  Filing happens minutes after a rival hop, while its issue and PR are still open;
+  triage happens after they have merged and closed, so the backlog search that would
+  have served the filer surfaces no rival while the work sits done on `main`. On
+  2026-08-19 go-to-k/cdkd#1986 was shortlisted here, and a grep of
+  `.claude/skills/work-issues/SKILL.md` found both halves of it already on `main` —
+  merged by go-to-k/cdkd#1984 four minutes after go-to-k/cdkd#1986 was filed — while
+  an open-issue search at that moment surfaced no rival holding the lesson, the one
+  that had (go-to-k/cdkd#1980) having closed four minutes earlier. That grep costs
+  one command at triage; the same discovery after claiming costs a worktree, a
+  `pnpm install` and a gate round.
 
 Scale the count to the backlog and to how many cross-cutting files are free. 2–3
 clean lanes is typical; do not force a lane into a contested file just to raise the
@@ -221,8 +235,11 @@ gate and §4's claim-then-verify still apply unchanged:
   comment on it is the proof — which is also why the exemption stops at `now`: §4
   gives a `next` issue no claim, and taking one back minutes after classifying it
   `next` contradicts the classification rather than being exempted by it.
-- **The maintainer named the issue in the invocation** (`/work-issues #<n>`) — an
-  explicit instruction outranks a heuristic about who else might want it.
+- **The maintainer named the issue in the invocation** — an explicit instruction
+  outranks a heuristic about who else might want it. Read the whole invoking
+  message, not just the command line: an issue number anywhere in it names the
+  issue, whether it trails the command, leads it, or sits on its own line above it.
+  On 2026-08-19 a run arrived with the number alone on the preceding line.
 - **A security issue** (rule 1 of §3-a) — an extra hour of a shipped vulnerability
   costs more than a duplicated context. Take it, and say in the claim (§4) that you
   took it inside the window and why.
@@ -238,10 +255,10 @@ What the gate accepts in exchange: an issue filed by a session that has since en
 waits up to an hour. That is the cheap side — the backlog is not going anywhere,
 while the expensive side is two agents deriving one fix from scratch. Added
 2026-08-19 at the maintainer's request, and the window was watched live the same
-morning: #1973 was filed at 03:14Z, claimed by its filing lane at 03:30Z, and that
-lane's branch reached `origin` only at 04:06Z. For 16 minutes the issue had no
-branch, no PR and no comment, so every probe in §2 reported it free; for 52 minutes
-nothing but a time-based gate could have kept a second run off it.
+morning: go-to-k/cdkd#1973 was filed at 03:14Z, claimed by its filing lane at
+03:30Z, and that lane's branch reached `origin` only at 04:06Z. For 16 minutes the
+issue had no branch, no PR and no comment, so every probe in §2 reported it free;
+for 52 minutes nothing but a time-based gate could have kept a second run off it.
 
 ### 3-a. Ranking the eligible issues
 
@@ -693,6 +710,51 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   them in this session when it can pay for two more gate runs; otherwise file one
   issue per repo carrying the `Session-fit` line. What is not an option is landing
   the fix in only one of the three — that is how the three drift apart.
+  **Before filing into a target repo, resolve the lesson against that repo's
+  CURRENT state — the merged FILE, then open PRs, then open issues — and file only
+  what none of the three already carries.** This mirror rule is a duplicate
+  GENERATOR, structurally rather than by bad luck: the chain runs A -> B -> C, so
+  two hops file into the same target repo independently and neither can see the
+  other. All three windows are needed because a lesson MOVES between them while it
+  is being worked — an hour after a rival hop files, its issue is closed and its PR
+  is merged, and the file is the only place left that shows the work was done. Each
+  hit takes a different action: already in the file, do not file at all; in an open
+  PR, comment on the PR; in an open issue, comment there with what this hop adds.
+  Two ways these searches miss what is really there: **match on the CONCEPT, not on
+  a phrase** — the bullet above tells each hop to adapt the wording per repo, so a
+  literal phrase lifted from your own copy will not find the sibling's rewrite — and
+  **judge a candidate PR by its BODY and DIFF, never its title**, since a mirror
+  lesson often rides along in a PR named for a different one. A mirror body saying
+  "landed in N of them" is the signal that other hops exist.
+
+  ```bash
+  T=/Users/goto/github/<target>
+  # the landed window — fetch first: a stale clone false-negatives the one window
+  # that no later check can recover
+  git -C "$T" fetch -q origin
+  git -C "$T" grep -n -i -e '<concept-keyword-1>' -e '<concept-keyword-2>' \
+    origin/main -- .claude/skills/work-issues/SKILL.md
+  # the in-flight window — then read each hit, since the title alone decides nothing
+  gh -R go-to-k/<target> pr list --state open --search '<keyword>' --json number,title
+  gh -R go-to-k/<target> pr view <hit> --json body -q .body
+  gh -R go-to-k/<target> pr diff <hit>
+  # the not-started window
+  gh -R go-to-k/<target> issue list --state open --search '<keyword>' --json number,title
+  ```
+
+  On 2026-08-19 this chain filed THREE issues into cdkd for two lessons inside 70
+  minutes, and the SAME lesson was reachable through a different window at each
+  moment someone looked. go-to-k/cdkd#1973 (03:14Z) and go-to-k/cdkd#1980 (03:50Z)
+  duplicate each other on the same §8 change: at 03:50Z the open-ISSUE check reaches
+  it, go-to-k/cdkd#1973 being still open. go-to-k/cdkd#1986 (04:23Z) then asked for
+  a §10-c sentence that by then sat in TWO open places — go-to-k/cdkd#1980's body,
+  and go-to-k/cdkd#1984, open since 04:18:12Z carrying the sentence in both its body
+  and its diff while its title named only the §8 lesson. Ten minutes later every one
+  of those had evaporated: go-to-k/cdkd#1984 merged at 04:27:29Z, go-to-k/cdkd#1980
+  closed at 04:28:51Z, and at 04:33Z triage neither an issue nor a PR search still
+  surfaced a rival holding the lesson, while the FILE now carried it outright (§3).
+  No single window was sufficient across that hour; which one pays depends only on
+  when you look.
   **Verify the copy against the TARGET repo, claim by claim, before shipping it.**
   Their gates, hooks and ship steps differ, so a sentence that is true here reads as
   authoritative there while being false, and nothing lints instruction prose — the
@@ -789,6 +851,10 @@ the run evidence behind it — or "no skill change" plus what held.
   lanes — was claimed, and had to be retracted after the deep read showed the
   legacy-state fixture arm plus export integ its body had already named. The line
   was in the body the whole time; nothing but a grep stood between the run and it.
+- **A mirror issue is a duplicate more often than it looks.** §10-c's three-repo
+  rule files one lesson into one repo from two hops, so resolve it against the file,
+  open PRs and open issues before filing one (§10-c) or claiming one (§3). Which of
+  the three finds it depends only on how long ago the rival hop ran.
 - **One lane per cross-cutting file.** `deploy-engine.ts` / `intrinsic-function-resolver.ts`
   / `dag-builder.ts` / `register-providers.ts` absorb most non-trivial fixes; you
   cannot parallelize two issues that both land there. Per-provider fixes ARE
