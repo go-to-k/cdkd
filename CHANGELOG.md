@@ -1,3 +1,10 @@
+## [0.284.9](https://github.com/go-to-k/cdkd/compare/v0.284.8...v0.284.9) (2026-08-19)
+
+
+### Bug Fixes
+
+* **deployment:** retry the transient server statuses, so one HTTP 500 stops ending a propagation sequence at 12% of its budget ([#2044](https://github.com/go-to-k/cdkd/issues/2044)) ([3cf859b](https://github.com/go-to-k/cdkd/commit/3cf859b6106eab20e0eaaa1e1219d700986448f0))
+
 ## [0.284.8](https://github.com/go-to-k/cdkd/compare/v0.284.7...v0.284.8) (2026-08-19)
 
 
