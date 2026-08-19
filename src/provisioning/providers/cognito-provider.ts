@@ -280,8 +280,10 @@ function hasMfaConfigProps(properties: Record<string, unknown>): boolean {
  * `MfaConfiguration` (ON/OFF/OPTIONAL) MUST be threaded into this request:
  * `SetUserPoolMfaConfig` is a full-replace of the pool's MFA state, and an
  * omitted `MfaConfiguration` defaults to OFF on the wire — which resets the
- * pool to MFA-disabled and makes AWS reject (or silently drop) the per-factor
- * sub-blocks we are trying to enable. Use the template's `MfaConfiguration`
+ * pool to MFA-disabled, and makes AWS reject the per-factor sub-blocks we are
+ * trying to enable. That reset is MEASURED against THIS API — it is not read
+ * off `UpdateUserPool`'s blanket reset sentence, which holds only field by
+ * field. Use the template's `MfaConfiguration`
  * when present; when the template omitted it, default by whether this call
  * enables an MFA FACTOR — `OPTIONAL` if it does, `OFF` (CloudFormation's own
  * default) if it does not. The body comment on that decision explains why both
@@ -374,8 +376,22 @@ function buildMfaConfigRequest(
   }
 
   // SetUserPoolMfaConfig is a full-replace: an omitted MfaConfiguration resets
-  // the pool to OFF, which would disable the very factors we are enabling. So
-  // thread the template's value, and when the template omitted it, default by
+  // the pool to OFF, which would disable the very factors we are enabling.
+  //
+  // That is a property of THIS API, MEASURED (us-east-1, 2026-08-19, issue
+  // #1968) — it is NOT the `UpdateUserPool` blanket "unspecified parameters are
+  // set to their default value" sentence, which holds only field by field (the
+  // ledger is in `readLiveMfaConfiguration`). On a pool sitting at
+  // MfaConfiguration ON with software-token enabled: a bare
+  // SetUserPoolMfaConfig carrying only the pool id reset it to OFF and dropped
+  // SoftwareTokenMfaConfiguration, while the same omission WITH a factor
+  // sub-block was rejected outright — `InvalidParameterException: Invalid MFA
+  // configuration given, can't turn off MFA and configure an MFA together`,
+  // whose wording is AWS itself confirming it read the absent field as "turn
+  // off". The sub-block case therefore fails loudly rather than shipping a
+  // silently MFA-disabled pool; threading the value is what avoids both.
+  //
+  // So thread the template's value, and when the template omitted it, default by
   // whether this call enables an MFA FACTOR at all. OFF is CloudFormation's own
   // default, and it is REQUIRED for a passkey-only pool: WebAuthn is not an MFA
   // factor, so AWS rejects OPTIONAL there with "Invalid MFA Configuration given.
@@ -738,9 +754,35 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   /**
    * Build the SDK `Policies` input from the CFn `Policies` blob. Both
    * sub-keys must be forwarded: `SignInPolicy` (passwordless first-auth
-   * factors) was silently dropped before issue #1380, and UpdateUserPool
-   * resets omitted attributes to their defaults, so leaving it out also
-   * wipes an existing sign-in policy on every update.
+   * factors) was silently dropped before issue #1380, so a template that
+   * declared -- or later CHANGED -- the allowed first-auth factors never
+   * reached AWS at all.
+   *
+   * **Forwarding is what APPLIES a declared value; it is NOT what keeps an
+   * existing one alive.** The original rationale here was AWS's blanket "if
+   * you don't provide a value for an attribute, Amazon Cognito sets it to its
+   * default value", i.e. that omitting `SignInPolicy` would WIPE it. MEASURED
+   * us-east-1 2026-08-19 (issue #1968), on a pool created with
+   * `SignInPolicy.AllowedFirstAuthFactors = [PASSWORD, EMAIL_OTP]` on the
+   * default `ESSENTIALS` tier -- no explicit `UserPoolTier` was needed for the
+   * field to be settable:
+   *
+   * - `UpdateUserPool` sending `Policies` with ONLY `PasswordPolicy` left
+   *   `SignInPolicy` at `[PASSWORD, EMAIL_OTP]`. Control: that same call's
+   *   `--auto-verified-attributes email` applied, so the update really ran.
+   * - `UpdateUserPool` omitting `Policies` entirely left BOTH sub-keys intact
+   *   (a non-default `RequireSymbols: false` survived too), while
+   *   `AutoVerifiedAttributes` reset from `[email]` to none in that very call
+   *   -- the control proving the omission was processed, not ignored.
+   * - An explicit `SignInPolicy` write landed in both directions
+   *   (`[PASSWORD]`, then back to `[PASSWORD, EMAIL_OTP]`), so the field is
+   *   reachable and writable here rather than silently dropped.
+   *
+   * So the forwarding stays -- it is the only way a CHANGED sign-in policy is
+   * applied -- but on the measured reason, not the blanket sentence. Do not
+   * generalise that sentence to another field from this site: see
+   * `readLiveMfaConfiguration`'s docstring, which carries the one ledger of
+   * which fields were measured to reset and which were not.
    */
   private toSdkUserPoolPolicies(policies: Record<string, unknown>): UserPoolPolicyType | undefined {
     const result: UserPoolPolicyType = {};
@@ -1134,9 +1176,20 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * `--auto-verified-attributes` change in the same request applied) and that
    * the field is writable here rather than ignored (an explicit
    * `--mfa-configuration OFF` did reset it). So AWS's blanket "unspecified
-   * parameters are set to their default value" holds field by field —
-   * `AutoVerifiedAttributes` DOES reset, `MfaConfiguration` does not — and
+   * parameters are set to their default value" holds field by field — and
    * there is no MFA-OFF window to design around.
+   *
+   * **This paragraph is the single ledger of that field-by-field result; a
+   * per-field verdict belongs at that field's own site, pointing here.**
+   * Measured so far, all `UpdateUserPool` with a control proving the call ran:
+   *
+   * - `AutoVerifiedAttributes` — DOES reset when omitted (2026-08-18).
+   * - `MfaConfiguration` — does NOT reset when omitted (2026-08-18, above).
+   * - `Policies` — neither sub-key resets, whether the container is sent
+   *   without `SignInPolicy` or omitted outright (2026-08-19, issue #1968;
+   *   details at `toSdkUserPoolPolicies`).
+   *
+   * Nothing here licenses a claim about a field NOT on that list. Measure it.
    *
    * The earlier ordering was reached from that doc sentence alone and is kept
    * only because it is strictly safer and already tested: reading first cannot

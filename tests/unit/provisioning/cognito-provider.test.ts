@@ -225,8 +225,12 @@ describe('CognitoUserPoolProvider', () => {
     });
 
     it('should forward Policies.SignInPolicy on update (#1380)', async () => {
-      // UpdateUserPool resets omitted attributes to defaults, so dropping
-      // SignInPolicy here wipes an existing passwordless configuration.
+      // Forwarding is what APPLIES a declared change: this case CHANGES the
+      // allowed first-auth factors, and dropping SignInPolicy from the request
+      // would leave the pool on its previous value. It is NOT about omission
+      // resetting the field -- measured us-east-1 2026-08-19 (issue #1968), an
+      // UpdateUserPool omitting SignInPolicy leaves it intact; see
+      // `toSdkUserPoolPolicies` in the provider.
       mockSend.mockResolvedValueOnce({});
       mockSend.mockResolvedValueOnce({
         UserPool: {
@@ -714,8 +718,9 @@ describe('CognitoUserPoolProvider', () => {
 
       it('defaults to OFF for a WebAuthn-only pool on update too', async () => {
         // GetUserPoolMfaConfig: the undeclared-OFF announcement probe (#1925
-        // item 3) reads the live value BEFORE UpdateUserPool can reset it. OFF
-        // here, so nothing is being downgraded and no warning is emitted.
+        // item 3) reads the live value BEFORE UpdateUserPool, defensively --
+        // measured, that update does NOT reset MfaConfiguration. OFF here, so
+        // nothing is being downgraded and no warning is emitted.
         mockSend.mockResolvedValueOnce({ MfaConfiguration: 'OFF' });
         mockSend.mockResolvedValueOnce({}); // UpdateUserPool
         mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
@@ -1342,9 +1347,13 @@ describe('CognitoUserPoolProvider', () => {
           {}
         );
 
-        // The read must come FIRST: AWS documents UpdateUserPool as resetting
-        // omitted parameters, so probing after it could read a value this same
-        // call already clobbered and the announcement would go silent.
+        // The read must come FIRST -- defensively, NOT because AWS resets the
+        // field. Measured us-east-1 2026-08-18: MfaConfiguration survives an
+        // UpdateUserPool that omits it (see `readLiveMfaConfiguration`, which
+        // carries the ledger of which fields were measured to reset). Reading
+        // first is kept because it cannot report a value this same call
+        // clobbered, whatever AWS does later; do not re-derive the ordering
+        // from the blanket "omitted parameters are reset" doc sentence.
         const getCall = mockSend.mock.calls[0][0];
         expect(getCall.constructor.name).toBe('GetUserPoolMfaConfigCommand');
         expect(getCall.input.UserPoolId).toBe('us-east-1_abc123');
