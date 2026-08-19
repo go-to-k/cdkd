@@ -1,3 +1,10 @@
+## [0.284.14](https://github.com/go-to-k/cdkd/compare/v0.284.13...v0.284.14) (2026-08-19)
+
+
+### Bug Fixes
+
+* **cognito:** refuse the two MFA combinations AWS always rejects, before any API call ([#2069](https://github.com/go-to-k/cdkd/issues/2069)) ([9fcad4e](https://github.com/go-to-k/cdkd/commit/9fcad4eabe82e987bb61a77ace8d18127f377427))
+
 ## [0.284.13](https://github.com/go-to-k/cdkd/compare/v0.284.12...v0.284.13) (2026-08-19)
 
 
