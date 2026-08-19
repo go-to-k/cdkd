@@ -257,6 +257,28 @@ run "gh -C=<path> equals form blocks" \
 run "preceding sort -t with non-English does not false-block" \
   'sort -t 日 f.txt && gh -R=o/r issue create -t x -b ok' 0
 
+# --- round-5 review regressions (issue #1993) --------------------------
+# A `\`-continued gh command is a normal shape; treating the newline as a
+# separator without honouring the backslash truncated the segment at the
+# continuation and left the body unscanned (a round-4 regression).
+run "backslash-continued --body is scanned" \
+  'gh issue create \
+  --title x \
+  --body "日本語"' 2
+run "backslash-continued -b is scanned" \
+  'gh issue create --title x \
+  -b "日本語"' 2
+
+# A quoted MENTION of one of these commands in an earlier argument used
+# to seed the segment scanner's quote state at the wrong polarity, which
+# both hid real bodies and hard-blocked legitimate ones.
+run "quoted mention before a real gh does not hide the real body" \
+  'echo "gh issue create" && gh issue create -t x -b "A && B 日本語"' 2
+run "quoted mention with a pipe in the real body still blocks" \
+  'echo "gh issue create" && gh issue create -t x -b "A | B 日本語"' 2
+run "quoted mention does not cause a false block on a later echo -n" \
+  'echo "gh issue create" && gh issue create -t x -b "ok" && echo -n "日本語"' 0
+
 # --- each Unicode range in ISOLATION ----------------------------------
 # Without these, deleting any single range from the character class
 # still passed every case.

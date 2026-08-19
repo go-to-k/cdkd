@@ -170,30 +170,53 @@ done < <(printf '%s' "$cmd" | perl -0777 -ne '
     # armed while this regex fell back to offset 0, so the segment
     # covered the PRECEDING command instead.
     my $s = $_;
-    my @segs;
-    while ($s =~ /gh(?:\s+(?:-C|-R|--repo)(?:\s+|=)\S+)*\s+(?:pr\s+(?:create|edit|comment|review)|issue\s+(?:create|comment|edit)|release\s+(?:create|edit)|api)\b/gs) {
-      my $start = $-[0];
-      my ($i, $q, $end) = ($start, "", length $s);
+    # ONE left-to-right pass over the whole command records (a) which
+    # offsets sit inside a quoted span and (b) where the top-level
+    # separators are. Scanning per match instead, seeded at the match
+    # offset, got the quote polarity INVERTED whenever the first match
+    # was a quoted MENTION of one of these commands in an earlier
+    # argument -- which is precisely the shape the shared stripper
+    # exists for, and which this perl cannot use because it needs the
+    # RAW offsets.
+    # chr(34) / chr(39) rather than literal quotes: this whole perl
+    # program is inside a single-quoted bash string, so a literal
+    # apostrophe would terminate it.
+    my @inq = (0) x (length($s) + 2);
+    my @seps;
+    {
+      my ($i, $q) = (0, "");
       while ($i < length $s) {
         my $c = substr($s, $i, 1);
-        # chr(34) / chr(39) rather than literal quotes: this whole perl
-        # program is inside a single-quoted bash string, so a literal
-        # apostrophe would terminate it.
         if ($q ne "") {
-          if ($c eq "\\" && $q eq chr(34)) { $i += 2; next; }
+          $inq[$i] = 1;
+          if ($c eq "\\" && $q eq chr(34)) { $inq[$i + 1] = 1; $i += 2; next; }
           $q = "" if $c eq $q;
           $i++; next;
         }
-        if ($c eq chr(34) || $c eq chr(39)) { $q = $c; $i++; next; }
+        # A backslash escapes the NEXT character, including a newline.
+        # Without this, a `\`-continued `gh issue create \<nl> --body
+        # "..."` ended at the continuation and its body went unscanned.
+        if ($c eq "\\") { $i += 2; next; }
+        if ($c eq chr(34) || $c eq chr(39)) { $q = $c; $inq[$i] = 1; $i++; next; }
         my $two = substr($s, $i, 2);
         # A newline and a bare `|` end a command just as `&&` does;
         # omitting them left the short-flag false positive alive in
         # multi-line blocks and pipelines.
-        if ($two eq "&&" || $two eq "||" || $c eq ";" || $c eq "|" || $c eq "\n") { $end = $i; last; }
+        if ($two eq "&&" || $two eq "||" || $c eq ";" || $c eq "|" || $c eq "\n") {
+          push @seps, $i; $i++; next;
+        }
         $i++;
       }
+    }
+    my @segs;
+    while ($s =~ /gh(?:\s+(?:-C|-R|--repo)(?:\s+|=)\S+)*\s+(?:pr\s+(?:create|edit|comment|review)|issue\s+(?:create|comment|edit)|release\s+(?:create|edit)|api)\b/gs) {
+      my $start = $-[0];
+      # A match inside a quoted span is prose describing the command,
+      # not an invocation of it.
+      next if $inq[$start];
+      my $end = length $s;
+      for my $p (@seps) { if ($p > $start) { $end = $p; last; } }
       push @segs, substr($s, $start, $end - $start);
-      pos($s) = ($end > $start) ? $end : $start + 1;
     }
     for my $seg (@segs) {
     local $_ = $seg;
