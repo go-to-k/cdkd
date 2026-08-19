@@ -27,7 +27,7 @@ basic	2026-08-01T10:00:06Z	PASS	81	standard	0801 regression sweep; 2 del/0 err, 
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-08-10T05:19:05Z	PASS	36	standard	0810 P2 sweep b6; 6 del 0 err, 0 orph
 bench-ccapi	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
-bench-cdk-sample	2026-08-19T10:03:27Z	PASS	540	standard	issue 2026 broad integ: 37 deleted, 2 retained (Retain policy), 0 errors, 0 orphans
+bench-cdk-sample	2026-08-19T18:33:33Z	PASS	424	standard	#2038/#2031 masking lane broad arm; 39 res deploy, 37 del / 2 retained (DeletionPolicy Retain log groups) / 0 err; 3 log groups swept, 0 orphans
 bench-sdk	2026-07-26T18:43:33Z	PASS	33	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bootstrap-free-region	2026-07-31T06:23:42Z	PASS	78	verify.sh	TTL-refresh sweep re-run in ca-central-1; marker+bucket swept, orph clean
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
@@ -234,7 +234,7 @@ replacement-fanout	2026-08-08T16:39:04Z	PASS	83	verify.sh	P1 post-#1360 replacem
 replacement-immutable-name	2026-08-01T09:51:12Z	PASS	113	verify.sh	0801 regression sweep; 6 types x 3 phases ok, 0 orphans
 rollback-command	2026-08-10T04:45:42Z	PASS	117	verify.sh	0810 sweep b3; post-#1361 rollback-executor re-verify, destroy clean
 rollback-deletion-policy-snapshot	2026-08-08T16:34:46Z	PASS	107	verify.sh	P0 first run post-#1361/#1365/#1367/#1369 rollback rework; rolled-back CREATE snapshot-then-deleted, state clean, 0 orphans
-rollback-failure-injection	2026-08-08T17:42:23Z	PASS	389	verify.sh	issue #1375 re-run (background, dodging the 600s clamp); all 8 phases, 17 del/0 err, 0 orphans incl NAT/EIP/ENI
+rollback-failure-injection	2026-08-19T18:33:33Z	PASS	418	verify.sh	#2038/#2031 lane; exercises the replay path the masking fix targets; verify PASS, 17 del / 0 err, 0 orphans incl state
 rollback-replay-effective-props	2026-08-13T05:57:36Z	PASS	191	verify.sh	1741 prune + 1742 ordering at 882fcef8; measured; 0 orphans
 rollback-sqs-cooldown	2026-08-10T04:45:42Z	PASS	152	verify.sh	0810 sweep b3; post-#1361 rollback-executor re-verify, destroy clean
 route53	2026-08-14T02:04:32Z	PASS	331	verify.sh	Issue #1875 import-path arm, 2.5d made discriminating (drops the two NameServers outputs before the redeploy; the no-change path kept the persisted map verbatim on a resolve failure, so the arm was green with the fix reverted). Mutation probe with zone attributes blanked to {} REDs on the #1875 symptom. 8 created / 8 deleted, 0 errors, 0 orphans

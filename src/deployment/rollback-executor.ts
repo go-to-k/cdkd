@@ -46,7 +46,7 @@
  *    replays each op exactly once).
  */
 
-import type { DeploymentEvent } from '../types/deployment-events.js';
+import type { DeploymentEvent, DeploymentEventError } from '../types/deployment-events.js';
 import { extractDeploymentEventError } from '../types/deployment-events.js';
 import type { ResourceState } from '../types/state.js';
 import type {
@@ -74,10 +74,16 @@ import {
   scrubResourceRecord,
   redactSecretsForState,
   createSecretMasker,
+  maskSecretsInText,
   STATE_DERIVED_RULES,
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import { withRetry } from './retry.js';
+// Issue #2038: the masking `RetryLogger` this file threads at all three of its
+// `withRetry` sites. Shared with `drift.ts` and the deploy engine's two
+// `--replace` sites rather than hand-copied — see that module's header for why
+// it is not in the no-import leaf `secret-redaction.ts`.
+import { maskingRetryLogger } from './masking-retry-logger.js';
 import {
   isNameCollisionError,
   isNameCooldownError,
@@ -168,6 +174,39 @@ const REPLAYING_STATE_CREATE_CONTEXT: CreateContext = { replayingState: true };
  */
 function replayingStateCreateContext(secrets: RecordedSecretValues): CreateContext {
   return { ...REPLAYING_STATE_CREATE_CONTEXT, maskSecrets: createSecretMasker(secrets) };
+}
+
+/**
+ * The {@link DeploymentEventError} a failed replay records, with this op's
+ * re-resolved secrets masked out of its message (issue
+ * [#2031](https://github.com/go-to-k/cdkd/issues/2031) acceptance item 2).
+ *
+ * `extractDeploymentEventError` copies `err.message` VERBATIM, and the events
+ * store is a DURABLE sink — `deployments/{runId}.jsonl` in S3 outlives the
+ * terminal the `logger.warn` beside it scrolls past, and `cdkd events` replays
+ * it later. The standalone `cdkd rollback` command wires
+ * `recordEvent: (e) => eventRecorder.record(e)` (`src/cli/commands/rollback.ts`)
+ * with NO masking of its own, so without this the plaintext the terminal line
+ * masks is persisted one statement later.
+ *
+ * The in-process caller (`DeployEngine.rollbackExecutorContext`) routes through
+ * `maskSecretsInEvent`, but that masks with the DEPLOY's `perResourceSecrets`
+ * for the resource — a different bag from the one this replay re-resolved from
+ * the JOURNAL, which can name a different secret version or a reference the
+ * deploy never resolved. Masking here is what makes both callers equal, and
+ * double-masking is a no-op (the mask is not a key of either bag).
+ *
+ * `name` / `awsErrorCode` / `requestId` are deliberately left alone: they are
+ * AWS-authored identifiers, not message text, and #2038 traced all three as
+ * non-sensitive.
+ */
+function maskedRollbackEventError(
+  error: unknown,
+  secrets: RecordedSecretValues
+): DeploymentEventError {
+  const extracted = extractDeploymentEventError(error);
+  if (secrets.size === 0) return extracted;
+  return { ...extracted, message: maskSecretsInText(extracted.message, secrets) };
 }
 
 /**
@@ -889,7 +928,8 @@ async function updateWithRollbackRetry(
   args: Parameters<ResourceProvider['update']>,
   logicalId: string,
   logger: RollbackExecutorContext['logger'],
-  isInterrupted: (() => boolean) | undefined
+  isInterrupted: (() => boolean) | undefined,
+  secrets: RecordedSecretValues
 ): Promise<ResourceUpdateResult> {
   if (provider.disableOuterRetry) {
     // Single-shot — the provider handles transient errors internally, and an
@@ -897,7 +937,7 @@ async function updateWithRollbackRetry(
     return await provider.update(...args);
   }
   return await withRetry(() => provider.update(...args), logicalId, {
-    logger,
+    logger: maskingRetryLogger(logger, secrets),
     ...(isInterrupted && {
       isInterrupted,
       onInterrupted: () => new Error('Rollback interrupted while retrying a resource update'),
@@ -990,6 +1030,21 @@ async function replaySingle(
 ): Promise<void> {
   const action = classifyRollbackOp(op, stateResources, orphanLogicalIds);
   const { logger } = ctx;
+  /**
+   * This op's `plaintext -> {{resolve:...}}expression` bag, filled by
+   * {@link resolveReplayProps} on whichever arm runs (issues
+   * [#2038](https://github.com/go-to-k/cdkd/issues/2038) /
+   * [#2031](https://github.com/go-to-k/cdkd/issues/2031)).
+   *
+   * HOISTED above the `try` rather than declared per arm, which is what the
+   * two arms used to do: the shared catch below logs the thrown AWS message and
+   * persists it to the events store, and it cannot see a binding scoped to the
+   * arm that threw. Exactly one arm runs per call, so a single per-op bag is
+   * equivalent to the per-arm ones for every existing reader (`secrets.size`
+   * stays 0 on the arms that resolve nothing, so `redactRollbackRecord` and the
+   * maskers keep their identity behavior).
+   */
+  const secrets: RecordedSecretValues = new Map();
   /**
    * The route a CREATE-rollback arm resolved for this op (issue #1366) —
    * hoisted so the shared catch's ROLLBACK_RESOURCE_FAILED reports the route
@@ -1244,9 +1299,9 @@ async function replaySingle(
         const prev = op.previousState!;
         // Re-resolve the redacted secret expressions for the re-CREATE (GHSA
         // fix): the old resource must be re-created with the concrete secret,
-        // not the literal `{{resolve:...}}` string. `secrets` captures
-        // plaintext->expression to redact the rebuilt state record below.
-        const secrets: RecordedSecretValues = new Map();
+        // not the literal `{{resolve:...}}` string. `secrets` (hoisted to the
+        // top of this function) captures plaintext->expression to redact the
+        // rebuilt state record below AND to mask every log site downstream.
         const resolvedPrevProps =
           (await resolveReplayProps(prev.properties, resolver, secrets)) ?? {};
         logger.info(
@@ -1305,7 +1360,9 @@ async function replaySingle(
             op.logicalId,
             {
               ...RECREATE_RETRY_SCHEDULE,
-              logger,
+              // Issue #2038: `resolvedPrevProps` above is PLAINTEXT, and the
+              // per-attempt retry line interpolates the AWS message verbatim.
+              logger: maskingRetryLogger(logger, secrets),
               ...(isInterrupted && {
                 isInterrupted,
                 onInterrupted: () =>
@@ -1366,7 +1423,8 @@ async function replaySingle(
               op.logicalId,
               {
                 ...RECREATE_RETRY_SCHEDULE,
-                logger,
+                // Issue #2038, same reason as the create-first attempt above.
+                logger: maskingRetryLogger(logger, secrets),
                 // Mirror the deploy engine's delete-first fallback: honor
                 // SIGINT mid-sleep instead of blocking up to ~64s.
                 ...(isInterrupted && {
@@ -1380,11 +1438,31 @@ async function replaySingle(
           } catch (recreateError) {
             // The new resource is already gone — say so, because the resource
             // is now absent from both AWS and state.
+            //
+            // Issue #2038: masked at CONSTRUCTION, the byte-identical twin of
+            // the deploy engine's two `--replace` wraps. The create this catch
+            // wraps was handed `resolvedPrevProps`, which `resolveReplayProps`
+            // re-resolved to PLAINTEXT, so the AWS message can quote the secret
+            // back. Every downstream reader already masks (the `~1694` catch
+            // through `maskSecretsInText`, and `maskedRollbackEventError` for
+            // the durable event), so this is defense-in-depth, not a live leak
+            // — but leaving the rollback twin bare while arguing the deploy
+            // engine's copies deserve the same treatment is the inconsistency,
+            // and masking here means the plaintext never exists inside a thrown
+            // `Error` for a future reader of the chain to re-open.
+            //
+            // MEASURED UNFENCEABLE, deliberately kept: deleting this mask
+            // leaves the whole unit suite green, exactly as the deploy engine's
+            // twins do, because every reader masks independently. Do not record
+            // it in a PR body as a tested behavior.
             throw new Error(
-              `Failed to re-create the old ${op.logicalId} after the new resource ` +
-                `(${current.physicalId}) was already deleted: ` +
-                `${recreateError instanceof Error ? recreateError.message : String(recreateError)}. ` +
-                `The resource is now absent — fix forward with 'cdkd deploy'.`
+              maskSecretsInText(
+                `Failed to re-create the old ${op.logicalId} after the new resource ` +
+                  `(${current.physicalId}) was already deleted: ` +
+                  `${recreateError instanceof Error ? recreateError.message : String(recreateError)}. ` +
+                  `The resource is now absent — fix forward with 'cdkd deploy'.`,
+                secrets
+              )
             );
           }
         }
@@ -1490,11 +1568,20 @@ async function replaySingle(
               'while deleting the new resource after re-creating the old one'
             );
           } catch (deleteError) {
+            // Issue #2038: this arm runs AFTER `resolveReplayProps` resolved
+            // this op's secrets to plaintext, so the AWS message is masked with
+            // the same bag as every other site on the path. The delete's own bag
+            // is the state record (redacted), but a provider is free to echo the
+            // properties it was re-created with, so masking here is not
+            // speculative — and it is a no-op when the op resolved no secret.
             logger.warn(
-              `  Rollback: old ${op.logicalId} re-created, but deleting the new resource ` +
-                `(${current.physicalId}) failed: ` +
-                `${deleteError instanceof Error ? deleteError.message : String(deleteError)}. ` +
-                `Delete it manually — it is no longer tracked in state.`
+              maskSecretsInText(
+                `  Rollback: old ${op.logicalId} re-created, but deleting the new resource ` +
+                  `(${current.physicalId}) failed: ` +
+                  `${deleteError instanceof Error ? deleteError.message : String(deleteError)}. ` +
+                  `Delete it manually — it is no longer tracked in state.`,
+                secrets
+              )
             );
             result.warnings++;
           }
@@ -1544,8 +1631,9 @@ async function replaySingle(
         // to the concrete secret for the provider call (GHSA fix): a patch-based
         // provider diffs previous-vs-desired, so an unresolved expression on
         // either side would either replay the literal string or wrongly compute a
-        // no-op. `secrets` captures plaintext->expression to redact the record.
-        const secrets: RecordedSecretValues = new Map();
+        // no-op. `secrets` (hoisted to the top of this function) captures
+        // plaintext->expression to redact the record AND to mask every log site
+        // downstream, the shared catch included.
         const desiredProps = await resolveReplayProps(previousState.properties, resolver, secrets);
         const currentProps = await resolveReplayProps(current.properties, resolver, secrets);
         // See {@link updateWithRollbackRetry} for why this is not a bare
@@ -1566,7 +1654,8 @@ async function replaySingle(
           ],
           op.logicalId,
           logger,
-          isInterrupted
+          isInterrupted,
+          secrets
         );
         stateResources[op.logicalId] = redactRollbackRecord(
           recordAfterRollbackUpdate(previousState, revertResult),
@@ -1580,8 +1669,14 @@ async function replaySingle(
         // user is least able to go looking for an untracked resource.
         const rollbackPartial = updatePartialReason(revertResult);
         if (rollbackPartial !== undefined) {
+          // Issue #2038: `updatePartialMessage` renders PROVIDER-authored prose
+          // about a bag this replay resolved to plaintext — the same site
+          // `drift.ts` masks on its own revert path.
           logger.warn(
-            `  Rollback: ${op.logicalId} restored, ${updatePartialMessage(rollbackPartial)}`
+            maskSecretsInText(
+              `  Rollback: ${op.logicalId} restored, ${updatePartialMessage(rollbackPartial)}`,
+              secrets
+            )
           );
           // Deliberately NOT `result.warnings++`, matching this file's own
           // precedent for the stateful reverse-replacement advisory: warnings
@@ -1607,15 +1702,27 @@ async function replaySingle(
           // an already-failing deploy, so a log line is the least likely thing
           // a user still has; without this the orphan's id dies with the
           // terminal.
-          ...(rollbackPartial !== undefined && { reason: rollbackPartial }),
+          // Masked for the same reason as the warn line above, and doubly so:
+          // this one is DURABLE (issue #2031 acceptance item 2).
+          ...(rollbackPartial !== undefined && {
+            reason: maskSecretsInText(rollbackPartial, secrets),
+          }),
         });
         return;
       }
     }
   } catch (rollbackError) {
     // Best-effort: warn and continue with remaining rollbacks.
+    //
+    // Issue #2031: masked with THIS op's re-resolved bag. `resolveReplayProps`
+    // hands the provider PLAINTEXT, and an AWS validation error routinely quotes
+    // the offending property value back, so this line — at DEFAULT verbosity —
+    // was the GHSA-p5qg-v9gv-hc7w fence missing on the rollback path.
     logger.warn(
-      `  Rollback failed for ${op.logicalId} (${op.changeType}): ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+      maskSecretsInText(
+        `  Rollback failed for ${op.logicalId} (${op.changeType}): ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+        secrets
+      )
     );
     logger.warn('  Continuing with remaining rollback operations...');
     result.failures++;
@@ -1627,7 +1734,7 @@ async function replaySingle(
       logicalId: op.logicalId,
       resourceType: op.resourceType,
       ...(failedRoute && { provisionedBy: failedRoute }),
-      error: extractDeploymentEventError(rollbackError),
+      error: maskedRollbackEventError(rollbackError, secrets),
     });
   }
 }
@@ -1686,6 +1793,15 @@ export async function replayFailedOperations(
     }
     const op = failedOps[i]!;
     const action = classifyFailedOp(op, stateResources);
+    /**
+     * This op's re-resolved secret bag — the twin of `replaySingle`'s, and
+     * hoisted above this iteration's `try` for the same reason (issues #2038 /
+     * #2031): the shared catch below logs the thrown AWS message and persists it
+     * to the events store, and could not see a binding scoped to the arm that
+     * threw. Re-created per ITERATION, so one op's secrets can never mask
+     * another's text.
+     */
+    const secrets: RecordedSecretValues = new Map();
     // The route a CREATE arm resolved (issue #1366), so the shared catch's
     // ROLLBACK_RESOURCE_FAILED names the route the delete was going to take —
     // the one a Snapshot refusal is about. Undefined on the UPDATE arm.
@@ -1857,8 +1973,9 @@ export async function replayFailedOperations(
           // Re-resolve redacted secret expressions on BOTH sides for the
           // provider call (GHSA fix); `secrets` redacts the rebuilt record.
           // See {@link updateWithRollbackRetry} — same three concerns as the
-          // `revert` arm (retry / disableOuterRetry / interrupt).
-          const secrets: RecordedSecretValues = new Map();
+          // `revert` arm (retry / disableOuterRetry / interrupt). `secrets` is
+          // this iteration's bag, hoisted above the `try` so the shared catch
+          // can mask with it too.
           const desiredProps = await resolveReplayProps(prev.properties, resolver, secrets);
           const attemptedProps = await resolveReplayProps(
             op.attemptedProperties ?? current.properties,
@@ -1878,7 +1995,8 @@ export async function replayFailedOperations(
             ],
             op.logicalId,
             logger,
-            options.isInterrupted
+            options.isInterrupted,
+            secrets
           );
           stateResources[op.logicalId] = redactRollbackRecord(
             recordAfterRollbackUpdate(prev, revertFailedResult),
@@ -1892,8 +2010,13 @@ export async function replayFailedOperations(
           // reaches for when a deploy has already gone wrong.
           const revertFailedPartial = updatePartialReason(revertFailedResult);
           if (revertFailedPartial !== undefined) {
+            // Issue #2038: provider-authored prose about a plaintext bag —
+            // the `revert` arm's twin.
             logger.warn(
-              `  Rollback: ${op.logicalId} reverted, ${updatePartialMessage(revertFailedPartial)}`
+              maskSecretsInText(
+                `  Rollback: ${op.logicalId} reverted, ${updatePartialMessage(revertFailedPartial)}`,
+                secrets
+              )
             );
             // Not counted, for the same reason as the revert arm above.
           } else {
@@ -1907,15 +2030,23 @@ export async function replayFailedOperations(
             logicalId: op.logicalId,
             resourceType: op.resourceType,
             ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
-            ...(revertFailedPartial !== undefined && { reason: revertFailedPartial }),
+            // Masked because this one is DURABLE (issue #2031 item 2).
+            ...(revertFailedPartial !== undefined && {
+              reason: maskSecretsInText(revertFailedPartial, secrets),
+            }),
           });
           break;
         }
       }
     } catch (revertError) {
+      // Issue #2031: the `--revert-failed` twin of `replaySingle`'s catch —
+      // same plaintext bag, same DEFAULT-verbosity exposure.
       logger.warn(
-        `  Rollback failed for failed-op ${op.logicalId} (${op.changeType}): ` +
-          `${revertError instanceof Error ? revertError.message : String(revertError)}`
+        maskSecretsInText(
+          `  Rollback failed for failed-op ${op.logicalId} (${op.changeType}): ` +
+            `${revertError instanceof Error ? revertError.message : String(revertError)}`,
+          secrets
+        )
       );
       result.failures++;
       pending.add(op);
@@ -1927,7 +2058,7 @@ export async function replayFailedOperations(
         logicalId: op.logicalId,
         resourceType: op.resourceType,
         ...(failedRoute && { provisionedBy: failedRoute }),
-        error: extractDeploymentEventError(revertError),
+        error: maskedRollbackEventError(revertError, secrets),
       });
     }
   }

@@ -1608,6 +1608,187 @@ export function maskSecretsInText(text: string, secrets: RecordedSecretValues): 
 }
 
 /**
+ * How deep {@link maskSecretsInError} follows a `cause` chain. A CYCLE is
+ * already handled by the visited-set, so this bounds only a pathologically long
+ * chain; the same bounded-walk shape `extractDeploymentEventError` (depth 10)
+ * and the retry classifiers (depth 5) use. A link BEYOND the cap keeps its
+ * original, UNMASKED message, and the last cloned link points at it.
+ */
+const ERROR_CAUSE_MASK_MAX_DEPTH = 20;
+
+/**
+ * The `cause` chain of `root`, root first, stopping at the first non-`Error`
+ * link, at a link already visited (so a cycle terminates instead of hanging),
+ * or at {@link ERROR_CAUSE_MASK_MAX_DEPTH}.
+ */
+function errorCauseChain(root: Error): Error[] {
+  const chain: Error[] = [];
+  const seen = new Set<Error>();
+  let current: unknown = root;
+  while (
+    current instanceof Error &&
+    !seen.has(current) &&
+    chain.length < ERROR_CAUSE_MASK_MAX_DEPTH
+  ) {
+    seen.add(current);
+    chain.push(current);
+    current = (current as { cause?: unknown }).cause;
+  }
+  return chain;
+}
+
+/**
+ * Return `error` with {@link maskSecretsInText} applied to the `message` AND the
+ * `stack` of every link in its `cause` chain, with everything else about each
+ * link preserved (issue [#2038](https://github.com/go-to-k/cdkd/issues/2038)
+ * review).
+ *
+ * Two bounds on that "every link", both stated here because the PUBLIC contract
+ * is what a caller reads and neither is visible from the call site:
+ * - The walk stops at {@link ERROR_CAUSE_MASK_MAX_DEPTH}. A chain longer than
+ *   that keeps its remaining links' ORIGINAL, UNMASKED messages, and the last
+ *   cloned link points straight at them.
+ * - A `cause` that is not an `Error` (a string, a plain object) is carried
+ *   through VERBATIM and is never masked — the walk has nothing to clone. No
+ *   cdkd or AWS SDK site constructs one today, so this is a documented residual
+ *   rather than a reachable leak, but a caller attaching arbitrary data as a
+ *   `cause` must mask it itself. `src/cli/index.ts`'s `console.error` renders
+ *   such a cause via `util.inspect`, so it WOULD reach the terminal.
+ *
+ * **Why an error and not just its text.** `formatError` (`src/utils/error-handler.ts`)
+ * renders a `CdkdError`'s CAUSE as `Caused by: <cause.message>`, and `handleError`
+ * logs that at `error` level for any failure that escapes a command — so a raw
+ * provider error attached as a `ProvisioningError`'s cause reaches the terminal
+ * verbatim, at DEFAULT verbosity, even when every log site that INTERPOLATED
+ * the message masked it. Masking the string at each log site cannot close that:
+ * the sink reads the error OBJECT.
+ *
+ * `formatError` is not the only such sink, and the second one is what makes the
+ * CHAIN argument below concrete rather than hypothetical: `src/cli/index.ts`'s
+ * top-level `main().catch(...)` does `console.error('Fatal error:', error)`,
+ * which renders the whole object through `util.inspect` — every `[cause]` link
+ * AND every link's `stack`. Measured: an outer `Error('top')` wrapping
+ * `Error("Value 'hunter2' failed")` prints as
+ * `Error: top ... { [cause]: Error: Value 'hunter2' failed ... }`. So a
+ * multi-level sink exists TODAY, and it is why `stack` is masked below rather
+ * than merely preserved.
+ *
+ * **Why the whole CHAIN and not just the top link.** Masking only `error.message`
+ * looks sufficient because `formatError` renders one level — and it is not, in
+ * two ways that a top-level-only fix gets exactly backwards. A provider that
+ * wraps an AWS failure in a generic sentence (`new Error('the call failed',
+ * { cause: awsError })`) leaves the plaintext ONE link down, where the
+ * identity-return below then reports "nothing to mask" and hands back an object
+ * still carrying it — the function's own contract says the returned error is
+ * safe to render, and every later reader believes it. And `formatError`
+ * rendering a single level is an implementation detail: one edit there (walking
+ * the chain is the obvious improvement) re-opens the hole with nothing failing.
+ * So the invariant is about the OBJECT, not about today's renderer.
+ *
+ * **Why a clone rather than assigning to `error.message`.** The argument is an
+ * error cdkd did not create — usually the AWS SDK's — and mutating a caller's
+ * object is visible to every other holder of it, including a retry loop that
+ * may still classify it. Each link's clone copies the prototype and EVERY own
+ * property descriptor, symbols included, so the three things that read a cause
+ * chain keep working: `isMarkedNonRetryable` (a non-enumerable `Symbol.for`
+ * marker), `extractDeploymentEventError` / `isThrottlingError` /
+ * `isTransientServerError` (`$metadata`, `Code`, `name`), and the chain itself.
+ * `Object.assign` would have dropped the marker, which is why the descriptors
+ * form is used.
+ *
+ * `message`, `cause` and `stack` are the three descriptors deliberately NOT
+ * copied through: each is re-defined per link, and copying a NON-CONFIGURABLE
+ * original would make that re-definition throw. `cause` is rewired to the CLONE
+ * of whatever it pointed at, in a second pass over the already-built clone map —
+ * which is what makes a cyclic chain terminate rather than recurse. A `cause`
+ * that is not an `Error` (a string, a plain object) keeps its original
+ * descriptor verbatim.
+ *
+ * **Why `stack` is re-defined as DATA rather than copied.** V8 installs `stack`
+ * as an own ACCESSOR whose getter reads a slot the engine attaches to an error
+ * IT created, so copying that descriptor onto an `Object.create` clone yields a
+ * getter with nothing behind it and `clone.stack` reads `undefined` (measured).
+ * That is not a leak today — the clone is only ever reached as a `cause`, and
+ * `handleError` prints the TOP-level error's stack — but this function is
+ * exported and generic, so a future top-level caller would get back an error
+ * with no trace at all. The clone therefore carries a masked COPY of the
+ * original's stack text, which both preserves the trace and closes the sink the
+ * copy would otherwise open: a stack's first line embeds the message, so an
+ * unmasked stack re-exposes exactly the plaintext the `message` mask removed —
+ * and `util.inspect` prints it. An original with no readable string `stack`
+ * (not an engine-created error) simply gets no own `stack`, as before.
+ *
+ * Returns the ORIGINAL object by identity when NOTHING ANYWHERE IN THE CHAIN
+ * changed, so a non-secret failure keeps referential equality and the common
+ * path allocates nothing.
+ */
+export function maskSecretsInError<T>(error: T, secrets: RecordedSecretValues): T {
+  if (secrets.size === 0 || !(error instanceof Error)) return error;
+  const chain = errorCauseChain(error);
+  const maskedMessages = chain.map((link) => maskSecretsInText(link.message, secrets));
+  if (maskedMessages.every((masked, i) => masked === chain[i]!.message)) return error;
+
+  const clones = new Map<Error, Error>();
+  for (const [i, original] of chain.entries()) {
+    // `Reflect.ownKeys` rather than `Object.getOwnPropertyDescriptors` + delete:
+    // the latter's return type has a REQUIRED index signature, so removing the
+    // two keys re-defined below would need a cast. Symbols are included, which
+    // is what carries `markNonRetryable`'s marker.
+    const descriptors: Record<PropertyKey, PropertyDescriptor> = {};
+    for (const key of Reflect.ownKeys(original)) {
+      if (key === 'message' || key === 'cause' || key === 'stack') continue;
+      const descriptor = Object.getOwnPropertyDescriptor(original, key);
+      if (descriptor) descriptors[key] = descriptor;
+    }
+    const clone = Object.create(Object.getPrototypeOf(original) as object, descriptors) as Error;
+    Object.defineProperty(clone, 'message', {
+      value: maskedMessages[i]!,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+    // Read through the accessor rather than copying its descriptor — see the
+    // `stack` paragraph above. `typeof` rather than a truthiness test: an empty
+    // stack string is a legitimate (if useless) trace and copying it changes
+    // nothing, while a non-string means this object is not an engine-created
+    // error and has no trace to carry.
+    const originalStack: unknown = (original as { stack?: unknown }).stack;
+    if (typeof originalStack === 'string') {
+      Object.defineProperty(clone, 'stack', {
+        value: maskSecretsInText(originalStack, secrets),
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+    clones.set(original, clone);
+  }
+  for (const original of chain) {
+    const causeDescriptor = Object.getOwnPropertyDescriptor(original, 'cause');
+    if (!causeDescriptor) continue;
+    const clone = clones.get(original)!;
+    const causeValue = (original as { cause?: unknown }).cause;
+    const replacement = causeValue instanceof Error ? clones.get(causeValue) : undefined;
+    Object.defineProperty(
+      clone,
+      'cause',
+      replacement
+        ? {
+            value: replacement,
+            writable: true,
+            // `=== true` rather than the raw field: under
+            // `exactOptionalPropertyTypes` a descriptor's `enumerable` types as
+            // `boolean | undefined`, and a real descriptor always has one.
+            enumerable: causeDescriptor.enumerable === true,
+            configurable: true,
+          }
+        : causeDescriptor
+    );
+  }
+  return clones.get(error) as T;
+}
+
+/**
  * A caller-supplied capability that masks any secret this deploy resolved out
  * of an arbitrary string (issue #1932 item 3).
  *

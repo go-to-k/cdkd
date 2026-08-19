@@ -59,12 +59,63 @@ Failure events carry an `error` object: `{ name, message, awsErrorCode?,
 requestId? }`. The AWS error code + request id are extracted from the
 innermost AWS-SDK-shaped error in the thrown error's `.cause` chain.
 
-### Security: no resource properties
+### Security: no resource properties, and a MASKED error message
 
 Events carry **error + metadata only**. Resource properties are **never**
 recorded in events (they may contain secrets); properties already live in
 `state.json`. The error object is the outermost error's name/message plus
 the AWS error code / request id — no payloads.
+
+**Withholding the payload is not sufficient on its own**, which is the part
+this section used to leave unsaid. AWS validation errors routinely quote the
+offending property VALUE back inside the `message` — `Value 'hunter2' at
+'password' failed to satisfy constraint ...` — so a resolved Secrets Manager /
+SSM `SecureString` value can reach the event `message` without any property ever
+being recorded. Because `deployments/{runId}.jsonl` is a **durable S3 sink**,
+that is worse than a terminal line: it persists after the run.
+
+Each of the two producers that holds a resolved secret bag therefore masks the
+message before it is recorded, substituting the `{{resolve:...}}` expression the
+way state redaction does (issue
+[#2031](https://github.com/go-to-k/cdkd/issues/2031)): `DeployEngine` masks
+every event through `maskSecretsInEvent`, and the **rollback executor** masks
+its own. The rollback half lives in the executor rather than in each caller
+because the replay re-resolves journaled properties to plaintext and has two
+entry points that would otherwise diverge: the standalone `cdkd rollback`
+command recorded events with no masking at all, while a deploy's in-process
+auto-rollback masked with the DEPLOY's secrets bag — a different generation from
+the one the replay resolved from the journal, so a rotated secret or a reference
+only the previous generation carried was missed. Masking at the shared executor
+makes both callers equal; the deploy engine's own `maskSecretsInEvent` still runs
+and double-masking is a no-op.
+
+The `name`, `awsErrorCode` and `requestId` fields are NOT masked — they are AWS
+enum-shaped identifiers that never carry a caller-supplied value.
+
+#### What the masking does NOT cover
+
+The mask is a **literal-occurrence substitution**, so it is bounded in three
+ways. None of these is new — they are inherited from `maskSecretsInText` and
+predate the masking described above — but they are worth stating HERE rather
+than only at the log sites, because a durable sink keeps whatever gets through:
+
+- **Secrets shorter than 4 characters are not substituted**
+  (`MIN_NEEDLE_LENGTH` in `src/deployment/secret-redaction.ts`) unless the whole
+  message IS the secret. A 1-3 character needle would rewrite unrelated text
+  across every message, so the substring scan declines it.
+- **Only a VERBATIM occurrence is matched.** A message that quotes the value
+  back JSON-escaped, truncated (`Value 'hunte...'`), re-cased, or URL-encoded
+  passes through unchanged, because the scanned string no longer contains the
+  recorded plaintext.
+- **A `NoEcho: true` template parameter is outside the model entirely.** The
+  masker works from the resolver's `{{resolve:...}}` bag, and a `Ref` to a
+  `NoEcho` parameter has no such expression to map back to, so its value is
+  never recorded and never masked (issue
+  [#1998](https://github.com/go-to-k/cdkd/issues/1998)).
+
+Treat `deployments/*.jsonl` as sensitive on that basis, and rotate any secret
+whose plaintext a run is known to have quoted — masking a later write does not
+un-persist an earlier one.
 
 ## Where it lives (S3 key layout)
 
