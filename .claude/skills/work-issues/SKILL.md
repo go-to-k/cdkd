@@ -64,14 +64,16 @@ global user instructions for the full rule.
 ## 1. List the backlog + assess volume
 
 ```bash
-gh api 'repos/{owner}/{repo}/issues?state=open&per_page=60' \
+gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
   --jq '.[] | select(.pull_request | not)
         | [.number, .author_association, .user.login, .created_at, .title] | @tsv'
 ```
 
 (REST because `gh issue list --json` has no `authorAssociation` field — issue
 #1593. The `select(.pull_request | not)` filter is required: the REST `/issues`
-endpoint returns open PRs too.)
+endpoint returns open PRs too. `per_page=100` is the API maximum and the repo has
+outgrown 60. `created_at` is in the tuple because two later steps read it: §3-0 holds
+back anything filed within the last hour, and §3-a's rule 6 ranks by age.)
 
 Skim titles: most cdkd issues are `fix(deployment)` (deploy/update/replacement),
 `fix(provider)` / `fix(<service>)` (a single resource type's create/update/delete),
@@ -109,7 +111,7 @@ files the newest open issue (#1597) asks you to edit. Only the ref-recency probe
 saw it. A worktree can also be removed while its branch lives on, so worktree
 absence proves nothing either.
 
-Corollary for §3: an issue FILED BY such a lane as its own deferral is the MOST
+Corollary for §3-0: an issue FILED BY such a lane as its own deferral is the MOST
 likely to collide, not the least — it names the files that lane is still editing.
 #1597 was filed by the AppSync lane itself.
 
@@ -170,12 +172,85 @@ Scale the count to the backlog and to how many cross-cutting files are free. 2�
 clean lanes is typical; do not force a lane into a contested file just to raise the
 count — report the deferred ones instead.
 
+### 3-0. A FRESH issue belongs to the lane that FILED it
+
+An issue you are cleared to act on is maintainer-authored (§0), so `.user.login`
+cannot tell you WHICH session filed it — and the session that did is usually a lane
+still running. It filed the issue as its own deferral, it still holds the context
+the issue was derived from, and it is therefore the cheapest agent alive to fix it:
+it may pick the issue up the moment its current lane merges. Taking it from under
+that lane pays for the same re-read twice, and risks two lanes on one fix even when
+§2's probes look clear — §2's corollary already says an issue filed by a live lane
+names the files that lane is still editing.
+
+Nothing identifies the filing session reliably, so do not try to build a reliable
+signal. Use the cheap conservative one and accept its false positives:
+
+**Skip every issue created less than 60 minutes ago.** The same span §2 calls a LIVE
+lane ("pushed within roughly the last hour"). Nothing binds the two mechanically —
+they are stated in both places, so change them together.
+
+```bash
+CUT=$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 min ago' +%Y-%m-%dT%H:%M:%SZ)
+# An empty $CUT matches nothing and reads as an empty backlog, so stop rather than warn.
+[ -n "$CUT" ] || { echo 'CUTOFF FAILED — do not treat the empty result as an empty backlog'; exit 1; }
+
+# §1's listing with the gate applied. Note the DOUBLE quotes — `gh api --jq` takes
+# no `--arg`, so the cutoff has to expand into the filter.
+gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
+  --jq ".[] | select(.pull_request | not) | select(.created_at < \"$CUT\")
+        | [.number, .created_at, .title] | @tsv"
+```
+
+(`created_at` is ISO-8601 UTC, which compares correctly as a plain string — no date
+parsing. Flip `<` to `>=` to list what you are holding back, and report those as HELD
+FOR THEIR FILER, never as backlog you declined.)
+
+**Recompute `CUT` as you pick each lane, not once at triage.** A run lasts hours, so
+an issue held at 09:00 is an ordinary candidate at 10:05 — and §3-a rule 6 then rates
+it among the MOST accurate on the board. A cutoff computed once silently excludes a
+whole cohort for the rest of the run, and that is the common case rather than the
+edge: this backlog arrives in `/hunt-bugs`-shaped bursts filed minutes apart.
+
+Three exemptions, and only these three. Each lifts §3-0 ALONE — §2's disjointness
+gate and §4's claim-then-verify still apply unchanged:
+
+- **You filed it yourself this run as `Session-fit: now`.** `/hunt-bugs` §6 files an
+  issue and then sends you here to fix it, and §4 has you claim exactly that kind.
+  The window protects OTHER lanes' deferrals, never your own, and your own claim
+  comment on it is the proof — which is also why the exemption stops at `now`: §4
+  gives a `next` issue no claim, and taking one back minutes after classifying it
+  `next` contradicts the classification rather than being exempted by it.
+- **The maintainer named the issue in the invocation** (`/work-issues #<n>`) — an
+  explicit instruction outranks a heuristic about who else might want it.
+- **A security issue** (rule 1 of §3-a) — an extra hour of a shipped vulnerability
+  costs more than a duplicated context. Take it, and say in the claim (§4) that you
+  took it inside the window and why.
+
+Once the window passes the issue is PRESUMED free, and that presumption is the whole
+test: no §2 probe, no open PR, no live claim referencing it. Do not try to establish
+that the filing session has ENDED — you cannot, and `CLAUDE.md`'s worktree-owner rule
+makes the same point about a recent claim (a live session and a dead one look
+identical from outside). What may still hold the issue back is §2 or §4, on their own
+grounds rather than this one.
+
+What the gate accepts in exchange: an issue filed by a session that has since ended
+waits up to an hour. That is the cheap side — the backlog is not going anywhere,
+while the expensive side is two agents deriving one fix from scratch. Added
+2026-08-19 at the maintainer's request, and the window was watched live the same
+morning: #1973 was filed at 03:14Z, claimed by its filing lane at 03:30Z, and that
+lane's branch reached `origin` only at 04:06Z. For 16 minutes the issue had no
+branch, no PR and no comment, so every probe in §2 reported it free; for 52 minutes
+nothing but a time-based gate could have kept a second run off it.
+
 ### 3-a. Ranking the eligible issues
 
-File-disjointness (§2) is a **hard gate, not a ranking factor** — an issue that
-collides with a live lane is not a low-priority candidate, it is not a candidate.
-Rank only what survives that gate, by applying these in order and moving to the
-next only to break a tie:
+File-disjointness (§2) and the freshness quarantine (§3-0) are **hard gates, not
+ranking factors** — an issue that collides with a live lane, or that was filed
+minutes ago and no §3-0 exemption lifts, is not a low-priority candidate; it is not
+a candidate. Rank only what
+survives BOTH gates, by applying these in order and moving to the next only to break
+a tie:
 
 | # | Rule | Why |
 |---|---|---|
@@ -191,13 +266,13 @@ the body when needed:
 
 ```bash
 # type + area come from the conventional-commit title prefix: fix(deploy): ...
-gh api 'repos/{owner}/{repo}/issues?state=open&per_page=60' \
+gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
   --jq '.[] | select(.pull_request | not)
         | [.number, (.title | capture("^(?<type>[a-z]+)(\\((?<area>[^)]+)\\))?") | .type + "/" + (.area // "-")), .title]
         | @tsv'
 
 # the filer may already have classified it (§3) — this is a body read, so do it
-# on the shortlist rather than on all 60
+# on the shortlist rather than on the whole listing
 gh issue view <n> --json body -q .body | grep -i 'Session-fit:'
 ```
 
@@ -235,10 +310,14 @@ gh issue view <n> --json body -q .body | grep -i 'Session-fit:'
   `intrinsic-function-resolver.ts`, `dag-builder.ts`, `template-parser.ts`,
   `register-providers.ts`, `destroy-runner.ts`, `export.ts` (the §2 list).
 - **Session-fit**: the body's own `Session-fit:` line (§3). `next` names a cycle
-  this run has to be able to pay for before taking the issue. `now` on a still-OPEN
-  issue is the rarer signal and points the other way — some earlier session ended
-  with a commitment unfinished, so it is a candidate to take EARLY rather than a
-  reason to skip.
+  this run has to be able to pay for before taking the issue. `now` is a
+  COMMITMENT made by the session that filed it, so read it against §3-0: for an
+  issue still inside the freshness window that no §3-0 exemption lifts — or one any
+  live lane still references — `now` says that lane is coming back for it, which
+  makes the issue RESERVED rather than available. Once §3-0's window has passed with no probe, PR or live claim pointing
+  at it, presume the filer gone — that presumption is all you can derive — and `now`
+  becomes what it looks like: an earlier session's unfinished commitment, and a
+  candidate to take EARLY rather than a reason to skip.
 
 **These are tiebreakers, not a scoring formula — do not average them.** Apply
 rule 1, then 2, then 3, and so on, stopping at the first that separates the
@@ -255,8 +334,9 @@ before:
   a `fix(deploy)` because their bug is filed as `fix(state)`.
 - **Ranking never lowers verification depth.** A rank-1 issue and a rank-9 issue
   get the same review tier, the same integs and the same live test — priority
-  decides ORDER, never rigor (see CLAUDE.md → "Cost is not a tiebreaker"). A
-  security issue moves the other way: dispatch `pr-security-reviewer` in addition
+  decides ORDER (and, for a security issue, eligibility under §3-0), never rigor
+  (see CLAUDE.md → "Cost is not a tiebreaker"). A security issue moves the other
+  way: dispatch `pr-security-reviewer` in addition
   to whatever tier its size gives (`CLAUDE.md` → "PR review pattern"), since urgency
   is a reason to start it sooner, never to check it less.
 
@@ -300,6 +380,18 @@ timestamps cannot settle it.
 This exists because it has already failed once: two sessions claimed #1419 /
 #1435 twenty seconds apart (2026-08-09), both having followed every other rule
 in this skill, and it took the maintainer arbitrating to resolve. See #1446.
+
+**Claim what you FILE, too — filing is not claiming.** An issue this run files as
+its own deferral is invisible to every ownership probe: no branch, no PR, no comment,
+and only §3-0's hour covers it. So when the issue is one THIS run means to pick up
+itself (`Session-fit: now` in its body), post the claim comment in the same turn you
+file it. Name the LANE and the issue it defers from, not just your current branch:
+§9 merges with `--delete-branch`, so a claim naming the branch you are on now reads
+stale at exactly the moment you come back for the issue — re-post the claim with the
+real branch when you open that lane. An issue you are handing off (`Session-fit:
+next`) gets NO claim at filing time — that would park a released issue under a
+session that has decided not to do it — but this says nothing about a LATER run that
+takes it: that run claims it normally, per the mandatory rule above.
 
 **Do not trust a handoff table — verify it live.** A "these issues are taken"
 note you were handed is a snapshot of the moment it was written; PRs merge and
@@ -607,6 +699,9 @@ the run evidence behind it — or "no skill change" plus what held.
   its `gh pr create` — which is when it is writing hardest. `git for-each-ref
   --sort=-committerdate refs/remotes/origin` after a `git fetch` is the only probe
   that sees it (§2).
+- **A fresh issue is someone's deferral, not free backlog** (§3-0). The author field
+  proves nothing about which session filed it, so the 60-minute window is the whole
+  defence — and §4 is its other half: claim what you FILE, not only what you take.
 - **The filer may already have classified the issue.** A body carrying
   `Session-fit: next` names the cycle the issue needs; take it only if this run
   can pay for that, and say why in the claim (§3). On 2026-08-13 #1791 passed
