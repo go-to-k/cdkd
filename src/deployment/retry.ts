@@ -19,9 +19,16 @@ export interface RetryLogger {
   /**
    * Issue #2018: the one line that survives a run without `--verbose`.
    *
-   * Optional so the many callers passing a bare `{ debug }` keep compiling; every
-   * PRODUCTION caller threads a real `Logger`, which has it. A logger without it
-   * loses only the give-up summary -- the retry behavior is unchanged.
+   * OPTIONAL because a caller may need to TRANSFORM the message rather than
+   * forward it -- `drift.ts`'s revert threads a masking `debug` so a resolved
+   * secret quoted back by an AWS error cannot reach the log (issue #1914), and
+   * a required `warn` would have been silently satisfied by an unmasked
+   * `logger.warn`. A caller that omits it loses only the give-up summary; the
+   * retry behavior is identical either way.
+   *
+   * Do NOT describe every production caller as threading a real `Logger` -- an
+   * earlier revision of this comment did, and it was false for exactly the
+   * masking caller above.
    */
   warn?(message: string): void;
 }
@@ -256,15 +263,38 @@ export async function withRetry<T>(
         // Gated on having actually retried, so the overwhelmingly common case
         // (a non-propagation error failing fast on attempt 0) prints nothing.
         if (propagationRetries > 0) {
-          opts.logger?.warn?.(
-            `${logicalId}: gave up after ${propagationRetries} IAM-propagation ${
-              propagationRetries === 1 ? 'retry' : 'retries'
-            } over ${(propagationSleptMs / 1000).toFixed(2)}s${
-              propagationRetries >= IAM_PROPAGATION_MAX_RETRIES
-                ? ' (the full propagation budget)'
-                : ''
-            } - ${message}`
-          );
+          // Whether the BUDGET ran out is a property of the loop's own exit
+          // condition, NOT of the retry count. Keying it on
+          // `propagationRetries >= IAM_PROPAGATION_MAX_RETRIES` was wrong in
+          // exactly the case the `sawPropagation` latch above exists for: one
+          // interleaved throttle classifies non-propagation, so the counter
+          // reaches 25 while the sequence still exhausts all 26 attempts, and
+          // the summary would report a genuine exhaustion as "something else
+          // ended it" -- inverting the branch the reader uses to decide
+          // whether the budget needs widening. False positives were never
+          // possible; this false NEGATIVE was.
+          const budgetExhausted = sawPropagation && attempt >= attemptLimit;
+          // The seconds figure counts PROPAGATION backoff only, so a mixed
+          // sequence's throttle waits are deliberately excluded -- the number
+          // exists to be compared against the 47.75s propagation budget, and
+          // folding in an 8s throttle step would make that comparison
+          // meaningless. Saying "of propagation backoff" rather than a bare
+          // "over Ns" is what keeps it from reading as total elapsed time.
+          const summary =
+            `${logicalId}: gave up after ${propagationRetries} IAM-propagation ` +
+            `${propagationRetries === 1 ? 'retry' : 'retries'} over ` +
+            `${(propagationSleptMs / 1000).toFixed(2)}s of propagation backoff` +
+            `${budgetExhausted ? ' (the full propagation budget)' : ''} - ${message}`;
+          // Best-effort: this is a diagnostic about an error we are ABOUT to
+          // rethrow, so a throwing logger must not replace it. Losing the
+          // summary degrades to the pre-fix behavior; losing the error loses
+          // the diagnosis entirely. Mirrors the try/catch `deploy-engine.ts`
+          // puts around its own best-effort side effects.
+          try {
+            opts.logger?.warn?.(summary);
+          } catch {
+            // ignore -- the original error below is what matters
+          }
         }
         throw error;
       }
@@ -275,18 +305,26 @@ export async function withRetry<T>(
             IAM_PROPAGATION_MAX_DELAY_MS
           )
         : Math.min(initialDelayMs * Math.pow(2, attempt), maxDelayMs);
-      if (propagation) {
-        propagationRetries++;
-        propagationSleptMs += delay;
-      }
       // Issue #2018: the cumulative figure is what makes a single line
       // answerable on its own ("how far into the 47.75s budget was this?").
       // Reading it off the attempt number instead requires the reader to know
       // and re-sum the schedule, which is the inference this issue asked to
       // replace with a measurement.
+      //
+      // The line is printed BEFORE the wait it announces, so any figure on it
+      // is either behind by one delay or includes the pending one. It includes
+      // it -- "through this attempt" says so -- because a reader comparing
+      // against the 47.75s cap wants the total this attempt reaches, and a
+      // trailing "slept so far" would have claimed 0.25s slept while nothing
+      // had been slept yet.
+      const backoffThroughThisAttemptMs = propagation
+        ? propagationSleptMs + delay
+        : propagationSleptMs;
       opts.logger?.debug(
         `  ⏳ Retrying ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${attemptLimit}${
-          propagation ? `, ${(propagationSleptMs / 1000).toFixed(2)}s slept so far` : ''
+          propagation
+            ? `, ${(backoffThroughThisAttemptMs / 1000).toFixed(2)}s backoff through this attempt`
+            : ''
         }) - ${message}`
       );
 
@@ -296,6 +334,13 @@ export async function withRetry<T>(
           throw opts.onInterrupted ? opts.onInterrupted() : new Error('Interrupted');
         }
         await sleep(Math.min(1000, delay - waited));
+      }
+
+      // Advanced only after the wait COMPLETED, so an interrupt mid-sleep
+      // cannot inflate the summary with a wait that never happened.
+      if (propagation) {
+        propagationRetries++;
+        propagationSleptMs = backoffThroughThisAttemptMs;
       }
     }
   }

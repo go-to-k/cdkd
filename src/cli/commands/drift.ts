@@ -2722,7 +2722,21 @@ async function runRevert(
             // an AWS validation error routinely quotes the offending property
             // value. Same fence `deploy-engine.ts` puts on its own provider
             // calls. No-op when the op resolved no secret.
-            { logger: { debug: (msg) => logger.debug(maskSecretsInText(msg, secrets)) } }
+            // `warn` is threaded too (issue #2018): without it the
+            // give-up summary for an exhausted IAM-propagation retry is
+            // dropped on THIS path only, so `cdkd drift --revert` would keep
+            // the pre-fix behavior of rethrowing the raw AWS error with no
+            // sign that cdkd had retried for ~48s. It goes through the SAME
+            // mask as `debug` rather than straight to `logger.warn` -- the
+            // summary interpolates the AWS message verbatim, so an unmasked
+            // forward would defeat the #1914 fence at a HIGHER log level than
+            // the one that fence was written for.
+            {
+              logger: {
+                debug: (msg) => logger.debug(maskSecretsInText(msg, secrets)),
+                warn: (msg) => logger.warn(maskSecretsInText(msg, secrets)),
+              },
+            }
           );
           totalSucceeded++;
           // Issue #1819: the revert landed, but the provider may have left

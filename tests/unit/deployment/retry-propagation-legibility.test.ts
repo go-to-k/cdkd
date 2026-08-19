@@ -53,14 +53,72 @@ describe('withRetry — IAM-propagation legibility (issue #2018)', () => {
       withRetry(op, 'MyFn', { logger, sleep: () => Promise.resolve() })
     ).rejects.toThrow('cannot be assumed');
 
+    // Anchored end-to-end rather than as separate `toContain`s: a bare
+    // `toContain('MyFn')` was satisfied by the appended AWS message (which
+    // also names the function), so it pinned nothing about the line's own
+    // `<logicalId>: ` prefix.
+    expect(warnText(logger)).toMatch(
+      new RegExp(
+        `^MyFn: gave up after ${IAM_PROPAGATION_MAX_RETRIES} IAM-propagation retries ` +
+          `over 47\\.75s of propagation backoff \\(the full propagation budget\\)` +
+          // The AWS message must still be appended: the summary REPLACES nothing,
+          // it explains the error that is about to be rethrown, so dropping the
+          // tail would leave the reader with a count and no cause.
+          ` - Failed to create Lambda function MyFn: ` +
+          `The role defined for the function cannot be assumed by Lambda\\.$`
+      )
+    );
+  });
+
+  it('still calls the budget exhausted when an interleaved throttle broke the propagation run', async () => {
+    // The regression this pins: the exhaustion note used to key on
+    // `propagationRetries >= IAM_PROPAGATION_MAX_RETRIES`, but a throttle
+    // mid-sequence classifies NON-propagation, so it consumes an attempt
+    // without advancing the counter. The run below exhausts all 26 attempts
+    // with only 25 propagation retries — under the old gate the summary
+    // reported a genuine exhaustion as "something else ended it", which is the
+    // opposite of the branch a reader uses to decide whether to widen the
+    // budget.
+    const logger = makeLogger();
+    let calls = 0;
+    const op = vi.fn().mockImplementation(async () => {
+      calls++;
+      // One throttle on the 4th attempt; propagation before and after.
+      if (calls === 4) throw new Error('Rate exceeded');
+      throw propagationError();
+    });
+
+    await expect(
+      withRetry(op, 'MyFn', { logger, sleep: () => Promise.resolve() })
+    ).rejects.toThrow('cannot be assumed');
+
     const summary = warnText(logger);
-    // The two numbers the issue asked to be measurable rather than inferred.
-    expect(summary).toContain(`${IAM_PROPAGATION_MAX_RETRIES} IAM-propagation retries`);
-    expect(summary).toContain('47.75s');
-    expect(summary).toContain('MyFn');
-    // Reaching the cap is the branch that says "widen the budget", so it is
-    // called out rather than left to be re-derived from the count.
+    expect(summary).toContain(`${IAM_PROPAGATION_MAX_RETRIES - 1} IAM-propagation retries`);
     expect(summary).toContain('the full propagation budget');
+  });
+
+  it('counts only propagation backoff, not a throttle wait that shared the sequence', async () => {
+    // Pins the counters' IDENTITY. Every other case has
+    // `attempt === propagationRetries`, so swapping one for the other — or
+    // dropping the `if (propagation)` guard entirely — left the suite green
+    // while a pure throttle sequence would report "N IAM-propagation retries".
+    const logger = makeLogger();
+    let calls = 0;
+    const op = vi.fn().mockImplementation(async () => {
+      calls++;
+      if (calls === 2) throw new Error('Rate exceeded');
+      if (calls >= 4) throw new Error('AccessDeniedException: explicit deny');
+      throw propagationError();
+    });
+
+    await expect(
+      withRetry(op, 'MyFn', { logger, sleep: () => Promise.resolve() })
+    ).rejects.toThrow('explicit deny');
+
+    // 3 attempts were retried but only 2 were propagation (0.25s + 1s); the
+    // throttle's own 2s generic step is deliberately excluded, so the figure
+    // stays comparable against the 47.75s propagation budget.
+    expect(warnText(logger)).toContain('2 IAM-propagation retries over 1.25s of propagation backoff');
   });
 
   it('emits the give-up summary at warn level, so it survives a run without --verbose', async () => {
@@ -125,7 +183,9 @@ describe('withRetry — IAM-propagation legibility (issue #2018)', () => {
     const summary = warnText(logger);
     // Two retries were spent before the terminal error — without this the user
     // cannot tell a fast deny from one that surfaced after a propagation wait.
-    expect(summary).toContain('2 IAM-propagation retries');
+    // The SECONDS are asserted too: pinned only where they equal the 47.75s
+    // cap, a hard-coded budget string passed every case.
+    expect(summary).toContain('2 IAM-propagation retries over 0.75s of propagation backoff');
     // Not the cap, so the budget note must NOT claim otherwise.
     expect(summary).not.toContain('the full propagation budget');
   });
@@ -142,7 +202,7 @@ describe('withRetry — IAM-propagation legibility (issue #2018)', () => {
     await expect(withRetry(op, 'MyFn', { logger, sleep: () => Promise.resolve() })).rejects.toThrow(
       'explicit deny'
     );
-    expect(warnText(logger)).toContain('1 IAM-propagation retry');
+    expect(warnText(logger)).toContain('1 IAM-propagation retry over 0.25s of propagation backoff');
   });
 
   it('carries the cumulative slept budget on each per-attempt debug line', async () => {
@@ -156,14 +216,15 @@ describe('withRetry — IAM-propagation legibility (issue #2018)', () => {
     ).rejects.toThrow();
 
     const lines = logger.debug.mock.calls.map((c) => String(c[0]));
-    // The dense schedule is 0.25 / 0.5 / 1 / 2 / 2 ... so the running total
-    // after the first four sleeps is 0.25, 0.75, 1.75, 3.75.
-    expect(lines[0]).toContain('0.25s slept so far');
-    expect(lines[1]).toContain('0.75s slept so far');
-    expect(lines[2]).toContain('1.75s slept so far');
-    expect(lines[3]).toContain('3.75s slept so far');
+    // The dense schedule is 0.25 / 0.5 / 1 / 2 / 2 ..., and each line reports
+    // the total THROUGH the wait it is announcing (the line prints before the
+    // sleep), so the first four read 0.25, 0.75, 1.75, 3.75.
+    expect(lines[0]).toContain('0.25s backoff through this attempt');
+    expect(lines[1]).toContain('0.75s backoff through this attempt');
+    expect(lines[2]).toContain('1.75s backoff through this attempt');
+    expect(lines[3]).toContain('3.75s backoff through this attempt');
     // ...and the last line lands on the documented cap.
-    expect(lines[lines.length - 1]).toContain('47.75s slept so far');
+    expect(lines[lines.length - 1]).toContain('47.75s backoff through this attempt');
   });
 
   it('does not annotate a generic transient retry with a propagation budget', async () => {
@@ -179,6 +240,6 @@ describe('withRetry — IAM-propagation legibility (issue #2018)', () => {
       'ok'
     );
     const lines = logger.debug.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(lines).not.toContain('slept so far');
+    expect(lines).not.toContain('backoff through this attempt');
   });
 });
