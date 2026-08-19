@@ -1,3 +1,10 @@
+## [0.284.2](https://github.com/go-to-k/cdkd/compare/v0.284.1...v0.284.2) (2026-08-19)
+
+
+### Bug Fixes
+
+* **dynamodb:** spend ONE wall-clock allowance across the whole DELETE path, and make it an actual bound rather than a prediction ([#2013](https://github.com/go-to-k/cdkd/issues/2013)) ([750d1e9](https://github.com/go-to-k/cdkd/commit/750d1e9438d267393296a8878a45207bcef7a563))
+
 ## [0.284.1](https://github.com/go-to-k/cdkd/compare/v0.284.0...v0.284.1) (2026-08-19)
 
 
