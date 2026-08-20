@@ -993,14 +993,21 @@ export class ELBv2Provider implements ResourceProvider {
       // The update twin of the create-path capacity debug line, and the reason
       // this arm takes a masker at all: it has no try/catch, so its REJECTIONS
       // are masked by `update()`'s outer frame, but a debug line it emits on
-      // the SUCCESS path never reaches that frame. `newCapacityUnits` is
-      // `Number(properties[...].CapacityUnits)`, and a number stringifies to
-      // the same digits the resolved plaintext had, so the coercion is not a
-      // sanitizer.
+      // the SUCCESS path never reaches that frame.
+      //
+      // Masks the RAW property value, NOT `newCapacityUnits` — the `Number()`
+      // coercion two statements up is exactly the "mask before you stringify"
+      // gap the `SecretMasker` contract documents, and an earlier revision of
+      // this line got it wrong while asserting the opposite in a comment.
+      // A masker matches by LITERAL occurrence, so any value `Number()` does
+      // not round-trip renders unmasked: `'0471'` prints `471`, `'1e5'` prints
+      // `100000`, `' 4071'` prints `4071`, and a 20-digit value loses its tail
+      // to float precision. The create twin above already masks the raw value;
+      // this now matches it.
       this.logger.debug(
         newCapacityUnits !== undefined
           ? `Requested capacity reservation of ${maskerOrIdentity(maskSecrets)(
-              String(newCapacityUnits)
+              String(newCapacity?.CapacityUnits)
             )} LCU for ${logicalId}`
           : `Reset capacity reservation for ${logicalId}`
       );

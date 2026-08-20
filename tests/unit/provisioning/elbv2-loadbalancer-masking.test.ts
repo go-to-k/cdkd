@@ -335,7 +335,18 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
    * not a sanitizer — a number stringifies back to the same digits.
    */
   describe('success-path debug lines', () => {
-    const NUMERIC_SECRET = '4071';
+    // Sub-MIN_NEEDLE_LENGTH on purpose (issue #2063 round-2 review). At 4+
+    // characters the substring arm masks the ASSEMBLED sentence too, so a mask
+    // relocated onto the finished line stays green and the "masked on the RAW
+    // value" rationale is unfenced. Below the floor only the whole-value arm can
+    // reach it, which is exactly what masking before interpolation buys.
+    //
+    // The LEADING ZERO fences the second property independently: the update arm
+    // computes `Number(properties[...].CapacityUnits)`, and `'07'` does not
+    // round-trip through it. So a masker applied to the COERCED number sees
+    // `'7'`, matches nothing, and prints the value unmasked -- which is the
+    // defect the round-2 review measured. One fixture, two discriminators.
+    const NUMERIC_SECRET = '07';
     const numericMasker = createSecretMasker(
       new Map([[NUMERIC_SECRET, '{{resolve:secretsmanager:elbv2-cap:SecretString:units::}}']])
     );
@@ -410,9 +421,12 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
     });
 
     it('masks the EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic debug line', async () => {
-      // This one's value space is narrow (`on` / `off` survive AWS), so the
-      // fixture uses a value AWS would take and the masker knows.
-      const flagSecret = 'on-4071';
+      // `on` / `off` are the only values AWS accepts here, so a REACHABLE
+      // secret at this site is necessarily sub-MIN_NEEDLE_LENGTH — the debug
+      // line is only emitted once the SetSecurityGroups call succeeded. That
+      // makes the whole-value arm the only one that can mask it, so this case
+      // also fences masking on the RAW value rather than the assembled line.
+      const flagSecret = 'on';
       const flagMasker = createSecretMasker(
         new Map([[flagSecret, '{{resolve:secretsmanager:elbv2-pl:SecretString:flag::}}']])
       );
