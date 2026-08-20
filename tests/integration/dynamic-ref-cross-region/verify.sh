@@ -314,11 +314,20 @@ cleanup() {
       aws s3 rm "s3://${STATE_BUCKET}/cdkd/${stack}/${region}/state.json" >/dev/null 2>&1 || true
       aws s3 rm "s3://${STATE_BUCKET}/cdkd/${stack}/${region}/lock.json" >/dev/null 2>&1 || true
       # ...and purge the versions the delete markers above leave behind.
-      # Unconditional rather than only for the seeded key: a destroy that ran
-      # normally still leaves earlier versions, and one of this fixture's states
-      # held a plaintext for part of the run. By PREFIX, so lock.json,
-      # rollback-journal.json and deployments/** go with state.json.
-      s3_purge_prefix_versions "${STATE_BUCKET}" "$(s3_stack_prefix "${stack}" "${region}")" || true
+      # Unconditional across KEYS rather than only the seeded one: a destroy
+      # that ran normally still leaves earlier versions, and one of this
+      # fixture's states held a plaintext for part of the run. By PREFIX, so
+      # lock.json, rollback-journal.json and deployments/** go with state.json.
+      #
+      # NONCURRENT, per the contract in ../s3-versions.sh. `cleanup` runs from
+      # the failure and signal traps too, and this fixture's `destroy` above is
+      # `|| true` -- so when it failed, StackA/StackB resources are still
+      # standing and the CURRENT state.json is the only thing a follow-up
+      # `cdkd state destroy` can work from. The pre-fix code defaulted to `all`
+      # here (inherited from this file's own helper, which is where the shared
+      # one came from) and would have erased it. The full sweep happens on the
+      # success path below, where destroy has been asserted.
+      s3_purge_prefix_versions "${STATE_BUCKET}" "$(s3_stack_prefix "${stack}" "${region}")" noncurrent || true
     done
   done
   exit "${rc}"

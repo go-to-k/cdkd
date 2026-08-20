@@ -119,11 +119,30 @@ _s3v_check_prefix() {
 # piped on purpose: piping into `while` hides the exit status, so a transient
 # throttle would look exactly like "there is nothing here" and the sweep would
 # purge nothing while the run carried on.
+#
+# stderr goes to its own file, NOT `2>&1`. Merging them puts any benign CLI
+# warning INTO THE ROW STREAM, where it becomes a phantom row: the count then
+# reports a surviving version on an empty bucket (assertion fails for no
+# reason), and the delete path hands that warning text to
+# `delete-object --key`. The message is still wanted for the WARN, hence the
+# temp file rather than `2>/dev/null`.
 _s3v_rows() {
-  local bucket="$1" scope="$2" query="$3" rows
-  if ! rows="$(aws s3api list-object-versions --bucket "${bucket}" \
-      --prefix "${scope}" --query "${query}" --output text 2>&1)"; then
-    echo "WARN: s3-versions: could not list versions under s3://${bucket}/${scope}: ${rows}" >&2
+  local bucket="$1" scope="$2" query="$3" rows err errfile rc
+  errfile="$(mktemp 2>/dev/null)" || errfile=""
+  if [ -n "${errfile}" ]; then
+    rows="$(aws s3api list-object-versions --bucket "${bucket}" \
+      --prefix "${scope}" --query "${query}" --output text 2>"${errfile}")"
+    rc=$?
+    err="$(cat "${errfile}" 2>/dev/null)"
+    rm -f "${errfile}"
+  else
+    rows="$(aws s3api list-object-versions --bucket "${bucket}" \
+      --prefix "${scope}" --query "${query}" --output text 2>/dev/null)"
+    rc=$?
+    err="<stderr unavailable: mktemp failed>"
+  fi
+  if [ "${rc}" -ne 0 ]; then
+    echo "WARN: s3-versions: could not list versions under s3://${bucket}/${scope}: ${err}" >&2
     return 1
   fi
   [ -n "${rows}" ] || return 0
@@ -151,17 +170,67 @@ _s3v_key_query() {
   fi
 }
 
+# _s3v_flush_batch <bucket> <objects-json-body> - one DeleteObjects call.
+# `Quiet: true` makes a fully successful call return `{}` and list ONLY the
+# failures, so any non-empty `Errors` in the output is a per-object failure the
+# call itself reported as overall success. Surfaced as a WARN rather than
+# swallowed: the caller retries, and the zero-assertion is the backstop.
+_s3v_flush_batch() {
+  local bucket="$1" objects="$2" out
+  if ! out="$(aws s3api delete-objects --bucket "${bucket}" \
+      --delete "{\"Objects\":[${objects}],\"Quiet\":true}" 2>&1)"; then
+    echo "WARN: s3-versions: delete-objects batch failed on s3://${bucket}: ${out}" >&2
+    return 1
+  fi
+  case "${out}" in
+    *'"Errors"'*)
+      echo "WARN: s3-versions: delete-objects reported per-object errors: ${out}" >&2
+      return 1
+      ;;
+  esac
+  return 0
+}
+
 # _s3v_delete_rows <bucket> - read "<key><TAB><versionId>" rows on stdin and
-# delete each. See trap 2 above for why the caller must feed this with
+# delete them in DeleteObjects batches of 1000 (the API maximum). Batched
+# rather than one `delete-object` per version because a single 347-version key
+# then costs 1 CLI process instead of 347; a real sweep of 455 objects went
+# from 455 calls to 7.
+#
+# See trap 2 in the header for why the caller must feed this with
 # `printf '%s\n'` and why the `|| [ -n "${key}" ]` guard is here as well.
+#
+# The payload is assembled by hand rather than through `jq`, so that sourcing
+# this file does not add a `jq` dependency to ten fixtures. That is safe for
+# cdkd's key space (stack names, regions, ISO timestamps, hashes) but not for
+# arbitrary text, so a key or version id carrying a quote or a backslash is
+# routed to a single-object `delete-object` instead of being interpolated into
+# JSON. A TAB or a NEWLINE cannot reach here at all - either would have split
+# the row before this point.
 _s3v_delete_rows() {
-  local bucket="$1" key vid
+  local bucket="$1" key vid objects="" n=0
   while IFS=$'\t' read -r key vid || [ -n "${key}" ]; do
     if [ -z "${key}" ] || [ -z "${vid}" ]; then continue; fi
     if [ "${vid}" = "None" ]; then continue; fi
-    aws s3api delete-object --bucket "${bucket}" --key "${key}" \
-      --version-id "${vid}" >/dev/null 2>&1 || true
+    case "${key}${vid}" in
+      *'"'* | *'\'*)
+        aws s3api delete-object --bucket "${bucket}" --key "${key}" \
+          --version-id "${vid}" >/dev/null 2>&1 || true
+        continue
+        ;;
+    esac
+    objects="${objects}${objects:+,}{\"Key\":\"${key}\",\"VersionId\":\"${vid}\"}"
+    n=$((n + 1))
+    if [ "${n}" -ge 1000 ]; then
+      _s3v_flush_batch "${bucket}" "${objects}" || true
+      objects=""
+      n=0
+    fi
   done
+  if [ "${n}" -gt 0 ]; then
+    _s3v_flush_batch "${bucket}" "${objects}" || true
+  fi
+  return 0
 }
 
 # --- public API -------------------------------------------------------------
@@ -231,11 +300,20 @@ s3_purge_key_versions() {
 }
 
 # s3_count_versions <bucket> <prefix> [noncurrent] - print the number of
-# surviving versions + delete markers. Returns 1 if the LIST failed, so a
-# caller can tell "zero" from "could not tell" (the same tri-state the
-# gone_probe helpers use). Counts ROWS, never `length()` - see trap 3.
+# surviving versions + delete markers. Returns 1 if the prefix is malformed OR
+# the LIST failed, so a caller can tell "zero" from "could not tell" (the same
+# tri-state the gone_probe helpers use). Counts ROWS, never `length()` - trap 3.
+#
+# The prefix check is NOT only a purge-path concern, even though nothing here
+# deletes. `cdkd///` lists nothing, so without it this returns a truthful 0 for
+# a prefix that names no stack, and `s3_assert_versions_swept` below then
+# announces a clean teardown for a bucket it never really looked at. Every
+# caller wraps the PURGE in `|| true`, so a mis-derived prefix would print the
+# purge's refusal to stderr and still let the run PASS - which is precisely the
+# vacuous green this file exists to remove.
 s3_count_versions() {
   local bucket="$1" prefix="$2" mode="${3:-all}" rows
+  _s3v_check_prefix "${prefix}" || return 1
   rows="$(_s3v_rows "${bucket}" "${prefix}" "$(_s3v_prefix_query "${mode}")")" || return 1
   printf '%s\n' "${rows}" | awk 'NF{n++} END{print n+0}'
   return 0
@@ -250,6 +328,14 @@ s3_count_versions() {
 # Call it on the SUCCESS path, as the LAST thing that looks at the bucket.
 s3_assert_versions_swept() {
   local bucket="$1" prefix="$2" desc="${3:-state teardown}" n
+  # Checked HERE as well as inside s3_count_versions, so the failure names the
+  # assertion's own description rather than surfacing as a bare helper WARN.
+  if ! _s3v_check_prefix "${prefix}"; then
+    echo "FAIL: ${desc}: refusing to certify a teardown against the malformed prefix '${prefix}'." >&2
+    echo "      A prefix that names no stack lists nothing, so the count would be a truthful 0" >&2
+    echo "      about the wrong key space - a vacuous pass, which is the failure this assertion exists to catch." >&2
+    exit 1
+  fi
   if ! n="$(s3_count_versions "${bucket}" "${prefix}")"; then
     echo "FAIL: ${desc}: could not list object versions under s3://${bucket}/${prefix}." >&2
     echo "      An unverified sweep is not a clean teardown - failing rather than assuming." >&2

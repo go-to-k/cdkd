@@ -696,21 +696,82 @@ teardown sweep must NOT be noncurrent-only: after `aws s3 rm` the DELETE MARKER
 is the entry with `IsLatest == true`, so one marker per key would survive
 forever and the zero-assertion would never pass.
 
-`s3_purge_prefix_versions` refuses any prefix that is not `cdkd/<stack>/<region>/`
-with both segments non-empty — a safety guard, since it runs inside `cleanup`
-under `set +eu` where an unset `STACK` would otherwise widen the prefix and
-delete another stack's LIVE state.
+EVERY entry point — purge, count AND assertion — refuses a prefix that is not
+`cdkd/<stack>/<region>/` with both segments non-empty. On the purge side that
+stops an unset `STACK` (`cleanup` runs under `set +eu`) from widening the prefix
+and deleting another stack's LIVE state. On the READ side it is subtler and was
+missed on the first cut: `cdkd///` lists nothing, so the count is a truthful `0`
+about the WRONG key space, and since every caller wraps the purge in `|| true`,
+a mis-derived prefix printed a refusal to stderr while the fixture still exited
+0 with the plaintext intact. That is the vacuous pass this whole convention
+exists to remove, reintroduced inside the assertion meant to prevent it. Pinned
+by `tests/unit/scripts/integ-s3-versions-helper.test.ts`, which runs the guard
+under bash against a fake `aws` that records its own invocation — so the test
+asserts not just a non-zero exit but that no AWS call was attempted at all.
 
-The helper is covered by `tests/unit/scripts/integ-verify-bash-compat.test.ts`,
-which now scans the shared helpers in `tests/integration/*.sh` as well as every
-`verify.sh` (with a per-shape floor, so a total that is swamped by 200+ fixtures
-cannot hide the helper going unread). It is a FLAT file rather than
-`lib/s3-versions.sh` on purpose: three coverage-matrix generators treat every
-DIRECTORY under `tests/integration/` as a fixture, so a `lib/` directory would
-silently become a 283rd row in all three committed matrices. The convention itself is NOT mechanically enforced —
-"does this fixture write a secret into state?" is a judgment a lint cannot make
-— so it stays a read-it-and-follow-it rule and the per-fixture zero-assertion is
-what makes a regression loud. User-facing writeup in
+Deletes go through `DeleteObjects` in batches of 1000 (the API maximum): a
+347-version key costs one CLI process, not 347. Keys carrying a quote or a
+backslash fall back to single-object `delete-object`, since the payload is built
+without `jq` — sourcing the helper must not add a `jq` dependency to ten
+fixtures. Under `Quiet: true` a successful call returns `{}`, so an `Errors` key
+in the output is a per-object failure reported as overall success (confirmed
+against real S3: rc=0 with `Errors` present); it warns, and the retry loop plus
+the zero-assertion are the backstop. The listing keeps stderr OUT of the row
+stream — `2>&1` there makes a benign CLI warning a phantom surviving version
+(measured: count 1 on an empty bucket) and feeds that text to
+`delete-object --key`.
+
+Also scanned by `tests/unit/scripts/integ-verify-bash-compat.test.ts` and by
+`scripts/check-integ-aws-commands.ts` (its `aws` verbs run in ten fixtures at
+once), both with per-shape floors so a total swamped by 280 fixtures cannot hide
+the helper going unread. Four other integ scanners still cannot see it; the
+per-scanner verdict is recorded in issue
+[#2110](https://github.com/go-to-k/cdkd/issues/2110) rather than fixed by a
+blanket extension, because at least one of them (`integ-verify-signal-traps`)
+would fail on correct code — a sourced helper installs no traps by design.
+
+It is a FLAT file rather than `lib/s3-versions.sh` on purpose: three
+coverage-matrix generators treat every DIRECTORY under `tests/integration/` as a
+fixture, so a `lib/` directory would silently become a 283rd row in all three
+committed matrices (issue
+[#2105](https://github.com/go-to-k/cdkd/issues/2105)).
+
+The convention IS enforced, by
+`tests/unit/scripts/integ-secret-fixture-sweep.test.ts`: a fixture whose
+`bin/**` / `lib/**` TypeScript declares secret material — `unsafePlainText`, a
+hand-supplied `secretStringValue` / `secretObjectValue` / `secretStringBeta1`, a
+templated `master(User)?Password`, `generateSecret: true`, or an `iam.AccessKey`
+— must source the helper AND call `s3_assert_versions_swept`. Per-pattern FLOORS
+(5 / 5 / 2 / 1 / 1) mean a regex that silently stopped matching cannot hide
+behind the others, and the seeding set is pinned by NAME, since the failure this
+closes was a hand audit producing the wrong SET rather than the wrong count.
+Both predicates read comment-stripped CODE: the first cut matched the
+explanatory comment above the `source` line, so its own break-test — delete the
+`.` line, keep the comment — stayed GREEN.
+
+It exists because the written rule above was violated the moment it was written.
+The #2096 audit read all 282 `verify.sh` files and still missed `docdb-neptune`,
+`eventbridge-api-destination` and `cognito-resource-server`, each an exact
+structural twin of one it DID find (a master password, an `unsafePlainText`
+literal, a service-generated credential). All three were then measured holding
+live plaintext: 16 of 64 versions, 15 of 18, and 3 of 18 carrying a real
+`ClientSecret`. The secret is declared in `lib/*.ts`; the audit was reading
+`verify.sh`.
+
+**When auditing by hand anyway, read the stack name from `verify.sh`'s `STACK=`
+line — never infer it from the directory name.** `cognito-resource-server`'s
+stack is `CognitoResourceServerStack`, not `CdkdCognitoResourceServerExample`,
+and probing the convention-derived name returns a clean-looking `0` for a key
+that does not exist. That nearly recorded a real finding as unreproducible.
+
+Three blind spots are named in the lint's own header rather than implied away:
+raw CloudFormation fixtures (template in a checked-in `.json` / `.yaml`, not
+scanned); secrets seeded by the SCRIPT rather than the app
+(`dynamic-ref-cross-region` writes a plaintext state record with `aws s3 cp` —
+no token in its sources reveals it); and service-generated credentials with no
+source marker at all, which is what Cognito's `ClientSecret` was and why it was
+found by grepping the BUCKET. The per-fixture zero-assertion plus periodic
+bucket inspection stay the backstop. User-facing writeup in
 [docs/testing.md](../../docs/testing.md).
 
 ### A fixture that greps cdkd's OWN output must fail loudly when the format drifts

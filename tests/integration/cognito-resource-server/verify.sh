@@ -55,9 +55,20 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# Shared S3 VERSION-sweep helpers (issue #2096). The fixture's user-pool client
+# sets `generateSecret: true`, so Cognito mints a real client secret and cdkd
+# caches it in the resource's state record -- no `unsafePlainText` anywhere, the
+# credential is service-generated. The state bucket is VERSIONED, so `aws s3 rm`
+# only writes a delete marker: measured 2026-08-20, 3 of 18 surviving versions
+# of this stack's state.json carried a live `"ClientSecret"` value.
+. ../s3-versions.sh
+
 STACK="CognitoResourceServerStack"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+# Everything this stack owns in the bucket: state.json, lock.json,
+# rollback-journal.json and deployments/**.
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -75,9 +86,17 @@ cleanup() {
       --region "${REGION}" >/dev/null 2>&1
     destroy_rc=$?
   fi
-  if [ -n "${STATE_BUCKET:-}" ] && [ "${destroy_rc}" -eq 0 ]; then
-    aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
-    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    if [ "${destroy_rc}" -eq 0 ]; then
+      aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
+      aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    fi
+    # Outside the destroy_rc guard on purpose, and NONCURRENT-only: the client
+    # secret is in the HISTORICAL versions whether or not this run's destroy
+    # succeeded, and noncurrent never touches a live state.json that a
+    # follow-up `cdkd state destroy` still needs. The success path does the
+    # full sweep.
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
   fi
   set -eu
 }
@@ -172,5 +191,15 @@ echo "    OK: UserPool is gone"
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
+# --- Teardown + VERSION sweep, ON THE SUCCESS PATH -------------------------
+# head-object only looks at the CURRENT object; the bucket is VERSIONED, so the
+# Cognito-generated client secret survives in prior versions without this
+# (issue #2096). On the success path, not only in `cleanup`, and asserted.
+echo "==> Final teardown + state-version sweep"
+cleanup
+trap - EXIT INT TERM
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "cognito-resource-server state teardown"
+
 echo ""
-echo "==> cognito-resource-server test passed (compound-id Ref -> bare scope + clean destroy)"
+echo "==> cognito-resource-server test passed (compound-id Ref -> bare scope + clean destroy + zero surviving state versions)"

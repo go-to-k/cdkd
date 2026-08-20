@@ -391,6 +391,14 @@ describe('integ fixture aws invocations (#1402)', () => {
   it('parses a substantial share of the fixture tree', () => {
     const stats = collectStats();
     expect(stats.fixtures).toBeGreaterThan(150);
+    // Per-SHAPE floor for the shared helpers: an aggregate over 280 fixtures
+    // cannot tell "the helper is clean" from "the helper was never read", and
+    // it is the one script whose aws verbs run in seven fixtures at once.
+    const scanned = readFixtureScripts(INTEG_ROOT);
+    const helper = scanned.find((f) => f.fixture === 's3-versions.sh');
+    expect(helper, 'tests/integration/s3-versions.sh is not being scanned').toBeDefined();
+    expect(helper?.content).toContain('aws s3api list-object-versions');
+    expect(helper?.content).toContain('aws s3api delete-objects');
     // Current: 3022 invocations (3002 before the `nlb-source-nat` fixture of
     // issue #1619 added 20; 2635 when these floors were written — the comment
     // had not been refreshed as the tree grew, which is how the ceiling below

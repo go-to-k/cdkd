@@ -53,9 +53,19 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
 
+# Shared S3 VERSION-sweep helpers (issue #2096). The fixture stack declares the
+# Connection's API key with `unsafePlainText`, so that value lands in the
+# Connection's own state properties. The state bucket is VERSIONED, so
+# `aws s3 rm` only writes a delete marker -- measured 2026-08-20, 15 of 18
+# surviving versions of this stack's state.json carried `cdkd-integ-api-key`.
+. ../s3-versions.sh
+
 STACK="CdkdEventbridgeApiDestinationExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+# Everything this stack owns in the bucket: state.json, lock.json,
+# rollback-journal.json and deployments/**.
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 CONN="cdkdeventbridgeapidestinationexample-conn"
 DEST="cdkdeventbridgeapidestinationexample-dest"
 RULE="cdkdeventbridgeapidestinationexample-rule"
@@ -78,6 +88,10 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    # The `aws s3 rm` above only wrote DELETE MARKERS. NONCURRENT-only here:
+    # this also runs from the pre-run sweep and the failure traps, where a live
+    # state.json may be the only record of resources still standing.
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
   fi
   set -eu
 }
@@ -130,5 +144,15 @@ assert_gone "Rule ${RULE} still exists after destroy" aws events describe-rule -
 echo "    Connection / ApiDestination / Rule deleted"
 assert_gone "state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
+
+# --- Teardown + VERSION sweep, ON THE SUCCESS PATH -------------------------
+# head-object only looks at the CURRENT object; the bucket is VERSIONED, so the
+# templated API key survives in prior versions without this (issue #2096). On
+# the success path, not only in `cleanup`, and asserted rather than assumed.
+echo "==> Final teardown + state-version sweep"
+cleanup
+trap - EXIT INT TERM
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "eventbridge-api-destination state teardown"
 
 echo "[verify] PASS — Connection Arn / ApiDestination Arn GetAtt enrichment works end-to-end, 2 phases passed"

@@ -214,8 +214,13 @@ sweep() {
       # versions. NONCURRENT-only here: `sweep` also runs from the pre-run pass
       # and the failure traps, where a live state.json may be the only record of
       # resources still standing. The success path does the full sweep.
-      s3_purge_prefix_versions "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX:-}" noncurrent
-      s3_purge_prefix_versions "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX:-}" noncurrent
+      # `|| true` like every other line in `sweep`: a failed LIST returns 1,
+      # and this subshell runs under the caller's `set -euo pipefail` at the
+      # PRE-RUN call site -- so an unguarded non-zero here aborts the run before
+      # it starts. Inside `cleanup` it would preempt `exit "${rc}"` and turn a
+      # SIGINT run's 130 into a 1.
+      s3_purge_prefix_versions "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX:-}" noncurrent || true
+      s3_purge_prefix_versions "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX:-}" noncurrent || true
     fi
   )
 }
@@ -503,11 +508,12 @@ pass "no orphan state, parameter, secret or exports-index entry"
 
 # --- Teardown + VERSION sweep, ON THE SUCCESS PATH -------------------------
 # This fixture is the textbook case for why the sweep cannot live only in
-# `cleanup`: the line below DISARMS the trap, so on the normal path `cleanup`
-# never runs at all. The bucket is VERSIONED, so without this the producer's
-# literal secret survives the run in every prior version of its state.json
-# (issue #2096). `sweep` is called explicitly first, then the trap is disarmed
-# so nothing can write a new delete marker after the count is taken.
+# `cleanup`: the `trap - EXIT INT TERM` a few lines down DISARMS the trap, so on
+# the normal path `cleanup` never runs at all. The bucket is VERSIONED, so
+# without this the producer's literal secret survives the run in every prior
+# version of its state.json (issue #2096). `sweep` (the teardown body `cleanup`
+# would have called) is invoked explicitly first, THEN the trap is disarmed, so
+# nothing can write a new delete marker after the count is taken.
 echo ""
 echo "==> Final teardown + state-version sweep"
 sweep

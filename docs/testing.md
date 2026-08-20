@@ -985,6 +985,15 @@ or a deliberately seeded pre-GHSA record. Measured 2026-08-20 for issue
 | --- | --- | --- |
 | `cdkd/CdkdSecretsDynamicRefExample/us-east-1/state.json` | 304 versions + 43 markers | yes (`cdkd-known-pw-123`) |
 | `cdkd/CdkdSecretsArrayNestedExample/us-east-1/state.json` | 7 versions + 3 markers | 5 of the 7 (`cdkd-array-nested-pw-789`) |
+| `cdkd/CdkdDocdbNeptuneExample/us-east-1/state.json` | 64 | 16 of them (`TempPass1234!`) |
+| `cdkd/CdkdEventbridgeApiDestinationExample/us-east-1/state.json` | 18 | 15 of them (`cdkd-integ-api-key`) |
+| `cdkd/CognitoResourceServerStack/us-east-1/state.json` | 18 | 3 of them (a live Cognito `ClientSecret`) |
+
+Ten fixtures do this today. Note the third row's stack name: it is
+`CognitoResourceServerStack`, **not** `CdkdCognitoResourceServerExample`. Read
+the stack name from `verify.sh`'s `STACK=` line when auditing — several fixtures
+do not follow the `Cdkd…Example` convention, and probing the convention-derived
+name returns a clean-looking `0` for a key that does not exist.
 
 Use the shared helpers in
 [`tests/integration/s3-versions.sh`](../tests/integration/s3-versions.sh)
@@ -1041,20 +1050,62 @@ And the teardown sweep must NOT be `noncurrent` — after `aws s3 rm` the delete
 marker is the entry carrying `IsLatest == true`, so a noncurrent-only sweep
 leaves one marker per key behind forever and the zero-assertion never passes.
 
-`s3_purge_prefix_versions` refuses any prefix that is not
-`cdkd/<stack>/<region>/` with both segments non-empty. That is a safety guard,
-not style: these run inside `cleanup`, which runs under `set +eu`, so an unset
-`STACK` would otherwise produce an over-broad prefix and the sweep would delete
-other stacks' LIVE state.
+**Every entry point refuses a prefix that is not `cdkd/<stack>/<region>/` with
+both segments non-empty** — the purge, the count, and the assertion alike. That
+is a safety guard, not style, and it is needed on the READ side for a reason
+that is easy to miss: `cdkd///` names no stack, so S3 lists nothing for it and
+the count is a truthful `0` **about the wrong key space**. Combined with every
+caller wrapping the purge in `|| true`, a mis-derived `STATE_PREFIX` would print
+a refusal to stderr and let the fixture exit 0 with the plaintext intact — the
+same vacuous green the whole convention exists to remove, one level up. On the
+purge side the guard also stops an unset `STACK` (recall `cleanup` runs under
+`set +eu`) from widening the prefix and deleting another stack's LIVE state.
 
-The helper file is covered by
-`tests/unit/scripts/integ-verify-bash-compat.test.ts`, which scans
-the shared helpers in `tests/integration/*.sh` alongside every `verify.sh` — a
-bash-4-ism in a file seven fixtures source is where it does the most damage and
-is least likely to be noticed. There is no lint for the convention itself: whether a given
-fixture writes a secret into state is a judgment call, so this one stays a
-read-it-and-follow-it rule, and the per-fixture zero-assertion is what makes a
-regression loud.
+Deletes go through `DeleteObjects` in batches of 1000, the API maximum, so a
+347-version key costs one CLI process rather than 347. A key or version id
+carrying a quote or a backslash falls back to a single-object `delete-object`,
+because the payload is assembled without `jq` — sourcing this file must not add
+a `jq` dependency to ten fixtures. `Quiet: true` means a fully successful call
+returns `{}`, so any `Errors` in the output is a per-object failure that the
+call reported as overall success; it is surfaced as a WARN and the retry loop
+plus the zero-assertion are the backstop.
+
+Note also that the listing keeps **stderr out of the row stream**: a `2>&1`
+there turns any benign CLI warning into a phantom surviving version, so an empty
+bucket counts 1 and the assertion fails for no reason — and on the delete side
+that warning text would be handed to `delete-object --key`.
+
+Two lints see the helper. `tests/unit/scripts/integ-verify-bash-compat.test.ts`
+scans the shared helpers in `tests/integration/*.sh` alongside every `verify.sh`
+— a bash-4-ism in a file ten fixtures source is where it does the most damage
+and is least likely to be noticed. `scripts/check-integ-aws-commands.ts` scans
+them too, since a verb removed from the AWS CLI here breaks ten fixtures at
+once. Both carry a per-shape floor, so a total swamped by 280 fixtures cannot
+hide the helper going unread. `tests/unit/scripts/integ-s3-versions-helper.test.ts`
+executes the guard directly, asserting a malformed prefix can never produce a
+pass and that no AWS call is even attempted for one.
+
+`tests/unit/scripts/integ-secret-fixture-sweep.test.ts` enforces the convention
+itself: a fixture whose `bin/**` or `lib/**` TypeScript declares secret material
+— `unsafePlainText`, a hand-supplied `secretStringValue` / `secretObjectValue`,
+a templated `masterUserPassword`, `generateSecret: true`, or an
+`iam.AccessKey` — must source the helper AND call `s3_assert_versions_swept`.
+Both predicates read comment-stripped CODE: an early cut matched the explanatory
+comment, so deleting the `source` line still read as compliant.
+
+It exists because a hand audit is not enough, and that is measured rather than
+assumed: the #2096 audit read every fixture's `verify.sh` and still missed
+`docdb-neptune`, `eventbridge-api-destination` and `cognito-resource-server` —
+each the structural twin of one it did find — because the secret is declared in
+`lib/*.ts`, where that audit never looked.
+
+The lint names what it cannot see, and so should you: raw CloudFormation
+fixtures whose template is a checked-in `.json` / `.yaml`; secrets seeded by the
+SCRIPT rather than the app (`dynamic-ref-cross-region` writes a plaintext state
+record with `aws s3 cp`); and service-generated credentials with no marker in
+the source at all — Cognito's `ClientSecret` was that class and was found by
+grepping the BUCKET, not the source. The per-fixture zero-assertion plus
+periodic bucket inspection remain the backstop.
 
 ### Unit-test convention: prime exactly what the code path consumes
 

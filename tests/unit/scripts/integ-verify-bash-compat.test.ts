@@ -55,7 +55,7 @@ const BASH4_ISMS: readonly Bash4ism[] = [
 
 /**
  * Every fixture `verify.sh`, plus every SHARED helper sitting directly in
- * `tests/integration/` (e.g. `s3-versions.sh`, issue #2096, sourced by seven
+ * `tests/integration/` (e.g. `s3-versions.sh`, issue #2096, sourced by ten
  * fixtures).
  *
  * The shared helpers are scanned because that is where a bash-4-ism does the
@@ -107,7 +107,13 @@ describe('integ verify.sh scripts stay bash 3.2 compatible', () => {
     // never read": 200+ fixtures swamp one file. Assert the shape separately.
     const shared = scripts.filter((s) => !s.name.includes('/'));
     expect(shared.length).toBeGreaterThanOrEqual(1);
-    expect(shared.some((s) => s.name === 's3-versions.sh')).toBe(true);
+    const helper = shared.find((s) => s.name === 's3-versions.sh');
+    expect(helper).toBeDefined();
+    // ...and that it was READ, not merely LISTED. A path that resolves to an
+    // empty or truncated read scans clean, which is the same vacuous-pass shape
+    // this suite exists to prevent elsewhere.
+    expect(helper?.lines.length ?? 0).toBeGreaterThan(50);
+    expect(helper?.lines.join('\n')).toContain('s3_assert_versions_swept()');
   });
 
   it('detects each bash-4-ism it claims to (positive control)', () => {
