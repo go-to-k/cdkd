@@ -104,6 +104,22 @@ function collisionErrorQuotingSecret(): Error {
   );
 }
 
+/**
+ * An IAM-PROPAGATION error that also quotes the secret (issue #2032).
+ *
+ * `cannot be assumed` is an `IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS` entry, so
+ * the inner default-schedule retry #2032 nested inside each replay-CREATE
+ * classifies it propagation, spends the dense 26-retry budget, and — this is
+ * what the case below exists for — emits `retry.ts`'s give-up summary at
+ * `warn`, i.e. DEFAULT verbosity, with the AWS message interpolated verbatim.
+ */
+function propagationErrorQuotingSecret(): Error {
+  return new Error(
+    `The role defined for the function cannot be assumed by Lambda. ` +
+      `Value '${SECRET_PLAINTEXT}' at 'password' failed to satisfy constraint`
+  );
+}
+
 function res(overrides: Partial<ResourceState> = {}): ResourceState {
   return {
     physicalId: 'phys',
@@ -373,12 +389,17 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
     };
   }
 
-  // The create-first attempt's retry logger. Its `isRetryable` is
-  // `isNameCooldownError`, a custom classifier, so `retry.ts` emits NO give-up
-  // summary for this loop (that line is gated on the propagation / 5xx counters,
+  // The create-first attempt's retry logger. The OUTER loop's `isRetryable` is
+  // `isNameCooldownError`, a custom classifier, so `retry.ts` emits no give-up
+  // summary for THAT loop (the line is gated on the propagation / 5xx counters,
   // both of which are inert under a caller-supplied classifier) — the
   // per-attempt DEBUG line is the sink that carries the AWS message here, and it
   // is what this pins.
+  //
+  // Scoped to the outer loop deliberately (issue #2032): the INNER
+  // default-schedule retry that issue nested inside this arm CAN emit the
+  // give-up summary at `warn`, which is default verbosity — see the
+  // propagation case below, which pins that sink's own mask.
   it('the create-first re-create retry line does not print the resolved secret', async () => {
     const create = vi.fn().mockRejectedValue(cooldownErrorQuotingSecret());
     const del = vi.fn().mockResolvedValue(undefined);
@@ -388,11 +409,21 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
     await replayRollback(ops, state, 'S', ctx);
 
     // Non-vacuity: the replay re-resolved the secret, handed the PLAINTEXT to
-    // create(), and the cooldown loop really exhausted (1 + 8).
+    // create(), and the cooldown loop really exhausted.
+    //
+    // 81 = 9 outer attempts (1 + the outer schedule's 8 retries) x 9 inner
+    // attempts (1 + the inner default schedule's 8). Issue #2032 nested an
+    // inner default-schedule `withRetry` inside each replay-CREATE so an IAM
+    // propagation error gets the dense 26-retry path; the SQS cooldown is
+    // matched by the inner default classifier too (the generic table carries
+    // 'wait 60 seconds'), so it is now absorbed by both loops — the same
+    // division of labour the deploy engine's named-replacement twin documents,
+    // where the inner ~47s budget covers most of the 60s window and the outer
+    // ~64s one covers the tail.
     expect(mockSMSend).toHaveBeenCalled();
     expect((create.mock.calls[0]![2] as Record<string, Record<string, unknown>>)['ProviderDetails'])
       .toEqual({ password: SECRET_PLAINTEXT });
-    expect(create).toHaveBeenCalledTimes(9);
+    expect(create).toHaveBeenCalledTimes(81);
     // The collision fallback must NOT have run, or the line under test would be
     // attributable to the delete-new-first logger instead.
     expect(del).not.toHaveBeenCalled();
@@ -403,6 +434,46 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
     expect(attemptLine).toContain(SECRET_MASK);
     expect(debugs.join('\n')).not.toContain(SECRET_PLAINTEXT);
     expect(warns.join('\n')).not.toContain(SECRET_PLAINTEXT);
+  });
+
+  // The INNER retry's give-up summary (issue #2032). This is a NEW sink at this
+  // arm, not a second view of the one above: before #2032 neither replay-CREATE
+  // could emit `retry.ts`'s summary at all (`defaultSchedule` was false and the
+  // custom classifier kept both counters inert), so the nested default-schedule
+  // loop is the FIRST thing here that prints at DEFAULT verbosity with the AWS
+  // message interpolated verbatim. That is exactly the shape GHSA-p5qg-v9gv-hc7w
+  // was — a `warn` a user sees without `--verbose` — so the mask guarding it
+  // must not be deletable while the suite stays green.
+  it('the create-first re-create GIVE-UP summary does not print the resolved secret', async () => {
+    const create = vi.fn().mockRejectedValue(propagationErrorQuotingSecret());
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx, debugs, warns } = makeCtx({ create, delete: del });
+    const { ops, state } = secretBearingReplacementOp();
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    // Non-vacuity: the replay re-resolved the secret and handed the PLAINTEXT to
+    // create(), and the inner DENSE propagation loop really exhausted —
+    // 27 = 1 + IAM_PROPAGATION_MAX_RETRIES (26). The outer loop does not
+    // re-enter: `isNameCooldownError` does not match a propagation message.
+    expect(mockSMSend).toHaveBeenCalled();
+    expect((create.mock.calls[0]![2] as Record<string, Record<string, unknown>>)['ProviderDetails'])
+      .toEqual({ password: SECRET_PLAINTEXT });
+    expect(create).toHaveBeenCalledTimes(27);
+    // The collision fallback must NOT have run, or the summary under test would
+    // be attributable to the delete-new-first loop instead.
+    expect(del).not.toHaveBeenCalled();
+
+    // THE DISCRIMINATOR: the summary is a `warn`, so masking only `debug`
+    // leaves it raw. Find it by its own wording rather than by the secret, or
+    // the assertion could be satisfied by the line simply not existing.
+    const summary = warns.find((m) => m.includes('gave up after'));
+    expect(summary).toBeDefined();
+    expect(summary).toContain('IAM-propagation');
+    expect(summary).not.toContain(SECRET_PLAINTEXT);
+    expect(summary).toContain(SECRET_MASK);
+    expect(warns.join('\n')).not.toContain(SECRET_PLAINTEXT);
+    expect(debugs.join('\n')).not.toContain(SECRET_PLAINTEXT);
   });
 
   // The delete-new-first fallback's retry logger. A COLLISION is not a cooldown,

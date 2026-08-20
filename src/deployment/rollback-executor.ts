@@ -946,6 +946,117 @@ async function updateWithRollbackRetry(
 }
 
 /**
+ * Both retry loops around a reverse-replacement replay-CREATE (issue
+ * [#2032](https://github.com/go-to-k/cdkd/issues/2032)) — the create-side twin
+ * of {@link updateWithRollbackRetry}, and the single place the two replay arms
+ * get their `disableOuterRetry` guard.
+ *
+ * ## The nesting, and why it is required
+ *
+ * A caller-supplied `isRetryable` REPLACES `isRetryableTransientError`
+ * outright, and ANY explicit schedule knob sets `defaultSchedule = false` in
+ * `retry.ts`, which is the gate on the dense IAM-propagation path. Both
+ * replay-CREATE arms pass BOTH ({@link RECREATE_RETRY_SCHEDULE} plus
+ * `isNameCooldownError` / `isRecreateRetryableError`), so a propagation error
+ * raised by the re-create — the old execution role was re-created moments
+ * earlier in this same rollback, so `CreateFunction` answers `The role defined
+ * for the function cannot be assumed by Lambda.` — was non-retryable on
+ * attempt 0 and rethrown raw, leaving the resource absent from BOTH AWS and
+ * state. The INNER call passes NO knobs and NO classifier, so it gets the
+ * dense 26-retry / 47.75s propagation schedule while the OUTER one keeps
+ * owning the name-release cadence.
+ *
+ * ## What the deploy engine's precedents actually are
+ *
+ * They are two DIFFERENT shapes, and the two rollback arms need one each —
+ * this helper is deliberately the sum of both rather than a copy of either:
+ *
+ *  - Arm 2 (post-delete-new-first) matches the delete-then-re-create sites,
+ *    `deploy-engine.ts`'s `--replace` delete-first fallback and its named
+ *    replacement, which nest `this.withRetry(...)` INSIDE an outer
+ *    `isRecreateRetryableError` retry. Same two loops as here.
+ *  - Arm 1 (create-first) has NO such twin. Its deploy-engine analogue is the
+ *    property-driven create-first at `deploy-engine.ts:3745`, which calls
+ *    `this.withRetry(...)` on its OWN — one default-schedule loop, no outer
+ *    custom-classifier loop at all — and whose catch then reads
+ *    `isNameCollisionError` to reach the delete-first fallback. Arm 1 is that
+ *    shape PLUS the outer SQS-cooldown loop issue #1206 added, so it is the
+ *    SUM of both precedents.
+ *
+ * ## Why the guard lives here and not in `retry.ts`
+ *
+ * `withRetry` never receives the provider, so it cannot honour
+ * `disableOuterRetry` — re-running `CustomResourceProvider.create()` /
+ * `NestedStackProvider.create()` mints a fresh pre-signed S3 URL + RequestId
+ * and strands the previous attempt at a key nobody polls, and re-running
+ * `NestedStackProvider.create()` re-creates child stacks and child state
+ * files. That check therefore has to live next to the provider, exactly as
+ * `DeployEngine.withRetry` does it.
+ *
+ * The guard covers BOTH loops, not just the inner one. Guarding only the inner
+ * loop left the outer schedule free to re-enter, which measured at 9
+ * `create()` calls for a cooldown and 10 for a collision against an opt-out
+ * provider — i.e. the exact hazard the flag exists for, arriving through the
+ * outer loop instead. A single-shot call still lets a name collision reach the
+ * CALLER's catch on attempt 0 (that catch sits outside this helper), so the
+ * delete-new-first fallback is unaffected by the opt-out.
+ *
+ * ## The collision arm is deliberately untouched
+ *
+ * `isNameCollisionError`'s signature (`already exist(s)` / `AlreadyExists`) is
+ * NOT in `RETRYABLE_ERROR_MESSAGE_PATTERNS`, so the inner classifier rejects it
+ * on attempt 0 and it reaches the caller's catch on the FIRST outer attempt,
+ * exactly as before. The SQS cooldown IS matched by the inner classifier (the
+ * generic table carries `wait 60 seconds`), which is the same division of
+ * labour the deploy engine's named-replacement site documents: the inner retry
+ * absorbs most of the 60s window and the outer ~64s budget covers the tail.
+ */
+async function createWithRollbackRetry(
+  provider: ResourceProvider,
+  create: () => Promise<ResourceCreateResult>,
+  logicalId: string,
+  logger: RollbackExecutorContext['logger'],
+  isInterrupted: (() => boolean) | undefined,
+  secrets: RecordedSecretValues,
+  outer: {
+    isRetryable: (message: string) => boolean;
+    interruptedMessage: string;
+  }
+): Promise<ResourceCreateResult> {
+  if (provider.disableOuterRetry) {
+    // Single-shot — BOTH loops skipped. The provider handles transient errors
+    // internally, and any retry would invalidate its per-call invariant state
+    // (a Custom Resource's pre-signed response URL + RequestId).
+    return await create();
+  }
+  // Issue #2038: the bag handed to `create()` is PLAINTEXT, and every retry
+  // sink below — the per-attempt debug line AND the give-up summary the inner
+  // loop can now emit at `warn` — interpolates the AWS message verbatim.
+  const maskedLogger = maskingRetryLogger(logger, secrets);
+  return await withRetry(
+    () =>
+      withRetry(create, logicalId, {
+        logger: maskedLogger,
+        ...(isInterrupted && {
+          isInterrupted,
+          onInterrupted: () =>
+            new Error('Rollback interrupted while retrying the replay re-create'),
+        }),
+      }),
+    logicalId,
+    {
+      ...RECREATE_RETRY_SCHEDULE,
+      logger: maskedLogger,
+      ...(isInterrupted && {
+        isInterrupted,
+        onInterrupted: () => new Error(outer.interruptedMessage),
+      }),
+      isRetryable: outer.isRetryable,
+    }
+  );
+}
+
+/**
  * The state record to store after a rollback UPDATE arm (issue #1644).
  *
  * The bag handed to `update()` on both arms IS `restored.properties`, so a
@@ -1331,12 +1442,25 @@ async function replaySingle(
           provisionedBy: current.provisionedBy ?? op.provisionedBy,
         });
 
-        // Create-first (the old resource's revival is the point; if it fails
-        // the new resource survives untouched). A user-supplied physical name
-        // still held by the NEW resource collides — delete the new one first,
-        // then retry the create with a bounded collision retry (async deletes
-        // release the name late), mirroring the deploy engine's --replace
-        // delete-first fallback.
+        // Create-first (the old resource's revival is the point). A
+        // user-supplied physical name still held by the NEW resource collides
+        // — delete the new one first, then retry the create with a bounded
+        // collision retry (async deletes release the name late), mirroring the
+        // deploy engine's --replace delete-first fallback.
+        //
+        // The new resource survives untouched ONLY when the create-first
+        // attempt fails with something OTHER than a name collision. It is not
+        // unconditional, and issue #2032's inner retry widened the exception:
+        // a provider that leaves a NAMED orphan behind after a transient
+        // failure now collides with that orphan on an inner retry, which
+        // routes into the DESTRUCTIVE fallback below and deletes the live new
+        // resource — after which the re-create collides with the orphan again
+        // and the resource ends absent from both AWS and state. The deploy
+        // engine's --replace fallback accepts the same class (its own
+        // create-first collision detection is a message heuristic over an
+        // "already exists" that need not name THIS resource), so this is a
+        // stated property of the path rather than a defect being introduced
+        // here.
         let deletedNewFirst = false;
         // Typed as the full provider contract (issue #1682): the narrower
         // local shape this used to declare hid `effectiveProperties`, so the
@@ -1349,7 +1473,13 @@ async function replaySingle(
           // rollback within 60s deterministically hits QueueDeletedRecently.
           // A genuine collision must NOT be retried here — it falls through
           // to the delete-new-first fallback below instead.
-          createResult = await withRetry(
+          // Issue #2032: BOTH loops live in the helper — an inner
+          // default-schedule retry so an IAM propagation error still gets the
+          // dense schedule the outer classifier + explicit knobs disable, and
+          // the outer cooldown retry below it. The helper also owns the
+          // `disableOuterRetry` guard for both.
+          createResult = await createWithRollbackRetry(
+            createProvider,
             () =>
               createProvider.create(
                 op.logicalId,
@@ -1358,17 +1488,12 @@ async function replaySingle(
                 replayingStateCreateContext(secrets)
               ),
             op.logicalId,
+            logger,
+            isInterrupted,
+            secrets,
             {
-              ...RECREATE_RETRY_SCHEDULE,
-              // Issue #2038: `resolvedPrevProps` above is PLAINTEXT, and the
-              // per-attempt retry line interpolates the AWS message verbatim.
-              logger: maskingRetryLogger(logger, secrets),
-              ...(isInterrupted && {
-                isInterrupted,
-                onInterrupted: () =>
-                  new Error('Rollback interrupted while waiting out the name cooldown'),
-              }),
               isRetryable: isNameCooldownError,
+              interruptedMessage: 'Rollback interrupted while waiting out the name cooldown',
             }
           );
         } catch (createError) {
@@ -1412,7 +1537,13 @@ async function replaySingle(
           delete stateResources[op.logicalId];
           await afterOp?.(op.logicalId);
           try {
-            createResult = await withRetry(
+            // Issue #2032, same two-loop shape as the create-first attempt
+            // above. The outer classifier widens to collision-or-cooldown here
+            // because the name holder was just deleted, and the interrupt
+            // message mirrors the deploy engine's delete-first fallback:
+            // honor SIGINT mid-sleep instead of blocking up to ~64s.
+            createResult = await createWithRollbackRetry(
+              createProvider,
               () =>
                 createProvider.create(
                   op.logicalId,
@@ -1421,18 +1552,13 @@ async function replaySingle(
                   replayingStateCreateContext(secrets)
                 ),
               op.logicalId,
+              logger,
+              isInterrupted,
+              secrets,
               {
-                ...RECREATE_RETRY_SCHEDULE,
-                // Issue #2038, same reason as the create-first attempt above.
-                logger: maskingRetryLogger(logger, secrets),
-                // Mirror the deploy engine's delete-first fallback: honor
-                // SIGINT mid-sleep instead of blocking up to ~64s.
-                ...(isInterrupted && {
-                  isInterrupted,
-                  onInterrupted: () =>
-                    new Error('Rollback interrupted while waiting for the old name to release'),
-                }),
                 isRetryable: isRecreateRetryableError,
+                interruptedMessage:
+                  'Rollback interrupted while waiting for the old name to release',
               }
             );
           } catch (recreateError) {

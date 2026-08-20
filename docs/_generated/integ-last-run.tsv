@@ -79,7 +79,7 @@ docdb-neptune	2026-07-27T06:16:35Z	PASS	1560	verify.sh	#1160 neptune+docdb remov
 docker-image-asset	2026-08-14T00:41:19Z	PASS	73	verify.sh	PR 1890 review (image-function readback skip); deploy+ECR push+invoke+destroy 2 del 0 err, 0 orph; live probe: both ZIP-only Lambda getters reject with InvalidParameterValueException on a PackageType=Image function
 drift-revert	2026-08-13T08:34:06Z	PASS	215	verify.sh	broad set; 13 deleted 0 errors 0 orphans
 drift-revert-arrays	2026-08-13T08:30:39Z	PASS	230	verify.sh	issue 1783/1784 seams; 19 deleted 0 errors 0 orphans
-drift-revert-vpc	2026-08-11T15:53:33Z	PASS	314	verify.sh	#1591 final: both-sides canonicalizer + cdkd diff wiring; 21 del/0 err, 0 orph
+drift-revert-vpc	2026-08-20T02:22:00Z	PASS	346	verify.sh	#2032 lane broad arm (rollback-executor.ts is cross-cutting: real deletes + re-creates); 21 deleted / 0 errors, 0 orphans
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-08-19T06:47:00Z	PASS	150	verify.sh	#1957 scrub arm (AC3) reached and green; seeded plaintext purged from every version; success-path version sweep verified leaving 0
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
@@ -235,9 +235,9 @@ replacement-fanout	2026-08-08T16:39:04Z	PASS	83	verify.sh	P1 post-#1360 replacem
 replacement-immutable-name	2026-08-01T09:51:12Z	PASS	113	verify.sh	0801 regression sweep; 6 types x 3 phases ok, 0 orphans
 rollback-command	2026-08-10T04:45:42Z	PASS	117	verify.sh	0810 sweep b3; post-#1361 rollback-executor re-verify, destroy clean
 rollback-deletion-policy-snapshot	2026-08-08T16:34:46Z	PASS	107	verify.sh	P0 first run post-#1361/#1365/#1367/#1369 rollback rework; rolled-back CREATE snapshot-then-deleted, state clean, 0 orphans
-rollback-failure-injection	2026-08-19T18:33:33Z	PASS	418	verify.sh	#2038/#2031 lane; exercises the replay path the masking fix targets; verify PASS, 17 del / 0 err, 0 orphans incl state
+rollback-failure-injection	2026-08-20T02:05:00Z	PASS	393	verify.sh	#2032 lane: exercises the reverse-replacement replay path the nested propagation retry changes; 17 deleted / 0 errors, 0 orphans (state, Lambda, IAM, VPC all clean)
 rollback-replay-effective-props	2026-08-13T05:57:36Z	PASS	191	verify.sh	1741 prune + 1742 ordering at 882fcef8; measured; 0 orphans
-rollback-sqs-cooldown	2026-08-10T04:45:42Z	PASS	152	verify.sh	0810 sweep b3; post-#1361 rollback-executor re-verify, destroy clean
+rollback-sqs-cooldown	2026-08-20T01:42:30Z	PASS	156	verify.sh	#2032 lane: the direct twin of the change (name-cooldown arm). Live evidence the nested inner retry engages: retry cadence 1s/2s/4s/8s (inner default schedule) not the outer 2s/4s/8s/10s; 8 attempts absorbed the cooldown, destroy 1 deleted / 0 errors, 0 orphans
 route53	2026-08-14T02:04:32Z	PASS	331	verify.sh	Issue #1875 import-path arm, 2.5d made discriminating (drops the two NameServers outputs before the redeploy; the no-change path kept the persisted map verbatim on a resolve failure, so the arm was green with the fix reverted). Mutation probe with zone attributes blanked to {} REDs on the #1875 symptom. 8 created / 8 deleted, 0 errors, 0 orphans
 s3-analytics-inventory	2026-08-13T00:49:56Z	PASS	135	verify.sh	1707/1717/1718 live after review round 3; 49 assertions, 0 orphans
 s3-asset-deploy	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
