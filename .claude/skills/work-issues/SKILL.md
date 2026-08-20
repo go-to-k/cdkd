@@ -190,6 +190,19 @@ parallelized — bundle them into ONE lane (one worktree, one PR) or defer one.
 - Prefer surgical, deterministic, live-proven issues (a provider tweak + a
   regression test) for auto-merge; hold complex redesigns (new DAG mechanism,
   new intrinsic, schema bump) for a focused solo pass.
+- **Most open bodies are still in the OLD packed shape — read them, do not
+  rewrite them.** 44 of the 104 open issues on 2026-08-20 carry
+  `Session-fit: <decision> — <reason> / Effort: <duration>` on one line, from
+  before the five-field split. Such a body IS classified: take its decision from
+  `Session-fit` and read its `Effort:` value as an **`Estimate`**, because in
+  that shape the field held a DURATION — reading it as the new `Effort` (a
+  verification-cycle kind) turns `~1-3 h` into nonsense. A missing `Severity` is
+  UNKNOWN, never `low`; ranking rule 4 already declines to separate a pair
+  unless both sides carry the line, so an unclassified body simply falls through
+  to rule 5 rather than sorting last. Do NOT bulk-migrate the 44 — `Severity`
+  can only be written by someone holding the evidence, and a sweep would
+  manufacture 44 guesses. Upgrade a body to the five-field shape when you CLAIM
+  it (§4), which is the moment that evidence exists.
 - **Read the body's own classification lines before shortlisting it** —
   `Session-fit` / `Severity` / `Effort` / `Estimate`. The filer
   may already have classified the issue, and a `Session-fit: next` line names the
@@ -333,9 +346,10 @@ a tie:
 | 1 | **Security issues come FIRST**, ahead of every other rule below | A security defect is the one class where the cost keeps growing while it sits: the vulnerable behavior is already shipped, already running in users' accounts, and the report may be public. Every other rule orders work by how much value a fix adds; this one orders it by how much a delay costs |
 | 2 | **Umbrella issues sort LAST**, whatever else they score (except rule 1) | They cannot be finished in one lane, so a lane leaves the issue open with ambiguous residue, and their many sites collide with everything |
 | 3 | **`fix:` outranks everything else** (`feat:` / `test:` / `docs:` / `audit:` / `chore:`) | A `fix:` is a defect in shipped behavior a user can hit today; the rest are improvements to behavior that is not wrong |
-| 4 | **Area: `deploy` > `diff` = `destroy` > everything else** | Deploy is the tool's primary function — it is what cdkd exists to do, so a deploy defect costs more than an equally-sized defect elsewhere. `diff` and `destroy` rank equally behind it |
-| 5 | **Prefer issues landing in ONE isolated file** over cross-cutting ones | Not just collision-avoidance for this run: a cross-cutting file admits only one lane at a time, so taking it blocks the widest set of future parallel work. Among equals, spend the contested files last |
-| 6 | **Newer first** (higher issue number / `created_at`) | Not novelty — **accuracy**. A freshly filed issue was written against current code, so its file:line tables and reproduction still hold. Older ones rot: on 2026-08-13 two of the enumerated sites in a one-day-old issue were already fixed or deleted. An older issue is likelier to be partly done, superseded, or wrong |
+| 4 | **Higher `Severity` first**, when BOTH candidates carry the line | It is the same axis rules 1 and 3 approximate — how much the defect costs while it sits — but measured by the session that had the evidence in hand, rather than inferred from a title prefix. It ranks below rule 3 rather than replacing it because most issues do not carry the line yet: a `fix:` with no `Severity` must not lose to a `chore:` that happens to claim `high`. When only one side carries it, this rule does not separate them — fall through to rule 5 |
+| 5 | **Area: `deploy` > `diff` = `destroy` > everything else** | Deploy is the tool's primary function — it is what cdkd exists to do, so a deploy defect costs more than an equally-sized defect elsewhere. `diff` and `destroy` rank equally behind it |
+| 6 | **Prefer issues landing in ONE isolated file** over cross-cutting ones | Not just collision-avoidance for this run: a cross-cutting file admits only one lane at a time, so taking it blocks the widest set of future parallel work. Among equals, spend the contested files last |
+| 7 | **Newer first** (higher issue number / `created_at`) | Not novelty — **accuracy**. A freshly filed issue was written against current code, so its file:line tables and reproduction still hold. Older ones rot: on 2026-08-13 two of the enumerated sites in a one-day-old issue were already fixed or deleted. An older issue is likelier to be partly done, superseded, or wrong |
 
 **Detecting each signal** — from the same REST listing §1 already fetched, plus
 the body when needed:
@@ -386,16 +400,6 @@ gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort
 - **Cross-cutting**: the body names any of `deploy-engine.ts`,
   `intrinsic-function-resolver.ts`, `dag-builder.ts`, `template-parser.ts`,
   `register-providers.ts`, `destroy-runner.ts`, `export.ts` (the §2 list).
-- **Severity / Effort / Estimate**: the body's own lines, when the filer wrote
-  them (§3). `Severity` says what stays broken while the issue sits, and is the
-  signal for WHICH to pick up first; `Effort` says which verification cycle the
-  fix drags (a `large` one needs its own PR plus integ plus review, so it does
-  not belong in a fan-out lane); `Estimate` says how many hours, which is what
-  decides how many lanes this run can carry. Read them as the filer's
-  measurement, not as a ceiling — but do not silently overwrite them either: if
-  this run's evidence contradicts one, say so in the claim comment (§4) and
-  correct the issue body, the same way §3 requires for a re-decided
-  `Session-fit`.
 - **Session-fit**: the body's own `Session-fit:` line (§3). `next` names a cycle
   this run has to be able to pay for before taking the issue. `now` is a
   COMMITMENT made by the session that filed it, so read it against §3-0: for an
@@ -405,6 +409,18 @@ gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort
   at it, presume the filer gone — that presumption is all you can derive — and `now`
   becomes what it looks like: an earlier session's unfinished commitment, and a
   candidate to take EARLY rather than a reason to skip.
+- **Severity / Effort / Estimate**: the body's own lines, when the filer wrote
+  them (§3). `Severity` says what stays broken while the issue sits — it is
+  ranking rule 4 above, and it separates two candidates only when BOTH carry the
+  line. `Effort` says which verification cycle the fix drags (a `large` one
+  needs its own PR plus integ plus review, so it does not belong in a fan-out
+  lane); `Estimate` says how many hours, which is what decides how many lanes
+  this run can carry. Neither of those two ranks anything — they gate whether
+  this run can AFFORD a candidate at all, which is a §2 disjointness-style
+  question, not a §3 ordering one. Read all three as the filer's measurement,
+  not as a ceiling — but do not silently overwrite them either: if this run's
+  evidence contradicts one, say so in the claim comment (§4) and correct the
+  issue body, the same way §3 requires for a re-decided `Session-fit`.
 
 **These are tiebreakers, not a scoring formula — do not average them.** Apply
 rule 1, then 2, then 3, and so on, stopping at the first that separates the

@@ -229,6 +229,8 @@ Run each check and report pass/fail:
         Estimate: <duration, e.g. ~1-3 h -- never a bare letter> — <what eats the time>
         ```
 
+        **The reviewer agents grade on a DIFFERENT scale — translate, do not copy.** `.claude/agents/pr-*-reviewer.md` report `blocker` / `minor` / `nit`; `Severity` takes `high` / `medium` / `low`. This step is exactly where a reviewer's word gets carried into an issue body, so map it: `nit` -> `low`, `minor` -> `medium`, `blocker` -> `high`. (A `blocker` should rarely reach this bucket at all — it is meant to be fixed in the PR.) And re-read the mapped value against the Severity scale rather than trusting it: reviewer severity grades how bad the FINDING is, while `Severity` grades what stays broken for a USER, and the two come apart on internal-consistency nits.
+
         **This step is the deferral moment**, so it is where the call gets made — not at wrap time, by which point the evidence for it (which files were open, which verification cycle was already paid for) is gone. A `now` item must be fixed before the marker is set, or re-classified to `next` with the reason recorded; you cannot set `verify-pr` over an open `now`.
       - (c) **Won't-do (decided + recorded)** — the PR body or a comment names the nit and explains why shipping as-is is the right call. Requires no future action.
     - If NONE of (a) / (b) / (c) is true for any nit, file a bundled follow-up issue NOW (one issue per session, listing every uncovered nit) and update the PR body to reference it. Do not set the `verify-pr` marker until every reviewer-flagged item is on one of those three paths.

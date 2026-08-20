@@ -255,12 +255,12 @@ high.
 
   In particular **do not collapse `Severity` into `Session-fit`**. A `Severity: high` item can still be `Session-fit: next` (it needs its own integ cycle), and a `low` one can be `now` (it lands in a file this session already has open). The moment the two track each other, `Severity` is just a second spelling of the decision and the field is wasted. Likewise **`Effort` is not `Estimate`**: "one integ run" is a kind of cost, and the hours it takes depend on which fixture — the first does not give you the second.
 
-  **`Session-fit` is the key that answers the deferral question, and it is spelled the same everywhere** — in the issue body and in every report, in an English or a Japanese report alike. The same holds for the other four keys. Do not translate or rename them per context (a localized label, "today's fit", "session scope", ...): one token means the reader can scan or grep for the same string in the issue and in the report, and two names for one key is why someone has to ask which field carries the decision.
+  **`Session-fit` is the key that answers the deferral question, and it is spelled the same everywhere** — in the issue body and in every report, in an English or a Japanese report alike. The same holds for `Severity`, `Effort`, `Estimate` and `Notes`. Do not translate or rename them per context (a localized label, "today's fit", "session scope", ...): one token means the reader can scan or grep for the same string in the issue and in the report, and two names for one key is why someone has to ask which field carries the decision.
 
   **No bare tokens: every value must be readable without knowing the internal scale.**
   - Write `Session-fit: next (not this session)`, not a lone `next`.
   - Write `Effort: large (L)`, not a lone `L`. The letter may accompany the word, never replace it.
-  - Write `Severity` as a word (`high` / `medium` / `low`) and **never as an initial** — `Severity: M` and `Effort: M` are the same character for two different scales, and the reader cannot tell which one is being spoken.
+  - Write `Severity` as a word (`high` / `medium` / `low`) and **never as an initial** — the initials collide with `Effort`'s in both directions, and the second collision is the dangerous one: `M` would be `medium` on either scale, while `L` would be *low* (the least urgent thing there is) against *large* (the biggest). A reader cannot tell which scale is being spoken.
   - **Always write `Effort` AND `Estimate`.** Dropping the duration and keeping the letter is exactly the older failure this split was made to end.
 
   This has now gone wrong three separate ways — `M` for a duration, `now`/`next` for the decision, and "Handoff" for the closing line — always in the same direction, because a short token is cheap to emit and its expansion is not. The rule is therefore mechanical rather than a matter of taste: a token may accompany its meaning, never replace it.
@@ -272,9 +272,11 @@ high.
   **Right after a merge, `next` is the default** and the burden of proof is on `now`. What stays hot across a merge is the merged lane's own files and its verification cycle — nothing else. So an item landing in those files, or riding the integ you already ran, is `now`; an item in any other subsystem is `next` even when it feels small and even when you can see exactly how to fix it. "I already understand this one" is not one of the `now` criteria: understanding is cheap to write down in the issue and expensive to act on with a stale context and a spent verification budget.
 
   **Severity — what stays broken while the item is undone.**
-  - **`high`** — a wrong result, data loss, a security surface, something a user hits in normal operation, or main left self-inconsistent.
+  - **`high`** — a wrong result, data loss, a security surface, or something a user hits in normal operation.
   - **`medium`** — a capability is missing but there is a workaround, or it only shows up under a specific condition.
   - **`low`** — internal tidiness: readability, duplication, a comment. Invisible to users.
+
+  **Rate what a user experiences, never why this session should do it.** "Leaving main self-inconsistent" belongs in `Session-fit`'s reason, where it is a `now` trigger — it is not a Severity level. Copying it here would make that flavour of `high` permanently un-`next`-able, which is the collapse the orthogonality rule above forbids, arriving through the scale instead of through the definition.
 
   Severity exists so a later reader can decide **which of these to pick up first**, so the value alone is not enough — add the one line saying what is broken. A bare `Severity: medium` still forces them to open the issue, which is the work the field was supposed to save.
 
@@ -283,7 +285,7 @@ high.
   - **`medium` (M)** — needs one re-review round or one integ run.
   - **`large` (L)** — needs its own PR plus integ plus review, or is a behavior change / schema bump.
 
-  **Estimate — the hours, plus what eats them.** `Estimate: ~1-3 h — one integ run + a review round`. The point is to let the reader decide whether to start it now. **This drifts on its own** — a letter costs no thought while a duration forces you to name what actually eats the time — which is why the `Effort` letter never licenses dropping the `Estimate` line. If you genuinely cannot bound it, say so and say what would settle it ("unbounded until the fixture is measured"), which is information; a lone letter is not.
+  **Estimate — the hours, plus what eats them.** `Estimate: ~1-3 h — the export fixture deploys a NAT gateway, so the integ is ~25 min of the total`. The "why" here must name what actually consumes the time; restating the `Effort` level ("needs one integ run") is the collapse the paragraph above forbids, arriving through the example. The point is to let the reader decide whether to start it now. **This drifts on its own** — a letter costs no thought while a duration forces you to name what actually eats the time — which is why the `Effort` letter never licenses dropping the `Estimate` line. If you genuinely cannot bound it, say so and say what would settle it ("unbounded until the fixture is measured"), which is information; a lone letter is not.
 
   **`now` is load-bearing, not a label.** A session with any open `now` item is NOT closeable — finish it, or re-classify it to `next` with the reason stated. The reverse move is required too: if the session ends up touching those files anyway, promote a `next` to `now` and clear it while the context is hot.
 
@@ -317,7 +319,7 @@ high.
       - Session-fit: now (do it in this session) — <why now>
       - Severity: medium — <what stays broken while it is undone>
       - Effort: small (S) — edit plus unit tests only
-      - Estimate: ~30 min — no new integ run, no higher review tier
+      - Estimate: ~30 min — two call sites plus the table fixture they share
       - Notes: doing this next
     ```
 
@@ -332,7 +334,7 @@ high.
 
   **Use fixed fields, at one granularity, in this order.** Left to prose these three sections drift apart in shape — remaining work becomes structured records while the close verdict becomes a sentence with its conditions crammed in behind slashes — and the reader can no longer find the same fact in the same place twice. Every block below is a labeled field list, never prose. Keep the field names and their order identical every time; a field with nothing to say gets a short explicit value (`none`, `n/a`), never omission, because a missing line and a line saying "none" mean different things to someone scanning.
 
-  **One field per line — never pack two onto one.** A line like `Session-fit: next (not this session) / Effort: ~3 h+ — <reason>` runs a value, a reason and the next key together, and the reader has to work out where each field ends. Every line is `Key: value — <one-line why>`, and nothing else.
+  **One field per line — never pack two onto one.** A line like `Session-fit: next (not this session) / Effort: ~3 h+ — <reason>` runs a value, a reason and the next key together, and the reader has to work out where each field ends. In the TODO record specifically, every line is `Key: value — <one-line why>`; elsewhere a bare `Key: value` is fine, but two keys on one line never are.
 
   ```text
   ## Remaining work
@@ -360,7 +362,8 @@ high.
   - Open PRs (this session): <none | #N ...>
   - Background tasks: <none | ...>
   - AWS leftovers: <none | ...>
-  - TODOs filed + classified: <yes | ...>   open `now`: <0 | N>
+  - TODOs filed + classified: <yes | ...>
+  - Open `now` TODOs: <0 | N>
 
   ## Not this session          (only when `next` TODOs exist)
   - Start with: <literal command>
