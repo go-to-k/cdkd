@@ -46,6 +46,12 @@ If any fail, show the error output and STOP — do not write the commit-gate mar
 
 After all four checks pass, record a marker so the PreToolUse `check-gate` hook (see `.claude/hooks/check-gate.sh`) allows the next `git commit`. The marker is managed by [markgate](https://github.com/go-to-k/markgate) and captures the current working tree state; any subsequent edits invalidate it and require re-running `/check`.
 
+**Merely CREATING a file inside a gate's scope stales that gate — no edit to an existing file, and no commit.** An untracked file counts: the digest covers the scope's file SET, so a new path appearing in it changes the digest the moment the file exists. Measured 2026-08-20 in a feature worktree, markers otherwise fresh: creating an untracked `tests/_probe.ts` flipped `markgate verify check` from rc=0 to rc=1, and deleting it flipped it back to rc=0. `git commit` is **not** the trigger — the staleness is already there before you commit.
+
+It is scope-dependent, which is what makes it confusing rather than merely surprising: in the same measurement `docs` stayed rc=0 throughout (`tests/**` is not in its scope), and three untracked files under `.claude/hooks/` left BOTH gates at rc=0 (that path is in neither scope). So the same action stales one gate, both, or neither depending only on where the file landed.
+
+This is correct behaviour, not a defect — a new test file genuinely means the recorded run no longer covers the tree. But the symptom is a `check-gate` refusal that reads as "my markers randomly expired", so it gets debugged instead of re-run. **Re-run the skill; do not investigate.** `/verify-pr` re-sets both markers in one shot.
+
 Run this from the repo root (cdkd pins markgate via mise, so use `mise exec` to avoid PATH issues when shims aren't active):
 
 ```bash
