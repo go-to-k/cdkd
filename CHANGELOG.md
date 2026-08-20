@@ -1,3 +1,10 @@
+## [0.284.16](https://github.com/go-to-k/cdkd/compare/v0.284.15...v0.284.16) (2026-08-20)
+
+
+### Bug Fixes
+
+* **rollback:** nest the dense IAM-propagation retry inside the reverse-replacement replay-CREATE ([#2082](https://github.com/go-to-k/cdkd/issues/2082)) ([a6aa954](https://github.com/go-to-k/cdkd/commit/a6aa95438b994212b0cae659b7cdbff0343c6671))
+
 ## [0.284.15](https://github.com/go-to-k/cdkd/compare/v0.284.14...v0.284.15) (2026-08-20)
 
 
