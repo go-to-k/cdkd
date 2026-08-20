@@ -1817,6 +1817,81 @@ a rollback delete counts as a per-op failure — except at the arm that deletes
 the NEW resource after the old one was already re-created, where the delete is
 best-effort and a skip only warns.
 
+### 2c. A CREATE that mints a server-side id needs an idempotency token (issue #2039)
+
+The deploy engine wraps every `provider.create()` in its outer transient-error
+retry, and HTTP 500 / 502 / 504 are retryable (issue #2026). So a 500 whose
+request actually SUCCEEDED server-side re-invokes `create()` from the top. For a
+create whose id comes from AWS rather than from a name, the replay provisions a
+SECOND resource: it has no state entry, `cdkd destroy` never reaches it, and it
+bills indefinitely.
+
+When the API takes a `ClientToken` / `ClientRequestToken` / `IdempotencyToken` /
+`CallerReference`, take it from the shared helper:
+
+```typescript
+import { acquireIdempotencyToken } from './idempotency-token.js';
+
+const token = acquireIdempotencyToken({ scope: 'RunInstances', logicalId });
+const response = await this.client.send(
+  new RunInstancesCommand({ ...input, ClientToken: token.value })
+);
+token.release(); // SUCCESS PATH ONLY
+```
+
+Three rules, each of which has a failure mode behind it:
+
+- **Never derive the token per attempt.** A `Date.now()` / `randomUUID()` value
+  is worse than no token at all, because the call site then LOOKS idempotent
+  while behaving exactly as before. `AWS::Route53::HostedZone` shipped that way.
+- **Release only on success**, and also wherever the provider DESTROYS the
+  resource the token names (the `RunInstances` wiring-failure path terminates the
+  instance). A released token is never handed out again, so releasing on a
+  failure path defeats the mechanism, while NOT releasing after the resource is
+  gone can hand a later create the resource it just destroyed — EC2 keeps a
+  `RunInstances` token for ~24h.
+- **Check what the API does with a repeat.** Most return the original resource;
+  Route 53 REFUSES a repeated `CallerReference` (`HostedZoneAlreadyExists`), so
+  that provider recovers by looking the zone up by its caller reference and
+  adopting it. A stable token that turns every retry into a hard failure is only
+  half a fix.
+
+`EFSProvider`'s `CreationToken` and `FSxFileSystemProvider`'s
+`ClientRequestToken` deliberately do NOT use the helper: those APIs enforce token
+uniqueness only among LIVE file systems, so a deterministic hash of the immutable
+create inputs is right there (it also lets the new file system coexist with the
+old one during a replacement).
+
+Where the API has NO token member, the choice is between `disableOuterRetry`
+(which makes the provider single-shot for EVERY transient error, IAM propagation
+included) and a pre-create reconcile that detects the previous attempt's orphan.
+Say in-code which you chose and what it costs.
+
+**A reconcile is not simply "delete what appeared since my baseline" — write it
+so the wrong answer LEAVES an orphan rather than destroying a live resource.**
+"Newer than my snapshot" is equally true of the orphan your own attempt minted
+and of a resource something else created in the same window: a sibling resource
+in the same stack (the deploy engine dispatches at `--concurrency 10` by
+default), a second `cdkd` process, or a human. Deleting the second kind is
+strictly worse than the bug being fixed — it destroys something cdkd state still
+advertises, and for a type whose `readCurrentState` returns `undefined` when the
+resource is gone, `cdkd drift` reports UNKNOWN rather than drift, so the loss is
+invisible. `IAMAccessKeyProvider` shows the shape:
+
+- **Serialize per owning resource in-process.** A `Map<owner, Promise>` queue,
+  with the baseline read, the create, and the reconcile all inside it, so no
+  sibling create can interleave with them.
+- **Reconcile from the FAILURE path of the attempt that took the baseline**,
+  never from the top of the next attempt. A baseline that spans the whole retry
+  schedule describes a window many seconds wide.
+- **Require a creation timestamp at or after the attempt started**, with a small
+  margin for clock skew between you and the service.
+- **Keep a set of ids this process created successfully and never delete one.**
+  This is the condition a baseline structurally cannot express, and it is the
+  one that covers the case the in-process lock cannot: another process.
+- **Report anything you decline to delete**, at `warn`, and do not claim an
+  attribution the code did not establish.
+
 ### 2a. UPDATE removal semantics — clear-on-removal (issue #1155)
 
 CloudFormation resets a property **removed** from the template to its

@@ -79,6 +79,9 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 INSTANCE_ID=""
+# Issue #2039: read off the live instance after deploy; `cleanup` sweeps every
+# instance carrying it, so a replay leak is reachable without a captured id.
+CLIENT_TOKEN=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS instance"
@@ -108,6 +111,26 @@ cleanup() {
     aws ec2 terminate-instances \
       --instance-ids "${PUBLIC_INSTANCE_ID}" \
       --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${CLIENT_TOKEN:-}" ]; then
+    # Sweep every instance carrying the #2039 client token, rather than an id
+    # captured into a variable: a kill between `run-instances` returning and the
+    # assignment would leak a billable instance nothing else in this teardown
+    # names, and more than one extra would overwrite a single variable. cdkd
+    # mixes a per-process nonce into the token, so this filter cannot match an
+    # instance from any other run.
+    LEAKED=$(aws ec2 describe-instances \
+      --filters "Name=client-token,Values=${CLIENT_TOKEN}" \
+      --region "${REGION}" \
+      --query 'Reservations[].Instances[?State.Name!=`terminated`].InstanceId[]' \
+      --output text 2>/dev/null)
+    for leaked in ${LEAKED}; do
+      if [ "${leaked}" != "${INSTANCE_ID}" ]; then
+        aws ec2 terminate-instances \
+          --instance-ids "${leaked}" \
+          --region "${REGION}" >/dev/null 2>&1 || true
+      fi
+    done
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -170,6 +193,129 @@ if [ -z "${INSTANCE_ID}" ] || [ "${INSTANCE_ID}" = "null" ]; then
   exit 1
 fi
 echo "    resolved instance id: ${INSTANCE_ID}"
+
+# --- Assertions: issue #2039 RunInstances idempotency token -----------------
+# cdkd retries a transient HTTP 500 across a multi-second schedule, so a 500
+# whose RunInstances actually SUCCEEDED server-side re-invokes create(). Without
+# a ClientToken that replay launches a SECOND instance which no state record
+# names -- invisible to `cdkd destroy`, billing forever.
+#
+# The property cannot be provoked from outside (AWS does not 500 on demand), so
+# it is verified in its two halves, both against real AWS:
+#   (a) cdkd SENT a cdkd-derived token -- read back off the live instance;
+#   (b) that token is REGISTERED with EC2 as an idempotency key -- replaying
+#       RunInstances with it must NOT produce a new instance.
+# Half (b) is the one that matters: a token EC2 does not recognise would let the
+# replay through, which is precisely the pre-fix behaviour.
+CLIENT_TOKEN=$(aws ec2 describe-instances \
+  --instance-ids "${INSTANCE_ID}" \
+  --region "${REGION}" \
+  --query 'Reservations[0].Instances[0].ClientToken' \
+  --output text)
+case "${CLIENT_TOKEN}" in
+  cdkd-*)
+    echo "    OK: RunInstances carried a cdkd-derived ClientToken (${CLIENT_TOKEN})"
+    ;;
+  *)
+    echo "FAIL: issue #2039 -- the instance carries no cdkd ClientToken (got: '${CLIENT_TOKEN}'); a retried 500 would launch a duplicate, untracked instance" >&2
+    exit 1
+    ;;
+esac
+
+# Replay the launch with the SAME token. Two independent checks follow, because
+# each one alone has a hole:
+#   - the BRANCH on the replay's exit code proves the replay actually reached
+#     EC2's idempotency machinery (without it, a replay refused for an unrelated
+#     reason -- no permission, no capacity -- would leave the count check below
+#     passing vacuously);
+#   - the COUNT of instances carrying this client token is the real verdict, and
+#     it depends on no error-code spelling at all. `client-token` is a documented
+#     describe-instances filter ("The idempotency token you provided when you
+#     launched the instance"), and cdkd mixes a per-process nonce into the token,
+#     so no earlier run of this fixture can contribute to the count.
+# Read the launch parameters off the live instance so the replay is a
+# WELL-FORMED request. Omitting the subnet makes EC2 fall back to the default
+# VPC, and an account without one answers `VPCIdNotSpecified` -- which would red
+# a CORRECT implementation, since the request never reaches the idempotency
+# check at all. The subnet also pins the security groups' VPC.
+REPLAY_PARAMS=$(aws ec2 describe-instances \
+  --instance-ids "${INSTANCE_ID}" \
+  --region "${REGION}" \
+  --query 'Reservations[0].Instances[0].[ImageId,InstanceType,SubnetId]' \
+  --output text)
+REPLAY_IMAGE_ID=$(printf '%s' "${REPLAY_PARAMS}" | awk '{print $1}')
+REPLAY_INSTANCE_TYPE=$(printf '%s' "${REPLAY_PARAMS}" | awk '{print $2}')
+REPLAY_SUBNET_ID=$(printf '%s' "${REPLAY_PARAMS}" | awk '{print $3}')
+# `--output text` renders a JMESPath null as the literal string None, so an
+# instance with no SubnetId would otherwise be replayed as `--subnet-id None`.
+if [ "${REPLAY_SUBNET_ID}" = "None" ]; then
+  REPLAY_SUBNET_ID=""
+fi
+if [ -z "${REPLAY_IMAGE_ID}" ] || [ "${REPLAY_IMAGE_ID}" = "None" ]; then
+  echo "FAIL: could not read the launch parameters back off instance ${INSTANCE_ID} for the #2039 replay" >&2
+  exit 1
+fi
+
+set +e
+REPLAY_OUT=$(aws ec2 run-instances \
+  --client-token "${CLIENT_TOKEN}" \
+  --image-id "${REPLAY_IMAGE_ID}" \
+  --instance-type "${REPLAY_INSTANCE_TYPE}" \
+  ${REPLAY_SUBNET_ID:+--subnet-id "${REPLAY_SUBNET_ID}"} \
+  --min-count 1 --max-count 1 \
+  --region "${REGION}" \
+  --query 'Instances[0].InstanceId' \
+  --output text 2>&1)
+REPLAY_RC=$?
+set -e
+
+# The EXIT CODE decides which branch applies -- greping the output alone would
+# read a new instance id and an error string the same way.
+if [ "${REPLAY_RC}" -eq 0 ]; then
+  if [ "${REPLAY_OUT}" = "${INSTANCE_ID}" ]; then
+    echo "    OK: replaying RunInstances with the same ClientToken returned the ORIGINAL instance"
+  else
+    # The replay launched a real instance. Record it so cleanup terminates it,
+    # then fail -- this is exactly the orphan issue #2039 is about.
+    aws ec2 terminate-instances \
+      --instance-ids "${REPLAY_OUT}" \
+      --region "${REGION}" >/dev/null 2>&1 || true
+    echo "FAIL: issue #2039 -- replaying RunInstances with the cdkd ClientToken launched a SECOND instance (${REPLAY_OUT}); the token is not registered with EC2. Terminate requested; verify with: aws ec2 describe-instances --instance-ids ${REPLAY_OUT}" >&2
+    exit 1
+  fi
+# Matched case-INSENSITIVELY on the substring rather than on one exact code:
+# EC2 answers a known token with IdempotentParameterMismatch (this replay sends
+# a deliberately minimal request) or IdempotentInstanceTerminated, and neither
+# spelling is carried in any local artifact this repo can check before the run.
+# Any EC2 error containing "idempotent" comes from the idempotency machinery,
+# which is all this branch needs to establish.
+elif printf '%s' "${REPLAY_OUT}" | grep -qi 'idempotent'; then
+  echo "    OK: EC2 recognised the ClientToken (idempotency error on the minimal replay: ${REPLAY_OUT})"
+else
+  echo "FAIL: issue #2039 -- the ClientToken replay never reached the EC2 idempotency check (rc=${REPLAY_RC}): ${REPLAY_OUT}. Without it the count assertion below would pass vacuously." >&2
+  exit 1
+fi
+
+# The verdict, independent of the branch above: exactly ONE live instance may
+# carry this token.
+TOKEN_HOLDERS=$(aws ec2 describe-instances \
+  --filters "Name=client-token,Values=${CLIENT_TOKEN}" \
+  --region "${REGION}" \
+  --query 'Reservations[].Instances[?State.Name!=`terminated`].InstanceId[]' \
+  --output text)
+TOKEN_HOLDER_COUNT=$(printf '%s' "${TOKEN_HOLDERS}" | wc -w | tr -d ' ')
+if [ "${TOKEN_HOLDER_COUNT}" != "1" ]; then
+  for extra in ${TOKEN_HOLDERS}; do
+    if [ "${extra}" != "${INSTANCE_ID}" ]; then
+      aws ec2 terminate-instances \
+        --instance-ids "${extra}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
+    fi
+  done
+  echo "FAIL: issue #2039 -- ${TOKEN_HOLDER_COUNT} live instances carry ClientToken ${CLIENT_TOKEN} (expected exactly 1): ${TOKEN_HOLDERS}. Terminate requested for the extras." >&2
+  exit 1
+fi
+echo "    OK: exactly one live instance carries the ClientToken"
 
 # --- Assertions: the #1281 NetworkInterfaces-shaped instance ----------------
 PUBLIC_INSTANCE_ID=$(echo "${STATE}" | jq -r '.outputs.PublicInstanceId // ""')

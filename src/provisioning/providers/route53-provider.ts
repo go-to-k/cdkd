@@ -15,6 +15,11 @@ import {
   ListHostedZonesByNameCommand,
   ListResourceRecordSetsCommand,
   ListTagsForResourceCommand,
+  HostedZoneAlreadyExists,
+  type CreateHostedZoneCommandInput,
+  type CreateHostedZoneCommandOutput,
+  type HostedZone,
+  type ListHostedZonesByNameCommandOutput,
   type ResourceRecordSet,
   type RRType,
   type VPCRegion,
@@ -24,6 +29,7 @@ import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { readConfigString } from '../config-shape.js';
+import { acquireIdempotencyToken } from './idempotency-token.js';
 import {
   COMPOSITE_ID_SEPARATOR,
   compositeIdSeparatorRefusal,
@@ -400,31 +406,48 @@ export class Route53Provider implements ResourceProvider {
       // For CreateHostedZone, only one VPC can be specified; additional VPCs are associated after creation
       const firstVpc = vpcs && vpcs.length > 0 ? vpcs[0] : undefined;
 
-      const response = await this.getClient().send(
-        new CreateHostedZoneCommand({
-          Name: name,
-          CallerReference: `${logicalId}-${Date.now()}`,
-          ...(createComment !== ''
-            ? {
-                HostedZoneConfig: {
-                  Comment: createComment,
-                  // When VPCs are specified, this is a private hosted zone
-                  ...(firstVpc ? { PrivateZone: true } : {}),
-                },
-              }
-            : firstVpc
-              ? { HostedZoneConfig: { PrivateZone: true } }
-              : {}),
-          ...(firstVpc
-            ? {
-                VPC: {
-                  VPCId: firstVpc['VPCId'] as string,
-                  VPCRegion: firstVpc['VPCRegion'] as VPCRegion | undefined,
-                },
-              }
+      // Issue #2039. `CallerReference` IS Route 53's idempotency key, and this
+      // used to be `${logicalId}-${Date.now()}` — regenerated on every
+      // re-invocation of `create()`, which is the worst shape of all: the call
+      // LOOKS idempotent while a deploy-engine retry of a 500 whose zone was
+      // actually created mints a SECOND hosted zone for the same domain (Route
+      // 53 permits that precisely when the caller reference differs), with its
+      // own NS delegation set, no state record, and no route to `cdkd destroy`.
+      //
+      // The token is stable across attempts of THIS create, so the replay is
+      // refused with `HostedZoneAlreadyExists` and adopted below. It is
+      // released once the zone is recorded, and on the rollback path that
+      // deletes it, so a later create of the same logical id starts fresh.
+      const callerReferenceToken = acquireIdempotencyToken({
+        scope: 'CreateHostedZone',
+        logicalId,
+        // Route 53 accepts up to 128 characters for CallerReference.
+        maxLength: 128,
+      });
+
+      const response = await this.createOrAdoptHostedZone({
+        Name: name,
+        CallerReference: callerReferenceToken.value,
+        ...(createComment !== ''
+          ? {
+              HostedZoneConfig: {
+                Comment: createComment,
+                // When VPCs are specified, this is a private hosted zone
+                ...(firstVpc ? { PrivateZone: true } : {}),
+              },
+            }
+          : firstVpc
+            ? { HostedZoneConfig: { PrivateZone: true } }
             : {}),
-        })
-      );
+        ...(firstVpc
+          ? {
+              VPC: {
+                VPCId: firstVpc['VPCId'] as string,
+                VPCRegion: firstVpc['VPCRegion'] as VPCRegion | undefined,
+              },
+            }
+          : {}),
+      });
 
       const hostedZone = response.HostedZone;
       if (!hostedZone?.Id) {
@@ -493,6 +516,17 @@ export class Route53Provider implements ResourceProvider {
             // would leak the zone if the UHF rollback skipped this step.
             await this.deleteQueryLoggingConfigForZone(zoneId, logicalId);
             await this.getClient().send(new DeleteHostedZoneCommand({ Id: zoneId }));
+            // Released only after the delete SUCCEEDED, and the ORDER is what
+            // matters here rather than the release itself. Route 53 does not
+            // retain a DELETED zone's caller reference, so reusing one whose
+            // zone is gone would simply create a new zone -- the release on
+            // this arm is hygiene (it retires a generation nothing can adopt),
+            // and a test cannot distinguish its presence from its absence.
+            // Releasing BEFORE the delete is a different matter and is fenced:
+            // a delete that FAILS leaves the zone live, and a retry that had
+            // lost the caller reference would create a second zone beside an
+            // orphan cdkd state never names, where keeping it adopts the zone.
+            callerReferenceToken.release();
           } catch (deleteError) {
             this.logger.warn(
               `Best-effort rollback DeleteHostedZone for ${zoneId} also failed: ${
@@ -518,6 +552,7 @@ export class Route53Provider implements ResourceProvider {
 
       this.logger.debug(`Successfully created hosted zone ${logicalId}: ${zoneId}`);
 
+      callerReferenceToken.release();
       return {
         physicalId: zoneId,
         attributes: {
@@ -536,6 +571,115 @@ export class Route53Provider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * `CreateHostedZone`, with the retry-replay case ADOPTED rather than failed
+   * (issue [#2039](https://github.com/go-to-k/cdkd/issues/2039)).
+   *
+   * A stable `CallerReference` stops a replayed create from minting a second
+   * zone, but on its own it converts the replay into a hard
+   * `HostedZoneAlreadyExists` — so the first attempt's zone would still be live
+   * and still absent from state, only now the deploy fails as well. Route 53
+   * reports the caller reference back on every `HostedZone`, which is what lets
+   * the replay find the zone the lost response described and continue with it.
+   *
+   * The lookup is `ListHostedZonesByName`, which starts at the requested DNS
+   * name and returns zones in name order, so the walk stops as soon as the name
+   * changes rather than paging the whole account. A `GetHostedZone` follows,
+   * because only that call returns the `DelegationSet` whose `NameServers` are
+   * the resource's `Fn::GetAtt` value — an adopted zone must return the same
+   * attributes a first-attempt create would have.
+   *
+   * Finding nothing rethrows the original error: a caller reference AWS says is
+   * taken but that names no zone we can see is not something to paper over.
+   */
+  private async createOrAdoptHostedZone(
+    input: CreateHostedZoneCommandInput
+  ): Promise<Partial<Pick<CreateHostedZoneCommandOutput, 'HostedZone' | 'DelegationSet'>>> {
+    try {
+      return await this.getClient().send(new CreateHostedZoneCommand(input));
+    } catch (error) {
+      // `instanceof` alone is not enough: a duplicate `@aws-sdk/client-route-53`
+      // anywhere in the tree gives the error a different class object, and the
+      // adopt path would then silently never run.
+      const isAlreadyExists =
+        error instanceof HostedZoneAlreadyExists ||
+        (error as { name?: string } | undefined)?.name === 'HostedZoneAlreadyExists';
+      if (!isAlreadyExists) {
+        throw error;
+      }
+      // The lookup is best-effort and must never REPLACE the diagnosis. A
+      // missing `route53:ListHostedZonesByName` / `route53:GetHostedZone`
+      // permission would otherwise surface as `AccessDenied`, sending the next
+      // reader after a permissions problem instead of the caller-reference
+      // collision that actually happened.
+      let adopted: HostedZone | undefined;
+      try {
+        adopted = await this.findHostedZoneByCallerReference(input.Name!, input.CallerReference!);
+      } catch (lookupError) {
+        this.logger.warn(
+          `CreateHostedZone for ${input.Name} was refused as already-existing, and the lookup that would have adopted the existing zone failed: ${lookupError instanceof Error ? lookupError.message : String(lookupError)}. Reporting the original error.`
+        );
+        throw error;
+      }
+      if (!adopted?.Id) {
+        throw error;
+      }
+      this.logger.warn(
+        `CreateHostedZone for ${input.Name} was replayed after a lost response; adopting the hosted zone ${adopted.Id} the previous attempt already created instead of creating a second one`
+      );
+      try {
+        const described = await this.getClient().send(new GetHostedZoneCommand({ Id: adopted.Id }));
+        return {
+          HostedZone: described.HostedZone ?? adopted,
+          ...(described.DelegationSet ? { DelegationSet: described.DelegationSet } : {}),
+        };
+      } catch (describeError) {
+        this.logger.warn(
+          `Adopted hosted zone ${adopted.Id} but could not read it back: ${describeError instanceof Error ? describeError.message : String(describeError)}. Reporting the original error rather than returning a zone with no NameServers.`
+        );
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * The hosted zone carrying `callerReference`, or `undefined`.
+   *
+   * Scoped to zones whose name matches `dnsName`: `ListHostedZonesByName` is
+   * ordered by name, so once the name differs no later page can hold ours.
+   */
+  private async findHostedZoneByCallerReference(
+    dnsName: string,
+    callerReference: string
+  ): Promise<HostedZone | undefined> {
+    const wanted = canonicalizeQueryName(dnsName);
+    let marker: { DNSName?: string; HostedZoneId?: string } | undefined = { DNSName: wanted };
+    while (marker) {
+      const page: ListHostedZonesByNameCommandOutput = await this.getClient().send(
+        new ListHostedZonesByNameCommand({
+          DNSName: marker.DNSName,
+          ...(marker.HostedZoneId ? { HostedZoneId: marker.HostedZoneId } : {}),
+        })
+      );
+      for (const zone of page.HostedZones ?? []) {
+        if (canonicalizeQueryName(zone.Name ?? '') !== wanted) {
+          return undefined;
+        }
+        if (zone.CallerReference === callerReference) {
+          return zone;
+        }
+      }
+      marker =
+        page.IsTruncated && page.NextDNSName
+          ? {
+              DNSName: page.NextDNSName,
+              ...(page.NextHostedZoneId ? { HostedZoneId: page.NextHostedZoneId } : {}),
+            }
+          : undefined;
+    }
+    return undefined;
   }
 
   private async updateHostedZone(

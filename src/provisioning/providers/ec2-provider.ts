@@ -103,6 +103,7 @@ import {
   TERMINATION_PROTECTION_MAX_ATTEMPTS,
 } from '../ec2-termination-protection.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { acquireIdempotencyToken } from './idempotency-token.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import type {
   CreateContext,
@@ -2012,9 +2013,21 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
+    // Issue #2039: same duplicate-create window as `RunInstances`, and a
+    // duplicate NAT gateway is the second most expensive orphan on the list.
+    // Released only on the success path — a wiring failure after the create
+    // (tags / the available-state wait) leaves the gateway in place on
+    // purpose, so the retry must reuse the token and be handed that same
+    // gateway rather than provisioning a second one.
+    const natGatewayToken = acquireIdempotencyToken({
+      scope: 'CreateNatGateway',
+      logicalId,
+    });
+
     try {
       const response = await this.ec2Client.send(
         new CreateNatGatewayCommand({
+          ClientToken: natGatewayToken.value,
           SubnetId: subnetId,
           AllocationId: properties['AllocationId'] as string | undefined,
           ConnectivityType:
@@ -2072,6 +2085,7 @@ export class EC2Provider implements ResourceProvider {
 
       this.logger.debug(`Successfully created NatGateway ${logicalId}: ${natGatewayId}`);
 
+      natGatewayToken.release();
       return {
         physicalId: natGatewayId,
         attributes: {
@@ -2211,8 +2225,17 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
+    // Issue #2039: a replayed create would leave an untagged, unstated route
+    // table behind. Same release rule as the NAT gateway above.
+    const routeTableToken = acquireIdempotencyToken({
+      scope: 'CreateRouteTable',
+      logicalId,
+    });
+
     try {
-      const response = await this.ec2Client.send(new CreateRouteTableCommand({ VpcId: vpcId }));
+      const response = await this.ec2Client.send(
+        new CreateRouteTableCommand({ VpcId: vpcId, ClientToken: routeTableToken.value })
+      );
 
       const routeTableId = response.RouteTable!.RouteTableId!;
 
@@ -2221,6 +2244,7 @@ export class EC2Provider implements ResourceProvider {
 
       this.logger.debug(`Successfully created RouteTable ${logicalId}: ${routeTableId}`);
 
+      routeTableToken.release();
       return {
         physicalId: routeTableId,
         attributes: {
@@ -3476,8 +3500,26 @@ export class EC2Provider implements ResourceProvider {
       // which is the correct error to surface.
       const networkInterfaces = this.buildNetworkInterfaces(properties);
 
+      // Issue #2039. Without a ClientToken, a `RunInstances` whose 500 response
+      // was lost AFTER the launch succeeded gets replayed by the deploy
+      // engine's outer retry and launches a SECOND instance — with no state
+      // entry and no cdkd-owned tag, so `cdkd destroy` never reaches it and it
+      // bills indefinitely. The token is stable across every attempt of THIS
+      // create (see `idempotency-token.ts`), so the replay is answered by EC2
+      // with the instance the first attempt already launched.
+      //
+      // It is released on exactly the two paths where the instance this token
+      // names stops existing — a successful create, and the wiring-failure
+      // cleanup that terminates it — because EC2 keeps the token for ~24h and
+      // would otherwise answer a later re-create with a TERMINATED instance.
+      const runInstancesToken = acquireIdempotencyToken({
+        scope: 'RunInstances',
+        logicalId,
+      });
+
       const response = await this.ec2Client.send(
         new RunInstancesCommand({
+          ClientToken: runInstancesToken.value,
           ImageId: imageId,
           InstanceType: instanceType as _InstanceType,
           KeyName: (properties['KeyName'] as string) ?? undefined,
@@ -3653,10 +3695,19 @@ export class EC2Provider implements ResourceProvider {
 
         this.logger.debug(`Successfully created EC2 Instance ${logicalId}: ${instanceId}`);
 
+        runInstancesToken.release();
         return { physicalId: instanceId, attributes };
       } catch (innerError) {
         try {
           await this.ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [instanceId] }));
+          // Released only now, because only now is the instance this token
+          // names actually going away: a retry reusing it would be handed back
+          // a terminated instance. The ordering is load-bearing in the other
+          // direction too — if the terminate FAILS the instance is still
+          // running and billing, and KEEPING the token means the retry is
+          // handed that same live instance and re-runs its wiring, instead of
+          // launching a second one beside an orphan nothing will ever reach.
+          runInstancesToken.release();
           this.logger.debug(
             `Terminate requested for partially-created EC2 Instance ${logicalId} (${instanceId}) after wiring failure (not waiting for terminated state)`
           );
@@ -4541,8 +4592,17 @@ export class EC2Provider implements ResourceProvider {
       );
     }
 
+    // Issue #2039: a replayed create would leave an untagged, unstated network
+    // ACL behind. Same release rule as the NAT gateway above.
+    const networkAclToken = acquireIdempotencyToken({
+      scope: 'CreateNetworkAcl',
+      logicalId,
+    });
+
     try {
-      const response = await this.ec2Client.send(new CreateNetworkAclCommand({ VpcId: vpcId }));
+      const response = await this.ec2Client.send(
+        new CreateNetworkAclCommand({ VpcId: vpcId, ClientToken: networkAclToken.value })
+      );
 
       const networkAclId = response.NetworkAcl!.NetworkAclId!;
 
@@ -4551,6 +4611,7 @@ export class EC2Provider implements ResourceProvider {
 
       this.logger.debug(`Successfully created NetworkAcl ${logicalId}: ${networkAclId}`);
 
+      networkAclToken.release();
       return {
         physicalId: networkAclId,
         attributes: {
