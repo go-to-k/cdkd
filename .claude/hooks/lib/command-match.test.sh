@@ -469,6 +469,19 @@ else
   fail_log+="FAIL unexpanded cd is skipped\n"
 fi
 
+# --- go-to-k/cdkd#2130 test review: two real defects, and the unpinned rest ----
+want_match 0 "bash -c with an inner chain" 'bash -c "cd /w && git commit -m x"' "$C"
+want_match 1 "escaped semicolon is literal" 'echo a\; git commit -m x' "$C"
+want_match 1 "ANSI-C quoting hides its contents" "echo \$'x; git commit'" "$C"
+want_match 0 "parameter expansion default runs"  'echo ${V:-a; git commit -m x}' "$C"
+want_match 1 "# comment holding the verb"        'echo hi # git commit -m x' "$C"
+want_match 1 "grep pattern is not a verb"        'git log --grep commit' "$C"
+want_match 1 "grep=pattern is not a verb"        'git log --grep=commit' "$C"
+want_match 1 "an ordinary task run"              'vp run test' "$C"
+# The quoted-span protection is the only thing keeping a gate off prose: pin it
+# with a separator INSIDE the quotes, the one shape that can distinguish it.
+want_match 1 "separator inside a quoted body" 'gh issue create --body "run vp check && git commit -m x"' "$C"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then
