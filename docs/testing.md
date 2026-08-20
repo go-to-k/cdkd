@@ -339,6 +339,20 @@ vp install
 - CDK Provider framework with isCompleteHandler/onEventHandler
 - Async pattern detection and polling
 - Pre-signed URL for cfn-response (2hr validity)
+- A delete handler that RETURNS `Status: FAILED` (env-gated by
+  `CDKD_TEST_UPDATE=cr-delete-fails`, issue
+  [#2054](https://github.com/go-to-k/cdkd/issues/2054)): the destroy must exit 2,
+  report the row as skipped, KEEP the state record and leave the handler's
+  resource live -- a handler that says it did not delete must never be recorded
+  as deleted. The arm cleans that resource up out of band, since cdkd
+  deliberately will not.
+- The synthetic `StackId` handed to the handler carries the REAL account and
+  region (issue [#1866](https://github.com/go-to-k/cdkd/issues/1866)); the arm
+  asserts the exact ARN and explicitly rejects the pre-fix fabricated pair.
+
+This fixture runs through its own `verify.sh` (it was a `standard`-flow test
+before the go-to-k/cdkd#2054 arm landed), so drive it with `/run-integ
+custom-resource-provider` rather than by hand.
 
 For details on each example, refer to the README.md in each directory.
 
@@ -1464,6 +1478,25 @@ test -- and because there is no deletion cooldown to collide on across repeated
 runs. (An SSM reference CAN name a full ARN: `resolveSSMReference` joins its
 colon-split tail back together, so an ARN reaches `GetParameter` intact. That
 form takes the `named-region` arm and is covered by the unit tests, not here.)
+### SNS standalone-subscription update (`tests/integration/sns-subscription-update/`)
+
+`SNSSubscriptionProvider.update` had NO real-AWS coverage before issue
+[#1967](https://github.com/go-to-k/cdkd/issues/1967) -- every existing SNS
+fixture either uses the L1 `CfnTopic.subscription` inline list (a different
+provider) or an L2 `addSubscription`, whose logical id embeds the target's node
+path so a target change is a create+delete pair rather than an update.
+
+The fixture flips `RawMessageDelivery` on an L1 `CfnSubscription`, which is the
+only shape that reaches the method: `TopicArn` / `Protocol` / `Endpoint` are all
+createOnly, so changing any of them routes to replacement and executes zero
+lines of `update()`. Phase 2 asserts the topic ends with exactly ONE
+subscription, that the `SubscriptionArn` CHANGED (a fresh `Subscribe` mints a new
+GUID, which is what proves the internal delete-then-create ran), and that cdkd
+recorded the new ARN. Phase 3 rewrites the state physicalId to a malformed ARN so
+`Unsubscribe` throws, and asserts cdkd ABORTS instead of creating -- the
+discriminator is that SNS's own `already exists with different attributes` is
+ABSENT from the output, which is the real-AWS spelling of "`create()` was never
+called".
 
 ### Drift revert E2E (`tests/integration/drift-revert/`)
 

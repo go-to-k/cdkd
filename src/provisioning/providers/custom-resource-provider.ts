@@ -17,6 +17,10 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import {
+  getAccountInfo,
+  type AwsAccountInfo,
+} from '../../deployment/intrinsic-function-resolver.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import {
@@ -87,6 +91,49 @@ export const CR_DELETE_INVOKE_FAILED_SKIP_REASON =
   'Delete request to the handler did not complete — resource unproven';
 
 /**
+ * Fourth sibling of the three above, for the arm where the handler RAN, was
+ * reached, and answered `Status: 'FAILED'` (issue
+ * [#2054](https://github.com/go-to-k/cdkd/issues/2054)).
+ *
+ * The terminal FAILED arm used to warn and fall through to `return undefined`,
+ * which `deleteSkipReason` reads as DELETED — so cdkd dropped the state
+ * record, printed the row as deleted and exited 0 over a resource the handler
+ * had EXPLICITLY said it did not delete. It is the same silent-orphan class
+ * {@link CR_DELETE_INVOKE_FAILED_SKIP_REASON} removed from the throw arm,
+ * reached through the handler's RESPONSE instead.
+ *
+ * **Unconditional, with no already-gone classifier.** A handler that reports
+ * FAILED because the thing it manages was already absent is a real and common
+ * shape, and today's leniency lets those destroys finish green. Classifying
+ * the reason to keep them green was rejected: the reason is free text a user's
+ * handler writes, so any classifier is a guess, and a wrong guess
+ * re-introduces exactly the orphan this arm exists to stop.
+ *
+ * This is therefore a COMPATIBILITY BREAK: a destroy whose delete handler
+ * reports FAILED now exits 2 with the record kept, where it used to exit 0
+ * with the record dropped.
+ *
+ * **The two callers have DIFFERENT escape hatches, and only one of them is a
+ * flag.** On `cdkd deploy` the skip is forced back to exit 0 by
+ * `--allow-unaddressed` (issue #1960, the flag that settled the analogous
+ * exit-code question). `cdkd destroy` has no such flag — a skip raises
+ * `PartialFailureError` unconditionally (`src/cli/commands/destroy.ts`) — so
+ * there the remedy is the one that command's own summary names: confirm the
+ * resource is gone, then drop the record with `cdkd state orphan <stack>`.
+ * Messages must not offer the flag on the destroy path, which is the path this
+ * arm is mostly reached from.
+ *
+ * **Fixed wording, no interpolation**, for the reason spelled out on
+ * {@link CR_DELETE_INVOKE_FAILED_SKIP_REASON}: the handler's own `Reason` is a
+ * user-authored string, it goes out on the `logger.warn` beside this, and a
+ * `Reason` carrying `does not exist` / `not found` would make the deploy-side
+ * replacement sites classify the skip as "already gone" and drop the record
+ * one layer further out.
+ */
+export const CR_DELETE_HANDLER_FAILED_SKIP_REASON =
+  'Delete handler reported FAILED — resource unproven';
+
+/**
  * The deploy-side caveat both skip warnings in this file carry (issue
  * [#1762](https://github.com/go-to-k/cdkd/issues/1762)).
  *
@@ -97,6 +144,34 @@ export const CR_DELETE_INVOKE_FAILED_SKIP_REASON =
  * torn down by hand. Mirrors the caveat `compositeIdFormatMessage` already
  * carries for the composite-id family.
  */
+/**
+ * The bound BOTH delete-path skips in this file have to state (found in review
+ * of issue [#2054](https://github.com/go-to-k/cdkd/issues/2054)).
+ *
+ * A skip KEEPS the state record, and the natural thing to promise is that a
+ * re-run retries the handler. **On `cdkd destroy` that promise is false**, and
+ * it is false in the direction that matters. `destroy-runner.ts` walks every
+ * reverse-DAG level regardless of skips, so the SAME run that skipped the
+ * custom resource goes on to delete its backing Lambda. The next
+ * `cdkd destroy` therefore reaches the issue-#804 pre-check above, finds the
+ * function gone, and treats the resource as already deleted — dropping the
+ * record and exiting 0 over a resource the handler explicitly refused to
+ * remove, which is the very silent orphan #2054 removed one run earlier.
+ *
+ * Closing it properly means making that pre-check answer `'skipped'` when the
+ * teardown was never PROVEN, which needs a durable "a prior run skipped this"
+ * signal. Every candidate is outside this file: a `ResourceState` field (a
+ * state-schema bump), or a `DeleteContext` flag threaded from
+ * `destroy-runner.ts`. So the record is described here as what it actually is
+ * — a POINTER to something that has to be torn down by hand — rather than as a
+ * retry that will not happen.
+ */
+const CR_SKIP_NOT_A_RETRY_CAVEAT =
+  `NOTE this record is a POINTER, not a retry: the same destroy run deletes the backing Lambda, ` +
+  `so the next 'cdkd destroy' finds the handler gone and DROPS this record (issue 804 pre-check). ` +
+  `Tear the resource down by hand, then clear the stack's records with 'cdkd state orphan <stack>' ` +
+  `— that command drops EVERY record for the stack, not just this one.`;
+
 const DEPLOY_SKIP_CAVEAT =
   `NOTE this arm is ALSO reached from cdkd deploy. Since issue 1762 the DELETE of a resource ` +
   `removed from the template behaves like destroy — the record is KEPT and the next deploy ` +
@@ -525,25 +600,53 @@ const CR_LOG_TAIL_BOILERPLATE =
 const SNS_SERVICE_TOKEN_ARN_RE = /^arn:aws[a-z0-9-]*:sns:/;
 
 /**
+ * Account segment {@link syntheticStackId} falls back to when STS could not
+ * answer (`AwsAccountInfo.fabricated`, issue
+ * [#1730](https://github.com/go-to-k/cdkd/issues/1730)).
+ *
+ * The Cloud Control enrichment sites answer a fabricated account by OMITTING
+ * the value they would have built. That is not available here — `StackId` is a
+ * REQUIRED member of the custom-resource request payload — so the choice is
+ * between two wrong strings, and the honest one is the one a handler cannot
+ * mistake for real. `getAccountInfo`'s own fallback id (`123456789012`) is
+ * shaped exactly like a live account; the all-zero id is not a valid AWS
+ * account and reads as the placeholder it is.
+ */
+const SYNTHETIC_STACK_ID_PLACEHOLDER_ACCOUNT = '000000000000';
+
+/**
  * The synthetic `StackId` handed to a custom-resource handler in place of the
  * CloudFormation stack ARN cdkd does not have.
  *
- * **Its `arn:aws:` prefix is deliberately NOT partition-derived** (issue
- * #1815, which fixed the SNS routing predicate above). Every segment of this
- * value is fabricated — the region is a fixed `us-east-1` rather than the
- * deploy region, and the account is the all-zero placeholder — so it addresses
- * nothing and cannot be made to. Deriving ONLY the partition would produce a
- * strictly LESS coherent ARN (`arn:aws-cn:cloudformation:us-east-1:0000...`,
- * a China partition carrying a commercial region) while fixing nothing a
- * handler could rely on. The coherent fix is to synthesize the real
- * partition / region / account together, which changes what every handler
- * observes and belongs in its own change.
+ * Partition / region / account are synthesized TOGETHER from the real deploy
+ * context (issue [#1866](https://github.com/go-to-k/cdkd/issues/1866)). Every
+ * segment used to be fabricated — `arn:aws:cloudformation:us-east-1:0000...`
+ * regardless of where the deploy actually ran — and CloudFormation-authored
+ * handlers DO read `event.StackId`: to re-derive the region / account they are
+ * running in, to build ARNs, to name log streams, to correlate a response.
+ * Each of those read a coherent-looking ARN and got an answer that addresses
+ * nothing.
+ *
+ * Deriving only ONE segment is worse than deriving none, which is why issue
+ * #1815 deliberately left the hardcoded `arn:aws:` prefix alone rather than
+ * partition-deriving it in isolation: `arn:aws-cn:cloudformation:us-east-1:…`
+ * is a China partition carrying a commercial region, strictly LESS coherent
+ * than a uniformly-commercial fabrication. So this takes the whole
+ * {@link AwsAccountInfo} — where `partition` is already derived FROM `region`
+ * — rather than any one field.
+ *
+ * The stack-NAME segment stays synthetic (`cdkd-<logicalId>`): cdkd has no
+ * CloudFormation stack, so there is no real value to put there.
  *
  * Factored into one place so the rationale cannot go stale against two other
- * copies: the create / update / delete request builders all use it.
+ * copies: the create / update / delete request builders all use it, through
+ * {@link CustomResourceProvider.resolveSyntheticStackId}.
  */
-function syntheticStackId(logicalId: string): string {
-  return `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`;
+function syntheticStackId(logicalId: string, accountInfo: AwsAccountInfo): string {
+  const account = accountInfo.fabricated
+    ? SYNTHETIC_STACK_ID_PLACEHOLDER_ACCOUNT
+    : accountInfo.accountId;
+  return `arn:${accountInfo.partition}:cloudformation:${accountInfo.region}:${account}:stack/cdkd-${logicalId}/cdkd`;
 }
 
 /**
@@ -759,11 +862,30 @@ export class CustomResourceProvider implements ResourceProvider {
    */
   private readonly preDeliveryAuthzMaxRetries: number = IAM_PROPAGATION_MAX_RETRIES;
 
+  /**
+   * The region the client bag this provider was built from was EXPLICITLY
+   * configured with, or `undefined` (issue #1866).
+   *
+   * Captured in the constructor, beside the clients, rather than read per call:
+   * `cdkd deploy` builds a region-configured `AwsClients` and a fresh
+   * `ProviderRegistry` per stack, and with `--stack-concurrency` (default 4) it
+   * swaps the process-global bag while other stacks are mid-flight — so a
+   * call-time read can hand a SIBLING stack's region. Pairing it with the
+   * clients keeps the two consistent by construction.
+   *
+   * `AwsClients.configuredRegion` is deliberately the only region a client bag
+   * will answer (see its own note on why `client.config.region()` is unsound),
+   * and `undefined` means no region was pinned anywhere — which
+   * {@link getAccountInfo} then resolves from `AWS_REGION` itself.
+   */
+  private readonly configuredRegion: string | undefined;
+
   constructor(config?: CustomResourceProviderConfig) {
     const awsClients = getAwsClients();
     this.lambdaClient = awsClients.lambda;
     this.snsClient = awsClients.sns;
     this.s3Client = awsClients.s3;
+    this.configuredRegion = awsClients.configuredRegion;
     this.responseBucket = config?.responseBucket;
     this.responsePrefix = config?.responsePrefix ?? 'custom-resource-responses';
     this.asyncResponseTimeoutMs =
@@ -881,6 +1003,31 @@ export class CustomResourceProvider implements ResourceProvider {
   }
 
   /**
+   * Resolve {@link syntheticStackId} against this deploy's REAL account /
+   * region / partition (issue #1866).
+   *
+   * `getAccountInfo` never throws — it answers a `fabricated` account when STS
+   * cannot, which {@link SYNTHETIC_STACK_ID_PLACEHOLDER_ACCOUNT} handles — so
+   * this cannot turn a working deploy into a failing one on the credential
+   * path. It is resolved ONCE per `create` / `update` / `delete` rather than
+   * per invocation attempt: the value does not vary between attempts, and the
+   * request builder the retry loop re-runs is synchronous.
+   */
+  private async resolveSyntheticStackId(logicalId: string): Promise<string> {
+    const accountInfo = await getAccountInfo(this.configuredRegion);
+    if (accountInfo.fabricated) {
+      this.logger.warn(
+        `Custom resource ${logicalId}: STS did not report this deploy's account id, so the ` +
+          `synthetic StackId handed to the handler carries the placeholder account ` +
+          `${SYNTHETIC_STACK_ID_PLACEHOLDER_ACCOUNT}. A handler that parses StackId to re-derive ` +
+          `the account it is running in will not get a usable one — fix the credentials (or set ` +
+          `AWS_ACCOUNT_ID) and re-run.`
+      );
+    }
+    return syntheticStackId(logicalId, accountInfo);
+  }
+
+  /**
    * Create a custom resource by invoking its Lambda handler
    */
   async create(
@@ -921,7 +1068,7 @@ export class CustomResourceProvider implements ResourceProvider {
           ResponseURL: invocation.responseURL,
           ResourceType: resourceType,
           LogicalResourceId: logicalId,
-          StackId: syntheticStackId(logicalId),
+          StackId: invocation.stackId,
           ResourceProperties: this.stringifyProperties(properties),
         })
       );
@@ -996,7 +1143,7 @@ export class CustomResourceProvider implements ResourceProvider {
           ResourceType: resourceType,
           LogicalResourceId: logicalId,
           PhysicalResourceId: physicalId,
-          StackId: syntheticStackId(logicalId),
+          StackId: invocation.stackId,
           ResourceProperties: this.stringifyProperties(properties),
           OldResourceProperties: this.stringifyProperties(previousProperties),
         })
@@ -1107,9 +1254,23 @@ export class CustomResourceProvider implements ResourceProvider {
     // "not found" path gets. Delete-only: create / update against a missing
     // function must keep failing loudly through the normal invoke path.
     if (!this.isSnsServiceToken(serviceToken) && (await this.isBackingLambdaGone(serviceToken))) {
+      // Still a DELETE, deliberately — see {@link CR_SKIP_NOT_A_RETRY_CAVEAT}
+      // for why the honest answer (`'skipped'`) is not taken here. Flipping it
+      // would turn a currently-green teardown red for the legitimate shape too
+      // (a shared provider stack destroyed before its consumers, where the
+      // ServiceToken points at a Lambda another stack already removed), and
+      // that trade is the maintainer's call, not this arm's.
+      //
+      // What IS fixed here is the silence: this used to read as a clean
+      // success, so a record kept by a skip one run earlier disappeared with no
+      // hint that anything survived.
       this.logger.warn(
         `Backing Lambda for custom resource ${logicalId} no longer exists (${serviceToken}); ` +
-          `treating the custom resource as already deleted`
+          `treating the custom resource as already deleted and DROPPING its state record. The ` +
+          `handler can never run again, so if its teardown was never PROVEN — e.g. an earlier ` +
+          `run reported this resource as skipped (issue 2054) — whatever it manages is still ` +
+          `LIVE and is now untracked by cdkd. Check for leftovers before treating the stack as ` +
+          `gone.`
       );
       return;
     }
@@ -1126,18 +1287,33 @@ export class CustomResourceProvider implements ResourceProvider {
           ResourceType: resourceType,
           LogicalResourceId: logicalId,
           PhysicalResourceId: physicalId,
-          StackId: syntheticStackId(logicalId),
+          StackId: invocation.stackId,
           ResourceProperties: this.stringifyProperties(properties),
         })
       );
 
+      // Issue #2054: the handler RAN and said it did not delete. This arm used
+      // to warn and fall through to `return undefined`, which `deleteSkipReason`
+      // reads as DELETED — so the record was dropped, the row printed as
+      // deleted and the destroy exited 0 over a resource the handler had
+      // explicitly refused to remove. Same silent-orphan class as the catch
+      // below (issue #2033) and the two guard arms above (issue #1752),
+      // reached through the RESPONSE rather than a throw. See
+      // {@link CR_DELETE_HANDLER_FAILED_SKIP_REASON} for why this is
+      // unconditional (no already-gone classifier) and for the compatibility
+      // break it carries.
       if (cfnResponse.Status === 'FAILED') {
         this.logger.warn(
-          `Custom resource delete handler returned FAILED for ${logicalId}: ${cfnResponse.Reason || 'Unknown reason'}`
+          `Custom resource delete handler returned FAILED for ${logicalId}: ` +
+            `${cfnResponse.Reason || 'Unknown reason'}. The handler reported that it did NOT ` +
+            `delete, so anything this custom resource manages is LEFT IN PLACE — cdkd is KEEPING ` +
+            `the state record and the run exits non-zero. ${CR_SKIP_NOT_A_RETRY_CAVEAT} ` +
+            `('cdkd deploy' also accepts --allow-unaddressed, which forces exit 0; ` +
+            `'cdkd destroy' has no such flag.) ${DEPLOY_SKIP_CAVEAT}`
         );
-      } else {
-        this.logger.debug(`Successfully deleted custom resource ${logicalId}`);
+        return { outcome: 'skipped', reason: CR_DELETE_HANDLER_FAILED_SKIP_REASON };
       }
+      this.logger.debug(`Successfully deleted custom resource ${logicalId}`);
     } catch (error) {
       // Issue #2033: lenient, but NOT silent. This catch used to swallow the
       // error and fall through to `return undefined`, which `deleteSkipReason`
@@ -1161,7 +1337,8 @@ export class CustomResourceProvider implements ResourceProvider {
       this.logger.warn(
         `Failed to delete custom resource ${logicalId}, but continuing: ${error instanceof Error ? error.message : String(error)}. ` +
           `The Delete handler did not complete, so anything this custom resource manages may still ` +
-          `be LIVE — cdkd is KEEPING the state record so a re-run can retry it. ${DEPLOY_SKIP_CAVEAT}`
+          `be LIVE — cdkd is KEEPING the state record and the run exits non-zero. ` +
+          `${CR_SKIP_NOT_A_RETRY_CAVEAT} ${DEPLOY_SKIP_CAVEAT}`
       );
       return { outcome: 'skipped', reason: CR_DELETE_INVOKE_FAILED_SKIP_REASON };
     }
@@ -1244,9 +1421,17 @@ export class CustomResourceProvider implements ResourceProvider {
    * PRE-delivery throw is safe to replay at all.
    *
    * `buildRequest` is called once per attempt with the fresh invocation so the
-   * CFn request body always carries the matching ResponseURL / RequestId.
+   * CFn request body always carries the matching ResponseURL / RequestId. The
+   * synthetic `StackId` rides the same bag although it is stable across
+   * attempts (issue #1866), for an ORDERING reason rather than a freshness one:
+   * resolving it needs an `await`, and every await before the SIGINT watch
+   * below is installed is a window in which Ctrl-C is dead — `docs/
+   * provider-development.md` requires a new wait site to be interruptible, and
+   * the pre-delivery backoff this method owns is 47.75s long.
+   *
    * Returns the final response; the caller decides what a terminal FAILED means
-   * (create/update throw, delete warns-and-continues).
+   * (create / update throw; delete warns and returns `'skipped'` — issue
+   * #2054, which replaced its warn-and-continue).
    */
   private async invokeCustomResourceWithRetry(
     serviceToken: string,
@@ -1256,6 +1441,7 @@ export class CustomResourceProvider implements ResourceProvider {
       requestId: string;
       responseKey: string;
       responseURL: string;
+      stackId: string;
     }) => Record<string, unknown>
   ): Promise<CfnCustomResourceResponse> {
     // One watch for the whole invocation, disposed in the `finally` below, so
@@ -1263,6 +1449,10 @@ export class CustomResourceProvider implements ResourceProvider {
     // `PutObject`'s own retry schedule instead of sitting them out.
     const watch = this.startInterruptWatch(logicalId);
     try {
+      // Resolved ONCE per call, and deliberately AFTER the watch above: the
+      // value does not vary between attempts, and `getAccountInfo` never
+      // throws, so there is nothing to gain from re-resolving it per attempt.
+      const stackId = await this.resolveSyntheticStackId(logicalId);
       // Two budgets, counted SEPARATELY (issue #2033). Sharing the loop counter
       // would let a pre-delivery throw consume the FAILED-response arm's budget
       // — with the arms on 26 and 2, three thrown retries would silently leave
@@ -1286,7 +1476,7 @@ export class CustomResourceProvider implements ResourceProvider {
 
         try {
           invocation = await this.prepareInvocation(logicalId, watch);
-          const request = buildRequest(invocation);
+          const request = buildRequest({ ...invocation, stackId });
 
           this.logger.debug(
             `Sending custom resource ${operation.toLowerCase()} request: ${serviceToken}`
@@ -1372,7 +1562,8 @@ export class CustomResourceProvider implements ResourceProvider {
 
         // Terminal FAILED whose reason hides an authorization denial: annotate the
         // reason so the finding reaches every consumer — the create / update
-        // throw, the delete warn-and-continue, and the `deployments/` record
+        // throw, the delete skip's warning (issue #2054; it was a
+        // warn-and-continue when this note was written), and the `deployments/` record
         // `cdkd events` replays. Surfacing it only in a log line would leave the
         // post-mortem record pointing at CloudWatch, which is the complaint issue
         // #1674 filed.

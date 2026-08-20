@@ -1150,6 +1150,44 @@ cdkd uses a multi-layered approach to prevent orphaned resources:
 
 5. **Rollback journal**: On a `--no-rollback` failure, a Ctrl+C interruption, or before an automatic rollback, cdkd writes a `rollback-journal.json` sibling of `state.json` recording exactly which operations completed (issue #1183). This is what lets the standalone `cdkd rollback` command revert the deploy later (see below). The journal is deleted on the next successful deploy and by `cdkd destroy`. After a **clean automatic rollback** it is settled to a failed-only segment instead of deleted (issue #1208): the completed ops are already reverted, but the failed resource's pre-op record is kept so `cdkd rollback --revert-failed` can still revert a possibly-half-applied resource; the next successful deploy clears it.
 
+### Issue: `DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for
+
+cdkd retries a `CreateDistribution` that answered HTTP 500 / 502 / 504, because
+those are usually transient. Some of them are not: the request can SUCCEED
+server-side and lose only the response. `CallerReference` is CloudFront's
+idempotency key, so cdkd sends a value that is stable across every attempt of
+one logical create (issue [#2079](https://github.com/go-to-k/cdkd/issues/2079)) —
+the replay is then REFUSED by CloudFront rather than quietly creating a second
+distribution that no state file knows about and that `cdkd destroy` can never
+reach.
+
+The deploy therefore fails, and **the first attempt's distribution is still
+live**. That is deliberate: a loud failure with an orphan you can find beats a
+green deploy with an orphan you cannot. CloudFront gives no way to adopt it —
+`ListDistributions` returns `Comment` but not `CallerReference`, and
+`GetDistribution` needs the `Id` the lost response was carrying — so the cleanup
+is manual:
+
+```bash
+# List every distribution with its origins, and find yours by origin domain or
+# Comment. Do NOT filter with `contains(Origins.Items[0].DomainName, ...)` --
+# JMESPath raises a TypeError on any distribution that has no origins, so one
+# unrelated distribution in the account breaks the whole query.
+aws cloudfront list-distributions \
+  --query "DistributionList.Items[].{Id:Id,Status:Status,Enabled:Enabled,Domain:DomainName,Origins:Origins.Items[].DomainName,Comment:Comment}"
+
+# Deleting one requires disabling it first, then waiting for the disable to
+# propagate (typically ~15 min) before the delete is accepted.
+aws cloudfront get-distribution-config --id <ID>    # note the ETag
+# ... set Enabled=false in the config, then:
+aws cloudfront update-distribution --id <ID> --if-match <ETag> --distribution-config file://disabled.json
+aws cloudfront wait distribution-deployed --id <ID>
+aws cloudfront delete-distribution --id <ID> --if-match <NewETag>
+```
+
+Then re-run `cdkd deploy`. The next run derives a fresh caller reference, so it
+will not collide with the deleted one.
+
 ### Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`
 
 After a deploy fails with `--no-rollback`, is interrupted with Ctrl+C, or its

@@ -10,12 +10,27 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 const mockLambdaSend = vi.fn();
 const mockSnsSend = vi.fn();
 const mockS3Send = vi.fn();
+/**
+ * Stand-in for the STS client `getAccountInfo()` resolves the deploy account
+ * through (issue #1866). A FIXED, non-empty `Account` — an empty / absent one
+ * is what `getAccountInfo` flags `fabricated`, which is a different case with
+ * its own arm.
+ */
+const mockStsSend = vi.fn(() => Promise.resolve({ Account: '123456789012' }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     lambda: { send: mockLambdaSend },
     sns: { send: mockSnsSend },
     s3: { send: mockS3Send },
+    // Issue #1866: the synthetic `StackId` is built from `getAccountInfo()`,
+    // which resolves the account through THIS bag's STS client. Without a
+    // stand-in it reaches for a real one, and — because `getAccountInfo`
+    // swallows its own failure — the provider silently answers `fabricated`
+    // and warns on every invocation. Answering here keeps the provider off
+    // real AWS AND keeps the account a proven one, which is the state every
+    // case in this file assumes.
+    sts: { send: mockStsSend },
   }),
 }));
 

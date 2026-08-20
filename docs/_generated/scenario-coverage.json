@@ -1934,6 +1934,11 @@
       "scenarios": []
     },
     {
+      "name": "sns-subscription-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "sqs-cloudwatch",
       "annotated": true,
       "scenarios": []
@@ -2826,6 +2831,7 @@
     "sns-event-source",
     "sns-inline-subscription",
     "sns-subscription-filter",
+    "sns-subscription-update",
     "sqs-esm-max-concurrency",
     "stepfunctions-s3-definition",
     "synthetics-canary"

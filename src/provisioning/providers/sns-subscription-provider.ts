@@ -22,6 +22,25 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * The "old subscription was not deleted" reason the THROWN-delete arm of
+ * `update()` reports (issue
+ * [#1967](https://github.com/go-to-k/cdkd/issues/1967)).
+ *
+ * A constant, and FIXED WORDING with no interpolation, for the reason the
+ * abort block spells out at length: this string is rendered onto the warn line
+ * beside a message that must stay clear of the substrings
+ * `retryable-errors.ts` classifies on, and the underlying AWS error text — an
+ * `Unsubscribe` throttle, a `does not exist` — is user-uncontrolled and
+ * carries several of them. The AWS message goes out on its own warn line in
+ * the `catch`, where nothing classifies it.
+ *
+ * Its skip-arm twin is the provider-supplied `ResourceDeleteResult.reason`,
+ * which is subject to the same rule at its own producer.
+ */
+export const SNS_SUBSCRIPTION_DELETE_THREW_REASON =
+  'the Unsubscribe call did not complete, so the old subscription is unproven';
+
+/**
  * AWS SNS Subscription Provider
  *
  * Implements resource provisioning for AWS::SNS::Subscription using the SNS SDK.
@@ -218,9 +237,14 @@ export class SNSSubscriptionProvider implements ResourceProvider {
 
     // Delete old subscription
     let deleteResult: void | ResourceDeleteResult = undefined;
+    // Issue #1967: the throw is REMEMBERED rather than swallowed, so the abort
+    // below can cover it. Logging here and deciding there keeps the two arms
+    // one rule instead of two (see the block comment on the abort).
+    let deleteThrew = false;
     try {
       deleteResult = await this.delete(logicalId, physicalId, resourceType);
     } catch (error) {
+      deleteThrew = true;
       this.logger.warn(
         `Failed to delete old subscription ${physicalId} during update: ${String(error)}`
       );
@@ -242,19 +266,51 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     // skipping delete did or did not do, adding a second live subscription on
     // top of it cannot be an improvement.
     //
-    // Deliberately NOT symmetric with the catch above, which creates anyway
-    // after a FAILED delete: a throw may mean the unsubscribe partially
-    // landed, was transient, or that the subscription is already gone, so
-    // converging is the better bet. A skip is a positive statement that the
-    // old subscription was not destroyed, which makes the duplicate a
-    // certainty rather than a risk — that distinction is exactly what the
-    // #1752 outcome mechanism exists to express. THIS provider's check lives
-    // OUTSIDE the try for the same reason (the three create-then-delete
-    // providers keep theirs inside, where a warn-only branch is harmless):
-    // `delete()` raises its own `ProvisioningError` on a real failure, so
-    // throwing from inside would be caught by that handler, and re-throwing
-    // typed errors from it would turn today's warn-and-continue failure path
-    // into a hard failure.
+    // Issue #1967: the THROWN delete takes this same exit. It used to fall
+    // through to the create below — the guard covered one arm of a two-arm
+    // failure. The rule is now stated once for both: **cdkd creates the
+    // replacement only when the old subscription is PROVEN gone.**
+    //
+    // **What the create actually did, MEASURED — not the duplicate the issue
+    // predicted.** SNS enforces uniqueness on (topic, protocol, endpoint):
+    // repeating `Subscribe` with identical attributes returns the SAME
+    // `SubscriptionArn` and leaves ONE subscription, and repeating it with
+    // DIFFERENT attributes is refused with `InvalidParameter ... Subscription
+    // already exists with different attributes`. Those three fields are
+    // exactly the `createOnlyProperties` of `AWS::SNS::Subscription`, so
+    // anything that reaches `update()` leaves all three identical — the engine
+    // routes a createOnly change to its OWN replacement branch and never calls
+    // this method. So on the reachable path the pre-fix create could not
+    // produce two live subscriptions; it produced a confusing AWS-authored
+    // failure instead of an accurate cdkd one.
+    //
+    // The abort is still right, and the reason is the CONTRACT rather than the
+    // duplicate: cdkd must not issue a create whose precondition it failed to
+    // establish. Two concrete gains: the error names the failed DELETE (which
+    // is what the user has to act on) instead of a downstream `Subscribe`
+    // rejection, and it is `markNonRetryable`, so the rollback callers stop
+    // burning a backoff schedule on a certain failure.
+    //
+    // The duplicate is NOT unreachable in general — it needs the endpoint to
+    // differ, which happens when `cloudformation:DescribeType` is unavailable
+    // and `create-only-properties.ts` degrades an endpoint change into an
+    // in-place update (that file's own warning says so). That is the case the
+    // one rule still protects.
+    //
+    // Reachability differs from the skip arm and is worth stating: `delete()`
+    // wraps a real `Unsubscribe` failure in a `ProvisioningError`, so this arm
+    // fires on genuine AWS failures (throttling, an authorization denial),
+    // whereas the skip arm has no producer yet. This is therefore the arm that
+    // actually changes behaviour in the field.
+    //
+    // THIS provider's check lives OUTSIDE the try for the same reason (the
+    // three create-then-delete providers keep theirs inside, where a warn-only
+    // branch is harmless): `delete()` raises its own `ProvisioningError` on a
+    // real failure, so throwing from INSIDE the try would be caught by the very
+    // `catch` above and swallowed. Note what changed with #1967 — that catch no
+    // longer warns-and-continues, it records the failure and falls into this
+    // abort, so the failure path IS now a hard failure; the reason to keep the
+    // check outside is the control flow, not the outcome.
     //
     // Right for every `update()` caller, which is the bar an abort has to
     // clear: `cdkd deploy` (the resource fails and rolls back rather than
@@ -297,21 +353,29 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     // widening those signatures to take the error object, which touches call
     // sites owned elsewhere.
     //
-    // Latent today: the two pending-confirmation arms in `delete` are
-    // deliberate CFn-parity delete-SUCCESS (see `logPendingConfirmationSkip`),
-    // not skips, so no arm produces this outcome yet.
-    if (deleteResult?.outcome === 'skipped') {
+    // Latent today for the SKIP arm: the two pending-confirmation arms in
+    // `delete` are deliberate CFn-parity delete-SUCCESS (see
+    // `logPendingConfirmationSkip`), not skips, so no arm produces that
+    // outcome yet. The THROW arm is live.
+    const notDeletedReason = deleteThrew
+      ? SNS_SUBSCRIPTION_DELETE_THREW_REASON
+      : deleteResult?.outcome === 'skipped'
+        ? deleteResult.reason
+        : undefined;
+    if (notDeletedReason !== undefined) {
       this.logger.warn(
         `Cannot replace SNS subscription ${logicalId}: the old subscription ${physicalId} was not deleted — ` +
-          `${deleteResult.reason}`
+          `${notDeletedReason}`
       );
       throw markNonRetryable(
         new ProvisioningError(
           `Cannot replace SNS subscription ${logicalId}: cdkd could not delete the old subscription, and ` +
             `creating the replacement would leave both subscribed to the topic and deliver every message ` +
             `twice. See the warning naming ${logicalId} for the recorded physical id and the cause. ` +
-            `Repair the state record for ${logicalId}, or remove the old subscription in AWS if it is ` +
-            `still live, then re-run.`,
+            `Usually the Unsubscribe itself failed (a throttle, a denied sns:Unsubscribe) and the ` +
+            `state record is FINE — clear that cause and re-run, or remove the old subscription in ` +
+            `AWS by hand. Repair the state record only when the warning says the recorded physical ` +
+            `id is malformed, which is the latent skip arm rather than this one.`,
           resourceType,
           logicalId,
           physicalId

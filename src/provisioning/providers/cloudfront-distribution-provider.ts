@@ -10,12 +10,15 @@ import {
   TagResourceCommand,
   UntagResourceCommand,
   NoSuchDistribution,
+  DistributionAlreadyExists,
   type DistributionConfig,
   type Tag,
 } from '@aws-sdk/client-cloudfront';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
+import { acquireIdempotencyToken } from './idempotency-token.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 import type {
@@ -24,6 +27,8 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
+  SecretMasker,
 } from '../../types/resource.js';
 
 /**
@@ -142,16 +147,60 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CloudFront Distribution ${logicalId}`);
+
+    // The orphan message below interpolates RESOLVED template values (an origin
+    // domain, the comment), and a `{{resolve:secretsmanager:...}}` scalar is
+    // plaintext by the time a provider sees it. The deploy engine masks at its
+    // own sinks, but only through `maskSecretsInText`'s SUBSTRING arm — which
+    // ignores a needle below `MIN_NEEDLE_LENGTH`, and cannot see a value whose
+    // quotes `JSON.stringify` has escaped so it no longer OCCURS literally. So
+    // the value is masked HERE, at the leaf, before either can happen.
+    // Defaulted to identity per the `SecretMaskingContext` contract: `create()`
+    // is also reached from `cdkd drift --revert`, the import path, and tests.
+    const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);
+
+    // Issue #2079. `CallerReference` IS CloudFront's idempotency key, and this
+    // used to be `${Date.now()}-${logicalId}-${Math.random()...}` — regenerated
+    // on every re-invocation of `create()`, which is the worst shape of all:
+    // the call LOOKS idempotent while behaving exactly as if it had no token.
+    // The deploy engine wraps `create()` in its outer transient-error retry and
+    // issue #2026 made HTTP 500 / 502 / 504 retryable, so a 500 whose
+    // `CreateDistribution` actually SUCCEEDED server-side minted a SECOND
+    // distribution: no state record, invisible to `cdkd destroy`, billing
+    // indefinitely.
+    //
+    // Same fix as the Route 53 `CreateHostedZone` site (issue #2039), but
+    // deliberately WITHOUT its adopt path, because CloudFront has none:
+    // `DistributionSummary` — what `ListDistributions` returns — carries
+    // `Comment` but NOT `CallerReference` (measured against
+    // `@aws-sdk/client-cloudfront` `models_0.d.ts`), and `GetDistribution`
+    // needs the `Id` the lost response was carrying. So the replay is REFUSED
+    // with `DistributionAlreadyExists` and the catch below turns that into a
+    // message naming the orphan and how to find it. Loud-and-orphaned instead
+    // of silent-and-orphaned; the orphan exists either way, and only this way
+    // does the user learn about it.
+    //
+    // Writing a cdkd marker into `Comment` to make the orphan findable was
+    // considered and REJECTED: `Comment` is capped at 128 characters, so a
+    // marker can break a create that works today, and `mergeUpdateConfig`
+    // documents `Comment` as fully template-owned.
+    const callerReferenceToken = acquireIdempotencyToken({
+      scope: 'CreateDistribution',
+      logicalId,
+      // CloudFront accepts up to 128 characters for CallerReference.
+      maxLength: 128,
+    });
 
     try {
       const distributionConfig =
         (properties['DistributionConfig'] as Record<string, unknown>) ?? {};
       const sdkConfig = this.convertToSdkFormat({
         ...distributionConfig,
-        CallerReference: `${Date.now()}-${logicalId}-${Math.random().toString(36).slice(2, 8)}`,
+        CallerReference: callerReferenceToken.value,
       });
 
       // CFn shape: `Tags: [{ Key, Value }]`. CloudFront's SDK wraps tags in
@@ -184,6 +233,15 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
 
       await this.settleDistribution(logicalId, distributionId);
 
+      // Success path ONLY, and after the distribution is settled, mirroring the
+      // Route 53 site: releasing bumps the token's generation, so a later
+      // create of the same logical id (the `--replace` delete-then-create in
+      // one process) is not handed the reference of a distribution that has
+      // since been torn down. Releasing on a FAILURE path would defeat the
+      // whole mechanism — the next attempt would mint a fresh reference and
+      // duplicate again, which is precisely the bug this replaced.
+      callerReferenceToken.release();
+
       return {
         physicalId: distributionId,
         attributes: {
@@ -193,6 +251,68 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // Issue #2079: the stable-token replay. This is the ONLY signal the user
+      // gets that a distribution was created by a lost attempt, so the message
+      // is load-bearing rather than decorative: with no `CallerReference` on
+      // `DistributionSummary` there is nothing to search by, and the message
+      // has to hand over the two fields that ARE listed — the origin domain
+      // and the comment.
+      //
+      // The `name` check sits beside the `instanceof` because the latter is
+      // identity-dependent (two copies of the SDK in one process, a bundler
+      // re-instantiating the class) and a miss here degrades to the generic
+      // message above, which never mentions the orphan.
+      if (
+        error instanceof DistributionAlreadyExists ||
+        (error as { name?: string } | undefined)?.name === 'DistributionAlreadyExists'
+      ) {
+        const cause = error instanceof Error ? error : undefined;
+        // BOTH halves are required, and the marker alone is NOT enough.
+        //
+        // 1. `markNonRetryable`: a repeated `CallerReference` is a DETERMINISTIC
+        //    refusal, so every replay is certain to fail. Unmarked, the
+        //    `--recreate-via-sdk-provider` path — which has already DELETED the
+        //    old distribution — hands this message to `isRecreateRetryableError`
+        //    and spends 8 attempts over ~64s on the same in-flight token.
+        //
+        // 2. The message must not CONTAIN a collision-shaped token. It used to
+        //    say `DistributionAlreadyExists`, which `isNameCollisionError`
+        //    matches on the bare `AlreadyExists` substring (measured). Two sites
+        //    read that classifier from a MESSAGE with no marker gate — the
+        //    engine's create-first collision fallback (`deploy-engine.ts`) and
+        //    its rollback twin (`rollback-executor.ts`) — and their remedy is to
+        //    DELETE the live, in-state old resource and retry a create that
+        //    cannot succeed. Latent for this type only because it has empty
+        //    `createOnlyProperties` and no `ReplacementRulesRegistry` entry,
+        //    which is far too thin a reason for a destructive path to rest on.
+        //    This is the exact bound `sns-subscription-provider.ts` documents:
+        //    a message-only classifier cannot consult the marker, so the
+        //    wording has to carry its own discipline.
+        //
+        // The AWS error is not lost: it rides on `cause`, which `formatError`
+        // prints as a `Caused by:` line and which every marker / classifier
+        // walk already follows.
+        throw markNonRetryable(
+          new ProvisioningError(
+            maskSecrets(
+              `Failed to create CloudFront Distribution ${logicalId}: CloudFront refused the ` +
+                `create because this deploy's CallerReference had been used before, which means ` +
+                `an EARLIER attempt of this same create succeeded and cdkd never received its ` +
+                `response. That distribution is LIVE, is not in cdkd state, and 'cdkd destroy' ` +
+                `will not remove it — it bills until you delete it by hand. CloudFront does not ` +
+                `return CallerReference from ListDistributions, so find it with ` +
+                `'aws cloudfront list-distributions' and match on ` +
+                `${this.orphanSearchHint(properties, maskSecrets)}; then disable and delete it ` +
+                `(or import it with 'cdkd import') before re-running. The AWS error is on this ` +
+                `error's cause.`
+            ),
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
+        );
+      }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create CloudFront Distribution ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -202,6 +322,56 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * The identifying fields of the distribution that WOULD have been created,
+   * for the `DistributionAlreadyExists` orphan message (issue #2079).
+   *
+   * Only fields `ListDistributions` actually returns are worth naming — the
+   * user has to match the orphan in that output by eye. `Origins[].DomainName`
+   * and `Comment` are both on `DistributionSummary`; `CallerReference` is not,
+   * which is the whole reason this message exists.
+   *
+   * Read from the RAW template properties rather than the converted SDK config
+   * so the helper stays usable from the catch, which is outside the scope
+   * where `sdkConfig` exists. Both the bare-array (CFn) and `{ Quantity,
+   * Items }` (SDK) spellings of `Origins` are accepted because a template may
+   * carry either.
+   *
+   * **Every value it returns is a RESOLVED template value, so each is masked
+   * HERE, at the leaf** (issue #1932 item 3, the shape
+   * `apigatewayv2-provider.ts`'s `toSdkResponseParameters` established). Two
+   * reasons the caller's outer mask cannot stand alone, both from
+   * `.claude/rules/providers.md`: `maskSecretsInText`'s SUBSTRING arm ignores a
+   * needle shorter than `MIN_NEEDLE_LENGTH` (4), and `JSON.stringify` escapes
+   * quotes — so a Secrets Manager JSON document no longer OCCURS literally in
+   * the finished sentence. Masking the raw string first reaches the
+   * WHOLE-VALUE arm at any length, and the mask is idempotent, so both layers
+   * are free.
+   */
+  private orphanSearchHint(properties: Record<string, unknown>, maskSecrets: SecretMasker): string {
+    const config = (properties['DistributionConfig'] as Record<string, unknown>) ?? {};
+    const origins = config['Origins'];
+    const originItems: unknown[] = Array.isArray(origins)
+      ? origins
+      : Array.isArray((origins as { Items?: unknown[] } | undefined)?.Items)
+        ? ((origins as { Items: unknown[] }).Items ?? [])
+        : [];
+    const domains = originItems
+      .map((origin) => (origin as { DomainName?: unknown } | undefined)?.DomainName)
+      .filter((domain): domain is string => typeof domain === 'string' && domain !== '')
+      .map((domain) => maskSecrets(domain));
+    const comment = typeof config['Comment'] === 'string' ? maskSecrets(config['Comment']) : '';
+
+    const parts: string[] = [];
+    if (domains.length > 0) parts.push(`origin domain ${domains.join(' / ')}`);
+    if (comment !== '') parts.push(`comment ${JSON.stringify(comment)}`);
+    // A template with neither is legal (an origin can arrive as an unresolved
+    // intrinsic, and Comment is optional), so never emit a dangling "match on".
+    return parts.length > 0
+      ? parts.join(' and ')
+      : 'its creation time (the orphan is the newest distribution in this account)';
   }
 
   /**
@@ -533,11 +703,14 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
    * false positive every run (mirrors the Lambda `Code.S3*` precedent).
    *
    * - `DistributionConfig.CallerReference`: a create-time idempotency
-   *   token. cdkd generates it internally (`<ts>-<logicalId>-<rand>`);
-   *   AWS echoes it back, but it is never templated by CDK, so comparing
-   *   it would diff cdkd's generated value on every run. `convertToCfnFormat`
-   *   already drops it from the AWS side; declaring it here also excludes
-   *   it from the observed-baseline side.
+   *   token. cdkd generates it internally (`acquireIdempotencyToken`, issue
+   *   #2079 — a per-process digest, `cdkd-<sha256 prefix>`); AWS echoes it
+   *   back, but it is never templated by CDK, so comparing it would diff
+   *   cdkd's generated value on every run. It is not even stable across
+   *   cdkd RUNS by design (a process nonce is mixed in), so suppression is
+   *   required rather than merely convenient. `convertToCfnFormat` already
+   *   drops it from the AWS side; declaring it here also excludes it from
+   *   the observed-baseline side.
    * - `DistributionConfig.Logging.Bucket`: CloudFront normalizes the S3
    *   logging bucket to its `<bucket>.s3.amazonaws.com` regional domain on
    *   read, which never matches the bare bucket domain a template may
@@ -692,9 +865,13 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
           // delete path's NotFound handling). Anything else (throttle, network
           // blip) must NOT escape: the wait has no failure signal by design,
           // and an escaped throw would fail an operation whose mutation
-          // already succeeded — on create, the engine's outer retry would
-          // then re-invoke create() with a fresh CallerReference and produce
-          // a DUPLICATE distribution. Log and keep polling; the deadline
+          // already succeeded — on create, the engine's outer retry would then
+          // re-invoke create() over a distribution that already exists. Since
+          // issue #2079 that no longer duplicates it (the CallerReference is
+          // stable across attempts, so CloudFront refuses the replay), but the
+          // refusal is a hard `DistributionAlreadyExists` failure over an
+          // ORPHAN the user then has to delete by hand — still a failure this
+          // wait must not manufacture. Log and keep polling; the deadline
           // bounds the loop either way.
           if (error instanceof NoSuchDistribution) throw error;
           this.logger.debug(
