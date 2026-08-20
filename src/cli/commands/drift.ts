@@ -38,6 +38,11 @@ import { CloudControlProvider } from '../../provisioning/cloud-control-provider.
 import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import {
+  classifyReplaySecretRegion,
+  producerRegionsFromState,
+} from '../../deployment/rollback-executor.js';
 import { withRetry } from '../../deployment/retry.js';
 import { maskingRetryLogger } from '../../deployment/masking-retry-logger.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
@@ -683,6 +688,191 @@ function collectDynamicReferencePaths(value: unknown, into: SecretPathSet, path 
 }
 
 /**
+ * The drift command's resolvers for ONE stack: the stack's own, plus one pinned
+ * sibling per FOREIGN region an ARN-named reference asks for (issue
+ * [#2108](https://github.com/go-to-k/cdkd/issues/2108)).
+ *
+ * The structural twin of the rollback replay's `ReplayResolvers`
+ * (`src/deployment/rollback-executor.ts`), and deliberately a SEPARATE class
+ * rather than an export of that one: the two are ~20 lines of caching around a
+ * constructor, and exporting the replay's would put a rollback-internal name on
+ * the drift command's contract for no behavioural gain. What is SHARED is the
+ * part with a decision in it — `classifyReplaySecretRegion`, imported.
+ *
+ * One instance per STACK, not per resource and not per op — the resolved-value
+ * cache lives on the resolver INSTANCE since issue
+ * [#1933](https://github.com/go-to-k/cdkd/issues/1933), so a resolver per
+ * resource would re-fetch every referenced secret once per resource. The pinned
+ * siblings are cached for the same reason: a 50-resource stack sharing one
+ * foreign ARN must pay one `GetSecretValue`, not fifty.
+ *
+ * A pinned sibling is a PLAIN resolver, deliberately NOT the resolver class's
+ * own `producerRegionGuest`, and the argument is `ReplayResolvers`' verbatim:
+ * {@link forRegion} is reached ONLY from a `named-region` verdict, which
+ * `classifyReplaySecretRegion` returns only when the SECRET_ID / parameter name
+ * starts with `arn:` and carries a region. So a pinned sibling only ever
+ * resolves an expression whose KEY EMBEDS THE REGION IT IS BEING RESOLVED IN,
+ * and the process-global `recordedSecretExpressions` store — keyed by the
+ * expression string alone — cannot have two regions sharing that key. If a
+ * future change ever routes a region-LESS expression here, the argument dies
+ * with it and the sibling needs the guest flag.
+ */
+class DriftSecretResolvers {
+  /** The stack's own resolver — every `local` verdict resolves through this. */
+  readonly primary: IntrinsicFunctionResolver;
+  private readonly pinned = new Map<string, IntrinsicFunctionResolver>();
+  private readonly stackRegion: string;
+
+  constructor(stackRegion: string) {
+    this.stackRegion = stackRegion;
+    this.primary = new IntrinsicFunctionResolver(stackRegion);
+  }
+
+  /** The resolver that must answer for `region` — `primary` when it is the stack's own. */
+  forRegion(region: string): IntrinsicFunctionResolver {
+    const target = canonicalizeRegion(region);
+    if (target === canonicalizeRegion(this.stackRegion)) return this.primary;
+    const cached = this.pinned.get(target);
+    if (cached) return cached;
+    const scoped = new IntrinsicFunctionResolver(target);
+    this.pinned.set(target, scoped);
+    return scoped;
+  }
+}
+
+/**
+ * The refusal a region-AMBIGUOUS drift reference throws (issue #2108).
+ *
+ * A plain throw: BOTH call sites already wrap `resolveStateSecretExpressions`
+ * in a per-resource catch that degrades instead of aborting the command, and
+ * the degradation each one performs is exactly the fail-closed behaviour this
+ * refusal wants.
+ *
+ *  - DETECTION falls back to the UNRESOLVED baseline, whose `{{resolve:...}}`
+ *    leaves `calculateResourceDrift` skips — so the secret-bearing property is
+ *    NOT COMPARED rather than compared against a foreign region's plaintext.
+ *    That is strictly better than the phantom drift this issue reports, and the
+ *    offline `seededSecretPaths` still masks the position.
+ *  - REVERT counts the resource as unresolvable and returns BEFORE
+ *    `provider.update`, so nothing is written. Refusing is strictly better than
+ *    the alternative it replaces: resolving a producer-region reference against
+ *    the consumer's region does not fail, it succeeds with the WRONG credential
+ *    and writes it to a live resource.
+ *
+ * Names the reference, the regions and the remedy. Never a resolved value:
+ * nothing has been resolved when this is thrown (the refusal runs over the
+ * WHOLE leaf before any reference in it is fetched), and the expression is the
+ * same string `state.json` already stores in the clear.
+ */
+function regionAmbiguousDriftSecretError(
+  logicalId: string,
+  propertyPath: string,
+  secretName: string,
+  foreignProducerRegions: readonly string[],
+  consumerRegion: string
+): CdkdError {
+  const where = propertyPath === '' ? '' : ` property '${propertyPath}'`;
+  return new CdkdError(
+    `${logicalId}${where}: the secret reference '${secretName}' carries no region of its own, ` +
+      `and this stack read across a region boundary (producer region(s) on record: ` +
+      `${foreignProducerRegions.join(', ')}), so it may have been resolved in one of those ` +
+      `rather than in '${consumerRegion}'. A secret of the same name in two regions is two ` +
+      `independent values, so cdkd would compare against — and with --revert WRITE — the WRONG ` +
+      `secret. Refusing instead. Spell the reference as a full ARN, which names its region and ` +
+      `is resolved there, then re-run 'cdkd drift'.`,
+    'DRIFT_SECRET_REGION_AMBIGUOUS'
+  );
+}
+
+/**
+ * Re-resolve one LEAF string, sending each `{{resolve:...}}` reference in it to
+ * the region {@link classifyReplaySecretRegion} says must answer (issue #2108).
+ *
+ * Mirrors the rollback replay's `resolveLeafByRegion` down to the ordering, and
+ * for the same reasons:
+ *
+ *  - Refuses FIRST, over the whole leaf, before any reference is fetched. A leaf
+ *    can splice several references together, and resolving the safe ones first
+ *    would leave half a credential fetched — and CACHED, and recorded as a
+ *    redaction needle — for a resource that is about to be refused anyway.
+ *  - With no foreign-region reference (every leaf on every pre-#2108 code path)
+ *    the leaf goes to `resolveDynamicReferences` WHOLE, byte-for-byte as before.
+ *    That method collects its matches from the ORIGINAL string, so a resolved
+ *    plaintext that is itself token-shaped is never re-resolved (issue #1917),
+ *    and this change does not want to relitigate any of it.
+ *  - With one, the leaf is rebuilt segment by segment so each reference can be
+ *    resolved by its OWN region's resolver, since `resolveDynamicReferences`
+ *    resolves every token in the string it is handed with the one resolver it
+ *    is called on. Each token is resolved ALONE and concatenated, so no resolved
+ *    value is re-scanned for tokens either.
+ *
+ * `dynamicReferenceTokens` returns the tokens in order and non-overlapping, so
+ * walking the leaf with a moving `indexOf` cursor reproduces their positions
+ * exactly, duplicates included.
+ */
+async function resolveDriftLeafByRegion(
+  leaf: string,
+  propertyPath: string,
+  logicalId: string,
+  consumerRegion: string,
+  producerRegions: readonly string[] | undefined,
+  resolvers: DriftSecretResolvers,
+  ctx: ResolverContext
+): Promise<string> {
+  // ONE spelling of the token scan, shared with `secret-redaction.ts` (issue
+  // #1936): a private regex here would answer a different question from the one
+  // the resolver is about to ask.
+  const tokens = dynamicReferenceTokens(leaf);
+  const verdicts = tokens.map(
+    (token) => [token, classifyReplaySecretRegion(token, consumerRegion, producerRegions)] as const
+  );
+
+  for (const [, verdict] of verdicts) {
+    if (verdict.kind === 'ambiguous') {
+      throw regionAmbiguousDriftSecretError(
+        logicalId,
+        propertyPath,
+        verdict.secretName,
+        verdict.foreignProducerRegions,
+        consumerRegion
+      );
+    }
+  }
+
+  if (!verdicts.some(([, verdict]) => verdict.kind === 'named-region')) {
+    return await resolvers.primary.resolveDynamicReferences(leaf, ctx);
+  }
+
+  let out = '';
+  let cursor = 0;
+  for (const [token, verdict] of verdicts) {
+    const at = leaf.indexOf(token, cursor);
+    // Unreachable while the tokens come from a scan of THIS string, so this is
+    // a guard against a future scanner change — and the direction it fails in
+    // is the point. Handing the leaf back to the primary resolver would send a
+    // token whose foreign region is already KNOWN to the consumer's region:
+    // issue #2108 verbatim, reintroduced by the guard meant to prevent a
+    // regression. Fail closed instead.
+    if (at < 0) {
+      throw new CdkdError(
+        `${logicalId}${propertyPath === '' ? '' : ` property '${propertyPath}'`}: could not ` +
+          `locate a scanned dynamic reference in the value it was scanned from. Refusing rather ` +
+          `than resolving it in '${consumerRegion}', which would be the wrong region for a ` +
+          `reference that names another one. This is an internal invariant failure — please ` +
+          `report it with the resource type and property path.`,
+        'DRIFT_SECRET_TOKEN_SCAN_MISMATCH'
+      );
+    }
+    out += leaf.slice(cursor, at);
+    const resolver =
+      verdict.kind === 'named-region' ? resolvers.forRegion(verdict.region) : resolvers.primary;
+    out += await resolver.resolveDynamicReferences(token, ctx);
+    cursor = at + token.length;
+  }
+  return out + leaf.slice(cursor);
+}
+
+/**
  * Re-resolve the SECRET dynamic references (`{{resolve:secretsmanager:...}}`,
  * and an `{{resolve:ssm:...}}` naming a `SecureString`) held by a bag read back
  * out of cdkd STATE (issue #1914).
@@ -720,18 +910,38 @@ function collectDynamicReferencePaths(value: unknown, into: SecretPathSet, path 
  *
  * Returns the input by identity when it holds no dynamic reference, so the
  * non-secret path is unchanged down to object identity.
+ *
+ * Issue [#2108](https://github.com/go-to-k/cdkd/issues/2108): every reference
+ * is now routed to the region that must ANSWER for it rather than to the
+ * consumer's, through {@link DriftSecretResolvers} — see
+ * {@link resolveDriftLeafByRegion}.
  */
 async function resolveStateSecretExpressions(
   props: Record<string, unknown>,
-  resolver: IntrinsicFunctionResolver,
+  resolvers: DriftSecretResolvers,
   secrets: RecordedSecretValues,
   options: {
     secretPaths?: SecretPathSet;
     onUnresolved?: (tokens: string[], path: string) => void;
+    /**
+     * Issue #2108: the stack's own region, and the FOREIGN producer regions its
+     * persisted cross-stack reads name (`producerRegionsFromState`). Together
+     * they are the whole input `classifyReplaySecretRegion` needs to decide
+     * which region must answer for each reference — see
+     * {@link resolveDriftLeafByRegion}. `logicalId` only names the resource in
+     * the refusal.
+     */
+    logicalId?: string;
+    consumerRegion?: string;
+    producerRegions?: readonly string[];
   } = {}
 ): Promise<Record<string, unknown>> {
   if (!containsDynamicReference(props)) return props;
-  const { secretPaths, onUnresolved } = options;
+  const { secretPaths, onUnresolved, producerRegions } = options;
+  const logicalId = options.logicalId ?? '';
+  // Falls back to the primary resolver's own region so the classifier is never
+  // handed an empty consumer region. The two call sites both pass one.
+  const consumerRegion = options.consumerRegion ?? '';
   const ctx: ResolverContext = {
     template: { Resources: {} },
     resources: {},
@@ -740,7 +950,17 @@ async function resolveStateSecretExpressions(
   const walk = async (v: unknown, path: string): Promise<unknown> => {
     if (typeof v === 'string') {
       if (!v.includes('{{resolve:')) return v;
-      const resolved = await resolver.resolveDynamicReferences(v, ctx);
+      // Issue #2108: decide the REGION of every reference in this leaf before
+      // any of them is fetched. See {@link classifyReplaySecretRegion}.
+      const resolved = await resolveDriftLeafByRegion(
+        v,
+        path,
+        logicalId,
+        consumerRegion,
+        producerRegions,
+        resolvers,
+        ctx
+      );
       // Only tokens that were in the INPUT. The scan runs over the RESOLVED
       // string, so a secret whose plaintext happens to contain
       // `{{resolve:...}}`-shaped text would otherwise be reported verbatim by
@@ -1090,7 +1310,24 @@ async function runDriftForStack(
     // clients. That is the provisioning half of the same ambient-singleton
     // problem, filed as issue
     // [#1981](https://github.com/go-to-k/cdkd/issues/1981).
-    const secretResolver = new IntrinsicFunctionResolver(region);
+    //
+    // Issue [#2108](https://github.com/go-to-k/cdkd/issues/2108) is the third
+    // scope note, and it is the one that made this a BAG of resolvers rather
+    // than a single one. #1957 fixed which region this resolver READS FOR — the
+    // stack's, rather than the ambient CLI one. It did NOT ask whether the
+    // stack's own region is the right region for a given EXPRESSION, and for a
+    // value that arrived through a cross-region cross-stack import it is not:
+    // since #1934 the consumer records the PRODUCER's region-less spelling, so
+    // re-resolving it here answered from a same-named secret in the wrong
+    // region. `DriftSecretResolvers` routes each reference to the region
+    // `classifyReplaySecretRegion` says must answer for it.
+    const secretResolvers = new DriftSecretResolvers(region);
+    // The FOREIGN-region evidence, read straight off the state record this
+    // command already loaded — `state.imports[].sourceRegion` /
+    // `state.outputReads[].sourceRegion`. The rollback lane (#2057) had to
+    // plumb this through `RollbackExecutorContext` because the replay site
+    // holds no state; here it is one call with nothing to thread.
+    const producerRegions = producerRegionsFromState(state);
     const entries = Object.entries(state.resources ?? {}).sort(([a], [b]) => a.localeCompare(b));
 
     for (const [logicalId, resource] of entries) {
@@ -1272,9 +1509,15 @@ async function runDriftForStack(
       try {
         comparisonBaseline = await resolveStateSecretExpressions(
           baseline,
-          secretResolver,
+          secretResolvers,
           secrets,
-          { secretPaths, onUnresolved: noteUnresolved }
+          {
+            secretPaths,
+            onUnresolved: noteUnresolved,
+            logicalId,
+            consumerRegion: region,
+            producerRegions,
+          }
         );
         // The record's `properties` are resolved into the SAME map and path set
         // (the resolved bag is thrown away — only those two are wanted) so a
@@ -1287,9 +1530,12 @@ async function runDriftForStack(
         // template side names a reference the baseline does not, since resolved
         // values are cached.
         if (useObserved) {
-          await resolveStateSecretExpressions(resource.properties ?? {}, secretResolver, secrets, {
+          await resolveStateSecretExpressions(resource.properties ?? {}, secretResolvers, secrets, {
             secretPaths,
             onUnresolved: noteUnresolved,
+            logicalId,
+            consumerRegion: region,
+            producerRegions,
           });
         }
       } catch (err) {
@@ -2561,7 +2807,17 @@ async function runRevert(
     // plaintext -> expression (the redaction direction), and a revert needs the
     // resolution direction, against AWS as it is NOW rather than as it was when
     // the report was built.
-    const revertSecretResolver = new IntrinsicFunctionResolver(report.region);
+    //
+    // Issue [#2108](https://github.com/go-to-k/cdkd/issues/2108): a BAG of
+    // resolvers, one per region that must answer, because this is the arm that
+    // WRITES. `desiredProperties` goes straight to `provider.update`, so a
+    // reference re-resolved in the wrong region does not fail — it succeeds
+    // with a foreign credential and installs it on a live resource. Each
+    // reference is routed by `classifyReplaySecretRegion`, and a reference
+    // whose origin cannot be established is REFUSED before any update.
+    const revertSecretResolvers = new DriftSecretResolvers(report.region);
+    // The foreign-region evidence for this stack — see the detection site.
+    const revertProducerRegions = producerRegionsFromState(report.state);
     try {
       const tasks = driftedOutcomes.map((outcome) => async () => {
         const stateResource = report.state.resources[outcome.logicalId];
@@ -2620,9 +2876,14 @@ async function runRevert(
         try {
           desiredProperties = await resolveStateSecretExpressions(
             revertBaseline,
-            revertSecretResolver,
+            revertSecretResolvers,
             secrets,
-            { onUnresolved: noteUnresolved }
+            {
+              onUnresolved: noteUnresolved,
+              logicalId: outcome.logicalId,
+              consumerRegion: report.region,
+              producerRegions: revertProducerRegions,
+            }
           );
           // Mirrors the detection pass: `properties` are resolved into the same
           // map so a secret the OBSERVED baseline never captured is still a key
@@ -2631,9 +2892,14 @@ async function runRevert(
           if (stateResource.observedProperties !== undefined) {
             await resolveStateSecretExpressions(
               stateResource.properties ?? {},
-              revertSecretResolver,
+              revertSecretResolvers,
               secrets,
-              { onUnresolved: noteUnresolved }
+              {
+                onUnresolved: noteUnresolved,
+                logicalId: outcome.logicalId,
+                consumerRegion: report.region,
+                producerRegions: revertProducerRegions,
+              }
             );
           }
         } catch (err) {
