@@ -602,6 +602,45 @@ under-protected far more than it over-claimed. Then ask what makes the recurrenc
 mechanical: if the issue says a list must stay in sync with the repo, that is a
 test, not a sentence asking the next reader to remember.
 
+**When the audit is a MEASUREMENT, the shape of the sample is the finding — a
+clean result from the wrong shape is indistinguishable from a clean subject.**
+Auditing go-to-k/cdkd#2096 on 2026-08-20 produced SIX confident wrong answers,
+each from a different plausible sampling shape, and each one hid a real secret:
+
+- **Newest-N.** `appsync` was cleared by reading its 6 NEWEST state versions,
+  which are clean; versions 12-45 held an AppSync API key in 17 of 33. The newest
+  versions come from the most recent run, i.e. the one most likely already fixed.
+  Sample across the range, or grep the whole key.
+- **One global needle.** A single `cdkd-known-*` grep reported `secrets-array-nested`
+  clean while 5 of its 7 versions carried `cdkd-array-nested-pw-789`. Each fixture
+  spells its OWN literal, so derive the needle per subject — or better, assert on a
+  needle-INDEPENDENT observable (here, surviving version count == 0).
+- **A name derived from convention.** `cognito-resource-server`'s stack is
+  `CognitoResourceServerStack`, not the `Cdkd…Example` the directory implies;
+  probing the convention returned `0 of 1` and nearly retired a real finding as
+  unreproducible. Read the identifier from the subject (`verify.sh`'s `STACK=`),
+  never infer it.
+- **A silent parse failure inside a pipe.** `aws s3api get-object … /dev/stdout`
+  emits metadata alongside the body, so a `json.load` in the pipeline died and the
+  loop counted `0 of 16`; a text match found 4. A parse that can fail must report
+  failing, not fall through to a count.
+- **A per-page aggregate.** `--query 'length(Versions)'` is applied PER PAGE and
+  concatenated, so a 1189-entry prefix prints `1000\n189` — and `[ "$n" -ne 0 ]`
+  on that is a bash error, not a count. Count ROWS of a projection instead.
+- **Grepping the layer the subject does not use.** `AWS::ApiGateway::ApiKey` is
+  registered to NO provider, so it takes the generic Cloud Control readback whose
+  model includes `Value`. Searching `src/provisioning/providers/**` for credential
+  handling — the obvious cross-check — cannot see it.
+
+The through-line: every one FAILED CLEAN. So when a measurement says "nothing
+here", treat that as the claim needing evidence, not the one that needs none —
+run the shape against a case you KNOW is dirty first, and only then trust a zero.
+The same run had a merged repo-wide scanner fail clean for the seventh time in
+this family: its `stripComments` stripped block comments before line ones, so a
+`//` comment containing the glob `src/provisioning/**` opened a block comment and
+swallowed 235 lines of `deploy-engine.ts`, dropping 2 writers and 2 helper calls
+into silence.
+
 **A mutation probe proves a test discriminates only if it changes the value the
 test READS.** Four vacuous tests shipped across three lanes on 2026-08-19, and
 every one had the same shape: the assertion targeted an observable that the
@@ -956,6 +995,32 @@ ran the check against go-to-k/cdkd#2000 and got a false 0 from a draft-sourced m
 which is why the sourcing rule above is stated.
 
 ## 8. Verify before merge (`/verify-pr` + `/run-integ`)
+
+**When a fix round produces the NEXT round's blocker twice, stop reviewing the
+patch and question its SHAPE.** `/verify-pr` step 8 already says to re-review the
+fix delta; this is what to do when that keeps paying out. On 2026-08-20 one lane
+ran FIVE rounds, and every blocker was created by the previous round's fix: a
+bare-`Error` interrupt took the ROLLBACK branch; re-throwing to avoid that
+orphaned an untracked resource permanently; a never-removed listener then made a
+multi-stack `destroy` keep deleting after Ctrl-C; keeping the handler armed to fix
+THAT stranded the lock; and reordering to fix that swallowed the interrupt so
+`--all` destroyed the next stack. Each fix was locally correct and moved the
+failure one layer out rather than removing it. Every one was found by executing a
+probe or tracing a window — never by re-reading the diff — including two where a
+comment confidently asserted the opposite.
+
+Two things follow, and the second is the one that is easy to get backwards:
+
+- **After round two, ask what the rounds have in common.** Here it was one
+  structural absence: `destroy.ts` registers no command-level SIGINT handler while
+  `deploy.ts` does, which is why only the destroy path kept generating instances.
+  Naming that earlier would not have skipped the rounds, but it would have told
+  everyone what they were chasing.
+- **Do NOT take the structural fix late in the cascade.** Round five's remedy was a
+  one-line re-sync plus an issue for the handler, deliberately: adding new code to
+  a command entrypoint at round five is how round six happens. Take the narrow fix,
+  file the structural one, and reference it from the narrow fix so the next reader
+  sees the choice was made rather than missed.
 
 Run `/verify-pr`. It layers CI status, docs consistency, AWS-resource cleanup, code
 review, and a **live-test of the changed behavior** on top of `/check`. Unit tests
