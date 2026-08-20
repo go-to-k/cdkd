@@ -60,6 +60,11 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
 
 import { CustomResourceProvider } from '../../../src/provisioning/providers/custom-resource-provider.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
+import {
+  disarmInterruptWatchForTests,
+  interruptWatchListenerCount,
+  interruptWatchTestSeam,
+} from '../../../src/provisioning/interrupt-watch.js';
 
 const SERVICE_TOKEN = 'arn:aws:lambda:us-east-1:123456789012:function:Stack-CrHandler';
 
@@ -111,6 +116,9 @@ describe('CustomResourceProvider synthetic StackId (issue #1866)', () => {
   });
 
   afterEach(() => {
+    // Never leave this file's one armed case bleeding into the others.
+    disarmInterruptWatchForTests();
+    delete interruptWatchTestSeam.commandOwnsInterrupts;
     if (originalRegion === undefined) delete process.env['AWS_REGION'];
     else process.env['AWS_REGION'] = originalRegion;
     if (originalAccountEnv === undefined) delete process.env['AWS_ACCOUNT_ID'];
@@ -278,17 +286,53 @@ describe('CustomResourceProvider synthetic StackId (issue #1866)', () => {
     // memoizes, so a per-attempt resolution still issues one `GetCallerIdentity`
     // and a call-count assertion passes under the very edit this guards
     // against — measured, and it is why that case was replaced by this one.
+    //
+    // The MECHANISM moved in issues #2053 / #1952 / #2104: this provider's
+    // private per-invocation watch became the shared
+    // `src/provisioning/interrupt-watch.ts`. The ORDER property is unchanged and
+    // is still what is asserted; two details of the shared module have to be
+    // set up for it to be observable at all, and each is a real property rather
+    // than a test convenience.
+    //
+    //  - It arms only inside a command that OWNS interrupt handling, because
+    //    any SIGINT listener disables Node's default terminate and a command
+    //    without a shutdown path must not gain one. A provider suite runs no
+    //    command, so the seam stands in for the scope production has opened by
+    //    this point — without it this case would measure the UNARMED path while
+    //    appearing to measure the armed one.
+    //  - The listener is shared and is NOT removed per invocation: one torn
+    //    down between two sequential waits cannot record a signal landing in
+    //    the gap. So the old "back to baseline afterwards" assertion is now
+    //    wrong by design, and what replaces it is the property that actually
+    //    protected: invocations must not ACCUMULATE listeners.
+    disarmInterruptWatchForTests();
+    interruptWatchTestSeam.commandOwnsInterrupts = () => true;
     const baseline = process.listeners('SIGINT');
+    expect(interruptWatchListenerCount()).toBe(0);
     configuredRegion = 'ap-northeast-1';
     const provider = makeProvider();
 
     const pending = provider.create('CrResource', 'Custom::CrResource', {
       ServiceToken: SERVICE_TOKEN,
     });
+    // SYNCHRONOUS read — `create()` has run only to its first await.
     const added = process.listeners('SIGINT').filter((l) => !baseline.includes(l));
     await pending;
 
     expect(added).toHaveLength(1);
+    expect(interruptWatchListenerCount()).toBe(1);
+
+    // A second invocation adds none: the listener is shared across every live
+    // watch, which is what keeps a `--concurrency 10` run under Node's
+    // ten-listener warning ceiling.
+    await provider.create('CrResource2', 'Custom::CrResource', {
+      ServiceToken: SERVICE_TOKEN,
+    });
+    expect(process.listeners('SIGINT').filter((l) => !baseline.includes(l))).toHaveLength(1);
+
+    // ...and closing the command scope returns the process to baseline, which
+    // is where the per-invocation removal's guarantee now lives.
+    disarmInterruptWatchForTests();
     expect(process.listeners('SIGINT')).toEqual(baseline);
   });
 });
