@@ -16,7 +16,7 @@ import { withErrorHandling, normalizeAwsError, CdkdError } from '../../utils/err
 import { bootstrapDestroyCommand } from './bootstrap-destroy.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import { foldRegionOption, rawCliRegion } from '../region-options.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 import {
   ensureAssetStorage,
@@ -56,11 +56,27 @@ async function bootstrapCommand(options: {
   logger.info('Starting cdkd bootstrap...');
   logger.debug('Options:', options);
 
-  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
   // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
-  // reaches an SDK client, an ARN segment or a state key. Rationale (and why
-  // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
+  // reaches an SDK client. Rationale (and why this is per-command rather than
+  // per-consumer) in `src/cli/region-options.ts`.
+  //
+  // The user's EXACT spelling is captured FIRST and is what `region` below
+  // stays. That is deliberate and is the one place in this change where the
+  // fold is withheld from a VALUE: `region` is threaded into
+  // `ensureAssetStorage`, whose existing-marker READ is paired with its marker
+  // WRITE and whose comment (`src/assets/asset-storage.ts`) states the pairing
+  // rests on both using the same raw spelling. Folding it here would move the
+  // WRITE key, so a user holding a marker at `cdkd-bootstrap/US-EAST-1.json`
+  // would stop having their recorded custom asset names reused and a
+  // conflicting name would stop being refused - a second marker and a second
+  // set of storage instead. Aligning the write side (and the asset bucket /
+  // ECR repo NAMES this same variable builds) is issue #1820's lane, and the
+  // canonical-then-raw probe in `gc` / `bootstrap --destroy` / the deploy path
+  // exists precisely because this side is still verbatim.
+  const rawRegion = rawCliRegion(options.region) ?? 'us-east-1';
   foldRegionOption(options);
+
+  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Initialize AWS clients with region/profile
@@ -71,7 +87,7 @@ async function bootstrapCommand(options: {
   setAwsClients(awsClients);
 
   const s3Client = awsClients.s3;
-  const region = namedCliRegion(options.region) ?? 'us-east-1';
+  const region = rawRegion;
 
   // Resolve bucket name: use provided value or generate default from account info
   let bucketName: string;

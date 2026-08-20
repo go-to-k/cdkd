@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { ListObjectsV2Command } from '@aws-sdk/client-s3';
 
 /**
  * Issue [#2029](https://github.com/go-to-k/cdkd/issues/2029) — `cdkd gc`
@@ -46,8 +47,9 @@ vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({ ...loggerMocks, child: () => loggerMocks }),
 }));
 
+const applyRoleArnMock = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../../../src/utils/role-arn.js', () => ({
-  applyRoleArnIfSet: vi.fn(async () => undefined),
+  applyRoleArnIfSet: applyRoleArnMock,
 }));
 
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
@@ -111,6 +113,12 @@ const { createGcCommand } = await import('../../../src/cli/commands/gc.js');
 const { CdkdError } = await import('../../../src/utils/error-handler.js');
 
 const PROFILE_REGION = 'ap-northeast-1';
+const MARKER_BODY = JSON.stringify({
+  assetBucket: 'my-custom-asset-bucket',
+  containerRepo: 'my-custom-container-repo',
+  assetSupportVersion: 1,
+  createdAt: '2026-01-01T00:00:00.000Z',
+});
 const savedEnv = { region: process.env['AWS_REGION'], def: process.env['AWS_DEFAULT_REGION'] };
 
 /** The bootstrap-marker keys gc actually asked the state backend for. */
@@ -183,21 +191,79 @@ describe('cdkd gc region resolution (issue #2029)', () => {
     expect(regionless).toHaveLength(1);
   });
 
-  it('honors an explicitly named region over the profile', async () => {
+  it('names the resolved region in the delete plan', async () => {
+    // The region can now come from `~/.aws/config`, a source the user never
+    // typed on this command line, so the plan has to say which one it is about.
+    // It was inferrable only by ACCIDENT before: the default storage name
+    // embeds the region, but a bootstrap run with `--asset-bucket` /
+    // `--container-repo` prints custom names with no region anywhere, and `-y`
+    // then deleted in a region the user was never shown.
+    ambient.region = PROFILE_REGION;
+    stateBackendMocks.getRawObject.mockResolvedValue(MARKER_BODY);
+    stateBackendMocks.listRawKeys.mockResolvedValue([]);
+    // One unreferenced, old-enough object, so gc reaches the confirmation
+    // plan instead of short-circuiting on "nothing to garbage-collect".
+    mockS3Send.mockImplementation(async (command: object) => {
+      if (command instanceof ListObjectsV2Command) {
+        return {
+          Contents: [{ Key: 'garbage.zip', Size: 2048, LastModified: new Date('2020-01-01') }],
+          IsTruncated: false,
+        };
+      }
+      return {};
+    });
+    mockEcrSend.mockResolvedValue({ imageDetails: [] });
+    await runGc(['--yes']);
+    const planLines = loggerMocks.warn.mock.calls.map((c) => String(c[0]));
+    expect(
+      planLines.some((l) => l.includes(PROFILE_REGION)),
+      `no plan line named the region:\n${planLines.join('\n')}`
+    ).toBe(true);
+    // ...and the CUSTOM storage name is what makes this load-bearing: it
+    // carries no region, so without the added line the plan names none.
+    expect(planLines.some((l) => l.includes('my-custom-asset-bucket'))).toBe(true);
+  });
+
+  it('folds the ENV half for the role-arn STS client', async () => {
+    // gc deliberately skips `foldRegionOption` (so the raw spelling survives
+    // for the marker's second probe), which used to leave `applyRoleArnIfSet`
+    // reading `canonicalizeRegion(options.region)` — `undefined` when only
+    // AWS_REGION names the region. `applyRoleArnIfSet` then built
+    // `new STSClient({})` and the SDK read the raw env itself.
+    ambient.region = PROFILE_REGION;
+    process.env['AWS_REGION'] = 'US-EAST-1';
+    await runGc(['--role-arn', 'arn:aws:iam::123456789012:role/R']);
+    expect(applyRoleArnMock).toHaveBeenCalledWith(
+      expect.objectContaining({ region: 'us-east-1' })
+    );
+  });
+
+  /**
+   * Counter-cases: the NAMED-region paths, which this change must leave
+   * byte-identical.
+   *
+   * Stated plainly because a review round caught them presented as if they
+   * proved the fix: they do NOT discriminate. Pre-fix `gc.ts` already folded
+   * (`canonicalizeRegion(rawRegion)`) and already probed both marker keys, so
+   * every assertion below passes against the broken code too. They earn their
+   * place as the other POLARITY — the half of the repo's both-polarities bar
+   * that pins "nothing else moved" — not as evidence.
+   */
+  it('counter-case: an explicitly named region still wins over the profile', async () => {
     ambient.region = PROFILE_REGION;
     await runGc(['--region', 'us-west-2']);
     expect(s3ClientConfigs.map((c) => c.region)).toEqual(['us-west-2']);
     expect(markerKeysRead()).toEqual(['cdkd-bootstrap/us-west-2.json']);
   });
 
-  it('honors AWS_REGION over the profile when no flag is given', async () => {
+  it('counter-case: AWS_REGION still wins over the profile when no flag is given', async () => {
     ambient.region = PROFILE_REGION;
     process.env['AWS_REGION'] = 'eu-west-1';
     await runGc([]);
     expect(s3ClientConfigs.map((c) => c.region)).toEqual(['eu-west-1']);
   });
 
-  it('folds an upper-cased --region, and STILL probes the raw marker key', async () => {
+  it('counter-case: an upper-cased --region folds and STILL probes the raw marker key', async () => {
     // The fold is issue #2065; the second probe is issue #1995 / #2021 and must
     // survive it, because `cdkd bootstrap` derives its own region verbatim
     // (issue #1820) and may have written a raw key.
