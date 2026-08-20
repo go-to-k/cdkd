@@ -1136,6 +1136,68 @@ conclude the fix is broken.
     its output matches what the text promises. That is §10-c's claim-by-claim pass,
     owed whether or not the text came from a sibling repo.
 
+**A fixture that establishes its precondition on the HAPPY path cannot test the
+arm where the FAILING path creates it — and it stays green while the fix is
+inert.** This is the most expensive shape this flow produces, because every
+signal says pass. On 2026-08-20 the go-to-k/cdkd#2057 lane shipped a refusal that
+could not fire on the deploy that matters: the evidence it keys on
+(`state.imports[]` / `outputReads[]`) was persisted only by the SUCCESS path, so
+a deploy that both INTRODUCES a cross-region read and fails recorded none of it.
+The fixture passed anyway, because its phases established the read with a
+successful deploy first and only then failed one. Unit tests passed, the integ
+passed, four reviewers had read the diff; a fifth found it by tracing the
+evidence rather than the code.
+
+So when a fix keys on state that some earlier step wrote, ask **which step wrote
+it in the fixture, and which step writes it in the reachable case**. If the
+fixture's answer is "an earlier, successful one", add the arm where one operation
+does both — and prove the arm discriminates by mutating the fix and confirming
+the ORIGINAL arm still passes while the new one fails. That asymmetry is the
+whole point: an arm that fails alongside the old one has not shown it reaches
+anything new.
+
+**Three fixture mechanics that each cost a real-AWS cycle on 2026-08-20.** None
+is visible by reading the script, and all three are caught by a stubbed dry run
+in seconds:
+
+- **A `cleanup` that ALSO runs pre-run must not destroy anything the run then
+  needs.** AWS resources are safe because creating them IS a phase; a scratch
+  directory computed at variable-definition time is not. A `WORKDIR="$(mktemp -d
+  …)"` at load time plus an `rm -rf "$WORKDIR"` in `cleanup` plus the usual
+  explicit pre-run `cleanup` call means the directory is gone before its first
+  write, 200 lines from the cause.
+- **Before you wait for a resource to disappear, verify the probe reports
+  "still present" DURING deletion.** `DescribeStateMachine` on a deleting Step
+  Functions machine returns success with `status: DELETING`, so the poll really
+  waits; had it 404'd, the wait would have been vacuous and the fixture would
+  have raced exactly as before. Measure the window too — 23s there — so the
+  budget is a number rather than a guess.
+- **A fixture whose only `cdkd destroy` exits non-zero BY DESIGN cannot honestly
+  flip `integ-destroy`.** A refusal arm is a destroy that reports failure, and
+  out-of-band teardown is not a cdkd destroy at all, so the marker would attest
+  to a clean teardown that never happened. Add a final phase that disables the
+  injection, redeploys, and runs a genuinely clean destroy — that run is the one
+  the gate reads.
+
+**Run the integ AFTER the final rebase, and expect the marker to go stale if you
+do it before.** `integ-destroy` uses markgate's `hash: diff` mode, so it
+invalidates when main merges a change to a file YOUR branch also touches. On
+2026-08-20 the go-to-k/cdkd#2057 lane ran three integs, then rebased onto a peer
+PR that had edited `deploy-engine.ts` — which that lane also edited — and the
+marker correctly went stale, buying a second real-AWS run at merge time. Push
+first so CI starts, then re-run the integ alongside it; the two are independent
+and serializing them wastes the CI wall-clock.
+
+**When two reviewers CONTRADICT each other, settle it in the code yourself
+before forwarding either.** On 2026-08-20 the spec reviewer explicitly CLEARED
+the evidence-persistence issue the security reviewer called a blocker, both
+having read the same lines. The code's own comment settled it in one read
+("persisted only on the final success path"). Forwarding both verdicts to the
+implementing agent would have handed it a contradiction to adjudicate with less
+context than you have — and forwarding only the reassuring one is how a blocker
+ships. Say in the fix message which reviewer was right and why, so the agent
+does not re-derive it.
+
 **Fresh deploys: UNIQUE stack names only** (e.g. `Cdkd<Issue>Verify`), never a
 shared fixed name and never a real prod stack — the account may hold the
 maintainer's production stacks. Tear down with `cdkd destroy … --force`, then SWEEP
