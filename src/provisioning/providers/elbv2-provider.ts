@@ -995,6 +995,13 @@ export class ELBv2Provider implements ResourceProvider {
       // are masked by `update()`'s outer frame, but a debug line it emits on
       // the SUCCESS path never reaches that frame.
       //
+      // The line therefore reports the value the TEMPLATE declared, not the
+      // one that went on the wire (`'1e5'` logs as `1e5` while AWS received
+      // `100000`). That divergence is deliberate: the masker matches by
+      // literal occurrence, so only the declared spelling can be masked, and a
+      // log line that cannot be masked is worth less than one that is
+      // approximate.
+      //
       // Masks the RAW property value, NOT `newCapacityUnits` — the `Number()`
       // coercion two statements up is exactly the "mask before you stringify"
       // gap the `SecretMasker` contract documents, and an earlier revision of

@@ -331,8 +331,14 @@ describe('ELBv2Provider LoadBalancer secret masking (#2063)', () => {
    *
    * The discriminating input is a secret that AWS ACCEPTS, or the call
    * rejects and the line is never reached: `CapacityUnits` is coerced with
-   * `Number()`, so the fixture uses a numeric-looking secret. The coercion is
-   * not a sanitizer — a number stringifies back to the same digits.
+   * `Number()`, so the fixture uses a numeric-looking secret. `Number()` does
+   * NOT round-trip every value AWS accepts, which is precisely why the mask is
+   * applied to the RAW property rather than to the coerced number, and why the
+   * fixture carries a leading zero — see the block comment on the fixture
+   * below. (An earlier revision of this header claimed the opposite, that a
+   * number stringifies back to the same digits. True of `4071`, false of
+   * `'0471'` / `'1e5'` / `' 4071'`, and that false claim is what the round-2
+   * review of issue #2063 caught masking the coerced value.)
    */
   describe('success-path debug lines', () => {
     // Sub-MIN_NEEDLE_LENGTH on purpose (issue #2063 round-2 review). At 4+
