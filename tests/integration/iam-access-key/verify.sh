@@ -58,9 +58,20 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# Shared S3 VERSION-sweep helpers (issue #2096). This fixture asserts that the
+# create-time IAM SecretAccessKey is CACHED in state `attributes` -- so a real,
+# usable AWS credential is in every state.json this fixture writes, by design.
+# The state bucket is VERSIONED, so `aws s3 rm` only writes a delete marker and
+# each of those credentials stays readable via GetObjectVersion long after the
+# IAM user that owned it was deleted.
+. ../s3-versions.sh
+
 STACK="CdkdIamAccessKeyExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+# Everything this stack owns in the bucket: state.json, lock.json,
+# rollback-journal.json and deployments/**.
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 
 USER_NAME="cdkd-iam-access-key-user"
 SECRET_NAME="cdkd-iam-access-key-secret"
@@ -86,6 +97,13 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    # The `aws s3 rm` above only wrote DELETE MARKERS, leaving the cached
+    # SecretAccessKey readable in every prior version. Purge them
+    # NONCURRENT-only here: this function also runs from the pre-run sweep and
+    # from the failure/INT/TERM traps, where a live state.json may still be the
+    # only record of resources that are standing. The success path does the
+    # full sweep and asserts the count is zero.
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
   fi
   # Direct sweep in case state-based teardown could not run: every access key
   # on the fixture user, then the user, then the secret (force, no recovery
@@ -238,5 +256,17 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
+# --- Teardown + VERSION sweep, ON THE SUCCESS PATH -------------------------
+# head-object above only looks at the CURRENT object. The bucket is VERSIONED
+# (issue #2096), so without this the cached SecretAccessKey survives the run in
+# every prior version. The sweep runs HERE, on the normal path, and not only in
+# `cleanup` -- a trap-only sweep never runs on a fixture that disarms its trap
+# -- and it ASSERTS zero rather than assuming it worked.
+echo "==> Final teardown + state-version sweep"
+cleanup
+trap - EXIT INT TERM
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "iam-access-key state teardown"
+
 echo ""
-echo "==> iam-access-key test passed (create + in-place Status update + secret preservation + clean destroy)"
+echo "==> iam-access-key test passed (create + in-place Status update + secret preservation + clean destroy + zero surviving state versions)"

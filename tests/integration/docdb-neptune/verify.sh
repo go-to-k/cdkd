@@ -48,9 +48,26 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/docdb-neptune"
 CLI="node ${REPO_ROOT}/dist/cli.js"
 
+# Shared S3 VERSION-sweep helpers (issue #2096). The fixture stack templates a
+# literal `masterUserPassword` for the DocDB cluster, so that password lands in
+# the cluster's own state properties. The state bucket is VERSIONED, so
+# `aws s3 rm` only writes a delete marker and it stays readable via
+# GetObjectVersion after a green run -- measured 2026-08-20, 16 of 64 surviving
+# versions of this stack's state.json carried it.
+#
+# Sourced by ABSOLUTE path because this line runs BEFORE the `cd "${TEST_DIR}"`
+# further down, so a relative `../s3-versions.sh` would resolve against whatever
+# the caller's cwd happens to be. Do NOT "simplify" this by moving the source
+# below that `cd` -- the helper is wanted before the first `cleanup` can fire --
+# and do not delete the `cd`, which the fixture's own npm/vp steps need.
+. "${REPO_ROOT}/tests/integration/s3-versions.sh"
+
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+# Everything this stack owns in the bucket: state.json, lock.json,
+# rollback-journal.json and deployments/**.
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 
 # Per-resource timeout overrides for DocDB + Neptune. AWS create / delete
@@ -108,6 +125,12 @@ cleanup() {
       --remove-protection \
       "${TIMEOUT_OVERRIDES[@]}" || true
   fi
+  # Purge the versions any `s3 rm` / `state destroy` left behind as delete
+  # markers. NONCURRENT-only, per the contract in ../s3-versions.sh: this runs
+  # from the failure and signal traps, where a live state.json may be the only
+  # record of a cluster that is still standing. The success path does the full
+  # sweep, after destroy has been asserted.
+  s3_purge_prefix_versions "${STATE_BUCKET:-}" "${STATE_PREFIX:-}" noncurrent || true
   exit "${rc}"
 }
 trap cleanup EXIT
@@ -224,5 +247,13 @@ echo "[verify] step 5 ok: state cleared"
 
 # AWS-side orphan auditing is delegated to /run-integ's /cleanup pass.
 
+# --- Teardown VERSION sweep, ON THE SUCCESS PATH ---------------------------
+# `state list` above only proves the CURRENT object is gone; the bucket is
+# VERSIONED, so the templated master password survived in every prior version
+# (issue #2096). The sweep must run HERE and not only in `cleanup`, because
+# `cleanup` does nothing on rc=0 and the line below disarms it anyway.
 trap - EXIT INT TERM
+echo "[verify] step 6: state-version sweep"
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "docdb-neptune state teardown"
 echo "[verify] PASS"

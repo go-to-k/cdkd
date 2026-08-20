@@ -40,9 +40,25 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
 
+# Shared S3 VERSION-sweep helpers (issue #2096). This fixture calls
+# `api.addApiKey(...)`, and `AWS::ApiGateway::ApiKey` has NO SDK provider -- it
+# takes the generic Cloud Control readback, whose resource model includes
+# `Value`. So the live 40-character key lands in `attributes.Value` without any
+# provider code naming it: measured 2026-08-20, 2 of this stack's 16 surviving
+# state.json versions carry one. The state bucket is VERSIONED, so `aws s3 rm`
+# only writes a delete marker and it stays readable.
+#
+# Both halves of that measurement matter. A newest-N sample missed it (the key
+# sits in versions 7 and 8 of 16), and grepping the PROVIDER sources for a
+# credential would have missed it too, because no provider handles this type.
+. ../s3-versions.sh
+
 STACK="CdkdApigwUsagePlanKeyExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+# Everything this stack owns in the bucket: state.json, lock.json,
+# rollback-journal.json and deployments/**.
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 API_NAME="${STACK}-api"
 KEY_NAME="${STACK}-key"
 PLAN_NAME="${STACK}-plan"
@@ -71,6 +87,10 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    # The `aws s3 rm` above only wrote DELETE MARKERS. NONCURRENT-only here:
+    # this also runs from the pre-run sweep and the failure traps, where a live
+    # state.json may be the only record of resources still standing.
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
   fi
   set -eu
 }
@@ -112,5 +132,16 @@ PLAN_REMAIN=$(aws apigateway get-usage-plans --region "${REGION}" --query "items
 echo "    OK: usage plan gone"
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state gone"
+
+# --- Teardown + VERSION sweep, ON THE SUCCESS PATH -------------------------
+# head-object only looks at the CURRENT object; the bucket is VERSIONED, so the
+# Cloud-Control-readback api key `Value` survives in prior versions without this
+# (issue #2096). On the success path, not only in `cleanup`, and asserted.
+echo "==> Final teardown + state-version sweep"
+cleanup
+trap - EXIT INT TERM
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "apigw-usage-plan-key state teardown"
+
 echo ""
 echo "==> apigw-usage-plan-key test passed"

@@ -439,12 +439,27 @@ export function lintScriptAwsCommands(
  * `.claude/rules/testing.md` exists to prevent, reintroduced one level up.
  */
 export function readFixtureScripts(integRoot: string): { fixture: string; content: string }[] {
-  return readdirSync(integRoot, { withFileTypes: true })
+  const entries = readdirSync(integRoot, { withFileTypes: true });
+  const fixtures = entries
     .filter((e) => e.isDirectory() && existsSync(join(integRoot, e.name, 'verify.sh')))
     .map((e) => ({
       fixture: e.name,
       content: readFileSync(join(integRoot, e.name, 'verify.sh'), 'utf8'),
     }));
+  // ...plus the SHARED helpers sitting directly in tests/integration/, which
+  // issue `aws` verbs on behalf of every fixture that sources them
+  // (`s3-versions.sh` runs `s3api list-object-versions` / `delete-objects` /
+  // `delete-object` in twelve of them, issue #2096). Scoping this walk to
+  // directories would leave the most widely executed aws calls in the tree as
+  // the only ones this lint cannot see -- and a removed verb there breaks
+  // twelve fixtures at once rather than one.
+  const shared = entries
+    .filter((e) => e.isFile() && e.name.endsWith('.sh'))
+    .map((e) => ({
+      fixture: e.name,
+      content: readFileSync(join(integRoot, e.name), 'utf8'),
+    }));
+  return [...fixtures, ...shared];
 }
 
 export function lintFixtureTreeAwsCommands(
@@ -456,9 +471,23 @@ export function lintFixtureTreeAwsCommands(
   );
 }
 
+/**
+ * `<fixture>/verify.sh` for a fixture, or the bare filename for a SHARED helper
+ * that lives directly in `tests/integration/`. `readFixtureScripts` returns
+ * both shapes, so a hardcoded `${fixture}/verify.sh` would report the
+ * nonexistent path `tests/integration/s3-versions.sh/verify.sh` for exactly the
+ * file the walk was widened to reach -- i.e. it would be wrong the first time
+ * it was ever needed.
+ */
+function violationPath(fixture: string): string {
+  return fixture.endsWith('.sh')
+    ? `tests/integration/${fixture}`
+    : `tests/integration/${fixture}/verify.sh`;
+}
+
 export function formatAwsCommandViolation(v: AwsCommandViolation): string {
   return [
-    `tests/integration/${v.fixture}/verify.sh:${v.line}`,
+    `${violationPath(v.fixture)}:${v.line}`,
     `  \`aws ${v.service} ${v.verb}\` is NOT an AWS CLI command — it is on the CLI's removal list`,
     `  (awscli/customizations/removals.py), even though the ${v.service} API operation exists and`,
     `  every AWS SDK exposes it. The CLI answers "Found invalid choice"; on a machine with`,

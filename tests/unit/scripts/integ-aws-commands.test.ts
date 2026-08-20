@@ -378,6 +378,27 @@ describe('lintScriptAwsCommands', () => {
 });
 
 describe('integ fixture aws invocations (#1402)', () => {
+  it('the violation path is right for BOTH shapes the walk now returns', () => {
+    // The walk was widened to include shared helpers that sit directly in
+    // tests/integration/ (issue #2096), which arrive with `fixture` set to a
+    // FILE name. A hardcoded `${fixture}/verify.sh` therefore reported the
+    // nonexistent path `tests/integration/s3-versions.sh/verify.sh` — wrong for
+    // exactly the file the walk was widened to reach, i.e. guaranteed wrong the
+    // first time it was ever needed. Nothing violates today, so only a direct
+    // assertion on the formatter can hold this.
+    const at = (fixture: string): string =>
+      formatAwsCommandViolation({
+        fixture,
+        line: 42,
+        service: 'emr',
+        verb: 'list-instance-groups',
+        raw: 'aws emr list-instance-groups --cluster-id j-X',
+      });
+    expect(at('lambda')).toContain('tests/integration/lambda/verify.sh:42');
+    expect(at('s3-versions.sh')).toContain('tests/integration/s3-versions.sh:42');
+    expect(at('s3-versions.sh')).not.toContain('s3-versions.sh/verify.sh');
+  });
+
   it('no fixture calls a command the AWS CLI removed', () => {
     const violations = lintFixtureTreeAwsCommands(INTEG_ROOT, TABLE);
     expect(violations.map(formatAwsCommandViolation).join('\n\n')).toBe('');
@@ -391,6 +412,14 @@ describe('integ fixture aws invocations (#1402)', () => {
   it('parses a substantial share of the fixture tree', () => {
     const stats = collectStats();
     expect(stats.fixtures).toBeGreaterThan(150);
+    // Per-SHAPE floor for the shared helpers: an aggregate over 280 fixtures
+    // cannot tell "the helper is clean" from "the helper was never read", and
+    // it is the one script whose aws verbs run in twelve fixtures at once.
+    const scanned = readFixtureScripts(INTEG_ROOT);
+    const helper = scanned.find((f) => f.fixture === 's3-versions.sh');
+    expect(helper, 'tests/integration/s3-versions.sh is not being scanned').toBeDefined();
+    expect(helper?.content).toContain('aws s3api list-object-versions');
+    expect(helper?.content).toContain('aws s3api delete-objects');
     // Current: 3022 invocations (3002 before the `nlb-source-nat` fixture of
     // issue #1619 added 20; 2635 when these floors were written — the comment
     // had not been refreshed as the tree grew, which is how the ceiling below
