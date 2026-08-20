@@ -74,7 +74,7 @@ gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
 go-to-k/cdkd#1593. The `select(.pull_request | not)` filter is required: the REST
 `/issues` endpoint returns open PRs too. `per_page=100` is the API maximum and the
 repo has outgrown 60. `created_at` is in the tuple because two later steps read it:
-§3-0 holds back anything filed within the last hour, and §3-a's rule 6 ranks by
+§3-0 holds back anything filed within the last hour, and §3-a's rule 7 ranks by
 age.)
 
 Skim titles: most cdkd issues are `fix(deployment)` (deploy/update/replacement),
@@ -190,15 +190,34 @@ parallelized — bundle them into ONE lane (one worktree, one PR) or defer one.
 - Prefer surgical, deterministic, live-proven issues (a provider tweak + a
   regression test) for auto-merge; hold complex redesigns (new DAG mechanism,
   new intrinsic, schema bump) for a focused solo pass.
-- **Read the body's own `Session-fit:` line before shortlisting it.** The filer
+- **Most open bodies are still in the OLD packed shape — read them, do not
+  rewrite them.** 44 of the 104 open issues on 2026-08-20 carry
+  `Session-fit: <decision> — <reason> / Effort: <duration>` on one line, from
+  before the five-field split. Such a body IS classified: take its decision from
+  `Session-fit` and read its `Effort:` value as an **`Estimate`**, because in
+  that shape the field held a DURATION — reading it as the new `Effort` (a
+  verification-cycle kind) turns `~1-3 h` into nonsense. A missing `Severity` is
+  UNKNOWN, never `low`; ranking rule 4 already declines to separate a pair
+  unless both sides carry the line, so an unclassified body simply falls through
+  to rule 5 rather than sorting last. Do NOT bulk-migrate the 44 — `Severity`
+  can only be written by someone holding the evidence, and a sweep would
+  manufacture 44 guesses. Upgrade a body to the four-line shape when you CLAIM
+  it (§4 carries the step), which is the moment that evidence exists. Four, not
+  five: `Notes` is report-only and never goes in an issue body.
+- **Read the body's own classification lines before shortlisting it** —
+  `Session-fit` / `Severity` / `Effort` / `Estimate`. The filer
   may already have classified the issue, and a `Session-fit: next` line names the
-  cycle it needs — its own fixture arm, an integ run, a higher review tier, an
-  upstream answer. Such an issue is not off-limits forever, but taking one means
+  cycle it needs — a fixture that has to be WRITTEN, a review tier this run
+  cannot carry, a schema bump that must not share a PR, an upstream answer.
+  ("An integ run" is not on that list: per `CLAUDE.md`'s calibration, running an
+  EXISTING fixture is a median 85 s and never on its own a reason to defer. A
+  body citing it is using the pre-2026-08-20 wording, so re-judge it rather than
+  honouring it.) Such an issue is not off-limits forever, but taking one means
   the claim comment (§4) states why the recorded classification no longer
   applies: typically that THIS run was started for it, or that the lane it would
   have been bundled into is already merged. Silently re-deciding from scratch is
   exactly the re-litigation the classification exists to prevent (CLAUDE.md →
-  "Session-fit classification") — the call was made when the evidence for it was
+  "The four TODO fields") — the call was made when the evidence for it was
   still in hand, and that evidence is gone by the time you are triaging.
 - **A MIRROR issue may already be done — resolve it against the repo before you
   claim it.** A body saying it is mirroring a lesson from a sibling repo comes from
@@ -279,7 +298,7 @@ parsing. Flip `<` to `>=` to list what you are holding back, and report those as
 FOR THEIR FILER, never as backlog you declined.)
 
 **Recompute `CUT` as you pick each lane, not once at triage.** A run lasts hours, so
-an issue held at 09:00 is an ordinary candidate at 10:05 — and §3-a rule 6 then rates
+an issue held at 09:00 is an ordinary candidate at 10:05 — and §3-a rule 7 then rates
 it among the MOST accurate on the board. A cutoff computed once silently excludes a
 whole cohort for the rest of the run, and that is the common case rather than the
 edge: this backlog arrives in `/hunt-bugs`-shaped bursts filed minutes apart.
@@ -332,9 +351,10 @@ a tie:
 | 1 | **Security issues come FIRST**, ahead of every other rule below | A security defect is the one class where the cost keeps growing while it sits: the vulnerable behavior is already shipped, already running in users' accounts, and the report may be public. Every other rule orders work by how much value a fix adds; this one orders it by how much a delay costs |
 | 2 | **Umbrella issues sort LAST**, whatever else they score (except rule 1) | They cannot be finished in one lane, so a lane leaves the issue open with ambiguous residue, and their many sites collide with everything |
 | 3 | **`fix:` outranks everything else** (`feat:` / `test:` / `docs:` / `audit:` / `chore:`) | A `fix:` is a defect in shipped behavior a user can hit today; the rest are improvements to behavior that is not wrong |
-| 4 | **Area: `deploy` > `diff` = `destroy` > everything else** | Deploy is the tool's primary function — it is what cdkd exists to do, so a deploy defect costs more than an equally-sized defect elsewhere. `diff` and `destroy` rank equally behind it |
-| 5 | **Prefer issues landing in ONE isolated file** over cross-cutting ones | Not just collision-avoidance for this run: a cross-cutting file admits only one lane at a time, so taking it blocks the widest set of future parallel work. Among equals, spend the contested files last |
-| 6 | **Newer first** (higher issue number / `created_at`) | Not novelty — **accuracy**. A freshly filed issue was written against current code, so its file:line tables and reproduction still hold. Older ones rot: on 2026-08-13 two of the enumerated sites in a one-day-old issue were already fixed or deleted. An older issue is likelier to be partly done, superseded, or wrong |
+| 4 | **Higher `Severity` first**, when BOTH candidates carry the line | It is the same axis rules 1 and 3 approximate — how much the defect costs while it sits — but measured by the session that had the evidence in hand, rather than inferred from a title prefix. It ranks below rule 3 rather than replacing it because most issues do not carry the line yet: a `fix:` with no `Severity` must not lose to a `chore:` that happens to claim `high`. When only one side carries it, this rule does not separate them — fall through to rule 5 |
+| 5 | **Area: `deploy` > `diff` = `destroy` > everything else** | Deploy is the tool's primary function — it is what cdkd exists to do, so a deploy defect costs more than an equally-sized defect elsewhere. `diff` and `destroy` rank equally behind it |
+| 6 | **Prefer issues landing in ONE isolated file** over cross-cutting ones | Not just collision-avoidance for this run: a cross-cutting file admits only one lane at a time, so taking it blocks the widest set of future parallel work. Among equals, spend the contested files last |
+| 7 | **Newer first** (higher issue number / `created_at`) | Not novelty — **accuracy**. A freshly filed issue was written against current code, so its file:line tables and reproduction still hold. Older ones rot: on 2026-08-13 two of the enumerated sites in a one-day-old issue were already fixed or deleted. An older issue is likelier to be partly done, superseded, or wrong |
 
 **Detecting each signal** — from the same REST listing §1 already fetched, plus
 the body when needed:
@@ -348,7 +368,7 @@ gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
 
 # the filer may already have classified it (§3) — this is a body read, so do it
 # on the shortlist rather than on the whole listing
-gh issue view <n> --json body -q .body | grep -i 'Session-fit:'
+gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort:|Estimate:'
 ```
 
 - **Security**: the issue reports a vulnerability in shipped behavior rather than a
@@ -373,7 +393,7 @@ gh issue view <n> --json body -q .body | grep -i 'Session-fit:'
   Two consequences that follow from rule 1 sitting above rule 2: a security issue
   that is ALSO an umbrella is not deferred by the umbrella rule — split it, take the
   concrete sites this lane can close now, and file the remainder. And a security
-  issue does not lose its place for being older; rule 6 never applies to it.
+  issue does not lose its place for being older; rule 7 never applies to it.
 - **Umbrella**: title or body says `umbrella`, `audit:`, `Backfill`, `N entries
   across M types`, or the body carries a TABLE of sites rather than one defect.
   A "residual of #N" issue naming two or three concrete sites is NOT an umbrella —
@@ -394,6 +414,18 @@ gh issue view <n> --json body -q .body | grep -i 'Session-fit:'
   at it, presume the filer gone — that presumption is all you can derive — and `now`
   becomes what it looks like: an earlier session's unfinished commitment, and a
   candidate to take EARLY rather than a reason to skip.
+- **Severity / Effort / Estimate**: the body's own lines, when the filer wrote
+  them (§3). `Severity` says what stays broken while the issue sits — it is
+  ranking rule 4 above, and it separates two candidates only when BOTH carry the
+  line. `Effort` says which verification cycle the fix drags (a `large` one
+  needs its own PR plus integ plus review, so it does not belong in a fan-out
+  lane); `Estimate` says how many hours, which is what decides how many lanes
+  this run can carry. Neither of those two ranks anything — they gate whether
+  this run can AFFORD a candidate at all, which is a §2 disjointness-style
+  question, not a §3 ordering one. Read all three as the filer's measurement,
+  not as a ceiling — but do not silently overwrite them either: if this run's
+  evidence contradicts one, say so in the claim comment (§4) and correct the
+  issue body, the same way §3 requires for a re-decided `Session-fit`.
 
 **These are tiebreakers, not a scoring formula — do not average them.** Apply
 rule 1, then 2, then 3, and so on, stopping at the first that separates the
@@ -429,6 +461,15 @@ Claiming to avoid collision with parallel agents."
 comes BEFORE the first edit. It is the issue-level twin of the worktree
 DISJOINT-FILE rule (see the "Claim a filed issue before working it" rule in
 `CLAUDE.md`).
+
+**Correct the classification lines in the same turn as the claim.** Claiming is
+the first moment this run holds evidence about the issue, so it is where the
+four lines get written or fixed: a legacy body carrying the old packed line is
+rewritten to the four-line shape (§3), a missing `Severity` is filled in from
+what you just read, and a value this run's evidence contradicts is corrected
+with the correction named in the claim comment. Doing it here rather than at
+merge time is the same argument the deferral rule makes — the evidence is in
+hand now and gone later. `Notes` never goes into an issue body.
 
 **Claim at SHORTLIST time, not after the analysis.** Claim the moment an issue
 enters your candidate set — before the deep read of its body, before mapping
@@ -485,6 +526,37 @@ git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 pnpm install                 # worktrees have no node_modules
 ```
+
+**Before fixing, ask whether the defect has SIBLING SITES — and if it does,
+sweep them in THIS lane rather than filing them.** Most defects here are a
+CLASS, not an instance: one provider mishandling an empty sub-object, one
+resolver arm missing an intrinsic, one caller of a shared helper assuming the
+old contract. So once the root cause is named, grep for the same shape across
+the repo before writing the fix:
+
+```bash
+# The shape depends on the defect; the DISCIPLINE is that you run one.
+grep -rn "<the mishandled call / property / assumption>" src/ | grep -v test
+grep -rln "implements ResourceProvider" src/provisioning/providers/   # per-implementer audits
+```
+
+**N sites of one root cause is ONE issue and ONE PR, never N issues.** This is
+the single largest source of unbounded backlog growth: split into N, each site
+pays the full fixed cost — triage, claim, worktree, review tier, integ run,
+merge, release — for a fix that is the same edit N times. Swept together, that
+cost is paid once, and the reviewer sees the whole class instead of one instance
+whose generality is invisible. It also removes the failure mode where sites 2..N
+sit open long enough for the fix at site 1 to drift away from them.
+
+Two boundaries, so this does not become a licence for unbounded lanes:
+
+- **A sweep that would make the PR unreviewable is a genuine `next`** — file it
+  as an explicit umbrella naming every site (§3 already sorts umbrellas last),
+  and say in the umbrella which sites this lane DID close, so the residue is
+  unambiguous rather than "the rest, somewhere".
+- **Sweep the same ROOT CAUSE, not the same AREA.** Two unrelated bugs in one
+  provider are two issues; one wrong assumption at five call sites is one. The
+  test is whether a single sentence describes the fix at every site.
 
 Do the fix in the worktree (match the existing provider/pattern exactly; ESM
 relative imports need the `.js` extension — even in TypeScript). After every source
@@ -1194,6 +1266,41 @@ subject and a wider scope, and neither is covered by that one:
   what the flow PROMISES — dropping a gate, lowering a verification tier, loosening
   §0 — never for wording, ordering, or a newly-learned trap.
 
+### 10-0. Measure the run's net effect on the backlog
+
+Before anything else in this step, count what the run did to the issue list and
+put the two numbers in the wrap report:
+
+```bash
+# closed BY this run (the lanes you merged, plus anything a sweep folded in)
+gh issue list --state closed --limit 100 --json number,closedAt,title \
+  --jq '.[] | select(.closedAt > "<this run start ISO>") | "\(.number)\t\(.title)"'
+# filed BY this run
+gh issue list --state all --limit 100 --json number,createdAt,title \
+  --jq '.[] | select(.createdAt > "<this run start ISO>") | "\(.number)\t\(.title)"'
+```
+
+Report it as one line — `closed N / filed M` — and **when M > N, give the reason
+in one more line**. The reason is almost always one of three, and only the first
+is healthy:
+
+- **the code really does have that many independent defects** — the run walked
+  into an untested area. Fine; say which area, so the next `/hunt-bugs` aims there.
+- **one root cause was split into many issues** — §5's sweep rule should have
+  folded them. This is the failure mode to catch; if it happened, fold what is
+  still open into an umbrella now rather than next time.
+- **discoveries were deferred that had session-only evidence** — re-read the
+  `now` criteria in `CLAUDE.md`; a discovery whose repro dies with this session
+  is not a residual, and deferring it means the next session re-derives it.
+
+**M ≤ N is NOT a target, and must never become one.** The purpose of the system
+is a correct codebase, not a short list: an unfiled finding is strictly worse
+than a filed one, because it removes the defect from the record while leaving it
+in the product. So this count exists to make growth VISIBLE and to route it to
+the right cause — never to justify not writing a finding down, softening one, or
+merging two genuinely independent defects into a single vague issue to make the
+number smaller. If you ever find yourself weighing whether to file, file.
+
 ### 10-a. Evidence: only what this run actually produced
 
 Walk the session and collect, with the concrete instance attached to each:
@@ -1511,11 +1618,20 @@ the run evidence behind it — or "no skill change" plus what held.
 - **Classify every deferral `now` / `next` the moment you defer it — this flow
   is where that decision is hardest and most often re-litigated.** Each merge in
   section 9 lands on the same question: keep going here, or hand off to a fresh
-  session / another agent? Answer it when the item is created (write
-  `Session-fit: now (do it in this session) | next (not this session) — <reason>
-  / Effort: <duration, e.g. ~1-3 h -- not a bare letter>` into the issue body,
-  per `CLAUDE.md` → "Session-fit classification"), not after the merge when the
-  context that justified it is gone. **After a lane merges, `next` is the
+  session / another agent? Answer it when the item is created — write the four
+  classification lines into the issue body, one field per line, per
+  `CLAUDE.md` → "The four TODO fields" — not after the merge when the
+  context that justified it is gone:
+
+  ```text
+  Session-fit: now (do it in this session) | next (not this session) — <reason>
+  Severity: high | medium | low — <what stays broken while it is undone>
+  Effort: small (S) | medium (M) | large (L) — <which verification cycle it drags>
+  Estimate: <duration, e.g. ~1-3 h -- never a bare letter> — <what eats the time>
+  ```
+
+  The report repeats those same four lines and adds a `Notes` line for
+  session-specific context; the issue body stays at four. **After a lane merges, `next` is the
   default**: what stays hot is that lane's files and the integ you already ran,
   and nothing else — so a residual landing in those files is `now`, and a
   residual anywhere else is `next` even when it looks small.

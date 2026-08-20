@@ -227,30 +227,69 @@ high.
   **Scope: only work this session created or touched.** The section reports residuals of THIS session's task: gaps in what was just shipped, polish deferred while doing it, and issues filed BECAUSE of this work. It is NOT a backlog dump. Do not list pre-existing open issues that merely happen to be unresolved, and once the session has moved on to an unrelated task, stop carrying forward items from earlier unrelated work in it. If the current work leaves nothing behind, the answer is "Nothing remaining" even when the repo has open issues elsewhere.
 
   **Remaining work** — exactly one of:
-  - **TODO (issue #N)** — work that still needs doing later. This is the ONLY bucket that means "there are follow-up tasks"; every entry MUST have a GitHub issue number (file the issue BEFORE reporting, in the same turn the deferral is decided) AND a **session-fit classification** (below). A reader who wants to know "is anything left to do?" reads this bucket and nothing else.
+  - **TODO (issue #N)** — work that still needs doing later. This is the ONLY bucket that means "there are follow-up tasks"; every entry MUST have a GitHub issue number (file the issue BEFORE reporting, in the same turn the deferral is decided) AND the **four classification fields** `Session-fit` / `Severity` / `Effort` / `Estimate` (below). A reader who wants to know "is anything left to do?" reads this bucket and nothing else.
   - **Won't-do (decided + recorded)** — things consciously decided AGAINST doing (cost/benefit call), with a one-line reason and where the decision is recorded (PR body, in-code comment, issue comment). These are NOT follow-up tasks and require no action; they are listed only so the decision is visible and challengeable.
   - **Nothing remaining** — an explicit statement after actually auditing for parity gaps, deferred polish, and reviewer nits.
 
   (The old bucket names "filed" / "accepted" / "none" map to TODO / Won't-do / Nothing remaining; do not use the old names in new reports.)
 
-  **Session-fit classification — decide it WHEN THE ITEM ARISES, not at wrap time.** Every TODO carries two attributes: whether it should be finished in THIS session, and how big it is. Classify at the moment you decide to defer something and file its issue — by wrap time the evidence for the call (which files you had open, which verification cycle you were already paying for) is gone, and a retrospective guess is worth little. Record it **in the issue body** so it survives the session, as one line:
+  **The four TODO fields — decide them WHEN THE ITEM ARISES, not at wrap time.** Classify at the moment you decide to defer something and file its issue — by wrap time the evidence for the call (which files you had open, which verification cycle you were already paying for) is gone, and a retrospective guess is worth little. Record it **in the issue body** so it survives the session. **The issue body and the report use the SAME four lines**, so copying one into the other takes no thought:
 
   ```text
-  Session-fit: now (do it in this session) | next (not this session) — <one-line reason> / Effort: <duration>
+  Session-fit: next (not this session) — <one-line reason>
+  Severity: medium — <what stays broken while it is undone>
+  Effort: large (L) — <which verification cycle it drags>
+  Estimate: ~3 h+ — <what eats the time>
   ```
 
-  The question this answers is always the same one, and it is the one that otherwise gets re-litigated after every merge: **do I keep going in THIS session, or hand this to a fresh session / another agent?** Answer it once, when the item is created, and the post-merge moment stops being a decision point at all.
+  A report adds a fifth line, **`Notes`**, for session-specific context (what this session measured, a correction posted to the issue, what you are about to do about it); write `none` when there is nothing. The issue body stays at four lines — what belongs there is only the part that outlives the session.
 
-  **`Session-fit` is the one key that answers it, and it is spelled the same everywhere** — in the issue body and in every report, in an English or a Japanese report alike. Do not translate or rename it per context (a localized label, "today's fit", "session scope", ...): one token means the reader can scan or grep for the same string in the issue and in the report, and two names for one key is why someone has to ask which field carries the decision.
+  **The four answer four different questions, and none of them derives from another:**
 
-  **No bare tokens: every value must be readable without knowing the internal scale.** Write `Session-fit: next (not this session)`, not a lone `next`; write `Effort: ~1-3 h`, not a lone `M`. This has now gone wrong three separate ways — `M` for a duration, `now`/`next` for the decision, and "Handoff" for the closing line — always in the same direction, because a short token is cheap to emit and its expansion is not. The rule is therefore mechanical rather than a matter of taste: a token may accompany its meaning, never replace it.
+  | Field | Question it answers | Kind |
+  | --- | --- | --- |
+  | `Session-fit` | do I finish it in THIS session? | decision |
+  | `Severity` | how much does leaving it undone hurt? | value |
+  | `Effort` | which verification cycle does it drag? | kind of cost |
+  | `Estimate` | how many hours? | amount of cost |
 
-  - **`now`** — finish it in this session. Any of: it lands in files this session already has open or changed (**re-acquiring the context costs more than the work**); skipping it leaves main self-inconsistent (docs contradicting shipped code, a stale rationale comment, a fixture that no longer discriminates, an unearned claim in a PR body); it blocks another lane in this session; or **it fits inside the verification cycle you are already paying for** (adds no new integ run and no higher review tier).
-  - **`next`** — hand off to a fresh session / another agent. Any of: it needs its own integ / review / schema-bump cycle; it is an independent subsystem with no file overlap; it waits on external input (an AWS quota, a maintainer decision, an upstream fix); or bundling it would make the PR unreviewable.
+  In particular **do not collapse `Severity` into `Session-fit`**. A `Severity: high` item can still be `Session-fit: next` (a new integ fixture has to be written for it), and a `low` one can be `now` (it lands in a file this session already has open). The moment the two track each other, `Severity` is just a second spelling of the decision and the field is wasted. Likewise **`Effort` is not `Estimate`**: "one integ run" is a kind of cost, and the hours it takes depend on which fixture — the first does not give you the second.
 
-  **Right after a merge, `next` is the default** and the burden of proof is on `now`. What stays hot across a merge is the merged lane's own files and its verification cycle — nothing else. So an item landing in those files, or riding the integ you already ran, is `now`; an item in any other subsystem is `next` even when it feels small and even when you can see exactly how to fix it. "I already understand this one" is not one of the `now` criteria: understanding is cheap to write down in the issue and expensive to act on with a stale context and a spent verification budget.
-  - **Effort estimates the whole tail, not the edit.** In this repo the integ and review cycles dominate wall-clock, so a ten-line change that touches a provider drags an integ behind it and is not S. **S** = under ~30 min: edit plus unit tests, no new integ, no higher review tier. **M** = ~1-3 h: needs one re-review round or one integ run. **L** = 3 h+: needs its own PR plus integ plus review, or is a behavior change / schema bump.
-  - **Write the estimate as TIME, not as a bare letter.** `Effort: ~1-3 h (one integ run + a review round)` — not `Effort: M`. The letters are an internal scale: a bare `M` is only readable by someone who has this table memorised, and the whole point of the estimate is to let the reader decide whether to start it now. **This drifts on its own** — a letter costs no thought while a duration forces you to name what actually eats the time — so it needs stating rather than leaving to preference. The letter may accompany the duration (`~1-3 h (M)`), never replace it. If you genuinely cannot bound it, say so and say what would settle it ("unbounded until the fixture is measured"), which is information; a lone letter is not.
+  **`Session-fit` is the key that answers the deferral question, and it is spelled the same everywhere** — in the issue body and in every report, in an English or a Japanese report alike. The same holds for `Severity`, `Effort`, `Estimate` and `Notes`. Do not translate or rename them per context (a localized label, "today's fit", "session scope", ...): one token means the reader can scan or grep for the same string in the issue and in the report, and two names for one key is why someone has to ask which field carries the decision.
+
+  **No bare tokens: every value must be readable without knowing the internal scale.**
+  - Write `Session-fit: next (not this session)`, not a lone `next`.
+  - Write `Effort: large (L)`, not a lone `L`. The letter may accompany the word, never replace it.
+  - Write `Severity` as a word (`high` / `medium` / `low`) and **never as an initial** — the initials collide with `Effort`'s in both directions, and the second collision is the dangerous one: `M` would be `medium` on either scale, while `L` would be *low* (the least urgent thing there is) against *large* (the biggest). A reader cannot tell which scale is being spoken.
+  - **Always write `Effort` AND `Estimate`.** Dropping the duration and keeping the letter is exactly the older failure this split was made to end.
+
+  This has now gone wrong three separate ways — `M` for a duration, `now`/`next` for the decision, and "Handoff" for the closing line — always in the same direction, because a short token is cheap to emit and its expansion is not. The rule is therefore mechanical rather than a matter of taste: a token may accompany its meaning, never replace it.
+
+  **Session-fit** — the question it answers is always the same one, and it is the one that otherwise gets re-litigated after every merge: **do I keep going in THIS session, or hand this to a fresh session / another agent?** Answer it once, when the item is created, and the post-merge moment stops being a decision point at all.
+  - **`now`** — finish it in this session. Any of: it lands in files this session already has open or changed (**re-acquiring the context costs more than the work**); skipping it leaves main self-inconsistent (docs contradicting shipped code, a stale rationale comment, a fixture that no longer discriminates, an unearned claim in a PR body); it blocks another lane in this session; **it rides an EXISTING integ fixture** (see the calibration below); or **its evidence exists only in this session** — a live repro, a real-AWS observation, a measurement you took. Understanding survives in an issue body; evidence does not.
+  - **`next`** — hand off to a fresh session / another agent. Any of: a NEW integ fixture has to be WRITTEN for it; it is a schema bump or a behavior change that must not share a PR (if either half fails, both become unmergeable); bundling it would make the PR unreviewable; it waits on external input (an AWS quota, a maintainer decision, an upstream fix); or it is an independent subsystem with no file overlap AND none of the `now` criteria fire.
+
+  **Calibration: RUNNING an existing integ is not a reason to defer, and this rule used to say it was.** Measured over the 268 rows of `docs/_generated/integ-last-run.tsv` on 2026-08-20: median run **85 s**, mean 4.6 min, p90 8.8 min, and the heaviest broad fixture (`multi-stack-deps`) 8.0 min. A passing run costs a few hundred tokens of output. If the session is running an integ for its current lane anyway, a fix riding the same fixture costs **zero** — the same run refreshes the same 14-day gate. What is genuinely expensive is *writing* a new fixture (a CDK app plus `verify.sh` plus a ledger row plus the coverage matrix), an integ that FAILS (unbounded, and you would pay it next session too), and above all **review of a larger diff, which grows superlinearly** because a reviewer reads the whole thing and cross-file interactions multiply. Defer on those, never on "it needs an integ".
+
+  **Right after a merge, `next` is the default for RESIDUALS** — deferred polish, a nit, a parity gap — and the burden of proof is on `now`. What stays hot across a merge is the merged lane's own files and its verification cycle. "I already understand this one" is not a `now` criterion for a residual: understanding is cheap to write down in the issue and expensive to act on with a stale context.
+
+  **A newly DISCOVERED bug is not a residual, and the default flips.** A residual is fully describable — write it down and the next session loses nothing. A discovery's expensive part is the evidence behind it (the repro you built, what you watched AWS actually do, the number you measured), and that is exactly the part an issue body cannot carry cheaply. So when a bug surfaces mid-session, ask which of the two it is. If the evidence is session-only, it is `now` unless a `next` criterion above genuinely fires; and if you must defer it anyway, **the issue body carries the evidence, not just the diagnosis** — otherwise the next session re-derives the expensive half from scratch.
+
+  **Severity — what stays broken while the item is undone.**
+  - **`high`** — a wrong result, data loss, a security surface, or something a user hits in normal operation.
+  - **`medium`** — a capability is missing but there is a workaround, or it only shows up under a specific condition.
+  - **`low`** — internal tidiness: readability, duplication, a comment, a rationale that no longer holds. Wrong text that does not execute — including docs contradicting shipped code — lands here: a user can read it, but nothing they run behaves differently.
+
+  **Rate what a user experiences, never why this session should do it.** "Leaving main self-inconsistent" belongs in `Session-fit`'s reason, where it is a `now` trigger — it is not a Severity level. Copying it here would make that flavour of `high` permanently un-`next`-able, which is the collapse the orthogonality rule above forbids, arriving through the scale instead of through the definition.
+
+  Severity exists so a later reader can decide **which of these to pick up first**, so the value alone is not enough — add the one line saying what is broken. A bare `Severity: medium` still forces them to open the issue, which is the work the field was supposed to save.
+
+  **Effort — which verification cycle the item drags.** Not the edit time — but what dominates is **review** and **fixture authoring**, not running an existing integ (see the calibration above). A ten-line change that rides a fixture the session is already running stays `small`; it rises only when it ADDS verification this session was not otherwise paying for.
+  - **`small` (S)** — edit plus unit tests, riding verification this session already pays for.
+  - **`medium` (M)** — one re-review round, or a run of an EXISTING integ fixture this session was not otherwise going to run.
+  - **`large` (L)** — a NEW integ fixture has to be written, or it is a behavior change / schema bump needing its own PR plus review.
+
+  **Estimate — the hours, plus what eats them.** `Estimate: ~1-3 h — the export fixture deploys a NAT gateway, so the integ is ~25 min of the total`. The "why" here must name what actually consumes the time; restating the `Effort` level ("needs one integ run") is the collapse the paragraph above forbids, arriving through the example. The point is to let the reader decide whether to start it now. **This drifts on its own** — a letter costs no thought while a duration forces you to name what actually eats the time — which is why the `Effort` letter never licenses dropping the `Estimate` line. If you genuinely cannot bound it, say so and say what would settle it ("unbounded until the fixture is measured"), which is information; a lone letter is not.
 
   **`now` is load-bearing, not a label.** A session with any open `now` item is NOT closeable — finish it, or re-classify it to `next` with the reason stated. The reverse move is required too: if the session ends up touching those files anyway, promote a `next` to `now` and clear it while the context is hot.
 
@@ -267,7 +306,7 @@ high.
 
   ```text
   Not this session — start a fresh session with: /work-issues
-  Not this session — start a fresh session with: fix issue <N> (Effort: ~1-3 h)
+  Not this session — start a fresh session with: fix issue <N> (Estimate: ~1-3 h)
   ```
 
   Group the `next` items by whether one fresh session could take them together (file-disjoint lanes) or whether they must be serialized, and say which. **Label it with the decision, not the mechanism.** Words like "Handoff" or "Next steps" name how the work moves, not whether THIS session will do it, so the reader is left making exactly the call this classification exists to have already made. Lead with "Not this session".
@@ -277,7 +316,17 @@ high.
   - **Never let a `next` item appear on the State line.** WAITING enumerates only what THIS session will still do on its own (a CI run, an integ, a subagent, a merge). A `next` TODO is by definition not one of those. If a `next` item is in the WAITING list, either it was misclassified and belongs in `now`, or the list is wrong.
 
   **What the report looks like when a `now` item exists.** A `now` TODO is a commitment that this session finishes it, so it changes all three parts of the report together — and the common failure is listing one while still writing CLOSEABLE:
-  - **Remaining work** — list it with its classification and, unlike a `next` item, **what you are about to do about it**: `TODO (issue #N) — <what>. Session-fit: now (do it in this session) / Effort: ~30 min — <why now>. Doing this next.`
+  - **Remaining work** — list the four fields as usual and, unlike a `next` item, say **what you are about to do about it** on the `Notes` line:
+
+    ```text
+    - TODO #<N> — <what it is>
+      - Session-fit: now (do it in this session) — <why now>
+      - Severity: medium — <what stays broken while it is undone>
+      - Effort: small (S) — edit plus unit tests only
+      - Estimate: ~30 min — two call sites plus the table fixture they share
+      - Notes: doing this next
+    ```
+
   - **State** — never STOPPED. Either WAITING (something must finish first, and the line says the `now` item follows it) or you simply keep working and do not end the turn at all. Ending a turn STOPPED with an open `now` is the "stopped with work left undone" failure.
   - **Session close** — always **NOT CLOSEABLE**, naming the `now` item as the blocker.
 
@@ -289,13 +338,19 @@ high.
 
   **Use fixed fields, at one granularity, in this order.** Left to prose these three sections drift apart in shape — remaining work becomes structured records while the close verdict becomes a sentence with its conditions crammed in behind slashes — and the reader can no longer find the same fact in the same place twice. Every block below is a labeled field list, never prose. Keep the field names and their order identical every time; a field with nothing to say gets a short explicit value (`none`, `n/a`), never omission, because a missing line and a line saying "none" mean different things to someone scanning.
 
+  **One field per line — never pack two onto one.** A line like `Session-fit: next (not this session) / Effort: ~3 h+ — <reason>` runs a value, a reason and the next key together, and the reader has to work out where each field ends. In the TODO record, the four classification lines are `Key: value — <one-line why>`; its head line (`- TODO #<N> — <what it is>`) and its `Notes` line are not, and no other block owes a why. Two keys on one line, though, are wrong everywhere.
+
   ```text
   ## Remaining work
   - TODO #<N> — <what it is>
-    - Session-fit: now (do it in this session) | next (not this session)
-      Effort: <duration>    Why: <one line>
+    - Session-fit: now (do it in this session) | next (not this session) — <one line>
+    - Severity: high | medium | low — <what stays broken while it is undone>
+    - Effort: small (S) | medium (M) | large (L) — <which verification cycle it drags>
+    - Estimate: <duration> — <what eats the time>
+    - Notes: <session-specific context | none>
   - Won't-do — <what>
-    - Why: <one line>            Recorded: <PR body | in-code comment | issue>
+    - Why: <one line>
+    - Recorded: <PR body | in-code comment | issue>
   (or the single line: Nothing remaining)
 
   ## State
@@ -311,7 +366,8 @@ high.
   - Open PRs (this session): <none | #N ...>
   - Background tasks: <none | ...>
   - AWS leftovers: <none | ...>
-  - TODOs filed + classified: <yes | ...>   open `now`: <0 | N>
+  - TODOs filed + classified: <yes | ...>
+  - Open `now` TODOs: <0 | N>
 
   ## Not this session          (only when `next` TODOs exist)
   - Start with: <literal command>

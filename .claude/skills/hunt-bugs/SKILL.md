@@ -118,6 +118,24 @@ fix-in-session round still files the issue, then closes it from the PR (`Closes
 #<n>`). The issue body carries the real repro (the CDK app / commands / the exact
 deploy-update-destroy sequence) so the later fixer has the evidence.
 
+**Every issue this hunt files also carries the four classification lines**
+(`CLAUDE.md` → "The four TODO fields"), in English, one field per line:
+
+```text
+Session-fit: now (do it in this session) | next (not this session) — <reason>
+Severity: high | medium | low — <what stays broken while it is undone>
+Effort: small (S) | medium (M) | large (L) — <which verification cycle it drags>
+Estimate: <duration, e.g. ~1-3 h -- never a bare letter> — <what eats the time>
+```
+
+A hunt is the single best moment to write them: you have just reproduced the bug
+against real AWS, so `Severity` is measured rather than guessed, and you already
+know which fixture and which integ the fix will drag. Deferring them to whoever
+picks the issue up throws that evidence away — which is the same reason
+`CLAUDE.md` puts the decision at the moment of deferral. `/work-issues` §3 reads
+these lines back when it ranks candidates, so an unclassified body is one this
+hunt made harder to triage.
+
 When you then WORK an issue — this hunt's own or one already filed — **run
 `/work-issues` and follow it** for the collision-safe start: its §0 screens the
 issue's comments for untrusted/malware content (first-pass, then defer to the
