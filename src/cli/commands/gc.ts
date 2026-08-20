@@ -13,6 +13,7 @@ import { getDefaultStateBucketName } from '../config-loader.js';
 import {
   getBootstrapMarkerKey,
   parseBootstrapMarker,
+  readBootstrapMarkerBody,
   type BootstrapMarker,
 } from '../../assets/asset-storage.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -1009,22 +1010,14 @@ export async function gcCommand(options: GcOptions): Promise<void> {
     // really was read.
     let resolvedMarkerKey = markerKey;
     try {
-      markerBody = await stateBackend.getRawObject(markerKey);
-      if (markerBody === null && rawMarkerKey !== markerKey) {
-        // Second probe: the un-folded spelling an upper-cased `cdkd bootstrap`
-        // may have written (see the `rawRegion` note above). Skipped entirely
-        // when the region was already canonical, so the common path still costs
-        // exactly one read.
-        markerBody = await stateBackend.getRawObject(rawMarkerKey);
-        if (markerBody !== null) {
-          resolvedMarkerKey = rawMarkerKey;
-          logger.debug(
-            `Bootstrap marker found at the un-folded key '${rawMarkerKey}' ` +
-              `(none at '${markerKey}') — an upper-cased region was used at ` +
-              `'cdkd bootstrap' time.`
-          );
-        }
-      }
+      // Issue #2021 folded the canonical-then-raw probe (issue #1995) into
+      // `readBootstrapMarkerBody`. THIS caller's policy is unchanged: the
+      // helper does not catch, so `NoSuchBucket` is still translated into the
+      // never-bootstrapped message below and every other failure still
+      // hard-errors out of the command with nothing collected.
+      const read = await readBootstrapMarkerBody(stateBackend, rawRegion);
+      markerBody = read.body;
+      resolvedMarkerKey = read.resolvedKey;
     } catch (error) {
       if ((error as { name?: string }).name === 'NoSuchBucket') {
         logger.info(

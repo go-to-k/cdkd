@@ -78,6 +78,7 @@ import {
   ensureAssetStorage,
   validateAssetBucketName,
   validateContainerRepoName,
+  readBootstrapMarkerBody,
   AssetModeResolver,
   type BootstrapMarker,
 } from '../../../src/assets/asset-storage.js';
@@ -947,5 +948,369 @@ describe('AssetModeResolver auto-create (issue #1007)', () => {
     expect(a.mode).toBe('cdkd-assets');
     expect(b.mode).toBe('cdkd-assets');
     expect(confirm).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Issue #2021 — the shared canonical-then-raw marker read.
+ *
+ * Three hand-written copies of this probe existed (`local-state-loader.ts`,
+ * `gc.ts`, `bootstrap-destroy.ts`) before `AssetModeResolver` needed a fourth.
+ * They already differed in ways that are easy to get wrong, so the RULE lives
+ * here and each caller's POLICY on top of it stays fenced in that caller's own
+ * suite.
+ */
+describe('readBootstrapMarkerBody (issue #2021)', () => {
+  const CANONICAL_KEY = 'cdkd-bootstrap/us-east-1.json';
+  const RAW_KEY = 'cdkd-bootstrap/US-EAST-1.json';
+
+  function makeBackend(getRawObject: ReturnType<typeof vi.fn>) {
+    return { getRawObject } as unknown as Parameters<typeof readBootstrapMarkerBody>[0];
+  }
+
+  it('costs exactly ONE probe when the region is already canonical', async () => {
+    const getRawObject = vi.fn().mockResolvedValue(null);
+    const read = await readBootstrapMarkerBody(makeBackend(getRawObject), 'us-east-1');
+
+    expect(getRawObject.mock.calls.map((c) => c[0])).toEqual([CANONICAL_KEY]);
+    expect(read).toEqual({ body: null, resolvedKey: CANONICAL_KEY });
+  });
+
+  it('probes the CANONICAL key FIRST for an upper-cased region, and stops on a hit', async () => {
+    // The order is the discriminator: an implementation that probed the RAW
+    // spelling first would still find this marker, but would resolve the raw
+    // key for a marker that lives at the canonical one.
+    const getRawObject = vi
+      .fn()
+      .mockImplementation(async (key: string) => (key === CANONICAL_KEY ? 'body' : null));
+
+    const read = await readBootstrapMarkerBody(makeBackend(getRawObject), 'US-EAST-1');
+
+    expect(getRawObject.mock.calls.map((c) => c[0])).toEqual([CANONICAL_KEY]);
+    expect(read).toEqual({ body: 'body', resolvedKey: CANONICAL_KEY });
+  });
+
+  it('falls back to the RAW spelling and reports THAT key as the resolved one', async () => {
+    // The pre-#1820 population: `AWS_REGION=US-EAST-1 cdkd bootstrap` really
+    // wrote the un-folded key. `resolvedKey` is what every caller's message,
+    // plan line and DELETE target follows, so it must name the file actually
+    // read — not the canonical key that missed.
+    const getRawObject = vi
+      .fn()
+      .mockImplementation(async (key: string) => (key === RAW_KEY ? 'raw-body' : null));
+
+    const read = await readBootstrapMarkerBody(makeBackend(getRawObject), 'US-EAST-1');
+
+    expect(getRawObject.mock.calls.map((c) => c[0])).toEqual([CANONICAL_KEY, RAW_KEY]);
+    expect(read).toEqual({ body: 'raw-body', resolvedKey: RAW_KEY });
+  });
+
+  it('reports the CANONICAL key when neither spelling holds a marker', async () => {
+    const getRawObject = vi.fn().mockResolvedValue(null);
+
+    const read = await readBootstrapMarkerBody(makeBackend(getRawObject), 'US-EAST-1');
+
+    expect(getRawObject.mock.calls.map((c) => c[0])).toEqual([CANONICAL_KEY, RAW_KEY]);
+    expect(read).toEqual({ body: null, resolvedKey: CANONICAL_KEY });
+  });
+
+  it('announces a raw-key hit at debug, naming BOTH keys so the miss is diagnosable', async () => {
+    // The raw-key arm is the whole reason probe 2 exists, and its ONLY runtime
+    // trace is this line — without it a marker resolved from the un-folded key
+    // looks identical to one resolved from the canonical key.
+    const getRawObject = vi
+      .fn()
+      .mockImplementation(async (key: string) => (key === RAW_KEY ? 'raw-body' : null));
+
+    await readBootstrapMarkerBody(makeBackend(getRawObject), 'US-EAST-1');
+
+    const line = mockLoggerDebug.mock.calls.map((c) => String(c[0])).find((l) => l.includes(RAW_KEY));
+    expect(line).toBeDefined();
+    expect(line).toContain(CANONICAL_KEY);
+    // No caller prefix supplied -> the standalone subject, capitalized.
+    expect(line).toMatch(/^Bootstrap marker found at the un-folded key/);
+  });
+
+  it('prefixes that line with the caller log prefix when one is supplied', async () => {
+    // `loadBootstrapContainerRepo` is best-effort and prefixes every line it
+    // emits with `--from-state` (or the caller's override). Folding its probe
+    // into the shared helper must not silently drop that prefix, or its debug
+    // output stops being attributable to the flag that produced it.
+    const getRawObject = vi
+      .fn()
+      .mockImplementation(async (key: string) => (key === RAW_KEY ? 'raw-body' : null));
+
+    await readBootstrapMarkerBody(makeBackend(getRawObject), 'US-EAST-1', {
+      logPrefix: '--from-state',
+    });
+
+    const line = mockLoggerDebug.mock.calls.map((c) => String(c[0])).find((l) => l.includes(RAW_KEY));
+    expect(line).toMatch(/^--from-state: bootstrap marker found at the un-folded key/);
+  });
+
+  it('does NOT catch — every caller keeps its own error policy on top', async () => {
+    // `gc` / `bootstrap --destroy` translate NoSuchBucket into their own
+    // never-bootstrapped message and hard-error on anything else, while
+    // `loadBootstrapContainerRepo` warns and falls back. Swallowing here would
+    // silently collapse all three into "no marker".
+    const getRawObject = vi.fn().mockRejectedValue(awsError('NoSuchBucket'));
+
+    await expect(readBootstrapMarkerBody(makeBackend(getRawObject), 'US-EAST-1')).rejects.toThrow(
+      'NoSuchBucket'
+    );
+  });
+});
+
+/**
+ * Issue #2021 — the deploy-time asset-mode resolver folds region CASE.
+ *
+ * Both deploy-time callers hand this resolver an un-canonicalized region
+ * (`options.region || AWS_REGION || 'us-east-1'`, then `stack.region ||
+ * baseRegion`), so an env-agnostic stack — the CDK default — under
+ * `--region US-EAST-1` reached the marker read with the upper-cased spelling.
+ * The miss took the `body === null` arm and silently downgraded the region to
+ * LEGACY asset mode, i.e. to the CDK bootstrap bucket/repo that `cdk gc` DOES
+ * collect. Nothing failed at deploy time; the assets vanished later.
+ */
+describe('AssetModeResolver region-case fold (issue #2021)', () => {
+  const REGION_UPPER = 'US-EAST-1';
+  const CANONICAL_KEY = `cdkd-bootstrap/${REGION}.json`;
+  const RAW_KEY = `cdkd-bootstrap/${REGION_UPPER}.json`;
+
+  function makeBackend(getRawObject: ReturnType<typeof vi.fn>): S3StateBackend {
+    return { getRawObject } as unknown as S3StateBackend;
+  }
+
+  function probedKeys(getRawObject: ReturnType<typeof vi.fn>): string[] {
+    return getRawObject.mock.calls.map((c) => c[0] as string);
+  }
+
+  function gcNotices(): unknown[][] {
+    return mockLoggerInfo.mock.calls.filter((c) => String(c[0]).includes('cdk gc'));
+  }
+
+  it('resolves cdkd-assets mode for an UPPER-cased region whose marker is canonical', async () => {
+    // The headline defect. Pre-fix this probed `cdkd-bootstrap/US-EAST-1.json`,
+    // missed, and returned `{ mode: 'legacy' }` — publishing the stack's assets
+    // to cdk-gc-collectable storage while printing a reassuring notice.
+    const getRawObject = vi
+      .fn()
+      .mockImplementation(async (key: string) =>
+        key === CANONICAL_KEY ? JSON.stringify(validMarker()) : null
+      );
+    const resolver = new AssetModeResolver(makeBackend(getRawObject), ACCOUNT);
+
+    const mode = await resolver.resolve(REGION_UPPER);
+
+    // `mode.mode` is the discriminator: pre-fix this probed the RAW key, missed,
+    // and returned `legacy`. Deliberately NOT asserting `marker.assetBucket` —
+    // that only re-reads `validMarker()`'s own fixture back out and fences
+    // nothing, since the marker is returned verbatim.
+    expect(probedKeys(getRawObject)).toEqual([CANONICAL_KEY]);
+    expect(mode.mode).toBe('cdkd-assets');
+    expect(gcNotices()).toHaveLength(0);
+  });
+
+  it('builds the verification clients with the CANONICAL region', async () => {
+    // SDK endpoint resolution is case-sensitive, and the region also names the
+    // bucket / repo the marker points at.
+    const getRawObject = vi.fn().mockResolvedValue(JSON.stringify(validMarker()));
+    const resolver = new AssetModeResolver(makeBackend(getRawObject), ACCOUNT, {
+      profile: 'dev',
+    });
+
+    await resolver.resolve(REGION_UPPER);
+
+    expect(vi.mocked(S3Client)).toHaveBeenCalledWith({ region: REGION, profile: 'dev' });
+    expect(vi.mocked(ECRClient)).toHaveBeenCalledWith({ region: REGION, profile: 'dev' });
+  });
+
+  it('shares ONE cache slot between US-EAST-1 and us-east-1 (probe count, not just the mode)', async () => {
+    // The quieter half of the same defect: the cache is keyed by region, so the
+    // two spellings occupied two slots and each re-probed S3. A returned-mode
+    // assertion alone passes with that bug fully intact — both spellings answer
+    // `cdkd-assets` once the read is folded — so the fence has to be the CALL
+    // COUNT.
+    const getRawObject = vi.fn().mockResolvedValue(JSON.stringify(validMarker()));
+    const resolver = new AssetModeResolver(makeBackend(getRawObject), ACCOUNT);
+
+    const upper = await resolver.resolve(REGION_UPPER);
+    const lower = await resolver.resolve(REGION);
+
+    expect(getRawObject).toHaveBeenCalledTimes(1);
+    expect(upper).toEqual(lower);
+  });
+
+  it('still reaches a marker written under the RAW upper-cased spelling', async () => {
+    // Folding the read must never LOSE a marker the pre-fold read found:
+    // `cdkd bootstrap` does not fold its own region (issue #1820), so the raw
+    // key really can be the only one that exists.
+    const getRawObject = vi
+      .fn()
+      .mockImplementation(async (key: string) =>
+        key === RAW_KEY ? JSON.stringify(validMarker()) : null
+      );
+    const resolver = new AssetModeResolver(makeBackend(getRawObject), ACCOUNT);
+
+    const mode = await resolver.resolve(REGION_UPPER);
+
+    expect(probedKeys(getRawObject)).toEqual([CANONICAL_KEY, RAW_KEY]);
+    expect(mode.mode).toBe('cdkd-assets');
+    expect(gcNotices()).toHaveLength(0);
+  });
+
+  it('names the key the body actually came from when a RAW-keyed marker is malformed', async () => {
+    // `parseBootstrapMarker`'s message is the user's only pointer at the file to
+    // repair, so it must follow `resolvedKey` rather than the canonical key that
+    // returned nothing.
+    const getRawObject = vi
+      .fn()
+      .mockImplementation(async (key: string) => (key === RAW_KEY ? 'not json{' : null));
+    const resolver = new AssetModeResolver(makeBackend(getRawObject), ACCOUNT);
+
+    await expect(resolver.resolve(REGION_UPPER)).rejects.toThrow(RAW_KEY);
+  });
+
+  it('names the CANONICAL region in the legacy notice, so the remediation command works', async () => {
+    // `cdkd bootstrap --region US-EAST-1` would write the raw key again; the
+    // notice has to point at the spelling the canonical-first probe finds.
+    const getRawObject = vi.fn().mockResolvedValue(null);
+    const resolver = new AssetModeResolver(makeBackend(getRawObject), ACCOUNT);
+
+    expect(await resolver.resolve(REGION_UPPER)).toEqual({ mode: 'legacy' });
+
+    const notices = gcNotices();
+    expect(notices).toHaveLength(1);
+    expect(String(notices[0]![0])).toContain(`Run 'cdkd bootstrap --region ${REGION}'`);
+    expect(String(notices[0]![0])).not.toContain(REGION_UPPER);
+  });
+
+  // NOTE deliberately no "shows the legacy notice once across both spellings"
+  // case here, and the reason is narrower than an earlier revision of this
+  // comment claimed. That case DOES discriminate the shipped defect — measured,
+  // it goes RED against a de-folded `resolve()` (two notices instead of one) —
+  // so it is not unfalsifiable; it is REDUNDANT with the CALL-COUNT assertion in
+  // the cache-slot case above, which fences the same fold one step earlier.
+  // What it cannot fence is `legacyNoticeShownRegions` itself: re-keying that
+  // Set on the raw spelling leaves the whole suite green, because the cache
+  // makes `doResolve` unreachable a second time (see the Set's own comment in
+  // `asset-storage.ts`). Stated precisely because a wrong "cannot be fenced"
+  // note suppresses the retest that would have caught the difference.
+
+  it('auto-creates under the CANONICAL name and key for an upper-cased region', async () => {
+    // `ensureAssetStorage` names the bucket / repo from the region it is handed
+    // and writes the marker at that key, so an unfolded region here would create
+    // `cdkd-assets-<acct>-US-EAST-1` in us-east-1 and key it un-findably.
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket' ? Promise.reject(awsError('NotFound', 404)) : Promise.resolve({})
+    );
+    mockEcrSend.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'DescribeRepositories'
+        ? Promise.reject(awsError('RepositoryNotFoundException'))
+        : Promise.resolve({})
+    );
+    let stored: string | null = null;
+    const putRawObject = vi.fn().mockImplementation(async (_key: string, body: string) => {
+      stored = body;
+    });
+    const getRawObject = vi.fn().mockImplementation(async () => stored);
+    const backend = { getRawObject, putRawObject } as unknown as S3StateBackend;
+    const confirm = vi.fn().mockResolvedValue(true);
+    const resolver = new AssetModeResolver(backend, ACCOUNT, { autoCreate: { confirm } });
+
+    const mode = await resolver.resolve(REGION_UPPER);
+
+    expect(confirm).toHaveBeenCalledWith(REGION);
+    expect(putRawObject).toHaveBeenCalledWith(
+      CANONICAL_KEY,
+      expect.stringContaining(`cdkd-assets-${ACCOUNT}-${REGION}`)
+    );
+    expect(mode.mode).toBe('cdkd-assets');
+    if (mode.mode === 'cdkd-assets') {
+      expect(mode.marker.assetBucket).toBe(`cdkd-assets-${ACCOUNT}-${REGION}`);
+    }
+  });
+});
+
+/**
+ * Issue #2021 — HOW REACHABLE the raw bootstrap-marker key actually is.
+ *
+ * `readBootstrapMarkerBody`'s second probe is justified in prose, and the
+ * earlier per-caller copies of it overstated the justification ("`AWS_REGION=
+ * US-EAST-1 cdkd bootstrap` really wrote `cdkd-bootstrap/US-EAST-1.json`").
+ * That claim is FALSE on the default path, and prose cannot hold itself
+ * honest — so the two mechanisms that make it false are pinned here. If a
+ * later change makes an upper-cased bootstrap succeed on the default path,
+ * these go red and the helper's doc gets revisited rather than silently
+ * becoming wrong again.
+ */
+describe('raw bootstrap-marker key reachability (issue #2021)', () => {
+  const REGION_UPPER = 'US-EAST-1';
+
+  function freshRegionScript(): void {
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket' ? Promise.reject(awsError('NotFound', 404)) : Promise.resolve({})
+    );
+    mockEcrSend.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'DescribeRepositories'
+        ? Promise.reject(awsError('RepositoryNotFoundException'))
+        : Promise.resolve({})
+    );
+  }
+
+  function optionsFor(region: string, extra: Record<string, unknown> = {}) {
+    const putRawObject = vi.fn().mockResolvedValue(undefined);
+    const getRawObject = vi.fn().mockResolvedValue(null);
+    return {
+      putRawObject,
+      options: {
+        s3Client: new S3Client({ region }) as S3Client,
+        ecrClient: new ECRClient({}) as ECRClient,
+        stateBackend: { putRawObject, getRawObject } as unknown as S3StateBackend,
+        accountId: ACCOUNT,
+        region,
+        force: false,
+        ...extra,
+      },
+    };
+  }
+
+  it('derives an INVALID bucket name and LocationConstraint from an upper-cased region', async () => {
+    // Both defects at once, and either alone is enough to stop the default path
+    // before the marker write: S3 bucket names cannot contain uppercase, and
+    // `region !== 'us-east-1'` is TRUE for `US-EAST-1`, so CreateBucket is also
+    // handed a LocationConstraint that is not a valid enum member.
+    freshRegionScript();
+    const { options } = optionsFor(REGION_UPPER);
+
+    await ensureAssetStorage(options);
+
+    const createCall = mockS3Send.mock.calls.find((c) => c[0]._type === 'CreateBucket')![0];
+    expect(createCall.Bucket).toBe(`cdkd-assets-${ACCOUNT}-${REGION_UPPER}`);
+    expect(createCall.Bucket).toMatch(/[A-Z]/); // S3 rejects this outright
+    expect(createCall.CreateBucketConfiguration?.LocationConstraint).toBe(REGION_UPPER);
+  });
+
+  it('reaches the RAW marker key only with BOTH custom names against an EXISTING bucket', async () => {
+    // The one flow that does write `cdkd-bootstrap/US-EAST-1.json`: custom
+    // lowercase names mean no conventional name is derived from the raw region,
+    // and an already-existing bucket means the bad-LocationConstraint
+    // CreateBucket is never issued. This is the state probe 2 exists to rescue.
+    mockS3Send.mockResolvedValue({}); // HeadBucket succeeds => bucket exists
+    mockEcrSend.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'DescribeRepositories'
+        ? Promise.reject(awsError('RepositoryNotFoundException'))
+        : Promise.resolve({})
+    );
+    const { putRawObject, options } = optionsFor(REGION_UPPER, {
+      assetBucketName: 'my-assets-bucket',
+      containerRepoName: 'my-container-assets',
+    });
+
+    await ensureAssetStorage(options);
+
+    expect(mockS3Send.mock.calls.some((c) => c[0]._type === 'CreateBucket')).toBe(false);
+    const [key] = putRawObject.mock.calls[0]! as [string, string];
+    expect(key).toBe(`cdkd-bootstrap/${REGION_UPPER}.json`);
   });
 });
