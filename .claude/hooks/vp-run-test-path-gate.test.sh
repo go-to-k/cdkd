@@ -67,8 +67,8 @@ run 0 'redirect to a file, then read rc' 'vp run test > /tmp/out 2>&1; rc=$?'
 run 0 'redirect merged into a pipe' 'vp run test 2>&1 | tail -40'
 run 0 'append redirect' 'vp run test >> /tmp/out'
 run 0 'backgrounded' 'vp run test &'
+run 0 'backgrounded, then another command' 'vp run test & tail -f tests/run.log'
 run 0 'trailing comment' 'vp run test # runs the whole suite'
-run 0 'env prefix' 'CDKD_ONCE_LEAK_DETECT=1 vp run test'
 run 0 'value-taking flag not on any list' 'vp run test -t "some name"'
 run 0 'another unlisted value flag' 'vp run test --testNamePattern foo'
 run 0 'output file under a path' 'vp run test --outputFile /tmp/out.json'
@@ -97,12 +97,35 @@ run 0 'command named inside a heredoc body' "vp run test && git commit -F - <<'E
 note: vp run test tests/x.test.ts is cached
 EOF"
 
-# --- Known limit, asserted so it cannot widen silently ---
+# --- BLOCK: a backslash-continued line is ONE command ---
+# Truncating at that newline dropped the path and regressed to a false
+# negative; the continuation is joined before the newline truncation.
+run 2 'backslash continuation before the path' 'vp run test \
+  tests/unit/foo.test.ts'
+run 2 'continuation with a flag between' 'vp run test --coverage \
+  tests/unit/foo.test.ts'
+
+# --- BLOCK: more redirect operator spellings still skip only their target ---
+run 0 'append to stderr' 'vp run test 1>> /tmp/out'
+run 0 'both streams appended' 'vp run test &>> /tmp/out'
+run 0 'clobber redirect' 'vp run test >| /tmp/out'
+
+# --- Known limits, each asserted WITH a control so it cannot widen silently ---
 # A fully quoted path is neutralised to a placeholder and is NOT recognised.
-# This is a false NEGATIVE (the pre-hook status quo), which is the safe
-# direction; the control below proves the unquoted twin IS caught.
+# False NEGATIVE (the pre-hook status quo), which is the safe direction.
 run 0 'KNOWN LIMIT: fully quoted path' 'vp run test "tests/unit/foo.test.ts"'
-run 2 'control for the limit above: unquoted' 'vp run test tests/unit/foo.test.ts'
+run 2 'control: the unquoted twin IS caught' 'vp run test tests/unit/foo.test.ts'
+# The command-position matcher does not fire when the invocation is prefixed,
+# so the arg parse is never reached. Both halves are asserted: without the
+# control carrying a PATH, the pass case would stay green with the entire
+# path-detection block deleted and would fence nothing.
+run 0 'KNOWN LIMIT: env prefix, no path' 'CDKD_ONCE_LEAK_DETECT=1 vp run test'
+run 0 'KNOWN LIMIT: env prefix WITH a path' 'CI=1 vp run test tests/unit/foo.test.ts'
+run 2 'control: same path with no prefix IS caught' 'vp run test tests/unit/foo.test.ts'
+# A flag VALUE under tests/ reads as a path. Documented rather than special-cased:
+# closing it needs the flag deny-list the inversion exists to remove.
+run 2 'KNOWN LIMIT: flag value under tests/' 'vp run test --outputFile tests/out.json'
+run 0 'control: the same flag value outside tests/' 'vp run test --outputFile /tmp/out.json'
 
 # --- PASS: nothing to inspect ---
 run 0 'empty command' ''

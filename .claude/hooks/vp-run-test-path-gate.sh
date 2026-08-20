@@ -38,7 +38,8 @@ set -u
 LIB_DIR="${BASH_SOURCE[0]%/*}"
 [ "$LIB_DIR" = "${BASH_SOURCE[0]}" ] && LIB_DIR="."
 if ! . "$LIB_DIR/lib/command-match.sh" 2>/dev/null \
-  || ! declare -F cmd_matches_verb >/dev/null 2>&1; then
+  || ! declare -F cmd_matches_verb >/dev/null 2>&1 \
+  || ! declare -F strip_noncommand_spans >/dev/null 2>&1; then
   # Fail CLOSED, matching the blocking gates: a missing library must not
   # silently disable the check.
   echo "Blocked by vp-run-test-path-gate: cannot load lib/command-match.sh" >&2
@@ -68,6 +69,10 @@ neutralised=$(strip_noncommand_spans "$cmd")
 # Collapse runs of spaces / tabs so the literal split below agrees with the ERE
 # above, which accepts `[[:space:]]+`. NEWLINES are preserved: they end an
 # argument list and are relied on as a separator further down.
+# Join backslash-continued lines FIRST. A `\`-continuation is one logical
+# command, so truncating at its newline (below) would drop the arguments that
+# follow — regressing to a false negative on `vp run test \` + an indented path.
+neutralised=$(printf '%s' "$neutralised" | sed -e ':a' -e '/\\$/{N;s/\\\n/ /;ba' -e '}')
 neutralised=$(printf '%s' "$neutralised" | tr '\t' ' ' | sed 's/  */ /g')
 
 # Walk EVERY occurrence rather than only the last. Taking the last one lets a
@@ -94,6 +99,7 @@ while [ "${rest#*vp run test}" != "$rest" ]; do
   tail_text=${tail_text%%||*}
   tail_text=${tail_text%%;*}
   tail_text=${tail_text%%|*}
+  tail_text=${tail_text%%&*}
   tail_text=${tail_text%%$'\n'*}
   tail_text=${tail_text%%#*}
 
@@ -108,9 +114,15 @@ while [ "${rest#*vp run test}" != "$rest" ]; do
 # The positive test is available because the argument this gate cares about has
 # exactly one meaning: `vp run test <path>` filters the suite, so its path is a
 # `tests/**` entry or a `*.test.ts` file. Requiring THAT rather than "not a
-# flag" makes every other token — a redirect target, a reporter name, an output
-# file, a comment word — a non-match by construction rather than by enumeration,
-# and the residual failure direction is a false NEGATIVE.
+# flag" makes an ordinary non-path token — a reporter name, a comment word, an
+# output file outside `tests/` — a non-match by construction rather than by
+# enumeration, and the residual failure direction is a false NEGATIVE.
+#
+# It is NOT a claim about every flag VALUE: a value that is itself under
+# `tests/` still reads as a path (`--outputFile tests/out.json` blocks). Only
+# REDIRECT targets are skipped, by the operator case below. Accepted, because
+# writing a run's output INTO the test tree is not a shape this repo uses, and
+# the alternative is the flag deny-list this inversion exists to remove.
 #
 # `set -f` because the loop is unquoted: without it a token containing a glob is
 # expanded against the hook's cwd.
@@ -124,7 +136,7 @@ while [ "${rest#*vp run test}" != "$rest" ]; do
     case "$tok" in
       # A bare redirection operator takes the NEXT token as its target; skip it
       # so a target that happens to sit under `tests/` cannot arm the gate.
-      '>' | '>>' | '<' | '2>' | '&>' | '1>' | '2>>') skip_next=1 ;;
+      '>' | '>>' | '<' | '2>' | '2>>' | '1>' | '1>>' | '&>' | '&>>' | '>|') skip_next=1 ;;
       tests/* | ./tests/* | */tests/* | *.test.ts | *.test.tsx | *.test-d.ts)
         found_path=1
         break
