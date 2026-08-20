@@ -2828,6 +2828,34 @@ still replaced by its own reference, while a reference already in state is left
 exactly as it is. A legacy leaf of this shape is cleaned the next time either
 `cdkd deploy` or `cdkd scrub` resolves that secret.
 
+**A value match never rewrites a fragment INSIDE a complete `{{resolve:...}}`
+reference** (issue [#1935](https://github.com/go-to-k/cdkd/issues/1935)). A
+stored value can hold a reference inside surrounding text —
+`jdbc://appdb:{{resolve:secretsmanager:appdb/creds:SecretString:password}}@host`
+is what a joined connection string looks like after redaction — and a LATER
+deploy can record a secret whose plaintext (`appdb`) also occurs inside that
+reference's own text. Rewriting it there produced
+`{{resolve:secretsmanager:{{resolve:ssm:/app/dbname}}/creds:...}}`, which no
+service can resolve: `cdkd rollback` reads it as a request for the secret id
+`{{resolve:ssm:/app/dbname` and either refuses or applies the wrong value.
+
+cdkd now replaces every match of a recorded secret EXCEPT one that lies wholly
+inside a complete reference and is shorter than it. A stored secret whose own
+value IS a reference is still replaced, and so is one that CONTAINS a whole
+reference plus surrounding text — dropping those would leave the plaintext in
+state, which is worse than the mangling this rule prevents. Nothing else about
+substring matching changes: an embedded secret in ordinary text is repaired
+exactly as before.
+
+Two limits worth knowing. An UNTERMINATED `{{resolve:` (an opener with no
+closing `}}`) is not a reference by the resolver's own grammar, so it forms no
+protected region and a secret after it is still replaced — leaving the plaintext
+there instead would hide it behind two characters any string can contain. And a
+value already mangled by an older cdkd is not repaired: it parses as a valid
+reference now, so neither a redeploy nor `cdkd scrub` rewrites it. Fixing such a
+record means editing it out of state, or redeploying the resource so the leaf is
+written afresh.
+
 **A reference you have edited but not deployed is never rewritten** — by
 `cdkd scrub` or by `cdkd deploy`. If state holds `...:AWSPREVIOUS` and the
 template now says `...:AWSCURRENT`, scrub leaves the record alone and reports

@@ -33,6 +33,7 @@ import {
   maskSecretsInText,
   maskSecretsInError,
   createSecretMasker,
+  TEMPLATE_SOURCED_RULES,
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import { DagExecutor } from './dag-executor.js';
@@ -872,10 +873,36 @@ export class DeployEngine {
    */
   private redactOutputs(outputs: Record<string, unknown>): Record<string, unknown> {
     if (this.outputSecrets.size === 0) return outputs;
+    // TEMPLATE_SOURCED and not the DEFAULT template-DERIVED rules (issue
+    // [#1943](https://github.com/go-to-k/cdkd/issues/1943)). `descendArrays` is
+    // the only flag the two differ on, and it claims "this bag was PRODUCED by
+    // resolving this source" — which two of this method's three callers cannot
+    // say. `redactStateForPersist` walks whatever `state.outputs` holds, and on
+    // the no-change path that is `persistedOutputs`, the PREVIOUS deploy's bag,
+    // while `outputsTemplateSource` is TODAY's template. Positional descent
+    // there does not merely mis-redact: `redactByPath` returns a known-secret
+    // SOURCE leaf verbatim, so a previous generation's ordinary literal at
+    // index `i` is rewritten to today's expression at index `i` — a value the
+    // stack never held, persisted into `state.outputs`, which the exports index
+    // re-applies to consumer stacks.
+    //
+    // Reachable rather than theoretical, though narrowly: `TemplateOutput.Value`
+    // is `unknown` and cdkd does not enforce CloudFormation's "Value must be a
+    // String", so a list-valued output (an escape hatch, an imported template)
+    // gives the array arm an array on BOTH sides and `state.outputs` is
+    // explicitly not string-coerced. Every CDK-synthesized template lands on a
+    // string or an intrinsic OBJECT, so for those the swap is inert.
+    //
+    // `sourceIsSameGeneration` is already false in both constants, so the
+    // token-shaped-leaf hazard (issue #1917) was never the gap here. The
+    // sibling `cdkd scrub` outputs call still passes the default and records
+    // the inertness measurement for its own bag; converging the two is issue
+    // [#2099](https://github.com/go-to-k/cdkd/issues/2099).
     return redactSecretsForState(
       outputs,
       this.outputSecrets,
-      this.outputsSourceUsable ? this.outputsTemplateSource : undefined
+      this.outputsSourceUsable ? this.outputsTemplateSource : undefined,
+      TEMPLATE_SOURCED_RULES
     );
   }
 

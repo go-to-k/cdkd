@@ -2223,7 +2223,9 @@ export function preserveLiveValuesAtUnresolvedTokens(
       // string over whatever AWS holds. Both user-facing warnings say so,
       // because the detection one is read immediately before the confirmation
       // prompt. Masking by SPAN, which is what would let these cases be both
-      // preserved and safe, is issue #1935.
+      // preserved and safe, is issue #2102. (NOT #1935, which fixed the
+      // value scan's SPLICE for a leaf it can MATCH; this leaf has no map
+      // entry at all, which is the whole reason it is here.)
       if (!isWholeDynamicReference(value)) return value;
       if (live === undefined) return value;
       // REGISTER what was just moved. Nothing was recorded FOR THIS LEAF —
@@ -2838,7 +2840,8 @@ async function runRevert(
                 // report masks by PATH, and the payload declines to copy a live
                 // value into a mixed leaf), and before this pass existed the
                 // delta was persisted with no redaction at all. Masking by SPAN
-                // is issue #1935.
+                // is issue #2102 (#1935 fixed the SPLICE for a leaf the
+                // scan can match; this echo has no map entry to match).
                 //
                 // Positioned against `revertBaseline` — the SAME bag
                 // `desiredProperties` was resolved from — and not against

@@ -248,9 +248,17 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   test, two right answers, and neither depends on the caller having
  *   classified itself correctly.
  *
- *   Whole-value and not the full value scan: the scan's SUBSTRING arm would
- *   splice a short secret value found inside the token's own text into the
- *   reference. And "onto its own expression" is the ordinary case, not a
+ *   Whole-value and not the full value scan. The two now AGREE for this shape
+ *   rather than differing, which is a change worth stating because the
+ *   original reason for the distinction has been removed: the scan's SUBSTRING
+ *   arm used to splice a short secret value found inside the token's own text
+ *   into the reference, and since issue
+ *   [#1935](https://github.com/go-to-k/cdkd/issues/1935) it leaves a
+ *   `{{resolve:...}}` span alone unless the span text is ITSELF a recorded
+ *   plaintext. The whole-value form is kept because it states what this arm
+ *   means without depending on that span rule holding.
+ *
+ *   And "onto its own expression" is the ordinary case, not a
  *   guarantee — `RecordedSecretValues` is keyed by plaintext, so if two
  *   references share one token-shaped resolved value the map has already
  *   collapsed and the refused leaf takes the SURVIVOR's expression. That is
@@ -277,10 +285,11 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   deploy persist `properties`                current template     TEMPLATE_DERIVED_RULES                VALUE SCAN
  *   deploy journal props / attemptedProps      current template     TEMPLATE_DERIVED_RULES                VALUE SCAN
  *   deploy no-change re-check                  current template     TEMPLATE_DERIVED_RULES                VALUE SCAN
- *   deploy `redactOutputs` (3 sites)           template `Outputs`   TEMPLATE_DERIVED_RULES                VALUE SCAN
+ *   deploy `redactOutputs` (3 sites)           template `Outputs`   TEMPLATE_SOURCED_RULES                VALUE SCAN
  *   `cdkd import` `properties`                 imported template    TEMPLATE_DERIVED_RULES                VALUE SCAN
  *   observed walk, template source             current template     TEMPLATE_SOURCED_RULES                VALUE SCAN
- *   `cdkd scrub` `properties` / `outputs`      TODAY's template     TEMPLATE_SOURCED_RULES                VALUE SCAN
+ *   `cdkd scrub` `properties`                  TODAY's template     TEMPLATE_SOURCED_RULES                VALUE SCAN
+ *   `cdkd scrub` `outputs`                     TODAY's template     TEMPLATE_DERIVED_RULES                VALUE SCAN
  *   `cdkd scrub` observed walk                 REPOSITIONED props   STATE_SOURCED_CROSS_GENERATION_RULES  VALUE SCAN
  *   observed walk, own-record source           the record itself    STATE_SOURCED_READBACK_RULES          TAKE SOURCE
  *   `cdkd state refresh-observed`              the record itself    STATE_SOURCED_READBACK_RULES          TAKE SOURCE
@@ -300,6 +309,17 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  * are distinct WRITE SITES sharing a rules constant with the deploy-time
  * observed walk, and a table claiming one row per write site cannot fold them
  * into it. The reverse direction found no orphan rows.
+ *
+ * The two OUTPUTS rows disagree, and the disagreement is recorded rather than
+ * smoothed over. `deploy redactOutputs` moved to TEMPLATE_SOURCED for issue
+ * [#1943](https://github.com/go-to-k/cdkd/issues/1943): its bag can be the
+ * PREVIOUS deploy's `state.outputs` (the no-change path persists
+ * `persistedOutputs` while `outputsTemplateSource` is today's template), so
+ * `descendArrays` — the only flag the two constants differ on — is a claim that
+ * site cannot make. `cdkd scrub`'s outputs call still passes the default; the
+ * two were split into their own rows because a single row could only be wrong
+ * about one of them. Converging them is issue
+ * [#2099](https://github.com/go-to-k/cdkd/issues/2099).
  *
  * The `verdict` column answers ONLY the "bag leaf is a single complete
  * `{{resolve:...}}` token" question the table poses. The two
@@ -1050,8 +1070,8 @@ function redactByPath(
       // and survives. The refusal costs nothing on the bags that were genuinely
       // resolved here.
       //
-      // WHOLE-VALUE, not the full value scan, and the difference is a defect
-      // this went through once: the scan's other arm rewrites a secret found as
+      // WHOLE-VALUE, not the full value scan, and the difference WAS a defect
+      // this went through once: the scan's other arm rewrote a secret found as
       // a SUBSTRING, and this leaf is a complete `{{resolve:...}}` token, so a
       // short secret VALUE occurring inside it (an ssm SecureString holding
       // `prod`, against `{{resolve:secretsmanager:prod/db:SecretString:pw}}`)
@@ -1059,9 +1079,14 @@ function redactByPath(
       // every `cdkd scrub` over already-clean state — full map, bag of
       // expressions by construction — and the replay then re-resolves the
       // wreckage, whose `[^}]+` stops at the first `}`, into a request for a
-      // bogus secret id. See the same rule in `redactSecretsForState`'s walk,
-      // which is where a leaf reached with no source is bounded; both spell it
-      // out so neither can be removed by editing only the other.
+      // bogus secret id.
+      //
+      // The scan no longer does that to ANY leaf since issue
+      // [#1935](https://github.com/go-to-k/cdkd/issues/1935) — it splits a
+      // MIXED leaf into spans and text and never rewrites inside a span — so
+      // this arm and the full scan now agree here for TWO independent reasons
+      // rather than one. Both are still spelled out, and neither may be
+      // removed by editing only the other: each has its own probe.
       //
       // While BOTH exist, `redactSecretsForState(bag, secrets)` here would be
       // byte-equivalent — the walk's own token guard makes it whole-value-only
@@ -1322,6 +1347,29 @@ export const DYNAMIC_REFERENCE_TOKEN_SCAN = new RegExp(
 
 export function dynamicReferenceTokens(value: string): string[] {
   return value.match(DYNAMIC_REFERENCE_TOKEN_SCAN) ?? [];
+}
+
+/**
+ * Where each complete `{{resolve:...}}` token sits in the string, as
+ * `[start, end)` offsets. The OFFSETS are what {@link dynamicReferenceTokens}
+ * cannot give, and the value scan needs them to decide whether a needle match
+ * lies inside a reference or merely beside one.
+ *
+ * `lastIndex` is reset before `matchAll`, and that is load-bearing rather than
+ * defensive. `String.prototype.matchAll` does not MUTATE the pattern's
+ * `lastIndex` — it clones — but it SEEDS the clone from it, so a caller that
+ * left the shared constant dirty (the constant's own doc forbids `.exec` /
+ * `.test` on it for exactly this reason) would make this function skip every
+ * span before that offset, silently restoring the splice this offsets are used
+ * to prevent. Measured, not assumed.
+ */
+function dynamicReferenceSpans(value: string): Array<{ start: number; end: number }> {
+  DYNAMIC_REFERENCE_TOKEN_SCAN.lastIndex = 0;
+  const spans: Array<{ start: number; end: number }> = [];
+  for (const match of value.matchAll(DYNAMIC_REFERENCE_TOKEN_SCAN)) {
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return spans;
 }
 
 /**
@@ -1615,6 +1663,83 @@ export function redactSecretsForState<T>(
   // degenerate and the resolver does not record one.
   const wholeValueExpr = (s: string): string | undefined => (s === '' ? undefined : secrets.get(s));
 
+  /**
+   * The SUBSTRING arm for a leaf the resolver substituted INTO rather than
+   * replaced. ONE rule over the WHOLE leaf (issue
+   * [#1935](https://github.com/go-to-k/cdkd/issues/1935)):
+   *
+   * > replace every recorded-plaintext match EXCEPT one that lies STRICTLY
+   * > INSIDE a complete `{{resolve:...}}` span.
+   *
+   * "Strictly inside" means contained by a span and SHORTER than it. The four
+   * positions a match can take, and why each lands where it does:
+   *
+   * - **strictly inside a span** -> KEPT. This is the defect: a plaintext that
+   *   happens to occur inside a token's own TEXT was spliced into the
+   *   reference. Deploy 1 persists
+   *   `jdbc://appdb:{{resolve:secretsmanager:appdb/creds:SecretString:password}}@host`;
+   *   deploy 2 records an ssm SecureString whose plaintext is `appdb`; the walk
+   *   wrote `{{resolve:secretsmanager:{{resolve:ssm:/app/dbname}}/creds:...}}`.
+   *   `resolveReplayProps` scans with `([^}]+)`, which stops at the FIRST `}`,
+   *   so the replay asks Secrets Manager for the secret id
+   *   `{{resolve:ssm:/app/dbname` — rollback blocked, or garbage applied to a
+   *   live resource. `cdkd scrub` writes the same wreckage into `properties`
+   *   and `observedProperties`.
+   * - **coextensive with a span** -> REPLACED. A secret whose resolved
+   *   PLAINTEXT is itself a `{{resolve:...}}` string (issue #1917), embedded in
+   *   a larger leaf. This is why "mask only OUTSIDE the spans" is wrong on its
+   *   own: that plaintext IS a span, so span-skipping would stop redacting it
+   *   and trade a mangling bug for a disclosure.
+   * - **containing or straddling a span** -> REPLACED. A recorded plaintext
+   *   that embeds a whole reference plus surrounding text. Nothing is spliced,
+   *   because the whole reference is consumed by the replacement. An earlier
+   *   revision of this fix expressed the rule as TWO rules — replace a span
+   *   that is a recorded plaintext, value-scan the text between spans — and
+   *   that form DROPPED this case at both ends (it is neither a whole span nor
+   *   contained in the text between spans), persisting the plaintext in the
+   *   clear where the pre-fix code had redacted it. A REGRESSION, caught by the
+   *   security review, and the reason the rule is one predicate over the whole
+   *   leaf rather than a split.
+   * - **disjoint from every span** -> REPLACED. The ordinary embedded secret.
+   *
+   * Scanning the WHOLE leaf in ONE pass is also what preserves needle
+   * PRECEDENCE. {@link buildNeedleRegex} sorts alternatives longest-first so an
+   * overlapping shorter secret cannot pre-empt a longer one — a property that
+   * only holds within a single scan. The two-rule form scanned each
+   * BETWEEN-span stretch separately, so a long straddling needle lost to a
+   * short one starting later in the tail and the leaf took the WRONG
+   * expression, which the replay then re-resolves and applies (the issue #1910
+   * class).
+   *
+   * KNOWN RESIDUAL, pinned by a test rather than left as prose: an UNTERMINATED
+   * `{{resolve:` opener is not a span, so a needle after it is replaced and the
+   * result reads as a reference to a bogus secret id. Refusing to redact there
+   * would leave PLAINTEXT behind an opener any template text can contain, which
+   * is the trade this whole arm exists to refuse; the pre-fix code behaves
+   * identically, so nothing regresses.
+   */
+  const scanLeaf = (value: string, needles: RegExp): string => {
+    // Only a leaf that HOLDS a reference can have a span, and the dominant leaf
+    // does not — so the offsets are computed only where they can matter.
+    const spans = isDynamicReferenceString(value) ? dynamicReferenceSpans(value) : [];
+    // No `lastIndex` reset before `replace`: `RegExp.prototype[Symbol.replace]`
+    // sets it to 0 itself for a `/g` pattern. The reset before `.test` at the
+    // call site is the one that IS needed.
+    return value.replace(needles, (match: string, offset: number) => {
+      const end = offset + match.length;
+      const strictlyInsideASpan = spans.some(
+        (span) =>
+          span.start <= offset && end <= span.end && (span.start !== offset || span.end !== end)
+      );
+      if (strictlyInsideASpan) return match;
+      // Always defined: `needles` is built FROM `secrets.keys()`, so every match
+      // is a key. The fallback is identity rather than {@link SECRET_MASK} —
+      // a mask here would be a redaction path that can never run, and identity
+      // is the one answer that cannot fabricate a value.
+      return secrets.get(match) ?? match;
+    });
+  };
+
   const walk = (value: unknown): unknown => {
     if (typeof value === 'string') {
       const whole = wholeValueExpr(value);
@@ -1629,12 +1754,30 @@ export function redactSecretsForState<T>(
       // can resolve. Reached with no source on the journal's `previousState`
       // walk and on `attributes`, so it is not reachable only through the
       // path pass.
+      //
+      // {@link scanLeaf} answers this shape identically, and the argument is
+      // short enough to check: the whole-value arm above has already ruled out
+      // the leaf BEING a recorded plaintext, so no match can be coextensive
+      // with the single span covering it, and every other match is strictly
+      // inside that span and therefore kept. It stays as an EARLY-OUT because
+      // the whole-token leaf is what a re-scrub of already-clean state is made
+      // of, and it costs a `matchAll` plus a string rebuild otherwise.
+      //
+      // Removing it is an EQUIVALENT mutant, so no test can red on it — stated
+      // rather than claimed pinned, which an earlier revision of this comment
+      // got wrong. What IS pinned is the ANSWER for this shape, so an edit that
+      // makes the two paths disagree reds whichever one it broke.
       if (isSingleDynamicReferenceToken(value)) return value;
+      // No needle can be a token-shaped plaintext either: the shortest possible
+      // `{{resolve:x}}` is far longer than {@link MIN_NEEDLE_LENGTH}, so an
+      // absent regex means nothing in this leaf can be rewritten at all.
       if (!regex) return value;
+      // `.test` on a `/g` pattern ADVANCES `lastIndex`, so it is reset before
+      // every use. A leaf holding no needle occurrence cannot be rewritten:
+      // a span that is a recorded plaintext would be a needle match itself.
       regex.lastIndex = 0;
       if (!regex.test(value)) return value;
-      regex.lastIndex = 0;
-      return value.replace(regex, (m) => secrets.get(m) ?? SECRET_MASK);
+      return scanLeaf(value, regex);
     }
     if (Array.isArray(value)) {
       return value.map(walk);
