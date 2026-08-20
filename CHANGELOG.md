@@ -1,3 +1,10 @@
+## [0.284.19](https://github.com/go-to-k/cdkd/compare/v0.284.18...v0.284.19) (2026-08-20)
+
+
+### Bug Fixes
+
+* **assets:** canonicalize the region at the AssetModeResolver boundary and share the marker read ([#2071](https://github.com/go-to-k/cdkd/issues/2071)) ([37984d4](https://github.com/go-to-k/cdkd/commit/37984d457dc956db1f8c3e98acc206d6b454dcb4))
+
 ## [0.284.18](https://github.com/go-to-k/cdkd/compare/v0.284.17...v0.284.18) (2026-08-20)
 
 
