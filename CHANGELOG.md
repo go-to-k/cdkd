@@ -1,3 +1,10 @@
+## [0.284.23](https://github.com/go-to-k/cdkd/compare/v0.284.22...v0.284.23) (2026-08-20)
+
+
+### Bug Fixes
+
+* **rollback:** resolve a replayed secret in the region it NAMES, refuse a region-ambiguous one, and stop a failed deploy dropping the cross-stack reads it made ([#2121](https://github.com/go-to-k/cdkd/issues/2121)) ([6c3bfa8](https://github.com/go-to-k/cdkd/commit/6c3bfa863356fc3d96554b30ff5a873f7c288592))
+
 ## [0.284.22](https://github.com/go-to-k/cdkd/compare/v0.284.21...v0.284.22) (2026-08-20)
 
 
