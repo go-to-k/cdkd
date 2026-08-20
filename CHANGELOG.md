@@ -1,3 +1,10 @@
+## [0.284.25](https://github.com/go-to-k/cdkd/compare/v0.284.24...v0.284.25) (2026-08-20)
+
+
+### Bug Fixes
+
+* **provisioning:** honor Ctrl-C in every provider withRetry, and make the interrupt a distinct type ([#2119](https://github.com/go-to-k/cdkd/issues/2119)) ([30b0bac](https://github.com/go-to-k/cdkd/commit/30b0bac495393467e4e086d33d5b03d4c83fdb05))
+
 ## [0.284.24](https://github.com/go-to-k/cdkd/compare/v0.284.23...v0.284.24) (2026-08-20)
 
 
