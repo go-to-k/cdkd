@@ -48,7 +48,7 @@
 
 import type { DeploymentEvent, DeploymentEventError } from '../types/deployment-events.js';
 import { extractDeploymentEventError } from '../types/deployment-events.js';
-import type { ResourceState } from '../types/state.js';
+import type { ResourceState, StackState } from '../types/state.js';
 import type {
   CreateContext,
   ResourceCreateResult,
@@ -69,11 +69,14 @@ import {
   type PreDeleteSnapshotClients,
 } from '../provisioning/final-snapshot.js';
 import { getAwsClients } from '../utils/aws-clients.js';
+import { canonicalizeRegion } from '../utils/aws-partition.js';
+import { CdkdError } from '../utils/error-handler.js';
 import { IntrinsicFunctionResolver, type ResolverContext } from './intrinsic-function-resolver.js';
 import {
   scrubResourceRecord,
   redactSecretsForState,
   createSecretMasker,
+  dynamicReferenceTokens,
   maskSecretsInText,
   STATE_DERIVED_RULES,
   type RecordedSecretValues,
@@ -407,6 +410,45 @@ export interface RollbackExecutorContext {
    * `DeployEngineOptions.skipFinalSnapshot`.
    */
   skipFinalSnapshot?: boolean | undefined;
+  /**
+   * The PRODUCER regions this stack's persisted cross-stack reads name --
+   * `StackState.imports[].sourceRegion` plus `StackState.outputReads[].sourceRegion`,
+   * as produced by {@link producerRegionsFromState} (issue
+   * [#2057](https://github.com/go-to-k/cdkd/issues/2057)).
+   *
+   * Read ONLY by {@link classifyReplaySecretRegion}, and only to answer one
+   * question: could a region-LESS `{{resolve:...}}` expression in a replayed bag
+   * have come from a region other than {@link RollbackExecutorContext.region}?
+   * Since #1934 a cross-stack consumer resolves a redacted secret expression in
+   * the PRODUCER's region and then records the PRODUCER's spelling into its own
+   * state -- and that spelling carries no region. The replay here rebuilds its
+   * resolver from `region` alone, so without this list it re-resolves the
+   * producer's expression against the consumer's region and writes whatever a
+   * same-named secret holds THERE onto a live resource.
+   *
+   * A list rather than a boolean because the refusal message has to NAME the
+   * regions the user must reconcile; empty / absent means "no cross-stack read
+   * on record", which is the overwhelmingly common case and leaves the replay
+   * behaviourally unchanged.
+   *
+   * BOTH CALLERS PASS IT, and how each derives it differs in a way that
+   * matters:
+   *
+   *  - `cdkd rollback` (`src/cli/commands/rollback.ts`) passes
+   *    `producerRegionsFromState(baseState)` — whatever the last save
+   *    persisted.
+   *  - `DeployEngine.rollbackExecutorContext(previousState)` passes the UNION
+   *    of the pre-deploy snapshot and THIS session's `recordedImports` /
+   *    `recordedOutputReads` (`crossStackReadsForPartialSave`). That union is
+   *    not belt-and-braces: a rollback journal exists only after a FAILED
+   *    deploy, and until the same review round fixed it every non-success save
+   *    persisted the PRE-deploy snapshot alone — so the cross-region read a
+   *    failing deploy INTRODUCED was never on record, this list came back
+   *    empty, and the refusal was inert on precisely the deploy that needs it.
+   *
+   * The ARN-named arm needs no list at all and is live regardless of either.
+   */
+  importedProducerRegions?: readonly string[] | undefined;
 }
 
 /** The action the planner / replayer decided for a single op. */
@@ -731,7 +773,7 @@ export async function replayRollback(
   // (`ctx.region`), which is exactly the scope the instance cache is meant to
   // have, and both loops below are strictly sequential, so sharing adds no
   // concurrency exposure the failed-op sibling does not already carry.
-  const resolver = new IntrinsicFunctionResolver(ctx.region);
+  const resolver = new ReplayResolvers(ctx.region);
 
   const { createOps, otherOps } = partitionOps(operations);
 
@@ -820,6 +862,21 @@ export async function replayRollback(
  * Cognito `client_secret`). Rollback is synth-free, so re-resolve straight from
  * the expression string here.
  *
+ * BOTH SIDES OF A DIFF ARE CLASSIFIED, not just the bag that is written, and
+ * that is deliberate (issue #2057 review). The `revert` / `--revert-failed`
+ * arms call this twice — once for the desired bag and once for the CURRENT /
+ * ATTEMPTED one, which only becomes the provider's `previousProperties`. Two
+ * things make a wrong-region value there consequential rather than cosmetic:
+ * a patch-based provider computes its patch previous-vs-desired, so a wrong
+ * previous side can emit a wrong patch or, when both sides carry the same
+ * expression and resolve to the same wrong value, silently compute a NO-OP and
+ * skip the revert entirely; and every resolved plaintext lands in the SHARED
+ * per-op `secrets` map, which is the redaction needle for the state record this
+ * op persists, so a foreign-region plaintext mis-redacts that record. In
+ * practice both bags carry the SAME expression (state redacts them identically),
+ * so scoping the refusal to the written bag would buy a rare case at the cost of
+ * a rule nobody could apply by reading one call site.
+ *
  * Records each `plaintext -> expression` into `secrets` so the caller can redact
  * the persisted state record back to the expression — the same
  * resolve-for-provider + redact-for-state split the deploy engine applies at its
@@ -835,32 +892,483 @@ export async function replayRollback(
  */
 async function resolveReplayProps(
   props: Record<string, unknown> | undefined,
-  resolver: IntrinsicFunctionResolver,
-  secrets: RecordedSecretValues
+  resolvers: ReplayResolvers,
+  secrets: RecordedSecretValues,
+  execCtx: RollbackExecutorContext,
+  logicalId: string
 ): Promise<Record<string, unknown> | undefined> {
   if (props === undefined) return undefined;
-  const ctx: ResolverContext = {
+  const resolverContext: ResolverContext = {
     template: { Resources: {} },
     resources: {},
     recordedSecretValues: secrets,
   };
-  const walk = async (v: unknown): Promise<unknown> => {
+  const walk = async (v: unknown, path: string): Promise<unknown> => {
     if (typeof v === 'string') {
-      return v.includes('{{resolve:') ? await resolver.resolveDynamicReferences(v, ctx) : v;
+      if (!v.includes('{{resolve:')) return v;
+      // Issue #2057: decide the REGION of every reference in this leaf before
+      // any of them is fetched. See {@link classifyReplaySecretRegion}.
+      return await resolveLeafByRegion(v, path, logicalId, execCtx, resolvers, resolverContext);
     }
     if (Array.isArray(v)) {
       const out: unknown[] = new Array(v.length) as unknown[];
-      for (let i = 0; i < v.length; i++) out[i] = await walk(v[i]);
+      for (let i = 0; i < v.length; i++) out[i] = await walk(v[i], `${path}[${i}]`);
       return out;
     }
     if (v !== null && typeof v === 'object') {
       const out: Record<string, unknown> = {};
-      for (const [k, val] of Object.entries(v)) out[k] = await walk(val);
+      for (const [k, val] of Object.entries(v))
+        out[k] = await walk(val, path === '' ? k : `${path}.${k}`);
       return out;
     }
     return v;
   };
-  return (await walk(props)) as Record<string, unknown>;
+  return (await walk(props, '')) as Record<string, unknown>;
+}
+
+/**
+ * The `{{resolve:<service>:...}}` families whose value can be a SECRET, and
+ * therefore the only ones the region question below is asked about: every
+ * `secretsmanager` reference by spelling, and every `ssm` one, which is secret
+ * exactly when its parameter is a `SecureString` (issue #1901).
+ *
+ * Every OTHER service is `local` because cdkd cannot resolve it at all, NOT
+ * because it is public. `ssm-secure` is the live example and is emphatically
+ * not public: `resolveDynamicReferences` has no arm for it, so the literal
+ * token is passed through to AWS and CloudFormation resolves it SERVER-side.
+ * cdkd never holds its value, so there is no region for cdkd to get wrong —
+ * which is the only reason it can be waved through here.
+ */
+const REPLAY_SECRET_SERVICES: ReadonlySet<string> = new Set(['secretsmanager', 'ssm']);
+
+/**
+ * Which region must answer for one `{{resolve:...}}` reference in a bag being
+ * replayed — issue [#2057](https://github.com/go-to-k/cdkd/issues/2057).
+ */
+export type ReplaySecretRegionVerdict =
+  /** The stack's own region answers. Every non-secret reference, and every
+   *  secret one whose origin is not in doubt. */
+  | { kind: 'local' }
+  /** The expression NAMES its region (ARN form), and it is not this stack's —
+   *  so a resolver pinned to `region` answers, per issue #1957's "a named
+   *  region binds". */
+  | { kind: 'named-region'; secretName: string; region: string }
+  /** The expression names no region and this stack read across a region
+   *  boundary, so nothing on hand can establish where it came from. Refused. */
+  | { kind: 'ambiguous'; secretName: string; foreignProducerRegions: string[] };
+
+/**
+ * Split a `{{resolve:secretsmanager:...}}` inner body into its SECRET_ID.
+ *
+ * Mirrors `IntrinsicFunctionResolver.resolveSecretsManagerReference`'s own
+ * split — including the END-ANCHORED whole-secret form — because a secret ID
+ * may legitimately contain colons (an ARN always does), so `split(':')[1]` is
+ * wrong for exactly the shape this file cares about most.
+ */
+function secretsManagerSecretId(inner: string): string {
+  const afterService = inner.substring('secretsmanager:'.length);
+  let stringIdx = afterService.indexOf(':SecretString:');
+  let binaryIdx = afterService.indexOf(':SecretBinary:');
+  if (stringIdx < 0 && afterService.endsWith(':SecretString')) {
+    stringIdx = afterService.length - ':SecretString'.length;
+  }
+  if (binaryIdx < 0 && afterService.endsWith(':SecretBinary')) {
+    binaryIdx = afterService.length - ':SecretBinary'.length;
+  }
+  const delimiterIdx =
+    stringIdx >= 0 && binaryIdx >= 0
+      ? Math.min(stringIdx, binaryIdx)
+      : stringIdx >= 0
+        ? stringIdx
+        : binaryIdx;
+  return delimiterIdx >= 0 ? afterService.substring(0, delimiterIdx) : afterService;
+}
+
+/**
+ * The parameter name an `{{resolve:ssm:...}}` reference asks for — byte-for-byte
+ * what `IntrinsicFunctionResolver.resolveSSMReference` passes as `GetParameter`'s
+ * `Name`, which is `parts.slice(1).join(':')` on the colon-split inner body.
+ *
+ * The whole remainder, deliberately, with NOTHING stripped:
+ *
+ *  - An SSM dynamic reference CAN name a full ARN. The resolver joins the tail
+ *    back together, so `{{resolve:ssm:arn:aws:ssm:us-west-2:111122223333:parameter/db/pw}}`
+ *    reaches AWS as that ARN. A `split(':')[1]` here would yield the literal
+ *    `'arn'` — a parameter that does not exist — and then report the reference
+ *    as region-LESS and refuse it, which is the guess-in-the-other-direction the
+ *    `named-region` arm exists to prevent.
+ *  - A trailing `:<version>` / `:<label>` is part of the name AS SSM PARSES IT
+ *    (`GetParameter` accepts `name:3` / `name:prod`), so stripping it would name
+ *    a different thing in the refusal message than the one that would be read.
+ */
+function ssmParameterName(inner: string): string {
+  return inner.substring('ssm:'.length);
+}
+
+/**
+ * The region an ARN names, or `undefined` for anything that is not an ARN with
+ * a populated region field (`arn:<partition>:<service>:<region>:...`).
+ */
+function arnRegion(secretId: string): string | undefined {
+  if (!secretId.startsWith('arn:')) return undefined;
+  const region = secretId.split(':')[3];
+  return region ? region : undefined;
+}
+
+/**
+ * The producer regions a stack's persisted cross-stack reads name, for
+ * {@link RollbackExecutorContext.importedProducerRegions} (issue #2057).
+ *
+ * Both record kinds count, and for the same reason: each one is a value this
+ * stack read out of ANOTHER region's state, so each one is a way a
+ * foreign-region `{{resolve:...}}` expression can have reached this stack's own
+ * record. `imports` is the strong `Fn::ImportValue` edge; `outputReads` is the
+ * weak `Fn::GetStackOutput` one (schema v8), which is the EASIER of the two to
+ * point across a region boundary because the reference carries its own
+ * `Region` argument.
+ *
+ * Deduplicated case-insensitively, keeping each region's first-recorded
+ * spelling so the refusal message echoes what the user will see in
+ * `state.json`. The consumer's own region is deliberately NOT filtered here —
+ * {@link classifyReplaySecretRegion} does that, because it is the one that
+ * knows which region is asking.
+ *
+ * Exported so the two `RollbackExecutorContext` construction sites derive the
+ * list identically — `cdkd rollback` from the state it loaded, and
+ * `DeployEngine.rollbackExecutorContext` from `crossStackReadsForPartialSave`,
+ * which unions that snapshot with the reads the failing deploy itself made.
+ */
+export function producerRegionsFromState(
+  state: Pick<StackState, 'imports' | 'outputReads'>
+): string[] {
+  const seen = new Set<string>();
+  const regions: string[] = [];
+  for (const entry of [...(state.imports ?? []), ...(state.outputReads ?? [])]) {
+    const canonical = canonicalizeRegion(entry.sourceRegion);
+    if (!canonical || seen.has(canonical)) continue;
+    seen.add(canonical);
+    regions.push(entry.sourceRegion);
+  }
+  return regions;
+}
+
+/**
+ * Decide which region must answer for a single `{{resolve:...}}` expression a
+ * rollback replay is about to re-resolve — issue
+ * [#2057](https://github.com/go-to-k/cdkd/issues/2057).
+ *
+ * WHY A REPLAY CAN BE HOLDING A FOREIGN REGION'S EXPRESSION AT ALL. Since
+ * issue #1934 a cross-stack consumer re-resolves a redacted producer value in
+ * the PRODUCER's region (`reresolveCrossStackValue` /
+ * `resolverForProducerRegion`) — correct, because a Secrets Manager secret or
+ * an SSM `SecureString` of the same NAME in two regions is two independent
+ * values. The plaintext is then recorded into the CONSUMER's
+ * `recordedSecretValues`, so the consumer's `state.json` (and from there the
+ * rollback journal) persists the PRODUCER's spelling of the expression. That is
+ * the right thing to persist, and it is region-less: the reader cannot tell
+ * from the string which region produced it.
+ *
+ * The replay rebuilds its resolver from the CONSUMER's region alone, so
+ * re-resolving that expression locally answers from a same-named secret in the
+ * wrong region and writes it to a LIVE resource. Silent, and on the recovery
+ * path. The rule applied here is the family's, from issue #1957: A NAMED REGION
+ * BINDS; NEVER SUBSTITUTE A GUESS. The three verdicts are that one sentence:
+ *
+ *  - **`named-region`** — the expression's SECRET_ID is an ARN, which names its
+ *    own region. The region is ESTABLISHED, so it binds: the caller resolves
+ *    through a resolver pinned to it ({@link ReplayResolvers.forRegion}) rather
+ *    than refusing. Refusing here would be the guess in the other direction.
+ *
+ *    cdkd would otherwise get this wrong, which is why the arm exists at all:
+ *    `resolveSecretsManagerReference` builds its client from
+ *    `this.explicitRegion` and passes the ARN through as an opaque `SecretId`,
+ *    and `@aws-sdk/client-secrets-manager`'s endpoint ruleset has NO
+ *    ARN-derived endpoint rule (unlike, say, S3 access points), so a
+ *    foreign-region ARN is sent to the stack's own regional endpoint. What the
+ *    SERVICE then does with it is not something this repo can settle offline —
+ *    see the fixture note in
+ *    `tests/integration/rollback-cross-region-secret/README.md`. Pinning the
+ *    client to the ARN's region is correct either way: if Secrets Manager would
+ *    have refused the foreign ARN, this turns a hard failure into a correct
+ *    resolution; if it would have honoured it, this reaches the same value by
+ *    the documented route. Neither outcome is a regression.
+ *
+ *  - **`ambiguous`** — the expression names no region (the plain name form) AND
+ *    this stack has a foreign producer region on record
+ *    ({@link RollbackExecutorContext.importedProducerRegions}). Nothing on hand
+ *    can establish the origin, so the replay refuses instead of guessing.
+ *
+ *    KNOWN OVER-REFUSAL, accepted deliberately, and WIDER THAN THE SSM CASE
+ *    ALONE — state both, because the second one is the common shape:
+ *
+ *    (a) Any NAME-FORM `secretsmanager` reference in a stack that has ANY
+ *    foreign producer region on record is refused, even when that secret is
+ *    the stack's own purely-local one and has nothing to do with the
+ *    cross-region read. The evidence is per-STACK, not per-reference, so one
+ *    cross-region export plus one ordinary
+ *    `{{resolve:secretsmanager:mysecret:SecretString:pw}}` is enough — and CDK's
+ *    `secretValueFromJson` emits exactly that name form, so this is the shape
+ *    most people will meet. It also persists: with the union the producer
+ *    region stays on record until the next SUCCESSFUL deploy. Per-reference
+ *    evidence is what would narrow it, and that needs the region recorded
+ *    ALONGSIDE the expression — the persisted-shape change issue #2057
+ *    deliberately deferred (its options 1 and 2). Until then the refusal is
+ *    loud, names the ARN spelling as the remedy, and is the fail-closed side
+ *    of a trade whose other side is a silent wrong-secret write.
+ *
+ *    (b) An `ssm` reference is secret only when its parameter is a
+ *    `SecureString`, and this arm cannot tell. So a `{{resolve:ssm:/app/env}}`
+ *    naming a PUBLIC `String` that reached a persisted bag (issue #2036's
+ *    acknowledged over-redaction) is refused too. Narrowing it by
+ *    `isRecordedSecretExpression` was considered and REJECTED, and not because
+ *    the store is unreachable — it is imported by this very file. It is
+ *    unusable: `recordedSecretExpressions` is populated BY resolution, and in
+ *    the standalone `cdkd rollback` process nothing has resolved anything when
+ *    the first op is classified, so the store is empty and every `ssm` verdict
+ *    would come back "not secret" — turning the protection off for exactly the
+ *    SecureString case it exists for. Worse, once one op DID resolve a
+ *    reference the store would be warm for the next, so the verdict would
+ *    depend on OP ORDER. A resolve-the-type-first probe is unsound for the
+ *    same reason the whole issue exists: the TYPE is region-dependent (#1957),
+ *    so probing locally can report `String` for a name that is `SecureString`
+ *    in the producer's region and wave through the very write this refuses.
+ *    The residual is therefore a loud, actionable error on a narrow
+ *    intersection (an over-redacted public ssm reference AND a cross-region
+ *    read on record), which is the fail-closed side of the trade.
+ *
+ *  - **`local`** — everything else, which is the overwhelmingly common case:
+ *    every non-secret service, every same-region ARN (the ordinary CDK
+ *    `secretValueFromJson` shape), and every name-form expression in a stack
+ *    with no foreign producer region recorded. Resolved exactly as before this
+ *    change.
+ *
+ * A same-region ARN answers `local` even when a foreign producer region IS on
+ * record: the expression settles the question itself, so the weaker evidence
+ * never gets consulted.
+ */
+export function classifyReplaySecretRegion(
+  expression: string,
+  consumerRegion: string,
+  importedProducerRegions: readonly string[] | undefined
+): ReplaySecretRegionVerdict {
+  const inner = expression.startsWith('{{resolve:')
+    ? expression.slice('{{resolve:'.length, -'}}'.length)
+    : undefined;
+  if (inner === undefined) return { kind: 'local' };
+  const service = inner.split(':')[0];
+  if (service === undefined || !REPLAY_SECRET_SERVICES.has(service)) return { kind: 'local' };
+
+  const secretName =
+    service === 'secretsmanager' ? secretsManagerSecretId(inner) : ssmParameterName(inner);
+  if (!secretName) return { kind: 'local' };
+
+  const named = arnRegion(secretName);
+  if (named !== undefined) {
+    return canonicalizeRegion(named) === canonicalizeRegion(consumerRegion)
+      ? { kind: 'local' }
+      : { kind: 'named-region', secretName, region: named };
+  }
+
+  const seen = new Set<string>();
+  const foreignProducerRegions: string[] = [];
+  for (const candidate of importedProducerRegions ?? []) {
+    const canonical = canonicalizeRegion(candidate);
+    if (!canonical || canonical === canonicalizeRegion(consumerRegion)) continue;
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    foreignProducerRegions.push(candidate);
+  }
+  if (foreignProducerRegions.length === 0) return { kind: 'local' };
+  return { kind: 'ambiguous', secretName, foreignProducerRegions };
+}
+
+/**
+ * The replay's resolvers: the stack's own, plus one pinned sibling per FOREIGN
+ * region an ARN-named reference asks for (issue #2057).
+ *
+ * One instance per replay, not per op — the resolved-value cache lives on the
+ * resolver INSTANCE since issue #1933, so a resolver per op would re-fetch every
+ * referenced secret once per op. The pinned siblings are cached here for the
+ * same reason: a 100-op replay of a bag carrying one foreign ARN must pay one
+ * `GetSecretValue`, not a hundred.
+ *
+ * A pinned sibling is a PLAIN resolver, deliberately NOT the resolver class's
+ * own `producerRegionGuest` (which the class sets on the siblings
+ * `resolverForProducerRegion` builds, to stop a foreign region pinning a verdict
+ * in the process-global `recordedSecretExpressions` store — the issue #1933
+ * shape, where an `ssm` parameter whose TYPE differs by region has one region's
+ * verdict decide the other's redaction).
+ *
+ * WHY A GUEST FLAG IS NOT NEEDED HERE, and the argument has to be this one
+ * rather than "only `secretsmanager` routes to a sibling" (that earlier claim
+ * was FALSE — `resolveSSMReference` joins its colon-split tail back together, so
+ * an `ssm` reference CAN name a full ARN and CAN therefore route here):
+ *
+ *   {@link ReplayResolvers.forRegion} is reached ONLY from a `named-region`
+ *   verdict, which `classifyReplaySecretRegion` returns only when the
+ *   SECRET_ID / parameter name starts with `arn:` and carries a region. So a
+ *   pinned sibling only ever resolves an expression whose KEY EMBEDS THE
+ *   REGION IT IS BEING RESOLVED IN.
+ *
+ * The store is keyed by the expression string alone, and that is exactly what
+ * makes #1933 possible: two regions sharing one key. An ARN-form key cannot be
+ * shared by two regions, so a verdict pinned from a sibling can never contradict
+ * another region's for the same key. If a future change ever routes a
+ * region-LESS expression to `forRegion`, this argument dies with it and the
+ * sibling needs the guest flag.
+ */
+class ReplayResolvers {
+  /** The stack's own resolver — every `local` verdict resolves through this. */
+  readonly primary: IntrinsicFunctionResolver;
+  private readonly pinned = new Map<string, IntrinsicFunctionResolver>();
+  private readonly stackRegion: string;
+
+  constructor(stackRegion: string) {
+    this.stackRegion = stackRegion;
+    this.primary = new IntrinsicFunctionResolver(stackRegion);
+  }
+
+  /** The resolver that must answer for `region` — `primary` when it is the stack's own. */
+  forRegion(region: string): IntrinsicFunctionResolver {
+    const target = canonicalizeRegion(region);
+    if (target === canonicalizeRegion(this.stackRegion)) return this.primary;
+    const cached = this.pinned.get(target);
+    if (cached) return cached;
+    const scoped = new IntrinsicFunctionResolver(target);
+    this.pinned.set(target, scoped);
+    return scoped;
+  }
+}
+
+/**
+ * The refusal an `ambiguous` replay reference throws (issue #2057).
+ *
+ * A plain throw, like the final-snapshot refusals above and for the same
+ * reason: the per-op catch in {@link replaySingle} /
+ * {@link replayFailedOperations} counts it as a failure, which keeps the
+ * journal segment and lets the user re-run once the reference is disambiguated.
+ * Refusing is strictly better than the alternative it replaces — resolving a
+ * producer-region reference against the consumer's region does not fail, it
+ * succeeds with the WRONG credential and writes it to a resource that is live.
+ *
+ * Names the reference, the regions, and the remedy. Never the resolved value:
+ * nothing here has resolved anything yet, and the expression is the same string
+ * `state.json` already stores in the clear.
+ */
+function regionAmbiguousReplaySecretError(
+  logicalId: string,
+  propertyPath: string,
+  secretName: string,
+  foreignProducerRegions: readonly string[],
+  consumerRegion: string
+): CdkdError {
+  const where = propertyPath === '' ? '' : ` property '${propertyPath}'`;
+  return new CdkdError(
+    `Rollback of ${logicalId}${where} cannot re-resolve the secret reference ` +
+      `'${secretName}': the reference carries no region of its own, and this stack read ` +
+      `across a region boundary (producer region(s) on record: ` +
+      `${foreignProducerRegions.join(', ')}), so it may have been resolved in one of those ` +
+      `rather than in '${consumerRegion}'. A secret of the same name in two regions is two ` +
+      `independent values, so replaying this would write the WRONG secret to a live resource. ` +
+      `Refusing instead. Resolve the reference in its own region and set the property ` +
+      `directly (or spell it as a full ARN, which names its region and is resolved there), ` +
+      `then re-run 'cdkd rollback'.`,
+    'ROLLBACK_SECRET_REGION_AMBIGUOUS'
+  );
+}
+
+/**
+ * Re-resolve one LEAF string, sending each `{{resolve:...}}` reference in it to
+ * the region {@link classifyReplaySecretRegion} says must answer (issue #2057).
+ *
+ * Refuses FIRST, over the whole leaf, before any reference is fetched: a leaf
+ * can splice several references together, and resolving the safe ones first
+ * would leave half a credential fetched (and cached, and recorded as a
+ * redaction needle) for an op that is about to be refused anyway.
+ *
+ * Then TWO paths, and the split is deliberate rather than an optimisation:
+ *
+ *  - With no foreign-region reference — every leaf on every existing code path
+ *    — the leaf goes to `resolveDynamicReferences` WHOLE, exactly as before this
+ *    change. That method has its own well-tested substitution semantics (it
+ *    collects matches from the ORIGINAL string, so a resolved plaintext that is
+ *    itself token-shaped is never re-resolved — issue #1917), and this change
+ *    does not want to relitigate any of it.
+ *  - With one, the leaf is rebuilt segment by segment so each reference can be
+ *    resolved by its OWN region's resolver. `resolveDynamicReferences` resolves
+ *    every token in the string it is handed with the one resolver it is called
+ *    on, so a mixed leaf cannot be served by a single call. Each token is
+ *    resolved ALONE and its result concatenated, which means no resolved value
+ *    is ever re-scanned for tokens either.
+ *
+ * `dynamicReferenceTokens` returns the tokens in order and non-overlapping, so
+ * walking the leaf with a moving `indexOf` cursor reproduces their positions
+ * exactly, duplicates included.
+ */
+async function resolveLeafByRegion(
+  leaf: string,
+  propertyPath: string,
+  logicalId: string,
+  execCtx: RollbackExecutorContext,
+  resolvers: ReplayResolvers,
+  resolverContext: ResolverContext
+): Promise<string> {
+  // ONE spelling of the token scan, shared with `secret-redaction.ts` (issue
+  // #1936): a private regex here would answer a different question from the one
+  // the resolver is about to ask, which is the whole defect that constant fixed.
+  const tokens = dynamicReferenceTokens(leaf);
+  const verdicts = tokens.map(
+    (token) =>
+      [
+        token,
+        classifyReplaySecretRegion(token, execCtx.region, execCtx.importedProducerRegions),
+      ] as const
+  );
+
+  for (const [, verdict] of verdicts) {
+    if (verdict.kind === 'ambiguous') {
+      throw regionAmbiguousReplaySecretError(
+        logicalId,
+        propertyPath,
+        verdict.secretName,
+        verdict.foreignProducerRegions,
+        execCtx.region
+      );
+    }
+  }
+
+  if (!verdicts.some(([, verdict]) => verdict.kind === 'named-region')) {
+    return await resolvers.primary.resolveDynamicReferences(leaf, resolverContext);
+  }
+
+  let out = '';
+  let cursor = 0;
+  for (const [token, verdict] of verdicts) {
+    const at = leaf.indexOf(token, cursor);
+    // Unreachable while the tokens come from a scan of THIS string, so this is
+    // a guard against a future scanner change — and the direction it fails in
+    // is the whole point. Handing the leaf back to the primary resolver would
+    // send a token whose foreign region is already KNOWN to the consumer's
+    // region: issue #2057 verbatim, reintroduced by the guard meant to prevent
+    // a regression. Fail closed instead; a rollback that stops is recoverable,
+    // a wrong secret written to a live resource is not.
+    if (at < 0) {
+      throw new CdkdError(
+        `Rollback of ${logicalId}${propertyPath === '' ? '' : ` property '${propertyPath}'`} ` +
+          `could not locate a scanned dynamic reference in the value it was scanned from. ` +
+          `Refusing rather than resolving it in '${execCtx.region}', which would be the wrong ` +
+          `region for a reference that names another one. This is an internal invariant ` +
+          `failure — please report it with the resource type and property path.`,
+        'ROLLBACK_SECRET_TOKEN_SCAN_MISMATCH'
+      );
+    }
+    out += leaf.slice(cursor, at);
+    const resolver =
+      verdict.kind === 'named-region' ? resolvers.forRegion(verdict.region) : resolvers.primary;
+    out += await resolver.resolveDynamicReferences(token, resolverContext);
+    cursor = at + token.length;
+  }
+  return out + leaf.slice(cursor);
 }
 
 /**
@@ -1133,7 +1641,7 @@ async function replaySingle(
    * resolved-value cache lives on the instance — see the construction site in
    * {@link replayRollback}.
    */
-  resolver: IntrinsicFunctionResolver,
+  resolver: ReplayResolvers,
   orphanLogicalIds: Set<string>,
   result: RollbackReplayResult,
   afterOp?: (logicalId: string) => Promise<void> | void,
@@ -1414,7 +1922,7 @@ async function replaySingle(
         // top of this function) captures plaintext->expression to redact the
         // rebuilt state record below AND to mask every log site downstream.
         const resolvedPrevProps =
-          (await resolveReplayProps(prev.properties, resolver, secrets)) ?? {};
+          (await resolveReplayProps(prev.properties, resolver, secrets, ctx, op.logicalId)) ?? {};
         logger.info(
           `  Rollback: Reversing replacement of ${op.logicalId} (${op.resourceType}) — ` +
             `re-creating the old resource and deleting the new one`
@@ -1760,8 +2268,20 @@ async function replaySingle(
         // no-op. `secrets` (hoisted to the top of this function) captures
         // plaintext->expression to redact the record AND to mask every log site
         // downstream, the shared catch included.
-        const desiredProps = await resolveReplayProps(previousState.properties, resolver, secrets);
-        const currentProps = await resolveReplayProps(current.properties, resolver, secrets);
+        const desiredProps = await resolveReplayProps(
+          previousState.properties,
+          resolver,
+          secrets,
+          ctx,
+          op.logicalId
+        );
+        const currentProps = await resolveReplayProps(
+          current.properties,
+          resolver,
+          secrets,
+          ctx,
+          op.logicalId
+        );
         // See {@link updateWithRollbackRetry} for why this is not a bare
         // `provider.update()` and not a bare `withRetry` either.
         const revertResult = await updateWithRollbackRetry(
@@ -1901,7 +2421,7 @@ export async function replayFailedOperations(
   const { logger } = ctx;
   // Re-resolves redacted `{{resolve:secretsmanager:...}}` expressions to the
   // concrete secret for the failed-op provider replay (GHSA fix).
-  const resolver = new IntrinsicFunctionResolver(ctx.region);
+  const resolver = new ReplayResolvers(ctx.region);
   const emitEnvelope = options.emitEnvelope === true && failedOps.length > 0;
   if (emitEnvelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_STARTED', stackName });
 
@@ -2102,11 +2622,19 @@ export async function replayFailedOperations(
           // `revert` arm (retry / disableOuterRetry / interrupt). `secrets` is
           // this iteration's bag, hoisted above the `try` so the shared catch
           // can mask with it too.
-          const desiredProps = await resolveReplayProps(prev.properties, resolver, secrets);
+          const desiredProps = await resolveReplayProps(
+            prev.properties,
+            resolver,
+            secrets,
+            ctx,
+            op.logicalId
+          );
           const attemptedProps = await resolveReplayProps(
             op.attemptedProperties ?? current.properties,
             resolver,
-            secrets
+            secrets,
+            ctx,
+            op.logicalId
           );
           const revertFailedResult = await updateWithRollbackRetry(
             provider,

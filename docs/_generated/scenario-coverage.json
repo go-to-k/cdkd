@@ -1724,6 +1724,14 @@
       "scenarios": []
     },
     {
+      "name": "rollback-cross-region-secret",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution",
+        "getstackoutput-cross-region"
+      ]
+    },
+    {
       "name": "rollback-deletion-policy-snapshot",
       "annotated": true,
       "scenarios": [
@@ -2252,6 +2260,7 @@
       "fixtures": [
         "cross-stack-secret-import",
         "dynamic-ref-cross-region",
+        "rollback-cross-region-secret",
         "secrets-array-nested",
         "secrets-dynamic-ref"
       ]
@@ -2302,7 +2311,8 @@
       "scenario": "getstackoutput-cross-region",
       "description": "Cross-REGION `Fn::GetStackOutput` (cdkd-specific): a CONSUMER stack deployed in region Y reads a PRODUCER stack output from region X via the `Region` argument. Works same-account because the cdkd state bucket is account-scoped (not region-scoped) — the resolver reads `cdkd/{Producer}/{regionX}/state.json` from the same bucket the consumer state lives in. No CFn equivalent (CFn Exports are region-scoped).",
       "fixtures": [
-        "getstackoutput-crossregion"
+        "getstackoutput-crossregion",
+        "rollback-cross-region-secret"
       ]
     },
     {

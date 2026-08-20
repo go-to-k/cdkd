@@ -26,7 +26,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CompletedOperation } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
-import type { ResourceState } from '../../../src/types/state.js';
+import type { ResourceState, StackState } from '../../../src/types/state.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -124,12 +124,23 @@ describe('DeployEngine rollback context threading (#1363)', () => {
     type PerformRollbackFn = (
       completedOperations: CompletedOperation[],
       stateResources: Record<string, ResourceState>,
-      stackName: string
+      stackName: string,
+      // Issue #2057: the PRE-deploy record, threaded so the executor context
+      // can derive `importedProducerRegions`. This fixture has no cross-stack
+      // read, so the derived list is empty and nothing here changes.
+      previousState: StackState
     ) => Promise<{ failures: number; warnings: number }>;
     const performRollback = (
       engine as unknown as { performRollback: PerformRollbackFn }
     ).performRollback.bind(engine);
-    const result = await performRollback([op], stateResources, 'MyStack');
+    const result = await performRollback([op], stateResources, 'MyStack', {
+      version: 8,
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      resources: {},
+      outputs: {},
+      lastModified: 1,
+    });
     expect(result.failures).toBe(0);
     return stateResources;
   }

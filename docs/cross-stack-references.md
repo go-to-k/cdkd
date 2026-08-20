@@ -296,6 +296,41 @@ to v4 cdkd:
 This means the enforcement activates **gradually as consumers are
 re-deployed**, with no explicit migration step from the user.
 
+### A FAILED consumer deploy used to leave the same hole (issue [#2057](https://github.com/go-to-k/cdkd/issues/2057) lane)
+
+Until 2026-08-20 the gap above had a second, permanent instance. Only the
+terminal SUCCESS save persisted the imports this session recorded. Every other
+save in `deploy-engine.ts` wrote the PRE-deploy `imports[]` / `outputReads[]`
+snapshot beside the POST-deploy resource records -- the diff-clean no-change
+save, the per-resource partial save, the pre-rollback save, the two
+post-rollback saves (primary and ETag retry) and
+`persistStateAfterOutputFailure`, which looked like a success save because
+provisioning WAS clean, yet writes a rollback journal segment and rethrows.
+
+So a consumer deploy that ADDED an `Fn::ImportValue` and then failed persisted
+the consumer's new resources while recording no import for them. The producer's
+strong-ref pre-flight (`findActiveImportConsumers`) then found nothing and
+`cdkd destroy <producer>` proceeded -- deleting a producer whose consumer was
+live and importing from it. Unlike the v3-to-v4 case above this never healed on
+its own, because nothing re-recorded the import until the consumer's next
+SUCCESSFUL deploy.
+
+Every save except the terminal success one now UNIONS this session's recorded
+reads with the snapshot; only that one replaces the list wholesale. The
+enumeration above is history, not a maintained list: it drifted twice while
+this lane was open (once undercounting the saves, once overcounting the
+post-rollback ones), so the live rule is enforced by
+`tests/unit/deployment/deploy-engine-cross-stack-read-writers.test.ts`, which
+scans `deploy-engine.ts` for direct `imports:` / `outputReads:` writes and
+fails on any that is not the allow-listed success-path one. A union never
+drops, so a stack that stops reading cross-stack keeps a stale entry until its
+next successful deploy -- refusing a destroy that would in fact be safe. That
+direction is deliberate: a refusal names the consumer and is overridable, while
+the other direction deletes a producer out from under a live consumer.
+
+`state.outputReads[]` (`Fn::GetStackOutput`, v8) is unioned by the same rule,
+though it is informational and never destroy-blocking -- see the section above.
+
 ---
 
 ## Resolver flow: `Fn::ImportValue`

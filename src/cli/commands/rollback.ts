@@ -23,6 +23,7 @@ import {
   replayFailedOperations,
   planRollback,
   planFailedOps,
+  producerRegionsFromState,
   type RollbackExecutorContext,
   type RollbackPlanItem,
   type FailedOpPlanItem,
@@ -388,6 +389,13 @@ export async function rollbackCommand(
         recordEvent: (e) => eventRecorder.record(e),
         finalSnapshotClients,
         skipFinalSnapshot: options.skipFinalSnapshot === true,
+        // Issue #2057: the producer regions this stack read across. A replayed
+        // `{{resolve:...}}` expression that a cross-region read put in this
+        // record carries no region of its own, so without this the replay
+        // re-resolves it HERE and writes a same-named foreign secret to a live
+        // resource. Derived from the state this command already loaded — see
+        // `producerRegionsFromState`.
+        importedProducerRegions: producerRegionsFromState(baseState),
       };
 
       // 7. Serialized incremental state save after every mutating op.
