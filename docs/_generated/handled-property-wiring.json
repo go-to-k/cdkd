@@ -3447,10 +3447,12 @@
             "AWS::CloudFront::Distribution"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
             "create",
+            "orphanSearchHint",
             "update"
           ]
         },

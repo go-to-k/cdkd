@@ -4814,6 +4814,7 @@
         "conditions",
         "context-test",
         "cross-stack-references",
+        "custom-resource-provider",
         "data-analytics",
         "destroy-data-guard",
         "diff-intrinsic-target-change",
@@ -4888,6 +4889,9 @@
           "l2"
         ],
         "cross-stack-references": [
+          "l2"
+        ],
+        "custom-resource-provider": [
           "l2"
         ],
         "data-analytics": [
@@ -5108,7 +5112,8 @@
         "sns-event-source",
         "sns-inline-subscription",
         "sns-sqs-event",
-        "sns-subscription-filter"
+        "sns-subscription-filter",
+        "sns-subscription-update"
       ],
       "signals": {
         "composite-stack": [
@@ -5124,6 +5129,10 @@
           "literal"
         ],
         "sns-subscription-filter": [
+          "literal"
+        ],
+        "sns-subscription-update": [
+          "l1",
           "literal"
         ]
       }
@@ -5162,6 +5171,7 @@
         "sns-pending-subscription",
         "sns-sqs-event",
         "sns-subscription-filter",
+        "sns-subscription-update",
         "tags-propagation",
         "throttle-wide-dag",
         "update-policy-mutations"
@@ -5266,6 +5276,10 @@
           "l2",
           "literal"
         ],
+        "sns-subscription-update": [
+          "l2",
+          "literal"
+        ],
         "tags-propagation": [
           "l2"
         ],
@@ -5351,6 +5365,7 @@
         "sns-inline-subscription",
         "sns-sqs-event",
         "sns-subscription-filter",
+        "sns-subscription-update",
         "sqs-esm-max-concurrency",
         "tags-propagation"
       ],
@@ -5472,6 +5487,10 @@
           "l2"
         ],
         "sns-subscription-filter": [
+          "l2",
+          "literal"
+        ],
+        "sns-subscription-update": [
           "l2",
           "literal"
         ],

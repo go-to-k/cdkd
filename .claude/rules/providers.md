@@ -1267,7 +1267,32 @@ failure arm uses AND, since issue
 engine can count and record the survivor; **delete-then-create** (SNS subscription) ABORTS
 with a `ProvisioningError` before creating the replacement, since continuing
 would leave two subscriptions delivering every message twice and that duplicate
-is exactly what the CREATE would add. State the premise as **"the resource was
+is exactly what the CREATE would add. **ONE rule covers BOTH failure arms** —
+cdkd creates the replacement only when the old resource is PROVEN gone. #1778
+scoped its abort to the SKIP arm and left the THROWN delete warning and
+creating anyway, on the argument that a throw is AMBIGUOUS (the delete may have
+partially landed, been transient, or found the resource already gone) and
+converging is the better bet. Issue
+[#1967](https://github.com/go-to-k/cdkd/issues/1967) reversed that: the
+ambiguity is real but the conclusion does not follow: cdkd must not issue a
+CREATE whose precondition it failed to establish, and the abort's downside is a
+failed deploy a retry converges on. Note which arm actually FIRES: `delete()`
+wraps a real AWS failure in a `ProvisioningError`, so the THROW arm is the live
+one, while the skip families here are still latent. When you add an abort, cover
+both arms in one place — a guard on one of them is the shape this defect had.
+**Reachability at THIS exemplar, measured rather than assumed** (#1967, review):
+the duplicate cannot occur here, because SNS enforces uniqueness on (topic,
+protocol, endpoint) — a repeated `Subscribe` with identical attributes returns
+the same `SubscriptionArn`, and with different attributes it is REFUSED — and
+those three fields are exactly this type's `createOnlyProperties`, so a change
+to any of them routes to the deploy engine's own replacement branch and never
+reaches `update()`. The duplicate needs the endpoint to differ, which happens
+only when `cloudformation:DescribeType` is unavailable and
+`create-only-properties.ts` degrades an endpoint change into an in-place update.
+So the gain here is error QUALITY (the failure names the DELETE that failed,
+non-retryably, instead of a downstream `Subscribe` rejection) and the rule holds
+for the degraded case. Do not restate the duplicate as this site's live harm —
+it is the RULE's justification, not this exemplar's measured outcome. State the premise as **"the resource was
 not destroyed"**, never as "no AWS call was issued" — `ResourceDeleteResult`'s
 contract warns against the second reading, since `NestedStackProvider` reports
 `skipped` after a recursion that may already have deleted things; the abort is
@@ -1298,8 +1323,8 @@ logical id) cannot resurrect a refusal even though they cannot read the marker
 themselves, and no classifier signature had to widen. Also point the
 remediation at the STATE record as well as at AWS, since neither skip family
 shipping today (the state-borne composite-id arms, `NestedStackProvider`'s
-propagation) is repaired by deleting the AWS resource alone. All six sites are
-LATENT, and they STAY latent even after #1770 lands — that issue's eight arms
+propagation) is repaired by deleting the AWS resource alone. All six sites were LATENT when #1778 shipped, and the SKIP
+families STAY latent even after #1770 lands — that issue's eight arms
 are in `lambda-layer` / `lambda-permission` / `custom-resource` / `iam-policy` /
 `iam-user-group`, none of which `CloudControlProvider` delegates to or any of
 the four REPLACE `update()`s calls, and neither `iam-role` nor

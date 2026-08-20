@@ -409,7 +409,21 @@ describe('SNS subscription delete-then-create REPLACE aborts on a skipped delete
     expect(warnings().some((m) => m.includes(hostileId))).toBe(true);
   });
 
-  it('a FAILED delete still converges (pre-existing warn-and-continue is unchanged)', async () => {
+  /**
+   * INVERTED by issue [#1967](https://github.com/go-to-k/cdkd/issues/1967).
+   * This case used to assert the opposite — "a FAILED delete still converges
+   * (pre-existing warn-and-continue is unchanged)" — because #1778 deliberately
+   * scoped its abort to the SKIP arm and left the THROW arm alone.
+   *
+   * That asymmetry was the defect: a thrown delete fell through to `create()`
+   * and produced exactly the duplicate the skip arm exists to prevent, and it
+   * is the arm that actually fires in the field (a real `Unsubscribe` failure
+   * is wrapped in a `ProvisioningError`, while the skip family still has no
+   * producer in this provider). One rule now covers both arms — cdkd creates
+   * the replacement only when the old subscription is PROVEN gone — so the
+   * assertion is that `create()` was NOT reached.
+   */
+  it('a THROWN delete aborts too, without creating the duplicate (issue #1967)', async () => {
     const provider = new SNSSubscriptionProvider();
     const createSpy = vi
       .spyOn(provider, 'create')
@@ -422,16 +436,20 @@ describe('SNS subscription delete-then-create REPLACE aborts on a skipped delete
       )
     );
 
-    const result = await provider.update(
-      'MySub',
-      OLD_ARN,
-      'AWS::SNS::Subscription',
-      PROPS,
-      PROPS
-    );
+    const error = await provider
+      .update('MySub', OLD_ARN, 'AWS::SNS::Subscription', PROPS, PROPS)
+      .then(
+        () => undefined,
+        (err: unknown) => err
+      );
 
-    expect(result.physicalId).toBe(NEW_ARN);
-    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect(createSpy).not.toHaveBeenCalled();
+    // The AWS cause is still diagnosable, on its own warn line.
     expect(warnings().some((m) => m.includes('Failed to delete old subscription'))).toBe(true);
+    // ...and the abort is terminal for the rollback callers that wrap
+    // `update()` in `withRetry`, exactly as the skip arm's is.
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(isRetryableTransientError(error, (error as Error).message)).toBe(false);
   });
 });

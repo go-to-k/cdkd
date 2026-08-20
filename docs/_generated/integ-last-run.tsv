@@ -62,7 +62,7 @@ cross-stack-cfn-fallback	2026-08-12T10:36:46Z	PASS	170	verify.sh	re-run post-reb
 cross-stack-references	2026-08-08T17:48:34Z	PASS	25	standard	marker re-flip after review coercion fix; deploy+destroy clean
 cross-stack-secret-import	2026-08-19T23:44:03Z	PASS	99	verify.sh	issue 1934 live test (new fixture); the LIVE SSM parameter carries the RESOLVED secret with no {{resolve: token (pre-fix it WAS the token), consumer state keeps the expression, re-deploy no-op and diff --fail rc=0; destroy 2 stacks 0 errors, secret force-deleted, 0 orphans
 custom-resource-getatt-data	2026-08-12T08:12:11Z	PASS	63	verify.sh	#1674 lane; CR invoke path, 6 del/0 err, 0 orph
-custom-resource-provider	2026-08-19T17:51:00Z	PASS	358	standard	#2033 pre-delivery retry lane; 17 created / 17 deleted 0 err; async CR + waiter state machine exercised; 4 auto log groups swept, 0 orphans
+custom-resource-provider	2026-08-20T11:38:33Z	PASS	740	verify.sh	#2054/#1866 lane, 7 phases. Phase 3 refused delete (skipped row, record kept, exit 2); phase 4 pins the #2115 bound; phase 7 is the CLEAN destroy the integ-destroy gate reads: 26 deleted / 0 errors / no skips, autoDeleteObjects handler emptied its bucket, state gone. Phase 6 waits out the Step Functions name cooldown (#2116). Orphans: 6 auto-created log groups swept
 data-analytics	2026-08-10T11:31:18Z	PASS	87	verify.sh	#1479 SD-subtree merge re-verified after review fixes (OR-gate bag semantics)
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 deep-getatt-chains	2026-08-01T10:07:21Z	PASS	53	verify.sh	0801 regression sweep; SDK+CC chain ok, 0 orphans
@@ -242,7 +242,7 @@ rollback-sqs-cooldown	2026-08-20T01:42:30Z	PASS	156	verify.sh	#2032 lane: the di
 route53	2026-08-14T02:04:32Z	PASS	331	verify.sh	Issue #1875 import-path arm, 2.5d made discriminating (drops the two NameServers outputs before the redeploy; the no-change path kept the persisted map verbatim on a resolve failure, so the arm was green with the fix reverted). Mutation probe with zone attributes blanked to {} REDs on the #1875 symptom. 8 created / 8 deleted, 0 errors, 0 orphans
 s3-analytics-inventory	2026-08-13T00:49:56Z	PASS	135	verify.sh	1707/1717/1718 live after review round 3; 49 assertions, 0 orphans
 s3-asset-deploy	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
-s3-cloudfront	2026-08-13T09:22:26Z	PASS	1150	verify.sh	PR 1745 re-run after review fixes (provider edit staled integ-destroy); 5 deleted 0 errors, 0 orphans
+s3-cloudfront	2026-08-20T11:58:20Z	PASS	226	verify.sh	#2079 lane: real Distribution created with the retry-stable acquireIdempotencyToken CallerReference, updated, drift-checked and deleted; AWS accepted the new token and release() ran on the success path. Does NOT reach the retried-500 replay (not inducible) -- that arm is unit-only, stated in the PR. Destroy clean, 0 distributions left in the account
 s3-directory-bucket	2026-08-13T11:19:53Z	PASS	-	verify.sh	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 s3-event-notification	2026-08-10T04:16:05Z	PASS	73	verify.sh	0810 staleness sweep b1; #1437 EventBridgeEnabled/NESTED_KEY_TARGETS live-verified, 14 del 0 err, 0 orph
 s3-lifecycle	2026-08-13T07:25:36Z	PASS	540	verify.sh	#1754/#1755/#1759 lifecycle round-trip + malformed EventBridgeEnabled refusal; 7 del 0 err, orph clean
@@ -270,6 +270,7 @@ sns-inline-subscription	2026-07-27T11:04:52Z	PASS	53	verify.sh	issue #1267 SNS t
 sns-pending-subscription	2026-07-30T12:40:16Z	PASS	22	verify.sh	issue #1301 re-run after review fixes, clean
 sns-sqs-event	2026-08-19T18:36:23Z	PASS	91	verify.sh	issue 1997 maskSecrets adoption; sns-topic delivery-status + throw arms exercised; clean destroy, 0 orphans
 sns-subscription-filter	2026-08-10T05:38:11Z	PASS	39	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
+sns-subscription-update	2026-08-20T11:53:45Z	PASS	70	verify.sh	#1967 new fixture, 4 phases. First real-AWS coverage of SNSSubscriptionProvider.update at all: phase 2 proves the internal replacement ran (SubscriptionArn changed, exactly one subscription, state in sync); phase 3 corrupts the physicalId so Unsubscribe throws and asserts cdkd ABORTS -- deploy exit 1, no Subscribe issued, old subscription untouched. Destroy clean, 0 orphans
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-08-10T04:23:28Z	PASS	76	verify.sh	0810 sweep b2; lambda-eventsource re-verify, 5 del 0 err, 0 orph
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
