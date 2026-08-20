@@ -46,6 +46,8 @@ import {
 } from '../../deployment/intrinsic-function-resolver.js';
 import {
   createSecretMasker,
+  dynamicReferenceTokens,
+  isSingleDynamicReferenceToken as isWholeDynamicReference,
   maskSecretsInText,
   MIN_NEEDLE_LENGTH,
   redactSecretsForState,
@@ -621,14 +623,25 @@ function isSecretBySpelling(token: string): boolean {
  * token is a reference NAME and carries no value, so it is always safe to show.
  */
 function survivingDynamicReferences(value: string): string[] {
-  // `[^}]+`, matching `intrinsic-function-resolver.ts`'s own scan pattern
-  // exactly. The two MUST agree or a token the resolver tried and left behind
-  // is reported by neither — a `{` inside a token (`{{resolve:ssm:/a{b}}`) is
-  // the shape that separates them. Note this is the OPPOSITE agreement from
-  // {@link isWholeDynamicReference}, which mirrors `secret-redaction.ts`
-  // instead; they answer different questions against different modules and
-  // there is no single class that can serve both.
-  return value.match(/\{\{resolve:[^}]+\}\}/g) ?? [];
+  // Built from `secret-redaction.ts`'s `DYNAMIC_REFERENCE_INNER`, which is
+  // byte-identical to `intrinsic-function-resolver.ts`'s own
+  // `/\{\{resolve:([^}]+)\}\}/` scan capture — the AUTHORITY on what cdkd will
+  // try to resolve. The two MUST agree or a token the resolver tried and left
+  // behind is reported by neither; a `{` inside a token
+  // (`{{resolve:ssm:/a{b}}`) is the shape that separates them.
+  //
+  // This used to be the ONLY one of cdkd's four spellings that agreed with the
+  // resolver, and its own comment argued the split with
+  // `isWholeDynamicReference` was principled ("they answer different questions
+  // against different modules"). Issue #1936 measured that: the questions
+  // differ, the CHARACTER CLASS does not, and the disagreement persisted
+  // plaintext at the strict sibling.
+  //
+  // Calls `secret-redaction.ts`'s exported scan rather than re-spelling it
+  // (issue #2088 review). #1936 shared the character CLASS while leaving the
+  // assembled PATTERN byte-duplicated here, which is how a later flag or
+  // anchor change re-forks exactly the way the four spellings did.
+  return dynamicReferenceTokens(value);
 }
 
 /**
@@ -833,25 +846,25 @@ function redactDriftValue(
   return SECRET_MASK;
 }
 
-/**
- * Is the WHOLE string a single `{{resolve:...}}` token and nothing else?
- *
- * Byte-for-byte `secret-redaction.ts`'s `isSingleDynamicReferenceToken`,
- * including the `[^{}]*` character class. The difference from `[^}]+` is
- * narrow and worth stating correctly: it is a `{` INSIDE the token, e.g.
- * `{{resolve:ssm:/a{b}}`. (A previous version of this comment claimed
- * `{{resolve:a}}{{resolve:b}}` would pass under `[^}]+` — it would not, since
- * `[^}]+` cannot span the `}` in the middle either.) Matching the sibling
- * exactly is what matters here: this predicate decides whether a value may be
- * shown INSTEAD of `SECRET_MASK`, and `redactByPath` uses its copy to decide
- * whether a leaf is already an expression, so a disagreement would let one of
- * them treat as a token what the other treats as data. Copied rather than
- * imported because that helper is module-private and this file may not widen
- * that module's exports.
- */
-function isWholeDynamicReference(value: string): boolean {
-  return /^\{\{resolve:[^{}]*\}\}$/.test(value);
-}
+// `isWholeDynamicReference` — "is the WHOLE string a single `{{resolve:...}}`
+// token and nothing else?" — lived HERE as a hand-copied twin of
+// `secret-redaction.ts`'s `isSingleDynamicReferenceToken` until issue #1936. It
+// is now that function, imported under this file's own name at the top.
+//
+// The copy spelled the inner class `[^{}]*` to match its sibling
+// "byte-for-byte", and the two DID stay byte-identical — which is precisely why
+// the copy was not the problem: both were stricter than the RESOLVER, so a
+// reference whose inner text contains a `{` was resolved by cdkd and then
+// classified as not-a-token by every predicate downstream. Being identical to
+// the wrong answer is not agreement, and duplicating it made the disagreement
+// with the authority twice as expensive to notice.
+//
+// A plain comment rather than a JSDoc block so nothing attaches it to the
+// function below. Sharing one definition matters here for the same reason the
+// copy did: this predicate decides whether a value may be shown INSTEAD of
+// `SECRET_MASK`, and `redactByPath` uses it to decide whether a leaf is already
+// an expression, so a disagreement lets one of them treat as a token what the
+// other treats as data.
 
 /**
  * Why `--accept` must not persist this drift, or `undefined` when it may.
