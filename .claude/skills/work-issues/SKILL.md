@@ -691,9 +691,26 @@ REAL tree rather than by reasoning:
   accept the flag. Deriving it from what declares the option, and making the
   predicate per-READ rather than per-file, is what made both probes fail.
 
-The general shape: **a fence is not evidence until you have watched it go red.**
-Calibration tells you it is not noisy; only the deletion probe tells you it is
-load-bearing.
+  The worst population is one derived from the DEFECT itself, because deleting
+  the required thing then drops the subject OUT of the population instead of
+  failing. Running these probes across the sibling repos on 2026-08-20 found
+  four such fences in one tree (go-to-k/cdk-real-drift#1797): a gate-parity test
+  that selected its gates by `condition.includes('Bash(git commit*)')` stayed
+  green at 7/7 with two gates disarmed outright, and a hook-coverage test that
+  enumerated `*.test.sh` could never report the hook that had no harness — the
+  one every commit passes through. A STATEFUL scanner fails the same way with no
+  OR at all: go-to-k/cdk-local#537's reference scan flipped one `inFence` boolean
+  on any fence marker, so a single nested fence inverted it and muted every check
+  for the rest of the file, silently.
+
+And ask the dumbest question last: **is anything RUNNING it?** The nine hook
+harnesses in go-to-k/cdk-real-drift were shell, so the vitest task never saw
+them, and no CI step invoked them either — they had been exercised only by hand
+since the day each was written.
+
+The general shape: **a fence is not evidence until you have watched it go red on
+something you had not already counted.** Calibration tells you it is not noisy;
+only the spelling and deletion probes tell you it is load-bearing.
 
 You may fan out **one subagent per lane** (disjoint files) to run them
 concurrently — give each agent its worktree path, its allowed files, and an
