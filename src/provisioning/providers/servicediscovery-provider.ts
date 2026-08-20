@@ -37,6 +37,7 @@ import {
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { withRetry, type RetryLogger } from '../../deployment/retry.js';
+import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -512,25 +513,35 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       // destroy failed 22/23, and the associated services were gone minutes
       // later with no action taken). Retry the delete on that signal with a
       // bounded ~5.5 min budget; any other error surfaces immediately.
-      await withRetry(
-        async () => {
-          const response = await client.send(new DeleteNamespaceCommand({ Id: physicalId }));
+      //
+      // Interruptible (issue #2053): 24 retries at 3s -> 15s is ~5.5 minutes of
+      // backoff, and without the watch a Ctrl-C had to sit out all of it.
+      const watch = startInterruptWatch(`Cloud Map namespace ${logicalId}`);
+      try {
+        await withRetry(
+          async () => {
+            const response = await client.send(new DeleteNamespaceCommand({ Id: physicalId }));
 
-          const operationId = response.OperationId;
-          if (operationId) {
-            await this.pollOperation(operationId, logicalId, resourceType);
+            const operationId = response.OperationId;
+            if (operationId) {
+              await this.pollOperation(operationId, logicalId, resourceType);
+            }
+          },
+          logicalId,
+          {
+            maxRetries: 24,
+            initialDelayMs: 3_000,
+            maxDelayMs: 15_000,
+            isRetryable: (message, error) =>
+              error instanceof ResourceInUse || /has associated services/i.test(message),
+            logger: this.logger,
+            isInterrupted: watch.isInterrupted,
+            onInterrupted: watch.onInterrupted,
           }
-        },
-        logicalId,
-        {
-          maxRetries: 24,
-          initialDelayMs: 3_000,
-          maxDelayMs: 15_000,
-          isRetryable: (message, error) =>
-            error instanceof ResourceInUse || /has associated services/i.test(message),
-          logger: this.logger,
-        }
-      );
+        );
+      } finally {
+        watch.dispose();
+      }
 
       this.logger.debug(`Successfully deleted Cloud Map namespace ${logicalId}`);
     } catch (error) {
@@ -940,23 +951,62 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       try {
         const attrs = this.normalizeServiceAttributes(properties['ServiceAttributes']);
         if (Object.keys(attrs).length > 0) {
-          await withRetry(
-            () =>
-              client.send(
-                new UpdateServiceAttributesCommand({ ServiceId: serviceId, Attributes: attrs })
-              ),
-            logicalId,
-            // NOT `this.logger` (issue #2050): `attrs` is
-            // `properties['ServiceAttributes']`, already RESOLVED, and an AWS
-            // rejection quotes the offending value back into the message
-            // `withRetry` interpolates.
-            { logger: this.maskedRetryLogger(maskSecrets) }
-          );
+          // Interruptible (issue #2053).
+          const watch = startInterruptWatch(`Cloud Map service ${logicalId} attributes`);
+          try {
+            await withRetry(
+              () =>
+                client.send(
+                  new UpdateServiceAttributesCommand({ ServiceId: serviceId, Attributes: attrs })
+                ),
+              logicalId,
+              // NOT `this.logger` (issue #2050): `attrs` is
+              // `properties['ServiceAttributes']`, already RESOLVED, and an AWS
+              // rejection quotes the offending value back into the message
+              // `withRetry` interpolates.
+              {
+                logger: this.maskedRetryLogger(maskSecrets),
+                isInterrupted: watch.isInterrupted,
+                onInterrupted: watch.onInterrupted,
+              }
+            );
+          } finally {
+            watch.dispose();
+          }
           this.logger.debug(
             `Applied ${Object.keys(attrs).length} ServiceAttribute(s) for ${logicalId}`
           );
         }
       } catch (innerError) {
+        // An interrupt takes the SAME cleanup as any other attributes-wiring
+        // failure — see the twin arm in `elbv2-provider.ts` for the full
+        // argument. In short: `create()` is throwing, so nothing in cdkd state
+        // ever holds this service id, and the choice is "delete vs orphan
+        // forever" rather than "delete vs preserve".
+        //
+        // The Cloud Map case is the WORSE of the two, which is why the note is
+        // not simply a cross-reference: an orphaned service also blocks
+        // `DeleteServiceDiscoveryNamespace` with `ResourceInUse`, so the
+        // untracked leftover makes the enclosing NAMESPACE undestroyable too.
+        //
+        // The handle is printed BEFORE the delete is attempted, at default
+        // verbosity, so a process that dies mid-cleanup still leaves the user
+        // something to act on.
+        if (isInterruptedWaitError(innerError)) {
+          // Masked for the same reason as the sibling `warn` below, which
+          // states it: an unmasked line sitting beside masked ones is what a
+          // later author copies.
+          this.logger.warn(
+            maskerOrIdentity(maskSecrets)(
+              `Interrupted after creating ServiceDiscovery Service ${logicalId} (${serviceId}) ` +
+                `but before its ServiceAttributes were applied. Nothing in cdkd state refers to ` +
+                `it, so cdkd is deleting it now — left behind it would fail the next deploy on a ` +
+                `name collision AND block deletion of its namespace with ResourceInUse. If that ` +
+                `delete does not complete, remove it manually: aws servicediscovery ` +
+                `delete-service --id ${serviceId}`
+            )
+          );
+        }
         try {
           await client.send(new DeleteServiceCommand({ Id: serviceId }));
           this.logger.debug(
@@ -1094,38 +1144,64 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         }
       }
 
-      if (hasAttrUpsert) {
-        await withRetry(
-          () =>
-            client.send(
-              new UpdateServiceAttributesCommand({ ServiceId: physicalId, Attributes: upsertAttrs })
-            ),
-          logicalId,
-          // Masked for the same reason as the create path (issue #2050) — the
-          // upsert map is built from `properties`, already RESOLVED.
-          { logger: this.maskedRetryLogger(maskSecrets) }
-        );
-        this.logger.debug(
-          `Applied ${Object.keys(upsertAttrs).length} ServiceAttribute change(s) for ${logicalId}`
-        );
-      }
+      // ONE watch for both attribute calls (issue #2053): they run back to back
+      // on the same resource, so a single Ctrl-C has to abort whichever of them
+      // is currently in its backoff.
+      // Entered only when an attribute call actually runs (issue #2053 review):
+      // the common update touches no ServiceAttributes at all, and a watch taken
+      // for it is a `Set` entry added and removed for a path that never waits.
+      if (hasAttrUpsert || hasAttrRemove) {
+        const attrWatch = startInterruptWatch(`Cloud Map service ${logicalId} attributes`);
+        try {
+          if (hasAttrUpsert) {
+            await withRetry(
+              () =>
+                client.send(
+                  new UpdateServiceAttributesCommand({
+                    ServiceId: physicalId,
+                    Attributes: upsertAttrs,
+                  })
+                ),
+              logicalId,
+              // Masked for the same reason as the create path (issue #2050) — the
+              // upsert map is built from `properties`, already RESOLVED.
+              {
+                logger: this.maskedRetryLogger(maskSecrets),
+                isInterrupted: attrWatch.isInterrupted,
+                onInterrupted: attrWatch.onInterrupted,
+              }
+            );
+            this.logger.debug(
+              `Applied ${Object.keys(upsertAttrs).length} ServiceAttribute change(s) for ${logicalId}`
+            );
+          }
 
-      if (hasAttrRemove) {
-        await withRetry(
-          () =>
-            client.send(
-              new DeleteServiceAttributesCommand({
-                ServiceId: physicalId,
-                Attributes: removedAttrKeys,
-              })
-            ),
-          logicalId,
-          // Masked too (issue #2050). The payload is attribute KEYS from
-          // `previousProperties`, not values — but a key can itself be a
-          // resolved secret, and AWS quotes the rejected key back.
-          { logger: this.maskedRetryLogger(maskSecrets) }
-        );
-        this.logger.debug(`Removed ${removedAttrKeys.length} ServiceAttribute(s) for ${logicalId}`);
+          if (hasAttrRemove) {
+            await withRetry(
+              () =>
+                client.send(
+                  new DeleteServiceAttributesCommand({
+                    ServiceId: physicalId,
+                    Attributes: removedAttrKeys,
+                  })
+                ),
+              logicalId,
+              // Masked too (issue #2050). The payload is attribute KEYS from
+              // `previousProperties`, not values — but a key can itself be a
+              // resolved secret, and AWS quotes the rejected key back.
+              {
+                logger: this.maskedRetryLogger(maskSecrets),
+                isInterrupted: attrWatch.isInterrupted,
+                onInterrupted: attrWatch.onInterrupted,
+              }
+            );
+            this.logger.debug(
+              `Removed ${removedAttrKeys.length} ServiceAttribute(s) for ${logicalId}`
+            );
+          }
+        } finally {
+          attrWatch.dispose();
+        }
       }
 
       this.logger.debug(`Successfully updated service discovery service ${logicalId}`);

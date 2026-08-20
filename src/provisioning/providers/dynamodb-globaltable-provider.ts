@@ -65,6 +65,7 @@ import {
   type WarmThroughputSpec,
 } from '../dynamodb-warm-throughput.js';
 import { withRetry } from '../../deployment/retry.js';
+import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import {
   DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
@@ -3647,227 +3648,275 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       return; // nothing to do
     }
 
-    if (newEnabled) {
-      // Register OR update scalable target (idempotent on no-op).
-      const minCapacity = Number(newSettings!['MinCapacity'] ?? 0);
-      const maxCapacity = Number(newSettings!['MaxCapacity'] ?? 0);
-      if (!Number.isFinite(minCapacity) || !Number.isFinite(maxCapacity)) {
-        warn(
-          `Cannot apply auto-scaling diff on ${tableName} (${dimension}): ` +
-            `MinCapacity / MaxCapacity must be numbers, got ` +
-            // Masked as RAW values (issue #1997): `String()` of a resolved
-            // secret is the plaintext itself, and the WHOLE-VALUE arm matches at
-            // any length where the sink's substring arm needs 4 characters.
-            `${maskSecrets(String(newSettings!['MinCapacity']))} / ` +
-            `${maskSecrets(String(newSettings!['MaxCapacity']))}`
-        );
-        return;
-      }
-      try {
-        // Throttle-only retry (Issue #1419 review): a table with many
-        // indexes issues a burst of these, and application-autoscaling is
-        // throttled per account. Every error here is swallowed into a WARN,
-        // so an un-retried `ThrottlingException` would leave the target
-        // unregistered *silently* — re-introducing, under load, exactly the
-        // never-registered gap this change closes. Non-throttle failures
-        // still fall straight through to the WARN below.
-        await withRetry(
-          () =>
-            asClient.send(
-              new RegisterScalableTargetCommand({
-                ServiceNamespace: 'dynamodb',
-                ResourceId: resourceId,
-                ScalableDimension: dimension,
-                MinCapacity: minCapacity,
-                MaxCapacity: maxCapacity,
-              })
-            ),
-          `${resourceId} (${dimension})`,
-          {
-            // `isRetryable` is invoked as `(message, error)`. Passing
-            // `isThrottlingError` DIRECTLY hands it the message STRING, on
-            // which it finds no `.name` / `.$metadata` / `.cause` and always
-            // returns false — and because `isRetryable` is set at all, the
-            // call also opts out of the default schedule. It typechecks (a
-            // 1-arg `unknown` callback is assignable) and silently disables
-            // the retry entirely. Same spelling as `describe-type.ts`.
-            isRetryable: (_message, error) => isThrottlingError(error),
-            maxRetries: asMaxRetries,
-            ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
-          }
-        );
-      } catch (err) {
-        warn(
-          `Could not register auto-scaling target on ${tableName} (${dimension}): ` +
-            `${err instanceof Error ? err.message : String(err)}. ` +
-            `Run: aws application-autoscaling register-scalable-target ` +
-            `--service-namespace dynamodb --resource-id ${resourceId} ` +
-            `--scalable-dimension ${dimension} --min-capacity ${minCapacity} ` +
-            `--max-capacity ${maxCapacity}`
-        );
+    // ONE watch for all four `withRetry` calls below (issue #2053). They run
+    // back to back on the same table — register + policy on the deploy path,
+    // policy-delete + deregister on the teardown path — so a single Ctrl-C has
+    // to abort whichever of them is currently sitting in its backoff, and a
+    // watch per call would install and tear one down four times for one wait.
+    //
+    // Started HERE, after the no-op early return above, rather than at the top
+    // of the method: the common call on a table with no auto-scaling reaches
+    // neither branch, and a watch taken for it is added and removed for a
+    // method that never waits. Every `return` from this point on unwinds
+    // through the `finally` that disposes it.
+    const watch = startInterruptWatch(`DynamoDB auto-scaling for ${tableName}`);
+    try {
+      if (newEnabled) {
+        // Register OR update scalable target (idempotent on no-op).
+        const minCapacity = Number(newSettings!['MinCapacity'] ?? 0);
+        const maxCapacity = Number(newSettings!['MaxCapacity'] ?? 0);
+        if (!Number.isFinite(minCapacity) || !Number.isFinite(maxCapacity)) {
+          warn(
+            `Cannot apply auto-scaling diff on ${tableName} (${dimension}): ` +
+              `MinCapacity / MaxCapacity must be numbers, got ` +
+              // Masked as RAW values (issue #1997): `String()` of a resolved
+              // secret is the plaintext itself, and the WHOLE-VALUE arm matches at
+              // any length where the sink's substring arm needs 4 characters.
+              `${maskSecrets(String(newSettings!['MinCapacity']))} / ` +
+              `${maskSecrets(String(newSettings!['MaxCapacity']))}`
+          );
+          return;
+        }
+        try {
+          // Throttle-only retry (Issue #1419 review): a table with many
+          // indexes issues a burst of these, and application-autoscaling is
+          // throttled per account. Every error here is swallowed into a WARN,
+          // so an un-retried `ThrottlingException` would leave the target
+          // unregistered *silently* — re-introducing, under load, exactly the
+          // never-registered gap this change closes. Non-throttle failures
+          // still fall straight through to the WARN below.
+          await withRetry(
+            () =>
+              asClient.send(
+                new RegisterScalableTargetCommand({
+                  ServiceNamespace: 'dynamodb',
+                  ResourceId: resourceId,
+                  ScalableDimension: dimension,
+                  MinCapacity: minCapacity,
+                  MaxCapacity: maxCapacity,
+                })
+              ),
+            `${resourceId} (${dimension})`,
+            {
+              // `isRetryable` is invoked as `(message, error)`. Passing
+              // `isThrottlingError` DIRECTLY hands it the message STRING, on
+              // which it finds no `.name` / `.$metadata` / `.cause` and always
+              // returns false — and because `isRetryable` is set at all, the
+              // call also opts out of the default schedule. It typechecks (a
+              // 1-arg `unknown` callback is assignable) and silently disables
+              // the retry entirely. Same spelling as `describe-type.ts`.
+              isRetryable: (_message, error) => isThrottlingError(error),
+              maxRetries: asMaxRetries,
+              isInterrupted: watch.isInterrupted,
+              onInterrupted: watch.onInterrupted,
+              ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
+            }
+          );
+        } catch (err) {
+          // A user abort is not an AWS failure (issue #2053 review). Swallowing it
+          // printed up to two "Could not ... Run: aws application-autoscaling ..."
+          // lines PER dimension, per GSI and per replica -- blaming AWS for a Ctrl-C
+          // -- and then carried straight on to the next teardown WRITE. Re-throwing
+          // stops the burst; `delete()`'s catch passes it through unwrapped.
+          if (isInterruptedWaitError(err)) throw err;
+          warn(
+            `Could not register auto-scaling target on ${tableName} (${dimension}): ` +
+              `${err instanceof Error ? err.message : String(err)}. ` +
+              `Run: aws application-autoscaling register-scalable-target ` +
+              `--service-namespace dynamodb --resource-id ${resourceId} ` +
+              `--scalable-dimension ${dimension} --min-capacity ${minCapacity} ` +
+              `--max-capacity ${maxCapacity}`
+          );
+          return;
+        }
+
+        const tttCfg = (newSettings!['TargetTrackingScalingPolicyConfiguration'] ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const targetValue = Number(tttCfg['TargetValue']);
+        if (!Number.isFinite(targetValue)) {
+          warn(
+            `Auto-scaling target registered on ${tableName} (${dimension}) but ` +
+              `TargetValue is missing or non-numeric — skipping PutScalingPolicy. ` +
+              `Provide TargetTrackingScalingPolicyConfiguration.TargetValue in the template.`
+          );
+          return;
+        }
+        const targetTrackingConfig: Record<string, unknown> = {
+          PredefinedMetricSpecification: { PredefinedMetricType: metricType },
+          TargetValue: targetValue,
+        };
+        if (tttCfg['ScaleInCooldown'] !== undefined) {
+          targetTrackingConfig['ScaleInCooldown'] = Number(tttCfg['ScaleInCooldown']);
+        }
+        if (tttCfg['ScaleOutCooldown'] !== undefined) {
+          targetTrackingConfig['ScaleOutCooldown'] = Number(tttCfg['ScaleOutCooldown']);
+        }
+        if (tttCfg['DisableScaleIn'] !== undefined) {
+          targetTrackingConfig['DisableScaleIn'] = Boolean(tttCfg['DisableScaleIn']);
+        }
+        try {
+          // Same throttle-only retry as the register above — a swallowed
+          // throttle here leaves a registered target with NO policy, which
+          // scales nothing.
+          await withRetry(
+            () =>
+              asClient.send(
+                new PutScalingPolicyCommand({
+                  PolicyName: policyName,
+                  ServiceNamespace: 'dynamodb',
+                  ResourceId: resourceId,
+                  ScalableDimension: dimension,
+                  PolicyType: 'TargetTrackingScaling',
+                  // SDK input shape uses Pascal-cased keys; the inner config object
+                  // is the same shape we read back via DescribeScalingPolicies.
+                  TargetTrackingScalingPolicyConfiguration: targetTrackingConfig as never,
+                })
+              ),
+            `${policyName}`,
+            {
+              isRetryable: (_message, error) => isThrottlingError(error),
+              maxRetries: asMaxRetries,
+              isInterrupted: watch.isInterrupted,
+              onInterrupted: watch.onInterrupted,
+              ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
+            }
+          );
+          this.logger.debug(
+            `Upserted auto-scaling policy ${policyName} on ${tableName} (${dimension})`
+          );
+        } catch (err) {
+          // A user abort is not an AWS failure (issue #2053 review). Swallowing it
+          // printed up to two "Could not ... Run: aws application-autoscaling ..."
+          // lines PER dimension, per GSI and per replica -- blaming AWS for a Ctrl-C
+          // -- and then carried straight on to the next teardown WRITE. Re-throwing
+          // stops the burst; `delete()`'s catch passes it through unwrapped.
+          if (isInterruptedWaitError(err)) throw err;
+          warn(
+            `Could not put auto-scaling policy on ${tableName} (${dimension}): ` +
+              `${err instanceof Error ? err.message : String(err)}. ` +
+              `Run: aws application-autoscaling put-scaling-policy ` +
+              `--policy-name ${policyName} --service-namespace dynamodb ` +
+              `--resource-id ${resourceId} --scalable-dimension ${dimension} ` +
+              `--policy-type TargetTrackingScaling`
+          );
+        }
         return;
       }
 
-      const tttCfg = (newSettings!['TargetTrackingScalingPolicyConfiguration'] ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const targetValue = Number(tttCfg['TargetValue']);
-      if (!Number.isFinite(targetValue)) {
-        warn(
-          `Auto-scaling target registered on ${tableName} (${dimension}) but ` +
-            `TargetValue is missing or non-numeric — skipping PutScalingPolicy. ` +
-            `Provide TargetTrackingScalingPolicyConfiguration.TargetValue in the template.`
+      // newEnabled === false, oldEnabled === true: tear down.
+      // Idempotency: AWS's application-autoscaling raises
+      // `ObjectNotFoundException` ("No scaling policy found" / "No
+      // scalable target found") when the resource is already gone.
+      // That is success for our purposes (e.g. the `update()` BillingMode
+      // flip already tore down autoscaling, and now `delete()`'s defense-
+      // in-depth teardown fires). Detect via the error name AND message
+      // substring (the SDK doesn't always type-name the error on first
+      // exposure) and silently skip — only surface non-RNF errors as
+      // WARN with the recovery command.
+      const isObjectNotFound = (err: unknown): boolean => {
+        if (!(err instanceof Error)) return false;
+        const name = (err as Error & { name?: string }).name ?? '';
+        const msg = err.message ?? '';
+        return (
+          name === 'ObjectNotFoundException' ||
+          msg.includes('No scaling policy found') ||
+          msg.includes('No scalable target found')
         );
-        return;
-      }
-      const targetTrackingConfig: Record<string, unknown> = {
-        PredefinedMetricSpecification: { PredefinedMetricType: metricType },
-        TargetValue: targetValue,
       };
-      if (tttCfg['ScaleInCooldown'] !== undefined) {
-        targetTrackingConfig['ScaleInCooldown'] = Number(tttCfg['ScaleInCooldown']);
-      }
-      if (tttCfg['ScaleOutCooldown'] !== undefined) {
-        targetTrackingConfig['ScaleOutCooldown'] = Number(tttCfg['ScaleOutCooldown']);
-      }
-      if (tttCfg['DisableScaleIn'] !== undefined) {
-        targetTrackingConfig['DisableScaleIn'] = Boolean(tttCfg['DisableScaleIn']);
-      }
       try {
-        // Same throttle-only retry as the register above — a swallowed
-        // throttle here leaves a registered target with NO policy, which
-        // scales nothing.
+        // Throttle-only retry, the SYMMETRIC twin of the register branch's. That
+        // one retries because a swallowed `ThrottlingException` leaves a target
+        // silently UNregistered; a swallowed throttle HERE leaves one silently
+        // REGISTERED, which is the PR #403 leak a future table of the same name
+        // inherits. The teardown had no retry at all until issue #1955's review
+        // found the asymmetry. `maxRetries` is the caller's bound
+        // (`autoScalingRetriesWithinDeleteBudget`) rather than the default,
+        // because this runs before every budgeted wait on the delete path; an
+        // absent budget (every CREATE / UPDATE caller) gets the default schedule.
+        // `ObjectNotFoundException` is not a throttle, so the idempotent
+        // already-gone arm below still fires on the FIRST attempt.
         await withRetry(
           () =>
             asClient.send(
-              new PutScalingPolicyCommand({
+              new DeleteScalingPolicyCommand({
                 PolicyName: policyName,
                 ServiceNamespace: 'dynamodb',
                 ResourceId: resourceId,
                 ScalableDimension: dimension,
-                PolicyType: 'TargetTrackingScaling',
-                // SDK input shape uses Pascal-cased keys; the inner config object
-                // is the same shape we read back via DescribeScalingPolicies.
-                TargetTrackingScalingPolicyConfiguration: targetTrackingConfig as never,
               })
             ),
-          `${policyName}`,
+          `${resourceId} (${dimension})`,
           {
             isRetryable: (_message, error) => isThrottlingError(error),
             maxRetries: asMaxRetries,
+            isInterrupted: watch.isInterrupted,
+            onInterrupted: watch.onInterrupted,
             ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
           }
         );
-        this.logger.debug(
-          `Upserted auto-scaling policy ${policyName} on ${tableName} (${dimension})`
-        );
       } catch (err) {
-        warn(
-          `Could not put auto-scaling policy on ${tableName} (${dimension}): ` +
-            `${err instanceof Error ? err.message : String(err)}. ` +
-            `Run: aws application-autoscaling put-scaling-policy ` +
-            `--policy-name ${policyName} --service-namespace dynamodb ` +
-            `--resource-id ${resourceId} --scalable-dimension ${dimension} ` +
-            `--policy-type TargetTrackingScaling`
-        );
-      }
-      return;
-    }
-
-    // newEnabled === false, oldEnabled === true: tear down.
-    // Idempotency: AWS's application-autoscaling raises
-    // `ObjectNotFoundException` ("No scaling policy found" / "No
-    // scalable target found") when the resource is already gone.
-    // That is success for our purposes (e.g. the `update()` BillingMode
-    // flip already tore down autoscaling, and now `delete()`'s defense-
-    // in-depth teardown fires). Detect via the error name AND message
-    // substring (the SDK doesn't always type-name the error on first
-    // exposure) and silently skip — only surface non-RNF errors as
-    // WARN with the recovery command.
-    const isObjectNotFound = (err: unknown): boolean => {
-      if (!(err instanceof Error)) return false;
-      const name = (err as Error & { name?: string }).name ?? '';
-      const msg = err.message ?? '';
-      return (
-        name === 'ObjectNotFoundException' ||
-        msg.includes('No scaling policy found') ||
-        msg.includes('No scalable target found')
-      );
-    };
-    try {
-      // Throttle-only retry, the SYMMETRIC twin of the register branch's. That
-      // one retries because a swallowed `ThrottlingException` leaves a target
-      // silently UNregistered; a swallowed throttle HERE leaves one silently
-      // REGISTERED, which is the PR #403 leak a future table of the same name
-      // inherits. The teardown had no retry at all until issue #1955's review
-      // found the asymmetry. `maxRetries` is the caller's bound
-      // (`autoScalingRetriesWithinDeleteBudget`) rather than the default,
-      // because this runs before every budgeted wait on the delete path; an
-      // absent budget (every CREATE / UPDATE caller) gets the default schedule.
-      // `ObjectNotFoundException` is not a throttle, so the idempotent
-      // already-gone arm below still fires on the FIRST attempt.
-      await withRetry(
-        () =>
-          asClient.send(
-            new DeleteScalingPolicyCommand({
-              PolicyName: policyName,
-              ServiceNamespace: 'dynamodb',
-              ResourceId: resourceId,
-              ScalableDimension: dimension,
-            })
-          ),
-        `${resourceId} (${dimension})`,
-        {
-          isRetryable: (_message, error) => isThrottlingError(error),
-          maxRetries: asMaxRetries,
-          ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
+        // A user abort is not an AWS failure (issue #2053 review). Swallowing it
+        // printed up to two "Could not ... Run: aws application-autoscaling ..."
+        // lines PER dimension, per GSI and per replica -- blaming AWS for a Ctrl-C
+        // -- and then carried straight on to the next teardown WRITE. Re-throwing
+        // stops the burst; `delete()`'s catch passes it through unwrapped.
+        if (isInterruptedWaitError(err)) throw err;
+        if (!isObjectNotFound(err)) {
+          warn(
+            `Could not delete auto-scaling policy on ${tableName} (${dimension}): ` +
+              `${err instanceof Error ? err.message : String(err)}. ` +
+              `Run: aws application-autoscaling delete-scaling-policy ` +
+              `--policy-name ${policyName} --service-namespace dynamodb ` +
+              `--resource-id ${resourceId} --scalable-dimension ${dimension}`
+          );
         }
-      );
-    } catch (err) {
-      if (!isObjectNotFound(err)) {
-        warn(
-          `Could not delete auto-scaling policy on ${tableName} (${dimension}): ` +
-            `${err instanceof Error ? err.message : String(err)}. ` +
-            `Run: aws application-autoscaling delete-scaling-policy ` +
-            `--policy-name ${policyName} --service-namespace dynamodb ` +
-            `--resource-id ${resourceId} --scalable-dimension ${dimension}`
-        );
+        // Continue to the Deregister attempt regardless — AWS may have
+        // already cleaned up the policy, in which case the deregister
+        // succeeds (or also returns ObjectNotFoundException, also
+        // suppressed below).
       }
-      // Continue to the Deregister attempt regardless — AWS may have
-      // already cleaned up the policy, in which case the deregister
-      // succeeds (or also returns ObjectNotFoundException, also
-      // suppressed below).
-    }
-    try {
-      // Same throttle-only retry and the same bound as the policy delete above.
-      await withRetry(
-        () =>
-          asClient.send(
-            new DeregisterScalableTargetCommand({
-              ServiceNamespace: 'dynamodb',
-              ResourceId: resourceId,
-              ScalableDimension: dimension,
-            })
-          ),
-        `${resourceId} (${dimension})`,
-        {
-          isRetryable: (_message, error) => isThrottlingError(error),
-          maxRetries: asMaxRetries,
-          ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
+      try {
+        // Same throttle-only retry and the same bound as the policy delete above.
+        await withRetry(
+          () =>
+            asClient.send(
+              new DeregisterScalableTargetCommand({
+                ServiceNamespace: 'dynamodb',
+                ResourceId: resourceId,
+                ScalableDimension: dimension,
+              })
+            ),
+          `${resourceId} (${dimension})`,
+          {
+            isRetryable: (_message, error) => isThrottlingError(error),
+            maxRetries: asMaxRetries,
+            isInterrupted: watch.isInterrupted,
+            onInterrupted: watch.onInterrupted,
+            ...(autoScalingRetryDelays.sleep ? { sleep: autoScalingRetryDelays.sleep } : {}),
+          }
+        );
+        this.logger.debug(`Deregistered auto-scaling target ${resourceId} (${dimension})`);
+      } catch (err) {
+        // A user abort is not an AWS failure (issue #2053 review). Swallowing it
+        // printed up to two "Could not ... Run: aws application-autoscaling ..."
+        // lines PER dimension, per GSI and per replica -- blaming AWS for a Ctrl-C
+        // -- and then carried straight on to the next teardown WRITE. Re-throwing
+        // stops the burst; `delete()`'s catch passes it through unwrapped.
+        if (isInterruptedWaitError(err)) throw err;
+        if (!isObjectNotFound(err)) {
+          warn(
+            `Could not deregister auto-scaling target on ${tableName} (${dimension}): ` +
+              `${err instanceof Error ? err.message : String(err)}. ` +
+              `Run: aws application-autoscaling deregister-scalable-target ` +
+              `--service-namespace dynamodb --resource-id ${resourceId} ` +
+              `--scalable-dimension ${dimension}`
+          );
         }
-      );
-      this.logger.debug(`Deregistered auto-scaling target ${resourceId} (${dimension})`);
-    } catch (err) {
-      if (!isObjectNotFound(err)) {
-        warn(
-          `Could not deregister auto-scaling target on ${tableName} (${dimension}): ` +
-            `${err instanceof Error ? err.message : String(err)}. ` +
-            `Run: aws application-autoscaling deregister-scalable-target ` +
-            `--service-namespace dynamodb --resource-id ${resourceId} ` +
-            `--scalable-dimension ${dimension}`
-        );
       }
+    } finally {
+      watch.dispose();
     }
   }
 
@@ -4331,6 +4380,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // re-entry. Same rule the `Table` provider's `update()` catch already
       // uses: never double-wrap an error that already says what went wrong.
       if (describeErr instanceof ProvisioningError) throw describeErr;
+      // Same passthrough, same reason (issue #2053 review): this catch wraps
+      // far more than the describe its message names — the replica teardown
+      // loop and `waitForReplicaGone` run inside it — so a user abort surfaced
+      // as `Failed to describe DynamoDB GlobalTable X before delete: ...`, a
+      // describe failure that did not happen. That is the exact double-wrap the
+      // comment below already claims was fixed for the replica case.
+      if (isInterruptedWaitError(describeErr)) throw describeErr;
       if (!(describeErr instanceof ResourceNotFoundException)) {
         const cause = describeErr instanceof Error ? describeErr : undefined;
         throw new ProvisioningError(
@@ -5659,23 +5715,42 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // and what the shared budget can still afford. The partial-create cleanup
     // caller passes no budget and keeps the full cap.
     const wait = beginDeleteWait(maxAttempts, budget);
-    while (wait.nextPoll()) {
-      try {
-        const response = await this.dynamoDBClient.send(
-          new DescribeTableCommand({ TableName: tableName })
-        );
-        const replica = response.Table?.Replicas?.find((r) => r.RegionName === region);
-        if (!replica) return;
-        await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
-      } catch (err) {
-        if (err instanceof ResourceNotFoundException) return;
-        throw err;
+    // Interruptible (issue #1952): 600 polls is ~12 minutes, and the whole
+    // point of interrupting only ONE wait on this path is that it buys little
+    // — every bounded wait the delete path can sit in has to consult the same
+    // signal. This one THROWS rather than returning, for the same reason the
+    // exhaustion arm below throws: `DeleteTable` has NOT been issued yet and
+    // AWS refuses it while a replica lives, so proceeding after a Ctrl-C would
+    // trade a long wait for a confusing failure.
+    const watch = startInterruptWatch(`DynamoDB replica ${region} teardown on ${tableName}`);
+    try {
+      while (wait.nextPoll()) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        try {
+          const response = await this.dynamoDBClient.send(
+            new DescribeTableCommand({ TableName: tableName })
+          );
+          const replica = response.Table?.Replicas?.find((r) => r.RegionName === region);
+          if (!replica) return;
+          await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
+        } catch (err) {
+          if (err instanceof ResourceNotFoundException) return;
+          throw err;
+        }
       }
+    } finally {
+      watch.dispose();
     }
     // Still THROWS even when the allowance ended it, unlike the gone-wait
-    // below, and the asymmetry is load-bearing: after this wait cdkd has yet to
-    // issue `DeleteTable`, which AWS refuses while a replica lives. Nothing has
-    // been accepted, so there is nothing to be optimistic about.
+    // below, and the asymmetry is load-bearing — but NOT because nothing has
+    // been accepted. The `UpdateTable{ReplicaUpdates:[{Delete}]}` that starts
+    // this teardown WAS accepted (see `delete()`), so an earlier reading of
+    // this comment was simply wrong. What differs is what comes NEXT: the
+    // gone-wait is the LAST thing on the path, so giving up on it costs
+    // nothing, while this wait is followed by a `DeleteTable` that AWS REFUSES
+    // while the replica still lives. Proceeding optimistically here trades a
+    // long wait for a confusing failure, which is why both the exhaustion arm
+    // and the interrupt arm throw.
     throw new ProvisioningError(
       `Replica ${region} for table ${tableName} did not disappear within ${wait.pollsRun}s` +
         `${wait.note()}`,
@@ -5710,14 +5785,32 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // that pushed the single-region shape to ~40.4 min. It draws from the same
     // shared budget as everything before it.
     const wait = beginDeleteWait(maxAttempts, budget);
-    while (wait.nextPoll()) {
-      try {
-        await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: tableName }));
-        await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
-      } catch (err) {
-        if (err instanceof ResourceNotFoundException) return;
-        throw err;
+    // Interruptible (issue #1952), and unlike `waitForReplicaGone` this one
+    // RETURNS: by the time it runs AWS has ACCEPTED the `DeleteTable` and the
+    // deletion is no longer in cdkd's hands, so a Ctrl-C here means "stop
+    // watching", not "the delete failed". That is the same reading the
+    // `cutShort` arm below already takes, and throwing would turn an accepted
+    // delete into a reported FAILURE with state preserved.
+    const watch = startInterruptWatch(`DynamoDB table ${tableName} deletion wait`);
+    try {
+      while (wait.nextPoll()) {
+        if (watch.isInterrupted()) {
+          this.logger.warn(
+            `DynamoDB GlobalTable ${logicalId}: interrupted while waiting for ${tableName} to ` +
+              `disappear. AWS ACCEPTED the DeleteTable and will finish it; cdkd stopped watching.`
+          );
+          return;
+        }
+        try {
+          await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: tableName }));
+          await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
+        } catch (err) {
+          if (err instanceof ResourceNotFoundException) return;
+          throw err;
+        }
       }
+    } finally {
+      watch.dispose();
     }
     // A wait the allowance CUT SHORT warns; a wait that was actually performed
     // still throws. The line is {@link DELETE_SHORT_WAIT_POLLS}, not

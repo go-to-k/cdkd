@@ -29,6 +29,7 @@ import {
   IAM_PROPAGATION_MAX_DELAY_MS,
   IAM_PROPAGATION_MAX_RETRIES,
 } from '../../deployment/retry.js';
+import { startInterruptWatch, type InterruptWatch } from '../interrupt-watch.js';
 import {
   isIamPropagationError,
   isMarkedNonRetryable,
@@ -538,26 +539,6 @@ const CR_ERROR_CAUSE_MAX_DEPTH = 5;
 export const customResourceRetryDelays = {
   sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
 };
-
-/**
- * SIGINT watch shared by the pre-delivery retry backoff and the placeholder
- * `PutObject`'s `withRetry` (issue #2033 / `docs/provider-development.md`).
- *
- * Ctrl-C during a 47.75s backoff has to abort, not sit out the schedule. The
- * provider already had exactly this shape locally — `pollS3Response` installs
- * its own SIGINT handler — so this is that pattern lifted into something the
- * two new wait sites can share and `withRetry` can consume directly through its
- * `isInterrupted` / `onInterrupted` options.
- *
- * Per-INVOCATION rather than per-provider: providers are registered as
- * SINGLETONS and serve concurrent resources, so a flag on `this` would be the
- * wrong resource's.
- */
-interface InterruptWatch {
-  isInterrupted: () => boolean;
-  onInterrupted: () => Error;
-  dispose: () => void;
-}
 
 /**
  * Lines Lambda emits for EVERY invocation regardless of what the handler logged.
@@ -1447,7 +1428,7 @@ export class CustomResourceProvider implements ResourceProvider {
     // One watch for the whole invocation, disposed in the `finally` below, so
     // Ctrl-C aborts a 47.75s pre-delivery backoff and the placeholder
     // `PutObject`'s own retry schedule instead of sitting them out.
-    const watch = this.startInterruptWatch(logicalId);
+    const watch = startInterruptWatch(`Custom resource ${logicalId}`);
     try {
       // Resolved ONCE per call, and deliberately AFTER the watch above: the
       // value does not vary between attempts, and `getAccountInfo` never
@@ -2402,34 +2383,6 @@ export class CustomResourceProvider implements ResourceProvider {
 
   private sleep(ms: number): Promise<void> {
     return customResourceRetryDelays.sleep(ms);
-  }
-
-  /**
-   * Install a SIGINT watch for one custom-resource invocation (issue #2033).
-   *
-   * `docs/provider-development.md` requires a new `withRetry` to thread
-   * `isInterrupted` / `onInterrupted`, and a hand-rolled backoff to be
-   * interruptible for the same reason: without it Ctrl-C is dead for the whole
-   * 47.75s schedule. The provider already had the shape — `pollS3Response`
-   * installs its own handler — so this is that pattern, lifted so the two new
-   * wait sites share one flag and one disposal.
-   *
-   * The caller MUST `dispose()` in a `finally`; a leaked listener would
-   * accumulate one per resource across a deploy.
-   */
-  private startInterruptWatch(logicalId: string): InterruptWatch {
-    let interrupted = false;
-    const handler = (): void => {
-      interrupted = true;
-    };
-    process.on('SIGINT', handler);
-    return {
-      isInterrupted: () => interrupted,
-      onInterrupted: () => new Error(`Custom resource ${logicalId} interrupted by user`),
-      dispose: () => {
-        process.removeListener('SIGINT', handler);
-      },
-    };
   }
 
   /**

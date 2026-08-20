@@ -368,6 +368,20 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/check-provider-error-cause.ts',
         cache: false,
       },
+      // Issue #2053 — every `withRetry` under `src/provisioning/**` must thread
+      // `isInterrupted` / `onInterrupted`. `withRetry` is the ONLY thing that
+      // polls an interrupt DURING a backoff (the engine, `destroy-runner.ts`
+      // and `rollback-executor.ts` all poll only BETWEEN operations), so a call
+      // that omits the pair leaves Ctrl-C dead for its whole schedule — and on
+      // the destroy path `withResourceTimeout` has by then abandoned the
+      // promise, so the loop keeps issuing writes behind a run the user was
+      // told had ended. `cache: false` for the same reason the sibling critic
+      // carries it: a green that can be replayed from cache is a checker
+      // reporting "all threaded" without having looked.
+      'audit:withretry-interrupt:check': {
+        command: 'node --experimental-strip-types scripts/check-withretry-interrupt.ts',
+        cache: false,
+      },
       // Escape hatch for issue #1842's evidence-loss verdict: the plain writer
       // above REFUSES to overwrite the matrix with weaker per-property evidence
       // than the committed one records. Use this only when the reduction is

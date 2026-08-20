@@ -47,6 +47,7 @@ import {
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { getLogger } from '../../utils/logger.js';
 import { withRetry, type RetryLogger } from '../../deployment/retry.js';
+import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
 import {
   CdkdError,
   ProvisioningError,
@@ -1631,26 +1632,72 @@ export class ELBv2Provider implements ResourceProvider {
       try {
         const listenerAttributes = this.normalizeAttributes(properties['ListenerAttributes']);
         if (listenerAttributes.length > 0) {
-          await withRetry(
-            () =>
-              this.getClient().send(
-                new ModifyListenerAttributesCommand({
-                  ListenerArn: listenerArn,
-                  Attributes: listenerAttributes,
-                })
-              ),
-            logicalId,
-            // NOT `this.logger` (issue #2050): `Attributes` here is
-            // `properties['ListenerAttributes']`, already RESOLVED, and an AWS
-            // rejection quotes the offending value back into the message
-            // `withRetry` interpolates.
-            { logger: this.maskedRetryLogger(maskSecrets) }
-          );
+          // Interruptible (issue #2053): without the watch a Ctrl-C here sits
+          // out the whole backoff schedule before anything responds.
+          const watch = startInterruptWatch(`ELBv2 Listener ${logicalId} attributes`);
+          try {
+            await withRetry(
+              () =>
+                this.getClient().send(
+                  new ModifyListenerAttributesCommand({
+                    ListenerArn: listenerArn,
+                    Attributes: listenerAttributes,
+                  })
+                ),
+              logicalId,
+              // NOT `this.logger` (issue #2050): `Attributes` here is
+              // `properties['ListenerAttributes']`, already RESOLVED, and an AWS
+              // rejection quotes the offending value back into the message
+              // `withRetry` interpolates.
+              {
+                logger: this.maskedRetryLogger(maskSecrets),
+                isInterrupted: watch.isInterrupted,
+                onInterrupted: watch.onInterrupted,
+              }
+            );
+          } finally {
+            watch.dispose();
+          }
           this.logger.debug(
             `Applied ${listenerAttributes.length} ListenerAttribute(s) for ${logicalId}`
           );
         }
       } catch (innerError) {
+        // An interrupt takes the SAME cleanup as any other attributes-wiring
+        // failure. That is not symmetry for its own sake, and the tempting
+        // opposite — "a Ctrl-C must not delete what the user just made" — was
+        // written here first and is WRONG, because it assumes this listener is
+        // tracked. It is not: `create()` is throwing, so `newResources[logicalId]`
+        // is never set, the rollback journal records `physicalId: undefined`,
+        // and `rollback-executor.ts` classifies it `skip-failed-unknown`.
+        // NOTHING holds this ARN.
+        //
+        // So the choice is not "delete vs preserve" but "delete vs ORPHAN
+        // FOREVER". A preserved listener fails the next deploy with
+        // `DuplicateListener` — permanently, since `cdkd rollback` skips it and
+        // `cdkd destroy` has no record of it — while the engine prints "run
+        // deploy again to resume, `cdkd rollback` to revert, or destroy to
+        // clean up", all three of which would be false.
+        //
+        // The handle is printed BEFORE the delete is attempted, at default
+        // verbosity, so a process that dies mid-cleanup still leaves the user
+        // something to act on. Silent orphan is the one unacceptable outcome.
+        if (isInterruptedWaitError(innerError)) {
+          // Routed through the masked sink like every other line in this catch.
+          // The three interpolated values are safe on their own — an AWS-minted
+          // ARN and a CFn logical id — but the sibling `warn` two lines down
+          // argues the discipline directly: an unmasked line sitting beside
+          // masked ones is what a later author copies.
+          this.logger.warn(
+            maskerOrIdentity(maskSecrets)(
+              `Interrupted after creating Listener ${logicalId} (${listenerArn}) but before its ` +
+                `attributes were applied. Nothing in cdkd state refers to it, so cdkd is deleting ` +
+                `it now — left behind it would fail the next deploy with DuplicateListener and ` +
+                `neither rollback nor destroy could reach it. If that delete does not complete, ` +
+                `remove it manually: aws elbv2 delete-listener --listener-arn ${listenerArn}`
+            )
+          );
+        }
         try {
           await this.getClient().send(new DeleteListenerCommand({ ListenerArn: listenerArn }));
           this.logger.debug(
@@ -1752,20 +1799,30 @@ export class ELBv2Provider implements ResourceProvider {
         this.attributeRemovalResolver(LISTENER_ATTRIBUTE_DEFAULTS)
       );
       if (submittedAttrs.length > 0) {
-        await withRetry(
-          () =>
-            this.getClient().send(
-              new ModifyListenerAttributesCommand({
-                ListenerArn: physicalId,
-                Attributes: submittedAttrs,
-              })
-            ),
-          logicalId,
-          // Masked for the same reason as the create path (issue #2050) — the
-          // submitted diff is built from `properties` / `previousProperties`,
-          // both RESOLVED.
-          { logger: this.maskedRetryLogger(maskSecrets) }
-        );
+        // Interruptible for the same reason as the create path (issue #2053).
+        const watch = startInterruptWatch(`ELBv2 Listener ${logicalId} attributes`);
+        try {
+          await withRetry(
+            () =>
+              this.getClient().send(
+                new ModifyListenerAttributesCommand({
+                  ListenerArn: physicalId,
+                  Attributes: submittedAttrs,
+                })
+              ),
+            logicalId,
+            // Masked for the same reason as the create path (issue #2050) — the
+            // submitted diff is built from `properties` / `previousProperties`,
+            // both RESOLVED.
+            {
+              logger: this.maskedRetryLogger(maskSecrets),
+              isInterrupted: watch.isInterrupted,
+              onInterrupted: watch.onInterrupted,
+            }
+          );
+        } finally {
+          watch.dispose();
+        }
         this.logger.debug(
           `Applied ${submittedAttrs.length} ListenerAttributes change(s) for ${logicalId}`
         );

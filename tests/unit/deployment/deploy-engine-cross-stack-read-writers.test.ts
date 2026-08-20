@@ -31,13 +31,32 @@ import { describe, expect, it } from 'vite-plus/test';
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const SOURCE = 'src/deployment/deploy-engine.ts';
 
-/** Comments carry example spellings (this rule's own doc does), so drop them. */
+/**
+ * Comments carry example spellings (this rule's own doc does), so drop them.
+ *
+ * LINE comments are blanked BEFORE block comments are stripped, and the order
+ * is load-bearing rather than incidental. A `//` comment naming a glob — and
+ * this repo's comments name them constantly — contains the two characters that
+ * OPEN a block comment: `src/provisioning/**` is `…/` followed by `**`. With
+ * the block pass first, that glob swallowed everything up to the next `*\/`,
+ * which for one instance in `deploy-engine.ts` was 235 lines including BOTH
+ * success-path writes and two of the helper calls. The scan then reported ZERO
+ * writers and a lower helper count — i.e. it failed CLOSED into "nothing to
+ * see", which is exactly the silence this whole test exists to prevent.
+ *
+ * Blanking whole-line comments first removes the glob before it can be read as
+ * a delimiter. A TRAILING `// …/**` after code is still a live hazard, and is
+ * deliberately not handled: stripping to end-of-line needs string awareness
+ * (`'https://…'` in real code) and regex-literal awareness (this file's own
+ * `/\/\*[\s\S]*?\*\//`), and getting that wrong fails OPEN in a way the fence
+ * below would not catch. The fence is what makes the residual visible.
+ */
 function stripComments(source: string): string {
   return source
-    .replace(/\/\*[\s\S]*?\*\//g, '')
     .split('\n')
     .map((line) => (line.trim().startsWith('//') ? '' : line))
-    .join('\n');
+    .join('\n')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
 }
 
 /**
@@ -125,6 +144,38 @@ describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2
       'imports: currentState.imports,',
       'outputReads: [...this.recordedOutputReads],',
     ]);
+  });
+
+  it('a GLOB in a line comment does not eat the rest of the file', () => {
+    // The residual this scan nearly died of. `src/provisioning/**` inside a
+    // `//` comment contains `/` + `*`, which OPENS a block comment — so with
+    // the block pass running first it swallowed everything up to the next
+    // `*` + `/`. In `deploy-engine.ts` that was 235 lines carrying BOTH
+    // success-path writes and two helper calls, and the scan reported zero
+    // writers: a FAIL-CLOSED silence, indistinguishable from a clean file to
+    // every assertion except this one.
+    //
+    // Fed as a fixture rather than trusted to the real source, so the property
+    // survives whoever next edits that comment out.
+    const flagged = scanWriters(
+      [
+        '// every `withRetry` under `src/provisioning/**` threads the watch',
+        'const partialState: StackState = {',
+        '  imports: currentState.imports,',
+        '};',
+        // The CLOSING delimiter is what completes the swallow, and a fixture
+        // without one proves nothing: the block regex needs a `*` + `/` to
+        // match at all, so a glob with nothing after it is inert and the
+        // fixture passes under BOTH strip orders. Every real file has a later
+        // doc comment; this stands in for it.
+        '/** a later doc comment, as every real file has */',
+      ].join('\n')
+    ).map((w) => w.text);
+    expect(
+      flagged,
+      'a glob in a line comment swallowed the code after it — strip line ' +
+        'comments BEFORE block comments'
+    ).toEqual(['imports: currentState.imports,']);
   });
 
   it('finds the success-path write exactly once, so the allow-list cannot cover a second one', () => {

@@ -1,3 +1,15 @@
+// NOTE: this is `utils/` importing from `provisioning/`, which inverts the
+// usual layering. It is deliberate and bounded rather than an oversight:
+// `interrupt-watch.ts` is a LEAF (it imports nothing but `process`), so the
+// edge closes no cycle, and the alternative — having each of the four commands
+// open the scope itself — would put the same call in four places where one of
+// them will eventually be forgotten. Revisit if that module ever grows an
+// import of its own.
+import {
+  beginCommandInterruptScope,
+  endCommandInterruptScope,
+} from '../provisioning/interrupt-watch.js';
+
 /**
  * SIGTERM -> SIGINT forwarding for the deploy / destroy / rollback commands
  * (issue #1342).
@@ -31,6 +43,24 @@
  * handler of its own).
  */
 export function forwardSigtermToSigint(): () => void {
+  // This is also where the provider-side interrupt watch is told a command with
+  // a graceful shutdown path is now running (issues #2053 / #1952). It gates on
+  // THIS rather than on `process.listenerCount('SIGINT')`, because a count is
+  // satisfied by the transient listeners CloudFront / ACM / Route53 install
+  // around their own waits — so `cdkd drift`, which owns no shutdown path and
+  // runs `provider.update` at concurrency 4, could arm the watch through a
+  // concurrent resource's listener and then keep it after that listener went
+  // away, leaving Ctrl-C unable to terminate the command at all.
+  //
+  // Every command that reaches a provider wait through a lock calls this
+  // (`deploy`, `destroy`, `rollback`, `state`); `drift` does not, and keeps
+  // Node's default terminate, which is the intended outcome rather than a gap.
+  //
+  // It doubles as the PER-COMMAND reset of the sticky interrupt latch: the latch
+  // must survive between two sequential waits (that is the whole point of it),
+  // so nothing on the wait path may clear it and command start is the only
+  // correct scope.
+  beginCommandInterruptScope();
   const handler = (): void => {
     if (process.listenerCount('SIGINT') === 0) {
       // No graceful path is active (e.g. during synthesis, before the
@@ -48,5 +78,11 @@ export function forwardSigtermToSigint(): () => void {
   process.on('SIGTERM', handler);
   return (): void => {
     process.removeListener('SIGTERM', handler);
+    // Closing the interrupt scope also removes the watch's shared SIGINT
+    // listener. That is safe here and nowhere else: the listener must never be
+    // torn down BETWEEN two waits (a signal landing in the gap would go
+    // unrecorded), and at command end there is no next wait — while leaving it
+    // installed would suppress default terminate for whatever runs after.
+    endCommandInterruptScope();
   };
 }

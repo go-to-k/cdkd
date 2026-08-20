@@ -2328,6 +2328,124 @@ Two placement rules go with it:
   `onInterrupted` (a rollback polls interrupts only BETWEEN ops, so an
   un-threaded probe leaves Ctrl-C dead for the whole backoff schedule).
 
+  **The second of those is now MECHANICALLY ENFORCED** (issue
+  [#2053](https://github.com/go-to-k/cdkd/issues/2053), after a count found 11
+  sites under `src/provisioning/providers/**` and the pair threaded at exactly
+  one of them). `vp run audit:withretry-interrupt:check`
+  (`scripts/check-withretry-interrupt.ts`, a CI step) fails on any `withRetry`
+  under `src/provisioning/**` whose options object literal does not declare
+  BOTH names. Half a pair is a defect too: without `onInterrupted`, `withRetry`
+  throws a bare `Error('Interrupted')` that names no resource, and without
+  `isInterrupted` the other half is never called. A conditional spread does not
+  count — it reads as threading to a reviewer while being absent whenever its
+  guard is falsy — and an options bag the checker cannot READ (an identifier, a
+  spread) is reported rather than skipped, so inline it.
+
+  **Do not hand-roll the watch.** There is exactly one:
+  `startInterruptWatch` in `src/provisioning/interrupt-watch.ts`, and the critic
+  above checks PROVENANCE, so a locally-built object with the right property
+  names fails. Four module-local copies existed briefly and could not agree with
+  each other, which is what made two of its properties wrong; all four are gone.
+  Call it per WAIT, thread `watch.isInterrupted` / `watch.onInterrupted`, and
+  `dispose()` in a `finally`.
+
+  Four properties of that module, each load-bearing and each the fix for a
+  concrete bug:
+
+  - **Per WAIT, never on `this`.** Providers are registered as SINGLETONS
+    serving concurrent resources, so provider-level state is some other
+    resource's.
+  - **`onInterrupted` returns an `InterruptedWaitError`**, not a bare `Error`.
+    `deploy-engine.ts` decides whether to ROLL BACK by asking what the failure
+    was, and its own `InterruptedError` is module-private, so a bare `Error` from
+    a provider read as a genuine resource failure and rolled the whole stack back
+    on Ctrl-C. Use `isInterruptedWaitError` to recognise one. It walks the
+    `cause` chain — every provider catch re-wraps — with a `visited` set and NO
+    depth ceiling, because the chain grows by one per nested-stack level and a
+    ceiling sized against today's nesting silently reinstates the rollback bug.
+  - **The latch is STICKY, and only a COMMAND clears it.** A wait STARTED after
+    the signal begins is already interrupted. Clearing it when the last watch is
+    disposed looks equivalent and is not: sequential waits always empty the live
+    set between them, so a `GlobalTable` delete running the #1521 gate, then the
+    index-busy loop, then the gone-wait left the two multi-minute waits after the
+    gate DEAF. `forwardSigtermToSigint()` opens and closes the command scope. The
+    process listener is likewise never removed BETWEEN waits — one torn down in
+    that gap cannot record a signal landing in it.
+  - **It arms only inside a command that OWNS interrupt handling**, signalled by
+    that scope rather than by counting SIGINT listeners. Any listener disables
+    Node's default terminate, so a command with none of its own (`cdkd drift
+    --revert` reaches `provider.update`) must not gain one here. A listener
+    COUNT is the wrong test and was the first cut: `drift` runs at concurrency
+    4, and a concurrent CloudFront / ACM / Route53 wait installs a transient
+    SIGINT listener, so a wait starting in that window armed the shared handler
+    permanently.
+  - **The handler force-quits when it is the LAST SIGINT listener.** A command
+    scope is not the same as a live graceful path: `destroy.ts` registers no
+    handler and `destroy-runner.ts` removes its own in a `finally`, so between
+    two stacks of a multi-stack destroy the watch is alone — and merely latching
+    there SWALLOWS the Ctrl-C, letting the next stack delete on. Alone, it does
+    what Node would have done with no listener at all, plus a
+    `cdkd force-unlock` hint it cannot verify but cannot afford to omit.
+
+    **The corollary is a rule for any command holding a lock: release it BEFORE
+    unregistering your SIGINT handler.** Unregister-first leaves a window where
+    the command holds the lock with no handler of its own, and the force-quit
+    turns a Ctrl-C there into a stranded lock for its full 30-minute TTL.
+    `destroy-runner.ts` had it backwards in its main `finally` and correct in
+    its strong-ref refusal path; both now read the same way, and
+    `destroy-runner-lock-release-ordering.test.ts` pins it by observing which
+    listeners are registered at the moment `releaseLock` is entered.
+    `deploy-engine.ts` still unregisters first and is safe only because
+    `deploy.ts` holds a handler that outlives it — stated at that call site,
+    because a surviving instance of a corrected anti-pattern has to explain
+    itself. `rollback.ts` is the remaining unfixed instance
+    ([#2118](https://github.com/go-to-k/cdkd/issues/2118)).
+
+    **And the corollary's own corollary: keeping the handler armed for longer
+    moves the window a signal can arrive in, so re-check anything that READS the
+    interrupt.** `destroy-runner.ts` assigns `result.interrupted` once, inside
+    its `try` — so arming across the teardown made a first Ctrl-C there set
+    `draining` after the only read, leaving the flag false and letting
+    `destroy --all` delete the next stack. It re-syncs with
+    `result.interrupted ||= draining` at the end of the `finally`. That is
+    tactical: the real defect is that flag being the only channel, which is
+    [#2117](https://github.com/go-to-k/cdkd/issues/2117).
+
+  **An interrupt is not a failure — but it is not a reason to leave AWS state
+  behind either.** Two shapes to check in any wait you add, and they pull in
+  opposite directions:
+
+  - A best-effort `catch` that swallows into a `warn` will blame AWS for a user
+    abort and then carry on to the next write. `applyAutoScalingDiff` re-throws
+    instead, which stops the burst.
+  - A partial-create cleanup arm must STILL run its cleanup delete on an
+    interrupt. "Ctrl-C must not delete what you just made" is the intuitive
+    answer and it is wrong here, because `create()` is throwing: the physical id
+    never reaches state, the rollback journal records `physicalId: undefined`,
+    and the rollback executor classifies it `skip-failed-unknown`. Nothing holds
+    the id, so the choice is *delete vs orphan forever* — and the orphan fails
+    every later deploy on a name collision that neither rollback nor destroy can
+    reach. Both the ELBv2 Listener and Cloud Map Service arms clean up, and each
+    prints the physical id plus a manual delete command BEFORE attempting it, so
+    a process killed mid-cleanup still leaves the user a handle.
+
+  **An interrupt must also never be read as "already deleted".** Both delete
+  paths decide a resource is already gone by SUBSTRING-matching the error
+  message, and an interrupt's message embeds a name the user chose — so a
+  logical id containing `NotFoundException` used to drop a live resource's state
+  row. `destroy-runner.ts` and `deploy-engine.ts` both check
+  `isInterruptedWaitError` ahead of that match; any new message-based classifier
+  on a delete path needs the same guard.
+
+  **A hand-rolled poll on the same path owes the same treatment**, and issue
+  [#1952](https://github.com/go-to-k/cdkd/issues/1952) is why the rule is stated
+  for the PATH rather than per call: interrupting one wait while the next one
+  still sits out its cap buys nothing. What a poll DOES on the signal is its
+  own call: throw when nothing has been accepted yet, stop waiting when the
+  operation is already in AWS's hands (see `waitForReplicaGone` /
+  `waitForTableGone` in `dynamodb-globaltable-provider.ts` for both answers on
+  one path).
+
 Only bags AWS actually writes into qualify. A purely user-authored bag
 (Glue's `JobUpdate.DefaultArguments`, `ConnectionInput.ConnectionProperties`)
 must NOT be merged — preserving a console-side addition there would break

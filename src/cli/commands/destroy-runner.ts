@@ -46,6 +46,7 @@ import {
   type ActiveImportConsumer,
 } from '../../utils/error-handler.js';
 import type { ExportIndexStore } from '../../state/export-index-store.js';
+import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 
 /**
  * Execution context passed by the caller (`cdkd destroy` or
@@ -1146,7 +1147,18 @@ export async function runDestroyForStack(
           // BEFORE the delete, so its error means the resource is still
           // live; reading a snapshot-poll NotFound as "already deleted"
           // would drop a live, un-snapshotted volume from state.
+          //
+          // ...and never for a USER ABORT either (issues #2053 / #1952), for the
+          // same reason and by the same shape. This match is on the MESSAGE, and
+          // an interrupt's message embeds a name the user chose — `DynamoDB
+          // auto-scaling for ${tableName}`, `Custom resource ${logicalId}` — so
+          // a logical id like `HandleNotFoundException` made an interrupted
+          // delete read as "already deleted" and DROPPED a live resource's state
+          // row while reporting success. The typed check has to come first
+          // because the substring match cannot be made safe: any needle can
+          // appear in a user-chosen name.
           if (
+            !isInterruptedWaitError(error) &&
             !isFinalSnapshotError(error) &&
             (msg.includes('does not exist') ||
               msg.includes('not found') ||
@@ -1336,23 +1348,86 @@ export async function runDestroyForStack(
       );
     }
   } finally {
-    // Remove our SIGINT listener so it never leaks past this call (each
-    // call registers and removes its own function reference — important for
-    // nested-stack recursion, where one handler is registered per level).
-    process.removeListener('SIGINT', sigintHandler);
+    // RELEASE FIRST, REMOVE THE LISTENER LAST — the same ordering the
+    // strong-ref refusal path above states and for a stronger reason than it
+    // had. This block used to unregister first, which left a window from the
+    // removal until the release resolved where THIS command had no SIGINT
+    // handler at all while the lock was still held: `destroy.ts` / `state.ts`
+    // register none of their own, so a Ctrl-C there was answered by the
+    // provider-side interrupt watch's last-listener force-quit
+    // (`src/provisioning/interrupt-watch.ts`), the process exited 130, and the
+    // release below never ran — stranding the lock for its full 30-minute TTL.
+    // On a `--all` run the watch is armed by the first stack that waits, so
+    // every later stack inherited the exposure. That is the issue #1348 class
+    // this file already claims to have closed.
+    //
+    // Keeping the handler armed across the release is also what the graceful
+    // path wants: a SIGTERM landing mid-release is still forwarded through it
+    // rather than hitting the exit-143 fallback with the lock held.
+    //
+    // The removal sits in its own `finally` so a throwing STEP cannot leak the
+    // listener — one leaked per stack would additionally keep the shared watch
+    // from ever being alone, silently disabling the force-quit.
+    //
+    // The `try` opens at `renderer.stop()` rather than at the release, because
+    // `stop()` writes to stdout and CAN throw (EPIPE on a closed pipe). Covering
+    // only the release left the exact double-badness this comment argues
+    // against: measured `threw=EPIPE releaseLock=0 leakedListeners=1` — the lock
+    // stranded AND the handler leaked.
+    try {
+      // Stop live renderer before releasing the lock so any pending in-flight
+      // task lines are cleared cleanly.
+      //
+      // CAUGHT rather than allowed to propagate, which the `try` above alone
+      // does not achieve: `stop()` writes to stdout, so an EPIPE on a closed
+      // pipe (`cdkd destroy | head`) would skip the release below entirely and
+      // strand the lock. The enclosing `finally` protects the LISTENER from
+      // that; only this catch protects the LOCK. A teardown write failing is
+      // also the single most swallowable error on this path — the terminal is
+      // already gone — so nothing is being hidden that anyone could act on.
+      try {
+        renderer.stop();
+      } catch (rendererError) {
+        logger.debug(
+          `Live renderer teardown failed (continuing to release the lock): ` +
+            `${rendererError instanceof Error ? rendererError.message : String(rendererError)}`
+        );
+      }
 
-    // Stop live renderer before releasing the lock so any pending in-flight
-    // task lines are cleared cleanly.
-    renderer.stop();
+      // Drain any still-pending incremental persists before releasing the
+      // lock — on the happy path this resolved already (awaited above), but a
+      // throw between scheduling and the flush must not let a state write
+      // land after the lock is gone. Never rejects (links catch internally).
+      await saveChain;
 
-    // Drain any still-pending incremental persists before releasing the
-    // lock — on the happy path this resolved already (awaited above), but a
-    // throw between scheduling and the flush must not let a state write
-    // land after the lock is gone. Never rejects (links catch internally).
-    await saveChain;
+      logger.debug('Releasing lock...');
+      await ctx.lockManager.releaseLock(stackName, regionForState);
+    } finally {
+      // Each call registers and removes its own function reference — important
+      // for nested-stack recursion, where one handler exists per level.
+      process.removeListener('SIGINT', sigintHandler);
+    }
 
-    logger.debug('Releasing lock...');
-    await ctx.lockManager.releaseLock(stackName, regionForState);
+    // RE-SYNC the interrupt outcome, because the reordering above MOVED the
+    // window it is read in. `result.interrupted` is assigned once, inside the
+    // `try`, after the level loop — and everything in this `finally` now runs
+    // with `sigintHandler` still armed, so a FIRST Ctrl-C landing in the
+    // renderer teardown, the state flush or the lock release sets `draining`
+    // AFTER that read. It then stayed false, and `destroy --all` deleted the
+    // NEXT STACK after the user asked to stop.
+    //
+    // That trade is worse than the bug the reordering fixed: before it, the same
+    // signal hit the interrupt watch's force-quit and exited 130 — stranding the
+    // lock, but never destroying stack B. `||=` rather than `=` because the
+    // in-`try` read is the authoritative one for every signal that arrived
+    // earlier; this only ever turns false into true. The `return` sits after
+    // this `finally`, so the caller sees the corrected value.
+    //
+    // TACTICAL by design. `result.interrupted` being the ONLY channel from here
+    // to the `--all` loop is the actual defect — `destroy.ts` registers no
+    // SIGINT handler of its own, where `deploy.ts` does — and closing THAT is
+    // https://github.com/go-to-k/cdkd/issues/2117 rather than this line.
+    result.interrupted ||= draining;
 
     // Restore base region/clients if we switched.
     if (destroyAwsClients) {

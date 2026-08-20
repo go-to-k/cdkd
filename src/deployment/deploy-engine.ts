@@ -101,6 +101,7 @@ import {
 } from './rollback-executor.js';
 import { getCdkdVersion } from '../state/deployment-events-store.js';
 import type { RollbackJournalSegment } from '../types/rollback-journal.js';
+import { isInterruptedWaitError } from '../provisioning/interrupt-watch.js';
 
 /**
  * The bag a resource with no recorded secret masks against (issue #2038).
@@ -1978,7 +1979,20 @@ export class DeployEngine {
       // Stop live renderer (clears any remaining in-flight task display)
       renderer.stop();
 
-      // Remove SIGINT handler
+      // Remove SIGINT handler.
+      //
+      // This unregisters BEFORE the lock release further down, which is the
+      // ordering `destroy-runner.ts` and (once
+      // https://github.com/go-to-k/cdkd/issues/2118 lands) `rollback.ts` were
+      // both corrected AWAY from — so the surviving instance owes an
+      // explanation. It is safe HERE for a reason neither of those had:
+      // `deploy.ts` registers its own top-level SIGINT handler that outlives
+      // this whole method, so the process is never left with zero listeners
+      // while the lock is held. `destroy.ts` / `state.ts` register none, which
+      // is exactly why the same shape was a stranded lock there.
+      //
+      // If that top-level handler is ever removed or made conditional, this
+      // block has to be reordered to release first.
       process.removeListener('SIGINT', sigintHandler);
 
       // On a rollback / SIGINT exit we may leave in-flight readCurrentState
@@ -2342,7 +2356,20 @@ export class DeployEngine {
       // On SIGINT, skip rollback — just save partial state, record a rollback
       // journal segment so the interrupted deploy is REVERTIBLE (not just
       // resumable), and let the caller exit.
-      if (error instanceof InterruptedError) {
+      //
+      // `InterruptedError` is this module's own and is NOT exported, so it can
+      // only ever be raised HERE — by the engine's own interrupt poll between
+      // operations. An interrupt raised inside a provider's wait (issues #2053
+      // / #1952 thread one into every `withRetry` under
+      // `src/provisioning/**`) arrives as an `InterruptedWaitError`, and by the
+      // time it reaches this catch it is WRAPPED: every provider catch
+      // re-throws AWS failures as a `ProvisioningError` threading the original
+      // as `cause` (issue #2040). Matching only the private class meant a
+      // Ctrl-C during a provider backoff read as a genuine resource failure and
+      // rolled the whole stack back automatically — strictly worse than the
+      // unresponsiveness the threading removes. `isInterruptedWaitError` walks
+      // the cause chain to a bounded depth for exactly that reason.
+      if (error instanceof InterruptedError || isInterruptedWaitError(error)) {
         await this.writeRollbackJournalSegment(
           stackName,
           completedOperations,
@@ -4533,15 +4560,22 @@ export class DeployEngine {
           );
         } catch (deleteError) {
           const msg = deleteError instanceof Error ? deleteError.message : String(deleteError);
-          // Treat "not found" errors as success (resource already deleted)
+          // Treat "not found" errors as success (resource already deleted) —
+          // but never a USER ABORT (issues #2053 / #1952). The match is on the
+          // MESSAGE, and an interrupt's message embeds a name the user chose, so
+          // a logical id containing `NotFoundException` / `NoSuchEntity` made an
+          // interrupted delete read as "already deleted" and dropped a live
+          // resource from state. Typed check first: the substring match cannot
+          // be made safe, because any needle can appear in a user-chosen name.
           if (
-            msg.includes('does not exist') ||
-            msg.includes('was not found') ||
-            msg.includes('not found') ||
-            msg.includes('No policy found') ||
-            msg.includes('NoSuchEntity') ||
-            msg.includes('NotFoundException') ||
-            msg.includes('ResourceNotFoundException')
+            !isInterruptedWaitError(deleteError) &&
+            (msg.includes('does not exist') ||
+              msg.includes('was not found') ||
+              msg.includes('not found') ||
+              msg.includes('No policy found') ||
+              msg.includes('NoSuchEntity') ||
+              msg.includes('NotFoundException') ||
+              msg.includes('ResourceNotFoundException'))
           ) {
             this.logger.debug(
               `Resource ${logicalId} already deleted (${msg}), removing from state`
