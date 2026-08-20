@@ -1,3 +1,10 @@
+## [0.284.20](https://github.com/go-to-k/cdkd/compare/v0.284.19...v0.284.20) (2026-08-20)
+
+
+### Bug Fixes
+
+* **state:** derive every dynamic-reference token pattern from one constant, so the strictest spelling stops persisting plaintext ([#2097](https://github.com/go-to-k/cdkd/issues/2097)) ([7772a93](https://github.com/go-to-k/cdkd/commit/7772a930bf0bd42c3b781383f7d55dfb38ae3a84))
+
 ## [0.284.19](https://github.com/go-to-k/cdkd/compare/v0.284.18...v0.284.19) (2026-08-20)
 
 
