@@ -901,6 +901,32 @@ registry FIRST — `docker pull hello-world` under a 120s cap — because
 `docker version` answering says nothing about registry networking, and that is
 the half that fails.
 
+**Do NOT restart Docker to fix a hang — on Docker Desktop the restart IS the
+likelier cause.** The daemon routes registry traffic through
+`http.docker.internal:3128`, a proxy the Docker Desktop **application** serves.
+`osascript -e 'quit app "Docker"'` followed by `open -a Docker` can leave the
+self-respawning `com.docker.backend` watchdog up while the app itself never
+finishes launching — and then every pull waits forever on a proxy that is not
+there, while `docker version` keeps answering over the local socket. Measured
+2026-08-20: after that sequence, four consecutive `docker pull hello-world`
+attempts hung past a 90-120s cap, `pkill` could not clear the watchdog, and only
+a maintainer restarting the app by hand restored it. Diagnose in this order and
+STOP at the first one that explains the symptom, rather than restarting anything:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' --max-time 15 https://registry-1.docker.io/v2/  # 401 = HOST networking is fine
+docker info 2>/dev/null | grep -i proxy         # names the proxy the daemon depends on
+pgrep -f 'Docker Desktop' >/dev/null && echo app-running || echo APP-NOT-RUNNING
+```
+
+A host that reaches the registry, a daemon configured with a proxy, and no app
+process is the whole diagnosis: the app must come up, and nothing else will fix
+it. Ask the maintainer rather than escalating — the remaining moves (factory
+reset, deleting Docker's data, rewriting the daemon proxy config) destroy local
+images and volumes, which is never yours to spend. Also clean up after your own
+probes: `kill`ing the wrapper of a `docker pull` leaves the `com.docker.cli`
+child running, and five of them had accumulated before anyone looked.
+
 **A run blocked before its assertions is not a failing fix, and the ledger note
 is where that distinction survives.** Record such a run as `FAIL` (the bar is
 exit-code-based) with a note naming the blocker, saying the change was not at
