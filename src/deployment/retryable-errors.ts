@@ -595,16 +595,27 @@ export function isThrottlingError(error: unknown): boolean {
  *
  * ACCEPTED RISK, stated rather than discovered later: this makes a
  * NON-IDEMPOTENT create retryable on a 500 that may have succeeded
- * server-side. `EC2Provider.createInstance` issues `RunInstances` with no
- * `ClientToken` (only four providers use one at all), and
- * `IAMAccessKeyProvider` mints an unnamed key, so a replay can leave a
- * resource that is absent from state and therefore from destroy. The class is
- * PRE-EXISTING -- the SDK's own three attempts already reach it, and 503 was
- * already retryable here -- but this widens the window from ~1s to the full
- * schedule. Judged worth it because the alternative is the measured failure
- * (a deploy that dies outright on a transient 500), and because the durable
- * remedy is per-provider idempotency tokens rather than a blanket refusal to
- * retry server errors. Tracked in issue #2039.
+ * server-side, so a replay can leave a resource that is absent from state and
+ * therefore from destroy. The class is PRE-EXISTING -- the SDK's own three
+ * attempts already reach it, and 503 was already retryable here -- but this
+ * widens the window from ~1s to the full schedule. Judged worth it because the
+ * alternative is the measured failure (a deploy that dies outright on a
+ * transient 500), and because the durable remedy is per-provider idempotency
+ * tokens rather than a blanket refusal to retry server errors.
+ *
+ * STATUS (issue #2039, and read this before citing the paragraph above). The
+ * two worked examples this note used to carry -- `RunInstances` sent with no
+ * `ClientToken`, and `IAMAccessKeyProvider` minting an unnamed key -- are both
+ * FIXED, so quoting them as live hazards would now mislead. `RunInstances`,
+ * `CreateNatGateway`, `CreateRouteTable`, `CreateNetworkAcl` and
+ * `CreateHostedZone` carry a retry-stable token from
+ * `src/provisioning/providers/idempotency-token.ts`, and `CreateAccessKey`
+ * (which has no token member) reconciles the orphan its own failed attempt
+ * left. The claim that "only four providers use one at all" was also wrong when
+ * written: six did, and two of those regenerated the token per attempt, which
+ * is worse than none. What REMAINS accepted here is the residue -- roughly 25
+ * creates across 16 providers audited in issue #2039 and enumerated in issue
+ * #2080 -- so this set stays as-is and the remedy stays per-provider.
  */
 export const TRANSIENT_SERVER_ERROR_STATUS_CODES: ReadonlySet<number> = new Set([
   500, 502, 503, 504,

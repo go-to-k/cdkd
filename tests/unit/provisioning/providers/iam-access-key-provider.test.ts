@@ -47,6 +47,17 @@ function notFound(): NoSuchEntityException {
   return new NoSuchEntityException({ message: 'not found', $metadata: {} });
 }
 
+/**
+ * The empty `ListAccessKeys` page (issue #2039).
+ *
+ * `create()` now reads the user's existing keys BEFORE issuing
+ * `CreateAccessKey`, and reads them again from the failure path to reconcile an
+ * orphan its own attempt minted. Both are real SDK calls, so every positionally
+ * primed queue below has to account for them or each `*Once` serves the wrong
+ * call -- which is exactly the shift `.claude/rules/testing.md` documents.
+ */
+const NO_EXISTING_KEYS = { AccessKeyMetadata: [] };
+
 function callsOf(commandClass: unknown): Array<Record<string, unknown>> {
   return mockSend.mock.calls
     .filter((c) => c[0] instanceof (commandClass as new (...args: never[]) => object))
@@ -81,7 +92,7 @@ describe('IAMAccessKeyProvider', () => {
 
   describe('create', () => {
     it('creates the key and caches SecretAccessKey + Id as attributes', async () => {
-      mockSend.mockResolvedValueOnce({
+      mockSend.mockResolvedValueOnce(NO_EXISTING_KEYS).mockResolvedValueOnce({
         AccessKey: { AccessKeyId: KEY_ID, SecretAccessKey: SECRET, Status: 'Active' },
       });
 
@@ -98,6 +109,7 @@ describe('IAMAccessKeyProvider', () => {
 
     it('applies Status: Inactive with a follow-up UpdateAccessKey', async () => {
       mockSend
+        .mockResolvedValueOnce(NO_EXISTING_KEYS)
         .mockResolvedValueOnce({ AccessKey: { AccessKeyId: KEY_ID, SecretAccessKey: SECRET } })
         .mockResolvedValueOnce({});
 
@@ -118,9 +130,12 @@ describe('IAMAccessKeyProvider', () => {
 
     it('deletes the just-created key when the Inactive status wiring fails', async () => {
       mockSend
+        .mockResolvedValueOnce(NO_EXISTING_KEYS)
         .mockResolvedValueOnce({ AccessKey: { AccessKeyId: KEY_ID, SecretAccessKey: SECRET } })
         .mockRejectedValueOnce(new Error('throttled'))
-        .mockResolvedValueOnce({});
+        .mockResolvedValueOnce({})
+        // The reconcile's read: the inner cleanup already deleted the key.
+        .mockResolvedValueOnce(NO_EXISTING_KEYS);
 
       await expect(
         provider.create('CiKey', TYPE, { UserName: 'ci-user', Status: 'Inactive' })
@@ -137,7 +152,10 @@ describe('IAMAccessKeyProvider', () => {
     });
 
     it('wraps SDK errors in ProvisioningError', async () => {
-      mockSend.mockRejectedValueOnce(new Error('LimitExceeded'));
+      mockSend
+        .mockResolvedValueOnce(NO_EXISTING_KEYS)
+        .mockRejectedValueOnce(new Error('LimitExceeded'))
+        .mockResolvedValueOnce(NO_EXISTING_KEYS);
       await expect(provider.create('CiKey', TYPE, { UserName: 'ci-user' })).rejects.toThrow(
         ProvisioningError
       );
@@ -145,8 +163,10 @@ describe('IAMAccessKeyProvider', () => {
 
     it('wraps a create response missing AccessKeyId/SecretAccessKey and cleans up a minted key', async () => {
       mockSend
+        .mockResolvedValueOnce(NO_EXISTING_KEYS)
         .mockResolvedValueOnce({ AccessKey: { AccessKeyId: KEY_ID } })
-        .mockResolvedValueOnce({});
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce(NO_EXISTING_KEYS);
       await expect(provider.create('CiKey', TYPE, { UserName: 'ci-user' })).rejects.toThrow(
         /no AccessKeyId\/SecretAccessKey/
       );
@@ -158,7 +178,10 @@ describe('IAMAccessKeyProvider', () => {
     });
 
     it('skips cleanup when the create response carries no AccessKeyId at all', async () => {
-      mockSend.mockResolvedValueOnce({});
+      mockSend
+        .mockResolvedValueOnce(NO_EXISTING_KEYS)
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce(NO_EXISTING_KEYS);
       await expect(provider.create('CiKey', TYPE, { UserName: 'ci-user' })).rejects.toThrow(
         /no AccessKeyId\/SecretAccessKey/
       );
@@ -167,9 +190,11 @@ describe('IAMAccessKeyProvider', () => {
 
     it('propagates the ORIGINAL status-wiring error even when the compensating delete also fails', async () => {
       mockSend
+        .mockResolvedValueOnce(NO_EXISTING_KEYS)
         .mockResolvedValueOnce({ AccessKey: { AccessKeyId: KEY_ID, SecretAccessKey: SECRET } })
         .mockRejectedValueOnce(new Error('status wiring failed'))
-        .mockRejectedValueOnce(new Error('cleanup also failed'));
+        .mockRejectedValueOnce(new Error('cleanup also failed'))
+        .mockResolvedValueOnce(NO_EXISTING_KEYS);
 
       await expect(
         provider.create('CiKey', TYPE, { UserName: 'ci-user', Status: 'Inactive' })

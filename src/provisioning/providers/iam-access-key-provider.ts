@@ -14,6 +14,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import type { CreateContext } from '../../types/resource.js';
+
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -21,6 +22,17 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * How far before an attempt's start a key's `CreateDate` may fall and still be
+ * treated as minted by that attempt (issue #2039).
+ *
+ * IAM stamps `CreateDate` from its own clock while the floor comes from ours,
+ * so some tolerance is needed or ordinary skew disarms the check entirely. It
+ * is deliberately small: every millisecond of it is a millisecond in which a
+ * key created by something else becomes deletable.
+ */
+const CREATE_DATE_SKEW_MARGIN_MS = 5_000;
 
 /**
  * AWS IAM AccessKey Provider (issue #1323)
@@ -73,6 +85,40 @@ export class IAMAccessKeyProvider implements ResourceProvider {
     ['AWS::IAM::AccessKey', new Set(['UserName', 'Serial', 'Status'])],
   ]);
 
+  /**
+   * Serializes create attempts per IAM user, in this process (issue
+   * [#2039](https://github.com/go-to-k/cdkd/issues/2039)).
+   *
+   * The orphan reconcile below identifies "a key that appeared since my
+   * baseline". With two `AWS::IAM::AccessKey` resources on ONE user — the
+   * ordinary two-key rotation shape — the deploy engine dispatches both
+   * concurrently at the default `--concurrency 10`, and a key the SIBLING
+   * legitimately created lands inside that window and matches the same
+   * description. Deleting it destroys a live credential that is already in
+   * cdkd state and may already be piped into a downstream Secrets Manager
+   * secret via `Fn::GetAtt`, and `readCurrentState` returns `undefined` for a
+   * deleted key, so `cdkd drift` reports UNKNOWN rather than drift and the
+   * loss is invisible. That is strictly worse than the untracked-but-alive
+   * credential this whole mechanism exists to prevent.
+   *
+   * This lock removes that race rather than narrowing it: the baseline read,
+   * the create attempt, and the reconcile all happen under it, so no sibling
+   * create on the same user can interleave with them.
+   */
+  private readonly userCreateLocks = new Map<string, Promise<void>>();
+
+  /**
+   * Access key ids THIS process created successfully.
+   *
+   * The complement of the baseline: a baseline can only say "this key is
+   * newer than my snapshot", which is true both of the orphan left by my own
+   * failed attempt AND of a key someone else minted in the same window. This
+   * set names the keys cdkd itself owns and has already recorded, so they are
+   * never deletable however the timing falls — including the case the lock
+   * cannot cover, a second `cdkd` process sharing the user.
+   */
+  private readonly accessKeyIdsCreatedByThisProcess = new Set<string>();
+
   constructor() {
     const awsClients = getAwsClients();
     this.iamClient = awsClients.iam;
@@ -109,6 +155,30 @@ export class IAMAccessKeyProvider implements ResourceProvider {
       'AWS::IAM::AccessKey Status',
       replayWarn(this.logger, context)
     );
+
+    return this.withUserCreateLock(userName, () =>
+      this.createAccessKeyUnderUserLock(logicalId, resourceType, userName, status)
+    );
+  }
+
+  /**
+   * The body of {@link IAMAccessKeyProvider.create}, running with this user's
+   * create lock held so the baseline, the create, and the reconcile are atomic
+   * against any sibling create on the same user.
+   */
+  private async createAccessKeyUnderUserLock(
+    logicalId: string,
+    resourceType: string,
+    userName: string,
+    status: string
+  ): Promise<ResourceCreateResult> {
+    // The baseline is taken per ATTEMPT, immediately before the create, and is
+    // consumed by the reconcile in this same attempt's catch. It deliberately
+    // does NOT survive into the next attempt: a snapshot that spans the whole
+    // retry schedule describes a window many seconds wide, and everything that
+    // appears in it looks equally like my orphan.
+    const attemptStartMs = Date.now() - CREATE_DATE_SKEW_MARGIN_MS;
+    const baseline = await this.tryListAccessKeyIds(userName, logicalId);
 
     try {
       const response = await this.iamClient.send(
@@ -163,6 +233,10 @@ export class IAMAccessKeyProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully created IAM access key ${logicalId}: ${accessKeyId}`);
 
+      // Recorded before returning: from here on this key is cdkd's, and no
+      // reconcile — this resource's or a sibling's — may delete it.
+      this.accessKeyIdsCreatedByThisProcess.add(accessKeyId);
+
       return {
         physicalId: accessKeyId,
         attributes: {
@@ -175,6 +249,9 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // Still under the user lock: whatever appeared since `baseline` did so
+      // during THIS attempt, and no sibling create could have run inside it.
+      await this.deleteOrphanFromFailedAttempt(userName, logicalId, baseline, attemptStartMs);
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create IAM access key ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -184,6 +261,170 @@ export class IAMAccessKeyProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Run `fn` with this IAM user's create lock held.
+   *
+   * Queue rather than mutual exclusion: each caller waits on its predecessor
+   * and publishes its own completion for the next one, so N concurrent creates
+   * on one user run strictly in arrival order. The stored promise only ever
+   * RESOLVES (the release is in a `finally`), so one create failing cannot
+   * wedge the queue behind it.
+   *
+   * Process-scoped, like every other guard here. A second `cdkd` process on the
+   * same user is out of its reach, which is why
+   * {@link IAMAccessKeyProvider.accessKeyIdsCreatedByThisProcess} and the
+   * `CreateDate` floor exist as well.
+   */
+  private async withUserCreateLock<T>(userName: string, fn: () => Promise<T>): Promise<T> {
+    const predecessor = this.userCreateLocks.get(userName) ?? Promise.resolve();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.userCreateLocks.set(
+      userName,
+      predecessor.then(() => held)
+    );
+    await predecessor;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Delete the access key THIS attempt minted before losing its response
+   * (issue [#2039](https://github.com/go-to-k/cdkd/issues/2039)).
+   *
+   * ## Why a reconcile rather than a token or an opt-out
+   *
+   * `CreateAccessKey` has no `ClientToken` / `ClientRequestToken` member, so
+   * there is nothing to make the call itself idempotent. The other candidate
+   * was `disableOuterRetry`, and it costs too much here: it would make the
+   * provider single-shot for EVERY transient error, including the IAM
+   * propagation window between a sibling `AWS::IAM::User` being created and
+   * being visible to `CreateAccessKey`.
+   *
+   * The orphan cannot be ADOPTED — its secret was returned once, in the
+   * response that was lost — so deleting it is the only remedy available.
+   *
+   * ## Three independent conditions, because deleting the wrong key is worse
+   * than leaving an orphan
+   *
+   * A key is deleted only when ALL of these hold:
+   *
+   *  1. It is absent from the baseline taken moments earlier, under the lock.
+   *  2. Its `CreateDate` is at or after this attempt started. IAM stamps that
+   *     date from ITS clock and the floor comes from ours, so a margin absorbs
+   *     ordinary skew; the residual risk is bounded by the length of ONE
+   *     `CreateAccessKey` call rather than by the retry schedule.
+   *  3. cdkd did not create it successfully in this process. This is the one
+   *     the baseline structurally cannot express — "newer than my snapshot" is
+   *     equally true of my orphan and of somebody else's key.
+   *
+   * Anything that fails 2 or 3 is reported and LEFT ALONE. That is the safe
+   * direction: an untracked key costs a quota slot and a manual cleanup, while
+   * a wrongly deleted one destroys a live credential that cdkd state still
+   * advertises — and because `readCurrentState` returns `undefined` for a
+   * deleted key, `cdkd drift` would report UNKNOWN rather than drift, so the
+   * loss would not even be visible.
+   *
+   * @param baseline `undefined` when the pre-create read failed, which disarms
+   * the reconcile entirely — see {@link IAMAccessKeyProvider.tryListAccessKeyIds}.
+   */
+  private async deleteOrphanFromFailedAttempt(
+    userName: string,
+    logicalId: string,
+    baseline: ReadonlySet<string> | undefined,
+    attemptStartMs: number
+  ): Promise<void> {
+    if (baseline === undefined) {
+      return;
+    }
+    const current = await this.tryListAccessKeyMetadata(userName, logicalId);
+    if (!current) {
+      return;
+    }
+    for (const key of current) {
+      const accessKeyId = key.accessKeyId;
+      if (baseline.has(accessKeyId) || this.accessKeyIdsCreatedByThisProcess.has(accessKeyId)) {
+        continue;
+      }
+      if (key.createDateMs === undefined || key.createDateMs < attemptStartMs) {
+        // Newer than the baseline but not attributable to this attempt. Say
+        // exactly that -- claiming it as "created by an earlier attempt at
+        // <logicalId>" would assert an attribution nothing here established.
+        this.logger.warn(
+          `IAM access key ${accessKeyId} appeared on user ${userName} while creating ${logicalId}, but cdkd cannot attribute it to this attempt (created ${key.createDateMs === undefined ? 'at an unknown time' : new Date(key.createDateMs).toISOString()}, attempt started ${new Date(attemptStartMs).toISOString()}). Leaving it in place. If it is an orphan of a failed cdkd deploy, delete it with: aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`
+        );
+        continue;
+      }
+      this.logger.warn(
+        `IAM access key ${accessKeyId} was minted on user ${userName} by this failed attempt at ${logicalId} and its secret was lost with the response, so it is unusable and unrecorded; deleting it before the retry`
+      );
+      try {
+        await this.iamClient.send(
+          new DeleteAccessKeyCommand({ UserName: userName, AccessKeyId: accessKeyId })
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Failed to delete the orphaned IAM access key ${accessKeyId} for user ${userName}: ${error instanceof Error ? error.message : String(error)}. Manual deletion may be required: aws iam delete-access-key --user-name ${userName} --access-key-id ${accessKeyId}`
+        );
+      }
+    }
+  }
+
+  /**
+   * The user's current access key ids, or `undefined` when the read failed.
+   *
+   * `undefined` disarms the reconcile rather than failing the create: a missing
+   * `iam:ListAccessKeys` permission must not turn a working deploy into a
+   * broken one over a safety net.
+   */
+  private async tryListAccessKeyIds(
+    userName: string,
+    logicalId: string
+  ): Promise<ReadonlySet<string> | undefined> {
+    const metadata = await this.tryListAccessKeyMetadata(userName, logicalId);
+    return metadata && new Set(metadata.map((key) => key.accessKeyId));
+  }
+
+  /** `ListAccessKeys` with its `CreateDate`s, or `undefined` when the read failed. */
+  private async tryListAccessKeyMetadata(
+    userName: string,
+    logicalId: string
+  ): Promise<{ accessKeyId: string; createDateMs: number | undefined }[] | undefined> {
+    const keys: { accessKeyId: string; createDateMs: number | undefined }[] = [];
+    let marker: string | undefined;
+    try {
+      do {
+        const page = await this.iamClient.send(
+          new ListAccessKeysCommand({ UserName: userName, ...(marker && { Marker: marker }) })
+        );
+        for (const key of page.AccessKeyMetadata ?? []) {
+          if (key.AccessKeyId) {
+            keys.push({
+              accessKeyId: key.AccessKeyId,
+              createDateMs: key.CreateDate ? key.CreateDate.getTime() : undefined,
+            });
+          }
+        }
+        marker = page.IsTruncated ? page.Marker : undefined;
+      } while (marker);
+    } catch (error) {
+      // WARN, not debug (issue #2018's rule: a guard that gives up must say so
+      // at default verbosity). Disarming this reconcile means a retried create
+      // can leave an ACTIVE, untracked credential behind, which is exactly the
+      // outcome a silent line would hide.
+      this.logger.warn(
+        `Could not list existing access keys for user ${userName} while creating ${logicalId}: ${error instanceof Error ? error.message : String(error)}. Orphan detection is DISABLED for this create, so a retried attempt may leave an unusable but ACTIVE access key on the user. Grant iam:ListAccessKeys, or check the user's keys after the deploy: aws iam list-access-keys --user-name ${userName}`
+      );
+      return undefined;
+    }
+    return keys;
   }
 
   /**
