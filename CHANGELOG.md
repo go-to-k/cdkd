@@ -1,3 +1,10 @@
+## [0.284.22](https://github.com/go-to-k/cdkd/compare/v0.284.21...v0.284.22) (2026-08-20)
+
+
+### Bug Fixes
+
+* **state:** stop the value scan splicing a plaintext into a {{resolve:}} reference, and walk outputs under same-generation rules ([#2114](https://github.com/go-to-k/cdkd/issues/2114)) ([9391feb](https://github.com/go-to-k/cdkd/commit/9391feb64797c06605630d24d317f2488c6c0582))
+
 ## [0.284.21](https://github.com/go-to-k/cdkd/compare/v0.284.20...v0.284.21) (2026-08-20)
 
 
