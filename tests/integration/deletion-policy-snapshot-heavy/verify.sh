@@ -57,9 +57,19 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# Shared S3 VERSION-sweep helpers (issue #2096). The fixture stack templates a
+# literal `masterUserPassword` for the Redshift cluster, so that password lands
+# in the cluster's own state properties. The state bucket is VERSIONED, so
+# `aws s3 rm` only writes a delete marker and the password stays readable via
+# GetObjectVersion long after the cluster is gone.
+. ../s3-versions.sh
+
 STACK="CdkdDeletionPolicySnapshotHeavyExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+# Everything this stack owns in the bucket: state.json, lock.json,
+# rollback-journal.json and deployments/**.
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 IDS_FILE="/tmp/cdkd-integ-deletion-policy-snapshot-heavy-ids"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -155,6 +165,12 @@ cleanup() {
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
+    # `aws s3 rm` / `state destroy` only leave DELETE MARKERS on a versioned
+    # bucket, so the templated master password survives in the prior versions.
+    # NONCURRENT-only here: this also runs from the pre-run sweep and the
+    # failure traps, where a live state.json may be the only record of a
+    # still-standing cluster. The success path does the full sweep + assertion.
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
   fi
   rm -f "${IDS_FILE}"
   set -eu
@@ -294,4 +310,14 @@ if [ "${REDIS_GONE}" -ne 1 ]; then
 fi
 rm -f "${IDS_FILE}"
 
-echo "PASS: DeletionPolicy: Snapshot honored for Redshift Cluster + ElastiCache ReplicationGroup, zero orphans"
+# --- Teardown + VERSION sweep, ON THE SUCCESS PATH -------------------------
+# The bucket is VERSIONED, so the templated Redshift master password outlives a
+# green run in every prior version of state.json (issue #2096). Sweep on the
+# NORMAL path, not only from the trap, and ASSERT the count is zero.
+echo "==> Final teardown + state-version sweep"
+cleanup
+trap - EXIT INT TERM
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "deletion-policy-snapshot-heavy state teardown"
+
+echo "PASS: DeletionPolicy: Snapshot honored for Redshift Cluster + ElastiCache ReplicationGroup, zero orphans, zero surviving state versions"

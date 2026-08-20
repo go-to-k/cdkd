@@ -172,72 +172,19 @@ assert_state_lacks() { # usage: assert_state_lacks <stack> <region> <plaintext> 
     exit 1
   fi
 }
-purge_s3_versions() { # usage: purge_s3_versions <key> [noncurrent]
-  # `cdkd bootstrap` enables bucket VERSIONING (src/cli/commands/bootstrap.ts),
-  # so `aws s3 rm` writes a DELETE MARKER and leaves every prior version
-  # readable. Phase 3d deliberately writes a SecureString plaintext into a
-  # state.json, so a run that only `s3 rm`s it leaves a real secret recoverable
-  # in the bucket after a "clean" teardown — the exact class this fixture
-  # exists to test.
-  #
-  # TWO MODES, and picking the wrong one is a live foot-gun rather than a
-  # nicety — the two callers care about DIFFERENT DIMENSIONS of the response:
-  #
-  #   noncurrent  MID-RUN, while the stack is still deployed. Removes the
-  #               historical versions (including the seeded plaintext) and
-  #               MUST leave the current one, which is StackB's LIVE state.
-  #               Delete it and `cdkd destroy` reports "No state found for
-  #               stack ..., skipping", StackB's parameters are never deleted,
-  #               and the teardown assertions fail ~30 minutes in.
-  #   (default)   TEARDOWN, from `cleanup`, when nothing needs the state any
-  #               more. Removes EVERY version and EVERY delete marker. The
-  #               filter must NOT be applied here: after `aws s3 rm` the
-  #               DELETE MARKER is the one carrying `IsLatest: true`, so a
-  #               noncurrent-only sweep would leave it behind forever.
-  #
-  # Two independent query bugs have already been caught here, and each was
-  # invisible to the other's test, which is why both dimensions are now
-  # spelled out. (1) The parenthesisation: `[Versions, DeleteMarkers][][?...]`
-  # returns EMPTY because the flatten projection swallows the filter. (2) The
-  # `IsLatest` axis: the first round validated five responses that all varied
-  # WHICH KEYS came back and none of which varied `IsLatest`, so a query that
-  # deleted the live object passed every one of them. Verified with the AWS
-  # CLI's own jmespath against a post-scrub shape (v3 current / v2 seeded /
-  # v1 original) and a post-`s3 rm` shape (delete marker current).
-  #
-  # `--prefix` matches by prefix, so the `?Key==` filter is what keeps a
-  # sibling key (`state.json.bak`) from being swept too.
-  local key="$1" mode="${2:-all}" filter="" vid versions
-  if [ "${mode}" = "noncurrent" ]; then
-    filter=" && IsLatest==\`false\`"
-  fi
-  # Captured rather than piped so a listing FAILURE is visible: piping into
-  # `while` hides the exit status, and with stderr discarded a transient
-  # throttle would silently purge nothing while the run continued.
-  if ! versions="$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" \
-    --prefix "${key}" \
-    --query "([Versions, DeleteMarkers][])[?Key=='${key}'${filter}].VersionId" \
-    --output text 2>&1)"; then
-    echo "WARN: could not list versions of ${key}: ${versions}" >&2
-    return 0
-  fi
-  # `printf '%s\n'`, NOT `printf '%s'`. Without the trailing newline the final
-  # field has no line terminator, `read` returns non-zero on it, and the `while`
-  # body never runs for the LAST version — so exactly one version survived every
-  # sweep. Measured against real S3: repeated passes took a key from 30 to 1 and
-  # then stopped, which is what a silent off-by-one looks like from outside.
-  # `|| [ -n "${vid}" ]` is the belt to that braces, so a future edit that drops
-  # the newline again cannot reintroduce it.
-  printf '%s\n' "${versions}" | tr '\t' '\n' | while read -r vid || [ -n "${vid}" ]; do
-    [ -n "${vid}" ] || continue
-    [ "${vid}" = "None" ] && continue
-    aws s3api delete-object --bucket "${STATE_BUCKET}" --key "${key}" \
-      --version-id "${vid}" >/dev/null 2>&1 || true
-  done
-}
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+
+# The version-sweep helpers moved to ../s3-versions.sh (issue #2096), where
+# the two traps this fixture's own copy documented -- a trap-only sweep, and the
+# `printf '%s' | tr | while read` that drops the last field -- are written down
+# once instead of once per fixture. The two MODES this file needs are both
+# preserved there: `noncurrent` for the mid-run purge in phase 3d (which must
+# leave StackB's LIVE state alone), and the default full sweep for teardown
+# (which must NOT be noncurrent-only, because after `aws s3 rm` the delete
+# marker is the entry carrying IsLatest==true).
+. ../s3-versions.sh
 
 REGION_A="${AWS_REGION:-us-east-1}"
 REGION_B="${SECOND_REGION:-us-west-2}"
@@ -366,12 +313,12 @@ cleanup() {
     for stack in "${STACK_A}" "${STACK_B}"; do
       aws s3 rm "s3://${STATE_BUCKET}/cdkd/${stack}/${region}/state.json" >/dev/null 2>&1 || true
       aws s3 rm "s3://${STATE_BUCKET}/cdkd/${stack}/${region}/lock.json" >/dev/null 2>&1 || true
-      # ...and purge the NON-CURRENT versions the delete markers above leave
-      # behind. Unconditional rather than only for the seeded key: a destroy
-      # that ran normally still leaves earlier versions, and one of this
-      # fixture's states held a plaintext for part of the run.
-      purge_s3_versions "cdkd/${stack}/${region}/state.json" || true
-      purge_s3_versions "cdkd/${stack}/${region}/lock.json" || true
+      # ...and purge the versions the delete markers above leave behind.
+      # Unconditional rather than only for the seeded key: a destroy that ran
+      # normally still leaves earlier versions, and one of this fixture's states
+      # held a plaintext for part of the run. By PREFIX, so lock.json,
+      # rollback-journal.json and deployments/** go with state.json.
+      s3_purge_prefix_versions "${STATE_BUCKET}" "$(s3_stack_prefix "${stack}" "${region}")" || true
     done
   done
   exit "${rc}"
@@ -632,7 +579,7 @@ assert_state_redacted "${STACK_B}" "${REGION_B}" "${EXPECTED_SECURE_B}"
 # `noncurrent` is load-bearing here — StackB is still DEPLOYED and the current
 # version is its live state.json. Sweeping that too makes Phase 4's destroy
 # skip the stack entirely and Phase 5's leak assertions fail.
-purge_s3_versions "${STATE_KEY_B}" noncurrent || true
+s3_purge_key_versions "${STATE_BUCKET}" "${STATE_KEY_B}" noncurrent || true
 echo "    OK: scrub classified region B's SecureString against region B (issue #1957)"
 
 echo "==> Phase 4: destroy both stacks"
@@ -681,21 +628,26 @@ assert_gone "mixed-type source parameter still exists in ${REGION_A}" \
 assert_gone "mixed-type source parameter still exists in ${REGION_B}" \
   aws ssm get-parameter --name "${MIXED_PARAM}" --region "${REGION_B}"
 
-# The version sweep lives in `cleanup`, and `cleanup` runs from the TRAP — which
-# the line below disarms. So on the SUCCESS path, the normal one, it never ran:
-# every run left its state/lock versions behind (measured: 30 accumulated on one
-# key before this was noticed, and a fresh run added 6 more). The seeded
-# plaintext itself was never among them — phase 3d's `noncurrent` purge runs
-# inline and was verified to leave zero versions containing it — so this is
-# litter rather than a disclosure. It is still worth sweeping: a fixture that
-# claims a clean teardown should have one, and a bucket that accumulates a
-# stack's history makes the next run's leak assertions harder to read.
+# --- Teardown VERSION sweep, ON THE SUCCESS PATH ---------------------------
+# `cleanup` also sweeps, but `cleanup` runs from the TRAP — which the line below
+# disarms — so on the SUCCESS path, the normal one, it never runs at all. Every
+# run therefore used to leave its state/lock versions behind (measured: 30
+# accumulated on one key before this was noticed, and a fresh run added 6 more).
+# The seeded plaintext itself was never among them — phase 3d's `noncurrent`
+# purge runs inline and was verified to leave zero versions containing it — so
+# for THIS fixture the residue is litter rather than a disclosure. It is the
+# same defect either way, and on the sibling fixtures issue #2096 covers it WAS
+# a disclosure, so the shape is identical: sweep here, then assert.
+trap - EXIT INT TERM
 for region in "${REGION_A}" "${REGION_B}"; do
   for stack in "${STACK_A}" "${STACK_B}"; do
-    purge_s3_versions "cdkd/${stack}/${region}/state.json" || true
-    purge_s3_versions "cdkd/${stack}/${region}/lock.json" || true
+    prefix="$(s3_stack_prefix "${stack}" "${region}")"
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${prefix}" all || true
+    # ASSERT rather than assume. The sweep above used to run with nothing
+    # checking it, which is how issue #2096's sibling fixtures kept hundreds of
+    # versions while every run reported a clean teardown.
+    s3_assert_versions_swept "${STATE_BUCKET}" "${prefix}" "dynamic-ref-cross-region ${stack} (${region}) state teardown"
   done
 done
 
-trap - EXIT INT TERM
 echo "PASS: dynamic-ref-cross-region"

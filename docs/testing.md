@@ -960,6 +960,102 @@ Enforced by `tests/unit/scripts/integ-state-bucket.test.ts` (classifier:
 bodies, comments and `echo` arguments are stripped, so a remediation hint that
 prints the command is not treated as an invocation.
 
+### Fixture convention: sweep S3 OBJECT VERSIONS, and assert the count is zero
+
+`cdkd bootstrap` turns **versioning on** for the state bucket
+(`src/cli/commands/bootstrap.ts`). On a versioned bucket `aws s3 rm` writes a
+DELETE MARKER; it removes nothing. So this, which most fixtures end with,
+
+```bash
+assert_gone "state file still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+```
+
+is a statement about the CURRENT object only. Every earlier version of that key
+is still readable by anyone with `s3:GetObjectVersion`.
+
+For most fixtures that is litter. For a fixture that puts a **known secret
+plaintext** into state it is a disclosure that outlives the run — and several
+do, for good reasons: an `unsafePlainText` secret in the fixture's own template,
+a literal `masterUserPassword`, an IAM `SecretAccessKey` cached in `attributes`,
+or a deliberately seeded pre-GHSA record. Measured 2026-08-20 for issue
+[#2096](https://github.com/go-to-k/cdkd/issues/2096), right after green runs:
+
+| key | surviving entries | carrying the fixture's plaintext |
+| --- | --- | --- |
+| `cdkd/CdkdSecretsDynamicRefExample/us-east-1/state.json` | 304 versions + 43 markers | yes (`cdkd-known-pw-123`) |
+| `cdkd/CdkdSecretsArrayNestedExample/us-east-1/state.json` | 7 versions + 3 markers | 5 of the 7 (`cdkd-array-nested-pw-789`) |
+
+Use the shared helpers in
+[`tests/integration/s3-versions.sh`](../tests/integration/s3-versions.sh)
+rather than open-coding a sweep — the three traps below are written down there
+once instead of once per fixture. Source it after the `cd` into the fixture dir:
+
+```bash
+cd "$(dirname "$0")"
+. ../s3-versions.sh
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
+```
+
+In `cleanup`, purge NONCURRENT versions only — that function also runs from the
+pre-run sweep and from the failure / INT / TERM traps, where a live `state.json`
+may be the only record of resources that are still standing:
+
+```bash
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
+```
+
+On the SUCCESS path, do the full sweep and **assert**:
+
+```bash
+cleanup
+trap - EXIT INT TERM
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "<fixture> state teardown"
+```
+
+Three traps make a sweep silently PARTIAL while the run still exits 0. Each was
+observed live, and none is visible from reading the script:
+
+1. **Sweeping only from the EXIT trap.** A fixture that ends with
+   `trap - EXIT INT TERM` disarms the trap on the success path, so a trap-only
+   sweep runs on the failure path and never on the normal one. One key reached
+   30 versions that way (2026-08-19). Sweep on the success path too.
+2. **Iterating with `printf '%s' | tr | while read`.** `out=$(aws ...)` strips
+   the trailing newline, so the last field has no terminator, `read` returns
+   non-zero on it, and the loop body never runs for it. Verified against real
+   S3: on a key holding one version the broken form swept 0 of 1; on a
+   347-entry listing it swept 346. Repeated passes take a key to 1 and stop.
+   Use `printf '%s\n'` plus a `|| [ -n "${key}" ]` guard — both.
+3. **Counting with `length(...)` under `--output text`.** The AWS CLI applies
+   `--query` PER PAGE and concatenates, so a listing over 1000 entries prints
+   one number per page — measured `1000\n189`, not `1189` — and `[ "$n" -ne 0 ]`
+   on that is a bash error, not a count. Count ROWS of a `[Key,VersionId]`
+   projection instead; the pages concatenate into one row stream.
+
+Two more details the helpers encode. The query is
+`([Versions, DeleteMarkers][])[...]` and the **parentheses are load-bearing**:
+`[Versions, DeleteMarkers][][?...]` returns empty because the flatten projection
+swallows the filter (measured: 0 where the parenthesised form reported 347).
+And the teardown sweep must NOT be `noncurrent` — after `aws s3 rm` the delete
+marker is the entry carrying `IsLatest == true`, so a noncurrent-only sweep
+leaves one marker per key behind forever and the zero-assertion never passes.
+
+`s3_purge_prefix_versions` refuses any prefix that is not
+`cdkd/<stack>/<region>/` with both segments non-empty. That is a safety guard,
+not style: these run inside `cleanup`, which runs under `set +eu`, so an unset
+`STACK` would otherwise produce an over-broad prefix and the sweep would delete
+other stacks' LIVE state.
+
+The helper file is covered by
+`tests/unit/scripts/integ-verify-bash-compat.test.ts`, which scans
+the shared helpers in `tests/integration/*.sh` alongside every `verify.sh` — a
+bash-4-ism in a file seven fixtures source is where it does the most damage and
+is least likely to be noticed. There is no lint for the convention itself: whether a given
+fixture writes a secret into state is a judgment call, so this one stays a
+read-it-and-follow-it rule, and the per-fixture zero-assertion is what makes a
+regression loud.
+
 ### Unit-test convention: prime exactly what the code path consumes
 
 `vi.clearAllMocks()` clears call RECORDS but does **not** drain the queue seeded

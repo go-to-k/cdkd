@@ -87,6 +87,14 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# Shared S3 VERSION-sweep helpers (issue #2096). The PRODUCER's template
+# declares the secret's value as a LITERAL SecretString, so `EXPECTED_PLAINTEXT`
+# sits in that resource's own state properties by construction -- which is why
+# the leak greps below are scoped to the outputs bag and to the CONSUMER. The
+# state bucket is VERSIONED, so `aws s3 rm` only writes a delete marker and the
+# producer's copy stays readable via GetObjectVersion.
+. ../s3-versions.sh
+
 REGION="${AWS_REGION:-us-east-1}"
 PRODUCER="CdkdCrossStackSecretProducer"
 CONSUMER="CdkdCrossStackSecretConsumer"
@@ -104,6 +112,13 @@ ARN_OUTPUT="CrossStackSecretArnOutput"
 
 PRODUCER_STATE_KEY="cdkd/${PRODUCER}/${REGION}/state.json"
 CONSUMER_STATE_KEY="cdkd/${CONSUMER}/${REGION}/state.json"
+# Everything each stack owns in the bucket: state.json, lock.json,
+# rollback-journal.json and deployments/**. The shared exports index
+# (`cdkd/_index/...`) is deliberately NOT swept -- it is not this stack's key
+# space, other stacks' entries live in it, and the assertions below already
+# prove it carries the expression rather than the plaintext.
+PRODUCER_STATE_PREFIX="$(s3_stack_prefix "${PRODUCER}" "${REGION}")"
+CONSUMER_STATE_PREFIX="$(s3_stack_prefix "${CONSUMER}" "${REGION}")"
 INDEX_KEY="cdkd/_index/${REGION}/exports.json"
 
 # One run id for the whole script, exported BEFORE any cdkd invocation: every
@@ -194,6 +209,13 @@ sweep() {
     if [ -n "${STATE_BUCKET:-}" ]; then
       aws s3 rm "s3://${STATE_BUCKET}/cdkd/${CONSUMER}/${REGION}/lock.json" >/dev/null 2>&1
       aws s3 rm "s3://${STATE_BUCKET}/cdkd/${PRODUCER}/${REGION}/lock.json" >/dev/null 2>&1
+      # `aws s3 rm` / `state destroy` only leave DELETE MARKERS on a versioned
+      # bucket, so the producer's literal SecretString survives in the prior
+      # versions. NONCURRENT-only here: `sweep` also runs from the pre-run pass
+      # and the failure traps, where a live state.json may be the only record of
+      # resources still standing. The success path does the full sweep.
+      s3_purge_prefix_versions "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX:-}" noncurrent
+      s3_purge_prefix_versions "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX:-}" noncurrent
     fi
   )
 }
@@ -479,6 +501,21 @@ else
 fi
 pass "no orphan state, parameter, secret or exports-index entry"
 
+# --- Teardown + VERSION sweep, ON THE SUCCESS PATH -------------------------
+# This fixture is the textbook case for why the sweep cannot live only in
+# `cleanup`: the line below DISARMS the trap, so on the normal path `cleanup`
+# never runs at all. The bucket is VERSIONED, so without this the producer's
+# literal secret survives the run in every prior version of its state.json
+# (issue #2096). `sweep` is called explicitly first, then the trap is disarmed
+# so nothing can write a new delete marker after the count is taken.
+echo ""
+echo "==> Final teardown + state-version sweep"
+sweep
+trap - EXIT INT TERM
+s3_purge_prefix_versions "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX}" all || true
+s3_purge_prefix_versions "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX}" "cross-stack-secret-import producer state teardown"
+s3_assert_versions_swept "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX}" "cross-stack-secret-import consumer state teardown"
+
 echo ""
 echo "==> All cross-stack-secret-import assertions passed"
-trap - EXIT INT TERM

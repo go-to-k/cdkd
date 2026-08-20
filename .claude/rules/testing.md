@@ -634,6 +634,85 @@ and `feedback_umbrella_issue_row_can_be_already_fixed`.
 
 User-facing writeup in [docs/testing.md](../../docs/testing.md).
 
+### `verify.sh` must sweep S3 OBJECT VERSIONS and assert zero (mandatory for secret-seeding fixtures)
+
+`cdkd bootstrap` enables VERSIONING on the state bucket
+(`src/cli/commands/bootstrap.ts`), so `aws s3 rm` writes a DELETE MARKER and
+removes nothing. The near-universal fixture ending —
+`assert_gone ... aws s3api head-object --key "${STATE_KEY}"` — therefore asserts
+only that the CURRENT object is gone, while every prior version stays readable
+via `s3:GetObjectVersion`.
+
+For most fixtures that is litter. For a fixture that puts a KNOWN SECRET
+PLAINTEXT into state it is a disclosure that outlives the run, and several do by
+design (an `unsafePlainText` secret in the fixture's own template, a literal
+`masterUserPassword`, an IAM `SecretAccessKey` cached in `attributes`, a
+deliberately seeded pre-GHSA record). Measured 2026-08-20 for issue
+[#2096](https://github.com/go-to-k/cdkd/issues/2096), immediately after GREEN
+runs: `CdkdSecretsDynamicRefExample`'s state.json held 304 versions + 43 markers
+carrying `cdkd-known-pw-123`, and `CdkdSecretsArrayNestedExample`'s held 7 + 3
+with 5 of the 7 carrying `cdkd-array-nested-pw-789`. Neither script had ever
+issued a `list-object-versions` or a `delete-object --version-id`.
+
+Use the shared helpers in `tests/integration/s3-versions.sh`; do not
+open-code a sweep. Source after the `cd`, purge NONCURRENT from `cleanup` (which
+also runs pre-run and from the failure traps, where a live state.json may be the
+only record of standing resources), and do the FULL sweep plus the assertion on
+the SUCCESS path:
+
+```bash
+cd "$(dirname "$0")"
+. ../s3-versions.sh
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
+...
+  s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true   # in cleanup
+...
+cleanup                                                                               # success path
+trap - EXIT INT TERM
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "<fixture> state teardown"
+```
+
+Three traps make a sweep silently PARTIAL while the run still exits 0. All three
+were observed live and none is visible from reading the script — only from
+COUNTING what S3 holds afterwards:
+
+1. **Trap-only sweep.** `trap - EXIT INT TERM` on the success path means a sweep
+   that lives only in `cleanup` runs on the failure path and never on the normal
+   one (one key reached 30 versions that way, 2026-08-19).
+2. **`printf '%s' | tr | while read`.** `out=$(aws ...)` strips the trailing
+   newline, so `read` returns non-zero on the LAST field and the body never runs
+   for it. Verified against real S3: 0 of 1 on a single-version key, 346 of 347
+   on a full listing. Use `printf '%s\n'` AND `|| [ -n "${key}" ]`.
+3. **`length(...)` under `--output text`.** The CLI applies `--query` PER PAGE
+   and concatenates, so a >1000-entry listing prints one number per page
+   (measured `1000\n189`, not `1189`). Count ROWS of a `[Key,VersionId]`
+   projection.
+
+Two shapes are decisions, not style. `([Versions, DeleteMarkers][])[...]` — the
+parentheses are load-bearing, the unparenthesised
+`[Versions, DeleteMarkers][][?...]` returns empty (measured 0 vs 347). And the
+teardown sweep must NOT be noncurrent-only: after `aws s3 rm` the DELETE MARKER
+is the entry with `IsLatest == true`, so one marker per key would survive
+forever and the zero-assertion would never pass.
+
+`s3_purge_prefix_versions` refuses any prefix that is not `cdkd/<stack>/<region>/`
+with both segments non-empty — a safety guard, since it runs inside `cleanup`
+under `set +eu` where an unset `STACK` would otherwise widen the prefix and
+delete another stack's LIVE state.
+
+The helper is covered by `tests/unit/scripts/integ-verify-bash-compat.test.ts`,
+which now scans the shared helpers in `tests/integration/*.sh` as well as every
+`verify.sh` (with a per-shape floor, so a total that is swamped by 200+ fixtures
+cannot hide the helper going unread). It is a FLAT file rather than
+`lib/s3-versions.sh` on purpose: three coverage-matrix generators treat every
+DIRECTORY under `tests/integration/` as a fixture, so a `lib/` directory would
+silently become a 283rd row in all three committed matrices. The convention itself is NOT mechanically enforced —
+"does this fixture write a secret into state?" is a judgment a lint cannot make
+— so it stays a read-it-and-follow-it rule and the per-fixture zero-assertion is
+what makes a regression loud. User-facing writeup in
+[docs/testing.md](../../docs/testing.md).
+
 ### A fixture that greps cdkd's OWN output must fail loudly when the format drifts
 
 A `verify.sh` that measures something by grepping the deploy log is a CONSUMER

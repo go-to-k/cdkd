@@ -96,9 +96,22 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# Shared S3 VERSION-sweep helpers (issue #2096). The state bucket is
+# VERSIONED, so `aws s3 rm` only writes a delete marker and every state.json
+# this fixture wrote -- including the pre-GHSA records it SEEDS with the
+# plaintext password on purpose -- stays readable via GetObjectVersion after a
+# green run. See the file header for the three traps that make a sweep
+# silently partial.
+. ../s3-versions.sh
+
 STACK="CdkdSecretsDynamicRefExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+# Everything this stack owns in the bucket: state.json, lock.json,
+# rollback-journal.json and deployments/**. Swept as one prefix so a key added
+# later cannot be forgotten; the trailing '/' is what keeps a sibling stack
+# whose name merely starts the same out of it.
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 SECRET_NAME="cdkd-test-dynref-secret-${ACCOUNT_ID}"
@@ -185,6 +198,13 @@ cleanup() {
       aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     fi
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    # The `aws s3 rm` above only wrote DELETE MARKERS. Purge the versions they
+    # hide, NONCURRENT-only: this same function runs from the pre-run sweep and
+    # from the failure/INT/TERM traps, where a live state.json may still be the
+    # only record of resources that are still standing -- deleting it would
+    # strand them. The success path below does the full sweep, once destroy has
+    # been asserted, and that is where the zero-assertion lives.
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
   fi
   set -eu
 }
@@ -1513,5 +1533,21 @@ echo "    OK: out-of-band SecureString parameter is gone"
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
+# --- Teardown + VERSION sweep, ON THE SUCCESS PATH -------------------------
+# "state file is gone" above is a head-object on the CURRENT object, and that
+# is exactly the assertion that let issue #2096 stand: the bucket is VERSIONED,
+# so it was green while 304 versions of this key still carried
+# cdkd-known-pw-123. The sweep therefore runs HERE, on the normal path, and not
+# only in `cleanup` -- a fixture that disarms its trap on success never runs a
+# trap-only cleanup, which is how a sibling key reached 30 versions on
+# 2026-08-19. `cleanup` is invoked explicitly first (it force-deletes the
+# secret and drops the state/lock objects), then the trap is disarmed so
+# nothing can write a new delete marker after the count is taken.
+echo "==> Final teardown + state-version sweep"
+cleanup
+trap - EXIT INT TERM
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "secrets-dynamic-ref state teardown"
+
 echo ""
-echo "==> secrets-dynamic-ref test passed (dynamic references resolved correctly + clean destroy)"
+echo "==> secrets-dynamic-ref test passed (dynamic references resolved correctly + clean destroy + zero surviving state versions)"

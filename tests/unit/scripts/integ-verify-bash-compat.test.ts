@@ -53,11 +53,25 @@ const BASH4_ISMS: readonly Bash4ism[] = [
   },
 ];
 
-/** Every `tests/integration/<name>/verify.sh`, with its source. */
+/**
+ * Every fixture `verify.sh`, plus every SHARED helper sitting directly in
+ * `tests/integration/` (e.g. `s3-versions.sh`, issue #2096, sourced by seven
+ * fixtures).
+ *
+ * The shared helpers are scanned because that is where a bash-4-ism does the
+ * MOST damage while being the least likely to be noticed: the file belongs to
+ * no single fixture, and nobody debugging the fixture that broke would think to
+ * open it.
+ */
 function readVerifyScripts(): { name: string; lines: string[] }[] {
-  return readdirSync(INTEG_ROOT, { withFileTypes: true })
+  const entries = readdirSync(INTEG_ROOT, { withFileTypes: true });
+  const fixtures = entries
     .filter((e) => e.isDirectory())
-    .map((e) => ({ name: e.name, path: join(INTEG_ROOT, e.name, 'verify.sh') }))
+    .map((e) => ({ name: `${e.name}/verify.sh`, path: join(INTEG_ROOT, e.name, 'verify.sh') }));
+  const shared = entries
+    .filter((e) => e.isFile() && e.name.endsWith('.sh'))
+    .map((e) => ({ name: e.name, path: join(INTEG_ROOT, e.name) }));
+  return [...fixtures, ...shared]
     .filter((f) => existsSync(f.path))
     .map((f) => ({ name: f.name, lines: readFileSync(f.path, 'utf8').split('\n') }));
 }
@@ -88,6 +102,14 @@ describe('integ verify.sh scripts stay bash 3.2 compatible', () => {
     expect(scripts.length).toBeGreaterThan(50);
   });
 
+  it('also scans the shared helpers (per-SHAPE floor, not just a total)', () => {
+    // An aggregate floor cannot tell "the shared helper is clean" from "it was
+    // never read": 200+ fixtures swamp one file. Assert the shape separately.
+    const shared = scripts.filter((s) => !s.name.includes('/'));
+    expect(shared.length).toBeGreaterThanOrEqual(1);
+    expect(shared.some((s) => s.name === 's3-versions.sh')).toBe(true);
+  });
+
   it('detects each bash-4-ism it claims to (positive control)', () => {
     // The lint must prove it can SEE its input. Without this, a regex that
     // silently stopped matching would report the tree clean forever.
@@ -108,10 +130,8 @@ describe('integ verify.sh scripts stay bash 3.2 compatible', () => {
     expect(findIsms(['  while IFS= read -r l; do :; done < f'])).toEqual([]);
   });
 
-  it('no fixture uses a bash-4-only construct', () => {
-    const offenders = scripts
-      .flatMap((s) => findIsms(s.lines).map((h) => `${s.name}/verify.sh ${h}`))
-      .sort();
+  it('no fixture or shared helper uses a bash-4-only construct', () => {
+    const offenders = scripts.flatMap((s) => findIsms(s.lines).map((h) => `${s.name} ${h}`)).sort();
     expect(offenders).toEqual([]);
   });
 });

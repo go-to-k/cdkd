@@ -75,9 +75,22 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# Shared S3 VERSION-sweep helpers (issue #2096). This fixture's own template
+# declares the secret with `unsafePlainText`, so EXPECTED_PASSWORD lands in
+# that resource's own state properties by construction -- the no-plaintext
+# assertions below are deliberately scoped to the CONSUMER record for exactly
+# that reason. The state bucket is VERSIONED, so `aws s3 rm` only writes a
+# delete marker and that plaintext stays readable via GetObjectVersion.
+# Measured 2026-08-20: 5 of the 7 surviving versions of this stack's state.json
+# carried cdkd-array-nested-pw-789, after runs that all exited 0.
+. ../s3-versions.sh
+
 STACK="CdkdSecretsArrayNestedExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+# Everything this stack owns in the bucket: state.json, lock.json,
+# rollback-journal.json and deployments/**.
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 SECRET_NAME="cdkd-test-array-secret-${ACCOUNT_ID}"
@@ -172,6 +185,11 @@ cleanup() {
       aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     fi
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
+    # The `aws s3 rm` above only wrote DELETE MARKERS. Purge the versions they
+    # hide, NONCURRENT-only: this function also runs from the pre-run sweep and
+    # from the failure/INT/TERM traps, where a live state.json may be the only
+    # record of resources still standing. The success path does the full sweep.
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
   fi
   set -eu
 }
@@ -609,5 +627,17 @@ echo "    OK: out-of-band token-shaped secret is gone"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
+
+# --- Teardown + VERSION sweep, ON THE SUCCESS PATH -------------------------
+# head-object only looks at the CURRENT object; the bucket is VERSIONED, so
+# this fixture was green for months while its seeded password stayed readable
+# in every prior version (issue #2096). The sweep runs HERE, on the normal
+# path, not only in `cleanup` -- a trap-only sweep never runs on a run that
+# disarms its trap, and asserting nothing is how this regressed silently.
+echo "==> Final teardown + state-version sweep"
+cleanup
+trap - EXIT INT TERM
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "secrets-array-nested state teardown"
 
 echo "[verify] PASS — an array-nested secret is redacted in observedProperties on the UNCHANGED-resource path (issue #1915), a token-shaped secret plaintext is redacted on both the template-sourced and same-generation rows (issue #1917), non-secret siblings untouched, clean destroy"
