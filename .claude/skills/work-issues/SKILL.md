@@ -664,6 +664,37 @@ per-line pass then pairs one span's closing backtick with the next span's openin
 one and invents findings; and report the HIT's own line, not the start of the
 region you stripped, or the failure message points at the wrong place.
 
+**Calibrating against the broken tree is only HALF the measurement, and the half
+it leaves out is the one that lets a fence ship inert.** Running the rule over
+the pre-fix tree measures its PRECISION (are the hits real?) and its recall on
+the instances that HAPPEN TO EXIST. It says nothing about the SHAPE — the
+spellings the tree does not currently use, and the contexts that defeat your
+exemption logic. So follow the calibration with two probes, both against the
+REAL tree rather than by reasoning:
+
+- **Write the defect in every spelling the language allows** and confirm each is
+  flagged. On 2026-08-20 (go-to-k/cdkd#2111) a scanner for
+  `options.region || process.env['AWS_REGION']` calibrated perfectly — 19
+  violations, zero false positives — and matched `||` only. The tree already used
+  `??` at four sites, so the obvious way to reintroduce the bug passed clean, and
+  the same rule was blind to the `opts.` / `args.` bag names two other files
+  resolve regions from. Widening it immediately surfaced a real pre-existing bug
+  nobody had filed.
+- **Delete the thing the fence REQUIRES, and watch it fail.** A fence whose
+  predicate is several whole-file substrings OR'd together is satisfied by any
+  one of them, and files routinely contain more than one. The same run's
+  coverage fence — "every region-taking handler folds" — passed 130/130 while a
+  probe deleted the ONLY fold from four handlers at once, because each still
+  contained a different accepted substring elsewhere. Its POPULATION was wrong
+  too: derived from "mentions `options.region`", it pulled in helper modules that
+  merely RECEIVE an already-folded value while missing the files that actually
+  accept the flag. Deriving it from what declares the option, and making the
+  predicate per-READ rather than per-file, is what made both probes fail.
+
+The general shape: **a fence is not evidence until you have watched it go red.**
+Calibration tells you it is not noisy; only the deletion probe tells you it is
+load-bearing.
+
 You may fan out **one subagent per lane** (disjoint files) to run them
 concurrently — give each agent its worktree path, its allowed files, and an
 explicit "do NOT touch <the other lanes' / other agents' files>; STOP and report
