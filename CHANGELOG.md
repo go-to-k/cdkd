@@ -1,3 +1,10 @@
+## [0.284.27](https://github.com/go-to-k/cdkd/compare/v0.284.26...v0.284.27) (2026-08-20)
+
+
+### Bug Fixes
+
+* **hooks:** recognise gated verbs in any command position, not only at line start ([#2130](https://github.com/go-to-k/cdkd/issues/2130)) ([6107095](https://github.com/go-to-k/cdkd/commit/6107095291a635147bd9f74ca8ff3a5271cabced))
+
 ## [0.284.26](https://github.com/go-to-k/cdkd/compare/v0.284.25...v0.284.26) (2026-08-20)
 
 
