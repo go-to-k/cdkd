@@ -988,8 +988,23 @@ or a deliberately seeded pre-GHSA record. Measured 2026-08-20 for issue
 | `cdkd/CdkdDocdbNeptuneExample/us-east-1/state.json` | 64 | 16 of them (`TempPass1234!`) |
 | `cdkd/CdkdEventbridgeApiDestinationExample/us-east-1/state.json` | 18 | 15 of them (`cdkd-integ-api-key`) |
 | `cdkd/CognitoResourceServerStack/us-east-1/state.json` | 18 | 3 of them (a live Cognito `ClientSecret`) |
+| `cdkd/AppSyncStack/us-east-1/state.json` | 557 | 17 of versions 12..45 (a live `da2-…` AppSync key) |
+| `cdkd/CdkdApigwUsagePlanKeyExample/us-east-1/state.json` | 16 | 2 of them (a live 40-char API Gateway key `Value`) |
 
-Ten fixtures do this today. Note the third row's stack name: it is
+Twelve fixtures do this today.
+
+**When measuring a key, sample across the RANGE or grep the whole thing — never
+the newest N.** The last two rows were each cleared as "no key material" by a
+newest-N probe before being caught: AppSync's 12 newest versions carry nothing
+while versions 12..45 do, and the API Gateway key sits in versions 7 and 8 of
+16. The newest versions come from the most recent run, which is the one most
+likely to be already-fixed or to have failed early — so a newest-N sample is
+biased towards exactly the answer you do not want.
+
+It is also not enough to grep `src/provisioning/providers/**` for a credential.
+`AWS::ApiGateway::ApiKey` is registered to no provider, so it takes the generic
+Cloud Control readback, whose resource model includes `Value`: the live key
+lands in `attributes` with no provider code naming it. Note the third row's stack name: it is
 `CognitoResourceServerStack`, **not** `CdkdCognitoResourceServerExample`. Read
 the stack name from `verify.sh`'s `STACK=` line when auditing — several fixtures
 do not follow the `Cdkd…Example` convention, and probing the convention-derived
@@ -1005,6 +1020,21 @@ cd "$(dirname "$0")"
 . ../s3-versions.sh
 STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 ```
+
+**Sweep the PREFIX, never a list of keys.** Sweeping `state.json` by name is the
+natural first instinct and it under-sweeps, because the plaintext is not only
+there. `rollback-journal.json` stores
+`failedOperations[].attemptedProperties` — the properties of the failed write,
+verbatim — and four measured versions of
+`CdkdDeletionPolicySnapshotHeavyExample`'s journal carried a literal
+`"MasterUserPassword"`. `lock.json` accumulates faster than anything else (452
+versions on one key), and `deployments/**` is not delete-markered by
+`cdkd destroy` at all, so its objects survive as CURRENT ones. One prefix covers
+all four; a key list covers whichever ones its author thought of.
+
+One blind spot to know: a nested-stack child lives at
+`cdkd/<Parent>~<Child>/<region>/`, a SIBLING prefix rather than a descendant, so
+this does not reach it. No fixture in the swept set has one today.
 
 In `cleanup`, purge NONCURRENT versions only — that function also runs from the
 pre-run sweep and from the failure / INT / TERM traps, where a live `state.json`
@@ -1065,7 +1095,7 @@ Deletes go through `DeleteObjects` in batches of 1000, the API maximum, so a
 347-version key costs one CLI process rather than 347. A key or version id
 carrying a quote or a backslash falls back to a single-object `delete-object`,
 because the payload is assembled without `jq` — sourcing this file must not add
-a `jq` dependency to ten fixtures. `Quiet: true` means a fully successful call
+a `jq` dependency to twelve fixtures. `Quiet: true` means a fully successful call
 returns `{}`, so any `Errors` in the output is a per-object failure that the
 call reported as overall success; it is surfaced as a WARN and the retry loop
 plus the zero-assertion are the backstop. The call pins `--output json`, which
@@ -1084,9 +1114,9 @@ that warning text would be handed to `delete-object --key`.
 
 Two lints see the helper. `tests/unit/scripts/integ-verify-bash-compat.test.ts`
 scans the shared helpers in `tests/integration/*.sh` alongside every `verify.sh`
-— a bash-4-ism in a file ten fixtures source is where it does the most damage
+— a bash-4-ism in a file twelve fixtures source is where it does the most damage
 and is least likely to be noticed. `scripts/check-integ-aws-commands.ts` scans
-them too, since a verb removed from the AWS CLI here breaks ten fixtures at
+them too, since a verb removed from the AWS CLI here breaks twelve fixtures at
 once. Both carry a per-shape floor, so a total swamped by 280 fixtures cannot
 hide the helper going unread. `tests/unit/scripts/integ-s3-versions-helper.test.ts`
 executes the guard directly, asserting a malformed prefix can never produce a

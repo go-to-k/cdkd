@@ -55,7 +55,7 @@ const BASH4_ISMS: readonly Bash4ism[] = [
 
 /**
  * Every fixture `verify.sh`, plus every SHARED helper sitting directly in
- * `tests/integration/` (e.g. `s3-versions.sh`, issue #2096, sourced by ten
+ * `tests/integration/` (e.g. `s3-versions.sh`, issue #2096, sourced by twelve
  * fixtures).
  *
  * The shared helpers are scanned because that is where a bash-4-ism does the

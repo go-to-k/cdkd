@@ -414,7 +414,7 @@ describe('integ fixture aws invocations (#1402)', () => {
     expect(stats.fixtures).toBeGreaterThan(150);
     // Per-SHAPE floor for the shared helpers: an aggregate over 280 fixtures
     // cannot tell "the helper is clean" from "the helper was never read", and
-    // it is the one script whose aws verbs run in ten fixtures at once.
+    // it is the one script whose aws verbs run in twelve fixtures at once.
     const scanned = readFixtureScripts(INTEG_ROOT);
     const helper = scanned.find((f) => f.fixture === 's3-versions.sh');
     expect(helper, 'tests/integration/s3-versions.sh is not being scanned').toBeDefined();

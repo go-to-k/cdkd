@@ -212,21 +212,27 @@ _s3v_flush_batch() {
 # `printf '%s\n'` and why the `|| [ -n "${key}" ]` guard is here as well.
 #
 # The payload is assembled by hand rather than through `jq`, so that sourcing
-# this file does not add a `jq` dependency to ten fixtures. That is safe for
+# this file does not add a `jq` dependency to twelve fixtures. That is safe for
 # cdkd's key space (stack names, regions, ISO timestamps, hashes) but not for
 # arbitrary text, so a key or version id carrying a quote or a backslash is
 # routed to a single-object `delete-object` instead of being interpolated into
 # JSON. A TAB or a NEWLINE cannot reach here at all - either would have split
 # the row before this point.
 _s3v_delete_rows() {
-  local bucket="$1" key vid objects="" n=0
+  local bucket="$1" key vid objects="" n=0 _s3v_out
   while IFS=$'\t' read -r key vid || [ -n "${key}" ]; do
     if [ -z "${key}" ] || [ -z "${vid}" ]; then continue; fi
     if [ "${vid}" = "None" ]; then continue; fi
     case "${key}${vid}" in
       *'"'* | *'\'*)
-        aws s3api delete-object --bucket "${bucket}" --key "${key}" \
-          --version-id "${vid}" >/dev/null 2>&1 || true
+        # WARN on failure rather than `|| true`. This is the only single-object
+        # call left, it is unreachable for cdkd's key shapes, and that is
+        # exactly why it would stay silent forever if it ever did fire -- in a
+        # file whose whole premise is that a quiet sweep is the bug.
+        if ! _s3v_out="$(aws s3api delete-object --bucket "${bucket}" --key "${key}" \
+            --version-id "${vid}" --output json 2>&1)"; then
+          echo "WARN: s3-versions: single-object delete failed for a quoted key under s3://${bucket}: ${_s3v_out}" >&2
+        fi
         continue
         ;;
     esac
@@ -247,8 +253,36 @@ _s3v_delete_rows() {
 # --- public API -------------------------------------------------------------
 
 # s3_stack_prefix <stack> <region> - the key space one cdkd stack owns.
-# Covers state.json, lock.json, rollback-journal.json and deployments/**; the
-# trailing '/' is what keeps `CdkdFoo` from matching `CdkdFooBar`.
+#
+# WHY A PREFIX AND NOT A LIST OF KEYS. Sweeping `state.json` by name is the
+# obvious first instinct and it UNDER-SWEEPS, because the plaintext is not only
+# there. Under one prefix cdkd writes at least four things:
+#
+#   state.json             the record everyone thinks of
+#   rollback-journal.json  failedOperations[].attemptedProperties - the
+#                          PROPERTIES OF THE FAILED WRITE, verbatim. Measured
+#                          2026-08-20 on CdkdDeletionPolicySnapshotHeavyExample:
+#                          four versions carrying a literal
+#                          `"MasterUserPassword": "Cdkdcf2f..."`. A per-key
+#                          sweep of state.json leaves every one of them.
+#   lock.json              no secret, but it accumulates faster than anything
+#                          else (452 versions on one key)
+#   deployments/**         the event store; sampled clean of plaintext, and its
+#                          objects are NOT delete-markered by `cdkd destroy`,
+#                          so they survive as CURRENT objects
+#
+# So the prefix form is the whole point of this helper, not a convenience: a
+# reviewer's manual remediation swept state.json by name and left the journal
+# behind, which is the mistake this comment exists to stop repeating.
+#
+# The trailing '/' is what keeps `CdkdFoo` from matching `CdkdFooBar`.
+#
+# BLIND SPOT, stated because it is invisible from here: a NESTED STACK child
+# lives at `cdkd/<Parent>~<Child>/<region>/`, which is a SIBLING prefix, not a
+# descendant of the parent's. This sweep does not reach it. No fixture in the
+# swept set creates one today (verified), so it is not a live gap - but a
+# fixture that gains a nested stack must sweep the child prefix too. Tracked
+# with the wider fixture-tree work in issue #2107.
 s3_stack_prefix() {
   printf 'cdkd/%s/%s/\n' "${1:-}" "${2:-}"
 }

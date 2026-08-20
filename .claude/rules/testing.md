@@ -654,6 +654,20 @@ carrying `cdkd-known-pw-123`, and `CdkdSecretsArrayNestedExample`'s held 7 + 3
 with 5 of the 7 carrying `cdkd-array-nested-pw-789`. Neither script had ever
 issued a `list-object-versions` or a `delete-object --version-id`.
 
+**Sweep the PREFIX, never a key list.** `state.json` is not the only thing under
+it. `rollback-journal.json` stores `failedOperations[].attemptedProperties` —
+the properties of the failed write, verbatim — and four measured versions of
+`CdkdDeletionPolicySnapshotHeavyExample`'s journal carried a literal
+`"MasterUserPassword"`. `lock.json` accumulates fastest (452 versions on one
+key) and `deployments/**` is not delete-markered by `cdkd destroy` at all, so
+its objects survive as CURRENT ones. A per-key sweep of `state.json` is the
+natural first instinct, it is what a manual remediation actually did, and it
+left the journal behind. `s3_stack_prefix` + `s3_purge_prefix_versions` covers
+all four. (Blind spot: a nested-stack child at `cdkd/<Parent>~<Child>/<region>/`
+is a SIBLING prefix, not a descendant, so it is not reached — no fixture in the
+swept set has one today; tracked with issue
+[#2107](https://github.com/go-to-k/cdkd/issues/2107).)
+
 Use the shared helpers in `tests/integration/s3-versions.sh`; do not
 open-code a sweep. Source after the `cd`, purge NONCURRENT from `cleanup` (which
 also runs pre-run and from the failure traps, where a live state.json may be the
@@ -712,7 +726,7 @@ asserts not just a non-zero exit but that no AWS call was attempted at all.
 Deletes go through `DeleteObjects` in batches of 1000 (the API maximum): a
 347-version key costs one CLI process, not 347. Keys carrying a quote or a
 backslash fall back to single-object `delete-object`, since the payload is built
-without `jq` — sourcing the helper must not add a `jq` dependency to ten
+without `jq` — sourcing the helper must not add a `jq` dependency to twelve
 fixtures. Under `Quiet: true` a successful call returns `{}`, so an `Errors` key
 in the output is a per-object failure reported as overall success (confirmed
 against real S3: rc=0 with `Errors` present); it warns, and the retry loop plus
@@ -730,7 +744,7 @@ stream — `2>&1` there makes a benign CLI warning a phantom surviving version
 `delete-object --key`.
 
 Also scanned by `tests/unit/scripts/integ-verify-bash-compat.test.ts` and by
-`scripts/check-integ-aws-commands.ts` (its `aws` verbs run in ten fixtures at
+`scripts/check-integ-aws-commands.ts` (its `aws` verbs run in twelve fixtures at
 once), both with per-shape floors so a total swamped by 280 fixtures cannot hide
 the helper going unread. Four other integ scanners still cannot see it; the
 per-scanner verdict is recorded in issue
@@ -748,23 +762,44 @@ The convention IS enforced, by
 `tests/unit/scripts/integ-secret-fixture-sweep.test.ts`: a fixture whose
 `bin/**` / `lib/**` TypeScript declares secret material — `unsafePlainText`, a
 hand-supplied `secretStringValue` / `secretObjectValue` / `secretStringBeta1`, a
-templated `master(User)?Password`, `generateSecret: true`, or an `iam.AccessKey`
-— must source the helper AND call `s3_assert_versions_swept`. Per-pattern FLOORS
-(5 / 5 / 2 / 1 / 1) mean a regex that silently stopped matching cannot hide
-behind the others, and the seeding set is pinned by NAME, since the failure this
+templated `master(User)?Password`, `generateSecret: true`, an `iam.AccessKey`, an
+`appsync.CfnApiKey` or an `addApiKey` — must source the helper AND call
+`s3_assert_versions_swept`. Per-pattern FLOORS mean a regex that silently
+stopped matching cannot hide behind the others; two forward-looking patterns
+(`SecretValue.plainText`, ElastiCache `AuthToken`) carry a floor of 0, so every
+pattern also carries a mandatory `sample` it must match — a control derived from
+the list rather than hand-written beside it, which is what keeps a zero-floor
+pattern honest. The seeding set is pinned by NAME, since the failure this
 closes was a hand audit producing the wrong SET rather than the wrong count.
 Both predicates read comment-stripped CODE: the first cut matched the
 explanatory comment above the `source` line, so its own break-test — delete the
 `.` line, keep the comment — stayed GREEN.
 
 It exists because the written rule above was violated the moment it was written.
-The #2096 audit read all 282 `verify.sh` files and still missed `docdb-neptune`,
-`eventbridge-api-destination` and `cognito-resource-server`, each an exact
-structural twin of one it DID find (a master password, an `unsafePlainText`
-literal, a service-generated credential). All three were then measured holding
-live plaintext: 16 of 64 versions, 15 of 18, and 3 of 18 carrying a real
-`ClientSecret`. The secret is declared in `lib/*.ts`; the audit was reading
-`verify.sh`.
+The #2096 audit read all 282 `verify.sh` files and still missed FIVE fixtures.
+Three — `docdb-neptune`, `eventbridge-api-destination`, `cognito-resource-server`
+— are exact structural twins of ones it DID find (a master password, an
+`unsafePlainText` literal, a service-generated credential), and were missed
+because the secret is declared in `lib/*.ts` while the audit read `verify.sh`.
+They were then measured holding live plaintext: 16 of 64 versions, 15 of 18, and
+3 of 18 carrying a real `ClientSecret`.
+
+**The other two were examined and wrongly CLEARED, and that failure is worth more
+than the rule itself.** `appsync` and `apigw-usage-plan-key` were both probed
+against the real bucket and both reported clean — from a newest-N sample. Of
+`AppSyncStack`'s 557 versions the 12 newest carry no key while 17 of versions
+12..45 do; the API Gateway key sits in versions 7 and 8 of 16. **A newest-N
+sample is the wrong shape for this question**: the newest versions come from the
+most recent run, the one most likely to be already-fixed or to have failed
+early. Sample across the range, or grep the whole key. The same error in its
+other form — probing a convention-derived stack name and reading the resulting
+`0` as clean — cost a separate finding in the same session, which is why the
+`STACK=` rule below exists.
+
+Nor is grepping `src/provisioning/providers/**` a substitute for measuring:
+`AWS::ApiGateway::ApiKey` is registered to no provider at all, so it takes the
+generic Cloud Control readback, whose resource model includes `Value` — the live
+40-character key, in `attributes`, with no provider code naming it.
 
 **When auditing by hand anyway, read the stack name from `verify.sh`'s `STACK=`
 line — never infer it from the directory name.** `cognito-resource-server`'s

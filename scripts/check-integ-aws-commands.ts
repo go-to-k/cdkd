@@ -449,10 +449,10 @@ export function readFixtureScripts(integRoot: string): { fixture: string; conten
   // ...plus the SHARED helpers sitting directly in tests/integration/, which
   // issue `aws` verbs on behalf of every fixture that sources them
   // (`s3-versions.sh` runs `s3api list-object-versions` / `delete-objects` /
-  // `delete-object` in ten of them, issue #2096). Scoping this walk to
+  // `delete-object` in twelve of them, issue #2096). Scoping this walk to
   // directories would leave the most widely executed aws calls in the tree as
   // the only ones this lint cannot see -- and a removed verb there breaks
-  // ten fixtures at once rather than one.
+  // twelve fixtures at once rather than one.
   const shared = entries
     .filter((e) => e.isFile() && e.name.endsWith('.sh'))
     .map((e) => ({

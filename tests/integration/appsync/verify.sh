@@ -63,9 +63,28 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# Shared S3 VERSION-sweep helpers (issue #2096). This fixture declares an
+# `appsync.CfnApiKey`, and for AppSync the key's ID *is* the usable credential:
+# `AppSyncProvider.createApiKey` persists `response.apiKey.id` as the physical
+# id, and `attributes` carries it again as `ApiKey` plus an `Arn` built from it
+# (src/provisioning/providers/appsync-provider.ts:431-434). So a live `da2-...`
+# key is in every state.json this fixture writes -- no `unsafePlainText`
+# anywhere, the credential is service-generated. The state bucket is VERSIONED,
+# so `aws s3 rm` only writes a delete marker and it stays readable.
+#
+# Measured 2026-08-20: of 557 surviving versions of this stack's state.json, the
+# 12 NEWEST carried no key at all while 17 of versions 12..45 did. That sampling
+# shape is the lesson, not a footnote -- a newest-N sample reads the most recent
+# run, which is the most likely to be already-fixed or to have failed early, and
+# it is what made a first pass call this fixture clean.
+. ../s3-versions.sh
+
 STACK="AppSyncStack"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+# Everything this stack owns in the bucket: state.json, lock.json,
+# rollback-journal.json and deployments/**.
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 API_NAME="cdkd-appsync-example"
 POOL_NAME="cdkd-appsync-example-pool"
 
@@ -80,6 +99,10 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
+    # The `aws s3 rm` above only wrote DELETE MARKERS. NONCURRENT-only here:
+    # this also runs from the pre-run sweep and the failure traps, where a live
+    # state.json may be the only record of resources still standing.
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
   fi
   set -eu
 }
@@ -532,6 +555,16 @@ assert_eq "leftover '${POOL_NAME}' user pools" "0" "${REMAINING_POOLS}"
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
+
+# --- Teardown + VERSION sweep, ON THE SUCCESS PATH -------------------------
+# head-object only looks at the CURRENT object; the bucket is VERSIONED, so the
+# AppSync api key survives in prior versions without this (issue #2096). On the
+# success path, not only in `cleanup`, and asserted rather than assumed.
+echo "==> Final teardown + state-version sweep"
+cleanup
+trap - EXIT INT TERM
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "appsync state teardown"
 
 echo ""
 echo "==> appsync test passed (#609 GraphQLApi + Resolver + DataSource config properties reach AWS on create / update / removal + clean destroy)"
