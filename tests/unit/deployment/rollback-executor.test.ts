@@ -1003,10 +1003,22 @@ describe('replayRollback', () => {
     const result = await replayRollback(ops, state, 'S', ctx);
     expect(result.failures).toBe(0);
 
-    // The LAST withRetry call is the post-delete re-create retry: it must
+    // The last OUTER withRetry call is the post-delete re-create retry: it must
     // wait out the late name release AND the SQS same-name cooldown (the
     // delete-new-first path deterministically starts the 60s window).
-    const retryOpts = vi.mocked(withRetry).mock.calls.at(-1)?.[2] as
+    //
+    // Selected by "carries a custom classifier" rather than by `.at(-1)`
+    // (issue #2032): each outer call now NESTS an inner default-schedule
+    // `withRetry` that passes neither a schedule nor an `isRetryable` — that is
+    // exactly what re-arms the dense IAM-propagation path — so the literally
+    // last call is the inner one and reading it would assert nothing.
+    const outerCalls = vi
+      .mocked(withRetry)
+      .mock.calls.filter(
+        (c) => (c[2] as { isRetryable?: unknown } | undefined)?.isRetryable !== undefined
+      );
+    expect(outerCalls).toHaveLength(2);
+    const retryOpts = outerCalls.at(-1)?.[2] as
       | { maxRetries?: number; isRetryable?: (m: string) => boolean }
       | undefined;
     expect(retryOpts?.maxRetries).toBe(8);
