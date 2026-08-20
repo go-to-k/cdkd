@@ -251,6 +251,19 @@ jobs:
       # here rather than reporting a byte-identical green.
       - run: vp run audit:provider-error-cause:check
 
+      # Issue #2053 — every `withRetry` under `src/provisioning/**` must thread
+      # `isInterrupted` / `onInterrupted`. It is the only wait in the codebase
+      # that polls an interrupt DURING a backoff, so an un-threaded call leaves
+      # Ctrl-C dead for minutes, and on the destroy path `withResourceTimeout`
+      # has already abandoned the promise — the loop keeps issuing writes behind
+      # a run the user was told had ended. Measured at filing: 11 sites under
+      # `providers/**` and one of them threaded. Pass/fail like the critic above,
+      # with nothing to regenerate, so it is a bare `run`; it self-probes its own
+      # classifier and re-audits its exemption list before reading the tree, so a
+      # degradation to "everything looks threaded" fails here instead of
+      # reporting a byte-identical green.
+      - run: vp run audit:withretry-interrupt:check
+
   # Issue #1618 — run the unit suite a second time with the runtime
   # `*Once`-leak detector armed, so a test that primes more mock responses than
   # its code path consumes fails HERE instead of silently shifting every later

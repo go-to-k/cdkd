@@ -90,6 +90,10 @@ import {
 } from '../../../src/provisioning/providers/custom-resource-provider.js';
 import { IAM_PROPAGATION_MAX_RETRIES } from '../../../src/deployment/retry.js';
 import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import {
+  disarmInterruptWatchForTests,
+  interruptWatchTestSeam,
+} from '../../../src/provisioning/interrupt-watch.js';
 
 const SERVICE_TOKEN =
   'arn:aws:lambda:us-east-1:123456789012:function:Stack-ProviderframeworkonEvent';
@@ -457,6 +461,12 @@ describe('CustomResourceProvider retry on a THROWN transient error (issue #2033)
     // interruptible; a bare `setTimeout` leaves Ctrl-C dead for the whole
     // 47.75s schedule. Only the listeners THIS invocation added are fired, so
     // the harness's own SIGINT handling is untouched.
+    // The watch this provider now shares (issue #2104) arms only inside a
+    // command that owns interrupt handling, so a command without a shutdown
+    // path keeps Node's default terminate. A suite runs no command, so stand in
+    // for the scope production has opened by this point.
+    disarmInterruptWatchForTests();
+    interruptWatchTestSeam.commandOwnsInterrupts = () => true;
     const baseline = process.listeners('SIGINT');
     const counts = wire({
       invoke: () => Promise.reject(awsError(PROPAGATION_MESSAGE, 'AccessDeniedException')),
@@ -481,7 +491,12 @@ describe('CustomResourceProvider retry on a THROWN transient error (issue #2033)
 
     // One backoff entered, then the abort — not 26.
     expect(counts.invokes()).toBe(1);
-    expect(process.listeners('SIGINT')).toEqual(baseline);
+    // At most ONE listener beyond the baseline, ever. It is deliberately not
+    // removed on dispose: a listener torn down between two sequential waits
+    // cannot record a signal landing in the gap (issue #1952 blocker).
+    expect(process.listeners('SIGINT').length).toBeLessThanOrEqual(baseline.length + 1);
+    disarmInterruptWatchForTests();
+    delete interruptWatchTestSeam.commandOwnsInterrupts;
   });
 
   // --- COVERED: a WRAPPED propagation error ---------------------------------
@@ -572,6 +587,12 @@ describe('CustomResourceProvider retry on a THROWN transient error (issue #2033)
     // once per second while sleeping, so omitting the two options leaves Ctrl-C
     // dead for the placeholder's own 47.75s schedule even when the loop's
     // backoff is interruptible.
+    // The watch this provider now shares (issue #2104) arms only inside a
+    // command that owns interrupt handling, so a command without a shutdown
+    // path keeps Node's default terminate. A suite runs no command, so stand in
+    // for the scope production has opened by this point.
+    disarmInterruptWatchForTests();
+    interruptWatchTestSeam.commandOwnsInterrupts = () => true;
     const baseline = process.listeners('SIGINT');
     const counts = wire({
       put: () =>
@@ -602,7 +623,12 @@ describe('CustomResourceProvider retry on a THROWN transient error (issue #2033)
     // The interrupt lands on the check that opens the SECOND backoff, so the
     // schedule stops two PUTs in rather than after 27.
     expect(counts.puts()).toBe(2);
-    expect(process.listeners('SIGINT')).toEqual(baseline);
+    // At most ONE listener beyond the baseline, ever. It is deliberately not
+    // removed on dispose: a listener torn down between two sequential waits
+    // cannot record a signal landing in the gap (issue #1952 blocker).
+    expect(process.listeners('SIGINT').length).toBeLessThanOrEqual(baseline.length + 1);
+    disarmInterruptWatchForTests();
+    delete interruptWatchTestSeam.commandOwnsInterrupts;
   });
 
   it('retries a propagation-worded throw from getSignedUrl, which sits OUTSIDE the PutObject retry', async () => {

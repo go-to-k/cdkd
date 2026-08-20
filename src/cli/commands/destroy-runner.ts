@@ -46,6 +46,7 @@ import {
   type ActiveImportConsumer,
 } from '../../utils/error-handler.js';
 import type { ExportIndexStore } from '../../state/export-index-store.js';
+import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 
 /**
  * Execution context passed by the caller (`cdkd destroy` or
@@ -1146,7 +1147,18 @@ export async function runDestroyForStack(
           // BEFORE the delete, so its error means the resource is still
           // live; reading a snapshot-poll NotFound as "already deleted"
           // would drop a live, un-snapshotted volume from state.
+          //
+          // ...and never for a USER ABORT either (issues #2053 / #1952), for the
+          // same reason and by the same shape. This match is on the MESSAGE, and
+          // an interrupt's message embeds a name the user chose — `DynamoDB
+          // auto-scaling for ${tableName}`, `Custom resource ${logicalId}` — so
+          // a logical id like `HandleNotFoundException` made an interrupted
+          // delete read as "already deleted" and DROPPED a live resource's state
+          // row while reporting success. The typed check has to come first
+          // because the substring match cannot be made safe: any needle can
+          // appear in a user-chosen name.
           if (
+            !isInterruptedWaitError(error) &&
             !isFinalSnapshotError(error) &&
             (msg.includes('does not exist') ||
               msg.includes('not found') ||
@@ -1336,11 +1348,6 @@ export async function runDestroyForStack(
       );
     }
   } finally {
-    // Remove our SIGINT listener so it never leaks past this call (each
-    // call registers and removes its own function reference — important for
-    // nested-stack recursion, where one handler is registered per level).
-    process.removeListener('SIGINT', sigintHandler);
-
     // Stop live renderer before releasing the lock so any pending in-flight
     // task lines are cleared cleanly.
     renderer.stop();
@@ -1351,8 +1358,34 @@ export async function runDestroyForStack(
     // land after the lock is gone. Never rejects (links catch internally).
     await saveChain;
 
-    logger.debug('Releasing lock...');
-    await ctx.lockManager.releaseLock(stackName, regionForState);
+    // RELEASE FIRST, REMOVE THE LISTENER LAST — the same ordering the
+    // strong-ref refusal path above states and for a stronger reason than it
+    // had. This block used to unregister first, which left a window from the
+    // removal until the release resolved where THIS command had no SIGINT
+    // handler at all while the lock was still held: `destroy.ts` / `state.ts`
+    // register none of their own, so a Ctrl-C there was answered by the
+    // provider-side interrupt watch's last-listener force-quit
+    // (`src/provisioning/interrupt-watch.ts`), the process exited 130, and the
+    // release below never ran — stranding the lock for its full 30-minute TTL.
+    // On a `--all` run the watch is armed by the first stack that waits, so
+    // every later stack inherited the exposure. That is the issue #1348 class
+    // this file already claims to have closed.
+    //
+    // Keeping the handler armed across the release is also what the graceful
+    // path wants: a SIGTERM landing mid-release is still forwarded through it
+    // rather than hitting the exit-143 fallback with the lock held.
+    //
+    // The removal sits in its own `finally` so a throwing release cannot leak
+    // the listener — one leaked per stack would additionally keep the shared
+    // watch from ever being alone, silently disabling the force-quit.
+    try {
+      logger.debug('Releasing lock...');
+      await ctx.lockManager.releaseLock(stackName, regionForState);
+    } finally {
+      // Each call registers and removes its own function reference — important
+      // for nested-stack recursion, where one handler exists per level.
+      process.removeListener('SIGINT', sigintHandler);
+    }
 
     // Restore base region/clients if we switched.
     if (destroyAwsClients) {

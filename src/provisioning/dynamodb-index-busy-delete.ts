@@ -56,6 +56,7 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-dynamodb';
 import { withRetry } from '../deployment/retry.js';
+import { startInterruptWatch } from './interrupt-watch.js';
 import { isThrottlingError } from '../deployment/retryable-errors.js';
 import type { Logger } from '../types/config.js';
 
@@ -358,71 +359,91 @@ export async function waitForIndexesSettled(opts: {
 }): Promise<void> {
   const { tableName, logicalId, logger, describeTable, maxAttempts, proceedNote } = opts;
   const budgetWait = opts.budgetWait;
+  // Interruptible (issue #1952). This one wait serves BOTH delete-path callers
+  // — `GlobalTable`'s #1521 pre-delete gate and the #1830 / #1931 retry re-arm
+  // on both DynamoDB types — so threading it here is what makes them all
+  // consult the signal without a call-site change; the auto-scaling caller gets
+  // it too. It STOPS WAITING rather than throwing, which is the contract every
+  // other give-up arm below already keeps ("give up the WAIT, never the
+  // operation"): the delete path's backstop is AWS refusing the `DeleteTable`
+  // again, and the retry loop's own `withRetry` then aborts in its backoff.
+  const watch = startInterruptWatch(`index settle wait on ${tableName}`);
   let attempt = 0;
-  while (budgetWait ? budgetWait.nextPoll() : attempt < maxAttempts) {
-    attempt += 1;
-    try {
-      const response = await describeTable();
-      const indexes = response.Table?.GlobalSecondaryIndexes ?? [];
-      // Block on the TRANSITIONAL statuses, not on "!== ACTIVE": an absent
-      // or unrecognized `IndexStatus` must not park the caller for the full
-      // cap on a table that is fine. AWS always sets the field, so the two
-      // readings only differ for a partial response — where proceeding and
-      // letting AWS answer is the better failure mode.
-      if (!hasTransitionalIndex(indexes)) return;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      // A THROTTLED describe says nothing about the indexes, so reading it
-      // as "settled" degrades the wait to no wait at all — which for the
-      // #1830 re-arm means every retry burns inside `withRetry`'s backoff
-      // grid — tens of seconds — against a condition that needs minutes,
-      // spending the whole budget without ever waiting. Keep waiting
-      // instead; the loop is bounded either way.
-      if (isThrottlingError(err)) {
+  try {
+    while (budgetWait ? budgetWait.nextPoll() : attempt < maxAttempts) {
+      attempt += 1;
+      if (watch.isInterrupted()) {
         logger.debug(
-          `DescribeTable throttled while waiting for indexes on ${tableName} ` +
-            `(attempt ${attempt}/${maxAttempts}); still waiting: ${message}`
-        );
-        await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
-        continue;
-      }
-      // The table is GONE — there is nothing left to wait for, and this is a
-      // routine shape on the delete path (a concurrent / re-run destroy), so
-      // it must not warn.
-      if (err instanceof ResourceNotFoundException) {
-        logger.debug(
-          `Table ${tableName} (${logicalId}) no longer exists while waiting for indexes`
+          `Interrupted while waiting for indexes on ${tableName} (${logicalId}) after ` +
+            `${attempt - 1} DescribeTable polls; ${proceedNote}`
         );
         return;
       }
-      // Anything else: give up the WAIT, never the operation. A delete path
-      // must tolerate a stale read rather than fail fast (a throw here would
-      // strand the resource), so the caller proceeds. Warn rather than debug
-      // — this is the arm that silently turned a wait into a no-op, and a run
-      // at default verbosity has to be able to see it. What proceeding COSTS
-      // is the caller's to say (`proceedNote`).
-      //
-      // The warning names the error CLASS only; AWS's raw message goes to
-      // debug. That message is not neutral text: an `AccessDeniedException`
-      // here reads `User: arn:aws:sts::<account>:assumed-role/<role>/<session>
-      // is not authorized to perform: dynamodb:DescribeTable ...`, so the
-      // default-verbosity line would print the account id, the role name and
-      // the session name — and this warning is wrapped into the persisted
-      // deployment-events store, not just the terminal. Debug is opt-in and
-      // already the level the throttle arm above uses for the same reason.
-      // The control flow is unchanged: both spellings still proceed.
-      const errorName = err instanceof Error ? err.name : typeof err;
-      logger.debug(
-        `DescribeTable failed while waiting for indexes on ${tableName} (${logicalId}): ${message}`
-      );
-      logger.warn(
-        `DescribeTable failed (${errorName}) while waiting for indexes on ${tableName} ` +
-          `(${logicalId}), so cdkd stopped waiting; ${proceedNote} Re-run with --verbose for ` +
-          `AWS's own message.`
-      );
-      return;
+      try {
+        const response = await describeTable();
+        const indexes = response.Table?.GlobalSecondaryIndexes ?? [];
+        // Block on the TRANSITIONAL statuses, not on "!== ACTIVE": an absent
+        // or unrecognized `IndexStatus` must not park the caller for the full
+        // cap on a table that is fine. AWS always sets the field, so the two
+        // readings only differ for a partial response — where proceeding and
+        // letting AWS answer is the better failure mode.
+        if (!hasTransitionalIndex(indexes)) return;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // A THROTTLED describe says nothing about the indexes, so reading it
+        // as "settled" degrades the wait to no wait at all — which for the
+        // #1830 re-arm means every retry burns inside `withRetry`'s backoff
+        // grid — tens of seconds — against a condition that needs minutes,
+        // spending the whole budget without ever waiting. Keep waiting
+        // instead; the loop is bounded either way.
+        if (isThrottlingError(err)) {
+          logger.debug(
+            `DescribeTable throttled while waiting for indexes on ${tableName} ` +
+              `(attempt ${attempt}/${maxAttempts}); still waiting: ${message}`
+          );
+          await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
+          continue;
+        }
+        // The table is GONE — there is nothing left to wait for, and this is a
+        // routine shape on the delete path (a concurrent / re-run destroy), so
+        // it must not warn.
+        if (err instanceof ResourceNotFoundException) {
+          logger.debug(
+            `Table ${tableName} (${logicalId}) no longer exists while waiting for indexes`
+          );
+          return;
+        }
+        // Anything else: give up the WAIT, never the operation. A delete path
+        // must tolerate a stale read rather than fail fast (a throw here would
+        // strand the resource), so the caller proceeds. Warn rather than debug
+        // — this is the arm that silently turned a wait into a no-op, and a run
+        // at default verbosity has to be able to see it. What proceeding COSTS
+        // is the caller's to say (`proceedNote`).
+        //
+        // The warning names the error CLASS only; AWS's raw message goes to
+        // debug. That message is not neutral text: an `AccessDeniedException`
+        // here reads `User: arn:aws:sts::<account>:assumed-role/<role>/<session>
+        // is not authorized to perform: dynamodb:DescribeTable ...`, so the
+        // default-verbosity line would print the account id, the role name and
+        // the session name — and this warning is wrapped into the persisted
+        // deployment-events store, not just the terminal. Debug is opt-in and
+        // already the level the throttle arm above uses for the same reason.
+        // The control flow is unchanged: both spellings still proceed.
+        const errorName = err instanceof Error ? err.name : typeof err;
+        logger.debug(
+          `DescribeTable failed while waiting for indexes on ${tableName} (${logicalId}): ${message}`
+        );
+        logger.warn(
+          `DescribeTable failed (${errorName}) while waiting for indexes on ${tableName} ` +
+            `(${logicalId}), so cdkd stopped waiting; ${proceedNote} Re-run with --verbose for ` +
+            `AWS's own message.`
+        );
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
     }
-    await new Promise((resolve) => setTimeout(resolve, INDEX_SETTLE_POLL_INTERVAL_MS));
+  } finally {
+    watch.dispose();
   }
   // Both figures come from {@link INDEX_SETTLE_POLL_INTERVAL_MS}: the interval
   // used to be the literal `~1s` in this string while the total next to it was
@@ -605,47 +626,60 @@ export async function deleteTableWithIndexBusyRetry(opts: {
   shouldKeepRetrying?: () => boolean;
 }): Promise<void> {
   let deleteAttempts = 0;
-  await withRetry(
-    async () => {
-      // Attempt 2+ can only be reached through the index-busy refusal, so
-      // re-arm on the CONDITION rather than on the clock.
-      if (deleteAttempts++ > 0) {
-        if (deleteAttempts === 2) {
-          // ONE line, on the FIRST retry only: this announces the CONDITION,
-          // not each attempt (which is what `withRetry`'s debug line does).
-          opts.logger.warn(
-            indexBusyRetryWarning({
-              typeLabel: opts.typeLabel,
-              logicalId: opts.logicalId,
-              physicalId: opts.physicalId,
-              attemptNumber: deleteAttempts,
-              maxRetries: opts.maxRetries,
-            })
-          );
+  // Interruptible (issue #1952). This loop can keep re-issuing `DeleteTable`
+  // for the better part of twenty minutes at the `Table` budget, and
+  // `destroy-runner.ts`'s `withResourceTimeout` does NOT cancel — it abandons
+  // the promise while the work carries on detached — so an un-threaded backoff
+  // meant a Ctrl-C left cdkd deleting behind a run the user had already been
+  // told was over.
+  const watch = startInterruptWatch(`DynamoDB ${opts.typeLabel} ${opts.logicalId} delete`);
+  try {
+    await withRetry(
+      async () => {
+        // Attempt 2+ can only be reached through the index-busy refusal, so
+        // re-arm on the CONDITION rather than on the clock.
+        if (deleteAttempts++ > 0) {
+          if (deleteAttempts === 2) {
+            // ONE line, on the FIRST retry only: this announces the CONDITION,
+            // not each attempt (which is what `withRetry`'s debug line does).
+            opts.logger.warn(
+              indexBusyRetryWarning({
+                typeLabel: opts.typeLabel,
+                logicalId: opts.logicalId,
+                physicalId: opts.physicalId,
+                attemptNumber: deleteAttempts,
+                maxRetries: opts.maxRetries,
+              })
+            );
+          }
+          await opts.reArm();
         }
-        await opts.reArm();
+        await opts.deleteTable();
+      },
+      opts.logicalId,
+      {
+        maxRetries: opts.maxRetries,
+        // `isRetryable` is invoked as `(message, error)`; this classifier is
+        // message-only on purpose — AWS wraps the condition in a generic
+        // `ResourceInUseException`, whose NAME is shared with genuinely
+        // terminal conflicts, so the message is the only discriminator.
+        // The wall-clock stop is ANDed with the classifier rather than replacing
+        // it: a non-index-busy error must stay terminal no matter how much budget
+        // is left, and an index-busy one must stop being retried once there is
+        // none. Order matters only for cost — classify first so a terminal error
+        // never consults the caller's clock.
+        isRetryable: (message) =>
+          isIndexBusyDeleteError(message) && (opts.shouldKeepRetrying?.() ?? true),
+        logger: opts.logger,
+        isInterrupted: watch.isInterrupted,
+        onInterrupted: watch.onInterrupted,
+        sleep: (ms: number) =>
+          opts.sleepSeam.sleep
+            ? opts.sleepSeam.sleep(ms)
+            : new Promise<void>((resolve) => setTimeout(resolve, ms)),
       }
-      await opts.deleteTable();
-    },
-    opts.logicalId,
-    {
-      maxRetries: opts.maxRetries,
-      // `isRetryable` is invoked as `(message, error)`; this classifier is
-      // message-only on purpose — AWS wraps the condition in a generic
-      // `ResourceInUseException`, whose NAME is shared with genuinely
-      // terminal conflicts, so the message is the only discriminator.
-      // The wall-clock stop is ANDed with the classifier rather than replacing
-      // it: a non-index-busy error must stay terminal no matter how much budget
-      // is left, and an index-busy one must stop being retried once there is
-      // none. Order matters only for cost — classify first so a terminal error
-      // never consults the caller's clock.
-      isRetryable: (message) =>
-        isIndexBusyDeleteError(message) && (opts.shouldKeepRetrying?.() ?? true),
-      logger: opts.logger,
-      sleep: (ms: number) =>
-        opts.sleepSeam.sleep
-          ? opts.sleepSeam.sleep(ms)
-          : new Promise<void>((resolve) => setTimeout(resolve, ms)),
-    }
-  );
+    );
+  } finally {
+    watch.dispose();
+  }
 }
