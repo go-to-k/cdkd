@@ -490,10 +490,29 @@ function isKnownSecretExpression(
  * `{` — a Secrets Manager JSON key or a secret name, e.g.
  * `{{resolve:secretsmanager:app/db:SecretString:my{key}}` — the resolver
  * resolves it fine, but the strict spelling said it was not a single token, so
- * `redactByPath`'s source arm refused it and on an EMPTY-map path (issue #1900:
- * `cdkd scrub`'s cross-generation observed walk, whose value scan has no
- * needles) the RESOLVED PLAINTEXT was persisted verbatim. A disclosure, narrow
- * and pre-existing.
+ * `redactByPath`'s source arm refused it and on an EMPTY-map path the RESOLVED
+ * PLAINTEXT was persisted verbatim. A disclosure, narrow and pre-existing.
+ *
+ * `cdkd scrub` is the only leaking command, and it leaks on BOTH of its walks
+ * -- the second one named after the issue #2088 security review, which found
+ * the first draft of this note incomplete:
+ *
+ * - the `properties` walk under `TEMPLATE_SOURCED_RULES`, where
+ *   `isKnownSecretExpression` answers true by SPELLING but the strict
+ *   predicate refused the leaf before it could; and
+ * - the cross-generation `observedProperties` walk, whose value scan has no
+ *   needles (issue #1900).
+ *
+ * The empty map is reachable on both because `scrub.ts` resolves BEST-EFFORT
+ * (a deleted secret, or a role lacking read permission on it, leaves
+ * `recordedSecretValues` empty) and then records `perResourceTemplateProps`
+ * UNCONDITIONALLY while recording `perResourceSecrets` only when non-empty --
+ * so the position source is present with no map beside it.
+ *
+ * `cdkd state refresh-observed` and the deploy's `drainObservedCaptures` are
+ * NOT affected: they take `STATE_SOURCED_READBACK_RULES`, which sets
+ * `sourceIsSameGeneration`, so {@link refuseUncertifiedReadbackPositions}
+ * restores the source even under the old strict class.
  *
  * Excluding `{` bought nothing. The mangled / concatenated shapes it might seem
  * to guard — `{{resolve:a}}{{resolve:b}}`, a spliced token — are already
@@ -1259,8 +1278,23 @@ function subtreeHasDynamicReference(value: unknown): boolean {
  *
  * This was a FOURTH spelling of the token pattern (`[^{}]*`, global) and is
  * built from {@link DYNAMIC_REFERENCE_INNER} since issue #1936, so it agrees
- * with the resolver like every other predicate here. A fresh `RegExp` per call
- * because a shared global instance carries `lastIndex` between callers.
+ * with the resolver like every other predicate here.
+ *
+ * EXPORTED, and `drift.ts`'s `survivingDynamicReferences` calls it rather than
+ * re-spelling the scan (issue #2088 review). The character CLASS was shared
+ * from #1936, but the assembled PATTERN was still byte-duplicated in the two
+ * files — which is how a later flag or anchor change re-forks exactly the way
+ * the four spellings did.
+ *
+ * The pattern is a module-level constant. An earlier revision built a fresh
+ * `RegExp` per call, justified as "a shared global instance carries
+ * `lastIndex` between callers" — that is FALSE for this use and was measured:
+ * `String.prototype.match` with a `/g` pattern sets `lastIndex` to 0 on entry
+ * and leaves it 0, so no state crosses callers. The per-call construction was
+ * compiling a pattern per string leaf at the persist choke point, which walks
+ * every record. Do NOT call `.exec` / `.test` on this constant — those DO
+ * advance `lastIndex`, which is exactly why the shared instance is safe only
+ * for `.match`.
  *
  * Widening it changes one answer, in the SAFE direction for the disclosure and
  * the DECLARED direction for issue #1901: its only reader is
@@ -1272,8 +1306,13 @@ function subtreeHasDynamicReference(value: unknown): boolean {
  * every other token — which, on a POPULATED map, means a genuinely public ssm
  * parameter keeps the resolved value it is supposed to keep.
  */
-function dynamicReferenceTokens(value: string): string[] {
-  return value.match(new RegExp(`\\{\\{resolve:${DYNAMIC_REFERENCE_INNER}\\}\\}`, 'g')) ?? [];
+const DYNAMIC_REFERENCE_TOKEN_SCAN = new RegExp(
+  `\\{\\{resolve:${DYNAMIC_REFERENCE_INNER}\\}\\}`,
+  'g'
+);
+
+export function dynamicReferenceTokens(value: string): string[] {
+  return value.match(DYNAMIC_REFERENCE_TOKEN_SCAN) ?? [];
 }
 
 /**

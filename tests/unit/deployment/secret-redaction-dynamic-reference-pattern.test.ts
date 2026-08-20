@@ -105,7 +105,15 @@ describe('the dynamic-reference token pattern agrees with the resolver (issue #1
     // straight after `resolve:` is by construction a new spelling.
     for (const relative of ['src/deployment/secret-redaction.ts', 'src/cli/commands/drift.ts']) {
       const code = stripComments(readFileSync(`${REPO_ROOT}${relative}`, 'utf8'));
-      expect(code, `${relative} spells the token class inline`).not.toMatch(/resolve:\[\^/);
+      // Enumerating ONE bad spelling is what let four of them accumulate, so
+      // this fences the shapes a re-fork actually takes (issue #2088 review):
+      // a bare class after `resolve:`, an escaped colon before one, and the
+      // resolver's own capturing spelling.
+      for (const spelling of [/resolve:\[\^/, /resolve\\:\[\^/, /resolve:\(\[\^/]) {
+        expect(code, `${relative} spells the token class inline (${spelling})`).not.toMatch(
+          spelling
+        );
+      }
     }
   });
 });
@@ -160,43 +168,6 @@ describe('a braced reference is not persisted as plaintext (issue #1936)', () =>
 });
 
 describe('drift.ts reads the same predicate (issue #1936)', () => {
-  it('KEEPS a resolved public ssm value in a braced MIXED leaf when a map exists', () => {
-    // The third user-visible delta of issue #1936, and the one the review of
-    // its PR found had no behavioural fence at all (issue #2088).
-    //
-    // Widening `dynamicReferenceTokens` makes a BRACED `{{resolve:ssm:` token
-    // inside a MIXED leaf visible to `mixedLeafMayCarryPublicReference`, so on
-    // a POPULATED map that leaf is now classified by the ordinary #1901 rule
-    // instead of being invisible and unconditionally refused back to the source
-    // expression. That is a plaintext-RETENTION direction change, so it needs a
-    // case of its own rather than riding the source-grep fence: nothing else
-    // stops a future edit silently reverting it.
-    //
-    // It is CORRECT to keep the value, and the populated map is why: a pass
-    // resolved this bag, and `isRecordedSecretExpression` only ever says "yes"
-    // about a token some pass proved secret — so absence from the verdict store
-    // is real evidence the parameter is a PUBLIC `String`, which #1901 stores
-    // RESOLVED. On an EMPTY map that inference is unavailable and the leaf fails
-    // closed; the `secrets.size === 0` guard is what separates the two, and the
-    // `secrets-dynamic-ref` integ is what forced that split.
-    const PUBLIC_TOKEN = '{{resolve:ssm:/app/env/{stage}}';
-    const PUBLIC_VALUE = 'production';
-    const secrets = new Map([[BRACED_PLAINTEXT, BRACED_EXPRESSION]]) as RecordedSecretValues;
-
-    // A MIXED leaf: surrounding text plus the braced PUBLIC token. Nothing here
-    // is a recorded secret, so the value scan has no needle for it either.
-    const bag = { ConnectionString: `postgres://app@host/${PUBLIC_VALUE}` };
-    const source = { ConnectionString: `postgres://app@host/${PUBLIC_TOKEN}` };
-
-    const out = redactSecretsForState(bag, secrets, source, STATE_SOURCED_READBACK_RULES);
-
-    // The DISCRIMINATOR is which string survives. Under the pre-#1936 strict
-    // class the braced token was invisible, the leaf could not be classified
-    // public, and the refusal rewrote it to the SOURCE expression — so asserting
-    // "no plaintext leaked" would pass either way and fence nothing.
-    expect(out['ConnectionString']).toBe(`postgres://app@host/${PUBLIC_VALUE}`);
-    expect(out['ConnectionString']).not.toBe(source['ConnectionString']);
-  });
 
   it('preserves the live value at a braced ssm-secure token and registers it', () => {
     // `preserveLiveValuesAtUnresolvedTokens` gates on the whole-token predicate,
@@ -219,5 +190,56 @@ describe('drift.ts reads the same predicate (issue #1936)', () => {
     // Registration is the half that is easy to lose: moving plaintext into a bag
     // without telling the maskers is its own defect class.
     expect(secrets.get(live)).toBe(token);
+  });
+});
+
+describe('a braced PUBLIC reference keeps its resolved value (issue #2088)', () => {
+  it('KEEPS a resolved public ssm value in a braced MIXED leaf when a map exists', () => {
+    // The third user-visible delta of issue #1936, and the one the review of
+    // its PR found had no behavioural fence at all (issue #2088).
+    //
+    // Widening `dynamicReferenceTokens` makes a BRACED `{{resolve:ssm:` token
+    // inside a MIXED leaf visible to `mixedLeafMayCarryPublicReference`, so on
+    // a POPULATED map that leaf is now classified by the ordinary #1901 rule
+    // instead of being invisible and unconditionally refused back to the source
+    // expression. That is a plaintext-RETENTION direction change, so it needs a
+    // case of its own rather than riding the source-grep fence: nothing else
+    // stops a future edit silently reverting it.
+    //
+    // It is CORRECT to keep the value, and the populated map is why: a pass
+    // resolved this bag, and `isRecordedSecretExpression` only ever says "yes"
+    // about a token some pass proved secret — so absence from the verdict store
+    // is real evidence the parameter is a PUBLIC `String`, which #1901 stores
+    // RESOLVED. On an EMPTY map that inference is unavailable and the leaf fails
+    // closed; the `secrets.size === 0` guard is what separates the two, and the
+    // `secrets-dynamic-ref` integ is what forced that split.
+    const PUBLIC_TOKEN = '{{resolve:ssm:/app/env/{stage}}';
+    // The fixture is only a fence while it is the shape the two spellings
+    // DISAGREE about (issue #2088 review). A later "typo fix" to a balanced
+    // `.../{stage}}}` or a brace-free name would leave this case green under
+    // the mutation and silently void it, so pin the property rather than
+    // trusting the literal.
+    expect(/^\{\{resolve:[^}]+\}\}$/.test(PUBLIC_TOKEN), 'braced: the resolver matches').toBe(
+      true
+    );
+    expect(/^\{\{resolve:[^{}]*\}\}$/.test(PUBLIC_TOKEN), 'braced: the old class does NOT').toBe(
+      false
+    );
+    const PUBLIC_VALUE = 'production';
+    const secrets = new Map([[BRACED_PLAINTEXT, BRACED_EXPRESSION]]) as RecordedSecretValues;
+
+    // A MIXED leaf: surrounding text plus the braced PUBLIC token. Nothing here
+    // is a recorded secret, so the value scan has no needle for it either.
+    const bag = { ConnectionString: `postgres://app@host/${PUBLIC_VALUE}` };
+    const source = { ConnectionString: `postgres://app@host/${PUBLIC_TOKEN}` };
+
+    const out = redactSecretsForState(bag, secrets, source, STATE_SOURCED_READBACK_RULES);
+
+    // The DISCRIMINATOR is which string survives. Under the pre-#1936 strict
+    // class the braced token was invisible, the leaf could not be classified
+    // public, and the refusal rewrote it to the SOURCE expression — so asserting
+    // "no plaintext leaked" would pass either way and fence nothing.
+    expect(out['ConnectionString']).toBe(`postgres://app@host/${PUBLIC_VALUE}`);
+    expect(out['ConnectionString']).not.toBe(source['ConnectionString']);
   });
 });

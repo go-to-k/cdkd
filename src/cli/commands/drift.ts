@@ -46,7 +46,7 @@ import {
 } from '../../deployment/intrinsic-function-resolver.js';
 import {
   createSecretMasker,
-  DYNAMIC_REFERENCE_INNER,
+  dynamicReferenceTokens,
   isSingleDynamicReferenceToken as isWholeDynamicReference,
   maskSecretsInText,
   MIN_NEEDLE_LENGTH,
@@ -635,9 +635,13 @@ function survivingDynamicReferences(value: string): string[] {
   // `isWholeDynamicReference` was principled ("they answer different questions
   // against different modules"). Issue #1936 measured that: the questions
   // differ, the CHARACTER CLASS does not, and the disagreement persisted
-  // plaintext at the strict sibling. A fresh `RegExp` per call, since a shared
-  // global instance carries `lastIndex` between callers.
-  return value.match(new RegExp(`\\{\\{resolve:${DYNAMIC_REFERENCE_INNER}\\}\\}`, 'g')) ?? [];
+  // plaintext at the strict sibling.
+  //
+  // Calls `secret-redaction.ts`'s exported scan rather than re-spelling it
+  // (issue #2088 review). #1936 shared the character CLASS while leaving the
+  // assembled PATTERN byte-duplicated here, which is how a later flag or
+  // anchor change re-forks exactly the way the four spellings did.
+  return dynamicReferenceTokens(value);
 }
 
 /**
