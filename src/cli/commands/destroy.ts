@@ -16,6 +16,7 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import {
   NestedStackChildDirectDestroyError,
   PartialFailureError,
@@ -195,10 +196,14 @@ async function destroyCommand(
   setResolvedResourceTimeouts(options.resourceTimeout);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
+  // reaches an SDK client, an ARN segment or a state key. Rationale (and why
+  // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
+  foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Resolve --state-bucket from CLI, env, cdk.json, or default
-  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const region = namedCliRegion(options.region) ?? 'us-east-1';
   const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
 
   logger.info('Starting stack destruction...');

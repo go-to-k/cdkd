@@ -62,6 +62,7 @@ import { DeployEngine, type DeployEngineOptions } from '../../deployment/deploy-
 import { WorkGraph } from '../../deployment/work-graph.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { foldRegionOption, namedCliRegion, rawCliRegion } from '../region-options.js';
 import { runStackBuffered } from '../../utils/stack-context.js';
 import { withSkipPrefix } from '../../provisioning/resource-name.js';
 import {
@@ -161,6 +162,25 @@ async function deployCommand(
   // providers read (issue #1291 items 1 + 6).
   applyWaitFlagEnv(options);
 
+  // Issue #2065 - fold `--region` ONCE, here, so no raw spelling reaches an SDK
+  // client, an ARN segment or a state key. This command is where the class was
+  // measured: `--region US-EAST-1` is copied verbatim into `AWS_REGION` below
+  // and into every `new AwsClients(...)` spread, and S3 rejects it outright
+  // (`AuthorizationHeaderMalformed: the region 'US-EAST-1' is wrong`), so the
+  // deploy died at the state-bucket preflight before doing anything. The fold
+  // sits ABOVE `applyRoleArnIfSet` because that call issues a real
+  // `sts:AssumeRole`, and STS rejects a non-canonical region too
+  // (`SignatureDoesNotMatch: Credential should be scoped to a valid region`).
+  //
+  // The user's EXACT spelling is captured first, for the bootstrap marker's
+  // SECOND probe only: `cdkd bootstrap` derives its own region verbatim
+  // (issue #1820), so a marker may exist under a raw key, and folding
+  // unconditionally would stop `AssetModeResolver` ever probing it. Same split
+  // `gc.ts` / `bootstrap-destroy.ts` already keep, and the same shape as
+  // `local-invoke.ts`'s `rawStackRegion`.
+  const rawBaseRegion = rawCliRegion(options.region) ?? 'us-east-1';
+  foldRegionOption(options);
+
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call. Writes the
   // assumed-role temp credentials into AWS_* env vars so every later
   // `new AwsClients(...)` picks them up via the SDK default chain.
@@ -207,7 +227,7 @@ async function deployCommand(
   }
   options.app = app;
 
-  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const region = namedCliRegion(options.region) ?? 'us-east-1';
 
   logger.debug('Starting deployment...');
   logger.debug('Options:', options);
@@ -466,7 +486,7 @@ async function deployCommand(
     // 3. Build work graph: asset-publish → stack deploy (DAG)
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
     const stsClient = new STSClient({
-      region: options.region || process.env['AWS_REGION'] || 'us-east-1',
+      region: namedCliRegion(options.region) ?? 'us-east-1',
     });
     const callerIdentity = await stsClient.send(new GetCallerIdentityCommand({}));
     const accountId = callerIdentity.Account!;
@@ -526,7 +546,7 @@ async function deployCommand(
       relaxCdkVpcDefensiveDeps: !!options.aggressiveVpcParallel,
     });
     const diffCalculator = new DiffCalculator();
-    const baseRegion = options.region || process.env['AWS_REGION'] || 'us-east-1';
+    const baseRegion = namedCliRegion(options.region) ?? 'us-east-1';
 
     const switchRegion = (region: string): void => {
       process.env['AWS_REGION'] = region;
@@ -558,7 +578,10 @@ async function deployCommand(
         const assetRegion = stack.region || baseRegion;
         const manifest = loadPublishableAssetManifest(stack.assetManifestPath);
         if (manifest) {
-          const assetMode = await assetModeResolver.resolve(assetRegion);
+          // The RAW spelling travels to the marker read (its second probe is what
+          // finds a key an unfolded `cdkd bootstrap` wrote); the resolver folds
+          // internally and every other consumer below uses `assetRegion`.
+          const assetMode = await assetModeResolver.resolve(stack.region || rawBaseRegion);
           logger.debug(
             `Asset mode for region ${assetRegion}: ${assetMode.mode} (stack ${stack.stackName})`
           );

@@ -16,6 +16,7 @@ import { withErrorHandling, normalizeAwsError, CdkdError } from '../../utils/err
 import { bootstrapDestroyCommand } from './bootstrap-destroy.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 import {
   ensureAssetStorage,
@@ -56,6 +57,10 @@ async function bootstrapCommand(options: {
   logger.debug('Options:', options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
+  // reaches an SDK client, an ARN segment or a state key. Rationale (and why
+  // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
+  foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Initialize AWS clients with region/profile
@@ -66,7 +71,7 @@ async function bootstrapCommand(options: {
   setAwsClients(awsClients);
 
   const s3Client = awsClients.s3;
-  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const region = namedCliRegion(options.region) ?? 'us-east-1';
 
   // Resolve bucket name: use provided value or generate default from account info
   let bucketName: string;

@@ -9,6 +9,7 @@ import type { Logger } from '../../types/config.js';
 import { withErrorHandling, CdkdError, normalizeAwsError } from '../../utils/error-handler.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { namedCliRegion, rawCliRegion } from '../region-options.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 import {
   getBootstrapMarkerKey,
@@ -927,6 +928,41 @@ export interface GcOptions {
 /**
  * `cdkd gc` implementation. See the module JSDoc for the safety posture.
  */
+/**
+ * The region `cdkd gc` operates on when the user NAMED none.
+ *
+ * Asks the SDK's own resolution chain - which reads `~/.aws/config`'s profile
+ * `region =` line and `AWS_DEFAULT_REGION` - through ONE client, so the answer
+ * is the region gc's clients would have talked to anyway (issue #2029).
+ *
+ * Refuses rather than defaulting when the chain answers nothing. gc DELETES,
+ * and a user with no region configured anywhere has genuinely not said where;
+ * inventing us-east-1 for them is the defect this function exists to remove,
+ * not a safe fallback. Every other cdkd command still carries that literal -
+ * they are read-mostly, and changing where they operate is a migration
+ * question (issue #1820), not a bug fix.
+ */
+async function resolveAmbientGcRegion(profile: string | undefined): Promise<string> {
+  const probe = new AwsClients({ ...(profile && { profile }) });
+  let resolved: string | undefined;
+  try {
+    resolved = await probe.sts.config.region();
+  } catch {
+    resolved = undefined;
+  } finally {
+    probe.destroy();
+  }
+  if (!resolved) {
+    throw new CdkdError(
+      'No AWS region configured. `cdkd gc` deletes, so it will not guess one: ' +
+        'pass --region, set AWS_REGION, or set `region =` in the profile ' +
+        '`~/.aws/config` selects.',
+      'REGION_NOT_RESOLVED'
+    );
+  }
+  return canonicalizeRegion(resolved);
+}
+
 export async function gcCommand(options: GcOptions): Promise<void> {
   const logger = getLogger();
 
@@ -963,8 +999,35 @@ export async function gcCommand(options: GcOptions): Promise<void> {
   // The failure direction here is the SAFE one either way — a missed marker
   // deletes nothing, it just reports "not opted in" for a region that has
   // assets — which is why this is a usability fix rather than a data one.
-  const rawRegion = options.region || process.env['AWS_REGION'] || 'us-east-1';
-  const region = canonicalizeRegion(rawRegion);
+  // Issue #2029 - the region gc OPERATES ON and the region its clients TARGET
+  // must be one value, and neither may be a literal pinned over the profile.
+  //
+  // The previous shape resolved `options.region || AWS_REGION || 'us-east-1'`
+  // and passed the result to `new AwsClients({ region })` unconditionally. For
+  // a user who names no region at all - no `--region`, no `AWS_REGION`, but a
+  // configured `~/.aws/config` region - that materialized literal WON over the
+  // SDK's own chain, so `cdkd gc` evaluated (and could DELETE in) us-east-1
+  // while doing nothing about the region they actually work in. There was no
+  // error, because us-east-1 is a perfectly valid region; the command simply
+  // operated on the wrong one.
+  //
+  // `bootstrap-destroy.ts` (issue #1995) already lets an absent region stay
+  // absent for its CLIENTS. That half alone is not enough here: gc's region is
+  // ALSO a VALUE - it keys the bootstrap marker and names the asset bucket /
+  // ECR repo - so a client resolved from the profile beside a marker key
+  // pinned to us-east-1 would read one region's marker and delete against
+  // another's endpoints. So the ambient region is resolved ONCE, through a
+  // throwaway probe bag, and every client gc actually uses is then built PINNED
+  // to that single answer - `aws-clients.ts` is explicit that a region-less
+  // bag's members need not agree with each other, so reusing an unconfigured
+  // bag here would reintroduce the divergence in a subtler place.
+  const namedRegion = namedCliRegion(options.region);
+  const region = namedRegion ?? (await resolveAmbientGcRegion(options.profile));
+  // The RAW spelling, for the marker's second probe only (see the comment on
+  // the probe below). When no region was NAMED there is no raw spelling to
+  // preserve, so it collapses onto the resolved one and the probe reads a
+  // single key.
+  const rawRegion = rawCliRegion(options.region) ?? region;
 
   const awsClients = new AwsClients({
     region,

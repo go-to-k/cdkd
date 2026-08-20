@@ -12,6 +12,7 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -165,10 +166,14 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
   }
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
+  // reaches an SDK client, an ARN segment or a state key. Rationale (and why
+  // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
+  foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Region falls through CLI flag → env → us-east-1, the same chain as deploy.
-  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const region = namedCliRegion(options.region) ?? 'us-east-1';
 
   const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
 

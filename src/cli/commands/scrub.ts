@@ -20,6 +20,7 @@ import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
@@ -153,6 +154,10 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
   warnIfDeprecatedRegion(options);
+  // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
+  // reaches an SDK client, an ARN segment or a state key. Rationale (and why
+  // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
+  foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   const app = resolveApp(options.app);
@@ -163,7 +168,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     );
   }
 
-  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const region = namedCliRegion(options.region) ?? 'us-east-1';
   const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
 
   const awsClients = new AwsClients({

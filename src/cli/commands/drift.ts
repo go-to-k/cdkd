@@ -37,6 +37,7 @@ import { stripCcApiAwsManagedFields } from '../../analyzer/cc-api-strip.js';
 import { CloudControlProvider } from '../../provisioning/cloud-control-provider.js';
 import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { withRetry } from '../../deployment/retry.js';
 import { maskingRetryLogger } from '../../deployment/masking-retry-logger.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
@@ -251,6 +252,10 @@ async function driftCommand(
   }
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
+  // reaches an SDK client, an ARN segment or a state key. Rationale (and why
+  // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
+  foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   const awsClients = new AwsClients({
@@ -260,7 +265,7 @@ async function driftCommand(
   setAwsClients(awsClients);
 
   try {
-    const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+    const region = namedCliRegion(options.region) ?? 'us-east-1';
     const bucket = await resolveStateBucketWithDefault(options.stateBucket, region);
     const prefix = options.statePrefix;
     const stateConfig = { bucket, prefix };

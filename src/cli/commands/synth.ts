@@ -13,6 +13,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { bold, green } from '../../utils/colors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { foldRegionOption } from '../region-options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import {
   Synthesizer,
@@ -62,6 +63,10 @@ async function synthCommand(options: {
   warnIfDeprecatedRegion(options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
+  // reaches an SDK client, an ARN segment or a state key. Rationale (and why
+  // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
+  foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Resolve --app from CLI, env, or cdk.json

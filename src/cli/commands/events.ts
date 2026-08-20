@@ -18,6 +18,7 @@ import {
   DEPLOYMENT_EVENTS_MAX_INDEX_RUNS,
 } from '../../state/deployment-events-store.js';
 import type { DeploymentEvent, DeploymentRunSummary } from '../../types/deployment-events.js';
+import { foldRegionOption, namedCliRegion } from '../region-options.js';
 
 /**
  * Options accepted by `cdkd events`. `stateBucket` / `statePrefix` /
@@ -61,6 +62,10 @@ export async function eventsCommand(
     logger.setLevel('debug');
   }
   warnIfDeprecatedRegion(options);
+  // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
+  // reaches an SDK client, an ARN segment or a state key. Rationale (and why
+  // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
+  foldRegionOption(options);
 
   const asJson = options.json === true;
 
@@ -71,7 +76,7 @@ export async function eventsCommand(
   setAwsClients(awsClients);
 
   try {
-    const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+    const region = namedCliRegion(options.region) ?? 'us-east-1';
     const bucket = await resolveStateBucketWithDefault(options.stateBucket, region);
     const prefix = options.statePrefix ?? 'cdkd';
     const stateBackend = new S3StateBackend(
@@ -197,6 +202,10 @@ export async function eventsPruneCommand(
     logger.setLevel('debug');
   }
   warnIfDeprecatedRegion(options);
+  // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
+  // reaches an SDK client, an ARN segment or a state key. Rationale (and why
+  // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
+  foldRegionOption(options);
 
   if (options.all === true && (options.keep !== undefined || options.olderThan !== undefined)) {
     throw new CdkdError(
@@ -214,7 +223,7 @@ export async function eventsPruneCommand(
   setAwsClients(awsClients);
 
   try {
-    const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+    const region = namedCliRegion(options.region) ?? 'us-east-1';
     const bucket = await resolveStateBucketWithDefault(options.stateBucket, region);
     const prefix = options.statePrefix ?? 'cdkd';
     const stateBackend = new S3StateBackend(

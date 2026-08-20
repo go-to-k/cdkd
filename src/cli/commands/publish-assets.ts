@@ -12,6 +12,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { bold, green } from '../../utils/colors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { foldRegionOption, namedCliRegion, rawCliRegion } from '../region-options.js';
 import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { AssetModeResolver } from '../../assets/asset-storage.js';
@@ -91,6 +92,12 @@ async function publishAssetsCommand(
   warnIfDeprecatedRegion(options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  // Issue #2065 - fold `--region` ONCE, at the boundary; same class and same
+  // split as `deploy.ts` (raw spelling kept only for the bootstrap marker's
+  // second probe). Rationale in `src/cli/region-options.ts`.
+  const rawBaseRegion = rawCliRegion(options.region) ?? 'us-east-1';
+  foldRegionOption(options);
+
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Resolve --app from CLI, env, or cdk.json (mirrors deploy.ts).
@@ -144,7 +151,7 @@ async function publishAssetsCommand(
   }
 
   // 3. Resolve account id once (asset-publish nodes need it for ECR / S3 paths).
-  const baseRegion = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const baseRegion = namedCliRegion(options.region) ?? 'us-east-1';
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
   const stsClient = new STSClient({ region: baseRegion });
   const callerIdentity = await stsClient.send(new GetCallerIdentityCommand({}));
@@ -236,7 +243,10 @@ async function publishAssetsCommand(
             const modeResolver = await getModeResolver();
             if (modeResolver) {
               const stackRegion = stack.region || baseRegion;
-              const assetMode = await modeResolver.resolve(stackRegion);
+              // RAW spelling to the marker read only (its second probe finds a
+              // key an unfolded `cdkd bootstrap` wrote); every other consumer
+              // below uses the folded `stackRegion`.
+              const assetMode = await modeResolver.resolve(stack.region || rawBaseRegion);
               if (assetMode.mode === 'cdkd-assets') {
                 const map = buildAssetRedirectMap(
                   manifest,

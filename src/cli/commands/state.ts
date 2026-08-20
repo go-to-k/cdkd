@@ -24,6 +24,7 @@ import { LockManager } from '../../state/lock-manager.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import {
   resolveStateBucketWithDefault,
   resolveStateBucketWithDefaultAndSource,
@@ -162,6 +163,10 @@ export async function setupStateBackend(options: {
   warnIfDeprecatedRegion(options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
+  // reaches an SDK client, an ARN segment or a state key. Rationale (and why
+  // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
+  foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   const awsClients = new AwsClients({
@@ -170,7 +175,7 @@ export async function setupStateBackend(options: {
   });
   setAwsClients(awsClients);
 
-  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const region = namedCliRegion(options.region) ?? 'us-east-1';
   const bucket = await resolveStateBucketWithDefault(options.stateBucket, region);
   const prefix = options.statePrefix;
   const stateConfig = { bucket, prefix };
@@ -1718,6 +1723,10 @@ async function stateInfoCommand(options: {
   if (options.verbose) logger.setLevel('debug');
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
+  // reaches an SDK client, an ARN segment or a state key. Rationale (and why
+  // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
+  foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   const awsClients = new AwsClients({
@@ -1732,7 +1741,7 @@ async function stateInfoCommand(options: {
   let regionCorrectedS3: S3Client | null = null;
 
   try {
-    const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+    const region = namedCliRegion(options.region) ?? 'us-east-1';
     const resolved = await resolveStateBucketWithDefaultAndSource(options.stateBucket, region);
     const bucket = resolved.bucket;
     const prefix = options.statePrefix;
