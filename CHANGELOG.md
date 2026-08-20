@@ -1,3 +1,10 @@
+## [0.284.18](https://github.com/go-to-k/cdkd/compare/v0.284.17...v0.284.18) (2026-08-20)
+
+
+### Bug Fixes
+
+* **provisioning:** thread maskSecrets into the ELBv2 LoadBalancer arm, all six ServiceDiscovery namespace arms, and pollOperation ([#2092](https://github.com/go-to-k/cdkd/issues/2092)) ([776ed48](https://github.com/go-to-k/cdkd/commit/776ed48b35c905e372ec1d3ae5e1f3a6098ee2f7))
+
 ## [0.284.17](https://github.com/go-to-k/cdkd/compare/v0.284.16...v0.284.17) (2026-08-20)
 
 
