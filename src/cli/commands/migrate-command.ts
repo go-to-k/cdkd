@@ -4,6 +4,7 @@ import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 import { withErrorHandling, LocalMigrateError } from '../../utils/error-handler.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { AwsClients } from '../../utils/aws-clients.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
 import { runImport, type RunImportOptions } from './import.js';
@@ -99,6 +100,10 @@ export async function migrateCommandAction(
     );
   }
 
+  // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
+  // reaches an SDK client, an ARN segment or a state key. Rationale (and why
+  // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
+  foldRegionOption(options);
   // ---- Role-arn assume up front so all later AWS clients inherit creds ----
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
@@ -106,7 +111,7 @@ export async function migrateCommandAction(
   });
 
   // ---- Region resolution (mirrors cdkd import / deploy) ----
-  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const region = namedCliRegion(options.region) ?? 'us-east-1';
 
   // ---- Output dir resolution (default = cwd + <sourceCfnStackName>) ----
   const outputDir = resolve(options.outputDir ?? sourceCfnStackName);

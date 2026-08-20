@@ -10,6 +10,9 @@
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   - defaults to us-east-1
+#   CDKD_REGION_SPELLING - the spelling handed to `cdkd --region` verbatim
+#                  (defaults to AWS_REGION). Set it to an upper-cased region to
+#                  run the issue-#2065 arm; see the note beside REGION below.
 
 set -euo pipefail
 
@@ -48,7 +51,28 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 cd "$(dirname "$0")"
 
 STACK="LambdaStack"
-REGION="${AWS_REGION:-us-east-1}"
+
+# Two spellings, deliberately (issue #2065).
+#
+# CDKD_REGION_SPELLING is what this fixture hands `cdkd --region` VERBATIM;
+# REGION is its canonical form and is what everything else uses - the state
+# key cdkd writes, every `aws` call, every assertion. Keeping them apart is the
+# whole point: cdkd folds the spelling internally, so a fixture that reused the
+# raw one for its own keys would look for `cdkd/LambdaStack/US-EAST-1/...` and
+# fail against a correct binary.
+#
+# Default: unset -> both are `us-east-1` and this file behaves exactly as
+# before, so the ordinary broad-set run is unchanged.
+#
+# Discriminating arm: `CDKD_REGION_SPELLING=US-EAST-1`. Against a pre-#2065
+# binary that arm dies before creating anything - S3 rejects the signature with
+# `AuthorizationHeaderMalformed: the region 'US-EAST-1' is wrong; expecting
+# 'us-east-1'` at the state-bucket preflight. Against a fixed one it deploys,
+# reads back and destroys exactly as the canonical arm does, and the state key
+# it writes is the CANONICAL one - which is what proves the fold reached the
+# state layer and not merely the SDK client.
+CDKD_REGION_SPELLING="${CDKD_REGION_SPELLING:-${AWS_REGION:-us-east-1}}"
+REGION="$(printf '%s' "${CDKD_REGION_SPELLING}" | tr '[:upper:]' '[:lower:]')"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
@@ -62,7 +86,7 @@ cleanup() {
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
-      --region "${REGION}" --yes >/dev/null 2>&1
+      --region "${CDKD_REGION_SPELLING}" --yes >/dev/null 2>&1
     destroy_rc=$?
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
@@ -100,7 +124,7 @@ cleanup
 echo "==> Phase 1: deploy with the local binary"
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" \
+  --region "${CDKD_REGION_SPELLING}" \
   --yes
 
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
@@ -153,7 +177,7 @@ echo "    OK: Lambda ReservedConcurrentExecutions == 5 on AWS (SDK provider wire
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" \
+  --region "${CDKD_REGION_SPELLING}" \
   --yes
 
 assert_gone "Lambda function ${FN_NAME} still exists after destroy" aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"

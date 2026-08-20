@@ -9,6 +9,7 @@ import type { Logger } from '../../types/config.js';
 import { withErrorHandling, CdkdError, normalizeAwsError } from '../../utils/error-handler.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { namedCliRegion, rawCliRegion } from '../region-options.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 import {
   getBootstrapMarkerKey,
@@ -17,7 +18,7 @@ import {
   type BootstrapMarker,
 } from '../../assets/asset-storage.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
-import { PARTITION_TABLE, canonicalizeRegion } from '../../utils/aws-partition.js';
+import { PARTITION_TABLE } from '../../utils/aws-partition.js';
 import { ecrRegistryHostPattern } from '../../utils/ecr-uri.js';
 import { escapeRegExp } from '../../utils/regexp.js';
 import {
@@ -813,10 +814,18 @@ function formatAge(date: Date): string {
 export async function promptGcConfirm(input: {
   planLines: string[];
   yes: boolean;
+  region: string;
 }): Promise<boolean> {
   const logger = getLogger();
   logger.warn('');
-  logger.warn('cdkd gc will delete the following unreferenced assets:');
+  // Name the REGION above the plan (issue #2029). Since that value can now come
+  // from `~/.aws/config` - a source the user never typed on this command line -
+  // the plan must say which region it is about. It was inferrable only by
+  // accident before: the DEFAULT storage name embeds the region
+  // (`cdkd-assets-<acct>-<region>`), but a bootstrap run with
+  // `--asset-bucket` / `--container-repo` prints custom names with no region
+  // anywhere, so `-y` deleted in an unnamed region.
+  logger.warn(`cdkd gc will delete the following unreferenced assets in ${input.region}:`);
   for (const line of input.planLines) {
     logger.warn(`  - ${line}`);
   }
@@ -938,9 +947,16 @@ export async function gcCommand(options: GcOptions): Promise<void> {
   logger.debug('Options:', options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  // `namedCliRegion`, not `canonicalizeRegion(options.region)`: this command
+  // deliberately skips `foldRegionOption` (so `rawCliRegion` below still sees
+  // the user's exact spelling for the marker's second probe), which left the
+  // ENV half unfolded here - `AWS_REGION=US-EAST-1 cdkd gc --role-arn ...`
+  // passed `undefined`, so `applyRoleArnIfSet` built `new STSClient({})` and
+  // the SDK read the raw env itself (`SignatureDoesNotMatch`). Folding the
+  // named region covers both halves without disturbing the raw capture.
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
-    region: canonicalizeRegion(options.region),
+    region: namedCliRegion(options.region),
   });
 
   // Issue #1995. `region` picks BOTH the AWS clients' endpoints and the
@@ -963,8 +979,31 @@ export async function gcCommand(options: GcOptions): Promise<void> {
   // The failure direction here is the SAFE one either way — a missed marker
   // deletes nothing, it just reports "not opted in" for a region that has
   // assets — which is why this is a usability fix rather than a data one.
-  const rawRegion = options.region || process.env['AWS_REGION'] || 'us-east-1';
-  const region = canonicalizeRegion(rawRegion);
+  // Issue #2029 - the region gc OPERATES ON and the region its clients TARGET
+  // must be ONE value.
+  //
+  // The previous shape resolved `options.region || AWS_REGION || 'us-east-1'`
+  // and passed the result to `new AwsClients({ region })` unconditionally,
+  // while `bootstrap-destroy.ts` let an absent region stay absent so the SDK
+  // chain answered. Either way the two halves could disagree, and gc's region
+  // is BOTH a client region and a VALUE - it keys the bootstrap marker and
+  // names the asset bucket / ECR repo - so a client resolved one way beside a
+  // marker key resolved another reads one region's marker and deletes against
+  // another region's endpoints.
+  //
+  // What this deliberately does NOT do is swap the literal for the profile
+  // region, which is what #2029 asks for and what a first cut of this change
+  // did. `cdkd bootstrap` WRITES the marker under this same
+  // `?? 'us-east-1'` default (issue #1820), so a read side that resolved the
+  // profile instead would stop finding the marker its own create side wrote:
+  // for a user with a non-us-east-1 profile and no flags, `cdkd gc` would
+  // report "not opted in" - and `cdkd bootstrap --destroy` would report
+  // "nothing to delete" - while the asset bucket and ECR repo stayed alive and
+  // billing. The read side cannot move until the write side moves with it, so
+  // both move together in issues #1820 / #2100.
+  const region = namedCliRegion(options.region) ?? 'us-east-1';
+  // The RAW spelling, for the marker's second probe only (see the probe below).
+  const rawRegion = rawCliRegion(options.region) ?? region;
 
   const awsClients = new AwsClients({
     region,
@@ -1116,7 +1155,7 @@ export async function gcCommand(options: GcOptions): Promise<void> {
 
     if (options.dryRun) {
       logger.info('');
-      logger.info('Dry run — the following unreferenced assets would be deleted:');
+      logger.info(`Dry run — the following unreferenced assets in ${region} would be deleted:`);
       for (const line of planLines) {
         logger.info(`  - ${line}`);
       }
@@ -1130,6 +1169,7 @@ export async function gcCommand(options: GcOptions): Promise<void> {
     const confirmed = await promptGcConfirm({
       planLines: [...planLines, totals],
       yes: options.yes,
+      region,
     });
     if (!confirmed) {
       logger.info('gc cancelled — nothing deleted.');
@@ -1186,11 +1226,14 @@ export function createGcCommand(): Command {
     )
     .option('--dry-run', 'Print the reclaim plan (per-item list + totals) without deleting', false)
     .addOption(
-      // Same region semantics as `cdkd bootstrap`: picks WHICH region's
-      // asset storage to gc (flag → AWS_REGION → us-east-1).
+      // Picks WHICH region's asset storage to gc. Unlike the other commands
+      // this one does NOT fall back to a us-east-1 literal - it deletes, so it
+      // refuses rather than guessing (issue #2029).
       new Option(
         '--region <region>',
-        'Region whose cdkd asset storage to garbage-collect (defaults to AWS_REGION env or us-east-1)'
+        'Region whose cdkd asset storage to garbage-collect ' +
+          '(defaults to AWS_REGION / AWS_DEFAULT_REGION, else the profile region; ' +
+          'refuses if none is configured)'
       )
     )
     .action(

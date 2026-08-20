@@ -428,6 +428,51 @@ describe('cdkd publish-assets', () => {
       expect(opts.redirect!.buckets.get(CDK_BUCKET)).toBe(CDKD_BUCKET);
     });
 
+    it('hands the RAW region spelling to the marker resolver, and the folded one to everything else', async () => {
+      // Issues #2065 / #2021. `AssetModeResolver.resolve` is the ONE consumer
+      // that must still see the user's exact spelling: it probes the canonical
+      // marker key first and the raw one second, and that second probe exists
+      // to find a key an unfolded `cdkd bootstrap` wrote (#1820). Everything
+      // else - the redirect map, the publish nodes' client region - must get
+      // the folded spelling.
+      //
+      // Without this the raw capture is dead code: reverting
+      // `resolve(stack.region || rawBaseRegion)` to `resolve(assetRegion)`
+      // leaves every other assertion in this file green, because they all run
+      // with an already-canonical region where the two spellings coincide.
+      mockLoadPublishableManifest.mockReturnValueOnce(publishableManifest());
+      mockResolveStateBucketWithDefault.mockResolvedValueOnce('cdkd-state-111111111111');
+      mockModeResolve.mockResolvedValueOnce({
+        mode: 'cdkd-assets',
+        marker: {
+          assetBucket: CDKD_BUCKET,
+          containerRepo: 'cdkd-container-assets-111111111111-us-east-1',
+          assetSupportVersion: 1,
+          createdAt: '2026-07-15T00:00:00.000Z',
+        },
+      });
+      // An ENV-AGNOSTIC stack, which is the CDK default and the only shape
+      // where this matters: `stack.region` comes from the Cloud Assembly and is
+      // always canonical, so a stack with `env.region` pinned never reaches the
+      // `|| rawBaseRegion` fallback at all. The first draft of this test used
+      // the default fixture (region `'us-east-1'`) and passed against BOTH the
+      // raw and the folded plumbing - a fixture that pinned the value under
+      // test.
+      mockSynthesize.mockResolvedValue({
+        stacks: [makeStack({ stackName: 'StackA', region: undefined })],
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+      });
+
+      const { error } = await runCmd(['--region', 'US-EAST-1']);
+      expect(error).toBeUndefined();
+      // RAW to the marker probe...
+      expect(mockModeResolve).toHaveBeenCalledWith('US-EAST-1');
+      // ...FOLDED to the publish nodes.
+      const opts = mockAddAssetsToGraph.mock.calls[0]![2] as { region?: string };
+      expect(opts.region).toBe('us-east-1');
+    });
+
     it('publishes verbatim (no redirect) when no state bucket is resolvable', async () => {
       // Default mockResolveStateBucketWithDefault rejects = never bootstrapped.
       mockLoadPublishableManifest.mockReturnValueOnce(publishableManifest());

@@ -26,6 +26,7 @@ import {
 } from '../../assets/asset-redirect.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import {
   resolveApp,
   resolveStateBucketWithDefault,
@@ -104,6 +105,10 @@ async function diffCommand(
   warnIfDeprecatedRegion(options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
+  // reaches an SDK client, an ARN segment or a state key. Rationale (and why
+  // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
+  foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Resolve --app from CLI, env, or cdk.json
@@ -116,7 +121,7 @@ async function diffCommand(
   options.app = app;
 
   // Resolve --state-bucket from CLI, env, cdk.json, or default
-  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const region = namedCliRegion(options.region) ?? 'us-east-1';
   const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
 
   logger.info('Calculating diff...');

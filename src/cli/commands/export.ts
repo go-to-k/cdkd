@@ -40,6 +40,7 @@ import { describeTypeWithThrottleRetry } from '../../provisioning/describe-type.
 import { withRetry } from '../../deployment/retry.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -2396,9 +2397,13 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
   // error message is the very first thing the user sees.
   refuseTransientContextIfUnsafe(options);
 
+  // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
+  // reaches an SDK client, an ARN segment or a state key. Rationale (and why
+  // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
+  foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
-  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const region = namedCliRegion(options.region) ?? 'us-east-1';
   const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
 
   if (options.region) {

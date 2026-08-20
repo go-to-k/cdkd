@@ -51,7 +51,11 @@ export const commonOptions = [
  * Kept (rather than fully removed) so that scripts or muscle memory passing
  * `--region` do not break. The value IS still honored — every non-bootstrap
  * command consumes `options.region` as the highest-precedence region source
- * (`options.region || AWS_REGION || 'us-east-1'`): it sets the region of the
+ * (`--region` -> `AWS_REGION` -> `us-east-1`, except `cdkd gc` and `cdkd
+ * bootstrap --destroy`, which resolve the profile region and REFUSE rather
+ * than falling back to a literal, because they delete — issue #2029; the
+ * value is folded to its canonical spelling at each handler's entry, issue
+ * #2065): it sets the region of the
  * provisioning / state-bucket SDK clients, the `applyRoleArnIfSet` STS hop,
  * and (for `deploy` / `destroy` / `import` / `export` / `orphan`) the
  * `AWS_REGION` env var inherited by the CDK synth subprocess. The flag is

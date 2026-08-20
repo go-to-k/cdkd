@@ -291,6 +291,45 @@ describe('cdkd bootstrap', () => {
     expect(call).not.toHaveProperty('containerRepoName');
   });
 
+  it('sends the RAW spelling to ensureAssetStorage and the FOLDED one everywhere else', async () => {
+    // Issue #2065's one deliberate exception, and the place a first cut of it
+    // over-applied. `ensureAssetStorage`'s existing-marker READ is paired with
+    // its marker WRITE (`src/assets/asset-storage.ts`), so that ONE argument
+    // keeps the user's exact spelling until issue #1820 aligns the write side.
+    //
+    // Every OTHER reader wants it canonical, and two fail loudly otherwise: the
+    // `CreateBucket` guard compares `region !== 'us-east-1'`, so a raw
+    // `US-EAST-1` would send a `LocationConstraint` for the one region S3
+    // forbids it in (issue #1888's defect), and the ECR / S3 / state-backend
+    // clients would sign for a region SigV4 rejects.
+    scriptStateBucket(false);
+
+    await runBootstrap(['--region', 'US-EAST-1']);
+
+    expect(mockEnsureAssetStorage).toHaveBeenCalledWith(
+      expect.objectContaining({ region: 'US-EAST-1' })
+    );
+    const createBucket = mockS3Send.mock.calls
+      .map((c) => c[0] as { constructor: { name: string }; input: Record<string, unknown> })
+      .find((c) => c.constructor.name === 'CreateBucketCommand');
+    expect(createBucket, 'no CreateBucket issued - anchor drifted?').toBeDefined();
+    // us-east-1 is the API default and passing it explicitly is an error, so
+    // the CANONICAL comparison must win: no constraint at all.
+    expect(createBucket!.input).not.toHaveProperty('CreateBucketConfiguration');
+  });
+
+  it('counter-case: an already-canonical region sends no constraint either', async () => {
+    scriptStateBucket(false);
+    await runBootstrap(['--region', 'us-east-1']);
+    expect(mockEnsureAssetStorage).toHaveBeenCalledWith(
+      expect.objectContaining({ region: 'us-east-1' })
+    );
+    const createBucket = mockS3Send.mock.calls
+      .map((c) => c[0] as { constructor: { name: string }; input: Record<string, unknown> })
+      .find((c) => c.constructor.name === 'CreateBucketCommand');
+    expect(createBucket!.input).not.toHaveProperty('CreateBucketConfiguration');
+  });
+
   it('rejects --asset-bucket / --container-repo with --no-assets before any AWS call', async () => {
     await expect(
       runBootstrap(['--region', 'us-east-1', '--no-assets', '--asset-bucket', 'my-bucket'])

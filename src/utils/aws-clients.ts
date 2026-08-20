@@ -37,6 +37,28 @@ export interface AwsClientConfig {
 /**
  * AWS clients manager
  */
+/**
+ * {@link canonicalizeRegion}'s body, inlined.
+ *
+ * This module may NOT import it — `scripts/audit-provider-coverage.ts` runs
+ * under `node` with native type stripping and imports this file as
+ * `'../src/utils/aws-clients.ts'`, and Node resolves relative specifiers
+ * LITERALLY: it does not rewrite `.js` to `.ts` the way TypeScript does at emit
+ * time. So a `./aws-partition.js` import here is fine for the bundle and fails
+ * the script with `ERR_MODULE_NOT_FOUND` (which is exactly how this was found —
+ * 32 `gen-nested-key-coverage` cases went red on the first cut of issue #2065).
+ * That constraint had never been written down, because until now this file
+ * happened to have NO relative import at all; the script's own import carries
+ * the other half of the note.
+ *
+ * `tests/unit/utils/aws-clients-region-fold.test.ts` fences BOTH halves: that
+ * this stays byte-equivalent to `canonicalizeRegion` over a table of spellings,
+ * and that this file gains no relative import that would break the script.
+ */
+function foldRegion(region: string): string {
+  return region.toLowerCase();
+}
+
 export class AwsClients {
   private s3Client?: S3Client;
   private cloudControlClient?: CloudControlClient;
@@ -63,7 +85,25 @@ export class AwsClients {
   private config: AwsClientConfig;
 
   constructor(config: AwsClientConfig = {}) {
-    this.config = config;
+    // Fold the region here as well as at the CLI boundary (issue #2065). This
+    // is defense in depth, not the primary fix: `src/cli/region-options.ts`
+    // folds `--region` / `AWS_REGION` per command, and this catches the paths
+    // that boundary cannot see - a LIBRARY caller constructing `AwsClients`
+    // directly (which never runs the CLI's handlers at all), and any future
+    // call site that reads a region from somewhere new. What it buys is that
+    // `client.config.region()` is canonical for every CONFIGURED bag, which is
+    // the source the six provider ARN builders in issue #1881 interpolate raw.
+    //
+    // Double-folding is a no-op, and this cannot hide a raw spelling from a
+    // consumer that wants one: nothing reads `configuredRegion` expecting the
+    // user's exact case (`intrinsic-function-resolver.ts` already compares it
+    // THROUGH `canonicalizeRegion`), and the one consumer that does want the
+    // raw spelling - the bootstrap marker's second probe - takes it as a
+    // string argument, never from a client.
+    this.config = {
+      ...config,
+      ...(config.region !== undefined && { region: foldRegion(config.region) }),
+    };
   }
 
   private get clientOptions(): Pick<AwsClientConfig, 'region' | 'profile' | 'credentials'> {

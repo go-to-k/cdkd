@@ -16,6 +16,7 @@ import { withErrorHandling, normalizeAwsError, CdkdError } from '../../utils/err
 import { bootstrapDestroyCommand } from './bootstrap-destroy.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { foldRegionOption, namedCliRegion, rawCliRegion } from '../region-options.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 import {
   ensureAssetStorage,
@@ -55,6 +56,30 @@ async function bootstrapCommand(options: {
   logger.info('Starting cdkd bootstrap...');
   logger.debug('Options:', options);
 
+  // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
+  // reaches an SDK client. Rationale (and why this is per-command rather than
+  // per-consumer) in `src/cli/region-options.ts`.
+  //
+  // The user's EXACT spelling is captured FIRST, for `ensureAssetStorage` ALONE
+  // (see its call site below). That call's existing-marker READ is paired with
+  // its marker WRITE, and `src/assets/asset-storage.ts` states the pairing rests
+  // on both using the same spelling; folding it would move the WRITE key, so a
+  // user holding a marker at `cdkd-bootstrap/US-EAST-1.json` would stop having
+  // their recorded custom asset names reused and a conflicting name would stop
+  // being refused - a second marker and a second set of storage instead.
+  // Aligning the write side, and with it the asset bucket / ECR repo NAMES the
+  // same value builds, is issue #1820's lane.
+  //
+  // Scoping the raw spelling to that ONE argument is the point, and a first cut
+  // of this change got it wrong by assigning it to `region` wholesale. Every
+  // other reader of `region` here wants it CANONICAL, and two of them fail
+  // loudly on a raw one: the `CreateBucket` guard at `region !== 'us-east-1'`
+  // would add a `LocationConstraint` for the one region S3 forbids it in (issue
+  // #1888's defect, re-created here), and the ECR / S3 / state-backend clients
+  // below would sign for a region SigV4 rejects.
+  const rawRegion = rawCliRegion(options.region) ?? 'us-east-1';
+  foldRegionOption(options);
+
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
@@ -66,7 +91,7 @@ async function bootstrapCommand(options: {
   setAwsClients(awsClients);
 
   const s3Client = awsClients.s3;
-  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const region = namedCliRegion(options.region) ?? 'us-east-1';
 
   // Resolve bucket name: use provided value or generate default from account info
   let bucketName: string;
@@ -275,7 +300,9 @@ async function bootstrapCommand(options: {
           ecrClient,
           stateBackend,
           accountId,
-          region,
+          // The ONE raw-spelling consumer (see the capture at the top of this
+          // function): its marker read is paired with its marker write.
+          region: rawRegion,
           force: options.force,
           // Issue #1011 — custom names override the conventional ones for
           // the probe, the creates, and the marker body. Re-bootstrap with
@@ -399,7 +426,8 @@ export function createBootstrapCommand(): Command {
       // from `AWS_REGION` / profile.
       new Option(
         '--region <region>',
-        'AWS region in which to create the state bucket (defaults to AWS_REGION env or us-east-1)'
+        'AWS region to bootstrap, or to tear down with --destroy ' +
+          '(defaults to AWS_REGION env, else us-east-1)'
       )
     )
     .action(

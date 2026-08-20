@@ -123,11 +123,23 @@ vi.mock('../../../src/assets/asset-publisher.js', () => ({
   })),
 }));
 
+/**
+ * Hoisted so the ARGUMENT is observable, not just the returned mode. Issue
+ * #2065: `deploy.ts` must hand this resolver the user's RAW region spelling
+ * (its second marker probe is what finds a key an unfolded `cdkd bootstrap`
+ * wrote) while every other consumer gets the folded one.
+ */
+const modeResolveSpy = vi.hoisted(() => vi.fn(async () => ({ mode: 'legacy' })));
+const loadPublishableManifestMock = vi.hoisted(() => vi.fn(() => null as unknown));
+
 vi.mock('../../../src/assets/asset-storage.js', () => ({
-  AssetModeResolver: vi.fn().mockImplementation(() => ({
-    resolve: vi.fn(async () => ({ mode: 'legacy' })),
-  })),
+  AssetModeResolver: vi.fn().mockImplementation(() => ({ resolve: modeResolveSpy })),
 }));
+
+vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, loadPublishableAssetManifest: loadPublishableManifestMock };
+});
 
 vi.mock('../../../src/cli/commands/prefix-migration-check.js', () => ({
   createPrefixMigrationGate: vi.fn(() => undefined),
@@ -193,7 +205,7 @@ vi.mock('../../../src/synthesis/stack-messages.js', () => ({
   processStackMessages: vi.fn(),
 }));
 
-function makeStack(stackName: string) {
+function makeStack(stackName: string, overrides: Record<string, unknown> = {}) {
   return {
     stackName,
     displayName: stackName,
@@ -201,6 +213,7 @@ function makeStack(stackName: string) {
     template: { Resources: {} },
     dependencyNames: [],
     region: 'us-east-1',
+    ...overrides,
   };
 }
 
@@ -466,5 +479,64 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     expect(code).toBeUndefined();
     const printed = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(printed).toContain('Deployment completed successfully');
+  });
+});
+
+/**
+ * Issue [#2065](https://github.com/go-to-k/cdkd/issues/2065) - the raw/folded
+ * SPLIT on the deploy path.
+ *
+ * `AssetModeResolver.resolve` is the one consumer that must still see the
+ * user's exact `--region` spelling: it probes the canonical marker key first
+ * and the raw one second, and that second probe exists to find a key an
+ * unfolded `cdkd bootstrap` wrote (issue #1820, still verbatim on the write
+ * side). Everything else on this path - the redirect map, the publish nodes'
+ * client region, the state key - takes the folded spelling.
+ *
+ * Without this case the raw capture in `deploy.ts` is dead code that nothing
+ * notices: reverting `resolve(stack.region || rawBaseRegion)` to
+ * `resolve(assetRegion)` leaves every other test in the repo green.
+ */
+describe('deploy hands the RAW region spelling to the marker resolver (issue #2065)', () => {
+  beforeEach(() => {
+    // Reset everything this describe depends on rather than inheriting the
+    // previous describe's last-test state - a review finding, and the kind of
+    // coupling that turns an unrelated edit above into a failure here.
+    engineResults.clear();
+    failingStacks.clear();
+    cancelledStacks.clear();
+    errorSpy.mockClear();
+    modeResolveSpy.mockClear();
+    loadPublishableManifestMock.mockReturnValue({ files: {}, dockerImages: {} });
+  });
+
+  afterEach(() => {
+    loadPublishableManifestMock.mockReturnValue(null);
+  });
+
+  it('passes the raw spelling to resolve() for an ENV-AGNOSTIC stack', async () => {
+    // Env-agnostic is the CDK default and the only shape where this matters:
+    // `stack.region` comes from the Cloud Assembly and is always canonical, so
+    // a stack with `env.region` pinned never reaches the `|| rawBaseRegion`
+    // fallback at all.
+    synthStacks.value = [
+      makeStack('StackA', { region: undefined, assetManifestPath: '/tmp/cdk.out/StackA.assets.json' }),
+    ];
+    engineResults.set('StackA', { deleteSkipped: 0, updatePartial: 0 });
+
+    await runDeploy(['--region', 'US-EAST-1', '--yes']);
+
+    expect(modeResolveSpy).toHaveBeenCalledWith('US-EAST-1');
+  });
+
+  it('counter-case: an already-canonical region is byte-identical', async () => {
+    synthStacks.value = [
+      makeStack('StackA', { region: undefined, assetManifestPath: '/tmp/cdk.out/StackA.assets.json' }),
+    ];
+    engineResults.set('StackA', { deleteSkipped: 0, updatePartial: 0 });
+
+    await runDeploy(['--region', 'us-east-1', '--yes']);
+
+    expect(modeResolveSpy).toHaveBeenCalledWith('us-east-1');
   });
 });

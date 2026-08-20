@@ -17,6 +17,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import { namedCliRegion, rawCliRegion } from '../region-options.js';
 import {
   BOOTSTRAP_MARKER_PREFIX,
   getBootstrapMarkerKey,
@@ -333,9 +334,14 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
   logger.debug('Options:', options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call (create-side parity).
+  // `namedCliRegion`, not `canonicalizeRegion(options.region)` - the latter is
+  // `undefined` when only `AWS_REGION` names the region, so
+  // `AWS_REGION=US-EAST-1 cdkd bootstrap --destroy --role-arn ...` built
+  // `new STSClient({})` and the SDK read the raw env itself
+  // (`SignatureDoesNotMatch`). Issue #2065.
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
-    region: canonicalizeRegion(options.region),
+    region: namedCliRegion(options.region),
   });
 
   // Issue #1995, same split as `cdkd gc` (`src/cli/commands/gc.ts`) — this
@@ -354,28 +360,27 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
   //   `cdkd-bootstrap/US-EAST-1.json`; a fold-and-stop read would MISS that
   //   marker where the pre-fold read HIT it, which for THIS command means
   //   refusing to destroy storage that exists.
-  const rawRegion = options.region || process.env['AWS_REGION'] || 'us-east-1';
-  const region = canonicalizeRegion(rawRegion);
-
-  // Canonical when a region was NAMED (flag or env), absent when it was not.
+  // Issue #2029, the same treatment `gc.ts` gets and for the same reason: this
+  // command DELETES on this value, and the previous split let its two halves
+  // disagree. `clientRegion` let an absent region stay absent (so the main bag
+  // resolved the profile) while `region` fell back to the `'us-east-1'` literal
+  // - and `region` is what keys the marker and what the marker / state-backend
+  // clients target. For a user with a configured profile region and no flag,
+  // that read one region's marker while the account-level bag pointed at
+  // another. ONE value now drives everything.
   //
-  // Deliberately NOT `region` unconditionally the way `gc.ts` passes it: that
-  // variable falls back to the literal `'us-east-1'`, so passing it always
-  // would PIN us-east-1 for a user who names no region and expects the SDK's
-  // own chain (`~/.aws/config` profile region) to answer — a behaviour change
-  // well outside this fix. What #1995 requires is only that a RAW spelling
-  // never reaches a client, and that holds here: the env path is folded too,
-  // which is the half the conditional spread used to miss
-  // (`AWS_REGION=CN-NORTH-1 cdkd bootstrap --destroy` previously let the SDK
-  // read the raw env value itself and resolve the wrong partition).
-  //
-  // Same shape as `loadBootstrapContainerRepo`'s `clientRegion`
-  // (`src/cli/commands/local-state-loader.ts`): fold, and let absent stay
-  // absent.
-  const clientRegion = canonicalizeRegion(options.region || process.env['AWS_REGION']) || undefined;
+  // As in `gc.ts`, the literal is deliberately NOT swapped for the profile
+  // region here: `cdkd bootstrap` writes the marker under this same default
+  // (issue #1820), so a teardown that resolved the profile instead would report
+  // "nothing to delete" while the asset bucket and ECR repo stayed alive - the
+  // failure direction this file's own header calls the worse one. Both sides
+  // move together in issues #1820 / #2100.
+  const region = namedCliRegion(options.region) ?? 'us-east-1';
+  // The RAW spelling, for the marker's second probe only.
+  const rawRegion = rawCliRegion(options.region) ?? region;
 
   const awsClients = new AwsClients({
-    ...(clientRegion !== undefined && { region: clientRegion }),
+    region,
     ...(options.profile && { profile: options.profile }),
   });
   setAwsClients(awsClients);
