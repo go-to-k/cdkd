@@ -382,6 +382,14 @@ export class ELBv2Provider implements ResourceProvider {
    * `withRetry`, whose per-attempt `debug` line and give-up `warn` summary
    * interpolate the AWS message verbatim — and that payload is built from
    * RESOLVED template properties. See {@link maskedRetryLogger}.
+   *
+   * The LoadBalancer arm receives it too (issue #2063). It runs no `withRetry`,
+   * but it has the two surfaces that do not need one: the `ProvisioningError`
+   * its catch throws (printed at ERROR — DEFAULT verbosity — by
+   * `deploy-engine.ts`) and its partial-create cleanup `warn`. Its payload is
+   * `Name` / `Subnets` / `SecurityGroups` / `LoadBalancerAttributes` values /
+   * `Tags` values straight out of the resolved bag, and AWS quotes a rejected
+   * value back.
    */
   async create(
     logicalId: string,
@@ -391,7 +399,7 @@ export class ELBv2Provider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
-        return this.createLoadBalancer(logicalId, resourceType, properties);
+        return this.createLoadBalancer(logicalId, resourceType, properties, context?.maskSecrets);
       case 'AWS::ElasticLoadBalancingV2::TargetGroup':
         return this.createTargetGroup(logicalId, resourceType, properties, context?.maskSecrets);
       case 'AWS::ElasticLoadBalancingV2::Listener':
@@ -408,6 +416,15 @@ export class ELBv2Provider implements ResourceProvider {
   /**
    * `context` is read for ONE thing today: `maskSecrets` (issue #2050) — the
    * update-path twin of the `create()` note above.
+   *
+   * The catch below is the LoadBalancer arm's masking site (issue #2063), and
+   * the reason that arm needs no `maskSecrets` parameter of its own.
+   * `updateLoadBalancer` has no try/catch: its `ModifyLoadBalancerAttributes` /
+   * `SetSubnets` / `SetSecurityGroups` / `AddTags` rejections — every one of
+   * them built from the resolved `properties` bag — propagate RAW to here.
+   * The sibling arms wrap their own errors into a `ProvisioningError` first,
+   * so the `CdkdError` passthrough short-circuits them and this frame masks
+   * only what actually escapes unwrapped.
    */
   async update(
     logicalId: string,
@@ -433,7 +450,7 @@ export class ELBv2Provider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update ELBv2 resource ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update ELBv2 resource ${logicalId}: ${this.maskErrorMessage(error, context?.maskSecrets)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -457,7 +474,8 @@ export class ELBv2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::ElasticLoadBalancingV2::TargetGroup':
         return this.updateTargetGroup(
@@ -516,7 +534,8 @@ export class ELBv2Provider implements ResourceProvider {
   private async createLoadBalancer(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating LoadBalancer ${logicalId}`);
 
@@ -646,8 +665,16 @@ export class ELBv2Provider implements ResourceProvider {
               EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic: enforcePrivateLink,
             })
           );
+          // Masked because `enforcePrivateLink` IS a resolved property value.
+          // Debug level is not an exemption (issue #2063 review): `--verbose`
+          // is an ordinary way to run a failing deploy, and #1997 shipped this
+          // exact shape as a leak (a resolved ASG name in a debug line). Masked
+          // on the RAW value rather than the finished sentence so a value that
+          // is the whole needle is caught at any length.
           this.logger.debug(
-            `Applied EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic=${enforcePrivateLink} for ${logicalId}`
+            `Applied EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic=${maskerOrIdentity(
+              maskSecrets
+            )(String(enforcePrivateLink))} for ${logicalId}`
           );
         }
 
@@ -668,8 +695,15 @@ export class ELBv2Provider implements ResourceProvider {
               },
             })
           );
+          // Same reason as the SetSecurityGroups debug above:
+          // `MinimumLoadBalancerCapacity.CapacityUnits` is a resolved property
+          // value, and it is the more reachable of the two — a
+          // `{{resolve:secretsmanager:...}}` resolving to a numeric string is
+          // accepted by `Number()` here and by AWS, so the plaintext prints.
           this.logger.debug(
-            `Requested capacity reservation of ${minCapacity.CapacityUnits} LCU for ${logicalId}`
+            `Requested capacity reservation of ${maskerOrIdentity(maskSecrets)(
+              String(minCapacity.CapacityUnits)
+            )} LCU for ${logicalId}`
           );
           if (
             isTruthyCfnBoolean(properties['EnableCapacityReservationProvisionStabilize']) &&
@@ -686,7 +720,13 @@ export class ELBv2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created LoadBalancer ${logicalId} (${lbArn}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws elbv2 delete-load-balancer --load-balancer-arn ${lbArn}`
+            // Masked for uniformity with the sibling lines in this same `try`
+            // (issue #2063), matching the Listener / TargetGroup create paths.
+            // The cleanup call carries only the AWS-issued ARN, so a resolved
+            // property value reaching here would be surprising — but
+            // "surprising" is not "impossible", and an unmasked line sitting
+            // beside masked ones is what a later author copies.
+            `Failed to clean up partially-created LoadBalancer ${logicalId} (${lbArn}): ${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be required before the next deploy: aws elbv2 delete-load-balancer --load-balancer-arn ${lbArn}`
           );
         }
         throw innerError;
@@ -703,9 +743,14 @@ export class ELBv2Provider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // `cause` carries the ORIGINAL error untouched (issue #2063): the
+      // classifier walks it for `$metadata`, so only the human-readable
+      // message is masked. This throw is the ONLY disclosure surface for a
+      // NON-RETRYABLE `CreateLoadBalancer` rejection — nothing on this path
+      // goes through `withRetry`, so there is no give-up summary behind it.
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create LoadBalancer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create LoadBalancer ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
         resourceType,
         logicalId,
         undefined,
@@ -719,7 +764,8 @@ export class ELBv2Provider implements ResourceProvider {
     physicalId: string,
     _resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     // ELBv2 LoadBalancer Name / Type / Scheme are immutable after
     // creation. The deploy engine detects these via immutable-property
@@ -944,9 +990,18 @@ export class ELBv2Provider implements ResourceProvider {
             : { ResetCapacityReservation: true }),
         })
       );
+      // The update twin of the create-path capacity debug line, and the reason
+      // this arm takes a masker at all: it has no try/catch, so its REJECTIONS
+      // are masked by `update()`'s outer frame, but a debug line it emits on
+      // the SUCCESS path never reaches that frame. `newCapacityUnits` is
+      // `Number(properties[...].CapacityUnits)`, and a number stringifies to
+      // the same digits the resolved plaintext had, so the coercion is not a
+      // sanitizer.
       this.logger.debug(
         newCapacityUnits !== undefined
-          ? `Requested capacity reservation of ${newCapacityUnits} LCU for ${logicalId}`
+          ? `Requested capacity reservation of ${maskerOrIdentity(maskSecrets)(
+              String(newCapacityUnits)
+            )} LCU for ${logicalId}`
           : `Reset capacity reservation for ${logicalId}`
       );
       if (
@@ -977,6 +1032,16 @@ export class ELBv2Provider implements ResourceProvider {
    * a timeout WARNS and continues (the reservation keeps provisioning
    * asynchronously and the ModifyCapacityReservation was accepted), while a
    * `failed` zonal state throws — that reservation will never provision.
+   *
+   * Takes NO masker, deliberately (issue #2063 audit). Its only request is
+   * `DescribeCapacityReservation({ LoadBalancerArn })` with an AWS-issued ARN,
+   * so no resolved template value is in the payload for AWS to quote back into
+   * the transient-failure `debug` line; the timeout `warn` and the `failed`
+   * throw are assembled from a logical id, a count and an AWS-supplied zonal
+   * reason. A structural reason, not a likelihood judgement — add the
+   * parameter if this ever sends a template-derived member. The `failed` throw
+   * is an ordinary `Error`, so it lands in `createLoadBalancer`'s masked catch
+   * on the create path and in `update()`'s on the update path either way.
    */
   private async waitForCapacityReservationProvisioned(
     lbArn: string,

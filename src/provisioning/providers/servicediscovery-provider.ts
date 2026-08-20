@@ -179,6 +179,15 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * `context` is read for ONE thing today: `maskSecrets` (issue #2050). The
    * Service create path runs a post-create `UpdateServiceAttributes` through
    * `withRetry` — see {@link maskedRetryLogger}.
+   *
+   * EVERY arm receives it, not just the Service one (issue #2063). The three
+   * namespace arms build their `Create*NamespaceCommand` payload out of the
+   * RESOLVED `properties` bag — `Name`, `Description`, `Tags` — and each has
+   * two disclosure surfaces for it: the `ProvisioningError` its catch throws
+   * (printed at ERROR, i.e. DEFAULT verbosity, by `deploy-engine.ts`) and the
+   * AWS `ErrorMessage` that {@link pollOperation} raises for a FAILED
+   * operation. Cloud Map's create is operation-based, so the second one is the
+   * NORMAL rejection path for those arms, not an edge case.
    */
   async create(
     logicalId: string,
@@ -188,11 +197,16 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
-        return this.createNamespace(logicalId, resourceType, properties);
+        return this.createNamespace(logicalId, resourceType, properties, context?.maskSecrets);
       case 'AWS::ServiceDiscovery::HttpNamespace':
-        return this.createHttpNamespace(logicalId, resourceType, properties);
+        return this.createHttpNamespace(logicalId, resourceType, properties, context?.maskSecrets);
       case 'AWS::ServiceDiscovery::PublicDnsNamespace':
-        return this.createPublicDnsNamespace(logicalId, resourceType, properties);
+        return this.createPublicDnsNamespace(
+          logicalId,
+          resourceType,
+          properties,
+          context?.maskSecrets
+        );
       case 'AWS::ServiceDiscovery::Service':
         return this.createService(logicalId, resourceType, properties, context?.maskSecrets);
       default:
@@ -206,7 +220,11 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
   /**
    * `context` is read for ONE thing today: `maskSecrets` (issue #2050) — the
-   * update-path twin of the `create()` note above.
+   * update-path twin of the `create()` note above, and threaded into every arm
+   * for the same reason (issue #2063). The namespace update arms carry one
+   * payload surface the create arms do not: {@link syncNamespaceTags} sends
+   * `TagResource` with the resolved `Tags` VALUES, whose rejection lands in
+   * the arm's own catch.
    */
   update(
     logicalId: string,
@@ -223,7 +241,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::ServiceDiscovery::HttpNamespace':
         return this.updateHttpNamespace(
@@ -231,7 +250,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::ServiceDiscovery::PublicDnsNamespace':
         return this.updatePublicDnsNamespace(
@@ -239,7 +259,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::ServiceDiscovery::Service':
         return this.updateService(
@@ -289,7 +310,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   private async createNamespace(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating private DNS namespace ${logicalId}`);
     const client = this.getClient();
@@ -340,7 +362,12 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       }
 
       // Poll for operation completion
-      const namespaceId = await this.pollOperation(operationId, logicalId, resourceType);
+      const namespaceId = await this.pollOperation(
+        operationId,
+        logicalId,
+        resourceType,
+        maskSecrets
+      );
 
       // Build ARN
       const arn = await this.buildNamespaceArn(namespaceId);
@@ -357,8 +384,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
+      // `cause` carries the ORIGINAL error untouched (issue #2063): the
+      // classifier walks it for `$metadata`, so only the human-readable
+      // message is masked. The `ProvisioningError` passthrough above is why
+      // {@link pollOperation} masks its OWN message rather than relying on
+      // this line — a FAILED-operation error re-throws here untouched.
       throw new ProvisioningError(
-        `Failed to create private DNS namespace ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create private DNS namespace ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
         resourceType,
         logicalId,
         undefined,
@@ -395,7 +427,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating private DNS namespace ${logicalId}: ${physicalId}`);
     const client = this.getClient();
@@ -431,7 +464,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
         const operationId = response.OperationId;
         if (operationId) {
-          await this.pollOperation(operationId, logicalId, resourceType);
+          await this.pollOperation(operationId, logicalId, resourceType, maskSecrets);
         }
       } else {
         this.logger.debug(`No mutable namespace-body diff for PrivateDnsNamespace ${logicalId}`);
@@ -446,7 +479,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update private DNS namespace ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update private DNS namespace ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -530,7 +563,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   private async createHttpNamespace(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating HTTP namespace ${logicalId}`);
     const client = this.getClient();
@@ -561,7 +595,12 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         throw new Error('CreateHttpNamespace did not return OperationId');
       }
 
-      const namespaceId = await this.pollOperation(operationId, logicalId, resourceType);
+      const namespaceId = await this.pollOperation(
+        operationId,
+        logicalId,
+        resourceType,
+        maskSecrets
+      );
       const arn = await this.resolveNamespaceArn(namespaceId);
 
       this.logger.debug(`Successfully created HTTP namespace ${logicalId}: ${namespaceId}`);
@@ -577,7 +616,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create HTTP namespace ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create HTTP namespace ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
         resourceType,
         logicalId,
         undefined,
@@ -609,7 +648,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating HTTP namespace ${logicalId}: ${physicalId}`);
     const client = this.getClient();
@@ -634,7 +674,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
         const operationId = response.OperationId;
         if (operationId) {
-          await this.pollOperation(operationId, logicalId, resourceType);
+          await this.pollOperation(operationId, logicalId, resourceType, maskSecrets);
         }
       }
 
@@ -647,7 +687,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update HTTP namespace ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update HTTP namespace ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -661,7 +701,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   private async createPublicDnsNamespace(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating public DNS namespace ${logicalId}`);
     const client = this.getClient();
@@ -698,7 +739,12 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         throw new Error('CreatePublicDnsNamespace did not return OperationId');
       }
 
-      const namespaceId = await this.pollOperation(operationId, logicalId, resourceType);
+      const namespaceId = await this.pollOperation(
+        operationId,
+        logicalId,
+        resourceType,
+        maskSecrets
+      );
 
       // PublicDnsNamespace exposes `HostedZoneId` as a CFn attribute (AWS
       // creates a public Route 53 hosted zone alongside the namespace);
@@ -710,6 +756,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         arn = nsResp.Namespace?.Arn;
         hostedZoneId = nsResp.Namespace?.Properties?.DnsProperties?.HostedZoneId;
       } catch (err) {
+        // Deliberately UNMASKED even though a masker is in scope here (issue
+        // #2063 audit). Not an oversight and not "probably fine": the request
+        // is `GetNamespace({ Id })` where `Id` came back from AWS's own
+        // operation result, so NO resolved template value is in the payload
+        // for AWS to quote back. The masked lines in this same `try` are the
+        // ones whose payload IS built from `properties`. If this call ever
+        // grows a template-derived member, mask it.
         this.logger.debug(
           `GetNamespace(${namespaceId}) after create failed: ${err instanceof Error ? err.message : String(err)}`
         );
@@ -732,7 +785,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create public DNS namespace ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create public DNS namespace ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
         resourceType,
         logicalId,
         undefined,
@@ -761,7 +814,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating public DNS namespace ${logicalId}: ${physicalId}`);
     const client = this.getClient();
@@ -797,7 +851,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
         const operationId = response.OperationId;
         if (operationId) {
-          await this.pollOperation(operationId, logicalId, resourceType);
+          await this.pollOperation(operationId, logicalId, resourceType, maskSecrets);
         }
       }
 
@@ -810,7 +864,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update public DNS namespace ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to update public DNS namespace ${logicalId}: ${this.maskErrorMessage(error, maskSecrets)}`,
         resourceType,
         logicalId,
         physicalId,
@@ -1030,7 +1084,13 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
         const operationId = response.OperationId;
         if (operationId) {
-          await this.pollOperation(operationId, logicalId, resourceType);
+          // Threaded (issue #2063): the `UpdateService` body carries the
+          // resolved `Description` / `DnsConfig` / `HealthCheckConfig`, and
+          // this arm's catch re-throws a `ProvisioningError` untouched — so
+          // the operation's `ErrorMessage` escapes unless `pollOperation`
+          // masks it itself. Issue #2050 threaded the two `withRetry` calls
+          // below but left this one, which was the hole.
+          await this.pollOperation(operationId, logicalId, resourceType, maskSecrets);
         }
       }
 
@@ -1169,6 +1229,15 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * Resolve a namespace's ARN — authoritative via `GetNamespace`, with a
    * deterministic STS-based construction as fallback so a transient read
    * failure right after create does not fail the whole resource.
+   *
+   * Takes NO masker, deliberately (issue #2063 audit). Its request is
+   * `GetNamespace({ Id })` with an AWS-issued namespace id — no resolved
+   * template value is in the payload, so the AWS error text it logs cannot
+   * echo one back. That is a structural reason, not an assessment of
+   * likelihood; add the parameter if this call ever grows a template-derived
+   * member. The `TagResource` / `UntagResource` calls in
+   * {@link syncNamespaceTags} DO carry resolved values, but they throw rather
+   * than log, and the throw lands in the calling arm's masked catch.
    */
   private async resolveNamespaceArn(namespaceId: string): Promise<string> {
     try {
@@ -1232,11 +1301,43 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   /**
    * Poll a Service Discovery operation until it completes.
    * Returns the target resource ID from the operation result.
+   *
+   * MASKS `Operation.ErrorMessage` (issue #2063), and this is the only place
+   * that can. Cloud Map's create / update are operation-based: the caller's
+   * `Create*Namespace` / `Update*` request carried the RESOLVED `properties`
+   * bag — `Name`, `Description`, `Tags`, `DnsConfig` — and AWS reports its
+   * rejection here rather than by rejecting the submit call, quoting the
+   * offending value back in `ErrorMessage`. A FAILED operation is therefore
+   * the NORMAL rejection path for these arms, not an edge case.
+   *
+   * Why not leave it to the arms' own catch: every namespace arm and
+   * `updateService` open with `if (error instanceof ProvisioningError) throw
+   * error;`, so a `ProvisioningError` raised here is re-thrown VERBATIM and
+   * never reaches their `maskErrorMessage`. `deploy-engine.ts` then prints it
+   * at ERROR — DEFAULT verbosity. That passthrough is correct (it preserves
+   * the resource/logical-id context this frame added), which is exactly why
+   * the mask has to be applied at the point of construction.
+   *
+   * `errorMessage` is masked RAW, before any interpolation. Stating precisely
+   * what that buys, because the obvious phrasing over-claims (issue #2063
+   * review): `maskSecretsInText`'s WHOLE-VALUE arm fires only when
+   * `secrets.has(text)` — i.e. when the text IS the secret in its entirety —
+   * so masking raw covers the case where AWS returns the offending value as
+   * the whole `ErrorMessage`, at ANY length, including below the substring
+   * arm's 4-character `MIN_NEEDLE_LENGTH` floor. When AWS instead quotes the
+   * value INSIDE a sentence, the substring arm handles it and that floor
+   * applies either way, raw or not. So masking here is strictly better than
+   * masking the assembled message, but it is not general sub-4-character
+   * coverage. See `SecretMaskingContext` in `src/types/resource.ts`.
+   *
+   * The `operationId` / timeout message below carries no template-derived
+   * value (an AWS-issued opaque id), so it is left as-is.
    */
   private async pollOperation(
     operationId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    maskSecrets?: SecretMasker
   ): Promise<string> {
     const client = this.getClient();
     const maxAttempts = 60;
@@ -1257,7 +1358,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       }
 
       if (status === 'FAIL') {
-        const errorMessage = result.Operation?.ErrorMessage || 'Unknown error';
+        const errorMessage = maskerOrIdentity(maskSecrets)(
+          result.Operation?.ErrorMessage || 'Unknown error'
+        );
         throw new ProvisioningError(
           `Operation failed for ${logicalId}: ${errorMessage}`,
           resourceType,
