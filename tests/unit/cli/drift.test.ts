@@ -1058,9 +1058,15 @@ describe('cdkd drift', () => {
     const payload = JSON.parse(output) as Array<{
       stack: string;
       region: string;
-      drifted: Array<{ logicalId: string; type: string; changes: unknown[] }>;
-      clean: Array<{ logicalId: string }>;
+      drifted: Array<{
+        logicalId: string;
+        type: string;
+        changes: unknown[];
+        referencesUnresolved: boolean;
+      }>;
+      clean: Array<{ logicalId: string; referencesUnresolved: boolean }>;
       notSupported: Array<{ logicalId: string }>;
+      notCompared: Array<{ logicalId: string; type: string }>;
     }>;
     expect(payload).toHaveLength(1);
     expect(payload[0]?.stack).toBe('TestStack');
@@ -1076,9 +1082,14 @@ describe('cdkd drift', () => {
             awsValue: 'Suspended',
           },
         ],
+        // Issue #2108: every drifted / clean entry says whether the comparison
+        // was COMPLETE. This resource has no dynamic reference at all, so it
+        // was, and the roll-up below is empty.
+        referencesUnresolved: false,
       },
     ]);
     expect(payload[0]?.notSupported.map((n) => n.logicalId)).toEqual(['Other']);
+    expect(payload[0]?.notCompared).toEqual([]);
   });
 
   it('auto-selects the only stack in state when no name is given (mirrors deploy/destroy)', async () => {

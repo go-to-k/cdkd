@@ -236,6 +236,39 @@ const IRELAND_PASSWORD = 'ireland-password-2108';
 const LAMBDA_TYPE = 'AWS::Lambda::Function';
 
 /**
+ * A leaf that is NOT a whole token — literal text on both sides of a
+ * foreign-ARN reference (issue #2108 review).
+ *
+ * Every other fixture in this file makes the property's WHOLE value one token,
+ * and a whole-token leaf never exercises the segment REBUILD at all: the loop
+ * appends `leaf.slice(cursor, at)` and `leaf.slice(cursor)` and both are empty
+ * strings, so gutting either splice site leaves the result identical. The
+ * rebuild is the newest code on the path that feeds `desiredProperties` into
+ * `provider.update` on a LIVE resource, and a mixed leaf is the only shape that
+ * can red it: get the splice wrong and cdkd writes the bare secret and DROPS
+ * the connection string around it.
+ */
+const mixedUrl = (secret: string): string =>
+  `postgres://appuser:${secret}@db.internal:5432/appdb?sslmode=require`;
+
+/** The SAME reference twice in one leaf — fences the `indexOf(token, cursor)` advance. */
+const twiceLeaf = (secret: string): string => `primary=${secret};replica=${secret};`;
+
+/** Two DIFFERENT references in one leaf, one `local` and one `named-region`. */
+const twoTokenLeaf = (localValue: string, foreignValue: string): string =>
+  `local=${localValue}|foreign=${foreignValue}|end`;
+
+const SSM_PARAM = '/app/db/password';
+/**
+ * `resolveSSMReference` re-joins its colon-split tail, so an `ssm` reference CAN
+ * name a full ARN and CAN therefore route to a pinned sibling resolver — the
+ * argument `rollback-executor.ts` spells out where it explains why a pinned
+ * sibling needs no guest flag. The `SSMClient` fake exists for this case.
+ */
+const PRODUCER_SSM_ARN = `arn:aws:ssm:${PRODUCER_REGION}:111122223333:parameter${SSM_PARAM}`;
+const SSM_ARN_EXPR = `{{resolve:ssm:${PRODUCER_SSM_ARN}}}`;
+
+/**
  * The `--json` payload shape, restated here rather than imported: `drift.ts`
  * keeps `StackDriftJson` private and the comment above it calls the shape a
  * "stable contract for tooling", so a test that asserts against a local copy is
@@ -248,10 +281,13 @@ interface StackDriftJson {
     logicalId: string;
     type: string;
     changes: Array<{ path: string; stateValue: unknown; awsValue: unknown }>;
+    referencesUnresolved: boolean;
   }>;
-  clean: Array<{ logicalId: string; type: string }>;
+  clean: Array<{ logicalId: string; type: string; referencesUnresolved: boolean }>;
   notSupported: Array<{ logicalId: string; type: string }>;
   skipped: Array<{ logicalId: string; type: string }>;
+  /** Issue #2108: the roll-up of every entry carrying `referencesUnresolved`. */
+  notCompared: Array<{ logicalId: string; type: string }>;
 }
 
 function captureStdout(): { output: string[]; restore: () => void } {
@@ -382,6 +418,15 @@ beforeEach(() => {
   prime(PRODUCER_REGION, 'GetSecretValueCommand', {
     SecretString: JSON.stringify({ password: IRELAND_PASSWORD }),
   });
+  // The `ssm` route, priming the SAME two-values-behind-one-name shape. `Type`
+  // is `SecureString`, so the parameter is a real secret rather than public
+  // config and takes the same persisted-as-its-expression path.
+  prime(CONSUMER_REGION, 'GetParameterCommand', {
+    Parameter: { Value: TOKYO_PASSWORD, Type: 'SecureString' },
+  });
+  prime(PRODUCER_REGION, 'GetParameterCommand', {
+    Parameter: { Value: IRELAND_PASSWORD, Type: 'SecureString' },
+  });
 
   exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
     throw new Error('__exit__');
@@ -407,6 +452,11 @@ afterEach(() => {
  */
 function secretCtorRegions(): string[] {
   return [...new Set(secretSends.map((s) => s.ctorRegion))] as string[];
+}
+
+/** The `ssm` twin of {@link secretCtorRegions}. */
+function ssmCtorRegions(): string[] {
+  return [...new Set(ssmSends.map((s) => s.ctorRegion))] as string[];
 }
 
 /** Every line the mocked logger saw, in one string. */
@@ -443,9 +493,18 @@ describe('cdkd drift --revert refuses a region-ambiguous secret reference (issue
     expect(text).toContain(CONSUMER_REGION);
     expect(text).toContain(PRODUCER_REGION);
     expect(text).toContain("re-run 'cdkd drift'");
-    // Never leaks either region's value.
-    expect(text).not.toContain(TOKYO_PASSWORD);
-    expect(text).not.toContain(IRELAND_PASSWORD);
+    // A refusal is a DECISION, not a failed read, and the line has to say which
+    // — 'could not re-resolve' sends the reader hunting for an IAM grant that
+    // is not missing. This discriminates: the pre-review code printed the
+    // read-failure wording on this path.
+    expect(text).toContain('refused to re-resolve');
+    expect(text).not.toContain('could not re-resolve');
+    // A "neither password appears" assertion used to sit here and was DELETED
+    // rather than kept: `secretSends` is empty two lines up, so no region was
+    // ever asked and neither value exists in this process. It could not fail
+    // under any mutation of the code it appeared to guard, and a test that
+    // cannot fail is worse than no test. The leak question is asserted where it
+    // can actually be answered — the tests below, which DO fetch.
   });
 
   it('cross-region Fn::GetStackOutput read on record: refused on the same evidence', async () => {
@@ -601,6 +660,11 @@ describe('cdkd drift detection baselines against the PRODUCER region (issue #210
     expect(parsed[0]!.clean.map((c) => c.logicalId)).toEqual(['Fn']);
     const text = logText();
     expect(text).toContain('NOT compared');
+    // The detection twin of the revert-side wording split: this resource was
+    // not UNREADABLE, cdkd declined to read it. Saying 'could not resolve'
+    // here points the reader at an IAM grant that is not missing.
+    expect(text).toContain('refused to resolve');
+    expect(text).not.toContain('could not resolve the dynamic reference');
     expect(text).toContain(PRODUCER_REGION);
     expect(text).not.toContain(IRELAND_PASSWORD);
     expect(text).not.toContain(TOKYO_PASSWORD);
@@ -653,7 +717,242 @@ describe('the drift redaction needle is the PRODUCER region plaintext (issue #21
     // `{{resolve:secretsmanager:arn:...}}` — a value the user never set, in a
     // report they are about to act on.
     expect(plain!.stateValue).toBe(TOKYO_PASSWORD);
-    // ...and the real secret is still never printed.
+    // ...and the OTHER half of the same fact: the secret path itself does NOT
+    // drift, because the baseline was resolved where the ARN says and matches
+    // what AWS holds. Under the broken code the baseline is the TOKYO password
+    // against an IRELAND readback, so a second, permanent change appears here.
+    //
+    // This replaces a bare `expect(output).not.toContain(IRELAND_PASSWORD)`,
+    // which could not discriminate: the path is secret-BEARING under either
+    // code path, so positional masking turns the AWS value into `***` and the
+    // plaintext is absent from the output either way.
+    expect(
+      parsed[0]!.drifted[0]!.changes.find(
+        (c) => c.path === 'Environment.Variables.SECRET_PASSWORD'
+      )
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * The segment REBUILD, which every whole-token fixture above leaves dead.
+ *
+ * `resolveDriftLeafByRegion` takes two paths. With no `named-region` verdict
+ * the leaf goes to `resolveDynamicReferences` WHOLE — that is every leaf on
+ * every pre-#2108 code path, and it is what the fixtures above exercise. With
+ * one, the leaf is rebuilt token by token so each reference reaches its own
+ * region's resolver, and THAT loop is the newest code in the change and the one
+ * feeding `desiredProperties` into `provider.update` on a live resource.
+ *
+ * A whole-token leaf cannot fence it: `leaf.slice(cursor, at)` and
+ * `leaf.slice(cursor)` are both `''` when the token IS the leaf, so deleting
+ * either splice site changes nothing. Each case below asserts the FULL rebuilt
+ * string, and each is a mutation-probe target:
+ *
+ *   - gut `out += leaf.slice(cursor, at)`      -> the mixed / two-token cases red
+ *   - gut `return out + leaf.slice(cursor)`    -> the mixed / duplicate cases red
+ *   - drop the `cursor` argument to `indexOf`  -> the duplicate case reds
+ *   - route every verdict to `resolvers.primary` -> the two-token case reds
+ */
+describe('cdkd drift --revert rebuilds a MIXED leaf around its references (issue #2108)', () => {
+  it('literal text on both sides of a foreign-ARN token: writes the whole string, not the bare secret', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(mixedUrl(PRODUCER_ARN_EXPR)) }, [])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(mixedUrl('tampered-in-the-console')),
+      update,
+    });
+
+    await runDrift(['Consumer', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(secretCtorRegions()).toEqual([PRODUCER_REGION]);
+    const sent = update.mock.calls[0]![3] as {
+      Environment: { Variables: Record<string, unknown> };
+    };
+    // The WHOLE connection string, byte for byte. A broken splice writes the
+    // bare password here and drops `postgres://appuser:` and everything after
+    // the token — a live Lambda env var that no longer parses as a URL.
+    expect(sent.Environment.Variables['SECRET_PASSWORD']).toBe(mixedUrl(IRELAND_PASSWORD));
+  });
+
+  it('the SAME token twice in one leaf: both occurrences substituted, in place', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(twiceLeaf(PRODUCER_ARN_EXPR)) }, [])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(twiceLeaf('tampered-in-the-console')),
+      update,
+    });
+
+    await runDrift(['Consumer', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = update.mock.calls[0]![3] as {
+      Environment: { Variables: Record<string, unknown> };
+    };
+    // `indexOf(token, cursor)` is what keeps the second iteration from
+    // re-finding the FIRST occurrence. Without the cursor argument the two
+    // segments collapse onto one position and the tail still carries the raw
+    // `{{resolve:...}}` token.
+    expect(sent.Environment.Variables['SECRET_PASSWORD']).toBe(twiceLeaf(IRELAND_PASSWORD));
+  });
+
+  it('two DIFFERENT tokens in one leaf, one local and one named-region: each resolved by ITS region', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    // No cross-stack reads on record, so the name-form token classifies `local`
+    // rather than `ambiguous` and the leaf carries one verdict of each kind —
+    // the only shape in which "route each token separately" is observable.
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(twoTokenLeaf(NAME_EXPR, PRODUCER_ARN_EXPR)) }, [])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(twoTokenLeaf('tampered', 'tampered')),
+      update,
+    });
+
+    await runDrift(['Consumer', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    // BOTH regions were asked, which a single-resolver rebuild cannot produce.
+    expect([...secretCtorRegions()].sort()).toEqual([CONSUMER_REGION, PRODUCER_REGION].sort());
+    const sent = update.mock.calls[0]![3] as {
+      Environment: { Variables: Record<string, unknown> };
+    };
+    expect(sent.Environment.Variables['SECRET_PASSWORD']).toBe(
+      twoTokenLeaf(TOKYO_PASSWORD, IRELAND_PASSWORD)
+    );
+  });
+});
+
+describe('cdkd drift --json marks a resource whose properties were NOT compared (issue #2108)', () => {
+  it('a refused resource is reported clean but flagged, and rolled up under notCompared', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(NAME_EXPR) }, [PRODUCER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+    });
+
+    const { output } = await runDrift(['Consumer', '--json']);
+
+    const parsed = JSON.parse(output) as StackDriftJson[];
+    // Still `clean` — the comparator SKIPS a state leaf holding a
+    // `{{resolve:...}}` string, so there is no change to report. What must not
+    // happen is a consumer reading that as "checked and fine": pre-#2108 this
+    // resource reported (wrongly, but visibly) as drifted, so a silent `clean`
+    // would be a regression this change introduced.
+    expect(parsed[0]!.drifted).toEqual([]);
+    expect(parsed[0]!.clean).toEqual([
+      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true },
+    ]);
+    // The roll-up a CI job can gate on with ONE key instead of a filter over
+    // two arrays.
+    expect(parsed[0]!.notCompared).toEqual([{ logicalId: 'Fn', type: LAMBDA_TYPE }]);
+  });
+
+  it('a fully compared resource carries the flag as false and stays out of notCompared', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(makeState({ Fn: lambdaResource(PRODUCER_ARN_EXPR) }, []));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+    });
+
+    const { output } = await runDrift(['Consumer', '--json']);
+
+    const parsed = JSON.parse(output) as StackDriftJson[];
+    // The NEGATIVE twin. Without it the flag could be hard-coded `true` and the
+    // case above would still pass, which would make `notCompared` useless in
+    // exactly the direction that matters — everything looks unchecked.
+    expect(parsed[0]!.clean).toEqual([
+      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: false },
+    ]);
+    expect(parsed[0]!.notCompared).toEqual([]);
+  });
+
+  it('the human report says so too, so stdout is not more reassuring than --json', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(NAME_EXPR) }, [PRODUCER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+    });
+
+    const { output } = await runDrift(['Consumer']);
+
+    // `✓ no drift detected` is still printed — nothing drifted. The added line
+    // is what stops it being read as "everything was checked". The per-resource
+    // warning goes to the LOGGER, which a user piping stdout does not see.
+    expect(output).toContain('no drift detected');
+    expect(output).toContain('PARTIALLY compared');
+    expect(output).toContain('Fn');
     expect(output).not.toContain(IRELAND_PASSWORD);
+    expect(output).not.toContain(TOKYO_PASSWORD);
+  });
+});
+
+describe('cdkd drift resolves each reference ONCE per stack (issue #2108)', () => {
+  it('two resources sharing one foreign ARN pay one GetSecretValue, not one each', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState(
+        { Fn: lambdaResource(PRODUCER_ARN_EXPR), Fn2: lambdaResource(PRODUCER_ARN_EXPR) },
+        []
+      )
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+    });
+
+    await runDrift(['Consumer', '--json']);
+
+    // COUNTED, not deduped. `secretCtorRegions()` folds the sends through a
+    // `Set`, so no assertion built on it can see a resolver being rebuilt per
+    // resource — the fetch count would go from 1 to N while the region set
+    // stayed `[eu-west-1]` and every existing assertion in this file stayed
+    // green. One `DriftSecretResolvers` per STACK is what makes this 1: the
+    // resolved-value cache lives on the resolver instance (issue #1933), and
+    // the pinned sibling is cached on the bag.
+    expect(secretSends).toHaveLength(1);
+    expect(secretCtorRegions()).toEqual([PRODUCER_REGION]);
+  });
+});
+
+describe('cdkd drift routes an ARN-form ssm reference by its ARN region (issue #2108)', () => {
+  it('a foreign-region ssm ARN is read by an SSM client CONSTRUCTED in that region, and THAT value is written', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(makeState({ Fn: lambdaResource(SSM_ARN_EXPR) }, []));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv('tampered-in-the-console'),
+      update,
+    });
+
+    await runDrift(['Consumer', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    // The `ssm` arm was inert before this case: `ssmSends` was reset in
+    // `beforeEach` and never primed or asserted, so `classifyReplaySecretRegion`
+    // could have returned `local` for every ssm reference and nothing here
+    // would have noticed.
+    expect(ssmSends.length).toBeGreaterThan(0);
+    expect(ssmCtorRegions()).toEqual([PRODUCER_REGION]);
+    // `resolveSSMReference` re-joins the colon-split tail, so the pinned client
+    // is asked for the ARN verbatim rather than for a truncated `arn`.
+    expect(ssmSends[0]!.input).toMatchObject({ Name: PRODUCER_SSM_ARN });
+    // No secretsmanager traffic at all — this reference is ssm end to end.
+    expect(secretSends).toHaveLength(0);
+    const sent = update.mock.calls[0]![3] as {
+      Environment: { Variables: Record<string, unknown> };
+    };
+    expect(sent.Environment.Variables['SECRET_PASSWORD']).toBe(IRELAND_PASSWORD);
   });
 });

@@ -2300,16 +2300,46 @@ Still reporting `drift unknown` (deferred):
             "stateValue": "Enabled",
             "awsValue": "Suspended"
           }
-        ]
+        ],
+        "referencesUnresolved": false
       }
     ],
-    "clean": [],
+    "clean": [
+      { "logicalId": "Queue1", "type": "AWS::SQS::Queue", "referencesUnresolved": false }
+    ],
     "notSupported": [
       { "logicalId": "Function1", "type": "AWS::Lambda::Function" }
-    ]
+    ],
+    "notCompared": []
   }
 ]
 ```
+
+`referencesUnresolved` (on every `drifted` and `clean` entry) and the
+`notCompared` roll-up answer one question `clean` alone cannot: **was
+the comparison complete?** When cdkd cannot resolve — or deliberately
+REFUSES to resolve — a dynamic reference a resource's state records,
+that resource's secret-bearing properties are not compared at all. The
+comparator skips those leaves, so the resource reports `clean` with an
+empty change list, which is indistinguishable from "compared and
+matched" unless the flag says otherwise.
+
+So a CI job that gates on drift should read `notCompared`, not just
+`drifted`:
+
+```bash
+# "everything was actually checked, and nothing drifted"
+cdkd drift --all --json | jq -e 'all(.[]; .drifted == [] and .notCompared == [])'
+```
+
+The human-readable report says the same thing as a
+`N resource(s) only PARTIALLY compared` block — the per-resource detail
+goes to the log, which a caller piping stdout does not see. The usual
+causes are a least-privilege role without `secretsmanager:GetSecretValue`
+/ `ssm:GetParameter`, a deleted or rotated-away secret, and a
+cross-region reference cdkd refuses to resolve in the consumer's region
+because that would compare against (and with `--revert`, write) a
+different region's same-named secret.
 
 The comparator only looks at keys present in cdkd state — AWS-managed
 fields (timestamps, generated identifiers, account-wide defaults) that
