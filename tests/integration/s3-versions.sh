@@ -175,9 +175,20 @@ _s3v_key_query() {
 # failures, so any non-empty `Errors` in the output is a per-object failure the
 # call itself reported as overall success. Surfaced as a WARN rather than
 # swallowed: the caller retries, and the zero-assertion is the backstop.
+#
+# `--output json` is PINNED, and that is load-bearing rather than tidy. This
+# function greps the response for `"Errors"`, which is a JSON spelling. The AWS
+# CLI's output format is ambient - `AWS_DEFAULT_OUTPUT=text`, or `output = text`
+# / `output = yaml` in the active profile - so without the flag the same failure
+# arrives as `ERRORS<TAB>...` or `Errors:`, the case never matches, and a
+# per-object delete failure is swallowed with no WARN at all. On the success
+# path the zero-assertion would still catch the under-sweep; from `cleanup` it
+# would not, because that purges `noncurrent` and asserts nothing. `_s3v_rows`
+# pins `--output text` for the same reason: neither reader may inherit a format
+# it does not parse.
 _s3v_flush_batch() {
   local bucket="$1" objects="$2" out
-  if ! out="$(aws s3api delete-objects --bucket "${bucket}" \
+  if ! out="$(aws s3api delete-objects --bucket "${bucket}" --output json \
       --delete "{\"Objects\":[${objects}],\"Quiet\":true}" 2>&1)"; then
     echo "WARN: s3-versions: delete-objects batch failed on s3://${bucket}: ${out}" >&2
     return 1

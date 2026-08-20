@@ -471,9 +471,23 @@ export function lintFixtureTreeAwsCommands(
   );
 }
 
+/**
+ * `<fixture>/verify.sh` for a fixture, or the bare filename for a SHARED helper
+ * that lives directly in `tests/integration/`. `readFixtureScripts` returns
+ * both shapes, so a hardcoded `${fixture}/verify.sh` would report the
+ * nonexistent path `tests/integration/s3-versions.sh/verify.sh` for exactly the
+ * file the walk was widened to reach -- i.e. it would be wrong the first time
+ * it was ever needed.
+ */
+function violationPath(fixture: string): string {
+  return fixture.endsWith('.sh')
+    ? `tests/integration/${fixture}`
+    : `tests/integration/${fixture}/verify.sh`;
+}
+
 export function formatAwsCommandViolation(v: AwsCommandViolation): string {
   return [
-    `tests/integration/${v.fixture}/verify.sh:${v.line}`,
+    `${violationPath(v.fixture)}:${v.line}`,
     `  \`aws ${v.service} ${v.verb}\` is NOT an AWS CLI command — it is on the CLI's removal list`,
     `  (awscli/customizations/removals.py), even though the ${v.service} API operation exists and`,
     `  every AWS SDK exposes it. The CLI answers "Found invalid choice"; on a machine with`,

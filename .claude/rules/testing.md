@@ -716,7 +716,15 @@ without `jq` — sourcing the helper must not add a `jq` dependency to ten
 fixtures. Under `Quiet: true` a successful call returns `{}`, so an `Errors` key
 in the output is a per-object failure reported as overall success (confirmed
 against real S3: rc=0 with `Errors` present); it warns, and the retry loop plus
-the zero-assertion are the backstop. The listing keeps stderr OUT of the row
+the zero-assertion are the backstop. **Both AWS calls pin `--output`** — `json`
+on the delete, `text` on the listing — because the CLI's format is AMBIENT
+(`AWS_DEFAULT_OUTPUT`, or `output =` in the active profile). Un-pinned, the
+delete's per-object failure arrives as `ERRORS<TAB>…` under `text` or `Errors:`
+under `yaml`, the `"Errors"` check never matches, and the WARN is swallowed;
+from `cleanup` — which purges `noncurrent` and asserts nothing — that is a
+silent under-sweep, i.e. this issue's own defect class. Measured both ways
+against a fake CLI honouring the ambient default: un-pinned fires under `json`
+only, pinned fires under all three. The listing keeps stderr OUT of the row
 stream — `2>&1` there makes a benign CLI warning a phantom surviving version
 (measured: count 1 on an empty bucket) and feeds that text to
 `delete-object --key`.

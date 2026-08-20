@@ -26,10 +26,17 @@ import { join } from 'node:path';
  * WHAT THIS CANNOT SEE — stated because a lint that implies completeness is
  * worse than one that names its edges:
  *
- *  1. RAW CloudFormation fixtures. The patterns read `bin/**` and `lib/**`
- *     TypeScript. A fixture whose template is a checked-in `.json` / `.yaml`
- *     (today: `migrate-from-bare-cfn-codegen-only/template-fixture.json`,
- *     verified secret-free) declares its resources somewhere this never looks.
+ *  1. A secret declared as a RAW CloudFormation property, wherever it lives.
+ *     The obvious case is a fixture whose template is a checked-in `.json` /
+ *     `.yaml` (today: `migrate-from-bare-cfn-codegen-only/template-fixture.json`,
+ *     verified secret-free), which these patterns never read. But being written
+ *     in TypeScript is NOT the same as being covered: every pattern below keys
+ *     on an L2 construct prop, so an L1 or an escape hatch slips straight
+ *     through -- `new CfnSecret({ secretString: 'x' })` (the pattern requires
+ *     the `Value` / `Beta1` suffix), `addPropertyOverride('MasterUserPassword',
+ *     ...)`, or a plain literal in a Lambda `environment`. Zero fixtures do this
+ *     today, so nothing here is quietly load-bearing -- but do not read "it is
+ *     .ts" as "it is scanned".
  *  2. Secrets seeded by the SCRIPT rather than the app. `dynamic-ref-cross-region`
  *     writes a SecureString plaintext straight into a state.json with
  *     `aws s3 cp` to simulate a pre-GHSA record. No token in its `lib/*.ts`

@@ -55,9 +55,11 @@ CLI="node ${REPO_ROOT}/dist/cli.js"
 # GetObjectVersion after a green run -- measured 2026-08-20, 16 of 64 surviving
 # versions of this stack's state.json carried it.
 #
-# Sourced by ABSOLUTE path: unlike its siblings this script never `cd`s into the
-# fixture directory, so a relative `../s3-versions.sh` would resolve against
-# whatever the caller's cwd happens to be.
+# Sourced by ABSOLUTE path because this line runs BEFORE the `cd "${TEST_DIR}"`
+# further down, so a relative `../s3-versions.sh` would resolve against whatever
+# the caller's cwd happens to be. Do NOT "simplify" this by moving the source
+# below that `cd` -- the helper is wanted before the first `cleanup` can fire --
+# and do not delete the `cd`, which the fixture's own npm/vp steps need.
 . "${REPO_ROOT}/tests/integration/s3-versions.sh"
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"

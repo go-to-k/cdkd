@@ -1068,7 +1068,14 @@ because the payload is assembled without `jq` — sourcing this file must not ad
 a `jq` dependency to ten fixtures. `Quiet: true` means a fully successful call
 returns `{}`, so any `Errors` in the output is a per-object failure that the
 call reported as overall success; it is surfaced as a WARN and the retry loop
-plus the zero-assertion are the backstop.
+plus the zero-assertion are the backstop. The call pins `--output json`, which
+is load-bearing rather than tidy: the CLI's format is ambient
+(`AWS_DEFAULT_OUTPUT`, or `output =` in the active profile), and under `text` /
+`yaml` that same failure arrives as `ERRORS<TAB>…` / `Errors:`, the check never
+matches, and the WARN is swallowed. On the success path the zero-assertion would
+still catch the under-sweep; from `cleanup`, which purges `noncurrent` and
+asserts nothing, it would not. Neither reader may inherit a format it does not
+parse — which is why the listing pins `--output text` for the same reason.
 
 Note also that the listing keeps **stderr out of the row stream**: a `2>&1`
 there turns any benign CLI warning into a phantom surviving version, so an empty
