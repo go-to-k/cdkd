@@ -322,13 +322,32 @@ export async function reconcileMarkerRegionWithLegacyDefault(input: {
   if (effective.source !== 'profile') return effective.region;
   if (effective.region === LEGACY_DEFAULT_REGION) return effective.region;
 
-  if ((await probe.getRawObject(markerKeyFor(effective.region))) !== null) {
+  // A probe that THROWS is treated as "no marker", not as an error. On a first
+  // `cdkd bootstrap` the state bucket does not exist yet, so the read fails
+  // with `NoSuchBucket` — and the honest reading of "I cannot see a marker" is
+  // that there is no existing opt-in to hold, which is also the safe answer
+  // (it can only send the command to the profile's region, never away from
+  // storage that exists). Logged rather than swallowed silently, because the
+  // same failure can mean a permissions problem worth knowing about.
+  const markerExists = async (region: string): Promise<boolean> => {
+    try {
+      return (await probe.getRawObject(markerKeyFor(region))) !== null;
+    } catch (error) {
+      logger.debug(
+        `[region] could not read the bootstrap marker for ${region}: ` +
+          `${error instanceof Error ? error.message : JSON.stringify(error)}`
+      );
+      return false;
+    }
+  };
+
+  if (await markerExists(effective.region)) {
     logger.debug(
       `[region] asset storage exists in ${effective.region} (from your AWS profile); using it.`
     );
     return effective.region;
   }
-  if ((await probe.getRawObject(markerKeyFor(LEGACY_DEFAULT_REGION))) === null) {
+  if (!(await markerExists(LEGACY_DEFAULT_REGION))) {
     return effective.region;
   }
 

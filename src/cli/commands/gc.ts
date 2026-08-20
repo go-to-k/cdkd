@@ -9,7 +9,12 @@ import type { Logger } from '../../types/config.js';
 import { withErrorHandling, CdkdError, normalizeAwsError } from '../../utils/error-handler.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { namedCliRegion, rawCliRegion } from '../region-options.js';
+import {
+  namedCliRegion,
+  rawCliRegion,
+  reconcileMarkerRegionWithLegacyDefault,
+  resolveEffectiveRegion,
+} from '../region-options.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 import {
   getBootstrapMarkerKey,
@@ -979,41 +984,30 @@ export async function gcCommand(options: GcOptions): Promise<void> {
   // The failure direction here is the SAFE one either way — a missed marker
   // deletes nothing, it just reports "not opted in" for a region that has
   // assets — which is why this is a usability fix rather than a data one.
-  // Issue #2029 - the region gc OPERATES ON and the region its clients TARGET
-  // must be ONE value.
+  // Issue #2029. The region gc operates on now consults the AWS profile, and
+  // the region its CLIENTS target is the same value by construction - the two
+  // used to be resolved separately and could disagree, so gc could read one
+  // region's marker and delete against another region's endpoints.
   //
-  // The previous shape resolved `options.region || AWS_REGION || 'us-east-1'`
-  // and passed the result to `new AwsClients({ region })` unconditionally,
-  // while `bootstrap-destroy.ts` let an absent region stay absent so the SDK
-  // chain answered. Either way the two halves could disagree, and gc's region
-  // is BOTH a client region and a VALUE - it keys the bootstrap marker and
-  // names the asset bucket / ECR repo - so a client resolved one way beside a
-  // marker key resolved another reads one region's marker and deletes against
-  // another region's endpoints.
-  //
-  // What this deliberately does NOT do is swap the literal for the profile
-  // region, which is what #2029 asks for and what a first cut of this change
-  // did. `cdkd bootstrap` WRITES the marker under this same
-  // `?? 'us-east-1'` default (issue #1820), so a read side that resolved the
-  // profile instead would stop finding the marker its own create side wrote:
-  // for a user with a non-us-east-1 profile and no flags, `cdkd gc` would
-  // report "not opted in" - and `cdkd bootstrap --destroy` would report
-  // "nothing to delete" - while the asset bucket and ECR repo stayed alive and
-  // billing. The read side cannot move until the write side moves with it, so
-  // both move together in issues #1820 / #2100.
-  const region = namedCliRegion(options.region) ?? 'us-east-1';
-  // The RAW spelling, for the marker's second probe only (see the probe below).
-  const rawRegion = rawCliRegion(options.region) ?? region;
+  // The sequencing is forced by a dependency: the reconciliation has to ask
+  // "does a marker already exist under the old default?", which needs the state
+  // backend, which needs the bucket name, which needs the account id. So the
+  // account lookup runs against a bag built from the UNRECONCILED region. That
+  // is safe and not a shortcut: STS is region-agnostic for
+  // `GetCallerIdentity`, and the state backend re-resolves the state bucket's
+  // own region itself (`rebuildClientForBucketRegion`) because the bucket is
+  // account-scoped. Only the ECR / asset-S3 clients are genuinely
+  // region-specific, and they are built AFTER the reconciliation.
+  const effective = await resolveEffectiveRegion(options);
 
-  const awsClients = new AwsClients({
-    region,
+  const accountClients = new AwsClients({
+    region: effective.region,
     ...(options.profile && { profile: options.profile }),
   });
-  setAwsClients(awsClients);
 
   // Account id is needed for the default bucket name AND for the
   // ExpectedBucketOwner pin on every S3 call, so always resolve it.
-  const identity = await awsClients.sts.send(new GetCallerIdentityCommand({}));
+  const identity = await accountClients.sts.send(new GetCallerIdentityCommand({}));
   const accountId = identity.Account!;
   const bucketName = options.stateBucket ?? getDefaultStateBucketName(accountId);
 
@@ -1022,14 +1016,34 @@ export async function gcCommand(options: GcOptions): Promise<void> {
   // state bucket is account-scoped and may live in a different region
   // than --region. The asset bucket / ECR repo clients keep using --region.
   const markerS3Client = new S3Client({
-    region,
+    region: effective.region,
     ...(options.profile && { profile: options.profile }),
   });
   const stateBackend = new S3StateBackend(
     markerS3Client,
     { bucket: bucketName, prefix: 'cdkd' },
-    { region, ...(options.profile && { profile: options.profile }) }
+    { region: effective.region, ...(options.profile && { profile: options.profile }) }
   );
+
+  // Hold an existing us-east-1 opt-in rather than silently reporting the region
+  // as not opted in. `cdkd bootstrap` writes this key through the SAME resolver
+  // and the SAME reconciliation, so the read and write sides cannot drift.
+  const region = await reconcileMarkerRegionWithLegacyDefault({
+    effective,
+    probe: stateBackend,
+    markerKeyFor: getBootstrapMarkerKey,
+    logger,
+  });
+  // The RAW spelling, for the marker's second probe only (see the probe below).
+  const rawRegion = rawCliRegion(options.region) ?? region;
+
+  const awsClients =
+    region === effective.region
+      ? accountClients
+      : new AwsClients({ region, ...(options.profile && { profile: options.profile }) });
+  if (awsClients !== accountClients) accountClients.destroy();
+  setAwsClients(awsClients);
+
   const ecrClient = new ECRClient({
     region,
     ...(options.profile && { profile: options.profile }),

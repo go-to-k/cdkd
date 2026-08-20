@@ -16,10 +16,16 @@ import { withErrorHandling, normalizeAwsError, CdkdError } from '../../utils/err
 import { bootstrapDestroyCommand } from './bootstrap-destroy.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { foldRegionOption, namedCliRegion, rawCliRegion } from '../region-options.js';
+import {
+  foldRegionOption,
+  rawCliRegion,
+  reconcileMarkerRegionWithLegacyDefault,
+  resolveEffectiveRegion,
+} from '../region-options.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 import {
   ensureAssetStorage,
+  getBootstrapMarkerKey,
   validateAssetBucketName,
   validateContainerRepoName,
 } from '../../assets/asset-storage.js';
@@ -77,7 +83,7 @@ async function bootstrapCommand(options: {
   // would add a `LocationConstraint` for the one region S3 forbids it in (issue
   // #1888's defect, re-created here), and the ECR / S3 / state-backend clients
   // below would sign for a region SigV4 rejects.
-  const rawRegion = rawCliRegion(options.region) ?? 'us-east-1';
+  const rawRegion = rawCliRegion(options.region);
   foldRegionOption(options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
@@ -91,7 +97,13 @@ async function bootstrapCommand(options: {
   setAwsClients(awsClients);
 
   const s3Client = awsClients.s3;
-  const region = namedCliRegion(options.region) ?? 'us-east-1';
+  // Issue #2029 - the WRITE side of the marker pair. `cdkd gc` and
+  // `cdkd bootstrap --destroy` READ the key this command writes, and all three
+  // resolve through `resolveEffectiveRegion` +
+  // `reconcileMarkerRegionWithLegacyDefault` so they cannot drift apart. The
+  // final value is settled just below, once the account id (and with it the
+  // state bucket the marker lives in) is known.
+  const effective = await resolveEffectiveRegion(options);
 
   // Resolve bucket name: use provided value or generate default from account info
   let bucketName: string;
@@ -108,6 +120,32 @@ async function bootstrapCommand(options: {
     accountId = identity.Account!;
     bucketName = getDefaultStateBucketName(accountId);
     logger.info(`Using default state bucket: ${bucketName}`);
+  }
+
+  // Reconcile BEFORE the bucket is created or configured, so every later use of
+  // `region` - the `CreateBucket` LocationConstraint, the ECR client, the marker
+  // key - sees one settled value. The probe reads through a throwaway backend
+  // because the real one is built from the reconciled region; on a FIRST
+  // bootstrap the bucket does not exist yet and the read fails, which the
+  // helper treats as "no marker to hold" (see its own note).
+  const reconcileS3Client = new S3Client({
+    region: effective.region,
+    ...(options.profile && { profile: options.profile }),
+  });
+  let region: string;
+  try {
+    region = await reconcileMarkerRegionWithLegacyDefault({
+      effective,
+      probe: new S3StateBackend(
+        reconcileS3Client,
+        { bucket: bucketName, prefix: 'cdkd' },
+        { region: effective.region, ...(options.profile && { profile: options.profile }) }
+      ),
+      markerKeyFor: getBootstrapMarkerKey,
+      logger,
+    });
+  } finally {
+    reconcileS3Client.destroy();
   }
 
   // The state bucket is account-scoped and single-region, while --region
@@ -301,8 +339,11 @@ async function bootstrapCommand(options: {
           stateBackend,
           accountId,
           // The ONE raw-spelling consumer (see the capture at the top of this
-          // function): its marker read is paired with its marker write.
-          region: rawRegion,
+          // function): its marker read is paired with its marker write. Falls
+          // back to the settled region when the user NAMED none - there is no
+          // exact spelling to preserve in that case, and the reconciliation's
+          // answer is what the pair must agree on.
+          region: rawRegion ?? region,
           force: options.force,
           // Issue #1011 — custom names override the conventional ones for
           // the probe, the creates, and the marker body. Re-bootstrap with

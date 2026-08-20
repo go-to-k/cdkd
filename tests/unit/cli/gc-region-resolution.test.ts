@@ -43,6 +43,31 @@ const awsClientsConfigs = vi.hoisted(() => [] as { region?: string; profile?: st
 /** Every config an `S3Client` was constructed with, in order. */
 const s3ClientConfigs = vi.hoisted(() => [] as { region?: string }[]);
 
+/**
+ * `resolveEffectiveRegion` builds its own `STSClient` to ask the AWS SDK's
+ * chain which region the PROFILE resolves. Mocking it is not optional hygiene:
+ * without it these tests read the developer's real `~/.aws/config`, so they
+ * pass on a machine whose profile happens to be us-east-1 and fail on one whose
+ * profile is not. Verified by running this file under
+ * `AWS_CONFIG_FILE=<a config with region = ap-northeast-1>`.
+ */
+vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
+  return {
+    ...actual,
+    STSClient: vi.fn().mockImplementation(() => ({
+      config: {
+        region: async (): Promise<string> => {
+          // A region-less client REJECTS when the chain answers nothing.
+          if (!ambient.region) throw new Error('Region is missing');
+          return ambient.region;
+        },
+      },
+      destroy: vi.fn(),
+    })),
+  };
+});
+
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({ ...loggerMocks, child: () => loggerMocks }),
 }));
@@ -155,11 +180,8 @@ afterEach(() => {
 
 describe('cdkd gc region resolution (issue #2029)', () => {
   it('keeps the client region and the marker key in AGREEMENT', async () => {
-    // THE fix. The previous shape resolved a literal-defaulted `region` for the
-    // marker key while `bootstrap-destroy.ts`'s sibling shape let an absent
-    // region stay absent for the CLIENTS - so the two halves could point at
-    // different regions, and gc would read one region's marker and delete
-    // against another region's endpoints. One value now drives both.
+    // The two used to be resolved separately and could disagree, so gc could
+    // read one region's marker and delete against another's endpoints.
     ambient.region = PROFILE_REGION;
     await runGc([]);
 
@@ -169,29 +191,51 @@ describe('cdkd gc region resolution (issue #2029)', () => {
     ]);
     expect(clientRegions.size).toBe(1);
     const [only] = [...clientRegions];
-    expect(markerKeysRead()).toEqual([`cdkd-bootstrap/${only}.json`]);
+    expect(markerKeysRead().at(-1)).toBe(`cdkd-bootstrap/${only}.json`);
   });
 
-  it('builds NO region-less bag - a region-less bag\'s members can disagree', async () => {
-    // `aws-clients.ts` is explicit that an unconfigured bag's lazy members
-    // resolve independently and need not agree with each other, so every bag gc
-    // keeps must carry a region.
+  it('uses the PROFILE region when the user names none and nothing exists yet', async () => {
+    // Issue #2029's actual fix. Pre-change this was us-east-1 regardless of the
+    // profile, while gc's own pre-flight bag already resolved the profile.
     ambient.region = PROFILE_REGION;
+    stateBackendMocks.getRawObject.mockResolvedValue(null); // no marker anywhere
     await runGc([]);
-    expect(awsClientsConfigs.filter((c) => !c.region)).toHaveLength(0);
+    expect(s3ClientConfigs.map((c) => c.region)).toEqual([PROFILE_REGION]);
   });
 
-  it('does NOT resolve the profile region - the write side still keys the literal', async () => {
-    // Deliberate, and the opposite of what a first cut of this change did.
-    // `cdkd bootstrap` writes the marker under the same `?? 'us-east-1'`
-    // default (issue #1820). A read side that resolved the PROFILE region
-    // instead would stop finding the marker its own create side wrote: this
-    // user would be told "not opted in" while their asset bucket and ECR repo
-    // stayed alive and billing. Both sides move together in #1820 / #2100.
+  it('HOLDS an existing us-east-1 opt-in instead of reporting it not opted in', async () => {
+    // The safety half. `cdkd bootstrap` wrote `cdkd-bootstrap/us-east-1.json`
+    // under the old default; moving the read side alone would report this
+    // region as not opted in while the asset bucket and ECR repo stay alive and
+    // billing - the failure a previous attempt at #2029 shipped and had to
+    // revert.
     ambient.region = PROFILE_REGION;
-    await runGc([]);
-    expect(s3ClientConfigs.map((c) => c.region)).toEqual(['us-east-1']);
-    expect(markerKeysRead()).toEqual(['cdkd-bootstrap/us-east-1.json']);
+    stateBackendMocks.getRawObject.mockImplementation(async (key: string) =>
+      key === 'cdkd-bootstrap/us-east-1.json' ? MARKER_BODY : null
+    );
+    stateBackendMocks.listRawKeys.mockResolvedValue([]);
+    mockS3Send.mockResolvedValue({ Contents: [], IsTruncated: false });
+    mockEcrSend.mockResolvedValue({ imageDetails: [] });
+
+    await runGc(['--yes']);
+
+    // Assert the bag that does the ASSET work, not the marker client. gc lists
+    // and deletes asset objects through `awsClients.s3` (`gc.ts` -
+    // `listS3Candidates` / `deleteS3Candidates`), and that bag is built AFTER
+    // the reconciliation. `markerS3Client` is deliberately allowed to keep the
+    // pre-reconciliation region: it serves the STATE bucket, which is
+    // account-scoped and whose real region the backend re-resolves itself.
+    // The LAST bag is the operational one - the first is the throwaway the
+    // account lookup runs on, before the reconciliation has an answer. Reading
+    // the last one discriminates: without the hold there is only ONE bag and it
+    // sits at the profile's region.
+    expect(awsClientsConfigs.at(-1)?.region).toBe('us-east-1');
+    // ...and the user is told, since this is the only place the changed default
+    // is visible.
+    const said = loggerMocks.info.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(said).toContain('us-east-1');
+    expect(said).toContain(PROFILE_REGION);
+    expect(said).toContain('--region');
   });
 
   it('names the region in the delete plan', async () => {
@@ -259,8 +303,13 @@ describe('cdkd gc region resolution (issue #2029)', () => {
     ]);
   });
 
-  it('reads ONE marker key when no region was named - there is no raw spelling', async () => {
+  it('reads ONE marker key for the resolved region when no raw spelling exists', async () => {
+    // With no region NAMED there is no raw spelling to preserve, so the
+    // canonical-then-raw probe collapses to a single read of the region the
+    // reconciliation settled on.
+    ambient.region = PROFILE_REGION;
+    stateBackendMocks.getRawObject.mockResolvedValue(null);
     await runGc([]);
-    expect(markerKeysRead()).toEqual(['cdkd-bootstrap/us-east-1.json']);
+    expect(markerKeysRead().at(-1)).toBe(`cdkd-bootstrap/${PROFILE_REGION}.json`);
   });
 });
