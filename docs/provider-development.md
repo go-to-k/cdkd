@@ -1491,6 +1491,26 @@ implementation. Three details are worth copying:
     masker — see `SecretMaskingContext` for why that is a statement about
     providers rather than about the bag, and why you must thread the capability
     BEFORE adding any delete-side log line that names a property value.
+    **Mask where the message is CONSTRUCTED, not where the arm catches it, when
+    the service reports rejections through an operation poller.** For an
+    operation-based API (AWS Cloud Map's `Create*Namespace` / `Update*Namespace`
+    return an `OperationId`, and the rejection arrives later as
+    `Operation.ErrorMessage` with the offending value quoted back), a shared
+    poller builds the error and every arm's catch opens with
+    `if (error instanceof ProvisioningError) throw error;` — so the poller's
+    error is re-thrown VERBATIM and masking the arm does nothing for it.
+    Threading the masker into the arm therefore looks like a fix and is inert on
+    the path that actually fires, since for these types a FAILED operation is
+    the NORMAL rejection route rather than an edge case. `pollOperation` in
+    [src/provisioning/providers/servicediscovery-provider.ts](../src/provisioning/providers/servicediscovery-provider.ts)
+    is the worked example (issue
+    [#2063](https://github.com/go-to-k/cdkd/issues/2063)): it masks the raw
+    `ErrorMessage` at construction, and it takes the masker from every
+    CREATE / UPDATE caller rather than only the newly-threaded ones — an arm
+    fixed by an earlier pass is not evidence that its poller was. The DELETE
+    callers stay unthreaded, which is the contract above rather than an
+    oversight: `DeleteContext` carries no masker, and their payload is a
+    physical id rather than a resolved property bag.
     The reference implementation
     is `buildMfaConfigRequest` in
     [src/provisioning/providers/cognito-provider.ts](../src/provisioning/providers/cognito-provider.ts),

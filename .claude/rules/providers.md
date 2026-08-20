@@ -1082,6 +1082,22 @@ Rules for a provider:
   `cognito-provider.ts` builds
   `const warn = (m: string) => logger?.warn(maskSecrets(m));` once and routes
   every warning through it, so a warning added later is masked by construction.
+- **Mask in the OPERATION POLLER, not in the arm that calls it.** Where the
+  service is operation-based — Cloud Map's `Create*Namespace` /
+  `Update*Namespace` return an `OperationId` and report the rejection later in
+  `Operation.ErrorMessage`, quoting the offending value back — a shared poller
+  constructs the error, and every arm's catch opens with
+  `if (error instanceof ProvisioningError) throw error;`. That passthrough
+  re-throws the poller's error VERBATIM, so threading the masker into the arm
+  is INERT on the path that actually fires, and for these types a FAILED
+  operation is the normal rejection route rather than an edge case. Mask the
+  raw `ErrorMessage` where it is read, and thread the masker from every
+  CREATE / UPDATE caller of the poller — an arm an earlier pass already fixed
+  is not evidence that its poller was (`pollOperation` in
+  `servicediscovery-provider.ts`, issue #2063). The DELETE callers are the one
+  exemption and stay unthreaded: `DeleteContext` carries no masker by the
+  contract above, and their payload is a physical id rather than a resolved
+  property bag.
 
 Why a FUNCTION and not the `RecordedSecretValues` bag: the bag is keyed by
 PLAINTEXT, so handing it to ~130 providers makes every one of them a place a
