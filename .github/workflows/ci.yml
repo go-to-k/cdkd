@@ -239,6 +239,18 @@ jobs:
           fi
       - run: vp run audit:handled-property-wiring:check
 
+      # Issue #2040 — every provider `catch` site (and every `wrapError` helper a
+      # catch hands its binding to) must thread the caught AWS error as `cause`.
+      # `isTransientServerError` / `isThrottlingError` / `isMarkedNonRetryable`
+      # all locate their signal by walking `.cause`, so a wrapper that drops it
+      # makes all three inert and the SAME AWS failure becomes retryable in one
+      # provider and terminal in another. Unlike the matrix guards above there is
+      # nothing to regenerate — the critic is pass/fail — so it is a bare `run`
+      # like audit:coverage:check. It also self-probes its own classifier before
+      # reading the tree, so a degradation to "everything looks threaded" fails
+      # here rather than reporting a byte-identical green.
+      - run: vp run audit:provider-error-cause:check
+
   # Issue #1618 — run the unit suite a second time with the runtime
   # `*Once`-leak detector armed, so a test that primes more mock responses than
   # its code path consumes fails HERE instead of silently shifting every later

@@ -357,6 +357,17 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-handled-property-wiring.ts --check',
         cache: false,
       },
+      // Issue #2040 — every provider `catch` site that wraps an AWS error must
+      // thread it as `cause`, or `isTransientServerError` / `isThrottlingError`
+      // / `isMarkedNonRetryable` (all of which walk `.cause`) are INERT for that
+      // call and the same AWS failure is retryable in one provider and terminal
+      // in another. `cache: false` for the same reason `typecheck` carries it:
+      // a checker whose green can be replayed from cache is a false assurance —
+      // it would report "no dropped causes" without having looked.
+      'audit:provider-error-cause:check': {
+        command: 'node --experimental-strip-types scripts/check-provider-error-cause.ts',
+        cache: false,
+      },
       // Escape hatch for issue #1842's evidence-loss verdict: the plain writer
       // above REFUSES to overwrite the matrix with weaker per-property evidence
       // than the committed one records. Use this only when the reduction is
