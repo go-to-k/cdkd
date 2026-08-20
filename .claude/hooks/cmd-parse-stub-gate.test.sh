@@ -31,12 +31,16 @@ fail_log=""
 # assert the expected exit code, then unstage.
 run_case() {
   local name="$1"; local want="$2"; local rel_path="$3"; local content="$4"
+  # Optional 5th arg: the tool_input.command to feed the hook. Defaults to the
+  # bare `git commit -m test`; the command-matching cases below pass a compound
+  # spelling and a quoted mention (issue #2129).
+  local cmd="${5:-git commit -m test}"
   mkdir -p "$fixture_repo/$(dirname "$rel_path")"
   printf '%s' "$content" > "$fixture_repo/$rel_path"
   git -C "$fixture_repo" add -- "$rel_path" 2>/dev/null
 
   local payload
-  payload=$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m test"}}' "$fixture_repo")
+  payload=$(jq -cn --arg c "$cmd" --arg d "$fixture_repo" '{cwd:$d,tool_input:{command:$c}}')
   local out got
   out=$(printf '%s' "$payload" | "$HOOK" 2>&1) || true
   got=$?
@@ -222,6 +226,25 @@ else
   fail_log+="FAIL non-commit: want 0, got $got\n"
   printf 'FAIL non-commit command (want 0, got %s)\n' "$got"
 fi
+
+# --- Command matching (issue #2129) -----------------------------------------
+# The gate must see its verb wherever it sits in the command list, and must NOT
+# fire on a quoted MENTION of it. Both directions, or the matcher is untested.
+run_case "compound: git add -A && git commit blocked" 2 \
+  "tests/unit/cli/compound.test.ts" \
+  "import { Command } from 'commander';
+const cmd = new Command();
+cmd.parse(['node', 'cli'], { from: 'user' });
+" \
+  'git add -A && git commit -m test'
+
+run_case "quoted mention of git commit allowed" 0 \
+  "tests/unit/cli/quoted.test.ts" \
+  "import { Command } from 'commander';
+const cmd = new Command();
+cmd.parse(['node', 'cli'], { from: 'user' });
+" \
+  'echo "then git commit -m test"'
 
 echo
 echo "Pass: $pass  Fail: $fail"

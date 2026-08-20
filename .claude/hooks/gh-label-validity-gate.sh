@@ -25,9 +25,27 @@ cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 # for `--limit` (gh issue list -l 5), `--locale`, etc. — too ambiguous to filter
 # without parsing each subcommand's flag table. Stick to the long forms; that's
 # what scripts and AI agents use anyway.
-if ! printf '%s' "$cmd" | grep -qE '\bgh[[:space:]]+(issue|pr)[[:space:]]+(create|edit)\b'; then
-  exit 0
+# Recognition goes through the shared matcher (.claude/hooks/lib/command-match.sh,
+# issue #2129), so a chained `git push && gh issue create --label x` is seen and
+# a quoted mention of the command is not.
+# shellcheck source=lib/command-match.sh
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+# Fail CLOSED: a gate that cannot evaluate the command must not wave it through.
+# `|| exit 0` silently disabled the gate whenever the library was unreadable or
+# truncated, while ten of these files carried a comment claiming the opposite
+# (go-to-k/cdkd#2130 review). The 18 gates that predate this convergence already
+# exit 2 here; these now match them.
+if [ ! -r "$_gate_lib" ]; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unreadable, so this gate cannot evaluate the command." >&2
+  exit 2
 fi
+# shellcheck source=/dev/null
+. "$_gate_lib"
+if ! declare -F gate_matches >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
+  exit 2
+fi
+gate_matches "$cmd" "$GATE_RE_GH_LABEL_CARRIER" || exit 0
 if ! printf '%s' "$cmd" | grep -qE -- '--(add-)?label\b'; then
   exit 0
 fi

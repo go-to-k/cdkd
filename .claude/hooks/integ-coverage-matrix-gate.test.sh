@@ -344,6 +344,24 @@ else
   ng_msg "expected debug entry log; got: $stderr_out"
 fi
 
+# --- Command matching (issue #2129) -----------------------------------------
+# The gate must see its verb wherever it sits in the command list, and must NOT
+# fire on a quoted MENTION of it. Both directions, or the matcher is untested.
+case_label "compound: git add -A && git commit still blocks"
+D="$TMPDIR/case_compound"; init_repo "$D"
+mkdir -p "$D/tests/integration/foo/lib"
+cat > "$D/tests/integration/foo/lib/foo-stack.ts" <<'EOF'
+import * as cdk from 'aws-cdk-lib';
+export class FooStack extends cdk.Stack {}
+EOF
+stage_all "$D"
+run_hook "$D" "git add -A && git commit -m test"; rc=$?
+if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
+
+case_label "quoted mention of git commit does not fire"
+run_hook "$D" 'echo \"remember to git commit -m test\"'; rc=$?
+if [[ $rc -eq 0 ]]; then ok; else ng 0 "$rc"; fi
+
 echo
 echo "integ-coverage-matrix-gate.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

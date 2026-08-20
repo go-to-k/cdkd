@@ -25,10 +25,34 @@ set -u
 
 cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 
-# Only gate git commit invocations.
-if ! printf '%s' "$cmd" | grep -qE '\bgit[[:space:]]+commit\b'; then
-  exit 0
+# Only gate git commit invocations. Recognition goes through the shared
+# matcher (.claude/hooks/lib/command-match.sh, issue #2129): heredoc bodies and
+# quoted spans are neutralised, then the verb is matched in COMMAND POSITION
+# with a `VAR=value` / `env` / `command` / `nohup` prefix skipped. The old
+# unanchored form blocked `echo "do not use git commit -m <<EOF form"` — a
+# measured false positive on a command that never reached git.
+#
+# The SHAPE check below deliberately still reads the RAW command: neutralising
+# the `"$(cat <<EOF ...)"` span is exactly what would hide the shape this gate
+# exists to catch.
+# shellcheck source=lib/command-match.sh
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+# Fail CLOSED: a gate that cannot evaluate the command must not wave it through.
+# `|| exit 0` silently disabled the gate whenever the library was unreadable or
+# truncated, while ten of these files carried a comment claiming the opposite
+# (go-to-k/cdkd#2130 review). The 18 gates that predate this convergence already
+# exit 2 here; these now match them.
+if [ ! -r "$_gate_lib" ]; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unreadable, so this gate cannot evaluate the command." >&2
+  exit 2
 fi
+# shellcheck source=/dev/null
+. "$_gate_lib"
+if ! declare -F gate_matches >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
+  exit 2
+fi
+gate_matches "$cmd" "$GATE_RE_GIT_COMMIT" || exit 0
 
 # Block only when `git commit ... (-m|--message) ... <<` appears in
 # the same pipeline segment (no `;` / `&&` / `||` / `|` between them).

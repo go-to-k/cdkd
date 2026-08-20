@@ -115,12 +115,14 @@ run 0 'clobber redirect' 'vp run test >| /tmp/out'
 # False NEGATIVE (the pre-hook status quo), which is the safe direction.
 run 0 'KNOWN LIMIT: fully quoted path' 'vp run test "tests/unit/foo.test.ts"'
 run 2 'control: the unquoted twin IS caught' 'vp run test tests/unit/foo.test.ts'
-# The command-position matcher does not fire when the invocation is prefixed,
-# so the arg parse is never reached. Both halves are asserted: without the
-# control carrying a PATH, the pass case would stay green with the entire
-# path-detection block deleted and would fence nothing.
-run 0 'KNOWN LIMIT: env prefix, no path' 'CDKD_ONCE_LEAK_DETECT=1 vp run test'
-run 0 'KNOWN LIMIT: env prefix WITH a path' 'CI=1 vp run test tests/unit/foo.test.ts'
+# A leading env assignment used to stop the command-position matcher, so the arg
+# parse was never reached and a prefixed invocation ran ungated (issue #2129).
+# The matcher now skips `VAR=value` / `env` / `command` / `nohup` prefixes, so
+# the prefixed form behaves exactly like the bare one: blocked WITH a path,
+# passed without. Both halves stay asserted so the pass case cannot go green on
+# a deleted path-detection block.
+run 0 'env prefix, no path' 'CDKD_ONCE_LEAK_DETECT=1 vp run test'
+run 2 'env prefix WITH a path IS caught' 'CI=1 vp run test tests/unit/foo.test.ts'
 run 2 'control: same path with no prefix IS caught' 'vp run test tests/unit/foo.test.ts'
 # A flag VALUE under tests/ reads as a path. Documented rather than special-cased:
 # closing it needs the flag deny-list the inversion exists to remove.

@@ -25,10 +25,28 @@ set -u
 
 cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 
-# Only gate `gh pr edit` invocations.
-if ! printf '%s' "$cmd" | grep -qE '\bgh[[:space:]]+pr[[:space:]]+edit\b'; then
-  exit 0
+# Only gate `gh pr edit` invocations. Recognition goes through the shared
+# matcher (.claude/hooks/lib/command-match.sh, issue #2129): the old unanchored
+# form blocked `echo "next step: gh pr edit 1 --body foo"` — a measured false
+# positive on a command that never called gh — while missing nothing it caught.
+# shellcheck source=lib/command-match.sh
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+# Fail CLOSED: a gate that cannot evaluate the command must not wave it through.
+# `|| exit 0` silently disabled the gate whenever the library was unreadable or
+# truncated, while ten of these files carried a comment claiming the opposite
+# (go-to-k/cdkd#2130 review). The 18 gates that predate this convergence already
+# exit 2 here; these now match them.
+if [ ! -r "$_gate_lib" ]; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unreadable, so this gate cannot evaluate the command." >&2
+  exit 2
 fi
+# shellcheck source=/dev/null
+. "$_gate_lib"
+if ! declare -F gate_matches >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
+  exit 2
+fi
+gate_matches "$cmd" "$GATE_RE_GH_PR_EDIT" || exit 0
 
 # Only block if the invocation actually sets --title or --body.
 if ! printf '%s' "$cmd" | grep -qE '(--title|--body|--body-file)\b'; then

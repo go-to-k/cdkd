@@ -136,6 +136,23 @@ node dist/cli.js state destroy "$STACK" --force' \
   "" \
   0
 
+# --- Command matching (issue #2129) -----------------------------------------
+# The gate must see its verb wherever it sits in the command list, and must NOT
+# fire on a quoted MENTION of it. Both directions, or the matcher is untested.
+run "compound: git add -A && git commit blocks" \
+  "tests/integration/foo/verify.sh" \
+  '#!/usr/bin/env bash
+node dist/cli.js state destroy MyStack --force' \
+  "git add -A && git commit -m x" \
+  2
+
+run "quoted mention of git commit does not fire" \
+  "tests/integration/foo/verify.sh" \
+  '#!/usr/bin/env bash
+node dist/cli.js state destroy MyStack --force' \
+  'echo "then git commit -m x"' \
+  0
+
 # ---------- Wrap up ----------
 
 echo ""

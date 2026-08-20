@@ -26,6 +26,11 @@ git -C "$side_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 
 git init -q -b main "$main_repo"
 git -C "$main_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 
+# Repo opt-in signal (mirrors branch-gate.test.sh): the gate only fires in a
+# repo carrying a `.markgate.yml` at its top level, so the fixtures must have
+# one or every case would pass through untested.
+touch "$side_repo/.markgate.yml" "$main_repo/.markgate.yml"
+
 # Shim dir for mise + markgate. markgate's verdict comes from
 # $MARKGATE_MOCK_VERDICT (fresh -> exit 0, anything else -> exit 1).
 # Each call appends $PWD to $CWD_TRACE_FILE so the test asserts the
@@ -163,6 +168,17 @@ run_case "echo body quoting 'git commit' passes through" 0 stale "" \
 #     subcommand; the trailing class must exclude `-`.
 run_case "git commit-tree passes through" 0 stale "" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git commit-tree HEAD^{tree} -m x"}}' "$side_repo")"
+
+# --- Repo opt-in scope (mirrors branch-gate.sh) ------------------------------
+# A repo with no `.markgate.yml` at its top level is not a markgate repo: the
+# gate must pass through rather than demand a marker the repo cannot have.
+# Without this the gate blocked commits in unrelated checkouts a session
+# happened to touch.
+plain_repo="$TMPDIR/plain-repo"
+git init -q -b feature/y "$plain_repo"
+git -C "$plain_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+run_case "repo without .markgate.yml passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$plain_repo")"
 
 echo
 echo "Pass: $pass  Fail: $fail"

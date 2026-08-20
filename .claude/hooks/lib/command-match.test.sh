@@ -152,12 +152,15 @@ cd_check "cd BEFORE the verb still counts, cd after does not" "/tmp/before" \
 cd_check "without a verb every cd is followed (back-compat)" "/tmp/after" \
   "gh pr merge 1 && cd /tmp/after"
 
-# A fully-quoted cd path resolves to NOTHING so the caller falls back to the
-# payload cwd. Recovering it from raw text was tried and removed: the raw
-# command still holds quoted `cd` mentions the neutralised pass ignored, and
-# pairing the two by order resolved the WRONG directory.
-cd_check "a fully-quoted cd path is not resolved (documented fallback)" "" \
-  'cd "/tmp/a b" && gh pr merge 1' "$MERGE"
+# A fully-quoted cd path now RESOLVES. It used to yield nothing — the stripper
+# had replaced the span with a placeholder, so the caller fell back to the
+# payload cwd — and recovering it from the raw text was tried and removed,
+# because the raw command still holds quoted `cd` MENTIONS the neutralised pass
+# correctly ignored and pairing the two by order resolved the WRONG directory.
+# The #2129 segmenter removes the dilemma: segments carry their original text,
+# so the path is simply there, and a quoted mention still never starts a segment.
+cd_check "a fully-quoted cd path resolves" "/tmp/a b" \
+  'cd "/tmp/a b" && gh pr merge 1'
 
 # --- Round-2 review regressions (quoted VALUES must survive) --------------
 #
@@ -180,10 +183,304 @@ check "escaped quote does not swallow the next line" 0 "$MERGE" "$esc_cmd"
 fake_open=$(printf 'echo "delimiter is <<DONE"\ngh pr merge 5\nDONE')
 check "quoted <<DELIM plus a later bare DELIM line does not swallow" 0 "$MERGE" "$fake_open"
 
+# --- Leading prefixes before the verb (issue #2129) ------------------------
+#
+# Measured on 2026-08-20 against branch-gate.sh: each of these exited 0, so the
+# commit/push reached git ungated. An assignment or an `env` / `command` /
+# `nohup` wrapper does not change which program runs, so it must not change
+# whether the gate fires.
+check "leading env assignment" 0 "$COMMIT" "GIT_EDITOR=true git commit -m x"
+check "two leading assignments" 0 "$COMMIT" "GIT_EDITOR=true LC_ALL=C git commit -m x"
+check "env wrapper" 0 "$COMMIT" "env git commit -m x"
+check "command wrapper" 0 "$COMMIT" "command git commit -m x"
+check "nohup wrapper" 0 "$COMMIT" "nohup git commit -m x"
+check "assignment after a chain operator" 0 "$COMMIT" "git add -A && GIT_EDITOR=true git commit -m x"
+check "assignment on a gh merge" 0 "$MERGE" "CDKD_X=1 gh pr merge 1 --squash"
+# The prefix rule must not turn a quoted mention into a match.
+check "assignment inside a quoted mention" 1 "$COMMIT" 'echo "run GIT_EDITOR=true git commit later"'
+# An assignment-looking token that is an ARGUMENT, not a prefix, still must not
+# manufacture a verb out of nowhere.
+check "assignment with no verb after it" 1 "$COMMIT" "GIT_EDITOR=true vp run test"
+
 # --- Non-matches ----------------------------------------------------------
 check "different subcommand" 1 "$MERGE" "gh pr create --title x"
 check "substring inside a path" 1 "$COMMIT" "ls /tmp/git-commit-notes"
 check "empty command" 1 "$MERGE" ""
+
+# --- gate_matches / gate_target_dir ------------------------------------------
+#
+# Folded in from the short-lived `_command-match.test.sh` when the two matchers
+# converged into this file. These drive the SAME engine as the `check` cases
+# above, through the API the 34 gates call, so a regression is reported once.
+
+# want_match <expect 0|1> <label> <command> <regex>
+want_match() {
+  local want="$1" label="$2" cmd="$3" re="$4" got
+  if gate_matches "$cmd" "$re"; then got=0; else got=1; fi
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (want %s, got %s)\n' "$label" "$want" "$got"
+    fail_log+="FAIL $label\n  command: $cmd\n"
+  fi
+}
+
+# want_dir <expected> <label> <command> <fallback> <regex>
+want_dir() {
+  local want="$1" label="$2" cmd="$3" fallback="$4" re="$5" got
+  got=$(gate_target_dir "$cmd" "$fallback" "$re")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s\n' "$label"
+    fail_log+="FAIL $label\n  want: $want\n  got:  $got\n"
+  fi
+}
+
+C="$GATE_RE_GIT_COMMIT"
+P="$GATE_RE_GIT_PUSH"
+M="$GATE_RE_GH_PR_MERGE"
+
+# --- the spellings that used to bypass ---------------------------------------
+want_match 0 "bare git commit"              'git commit -m x' "$C"
+want_match 0 "git add -A && git commit"     'git add -A && git commit -m x' "$C"
+want_match 0 "cd && git commit"             'cd /w/t && git commit -m x' "$C"
+want_match 0 "cd ; git commit"              'cd /w/t; git commit -m x' "$C"
+want_match 0 "no spaces around &&"          'cd /w/t&&git commit -m x' "$C"
+want_match 0 "subshell"                     '(cd /w/t && git commit -m x)' "$C"
+want_match 0 "leading env assignment"       'GIT_EDITOR=true git commit -m x' "$C"
+want_match 0 "env wrapper"                  'env git commit -m x' "$C"
+want_match 0 "git -C <path> commit"         'git -C /w/t commit -m x' "$C"
+want_match 0 "git -c k=v commit"            'git -c user.name=t commit -m x' "$C"
+want_match 0 "three-segment chain"          'vp run check && git add -A && git commit -m x' "$C"
+want_match 0 "pipe into another command"    'git commit -m x | tee log' "$C"
+want_match 0 "gh pr merge after a push"     'git push && gh pr merge 1 --squash' "$M"
+want_match 0 "git push in second position"  'echo go && git push origin HEAD' "$P"
+
+# --- negatives ----------------------------------------------------------------
+want_match 1 "verb inside a double-quoted string" 'echo "next: git commit -m x"' "$C"
+want_match 1 "verb inside a single-quoted string" "echo 'run git commit later'" "$C"
+want_match 1 "heredoc body mentioning the verb"   'cat <<EOF
+git commit -m x
+EOF' "$C"
+want_match 1 "different verb"                     'git status --short' "$C"
+want_match 1 "commit as an argument, not a verb"  'git log --grep commit' "$C"
+want_match 1 "push is not commit"                 'git push origin HEAD' "$C"
+want_match 1 "gh pr create is not merge"          'gh pr create --fill' "$M"
+
+# --- target directory ---------------------------------------------------------
+want_dir "/fallback"  "no cd, no -C"           'git commit -m x' /fallback "$C"
+want_dir "/w/t"       "leading cd"             'cd /w/t && git commit -m x' /fallback "$C"
+want_dir "/w/t"       "cd in an earlier segment" 'cd /w/t && git add -A && git commit -m x' /fallback "$C"
+want_dir "/w/b"       "chained cd"             'cd /w && cd /w/b && git commit -m x' /fallback "$C"
+want_dir "/fallback/rel" "relative cd"         'cd rel && git commit -m x' /fallback "$C"
+want_dir "/w/t"       "git -C beats cd"        'cd /other && git -C /w/t commit -m x' /fallback "$C"
+want_dir "/w/t"       "gh -C on a merge"       'gh -C /w/t pr merge 1 --squash' /fallback "$M"
+want_dir "/fallback"  "cd AFTER the verb does not count" 'git commit -m x && cd /w/t' /fallback "$C"
+
+# --- the review findings from go-to-k/cdk-local#542 --------------------------
+# Every one of these was measured WRONG in the first version of this helper.
+want_match 0 "bare & separator"              'sleep 0 & git commit -m x' "$C"
+want_match 0 "command substitution"          'echo $(git commit -m x)' "$C"
+want_match 0 "substitution into a variable"  'SHA=$(git commit -m x)' "$C"
+want_match 0 "backtick substitution"         'echo `git commit -m x`' "$C"
+want_match 0 "bash -c wrapper"               'bash -c "git commit -m x"' "$C"
+want_match 0 "if/then compound"              'if true; then git commit -m x; fi' "$C"
+want_match 0 "for/do compound"               'for f in a; do git commit -m x; done' "$C"
+want_match 0 "timeout wrapper"               'timeout 60 git commit -m x' "$C"
+want_match 0 "time wrapper"                  'time git commit -m x' "$C"
+want_match 0 "nested subshells"              '( ( git commit -m x ) )' "$C"
+want_match 0 "backslash continuation"        'git \
+  commit -m x' "$C"
+want_match 0 "quoted -C path with a space"   'git -C "/w t" commit -m x' "$C"
+
+# The quote machinery only earns its keep on a separator INSIDE a string: without
+# it these match, and the gates start blocking ordinary `echo`s.
+want_match 1 "&& inside a quoted string"     'echo "step && git commit -m x"' "$C"
+want_match 1 "; inside a quoted string"      "echo 'step ; git commit -m x'" "$C"
+want_match 1 "| inside a quoted string"      'echo "step | git commit -m x"' "$C"
+# A quoted span survives a NEWLINE: a `--body "…"` argument is one span, and this
+# repo writes PR bodies that quote shell examples.
+want_match 1 "multi-line quoted body" 'gh pr create --body "line one
+line two && git commit -m x
+line three"' "$C"
+want_match 1 "CRLF heredoc terminator" 'cat <<EOF
+body
+EOF
+echo done' "$C"
+
+want_dir "/w t"   "quoted cd path"   'cd "/w t" && git commit -m x' /fb "$C"
+want_dir "/w t"   "quoted -C path"   'git -C "/w t" commit -m x' /fb "$C"
+want_dir "/fb"    "-C in a NON-matched segment is ignored" \
+  'git -C /elsewhere status && git commit -m x' /fb "$C"
+
+
+# --- heredoc openers are only honoured when TERMINATED (cdkd, issue #1455) ----
+# Latching onto any `<<WORD` blanks every remaining line, so a real verb after
+# an unterminated heredoc measures as NO MATCH — fail open.
+want_match 0 "unterminated heredoc then a real commit" 'cat <<EOF
+some prose
+git commit -m x' "$C"
+want_match 0 "here-string is not a heredoc opener" 'grep x <<< "data" && git commit -m x' "$C"
+
+# --- one compound positive + one negative for every cdkd-only GATE_RE_* ------
+want_match 0 "commit-or-push"          'git add -A && git commit -m x'                  "$GATE_RE_GIT_COMMIT_OR_PUSH"
+want_match 1 "commit-or-push negative" 'git fetch origin'                               "$GATE_RE_GIT_COMMIT_OR_PUSH"
+
+want_match 0 "git merge"               'git fetch origin && git merge origin/main'      "$GATE_RE_GIT_MERGE"
+want_match 1 "git merge negative"      'git log --merges'                               "$GATE_RE_GIT_MERGE"
+
+want_match 0 "git switch"              'git fetch && git switch -c fix/x'               "$GATE_RE_GIT_SWITCH"
+want_match 1 "git switch negative"     'echo "then git switch main"'                    "$GATE_RE_GIT_SWITCH"
+
+want_match 0 "git restore"             'git stash && git restore -- src/a.ts'           "$GATE_RE_GIT_CHECKOUT_RESTORE"
+want_match 1 "git restore negative"    'git status && ls restore'                       "$GATE_RE_GIT_CHECKOUT_RESTORE"
+
+want_match 0 "gh pr create-or-merge"   'vp run test && gh pr merge 1 --squash'          "$GATE_RE_GH_PR_CREATE_OR_MERGE"
+want_match 1 "gh pr create-or-merge negative" 'gh pr checks 1'                          "$GATE_RE_GH_PR_CREATE_OR_MERGE"
+
+want_match 0 "gh pr write"             'git push && gh pr edit 1 --title x'             "$GATE_RE_GH_PR_WRITE"
+want_match 1 "gh pr write negative"    'gh pr diff 1'                                   "$GATE_RE_GH_PR_WRITE"
+
+want_match 0 "gh label carrier"        'git push && gh issue create --label bug'        "$GATE_RE_GH_LABEL_CARRIER"
+want_match 1 "gh label carrier negative" 'gh issue list --label bug'                    "$GATE_RE_GH_LABEL_CARRIER"
+
+want_match 0 "gh api"                  'gh pr view 1 && gh api repos/o/r/issues'        "$GATE_RE_GH_API"
+want_match 1 "gh api negative"         'echo "call gh api later"'                       "$GATE_RE_GH_API"
+
+want_match 0 "gh body carrier"         'git push && gh issue comment 1 --body-file b.md' "$GATE_RE_GH_BODY_CARRIER"
+want_match 1 "gh body carrier negative" 'gh issue view 1'                               "$GATE_RE_GH_BODY_CARRIER"
+
+want_match 0 "vp run test"             'vp run build && vp run test'                    "$GATE_RE_VP_RUN_TEST"
+want_match 1 "vp run test negative"    'vp run test:hooks'                              "$GATE_RE_VP_RUN_TEST"
+
+want_match 0 "cdk deploy"              'cd tests/integration/x && npx cdk deploy --all' "$GATE_RE_CDK_DEPLOY"
+want_match 1 "cdk deploy negative"     'echo "then npx cdk deploy"'                     "$GATE_RE_CDK_DEPLOY"
+
+want_match 0 "cdk destroy"             'cd x && cdk destroy --force'                    "$GATE_RE_CDK_DESTROY"
+want_match 1 "cdk destroy negative"    'ls cdk-destroy.log'                             "$GATE_RE_CDK_DESTROY"
+
+want_match 0 "delstack"                'cd x && delstack -s S -r us-east-1 -y -f'       "$GATE_RE_DELSTACK"
+want_match 1 "delstack negative"       'echo "run delstack afterwards"'                 "$GATE_RE_DELSTACK"
+
+# --- positions issue #2093 named (all must MATCH) ----------------------------
+# Measured against main-tree-git-cwd-detector.sh: the #1455 anchor treated only
+# a control operator as opening a command position, so each of these was quiet
+# where the pre-shared-matcher hook had warned.
+want_match 0 "subshell"                       '(git commit -m x)' "$C"
+want_match 0 "subshell after a chain"         'true && (git commit -m x)' "$C"
+want_match 0 "command substitution"           'out=$(git commit -m x)' "$C"
+want_match 0 "backtick substitution"          'out=`git commit -m x`' "$C"
+want_match 0 "bare & separator"               'sleep 1 & git commit -m x' "$C"
+want_match 0 "bash -c runs its argument"      'bash -c "git commit -m x"' "$C"
+want_match 0 "then keyword"                   'if true; then git commit -m x; fi' "$C"
+want_match 0 "unbalanced apostrophe upstream" $'echo don\'t; git commit -m y' "$C"
+want_match 0 "backslash continuation"         'git add -A && \
+  git commit -m x' "$C"
+# ...and through the compatibility wrapper the other 18 gates call.
+check "subshell via cmd_matches_verb" 0 "$COMMIT" '(git commit -m x)'
+check "substitution via cmd_matches_verb" 0 "$COMMIT" 'out=$(git commit -m x)'
+
+# --- heredoc openers only count when TERMINATED ------------------------------
+# Latching onto any `<<WORD` blanks every remaining line, so a real verb after
+# an unterminated heredoc reads as NO MATCH — fail open, the direction that
+# silently disables a gate.
+want_match 0 "unterminated heredoc then a real commit" 'cat <<EOF
+some prose
+git commit -m x' "$C"
+want_match 0 "here-string is not a heredoc opener" 'grep x <<< "data" && git commit -m x' "$C"
+want_match 1 "terminated heredoc body is data" 'cat <<EOF
+git commit -m x
+EOF' "$C"
+
+# --- one compound positive + one negative for every cdkd-only GATE_RE_* ------
+want_match 0 "commit-or-push"          'git add -A && git commit -m x'                  "$GATE_RE_GIT_COMMIT_OR_PUSH"
+want_match 1 "commit-or-push negative" 'git fetch origin'                               "$GATE_RE_GIT_COMMIT_OR_PUSH"
+
+want_match 0 "git merge"               'git fetch origin && git merge origin/main'      "$GATE_RE_GIT_MERGE"
+want_match 1 "git merge negative"      'git log --merges'                               "$GATE_RE_GIT_MERGE"
+
+want_match 0 "git switch"              'git fetch && git switch -c fix/x'               "$GATE_RE_GIT_SWITCH"
+want_match 1 "git switch negative"     'echo "then git switch main"'                    "$GATE_RE_GIT_SWITCH"
+
+want_match 0 "git restore"             'git stash && git restore -- src/a.ts'           "$GATE_RE_GIT_CHECKOUT_RESTORE"
+want_match 1 "git restore negative"    'git status && ls restore'                       "$GATE_RE_GIT_CHECKOUT_RESTORE"
+
+want_match 0 "gh pr create-or-merge"   'vp run test && gh pr merge 1 --squash'          "$GATE_RE_GH_PR_CREATE_OR_MERGE"
+want_match 1 "gh pr create-or-merge negative" 'gh pr checks 1'                          "$GATE_RE_GH_PR_CREATE_OR_MERGE"
+
+want_match 0 "gh pr write"             'git push && gh pr edit 1 --title x'             "$GATE_RE_GH_PR_WRITE"
+want_match 1 "gh pr write negative"    'gh pr diff 1'                                   "$GATE_RE_GH_PR_WRITE"
+
+want_match 0 "gh label carrier"        'git push && gh issue create --label bug'        "$GATE_RE_GH_LABEL_CARRIER"
+want_match 1 "gh label carrier negative" 'gh issue list --label bug'                    "$GATE_RE_GH_LABEL_CARRIER"
+
+want_match 0 "gh api"                  'gh pr view 1 && gh api repos/o/r/issues'        "$GATE_RE_GH_API"
+want_match 1 "gh api negative"         'echo "call gh api later"'                       "$GATE_RE_GH_API"
+
+want_match 0 "gh body carrier"         'git push && gh issue comment 1 --body-file b.md' "$GATE_RE_GH_BODY_CARRIER"
+want_match 1 "gh body carrier negative" 'gh issue view 1'                               "$GATE_RE_GH_BODY_CARRIER"
+
+want_match 0 "vp run test"             'vp run build && vp run test'                    "$GATE_RE_VP_RUN_TEST"
+want_match 1 "vp run test negative"    'vp run test:hooks'                              "$GATE_RE_VP_RUN_TEST"
+
+want_match 0 "cdk deploy"              'cd tests/integration/x && npx cdk deploy --all' "$GATE_RE_CDK_DEPLOY"
+want_match 1 "cdk deploy negative"     'echo "then npx cdk deploy"'                     "$GATE_RE_CDK_DEPLOY"
+
+want_match 0 "cdk destroy"             'cd x && cdk destroy --force'                    "$GATE_RE_CDK_DESTROY"
+want_match 1 "cdk destroy negative"    'ls cdk-destroy.log'                             "$GATE_RE_CDK_DESTROY"
+
+want_match 0 "delstack"                'cd x && delstack -s S -r us-east-1 -y -f'       "$GATE_RE_DELSTACK"
+want_match 1 "delstack negative"       'echo "run delstack afterwards"'                 "$GATE_RE_DELSTACK"
+
+# --- the legacy API keeps its contract on quoted paths -----------------------
+# `cmd_last_cd_target` prints NOTHING when no cd precedes the verb, and a
+# formerly-unresolvable quoted path now resolves rather than falling back.
+if [ -z "$(cmd_last_cd_target 'git commit -m x' /fb "$COMMIT")" ]; then
+  pass=$((pass + 1)); printf 'OK   cmd_last_cd_target prints nothing with no cd\n'
+else
+  fail=$((fail + 1)); printf 'FAIL cmd_last_cd_target prints nothing with no cd\n'
+  fail_log+="FAIL cmd_last_cd_target no-cd\n"
+fi
+got=$(cmd_last_cd_target 'cd "/w t" && git commit -m x' /fb "$COMMIT")
+if [ "$got" = "/w t" ]; then
+  pass=$((pass + 1)); printf 'OK   cmd_last_cd_target resolves a quoted path\n'
+else
+  fail=$((fail + 1)); printf 'FAIL cmd_last_cd_target quoted path (got %s)\n' "$got"
+  fail_log+="FAIL cmd_last_cd_target quoted path: got $got\n"
+fi
+
+# --- go-to-k/cdkd#2130 review: leaders, process substitution, unexpanded paths ---
+want_match 0 "if ... then <verb>"      'if true; then git commit -m x; fi' "$C"
+want_match 0 "negation"                '! git commit -m x' "$C"
+want_match 0 "sudo wrapper"            'sudo git commit -m x' "$C"
+want_match 0 "xargs behind a pipe"     'echo f | xargs git commit -m x' "$C"
+want_match 0 "case arm"                'case a in a) git commit -m x;; esac' "$C"
+want_match 0 "process substitution"    'diff <(git commit -m x) /dev/null' "$C"
+want_match 0 "output process substitution" 'tee >(git commit -m x) < f' "$C"
+
+# `cd "$WT" && …` is the spelling /work-issues mandates: an UNEXPANDED path must
+# be skipped, so the gate falls back to the payload cwd and fails CLOSED rather
+# than resolving `<cwd>/$WT` and exiting 0.
+if [ "$(cmd_last_cd_target 'cd "$WT" && git commit -m x' /base)" = "" ]; then
+  pass=$((pass + 1)); echo "OK   unexpanded cd is skipped"
+else
+  fail=$((fail + 1)); echo "FAIL unexpanded cd resolved to $(cmd_last_cd_target 'cd "$WT" && git commit -m x' /base)"
+  fail_log+="FAIL unexpanded cd is skipped\n"
+fi
+
+# --- go-to-k/cdkd#2130 test review: two real defects, and the unpinned rest ----
+want_match 0 "bash -c with an inner chain" 'bash -c "cd /w && git commit -m x"' "$C"
+want_match 1 "escaped semicolon is literal" 'echo a\; git commit -m x' "$C"
+want_match 1 "ANSI-C quoting hides its contents" "echo \$'x; git commit'" "$C"
+want_match 0 "parameter expansion default runs"  'echo ${V:-a; git commit -m x}' "$C"
+want_match 1 "# comment holding the verb"        'echo hi # git commit -m x' "$C"
+want_match 1 "grep pattern is not a verb"        'git log --grep commit' "$C"
+want_match 1 "grep=pattern is not a verb"        'git log --grep=commit' "$C"
+want_match 1 "an ordinary task run"              'vp run test' "$C"
+# The quoted-span protection is the only thing keeping a gate off prose: pin it
+# with a separator INSIDE the quotes, the one shape that can distinguish it.
+want_match 1 "separator inside a quoted body" 'gh issue create --body "run vp check && git commit -m x"' "$C"
 
 echo
 echo "Pass: $pass  Fail: $fail"

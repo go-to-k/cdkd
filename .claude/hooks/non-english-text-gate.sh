@@ -69,38 +69,33 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || ec
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
 # Only gate gh pr create / edit / merge — anything else passes through.
-if ! printf '%s' "$cmd" | grep -qE '\bgh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+(create|edit|merge)\b'; then
-  exit 0
+# Recognition goes through the shared matcher (.claude/hooks/lib/command-match.sh,
+# issue #2129): heredoc bodies and quoted spans are neutralised, then the verb
+# is matched in COMMAND POSITION with a `VAR=value` / `env` / `command` /
+# `nohup` prefix skipped. So `git push && gh pr create --fill` fires, while a
+# shellcheck source=lib/command-match.sh
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+# Fail CLOSED: a gate that cannot evaluate the command must not wave it through.
+# `|| exit 0` silently disabled the gate whenever the library was unreadable or
+# truncated, while ten of these files carried a comment claiming the opposite
+# (go-to-k/cdkd#2130 review). The 18 gates that predate this convergence already
+# exit 2 here; these now match them.
+if [ ! -r "$_gate_lib" ]; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unreadable, so this gate cannot evaluate the command." >&2
+  exit 2
 fi
-
-target_dir="${hook_cwd:-$PWD}"
-
-# Leading `cd <path> && ...` shifts the target dir.
-if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-  cd_target="${BASH_REMATCH[1]}"
-  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
-  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
-  if [[ "$cd_target" != /* ]]; then
-    cd_target="$target_dir/$cd_target"
-  fi
-  target_dir="$cd_target"
+# shellcheck source=/dev/null
+. "$_gate_lib"
+if ! declare -F gate_matches >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
+  exit 2
 fi
+gate_matches "$cmd" "$GATE_RE_GH_PR_WRITE" || exit 0
 
-# Last `gh -C <path>` wins.
-if [[ "$cmd" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
-  c_target=""
-  remaining="$cmd"
-  while [[ "$remaining" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-    c_target="${BASH_REMATCH[1]}"
-    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  done
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  if [[ "$c_target" != /* ]]; then
-    c_target="$target_dir/$c_target"
-  fi
-  target_dir="$c_target"
-fi
+# Where the gh command actually runs: the last `gh -C <path>` wins, else the
+# last `cd <path>` in ANY segment before the verb (the previous form saw only a
+# LEADING cd), else the payload cwd.
+target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$GATE_RE_GH_PR_WRITE")
 
 # If the resolved target dir is not a git repo, silently pass.
 if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then

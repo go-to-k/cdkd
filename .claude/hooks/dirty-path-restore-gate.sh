@@ -55,16 +55,30 @@ command=$(jq -r '.tool_input.command // empty' <<<"$input_json" 2>/dev/null || t
 
 [[ "${CDKD_ALLOW_DIRTY_RESTORE:-}" == "1" ]] && exit 0
 
-# Cheap pre-filter so the common case costs nothing. Deliberately matches the
-# bare VERBS rather than `git checkout` / `git restore`: a `git -C <path>`
-# prefix sits between the two words, so the literal-pair form silently skipped
-# every cross-worktree invocation — exactly the shape this repo uses most (a
-# gate that never fires is worse than no gate, and this one was caught only
-# because the test suite covers the `-C` case).
-case "$command" in
-  *checkout*|*restore*) ;;
-  *) exit 0 ;;
-esac
+# Cheap pre-filter so the common case costs nothing. It used to test for the
+# bare VERBS as substrings, because a `git -C <path>` prefix sits between the
+# two words and the literal-pair form silently skipped every cross-worktree
+# invocation. The shared matcher (.claude/hooks/lib/command-match.sh, issue #2129)
+# absorbs that prefix itself, so the pair can be matched properly again: the
+# `-C` shape still fires, and a quoted mention of the verb no longer does.
+# shellcheck source=lib/command-match.sh
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
+# Fail CLOSED: a gate that cannot evaluate the command must not wave it through.
+# `|| exit 0` silently disabled the gate whenever the library was unreadable or
+# truncated, while ten of these files carried a comment claiming the opposite
+# (go-to-k/cdkd#2130 review). The 18 gates that predate this convergence already
+# exit 2 here; these now match them.
+if [ ! -r "$_gate_lib" ]; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unreadable, so this gate cannot evaluate the command." >&2
+  exit 2
+fi
+# shellcheck source=/dev/null
+. "$_gate_lib"
+if ! declare -F gate_matches >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
+  exit 2
+fi
+gate_matches "$command" "$GATE_RE_GIT_CHECKOUT_RESTORE" || exit 0
 
 # Resolve the working directory the command runs in, mirroring the other
 # cwd-aware gates: the payload cwd, overridden by an explicit `cd <path>`
@@ -72,14 +86,11 @@ esac
 cwd=$(jq -r '.cwd // empty' <<<"$input_json" 2>/dev/null || true)
 [[ -n "$cwd" && -d "$cwd" ]] || cwd="$PWD"
 
-if [[ "$command" =~ (^|[[:space:]\;\&])cd[[:space:]]+\"?([^\"[:space:]\;\&]+)\"? ]]; then
-  candidate="${BASH_REMATCH[2]}"
-  [[ -d "$candidate" ]] && cwd="$candidate"
-fi
-if [[ "$command" =~ git[[:space:]]+-C[[:space:]]+\"?([^\"[:space:]]+)\"? ]]; then
-  candidate="${BASH_REMATCH[1]}"
-  [[ -d "$candidate" ]] && cwd="$candidate"
-fi
+# A `cd` in ANY segment before the verb, then a `git -C <path>`, each honoured
+# only when it names a directory that exists (unchanged from the hand-rolled
+# form this replaces).
+candidate=$(gate_target_dir "$command" "$cwd" "$GATE_RE_GIT_CHECKOUT_RESTORE")
+[[ -d "$candidate" ]] && cwd="$candidate"
 
 git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 

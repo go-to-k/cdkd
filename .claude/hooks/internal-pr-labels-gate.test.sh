@@ -226,6 +226,27 @@ stage_all "$D"
 run_hook "$D"; rc=$?
 if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
 
+# --- Command matching (issue #2129) -----------------------------------------
+# The gate must see its verb wherever it sits in the command list, and must NOT
+# fire on a quoted MENTION of it. Both directions, or the matcher is untested.
+run_hook_cmd() {
+  local dir="$1" cmd="$2" payload
+  payload=$(jq -cn --arg c "$cmd" --arg d "$dir" '{tool_input:{command:$c},cwd:$d}')
+  printf '%s' "$payload" | bash "$HOOK" >/dev/null 2>&1
+}
+
+case_label "compound: git add -A && git commit still blocks"
+D="$TMPDIR/case_compound"; init_repo "$D"
+append_line "$D/README.md" ""
+append_line "$D/README.md" "This feature ships in PR 8b of #224 as planned."
+stage_all "$D"
+run_hook_cmd "$D" 'git add -A && git commit -m test'; rc=$?
+if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
+
+case_label "quoted mention of git commit does not fire"
+run_hook_cmd "$D" 'echo "remember to git commit -m test"'; rc=$?
+if [[ $rc -eq 0 ]]; then ok; else ng 0 "$rc"; fi
+
 echo
 echo "  total: $((PASS + FAIL))  pass: $PASS  fail: $FAIL"
 if [[ $FAIL -eq 0 ]]; then exit 0; else exit 1; fi
