@@ -125,7 +125,7 @@ deploy-update-destroy sequence) so the later fixer has the evidence.
 Session-fit: now (do it in this session) | next (not this session) — <reason>
 Severity: high | medium | low — <what stays broken while it is undone>
 Effort: small (S) | medium (M) | large (L) — <which verification cycle it drags>
-Estimate: <duration, e.g. ~1-3 h> — <what eats the time>
+Estimate: <duration, e.g. ~1-3 h -- never a bare letter> — <what eats the time>
 ```
 
 A hunt is the single best moment to write them: you have just reproduced the bug
