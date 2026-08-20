@@ -450,6 +450,25 @@ else
   fail_log+="FAIL cmd_last_cd_target quoted path: got $got\n"
 fi
 
+# --- go-to-k/cdkd#2130 review: leaders, process substitution, unexpanded paths ---
+want_match 0 "if ... then <verb>"      'if true; then git commit -m x; fi' "$C"
+want_match 0 "negation"                '! git commit -m x' "$C"
+want_match 0 "sudo wrapper"            'sudo git commit -m x' "$C"
+want_match 0 "xargs behind a pipe"     'echo f | xargs git commit -m x' "$C"
+want_match 0 "case arm"                'case a in a) git commit -m x;; esac' "$C"
+want_match 0 "process substitution"    'diff <(git commit -m x) /dev/null' "$C"
+want_match 0 "output process substitution" 'tee >(git commit -m x) < f' "$C"
+
+# `cd "$WT" && …` is the spelling /work-issues mandates: an UNEXPANDED path must
+# be skipped, so the gate falls back to the payload cwd and fails CLOSED rather
+# than resolving `<cwd>/$WT` and exiting 0.
+if [ "$(cmd_last_cd_target 'cd "$WT" && git commit -m x' /base)" = "" ]; then
+  pass=$((pass + 1)); echo "OK   unexpanded cd is skipped"
+else
+  fail=$((fail + 1)); echo "FAIL unexpanded cd resolved to $(cmd_last_cd_target 'cd "$WT" && git commit -m x' /base)"
+  fail_log+="FAIL unexpanded cd is skipped\n"
+fi
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then

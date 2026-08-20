@@ -36,8 +36,21 @@ trimmed="${command}"
 # QUOTES `gh pr merge` no longer reaches the PR-number extraction below.
 # shellcheck source=lib/command-match.sh
 _gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
-[ -r "$_gate_lib" ] || exit 0
+# Fail CLOSED: a gate that cannot evaluate the command must not wave it through.
+# `|| exit 0` silently disabled the gate whenever the library was unreadable or
+# truncated, while ten of these files carried a comment claiming the opposite
+# (go-to-k/cdkd#2130 review). The 18 gates that predate this convergence already
+# exit 2 here; these now match them.
+if [ ! -r "$_gate_lib" ]; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unreadable, so this gate cannot evaluate the command." >&2
+  exit 2
+fi
+# shellcheck source=/dev/null
 . "$_gate_lib"
+if ! declare -F gate_matches >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
+  exit 2
+fi
 gate_matches "$trimmed" "$GATE_RE_GH_PR_MERGE" || exit 0
 
 # Extract PR number (positional integer after `gh pr merge`)

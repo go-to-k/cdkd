@@ -251,6 +251,8 @@ gate_segments_raw() {
         if (q == "") {
           if ((c == "\"" || c == "'"'"'") && c != ignore_q) { q = c; res = res c; continue }
           if (c == "$" && substr(line, i + 1, 1) == "(") { res = res "\n"; i++; continue }
+          # Process substitution runs its body too: `diff <(git commit) …`.
+          if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") { res = res "\n"; i++; continue }
           if (c == "`") { res = res "\n"; continue }
           if (c == "&" || c == ";" || c == "|") { res = res "\n"; continue }
           if (c == "<" && substr(line, i + 1, 1) == "<") {
@@ -334,8 +336,24 @@ gate_strip_prefix() {
   if [[ "$s" =~ ^(bash|zsh|ksh|sh)[[:space:]]+-[a-z]*c[[:space:]]+[\"\'](.*)[\"\'][[:space:]]*$ ]]; then
     s="${BASH_REMATCH[2]}"
   fi
-  while [[ "$s" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|command|nohup|time|timeout[[:space:]]+[^[:space:]]+|exec|then|do|else|elif|\{|\()[[:space:]]+(.*)$ ]]; do
-    s="${BASH_REMATCH[2]}"
+  # Strip leaders until stable: a `case <word> in` opener, a `<pattern>)` arm
+  # label, compound keywords, wrappers and env assignments nest
+  # (`case a in a) sudo git commit`). `if|while|until|!|sudo|xargs` were missing,
+  # so `if <verb>; then …`, `! <verb>` and `sudo <verb>` ran UNGATED — a
+  # regression for every gate that traded an unanchored grep for this matcher.
+  local prev=""
+  while [ "$s" != "$prev" ]; do
+    prev="$s"
+    if [[ "$s" =~ ^[[:space:]]*case[[:space:]]+[^[:space:]]+[[:space:]]+in[[:space:]]+(.*)$ ]]; then
+      s="${BASH_REMATCH[1]}"
+    fi
+    if [[ "$s" =~ ^[[:space:]]*[^\(\)\|\;\&[:space:]]+\)[[:space:]]*(.*)$ ]]; then
+      s="${BASH_REMATCH[1]}"
+    fi
+    if [[ "$s" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|command|nohup|time|timeout[[:space:]]+[^[:space:]]+|exec|then|do|else|elif|if|while|until|!|sudo|xargs|-[A-Za-z][^[:space:]]*|\{|\()[[:space:]]+(.*)$ ]]; then
+      s="${BASH_REMATCH[2]}"
+    fi
+    s="${s#"${s%%[![:space:]]*}"}"
   done
   # Any remaining grouping punctuation at either end (nested subshells).
   while [[ "$s" =~ ^[[:space:]]*[\(\{][[:space:]]*(.*)$ ]]; do s="${BASH_REMATCH[1]}"; done
@@ -349,7 +367,13 @@ gate_strip_prefix() {
 gate_segments() {
   local segment
   while IFS= read -r segment; do
-    segment="${segment//"$GATE_SEP_AMP"/&}"
+    # NOT `${segment//"$GATE_SEP_AMP"/&}`: since bash 5.2 an `&` in the
+    # replacement means the MATCHED TEXT, so the placeholder survived and a
+    # quoted path containing `&` came back corrupted — the gate then failed to
+    # resolve the tree and exited 0. macOS bash 3.2 masks it.
+    while [[ "$segment" == *"$GATE_SEP_AMP"* ]]; do
+      segment="${segment%%"$GATE_SEP_AMP"*}&${segment#*"$GATE_SEP_AMP"}"
+    done
     segment="${segment//"$GATE_SEP_SEMI"/;}"
     segment="${segment//"$GATE_SEP_PIPE"/|}"
     segment="${segment//"$GATE_SEP_SUBST"/$}"
@@ -433,6 +457,11 @@ gate_target_dir() {
   while IFS= read -r segment; do
     if [[ "$segment" =~ ^cd[[:space:]]+$GATE_PATH_TOKEN ]]; then
       cd_target=$(gate_unquote "${BASH_REMATCH[1]}")
+      # An UNEXPANDED path is not a path. `cd "$WT" && …` is the spelling
+      # /work-issues mandates; resolving it literally gave `<cwd>/$WT`, which no
+      # `git -C` can read, so the gate could not resolve a tree and exited 0.
+      # Falling back to the payload cwd fails CLOSED (go-to-k/cdkd#2130 review).
+      case "$cd_target" in *'$'*|*'`'*) continue ;; esac
       [ -z "$cd_target" ] && continue
       [[ "$cd_target" != /* ]] && cd_target="$target/$cd_target"
       target="$cd_target"
@@ -448,6 +477,7 @@ gate_target_dir() {
         remaining="${remaining#*"${BASH_REMATCH[0]}"}"
       done
       c_target=$(gate_unquote "$c_target")
+      case "$c_target" in *'$'*|*'`'*) c_target="" ;; esac
       if [ -n "$c_target" ]; then
         [[ "$c_target" != /* ]] && c_target="$target/$c_target"
         target="$c_target"
@@ -507,6 +537,11 @@ cmd_last_cd_target() {
     fi
     if [[ "$segment" =~ ^cd[[:space:]]+$GATE_PATH_TOKEN ]]; then
       cd_target=$(gate_unquote "${BASH_REMATCH[1]}")
+      # An UNEXPANDED path is not a path: `cd "$WT" && …` must be SKIPPED, not
+      # resolved to `<cwd>/$WT`, which no `git -C` can read — the callers then
+      # exited 0 over a tree they never checked (go-to-k/cdkd#2130 review). The
+      # `has_cd_before_verb` companion is what tells "unresolvable" from "absent".
+      case "$cd_target" in *'$'*|*'`'*) cd_target="" ;; esac
       if [ -n "$cd_target" ]; then
         seen=1
         if [[ "$cd_target" == /* ]]; then
