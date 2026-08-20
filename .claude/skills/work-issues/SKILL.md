@@ -642,6 +642,37 @@ arguing the code "cannot have changed behaviour".
   phase away. jq / JMESPath / AWS CLI `--query` are untested code; run each
   against real output shape before finishing, in both directions where the
   expression carries a guard.
+- **A read-only REVIEWER can silently revert a live lane's uncommitted `src/`
+  edits, and nothing surfaces it.** The reviewer agents run mutation probes by
+  editing a file and restoring it from `git show HEAD:<path>` — which restores
+  HEAD, not the lane's in-flight work. On 2026-08-20 that wiped three `src/`
+  edits an implementing agent had just applied in the same worktree; it was
+  caught only because `git status` disagreed with what the agent had written,
+  and one reviewer independently reported seeing another's probe on disk. So:
+  **do not dispatch reviewers against a worktree whose lane still has
+  uncommitted work.** Commit the lane first (the gates make that cheap) and
+  point the reviewers at the committed diff. When a lane resumes after a review
+  round, have it re-run `git status --porcelain` and `git diff --stat` FIRST and
+  report both, rather than assuming its edits survived — the orchestrator cannot
+  tell a wiped edit from an unstarted one.
+
+**Two probe-harness failures from the same run, both of which reported a false
+green rather than an error.** A probe that cannot fail is worse than no probe,
+because it converts an open gap into a recorded assurance:
+
+- **A scratch harness was silently REPLACED by another agent's file of the same
+  name.** Its `__main__` was `pass`, so four probes "passed" having applied
+  nothing. Parallel agents share `/tmp`-style scratch space and pick the same
+  obvious filenames. Name scratch files per lane, and make every probe emit a
+  positive receipt it cannot produce without having run —
+  `bytes 41822 -> 41799; anchor now 0 (was 1); changed=True` — then read the
+  receipt rather than the exit code.
+- **A probe's FIXTURE, not its mutation, decided the outcome.** A region test
+  set `AWS_REGION` to the CONSUMER's region, under which the correct code and
+  the mutation bind identically, so the probe stayed green; pointing it at the
+  PRODUCER's region separated them. Same lesson as choosing the probe's input
+  (section 5, above), reached from the fixture side: when a probe comes back
+  green, suspect the fixture before concluding the code is fenced.
 
 ## 6. Gates + PR (per lane)
 
@@ -822,6 +853,60 @@ AWS:
 - **Non-deletion source change** → still live-test the fixed path end-to-end
   (deploy → the redeploy-with-a-change that reproduced the bug → destroy) with a
   fresh fixture, or via `/run-integ` against an existing one that covers it.
+
+**Never leave a real-AWS run unwatched, and do not reach for `timeout` to do
+it.** A hung integ and a legitimately slow one look identical from outside, so
+silence proves nothing: on 2026-08-20 a fixture wedged inside `docker push` and
+ran **4h17m** with no container alive and no log line after the first minute,
+noticed only on a manual check. `timeout` **does not exist on macOS**, and the
+obvious guard is therefore worse than none — it exits 127 in 0s, which reads as
+a run that completed instantly. Use a shell watchdog beside the job and make the
+firing visible in the log:
+
+```bash
+bash verify.sh > "$LOG" 2>&1 &
+VPID=$!
+( sleep 1500; kill -9 $VPID 2>/dev/null; echo "WATCHDOG_FIRED" >> "$LOG" ) &
+WPID=$!
+wait "$VPID"; RC=$?
+kill "$WPID" 2>/dev/null
+grep -c WATCHDOG_FIRED "$LOG" || echo "watchdog did not fire"
+```
+
+The `grep` is load-bearing: `kill -9` surfaces as rc=137, which is otherwise
+indistinguishable from any other crash. Pair it with a `Monitor` that emits on
+phase lines AND on log-growth stalling, so a wedge announces itself instead of
+being discovered hours later.
+
+**Check a fixture's unstated PRECONDITIONS before spending a run on it.** Integ
+fixtures guard themselves and refuse rather than explain, so a wrong region
+costs a full round-trip each time. Choosing a region for `asset-bootstrap` on
+2026-08-20 took three attempts: it needs a region that is **CDK-bootstrapped**
+(its legacy-mode phase publishes to the CDK bootstrap bucket) AND has **no cdkd
+marker** (its own guard refuses otherwise), and on that account only `eu-west-1`
+satisfied both. Both conditions are two commands:
+
+```bash
+aws s3api head-bucket --bucket "cdk-hnb659fds-assets-<acct>-<region>"   # CDK-bootstrapped?
+aws s3 ls "s3://cdkd-state-<acct>/cdkd-bootstrap/"                       # which regions cdkd owns
+```
+
+**A DOCKER-dependent fixture is an environment blocker, so prefer the one that
+reaches the same code more directly without it.** `gc-custom-asset-names` was
+abandoned after two blockers (daemon down, then the 4h push wedge) in favour of
+`asset-bootstrap`, which needs no docker AND exercises `AssetModeResolver` more
+directly — the better fixture on the merits, not merely the available one. When
+docker is genuinely required by the gate (`integ-local`), verify it can reach a
+registry FIRST — `docker pull hello-world` under a 120s cap — because
+`docker version` answering says nothing about registry networking, and that is
+the half that fails.
+
+**A run blocked before its assertions is not a failing fix, and the ledger note
+is where that distinction survives.** Record such a run as `FAIL` (the bar is
+exit-code-based) with a note naming the blocker, saying the change was not at
+fault, and listing any AWS resources the aborted run created and you removed by
+hand. The next reader sees a FAIL row against a merged change and will otherwise
+conclude the fix is broken.
 - **Any diff with no `src/**` change** (docs, toolchain, CI, hooks, skills, tests,
   config) → EXEMPT from the deploy / destroy live-test tiers above, never from
   `/verify-pr` step 9, and never from `verify-pr` itself — that gate sits on top of
