@@ -135,14 +135,36 @@ run_case quiet "vp run test from feature-worktree cwd" \
 # 18. Quoted mention of a verification command -> QUIET (the shared
 #     command-position matcher neutralises quoted spans). Uses `git -C
 #     <worktree>` so the GIT half is quiet for its own reason, isolating
-#     the verify half: this case only stays quiet if the quoted body is
-#     neutralised, not because nothing matched.
-run_case quiet "git -C <worktree> commit whose message quotes 'vp run test'" \
-  "$MAIN" "git -C $WT commit -m \"then run vp run test\""
+#     the verify half.
+#
+#     The quoted body carries a `&&` SEPARATOR before the verb. That is
+#     load-bearing: without one the verb is not in command position even
+#     in the RAW text, so the case would pass with stripping disabled
+#     and would not discriminate the stripper at all. With it, the only
+#     thing keeping this quiet is the neutralisation.
+run_case quiet "git -C <worktree> commit whose message quotes '&& vp run test'" \
+  "$MAIN" "git -C $WT commit -m \"done && vp run test\""
 
-# 19. Plain quoted mention with no git verb at all -> QUIET.
-run_case quiet "echo containing 'mise exec -- markgate set' string" \
-  "$MAIN" 'echo "next: mise exec -- markgate set check"'
+# 19. Plain quoted mention with no git verb at all -> QUIET. Same
+#     construction: the `;` inside the quotes puts the verb in command
+#     position in the raw text, so this fails without the stripper.
+run_case quiet "echo containing '; mise exec -- markgate set' string" \
+  "$MAIN" 'echo "next; mise exec -- markgate set check"'
+
+# 19b. The `mise exec -- ` prefix must be honoured for `vp` too, not
+#      only `markgate` — work-issues/SKILL.md tells agents to invoke vp
+#      that way -> WARN.
+run_case warn  "mise exec -- vp run test in main tree" \
+  "$MAIN" 'mise exec -- vp run test'
+
+# 19c. `mise exec <tool> -- vp run <task>` (a tool token before `--`).
+run_case warn  "mise exec node@24 -- vp run build in main tree" \
+  "$MAIN" 'mise exec node@24 -- vp run build'
+
+# 19d. The literal `--` is required, so a `mise exec` whose ARGUMENTS
+#      merely mention the verb does not fire -> QUIET.
+run_case quiet "mise exec -- echo mentioning vp run test" \
+  "$MAIN" 'mise exec -- echo vp run test'
 
 # 20. `git -C <worktree>` does NOT redirect the verification half: the
 #     `vp run test` still runs in the cwd (vp has no `-C`), so this must
@@ -150,6 +172,42 @@ run_case quiet "echo containing 'mise exec -- markgate set' string" \
 #     unacceptable direction for a detector.
 run_case warn  "git -C <worktree> add && bare vp run test" \
   "$MAIN" "git -C $WT add -A && vp run test"
+
+# ---------------------------------------------------------------------
+# UNRESOLVABLE `cd`: a `cd` IS present in command position but its
+# target cannot be resolved (the path was entirely quoted, so the
+# stripper left a placeholder). Must stay QUIET — asserting the cwd
+# here means crying wolf on `cd "$WT" && <cmd>`, the exact spelling
+# /work-issues section 6 mandates and the shape that defeated
+# pr-review-gate twice. "No cd" and "unresolvable cd" are different
+# states. Cases 20a-20e.
+# ---------------------------------------------------------------------
+
+# 20a. VERIFICATION family, the mandated spelling with a quoted
+#      variable -> QUIET.
+run_case quiet 'cd "$WT" && vp run test (quoted var, unresolvable)' \
+  "$MAIN" 'cd "$WT" && vp run test'
+
+# 20b. GIT family, same shape -> QUIET.
+run_case quiet 'cd "$WT" && git commit (quoted var, unresolvable)' \
+  "$MAIN" 'cd "$WT" && git commit -m x'
+
+# 20c. Also the marker call, which is what section 6 is actually about.
+run_case quiet 'cd "$W" && mise exec -- markgate set check' \
+  "$MAIN" 'cd "$W" && mise exec -- markgate set check'
+
+# 20d. An UNQUOTED variable resolves to a literal `$WT` path that does
+#      not exist, so the directory check makes it quiet by a different
+#      route -> QUIET. Pinned so the two mechanisms cannot both be
+#      removed at once believing the other covers it.
+run_case quiet 'cd $WT && vp run test (unquoted var, nonexistent dir)' \
+  "$MAIN" 'cd $WT && vp run test'
+
+# 20e. CONTROL for 20a-20d: identical shape with a RESOLVABLE literal
+#      target that IS the main tree still WARNS. Without this, making
+#      the hook quiet on every `cd` would pass 20a-20d.
+run_case warn  "cd <main-tree> && vp run test (resolvable, is main tree)" \
+  "$MAIN" "cd $MAIN && vp run test"
 
 # ---------------------------------------------------------------------
 # Scope guards: the evidence-producing set only. Noise is what makes a

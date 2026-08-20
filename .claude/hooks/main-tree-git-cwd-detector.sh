@@ -59,7 +59,28 @@
 #      a trailing `cd` cannot hijack the lookup);
 #   2. for the GIT family only, an explicit `git -C <dir>` overrides —
 #      it is the cwd-race-proof form we want people to use;
-#   3. otherwise the hook's reported cwd.
+#   3. no `cd` at all -> the hook's reported cwd;
+#   4. a `cd` that IS present but does not RESOLVE -> stay SILENT.
+#
+# Rule 4 is not a detail, it is the difference between a useful
+# detector and one people learn to ignore. `cd "$WT" && vp run test` is
+# the spelling `/work-issues` section 6 mandates, and a VARIABLE is how
+# it gets written in practice — the same shape that defeated
+# `pr-review-gate` twice in the run this hook was extended for. The
+# quoted span is neutralised to a placeholder before parsing, so the
+# target cannot be resolved; falling back to the payload cwd would then
+# make the hook assert "this ran in the MAIN worktree" about a command
+# that almost certainly did not, on the one spelling we tell everyone
+# to use. Absence of a `cd` and an unresolvable `cd` are DIFFERENT
+# states and must not collapse into each other.
+#
+# The honest reason for the silence is that the hook cannot know: it
+# has no way to expand `$WT`. Between a false alarm on the mandated
+# spelling and a missed warning on a command that already carried the
+# right prefix, the false alarm costs more — it trains the reader to
+# skip the warning, which disables the hook for the cases it CAN
+# decide. (An UNQUOTED `cd $WT` resolves to a literal `$WT` path that
+# does not exist, and the `-d` check below already makes that quiet.)
 #
 # `git -C` is deliberately NOT honoured for the verification family:
 # `vp` and `markgate` have no `-C` equivalent, so a compound like
@@ -68,6 +89,31 @@
 # false NEGATIVE, which for a detector is the one unacceptable
 # direction, since a missing warning is indistinguishable from nothing
 # being wrong.
+#
+# ── KNOWN GAP: what moving to the shared matcher COST ─────────────────
+#
+# This hook used to match with its own inline ERE anchored at
+# `(^|[&;|(])`. The shared `lib/command-match.sh` anchors at
+# `(^|[|;&][[:space:]]*)` — no `(` — so moving to it LOST subshell and
+# command-substitution positions. Measured old -> new, all warn ->
+# quiet:
+#
+#     (git commit -m x)
+#     true && (git commit -m x)
+#     out=$(git commit -m x)
+#
+# It also inherits the shared matcher's unbalanced-apostrophe limit:
+# `echo don't; git commit -m y` goes warn -> quiet, because the lone
+# apostrophe opens a quoted span that swallows the rest.
+#
+# This is a REGRESSION for this hook, not parity, and it is recorded
+# rather than papered over. It is accepted here because the loss is
+# shared with 17 other hooks — several of them BLOCKING gates, where
+# the same gap is a `check-gate` bypass rather than a missed warning —
+# so the fix belongs in the library, under its own review and its own
+# test round, not in this hook's local ERE. Widening the shared matcher
+# changes what all 17 match at once. Tracked as its own issue; see the
+# `main-tree-git-cwd-detector` entry in `.claude/rules/hooks.md`.
 #
 # Always exit 0 — PostToolUse cannot block, this only informs.
 
@@ -107,17 +153,28 @@ GIT_VERB='git([[:space:]]+-[^[:space:]]+)*[[:space:]]+(commit|add|push)([[:space
 
 # Family 2: verification commands whose verdict is taken as evidence.
 #
+# The optional `mise exec [args] -- ` prefix is not an optional nicety:
+# this repo pins BOTH `vp` and `markgate` through mise, and
+# `work-issues/SKILL.md` instructs agents to invoke them that way, so a
+# matcher seeing only the bare binaries would miss the real-world shape
+# entirely. It applies to BOTH binaries — an earlier revision honoured
+# it for `markgate` only, and that asymmetry would have gone quiet on
+# exactly the `mise exec -- vp run test` the skill tells people to
+# write. A literal `--` is required, so `mise exec -- echo vp run test`
+# does not match on the `echo`'s arguments.
+#
+# `npx` / `pnpm exec` are deliberately NOT honoured: this repo pins
+# `vp` via mise and those spellings do not appear in it, so adding them
+# buys nothing and widens the surface. The failure direction of that
+# choice is a MISS, i.e. the status quo before this hook existed.
+#
 # `vp run <task>` requires a task token, so a bare `vp run` (which does
 # nothing) does not arm it. `vp test run <path>` is the form
 # vp-run-test-path-gate steers callers to, so it must be covered too or
 # the steer would move traffic OUT of this detector's view.
-#
-# The `mise exec [args] -- markgate ...` prefix is not optional
-# nicety: it is how EVERY marker call in this repo is actually spelled,
-# so a matcher seeing only a bare `markgate` would miss the real-world
-# shape entirely. Both spellings are asserted by this hook's suite.
 # `markgate status` is read-only and stays out.
-VERIFY_VERB='(vp[[:space:]]+run[[:space:]]+[^[:space:]]|vp[[:space:]]+test[[:space:]]+run([[:space:]]|$|[|;&])|(mise[[:space:]]+exec[[:space:]]+([^[:space:]]+[[:space:]]+)*)?markgate[[:space:]]+(set|verify)([[:space:]]|$|[|;&]))'
+RUNNER_PFX='(mise[[:space:]]+exec[[:space:]]+([^[:space:]]+[[:space:]]+)*--[[:space:]]+)?'
+VERIFY_VERB="${RUNNER_PFX}"'(vp[[:space:]]+run[[:space:]]+[^[:space:]]|vp[[:space:]]+test[[:space:]]+run([[:space:]]|$|[|;&])|markgate[[:space:]]+(set|verify)([[:space:]]|$|[|;&]))'
 
 # Cheap literal pre-filter before the shared matcher. This hook is a
 # PostToolUse `Bash` hook with no `if:` condition, so it runs on EVERY
@@ -142,14 +199,53 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 base="${hook_cwd:-$PWD}"
 
 # --------------------------------------------------------- effective dirs
+#
+# has_cd_before_verb <cmd> <verb-ere> — succeeds when a `cd` appears in
+# command position before the verb, INCLUDING one whose path was
+# entirely quoted. `cmd_last_cd_target` deliberately skips that case
+# (it cannot resolve a placeholder) and returns an empty string, which
+# is indistinguishable from "there was no cd at all". This mirrors its
+# scan to tell those two states apart; see rule 4 in the header for why
+# they must not collapse.
+has_cd_before_verb() {
+  strip_noncommand_spans "$1" | awk -v verb="$2" '
+    {
+      n = split($0, seg, /[|;&]+/)
+      for (k = 1; k <= n; k++) {
+        s = seg[k]
+        sub(/^[ \t]+/, "", s)
+        if (verb != "" && s ~ verb) { stop = 1; break }
+        if (s ~ /^cd([ \t]|$)/) { found = 1 }
+      }
+      if (stop) exit
+    }
+    END { exit(found ? 0 : 1) }
+  '
+}
+
 eff_git="$base"
 if [[ "$git_hit" == 1 ]]; then
-  cdt="$(cmd_last_cd_target "$cmd" "$base" "$GIT_VERB")"
-  [[ -n "$cdt" ]] && eff_git="$cdt"
-  # An explicit `git -C <dir>` wins — the cwd-race-proof form.
+  # An explicit `git -C <dir>` wins — the cwd-race-proof form. Read it
+  # first, because an ABSOLUTE `-C` makes an unresolvable `cd` moot:
+  # it, not the cwd, decides where this git call ran.
+  gc=""
   if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
     gc="${BASH_REMATCH[1]}"
     gc="${gc%\"}"; gc="${gc#\"}"; gc="${gc%\'}"; gc="${gc#\'}"
+  fi
+
+  cdt="$(cmd_last_cd_target "$cmd" "$base" "$GIT_VERB")"
+  if [[ -n "$cdt" ]]; then
+    eff_git="$cdt"
+  elif [[ "$gc" != /* ]] && has_cd_before_verb "$cmd" "$GIT_VERB"; then
+    # A `cd` we cannot resolve, and no absolute `-C` to override it:
+    # stay silent rather than assert the cwd (header rule 4). A
+    # RELATIVE `-C` is suppressed too — it would be resolved against
+    # the unknown directory.
+    git_hit=0
+  fi
+
+  if [[ -n "$gc" ]]; then
     [[ "$gc" != /* ]] && gc="$eff_git/$gc"
     eff_git="$gc"
   fi
@@ -158,8 +254,14 @@ fi
 eff_verify="$base"
 if [[ "$verify_hit" == 1 ]]; then
   cdt="$(cmd_last_cd_target "$cmd" "$base" "$VERIFY_VERB")"
-  [[ -n "$cdt" ]] && eff_verify="$cdt"
+  if [[ -n "$cdt" ]]; then
+    eff_verify="$cdt"
+  elif has_cd_before_verb "$cmd" "$VERIFY_VERB"; then
+    verify_hit=0
+  fi
 fi
+
+[[ "$git_hit" == 1 || "$verify_hit" == 1 ]] || exit 0
 
 # Canonicalize for a reliable equality test (macOS symlinked /tmp,
 # trailing slashes, ..).
