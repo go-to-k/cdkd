@@ -835,6 +835,24 @@ because it converts an open gap into a recorded assurance:
 
 ## 6. Gates + PR (per lane)
 
+**Before the session's FIRST commit, prove the gates are ALIVE.** Registration is
+not execution. This repo's gates have always fired — it wires its hooks with no
+`if` at all — but both siblings spent a day with every gate registered and INERT
+(go-to-k/cdk-real-drift#1801: an `if` holding `A or B` matches nothing), and the
+failure is silent in the worst direction, since an ungated commit looks exactly
+like one that passed. `/hooks` lists what is REGISTERED, so it cannot see this.
+One command can:
+
+```bash
+git commit --dry-run -m "gate liveness probe"   # from the repo root, on main
+```
+
+`--dry-run` commits nothing whatever the tree looks like. Expected: `Blocked by
+branch-gate` (the root is on `main`) or `Blocked by check-gate` (markers stale).
+Git's ordinary output instead means the gates are not firing, and every gate step
+below is then self-enforced: run each check by hand and say so in the report.
+
+
 From inside the worktree, run the local quality checks and record the markers:
 
 ```
