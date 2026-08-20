@@ -1,3 +1,10 @@
+## [0.284.26](https://github.com/go-to-k/cdkd/compare/v0.284.25...v0.284.26) (2026-08-20)
+
+
+### Bug Fixes
+
+* **cli:** resolve bootstrap / gc / bootstrap --destroy from the AWS profile, holding existing storage rather than stranding it ([#2127](https://github.com/go-to-k/cdkd/issues/2127)) ([81a4dae](https://github.com/go-to-k/cdkd/commit/81a4daee810281cdefe134bf7430a93ab99c6c84))
+
 ## [0.284.25](https://github.com/go-to-k/cdkd/compare/v0.284.24...v0.284.25) (2026-08-20)
 
 
