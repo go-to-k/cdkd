@@ -74,6 +74,14 @@ function ssmSecrets(): RecordedSecretValues {
  * | containing / straddling one  | REPLACED | the straddle REGRESSION (see below)     |
  * | disjoint from every span     | REPLACED | the ordinary embedded secret            |
  *
+ * A STRAY `{{resolve:` opener decides which row a needle lands on, and the two
+ * cases go opposite ways: with no later `}}` there is no span and the needle is
+ * REPLACED (as before this change), while with a `}}` anywhere later the greedy
+ * `[^}]+` grammar brackets one span over everything between them and the needle
+ * is KEPT — the only shape where this rule redacts less than the code it
+ * replaced. Both are pinned below as residuals, with the reason they are
+ * documented rather than fixed.
+ *
  * The third row is here because an earlier revision of this fix got it wrong
  * in the disclosing direction. Expressed as TWO rules — replace a span that IS
  * a recorded plaintext, value-scan the text between spans — a straddling
@@ -83,10 +91,15 @@ function ssmSecrets(): RecordedSecretValues {
  * `jdbc://user:pw{{resolve:ssm:/a/b}}tail@host`. So these cases are not
  * hypothetical coverage — they are the regression the security review caught.
  *
- * The fourth thing the single pass buys is needle PRECEDENCE: `buildNeedleRegex`
- * sorts alternatives longest-first, which only holds WITHIN one scan, so the
- * split form let a short needle in the tail beat a long straddling one and
- * wrote the wrong expression (the issue #1910 class, re-applied by the replay).
+ * The fourth thing the single pass buys is SAME-OFFSET needle precedence:
+ * `buildNeedleRegex` sorts alternatives longest-first, which decides only
+ * between alternatives starting at the same offset and only within one scan.
+ * The split form scanned the between-span text separately, so a long straddling
+ * needle was never a candidate and a short one in the tail won by default,
+ * writing the wrong expression (the issue #1910 class, re-applied by the
+ * replay). What it does NOT buy is anything about a shorter needle starting
+ * EARLIER: the scan is leftmost-first, so that one still wins and the longer
+ * secret's tail survives in the clear, before and after this change alike.
  *
  * This walk is the SHARED arm: every `PathSourceRules` constant reaches it
  * through `redactByPath`'s fallbacks and the journal's `previousState` /
@@ -209,12 +222,15 @@ describe('secret-redaction - one rule over the whole leaf, spans excepted (issue
     expect(out['Url']).toBe(`x${STRADDLING_EXPR}y`);
   });
 
-  it('PRECEDENCE: a long straddling needle beats a short one later in the leaf', () => {
-    // `buildNeedleRegex` sorts alternatives longest-first, and that ordering
-    // only holds within ONE scan. Splitting the leaf at the span boundaries let
-    // `tail@ho` — which lies wholly in the tail — win, so the leaf took the
-    // WRONG expression: the issue #1910 wrong-reference class, which the replay
-    // re-resolves and applies to the live resource.
+  it('PRECEDENCE: a straddling needle is a CANDIDATE again, so it beats a later short one', () => {
+    // Not a claim that the longest needle always wins — see the case below for
+    // where it does not. `buildNeedleRegex`'s longest-first ordering decides
+    // between alternatives at the SAME offset, and the scan is leftmost-first.
+    // What the split form broke is candidacy: scanning the tail separately
+    // meant the straddling needle could not match at all, so `tail@ho` won by
+    // default and the leaf took the WRONG expression — the issue #1910
+    // wrong-reference class, which the replay re-resolves and applies to the
+    // live resource.
     const long = STRADDLING_PLAINTEXT;
     const short = 'tail@ho';
     const out = redactSecretsForState(
@@ -226,6 +242,32 @@ describe('secret-redaction - one rule over the whole leaf, spans excepted (issue
     ) as Record<string, unknown>;
 
     expect(out['Url']).toBe('jdbc://user:{{resolve:secretsmanager:LONG:SecretString:p}}@host');
+  });
+
+  it('LEFTMOST beats LONGEST: a shorter needle starting earlier keeps the longer one out', () => {
+    // The limit of the precedence claim above, pinned so the comment cannot
+    // quietly widen back. Regex alternation is leftmost-first; longest-first
+    // only orders alternatives at ONE offset. So `ABCD` wins at index 2 and the
+    // `EF` tail of `BCDEF` survives in the clear.
+    //
+    // Identical before and after this change — the rule under test does not
+    // reach overlapping needles at DIFFERENT offsets, and this case exists to
+    // say so rather than to endorse it.
+    //
+    // NO cheap mutant reds this one, and that is measured rather than assumed:
+    // inverting `buildNeedleRegex`'s longest-first sort leaves it green,
+    // because leftmost-first decides it before ordering ever applies. It is a
+    // CHARACTERIZATION case — its job is to make the narrowed claim in the
+    // comments falsifiable if someone widens it back, not to guard a mechanism.
+    const out = redactSecretsForState(
+      { Url: 'zzABCDEFzz' },
+      new Map([
+        ['ABCD', '{{resolve:secretsmanager:EARLY:SecretString:p}}'],
+        ['BCDEF', '{{resolve:secretsmanager:LONGER:SecretString:p}}'],
+      ])
+    ) as Record<string, unknown>;
+
+    expect(out['Url']).toBe('zz{{resolve:secretsmanager:EARLY:SecretString:p}}EFzz');
   });
 
   it('RESIDUAL: an UNTERMINATED `{{resolve:` opener is not a span, so a needle after it is replaced', () => {
@@ -245,6 +287,46 @@ describe('secret-redaction - one rule over the whole leaf, spans excepted (issue
     >;
 
     expect(out['Url']).toBe(`foo{{resolve:${SSM_EXPR}`);
+  });
+
+  it('RESIDUAL: a stray opener plus ANY later `}}` forms a span that KEEPS the needle', () => {
+    // The same stray opener failing in the OPPOSITE direction, which is why
+    // both halves are pinned. The span grammar is greedy `[^}]+` — the
+    // resolver's own spelling, unified by issue #1936 — so the opener and a
+    // `}}` anywhere later in the leaf bracket ONE span, and a needle between
+    // them is strictly inside it and kept.
+    //
+    // This is the ONE shape where this rule redacts LESS than the code it
+    // replaced (measured against `origin/main`, which rewrote it). It is
+    // documented rather than fixed: narrowing the span pattern would re-fork
+    // the grammar #1936 unified AND make an already-mangled legacy leaf parse
+    // differently and be spliced a second time. Reachability is bounded by the
+    // shared grammar — such a leaf could not have RESOLVED on the deploy path,
+    // so it arrives as an `observedProperties` readback, which is arbitrary
+    // text from AWS.
+    const leaf = 'echo {{resolve: ; PASSWORDVALUE ; echo }} done';
+    const out = redactSecretsForState(
+      { Url: leaf },
+      new Map([['PASSWORDVALUE', '{{resolve:secretsmanager:S:SecretString:pw}}']])
+    ) as Record<string, unknown>;
+
+    expect(out['Url']).toBe(leaf);
+  });
+
+  it('RESIDUAL: the same swallowing span keeps a token-shaped plaintext too', () => {
+    // The second reported shape, and it is not a duplicate: here the needle is
+    // a complete `{{resolve:...}}` string, so on a leaf with no stray opener it
+    // would be COEXTENSIVE with its own span and replaced (the issue #1917
+    // case). The stray opener swallows it into a LARGER span, which makes the
+    // same needle strictly-inside instead — so the two residual rows really do
+    // cover different arms of the rule.
+    const leaf = 'note{{resolve: see {{resolve:ssm:/pub/x}} ok';
+    const out = redactSecretsForState(
+      { Url: leaf },
+      new Map([['{{resolve:ssm:/pub/x}}', '{{resolve:secretsmanager:T:SecretString:pw}}']])
+    ) as Record<string, unknown>;
+
+    expect(out['Url']).toBe(leaf);
   });
 
   it('reaches the walk through `attributes`, which has no source at all', () => {

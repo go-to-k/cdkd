@@ -2847,14 +2847,27 @@ state, which is worse than the mangling this rule prevents. Nothing else about
 substring matching changes: an embedded secret in ordinary text is repaired
 exactly as before.
 
-Two limits worth knowing. An UNTERMINATED `{{resolve:` (an opener with no
-closing `}}`) is not a reference by the resolver's own grammar, so it forms no
-protected region and a secret after it is still replaced — leaving the plaintext
-there instead would hide it behind two characters any string can contain. And a
-value already mangled by an older cdkd is not repaired: it parses as a valid
-reference now, so neither a redeploy nor `cdkd scrub` rewrites it. Fixing such a
-record means editing it out of state, or redeploying the resource so the leaf is
-written afresh.
+Three limits worth knowing, all of them narrow. A STRAY `{{resolve:` — an
+opener that is not part of a real reference — is read by the same grammar the
+resolver uses, and which way it falls depends on what follows it in that same
+value:
+
+- With **no later `}}`** it is not a reference at all, so it protects nothing
+  and a secret after it is still replaced. Leaving the plaintext there instead
+  would hide it behind two characters any string can contain.
+- With a **`}}` anywhere later**, the opener and that `}}` bracket one region,
+  and a secret inside it is left alone. This is the one shape where cdkd redacts
+  less than it did before this change. It is not fixed by narrowing what counts
+  as a reference: that would disagree with the resolver about the same string,
+  and would re-mangle values an older cdkd already mangled. Such a value cannot
+  come from a template — it would fail to resolve at deploy time — so the way it
+  arrives is a drift readback (`observedProperties`), which is arbitrary text
+  from AWS.
+
+And a value already mangled by an older cdkd is not repaired: it parses as a
+valid reference now, so neither a redeploy nor `cdkd scrub` rewrites it. Fixing
+such a record means editing it out of state, or redeploying the resource so the
+leaf is written afresh.
 
 **A reference you have edited but not deployed is never rewritten** — by
 `cdkd scrub` or by `cdkd deploy`. If state holds `...:AWSPREVIOUS` and the

@@ -253,10 +253,11 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   original reason for the distinction has been removed: the scan's SUBSTRING
  *   arm used to splice a short secret value found inside the token's own text
  *   into the reference, and since issue
- *   [#1935](https://github.com/go-to-k/cdkd/issues/1935) it leaves a
- *   `{{resolve:...}}` span alone unless the span text is ITSELF a recorded
- *   plaintext. The whole-value form is kept because it states what this arm
- *   means without depending on that span rule holding.
+ *   [#1935](https://github.com/go-to-k/cdkd/issues/1935) it KEEPS a match that
+ *   lies strictly inside a complete `{{resolve:...}}` span — which is every
+ *   match in a whole-token leaf except one covering the leaf entire, and that
+ *   one is the whole-value arm's own case. The whole-value form is kept because
+ *   it states what this arm means without depending on that rule holding.
  *
  *   And "onto its own expression" is the ordinary case, not a
  *   guarantee — `RecordedSecretValues` is keyed by plaintext, so if two
@@ -1081,12 +1082,22 @@ function redactByPath(
       // wreckage, whose `[^}]+` stops at the first `}`, into a request for a
       // bogus secret id.
       //
-      // The scan no longer does that to ANY leaf since issue
-      // [#1935](https://github.com/go-to-k/cdkd/issues/1935) — it splits a
-      // MIXED leaf into spans and text and never rewrites inside a span — so
+      // The scan no longer does that to a leaf of THIS shape since issue
+      // [#1935](https://github.com/go-to-k/cdkd/issues/1935) — it keeps a match
+      // that lies STRICTLY INSIDE a complete `{{resolve:...}}` span, and a
+      // whole-token leaf is one span end to end, so every match in it is either
+      // strictly inside (kept) or coextensive with it, and coextensive means
+      // the whole leaf, which the whole-value arm above already answered. So
       // this arm and the full scan now agree here for TWO independent reasons
-      // rather than one. Both are still spelled out, and neither may be
-      // removed by editing only the other: each has its own probe.
+      // rather than one.
+      //
+      // NOT "never rewrites inside a span", which an earlier revision of this
+      // comment said: a needle that STRADDLES or CONTAINS a span does consume
+      // span text, deliberately, because refusing it left the plaintext in
+      // state. The exception is about a match SHORTER than the span it sits
+      // in — see {@link scanLeaf}'s own table. Both guards are still spelled
+      // out, and neither may be removed by editing only the other: each has its
+      // own probe.
       //
       // While BOTH exist, `redactSecretsForState(bag, secrets)` here would be
       // byte-equivalent — the walk's own token guard makes it whole-value-only
@@ -1702,21 +1713,44 @@ export function redactSecretsForState<T>(
    *   leaf rather than a split.
    * - **disjoint from every span** -> REPLACED. The ordinary embedded secret.
    *
-   * Scanning the WHOLE leaf in ONE pass is also what preserves needle
-   * PRECEDENCE. {@link buildNeedleRegex} sorts alternatives longest-first so an
-   * overlapping shorter secret cannot pre-empt a longer one — a property that
-   * only holds within a single scan. The two-rule form scanned each
-   * BETWEEN-span stretch separately, so a long straddling needle lost to a
-   * short one starting later in the tail and the leaf took the WRONG
+   * Scanning the WHOLE leaf in ONE pass is also what preserves what needle
+   * PRECEDENCE there is. {@link buildNeedleRegex} sorts alternatives
+   * longest-first, which decides only between alternatives matching at the SAME
+   * offset; the scan itself is LEFTMOST-first, so a shorter secret starting
+   * EARLIER still wins and the tail of the longer one survives in the clear
+   * (`zzABCDEFzz` with needles `ABCD` / `BCDEF` leaves `EF`). That is regex
+   * semantics, identical before and after this change, and is not something
+   * this rule claims to fix.
+   *
+   * What the single pass DOES restore is the same-offset ordering across a span
+   * boundary. The two-rule form scanned each BETWEEN-span stretch separately,
+   * so a long straddling needle was never even a candidate and a short one
+   * starting later in the tail won by default — the leaf took the WRONG
    * expression, which the replay then re-resolves and applies (the issue #1910
    * class).
    *
-   * KNOWN RESIDUAL, pinned by a test rather than left as prose: an UNTERMINATED
-   * `{{resolve:` opener is not a span, so a needle after it is replaced and the
-   * result reads as a reference to a bogus secret id. Refusing to redact there
-   * would leave PLAINTEXT behind an opener any template text can contain, which
-   * is the trade this whole arm exists to refuse; the pre-fix code behaves
-   * identically, so nothing regresses.
+   * TWO KNOWN RESIDUALS around a STRAY `{{resolve:` opener, both pinned by
+   * tests rather than left as prose, and they fail in OPPOSITE directions
+   * because the span grammar is greedy `[^}]+` (deliberately — it is the
+   * resolver's own spelling, unified by issue #1936):
+   *
+   * - **no later `}}` in the leaf** -> no span, so a needle after the opener is
+   *   REPLACED and the result reads as a reference to a bogus secret id.
+   *   Identical to the pre-fix code. Refusing to redact there would leave
+   *   PLAINTEXT behind two characters any string can contain.
+   * - **a later `}}` anywhere in the leaf** -> the opener and that `}}` form
+   *   ONE span swallowing everything between them, so a needle in that region
+   *   is KEPT — the only shape where this rule redacts LESS than the code it
+   *   replaced. Narrow but real, and the reachable carrier is named rather than
+   *   waved at: the resolver shares this grammar, so such a leaf could not have
+   *   resolved on the deploy path, which leaves an `observedProperties`
+   *   READBACK (arbitrary text from AWS) as the way one arrives.
+   *
+   * Narrowing the span pattern here would close the second and open two worse
+   * holes: it would re-fork the one grammar issue #1936 unified, and it would
+   * make an ALREADY-MANGLED legacy leaf parse differently and be spliced again,
+   * contradicting this change's own "not repaired, not made worse" property.
+   * So the residual is documented, not fixed.
    */
   const scanLeaf = (value: string, needles: RegExp): string => {
     // Only a leaf that HOLDS a reference can have a span, and the dominant leaf
@@ -1732,11 +1766,14 @@ export function redactSecretsForState<T>(
           span.start <= offset && end <= span.end && (span.start !== offset || span.end !== end)
       );
       if (strictlyInsideASpan) return match;
-      // Always defined: `needles` is built FROM `secrets.keys()`, so every match
-      // is a key. The fallback is identity rather than {@link SECRET_MASK} —
-      // a mask here would be a redaction path that can never run, and identity
-      // is the one answer that cannot fabricate a value.
-      return secrets.get(match) ?? match;
+      // Unreachable today: `needles` is built FROM `secrets.keys()`, so every
+      // match is a key. {@link SECRET_MASK} anyway, and the polarity is the
+      // whole point of keeping a dead branch — a caller that ever hands this
+      // function a regex built from somewhere else gets a MASK rather than the
+      // plaintext. An earlier revision made it identity on the grounds that the
+      // branch cannot run; a branch that cannot run still has to fail in the
+      // safe direction, because the day it runs is the day nobody is looking.
+      return secrets.get(match) ?? SECRET_MASK;
     });
   };
 
