@@ -64,6 +64,14 @@ run_case() {
     plain)
       cmdstr=$(printf 'git -C %q commit' "$tmpdir")
       ;;
+    # Command-matching shapes (issue #2129): the verb after a chain operator
+    # must be seen, and a quoted mention of it must not fire.
+    compound)
+      cmdstr=$(printf 'git add -A && git -C %q commit -m "%s"' "$tmpdir" "$subject")
+      ;;
+    quoted)
+      cmdstr=$(printf 'echo "then git -C %q commit -m %s"' "$tmpdir" "$subject")
+      ;;
     *)
       echo "internal test error: unknown shape '$shape'" >&2
       return 1
@@ -240,6 +248,14 @@ run_case "feat: with --message= form BLOCKED" 2 \
   else fail=$((fail + 1)); printf 'FAIL --message= form (want 2, got %s)\n' "$?"; fi
   rm -rf "$tmpdir"
 }
+
+# --- Command matching (issue #2129) -----------------------------------------
+# The gate must see its verb wherever it sits in the command list, and must NOT
+# fire on a quoted MENTION of it. Both directions, or the matcher is untested.
+run_case "compound: git add -A && git commit still blocks" 2 \
+  "feat: document new pattern" "docs/cli-reference.md" compound
+run_case "quoted mention of git commit does not fire" 0 \
+  "feat: document new pattern" "docs/cli-reference.md" quoted
 
 echo
 echo "Pass: $pass  Fail: $fail"

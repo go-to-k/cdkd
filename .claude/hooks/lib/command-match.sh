@@ -168,6 +168,18 @@ strip_noncommand_spans() {
   '
 }
 
+# What may sit BETWEEN the start of a command segment and the verb without
+# changing which program runs: `VAR=value` environment assignments and the
+# `env` / `command` / `nohup` wrappers, in any number.
+#
+# Issue #2129 measured the omission: with the segment start anchored directly
+# against the verb, `GIT_EDITOR=true git commit -m x`, `env git commit -m x`,
+# `nohup git commit -m x` and `command git push origin HEAD` all reached git
+# with branch-gate.sh exiting 0 — ungated, and indistinguishable from a command
+# that passed. `bash -c "<verb> ..."` stays out of scope, as before: that needs
+# real parsing, not a prefix rule.
+CMD_MATCH_PREFIX_ERE='(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|command|nohup)[[:space:]]+)*'
+
 # cmd_matches_verb <command> <verb-ere>
 #
 # Exit 0 when <verb-ere> appears in command position within <command>.
@@ -179,7 +191,7 @@ cmd_matches_verb() {
   # pipeline exits 141 (SIGPIPE) on a large command under `set -o pipefail`,
   # which a caller reads as "no match" — a silent gate miss.
   stripped="$(strip_noncommand_spans "$cmd")"
-  grep -qE "(^|[|;&][[:space:]]*)[[:space:]]*${verb}" <<< "$stripped"
+  grep -qE "(^|[|;&][[:space:]]*)[[:space:]]*${CMD_MATCH_PREFIX_ERE}${verb}" <<< "$stripped"
 }
 
 # cmd_last_cd_target <command> [base-dir] [verb-ere]

@@ -218,6 +218,20 @@ printf '%s' "$payload" | GH_BIN="/nonexistent/gh" bash "$HOOK" >/dev/null 2>&1
 rc=$?
 if [[ $rc -eq 0 ]]; then ok; else ng 0 "$rc"; fi
 
+# --- Command matching (issue #2129) -----------------------------------------
+# The gate must see its verb wherever it sits in the command list, and must NOT
+# fire on a quoted MENTION of it. Both directions, or the matcher is untested.
+case_label "compound: git push && gh pr create still blocks"
+D="$TMPDIR/case_compound"; init_repo "$D"
+printf '\n// %s\n' "$(printf '\343\201\223\343\202\223\343\201\253\343\201\241\343\201\257')" >> "$D/src/foo.ts"
+commit_all "$D"
+run_hook "$D" "git push && gh -C $D pr create"; rc=$?
+if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
+
+case_label "quoted mention of gh pr create does not fire"
+run_hook "$D" "echo \"next: gh -C $D pr create\""; rc=$?
+if [[ $rc -eq 0 ]]; then ok; else ng 0 "$rc"; fi
+
 echo
 printf 'Total: %d pass, %d fail\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1

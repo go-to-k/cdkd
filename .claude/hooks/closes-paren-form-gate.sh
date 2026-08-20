@@ -30,10 +30,15 @@ command=$(jq -r '.tool_input.command // empty' <<<"$input_json" 2>/dev/null || t
 # so a `# Wait + merge` Bash comment doesn't confuse the parser (same
 # fix as pr-review-gate.sh).
 trimmed="${command}"
-case "$trimmed" in
-  *"gh pr merge"*) ;;
-  *) exit 0 ;;
-esac
+# Recognition goes through the shared matcher (.claude/hooks/_command-match.sh,
+# issue #2129) rather than a bare substring test, so a chained
+# `vp run test && gh pr merge 1` is seen while a body or comment that merely
+# QUOTES `gh pr merge` no longer reaches the PR-number extraction below.
+# shellcheck source=_command-match.sh
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+[ -r "$_gate_lib" ] || exit 0
+. "$_gate_lib"
+gate_matches "$trimmed" "$GATE_RE_GH_PR_MERGE" || exit 0
 
 # Extract PR number (positional integer after `gh pr merge`)
 args="${trimmed##*gh pr merge}"

@@ -175,6 +175,19 @@ run_gh_fail "gh pr view fails → fail-open but loud warning to stderr" \
   0 \
   'could not fetch PR #100 body'
 
+# --- Command matching (issue #2129) -----------------------------------------
+# The gate must see its verb wherever it sits in the command list, and must NOT
+# fire on a quoted MENTION of it. Both directions, or the matcher is untested.
+run "compound: vp run test && gh pr merge blocked" \
+  '{"tool_name":"Bash","tool_input":{"command":"vp run test && gh pr merge 100 --squash"}}' \
+  'Closes (#502).' \
+  2
+
+run "quoted mention of gh pr merge passes" \
+  '{"tool_name":"Bash","tool_input":{"command":"echo \\"then gh pr merge 100 --squash\\""}}' \
+  'Closes (#502).' \
+  0
+
 # Summary
 echo ""
 echo "==== Test Summary ===="

@@ -180,6 +180,25 @@ check "escaped quote does not swallow the next line" 0 "$MERGE" "$esc_cmd"
 fake_open=$(printf 'echo "delimiter is <<DONE"\ngh pr merge 5\nDONE')
 check "quoted <<DELIM plus a later bare DELIM line does not swallow" 0 "$MERGE" "$fake_open"
 
+# --- Leading prefixes before the verb (issue #2129) ------------------------
+#
+# Measured on 2026-08-20 against branch-gate.sh: each of these exited 0, so the
+# commit/push reached git ungated. An assignment or an `env` / `command` /
+# `nohup` wrapper does not change which program runs, so it must not change
+# whether the gate fires.
+check "leading env assignment" 0 "$COMMIT" "GIT_EDITOR=true git commit -m x"
+check "two leading assignments" 0 "$COMMIT" "GIT_EDITOR=true LC_ALL=C git commit -m x"
+check "env wrapper" 0 "$COMMIT" "env git commit -m x"
+check "command wrapper" 0 "$COMMIT" "command git commit -m x"
+check "nohup wrapper" 0 "$COMMIT" "nohup git commit -m x"
+check "assignment after a chain operator" 0 "$COMMIT" "git add -A && GIT_EDITOR=true git commit -m x"
+check "assignment on a gh merge" 0 "$MERGE" "CDKD_X=1 gh pr merge 1 --squash"
+# The prefix rule must not turn a quoted mention into a match.
+check "assignment inside a quoted mention" 1 "$COMMIT" 'echo "run GIT_EDITOR=true git commit later"'
+# An assignment-looking token that is an ARGUMENT, not a prefix, still must not
+# manufacture a verb out of nowhere.
+check "assignment with no verb after it" 1 "$COMMIT" "GIT_EDITOR=true vp run test"
+
 # --- Non-matches ----------------------------------------------------------
 check "different subcommand" 1 "$MERGE" "gh pr create --title x"
 check "substring inside a path" 1 "$COMMIT" "ls /tmp/git-commit-notes"

@@ -83,6 +83,17 @@ T=$(mktemp -d)
 run "outside a work tree passes" "$T" "git checkout -- tracked.txt" 0
 rm -rf "$T"
 
+# --- Command matching (issue #2129) -----------------------------------------
+# The gate must see its verb wherever it sits in the command list, and must NOT
+# fire on a quoted MENTION of it. Both directions, or the matcher is untested.
+R=$(make_repo)
+echo "dirty" > "$R/tracked.txt"
+run "compound: git stash && git restore -- <dirty path> blocks" "$R" \
+  "git stash && git restore -- tracked.txt" 2
+run "quoted mention of git restore does not fire" "$R" \
+  'echo "then git restore -- tracked.txt"' 0
+rm -rf "$R"
+
 echo
 echo "dirty-path-restore-gate: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

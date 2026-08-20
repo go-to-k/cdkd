@@ -83,6 +83,14 @@ run_case "empty command allowed" 0 \
 run_case "git commit -m without heredoc, semicolon, then unrelated heredoc" 0 \
   $'git commit -m simple; cat > /tmp/x <<\'EOF\'\nfoo\nEOF\n'
 
+# --- Command matching (issue #2129) -----------------------------------------
+# The gate must see its verb wherever it sits in the command list, and must NOT
+# fire on a quoted MENTION of it. Both directions, or the matcher is untested.
+run_case "compound: git add -A && the fragile -m heredoc blocked" 2 \
+  $'git add -A && git commit -m "$(cat <<\'EOF\'\nmsg\nEOF\n)"'
+run_case "quoted mention of the fragile form allowed" 0 \
+  'echo "do not use git commit -m <<EOF form"'
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then

@@ -229,6 +229,14 @@ run_case "gh pr create with fraction-shaped item number still blocked" 2 \
 run_case "gh pr edit with #N body-file blocked" 2 \
   "$(printf '{"tool_input":{"command":"gh pr edit 123 --body-file %s"}}' "$B")"
 
+# --- Command matching (issue #2129) -----------------------------------------
+# The gate must see its verb wherever it sits in the command list, and must NOT
+# fire on a quoted MENTION of it. Both directions, or the matcher is untested.
+run_case "compound: git push && gh pr create with #N body-file blocked" 2 \
+  "$(jq -cn --arg c "git push && gh pr create --body-file $B" '{tool_input:{command:$c}}')"
+run_case "quoted mention of gh pr create allowed" 0 \
+  "$(jq -cn --arg c "echo \"then gh pr create --body-file $B\"" '{tool_input:{command:$c}}')"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then

@@ -106,6 +106,17 @@ if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
   exit 0
 fi
 
+# Repo opt-in scope (mirrors branch-gate.sh, issue #1259): this gate protects
+# repos that follow the markgate convention. A session rooted in such a repo can
+# still run git / gh against OTHER repos (a dotfiles checkout, a scratch clone)
+# that have no markers at all, and blocking there is pure friction — the gate
+# would demand a marker the repo cannot have. Opt-in signal: a `.markgate.yml`
+# at the resolved target repo's top level. Repos without it pass through.
+target_top=$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || echo "")
+if [[ -z "$target_top" || ! -f "$target_top/.markgate.yml" ]]; then
+  exit 0
+fi
+
 cd "$target_dir" 2>/dev/null || exit 0
 
 # Prefer the `.mise.toml`-pinned version via `mise exec --` so the repo's

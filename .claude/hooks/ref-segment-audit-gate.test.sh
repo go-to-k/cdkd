@@ -70,8 +70,15 @@ TS
   # Per-case mutation.
   "$setup_fn" "$tmpdir"
 
+  # Optional 4th arg: a command template whose `@DIR@` is replaced by the
+  # fixture repo, so a case can exercise a compound spelling or a quoted
+  # mention (issue #2129).
   local cmdstr
-  cmdstr=$(printf 'git -C %q commit -m "feat: add ref segment type"' "$tmpdir")
+  if [[ -n "${4:-}" ]]; then
+    cmdstr="${4//@DIR@/$tmpdir}"
+  else
+    cmdstr=$(printf 'git -C %q commit -m "feat: add ref segment type"' "$tmpdir")
+  fi
   local payload
   payload=$(jq -cn --arg c "$cmdstr" '{tool_input:{command:$c}}')
 
@@ -165,6 +172,14 @@ run_case "two added one uncovered -> block" 2 setup_two_one_covered
   if [[ "$got" == 0 ]]; then pass=$((pass+1)); printf 'OK   quoted-body echo passes (exit 0)\n'
   else fail=$((fail+1)); fail_log+="FAIL quoted-body: want 0 got $got\n"; printf 'FAIL quoted-body (got %s)\n' "$got"; fi
 }
+
+# --- Command matching (issue #2129) -----------------------------------------
+# The gate must see its verb wherever it sits in the command list, and must NOT
+# fire on a quoted MENTION of it. Both directions, or the matcher is untested.
+run_case "compound: git add -A && git commit blocked" 2 setup_add_uncovered \
+  'git add -A && git -C @DIR@ commit -m "feat: add ref segment type"'
+run_case "quoted mention of git commit allowed" 0 setup_add_uncovered \
+  'echo "then git -C @DIR@ commit -m feat"'
 
 echo ""
 echo "ref-segment-audit-gate.test.sh: $pass passed, $fail failed"

@@ -176,6 +176,14 @@ run_case "missing .cwd does not crash" 0 \
 # --- Edge case: empty stdin → cmd empty → allowed.
 run_case "empty stdin allowed" 0 ''
 
+# --- Command matching (issue #2129) -----------------------------------------
+# The gate must see its verb wherever it sits in the command list, and must NOT
+# fire on a quoted MENTION of it. Both directions, or the matcher is untested.
+run_case "compound: git add -A && git commit blocked" 2 \
+  "$(jq -cn --arg c 'git add -A && git commit -m feat' --arg d "$repo7" '{cwd:$d,tool_input:{command:$c}}')"
+run_case "quoted mention of git commit allowed" 0 \
+  "$(jq -cn --arg c 'echo "then git commit -m feat"' --arg d "$repo7" '{cwd:$d,tool_input:{command:$c}}')"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then

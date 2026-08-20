@@ -1720,6 +1720,25 @@ the run evidence behind it — or "no skill change" plus what held.
   lanes — was claimed, and had to be retracted after the deep read showed the
   legacy-state fixture arm plus export integ its body had already named. The line
   was in the body the whole time; nothing but a grep stood between the run and it.
+- **A cross-repo framing spends the deferral budget up front.** When the user
+  says "do this across the repos in one session", `Session-fit: next` is no
+  longer available for anything discovered inside that scope — the decision was
+  made when the scope was set, and a discovery inside it inherits it. Three
+  tells make it unarguable: you are about to file the SAME issue body in more
+  than one repo (that split is what the framing exists to end, so filing it is
+  the failure, not triage); the fix is mechanical and its evidence is live right
+  now (repro built, files open, a gate cycle already turning); or the user
+  already said "finish it here" about the surrounding task. Remember what the
+  four fields are for: they make a deferral HONEST, they do not make one
+  available. An `Effort` / `Estimate` pair that reads defensibly for work the
+  run is already positioned to do is the tell that the classification is being
+  written as an excuse. On 2026-08-20 a run consolidating one `/work-issues`
+  lesson across cdkd, cdk-local and cdk-real-drift discovered the siblings'
+  PreToolUse gates were inert, fixed them, and then filed the remaining
+  script-level gap as three separate issues — the exact per-repo split the user
+  had asked it to end. It was carried in the same session as a follow-up PR per
+  repo once the user objected: **same session is the bar; same PR only when the
+  work is small enough to review together.**
 - **A mirror issue may already be carried elsewhere.** Historically §10-c's
   hop-by-hop mirroring filed one lesson into one repo twice; the same-session
   three-repo clauses removed that source, but a lesson can still already sit in a

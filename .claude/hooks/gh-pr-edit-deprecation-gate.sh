@@ -25,10 +25,15 @@ set -u
 
 cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 
-# Only gate `gh pr edit` invocations.
-if ! printf '%s' "$cmd" | grep -qE '\bgh[[:space:]]+pr[[:space:]]+edit\b'; then
-  exit 0
-fi
+# Only gate `gh pr edit` invocations. Recognition goes through the shared
+# matcher (.claude/hooks/_command-match.sh, issue #2129): the old unanchored
+# form blocked `echo "next step: gh pr edit 1 --body foo"` — a measured false
+# positive on a command that never called gh — while missing nothing it caught.
+# shellcheck source=_command-match.sh
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+[ -r "$_gate_lib" ] || exit 0
+. "$_gate_lib"
+gate_matches "$cmd" "$GATE_RE_GH_PR_EDIT" || exit 0
 
 # Only block if the invocation actually sets --title or --body.
 if ! printf '%s' "$cmd" | grep -qE '(--title|--body|--body-file)\b'; then
