@@ -220,7 +220,16 @@ Run each check and report pass/fail:
     - For every `/review-pr` reviewer agent output during this session (including re-reviews after fix-back), walk the reviewer's "Minor / Nit / Informational" section.
     - For EACH item there, confirm ONE of the following is true BEFORE setting the `verify-pr` marker (these are the same three buckets as CLAUDE.md's "Remaining work" taxonomy — Fixed here / TODO / Won't-do):
       - (a) **Fixed in this PR** — point at the fix commit / file:line that resolves the nit.
-      - (b) **TODO (issue #N)** — a GitHub issue exists AND this PR's body references it (e.g. "minor follow-ups in (#515)"). This is the only bucket that leaves future work. The issue body MUST carry the session-fit line `Session-fit: now (do it in this session) | next (not this session) — <reason> / Effort: <duration, e.g. `~1-3 h` -- never a bare `S`/`M`/`L`>` (see CLAUDE.md → "Session-fit classification"). **This step is the deferral moment**, so it is where the call gets made — not at wrap time, by which point the evidence for it (which files were open, which verification cycle was already paid for) is gone. A `now` item must be fixed before the marker is set, or re-classified to `next` with the reason recorded; you cannot set `verify-pr` over an open `now`.
+      - (b) **TODO (issue #N)** — a GitHub issue exists AND this PR's body references it (e.g. "minor follow-ups in (#515)"). This is the only bucket that leaves future work. The issue body MUST carry the four classification lines, one field per line (see CLAUDE.md → "The four TODO fields"):
+
+        ```text
+        Session-fit: now (do it in this session) | next (not this session) — <reason>
+        Severity: high | medium | low — <what stays broken while it is undone>
+        Effort: small (S) | medium (M) | large (L) — <which verification cycle it drags>
+        Estimate: <duration, e.g. ~1-3 h -- never a bare letter> — <what eats the time>
+        ```
+
+        **This step is the deferral moment**, so it is where the call gets made — not at wrap time, by which point the evidence for it (which files were open, which verification cycle was already paid for) is gone. A `now` item must be fixed before the marker is set, or re-classified to `next` with the reason recorded; you cannot set `verify-pr` over an open `now`.
       - (c) **Won't-do (decided + recorded)** — the PR body or a comment names the nit and explains why shipping as-is is the right call. Requires no future action.
     - If NONE of (a) / (b) / (c) is true for any nit, file a bundled follow-up issue NOW (one issue per session, listing every uncovered nit) and update the PR body to reference it. Do not set the `verify-pr` marker until every reviewer-flagged item is on one of those three paths.
     - Also walk the session transcript for **surfaced memory-rule candidates** (surprising traps, repeated friction, "I should remember this for next time" moments). Each MUST be either written as a memory file in `~/.claude/projects/-Users-goto-pc-github-cdkd/memory/` (with a MEMORY.md index entry) OR explicitly de-prioritized in the chat / PR body.
@@ -279,7 +288,7 @@ Present results as a table:
 | live-test changed behavior | pass/skipped/issues found |
 | retrospective + rule proposals | done/skipped |
 | residual review-nit sweep (fixed / TODO-issue / won't-do) | N items / 0 unhandled |
-| session-fit classified on every TODO (`now` \| `next` + Effort) | N classified / 0 open `now` |
+| every TODO carries `Session-fit` / `Severity` / `Effort` / `Estimate` | N classified / 0 open `now` |
 | auto-close audit (no `Closes (#N)` in body) | clean / N traps fixed |
 | PR title + body freshness | up-to-date/stale (updated)/n-a (no PR yet) |
 

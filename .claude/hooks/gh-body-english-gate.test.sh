@@ -64,7 +64,7 @@ run "japanese in gh api -f body= blocks" \
   'gh api repos/o/r/issues/5/comments -f body=これはテスト' 2
 
 run "localized Session-fit gloss blocks" \
-  'gh issue create --title "x" --body "Session-fit: next (今セッションではやらない) / Effort: 30m"' 2
+  'gh issue create --title "x" --body "Session-fit: next (今セッションではやらない)"' 2
 
 run "japanese in pr create body-file blocks" \
   "gh pr create --title 'x' --body-file $JP_BODY" 2

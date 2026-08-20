@@ -190,7 +190,8 @@ parallelized — bundle them into ONE lane (one worktree, one PR) or defer one.
 - Prefer surgical, deterministic, live-proven issues (a provider tweak + a
   regression test) for auto-merge; hold complex redesigns (new DAG mechanism,
   new intrinsic, schema bump) for a focused solo pass.
-- **Read the body's own `Session-fit:` line before shortlisting it.** The filer
+- **Read the body's own classification lines before shortlisting it** —
+  `Session-fit` / `Severity` / `Effort` / `Estimate`. The filer
   may already have classified the issue, and a `Session-fit: next` line names the
   cycle it needs — its own fixture arm, an integ run, a higher review tier, an
   upstream answer. Such an issue is not off-limits forever, but taking one means
@@ -198,7 +199,7 @@ parallelized — bundle them into ONE lane (one worktree, one PR) or defer one.
   applies: typically that THIS run was started for it, or that the lane it would
   have been bundled into is already merged. Silently re-deciding from scratch is
   exactly the re-litigation the classification exists to prevent (CLAUDE.md →
-  "Session-fit classification") — the call was made when the evidence for it was
+  "The four TODO fields") — the call was made when the evidence for it was
   still in hand, and that evidence is gone by the time you are triaging.
 - **A MIRROR issue may already be done — resolve it against the repo before you
   claim it.** A body saying it is mirroring a lesson from a sibling repo comes from
@@ -348,7 +349,7 @@ gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
 
 # the filer may already have classified it (§3) — this is a body read, so do it
 # on the shortlist rather than on the whole listing
-gh issue view <n> --json body -q .body | grep -i 'Session-fit:'
+gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort:|Estimate:'
 ```
 
 - **Security**: the issue reports a vulnerability in shipped behavior rather than a
@@ -385,6 +386,16 @@ gh issue view <n> --json body -q .body | grep -i 'Session-fit:'
 - **Cross-cutting**: the body names any of `deploy-engine.ts`,
   `intrinsic-function-resolver.ts`, `dag-builder.ts`, `template-parser.ts`,
   `register-providers.ts`, `destroy-runner.ts`, `export.ts` (the §2 list).
+- **Severity / Effort / Estimate**: the body's own lines, when the filer wrote
+  them (§3). `Severity` says what stays broken while the issue sits, and is the
+  signal for WHICH to pick up first; `Effort` says which verification cycle the
+  fix drags (a `large` one needs its own PR plus integ plus review, so it does
+  not belong in a fan-out lane); `Estimate` says how many hours, which is what
+  decides how many lanes this run can carry. Read them as the filer's
+  measurement, not as a ceiling — but do not silently overwrite them either: if
+  this run's evidence contradicts one, say so in the claim comment (§4) and
+  correct the issue body, the same way §3 requires for a re-decided
+  `Session-fit`.
 - **Session-fit**: the body's own `Session-fit:` line (§3). `next` names a cycle
   this run has to be able to pay for before taking the issue. `now` is a
   COMMITMENT made by the session that filed it, so read it against §3-0: for an
@@ -1511,11 +1522,20 @@ the run evidence behind it — or "no skill change" plus what held.
 - **Classify every deferral `now` / `next` the moment you defer it — this flow
   is where that decision is hardest and most often re-litigated.** Each merge in
   section 9 lands on the same question: keep going here, or hand off to a fresh
-  session / another agent? Answer it when the item is created (write
-  `Session-fit: now (do it in this session) | next (not this session) — <reason>
-  / Effort: <duration, e.g. ~1-3 h -- not a bare letter>` into the issue body,
-  per `CLAUDE.md` → "Session-fit classification"), not after the merge when the
-  context that justified it is gone. **After a lane merges, `next` is the
+  session / another agent? Answer it when the item is created — write the four
+  classification lines into the issue body, one field per line, per
+  `CLAUDE.md` → "The four TODO fields" — not after the merge when the
+  context that justified it is gone:
+
+  ```text
+  Session-fit: now (do it in this session) | next (not this session) — <reason>
+  Severity: high | medium | low — <what stays broken while it is undone>
+  Effort: small (S) | medium (M) | large (L) — <which verification cycle it drags>
+  Estimate: <duration, e.g. ~1-3 h -- never a bare letter> — <what eats the time>
+  ```
+
+  The report repeats those same four lines and adds a `Notes` line for
+  session-specific context; the issue body stays at four. **After a lane merges, `next` is the
   default**: what stays hot is that lane's files and the integ you already ran,
   and nothing else — so a residual landing in those files is `now`, and a
   residual anywhere else is `next` even when it looks small.
