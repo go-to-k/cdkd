@@ -239,11 +239,33 @@ gates:
       # The CC provider's delete()/remnant-cleanup is deletion logic too —
       # it was missing from this scope until issue #1252 touched it.
       - "src/provisioning/cloud-control-provider.ts"
+      # `region-check.ts` and `destroy-runner.ts` ACTIVATED the merge gate
+      # (integ-destroy-gate.sh's provider_pattern / filtered_delete) while
+      # sitting outside this list, which is a FAIL-OPEN, not a missing entry:
+      # the hook blocked and consulted markgate, but the marker's `hash: diff`
+      # digest never saw the file, so `verify` returned 0 and the merge went
+      # through with no destroy verification at all. The two lists are now
+      # compared in both directions by
+      # tests/unit/scripts/cross-cutting-list-sync.test.ts.
+      - "src/provisioning/region-check.ts"
       - "src/cli/commands/destroy.ts"
+      - "src/cli/commands/destroy-runner.ts"
       - "src/deployment/deploy-engine.ts"
       - "src/analyzer/dag-builder.ts"
       - "src/analyzer/implicit-delete-deps.ts"
       - "src/analyzer/lambda-vpc-deps.ts"
+      # The retry classifier sits UNDER every mutating AWS call cdkd makes:
+      # `withRetry` wraps every provider's create/update/delete, and
+      # `destroy-runner.ts` calls `isRetryableTransientError` directly. Which
+      # errors count as retryable therefore decides whether a failed DELETE is
+      # retried or surfaced, which is real-AWS delete behavior (issue #2042).
+      - "src/deployment/retry.ts"
+      - "src/deployment/retryable-errors.ts"
+      # Automatic rollback DELETES and re-CREATES real resources — the
+      # reverse-replacement path calls `provider.delete()` on the new physical
+      # resource and re-creates the old one — so this is delete logic by any
+      # reading. Found unscoped while fixing issue #2042, not named by it.
+      - "src/deployment/rollback-executor.ts"
 
   pr-review:
     hash: files
@@ -273,6 +295,10 @@ gates:
     #   multi-resource
     #   remove-protection
     #   export
+    # That seven-way duplication is fenced rather than merely requested:
+    # tests/unit/scripts/cross-cutting-list-sync.test.ts compares every
+    # copy against the hook's block message. It was written after the
+    # hook's own header comment was found carrying 8 of these 9 names.
     # Narrow feature integs like `import-value-strong-ref` flip the
     # `integ-destroy` marker but do not exercise multi-resource VPC /
     # Lambda / Custom-Resource paths, so a cross-cutting code change

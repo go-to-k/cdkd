@@ -127,8 +127,11 @@ Run each check and report pass/fail:
      - `src/analyzer/dag-builder.ts`
      - `src/analyzer/template-parser.ts`
      - `src/provisioning/register-providers.ts`
+     - `src/deployment/retry.ts`
+     - `src/deployment/retryable-errors.ts`
+     - `src/deployment/rollback-executor.ts`
 
-     ...you MUST run a **broad integ** in addition to whatever feature-specific integ the change came with. The canonical broad set (keep in sync with `.claude/hooks/integ-broad-gate.sh`, `.claude/skills/run-integ/SKILL.md` step 11, `.markgate.yml` integ-broad gate, CLAUDE.md "integ-broad" entry):
+     ...you MUST run a **broad integ** in addition to whatever feature-specific integ the change came with. (Both lists in this step — the paths above and the test names below — are duplicated across several files and are fenced against the hook by `tests/unit/scripts/cross-cutting-list-sync.test.ts`, so editing one copy alone fails CI rather than drifting silently.) The canonical broad set (keep in sync with `.claude/hooks/integ-broad-gate.sh`, `.claude/skills/run-integ/SKILL.md` step 11, `.markgate.yml` integ-broad gate, CLAUDE.md "integ-broad" entry):
      - `bench-cdk-sample` (39-resource VPC+NAT+CF+Lambda+SQS)
      - `lambda`
      - `microservices`
@@ -142,7 +145,7 @@ Run each check and report pass/fail:
      These exercise multi-resource VPC / Lambda / IAM / CFn-Custom paths that narrow integs leave uncovered. Cross-cutting code paths affect EVERY user's deploy/destroy, not just the feature you added — broad integs are the only structural defense against shipping a regression that only surfaces in production on stacks unlike your fixture. Bypassing this is the PR #348 trap from 2026-05-13 (Issue #343 shipped without bench-cdk-sample validation; surfaced post-merge as an incident).
      ```bash
      # Detection: only fires when the diff actually touches cross-cutting code.
-     if git diff origin/main...HEAD --name-only | grep -qE '^src/deployment/(deploy-engine|intrinsic-function-resolver)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/register-providers\.ts$'; then
+     if git diff origin/main...HEAD --name-only | grep -qE '^src/deployment/(deploy-engine|intrinsic-function-resolver|retry|retryable-errors|rollback-executor)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/register-providers\.ts$'; then
        echo "Cross-cutting code touched — broad integ required (bench-cdk-sample / lambda / microservices / drift-revert)."
        # Then run the broad integ via /run-integ and confirm 0 errors / 0 orphans.
      fi

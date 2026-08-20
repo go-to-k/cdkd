@@ -197,6 +197,45 @@ run_case "block: gh pr merge touches intrinsic-function-resolver.ts" 2 \
   '{"tool_input":{"command":"gh pr merge 600 --squash --auto"},"cwd":"."}' \
   '{"files":[{"path":"src/deployment/intrinsic-function-resolver.ts"}]}'
 
+# --- Issue #2042: the retry classifier + the rollback executor.
+#
+# These three files sat in NO integ gate's scope while `withRetry` wrapped
+# every provider's create/update/delete and `rollback-executor.ts` deleted and
+# re-created real resources on the reverse-replacement path. Each is asserted
+# ALONE (not folded into a mixed-file case) so that dropping any ONE
+# alternative from CROSS_CUTTING_REGEX fails a case — a mixed payload would
+# stay green on the surviving members and report a working gate for a scope
+# that had silently shrunk.
+#
+# Verified by construction against the pre-change hook (`git show
+# HEAD:.claude/hooks/integ-broad-gate.sh`): all three cases exit 0 there,
+# i.e. they FAIL, which is what makes them evidence rather than decoration.
+
+run_case "block: gh pr merge touches retryable-errors.ts (#2042)" 2 \
+  '{"tool_input":{"command":"gh pr merge 310 --squash"},"cwd":"."}' \
+  '{"files":[{"path":"src/deployment/retryable-errors.ts"}]}'
+
+run_case "block: gh pr merge touches retry.ts (#2042)" 2 \
+  '{"tool_input":{"command":"gh pr merge 320 --squash"},"cwd":"."}' \
+  '{"files":[{"path":"src/deployment/retry.ts"}]}'
+
+run_case "block: gh pr merge touches rollback-executor.ts (#2042)" 2 \
+  '{"tool_input":{"command":"gh pr merge 330 --squash"},"cwd":"."}' \
+  '{"files":[{"path":"src/deployment/rollback-executor.ts"}]}'
+
+# Near-miss control for the widened alternation. `retry|retryable-errors`
+# must stay anchored at both ends: a sibling whose basename merely STARTS
+# with `retry` is not in scope, and neither is the unit test for one of the
+# scoped files. Without these, replacing the alternation with a loose
+# `retry.*` would pass every case above while quietly gating unrelated files.
+run_case "pass: gh pr merge touches retry-helpers.ts (not in scope)" 0 \
+  '{"tool_input":{"command":"gh pr merge 340 --squash"},"cwd":"."}' \
+  '{"files":[{"path":"src/deployment/retry-helpers.ts"}]}'
+
+run_case "pass: gh pr merge touches the retry UNIT TEST only" 0 \
+  '{"tool_input":{"command":"gh pr merge 350 --squash"},"cwd":"."}' \
+  '{"files":[{"path":"tests/unit/deployment/retry-transient-server-error.test.ts"}]}'
+
 run_case "block: mix of cross-cutting + unrelated" 2 \
   '{"tool_input":{"command":"gh pr merge 700"},"cwd":"."}' \
   '{"files":[{"path":"README.md"},{"path":"src/deployment/deploy-engine.ts"},{"path":"docs/foo.md"}]}'

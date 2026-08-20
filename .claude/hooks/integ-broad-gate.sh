@@ -30,8 +30,8 @@
 #      `.markgate-broad-integ-test` which /run-integ writes ONLY when
 #      the test name is in the broad set (bench-cdk-sample, lambda,
 #      microservices, drift-revert, drift-revert-vpc, multi-stack-deps,
-#      multi-resource, remove-protection). Narrow integs don't touch
-#      the sentinel, so they don't refresh this marker.
+#      multi-resource, remove-protection, export). Narrow integs don't
+#      touch the sentinel, so they don't refresh this marker.
 #   3. The marker also carries the 14d TTL of integ-destroy / integ-local
 #      so AWS-side drift forces a fresh broad run periodically.
 #
@@ -118,9 +118,21 @@ cd "$target_dir" 2>/dev/null || exit 0
 # Cross-cutting code paths whose modification can affect EVERY user's
 # deploy/destroy, not just the feature scenario the PR adds. Keep in
 # sync with the same list in .claude/skills/verify-pr/SKILL.md
-# (step 6, "CROSS-CUTTING CHECK") and the memory rule
-# feedback_cross_cutting_needs_broad_integ.md.
-CROSS_CUTTING_REGEX='^src/deployment/(deploy-engine|intrinsic-function-resolver)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/register-providers\.ts$'
+# (step 6, "CROSS-CUTTING CHECK"), .claude/skills/pick-integ/SKILL.md
+# (step 2's changed-path table), the CLAUDE.md "integ-broad" entry, and
+# the memory rule feedback_cross_cutting_needs_broad_integ.md. The four
+# prose copies are fenced against this one by
+# tests/unit/scripts/cross-cutting-list-sync.test.ts, because the list
+# had already drifted between copies before that fence existed.
+#
+# `retry.ts` / `retryable-errors.ts` joined the list in issue #2042:
+# `withRetry` wraps every provider's create/update/delete and
+# `destroy-runner.ts` consults `isRetryableTransientError` directly, so
+# a change to which errors are retryable reaches every mutating AWS call
+# cdkd makes. `rollback-executor.ts` was found unscoped in the same pass
+# (it was NOT named by that issue): its reverse-replacement path deletes
+# the new physical resource and re-creates the old one.
+CROSS_CUTTING_REGEX='^src/deployment/(deploy-engine|intrinsic-function-resolver|retry|retryable-errors|rollback-executor)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/register-providers\.ts$'
 
 # --- Extract PR number from the `gh pr merge` command and fetch the
 # actual PR diff via `gh pr view --json files`. Same pattern as
@@ -217,8 +229,8 @@ else
   cat >&2 <<'EOF_HEAD'
 Blocked by integ-broad-gate: this PR touches cross-cutting
 deploy/destroy code (DeployEngine, destroy-runner, IntrinsicFunctionResolver,
-DagBuilder, TemplateParser, or register-providers) and the
-`integ-broad` marker is stale or missing.
+DagBuilder, TemplateParser, register-providers, the retry classifier, or
+the rollback executor) and the `integ-broad` marker is stale or missing.
 
 EOF_HEAD
 fi
