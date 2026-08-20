@@ -63,6 +63,14 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
   })),
   DEFAULT_RESOURCE_WARN_AFTER_MS: 5 * 60 * 1000,
   DEFAULT_RESOURCE_TIMEOUT_MS: 30 * 60 * 1000,
+  // Issue #1903: the provider reads the parent's per-resource secrets bag out
+  // of the deploy engine's async-local store to seed the child engine. This
+  // file's callers are not the deploy engine, so the honest stand-in is the
+  // absent case (no seed) — which is also the pre-#1903 behaviour every
+  // assertion below was written against. The forwarding itself is fenced in
+  // `nested-stack-provider-inherited-secrets.test.ts`, which drives the REAL
+  // store.
+  getCurrentResourceSecrets: () => undefined,
 }));
 
 // Mock runDestroyForStack so delete doesn't require an actual destroy

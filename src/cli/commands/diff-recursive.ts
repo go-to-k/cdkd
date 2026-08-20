@@ -476,6 +476,20 @@ async function resolveChildStackParameters(
         // parameter is expected (caught + omitted below), not warn-worthy.
         bestEffort: true,
         ...(parentParameters && { parameters: parentParameters }),
+        // Leave SECRET `{{resolve:...}}` dynamic references UNRESOLVED here
+        // too (issue #1903). Without it `cdkd diff --recursive` DECRYPTED a
+        // secret-bearing nested-stack input parameter at plan time and printed
+        // the plaintext in the child's diff.
+        //
+        // This flag is only correct BECAUSE the deploy half landed with it:
+        // `DeployEngineOptions.inheritedSecrets` now makes the child's
+        // `state.json` hold the `{{resolve:...}}` expression rather than the
+        // resolved value, so the desired side and the stored side are both
+        // expressions. On its own it would have compared an expression against
+        // a child state still holding plaintext and reported a spurious
+        // perpetual change on every run — which is why the issue's two halves
+        // could not be split.
+        skipDynamicReferences: true,
       });
     } catch {
       // Unresolvable (e.g. references a not-yet-deployed resource): omit it so

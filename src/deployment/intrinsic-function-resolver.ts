@@ -674,6 +674,38 @@ function carriesDynamicReference(value: unknown): boolean {
   return false;
 }
 
+/** The nested-stack resource type, whose `Outputs.<Name>` attributes are re-resolved (issue #2055). */
+const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
+/** Prefix `NestedStackProvider` records a child stack output under. */
+const NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX = 'Outputs.';
+/**
+ * `arn:cdkd-local:<childRegion>:<accountId>:nested-stack/<parent>/<logicalId>` —
+ * the synthesized physicalId `NestedStackProvider.synthesizeArn` records on the
+ * parent's `AWS::CloudFormation::Stack` row.
+ */
+const NESTED_STACK_LOCAL_ARN = /^arn:cdkd-local:([a-z0-9-]+):[^:]*:nested-stack\//i;
+
+/**
+ * The CHILD stack's region, read off the parent row's synthesized physicalId
+ * (issue [#2055](https://github.com/go-to-k/cdkd/issues/2055)).
+ *
+ * WHY THE ARN AND NOT A STATE READ. The child's own record carries `region`,
+ * but its state KEY is `cdkd/<parent>~<logicalId>/<region>/state.json` — the
+ * region is part of the key, so reading the record to learn the region is
+ * circular. The synthesized physicalId is the SAME provider's durable record of
+ * the region it deployed the child into, it sits on the resource row the
+ * resolver already holds, and reading it costs no I/O on a path that is
+ * otherwise hot.
+ *
+ * Returns `undefined` for anything that is not that shape (a hand-edited state
+ * file, a record written before this provider existed), which the caller reads
+ * as "use this resolver's own region".
+ */
+function nestedStackChildRegionFromLocalArn(physicalId: string | undefined): string | undefined {
+  if (typeof physicalId !== 'string') return undefined;
+  return NESTED_STACK_LOCAL_ARN.exec(physicalId)?.[1];
+}
+
 /**
  * Resolver context for intrinsic functions
  */
@@ -2317,6 +2349,36 @@ export class IntrinsicFunctionResolver {
         this.logger.debug(
           `Resolved Fn::GetAtt from attributes: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, flatValue)}`
         );
+        // A nested-stack child's outputs are read out of the child's PERSISTED
+        // state by `NestedStackProvider`, which since PR #1899 holds a
+        // secret-bearing output as its unresolved `{{resolve:...}}` expression
+        // — so `{"Fn::GetAtt": ["Child", "Outputs.DbPassword"]}` used to reach
+        // AWS as that literal token (issue #2055). Same class as #1934's
+        // `Fn::ImportValue` / `Fn::GetStackOutput` arms, one reader further
+        // out, so it takes the same helper rather than a fourth copy of the
+        // walk.
+        //
+        // The log line above stays AHEAD of this call on purpose (the #1934
+        // ordering rule): it prints the token, never the resolved value.
+        //
+        // The producer region is the CHILD's, read off the synthesized
+        // `arn:cdkd-local:<childRegion>:...` physicalId `NestedStackProvider`
+        // recorded — a secret NAME is regional, so the consumer's own region
+        // can answer with a different secret. `undefined` (an unparseable or
+        // hand-edited id) falls back to this resolver, which is the pre-fix
+        // region and still strictly better than shipping the token.
+        if (
+          resource.resourceType === NESTED_STACK_RESOURCE_TYPE &&
+          attributeName.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX) &&
+          carriesDynamicReference(flatValue)
+        ) {
+          return await this.reresolveCrossStackValue(
+            flatValue,
+            nestedStackChildRegionFromLocalArn(resource.physicalId),
+            context,
+            `nested stack ${logicalId} ${attributeName}`
+          );
+        }
         return flatValue;
       }
 
