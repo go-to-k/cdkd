@@ -1,3 +1,10 @@
+## [0.284.24](https://github.com/go-to-k/cdkd/compare/v0.284.23...v0.284.24) (2026-08-20)
+
+
+### Bug Fixes
+
+* **provisioning:** stop recording a failed or unproven operation as a success ([#2123](https://github.com/go-to-k/cdkd/issues/2123)) ([4580ed2](https://github.com/go-to-k/cdkd/commit/4580ed26a2bbe78c6d15f28a17400e0aa21ce816))
+
 ## [0.284.23](https://github.com/go-to-k/cdkd/compare/v0.284.22...v0.284.23) (2026-08-20)
 
 
