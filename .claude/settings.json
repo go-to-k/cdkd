@@ -180,6 +180,12 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/vp-run-test-path-gate.sh",
+            "timeout": 10,
+            "statusMessage": "Checking for the cached-replay vp run test <path> form..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/dirty-path-restore-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking for a restore that would discard uncommitted work..."

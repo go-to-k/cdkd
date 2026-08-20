@@ -12,8 +12,8 @@ paths:
 vp run test:hooks     # or: bash .claude/hooks/run-tests.sh
 ```
 
-Most hooks in this file ship a `*.test.sh` smoke suite next to them (33 suites
-for 37 hooks as of issue #1993, counting `run-tests.sh` as the runner rather
+Most hooks in this file ship a `*.test.sh` smoke suite next to them (34 suites
+for 38 hooks as of issue #2050, counting `run-tests.sh` as the runner rather
 than a hook — `gh-label-validity-gate`, `gh-pr-edit-deprecation-gate`,
 `post-merge-sync-reminder`, and `stop-warn` have none), and the runner executes
 every suite that exists under **every bash on the machine** — `bash` from PATH (Homebrew 5.x on a dev Mac) and `/bin/bash`
@@ -71,7 +71,7 @@ matches".
 
 # Other PreToolUse safety hooks
 
-Fourteen additional one-shot hooks block known foot-guns at the source.
+Fifteen additional one-shot hooks block known foot-guns at the source.
 
 - **`.claude/hooks/commit-msg-heredoc-gate.sh`** blocks `git commit -m "$(cat <<'EOF' ... EOF)"`-style invocations because outer-shell quote tracking miscounts when the body contains apostrophes / backticks; use `git commit -F <file>` instead.
 
@@ -111,7 +111,9 @@ Fourteen additional one-shot hooks block known foot-guns at the source.
 
   No bypass marker, matching `non-english-text-gate.sh`: the fix is to translate the text. Smoke test at `.claude/hooks/gh-body-english-gate.test.sh` (80 cases), green under BOTH bash 5.x and macOS system bash 3.2. Forty-four of the cases are regressions for defects the review rounds found, and each was verified by re-running the suite against the corresponding PRE-FIX hook and confirming it failed there (10 + 12 + 7 + 9 + 5 across rounds 2-5, plus the round-6 heredoc-apostrophe case) rather than merely asserted. The remainder are known-limit assertions, their controls, and the baseline pass cases. Each of the five Unicode ranges is covered in ISOLATION, so deleting any one range from the character class fails a case. It also carries the repo's mandated quoted-body false-positive cases, pass cases that can only pass for the right reason (non-English in the PATH, and outside the published field — both break if anyone "simplifies" the hook to scan the whole command), explicit known-limit cases for the short flags, and a registration check, since the suite invokes the hook directly and would otherwise not notice it being unregistered from `.claude/settings.json`.
 
-All fourteen produce actionable error messages with the exact replacement command.
+- **`.claude/hooks/vp-run-test-path-gate.sh`** blocks `vp run test <path>` and steers the caller to `vp test run <path>`. `vp run test` goes through the Vite+ TASK runner, where `test` participates in `run.cache.tasks`, so a repeat invocation REPLAYS the previous result — printing `◉ cache hit, replaying` plus the earlier run's counts and duration — instead of executing. For an ordinary run that is a feature; for a MUTATION PROBE it is the worst kind of correctness hazard, because the probe edits a file the task hash does not cover, the runner replays the PRE-mutation verdict, and the probe reports PASS having executed nothing. A probe that cannot fail is indistinguishable from a guard that works. Measured 2026-08-20 during the `#2050` / `#2006` / `#1975` lanes: a repeat of `vp run test tests/unit/cli/version.test.ts` printed `$ vp test run tests/unit/cli/version.test.ts ◉ cache hit, replaying` with byte-identical counts and a byte-identical 122ms duration, and a reviewer on the same run had FOUR probes report PASS without executing. `vp test run <path>` is the command the task delegates to, invoked directly, so it bypasses the task cache. **Scope is only the form carrying a PATH ARGUMENT** — a bare `vp run test` (the whole suite, which the gate flow legitimately runs and caches) passes through, as does any other `vp run <task>`; flags alone are not paths, and a value-taking flag's value is not mistaken for one (`--reporter json` passes). Two shapes are deliberately handled because the hook's own suite caught them: the ERE requires `test` to END the task name (a `\b` treats `:` as a boundary and fired on the sibling task `vp run test:once-leak`), and the tail parse bails when the split lands inside a longer task name. Uses the shared command-position matcher, so a quoted mention in a commit message or PR body does not fire, and fails CLOSED when the library is unloadable. No bypass marker — the replacement is a word-order change running the same underlying command. Smoke test at `.claude/hooks/vp-run-test-path-gate.test.sh` (21 cases, green under bash 5.x and macOS system bash 3.2 — every blocking spelling incl. chained and flag-interleaved forms, the whole-suite and sibling-task pass cases, the recommended replacement itself, and the mandated quoted-body false-positive cases). **Two false greens ride the same command that this hook does NOT close**, so the skills say to read the output as well as the rc: a suite can report `skipped` rather than `passed` (the `version` test `skipIf`s itself when `dist/` is absent — the normal state of a fresh worktree), and a run whose every test passes can still exit non-zero (see the `Errors  20 errors` case in `.claude/skills/work-issues/SKILL.md` section 6).
+
+All fifteen produce actionable error messages with the exact replacement command.
 
 ## Bug-hunt cleanup safety
 
@@ -222,7 +224,7 @@ Consequently the `cd <path> &&` special case disappears from the patterns — it
 
 The shared matcher has its own smoke test at `.claude/hooks/lib/command-match.test.sh` (47 cases — every command-position shape, every quoted-span false positive, and the heredoc cases above), so a regression in it is reported once and precisely instead of as a scatter of failures across thirteen hook tests.
 
-Sixteen hooks share the helper — the seven markgate gates plus `ci-green-gate`, `bughunt-clean-gate`, `pr-title-prefix-scope-gate` (2 sites), `integ-local-gate` (2 sites), `gh-body-english-gate`, the branch / push / main-tree-branch / post-merge-orphan-push hooks, and the two non-blocking ones (`restore-backup.sh`, `post-merge-sync-reminder.sh`). Two smoke-test cases that previously asserted the chained shape was an "accepted false-negative" (`branch-gate.test.sh`, `pr-review-gate.test.sh`) now assert it is CAUGHT.
+Seventeen hooks share the helper — the seven markgate gates plus `ci-green-gate`, `bughunt-clean-gate`, `pr-title-prefix-scope-gate` (2 sites), `integ-local-gate` (2 sites), `gh-body-english-gate`, `vp-run-test-path-gate`, the branch / push / main-tree-branch / post-merge-orphan-push hooks, and the two non-blocking ones (`restore-backup.sh`, `post-merge-sync-reminder.sh`). Two smoke-test cases that previously asserted the chained shape was an "accepted false-negative" (`branch-gate.test.sh`, `pr-review-gate.test.sh`) now assert it is CAUGHT.
 
 **Sourcing fails CLOSED.** Without the helper, `cmd_matches_verb` is undefined, the `if ! cmd_matches_verb ...` guard sees exit 127 (truthy for `!`), and the hook would `exit 0` — silently disabling every gate at once. Each blocking gate therefore refuses with exit 2 when the library is missing or unloadable; the two non-blocking hooks skip instead, since a missed backup or reminder is a smaller harm than refusing an operation they only observe. The path is derived with pure-bash `${BASH_SOURCE[0]%/*}` rather than `dirname`, so a hook never needs a PATH lookup to find its own library — with a `.` fallback for the no-slash case (`bash verify-pr-gate.sh` from inside the hooks dir), where `%/*` leaves the string unchanged. The liveness check covers all three exported functions, since a truncated library could define one and not the others.
 
