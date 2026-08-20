@@ -20,6 +20,7 @@ import {
   foldRegionOption,
   rawCliRegion,
   reconcileMarkerRegionWithLegacyDefault,
+  regionNeedsReconciliation,
   resolveEffectiveRegion,
 } from '../region-options.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
@@ -90,20 +91,38 @@ async function bootstrapCommand(options: {
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Initialize AWS clients with region/profile
-  const awsClients = new AwsClients({
-    ...(options.region && { region: options.region }),
-    ...(options.profile && { profile: options.profile }),
-  });
-  setAwsClients(awsClients);
-
-  const s3Client = awsClients.s3;
   // Issue #2029 - the WRITE side of the marker pair. `cdkd gc` and
   // `cdkd bootstrap --destroy` READ the key this command writes, and all three
   // resolve through `resolveEffectiveRegion` +
   // `reconcileMarkerRegionWithLegacyDefault` so they cannot drift apart. The
-  // final value is settled just below, once the account id (and with it the
-  // state bucket the marker lives in) is known.
+  // final value is settled below, once the account id (and with it the state
+  // bucket the marker lives in) is known.
+  //
+  // This runs ABOVE the client bag on purpose. The bag used to be built as
+  // `...(options.region && { region })` - flag-only, SDK chain otherwise - and
+  // leaving it that way while `region` gained two new sources made the CLIENT
+  // and the VALUE resolve differently, which is the very incoherence this issue
+  // is about. Two concrete failures came out of a review of that shape:
+  // `AWS_DEFAULT_REGION=ap-northeast-1` with a us-east-1 profile created the
+  // state bucket in ap-northeast-1 through a us-east-1 client, so the very next
+  // `PutBucketVersioning` took a 301 and bootstrap died leaving a bucket with no
+  // versioning, no encryption and no deny-external-access policy - which a
+  // re-run then SKIPS as "already exists"; and on the hold path
+  // `ensureAssetStorage`'s HeadBucket ran cross-region against the asset bucket
+  // it was meant to reuse.
   const effective = await resolveEffectiveRegion(options);
+
+  // `let`, because the reconciliation below may move the region and this bag
+  // must follow it — the `finally` at the end of the command destroys whichever
+  // bag is current, so a `const` here would destroy the discarded one and leak
+  // the live one.
+  let awsClients = new AwsClients({
+    region: effective.region,
+    ...(options.profile && { profile: options.profile }),
+  });
+  setAwsClients(awsClients);
+
+  let s3Client = awsClients.s3;
 
   // Resolve bucket name: use provided value or generate default from account info
   let bucketName: string;
@@ -128,24 +147,50 @@ async function bootstrapCommand(options: {
   // because the real one is built from the reconciled region; on a FIRST
   // bootstrap the bucket does not exist yet and the read fails, which the
   // helper treats as "no marker to hold" (see its own note).
-  const reconcileS3Client = new S3Client({
-    region: effective.region,
-    ...(options.profile && { profile: options.profile }),
-  });
-  let region: string;
-  try {
-    region = await reconcileMarkerRegionWithLegacyDefault({
-      effective,
-      probe: new S3StateBackend(
-        reconcileS3Client,
-        { bucket: bucketName, prefix: 'cdkd' },
-        { region: effective.region, ...(options.profile && { profile: options.profile }) }
-      ),
-      markerKeyFor: getBootstrapMarkerKey,
-      logger,
+  // Built ONLY when the reconciliation can actually move the answer. For a
+  // NAMED region it returns on its first line, and constructing an S3 client
+  // plus a state backend to reach that line is pure waste — the same principle
+  // `region-effective.test.ts` already pins for the STS probe.
+  //
+  // The backend OWNS the client it is given and may destroy and replace it
+  // (`rebuildClientForBucketRegion` fires exactly in the cross-region case this
+  // change targets), so the probe client is deliberately NOT destroyed here: a
+  // `finally` would destroy the dead original and leak the live replacement.
+  // `destroyClient()` asks the backend to release whichever client it holds.
+  let region = effective.region;
+  if (regionNeedsReconciliation(effective)) {
+    const probeBackend = new S3StateBackend(
+      new S3Client({
+        region: effective.region,
+        ...(options.profile && { profile: options.profile }),
+      }),
+      { bucket: bucketName, prefix: 'cdkd' },
+      { region: effective.region, ...(options.profile && { profile: options.profile }) }
+    );
+    try {
+      region = await reconcileMarkerRegionWithLegacyDefault({
+        effective,
+        probe: probeBackend,
+        markerKeyFor: getBootstrapMarkerKey,
+        logger,
+      });
+    } finally {
+      probeBackend.destroyClient();
+    }
+  }
+
+  // Rebuild when the reconciliation moved the region, so the clients that
+  // CREATE and CONFIGURE the buckets speak to the same region the names are
+  // built from. `gc.ts` / `bootstrap-destroy.ts` do the same.
+  if (region !== effective.region) {
+    const held = new AwsClients({
+      region,
+      ...(options.profile && { profile: options.profile }),
     });
-  } finally {
-    reconcileS3Client.destroy();
+    awsClients.destroy();
+    awsClients = held;
+    setAwsClients(awsClients);
+    s3Client = awsClients.s3;
   }
 
   // The state bucket is account-scoped and single-region, while --region

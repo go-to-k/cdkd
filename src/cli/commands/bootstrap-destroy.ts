@@ -21,6 +21,7 @@ import {
   namedCliRegion,
   rawCliRegion,
   reconcileMarkerRegionWithLegacyDefault,
+  regionNeedsReconciliation,
   resolveEffectiveRegion,
 } from '../region-options.js';
 import {
@@ -390,27 +391,31 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
   const accountId = identity.Account!;
   const bucketName = options.stateBucket ?? getDefaultStateBucketName(accountId);
 
-  const reconcileS3Client = new S3Client({
-    region: effective.region,
-    ...(options.profile && { profile: options.profile }),
-  });
-  let region: string;
-  try {
-    region = await reconcileMarkerRegionWithLegacyDefault({
-      effective,
-      probe: new S3StateBackend(
-        reconcileS3Client,
-        { bucket: bucketName, prefix: STATE_PREFIX },
-        { region: effective.region, ...(options.profile && { profile: options.profile }) }
-      ),
-      markerKeyFor: getBootstrapMarkerKey,
-      logger,
-    });
-  } finally {
-    // Its own client, destroyed on every exit: the real marker client below is
-    // built from the RECONCILED region and this one would otherwise hold a
-    // keep-alive socket open for the rest of the command.
-    reconcileS3Client.destroy();
+  // Built ONLY when the reconciliation can move the answer — for a NAMED region
+  // it returns on its first line. Released through `destroyClient()` because the
+  // backend OWNS its client and may replace it (the cross-region rebuild fires
+  // exactly in the case this change targets), so destroying our own reference
+  // would kill the dead original and leak the live replacement.
+  let region = effective.region;
+  if (regionNeedsReconciliation(effective)) {
+    const probeBackend = new S3StateBackend(
+      new S3Client({
+        region: effective.region,
+        ...(options.profile && { profile: options.profile }),
+      }),
+      { bucket: bucketName, prefix: STATE_PREFIX },
+      { region: effective.region, ...(options.profile && { profile: options.profile }) }
+    );
+    try {
+      region = await reconcileMarkerRegionWithLegacyDefault({
+        effective,
+        probe: probeBackend,
+        markerKeyFor: getBootstrapMarkerKey,
+        logger,
+      });
+    } finally {
+      probeBackend.destroyClient();
+    }
   }
   // The RAW spelling, for the marker's second probe only.
   const rawRegion = rawCliRegion(options.region) ?? region;

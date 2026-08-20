@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const { mockS3Send, mockStsSend, mockEnsureAssetStorage, mockRebuildClient, sdkChain } = vi.hoisted(
+const {
+  mockS3Send,
+  mockStsSend,
+  mockEnsureAssetStorage,
+  mockRebuildClient,
+  sdkChain,
+  existingMarkers,
+} = vi.hoisted(
   () => ({
     mockS3Send: vi.fn(),
     mockStsSend: vi.fn(),
@@ -10,6 +17,8 @@ const { mockS3Send, mockStsSend, mockEnsureAssetStorage, mockRebuildClient, sdkC
     // `region =` line / AWS_DEFAULT_REGION) when `--region` is NOT passed.
     // Mutable so a test can model a non-commercial profile.
     sdkChain: { region: 'us-east-1' },
+    /** Marker key -> body, for the issue-#2029 reconciliation probe. */
+    existingMarkers: new Map<string, string>(),
   })
 );
 
@@ -41,6 +50,24 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 // (modelled here by `sdkChainRegion`, which stands in for the profile's region).
 // The bucket-policy partition is derived from `s3.config.region()`, so this
 // distinction is load-bearing — see the issue #1794 regression test below.
+// Issue #2029: `resolveEffectiveRegion` builds its OWN `STSClient` to ask the
+// SDK chain what the profile resolves — it does not go through `AwsClients`. So
+// `sdkChain` has to drive BOTH mocks, or a test that names no region reads the
+// developer's real `~/.aws/config`: green on a us-east-1 machine, red on any
+// other. That is the third suite in this change to need this, which is why it
+// is spelled out rather than left as a one-line mock.
+vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
+  return {
+    ...actual,
+    STSClient: vi.fn().mockImplementation((opts?: { region?: string }) => ({
+      send: mockStsSend,
+      config: { region: async () => opts?.region ?? sdkChain.region },
+      destroy: vi.fn(),
+    })),
+  };
+});
+
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
   AwsClients: vi.fn().mockImplementation((opts?: { region?: string }) => ({
     get s3() {
@@ -86,6 +113,15 @@ vi.mock('../../../src/utils/error-handler.js', async (importOriginal) => {
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
     putRawObject: vi.fn(),
+    // Load-bearing since issue #2029: the region reconciliation probes for an
+    // existing bootstrap marker through this. Without it the call is
+    // `undefined(...)`, which the reconciliation's catch arm reads as "no
+    // marker" — so every test would pass through the ERROR path rather than
+    // the real one, and the hold could never be exercised.
+    getRawObject: vi.fn(async (key: string) => existingMarkers.get(key) ?? null),
+    // The probe backend releases its client through the backend, not through
+    // its own reference: the backend OWNS the client and may replace it.
+    destroyClient: vi.fn(),
   })),
 }));
 
@@ -136,6 +172,7 @@ beforeEach(() => {
   mockStsSend.mockResolvedValue({ Account: ACCOUNT });
   mockRebuildClient.mockResolvedValue(null);
   sdkChain.region = 'us-east-1';
+  existingMarkers.clear();
   mockEnsureAssetStorage.mockResolvedValue({
     assetBucket: `cdkd-assets-${ACCOUNT}-us-east-1`,
     containerRepo: `cdkd-container-assets-${ACCOUNT}-us-east-1`,
@@ -289,6 +326,58 @@ describe('cdkd bootstrap', () => {
     const call = mockEnsureAssetStorage.mock.calls[0]![0] as Record<string, unknown>;
     expect(call).not.toHaveProperty('assetBucketName');
     expect(call).not.toHaveProperty('containerRepoName');
+  });
+
+  it('bootstraps the PROFILE region when the user names none (issue #2029)', async () => {
+    // The WRITE side of the marker pair. `cdkd gc` and `cdkd bootstrap
+    // --destroy` READ the key this command writes, so all three resolve through
+    // one function — a previous attempt moved only the readers and had to be
+    // reverted. Pre-change this wrote `cdkd-bootstrap/us-east-1.json` no matter
+    // what the profile said.
+    scriptStateBucket(false);
+    sdkChain.region = 'ap-northeast-1';
+
+    await runBootstrap([]);
+
+    expect(mockEnsureAssetStorage).toHaveBeenCalledWith(
+      expect.objectContaining({ region: 'ap-northeast-1' })
+    );
+  });
+
+  it('HOLDS an existing us-east-1 opt-in rather than creating a second one', async () => {
+    // Without the hold, a user with a non-us-east-1 profile who bootstrapped
+    // under the old default would get a SECOND marker and a second set of
+    // storage on their next `cdkd bootstrap`, while the first set kept billing.
+    scriptStateBucket(true);
+    sdkChain.region = 'ap-northeast-1';
+    existingMarkers.set(
+      'cdkd-bootstrap/us-east-1.json',
+      JSON.stringify({
+        assetBucket: 'cdkd-assets-123456789012-us-east-1',
+        containerRepo: 'cdkd-container-assets-123456789012-us-east-1',
+        assetSupportVersion: 1,
+        createdAt: '2026-01-01T00:00:00.000Z',
+      })
+    );
+
+    await runBootstrap([]);
+
+    expect(mockEnsureAssetStorage).toHaveBeenCalledWith(
+      expect.objectContaining({ region: 'us-east-1' })
+    );
+  });
+
+  it('counter-case: a NAMED region is obeyed even when a legacy marker exists', async () => {
+    // `--region X` means bootstrap X, never "guess what I meant".
+    scriptStateBucket(true);
+    sdkChain.region = 'ap-northeast-1';
+    existingMarkers.set('cdkd-bootstrap/us-east-1.json', '{"assetSupportVersion":1}');
+
+    await runBootstrap(['--region', 'eu-west-1']);
+
+    expect(mockEnsureAssetStorage).toHaveBeenCalledWith(
+      expect.objectContaining({ region: 'eu-west-1' })
+    );
   });
 
   it('sends the RAW spelling to ensureAssetStorage and the FOLDED one everywhere else', async () => {

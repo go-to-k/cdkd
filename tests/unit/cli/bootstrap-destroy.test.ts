@@ -125,6 +125,8 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
   // afterwards, not skipped.
   S3StateBackend: vi.fn().mockImplementation(() => ({
     ...stateBackendMocks,
+    // The probe backend releases its client through the backend itself.
+    destroyClient: vi.fn(),
     getRawObject: async (key: string): Promise<string | null> => {
       const body = (await stateBackendMocks.getRawObject(key)) as string | null;
       return deletedKeys.has(key) ? null : body;

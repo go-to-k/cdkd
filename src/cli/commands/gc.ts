@@ -13,6 +13,7 @@ import {
   namedCliRegion,
   rawCliRegion,
   reconcileMarkerRegionWithLegacyDefault,
+  regionNeedsReconciliation,
   resolveEffectiveRegion,
 } from '../region-options.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
@@ -1028,12 +1029,17 @@ export async function gcCommand(options: GcOptions): Promise<void> {
   // Hold an existing us-east-1 opt-in rather than silently reporting the region
   // as not opted in. `cdkd bootstrap` writes this key through the SAME resolver
   // and the SAME reconciliation, so the read and write sides cannot drift.
-  const region = await reconcileMarkerRegionWithLegacyDefault({
-    effective,
-    probe: stateBackend,
-    markerKeyFor: getBootstrapMarkerKey,
-    logger,
-  });
+  // `stateBackend` is gc's REAL backend (it is account-scoped and re-resolves
+  // the state bucket's own region), so no throwaway probe is needed here — but
+  // the guard still matters: it skips two S3 round trips for a NAMED region.
+  const region = regionNeedsReconciliation(effective)
+    ? await reconcileMarkerRegionWithLegacyDefault({
+        effective,
+        probe: stateBackend,
+        markerKeyFor: getBootstrapMarkerKey,
+        logger,
+      })
+    : effective.region;
   // The RAW spelling, for the marker's second probe only (see the probe below).
   const rawRegion = rawCliRegion(options.region) ?? region;
 
@@ -1240,14 +1246,14 @@ export function createGcCommand(): Command {
     )
     .option('--dry-run', 'Print the reclaim plan (per-item list + totals) without deleting', false)
     .addOption(
-      // Picks WHICH region's asset storage to gc. Unlike the other commands
-      // this one does NOT fall back to a us-east-1 literal - it deletes, so it
-      // refuses rather than guessing (issue #2029).
+      // Picks WHICH region's asset storage to gc (issue #2029). The "refuses if
+      // none is configured" clause an earlier cut carried here was false —
+      // `resolveEffectiveRegion` ends at the us-east-1 literal and gc proceeds.
       new Option(
         '--region <region>',
         'Region whose cdkd asset storage to garbage-collect ' +
-          '(defaults to AWS_REGION / AWS_DEFAULT_REGION, else the profile region; ' +
-          'refuses if none is configured)'
+          '(defaults to AWS_REGION, then AWS_DEFAULT_REGION, then your AWS ' +
+          "profile's region, then us-east-1)"
       )
     )
     .action(

@@ -33,8 +33,13 @@ vi.mock('@aws-sdk/client-sts', () => ({
   })),
 }));
 
-const { resolveEffectiveRegion, reconcileRegionWithLegacyDefault, LEGACY_DEFAULT_REGION } =
-  await import('../../../src/cli/region-options.js');
+const {
+  resolveEffectiveRegion,
+  reconcileRegionWithLegacyDefault,
+  reconcileMarkerRegionWithLegacyDefault,
+  regionNeedsReconciliation,
+  LEGACY_DEFAULT_REGION,
+} = await import('../../../src/cli/region-options.js');
 
 const saved = { region: process.env['AWS_REGION'], def: process.env['AWS_DEFAULT_REGION'] };
 beforeEach(() => {
@@ -78,16 +83,24 @@ describe('resolveEffectiveRegion', () => {
     });
   });
 
-  it('reads AWS_DEFAULT_REGION, which the JS SDK itself does NOT', async () => {
+  it('reads AWS_DEFAULT_REGION as its OWN source, not as `env`', async () => {
     // Measured: with only this variable set, `STSClient({}).config.region()`
     // returns the PROFILE's region, not the variable's. The AWS CLI honours it,
     // so reading it here is what stops cdkd disagreeing with a CLI command the
     // user just ran.
+    //
+    // The SOURCE is the load-bearing half. Before this change cdkd never read
+    // the variable at all, so acting on it is an INFERENCE rather than
+    // something the user asked cdkd for — and inferences are what the
+    // reconciliation exists to hold. Classifying it as `env` would skip the
+    // hold, which for a CI image that exports it means
+    // `cdkd bootstrap --destroy --yes` reporting "nothing to delete" over
+    // us-east-1 storage that keeps billing.
     stsRegionProvider.value = 'ap-northeast-1';
     process.env['AWS_DEFAULT_REGION'] = 'EU-CENTRAL-1';
     await expect(resolveEffectiveRegion({})).resolves.toEqual({
       region: 'eu-central-1',
-      source: 'env',
+      source: 'default-env',
     });
   });
 
@@ -218,5 +231,154 @@ describe('reconcileRegionWithLegacyDefault', () => {
       })
     ).resolves.toBe('us-east-1');
     expect(probe.stateExists).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveEffectiveRegion forwards the profile to its probe', () => {
+  it('constructs the STS probe WITH the profile, so a named profile is honoured', async () => {
+    // Load-bearing, and it was untested: the real SDK merges
+    // `loaderConfig = { profile }` into `NODE_REGION_CONFIG_FILE_OPTIONS`
+    // (`@aws-sdk/client-sts`'s runtimeConfig), so dropping it makes
+    // `cdkd gc --profile prod` resolve the DEFAULT profile's region and collect
+    // - or delete - in the wrong one.
+    const { STSClient } = await import('@aws-sdk/client-sts');
+    stsRegionProvider.value = 'eu-west-1';
+    await resolveEffectiveRegion({ profile: 'prod' });
+    expect(vi.mocked(STSClient)).toHaveBeenCalledWith({ profile: 'prod' });
+  });
+
+  it('constructs it with NO profile when none was given', async () => {
+    const { STSClient } = await import('@aws-sdk/client-sts');
+    stsRegionProvider.value = 'eu-west-1';
+    await resolveEffectiveRegion({});
+    expect(vi.mocked(STSClient)).toHaveBeenCalledWith({});
+  });
+});
+
+describe('regionNeedsReconciliation', () => {
+  it.each([
+    ['flag', 'ap-northeast-1', false],
+    ['env', 'ap-northeast-1', false],
+    // The whole reason `default-env` is its own source: cdkd never read
+    // AWS_DEFAULT_REGION before, so acting on it is an inference and must be
+    // held. CI images commonly export it.
+    ['default-env', 'ap-northeast-1', true],
+    ['profile', 'ap-northeast-1', true],
+    // Already the legacy region - nothing to reconcile against.
+    ['profile', 'us-east-1', false],
+    ['default', 'us-east-1', false],
+  ] as const)('source=%s region=%s -> %s', (source, region, expected) => {
+    expect(regionNeedsReconciliation({ region, source })).toBe(expected);
+  });
+});
+
+describe('reconcileMarkerRegionWithLegacyDefault', () => {
+  const logger = { info: vi.fn(), debug: vi.fn() };
+  const markerKeyFor = (region: string): string => `cdkd-bootstrap/${region}.json`;
+  const probeWith = (regionsWithMarker: string[]) => ({
+    getRawObject: vi.fn(async (key: string) =>
+      regionsWithMarker.some((r) => key === markerKeyFor(r)) ? '{"assetSupportVersion":1}' : null
+    ),
+  });
+
+  beforeEach(() => {
+    logger.info.mockClear();
+    logger.debug.mockClear();
+  });
+
+  it('HOLDS an existing us-east-1 marker and says so', async () => {
+    // This is the twin all three commands actually call. Its sibling
+    // `reconcileRegionWithLegacyDefault` (tested above) has NO production
+    // caller yet — it is staged for issue go-to-k/cdkd#2100 — so testing only
+    // that one would have covered the unused function and left the shipped one
+    // to indirect coverage.
+    await expect(
+      reconcileMarkerRegionWithLegacyDefault({
+        effective: { region: 'ap-northeast-1', source: 'profile' },
+        probe: probeWith(['us-east-1']),
+        markerKeyFor,
+        logger,
+      })
+    ).resolves.toBe('us-east-1');
+    expect(logger.info).toHaveBeenCalledTimes(1);
+  });
+
+  it('HOLDS for an AWS_DEFAULT_REGION-sourced region too', async () => {
+    await expect(
+      reconcileMarkerRegionWithLegacyDefault({
+        effective: { region: 'us-west-2', source: 'default-env' },
+        probe: probeWith(['us-east-1']),
+        markerKeyFor,
+        logger,
+      })
+    ).resolves.toBe('us-east-1');
+  });
+
+  it('uses the resolved region when a marker exists THERE, probing once', async () => {
+    const probe = probeWith(['ap-northeast-1', 'us-east-1']);
+    await expect(
+      reconcileMarkerRegionWithLegacyDefault({
+        effective: { region: 'ap-northeast-1', source: 'profile' },
+        probe,
+        markerKeyFor,
+        logger,
+      })
+    ).resolves.toBe('ap-northeast-1');
+    expect(probe.getRawObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('OBEYS a named region without probing at all', async () => {
+    const probe = probeWith(['us-east-1']);
+    await expect(
+      reconcileMarkerRegionWithLegacyDefault({
+        effective: { region: 'ap-northeast-1', source: 'flag' },
+        probe,
+        markerKeyFor,
+        logger,
+      })
+    ).resolves.toBe('ap-northeast-1');
+    expect(probe.getRawObject).not.toHaveBeenCalled();
+  });
+
+  it('treats NoSuchBucket as "no marker" — the first-bootstrap case', async () => {
+    // On a first `cdkd bootstrap` the state bucket does not exist yet, so the
+    // probe rejects. Without this arm the command would crash before creating
+    // anything.
+    const probe = {
+      getRawObject: vi.fn(async () => {
+        throw Object.assign(new Error('The specified bucket does not exist'), {
+          name: 'NoSuchBucket',
+        });
+      }),
+    };
+    await expect(
+      reconcileMarkerRegionWithLegacyDefault({
+        effective: { region: 'ap-northeast-1', source: 'profile' },
+        probe,
+        markerKeyFor,
+        logger,
+      })
+    ).resolves.toBe('ap-northeast-1');
+  });
+
+  it('RETHROWS anything else rather than holding on a transient failure', async () => {
+    // The counter-case, and the reason the catch is narrow. A 403 or a throttle
+    // on the PROFILE-region key would otherwise make cdkd conclude that region
+    // has no storage, fall through to the legacy key and hold us-east-1 — so
+    // `cdkd gc --yes` would delete in a region the user never named, off a
+    // transient error, with only a debug line to show for it.
+    const probe = {
+      getRawObject: vi.fn(async () => {
+        throw Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
+      }),
+    };
+    await expect(
+      reconcileMarkerRegionWithLegacyDefault({
+        effective: { region: 'ap-northeast-1', source: 'profile' },
+        probe,
+        markerKeyFor,
+        logger,
+      })
+    ).rejects.toThrow('Access Denied');
   });
 });

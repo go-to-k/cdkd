@@ -121,7 +121,7 @@ export function rawCliRegion(optionRegion?: string): string | undefined {
  * own chain answered (the `region =` line of the selected profile); `default`
  * means nothing answered and the historical `us-east-1` literal applies.
  */
-export type RegionSource = 'flag' | 'env' | 'profile' | 'default';
+export type RegionSource = 'flag' | 'env' | 'default-env' | 'profile' | 'default';
 
 export interface EffectiveRegion {
   region: string;
@@ -176,8 +176,21 @@ export async function resolveEffectiveRegion(options: {
   const flag = canonicalizeRegion(options.region);
   if (flag) return { region: flag, source: 'flag' };
 
-  const env = canonicalizeRegion(process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION']);
-  if (env) return { region: env, source: 'env' };
+  const awsRegion = canonicalizeRegion(process.env['AWS_REGION']);
+  if (awsRegion) return { region: awsRegion, source: 'env' };
+
+  // `AWS_DEFAULT_REGION` is its OWN source, not another `env`, and the
+  // difference decides whether the reconciliation applies. Before this change
+  // cdkd never read the variable at all, so a user who set it has NEVER had
+  // cdkd act on it — which makes it an INFERENCE from cdkd's point of view,
+  // exactly like the profile, rather than something the user asked cdkd for.
+  // Classifying it as "named" would skip the hold, and the miss is not
+  // theoretical: `AWS_DEFAULT_REGION` is commonly exported in CI images, so
+  // `cdkd bootstrap --destroy --yes` would report "nothing to delete" over
+  // us-east-1 storage that keeps billing, or tear down a different region than
+  // the same command did yesterday.
+  const defaultRegionEnv = canonicalizeRegion(process.env['AWS_DEFAULT_REGION']);
+  if (defaultRegionEnv) return { region: defaultRegionEnv, source: 'default-env' };
 
   const fromProfile = canonicalizeRegion(await resolveSdkDefaultRegion(options.profile));
   if (fromProfile) return { region: fromProfile, source: 'profile' };
@@ -256,8 +269,7 @@ export async function reconcileRegionWithLegacyDefault(input: {
   logger: { info: (message: string) => void; debug: (message: string) => void };
 }): Promise<string> {
   const { effective, stackName, probe, logger } = input;
-  if (effective.source !== 'profile') return effective.region;
-  if (effective.region === LEGACY_DEFAULT_REGION) return effective.region;
+  if (!regionNeedsReconciliation(effective)) return effective.region;
 
   // Order matters: ask about the RESOLVED region first. A stack that already
   // has state there is fully migrated, and probing the legacy key for it would
@@ -319,8 +331,7 @@ export async function reconcileMarkerRegionWithLegacyDefault(input: {
   logger: { info: (message: string) => void; debug: (message: string) => void };
 }): Promise<string> {
   const { effective, probe, markerKeyFor, logger } = input;
-  if (effective.source !== 'profile') return effective.region;
-  if (effective.region === LEGACY_DEFAULT_REGION) return effective.region;
+  if (!regionNeedsReconciliation(effective)) return effective.region;
 
   // A probe that THROWS is treated as "no marker", not as an error. On a first
   // `cdkd bootstrap` the state bucket does not exist yet, so the read fails
@@ -333,9 +344,20 @@ export async function reconcileMarkerRegionWithLegacyDefault(input: {
     try {
       return (await probe.getRawObject(markerKeyFor(region))) !== null;
     } catch (error) {
+      // ONLY `NoSuchBucket`, and only because a first `cdkd bootstrap` runs
+      // before the state bucket exists. Everything else rethrows.
+      //
+      // An earlier cut caught everything and called it safe, on the reasoning
+      // that a missing marker can only send the command TOWARD the profile's
+      // region. That is false for the FIRST probe: a 403 or a throttle on the
+      // profile-region key makes cdkd conclude that region has no storage, fall
+      // through to the legacy key, and HOLD us-east-1 — so `cdkd gc --yes`
+      // would delete in a region the user never named, off a transient error,
+      // with nothing but a debug line to show for it. `getRawObject` already
+      // maps NoSuchKey / NotFound to `null`, so narrowing costs nothing.
+      if ((error as { name?: string }).name !== 'NoSuchBucket') throw error;
       logger.debug(
-        `[region] could not read the bootstrap marker for ${region}: ` +
-          `${error instanceof Error ? error.message : JSON.stringify(error)}`
+        `[region] no state bucket yet, so no bootstrap marker for ${region} ` + `(first bootstrap).`
       );
       return false;
     }
@@ -358,4 +380,22 @@ export async function reconcileMarkerRegionWithLegacyDefault(input: {
       `or '--region ${LEGACY_DEFAULT_REGION}' to silence this message.`
   );
   return LEGACY_DEFAULT_REGION;
+}
+
+/**
+ * Whether {@link resolveEffectiveRegion}'s answer is subject to the
+ * reconciliation — i.e. whether cdkd INFERRED it rather than being told.
+ *
+ * `flag` and `env` (`AWS_REGION`) are the user speaking, and are obeyed as
+ * given. `default-env` (`AWS_DEFAULT_REGION`) is NOT: cdkd never read that
+ * variable before, so acting on it is a new inference. `default` is already
+ * the legacy region, so there is nothing to reconcile against.
+ *
+ * Exported so a caller can skip CONSTRUCTING a probe client it will not use —
+ * the reconciliation functions return early on the same condition, but by then
+ * the caller has already paid for an S3 client and a state backend.
+ */
+export function regionNeedsReconciliation(effective: EffectiveRegion): boolean {
+  if (effective.source === 'flag' || effective.source === 'env') return false;
+  return effective.region !== LEGACY_DEFAULT_REGION;
 }
