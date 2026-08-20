@@ -46,6 +46,8 @@ If any fail, show the error output and STOP — do not write the commit-gate mar
 
 After all four checks pass, record a marker so the PreToolUse `check-gate` hook (see `.claude/hooks/check-gate.sh`) allows the next `git commit`. The marker is managed by [markgate](https://github.com/go-to-k/markgate) and captures the current working tree state; any subsequent edits invalidate it and require re-running `/check`.
 
+**A marker goes stale the moment you `git commit` a NEW, previously-untracked file — with no edit involved.** The digest enumerates TRACKED files, so a file entering the index changes the digest even though its bytes did not change. Measured 2026-08-20: `markgate verify check` answered rc=0 immediately before a `git commit`, and rc=1 immediately after, with the only tree change being an untracked test file becoming tracked. This is correct behaviour, not a defect — but the symptom is a `check-gate` refusal on the NEXT commit that reads as "my markers randomly expired", so it gets debugged instead of re-run. When a commit adds new files, expect to re-run `/check` (or `/verify-pr`, which re-sets both markers anyway) before the following commit.
+
 Run this from the repo root (cdkd pins markgate via mise, so use `mise exec` to avoid PATH issues when shims aren't active):
 
 ```bash
