@@ -467,8 +467,72 @@ function isKnownSecretExpression(
 }
 
 /**
- * Is this source leaf a SINGLE complete `{{resolve:...}}` token and nothing
- * else?
+ * The character class a `{{resolve:...}}` reference's INNER text is built from,
+ * and the SINGLE SOURCE OF TRUTH every dynamic-reference predicate in cdkd
+ * derives from (issue
+ * [#1936](https://github.com/go-to-k/cdkd/issues/1936)).
+ *
+ * **THE AUTHORITY IS THE RESOLVER.**
+ * `IntrinsicFunctionResolver.resolveDynamicReferences`
+ * (`src/deployment/intrinsic-function-resolver.ts`) scans with
+ * `/\{\{resolve:([^}]+)\}\}/g`, so what cdkd will actually RESOLVE is exactly
+ * `{{resolve:` followed by one or more non-`}` characters followed by `}}`.
+ * A predicate that answers a different question than that scan is answering
+ * about a string the resolver already substituted a value INTO, which is how a
+ * leaf ends up classified as "not a token" while holding the plaintext the
+ * resolver put there.
+ *
+ * Three sites disagreed before this constant existed, and the STRICTEST of them
+ * was the one that persisted plaintext. `isSingleDynamicReferenceToken` here and
+ * `isWholeDynamicReference` in `src/cli/commands/drift.ts` both spelled the
+ * inner class `[^{}]*`, while `survivingDynamicReferences` (same file) spelled
+ * it `[^}]+` to match the resolver. For a reference whose inner text contains a
+ * `{` — a Secrets Manager JSON key or a secret name, e.g.
+ * `{{resolve:secretsmanager:app/db:SecretString:my{key}}` — the resolver
+ * resolves it fine, but the strict spelling said it was not a single token, so
+ * `redactByPath`'s source arm refused it and on an EMPTY-map path (issue #1900:
+ * `cdkd scrub`'s cross-generation observed walk, whose value scan has no
+ * needles) the RESOLVED PLAINTEXT was persisted verbatim. A disclosure, narrow
+ * and pre-existing.
+ *
+ * Excluding `{` bought nothing. The mangled / concatenated shapes it might seem
+ * to guard — `{{resolve:a}}{{resolve:b}}`, a spliced token — are already
+ * rejected by `[^}]+` under an ANCHORED pattern, because the class cannot cross
+ * the first `}`. (A claim that `[^}]+` would let `{{resolve:a}}{{resolve:b}}`
+ * through circulated in review and is FALSE: that string does not match
+ * `^\{\{resolve:[^}]+\}\}$` either.) The only strings the two spellings
+ * classify differently are the ones with a `{` inside a single token, i.e.
+ * exactly the disclosure above.
+ *
+ * `+` rather than `*` for the same reason: `{{resolve:}}` is not something the
+ * resolver would try to resolve, so nothing here may call it a token.
+ *
+ * The class is exported as a STRING rather than as a finished `RegExp` because
+ * three different pattern shapes are built from it — anchored, global, and
+ * {@link SKELETON_WILDCARD}'s zero-or-more form — and a shared global `RegExp`
+ * instance would carry `lastIndex` across callers.
+ */
+const DYNAMIC_REFERENCE_INNER_CHAR = '[^}]';
+
+/**
+ * The inner-text pattern fragment of a complete `{{resolve:...}}` reference,
+ * byte-identical to the resolver's own `([^}]+)` capture. See
+ * {@link DYNAMIC_REFERENCE_INNER_CHAR} for why this is one constant.
+ */
+export const DYNAMIC_REFERENCE_INNER = `${DYNAMIC_REFERENCE_INNER_CHAR}+`;
+
+/**
+ * Anchored: the WHOLE string is one complete `{{resolve:...}}` token.
+ *
+ * A non-global `RegExp`, so `.test` carries no `lastIndex` state and the shared
+ * instance is safe to reuse.
+ */
+export const WHOLE_DYNAMIC_REFERENCE_PATTERN = new RegExp(
+  `^\\{\\{resolve:${DYNAMIC_REFERENCE_INNER}\\}\\}$`
+);
+
+/**
+ * Is this leaf a SINGLE complete `{{resolve:...}}` token and nothing else?
  *
  * Whole-leaf substitution is only correct for that shape. A MIXED leaf --
  * `pre{{resolve:ssm:/public}}-{{resolve:secretsmanager:x}}post`, i.e. anything
@@ -476,9 +540,15 @@ function isKnownSecretExpression(
  * scan, which rewrites just the secret substring. Substituting the whole leaf
  * there would re-introduce every other token in it, including a public ssm
  * reference the resolver deliberately left resolved (issue #1901).
+ *
+ * EXPORTED since issue #1936 so `src/cli/commands/drift.ts` can consume this
+ * one definition instead of carrying a hand-copied twin. Its copy's own comment
+ * said "copied rather than imported because that helper is module-private and
+ * this file may not widen that module's exports" — widening the exports is the
+ * cheaper half of that trade once the copies have provably disagreed.
  */
-function isSingleDynamicReferenceToken(value: string): boolean {
-  return /^\{\{resolve:[^{}]*\}\}$/.test(value);
+export function isSingleDynamicReferenceToken(value: string): boolean {
+  return WHOLE_DYNAMIC_REFERENCE_PATTERN.test(value);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -489,14 +559,18 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * Stands in for a source part the skeleton cannot know — an `Fn::Join` element
  * that is itself an intrinsic, or an `Fn::Sub` `${...}` variable.
  *
- * `[^}]*` rather than `.*` because a recorded expression's INNER text never
- * contains `}`: the resolver matches them with `/\{\{resolve:([^}]+)\}\}/`, so
- * the first `}` after `{{resolve:` is already the terminator. Excluding it
- * means a wildcard can never swallow one token's terminator and run into the
- * next, so a skeleton for ONE reference cannot match a candidate built from a
- * different one.
+ * Built from {@link DYNAMIC_REFERENCE_INNER_CHAR} rather than `.` because a
+ * recorded expression's INNER text never contains `}`: the resolver matches
+ * them with `/\{\{resolve:([^}]+)\}\}/`, so the first `}` after `{{resolve:` is
+ * already the terminator. Excluding it means a wildcard can never swallow one
+ * token's terminator and run into the next, so a skeleton for ONE reference
+ * cannot match a candidate built from a different one.
+ *
+ * Zero-or-more here, unlike {@link DYNAMIC_REFERENCE_INNER}: this stands in for
+ * an unknown SPAN, which may legitimately be empty (an `Fn::Join` part that
+ * resolved to `''`), whereas a token with no inner text is not a token.
  */
-const SKELETON_WILDCARD = '[^}]*';
+const SKELETON_WILDCARD = `${DYNAMIC_REFERENCE_INNER_CHAR}*`;
 
 /**
  * More wildcards than this and the skeleton is REFUSED outright.
@@ -1180,9 +1254,26 @@ function subtreeHasDynamicReference(value: unknown): boolean {
   return false;
 }
 
-/** Every complete `{{resolve:...}}` token inside a string. */
+/**
+ * Every complete `{{resolve:...}}` token inside a string.
+ *
+ * This was a FOURTH spelling of the token pattern (`[^{}]*`, global) and is
+ * built from {@link DYNAMIC_REFERENCE_INNER} since issue #1936, so it agrees
+ * with the resolver like every other predicate here. A fresh `RegExp` per call
+ * because a shared global instance carries `lastIndex` between callers.
+ *
+ * Widening it changes one answer, in the SAFE direction for the disclosure and
+ * the DECLARED direction for issue #1901: its only reader is
+ * {@link mixedLeafMayCarryPublicReference}, which asks whether a MIXED leaf
+ * embeds a `{{resolve:ssm:` token the verdict store does not know. A token
+ * carrying a `{` inside it used to be INVISIBLE here, so such a leaf was
+ * always treated as secret-bearing and the source expression was substituted
+ * over the resolved value. Now it is seen and classified by the same rule as
+ * every other token — which, on a POPULATED map, means a genuinely public ssm
+ * parameter keeps the resolved value it is supposed to keep.
+ */
 function dynamicReferenceTokens(value: string): string[] {
-  return value.match(/\{\{resolve:[^{}]*\}\}/g) ?? [];
+  return value.match(new RegExp(`\\{\\{resolve:${DYNAMIC_REFERENCE_INNER}\\}\\}`, 'g')) ?? [];
 }
 
 /**
