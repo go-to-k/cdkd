@@ -37,14 +37,14 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || ec
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
 # Only gate git commit — anything else passes through. Recognition goes through
-# the shared matcher (.claude/hooks/_command-match.sh, issue #2129): heredoc
+# the shared matcher (.claude/hooks/lib/command-match.sh, issue #2129): heredoc
 # bodies and quoted spans are neutralised, then the verb is matched in COMMAND
 # POSITION with any `VAR=value` / `env` / `command` / `nohup` prefix skipped. So
 # `git add -A && git commit` and `GIT_EDITOR=true git commit` fire, while
 # `echo "git commit"` — which the previous unanchored `\bgit...\bcommit\b`
 # blocked — does not. Sourcing fails CLOSED if the helper is unloadable.
-# shellcheck source=_command-match.sh
-_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+# shellcheck source=lib/command-match.sh
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
 [ -r "$_gate_lib" ] || exit 0
 . "$_gate_lib"
 gate_matches "$cmd" "$GATE_RE_GIT_COMMIT" || exit 0

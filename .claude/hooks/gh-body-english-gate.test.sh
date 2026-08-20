@@ -293,18 +293,20 @@ printf "It's fixed now.\n" > "$APOS"
 run "apostrophe in an English body file does not hide a non-English title" \
   "gh pr create --title \"バグ修正\" --body-file $APOS" 2
 # An UNBALANCED APOSTROPHE anywhere earlier in the command (`don't` in a
-# comment or in prose) makes the shared `strip_noncommand_spans` treat the
-# rest of the command as one quoted span, so `cmd_matches_verb` never sees
-# the verb and the gate does not arm. It is the apostrophe-parity class
-# again, but living in `lib/command-match.sh`, shared by all 16 sourcing
-# gates -- NOT something deleting this hook's own scanner could fix.
-# Asserted so a change to the shared matcher shows up as these cases
-# flipping rather than as silence. The position of the comment is
-# irrelevant; the apostrophe is the whole mechanism -- the control below
-# proves it.
-run "known limit (shared matcher): an unbalanced apostrophe stops the gate arming" \
+# comment or in prose) used to leave the shared matcher's quote state open, so
+# the rest of the command read as one quoted span, `cmd_matches_verb` never saw
+# the verb, and the gate did not arm. It was the apostrophe-parity class living
+# in `lib/command-match.sh`, shared by every sourcing gate -- NOT something
+# deleting this hook's own scanner could fix, and issue #2093 recorded it
+# alongside the subshell gap because it lands in the same place.
+#
+# FIXED by the #2129 convergence: an unterminated quote makes the segmenter
+# re-run treating that character as literal, so the command fails LOUD instead
+# of going quiet. Asserted in the blocking direction now, with the control
+# below still proving the apostrophe is the whole mechanism.
+run "an unbalanced apostrophe no longer stops the gate arming" \
   "# don't
-gh issue create --title y --body \"日本語\"" 0
+gh issue create --title y --body \"日本語\"" 2
 run "control: the same comment WITHOUT an apostrophe blocks normally" \
   "# file the issue
 gh issue create --title y --body \"日本語\"" 2

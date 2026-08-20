@@ -26,7 +26,7 @@ set -u
 cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 
 # Only gate git commit invocations. Recognition goes through the shared
-# matcher (.claude/hooks/_command-match.sh, issue #2129): heredoc bodies and
+# matcher (.claude/hooks/lib/command-match.sh, issue #2129): heredoc bodies and
 # quoted spans are neutralised, then the verb is matched in COMMAND POSITION
 # with a `VAR=value` / `env` / `command` / `nohup` prefix skipped. The old
 # unanchored form blocked `echo "do not use git commit -m <<EOF form"` — a
@@ -35,8 +35,8 @@ cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 # The SHAPE check below deliberately still reads the RAW command: neutralising
 # the `"$(cat <<EOF ...)"` span is exactly what would hide the shape this gate
 # exists to catch.
-# shellcheck source=_command-match.sh
-_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+# shellcheck source=lib/command-match.sh
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
 [ -r "$_gate_lib" ] || exit 0
 . "$_gate_lib"
 gate_matches "$cmd" "$GATE_RE_GIT_COMMIT" || exit 0

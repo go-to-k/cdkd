@@ -50,10 +50,10 @@ cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 
 # Only gate gh invocations that pass a body file. Cheap pre-filter before the
 # more expensive extraction, run through the shared matcher
-# (.claude/hooks/_command-match.sh, issue #2129) so a chained invocation is seen
+# (.claude/hooks/lib/command-match.sh, issue #2129) so a chained invocation is seen
 # and a quoted mention is not.
-# shellcheck source=_command-match.sh
-_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+# shellcheck source=lib/command-match.sh
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
 [ -r "$_gate_lib" ] || exit 0
 . "$_gate_lib"
 gate_matches "$cmd" "$GATE_RE_GH_BODY_CARRIER" || exit 0

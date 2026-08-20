@@ -58,11 +58,11 @@ command=$(jq -r '.tool_input.command // empty' <<<"$input_json" 2>/dev/null || t
 # Cheap pre-filter so the common case costs nothing. It used to test for the
 # bare VERBS as substrings, because a `git -C <path>` prefix sits between the
 # two words and the literal-pair form silently skipped every cross-worktree
-# invocation. The shared matcher (.claude/hooks/_command-match.sh, issue #2129)
+# invocation. The shared matcher (.claude/hooks/lib/command-match.sh, issue #2129)
 # absorbs that prefix itself, so the pair can be matched properly again: the
 # `-C` shape still fires, and a quoted mention of the verb no longer does.
-# shellcheck source=_command-match.sh
-_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+# shellcheck source=lib/command-match.sh
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
 [ -r "$_gate_lib" ] || exit 0
 . "$_gate_lib"
 gate_matches "$command" "$GATE_RE_GIT_CHECKOUT_RESTORE" || exit 0

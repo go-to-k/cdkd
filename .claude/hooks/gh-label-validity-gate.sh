@@ -25,11 +25,11 @@ cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 # for `--limit` (gh issue list -l 5), `--locale`, etc. — too ambiguous to filter
 # without parsing each subcommand's flag table. Stick to the long forms; that's
 # what scripts and AI agents use anyway.
-# Recognition goes through the shared matcher (.claude/hooks/_command-match.sh,
+# Recognition goes through the shared matcher (.claude/hooks/lib/command-match.sh,
 # issue #2129), so a chained `git push && gh issue create --label x` is seen and
 # a quoted mention of the command is not.
-# shellcheck source=_command-match.sh
-_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+# shellcheck source=lib/command-match.sh
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
 [ -r "$_gate_lib" ] || exit 0
 . "$_gate_lib"
 gate_matches "$cmd" "$GATE_RE_GH_LABEL_CARRIER" || exit 0

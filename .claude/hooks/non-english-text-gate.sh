@@ -69,13 +69,13 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || ec
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
 # Only gate gh pr create / edit / merge — anything else passes through.
-# Recognition goes through the shared matcher (.claude/hooks/_command-match.sh,
+# Recognition goes through the shared matcher (.claude/hooks/lib/command-match.sh,
 # issue #2129): heredoc bodies and quoted spans are neutralised, then the verb
 # is matched in COMMAND POSITION with a `VAR=value` / `env` / `command` /
 # `nohup` prefix skipped. So `git push && gh pr create --fill` fires, while a
 # PR body that merely QUOTES the command does not. Sourcing fails CLOSED.
-# shellcheck source=_command-match.sh
-_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+# shellcheck source=lib/command-match.sh
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
 [ -r "$_gate_lib" ] || exit 0
 . "$_gate_lib"
 gate_matches "$cmd" "$GATE_RE_GH_PR_WRITE" || exit 0
