@@ -1296,8 +1296,17 @@ function subtreeHasDynamicReference(value: unknown): boolean {
  * advance `lastIndex`, which is exactly why the shared instance is safe only
  * for `.match`.
  *
- * Widening it changes one answer, in the SAFE direction for the disclosure and
- * the DECLARED direction for issue #1901: its only reader is
+ * Widening it changes one answer, in the SAFE direction for BOTH readers.
+ *
+ * `drift.ts`'s `survivingDynamicReferences` is the reader that is easy to
+ * forget, because it lives in another file — it feeds `isSecretBySpelling`,
+ * so seeing MORE tokens can only mask more, never less. Do not shorten this
+ * to "the only reader": that sentence is what a later editor uses to bound
+ * the blast radius of touching the class, and getting it wrong points them
+ * away from the report / `--json` / `--accept` path where an unmasked
+ * `ssm-secure` survivor would surface.
+ *
+ * The other reader is the DECLARED direction for issue #1901:
  * {@link mixedLeafMayCarryPublicReference}, which asks whether a MIXED leaf
  * embeds a `{{resolve:ssm:` token the verdict store does not know. A token
  * carrying a `{` inside it used to be INVISIBLE here, so such a leaf was
@@ -1306,7 +1315,7 @@ function subtreeHasDynamicReference(value: unknown): boolean {
  * every other token — which, on a POPULATED map, means a genuinely public ssm
  * parameter keeps the resolved value it is supposed to keep.
  */
-const DYNAMIC_REFERENCE_TOKEN_SCAN = new RegExp(
+export const DYNAMIC_REFERENCE_TOKEN_SCAN = new RegExp(
   `\\{\\{resolve:${DYNAMIC_REFERENCE_INNER}\\}\\}`,
   'g'
 );

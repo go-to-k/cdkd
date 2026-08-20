@@ -1,9 +1,12 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vite-plus/test';
 import { preserveLiveValuesAtUnresolvedTokens } from '../../../src/cli/commands/drift.js';
 import {
   DYNAMIC_REFERENCE_INNER,
+  DYNAMIC_REFERENCE_TOKEN_SCAN,
+  dynamicReferenceTokens,
   isSingleDynamicReferenceToken,
   redactSecretsForState,
   scrubResourceRecord,
@@ -99,22 +102,84 @@ describe('the dynamic-reference token pattern agrees with the resolver (issue #1
     expect(isSingleDynamicReferenceToken('not a reference at all')).toBe(false);
   });
 
-  it('carries no second inline spelling of the class in either consumer', () => {
-    // "So a fourth spelling cannot be added without noticing." Both files build
-    // every pattern from the shared constant now, so a bare character class
-    // straight after `resolve:` is by construction a new spelling.
-    for (const relative of ['src/deployment/secret-redaction.ts', 'src/cli/commands/drift.ts']) {
-      const code = stripComments(readFileSync(`${REPO_ROOT}${relative}`, 'utf8'));
-      // Enumerating ONE bad spelling is what let four of them accumulate, so
-      // this fences the shapes a re-fork actually takes (issue #2088 review):
-      // a bare class after `resolve:`, an escaped colon before one, and the
-      // resolver's own capturing spelling.
-      for (const spelling of [/resolve:\[\^/, /resolve\\:\[\^/, /resolve:\(\[\^/]) {
-        expect(code, `${relative} spells the token class inline (${spelling})`).not.toMatch(
-          spelling
-        );
-      }
+  it('builds the token pattern in exactly two places, both in this module', () => {
+    // ENUMERATING BAD SPELLINGS LOSES THE RACE. Three earlier revisions of this
+    // fence each closed one more spelling (a bare class after `resolve:`, an
+    // escaped colon, the resolver's capturing form) and a review immediately
+    // probed a fourth that passed: re-duplicating the ASSEMBLED pattern,
+    // `new RegExp(\`\\{\\{resolve:${'$'}{DYNAMIC_REFERENCE_INNER}\\}\\}\`, 'g')` —
+    // verbatim the drift.ts line issue #2088 deleted. It is behaviourally
+    // identical, so nothing else reds it, and it is the exact re-fork this
+    // change exists to prevent. Two more were reported unclosed in the same
+    // pass (a `.+?` class never opens with `[^`; an escaped colon inside a
+    // CONSTRUCTOR string is `resolve\\:` with two backslashes, not one).
+    //
+    // So state the GOOD condition instead and all four collapse: a regex that
+    // matches a `{{resolve:` token must escape both braces, in a literal
+    // (`\{\{resolve`) or a constructor template (`\\{\\{resolve`), and this
+    // module is the only place allowed to write one. A plain string test like
+    // drift.ts's `value.includes('{{resolve:')` has no backslashes and is
+    // deliberately NOT matched — those are substring checks, not patterns.
+    const CONSTRUCTS_TOKEN_PATTERN = /\\+\{\\+\{resolve/g;
+    // The RESOLVER is the authority every other spelling derives from, so it
+    // owns one — found by this fence flagging it, which is the rule working:
+    // an exempt-by-name list would have hidden a SECOND spelling appearing
+    // there, and the resolver is precisely where that would matter most.
+    const OWNERS: Record<string, number> = {
+      'src/deployment/intrinsic-function-resolver.ts': 1,
+      // WHOLE_DYNAMIC_REFERENCE_PATTERN and DYNAMIC_REFERENCE_TOKEN_SCAN.
+      'src/deployment/secret-redaction.ts': 2,
+    };
+
+    for (const [relative, expected] of Object.entries(OWNERS)) {
+      const sites = (
+        stripComments(readFileSync(`${REPO_ROOT}${relative}`, 'utf8')).match(
+          CONSTRUCTS_TOKEN_PATTERN
+        ) ?? []
+      ).length;
+      // An EXACT count, not a floor: one more site in an owning file is a
+      // re-fork inside the module, which is how the original four started.
+      expect(sites, `${relative} must build the token pattern exactly ${expected}x`).toBe(expected);
     }
+
+    // Every OTHER consumer must import, never rebuild. Scanning the tree rather
+    // than a hand-listed pair closes the last gap the review named: a brand-new
+    // consumer file re-spelling the pattern was unfenced.
+    const others = readdirSync(`${REPO_ROOT}src`, { recursive: true, encoding: 'utf8' })
+      .filter((entry: string) => entry.endsWith('.ts'))
+      .map((entry: string) => `src/${entry.split(sep).join('/')}`)
+      .filter((relative: string) => !(relative in OWNERS));
+    expect(others.length, 'the source glob matched nothing — the fence would pass vacuously')
+      .toBeGreaterThan(50);
+    for (const relative of others) {
+      const code = stripComments(readFileSync(`${REPO_ROOT}${relative}`, 'utf8'));
+      expect(
+        code.match(CONSTRUCTS_TOKEN_PATTERN) ?? [],
+        `${relative} rebuilds the token pattern — import dynamicReferenceTokens / ` +
+          'isSingleDynamicReferenceToken from secret-redaction.ts instead'
+      ).toHaveLength(0);
+    }
+  });
+
+  it('keeps the shared scan GLOBAL, so a multi-token leaf yields every token', () => {
+    // The `g` flag became shared mutable state when the constant was hoisted,
+    // and the JSDoc one screen up reasons about "a later flag change" while
+    // fencing nothing. Its sibling WHOLE_DYNAMIC_REFERENCE_PATTERN pins
+    // `.global === false`; this is the missing other half.
+    expect(DYNAMIC_REFERENCE_TOKEN_SCAN.global).toBe(true);
+
+    // The BEHAVIOURAL half, at the unit that owns the property. Drop `g` and
+    // `.match` silently returns first-match-only, so drift.ts's
+    // `survivors.some(isSecretBySpelling)` would miss an `ssm-secure` token
+    // that is not FIRST — reporting the CFn-resolved plaintext unmasked in the
+    // drift report, `--json` and `--accept`. Fenced HERE rather than through
+    // drift, where `isSecretBySpelling` blocks such a leaf on its own and the
+    // case could not tell the two guards apart.
+    const publicFirst = '{{resolve:ssm:/app/stage}}-{{resolve:ssm-secure:/db/pw}}';
+    expect(dynamicReferenceTokens(publicFirst)).toEqual([
+      '{{resolve:ssm:/app/stage}}',
+      '{{resolve:ssm-secure:/db/pw}}',
+    ]);
   });
 });
 
@@ -168,7 +233,6 @@ describe('a braced reference is not persisted as plaintext (issue #1936)', () =>
 });
 
 describe('drift.ts reads the same predicate (issue #1936)', () => {
-
   it('preserves the live value at a braced ssm-secure token and registers it', () => {
     // `preserveLiveValuesAtUnresolvedTokens` gates on the whole-token predicate,
     // and its failure mode is the mirror image of the persist one: the strict
@@ -177,6 +241,12 @@ describe('drift.ts reads the same predicate (issue #1936)', () => {
     // record holds the token in state while AWS holds the plaintext), and the
     // moved value was registered with nothing that masks.
     const token = '{{resolve:ssm-secure:/db/pw{v}}';
+    // ANCHOR the fixture's SHAPE, same as its twin below. This token only
+    // discriminates the two spellings while its `{` stays UNBALANCED: a
+    // "typo fix" to `pw{v}` (balanced) or `pwv` (brace-free) would leave this
+    // case green under the strict-class mutation and silently void the fence.
+    expect(/^\{\{resolve:[^}]+\}\}$/.test(token), 'braced: the resolver matches').toBe(true);
+    expect(/^\{\{resolve:[^{}]*\}\}$/.test(token), 'braced: the old class does NOT').toBe(false);
     const live = 'the-live-secure-parameter-value';
     const secrets: RecordedSecretValues = new Map();
 
