@@ -345,8 +345,13 @@ function pathsFromPickInteg(): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * These are two halves of ONE gate that must name the same files, and a
- * mismatch in EITHER direction silently disarms it. Both have shipped:
+ * THREE copies of one gate's scope: the hook's activation patterns, the
+ * marker's include list, and the prose list in CLAUDE.md's `integ-destroy`
+ * entry. The first two are the executable halves and a mismatch between them in
+ * EITHER direction silently disarms the gate; the third is documentation, and
+ * drifts against both. All three are compared here.
+ *
+ * Both executable failure modes have shipped:
  *
  *   - In `.markgate.yml` only (no hook pattern): the marker goes stale for the
  *     file, but the hook's diff guard passes the PR through before ever
@@ -450,6 +455,43 @@ function destroyHookScope(): string[] {
     out.push(...entries);
   }
   assertFloor(out, 'integ-destroy-gate.sh activation patterns', MIN_DESTROY_SCOPE);
+  return out;
+}
+
+/**
+ * The THIRD copy: the prose scope list in CLAUDE.md's `integ-destroy` entry.
+ *
+ * It was added by this PR, to say what the entry previously left unsaid -- that
+ * the gate has two halves and they must agree. Adding an unfenced hand-copy of a
+ * list inside the change whose whole thesis is "hand-duplicated lists drift" is
+ * the one shape this must not ship with, so it is compared against BOTH
+ * machine-readable halves rather than against whichever one happens to be handy.
+ *
+ * The anchor is deliberately two-part (the gate's own sentence, then the
+ * terminator) because `Scope:` appears in five other CLAUDE.md gate entries. A
+ * one-part anchor would match the first of them and compare the wrong list.
+ */
+function destroyScopeFromClaudeMd(): string[] {
+  const m =
+    /A fourth markgate gate, `integ-destroy`[\s\S]*?Scope: ((?:`[^`]+`(?:, )?)+)\. \*\*The gate has two halves/.exec(
+      read(CLAUDE_MD),
+    );
+  expect(
+    m,
+    "CLAUDE.md: could not find the integ-destroy scope enumeration. Expected the `integ-destroy` " +
+      'gate bullet to read "Scope: `path`, `path`, ... . **The gate has two halves". The anchor ' +
+      'was reworded, or a non-`path` item was interleaved. This REFUSES rather than returning ' +
+      '[], which would compare equal to nothing and pass trivially.',
+  ).not.toBeNull();
+  const out = m![1].split(', ').map((item) => {
+    const entry = /^`([^`]+)`$/.exec(item);
+    expect(
+      entry,
+      `CLAUDE.md: integ-destroy scope item ${JSON.stringify(item)} is not a plain \`path\``,
+    ).not.toBeNull();
+    return normalizeGlob(entry![1]);
+  });
+  assertFloor(out, 'CLAUDE.md integ-destroy scope', MIN_DESTROY_SCOPE);
   return out;
 }
 
@@ -622,6 +664,26 @@ describe('integ-destroy hook activation and marker scope name the same files', (
         `ever reading it -- an invalidated marker nobody consults. Add them to strict_delete, ` +
         `filtered_delete or provider_pattern in integ-destroy-gate.sh.`,
     ).toEqual([]);
+  });
+
+  it('the CLAUDE.md prose copy agrees with both machine-readable halves', () => {
+    // Compared against BOTH, not just one. The two halves are proven equal by
+    // the test above, so agreeing with either implies agreeing with the other --
+    // but only while that test passes. When it fails, this one should say which
+    // of the three copies is the odd one out rather than inheriting the
+    // ambiguity, and that costs one extra assertion.
+    const prose = canonical(destroyScopeFromClaudeMd());
+    expect(
+      prose,
+      "CLAUDE.md's integ-destroy scope list disagrees with integ-destroy-gate.sh's activation " +
+        'patterns. The prose is documentation; the hook is what runs. Fix whichever is wrong, ' +
+        'but they must agree -- an entry documented as gated but not matched by any pattern is ' +
+        'a scope readers will trust and the gate will not enforce.',
+    ).toEqual(canonical(destroyHookScope()));
+    expect(
+      prose,
+      "CLAUDE.md's integ-destroy scope list disagrees with .markgate.yml's integ-destroy.include.",
+    ).toEqual(canonical(destroyIncludeScope()));
   });
 
   it('holds exactly the pinned scope', () => {
