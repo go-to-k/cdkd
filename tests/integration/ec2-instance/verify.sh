@@ -67,6 +67,19 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 
+# --- one-line, control-byte-free command output ------------------------------
+# A diagnostic that destroys its own message is worse than none. A failed `aws`
+# call can answer with CR and other control bytes (an auto-prompt redraw, a
+# progress spinner), and interpolating those into a FAIL line makes the terminal
+# overwrite everything after them -- which is how a real run reported
+# `FAIL: ... (rc=255): ` with the output, and the whole explanatory tail after
+# it, invisible. Newlines become spaces so the message stays one line; every
+# remaining control byte (INCLUDING CR at \015, which is the one that does the
+# overwriting) is dropped; tab is kept because `--output text` uses it.
+sanitize_aws_output() {
+  printf '%s' "$1" | tr '\n' ' ' | tr -d '\000-\010\013-\037\177'
+}
+
 cd "$(dirname "$0")"
 
 STACK="Ec2InstanceStack"
@@ -257,16 +270,26 @@ if [ -z "${REPLAY_IMAGE_ID}" ] || [ "${REPLAY_IMAGE_ID}" = "None" ]; then
 fi
 
 set +e
+# `--count 1`, NOT `--min-count 1 --max-count 1`: those are the API's parameter
+# names (`MinCount` / `MaxCount`) and the CLI v2 rejects them outright with
+# `Unknown options` (rc=255) -- so the replay never reaches EC2 at all. Measured
+# against the real CLI with `--dry-run`.
+#
+# `--no-cli-auto-prompt` because a machine with `cli_auto_prompt = on-partial`
+# in ~/.aws/config answers a malformed request with an interactive prompt whose
+# escape sequences then land in the captured output.
 REPLAY_OUT=$(aws ec2 run-instances \
+  --no-cli-auto-prompt \
   --client-token "${CLIENT_TOKEN}" \
   --image-id "${REPLAY_IMAGE_ID}" \
   --instance-type "${REPLAY_INSTANCE_TYPE}" \
   ${REPLAY_SUBNET_ID:+--subnet-id "${REPLAY_SUBNET_ID}"} \
-  --min-count 1 --max-count 1 \
+  --count 1 \
   --region "${REGION}" \
   --query 'Instances[0].InstanceId' \
-  --output text 2>&1)
+  --output text 2>&1 </dev/null)
 REPLAY_RC=$?
+REPLAY_OUT=$(sanitize_aws_output "${REPLAY_OUT}")
 set -e
 
 # The EXIT CODE decides which branch applies -- greping the output alone would
