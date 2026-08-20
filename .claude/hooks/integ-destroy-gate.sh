@@ -116,11 +116,18 @@ cd "$target_dir" 2>/dev/null || exit 0
 #
 # Heuristic:
 # - "strict-delete" files (dag-builder.ts, implicit-delete-deps.ts,
-#   lambda-vpc-deps.ts): any change at all is delete-touching. These
+#   lambda-vpc-deps.ts, retry.ts, retryable-errors.ts,
+#   rollback-executor.ts): any change at all is delete-touching. These
 #   are small high-stakes analyzer files where a typical addition is an
 #   array entry like `'AWS::Foo': ['AWS::Bar']` whose text does NOT
 #   contain the delete-symbol vocabulary, so the hunk filter would
-#   miss it. Keep strict.
+#   miss it. Keep strict. The retry pair joined this group for the same
+#   reason (issue #2042): a typical change there adds an HTTP status
+#   code or an error name to a classifier list, text that carries none
+#   of the delete vocabulary, while `withRetry` wraps every provider's
+#   delete() and `destroy-runner.ts` consults the classifier directly.
+#   `rollback-executor.ts` is here because its every path is a DELETE or
+#   a re-CREATE of a real resource, so the hunk filter buys nothing.
 # - "filtered-delete" files (destroy.ts, destroy-runner.ts,
 #   deploy-engine.ts): considered delete-touching ONLY when the diff
 #   hunks add/remove a delete-related symbol — same filter as provider
@@ -146,8 +153,9 @@ if [ -n "$diff_base" ]; then
   changed_files=$(git diff --name-only "$diff_base"...HEAD 2>/dev/null)
   delete_touch=0
   # Strict files — any change triggers (small high-stakes analyzer
-  # files; see header comment for rationale).
-  strict_delete='^src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts$'
+  # files plus the retry classifier / rollback executor; see header
+  # comment for rationale).
+  strict_delete='^src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts$|^src/deployment/(retry|retryable-errors|rollback-executor)\.ts$'
   # Hunk-filtered files — only delete-symbol changes trigger.
   filtered_delete='^(src/cli/commands/destroy(-runner)?\.ts|src/deployment/deploy-engine\.ts)$'
   provider_pattern='^src/provisioning/(providers/.*\.ts|cloud-control-provider\.ts|region-check\.ts)$'

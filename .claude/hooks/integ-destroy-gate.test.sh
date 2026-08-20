@@ -202,6 +202,94 @@ run_msg_case "stale marker still advises /run-integ" stale \
   'Required action' 'could not EVALUATE' \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42"}}' "$side_repo")"
 
+# --- DIFF-FILTER cases (issue #2042) ---
+#
+# Every case above deliberately runs against fixture repos WITHOUT an
+# `origin/main`, so the hook's `diff_base` stays empty and the delete-touch
+# filter is skipped entirely. That is the right isolation for the cwd
+# contract, but it means nothing here exercised WHICH paths the filter
+# considers delete-touching -- so `src/deployment/retry.ts` could be added to
+# `.markgate.yml`'s `integ-destroy.include` (making the MARKER go stale on a
+# retry change) while the merge-time hook kept passing the PR through, and no
+# case would have noticed. That combination is the worst of both: an
+# invalidated marker plus a gate that never consults it.
+#
+# These cases build a repo that DOES carry `refs/remotes/origin/main`, so the
+# filter runs for real. The pass case is load-bearing: it proves the fixture
+# actually drives the filter rather than falling through the empty-diff_base
+# escape, which would make every block case below pass for the wrong reason.
+
+filter_repo="$TMPDIR/filter-repo"
+git init -q -b feature/x "$filter_repo"
+mkdir -p "$filter_repo/src/deployment" "$filter_repo/docs"
+echo "base" > "$filter_repo/docs/readme.md"
+git -C "$filter_repo" add -A
+git -C "$filter_repo" -c user.email=t@t -c user.name=t commit -q -m base
+git -C "$filter_repo" update-ref refs/remotes/origin/main "$(git -C "$filter_repo" rev-parse HEAD)"
+
+# stage_filter_change <relative-path> <content-line>
+#  Commits a single-file change on top of the origin/main baseline. The
+#  content carries none of the delete-symbol vocabulary (delete / rollback /
+#  ENI / detach / ...), so a file that reaches the gate does so because it is
+#  in the STRICT set, not because the hunk filter matched words.
+stage_filter_change() {
+  local rel="$1"; local line="$2"
+  git -C "$filter_repo" reset -q --hard refs/remotes/origin/main
+  mkdir -p "$filter_repo/$(dirname "$rel")"
+  printf '%s\n' "$line" > "$filter_repo/$rel"
+  git -C "$filter_repo" add -A
+  git -C "$filter_repo" -c user.email=t@t -c user.name=t commit -q -m "change $rel"
+}
+
+# Control: an out-of-scope file must pass through. If this ever blocks, the
+# fixture is not driving the filter and every case below is vacuous.
+stage_filter_change "docs/guide.md" "some prose"
+run_case "diff filter: docs-only change passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# Second control, closer in: a deployment sibling that is NOT in any scope
+# list. This is what distinguishes "the strict list gained three entries"
+# from "the strict pattern matches all of src/deployment".
+stage_filter_change "src/deployment/retry-helpers.ts" "export const timeoutMs = 1;"
+run_case "diff filter: unscoped src/deployment sibling passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# Third control: the UNIT TEST for a scoped file. A unit-test-only PR carries no
+# real-AWS risk and must not be blocked on an integ run it cannot need. The
+# broad suite has this case; the destroy suite did not.
+#
+# WHAT PROTECTS IT, measured rather than assumed. Two mutations were run against
+# `strict_delete`:
+#   - dropping the leading `^` (`|src/deployment/(retry|...)\.ts$`): all 20 cases
+#     still pass. This case does NOT discriminate that, because the pattern still
+#     demands the literal `src/deployment/` segment and a `tests/...` path has
+#     none. So the `^` anchor is NOT fenced by anything here -- stated because a
+#     comment claiming otherwise would suppress the next person's probe.
+#   - loosening to a bare `retry.*\.ts$`: this case fails (exit 2, want 0), along
+#     with the sibling control and the rollback-executor case.
+# The DIRECTORY PREFIX is therefore what holds, and that is the realistic
+# loosening -- someone widening the alternation to catch a new retry file.
+stage_filter_change "tests/unit/deployment/retry-transient-server-error.test.ts" "// test only"
+run_case "diff filter: unit test for a scoped file passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+# The three files issue #2042 brought into scope, each ALONE so that dropping
+# any single alternative from `strict_delete` fails a case. The content lines
+# deliberately avoid every delete-symbol word, which is exactly why these
+# files must be STRICT rather than hunk-filtered: a real change here adds an
+# HTTP status code or an error name, text the symbol grep cannot see.
+stage_filter_change "src/deployment/retryable-errors.ts" "const RETRYABLE_STATUS = [500, 502, 504];"
+run_case "diff filter: retryable-errors.ts is delete-touching (#2042)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+stage_filter_change "src/deployment/retry.ts" "const MAX_ATTEMPTS = 5;"
+run_case "diff filter: retry.ts is delete-touching (#2042)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+stage_filter_change "src/deployment/rollback-executor.ts" "const REPLAY_LIMIT = 3;"
+run_case "diff filter: rollback-executor.ts is delete-touching (#2042)" 2 stale "$filter_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then

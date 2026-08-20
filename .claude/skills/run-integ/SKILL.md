@@ -239,7 +239,10 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
 
     (Keep this list in sync with `.claude/hooks/integ-broad-gate.sh`'s
     error message and the matching memory rule
-    `feedback_cross_cutting_needs_broad_integ.md`.)
+    `feedback_cross_cutting_needs_broad_integ.md`. The sync is now
+    enforced rather than requested: `tests/unit/scripts/cross-cutting-list-sync.test.ts`
+    compares all seven copies of this list, after the hook's own header
+    comment was found sitting at 8 entries while every other copy had 9.)
 
     When the integ test name is in the broad set AND the destroy step
     finished cleanly with 0 errors / 0 orphans (= the same conditions
