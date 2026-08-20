@@ -4,6 +4,12 @@
 
 cdkd adopts a state management system with S3 as the backend. Unlike CloudFormation's server-side state management, state is explicitly managed on the client side.
 
+The state bucket is **created by `cdkd bootstrap`** (once per account), not by
+the user: bootstrap creates it with versioning, AES-256 encryption, and a
+deny-external-access bucket policy. A `cdkd deploy` that finds no state bucket
+fails with a "run cdkd bootstrap" error rather than creating one implicitly —
+see [Default Bucket Name](#default-bucket-name) below.
+
 ## Design Principles
 
 ### 1. Use S3 as Single Source of Truth (SSOT)

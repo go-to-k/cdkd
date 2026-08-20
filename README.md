@@ -798,6 +798,12 @@ State is stored in S3 with optimistic locking via S3 Conditional Writes
 (no DynamoDB required). Keys are scoped by `(stackName, region)` so the
 same stack deployed to two regions has two independent state files.
 
+**You do not create this bucket yourself** — `cdkd bootstrap` creates it once
+per account (see [Prerequisites](#prerequisites)), with versioning, AES-256
+encryption, and a deny-external-access bucket policy. The settings below are
+only for pointing cdkd at a non-default name; pass that same name to
+`cdkd bootstrap --state-bucket` so bootstrap creates it for you there too.
+
 | Setting | CLI | cdk.json | Env var | Default |
 |---------|-----|----------|---------|---------|
 | Bucket | `--state-bucket` | `context.cdkd.stateBucket` | `CDKD_STATE_BUCKET` | `cdkd-state-{accountId}` (legacy `cdkd-state-{accountId}-{region}` is still read with a deprecation warning — run `cdkd state migrate` to consolidate) |
