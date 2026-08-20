@@ -17,7 +17,13 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
-import { namedCliRegion, rawCliRegion } from '../region-options.js';
+import {
+  namedCliRegion,
+  rawCliRegion,
+  reconcileMarkerRegionWithLegacyDefault,
+  regionNeedsReconciliation,
+  resolveEffectiveRegion,
+} from '../region-options.js';
 import {
   BOOTSTRAP_MARKER_PREFIX,
   getBootstrapMarkerKey,
@@ -360,41 +366,67 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
   //   `cdkd-bootstrap/US-EAST-1.json`; a fold-and-stop read would MISS that
   //   marker where the pre-fold read HIT it, which for THIS command means
   //   refusing to destroy storage that exists.
-  // Issue #2029, the same treatment `gc.ts` gets and for the same reason: this
-  // command DELETES on this value, and the previous split let its two halves
-  // disagree. `clientRegion` let an absent region stay absent (so the main bag
-  // resolved the profile) while `region` fell back to the `'us-east-1'` literal
-  // - and `region` is what keys the marker and what the marker / state-backend
-  // clients target. For a user with a configured profile region and no flag,
-  // that read one region's marker while the account-level bag pointed at
-  // another. ONE value now drives everything.
+  // Issue #2029, the same treatment `gc.ts` gets, in the same order and for
+  // the same reason: this command DELETES on this value, its two halves used to
+  // be able to disagree, and the region it resolves must be the one
+  // `cdkd bootstrap` WROTE the marker under. All three commands go through
+  // `resolveEffectiveRegion` + `reconcileMarkerRegionWithLegacyDefault`, so the
+  // read and write sides cannot drift apart.
   //
-  // As in `gc.ts`, the literal is deliberately NOT swapped for the profile
-  // region here: `cdkd bootstrap` writes the marker under this same default
-  // (issue #1820), so a teardown that resolved the profile instead would report
-  // "nothing to delete" while the asset bucket and ECR repo stayed alive - the
-  // failure direction this file's own header calls the worse one. Both sides
-  // move together in issues #1820 / #2100.
-  const region = namedCliRegion(options.region) ?? 'us-east-1';
-  // The RAW spelling, for the marker's second probe only.
-  const rawRegion = rawCliRegion(options.region) ?? region;
+  // Sequencing note, as in `gc.ts`: the reconciliation needs the state backend,
+  // which needs the bucket, which needs the account id — so the account lookup
+  // runs on a bag built from the UNRECONCILED region. Safe because
+  // `GetCallerIdentity` is region-agnostic and the state backend re-resolves
+  // the account-scoped state bucket's own region itself.
+  const effective = await resolveEffectiveRegion(options);
 
-  const awsClients = new AwsClients({
-    region,
+  const accountClients = new AwsClients({
+    region: effective.region,
     ...(options.profile && { profile: options.profile }),
   });
-  setAwsClients(awsClients);
 
   // Account id is needed for the default bucket name AND for the
   // ExpectedBucketOwner pin on every S3 call, so always resolve it.
-  const identity = await awsClients.sts.send(new GetCallerIdentityCommand({}));
+  const identity = await accountClients.sts.send(new GetCallerIdentityCommand({}));
   const accountId = identity.Account!;
   const bucketName = options.stateBucket ?? getDefaultStateBucketName(accountId);
 
-  // State-bucket reads/writes (marker, state scan) go through the state
-  // backend, which resolves the bucket's ACTUAL region itself — the state
-  // bucket is account-scoped and may live in a different region than
-  // --region (create-side parity).
+  // Built ONLY when the reconciliation can move the answer — for a NAMED region
+  // it returns on its first line. Released through `destroyClient()` because the
+  // backend OWNS its client and may replace it (the cross-region rebuild fires
+  // exactly in the case this change targets), so destroying our own reference
+  // would kill the dead original and leak the live replacement.
+  let region = effective.region;
+  if (regionNeedsReconciliation(effective)) {
+    const probeBackend = new S3StateBackend(
+      new S3Client({
+        region: effective.region,
+        ...(options.profile && { profile: options.profile }),
+      }),
+      { bucket: bucketName, prefix: STATE_PREFIX },
+      { region: effective.region, ...(options.profile && { profile: options.profile }) }
+    );
+    try {
+      region = await reconcileMarkerRegionWithLegacyDefault({
+        effective,
+        probe: probeBackend,
+        markerKeyFor: getBootstrapMarkerKey,
+        logger,
+      });
+    } finally {
+      probeBackend.destroyClient();
+    }
+  }
+  // The RAW spelling, for the marker's second probe only.
+  const rawRegion = rawCliRegion(options.region) ?? region;
+
+  const awsClients =
+    region === effective.region
+      ? accountClients
+      : new AwsClients({ region, ...(options.profile && { profile: options.profile }) });
+  if (awsClients !== accountClients) accountClients.destroy();
+  setAwsClients(awsClients);
+
   const markerS3Client = new S3Client({
     region,
     ...(options.profile && { profile: options.profile }),

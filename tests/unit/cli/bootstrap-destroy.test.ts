@@ -68,6 +68,28 @@ vi.mock('../../../src/utils/role-arn.js', () => ({
 /** What the AWS SDK's own chain answers - i.e. the profile region. */
 const ambientRegion = vi.hoisted(() => ({ value: undefined as string | undefined }));
 
+/**
+ * `resolveEffectiveRegion` builds its own `STSClient` to ask the SDK's chain
+ * what the PROFILE resolves. Without this mock these tests read the developer's
+ * real `~/.aws/config` - green on a us-east-1 machine, red on any other.
+ * Verified by running this file under `AWS_CONFIG_FILE=<region = ap-northeast-1>`.
+ */
+vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
+  return {
+    ...actual,
+    STSClient: vi.fn().mockImplementation(() => ({
+      config: {
+        region: async (): Promise<string> => {
+          if (!ambientRegion.value) throw new Error('Region is missing');
+          return ambientRegion.value;
+        },
+      },
+      destroy: vi.fn(),
+    })),
+  };
+});
+
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
   AwsClients: vi.fn().mockImplementation((config: { region?: string } = {}) => {
     // The SDK's contract, reproduced: a client CONSTRUCTED with a region
@@ -103,6 +125,8 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
   // afterwards, not skipped.
   S3StateBackend: vi.fn().mockImplementation(() => ({
     ...stateBackendMocks,
+    // The probe backend releases its client through the backend itself.
+    destroyClient: vi.fn(),
     getRawObject: async (key: string): Promise<string | null> => {
       const body = (await stateBackendMocks.getRawObject(key)) as string | null;
       return deletedKeys.has(key) ? null : body;
@@ -1212,43 +1236,47 @@ describe('cdkd bootstrap --destroy', () => {
       expect(stateBackendMocks.deleteRawObjects).toHaveBeenCalledWith([MARKER_KEY]);
     });
 
-    it('pins every client AND the marker key to ONE value when no region is named', async () => {
-      // Issue #2029 replaces the contract this test used to pin.
-      //
-      // The old shape let this command's two halves disagree: `clientRegion`
-      // let an absent region stay absent (so the main bag resolved the profile)
-      // while `region` - which keys the MARKER and drives the marker and
-      // state-backend clients - fell back to the `'us-east-1'` literal. On a
-      // command that DELETES, that read one region's marker while the
-      // account-level bag pointed at another.
-      //
-      // The literal is deliberately NOT swapped for the profile region:
-      // `cdkd bootstrap` writes the marker under the same default (issue
-      // #1820), so a teardown resolving the profile instead would report
-      // "nothing to delete" while the storage stayed alive - the failure
-      // direction this file's own header calls the worse one.
+    const withNoRegionEnv = async (run: () => Promise<void>): Promise<void> => {
       const prev = process.env['AWS_REGION'];
       const prevDefault = process.env['AWS_DEFAULT_REGION'];
       delete process.env['AWS_REGION'];
       delete process.env['AWS_DEFAULT_REGION'];
-      ambientRegion.value = 'ap-northeast-1';
       try {
-        await runDestroyNoRegionFlag(['--yes']);
+        await run();
       } finally {
         ambientRegion.value = undefined;
         if (prev !== undefined) process.env['AWS_REGION'] = prev;
         if (prevDefault !== undefined) process.env['AWS_DEFAULT_REGION'] = prevDefault;
       }
+    };
 
+    it('resolves the PROFILE region when no region is named and nothing exists yet', async () => {
+      // Issue #2029's fix, and the WRITE side moves with it: `cdkd bootstrap`
+      // now derives the marker key through the same resolver, so the pair
+      // cannot drift. Pre-change this was the us-east-1 literal regardless.
+      ambientRegion.value = 'ap-northeast-1';
+      stateBackendMocks.getRawObject.mockResolvedValue(null);
+      await withNoRegionEnv(async () => {
+        await runDestroyNoRegionFlag(['--yes']).catch(() => undefined);
+      });
+      expect(markerProbes().at(-1)).toBe('cdkd-bootstrap/ap-northeast-1.json');
+    });
+
+    it('HOLDS an existing us-east-1 opt-in rather than reporting nothing to delete', async () => {
+      // The failure direction this file's own header calls the worse one, and
+      // the one a previous attempt at #2029 shipped: a teardown reporting
+      // success while the asset bucket and ECR repo stay alive and billing.
+      ambientRegion.value = 'ap-northeast-1';
+      stateBackendMocks.getRawObject.mockImplementation(async (key: string) =>
+        key === 'cdkd-bootstrap/us-east-1.json' ? MARKER_BODY : null
+      );
+      await withNoRegionEnv(async () => {
+        await runDestroyNoRegionFlag(['--yes']).catch(() => undefined);
+      });
       const awsClientConfigs = vi.mocked(AwsClients).mock.calls.map((c) => c[0] ?? {});
-      // No region-less bag at all: `aws-clients.ts` is explicit that such a
-      // bag's lazy members need not agree with each other.
-      expect(awsClientConfigs.filter((c) => !c.region)).toHaveLength(0);
-      const kept = awsClientConfigs.map((c) => c.region);
-      expect(new Set(kept)).toEqual(new Set(['us-east-1']));
-      // ...and the MARKER key agrees with the clients, which is the half the
-      // old split left diverging.
-      expect(markerProbes()).toEqual(['cdkd-bootstrap/us-east-1.json']);
+      // The LAST bag is the operational one; the first is the throwaway the
+      // account lookup runs on before the reconciliation has an answer.
+      expect(awsClientConfigs.at(-1)?.region).toBe('us-east-1');
     });
 
     it('folds the ENV half for the role-arn STS client', async () => {

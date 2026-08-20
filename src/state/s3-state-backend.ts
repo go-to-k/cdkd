@@ -125,6 +125,20 @@ export class S3StateBackend {
    * but `--state-prefix` overrides at the consumer side propagate
    * cleanly).
    */
+  /**
+   * Release the S3 client this backend currently holds.
+   *
+   * The backend OWNS its client and may destroy and REPLACE it
+   * (`ensureClientForBucket` rebuilds when the bucket turns out to live in
+   * another region). So a caller that keeps its own reference and destroys
+   * that instead destroys the dead original and leaks the live replacement —
+   * which is exactly what a short-lived probe backend does in the cross-region
+   * case. Callers that construct a throwaway backend use this instead.
+   */
+  destroyClient(): void {
+    this.s3Client.destroy();
+  }
+
   get prefix(): string {
     return this.config.prefix;
   }
