@@ -964,26 +964,32 @@ export async function scrubStack(
       if (JSON.stringify(scrubbed) !== JSON.stringify(record)) recordsChanged++;
       newResources[logicalId] = scrubbed;
     }
-    // The DEFAULT rules, deliberately, and the reasoning is worth recording
-    // because the constant's name argues against it. `state.outputs` is a
-    // PERSISTED bag while `outputsTemplateSource` is TODAY's template, so
+    // The DEFAULT rules, and the reasoning is worth recording because the
+    // constant's name argues against it. `state.outputs` is a PERSISTED bag
+    // while `outputsTemplateSource` is TODAY's template, so
     // `TEMPLATE_DERIVED_RULES` — "the bag was produced by resolving the
-    // source" — is not literally true of this pair. It is nonetheless the right
-    // call, because the two constants differ on `descendArrays` ALONE
-    // (`sourceIsSameGeneration` is already false in both), and that flag cannot
-    // fire here: `outputsTemplateSource[name]` is a template Output's `Value`,
-    // which CloudFormation requires to be a string or an intrinsic OBJECT — a
-    // list-valued output is an `Fn::GetAtt`, never a literal array — so the
-    // array arm is never reached however the bag is shaped. Measured across
-    // every reachable shape (list bag against an `Fn::GetAtt` source, scalar,
-    // `Fn::Join` source): byte-identical output under both constants. Switching
-    // it would put a third, INERT behavior-shaped change in a PR that ships
-    // two issues.
+    // source" — is not true of this pair. The two constants differ on
+    // `descendArrays` ALONE (`sourceIsSameGeneration` is already false in
+    // both), so that flag is the whole question here.
     //
-    // What would make this wrong: `outputsTemplateSource` gaining a source
-    // whose value can be an ARRAY. At that point the bag really is a persisted
-    // generation walked against today's template, positional descent stops
-    // being sound, and this call site needs `TEMPLATE_SOURCED_RULES`.
+    // **The reason given for that flag being unreachable is FALSE, and the
+    // correction is left here rather than acted on** (issue
+    // [#2099](https://github.com/go-to-k/cdkd/issues/2099)). It read: the array
+    // arm cannot fire because `outputsTemplateSource[name]` is a template
+    // Output's `Value`, "which CloudFormation requires to be a string or an
+    // intrinsic OBJECT". CloudFormation does require that; cdkd does not
+    // ENFORCE it. `TemplateOutput.Value` is typed `unknown`, the resolver walks
+    // an array elementwise with no string coercion, and `StackState.outputs` is
+    // deliberately not string-coerced — so a list-valued output (an escape
+    // hatch, a hand-written or imported template) puts an array on BOTH sides
+    // and the arm IS reachable. The measurement that produced the claim
+    // enumerated the shapes CDK emits, not the shapes this code accepts.
+    //
+    // The deploy-side twin `DeployEngine.redactOutputs` moved to
+    // `TEMPLATE_SOURCED_RULES` for issue
+    // [#1943](https://github.com/go-to-k/cdkd/issues/1943); this call keeps the
+    // default until #2099, so the two `state.outputs` writers currently
+    // disagree. Do not "fix" the disagreement by re-deriving the claim above.
     const positionedOutputs =
       outputSecrets.size > 0
         ? redactSecretsForState(

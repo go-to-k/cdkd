@@ -86,10 +86,15 @@ describe('secret-redaction - source generation and the token-shaped plaintext (i
   });
 
   // SITE 1: the deploy engine's state-persist choke point (and the journal's
-  // `properties` / `attemptedProperties`, the no-change re-check and
-  // `redactOutputs`, which take the same rules). The bag it walks was USUALLY
-  // produced by resolving the template — see the case after this one for when
-  // it was not.
+  // `properties` / `attemptedProperties` and the no-change re-check, which take
+  // the same rules). The bag it walks was USUALLY produced by resolving the
+  // template — see the case after this one for when it was not.
+  //
+  // `redactOutputs` was in that list and moved to `TEMPLATE_SOURCED_RULES` for
+  // issue #1943, so it is no longer a fourth caller of this row; the two
+  // constants still agree on `sourceIsSameGeneration`, which is what this case
+  // is about, and the outputs row's own difference is pinned by
+  // `deploy-engine-outputs-generation-rules.test.ts`.
   it('deploy persist: redacts the token-shaped plaintext onto the template expression', () => {
     const secrets: RecordedSecretValues = new Map([[TOKEN_SHAPED_PLAINTEXT, EXPR]]);
 

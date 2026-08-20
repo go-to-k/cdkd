@@ -2828,6 +2828,47 @@ still replaced by its own reference, while a reference already in state is left
 exactly as it is. A legacy leaf of this shape is cleaned the next time either
 `cdkd deploy` or `cdkd scrub` resolves that secret.
 
+**A value match never rewrites a fragment INSIDE a complete `{{resolve:...}}`
+reference** (issue [#1935](https://github.com/go-to-k/cdkd/issues/1935)). A
+stored value can hold a reference inside surrounding text —
+`jdbc://appdb:{{resolve:secretsmanager:appdb/creds:SecretString:password}}@host`
+is what a joined connection string looks like after redaction — and a LATER
+deploy can record a secret whose plaintext (`appdb`) also occurs inside that
+reference's own text. Rewriting it there produced
+`{{resolve:secretsmanager:{{resolve:ssm:/app/dbname}}/creds:...}}`, which no
+service can resolve: `cdkd rollback` reads it as a request for the secret id
+`{{resolve:ssm:/app/dbname` and either refuses or applies the wrong value.
+
+cdkd now replaces every match of a recorded secret EXCEPT one that lies wholly
+inside a complete reference and is shorter than it. A stored secret whose own
+value IS a reference is still replaced, and so is one that CONTAINS a whole
+reference plus surrounding text — dropping those would leave the plaintext in
+state, which is worse than the mangling this rule prevents. Nothing else about
+substring matching changes: an embedded secret in ordinary text is repaired
+exactly as before.
+
+Three limits worth knowing, all of them narrow. A STRAY `{{resolve:` — an
+opener that is not part of a real reference — is read by the same grammar the
+resolver uses, and which way it falls depends on what follows it in that same
+value:
+
+- With **no later `}}`** it is not a reference at all, so it protects nothing
+  and a secret after it is still replaced. Leaving the plaintext there instead
+  would hide it behind two characters any string can contain.
+- With a **`}}` anywhere later**, the opener and that `}}` bracket one region,
+  and a secret inside it is left alone. This is the one shape where cdkd redacts
+  less than it did before this change. It is not fixed by narrowing what counts
+  as a reference: that would disagree with the resolver about the same string,
+  and would re-mangle values an older cdkd already mangled. Such a value cannot
+  come from a template — it would fail to resolve at deploy time — so the way it
+  arrives is a drift readback (`observedProperties`), which is arbitrary text
+  from AWS.
+
+And a value already mangled by an older cdkd is not repaired: it parses as a
+valid reference now, so neither a redeploy nor `cdkd scrub` rewrites it. Fixing
+such a record means editing it out of state, or redeploying the resource so the
+leaf is written afresh.
+
 **A reference you have edited but not deployed is never rewritten** — by
 `cdkd scrub` or by `cdkd deploy`. If state holds `...:AWSPREVIOUS` and the
 template now says `...:AWSCURRENT`, scrub leaves the record alone and reports
