@@ -2395,6 +2395,21 @@ Two placement rules go with it:
     its strong-ref refusal path; both now read the same way, and
     `destroy-runner-lock-release-ordering.test.ts` pins it by observing which
     listeners are registered at the moment `releaseLock` is entered.
+    `deploy-engine.ts` still unregisters first and is safe only because
+    `deploy.ts` holds a handler that outlives it — stated at that call site,
+    because a surviving instance of a corrected anti-pattern has to explain
+    itself. `rollback.ts` is the remaining unfixed instance
+    ([#2118](https://github.com/go-to-k/cdkd/issues/2118)).
+
+    **And the corollary's own corollary: keeping the handler armed for longer
+    moves the window a signal can arrive in, so re-check anything that READS the
+    interrupt.** `destroy-runner.ts` assigns `result.interrupted` once, inside
+    its `try` — so arming across the teardown made a first Ctrl-C there set
+    `draining` after the only read, leaving the flag false and letting
+    `destroy --all` delete the next stack. It re-syncs with
+    `result.interrupted ||= draining` at the end of the `finally`. That is
+    tactical: the real defect is that flag being the only channel, which is
+    [#2117](https://github.com/go-to-k/cdkd/issues/2117).
 
   **An interrupt is not a failure — but it is not a reason to leave AWS state
   behind either.** Two shapes to check in any wait you add, and they pull in

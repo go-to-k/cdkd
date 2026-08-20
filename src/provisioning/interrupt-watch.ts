@@ -216,13 +216,18 @@ function armSharedSigintHandler(): void {
     if (others.length === 0) {
       // The recovery line is unconditional, and deliberately hedged rather than
       // omitted. This handler cannot know whether a stack lock is held — it has
-      // no command context — and the ONE window where it could fire with a lock
-      // held (`destroy-runner.ts`'s own `finally`, between its listener removal
-      // and its release) was closed by reordering that block. Printing the hint
-      // anyway costs one line on the common lock-free path and is the only
-      // thing standing between a user and a 30-minute TTL if a fourth such
-      // window is ever introduced. `destroy-runner.ts`'s own force-quit arm
-      // prints the same command for the same reason.
+      // no command context — so the hint is a guess it cannot verify and cannot
+      // afford to skip: it is the only thing between a user and a 30-minute TTL.
+      // `destroy-runner.ts`'s own force-quit arm prints the same command.
+      //
+      // The window THIS handler could fire in with a lock held was
+      // `destroy-runner.ts`'s `finally`, and reordering that block closed it.
+      // That is a claim about this handler, NOT about the repo: `rollback.ts`
+      // unregisters before releasing too, so a Ctrl-C there empties the listener
+      // set and takes Node's default terminate with the lock held — same
+      // outcome, reached without this handler being involved at all. Tracked as
+      // https://github.com/go-to-k/cdkd/issues/2118; until it lands, "no window
+      // remains" would be false for the codebase even while it is true here.
       process.stderr.write(
         '\nInterrupted.\n' +
           'If the next run reports a stack lock, release it with: cdkd force-unlock <stack-name>\n'

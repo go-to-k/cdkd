@@ -48,18 +48,23 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   setAwsClients: vi.fn(),
   getAwsClients: vi.fn(),
 }));
-vi.mock('../../../src/utils/live-renderer.js', () => ({
-  getLiveRenderer: () => ({
+// ONE renderer object for the whole module, so a case can make `stop()` throw.
+// The inline-factory form returns a fresh object per call, which no test can
+// reach.
+vi.mock('../../../src/utils/live-renderer.js', () => {
+  const renderer = {
     start: vi.fn(),
     stop: vi.fn(),
     addTask: vi.fn(),
     removeTask: vi.fn(),
     updateTaskLabel: vi.fn(),
     printAbove: (write: () => void) => write(),
-  }),
-}));
+  };
+  return { getLiveRenderer: () => renderer };
+});
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
+import { getLiveRenderer } from '../../../src/utils/live-renderer.js';
 import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
@@ -174,6 +179,77 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
     await runDestroyForStack('TestStack', makeState('Table'), ctx);
 
     expect(process.listeners('SIGINT')).toEqual(before);
+  });
+
+  it('removes it even when a RENDERER teardown throws, and still releases', async () => {
+    // The nested `try` opens at `renderer.stop()`, not at the release.
+    // `stop()` writes to stdout and can throw EPIPE on a closed pipe, and
+    // covering only the release produced the exact double-badness the block's
+    // own comment argues against: measured `threw=EPIPE releaseLock=0
+    // leakedListeners=1` — lock stranded AND handler leaked.
+    const before = process.listeners('SIGINT');
+    const { ctx, releaseLock } = ctxObservingRelease();
+    const renderer = getLiveRenderer() as unknown as { stop: ReturnType<typeof vi.fn> };
+    renderer.stop.mockImplementationOnce(() => {
+      throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    });
+
+    // The destroy itself SUCCEEDS: a teardown write failing after every delete
+    // has landed is not a destroy failure, and turning it into one would fail a
+    // run whose resources are all gone.
+    await runDestroyForStack('TestStack', makeState('Table'), ctx);
+
+    // Neither half may be sacrificed to the other. The enclosing `finally`
+    // protects the listener; only the catch around `stop()` protects the lock.
+    expect(releaseLock).toHaveBeenCalledOnce();
+    expect(process.listeners('SIGINT')).toEqual(before);
+  });
+
+  it('reports interrupted=true when the Ctrl-C lands DURING the release', async () => {
+    // THE round-4 regression, in the reviewer's own probe shape.
+    //
+    // `result.interrupted` is assigned once inside the `try`, after the level
+    // loop. Keeping `sigintHandler` armed across the renderer teardown, the
+    // state flush and the lock release — which is what fixed the stranded lock
+    // — moved a whole class of signals to AFTER that read, so `draining` flipped
+    // too late and the flag stayed false. `destroy.ts` reads exactly that flag
+    // to decide whether to stop, and registers no SIGINT handler of its own, so
+    // `--all` went on to delete the NEXT STACK after the user asked it to stop.
+    //
+    // Pre-round-4 the same signal hit the interrupt watch's force-quit and
+    // exited 130: the lock was stranded, but stack B survived. Trading a
+    // 30-minute TTL for a destroyed stack is the worse side of that trade,
+    // which is why the re-sync at the end of the `finally` is not cosmetic.
+    const base = makeCtx(vi.fn().mockResolvedValue(undefined));
+    const ctx = {
+      ...base.ctx,
+      lockManager: {
+        acquireLock: vi.fn(),
+        releaseLock: vi.fn().mockImplementation(() => {
+          // Fire only the runner's own handler — the one it still has armed at
+          // this point — so the harness's SIGINT handling is untouched.
+          for (const listener of process.listeners('SIGINT')) {
+            (listener as unknown as () => void)();
+          }
+          return Promise.resolve(undefined);
+        }),
+      } as unknown as LockManager,
+    };
+
+    const result = await runDestroyForStack('TestStack', makeState('Table'), ctx);
+
+    expect(result.interrupted).toBe(true);
+  });
+
+  it('INVERTED CONTROL — an uninterrupted destroy still reports interrupted=false', async () => {
+    // `||=` only ever turns false into true, and this is what stops the re-sync
+    // being a constant. Without it the case above passes with
+    // `result.interrupted = true` hard-coded.
+    const { ctx } = ctxObservingRelease();
+
+    const result = await runDestroyForStack('TestStack', makeState('Table'), ctx);
+
+    expect(result.interrupted).toBe(false);
   });
 
   it('removes it even when the release THROWS', async () => {
