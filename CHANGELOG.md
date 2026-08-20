@@ -1,3 +1,10 @@
+## [0.284.21](https://github.com/go-to-k/cdkd/compare/v0.284.20...v0.284.21) (2026-08-20)
+
+
+### Bug Fixes
+
+* **cli:** fold --region / AWS_REGION at every command boundary, and stop gc and bootstrap --destroy resolving their region twice ([#2111](https://github.com/go-to-k/cdkd/issues/2111)) ([9cbd3b7](https://github.com/go-to-k/cdkd/commit/9cbd3b7a9cf87f610d9871aa5b2de60748c56b88))
+
 ## [0.284.20](https://github.com/go-to-k/cdkd/compare/v0.284.19...v0.284.20) (2026-08-20)
 
 
