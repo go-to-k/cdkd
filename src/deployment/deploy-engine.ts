@@ -26,6 +26,7 @@ import {
   getCurrentStackName,
   looksLikeCdkdGeneratedName,
 } from '../provisioning/resource-name.js';
+import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import {
   redactSecretsForState,
@@ -93,6 +94,7 @@ import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
 import { findUnrewrittenAssetReferences, type AssetRedirectMap } from '../assets/asset-redirect.js';
 import {
   replayRollback,
+  producerRegionsFromState,
   type CompletedOperation,
   type FailedOperation,
   type RollbackExecutorContext,
@@ -626,6 +628,120 @@ function deepEqualValue(a: unknown, b: unknown): boolean {
     if (!deepEqualValue(ao[k], bo[k])) return false;
   }
   return true;
+}
+
+/**
+ * The `imports` / `outputReads` records to persist on a save that is NOT the
+ * final success save — the UNION of the pre-deploy snapshot and what THIS
+ * session resolved (issue
+ * [#2057](https://github.com/go-to-k/cdkd/issues/2057) review).
+ *
+ * Every non-success save used to write `currentState.imports` /
+ * `currentState.outputReads` verbatim, i.e. the PRE-DEPLOY snapshot, while
+ * writing the POST-deploy `newResources` beside it. So a deploy that
+ * introduced a cross-stack read and then failed persisted resources built FROM
+ * that read next to a record that does not mention it. Two consequences, and
+ * only the first is about #2057:
+ *
+ *  1. A rollback journal exists only after a FAILED deploy, so
+ *     {@link producerRegionsFromState} saw an empty list on exactly the deploy
+ *     that introduces a cross-region secret read — and
+ *     `classifyReplaySecretRegion` answered `local`, resolving the producer's
+ *     region-less expression in the consumer's region. The refusal was inert
+ *     where it mattered most.
+ *  2. INDEPENDENT PRE-EXISTING BUG. `state.imports[]` is what
+ *     `findActiveImportConsumers` (`src/cli/commands/destroy-runner.ts`) scans
+ *     to refuse destroying a producer while a consumer still imports from it,
+ *     and `state.outputReads[]` is what `findDownstreamConsumers`
+ *     (`src/cli/commands/recreate-downstream-consumers.ts`) enumerates. A
+ *     failed deploy therefore silently DOWNGRADED a fresh strong reference to
+ *     no reference: the consumer's resource is live and recorded, its import is
+ *     not, and `cdkd destroy` on the producer sails through the strong-ref
+ *     pre-flight. This exists on main today, with or without #2057.
+ *
+ * DIRECTION OF THE RESIDUAL, stated rather than left to be discovered: a union
+ * never drops a record, so a stack that STOPS reading across a region keeps the
+ * stale entry until its next SUCCESSFUL deploy, whose save replaces the list
+ * wholesale (`imports: [...this.recordedImports]`). Until then a purely-local
+ * rollback can be refused on the strength of a read the template no longer has.
+ * That is the fail-closed side — a clear error naming the region to reconcile,
+ * versus a silent wrong-secret write — and the same asymmetry already justifies
+ * preserving the snapshot at all (dropping it would strip a live strong-ref
+ * record on every diff-clean deploy).
+ *
+ * THE RULE IS "EVERY SAVE EXCEPT THE TERMINAL SUCCESS ONE", and it is stated
+ * that way rather than as "every non-success save" because the latter is loose
+ * in both directions: the diff-clean no-change save in `doDeploy` is a SUCCESS
+ * outcome and unions anyway (nothing was re-resolved, so the union is an
+ * identity there and one rule beats an exception), while
+ * `persistStateAfterOutputFailure` looks like a success save — provisioning
+ * was clean — and is not one.
+ *
+ * THE ENUMERATION IS NOT KEPT HERE, DELIBERATELY. Two prose counts in this
+ * lane were measured wrong (an "ALL FIVE" that missed
+ * `persistStateAfterOutputFailure`, and a "three post-rollback saves" that is
+ * two), and each wrong count is worse than none: it is the sentence a reader
+ * uses to conclude the rule is already applied everywhere.
+ * `tests/unit/deployment/deploy-engine-cross-stack-read-writers.test.ts`
+ * derives the set instead — it SCANS this file for every `imports:` /
+ * `outputReads:` object key that writes a VALUE and fails on any that is not
+ * the one allow-listed success-path write, with a positive control proving the
+ * scan can see a violation. A save site added here fails that test rather than
+ * escaping silently, so the authority on "where is this applied" is a grep the
+ * test performs, not a number anybody has to maintain.
+ */
+function crossStackReadsForPartialSave(
+  previous: StackState,
+  recordedImports: readonly StateImportEntry[],
+  recordedOutputReads: readonly StateOutputReadEntry[]
+): Pick<StackState, 'imports' | 'outputReads'> {
+  const imports = unionCrossStackReads(
+    previous.imports,
+    recordedImports,
+    (e) => `${e.sourceStack}\u0000${canonicalizeRegion(e.sourceRegion)}\u0000${e.exportName}`
+  );
+  const outputReads = unionCrossStackReads(
+    previous.outputReads,
+    recordedOutputReads,
+    (e) => `${e.sourceStack}\u0000${canonicalizeRegion(e.sourceRegion)}\u0000${e.outputName}`
+  );
+  return {
+    // Omitted rather than written empty, matching what every one of these save
+    // sites did before: an absent field and an empty array are different
+    // records to a reader that predates the field.
+    ...(imports.length > 0 && { imports }),
+    ...(outputReads.length > 0 && { outputReads }),
+  };
+}
+
+/**
+ * Concatenate two cross-stack-read lists, dropping a later duplicate of an
+ * identity an earlier entry already carries. First-seen wins, so the PRE-DEPLOY
+ * spelling of a region survives — entries are COMPARED on a canonicalized
+ * region but STORED verbatim, mirroring `producerRegionsFromState`.
+ */
+function unionCrossStackReads<T>(
+  previous: readonly T[] | undefined,
+  recorded: readonly T[],
+  identity: (entry: T) => string
+): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const entry of [...(previous ?? []), ...recorded]) {
+    // `previous` comes from persisted JSON, and `parseState` only CASTS — it
+    // does not validate the element shape. A `null` / non-object element in a
+    // hand-edited `state.imports` would make `identity` throw where the old
+    // code copied the array verbatim. Every call site sits inside a try/catch
+    // whose catch only warns, so the blast radius was a skipped save rather
+    // than a crash, but a save skipped for this reason is a strong-reference
+    // record silently not written.
+    if (entry === null || typeof entry !== 'object') continue;
+    const key = identity(entry);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+  }
+  return out;
 }
 
 export class DeployEngine {
@@ -1652,18 +1768,19 @@ export class DeployEngine {
                   string,
                   string
                 >,
-                // Preserve existing imports[] (no-change path: nothing
-                // re-resolved). Otherwise the refresh would silently
-                // strip the strong-reference record on every diff-clean
-                // deploy. Same logic applies to outputReads[] (v8+).
-                ...(currentState.imports &&
-                  currentState.imports.length > 0 && {
-                    imports: currentState.imports,
-                  }),
-                ...(currentState.outputReads &&
-                  currentState.outputReads.length > 0 && {
-                    outputReads: currentState.outputReads,
-                  }),
+                // Preserve existing imports[] / outputReads[] (v8+) — otherwise
+                // the refresh would silently strip the strong-reference record
+                // on every diff-clean deploy. Unioned with this session's
+                // records rather than taking the snapshot alone (issue #2057):
+                // the no-change path resolves nothing new in the common case,
+                // so the union is usually an identity, and applying one rule at
+                // every non-success save leaves no exception to remember. See
+                // `crossStackReadsForPartialSave`.
+                ...crossStackReadsForPartialSave(
+                  currentState,
+                  this.recordedImports,
+                  this.recordedOutputReads
+                ),
                 lastModified: Date.now(),
               };
               const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {};
@@ -1939,18 +2056,15 @@ export class DeployEngine {
             stackName: currentState.stackName,
             resources: newResources,
             outputs: currentState.outputs,
-            // Per-resource partial save: imports[] / outputReads[]
-            // revert to the pre-deploy snapshot. recordedImports +
-            // recordedOutputReads from this session are persisted
-            // only on the final success path.
-            ...(currentState.imports &&
-              currentState.imports.length > 0 && {
-                imports: currentState.imports,
-              }),
-            ...(currentState.outputReads &&
-              currentState.outputReads.length > 0 && {
-                outputReads: currentState.outputReads,
-              }),
+            // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
+            // session resolved. See `crossStackReadsForPartialSave` — writing the
+            // snapshot alone left a failed deploy's persisted record denying a
+            // cross-stack read its own resources were built from.
+            ...crossStackReadsForPartialSave(
+              currentState,
+              this.recordedImports,
+              this.recordedOutputReads
+            ),
             lastModified: Date.now(),
           };
           // Migration is a one-shot tail on the first save; subsequent saves
@@ -2194,14 +2308,15 @@ export class DeployEngine {
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
-          ...(currentState.imports &&
-            currentState.imports.length > 0 && {
-              imports: currentState.imports,
-            }),
-          ...(currentState.outputReads &&
-            currentState.outputReads.length > 0 && {
-              outputReads: currentState.outputReads,
-            }),
+          // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
+          // session resolved. See `crossStackReadsForPartialSave` — writing the
+          // snapshot alone left a failed deploy's persisted record denying a
+          // cross-stack read its own resources were built from.
+          ...crossStackReadsForPartialSave(
+            currentState,
+            this.recordedImports,
+            this.recordedOutputReads
+          ),
           lastModified: Date.now(),
         };
         const migrate = pendingMigration;
@@ -2273,7 +2388,8 @@ export class DeployEngine {
         const rollbackResult = await this.performRollback(
           completedOperations,
           newResources,
-          stackName
+          stackName,
+          currentState
         );
         autoRollbackClean = rollbackResult.failures === 0;
       }
@@ -2288,14 +2404,15 @@ export class DeployEngine {
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
-          ...(currentState.imports &&
-            currentState.imports.length > 0 && {
-              imports: currentState.imports,
-            }),
-          ...(currentState.outputReads &&
-            currentState.outputReads.length > 0 && {
-              outputReads: currentState.outputReads,
-            }),
+          // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
+          // session resolved. See `crossStackReadsForPartialSave` — writing the
+          // snapshot alone left a failed deploy's persisted record denying a
+          // cross-stack read its own resources were built from.
+          ...crossStackReadsForPartialSave(
+            currentState,
+            this.recordedImports,
+            this.recordedOutputReads
+          ),
           lastModified: Date.now(),
         };
         await this.stateBackend.saveState(
@@ -2331,14 +2448,15 @@ export class DeployEngine {
             stackName: currentState.stackName,
             resources: newResources,
             outputs: currentState.outputs,
-            ...(currentState.imports &&
-              currentState.imports.length > 0 && {
-                imports: currentState.imports,
-              }),
-            ...(currentState.outputReads &&
-              currentState.outputReads.length > 0 && {
-                outputReads: currentState.outputReads,
-              }),
+            // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
+            // session resolved. See `crossStackReadsForPartialSave` — writing the
+            // snapshot alone left a failed deploy's persisted record denying a
+            // cross-stack read its own resources were built from.
+            ...crossStackReadsForPartialSave(
+              currentState,
+              this.recordedImports,
+              this.recordedOutputReads
+            ),
             lastModified: Date.now(),
           };
           await this.stateBackend.saveState(
@@ -2464,10 +2582,24 @@ export class DeployEngine {
       stackName: currentState.stackName,
       resources: newResources,
       outputs: currentState.outputs,
-      ...(this.recordedImports.length > 0 && { imports: [...this.recordedImports] }),
-      ...(this.recordedOutputReads.length > 0 && {
-        outputReads: [...this.recordedOutputReads],
-      }),
+      // Issue #2057: the UNION, like every other non-success save. This one
+      // used to write `[...this.recordedImports]` WHOLESALE, copying the
+      // SUCCESS path's shape onto a path that is not one — provisioning
+      // succeeded, but output resolution threw, and the caller writes a
+      // rollback journal segment and rethrows, so `cdkd rollback` reads
+      // exactly this record. A deploy that no longer re-resolves a
+      // cross-stack read (the reference moved, or the resource holding it had
+      // no diff this run) therefore came through here with an EMPTY
+      // `recordedOutputReads`, the field was omitted, and the producer region
+      // the previous record carried was erased from under a
+      // `properties.Value` that still holds the producer's region-less
+      // spelling. `producerRegionsFromState` then returned `[]` and the replay
+      // resolved it locally.
+      ...crossStackReadsForPartialSave(
+        currentState,
+        this.recordedImports,
+        this.recordedOutputReads
+      ),
       lastModified: Date.now(),
     });
     try {
@@ -2515,13 +2647,20 @@ export class DeployEngine {
   private async performRollback(
     completedOperations: CompletedOperation[],
     stateResources: Record<string, ResourceState>,
-    stackName: string
+    stackName: string,
+    /**
+     * The PRE-deploy state record, threaded in for issue #2057's
+     * `importedProducerRegions`. Taken as a parameter rather than read off a
+     * field because `currentState` is a local of `executeDeployment`, whose
+     * automatic-rollback arm is this method's only caller.
+     */
+    previousState: StackState
   ): Promise<{ failures: number; warnings: number }> {
     const result = await replayRollback(
       completedOperations,
       stateResources,
       stackName,
-      this.rollbackExecutorContext()
+      this.rollbackExecutorContext(previousState)
     );
     return { failures: result.failures, warnings: result.warnings };
   }
@@ -2602,7 +2741,7 @@ export class DeployEngine {
   }
 
   /** Build the {@link RollbackExecutorContext} from the engine's fields. */
-  private rollbackExecutorContext(): RollbackExecutorContext {
+  private rollbackExecutorContext(previousState: StackState): RollbackExecutorContext {
     return {
       providerRegistry: this.providerRegistry,
       region: this.stackRegion,
@@ -2613,6 +2752,17 @@ export class DeployEngine {
       // opt-out the engine's own delete sites use.
       finalSnapshotClients: this.options.finalSnapshotClients,
       skipFinalSnapshot: this.options.skipFinalSnapshot,
+      // Issue #2057: the producer regions this stack reads across, so the
+      // replay refuses a region-LESS `{{resolve:...}}` expression rather than
+      // re-resolving it here and writing a same-named foreign secret to a live
+      // resource. The UNION is what makes this reachable at all — a rollback
+      // runs only after a FAILED deploy, and the read this deploy INTRODUCED is
+      // in `recordedImports` / `recordedOutputReads`, never yet in the
+      // persisted snapshot. Strictly more evidence than `cdkd rollback` can
+      // derive on its own, which sees only what a save persisted.
+      importedProducerRegions: producerRegionsFromState(
+        crossStackReadsForPartialSave(previousState, this.recordedImports, this.recordedOutputReads)
+      ),
     };
   }
 

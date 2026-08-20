@@ -251,6 +251,7 @@
         "replacement-fanout",
         "replacement-immutable-name",
         "rollback-command",
+        "rollback-cross-region-secret",
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
@@ -339,6 +340,7 @@
       "integs": [
         "lambda-url-authtype-replay",
         "rollback-command",
+        "rollback-cross-region-secret",
         "rollback-sqs-cooldown",
         "secrets-dynamic-ref"
       ]
@@ -524,6 +526,7 @@
         "replacement-fanout",
         "replacement-immutable-name",
         "rollback-command",
+        "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
         "rollback-replay-effective-props",
@@ -759,6 +762,7 @@
         "replacement-fanout",
         "replacement-immutable-name",
         "rollback-command",
+        "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
         "rollback-sqs-cooldown",
@@ -1039,6 +1043,7 @@
         "replacement-fanout",
         "replacement-immutable-name",
         "rollback-command",
+        "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
         "rollback-replay-effective-props",
@@ -1290,6 +1295,7 @@
         "rename-refactor",
         "replacement-fanout",
         "replacement-immutable-name",
+        "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
         "rollback-replay-effective-props",
         "route53",

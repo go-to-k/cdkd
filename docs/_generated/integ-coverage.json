@@ -5341,6 +5341,7 @@
         "multi-resource",
         "rename-refactor",
         "rollback-command",
+        "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
         "rollback-replay-effective-props",
@@ -5439,6 +5440,9 @@
           "literal"
         ],
         "rollback-command": [
+          "l1"
+        ],
+        "rollback-cross-region-secret": [
           "l1"
         ],
         "rollback-deletion-policy-snapshot": [
@@ -5545,6 +5549,7 @@
         "replacement-fanout",
         "replacement-immutable-name",
         "rollback-command",
+        "rollback-cross-region-secret",
         "rollback-failure-injection",
         "s3-tables",
         "schema-v5-to-v6-migration",
@@ -5703,6 +5708,10 @@
           "literal"
         ],
         "rollback-command": [
+          "l2"
+        ],
+        "rollback-cross-region-secret": [
+          "l1",
           "l2"
         ],
         "rollback-failure-injection": [

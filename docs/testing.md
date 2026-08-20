@@ -1444,6 +1444,27 @@ bucket's reverse-replacement re-create has to re-acquire a just-deleted
 GLOBALLY unique name, which would make the fixture flaky for a reason
 unrelated to what it tests.
 
+For the rollback arm whose replayed value is a SECRET the deploy resolved in
+another region, see `tests/integration/rollback-cross-region-secret/` (scenario
+tags `dynamic-reference-resolution` + `getstackoutput-cross-region`, issue
+#2057). A producer stack in `us-west-2` exports an output carrying a
+`{{resolve:ssm:...}}` SecureString reference; a consumer in `us-east-1` reads it
+via `Fn::GetStackOutput`, so the consumer's state persists the PRODUCER's
+region-less spelling of that expression while `outputReads[].sourceRegion`
+records where it came from. A failing `--no-rollback` deploy then forces
+`cdkd rollback --force`, which must exit 2 with
+`ROLLBACK_SECRET_REGION_AMBIGUOUS` rather than re-resolving the reference
+locally. The discriminator is that the SAME parameter NAME is seeded in BOTH
+regions with DIFFERENT values, both asserted to really be `SecureString` first:
+without that the run cannot tell a correct resolution from a wrong one, and the
+assertion the fixture exists for is that the live parameter still holds the
+PRODUCER region's value. `SecureString` rather than a Secrets Manager secret
+because a bare parameter NAME is region-less -- which is precisely the arm under
+test -- and because there is no deletion cooldown to collide on across repeated
+runs. (An SSM reference CAN name a full ARN: `resolveSSMReference` joins its
+colon-split tail back together, so an ARN reaches `GetParameter` intact. That
+form takes the `named-region` arm and is covered by the unit tests, not here.)
+
 ### Drift revert E2E (`tests/integration/drift-revert/`)
 
 End-to-end real-AWS test for `cdkd drift` + `cdkd drift --revert`.

@@ -425,13 +425,41 @@ describe('integ fixture aws invocations (#1402)', () => {
     // had not been refreshed as the tree grew, which is how the ceiling below
     // came to sit 2 invocations away from the real number). The band set just
     // below still holds at 3022, so only this measurement needed refreshing.
+    //
+    // MEASURED AGAIN for issue #2057's two-region fixture, and the 3022 above
+    // is left standing only as the history it records: this paragraph's own
+    // warning is that a stale "Current:" number lets a reader compute headroom
+    // against the wrong base. That warning caught this very line — a first pass
+    // wrote 3428 from an eyeball count and it was off by 8.
+    //
+    // Current: 3436 invocations, 70 services, 404 verbs (the fixture added 44,
+    // not the ~30 first claimed — it seeds, probes and tears down in BOTH
+    // regions across two rollback arms). RE-MEASURE rather than guessing, with
+    // the corpus walk this file already owns:
+    //
+    //   vp test --run tests/unit/scripts/integ-aws-commands.test.ts
+    //
+    // after temporarily asserting
+    // `expect({ t: stats.total, s: stats.services.size, v: stats.verbs.size })
+    //  .toEqual({ t: -1, s: -1, v: -1 })` at the top of this case — the failure
+    // prints all three. `collectStats` drives the LINT's own
+    // `readFixtureScripts` / `extractAwsInvocations`, so a number taken any
+    // other way can disagree with what the fence actually counts.
     // Raised 2200 -> 2800 alongside the ceiling: leaving the floor where it was
     // while the real total reached 3002 would let a 27% collapse in parsed
     // invocations pass silently, which is the exact failure the floor exists
     // for. A band only guards while BOTH edges track the measurement.
-    expect(stats.total).toBeGreaterThan(2800);
-    expect(stats.services.size).toBeGreaterThan(55);
-    expect(stats.verbs.size).toBeGreaterThan(290);
+    // Raised 2800 -> 3200 with the ceiling below when the
+    // rollback-cross-region-secret fixture (issue #2057) took the real total to
+    // 3428; the band keeps the same proportional width it was written with
+    // (~0.93x / ~1.13x of the measurement) rather than only its upper edge.
+    expect(stats.total).toBeGreaterThan(3200);
+    // Re-tracked with the total (issue #2057): 55 / 290 sat 21% and 28% below
+    // the measured 70 / 404, so either could have lost a fifth of its coverage
+    // silently — the same argument the total's floor rests on. A floor is only
+    // a floor while it tracks the measurement.
+    expect(stats.services.size).toBeGreaterThan(65);
+    expect(stats.verbs.size).toBeGreaterThan(380);
     // CEILING as well as floor. Floors catch a parser that stops seeing things;
     // only a ceiling catches one that starts seeing things that are not there
     // (the quoted-prose / ARN false positives review found were exactly that,
@@ -443,7 +471,11 @@ describe('integ fixture aws invocations (#1402)', () => {
     // headroom over the measured total as it had when it was written, which is
     // what makes it tight enough to still catch a false-positive explosion
     // rather than merely tracking the tree.
-    expect(stats.total).toBeLessThan(3400);
+    // Raised 3400 -> 3900 when the two-region rollback-cross-region-secret
+    // fixture (issue #2057) landed: it seeds, probes and tears down in BOTH
+    // regions, so its ~30 invocations took the real total to 3428. Same
+    // proportional headroom as before.
+    expect(stats.total).toBeLessThan(3900);
     // The highest-traffic services must always be represented.
     for (const svc of ['s3api', 'lambda', 'ec2', 'iam', 'logs']) {
       expect(stats.services.has(svc), `no aws ${svc} invocation parsed`).toBe(true);
