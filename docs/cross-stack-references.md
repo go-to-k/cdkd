@@ -306,7 +306,7 @@ resolveImportValue(exportName):
     entry = await exportIndex.lookup(exportName)
     if entry and entry.producerStack != context.stackName:
       recordImport(exportName, entry.producerStack, entry.producerRegion)
-      return entry.value                                ← O(1) hot path
+      return reresolve(entry.value, entry.producerRegion)  ← O(1) hot path
     // else fall through to scan (cache miss or self-ref)
 
   allStacks = await stateBackend.listStacks()          ← O(N) cold path
@@ -318,15 +318,59 @@ resolveImportValue(exportName):
       if exportIndex:
         exportIndex.patchEntry(exportName, ...)        ← write-through
       recordImport(exportName, ref.stackName, ref.region)
-      return value
+      return reresolve(value, ref.region)
 
   if cfnFallback:                                      ← issue #1697 (default on)
     export = await cloudformation.ListExports().find(exportName)
     if export:
       return export.value        ← WEAK reference: recordImport NOT called
+                                   NOT re-resolved (see below)
 
   throw "export not found"
 ```
+
+### `reresolve` — a redacted secret is resolved before the consumer sees it
+
+Issue [#1934](https://github.com/go-to-k/cdkd/issues/1934). A
+secret-bearing output is PERSISTED as its unresolved
+`{{resolve:secretsmanager:...}}` expression (the GHSA-p5qg-v9gv-hc7w
+fix, PR #1899), so what the index / `state.outputs` hands back for such
+an export is the expression, not the value. Returning it verbatim made
+the consumer stack ship the literal token to AWS as a property value, so
+the three cross-stack reads the intrinsic resolver owns — `Fn::ImportValue`'s
+index arm and its state-scan arm, and `Fn::GetStackOutput` — now run the value
+back through dynamic-reference resolution first:
+
+- **Resolved in the PRODUCER's region** (`entry.producerRegion` / the
+  state ref's region / `Fn::GetStackOutput`'s `Region`). A Secrets
+  Manager secret or an SSM parameter of the same NAME in two regions is
+  two independent values, so only the producer's region reproduces what
+  the producer exported. **One case does fall back to a guess**: a
+  pre-v2 state record carries no `region`, so the index-miss scan reads
+  it as the consumer's own region (itself defaulted from `AWS_REGION`,
+  then `us-east-1`). That is the same region the state READ used, so the
+  re-resolution cannot disagree with the record it was handed — but if
+  the producer really lived elsewhere the lookup asks the wrong region
+  and fails loudly (or resolves a same-named secret in the consumer's
+  region). Every record written since schema v2 carries its region.
+- **Under the consumer's credentials**, which are the producer's too:
+  the exports index and the state bucket are account-scoped, so a
+  producer cdkd can see on this path is in the same account.
+- **The consumer's own state stays redacted.** The resolved plaintext is
+  recorded as a secret for the deploy's redaction pass, so the
+  consumer's `state.json` stores the same expression the producer's
+  does.
+- **`cdkd diff` still compares expression-vs-expression** — the
+  comparison path leaves secret references unresolved, so no value is
+  fetched or printed there.
+- **The CloudFormation fallbacks are NOT re-resolved** (`ListExports`
+  for `Fn::ImportValue`, `DescribeStacks` outputs for
+  `Fn::GetStackOutput`). Those values never passed through cdkd's
+  redaction, so a token there is a literal the producer chose to
+  publish, and resolving it would diverge from what a CloudFormation
+  consumer of the same export receives.
+- **Cross-account `Fn::GetStackOutput` REFUSES** a redacted value rather
+  than resolving it — see the cross-account section below.
 
 `recordImport` pushes a `StateImportEntry` into the resolver context's
 `recordedImports` bag — the DeployEngine reads this after resource
@@ -449,6 +493,24 @@ A minimal producer-side policy:
 The role's trust policy must allow the consumer account's principal
 (or a specific consumer role) to `sts:AssumeRole`. Standard cross-account
 trust-policy setup applies.
+
+#### A redacted secret output is refused, not resolved
+
+Issue [#1934](https://github.com/go-to-k/cdkd/issues/1934). When the
+requested output is stored as a `{{resolve:...}}` expression (what cdkd
+persists for a secret-bearing output), the same-account path re-resolves
+it before handing it to the consumer — but the cross-account path
+REFUSES with an `IntrinsicResolutionRefusalError` naming the output and
+the `RoleArn`. The expression names a secret in the PRODUCER's account,
+and the only credentials available for a lookup are the consumer's, so
+resolving would silently answer from a same-named secret in the WRONG
+account. (The assumed role is scoped to the state read and carries no
+promise of `secretsmanager:GetSecretValue` / `ssm:GetParameter`;
+widening it is a permission-model change, not a silent fallback.)
+
+Workaround: export a non-secret value — typically the secret's ARN —
+and resolve it inside the consumer stack, or reference the producer
+from within its own account.
 
 #### Strong-reference semantics
 

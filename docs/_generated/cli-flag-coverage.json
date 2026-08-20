@@ -82,6 +82,7 @@
     {
       "flag": "--exclusively",
       "integs": [
+        "cross-stack-secret-import",
         "importvalue-chain",
         "outputs-only-export"
       ]
@@ -127,6 +128,7 @@
         "conditions",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
+        "cross-stack-secret-import",
         "custom-resource-getatt-data",
         "data-analytics",
         "deep-getatt-chains",
@@ -394,6 +396,7 @@
         "conditions-update-2",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
+        "cross-stack-secret-import",
         "custom-resource-getatt-data",
         "data-analytics",
         "deep-getatt-chains",
@@ -631,6 +634,7 @@
         "conditions-update-2",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
+        "cross-stack-secret-import",
         "custom-resource-getatt-data",
         "data-analytics",
         "deep-getatt-chains",
@@ -908,6 +912,7 @@
         "conditions-update-2",
         "cross-region-state-bucket",
         "cross-stack-cfn-fallback",
+        "cross-stack-secret-import",
         "custom-resource-getatt-data",
         "data-analytics",
         "deep-getatt-chains",
@@ -1179,6 +1184,7 @@
         "conditions-and-if",
         "conditions-update-2",
         "cross-stack-cfn-fallback",
+        "cross-stack-secret-import",
         "custom-resource-getatt-data",
         "data-analytics",
         "deep-getatt-chains",

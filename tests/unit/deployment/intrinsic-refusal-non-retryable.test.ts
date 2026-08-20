@@ -21,6 +21,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { readFileSync } from 'node:fs';
 import {
   IntrinsicFunctionResolver,
   type ResolverContext,
@@ -190,5 +191,49 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
   it('still does not mark in the constructor (the mechanism behind the site split)', async () => {
     const bare = new IntrinsicResolutionRefusalError('a refusal that may heal');
     expect(isMarkedNonRetryable(bare)).toBe(false);
+  });
+
+  it('classifies EVERY refusal site in the resolver, so a new one cannot arrive unclassified', () => {
+    // The behavioural cases above pin the sites that EXISTED when #1874 was
+    // worked. They cannot fence a site added later — which is exactly what
+    // happened: issue #1934's cross-account `Fn::GetStackOutput` refusal landed
+    // marked, and this file (the repo's enumeration of the decision) stayed
+    // green either way, so the marking was unfenced.
+    //
+    // A SOURCE-level enumeration is what generalises. Each site is either
+    // marked or is a deliberate exception, and adding one without deciding
+    // fails here rather than silently inheriting whichever answer the author
+    // happened to type. Reading the source is the same technique
+    // `outputs-diff.test.ts` uses to fence its mirrored deploy-engine
+    // semantics.
+    const source = readFileSync(
+      new URL('../../../src/deployment/intrinsic-function-resolver.ts', import.meta.url),
+      'utf8'
+    );
+    const lines = source.split('\n');
+
+    const marked: number[] = [];
+    const unmarked: number[] = [];
+    lines.forEach((line, i) => {
+      if (!line.includes('new IntrinsicResolutionRefusalError(')) return;
+      // `markNonRetryable(` sits on the `throw` line, i.e. immediately above a
+      // wrapped construction, or on the SAME line for a one-liner.
+      const previous = lines[i - 1] ?? '';
+      if (line.includes('markNonRetryable(') || previous.includes('markNonRetryable(')) {
+        marked.push(i + 1);
+      } else {
+        unmarked.push(i + 1);
+      }
+    });
+
+    // A floor, so a regex that stops matching cannot pass vacuously.
+    expect(marked.length).toBeGreaterThanOrEqual(6);
+
+    // EXACTLY ONE deliberate exception: the #1730 fabricated-account guard,
+    // whose behavioural fence is the test above. Identified by its message
+    // rather than by a line number, which every edit above it would shift.
+    expect(unmarked).toHaveLength(1);
+    const exception = lines.slice(unmarked[0]! - 1, unmarked[0]! + 6).join('\n');
+    expect(exception).toContain('STS did not report');
   });
 });
