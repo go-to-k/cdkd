@@ -1,3 +1,11 @@
+## [0.284.15](https://github.com/go-to-k/cdkd/compare/v0.284.14...v0.284.15) (2026-08-20)
+
+
+### Bug Fixes
+
+* **deployment:** re-resolve a redacted cross-stack value before the consumer ships it ([#2072](https://github.com/go-to-k/cdkd/issues/2072)) ([2d882cc](https://github.com/go-to-k/cdkd/commit/2d882cc21cf9c397f9224c18873afaa4fc174917))
+* **provisioning:** adopt the maskSecrets contract in the five providers that log a resolved property value ([#2073](https://github.com/go-to-k/cdkd/issues/2073)) ([aa20f0d](https://github.com/go-to-k/cdkd/commit/aa20f0d0a409fd027586f94a6baa0da8675f6e7d))
+
 ## [0.284.14](https://github.com/go-to-k/cdkd/compare/v0.284.13...v0.284.14) (2026-08-19)
 
 
