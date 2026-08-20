@@ -1334,19 +1334,20 @@ recorded custom asset name stops being reused; aligning that pair is issue
 [#1820](https://github.com/go-to-k/cdkd/issues/1820)'s lane. The clients
 `cdkd bootstrap` builds ARE folded.
 
-Every marker READ therefore tries the canonical key first and the spelling you
-passed second, so a marker written under a raw key — by this cdkd or by an older
-one — is still found. See the `cdkd gc` and `cdkd bootstrap --destroy` sections
+The marker reads on the TEARDOWN and DEPLOY paths therefore try the canonical
+key first and the spelling you passed second, so a marker written under a raw
+key — by this cdkd or by an older one — is still found. `cdkd bootstrap`'s own
+existing-marker read is the exception, and deliberately so: it reads the single
+raw key it is about to write, because that read and that write are one pair. See the `cdkd gc` and `cdkd bootstrap --destroy` sections
 above.
 
-**Resolution order** is `--region` → `AWS_REGION` → `us-east-1`, with two
-exceptions: `cdkd gc` and `cdkd bootstrap --destroy` fall back to
-`AWS_DEFAULT_REGION` and then to the region your AWS profile resolves, and
-REFUSE when nothing names one — they DELETE, so they will not guess (issue
-[#2029](https://github.com/go-to-k/cdkd/issues/2029)). Aligning the remaining
-commands with the profile region is issue
-[#2100](https://github.com/go-to-k/cdkd/issues/2100) — for them the value also
-keys the state file, so moving it needs a migration answer rather than a fold.
+**Resolution order** is `--region` → `AWS_REGION` → `us-east-1`, uniformly.
+Note what that literal means: if your profile selects a region and you pass
+neither the flag nor the env var, cdkd operates on `us-east-1`, not on your
+profile's region. Changing that is issue
+[#2100](https://github.com/go-to-k/cdkd/issues/2100) — the value also keys the
+state file and the bootstrap marker, so moving it needs a migration answer
+rather than a fold, and the read and write sides have to move together.
 
 ## `--role-arn`
 
@@ -1642,19 +1643,23 @@ same hash), so the storage grows without bound — and `cdk gc` cannot reach
 it by design. cdkd can gc it *precisely* because its state files record
 exactly which assets are in use.
 
-**Scope**: one region per invocation (`--region`, resolved as flag →
-`AWS_REGION` → `AWS_DEFAULT_REGION` → **the region the AWS SDK's own chain
-resolves**, i.e. the `region =` line of the profile your `AWS_PROFILE` /
-`--profile` selects). Along with `cdkd bootstrap --destroy`, and unlike every
-other cdkd command, gc does NOT fall back to a literal `us-east-1`: it DELETES,
-so when nothing names a region it refuses rather than guessing one (issue
-[#2029](https://github.com/go-to-k/cdkd/issues/2029) — the literal used to be
-materialised before the client was built, which pinned it OVER the profile
-region and let gc evaluate, and delete in, a region you never mentioned). The
-region gc reports, the region its clients target and the region its marker key
-is built from are one value by construction, and the delete plan names it
-explicitly — with a custom `--asset-bucket` name the plan would otherwise
-mention no region at all. The resolved region is
+**Scope**: one region per invocation (`--region` → `AWS_REGION` →
+`us-east-1`). The region gc reports, the region its clients target and the
+region its marker key is built from are **one value by construction** (issue
+[#2029](https://github.com/go-to-k/cdkd/issues/2029) — they used to be resolved
+separately and could disagree, so gc read one region's marker and deleted
+against another region's endpoints), and the delete plan now names it
+explicitly, because with a custom `--asset-bucket` name the plan would
+otherwise mention no region at all.
+
+That `us-east-1` fallback is **deliberately still a literal** rather than your
+profile's region, which is what #2029 originally asked for: `cdkd bootstrap`
+WRITES the marker under the same default (issue
+[#1820](https://github.com/go-to-k/cdkd/issues/1820)), so a read side resolving
+the profile instead would stop finding the marker its own create side wrote —
+gc would report "not opted in" while your asset bucket and ECR repo stayed
+alive and billing. Both sides move together in
+[#2100](https://github.com/go-to-k/cdkd/issues/2100). The resolved region is
 lower-cased before it reaches any AWS client or the marker key, and the marker
 is looked up under the canonical spelling first and the spelling you passed
 second, so `--region US-EAST-1` finds the marker either way (issue

@@ -149,7 +149,13 @@ describe('rawCliRegion', () => {
  *   `publish-assets.ts`, `bootstrap.ts`).
  */
 describe('no CLI command resolves a region without folding it', () => {
-  const SHAPE = /options\.region\s*(?:\|\||\?\?)\s*process\.env(?:\['AWS_REGION'\]|\.AWS_REGION)/g;
+  // `options` is not the only bag name in this tree: `local-state-loader.ts`
+  // resolves from `opts.region` and `local-invoke*.ts` from `args.region`, and
+  // one of those carries a comment saying it "escapes the handler-entry fold
+  // entirely". A pattern hardcoding `options` is blind to exactly the sites
+  // most likely to regress.
+  const SHAPE =
+    /\b(?:options|opts|args)\.region\s*(?:\|\||\?\?)\s*process\.env(?:\['AWS_REGION'\]|\.AWS_REGION)/g;
 
   /**
    * Blank out comments and string literals, PRESERVING length and newlines so
@@ -325,30 +331,44 @@ describe('no CLI command resolves a region without folding it', () => {
     // silently re-permit the shape there. Every pinned file must still have at
     // least one violation, and every pinned count must be exact (asserted
     // above), so the list cannot outlive what it describes.
-    for (const [file, count] of Object.entries(KNOWN_VIOLATIONS)) {
+    for (const file of Object.keys(KNOWN_VIOLATIONS)) {
       expect(sources.has(file), `${file} is pinned but no longer exists`).toBe(true);
-      expect(count).toBeGreaterThan(0);
+      // Assert against the TREE, not against the literal beside it. An earlier
+      // cut asserted `count > 0` on the hardcoded number, which is a tautology
+      // that can never fail and so verified nothing about the file.
+      expect(
+        scan(sources.get(file)!).violations.length,
+        `${file} is pinned but no longer violates - delete its entry`
+      ).toBeGreaterThan(0);
     }
   });
 });
 
 /**
- * The COVERAGE fence: every handler that takes a region must fold it.
+ * The COVERAGE fence: every handler that ACCEPTS a `--region` must fold it.
  *
- * The scanner above only rejects one WRITTEN shape, which leaves the other half
- * of the bug open - a handler that simply never folds, and reads
- * `options.region` straight into `applyRoleArnIfSet` or a client spread. A
- * review probe deleting the `foldRegionOption` line from ten of the eighteen
- * handlers produced ZERO scanner violations, which is exactly the regression
- * this file exists to prevent: `cdkd orphan --region US-EAST-1` would again
- * hand a raw spelling to `applyRoleArnIfSet`, whose `new STSClient({ region })`
- * fails `SignatureDoesNotMatch`.
+ * The scanner above rejects one WRITTEN shape, which leaves the other half of
+ * the bug open — a handler that simply never folds and reads `options.region`
+ * straight into `applyRoleArnIfSet` or a client spread.
  *
- * The exemptions are BY SHAPE: a file may fold via `foldRegionOption(options)`
- * or by assigning `options.region = canonicalizeRegion(...)` itself (what the
- * four `cdkd local *` commands do), or - for the two DESTRUCTIVE commands - by
- * routing every read through `namedCliRegion` / `rawCliRegion`, which fold on
- * the way out.
+ * Two earlier cuts of this fence were themselves inert, and both failures are
+ * worth naming because they are the generic ways a fence like this rots:
+ *
+ * 1. **Wrong POPULATION.** The first cut fenced every file mentioning
+ *    `options.region`, which both over- and under-shot: it pulled in helper
+ *    modules that merely RECEIVE an already-folded region from their caller
+ *    (`deployment-events-run.ts` takes `args.region` from `deploy.ts`), while
+ *    missing files using other bag names. The population is now derived from
+ *    what actually ACCEPTS the flag — `deprecatedRegionOption` (18 commands)
+ *    plus the four that declare `'--region'` themselves.
+ * 2. **Wrong PREDICATE.** The second cut OR'd three whole-file substrings, and
+ *    16 of these files contain more than one of them. A review probe deleted
+ *    the ONLY `foldRegionOption` call from `orphan.ts`, `drift.ts`,
+ *    `force-unlock.ts` and `scrub.ts` at once and all 130 cases still passed,
+ *    while `cdkd orphan --region US-EAST-1` then handed a raw spelling to
+ *    `applyRoleArnIfSet`. The predicate is now per-READ: no occurrence of
+ *    `<bag>.region` may sit outside a folding wrapper unless the file folds the
+ *    bag in place first.
  */
 const stripComments = (source: string): string =>
   source
@@ -357,28 +377,55 @@ const stripComments = (source: string): string =>
     .map((l) => l.replace(/\/\/.*$/, ''))
     .join('\n');
 
-describe('every region-taking handler folds', () => {
+describe('every handler that accepts --region folds it', () => {
   const files = readdirSync(COMMANDS_DIR).filter((f) => f.endsWith('.ts'));
-  const regionTaking = files.filter((f) =>
-    // Comment-stripped: `local-state-loader.ts` names `options.region` only in
-    // a prose comment about another command, and it reads `opts.region` (which
-    // it folds at every site). Matching raw text listed it as an unfolded
-    // handler - a false positive that would have been "fixed" by adding a fold
-    // call to a file that has no `options` object at all.
-    /\boptions\.region\b/.test(stripComments(readFileSync(join(COMMANDS_DIR, f), 'utf8')))
-  );
+  const sources = new Map(files.map((f) => [f, readFileSync(join(COMMANDS_DIR, f), 'utf8')]));
 
-  it('finds the handlers - floor, so an empty list cannot pass as full coverage', () => {
-    expect(regionTaking.length).toBeGreaterThanOrEqual(18);
+  /** Files that actually take a `--region` flag from the user. */
+  const regionTaking = files.filter((f) => {
+    const code = stripComments(sources.get(f)!);
+    return code.includes('deprecatedRegionOption') || code.includes("'--region");
   });
 
-  it.each(regionTaking)('%s folds its region by one of the accepted shapes', (file) => {
-    const source = readFileSync(join(COMMANDS_DIR, file), 'utf8');
-    const folds =
-      source.includes('foldRegionOption(options)') ||
-      /options\.region\s*=\s*canonicalizeRegion\(/.test(source) ||
-      source.includes('namedCliRegion(options.region)');
-    expect(folds, `${file} reads options.region but never folds it`).toBe(true);
+  it('finds the handlers — floor, so an empty list cannot pass as full coverage', () => {
+    expect(regionTaking.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it.each(regionTaking)('%s leaves no unfolded read of its region flag', (file) => {
+    const code = stripComments(sources.get(file)!);
+
+    // Folding the bag IN PLACE makes every later read canonical by
+    // construction, so the per-read check below does not apply.
+    if (/\bfoldRegionOption\(options\)/.test(code)) return;
+    if (/\b(?:options|opts|args)\.region\s*=\s*canonicalizeRegion\(/.test(code)) return;
+
+    // Otherwise EVERY read must be wrapped by something that folds.
+    const WRAPPERS = ['canonicalizeRegion(', 'namedCliRegion(', 'rawCliRegion('];
+    const unwrapped: string[] = [];
+    for (const m of code.matchAll(/\b(?:options|opts|args)\.region\b/g)) {
+      const before = code.slice(Math.max(0, m.index - 40), m.index);
+      if (WRAPPERS.some((w) => before.includes(w))) continue;
+      unwrapped.push(`${code.slice(0, m.index).split('\n').length}: ${m[0]}`);
+    }
+    expect(
+      unwrapped,
+      `${file} accepts --region but reads it unfolded at:\n${unwrapped.join('\n')}`
+    ).toEqual([]);
+  });
+
+  /**
+   * A file with N handlers needs N folds. `events.ts` has two command
+   * functions and no `applyRoleArnIfSet` at all, so the order fence below
+   * cannot see it: a review probe deleted the fold from `eventsPruneCommand`
+   * and every case stayed green, leaving `cdkd events prune --region US-EAST-1`
+   * unfolded into `new AwsClients`. Pinned by COUNT so a deleted fold fails.
+   */
+  it.each([
+    ['events.ts', 2],
+    ['state.ts', 2],
+  ])('%s folds once per handler (%i)', (file, expected) => {
+    const code = stripComments(sources.get(file as string)!);
+    expect([...code.matchAll(/\bfoldRegionOption\(options\)/g)]).toHaveLength(expected as number);
   });
 });
 

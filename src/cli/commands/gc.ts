@@ -9,11 +9,7 @@ import type { Logger } from '../../types/config.js';
 import { withErrorHandling, CdkdError, normalizeAwsError } from '../../utils/error-handler.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import {
-  namedCliRegion,
-  rawCliRegion,
-  resolveAmbientDestructiveRegion,
-} from '../region-options.js';
+import { namedCliRegion, rawCliRegion } from '../region-options.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 import {
   getBootstrapMarkerKey,
@@ -984,35 +980,29 @@ export async function gcCommand(options: GcOptions): Promise<void> {
   // deletes nothing, it just reports "not opted in" for a region that has
   // assets — which is why this is a usability fix rather than a data one.
   // Issue #2029 - the region gc OPERATES ON and the region its clients TARGET
-  // must be one value, and neither may be a literal pinned over the profile.
+  // must be ONE value.
   //
   // The previous shape resolved `options.region || AWS_REGION || 'us-east-1'`
-  // and passed the result to `new AwsClients({ region })` unconditionally. For
-  // a user who names no region at all - no `--region`, no `AWS_REGION`, but a
-  // configured `~/.aws/config` region - that materialized literal WON over the
-  // SDK's own chain, so `cdkd gc` evaluated (and could DELETE in) us-east-1
-  // while doing nothing about the region they actually work in. There was no
-  // error, because us-east-1 is a perfectly valid region; the command simply
-  // operated on the wrong one.
+  // and passed the result to `new AwsClients({ region })` unconditionally,
+  // while `bootstrap-destroy.ts` let an absent region stay absent so the SDK
+  // chain answered. Either way the two halves could disagree, and gc's region
+  // is BOTH a client region and a VALUE - it keys the bootstrap marker and
+  // names the asset bucket / ECR repo - so a client resolved one way beside a
+  // marker key resolved another reads one region's marker and deletes against
+  // another region's endpoints.
   //
-  // `bootstrap-destroy.ts` (issue #1995) already lets an absent region stay
-  // absent for its CLIENTS. That half alone is not enough here: gc's region is
-  // ALSO a VALUE - it keys the bootstrap marker and names the asset bucket /
-  // ECR repo - so a client resolved from the profile beside a marker key
-  // pinned to us-east-1 would read one region's marker and delete against
-  // another's endpoints. So the ambient region is resolved ONCE, and every
-  // client gc actually uses is built PINNED to that single answer. The same
-  // treatment is applied to `cdkd bootstrap --destroy`, the other command that
-  // DELETES on this value; the rest keep the literal because for them it also
-  // keys the state file, so moving it would strand existing state - deferred to
-  // issues #1820 / #2100, NOT because those commands are read-only (several of
-  // them delete too).
-  const namedRegion = namedCliRegion(options.region);
-  const region = namedRegion ?? (await resolveAmbientDestructiveRegion(options.profile, 'gc'));
-  // The RAW spelling, for the marker's second probe only (see the comment on
-  // the probe below). When no region was NAMED there is no raw spelling to
-  // preserve, so it collapses onto the resolved one and the probe reads a
-  // single key.
+  // What this deliberately does NOT do is swap the literal for the profile
+  // region, which is what #2029 asks for and what a first cut of this change
+  // did. `cdkd bootstrap` WRITES the marker under this same
+  // `?? 'us-east-1'` default (issue #1820), so a read side that resolved the
+  // profile instead would stop finding the marker its own create side wrote:
+  // for a user with a non-us-east-1 profile and no flags, `cdkd gc` would
+  // report "not opted in" - and `cdkd bootstrap --destroy` would report
+  // "nothing to delete" - while the asset bucket and ECR repo stayed alive and
+  // billing. The read side cannot move until the write side moves with it, so
+  // both move together in issues #1820 / #2100.
+  const region = namedCliRegion(options.region) ?? 'us-east-1';
+  // The RAW spelling, for the marker's second probe only (see the probe below).
   const rawRegion = rawCliRegion(options.region) ?? region;
 
   const awsClients = new AwsClients({
@@ -1165,7 +1155,7 @@ export async function gcCommand(options: GcOptions): Promise<void> {
 
     if (options.dryRun) {
       logger.info('');
-      logger.info('Dry run — the following unreferenced assets would be deleted:');
+      logger.info(`Dry run — the following unreferenced assets in ${region} would be deleted:`);
       for (const line of planLines) {
         logger.info(`  - ${line}`);
       }

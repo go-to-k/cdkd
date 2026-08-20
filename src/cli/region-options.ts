@@ -1,6 +1,4 @@
 import { canonicalizeRegion } from '../utils/aws-partition.js';
-import { CdkdError } from '../utils/error-handler.js';
-import { getLogger } from '../utils/logger.js';
 
 /**
  * ONE region-normalization point for the CLI's command handlers.
@@ -114,84 +112,4 @@ export function namedCliRegion(optionRegion?: string): string | undefined {
  */
 export function rawCliRegion(optionRegion?: string): string | undefined {
   return optionRegion || process.env['AWS_REGION'] || undefined;
-}
-
-/**
- * The region a DESTRUCTIVE command operates on when the user NAMED none.
- *
- * Shared by `cdkd gc` and `cdkd bootstrap --destroy` (issue
- * [#2029](https://github.com/go-to-k/cdkd/issues/2029)). Both delete, both key
- * a bootstrap marker off this value, and both used to materialise a
- * `|| 'us-east-1'` literal BEFORE building their clients — which pinned
- * us-east-1 over the region the AWS SDK's own chain would have resolved from
- * `~/.aws/config`. Silent in both directions, since us-east-1 is a perfectly
- * valid region: the command evaluated, and could delete in, a region the user
- * never mentioned while reporting success about the one they work in.
- *
- * Resolution: `AWS_DEFAULT_REGION` first, then the SDK's own chain.
- *
- * That order looks backwards and is not. The SDK does NOT read
- * `AWS_DEFAULT_REGION` (measured: `@smithy/config-resolver`'s
- * `NODE_REGION_CONFIG_OPTIONS` reads `AWS_REGION` only, so
- * `AWS_DEFAULT_REGION=eu-west-9` alone resolves the profile region instead) —
- * but the AWS CLI does, so a user who set only that variable HAS named a
- * region, and consulting it here is what keeps them from being refused for a
- * region they did configure. It is checked before the chain rather than after
- * because after would mean the profile silently outranks an explicit
- * environment variable.
- *
- * REFUSES rather than defaulting when nothing answers. These commands delete,
- * and a user with no region configured anywhere has genuinely not said where;
- * inventing us-east-1 for them is the defect this function exists to remove,
- * not a safe fallback. Every non-destructive command still carries the
- * literal — moving it there would move the `{region}` segment of the state key
- * and strand existing state, which is issue
- * [#2100](https://github.com/go-to-k/cdkd/issues/2100)'s migration question,
- * not a fold.
- *
- * The probe bag is built region-LESS on purpose and thrown away immediately:
- * `src/utils/aws-clients.ts` is explicit that such a bag's lazy members
- * resolve independently and need not agree with each other, so it is sampled
- * once and never used for real work — the caller pins every client it keeps to
- * the single answer returned here.
- */
-export async function resolveAmbientDestructiveRegion(
-  profile: string | undefined,
-  commandName: string
-): Promise<string> {
-  const fromDefaultRegionEnv = canonicalizeRegion(process.env['AWS_DEFAULT_REGION']);
-  if (fromDefaultRegionEnv) return fromDefaultRegionEnv;
-
-  const { AwsClients } = await import('../utils/aws-clients.js');
-  const probe = new AwsClients({ ...(profile && { profile }) });
-  let resolved: string | undefined;
-  let failure: unknown;
-  try {
-    resolved = await probe.sts.config.region();
-  } catch (error) {
-    // Swallowed on purpose - a region-less client REJECTS when the chain
-    // answers nothing, and that rejection is the normal "no region" signal
-    // rather than an error worth surfacing. It is logged rather than dropped
-    // because the same chain can reject for an unrelated reason (a `--profile`
-    // that does not exist is resolved BEFORE credentials are consulted), and
-    // "No AWS region configured" is a confusing thing to tell someone who
-    // actually made a typo in a profile name.
-    failure = error;
-  } finally {
-    probe.destroy();
-  }
-  if (!resolved) {
-    const logger = getLogger();
-    if (failure !== undefined) {
-      const detail = failure instanceof Error ? failure.message : JSON.stringify(failure);
-      logger.debug(`Region resolution through the AWS SDK chain failed: ${detail}`);
-    }
-    throw new CdkdError(
-      `No AWS region configured. \`cdkd ${commandName}\` deletes, so it will not guess one: ` +
-        'pass --region, set AWS_REGION, or set `region =` in the profile ' +
-        '`~/.aws/config` selects.',
-      'REGION_NOT_RESOLVED'
-    );
-  }
-  return canonicalizeRegion(resolved);
 }

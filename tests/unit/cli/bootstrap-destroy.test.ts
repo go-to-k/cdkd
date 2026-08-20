@@ -1212,16 +1212,21 @@ describe('cdkd bootstrap --destroy', () => {
       expect(stateBackendMocks.deleteRawObjects).toHaveBeenCalledWith([MARKER_KEY]);
     });
 
-    it('resolves the PROFILE region when no region is named, and pins every kept client to it', async () => {
+    it('pins every client AND the marker key to ONE value when no region is named', async () => {
       // Issue #2029 replaces the contract this test used to pin.
       //
       // The old shape let this command's two halves disagree: `clientRegion`
-      // let an absent region stay absent (so the main bag resolved the
-      // profile) while `region` - which keys the MARKER and drives the marker
-      // and state-backend clients - fell back to the `'us-east-1'` literal. On
-      // a command that DELETES, that read one region's marker while the
-      // account-level bag pointed at another. Now one resolved value drives
-      // everything, and it is never a literal pinned over the profile.
+      // let an absent region stay absent (so the main bag resolved the profile)
+      // while `region` - which keys the MARKER and drives the marker and
+      // state-backend clients - fell back to the `'us-east-1'` literal. On a
+      // command that DELETES, that read one region's marker while the
+      // account-level bag pointed at another.
+      //
+      // The literal is deliberately NOT swapped for the profile region:
+      // `cdkd bootstrap` writes the marker under the same default (issue
+      // #1820), so a teardown resolving the profile instead would report
+      // "nothing to delete" while the storage stayed alive - the failure
+      // direction this file's own header calls the worse one.
       const prev = process.env['AWS_REGION'];
       const prevDefault = process.env['AWS_DEFAULT_REGION'];
       delete process.env['AWS_REGION'];
@@ -1236,33 +1241,35 @@ describe('cdkd bootstrap --destroy', () => {
       }
 
       const awsClientConfigs = vi.mocked(AwsClients).mock.calls.map((c) => c[0] ?? {});
-      // Exactly ONE region-less bag: the throwaway probe that samples the
-      // chain. `aws-clients.ts` is explicit that such a bag's lazy members need
-      // not agree with each other, so no bag kept for real work may be one.
-      expect(awsClientConfigs.filter((c) => !c.region)).toHaveLength(1);
-      const kept = awsClientConfigs.filter((c) => c.region).map((c) => c.region);
-      expect(kept.length).toBeGreaterThanOrEqual(1);
-      expect(new Set(kept)).toEqual(new Set(['ap-northeast-1']));
-      // ...and the MARKER key agrees with the clients, which is the half a
-      // client-only fix would have left diverging.
-      expect(markerProbes()).toEqual(['cdkd-bootstrap/ap-northeast-1.json']);
+      // No region-less bag at all: `aws-clients.ts` is explicit that such a
+      // bag's lazy members need not agree with each other.
+      expect(awsClientConfigs.filter((c) => !c.region)).toHaveLength(0);
+      const kept = awsClientConfigs.map((c) => c.region);
+      expect(new Set(kept)).toEqual(new Set(['us-east-1']));
+      // ...and the MARKER key agrees with the clients, which is the half the
+      // old split left diverging.
+      expect(markerProbes()).toEqual(['cdkd-bootstrap/us-east-1.json']);
     });
 
-    it('REFUSES rather than guessing when nothing resolves a region', async () => {
-      // This command deletes an asset bucket and an ECR repo. A user with no
-      // region configured anywhere has not said where; us-east-1 is a guess.
+    it('folds the ENV half for the role-arn STS client', async () => {
+      // The twin of `gc-region-resolution.test.ts`'s case, and it was missing:
+      // this command deliberately skips `foldRegionOption` (so `rawCliRegion`
+      // still sees the exact spelling for the marker's second probe), which
+      // left `applyRoleArnIfSet` reading `canonicalizeRegion(options.region)` -
+      // `undefined` when only `AWS_REGION` names the region. It then built
+      // `new STSClient({})` and the SDK read the raw env itself
+      // (`SignatureDoesNotMatch`). Issue #2065.
       const prev = process.env['AWS_REGION'];
-      const prevDefault = process.env['AWS_DEFAULT_REGION'];
-      delete process.env['AWS_REGION'];
-      delete process.env['AWS_DEFAULT_REGION'];
-      ambientRegion.value = undefined;
+      process.env['AWS_REGION'] = 'US-EAST-1';
       try {
-        await expect(runDestroyNoRegionFlag(['--yes'])).rejects.toThrow(/will not guess one/);
+        await runDestroyNoRegionFlag(['--yes', '--role-arn', 'arn:aws:iam::123456789012:role/R']);
       } finally {
-        if (prev !== undefined) process.env['AWS_REGION'] = prev;
-        if (prevDefault !== undefined) process.env['AWS_DEFAULT_REGION'] = prevDefault;
+        if (prev === undefined) delete process.env['AWS_REGION'];
+        else process.env['AWS_REGION'] = prev;
       }
-      expect(mockS3Send).not.toHaveBeenCalled();
+      expect(vi.mocked(applyRoleArnIfSet)).toHaveBeenCalledWith(
+        expect.objectContaining({ region: 'us-east-1' })
+      );
     });
 
     it('makes no extra marker read when the region is canonical', async () => {

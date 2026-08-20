@@ -499,7 +499,13 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
  */
 describe('deploy hands the RAW region spelling to the marker resolver (issue #2065)', () => {
   beforeEach(() => {
+    // Reset everything this describe depends on rather than inheriting the
+    // previous describe's last-test state - a review finding, and the kind of
+    // coupling that turns an unrelated edit above into a failure here.
     engineResults.clear();
+    failingStacks.clear();
+    cancelledStacks.clear();
+    errorSpy.mockClear();
     modeResolveSpy.mockClear();
     loadPublishableManifestMock.mockReturnValue({ files: {}, dockerImages: {} });
   });

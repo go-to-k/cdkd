@@ -17,11 +17,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
-import {
-  namedCliRegion,
-  rawCliRegion,
-  resolveAmbientDestructiveRegion,
-} from '../region-options.js';
+import { namedCliRegion, rawCliRegion } from '../region-options.js';
 import {
   BOOTSTRAP_MARKER_PREFIX,
   getBootstrapMarkerKey,
@@ -367,19 +363,20 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
   // Issue #2029, the same treatment `gc.ts` gets and for the same reason: this
   // command DELETES on this value, and the previous split let its two halves
   // disagree. `clientRegion` let an absent region stay absent (so the main bag
-  // resolved the profile) while `region` fell back to the `'us-east-1'`
-  // literal - and `region` is what keys the marker and what the marker /
-  // state-backend clients target. For a user with a configured profile region
-  // and no flag, that read one region's marker while the account-level bag
-  // pointed at another. Now ONE value drives everything, and it is never a
-  // literal pinned over the profile; when nothing names a region the helper
-  // REFUSES rather than guessing, which for a teardown is the safe direction.
-  const namedRegion = namedCliRegion(options.region);
-  const region =
-    namedRegion ?? (await resolveAmbientDestructiveRegion(options.profile, 'bootstrap --destroy'));
-  // The RAW spelling, for the marker's second probe only (see the comment on
-  // that read below). With no region NAMED there is no raw spelling to keep, so
-  // it collapses onto the resolved one and the probe reads a single key.
+  // resolved the profile) while `region` fell back to the `'us-east-1'` literal
+  // - and `region` is what keys the marker and what the marker / state-backend
+  // clients target. For a user with a configured profile region and no flag,
+  // that read one region's marker while the account-level bag pointed at
+  // another. ONE value now drives everything.
+  //
+  // As in `gc.ts`, the literal is deliberately NOT swapped for the profile
+  // region here: `cdkd bootstrap` writes the marker under this same default
+  // (issue #1820), so a teardown that resolved the profile instead would report
+  // "nothing to delete" while the asset bucket and ECR repo stayed alive - the
+  // failure direction this file's own header calls the worse one. Both sides
+  // move together in issues #1820 / #2100.
+  const region = namedCliRegion(options.region) ?? 'us-east-1';
+  // The RAW spelling, for the marker's second probe only.
   const rawRegion = rawCliRegion(options.region) ?? region;
 
   const awsClients = new AwsClients({
