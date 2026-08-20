@@ -40,6 +40,9 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  CreateContext,
+  UpdateContext,
+  SecretMasker,
 } from '../../types/resource.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 
@@ -180,10 +183,24 @@ export class ASGProvider implements ResourceProvider {
 
   // ─── Dispatch ─────────────────────────────────────────────────────
 
+  /**
+   * The `context` parameter is read for ONE thing: `maskSecrets` (issue #1932
+   * item 3, adopted here by issue #1997).
+   *
+   * An earlier revision of this comment claimed the create path had no site to
+   * mask, on the grounds that it names "only the logical id and the generated
+   * group name". Both halves were wrong: `groupName` falls back to a generated
+   * name only when `AutoScalingGroupName` is ABSENT, so when the template
+   * DECLARES it the value is a resolved property value — and it IS logged, on
+   * the line below. Debug level is not an exemption; the contract's rule is any
+   * log line that interpolates a value from the `properties` bag, and this
+   * provider already masks its convergence-poll debug line for that reason.
+   */
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     if (resourceType !== 'AWS::AutoScaling::AutoScalingGroup') {
       throw new ProvisioningError(
@@ -197,7 +214,10 @@ export class ASGProvider implements ResourceProvider {
       (properties['AutoScalingGroupName'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 255 });
 
-    this.logger.debug(`Creating AutoScalingGroup ${logicalId}: ${groupName}`);
+    // ONE masked sink for this method's own lines (issue #1997).
+    const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);
+    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
+    debug(`Creating AutoScalingGroup ${logicalId}: ${maskSecrets(groupName)}`);
 
     try {
       const launchTemplate = this.buildLaunchTemplate(properties);
@@ -299,7 +319,7 @@ export class ASGProvider implements ResourceProvider {
         })
       );
 
-      this.logger.debug(`Successfully created AutoScalingGroup ${logicalId}: ${groupName}`);
+      debug(`Successfully created AutoScalingGroup ${logicalId}: ${maskSecrets(groupName)}`);
 
       const arn = await this.fetchArn(groupName);
       const attributes: Record<string, unknown> = {};
@@ -320,12 +340,23 @@ export class ASGProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * The `context` parameter is read for ONE thing today: `maskSecrets` (issue
+   * #1932 item 3, adopted here by issue #1997). `applyTargetGroupArnsDiff` is
+   * the only path in this provider that interpolates a RESOLVED property value
+   * into a log line — its convergence timeout names the expected
+   * `TargetGroupARNs` set — so it is the only one the masker is threaded into.
+   *
+   * `create()` takes the masker too — see its own doc for why the original
+   * "nothing to mask there" reading was wrong.
+   */
   async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     if (resourceType !== 'AWS::AutoScaling::AutoScalingGroup') {
       throw new ProvisioningError(
@@ -365,7 +396,8 @@ export class ASGProvider implements ResourceProvider {
       await this.applyTargetGroupArnsDiff(
         physicalId,
         properties['TargetGroupARNs'],
-        previousProperties['TargetGroupARNs']
+        previousProperties['TargetGroupARNs'],
+        context?.maskSecrets
       );
       await this.applyMetricsCollectionDiff(
         physicalId,
@@ -1256,7 +1288,8 @@ export class ASGProvider implements ResourceProvider {
   private async applyTargetGroupArnsDiff(
     physicalId: string,
     next: unknown,
-    prev: unknown
+    prev: unknown,
+    maskSecrets?: SecretMasker
   ): Promise<void> {
     if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
     const nextArns = (Array.isArray(next) ? next : []).filter(
@@ -1295,17 +1328,35 @@ export class ASGProvider implements ResourceProvider {
     // confirm the post-state matches the intent before returning so the
     // caller's next read is consistent.
     if (toDetach.length > 0 || toAttach.length > 0) {
-      await this.waitForTargetGroupArnsConvergence(physicalId, new Set(nextArns));
+      await this.waitForTargetGroupArnsConvergence(physicalId, new Set(nextArns), maskSecrets);
     }
   }
 
   private static readonly TG_CONVERGENCE_TIMEOUT_MS = 30_000;
   private static readonly TG_CONVERGENCE_POLL_INTERVAL_MS = 1_000;
 
+  /**
+   * `maskSecrets` is the caller's secret masker (issue #1932 item 3, adopted
+   * here by issue #1997), threaded from `UpdateContext` via
+   * `applyTargetGroupArnsDiff`. `expected` is built from the RESOLVED
+   * `TargetGroupARNs` bag, so a `{{resolve:secretsmanager:...}}` scalar in it is
+   * already plaintext by the time this method names it. It defaults to IDENTITY
+   * so every existing caller and unit test keeps working unchanged.
+   */
   private async waitForTargetGroupArnsConvergence(
     physicalId: string,
-    expected: Set<string>
+    expected: Set<string>,
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
+    // ONE masked sink per level for every line in this method (issue #1997),
+    // rather than a `maskSecrets(...)` at each call: a line added later is
+    // masked by construction instead of by the author remembering. Each is the
+    // OUTER of two layers — a finished message is always longer than the value
+    // inside it, so it can only reach `maskSecretsInText`'s SUBSTRING arm, which
+    // ignores needles below `MIN_NEEDLE_LENGTH` (4); the per-ARN mask below is
+    // the inner layer, reaching the WHOLE-VALUE arm at any length.
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
     const deadlineMs = Date.now() + ASGProvider.TG_CONVERGENCE_TIMEOUT_MS;
     let lastObserved: Set<string> = new Set();
     while (Date.now() < deadlineMs) {
@@ -1320,7 +1371,7 @@ export class ASGProvider implements ResourceProvider {
         // already succeeded, and propagating would fail the whole
         // update path. Log + retry; the loop will fall through to the
         // timeout-warn path if the API is genuinely down.
-        this.logger.debug(
+        debug(
           `applyTargetGroupArnsDiff convergence poll: transient error, retrying — ${
             err instanceof Error ? err.message : String(err)
           }`
@@ -1341,9 +1392,15 @@ export class ASGProvider implements ResourceProvider {
     // Sort both sides before stringify for visual symmetry — expected
     // comes from the caller's insertion order, observed from AWS-side
     // order; eyeballing the diff in logs is easier when both are sorted.
-    const expectedSorted = [...expected].sort();
-    const observedSorted = [...lastObserved].sort();
-    this.logger.warn(
+    //
+    // Each ARN is masked INDIVIDUALLY before being stringified (issue #1997):
+    // `JSON.stringify` escapes `"` / `\` / newlines, so a secret carrying any of
+    // them no longer OCCURS in the finished line and the outer sink alone would
+    // miss it. The observed side is masked too — it comes back from AWS, but a
+    // resolved secret sent by an earlier deploy is exactly what AWS echoes.
+    const expectedSorted = [...expected].sort().map((a) => maskSecrets(a));
+    const observedSorted = [...lastObserved].sort().map((a) => maskSecrets(a));
+    warn(
       `applyTargetGroupArnsDiff: TG set did not converge within ${ASGProvider.TG_CONVERGENCE_TIMEOUT_MS}ms for ASG ${physicalId}. expected=${JSON.stringify(expectedSorted)} observed=${JSON.stringify(observedSorted)}`
     );
   }

@@ -77,6 +77,8 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
+  UpdateContext,
+  SecretMasker,
 } from '../../types/resource.js';
 
 /**
@@ -805,6 +807,37 @@ function desiredIndexEntriesByName(value: unknown): Map<string, Record<string, u
  */
 export const deleteTableRetryDelays: { sleep?: (ms: number) => Promise<void> } = {};
 
+/**
+ * Mask every string LEAF (and every KEY) of a value before it is stringified
+ * into a log line (issue #1932 item 3, adopted here by issue #1997).
+ *
+ * This is the INNER of the two masking layers `SecretMaskingContext` prescribes,
+ * and neither layer subsumes the other. The outer one — routing the assembled
+ * message through the masker — can only reach `maskSecretsInText`'s SUBSTRING
+ * arm, which ignores needles below `MIN_NEEDLE_LENGTH` (4) and, more
+ * importantly, never matches at all once `JSON.stringify` has escaped a `"`, a
+ * `\` or a newline inside the value: the secret no longer OCCURS in the finished
+ * line. Handing the masker each raw string reaches the WHOLE-VALUE arm at any
+ * length and runs BEFORE any escaping. The mask is idempotent and matches by
+ * value rather than by position, so applying both composes.
+ *
+ * Walks rather than testing the top level, because a secret nested in an object
+ * leaf is stringified — and escaped — identically.
+ */
+function maskLeafValue(value: unknown, maskSecrets: SecretMasker): unknown {
+  if (typeof value === 'string') return maskSecrets(value);
+  if (Array.isArray(value)) return value.map((v) => maskLeafValue(v, maskSecrets));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+        maskSecrets(k),
+        maskLeafValue(v, maskSecrets),
+      ])
+    );
+  }
+  return value;
+}
+
 export class DynamoDBTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
   private logger = getLogger().child('DynamoDBTableProvider');
@@ -899,6 +932,20 @@ export class DynamoDBTableProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    // The caller's secret masker (issue #1932 item 3, adopted here by issue
+    // #1997). Read defensively — `create()` is also called by the import path,
+    // by the rollback executor's reverse-replacement arm, and by tests, so it
+    // must not care which caller it got. The helpers below install their own
+    // masked sinks from it rather than each call site masking, so a warning
+    // added later is masked by construction.
+    const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);
+    // ONE masked sink for this method's OWN lines too (issue #1997). The first
+    // cut installed the masker here and threaded it into the helpers but built
+    // no sink, so the partial-create rollback warning below printed `tableName`
+    // — which is `properties['TableName']` — unmasked. The GlobalTable sibling
+    // has carried this sink since the same change.
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
     this.logger.debug(`Creating DynamoDB table ${logicalId}`);
 
     const tableName =
@@ -986,14 +1033,16 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // `'12000'` reaches AWS as a number (PR review round 5).
       const createWarmThroughput = this.coerceWarmThroughputForSend(
         `AWS::DynamoDB::Table ${logicalId}`,
-        properties['WarmThroughput']
+        properties['WarmThroughput'],
+        maskSecrets
       );
       if (createWarmThroughput) {
         createParams.WarmThroughput = createWarmThroughput;
       } else {
         this.warnRefusedWarmThroughput(
           `AWS::DynamoDB::Table ${logicalId}`,
-          properties['WarmThroughput']
+          properties['WarmThroughput'],
+          maskSecrets
         );
       }
 
@@ -1028,7 +1077,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         const declaredGsis = properties['GlobalSecondaryIndexes'];
         createParams.GlobalSecondaryIndexes = Array.isArray(declaredGsis)
           ? (declaredGsis as GlobalSecondaryIndex[]).map((entry) =>
-              this.coerceIndexWarmThroughputForCreate(logicalId, entry)
+              this.coerceIndexWarmThroughputForCreate(logicalId, entry, maskSecrets)
             )
           : (declaredGsis as GlobalSecondaryIndex[]);
       }
@@ -1104,7 +1153,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // NOT fields on CreateTable), so they run after the ACTIVE wait too.
       await this.applyKinesisStreamingDestination(
         tableName,
-        properties['KinesisStreamSpecification']
+        properties['KinesisStreamSpecification'],
+        undefined,
+        maskSecrets
       );
       await this.applyContributorInsights(
         tableName,
@@ -1131,9 +1182,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
       if (tableCreated) {
         try {
           await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
-          this.logger.debug(`Rolled back partially-created DynamoDB table ${tableName}`);
+          debug(`Rolled back partially-created DynamoDB table ${tableName}`);
         } catch (cleanupError) {
-          this.logger.warn(
+          warn(
             `Failed to roll back partially-created DynamoDB table ${tableName}: ${
               cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
             }`
@@ -1166,9 +1217,30 @@ export class DynamoDBTableProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    // Read for ONE thing today: `maskSecrets` (issue #1932 item 3, adopted here
+    // by issue #1997). The update path carries the same RESOLVED bag as
+    // `create()`, so the masking requirement is identical on both — a masker
+    // present on one and absent from the other is not a partial fix, it is a fix
+    // with a hole in the shape of whichever path a given deploy takes.
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating DynamoDB table ${logicalId}: ${physicalId}`);
+    // ONE masked sink for every warning in this method (issue #1997), rather
+    // than a `maskSecrets(...)` at each `this.logger.warn` call: a warning added
+    // later is masked by construction instead of by the author remembering. It
+    // is the OUTER of two layers — a finished message is always longer than the
+    // value inside it, so it can only reach `maskSecretsInText`'s SUBSTRING arm,
+    // which ignores needles below `MIN_NEEDLE_LENGTH` (4). The per-value
+    // maskers in the helpers below are the inner layer, handing the masker each
+    // raw string so it reaches the WHOLE-VALUE arm at any length; the mask is
+    // idempotent, so applying both is free.
+    const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    // `physicalId` is the resolved table name, so the entry line needs the
+    // sink too (issue #1997) — found by a test asserting on the debug
+    // stream rather than by review.
+    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
+    debug(`Updating DynamoDB table ${logicalId}: ${maskSecrets(physicalId)}`);
 
     try {
       // Get current table description for attributes (also gives us the
@@ -1317,9 +1389,20 @@ export class DynamoDBTableProvider implements ResourceProvider {
           : liveBillingMode
       ) as 'PROVISIONED' | 'PAY_PER_REQUEST';
       if (!recordedPrevBillingModeUsable) {
-        this.logger.warn(
+        warn(
           `AWS::DynamoDB::Table ${logicalId}: the recorded previous BillingMode is ` +
-            `unusable (${JSON.stringify(recordedPrevBillingMode)}) — using the table's ` +
+            // Masked LEAF BY LEAF before `JSON.stringify` escapes anything
+            // (issue #1997): a secret carrying a quote, a backslash or a newline
+            // no longer OCCURS in the finished line, so the sink alone would
+            // miss it. The walk rather than a top-level `typeof` test is
+            // load-bearing — this arm fires precisely when the value is NOT a
+            // usable string, so the realistic shapes are an array or an object
+            // with the secret nested inside. `previousProperties` is a cdkd
+            // state record, whose values were resolved by an earlier deploy and
+            // can be plaintext.
+            `unusable (${JSON.stringify(
+              maskLeafValue(recordedPrevBillingMode, maskSecrets)
+            )}) — using the table's ` +
             `actual billing mode (${prevBillingMode}) as the comparison baseline for ` +
             `this update so a corrected template does not issue a same-mode UpdateTable.`
         );
@@ -1364,7 +1447,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
                   // The GlobalTable twin of THIS arm is still unprefixed and
                   // still says "current" — same defect, contended file, tracked
                   // in issue #1739.
-                  this.logger.warn(
+                  warn(
                     `AWS::DynamoDB::Table ${logicalId}: ${message} The mode this update ` +
                       `compared against (${prevBillingMode}) is kept rather than flipped to ` +
                       `the default.`
@@ -1545,9 +1628,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
           if (tableCapacityUnusable) {
             reasons.push(`the template declares no usable table-level ProvisionedThroughput`);
           }
-          this.logger.warn(
+          warn(
             `AWS::DynamoDB::Table ${logicalId}: this deploy removes global secondary index(es) ` +
-              `${removable.join(', ')} and flips BillingMode to PROVISIONED. The removal would ` +
+              // Index NAMES come out of the resolved `GlobalSecondaryIndexes`
+              // bag, so each is masked as a raw value before being joined.
+              `${removable.map((n) => maskSecrets(n)).join(', ')} and flips BillingMode to ` +
+              `PROVISIONED. The removal would ` +
               `normally be applied BEFORE the flip, but ${reasons.join(' and ')}, so AWS rejects ` +
               `the flip either way. Nothing was removed.`
           );
@@ -1773,10 +1859,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
             // is the CFn-parity outcome and a better message than anything a
             // pre-flight guess could produce. The warning exists so the cause is
             // visible in cdkd's own output rather than only in the AWS error.
-            this.logger.warn(
+            warn(
               `AWS::DynamoDB::Table ${logicalId}: flipping BillingMode to PROVISIONED, but the ` +
                 `template declares no usable ProvisionedThroughput for live index(es) ` +
-                `${unspecified.join(', ')}. AWS requires per-index capacity in the same ` +
+                // Index NAMES, masked raw before the join — same reason as the
+                // removal warning above.
+                `${unspecified.map((n) => maskSecrets(n)).join(', ')}. AWS requires per-index ` +
+                `capacity in the same ` +
                 `UpdateTable and will reject the flip naming them. Declare ` +
                 `GlobalSecondaryIndexes[].ProvisionedThroughput (both ReadCapacityUnits and ` +
                 `WriteCapacityUnits) for each. An index this deploy REMOVES is deleted BEFORE ` +
@@ -1856,7 +1945,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // `skipWarmThroughputDecrease` wherever this call sits.)
         this.warnRefusedWarmThroughput(
           `AWS::DynamoDB::Table ${logicalId}`,
-          properties['WarmThroughput']
+          properties['WarmThroughput'],
+          maskSecrets
         );
         // COERCED ONCE, here, and used for BOTH the gate below and the wire
         // (PR review round 7). Two rules meet at this line:
@@ -1877,7 +1967,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
         //    changed value rather than on every deploy.
         const warmThroughputToSend = this.coerceWarmThroughputForSend(
           `AWS::DynamoDB::Table ${logicalId}`,
-          properties['WarmThroughput']
+          properties['WarmThroughput'],
+          maskSecrets
         );
         if (
           warmThroughputToSend !== undefined &&
@@ -1905,7 +1996,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
             logicalId,
             physicalId,
             warmThroughputToSend,
-            table?.WarmThroughput
+            table?.WarmThroughput,
+            maskSecrets
           )
         ) {
           await this.dynamoDBClient.send(
@@ -2049,7 +2141,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
           gsiHandledByBillingFlip,
           currentLiveIndexNames,
           currentLiveIndexByName,
-          liveCapacityComparable
+          liveCapacityComparable,
+          maskSecrets
         );
       }
 
@@ -2125,7 +2218,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
         await this.applyKinesisStreamingDestination(
           physicalId,
           properties['KinesisStreamSpecification'],
-          previousProperties['KinesisStreamSpecification']
+          previousProperties['KinesisStreamSpecification'],
+          maskSecrets
         );
       }
 
@@ -2721,7 +2815,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
   private async applyKinesisStreamingDestination(
     tableName: string,
     spec: unknown,
-    previousSpec?: unknown
+    previousSpec?: unknown,
+    // The caller's secret masker (issue #1997). The warning below names
+    // `tableName`, which on the create path IS `properties['TableName']`.
+    // Defaults to IDENTITY; both callers are on the create / update path.
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
     const newArn = this.extractKinesisStreamArn(spec);
     const prevArn = this.extractKinesisStreamArn(previousSpec);
@@ -2745,7 +2843,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
           )
       ) {
         this.logger.warn(
-          `Kinesis streaming ApproximateCreationDateTimePrecision change on ${tableName} was not applied (same stream ARN; precision-only updates are not yet supported)`
+          maskSecrets(
+            `Kinesis streaming ApproximateCreationDateTimePrecision change on ${tableName} was not applied (same stream ARN; precision-only updates are not yet supported)`
+          )
         );
       }
       return;
@@ -3084,8 +3184,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // `{0, 0}` for every index (the #1571 trap) — comparing that would be
     // meaningless, so the capacity half stays disabled while the EXISTENCE
     // half above still applies.
-    liveCapacityComparable = false
+    liveCapacityComparable = false,
+    // The caller's secret masker (issue #1932 item 3, adopted here by issue
+    // #1997). Every warning below names a RESOLVED property value — an index
+    // NAME, or a declared `WarmThroughput` / `ProvisionedThroughput` block — and
+    // the helpers this method calls each install their own masked sink from it.
+    // Defaults to IDENTITY so existing callers and unit tests are unchanged.
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
+    // ONE masked sink for the warnings this method emits directly (issue
+    // #1997); the helpers below take the masker itself so they can also mask
+    // raw values before stringifying them.
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     const prev = previousGsis ?? [];
     const desired = desiredGsis ?? [];
     const prevByName = new Map(prev.filter((g) => g.IndexName).map((g) => [g.IndexName!, g]));
@@ -3141,8 +3251,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // the call that should be suppressed.)
         const recovered = live !== undefined && live.IndexStatus !== 'DELETING';
         if (recovered) {
-          this.logger.warn(
-            `GSI ${name} on DynamoDB table ${physicalId} already exists in AWS but is absent ` +
+          warn(
+            `GSI ${maskSecrets(name)} on DynamoDB table ${physicalId} already exists in AWS ` +
+              `but is absent ` +
               `from cdkd's recorded previous state, so its Create is being skipped. This ` +
               `usually means an earlier deploy created the index and then failed before ` +
               `state was written.`
@@ -3165,7 +3276,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
             gsi.ProvisionedThroughput &&
             !handledByBillingFlip.has(name) &&
             !liveCapacityAlreadyMatches(live.ProvisionedThroughput, gsi.ProvisionedThroughput) &&
-            !this.skipZeroCapacityIndexUpdate(name, physicalId, gsi.ProvisionedThroughput)
+            !this.skipZeroCapacityIndexUpdate(
+              name,
+              physicalId,
+              gsi.ProvisionedThroughput,
+              maskSecrets
+            )
           ) {
             adopted.ProvisionedThroughput = gsi.ProvisionedThroughput;
             adoptedHasMember = true;
@@ -3174,7 +3290,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
           // capacity is (issue #1768): the Create was skipped, so nothing else
           // in this deploy would ever send it. There is no recorded previous
           // side here, so the value is compared only against what AWS holds.
-          const adoptedWarm = this.warmThroughputOpFor(name, physicalId, gsi, undefined, live);
+          const adoptedWarm = this.warmThroughputOpFor(
+            name,
+            physicalId,
+            gsi,
+            undefined,
+            live,
+            maskSecrets
+          );
           if (adoptedWarm) {
             adopted.WarmThroughput = adoptedWarm;
             adoptedHasMember = true;
@@ -3191,8 +3314,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
           // actually tell them apart" trap, and a false positive would refuse
           // a perfectly valid deploy. A visible warning naming `cdkd drift` is
           // the honest answer for the shape half.
-          this.logger.warn(
-            `GSI ${name} was adopted from AWS rather than created, so cdkd could not verify ` +
+          warn(
+            `GSI ${maskSecrets(name)} was adopted from AWS rather than created, so cdkd could ` +
+              `not verify ` +
               `its KeySchema / Projection match the template. Run \`cdkd drift ${physicalId}\` ` +
               `to confirm, and \`cdkd drift --accept\` if AWS is the source of truth.`
           );
@@ -3201,15 +3325,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // A declared-but-unsendable WarmThroughput is announced here rather
         // than vanishing into the spread below (PR review of issue #1768).
         this.warnRefusedWarmThroughput(
-          `GSI ${name} on DynamoDB table ${physicalId}`,
-          gsi.WarmThroughput
+          `GSI ${maskSecrets(name)} on DynamoDB table ${physicalId}`,
+          gsi.WarmThroughput,
+          maskSecrets
         );
         // COERCED, not forwarded verbatim (PR review round 5): a quoted
         // `'12000'` must reach AWS as a number, not as a string in a Long
         // field.
         const createWarm = this.coerceWarmThroughputForSend(
-          `GSI ${name} on DynamoDB table ${physicalId}`,
-          gsi.WarmThroughput
+          `GSI ${maskSecrets(name)} on DynamoDB table ${physicalId}`,
+          gsi.WarmThroughput,
+          maskSecrets
         );
         ops.push({
           Create: {
@@ -3291,7 +3417,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
                 `capacity in AWS; skipping its throughput Update`
             );
           } else if (
-            !this.skipZeroCapacityIndexUpdate(name, physicalId, gsi.ProvisionedThroughput)
+            !this.skipZeroCapacityIndexUpdate(
+              name,
+              physicalId,
+              gsi.ProvisionedThroughput,
+              maskSecrets
+            )
           ) {
             update.ProvisionedThroughput = gsi.ProvisionedThroughput;
             updateHasMember = true;
@@ -3303,7 +3434,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
           physicalId,
           gsi,
           before,
-          liveIndexByName?.get(name)
+          liveIndexByName?.get(name),
+          maskSecrets
         );
         if (warm) {
           update.WarmThroughput = warm;
@@ -3329,15 +3461,32 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * two messages are disjoint by construction: this one fires only when
    * something DID resolve.
    */
-  private coerceWarmThroughputForSend(scope: string, value: unknown): WarmThroughput | undefined {
+  private coerceWarmThroughputForSend(
+    scope: string,
+    value: unknown,
+    maskSecrets: SecretMasker = (text) => text
+  ): WarmThroughput | undefined {
+    // ONE masked sink (issue #1997) — BUILT, not an inline wrap. An inline
+    // `this.logger.warn(maskSecrets(...))` leaves the next warning added here
+    // unmasked by default, which is the exact failure the sink shape exists to
+    // prevent (and which this file already suffered once, in
+    // `warmThroughputOpFor`).
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     const coerced = coerceWarmThroughput(value);
     if (coerced === undefined) return undefined;
     if (coerced.dropped.length > 0) {
-      this.logger.warn(
+      // The message names the RAW declared
+      // `WarmThroughput` bag, which arrives resolved, so a
+      // `{{resolve:secretsmanager:...}}` scalar inside it is plaintext here.
+      // `maskLeafValue` is the inner layer — it hands the masker each raw string
+      // BEFORE `JSON.stringify` escapes it, so a secret carrying a quote, a
+      // backslash or a newline is still caught.
+      warn(
         `${scope}: WarmThroughput member(s) ${coerced.dropped.join(', ')} in ` +
-          `${JSON.stringify(value)} are not a number DynamoDB accepts, so they were dropped from ` +
-          `the request, which leaves ${JSON.stringify(coerced.spec)}. Check for an unresolved ` +
-          `intrinsic or a non-numeric value.`
+          `${JSON.stringify(maskLeafValue(value, maskSecrets))} are not a number DynamoDB ` +
+          `accepts, so they were dropped from the request, which leaves ` +
+          `${JSON.stringify(coerced.spec)}. Check for an unresolved intrinsic or a ` +
+          `non-numeric value.`
       );
     }
     return coerced.spec;
@@ -3360,17 +3509,22 @@ export class DynamoDBTableProvider implements ResourceProvider {
    */
   private coerceIndexWarmThroughputForCreate(
     logicalId: string,
-    entry: GlobalSecondaryIndex
+    entry: GlobalSecondaryIndex,
+    maskSecrets: SecretMasker = (text) => text
   ): GlobalSecondaryIndex {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return entry;
     const declared = (entry as unknown as Record<string, unknown>)['WarmThroughput'];
     if (declared === undefined) return entry;
-    const scope = `GSI ${entry.IndexName ?? '<unnamed>'} on AWS::DynamoDB::Table ${logicalId}`;
-    const coerced = this.coerceWarmThroughputForSend(scope, declared);
+    // The index NAME is a resolved property value, so it is masked before it
+    // becomes part of the scope every warning below interpolates (issue #1997).
+    const scope = `GSI ${
+      entry.IndexName === undefined ? '<unnamed>' : maskSecrets(entry.IndexName)
+    } on AWS::DynamoDB::Table ${logicalId}`;
+    const coerced = this.coerceWarmThroughputForSend(scope, declared, maskSecrets);
     if (coerced === undefined) {
       // Nothing usable: drop the block from the request and say so, exactly as
       // the update-side arms do.
-      this.warnRefusedWarmThroughput(scope, declared);
+      this.warnRefusedWarmThroughput(scope, declared, maskSecrets);
       const { WarmThroughput: _dropped, ...rest } = entry;
       return rest;
     }
@@ -3389,13 +3543,23 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * Silent for an ABSENT or FALSY value — see {@link isRefusedWarmThroughput}
    * for why those two are not this warning's business.
    */
-  private warnRefusedWarmThroughput(scope: string, value: unknown): void {
+  private warnRefusedWarmThroughput(
+    scope: string,
+    value: unknown,
+    maskSecrets: SecretMasker = (text) => text
+  ): void {
+    // ONE masked sink (issue #1997) — BUILT, not an inline wrap, with the raw
+    // declared value masked leaf by leaf first. See
+    // `coerceWarmThroughputForSend` for why both layers are needed.
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     if (!isRefusedWarmThroughput(value)) return;
-    this.logger.warn(
-      `${scope}: the declared WarmThroughput ${JSON.stringify(value)} carries no usable ` +
-        `ReadUnitsPerSecond or WriteUnitsPerSecond, so it was NOT sent — DynamoDB accepts only ` +
-        `those two members and rejects a request without either. Check for a misspelled member ` +
-        `name or an unresolved intrinsic. Nothing else on this resource was affected.`
+    warn(
+      `${scope}: the declared WarmThroughput ${JSON.stringify(
+        maskLeafValue(value, maskSecrets)
+      )} carries no usable ` +
+        `ReadUnitsPerSecond or WriteUnitsPerSecond, so it was NOT sent — DynamoDB accepts ` +
+        `only those two members and rejects a request without either. Check for a misspelled ` +
+        `member name or an unresolved intrinsic. Nothing else on this resource was affected.`
     );
   }
 
@@ -3455,7 +3619,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
   private skipZeroCapacityIndexUpdate(
     indexName: string,
     physicalId: string,
-    requested: ProvisionedThroughput | undefined
+    requested: ProvisionedThroughput | undefined,
+    maskSecrets: SecretMasker = (text) => text
   ): boolean {
     if (requested === undefined) return false;
     if (
@@ -3464,8 +3629,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
     ) {
       return false;
     }
-    this.logger.warn(
-      `GSI ${indexName} on DynamoDB table ${physicalId}: the requested ProvisionedThroughput is ` +
+    // ONE masked sink (issue #1997) — BUILT, not an inline wrap. `indexName` is
+    // a RESOLVED property value (the declared `IndexName`) and is ALSO masked
+    // raw: a DynamoDB index name may be as short as 3 characters, which is
+    // below `MIN_NEEDLE_LENGTH` (4), so the sink's substring scan can never
+    // reach it and only the whole-value mask can.
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    warn(
+      `GSI ${maskSecrets(indexName)} on DynamoDB table ${physicalId}: the requested ProvisionedThroughput is ` +
         `{ReadCapacityUnits: 0, WriteCapacityUnits: 0}, which is AWS's on-demand placeholder rather ` +
         `than a capacity DynamoDB accepts (the minimum is 1), so no per-index throughput update was ` +
         `sent. This usually means the value came from a pre-#1767 cdkd state record — a ` +
@@ -3506,8 +3677,21 @@ export class DynamoDBTableProvider implements ResourceProvider {
     physicalId: string,
     desired: GlobalSecondaryIndex,
     previous: GlobalSecondaryIndex | undefined,
-    live: GlobalSecondaryIndexDescription | undefined
+    live: GlobalSecondaryIndexDescription | undefined,
+    maskSecrets: SecretMasker = (text) => text
   ): WarmThroughput | undefined {
+    // ONE masked sink per level for every line in this method (issue #1997).
+    // Built rather than inline-wrapped because this method had TWO further
+    // interpolations of `indexName` below the two masked calls — a `debug` and
+    // a `warn` — that carried no masking at all: the value was masked where it
+    // entered a helper's `scope` string and then printed RAW here. That is the
+    // exact failure the sink shape exists to prevent, so the sink is the fix
+    // rather than a third inline wrap.
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
+    // Masked ONCE and reused, so the two helper `scope` strings and the two
+    // lines below cannot drift apart again.
+    const safeIndexName = maskSecrets(indexName);
     const requested = desired.WarmThroughput;
     // The UNCHANGED gate runs FIRST, so the refusal below warns once per
     // CHANGED value rather than on every deploy that touches any other index
@@ -3526,11 +3710,16 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // messages quote `sendable`, which is narrower than what the user wrote,
     // and without this the missing member went unmentioned entirely.
     const sendable = this.coerceWarmThroughputForSend(
-      `GSI ${indexName} on DynamoDB table ${physicalId}`,
-      requested
+      `GSI ${safeIndexName} on DynamoDB table ${physicalId}`,
+      requested,
+      maskSecrets
     );
     if (sendable === undefined) {
-      this.warnRefusedWarmThroughput(`GSI ${indexName} on DynamoDB table ${physicalId}`, requested);
+      this.warnRefusedWarmThroughput(
+        `GSI ${safeIndexName} on DynamoDB table ${physicalId}`,
+        requested,
+        maskSecrets
+      );
       return undefined;
     }
     // Both gates below read the COERCED spec, not the raw declared value (PR
@@ -3554,8 +3743,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // structural compare could never match and the skip would be dead code that
     // only LOOKED safe.
     if (warmThroughputAlreadyMatches(sendable, live?.WarmThroughput)) {
-      this.logger.debug(
-        `GSI ${indexName} on DynamoDB table ${physicalId} already carries the requested warm ` +
+      debug(
+        `GSI ${safeIndexName} on DynamoDB table ${physicalId} already carries the requested warm ` +
           `throughput in AWS; skipping its WarmThroughput Update`
       );
       return undefined;
@@ -3570,8 +3759,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // one the table-level twin carries: a successful deploy re-captures
       // `observedProperties` through this provider's own `readCurrentState`, so
       // the drift signal this leaves standing is erased by the next deploy.
-      this.logger.warn(
-        `GSI ${indexName} on DynamoDB table ${physicalId}: the requested WarmThroughput ` +
+      warn(
+        `GSI ${safeIndexName} on DynamoDB table ${physicalId}: the requested WarmThroughput ` +
           `${JSON.stringify(sendable)} is lower than the ${JSON.stringify({
             ReadUnitsPerSecond: live?.WarmThroughput?.ReadUnitsPerSecond,
             WriteUnitsPerSecond: live?.WarmThroughput?.WriteUnitsPerSecond,
@@ -3695,10 +3884,16 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // reading "the requested WarmThroughput {...}" needs the request, not a
     // bag containing members cdkd already dropped.
     desired: WarmThroughput,
-    live: WarmThroughputUnits | undefined
+    live: WarmThroughputUnits | undefined,
+    maskSecrets: SecretMasker = (text) => text
   ): boolean {
+    // ONE masked sink (issue #1997) — BUILT, not an inline wrap. `desired` is
+    // the COERCED numeric spec, so it carries no plaintext of its own, but a
+    // built sink means any interpolation added later is masked by construction
+    // rather than by the author remembering.
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     if (!isWarmThroughputDecrease(desired, live)) return false;
-    this.logger.warn(
+    warn(
       `AWS::DynamoDB::Table ${logicalId}: the requested WarmThroughput ` +
         `${JSON.stringify(desired)} is lower than the ${JSON.stringify({
           ReadUnitsPerSecond: live?.ReadUnitsPerSecond,

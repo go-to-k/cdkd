@@ -93,6 +93,8 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
+  UpdateContext,
+  SecretMasker,
 } from '../../types/resource.js';
 
 /**
@@ -164,6 +166,42 @@ const DRIFT_STRIPPED_INDEX_MEMBERS: ReadonlyArray<{ listKey: string; member: str
  *    client. The shared helper `applyCrossRegionReplicaTagsDiff`
  *    centralizes the diff + best-effort WARN-on-failure contract.
  */
+/**
+ * Mask every string LEAF (and every KEY) of a value before it is stringified
+ * into a log line (issue #1932 item 3, adopted here by issue #1997).
+ *
+ * The INNER of the two masking layers `SecretMaskingContext` prescribes, and
+ * neither layer subsumes the other. The outer one — routing the assembled
+ * message through the masker — can only reach `maskSecretsInText`'s SUBSTRING
+ * arm, which ignores needles below `MIN_NEEDLE_LENGTH` (4) and, more
+ * importantly, never matches at all once `JSON.stringify` has escaped a `"`, a
+ * `\` or a newline inside the value: the secret no longer OCCURS in the
+ * finished line. Handing the masker each raw string reaches the WHOLE-VALUE arm
+ * at any length and runs BEFORE any escaping. The mask is idempotent and matches
+ * by value rather than by position, so the two layers compose.
+ *
+ * Walks rather than testing the top level, because a secret nested in an object
+ * or array leaf is stringified — and escaped — identically. The sibling
+ * `dynamodb-table-provider.ts` carries the same helper; it is duplicated rather
+ * than shared because these two files deliberately hold no common module today
+ * beyond the narrow rule modules (`dynamodb-warm-throughput.ts`,
+ * `dynamodb-index-busy-delete.ts`), each of which exists for a MEASURED
+ * divergence rather than for convenience.
+ */
+function maskLeafValue(value: unknown, maskSecrets: SecretMasker): unknown {
+  if (typeof value === 'string') return maskSecrets(value);
+  if (Array.isArray(value)) return value.map((v) => maskLeafValue(v, maskSecrets));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+        maskSecrets(k),
+        maskLeafValue(v, maskSecrets),
+      ])
+    );
+  }
+  return value;
+}
+
 export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
   private logger = getLogger().child('DynamoDBGlobalTableProvider');
@@ -370,6 +408,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    // The caller's secret masker (issue #1932 item 3, adopted here by issue
+    // #1997). Read defensively — `create()` is also called by the import path,
+    // by the rollback executor's reverse-replacement arm, and by tests, so it
+    // must not care which caller it got.
+    const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     this.logger.debug(`Creating DynamoDB GlobalTable ${logicalId}`);
 
     const tableName =
@@ -461,7 +505,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // `BillingMode`, because whether an absent recorded mode may be
         // materialized is issue #1733's question, not this one's.
         billingModeAbsentOnReplay = true;
-        this.logger.warn(
+        warn(
           `AWS::DynamoDB::GlobalTable ${logicalId}: the state record declares no BillingMode, ` +
             `so this replay creates the table PAY_PER_REQUEST. If it was PROVISIONED, set the ` +
             `mode in the template and redeploy.`
@@ -991,7 +1035,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       );
       toSdkReplicaThroughputOverrides(replica, billingMode, diagnostics, {});
     }
-    this.reportThroughputDiagnostics(diagnostics, logicalId, tableName);
+    this.reportThroughputDiagnostics(diagnostics, logicalId, tableName, maskSecrets);
 
     try {
       await this.dynamoDBClient.send(new CreateTableCommand(createParams));
@@ -1052,7 +1096,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           region,
           undefined, // create() has no previous state — every tag is an add
           replicaTags,
-          tableName
+          tableName,
+          maskSecrets
         );
       }
 
@@ -1100,10 +1145,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             tableName,
             [],
             collectAutoScalingTargets(properties, currentRegion),
-            currentRegion
+            currentRegion,
+            undefined,
+            maskSecrets
           );
         } catch (autoScalingErr) {
-          this.logger.warn(
+          warn(
             `Auto-scaling registration failed for ${tableName}: ` +
               `${autoScalingErr instanceof Error ? autoScalingErr.message : String(autoScalingErr)}. ` +
               `The table was created successfully; re-run the deploy to register the ` +
@@ -1137,9 +1184,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // first — mirror the `delete()` shape: DescribeTable → per-region
       // Delete ReplicaUpdates → DeleteTable. Each step is best-effort
       // so a single sub-failure does not block the rest of the cleanup.
-      this.logger.warn(
-        `Wiring failed after CreateTable for ${tableName}; attempting best-effort cleanup`
-      );
+      warn(`Wiring failed after CreateTable for ${tableName}; attempting best-effort cleanup`);
       try {
         const describe = await this.dynamoDBClient.send(
           new DescribeTableCommand({ TableName: tableName })
@@ -1161,7 +1206,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               replicaCleanupErr instanceof Error
                 ? replicaCleanupErr.message
                 : String(replicaCleanupErr);
-            this.logger.warn(
+            warn(
               `Partial-create cleanup: failed to drop replica ${region} on ${tableName}: ${msg}. ` +
                 `Run: aws dynamodb update-table --table-name ${tableName} ` +
                 `--replica-updates 'Delete={RegionName=${region}}' --region ${currentRegion}`
@@ -1171,7 +1216,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
       } catch (cleanupErr) {
         const cleanupMsg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
-        this.logger.warn(
+        warn(
           `Partial-create cleanup failed for ${tableName}: ${cleanupMsg}. ` +
             `Run: aws dynamodb delete-table --table-name ${tableName} ` +
             `to remove the orphaned AWS-side table.`
@@ -1200,17 +1245,27 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private reportThroughputDiagnostics(
     diagnostics: readonly ThroughputDiagnostic[],
     logicalId: string,
-    physicalId: string
+    physicalId: string,
+    // The caller's secret masker (issue #1997). Each diagnostic names an index
+    // NAME read out of the resolved `GlobalSecondaryIndexes` bag, and its
+    // message can quote a declared capacity value. Defaults to IDENTITY.
+    maskSecrets: SecretMasker = (text) => text
   ): void {
+    // ONE masked sink (issue #1997): this formatter is the single site the five
+    // translation call sites share, so masking here covers every one of them.
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     const seen = new Set<string>();
     for (const diagnostic of diagnostics) {
+      // The index NAME is a resolved property value, so it is masked raw —
+      // reaching `maskSecretsInText`'s WHOLE-VALUE arm at any length — as well
+      // as through the sink above.
       const scope = diagnostic.indexName
-        ? `GSI '${diagnostic.indexName}' on ${physicalId}`
+        ? `GSI '${maskSecrets(diagnostic.indexName)}' on ${physicalId}`
         : physicalId;
       const line = `DynamoDB GlobalTable ${logicalId}: ${scope}: ${diagnostic.message}`;
       if (seen.has(line)) continue;
       seen.add(line);
-      this.logger.warn(line);
+      warn(line);
     }
   }
 
@@ -1241,8 +1296,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     desired: WarmThroughputSpec | undefined,
     liveWarmByIndexName: ReadonlyMap<string, WarmThroughputSpec>,
     logicalId: string,
-    physicalId: string
+    physicalId: string,
+    // The caller's secret masker (issue #1997). The warning below names the
+    // DECLARED per-index `WarmThroughput` and the index NAME, both of which come
+    // out of the RESOLVED `properties` bag. Defaults to IDENTITY.
+    maskSecrets: SecretMasker = (text) => text
   ): WarmThroughputSpec | undefined {
+    // ONE masked sink (issue #1997) — see `update()` for why both layers.
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     if (!desired) return undefined;
     const live = liveWarmByIndexName.get(indexName);
     if (!isWarmThroughputDecrease(desired, live)) return desired;
@@ -1256,8 +1317,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       WARM_THROUGHPUT_MEMBERS.filter((m) => spec?.[m] !== undefined)
         .map((m) => `${m}=${spec?.[m]}`)
         .join(', ');
-    this.logger.warn(
-      `DynamoDB GlobalTable ${logicalId}: GSI '${indexName}' on ${physicalId}: ` +
+    warn(
+      // The index NAME is a resolved property value: masked RAW so it reaches
+      // `maskSecretsInText`'s WHOLE-VALUE arm at any length, as well as through
+      // the sink above (issue #1997). `format` renders numeric members only, so
+      // it carries no plaintext of its own.
+      `DynamoDB GlobalTable ${logicalId}: GSI '${maskSecrets(indexName)}' on ${physicalId}: ` +
         `WarmThroughput was NOT sent — the template asks for ${format(desired)} while AWS ` +
         `reports ${format(live)}, and DynamoDB rejects a decrease ` +
         `("decreasing WarmThroughput is not supported"). Warm throughput only rises with a ` +
@@ -1378,9 +1443,29 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    // Read for ONE thing today: `maskSecrets` (issue #1932 item 3, adopted here
+    // by issue #1997). The update path carries the same RESOLVED bag as
+    // `create()`, so the masking requirement is identical on both — a masker on
+    // one path and not the other is a fix with a hole in the shape of whichever
+    // path a given deploy takes.
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating DynamoDB GlobalTable ${logicalId}: ${physicalId}`);
+    // ONE masked sink for every warning in this method (issue #1997), rather
+    // than a `maskSecrets(...)` at each `this.logger.warn` call: a warning added
+    // later is masked by construction instead of by the author remembering. It
+    // is the OUTER of two layers — a finished message is always longer than the
+    // value inside it, so it can only reach `maskSecretsInText`'s SUBSTRING arm,
+    // which ignores needles below `MIN_NEEDLE_LENGTH` (4). The per-value masking
+    // below is the inner layer, handing the masker each raw string so it reaches
+    // the WHOLE-VALUE arm at any length and BEFORE `JSON.stringify` escapes it.
+    const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    // `physicalId` is the resolved table name, so the entry line needs the
+    // sink too (issue #1997) — found by a test asserting on the debug
+    // stream rather than by review.
+    const debug = (message: string): void => this.logger.debug(maskSecrets(message));
+    debug(`Updating DynamoDB GlobalTable ${logicalId}: ${maskSecrets(physicalId)}`);
 
     // ─── Immutable property guards (defense-in-depth) ───────────────────
     if (
@@ -1475,7 +1560,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     try {
       // 1. Wait for ACTIVE before any update — defensive against rare
       // states where a previous deploy left the table mid-transition.
-      await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+      await this.waitForTableActiveAfterUpdate(
+        physicalId,
+        logicalId,
+        undefined,
+        undefined,
+        maskSecrets
+      );
 
       // 2. Tags diff. The CFn `AWS::DynamoDB::GlobalTable` schema has
       // NO top-level `Tags` — tags live inside each `Replicas[]` entry
@@ -1634,9 +1725,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             : 'PAY_PER_REQUEST'
           : liveBillingMode;
       if (!recordedOldBillingUsable && !recordedOldBillingAbsent) {
-        this.logger.warn(
+        warn(
           `AWS::DynamoDB::GlobalTable ${logicalId}: the recorded previous BillingMode ` +
-            `is unusable (${JSON.stringify(recordedOldBilling)}) — using the table's ` +
+            // Masked LEAF BY LEAF before `JSON.stringify` escapes anything
+            // (issue #1997): `previousProperties` is a cdkd state record whose
+            // values were resolved by an earlier deploy and can be plaintext,
+            // and a secret carrying a quote / backslash / newline no longer
+            // OCCURS in the finished line once stringified. The walk rather than
+            // a top-level `typeof` test is load-bearing — this arm fires
+            // precisely when the value is NOT a usable string, so the realistic
+            // shapes are an array or an object with the secret nested inside.
+            `is unusable (${JSON.stringify(
+              maskLeafValue(recordedOldBilling, maskSecrets)
+            )}) — using the table's ` +
             `actual billing mode (${oldBilling}) as the comparison baseline for this ` +
             `update so a corrected template does not issue a same-mode UpdateTable.`
         );
@@ -1648,7 +1749,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // suffices: `liveBillingMode` is PAY_PER_REQUEST only when AWS reported
       // it, so this arm implies a reported-or-inferred PROVISIONED.
       if (seedAbsentFromLive && oldBilling !== 'PAY_PER_REQUEST') {
-        this.logger.warn(
+        warn(
           `AWS::DynamoDB::GlobalTable ${logicalId}: the cdkd state record declares no ` +
             `BillingMode — using ${oldBilling} as the comparison baseline for this update ` +
             `(${
@@ -1690,7 +1791,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             // ABSENT recorded previous `oldBilling` is the create-path default
             // and was never checked against AWS, so the stronger wording would
             // assert a mode the table may not have.
-            this.logger.warn(
+            warn(
               `AWS::DynamoDB::GlobalTable ${logicalId}: ${message} The mode this update ` +
                 `compared against (${oldBilling}) is kept for this update rather than ` +
                 `flipped to the default.`
@@ -1762,7 +1863,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       let desiredGsiUnusable = false;
       const onUnusableGsiBlock = (message: string): void => {
         desiredGsiUnusable = true;
-        this.logger.warn(
+        warn(
           `AWS::DynamoDB::GlobalTable ${logicalId}: ${message} No GlobalSecondaryIndexes ` +
             `change is applied by this update; the table's existing indexes are left untouched.`
         );
@@ -1787,7 +1888,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       let previousGsiUnusable = false;
       const onUnusablePreviousGsiBlock = (message: string): void => {
         previousGsiUnusable = true;
-        this.logger.warn(
+        warn(
           `AWS::DynamoDB::GlobalTable ${logicalId}: ${message} (recorded in cdkd state, ` +
             `not in the template) — using the table's LIVE indexes as the comparison ` +
             `baseline for this update, so a corrected template still applies.`
@@ -1847,7 +1948,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
         toSdkReplicaThroughputOverrides(replica, newBilling, diagnostics, {});
       }
-      this.reportThroughputDiagnostics(diagnostics, logicalId, physicalId);
+      this.reportThroughputDiagnostics(diagnostics, logicalId, physicalId, maskSecrets);
 
       // 3. Non-conflicting flat fields in one combined UpdateTable.
       // AWS allows combining these in a single call because they don't
@@ -1895,7 +1996,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           //   - state DPE=false/undefined, AWS=true, new=undefined (console-side enable
           //     + CDK code never set it)
           // Both cases reach the same recovery path.
-          this.logger.warn(
+          warn(
             `Auto-disabling DeletionProtectionEnabled on ${physicalId}: ` +
               `the CDK code does not set 'deletionProtection: true' but AWS ` +
               `has it enabled. AWS will accept DeleteTable on this resource ` +
@@ -1959,7 +2060,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               // below. Without it the sentence names only the PROPERTY PATH, so
               // on a stack with several GlobalTables the user cannot tell which
               // table warned — and neither can an integ assertion.
-              this.logger.warn(
+              warn(
                 `AWS::DynamoDB::GlobalTable ${logicalId}: ${message} The table's existing ` +
                   `stream configuration is left untouched for this update rather than ` +
                   `re-pointed at the default.`
@@ -2250,7 +2351,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
       if (flatChanged) {
         await this.dynamoDBClient.send(new UpdateTableCommand(flatUpdate));
-        await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+        await this.waitForTableActiveAfterUpdate(
+          physicalId,
+          logicalId,
+          undefined,
+          undefined,
+          maskSecrets
+        );
       }
 
       // 4. BillingMode flip (own UpdateTable per AWS state-machine rule).
@@ -2395,7 +2502,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                   gsi.WarmThroughput,
                   liveWarmByIndexName,
                   logicalId,
-                  physicalId
+                  physicalId,
+                  maskSecrets
                 )
               : undefined;
             indexUpdates.push({
@@ -2415,7 +2523,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           }
         }
         await this.dynamoDBClient.send(new UpdateTableCommand(billingUpdate));
-        await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+        await this.waitForTableActiveAfterUpdate(
+          physicalId,
+          logicalId,
+          undefined,
+          undefined,
+          maskSecrets
+        );
       }
 
       // 4a. The table-level on-demand ceilings a PROVISIONED ->
@@ -2428,7 +2542,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         await this.dynamoDBClient.send(
           new UpdateTableCommand({ TableName: physicalId, OnDemandThroughput: onDemandPayload })
         );
-        await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+        await this.waitForTableActiveAfterUpdate(
+          physicalId,
+          logicalId,
+          undefined,
+          undefined,
+          maskSecrets
+        );
       }
 
       // 4b. Table-level write auto-scaling diff (Issue #402 / closes #395
@@ -2467,7 +2587,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           physicalId,
           'dynamodb:table:WriteCapacityUnits',
           writeAutoScalingOld,
-          effectiveNewAutoScaling
+          effectiveNewAutoScaling,
+          undefined,
+          undefined,
+          undefined,
+          maskSecrets
         );
         autoScalingApplied.add(
           autoScalingTargetKey({
@@ -2508,7 +2632,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             'dynamodb:table:ReadCapacityUnits',
             removedReadAutoScaling,
             undefined,
-            regionalAutoScalingClient
+            regionalAutoScalingClient,
+            undefined,
+            undefined,
+            maskSecrets
           );
           autoScalingApplied.add(
             autoScalingTargetKey({ dimension: 'dynamodb:table:ReadCapacityUnits', region })
@@ -2544,7 +2671,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           region,
           undefined,
           newReplicaTags,
-          physicalId
+          physicalId,
+          maskSecrets
         );
 
         // Per-replica read auto-scaling (Issue #402): when the new
@@ -2563,7 +2691,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             'dynamodb:table:ReadCapacityUnits',
             undefined,
             newReadAutoScaling,
-            regionalAutoScalingClient
+            regionalAutoScalingClient,
+            undefined,
+            undefined,
+            maskSecrets
           );
           autoScalingApplied.add(
             autoScalingTargetKey({ dimension: 'dynamodb:table:ReadCapacityUnits', region })
@@ -2600,7 +2731,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           region,
           oldReplicaTags,
           newReplicaTags,
-          physicalId
+          physicalId,
+          maskSecrets
         );
 
         // Per-replica read auto-scaling diff (Issue #402 / closes #395
@@ -2626,7 +2758,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             'dynamodb:table:ReadCapacityUnits',
             oldReadAutoScaling,
             effectiveNewReadAutoScaling,
-            regionalAutoScalingClient
+            regionalAutoScalingClient,
+            undefined,
+            undefined,
+            maskSecrets
           );
           autoScalingApplied.add(
             autoScalingTargetKey({ dimension: 'dynamodb:table:ReadCapacityUnits', region })
@@ -2698,9 +2833,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             droppedOverrides.push('ReadProvisionedThroughputSettings');
           }
           if (droppedOverrides.length > 0) {
-            this.logger.warn(
+            warn(
               `Cross-region replica ${region} of ${physicalId}: the template no longer ` +
-                `declares ${droppedOverrides.join(' / ')}, but DynamoDB offers no way to ` +
+                // Override MEMBER NAMES come out of the resolved `Replicas`
+                // bag, so each is masked raw before the join (issue #1997).
+                `declares ${droppedOverrides.map((o) => maskSecrets(o)).join(' / ')}, but ` +
+                `DynamoDB offers no way to ` +
                 `CLEAR a replica-level throughput override — a -1 sentinel is stored ` +
                 `literally, and an empty override block wedges the table in UPDATING ` +
                 `(both live-probed, issue #1436). The previous override is STILL IN ` +
@@ -2824,8 +2962,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // `readCurrentState` already reverse-maps the LIVE index list, so
           // the drift report is empty and there is nothing to accept. The
           // only thing that actually clears the index is deleting it in AWS.
-          this.logger.warn(
-            `AWS::DynamoDB::GlobalTable ${logicalId}: ${liveOnly.join(', ')} exist(s) on the ` +
+          warn(
+            // Index names, masked raw before the join (issue #1997). These come
+            // back from AWS, but a resolved value sent by an earlier deploy is
+            // exactly what AWS echoes.
+            `AWS::DynamoDB::GlobalTable ${logicalId}: ${liveOnly
+              .map((n) => maskSecrets(n))
+              .join(', ')} exist(s) on the ` +
               `table but not in the template. No Delete is issued while the recorded ` +
               `GlobalSecondaryIndexes are unusable — a junk state record cannot prove cdkd ` +
               `created them, and an index delete is irreversible. This does NOT self-heal, ` +
@@ -2870,7 +3013,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             GlobalSecondaryIndexUpdates: [gsiUpdate],
           })
         );
-        await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+        await this.waitForTableActiveAfterUpdate(
+          physicalId,
+          logicalId,
+          undefined,
+          undefined,
+          maskSecrets
+        );
       }
       for (const gsi of gsiDiff.added) {
         if (!gsi.IndexName || !gsi.KeySchema || !gsi.Projection) continue;
@@ -2879,7 +3028,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           gsi.WarmThroughput,
           liveWarmByIndexName,
           logicalId,
-          physicalId
+          physicalId,
+          maskSecrets
         );
         const gsiUpdate: GlobalSecondaryIndexUpdate = {
           Create: {
@@ -2913,7 +3063,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             GlobalSecondaryIndexUpdates: [gsiUpdate],
           })
         );
-        await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+        await this.waitForTableActiveAfterUpdate(
+          physicalId,
+          logicalId,
+          undefined,
+          undefined,
+          maskSecrets
+        );
       }
       for (const gsi of gsiDiff.modified) {
         // Explicit `typeof` rather than truthiness: an unresolved-intrinsic
@@ -3032,7 +3188,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             gsi.WarmThroughput,
             liveWarmByIndexName,
             logicalId,
-            physicalId
+            physicalId,
+            maskSecrets
           );
           if (warmToSend) update.WarmThroughput = warmToSend;
           else warmDecreaseRefused = true;
@@ -3057,8 +3214,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // recreating the index would not raise a warm throughput AWS itself
           // grew.
           if (!billingFlipped && unresolvedMembers.length === 0 && !warmDecreaseRefused) {
-            this.logger.warn(
-              `GSI '${gsi.IndexName}' on ${physicalId} changed in a way DynamoDB's ` +
+            warn(
+              // The index NAME is a resolved property value, masked raw so it
+              // reaches the WHOLE-VALUE arm at any length (issue #1997).
+              `GSI '${maskSecrets(gsi.IndexName ?? '')}' on ${physicalId} changed in a way ` +
+                `DynamoDB's ` +
                 `UpdateTable cannot express (KeySchema / Projection are immutable on an ` +
                 `existing index). Recreate the index under a new name to apply the change.`
             );
@@ -3072,7 +3232,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             GlobalSecondaryIndexUpdates: [gsiUpdate],
           })
         );
-        await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+        await this.waitForTableActiveAfterUpdate(
+          physicalId,
+          logicalId,
+          undefined,
+          undefined,
+          maskSecrets
+        );
       }
 
       // 6b. Auto-scaling reconciliation across ALL FOUR scalable dimensions
@@ -3139,7 +3305,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         (newBilling === 'PROVISIONED' || oldBilling === 'PROVISIONED') &&
         !skipAutoScalingForUnusableGsi;
       if (skipAutoScalingForUnusableGsi && oldBilling === 'PROVISIONED') {
-        this.logger.warn(
+        warn(
           `AWS::DynamoDB::GlobalTable ${logicalId}: skipping the auto-scaling target ` +
             `reconcile because the GlobalSecondaryIndexes block is unusable — the ` +
             `per-index targets are derived from it, so reconciling would deregister ` +
@@ -3162,7 +3328,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             ? []
             : collectAutoScalingTargets(properties, currentRegion),
           currentRegion,
-          autoScalingApplied
+          autoScalingApplied,
+          maskSecrets
         );
       }
 
@@ -3297,18 +3464,25 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     region: string,
     oldTags: Array<{ Key?: string; Value?: string }> | undefined,
     newTags: Array<{ Key?: string; Value?: string }> | undefined,
-    physicalIdForLogs: string
+    physicalIdForLogs: string,
+    // The caller's secret masker (issue #1997). All three warnings below name
+    // `physicalIdForLogs`, which is the resolved table name. Defaults to
+    // IDENTITY; every caller is on the create or update path, both of which
+    // have one.
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
+    // ONE masked sink for every line in this method (issue #1997).
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     if (deepEqual(oldTags, newTags)) return;
     if (!tableArn) {
-      this.logger.warn(
+      warn(
         `Local DescribeTable returned no TableArn — cannot propagate Tags to cross-region replica ${region} of ${physicalIdForLogs}`
       );
       return;
     }
     const replicaArn = this.replicaArnForRegion(tableArn, region);
     if (!replicaArn) {
-      this.logger.warn(
+      warn(
         `Could not derive replica ARN for region ${region} from ${tableArn} — skipping Tags propagation for ${physicalIdForLogs}`
       );
       return;
@@ -3317,7 +3491,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const regionalClient = this.getRegionalClient(region);
       await this.applyTagDiffOnClient(regionalClient, replicaArn, oldTags, newTags);
     } catch (tagErr) {
-      this.logger.warn(
+      warn(
         `Could not apply Tags diff to cross-region replica ${region} of ${physicalIdForLogs}: ${tagErr instanceof Error ? tagErr.message : String(tagErr)}. The replica's Tags state will surface as drift until the next successful deploy.`
       );
     }
@@ -3416,8 +3590,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     newSettings: Record<string, unknown> | undefined,
     client?: ApplicationAutoScalingClient,
     indexName?: string,
-    budget?: ElapsedBudget
+    budget?: ElapsedBudget,
+    // The caller's secret masker (issue #1997). The malformed-capacity warning
+    // below names `MinCapacity` / `MaxCapacity` straight out of the RESOLVED
+    // auto-scaling settings bag. Defaults to IDENTITY, which is what the DELETE
+    // path takes: `DeleteContext` carries no masker (see `SecretMaskingContext`
+    // in `src/types/resource.ts` and issue #2007), so a delete-path caller has
+    // nothing to pass and behaves exactly as before.
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
+    // ONE masked sink (issue #1997) — see `update()` for why both layers.
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     // Issue #1955: the DELETE path calls this in a BURST — table-level plus one
     // per GSI, per non-local replica, then again locally — BEFORE the first
     // budgeted poll. Both branches below now retry throttles: the register one
@@ -3469,10 +3652,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const minCapacity = Number(newSettings!['MinCapacity'] ?? 0);
       const maxCapacity = Number(newSettings!['MaxCapacity'] ?? 0);
       if (!Number.isFinite(minCapacity) || !Number.isFinite(maxCapacity)) {
-        this.logger.warn(
+        warn(
           `Cannot apply auto-scaling diff on ${tableName} (${dimension}): ` +
             `MinCapacity / MaxCapacity must be numbers, got ` +
-            `${String(newSettings!['MinCapacity'])} / ${String(newSettings!['MaxCapacity'])}`
+            // Masked as RAW values (issue #1997): `String()` of a resolved
+            // secret is the plaintext itself, and the WHOLE-VALUE arm matches at
+            // any length where the sink's substring arm needs 4 characters.
+            `${maskSecrets(String(newSettings!['MinCapacity']))} / ` +
+            `${maskSecrets(String(newSettings!['MaxCapacity']))}`
         );
         return;
       }
@@ -3510,7 +3697,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           }
         );
       } catch (err) {
-        this.logger.warn(
+        warn(
           `Could not register auto-scaling target on ${tableName} (${dimension}): ` +
             `${err instanceof Error ? err.message : String(err)}. ` +
             `Run: aws application-autoscaling register-scalable-target ` +
@@ -3527,7 +3714,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       >;
       const targetValue = Number(tttCfg['TargetValue']);
       if (!Number.isFinite(targetValue)) {
-        this.logger.warn(
+        warn(
           `Auto-scaling target registered on ${tableName} (${dimension}) but ` +
             `TargetValue is missing or non-numeric — skipping PutScalingPolicy. ` +
             `Provide TargetTrackingScalingPolicyConfiguration.TargetValue in the template.`
@@ -3576,7 +3763,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           `Upserted auto-scaling policy ${policyName} on ${tableName} (${dimension})`
         );
       } catch (err) {
-        this.logger.warn(
+        warn(
           `Could not put auto-scaling policy on ${tableName} (${dimension}): ` +
             `${err instanceof Error ? err.message : String(err)}. ` +
             `Run: aws application-autoscaling put-scaling-policy ` +
@@ -3639,7 +3826,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       );
     } catch (err) {
       if (!isObjectNotFound(err)) {
-        this.logger.warn(
+        warn(
           `Could not delete auto-scaling policy on ${tableName} (${dimension}): ` +
             `${err instanceof Error ? err.message : String(err)}. ` +
             `Run: aws application-autoscaling delete-scaling-policy ` +
@@ -3673,7 +3860,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       this.logger.debug(`Deregistered auto-scaling target ${resourceId} (${dimension})`);
     } catch (err) {
       if (!isObjectNotFound(err)) {
-        this.logger.warn(
+        warn(
           `Could not deregister auto-scaling target on ${tableName} (${dimension}): ` +
             `${err instanceof Error ? err.message : String(err)}. ` +
             `Run: aws application-autoscaling deregister-scalable-target ` +
@@ -3824,7 +4011,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     previousSpecs: AutoScalingTargetSpec[],
     desiredSpecs: AutoScalingTargetSpec[],
     localRegion: string,
-    alreadyApplied: ReadonlySet<string> = new Set()
+    alreadyApplied: ReadonlySet<string> = new Set(),
+    // Forwarded to `applyAutoScalingDiff` (issue #1997); this method logs no
+    // property value of its own. Defaults to IDENTITY.
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
     // Dimensions an earlier step of this same `update()` already applied are
     // dropped here rather than re-issued. This is a DYNAMIC skip-set, not a
@@ -3878,7 +4068,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         previous?.settings,
         spec.settings,
         client,
-        spec.indexName
+        spec.indexName,
+        undefined,
+        maskSecrets
       );
     }
 
@@ -3896,7 +4088,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         spec.settings,
         undefined,
         client,
-        spec.indexName
+        spec.indexName,
+        undefined,
+        maskSecrets
       );
     }
   }
@@ -5280,7 +5474,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     tableName: string,
     logicalId: string,
     maxAttempts = GLOBAL_TABLE_ACTIVE_WAIT_ATTEMPTS,
-    budget?: ElapsedBudget
+    budget?: ElapsedBudget,
+    // The caller's secret masker (issue #1997). Both the warning and the THROW
+    // below name `tableName`, the resolved table name — and the throw matters
+    // more than the warning here, because the deploy engine's CLI path logs
+    // `error.message` RAW (only its events store masks). Defaults to IDENTITY,
+    // which is what the DELETE-path caller takes: `DeleteContext` carries no
+    // masker by design (issue #2007).
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
     // Issue #1955: on the DELETE path (`--remove-protection`) this is the FIRST
     // wait of four sharing one per-resource deadline, and it is the slowest
@@ -5310,14 +5511,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     const budgetNote = wait.note();
     if (tableReachedActive) {
       this.logger.warn(
-        `Indexes on ${tableName} (${logicalId}) were still transitioning after ` +
-          `${wait.pollsRun}s — a large index backfill can outlive this wait. Proceeding; ` +
-          `AWS rejects the next call if it is still too early.${budgetNote}`
+        maskSecrets(
+          `Indexes on ${tableName} (${logicalId}) were still transitioning after ` +
+            `${wait.pollsRun}s — a large index backfill can outlive this wait. Proceeding; ` +
+            `AWS rejects the next call if it is still too early.${budgetNote}`
+        )
       );
       return;
     }
     throw new ProvisioningError(
-      `Table ${tableName} did not reach ACTIVE within ${wait.pollsRun}s after UpdateTable${budgetNote}`,
+      maskSecrets(
+        `Table ${tableName} did not reach ACTIVE within ${wait.pollsRun}s after UpdateTable${budgetNote}`
+      ),
       'AWS::DynamoDB::GlobalTable',
       logicalId,
       tableName

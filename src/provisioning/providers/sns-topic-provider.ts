@@ -30,6 +30,8 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
+  UpdateContext,
+  SecretMasker,
 } from '../../types/resource.js';
 
 /**
@@ -90,6 +92,11 @@ export class SNSTopicProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    // ONE masked sink for this method's own lines (issue #1997). `topicArn` is
+    // derived from `properties['TopicName']`, so the partial-create cleanup
+    // warning below names a resolved property value.
+    const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     this.logger.debug(`Creating SNS topic ${logicalId}`);
 
     const topicName =
@@ -213,7 +220,11 @@ export class SNSTopicProvider implements ResourceProvider {
         const deliveryStatusAttributes = buildDeliveryStatusAttributeMap(
           properties['DeliveryStatusLogging'],
           logicalId,
-          context?.replayingState === true ? 'warn' : 'throw'
+          context?.replayingState === true ? 'warn' : 'throw',
+          // Issue #1997: the warnings this may emit name RESOLVED property
+          // values. `maskSecrets` above already applied the defensive default,
+          // so create() has ONE masker rather than two reads that could drift.
+          maskSecrets
         );
         for (const [attributeName, attributeValue] of deliveryStatusAttributes) {
           await this.snsClient.send(
@@ -248,7 +259,7 @@ export class SNSTopicProvider implements ResourceProvider {
             `Cleaned up partially-created SNS topic ${logicalId} (${topicArn}) after wiring failure`
           );
         } catch (cleanupError) {
-          this.logger.warn(
+          warn(
             `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws sns delete-topic --topic-arn ${topicArn}`
           );
         }
@@ -301,10 +312,20 @@ export class SNSTopicProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     try {
-      return await this.applyUpdate(logicalId, physicalId, properties, previousProperties);
+      return await this.applyUpdate(
+        logicalId,
+        physicalId,
+        properties,
+        previousProperties,
+        // Issue #1997: only `maskSecrets` is read off the context here, and it
+        // is forwarded rather than the whole bag so `applyUpdate` cannot grow a
+        // dependence on a field the update path does not carry.
+        context?.maskSecrets
+      );
     } catch (error) {
       // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
       // is control flow the deploy engine matches BY CLASS, and a ProvisioningError
@@ -325,7 +346,8 @@ export class SNSTopicProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SNS topic ${logicalId}: ${physicalId}`);
 
@@ -387,7 +409,11 @@ export class SNSTopicProvider implements ResourceProvider {
       const desiredAttributes = buildDeliveryStatusAttributeMap(
         properties['DeliveryStatusLogging'],
         logicalId,
-        'warn'
+        'warn',
+        // Issue #1997: the desired side is the one that warns, and the values it
+        // names arrive RESOLVED. The previous side below is walked in silent
+        // 'skip' mode and emits nothing, so it needs no masker.
+        maskSecrets
       );
       const previousAttributes = buildDeliveryStatusAttributeMap(
         previousProperties['DeliveryStatusLogging'],
@@ -1040,29 +1066,75 @@ const SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES = [
  * while `create()` kept `'throw'`; issue #1551 then extended the downgrade to
  * a create that DECLARES a state replay, leaving the template-path create
  * strict (#1529 / #1536 deliberately left that contract unchanged).
+ *
+ * `maskSecrets` is the caller's secret masker (issue #1932 item 3, adopted here
+ * by issue #1997), threaded from `CreateContext` / `UpdateContext` — see
+ * `SecretMaskingContext` in `src/types/resource.ts`. Every warning below names a
+ * RESOLVED property value: `DeliveryStatusLogging` reaches this function already
+ * resolved, so a `{{resolve:secretsmanager:...}}` scalar inside it is plaintext,
+ * and cdkd's other masking boundaries (the deploy engine's error / reason text
+ * and the resolver's debug line) do not cover a provider's own `logger.warn`.
+ * It defaults to IDENTITY so every existing caller — the diff / import paths and
+ * the unit tests — keeps working unchanged.
+ *
+ * The `'throw'` arm is masked too, and the reason is worth stating because the
+ * first cut of this change got it backwards. It claimed a thrown message travels
+ * to the deploy engine "which already runs it through `maskSecretsInText`" —
+ * FALSE. The engine masks an error message on ONE path only, the events store
+ * (`deploy-engine.ts`'s per-event masker); its CLI path logs `error.message`
+ * RAW to `logger.error`. So an unmasked throw here printed the resolved bag
+ * straight to the terminal at default verbosity, which is a worse exposure than
+ * the warn arms this change was written for, not a covered one. Both throw sites
+ * therefore run their interpolated value through the same `maskLeaf` walk.
  */
 export function buildDeliveryStatusAttributeMap(
   logging: unknown,
   logicalId: string,
-  onMalformed: 'throw' | 'warn' | 'skip'
+  onMalformed: 'throw' | 'warn' | 'skip',
+  maskSecrets: SecretMasker = (text) => text
 ): Map<string, string> {
   const map = new Map<string, string>();
   if (logging == null) return map;
+  // ONE masked sink for every warning in this function (issue #1997), rather
+  // than a `maskSecrets(...)` at each call: a warning added later is masked by
+  // construction instead of by the author remembering. This is the OUTER of two
+  // layers — a finished message is always longer than the value inside it, so it
+  // can only reach `maskSecretsInText`'s SUBSTRING arm, which ignores needles
+  // below `MIN_NEEDLE_LENGTH` (4). `maskLeaf` below is the inner layer: it hands
+  // the masker each raw string leaf, which reaches the WHOLE-VALUE arm at any
+  // length. The mask is idempotent, so applying both is free.
   const warn = (message: string): void => {
-    getLogger().child('SNSTopicProvider').warn(message);
+    getLogger().child('SNSTopicProvider').warn(maskSecrets(message));
+  };
+  // Mask every string leaf (and key) of a value before it is stringified into a
+  // warning. `JSON.stringify` escapes `"` / `\` / newlines, so a secret carrying
+  // any of them no longer OCCURS in the finished line and the outer sink alone
+  // would miss it — which is every Secrets Manager JSON document.
+  const maskLeaf = (value: unknown): unknown => {
+    if (typeof value === 'string') return maskSecrets(value);
+    if (Array.isArray(value)) return value.map(maskLeaf);
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+          maskSecrets(k),
+          maskLeaf(v),
+        ])
+      );
+    }
+    return value;
   };
   const seenProtocols = new Set<SnsDeliveryStatusProtocol>();
   if (!Array.isArray(logging)) {
     if (onMalformed === 'throw') {
       throw new Error(
         `SNS topic ${logicalId}: DeliveryStatusLogging must be an array of ` +
-          `{Protocol, ...} objects, got ${JSON.stringify(logging)}`
+          `{Protocol, ...} objects, got ${JSON.stringify(maskLeaf(logging))}`
       );
     }
     if (onMalformed === 'warn') {
       warn(
         `SNS topic ${logicalId}: DeliveryStatusLogging must be an array of ` +
-          `{Protocol, ...} objects, got ${JSON.stringify(logging)} — treating it ` +
+          `{Protocol, ...} objects, got ${JSON.stringify(maskLeaf(logging))} — treating it ` +
           `as empty, so no delivery-status attribute is applied (on an update, any ` +
           `previously set one is reset). The desired properties can come from a cdkd ` +
           `state record (rollback replay / drift --revert), so this does not fail the ` +
@@ -1077,13 +1149,13 @@ export function buildDeliveryStatusAttributeMap(
       if (onMalformed === 'throw') {
         throw new Error(
           `SNS topic ${logicalId}: DeliveryStatusLogging entries must be ` +
-            `{Protocol, ...} objects, got ${JSON.stringify(entry)}`
+            `{Protocol, ...} objects, got ${JSON.stringify(maskLeaf(entry))}`
         );
       }
       if (onMalformed === 'warn') {
         warn(
           `SNS topic ${logicalId}: skipping DeliveryStatusLogging entry ` +
-            `${JSON.stringify(entry)} — entries must be {Protocol, ...} objects. ` +
+            `${JSON.stringify(maskLeaf(entry))} — entries must be {Protocol, ...} objects. ` +
             `Attributes previously set for the skipped entry's protocol are reset, ` +
             `as if the entry had been removed.`
         );
@@ -1093,14 +1165,14 @@ export function buildDeliveryStatusAttributeMap(
     const config = entry as Record<string, unknown>;
     let protocol: SnsDeliveryStatusProtocol;
     if (onMalformed === 'throw') {
-      protocol = normalizeDeliveryStatusProtocolOrThrow(config['Protocol'], logicalId);
+      protocol = normalizeDeliveryStatusProtocolOrThrow(config['Protocol'], logicalId, maskLeaf);
     } else {
       const normalized = normalizeDeliveryStatusProtocol(config['Protocol']);
       if (normalized === undefined) {
         if (onMalformed === 'warn') {
           warn(
             `SNS topic ${logicalId}: skipping DeliveryStatusLogging entry with ` +
-              `unsupported protocol ${JSON.stringify(config['Protocol'])}. Expected ` +
+              `unsupported protocol ${JSON.stringify(maskLeaf(config['Protocol']))}. Expected ` +
               `one of ${SNS_DELIVERY_STATUS_PROTOCOL_SPELLINGS.join(', ')} ` +
               `(case-insensitive). Attributes previously set for the skipped ` +
               `entry's protocol are reset, as if the entry had been removed.`
@@ -1117,7 +1189,7 @@ export function buildDeliveryStatusAttributeMap(
     if (onMalformed !== 'skip' && seenProtocols.has(protocol)) {
       warn(
         `SNS topic ${logicalId}: DeliveryStatusLogging declares more than one entry ` +
-          `for the "${protocol}" attribute prefix (${JSON.stringify(config['Protocol'])} ` +
+          `for the "${protocol}" attribute prefix (${JSON.stringify(maskLeaf(config['Protocol']))} ` +
           `canonicalizes to it). AWS has one attribute set per prefix, so these are ` +
           `merged per field — a later entry overwrites only the sub-fields it ` +
           `declares, and a field it omits keeps the earlier entry's value. ` +
@@ -1221,13 +1293,21 @@ export function normalizeDeliveryStatusProtocol(
  */
 function normalizeDeliveryStatusProtocolOrThrow(
   input: unknown,
-  logicalId: string
+  logicalId: string,
+  // The caller's secret masker (issue #1997), defaulting to IDENTITY so the
+  // existing single caller's behavior is unchanged when none is supplied. This
+  // is the THIRD throw site in this module that names a resolved property
+  // value, and it is reached from the SAME `'throw'` arm as the other two — the
+  // engine's CLI path logs `error.message` raw, so leaving it unmasked would
+  // have re-opened the exposure the sibling fixes just closed.
+  maskValue: (value: unknown) => unknown = (value) => value
 ): SnsDeliveryStatusProtocol {
   const normalized = normalizeDeliveryStatusProtocol(input);
   if (normalized === undefined) {
     throw new Error(
-      `SNS topic ${logicalId}: unsupported DeliveryStatusLogging protocol ${JSON.stringify(input)}. ` +
-        `Expected one of ${SNS_DELIVERY_STATUS_PROTOCOL_SPELLINGS.join(', ')} (case-insensitive).`
+      `SNS topic ${logicalId}: unsupported DeliveryStatusLogging protocol ${JSON.stringify(
+        maskValue(input)
+      )}. Expected one of ${SNS_DELIVERY_STATUS_PROTOCOL_SPELLINGS.join(', ')} (case-insensitive).`
     );
   }
   return normalized;

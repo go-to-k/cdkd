@@ -53,6 +53,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
+  UpdateContext,
+  SecretMasker,
 } from '../../types/resource.js';
 
 /**
@@ -221,10 +224,19 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
   // ─── Dispatch ─────────────────────────────────────────────────────
 
+  /**
+   * The `context` parameter is read for ONE thing today: `maskSecrets` (issue
+   * #1932 item 3, adopted here by issue #1997). `createIntegration` is the only
+   * arm that interpolates a RESOLVED property value into a log line, so it is
+   * the only arm the masker is threaded into; the rest name nothing but the
+   * logical id. Read defensively — `create()` is also called by the import path
+   * and by tests, neither of which supplies a context.
+   */
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::ApiGatewayV2::Api':
@@ -232,7 +244,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       case 'AWS::ApiGatewayV2::Stage':
         return this.createStage(logicalId, resourceType, properties);
       case 'AWS::ApiGatewayV2::Integration':
-        return this.createIntegration(logicalId, resourceType, properties);
+        return this.createIntegration(logicalId, resourceType, properties, context?.maskSecrets);
       case 'AWS::ApiGatewayV2::Route':
         return this.createRoute(logicalId, resourceType, properties);
       case 'AWS::ApiGatewayV2::Authorizer':
@@ -256,13 +268,21 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * on Api; `StageName` on Stage) are not part of the Update input shape
    * and are handled by the deploy engine's immutable-property
    * replacement path.
+   *
+   * The `context` parameter mirrors {@link create}'s: read only for
+   * `maskSecrets`, and only `updateIntegration` needs it. The update path
+   * carries the same RESOLVED bag as the create path, so the masking
+   * requirement is identical on both — a masker present on one and absent from
+   * the other is not a partial fix, it is a fix with a hole in the shape of
+   * whichever path a given deploy takes.
    */
   async update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::ApiGatewayV2::Api':
@@ -281,7 +301,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::ApiGatewayV2::Route':
         return this.updateRoute(
@@ -576,7 +597,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   private async createIntegration(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating API Gateway V2 Integration ${logicalId}`);
 
@@ -613,7 +635,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           IntegrationSubtype: properties['IntegrationSubtype'] as string | undefined,
           PassthroughBehavior: properties['PassthroughBehavior'] as PassthroughBehavior | undefined,
           RequestTemplates: properties['RequestTemplates'] as Record<string, string> | undefined,
-          ResponseParameters: this.toSdkResponseParameters(properties['ResponseParameters']),
+          ResponseParameters: this.toSdkResponseParameters(
+            properties['ResponseParameters'],
+            maskSecrets
+          ),
           TemplateSelectionExpression: properties['TemplateSelectionExpression'] as
             | string
             | undefined,
@@ -1717,7 +1742,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
     const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
     if (!apiId) {
@@ -1918,7 +1944,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       properties['ResponseParameters'] != null &&
       !this.deepEqual(properties['ResponseParameters'], previousProperties['ResponseParameters'])
     ) {
-      input.ResponseParameters = this.toSdkResponseParameters(properties['ResponseParameters']);
+      input.ResponseParameters = this.toSdkResponseParameters(
+        properties['ResponseParameters'],
+        maskSecrets
+      );
       changed = true;
     }
     if (
@@ -2555,10 +2584,53 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * Skipping it would re-introduce the silent drop this method exists to close.
    * A `Destination` is never coerced — it becomes an SDK map KEY, and a
    * non-string there is a malformed template, not a scalar shorthand.
+   *
+   * `maskSecrets` is the caller's secret masker (issue #1932 item 3, adopted
+   * here by issue #1997), threaded from `CreateContext` / `UpdateContext` via
+   * `createIntegration` / `updateIntegration`. The warning below names the
+   * offending `Destination` / `Source`, which come out of the RESOLVED
+   * `properties` bag — a `{{resolve:secretsmanager:...}}` scalar is plaintext by
+   * the time a provider sees it, and neither the deploy engine's error text nor
+   * the resolver's debug line covers a provider's own `logger.warn`. It defaults
+   * to IDENTITY so `readCurrentState`'s inverse mapper and every unit test keep
+   * working unchanged.
    */
   private toSdkResponseParameters(
-    value: unknown
+    value: unknown,
+    maskSecrets: SecretMasker = (text) => text
   ): Record<string, Record<string, string>> | undefined {
+    // ONE masked sink for every warning in this method, rather than a
+    // `maskSecrets(...)` at each `logger.warn` call: a warning added later is
+    // masked by construction instead of by the author remembering. It is the
+    // OUTER of two layers — a finished message is always longer than the value
+    // inside it, so it can only reach `maskSecretsInText`'s SUBSTRING arm, which
+    // ignores needles below `MIN_NEEDLE_LENGTH` (4). `maskLeaf` below is the
+    // inner layer, handing the masker the raw string so it reaches the
+    // WHOLE-VALUE arm at any length; the mask is idempotent, so both are free.
+    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
+    // Mask every string LEAF (and KEY) BEFORE `JSON.stringify` escapes it: a
+    // secret carrying a quote, a backslash or a newline no longer OCCURS in the
+    // finished line, so the outer sink alone would miss it.
+    //
+    // A WALK, not a top-level `typeof v === 'string'` test. That distinction is
+    // load-bearing precisely here: this arm fires BECAUSE `destination` is not a
+    // string (or `source` is neither string, number nor boolean), so the
+    // realistic shapes are an unresolved intrinsic like `{ Ref: '<secret>' }` or
+    // a mis-nested array — i.e. the secret is a NESTED leaf every time, and a
+    // scalar-only mask would decline exactly the values this warning prints.
+    const maskLeaf = (value: unknown): unknown => {
+      if (typeof value === 'string') return maskSecrets(value);
+      if (Array.isArray(value)) return value.map(maskLeaf);
+      if (value !== null && typeof value === 'object') {
+        return Object.fromEntries(
+          Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+            maskSecrets(k),
+            maskLeaf(v),
+          ])
+        );
+      }
+      return value;
+    };
     if (value == null) return undefined;
     if (typeof value !== 'object' || Array.isArray(value)) {
       return value as Record<string, Record<string, string>>;
@@ -2597,11 +2669,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           // Never silent: an entry cdkd cannot deliver is the same class of
           // defect as the drop this whole method closes, so it is announced
           // rather than skipped quietly.
-          this.logger.warn(
-            `AWS::ApiGatewayV2::Integration ResponseParameters['${statusCode}'] has an entry ` +
-              `cdkd cannot deliver (Destination must be a string and Source a string / number / ` +
-              `boolean; got ${JSON.stringify(destination)} / ${JSON.stringify(source)}); ` +
-              `skipping that entry.`
+          warn(
+            `AWS::ApiGatewayV2::Integration ResponseParameters['${maskSecrets(statusCode)}'] has ` +
+              `an entry cdkd cannot deliver (Destination must be a string and Source a string / ` +
+              `number / boolean; got ${JSON.stringify(maskLeaf(destination))} / ` +
+              `${JSON.stringify(maskLeaf(source))}); skipping that entry.`
           );
           continue;
         }
