@@ -863,6 +863,21 @@ arguing the code "cannot have changed behaviour".
   report both, rather than assuming its edits survived — the orchestrator cannot
   tell a wiped edit from an unstarted one.
 
+  **That is a DURATION constraint, not just a precondition, and the ORCHESTRATOR
+  breaks it more easily than a lane agent does.** The tree being clean at
+  dispatch buys nothing if you start editing while the reviewers run — their
+  probes restore from a snapshot taken at THEIR t0, so an edit landing inside
+  that window is reverted by a restore that is behaving correctly. Measured
+  2026-08-21: four reviewers were dispatched against a committed tree, the
+  orchestrator began applying an early blocker's fix minutes later, and a
+  reviewer's report ended with a warning that its restores may have reverted
+  concurrent edits to the three files it had probed. Nothing else would have
+  said so. The edits happened to survive, which is luck rather than evidence.
+  So: dispatch, then WAIT — do other lanes' work, write the PR body, watch CI,
+  but do not touch the files under review. If you must, re-verify with
+  `git status --porcelain` plus a `grep -c` for a marker of each edit before
+  trusting it, exactly as §6 prescribes for a blocked restore.
+
 **Two probe-harness failures from the same run, both of which reported a false
 green rather than an error.** A probe that cannot fail is worse than no probe,
 because it converts an open gap into a recorded assurance:
@@ -927,11 +942,20 @@ one moment: `markgate status` in the main checkout printed
 `check  mismatch  22h36m ago  digest differs` while the same command in this lane's
 worktree printed `check  no marker  -  (configured)`.
 
-**A gated command carries no SIDE-EFFECTING preamble in its Bash call.** The
+**A gated command carries no SIDE-EFFECTING preamble in its Bash call, and
+"gated" means EVERY PreToolUse hook, not just this repo's markgate ones.** The
 leading `cd <worktree> &&` above is fine — the gates resolve it themselves — but
 nothing that WRITES may share the call. `check-gate`, `verify-pr-gate` and the
-`integ-*` gates are **PreToolUse** hooks, so they judge the call BEFORE any of it
-runs, and a denial aborts the whole string. Two consequences:
+`integ-*` gates are PreToolUse hooks, so they judge the call BEFORE any of it
+runs, and a denial aborts the whole string — and so do the global safety hooks
+that have nothing to do with the merge flow. On 2026-08-21 a
+`cp <snapshot> src/cli/commands/scrub.ts && python3 <<'EOF' … EOF` was refused by
+the SECRET-FETCHING gate, because the heredoc quoted an SDK command name; the
+restore never ran, and the file stayed mutated from the previous probe. Do not
+reason about which hooks can fire — assume any call can be refused, and keep
+writes in their own call.
+
+Three consequences, each seen live.
 `markgate set check && markgate set docs && git commit …` is refused in full,
 including the two `set`s that would have satisfied the gate; and a call whose
 preamble has a side effect — `cat > body.md <<'EOF' … EOF` then `gh pr create
@@ -939,9 +963,29 @@ preamble has a side effect — `cat > body.md <<'EOF' … EOF` then `gh pr creat
 retry with `>>` then appends to nothing and ships a fragment: go-to-k/cdk-local#525
 opened carrying only its review section, with no `Closes` line, and silently lost
 the issue auto-close. Write the body file in one call, run the gated command in the
-next, and re-create rather than append after any refusal.
+next, and re-create rather than append after any refusal. And the restore case
+above: a `cp` that never ran leaves the file exactly as your last probe left it.
 
-**Its worst signature is not an absent file but a STALE one from an earlier
+**Its worst signature is a file left MID-PROBE, because that one does not look
+like a missing write at all.** The absent-file and stale-file shapes below at
+least point at the call that failed; a restore that silently did not happen
+leaves the tree in a state you deliberately created earlier and have already
+mentally undone. Measured 2026-08-21: the blocked `cp` above left `scrub.ts`
+carrying a mutation from a completed probe, and the symptom was three tests
+failing in the FULL suite while passing alone — which reads as cross-file
+pollution, not as a missing restore. That misreading cost pairing test files,
+instrumenting the classifier, and two wrong hypotheses before `grep` on the
+mutated line settled it in one command.
+
+So **verify a restore rather than assuming it**, in the same call that performs
+it: `cp <snap> <file> && grep -c '<a marker of the fixed state>' <file>`. It is
+one command, it converts a silent failure into an immediate `0`, and it is the
+only thing that distinguishes "my probe is undone" from "my probe is undone as
+far as I know". The same check is what caught a reviewer agent's restore
+reverting live edits earlier in that run (§5) — there it was run deliberately
+and worked; here it was skipped and did not.
+
+**Its next-worst signature is a STALE file from an earlier
 session**, since these paths are conventional (`/tmp/pr-body.md`) and shared.
 The gate then inspects that file and reports violations from content this
 session never wrote — measured 2026-08-21, when a `gh pr create` whose heredoc
@@ -1102,6 +1146,19 @@ Two things follow, and the second is the one that is easy to get backwards:
   a command entrypoint at round five is how round six happens. Take the narrow fix,
   file the structural one, and reference it from the narrow fix so the next reader
   sees the choice was made rather than missed.
+- **When the shape is "TWO SPELLINGS OF ONE QUESTION", the fix is to make both
+  sites use ONE predicate verbatim — not to write a better second spelling.**
+  This is the sub-case that keeps regenerating, because a better spelling looks
+  like a fix and passes its own test. Measured on issue go-to-k/cdkd#2134, three
+  rounds: a per-STACK signal was being consulted where a reference's origin was
+  already known. Round 1 stripped it by RESOLVER IDENTITY -- wrong, because a
+  producer in the consumer's own region yields the same resolver. Round 2 fixed
+  the predicate to `producerRegion !== undefined` -- still a second spelling, and
+  round 3 found it disagreed with the authority's own `if (!producerRegion)` on
+  the empty string, on the fail-OPEN side. Only copying the authority's test
+  character for character ended it. So when you name the shape, also name the
+  SITE THAT OWNS the question, and make every other site call or copy it exactly;
+  a paraphrase is a fourth round waiting to happen.
 
 Run `/verify-pr`. It layers CI status, docs consistency, AWS-resource cleanup, code
 review, and a **live-test of the changed behavior** on top of `/check`. Unit tests
