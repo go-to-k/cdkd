@@ -1057,6 +1057,48 @@ AWS:
   (deploy → the redeploy-with-a-change that reproduced the bug → destroy) with a
   fresh fixture, or via `/run-integ` against an existing one that covers it.
 
+**An integ ARM owes the same discrimination proof a unit test does, and it is
+easier to write a vacuous one — so MUTATION-PROBE THE ARM against real AWS.**
+The unit-test rules above stop at the suite; an arm is the one place this flow
+routinely ships a fence nobody has watched fail. Three ways it goes wrong, all
+measured on 2026-08-21 across go-to-k/cdkd#2108 / go-to-k/cdkd#2109, and none
+visible by reading the script:
+
+- **The host has the trigger but not the EVIDENCE, or the reverse.** A fix that
+  keys on recorded state needs the state AND the thing that state describes in
+  the SAME unit. `cdkd scrub` classifies only a literal `{{resolve:...}}` in the
+  TEMPLATE, so the producer stack (literal, no cross-stack read on record) and
+  the consumer (evidence, but an `Fn::GetStackOutput` leaf with no literal) each
+  had exactly half, and a third fixture had the two-region seeding with no
+  cross-stack machinery at all. All three would have passed with the fix
+  reverted. Adding one small resource to the stack that already carried the
+  evidence is what made the arm real — cheaper than a new fixture, so check for
+  it before concluding a live arm is `next`.
+- **The arm is INERT because the command returns early.** When the fix's
+  behaviour is to SKIP something, a fixture whose only difference is in the
+  skipped thing gives the command no work: it finds nothing to do and never
+  reaches the new code. A `drift --revert` arm tampered the secret-bearing
+  property, which is exactly the one now skipped, so the resource came back
+  clean and the revert returned "nothing to revert" — two live writes, zero
+  signal. Give the fixture a second, ORDINARY difference alongside the one under
+  test, and add a phase that proves the premise (the resource really is drifted,
+  on the ordinary property) before the phase that depends on it.
+- **The assertion is a negative, so it is a confluence point.** "The bad value
+  was not written" is satisfied by a correct refusal AND by any unrelated
+  failure that stopped short. Measured: with the fix mutated back to pre-fix
+  behaviour the arm stayed GREEN, because the revert had errored instead of
+  writing. Assert the POSITIVE marker only the fixed path emits — a specific
+  exit code, a string only the deep path prints, a field in the `--json`
+  payload — and demote the negative to a stated safety net, recording the
+  measurement so nobody re-promotes it.
+
+The probe is one extra run of a fixture you are already running: revert the fix,
+rebuild, run, confirm the arm goes RED, restore, rebuild. Both arms this run
+were probed; one passed the probe and one failed it, which is the whole argument
+for doing it rather than reasoning about it. Also add a NEGATIVE CONTROL inside
+the arm — a sibling case that must NOT trip the new behaviour — or a refusal
+that fires on everything satisfies every positive assertion you just wrote.
+
 **Never leave a real-AWS run unwatched, and do not reach for `timeout` to do
 it.** A hung integ and a legitimately slow one look identical from outside, so
 silence proves nothing: on 2026-08-20 a fixture wedged inside `docker push` and
