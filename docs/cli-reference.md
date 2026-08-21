@@ -2830,6 +2830,21 @@ branch only, and neither does a `Fn::ImportValue` inside an output that this
 run's conditions SUPPRESS -- such an output wrote no state key, so there is
 nothing behind it to protect.
 
+**Which branch scrub selects is evaluated against the template's DEFAULT
+parameter values.** `scrub` takes no `--parameters`, so it has nothing else to
+evaluate a `Conditions` entry with, and a condition it cannot evaluate reads as
+false. For a stack deployed with NON-default parameters that means scrub can
+pick a branch the deploy never took -- and in a RESOURCE position, unlike an
+output position, a cross-stack read on that branch still refuses (exit 2), so
+the stack can be refused over a producer that legitimately does not exist for
+the parameters it was actually deployed with. An output position is already
+spared this: `state.outputs` records what the deploy really wrote, and a key
+absent from it disarms the refusal. There is no equivalent record for a
+resource-position branch, so the practical remedies are to make the read
+resolvable -- deploy or scrub the producer that branch names, which
+`cdkd scrub --all` does in one run by ordering producers before consumers --
+rather than to re-run unchanged.
+
 **A cross-stack read that SUCCEEDS but whose PRODUCER still stores the
 plaintext refuses too** (`SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT`, exit 2). scrub
 can only replace a stored plaintext with the `{{resolve:...}}` expression the

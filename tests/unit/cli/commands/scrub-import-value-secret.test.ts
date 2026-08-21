@@ -1832,3 +1832,211 @@ describe('the producer state is read ONCE per scrub (issue #2133 review)', () =>
     expect(secretSends.length).toBeGreaterThan(0);
   });
 });
+
+describe('a CONDITION that imports a secret does not print it (issue #2133 review)', () => {
+  /**
+   * The disclosure this fences. `resolveEquals` rendered BOTH resolved operands
+   * unmasked, and that line was unreachable from `cdkd scrub` until this issue
+   * gave the CONDITION context a `stateBackend`: an `Fn::ImportValue` inside a
+   * condition used to throw for want of one. Now it resolves the producer's
+   * export, `reresolveCrossStackValue` hands back the PLAINTEXT, and
+   * `cdkd scrub --dry-run --verbose` printed it into a CI log — inside the
+   * command whose whole purpose is removing that plaintext from state.
+   *
+   * The resource properties here are deliberately secret-free, so the CONDITION
+   * is the ONLY thing in the run that can reach a producer or a secret. That is
+   * what makes the producer `getState` and the `GetSecretValue` send positive
+   * markers for the condition pass specifically, rather than for the resource
+   * pass beside it.
+   */
+  const CONDITIONS = {
+    ImportedIsProd: { 'Fn::Equals': [{ 'Fn::ImportValue': EXPORT_NAME }, 'x'] },
+  };
+  const PUBLIC_PROPS = { MasterUserPassword: 'not-a-secret', MasterUsername: 'admin' };
+  /** What the masked line must read once both operands have been rendered. */
+  const MASKED_EQUALS = 'Resolved Fn::Equals: "***" === "x" -> false';
+
+  beforeEach(() => {
+    consumerState = makeConsumerState(PUBLIC_PROPS);
+    useProducerOutputs({ [EXPORT_NAME]: SECRET_EXPR });
+  });
+
+  it('--dry-run: Fn::Equals over an imported secret logs the MASK, not the plaintext', async () => {
+    await scrub(PUBLIC_PROPS, { conditions: CONDITIONS, dryRun: true });
+
+    // POSITIVE MARKERS FIRST — absence of the plaintext is a confluence point
+    // that a run which never evaluated the condition satisfies just as well.
+    // 1. The condition pass really performed the cross-stack read...
+    expect(stateBackend.getState.mock.calls).toContainEqual([PRODUCER, REGION]);
+    // 2. ...and really re-resolved the export's expression, which is the step
+    //    that PRODUCES the plaintext (and records the needle to mask against).
+    expect(secretSends.map((s) => s.command)).toEqual(['GetSecretValueCommand']);
+    // 3. ...and `resolveEquals` really ran and rendered its operands.
+    const equalsLines = logLines.filter((l) => l.includes('Resolved Fn::Equals:'));
+    expect(equalsLines).toHaveLength(1);
+    // 4. THE assertion: the operand it rendered is the MASK. The right-hand
+    //    literal survives untouched, which is what tells a masked line apart
+    //    from one that simply never carried the value.
+    expect(equalsLines[0]).toContain(MASKED_EQUALS);
+
+    // ...and nothing anywhere else in the run leaked it either.
+    expect(logLines.join('\n')).not.toContain(PLAINTEXT);
+    expect(stateBackend.saveState).not.toHaveBeenCalled();
+  });
+
+  it('the same holds on an ordinary (non-dry-run) scrub', async () => {
+    await scrub(PUBLIC_PROPS, { conditions: CONDITIONS });
+
+    const equalsLines = logLines.filter((l) => l.includes('Resolved Fn::Equals:'));
+    expect(equalsLines).toHaveLength(1);
+    expect(equalsLines[0]).toContain(MASKED_EQUALS);
+    expect(logLines.join('\n')).not.toContain(PLAINTEXT);
+  });
+
+  it('the needle map handed to the condition pass starts EMPTY and is filled BY that pass', async () => {
+    // The empty-map doubt, measured rather than argued. `scrub.ts` declares
+    // `outputSecrets` as an empty `Map` and passes THAT in, and a masker over
+    // an empty map is a no-op that reads as safe in a diff. What makes it real
+    // is that the map is a MUTABLE REFERENCE the resolver fills in place as it
+    // resolves, and the `Fn::Equals` log runs AFTER both operands resolve — so
+    // by logging time the needle is present. This measures both ends.
+    let sizeBefore: number | undefined;
+    let sizeAfter: number | undefined;
+    let recorded: Map<string, string> | undefined;
+    const original = IntrinsicFunctionResolver.prototype.evaluateConditions;
+    const spy = vi
+      .spyOn(IntrinsicFunctionResolver.prototype, 'evaluateConditions')
+      .mockImplementation(async function (this: IntrinsicFunctionResolver, ctx: unknown) {
+        recorded = (ctx as { recordedSecretValues?: Map<string, string> }).recordedSecretValues;
+        sizeBefore = recorded?.size;
+        try {
+          return await original.call(this, ctx as never);
+        } finally {
+          sizeAfter = recorded?.size;
+        }
+      } as never);
+    try {
+      await scrub(PUBLIC_PROPS, { conditions: CONDITIONS, dryRun: true });
+    } finally {
+      spy.mockRestore();
+    }
+
+    // A map WAS supplied — `resolverContext`'s
+    // `...(recordedSecretValues && { recordedSecretValues })` spread drops the
+    // key entirely when it is not, which is the pre-fix shape.
+    expect(recorded).toBeInstanceOf(Map);
+    // It went in empty — the state in which the mask would be a no-op...
+    expect(sizeBefore).toBe(0);
+    // ...and the condition pass itself filled it, before the log line ran.
+    expect(sizeAfter).toBeGreaterThan(0);
+    expect(recorded!.get(PLAINTEXT)).toBe(SECRET_EXPR);
+  });
+});
+
+describe('a stored value carrying no text is not a plaintext producer (issue #2133 review)', () => {
+  /**
+   * The `widened` verdict fires when the producer publishes SOME secret-bearing
+   * output but this key matched no declared one — an intrinsic `Export.Name`
+   * scrub cannot reproduce. `carriesDynamicReference` is false for `null`, `''`
+   * and every non-string scalar, so such a key used to raise
+   * `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT` claiming the read "resolved to a
+   * PLAINTEXT value" over a value holding nothing — and the remedy that
+   * refusal prescribes (scrub the producer, re-run) cannot clear it, because
+   * scrubbing cannot turn an empty value into an expression.
+   *
+   * The producer's TEMPLATE below declares its secret output under
+   * `EXPORT_NAME`, while the consumer imports `OTHER_EXPORT` — which is what
+   * makes the verdict `widened` rather than `declared`.
+   */
+  const OTHER_EXPORT = 'Producer:OtherExport';
+  const PROPS = { MasterUserPassword: { 'Fn::ImportValue': OTHER_EXPORT }, MasterUsername: 'admin' };
+  const scrubWithStored = async (stored: unknown): Promise<unknown> => {
+    useProducerOutputs({ [OTHER_EXPORT]: stored });
+    return await scrub(PROPS, { appStacks: [makeProducerStackInfo(SECRET_PRODUCER_OUTPUTS)] }).catch(
+      (e: unknown) => e
+    );
+  };
+
+  it('POSITIVE CONTROL: a real stored plaintext under the SAME widened verdict still refuses', async () => {
+    // Without this the two cases below would pass just as well if the widened
+    // arm were unreachable from this fixture at all.
+    const err = await scrubWithStored(PLAINTEXT);
+
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
+    // ...and the message takes the `widened` wording, so the verdict really is
+    // the one these cases are about.
+    expect((err as Error).message).toContain('could not ');
+    expect((err as Error).message).toContain('publishes at least one output');
+  });
+
+  it('a stored null does not refuse', async () => {
+    const res = await scrubWithStored(null);
+
+    expect(res).not.toBeInstanceOf(Error);
+    // The read really happened — otherwise "did not refuse" is satisfied by a
+    // run that never reached the discriminator.
+    expect(stateBackend.getState.mock.calls).toContainEqual([PRODUCER, REGION]);
+    expect(
+      logLines.some((l) => l.startsWith('debug') && l.includes('carries no ')),
+      'the classifier should say why it declined to refuse'
+    ).toBe(true);
+  });
+
+  it('a stored empty string does not refuse either', async () => {
+    const res = await scrubWithStored('');
+
+    expect(res).not.toBeInstanceOf(Error);
+    expect(stateBackend.getState.mock.calls).toContainEqual([PRODUCER, REGION]);
+  });
+});
+
+describe('the plaintext-producer refusal masks its export key (issue #2133 review)', () => {
+  /**
+   * `exportKey` is a RESOLVED export name, so an `Fn::ImportValue` over a
+   * `{{resolve:...}}` string makes it a resolved secret verbatim — and this
+   * builder used to interpolate it RAW while its sibling
+   * `unresolvableCrossStackReadError` masked.
+   *
+   * THE FIXTURE IS DELIBERATELY SUB-THRESHOLD, and that is what makes this test
+   * discriminating rather than vacuous. `maskSecretsInError` at `scrubStack`'s
+   * boundary would mask an ordinary needle whatever this builder did, because
+   * it re-masks the whole message on the way out. But it masks through
+   * `allRecordedSecrets`, which DROPS every needle shorter than
+   * `MIN_NEEDLE_LENGTH` (4), while the whole-value arm of `maskSecretsInText`
+   * matches at ANY length. So a 3-character secret is reached by the local mask
+   * and by nothing else, and the assertion below fails if the local mask is
+   * removed.
+   */
+  const SHORT_SECRET = 'q7z';
+  const SHORT_SECRET_EXPR = '{{resolve:secretsmanager:prod/db/cred:SecretString:short}}';
+
+  it('a secret-valued export NAME appears masked, not verbatim', async () => {
+    // One primed response serves both JSON keys, so `:password` still resolves
+    // to PLAINTEXT while `:short` resolves to the sub-threshold secret.
+    secretResponses.set('secretsmanager|GetSecretValueCommand', {
+      SecretString: JSON.stringify({ password: PLAINTEXT, short: SHORT_SECRET }),
+    });
+    // The producer's state carries the RESOLVED export name as its key, holding
+    // an ordinary stored plaintext — so the read succeeds and the refusal fires.
+    useProducerOutputs({ [SHORT_SECRET]: 'producer-stored-plaintext' });
+
+    const err = await scrub(
+      {
+        MasterUserPassword: { 'Fn::ImportValue': SHORT_SECRET_EXPR },
+        MasterUsername: 'admin',
+      },
+      { appStacks: [makeProducerStackInfo(SECRET_PRODUCER_OUTPUTS)] }
+    ).catch((e: unknown) => e);
+
+    // POSITIVE MARKER: the refusal this test is about really fired, so the
+    // absence assertion below is not satisfied by some other code path.
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
+    const message = (err as Error).message;
+    // ...and it rendered the MASK where the export name goes.
+    expect(message).toContain('***');
+    // THE assertion: the resolved secret is not in the message at all.
+    expect(message).not.toContain(SHORT_SECRET);
+    // Nor anywhere in the run's log output.
+    expect(logLines.join('\n')).not.toContain(SHORT_SECRET);
+  });
+});

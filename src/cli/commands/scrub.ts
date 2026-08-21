@@ -1624,8 +1624,29 @@ function plaintextProducerCrossStackReadError(
   path: string,
   producerStack: string,
   exportKey: string,
-  verdict: SecretExpressionVerdict
+  verdict: SecretExpressionVerdict,
+  secrets: RecordedSecretValues
 ): CdkdError {
+  // MASKED, for the reason its sibling `unresolvableCrossStackReadError`
+  // already gives (issue #2133 review — this builder interpolated both
+  // identifiers RAW while the sibling masked).
+  //
+  // `exportKey` is the REACHABLE half: it is a RESOLVED export name, so an
+  // `Fn::ImportValue` over a `{{resolve:...}}` string (or an `Fn::Sub` /
+  // `Fn::Join` assembling one) makes it a resolved secret verbatim — which is
+  // exactly why the resolver half of this same lane masks resolved export names
+  // at EVERY log site. `maskSecretsInError` at `scrubStack`'s boundary is the
+  // outermost net, not the rule, and it is provably NOT sufficient here:
+  // `allRecordedSecrets` DROPS every needle below `MIN_NEEDLE_LENGTH`, while
+  // the whole-value arm of `maskSecretsInText` matches at any length, so a
+  // short secret is masked by this call and by nothing else.
+  //
+  // `producerStack` is masked for UNIFORMITY rather than reach: it comes from
+  // the state record's own stack name, which is never a resolved value, so no
+  // input makes it a secret today. Stated rather than implied, so a later
+  // reader does not mistake it for a fence that is holding something.
+  const loggedExportKey = maskSecretsInText(exportKey, secrets);
+  const loggedProducerStack = maskSecretsInText(producerStack, secrets);
   // The claim about the producer's TEMPLATE is only as precise as the match
   // that produced it (issue #2133 review). `declared` matched an output by name
   // or by literal `Export.Name`, so naming the key is exact; `widened` matched
@@ -1635,16 +1656,17 @@ function plaintextProducerCrossStackReadError(
   // the code did not check.
   const templateClaim =
     verdict === 'declared'
-      ? `declares '${exportKey}' from a {{resolve:...}} expression`
+      ? `declares '${loggedExportKey}' from a {{resolve:...}} expression`
       : `publishes at least one output from a {{resolve:...}} expression (this run could not ` +
-        `match '${exportKey}' to a declared output, so it cannot say which)`;
+        `match '${loggedExportKey}' to a declared output, so it cannot say which)`;
   return new ScrubRefusalError(
     `Scrub of ${stackName} resolved the ${intrinsic} in ${origin}` +
-      `${path ? ` at ${path}` : ''} to a PLAINTEXT value: the producer stack '${producerStack}' ` +
+      `${path ? ` at ${path}` : ''} to a PLAINTEXT value: the producer stack ` +
+      `'${loggedProducerStack}' ` +
       `${templateClaim}, but its own state still stores ` +
       `the resolved plaintext rather than that expression. scrub has no expression to write in ` +
       `this stack's place, so it cannot redact the imported secret and must not report this ` +
-      `stack clean. Scrub the producer first ('cdkd scrub ${producerStack}'), then re-run ` +
+      `stack clean. Scrub the producer first ('cdkd scrub ${loggedProducerStack}'), then re-run ` +
       `'cdkd scrub ${stackName}' — the read will then return the expression and this stack is ` +
       `scrubbed normally.`,
     'SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT'
@@ -1664,6 +1686,29 @@ function plaintextProducerCrossStackReadError(
  * - `no` — nothing in the producer's outputs carries a `{{resolve:` expression.
  */
 type SecretExpressionVerdict = 'declared' | 'widened' | 'no';
+
+/**
+ * Can the producer's STORED value be a legacy plaintext secret at all (issue
+ * #2133 review)?
+ *
+ * `false` for a value that carries no text: `null` / `undefined`, the empty
+ * string, and every non-string scalar. A resolved `{{resolve:...}}` reference
+ * is always a STRING — `resolveDynamicReferences` substitutes text — so a
+ * number or a boolean cannot be one, and an empty string holds nothing to
+ * redact. Without this, `carriesDynamicReference` being false for those shapes
+ * made a `widened` verdict refuse the consumer over a value with nothing behind
+ * it, in a refusal that no re-run could clear (scrubbing the producer cannot
+ * turn an empty value into an expression).
+ *
+ * Containers are NOT included: an array or object can nest a plaintext string,
+ * and `carriesDynamicReference` already walks them, so the classification for
+ * those is left exactly as it was.
+ */
+function storedValueCarriesNoPlaintext(stored: unknown): boolean {
+  if (stored === null || stored === undefined) return true;
+  if (typeof stored === 'string') return stored === '';
+  return typeof stored !== 'object';
+}
 
 /**
  * Is `key` an export the producer's TEMPLATE declares from a `{{resolve:...}}`
@@ -1779,8 +1824,22 @@ interface CrossStackPrePassFindings {
  * this pass resolve something else, and so a failure names the cross-stack read
  * rather than whatever the whole node resolves to. Which key of a multi-key
  * node is even eligible is decided by {@link RESOLVER_INTRINSIC_PRECEDENCE},
- * mirroring the resolver, so the pass never performs a read the main resolution
- * would not.
+ * mirroring the resolver — so for the CHOICE OF KEY the pass never reads
+ * through an intrinsic the main resolution would ignore.
+ *
+ * That is the whole of the invariant, and it is deliberately narrower than
+ * "this pass performs no read the main resolution would not" (issue #2133
+ * review — the earlier, overstated wording). `resolveValue` walks a plain
+ * object's properties SEQUENTIALLY and aborts the whole bag at the first one
+ * that throws, and it THROWS on an unknown intrinsic (`Fn::ToJsonString`,
+ * `Fn::ForEach`) before descending into its argument at all; this pass resolves
+ * each node on its own and keeps walking in both cases. So it can read a
+ * reference the main resolution never reaches — after a sibling `Ref` to a
+ * resource absent from state, which is the routine case, or beneath an
+ * intrinsic cdkd cannot resolve. The DIRECTION is safe (the deploy made those
+ * reads, so refusing over one names a real unscrubbed producer rather than a
+ * fabricated one) but the sentence is load-bearing for the refusal, so it is
+ * stated as what it is rather than as the stronger claim.
  *
  * The bag is NOT rewritten. The main resolution re-resolves these references
  * itself, and the S3 reads behind them are shared with this pass by the
@@ -1865,11 +1924,31 @@ function makeCrossStackPrePass(deps: {
      * `.at(-1)` for the same reason within one family: the outer read is
      * recorded LAST, after its argument has resolved.
      *
-     * An empty bag means the value did NOT come from a cdkd state record — the
-     * CloudFormation `ListExports` / `DescribeStacks` fallbacks record nothing
-     * deliberately (a CFn-managed producer is a weak reference), and the
-     * cross-account `Fn::GetStackOutput` arm records nothing either. cdkd never
-     * redacted those values, so there was never an expression to restore.
+     * An empty bag means the value did NOT come from a cdkd state record, and
+     * the two arms that produce one are NOT unreadable for the same reason
+     * (issue #2133 review — one rationale used to cover both, and it was false
+     * of the second):
+     *
+     * - the CloudFormation `ListExports` / `DescribeStacks` FALLBACKS record
+     *   nothing deliberately, a CFn-managed producer being a weak reference.
+     *   Here "no expression to restore" is literally true: the value came from
+     *   CloudFormation, which cdkd never redacted, so no `{{resolve:...}}`
+     *   expression exists anywhere for scrub to write in its place.
+     * - the CROSS-ACCOUNT `Fn::GetStackOutput` arm records nothing for a
+     *   different reason, and a post-#1934 producer in the other account DOES
+     *   store the expression — which is precisely why
+     *   `CrossAccountSecretRefusalError` exists, and why it fires BEFORE this
+     *   point whenever the stored value carries one. What can reach here is a
+     *   value that carried none, and scrub cannot classify it any further: the
+     *   producer's `state.json` lives in another account and the only
+     *   credentials in hand are the consumer's, so reading it is the
+     *   wrong-account lookup that refusal exists to prevent.
+     *
+     * The OUTCOME is the same today either way — a cross-account producer is
+     * never in `appStacks`, so the `!producerTemplate` return below fires first
+     * regardless — but a future change that widened `producerTemplates` would
+     * be relying on this sentence, so it must not claim the second arm has no
+     * expression behind it.
      *
      * Residual: an OUTER read that fell through to a CloudFormation fallback
      * while its ARGUMENT performed a same-family cdkd read leaves the inner
@@ -2031,6 +2110,31 @@ function makeCrossStackPrePass(deps: {
       // The producer's state holds the EXPRESSION: it has been scrubbed, the
       // read handed this stack a resolvable secret, and there is nothing wrong.
       if (carriesDynamicReference(stored.stored)) return;
+      // ...and neither is it a plaintext when it carries no text at ALL (issue
+      // #2133 review). `carriesDynamicReference` is false for `null`, `''` and
+      // every non-string scalar, so under a `widened` verdict — where the
+      // producer merely has SOME secret-bearing output and this key matched no
+      // declared one — a stored `null` or `''` raised
+      // `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT` claiming the read "resolved to a
+      // PLAINTEXT value". That refusal is both false and UNCLEARABLE: scrubbing
+      // the producer cannot turn an empty value into an expression, so the
+      // re-run the message prescribes refuses identically forever.
+      //
+      // A resolved dynamic reference is always a STRING, so a non-string scalar
+      // cannot be a legacy plaintext secret either, and an empty string holds
+      // nothing to redact. Same fail-open shape as `!stored` above: cannot
+      // classify, so do not refuse. CONTAINERS are deliberately NOT covered —
+      // an array or object can nest a plaintext string, and `[]` / `{}` reach
+      // this arm only through a producer that publishes an empty collection,
+      // which no shape here can distinguish from a populated one worth testing.
+      if (storedValueCarriesNoPlaintext(stored.stored)) {
+        logger.debug(
+          `Scrub of ${stackName}: ${key} in ${origin}${path ? ` at ${path}` : ''} resolved ` +
+            `through producer '${producer.stack}', whose stored value for that key carries no ` +
+            `text — nothing to redact, so this is not classified as a plaintext producer.`
+        );
+        return;
+      }
       if (!nodeCanRefuse) {
         logger.debug(
           `Scrub of ${stackName}: ${key} in ${origin}${path ? ` at ${path}` : ''} resolved to a ` +
@@ -2045,7 +2149,8 @@ function makeCrossStackPrePass(deps: {
         path,
         producer.stack,
         producer.key,
-        verdict
+        verdict,
+        secrets
       );
     };
 
@@ -2088,7 +2193,10 @@ function makeCrossStackPrePass(deps: {
       // Some OTHER intrinsic wins this node, so the resolver resolves that
       // one's ARGUMENT and never looks at a sibling key. Descend into the
       // argument only — a cross-stack read nested inside an `Fn::Join` list is
-      // one the main resolution really does perform.
+      // one the main resolution reaches, unlike a read under a sibling key it
+      // never dispatches on. Reaching it is not the same as performing it: an
+      // earlier element of that same `Fn::Join` list can throw and abort the
+      // rest, per the narrowed invariant on {@link makeCrossStackPrePass}.
       await walk(node[key], `${path}['${key}']`, nodeCanRefuse);
     };
 
@@ -2287,7 +2395,12 @@ export async function scrubStack(
     // deciding what an unevaluatable condition should do to a whole scrub,
     // which is a different question from this issue's.
     try {
-      conditions = await resolver.evaluateConditions(resolverContext());
+      // Pass `outputSecrets` so the condition pass has a needle map to mask
+      // AGAINST. A condition can resolve a cross-stack read now that this
+      // context carries a `stateBackend` (issue #2133), and a masker with an
+      // empty map is a no-op that reads as safe in a diff. `outputSecrets` is
+      // the run-scoped map, registered before anything that can throw.
+      conditions = await resolver.evaluateConditions(resolverContext(outputSecrets));
     } catch (err) {
       logger.debug(
         `Condition evaluation skipped for ${stack.stackName}: ${err instanceof Error ? err.message : String(err)}`

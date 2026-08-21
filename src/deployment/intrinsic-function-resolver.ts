@@ -3789,8 +3789,17 @@ export class IntrinsicFunctionResolver {
     // Deep equality check
     const result = JSON.stringify(resolved1) === JSON.stringify(resolved2);
 
+    // Masked like every other operand-rendering site (`Fn::Select` / `Fn::Split`
+    // / `Fn::Join` / `Fn::Sub`). An operand can be a resolved cross-stack value:
+    // `cdkd scrub` gained a `stateBackend` on its CONDITION context in issue
+    // #2133, so `{"Fn::Equals": [{"Fn::ImportValue": "..."}, "x"]}` now resolves
+    // the producer's export -- and `reresolveCrossStackValue` hands back the
+    // PLAINTEXT -- inside the command whose whole purpose is removing it.
     this.logger.debug(
-      `Resolved Fn::Equals: ${JSON.stringify(resolved1)} === ${JSON.stringify(resolved2)} -> ${result}`
+      `Resolved Fn::Equals: ${this.maskSecretsForLog(
+        JSON.stringify(resolved1),
+        context
+      )} === ${this.maskSecretsForLog(JSON.stringify(resolved2), context)} -> ${result}`
     );
 
     return result;
