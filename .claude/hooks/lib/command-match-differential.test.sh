@@ -23,12 +23,16 @@
 # `id + observable + new value`, so a cell that flips the OTHER way, or a new
 # cell on the same input, is unenumerated and fails.
 #
-# MAINTENANCE CONTRACT. The baseline is pinned to a SHA, not to `origin/main`,
-# because once this work merges `origin/main` becomes the new implementation and
-# a ref-based baseline would silently compare the code to itself and report a
-# clean zero-difference run forever. When a later change intentionally alters a
-# verdict, its cells are added here with a reason -- this table is the changelog
-# of behaviour changes to the classifier.
+# MAINTENANCE CONTRACT. The baseline is a VENDORED GOLDEN FILE under
+# `testdata/`, pinned to a SHA rather than to `origin/main`: once this work
+# merges, a ref-based baseline would compare the code to itself and report a
+# clean zero-difference run forever. It is vendored rather than read with
+# `git show` because CI shallow-clones and the object is not there -- the fence
+# then correctly refused to run, but a fence that cannot run in CI is not a
+# fence. Its sha256 is verified on every run, so a drifted copy is loud. When a
+# later change intentionally alters a verdict, its cells are added to the table
+# below with a reason -- that table is the changelog of behaviour changes to the
+# classifier.
 #
 # Run from the repo root: `bash .claude/hooks/lib/command-match-differential.test.sh`.
 
@@ -50,13 +54,43 @@ fail_log=""
 ok() { pass=$((pass + 1)); printf 'OK   %s\n' "$1"; }
 ng() { fail=$((fail + 1)); fail_log+="FAIL $1\n"; printf 'FAIL %s\n' "$1"; }
 
-OLD_LIB="$TMPDIR/old-command-match.sh"
-if ! git -C "$HERE" show "$BASELINE_SHA:.claude/hooks/lib/command-match.sh" > "$OLD_LIB" 2>/dev/null \
-  || [ ! -s "$OLD_LIB" ]; then
+# The baseline is VENDORED, not read from git. `git show <sha>` failed in CI,
+# which shallow-clones and therefore does not have the object: the fence refused
+# to run rather than report an unearned pass -- correct, but it meant the fence
+# never ran there at all. A golden file needs no history, no network and no
+# clone depth, and it survives a squash or history rewrite that renumbers the
+# SHA.
+OLD_LIB="$HERE/testdata/command-match.baseline.sh"
+BASELINE_SHA256="2af09c64246d12cc4d9dab1bf14c8cbc8d16da738ddaa012877e68a4e30f6e85"
+
+if [ ! -r "$OLD_LIB" ] || [ ! -s "$OLD_LIB" ]; then
   # Loud, not skipped. A differential that quietly does nothing when it cannot
   # find its baseline is the same silent-no-op this file exists to prevent.
-  echo "FAIL differential: cannot read baseline $BASELINE_SHA -- fence did NOT run" >&2
+  echo "FAIL differential: cannot read baseline fixture $OLD_LIB -- fence did NOT run" >&2
   exit 1
+fi
+
+# INTEGRITY. The fixture is a snapshot of a past generation, so a drifted copy
+# would silently redefine what "unchanged" means and every allowed cell below
+# would be measured against the wrong thing.
+sha256_of() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 | awk '{print $NF}'
+  else printf 'NO-HASHER'; fi
+}
+marker_line=$(grep -n 'VENDORED CONTENT BEGINS' "$OLD_LIB" | head -1 | cut -d: -f1)
+if [ -z "$marker_line" ]; then
+  echo "FAIL differential: baseline fixture $OLD_LIB has no content marker -- fence did NOT run" >&2
+  exit 1
+fi
+baseline_got=$(tail -n "+$((marker_line + 1))" "$OLD_LIB" | sha256_of)
+if [ "$baseline_got" = "NO-HASHER" ]; then
+  ng "baseline integrity: no sha256 tool available, so the fixture could NOT be verified against $BASELINE_SHA"
+elif [ "$baseline_got" = "$BASELINE_SHA256" ]; then
+  ok "baseline integrity: fixture body matches $BASELINE_SHA byte-for-byte"
+else
+  ng "baseline integrity: fixture body is $baseline_got, expected $BASELINE_SHA256 from $BASELINE_SHA -- the vendored copy has DRIFTED and every comparison below is against the wrong baseline"
 fi
 
 # ---------------------------------------------------------------- the corpus
