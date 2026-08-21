@@ -144,7 +144,8 @@ export function clearRecordedSecretExpressions(): void {
 
 /**
  * Every cross-stack source leaf whose producer stored a WHOLE
- * `{{resolve:...}}` token, against the token the producer stored (issue
+ * `{{resolve:...}}` token, against the token the producer stored and the
+ * plaintext it resolved to — SCOPED TO ONE RESOLUTION PASS (issue
  * [#2059](https://github.com/go-to-k/cdkd/issues/2059)).
  *
  * WHY A SECOND STORE, when {@link recordedSecretExpressions} already holds
@@ -162,59 +163,67 @@ export function clearRecordedSecretExpressions(): void {
  *
  * What closes it is an ASSOCIATION rather than a matcher, and the resolver is
  * the only place both halves are in hand at once: it knows the source leaf it
- * is resolving AND the token the producer stored. This map is where it puts
- * them. Note what it is NOT: it never lets the value scan take a source
- * subtree, so the issue
- * [#1915](https://github.com/go-to-k/cdkd/issues/1915) fences (a
- * `{Name:'', Value:'an-unrelated-literal'}` pair the bag cannot vouch for) are
- * untouched — the consumer arm fires only for these two intrinsic spellings,
- * and only when the bag leaf's WHOLE value is a plaintext this pass recorded.
+ * is resolving AND the token the producer stored. This is where it puts them.
  *
- * It lives in THIS module rather than in the resolver for the reason
- * {@link recordedSecretExpressions} does: this module is the LEAF, the resolver
- * already imports it, and the reverse edge would close a cycle. The reader is
- * {@link positionByCrossStackSource} right here, so no call site has to thread
- * it — the redaction path's callers pass a position SOURCE and nothing else.
+ * THE SCOPE IS THE SAFETY ARGUMENT, and it took two rounds to get right, so the
+ * history is recorded rather than left to be re-derived. The store began
+ * PROCESS-WIDE — one module-level map, cleared with the resolver caches — and
+ * that is unsound here for a reason no amount of narrowing reaches. The key is
+ * not region-qualified: an `Fn::ImportValue` key carries no region at all and
+ * an `Fn::GetStackOutput` that omits `Region` keys it empty, so ONE key
+ * genuinely names TWO producers inside a single `cdkd deploy --all`, where
+ * `deploy.ts` builds a resolver per stack region. A second stack's leaf was
+ * then certified with the FIRST stack's region-pinned expression — a case the
+ * value scan gets RIGHT, so it was a NEW wrong answer rather than a missed
+ * improvement. Pairing each entry with its plaintext narrowed that but could
+ * not close it: two regions holding the SAME value (a Secrets Manager
+ * multi-region replica, a shared API key) pair happily, and "correct only while
+ * replication holds" is a property nobody declared and nothing enforces.
  *
- * EACH ENTRY CARRIES THE PLAINTEXT THAT TOKEN RESOLVED TO, and the reader
- * refuses unless it equals the bag leaf it is being asked to certify. That
- * pairing is what makes the store safe to keep PROCESS-WIDE while the `secrets`
- * maps it is consulted beside are PER-RESOURCE, and it closes a REGRESSION the
- * expression-only shape carried. A key derived from an `Fn::ImportValue` has NO
- * region segment, and an `Fn::GetStackOutput` that omits `Region` has an empty
- * one, so ONE key can genuinely name TWO producers inside a single
- * `cdkd deploy --all` — `deploy.ts` builds a resolver per stack region. With
- * only an expression stored, a leaf in the second stack whose own producer
- * recorded NOTHING (its state still holds the PLAINTEXT — the population issues
- * [#2133](https://github.com/go-to-k/cdkd/issues/2133) /
- * [#2146](https://github.com/go-to-k/cdkd/issues/2146) exist for, where
- * `carriesDynamicReference` short-circuits before any recording and so no
- * conflict can be seen either) would be certified with the FIRST stack's
- * expression, and `resolveReplayProps` would push that region's secret onto
- * this region's resource. The value scan gets that case RIGHT today, so this
- * would have been a new wrong answer rather than a missed improvement. Pairing
- * on the plaintext refuses it while leaving the case this whole store exists
- * for untouched: the colliding pair both recorded the SAME plaintext, which is
- * the premise of the collapse, so both still match their bag.
+ * So the store is keyed by the RESOLUTION PASS's own {@link RecordedSecretValues}
+ * bag, and a foreign entry is not merely refused — it cannot be REACHED. That
+ * bag is already per-pass and already travels from the resolver context to the
+ * redaction path (`DeployEngine.perResourceSecrets`, `cdkd scrub`'s
+ * `perResourceSecrets`, `rollback-executor.ts`'s `secrets`, each storing the
+ * very object the resolver mutated), so this is a scope change rather than new
+ * plumbing, and no call site had to grow a parameter. A caller that hands the
+ * redaction path a DIFFERENT bag from the one it resolved with — `cdkd state
+ * refresh-observed`, whose map is empty by construction because it neither
+ * synthesizes nor resolves — simply finds no associations and falls back to the
+ * value scan, which is the direction a mismatch must fail in.
+ *
+ * A `WeakMap` so a pass's associations die with its bag. That replaces an
+ * explicit clear paired with `resetAccountInfoCache`, which production never
+ * called — and it is what keeps the PLAINTEXTS these entries hold from
+ * outliving the pass that fetched them.
+ *
+ * Each entry still carries its plaintext, and the reader still refuses an entry
+ * whose plaintext is not the bag it is certifying. That check is now
+ * BELT-AND-BRACES against a foreign pass, and it is deliberately kept: inside
+ * ONE pass it is still the only guard against a bag/source MISALIGNMENT, where
+ * a readback bag holds a different resource's secret while the source leaf
+ * still spells this import.
  *
  * A key recorded against a DIFFERENT (expression, plaintext) pair is POISONED
  * to {@link CONFLICTING_CROSS_STACK} rather than overwritten, and the reader
  * then refuses. Either half differing is enough: two expressions under one key
- * is the shared-key case above with both producers redacted, and one expression
- * under two plaintexts is the same reference answering differently in two
- * regions (the issue [#1933](https://github.com/go-to-k/cdkd/issues/1933)
- * shape). Guessing between them would be the collapse this exists to remove,
- * one step over. Every refusal degrades to the value scan, i.e. to today's
- * behavior, so no case gets worse.
+ * means the pass read one leaf identity two ways, and one expression under two
+ * plaintexts is the same reference answering differently in two regions (the
+ * issue [#1933](https://github.com/go-to-k/cdkd/issues/1933) shape, reachable
+ * within one pass through a producer-region resolver). Guessing between them
+ * would be the collapse this exists to remove, one step over. Every refusal
+ * degrades to the value scan, i.e. to today's behavior, so no case gets worse.
  */
 interface CrossStackAssociation {
   /** The WHOLE `{{resolve:...}}` token the producer's state held. */
   readonly expression: string;
-  /** What that token resolved to when this process read the producer. */
+  /** What that token resolved to when this pass read the producer. */
   readonly plaintext: string;
 }
 
-const recordedCrossStackExpressions = new Map<string, CrossStackAssociation | symbol>();
+type CrossStackAssociations = Map<string, CrossStackAssociation | symbol>;
+
+const crossStackAssociations = new WeakMap<RecordedSecretValues, CrossStackAssociations>();
 
 /** Poison for a key seen against two different (expression, plaintext) pairs. */
 const CONFLICTING_CROSS_STACK = Symbol('conflicting cross-stack association');
@@ -240,7 +249,7 @@ function literalStringOrUndefined(value: unknown): string | undefined {
  * this leaf's identity is not LITERALLY COMPUTABLE from the source alone
  * (issue #2059).
  *
- * Both sides of {@link recordedCrossStackExpressions} call THIS function, which
+ * Both sides of {@link crossStackAssociations} call THIS function, which
  * is what makes the two keys byte-identical by construction: the resolver hands
  * it the raw intrinsic it is about to resolve, the redaction path hands it the
  * template source leaf at the position being persisted, and both are the same
@@ -272,9 +281,11 @@ function literalStringOrUndefined(value: unknown): string | undefined {
  * An earlier revision of this note claimed the opposite ("one resolver region
  * answers them all"), and that false premise is exactly what let the store's
  * first shape certify one region's expression onto another region's resource.
- * What makes the key safe is not uniqueness but
- * {@link recordedCrossStackExpressions} pairing every entry with the PLAINTEXT
- * it resolved to, so a reader can refuse an entry that is not about its bag.
+ * What makes the key safe is not uniqueness but SCOPE:
+ * {@link crossStackAssociations} is keyed by the resolution pass's own secrets
+ * bag, so a key another pass recorded cannot be reached from here at all. Each
+ * entry additionally carries the plaintext it resolved to, which is what
+ * refuses a MISALIGNED entry inside one pass.
  *
  * A MULTI-KEY leaf (`{'Fn::ImportValue': 'X', Extra: 1}`) is the one exception
  * to "both sides compute the same string": the resolver reaches this function
@@ -331,50 +342,56 @@ export function crossStackSourceKey(source: Record<string, unknown>): string | u
 }
 
 /**
- * Remember that the cross-stack source leaf keyed by `key` reads a producer
- * value that IS the whole `{{resolve:...}}` token `expression`, and that this
- * process saw that token resolve to `plaintext`. Called by the resolver, and
- * only for a token it PROVED secret.
+ * Remember, FOR THE PASS THAT OWNS `secrets`, that the cross-stack source leaf
+ * keyed by `key` reads a producer value that IS the whole `{{resolve:...}}`
+ * token `expression`, and that this pass saw it resolve to `plaintext`. Called
+ * by the resolver, and only for a token it PROVED secret.
  *
- * `plaintext` is not bookkeeping: it is what the reader pairs against its bag,
- * and it is the whole reason a process-wide store may be consulted beside a
- * per-resource `secrets` map. See {@link recordedCrossStackExpressions}.
+ * `secrets` is the pass's own {@link RecordedSecretValues} bag, used as the
+ * SCOPE KEY — the same object the redaction path will be handed. See
+ * {@link crossStackAssociations} for why the scope, not the pairing, is what
+ * makes this sound.
  */
 export function recordCrossStackExpression(
+  secrets: RecordedSecretValues,
   key: string,
   expression: string,
   plaintext: string
 ): void {
-  const seen = recordedCrossStackExpressions.get(key);
+  // SHAPE INVARIANT, at the store boundary rather than at the caller. The two
+  // payload parameters are both `string`, so the type system cannot see a
+  // SWAPPED call — and a swap is not merely a wrong answer here: the reader
+  // returns `expression` to be persisted, so a stored `{expression: <plaintext>}`
+  // writes a SECRET into `state.json` as soon as a token-shaped bag satisfies
+  // the conditions above it (the issue #1917 shape does). Unreachable from the
+  // one caller today; this makes it unreachable from any caller, which is the
+  // difference between a guarded call site and an invariant.
+  //
+  // It NARROWS rather than closes, and the residual is worth naming: a swap
+  // whose plaintext is ITSELF a complete `{{resolve:...}}` token passes this
+  // test, because issue #1917 exists precisely because a secret's VALUE can look
+  // like one and nothing distinguishes them from the string alone. So this takes
+  // a swap from "persists any secret" to "persists a token-shaped secret", and
+  // the seam's own gate covers the rest.
+  if (!isSingleDynamicReferenceToken(expression)) return;
+
+  let associations = crossStackAssociations.get(secrets);
+  if (associations === undefined) {
+    associations = new Map();
+    crossStackAssociations.set(secrets, associations);
+  }
+
+  const seen = associations.get(key);
   if (seen === undefined) {
-    recordedCrossStackExpressions.set(key, { expression, plaintext });
+    associations.set(key, { expression, plaintext });
     return;
   }
   // Already poisoned stays poisoned — a third sighting cannot un-contradict the
   // first two.
   if (typeof seen === 'symbol') return;
   if (seen.expression !== expression || seen.plaintext !== plaintext) {
-    recordedCrossStackExpressions.set(key, CONFLICTING_CROSS_STACK);
+    associations.set(key, CONFLICTING_CROSS_STACK);
   }
-}
-
-/**
- * Drop every remembered cross-stack association. Paired with the resolver's
- * cache reset, for the reason {@link clearRecordedSecretExpressions} is: the
- * association names a producer's STORED value, and a reset asks the process to
- * forget what it read from AWS.
- *
- * NOT load-bearing for correctness, and that is worth stating rather than
- * leaving to be assumed: once an entry carries the PLAINTEXT it resolved to
- * ({@link recordedCrossStackExpressions}), a stale entry cannot certify
- * anything, because the reader refuses every entry whose plaintext is not the
- * bag in front of it. So this is hygiene — it bounds a long-lived process's
- * memory and keeps the two stores' lifetimes the same — and no caller may be
- * added on the theory that the pairing needs it. `resetAccountInfoCache` is its
- * only caller today, which the tests drive and production does not.
- */
-export function clearRecordedCrossStackExpressions(): void {
-  recordedCrossStackExpressions.clear();
 }
 
 /**
@@ -737,6 +754,17 @@ function isKnownSecretExpression(
  * resolver is a GUEST and `pinSecretVerdict` deliberately writes nothing
  * process-wide from a guest (issue #1934's review) — so such a token is simply
  * not recorded at the seam, and its leaf falls back to the value scan.
+ *
+ * GUEST SUPPRESSION ALSO CUTS THE OTHER WAY, and saying only the above would be
+ * one-sided. The same early return means a guest's DEFINITIVE PUBLIC verdict
+ * never RETRACTS a memo either, so if the consumer's own resolver already
+ * pinned that spelling as a `SecureString`, this answers `true` for a
+ * producer-region parameter that is really a plain `String`. The outcome is
+ * bounded to a spurious UPDATE (#1901's class) and can never be a plaintext:
+ * the answer persisted is still an EXPRESSION, and the presence test beside
+ * this one at the seam still requires the pass to have resolved it to a real
+ * needle. Closing it means keying the verdict store by region, which is a
+ * change to a store this function only reads.
  */
 export function isSecretExpressionByVerdictOrSpelling(expression: string): boolean {
   return (
@@ -1106,7 +1134,7 @@ function plaintextIndexOf(secrets: RecordedSecretValues): Map<string, string | s
  * is `[^}]*`, which cannot cross a token's own `}}` — so it would match zero
  * candidates and always refuse, i.e. degrade to the collapse. The association
  * has to come from the one place that holds both halves at once, which is
- * {@link recordedCrossStackExpressions}.
+ * {@link crossStackAssociations}.
  *
  * Three conditions, mirroring the ones next door, and each removing a different
  * way of being wrong:
@@ -1118,10 +1146,10 @@ function plaintextIndexOf(secrets: RecordedSecretValues): Map<string, string | s
  *    reference out (issue #1901): the resolver records a plaintext only on a
  *    proven-secret verdict, so a public parameter's value is not a key here.
  * 2. The association is ABOUT THIS BAG — the plaintext the WRITER recorded
- *    beside the expression equals the bag leaf. This is what lets a
- *    PROCESS-WIDE store be consulted beside a PER-RESOURCE `secrets` map at
- *    all; see {@link recordedCrossStackExpressions} for the regression the
- *    expression-only shape carried across two stacks sharing one key.
+ *    beside the expression equals the bag leaf. Against another pass this is
+ *    belt-and-braces, since {@link crossStackAssociations} is scoped to the
+ *    pass and a foreign entry cannot be reached; within one pass it is the only
+ *    guard against a bag/source MISALIGNMENT.
  * 3. The match is not DEMONSTRABLY another value's expression — verbatim
  *    condition 3 next door, over the same {@link plaintextIndexOf} index. It is
  *    what fences a bag/source MISALIGNMENT: on a readback walk the bag leaf can
@@ -1157,19 +1185,29 @@ function positionByCrossStackSource(
   const key = crossStackSourceKey(source);
   if (key === undefined) return undefined;
 
+  // THIS PASS's associations and no others. A pass that recorded nothing —
+  // `cdkd state refresh-observed`, whose bag is empty by construction — finds
+  // no bucket and falls through, which is the same answer it gets today.
+  const associations = crossStackAssociations.get(secrets);
+  if (associations === undefined) return undefined;
+
   // A poisoned key reads back as the symbol, so this refuses an absent
   // association and a conflicting one in one move.
-  const association = recordedCrossStackExpressions.get(key);
+  const association = associations.get(key);
   if (association === undefined || typeof association === 'symbol') return undefined;
 
-  // Condition 2. The association has to be ABOUT THIS BAG. The store is
-  // process-wide while `secrets` is per-resource, and the key is not
-  // region-qualified, so without this an entry recorded while resolving another
-  // stack answers here — and condition 3 below cannot refuse it, since a
-  // FOREIGN expression is absent from this pass's map and absence is exactly
-  // what condition 3 must accept (the collapsed loser is absent too). The
-  // colliding pair this function exists for is untouched: both leaves recorded
-  // the SAME plaintext, which is what "their values coincide" means.
+  // Condition 2. The association has to be ABOUT THIS BAG.
+  //
+  // Against a FOREIGN pass this is now belt-and-braces — the lookup above
+  // cannot reach one at all — and it is kept deliberately rather than deleted
+  // because a second guard covering a case is not a reason to drop the first.
+  // Inside ONE pass it is still load-bearing and nothing else covers it: a
+  // readback bag can hold a DIFFERENT resource's secret while the source leaf
+  // still spells this import, and condition 3 below cannot refuse that, since
+  // it must ACCEPT an expression absent from the pass's map (the collapsed
+  // loser is absent too). The colliding pair this function exists for is
+  // untouched either way: both leaves recorded the SAME plaintext, which is
+  // what "their values coincide" means.
   if (association.plaintext !== bag) return undefined;
 
   // Condition 3 (the neighbour's condition 3), and NOT subsumed by condition 2:

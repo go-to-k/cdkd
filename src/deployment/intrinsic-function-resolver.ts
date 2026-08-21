@@ -43,7 +43,6 @@ import {
   clearRecordedSecretExpressions,
   crossStackSourceKey,
   recordCrossStackExpression,
-  clearRecordedCrossStackExpressions,
   isSecretExpressionByVerdictOrSpelling,
   isSingleDynamicReferenceToken,
   type RecordedSecretValues,
@@ -1243,10 +1242,11 @@ export function resetAccountInfoCache(): void {
   // (issues #1901 / #1916) — keeping them would let a stale verdict decide
   // secret-ness for a reference this call just asked to forget.
   recordedSecretExpressions.clear();
-  // Same lifetime, same reason (issue #2059): the cross-stack associations name
-  // what a PRODUCER's state held when this process read it, so a reset asking
-  // the process to forget what it read from AWS has to drop them too.
-  clearRecordedCrossStackExpressions();
+  // The issue #2059 cross-stack associations are deliberately NOT cleared here,
+  // and need no clearing at all: they are scoped to the resolution pass's own
+  // `recordedSecretValues` bag through a `WeakMap`, so they die with it. A
+  // module-level store cleared from here was the first shape, and is what let
+  // one stack's expression be certified onto another stack's leaf.
   // Also reset EC2 instance attribute cache
   for (const key of Object.keys(cachedEc2InstanceAttributes)) {
     delete cachedEc2InstanceAttributes[key];
@@ -4072,8 +4072,17 @@ export class IntrinsicFunctionResolver {
     // `isSecretExpressionByVerdictOrSpelling(value)` is the test that is
     // actually ABOUT this token: `secretsmanager` by spelling, or an `ssm`
     // reference this process PROVED to be a `SecureString`. A plain `String`
-    // parameter answers false — and answers false even if a stale memo once
-    // said otherwise, since a definitive public verdict RETRACTS it.
+    // parameter answers false — for the consumer's own region, where a
+    // definitive public verdict RETRACTS a stale memo.
+    //
+    // NOT for a CROSS-REGION producer, and the exception belongs here rather
+    // than being left to be rediscovered: `pinSecretVerdict` returns early for
+    // a producer-region GUEST, so a guest's definitive `String` verdict never
+    // retracts a `SecureString` memo the consumer's own resolver pinned for the
+    // same spelling — and this then answers `true` for a producer-region
+    // parameter that is really public. The cost is bounded to a spurious UPDATE
+    // (#1901's class) and can never be a plaintext, since what gets persisted is
+    // still an EXPRESSION. Closing it means keying the verdict store by region.
     //
     // Both, not either: presence proves the pass actually resolved this token to
     // a usable needle, the verdict proves the token is a secret at all.
@@ -4085,11 +4094,11 @@ export class IntrinsicFunctionResolver {
       context.recordedSecretValues?.has(reresolved) === true &&
       isSecretExpressionByVerdictOrSpelling(value)
     ) {
-      // The PLAINTEXT is recorded beside the expression, and the reader refuses
-      // any entry whose plaintext is not the bag it is certifying. That is what
-      // keeps a PROCESS-WIDE store honest beside PER-RESOURCE `secrets` maps
-      // when two stacks in two regions spell the identical key.
-      recordCrossStackExpression(sourceKey, value, reresolved);
+      // Recorded INTO THIS PASS's own bag, which is what keeps two stacks that
+      // spell the identical key (an `Fn::ImportValue` key carries no region)
+      // from reading each other's associations at all. The plaintext beside the
+      // expression then refuses a MISALIGNED entry inside the one pass.
+      recordCrossStackExpression(context.recordedSecretValues, sourceKey, value, reresolved);
     }
     return reresolved;
   }

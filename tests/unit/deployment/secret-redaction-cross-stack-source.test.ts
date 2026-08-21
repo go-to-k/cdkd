@@ -8,7 +8,6 @@ import {
   redactSecretsForState,
   crossStackSourceKey,
   recordCrossStackExpression,
-  clearRecordedCrossStackExpressions,
   clearRecordedSecretExpressions,
   type RecordedSecretValues,
 } from '../../../src/deployment/secret-redaction.js';
@@ -144,7 +143,6 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
     resolver = new IntrinsicFunctionResolver(REGION);
     resetAccountInfoCache();
     clearRecordedSecretExpressions();
-    clearRecordedCrossStackExpressions();
     mockSecretsManagerSend.mockReset();
     mockSSMSend.mockReset();
     // ONE secret behind both staging labels, which is the rotation window: the
@@ -164,7 +162,6 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
   afterEach(() => {
     resetAccountInfoCache();
     clearRecordedSecretExpressions();
-    clearRecordedCrossStackExpressions();
   });
 
   describe('the canonical key', () => {
@@ -278,28 +275,32 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
       // for exactly the pair this issue exists for, and no test of a single pass
       // could see it. The presence test on `recordedSecretValues` is what keeps
       // the skip path from writing at all.
-      const diffSecrets: RecordedSecretValues = new Map();
+      // ONE bag across both resolutions, which is what puts them in the SAME
+      // association bucket now that the store is pass-scoped. That is the shape
+      // the presence test defends: nothing forbids a caller reusing its
+      // `recordedSecretValues` across a comparison resolve and the deploy
+      // resolve, and the guard has to hold if one does.
+      const sharedSecrets: RecordedSecretValues = new Map();
       const diffResolved = await resolver.resolve(
         SOURCE,
         buildContext({
           exportIndex: importIndex(),
           stateBackend: mockBackend(),
-          recordedSecretValues: diffSecrets,
+          recordedSecretValues: sharedSecrets,
           skipDynamicReferences: true,
         })
       );
       // The premise: the diff pass fetched nothing and holds no plaintext.
-      expect(diffSecrets.size).toBe(0);
+      expect(sharedSecrets.size).toBe(0);
       expect(diffResolved).toEqual({ Variables: { CURRENT: EXPR_CURRENT, PREVIOUS: EXPR_PREVIOUS } });
 
-      // Now the deploy pass, same process, same store.
-      const deploySecrets: RecordedSecretValues = new Map();
+      // Now the deploy pass, same process, same bag.
       const resolved = (await new IntrinsicFunctionResolver(REGION).resolve(
         SOURCE,
-        importContext(deploySecrets)
+        importContext(sharedSecrets)
       )) as { Variables: Record<string, string> };
 
-      const redacted = redactSecretsForState(resolved, deploySecrets, SOURCE) as {
+      const redacted = redactSecretsForState(resolved, sharedSecrets, SOURCE) as {
         Variables: Record<string, string>;
       };
       expect(redacted.Variables['CURRENT']).toBe(EXPR_CURRENT);
@@ -433,17 +434,20 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
       expect(resolved).toEqual({ Endpoint: PUBLIC_VALUE });
       expect(recordedSecretValues.size).toBe(0);
 
-      // The discriminator: hand the redactor a bag in which the PUBLIC value is
-      // (implausibly, but this is the fence) a recorded needle. If the seam had
-      // associated the public expression with this leaf, the certification would
-      // hand back `PUBLIC_EXPR`; gated, it falls to the value scan.
-      const OTHER = '{{resolve:secretsmanager:other:SecretString:v}}';
+      // Redacted with the resolver's OWN bag, which is what puts the seam's
+      // writes and this read in the same association bucket — handing over a
+      // separately built map would put them in different ones and the case would
+      // assert nothing about the seam. The public value must survive RESOLVED:
+      // persisting the expression instead is issue #1901's perpetual-UPDATE
+      // class, and it is what happens if the seam records a public reference and
+      // condition 1 stops refusing the leaf.
       const redacted = redactSecretsForState(
-        { Endpoint: PUBLIC_VALUE },
-        new Map([[PUBLIC_VALUE, OTHER]]),
+        resolved,
+        recordedSecretValues,
         source
       ) as Record<string, string>;
-      expect(redacted['Endpoint']).toBe(OTHER);
+      expect(redacted['Endpoint']).toBe(PUBLIC_VALUE);
+      expect(redacted['Endpoint']).not.toBe(PUBLIC_EXPR);
     });
     it('does NOT record a PUBLIC ssm reference whose value COINCIDES with a recorded secret', () => {
       // The gate cannot be a PRESENCE test on `recordedSecretValues`. That map
@@ -521,6 +525,63 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
     const SHARED_SOURCE = {
       'Fn::GetStackOutput': { StackName: 'Shared', OutputName: 'DbPassword' },
     };
+
+    it('refuses a FOREIGN association even when the two regions resolve to the SAME value', async () => {
+      // THE ROUND-2 RESIDUAL, and why the pairing check could not be the whole
+      // answer. Pairing refuses a foreign entry only when the two plaintexts
+      // DIFFER; a Secrets Manager multi-region replica and a shared API key both
+      // make them coincide, and then a foreign association still certified. The
+      // west leaf got the EAST region's expression, which `resolveReplayProps`
+      // and `drift --revert` re-resolve against the EAST region — correct only
+      // while replication holds, which is a property nobody declared and nothing
+      // enforces. Scoping the store to the pass removes the reach entirely.
+      const COINCIDE = 'the-same-value-in-both-regions';
+      mockSecretsManagerSend.mockResolvedValue({
+        SecretString: JSON.stringify({ password: COINCIDE }),
+      });
+
+      const east = new IntrinsicFunctionResolver(REGION);
+      const eastSecrets: RecordedSecretValues = new Map();
+      await east.resolve(
+        { Pw: SHARED_SOURCE },
+        buildContext({
+          stackName: 'StackA',
+          stateBackend: mockBackend([
+            { stackName: 'Shared', region: REGION, outputs: { DbPassword: EXPR_CURRENT } },
+          ]),
+          recordedSecretValues: eastSecrets,
+        })
+      );
+      expect(eastSecrets.get(COINCIDE)).toBe(EXPR_CURRENT);
+
+      // West: producer still holds a PLAINTEXT (nothing recorded, nothing
+      // poisoned), and its own sibling reference resolves to the SAME value.
+      const WEST_REGION = 'us-west-2';
+      const west = new IntrinsicFunctionResolver(WEST_REGION);
+      const westSecrets: RecordedSecretValues = new Map();
+      const westSource = { Pw: SHARED_SOURCE, Other: EXPR_WEST };
+      const westResolved = (await west.resolve(
+        westSource,
+        buildContext({
+          stackName: 'StackB',
+          stateBackend: mockBackend([
+            { stackName: 'Shared', region: WEST_REGION, outputs: { DbPassword: COINCIDE } },
+          ]),
+          recordedSecretValues: westSecrets,
+        })
+      )) as Record<string, string>;
+
+      // The premise the pairing check cannot see: ONE plaintext, two regions.
+      expect(westResolved['Pw']).toBe(COINCIDE);
+      expect(westSecrets.get(COINCIDE)).toBe(EXPR_WEST);
+
+      const redacted = redactSecretsForState(westResolved, westSecrets, westSource) as Record<
+        string,
+        string
+      >;
+      expect(redacted['Pw']).toBe(EXPR_WEST);
+      expect(redacted['Pw']).not.toBe(EXPR_CURRENT);
+    });
 
     it('refuses an association recorded by ANOTHER stack under the identical key', async () => {
       // Stack A, us-east-1: its producer IS redacted, so it records the key.
@@ -686,23 +747,25 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
 
     it('leaves an unrelated literal alone even when its source leaf IS a recorded import', () => {
       const key = crossStackSourceKey({ 'Fn::ImportValue': 'Producer:CurrentPw' })!;
-      recordCrossStackExpression(key, EXPR_CURRENT, UNRELATED);
+      const secrets: RecordedSecretValues = new Map();
+      recordCrossStackExpression(secrets, key, EXPR_CURRENT, UNRELATED);
 
       const source = { Name: '', Value: { 'Fn::ImportValue': 'Producer:CurrentPw' } };
       const bag = { Name: '', Value: UNRELATED };
 
-      const redacted = redactSecretsForState(bag, new Map(), source);
+      const redacted = redactSecretsForState(bag, secrets, source);
       expect(redacted).toEqual(bag);
     });
 
     it('leaves the #1915 ARRAY shape alone', () => {
       const key = crossStackSourceKey({ 'Fn::ImportValue': 'Producer:CurrentPw' })!;
-      recordCrossStackExpression(key, EXPR_CURRENT, UNRELATED);
+      const secrets: RecordedSecretValues = new Map();
+      recordCrossStackExpression(secrets, key, EXPR_CURRENT, UNRELATED);
 
       const source = [{ Name: '', Value: { 'Fn::ImportValue': 'Producer:CurrentPw' } }];
       const bag = [{ Name: '', Value: UNRELATED }];
 
-      const redacted = redactSecretsForState(bag, new Map(), source);
+      const redacted = redactSecretsForState(bag, secrets, source);
       expect(redacted).toEqual(bag);
     });
 
@@ -718,15 +781,15 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
 
     it('REFUSES a key recorded against two DIFFERENT expressions (vs KEEP-LAST)', () => {
       const key = CONFLICT_KEY();
-      recordCrossStackExpression(key, EXPR_CURRENT, SHARED);
-      recordCrossStackExpression(key, EXPR_PREVIOUS, SHARED);
+      const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_CURRENT]]);
+      recordCrossStackExpression(secrets, key, EXPR_CURRENT, SHARED);
+      recordCrossStackExpression(secrets, key, EXPR_PREVIOUS, SHARED);
 
       const source = { P: { 'Fn::ImportValue': 'Producer:CurrentPw' } };
-      const redacted = redactSecretsForState(
-        { P: SHARED },
-        new Map([[SHARED, EXPR_CURRENT]]),
-        source
-      ) as Record<string, string>;
+      const redacted = redactSecretsForState({ P: SHARED }, secrets, source) as Record<
+        string,
+        string
+      >;
 
       // Falls through to the value scan, i.e. today's behaviour. A keep-LAST
       // mutant would answer EXPR_PREVIOUS here.
@@ -735,15 +798,15 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
 
     it('REFUSES a key recorded against two DIFFERENT expressions (vs KEEP-FIRST)', () => {
       const key = CONFLICT_KEY();
-      recordCrossStackExpression(key, EXPR_CURRENT, SHARED);
-      recordCrossStackExpression(key, EXPR_PREVIOUS, SHARED);
+      const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PREVIOUS]]);
+      recordCrossStackExpression(secrets, key, EXPR_CURRENT, SHARED);
+      recordCrossStackExpression(secrets, key, EXPR_PREVIOUS, SHARED);
 
       const source = { P: { 'Fn::ImportValue': 'Producer:CurrentPw' } };
-      const redacted = redactSecretsForState(
-        { P: SHARED },
-        new Map([[SHARED, EXPR_PREVIOUS]]),
-        source
-      ) as Record<string, string>;
+      const redacted = redactSecretsForState({ P: SHARED }, secrets, source) as Record<
+        string,
+        string
+      >;
 
       // A keep-FIRST mutant would answer EXPR_CURRENT here.
       expect(redacted['P']).toBe(EXPR_PREVIOUS);
@@ -754,30 +817,30 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
       // in two regions (the issue #1933 shape). The expression matches, so an
       // expression-only conflict test would accept it.
       const key = CONFLICT_KEY();
-      recordCrossStackExpression(key, EXPR_CURRENT, SHARED);
-      recordCrossStackExpression(key, EXPR_CURRENT, 'a-different-region-password');
+      const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PREVIOUS]]);
+      recordCrossStackExpression(secrets, key, EXPR_CURRENT, SHARED);
+      recordCrossStackExpression(secrets, key, EXPR_CURRENT, 'a-different-region-password');
 
       const source = { P: { 'Fn::ImportValue': 'Producer:CurrentPw' } };
-      const redacted = redactSecretsForState(
-        { P: SHARED },
-        new Map([[SHARED, EXPR_PREVIOUS]]),
-        source
-      ) as Record<string, string>;
+      const redacted = redactSecretsForState({ P: SHARED }, secrets, source) as Record<
+        string,
+        string
+      >;
 
       expect(redacted['P']).toBe(EXPR_PREVIOUS);
     });
 
     it('re-recording the SAME association is not a conflict', () => {
       const key = CONFLICT_KEY();
-      recordCrossStackExpression(key, EXPR_CURRENT, SHARED);
-      recordCrossStackExpression(key, EXPR_CURRENT, SHARED);
+      const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PREVIOUS]]);
+      recordCrossStackExpression(secrets, key, EXPR_CURRENT, SHARED);
+      recordCrossStackExpression(secrets, key, EXPR_CURRENT, SHARED);
 
       const source = { P: { 'Fn::ImportValue': 'Producer:CurrentPw' } };
-      const redacted = redactSecretsForState(
-        { P: SHARED },
-        new Map([[SHARED, EXPR_PREVIOUS]]),
-        source
-      ) as Record<string, string>;
+      const redacted = redactSecretsForState({ P: SHARED }, secrets, source) as Record<
+        string,
+        string
+      >;
 
       expect(redacted['P']).toBe(EXPR_CURRENT);
     });
@@ -788,7 +851,6 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
       // recorded this expression against SHARED, so the association is not about
       // this bag and is refused before anything else is consulted.
       const key = CONFLICT_KEY();
-      recordCrossStackExpression(key, EXPR_CURRENT, SHARED);
 
       const OTHER_PLAINTEXT = 'a-completely-different-secret';
       const OTHER_EXPR = '{{resolve:secretsmanager:other:SecretString:v}}';
@@ -799,6 +861,7 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
       // pairing therefore turns this red instead of being masked by its
       // neighbour.
       const secrets: RecordedSecretValues = new Map([[OTHER_PLAINTEXT, OTHER_EXPR]]);
+      recordCrossStackExpression(secrets, key, EXPR_CURRENT, SHARED);
 
       const source = { P: { 'Fn::ImportValue': 'Producer:CurrentPw' } };
       const redacted = redactSecretsForState({ P: OTHER_PLAINTEXT }, secrets, source) as Record<
@@ -816,13 +879,13 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
       // answering differently in two regions (issue #1933). Condition 2 compares
       // what the WRITER recorded; condition 3 compares what THIS PASS holds.
       const key = CONFLICT_KEY();
-      recordCrossStackExpression(key, EXPR_CURRENT, SHARED);
 
       const ELSEWHERE = 'the-other-regions-password';
       const secrets: RecordedSecretValues = new Map([
         [SHARED, EXPR_PREVIOUS],
         [ELSEWHERE, EXPR_CURRENT],
       ]);
+      recordCrossStackExpression(secrets, key, EXPR_CURRENT, SHARED);
 
       const source = { P: { 'Fn::ImportValue': 'Producer:CurrentPw' } };
       const redacted = redactSecretsForState({ P: SHARED }, secrets, source) as Record<
@@ -833,6 +896,42 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
       expect(redacted['P']).toBe(EXPR_PREVIOUS);
     });
 
+    it('REFUSES to store an association whose expression is not a whole token', () => {
+      // The two payload parameters are both `string`, so the type system cannot
+      // see a SWAPPED call — and a swap is not merely a wrong answer: the reader
+      // returns `expression`, so a stored `{expression: <plaintext>}` writes a
+      // SECRET into `state.json`. The setup is what a swap looks like when the
+      // reader would otherwise ACCEPT it: the swapped `plaintext` slot holds the
+      // real EXPRESSION, so it equals a bag leaf that is a token-shaped value
+      // this pass recorded (the issue #1917 shape), satisfying conditions 1 and
+      // 2, while condition 3 has nothing to say about the plaintext now sitting
+      // in the expression slot.
+      //
+      // WHAT THE INVARIANT DOES NOT CATCH, stated rather than left to be
+      // discovered: a swap whose plaintext is ITSELF a complete
+      // `{{resolve:...}}` token passes the shape test, because #1917 exists
+      // precisely because a secret's VALUE can look like one and nothing can
+      // tell the two apart from the string alone. The guard narrows a swap from
+      // "any secret" to "a secret that happens to be token-shaped"; the caller
+      // guard at the seam is what covers the rest.
+      const PLAINTEXT = 'ordinary-plaintext-secret-value';
+      const OWN_EXPR = '{{resolve:secretsmanager:owner:SecretString:v}}';
+      const key = CONFLICT_KEY();
+      const secrets: RecordedSecretValues = new Map([[EXPR_CURRENT, OWN_EXPR]]);
+
+      // SWAPPED on purpose: the plaintext lands in the `expression` slot.
+      recordCrossStackExpression(secrets, key, PLAINTEXT, EXPR_CURRENT);
+
+      const source = { P: { 'Fn::ImportValue': 'Producer:CurrentPw' } };
+      const redacted = redactSecretsForState({ P: EXPR_CURRENT }, secrets, source) as Record<
+        string,
+        string
+      >;
+
+      expect(redacted['P']).not.toBe(PLAINTEXT);
+      expect(redacted['P']).toBe(OWN_EXPR);
+    });
+
     it('leaves a leaf that merely EMBEDS the secret to the value scan', () => {
       // The certification answers with one complete token, so a leaf with
       // surrounding text is not this shape and must keep going to the scan,
@@ -841,12 +940,13 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
       // writer recorded SHARED, not the URL) — so it takes a combined probe to
       // turn it red, which is the honest reading of a leaf no single guard owns.
       const key = CONFLICT_KEY();
-      recordCrossStackExpression(key, EXPR_CURRENT, SHARED);
+      const secrets: RecordedSecretValues = new Map([[SHARED, EXPR_PREVIOUS]]);
+      recordCrossStackExpression(secrets, key, EXPR_CURRENT, SHARED);
 
       const source = { Url: { 'Fn::ImportValue': 'Producer:CurrentPw' } };
       const redacted = redactSecretsForState(
         { Url: `postgres://user:${SHARED}@host/db` },
-        new Map([[SHARED, EXPR_PREVIOUS]]),
+        secrets,
         source
       ) as Record<string, string>;
 
