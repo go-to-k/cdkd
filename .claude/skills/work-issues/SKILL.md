@@ -1200,6 +1200,34 @@ Two things follow, and the second is the one that is easy to get backwards:
   character for character ended it. So when you name the shape, also name the
   SITE THAT OWNS the question, and make every other site call or copy it exactly;
   a paraphrase is a fourth round waiting to happen.
+- **When the shape is "A PROXY FOR A QUESTION ONLY ANOTHER COMPONENT CAN
+  ANSWER", the fix is to make that component REPORT — and the tell is that each
+  proxy is wrong in BOTH directions at once.** The sibling of the bullet above,
+  and it is diagnosable one round earlier: two spellings DISAGREE at an edge,
+  while a proxy has no access to the fact at all, so every candidate both misses
+  real cases and fires on unreal ones. When a round's fix lands on a new
+  observable rather than a new spelling — "it threw", "the text survived", "a
+  needle exists" — ask whether the thing you want to know is even derivable from
+  outside the component that decides it. If it is not, the rounds are unbounded.
+  Measured on issues go-to-k/cdkd#2157 / go-to-k/cdkd#2166, three rounds asking
+  "did this reference go unresolved?" from outside the resolver: keying on "the
+  resolution THREW" missed the shape where `resolveSub` warn-and-KEEPS an
+  unevaluable placeholder (nothing throws) and over-reported an unrelated `Ref`
+  failure that merely shared the bag; keying on "the raw leaf text SURVIVED"
+  missed a leaf a downstream intrinsic rewrote without resolving, broke on JSON
+  escaping, and fired PERMANENTLY on prose that merely mentions the syntax —
+  re-opening, one level out, an unactionable-refusal class the same file had
+  already closed once.
+- **WITHDRAWING the half that cannot be made right is a legitimate outcome, and
+  the residual issue must carry the MEASUREMENTS, not just the diagnosis.**
+  §8's "do NOT take the structural fix late in the cascade" says where the fix
+  goes; this says what to do with the code already written for the wrong one.
+  Cut it, ship the part the issues actually scoped, and file the rest — the
+  filing is cheap only if it carries what the session PAID for: each proxy tried,
+  the input that broke it, and the number it produced. A diagnosis alone makes
+  the next session re-run the probes. The go-to-k/cdkd#2166 filing carries all
+  three rounds plus a live arm that was written, passed, mutation-probed and then
+  reverted, so none of it is rebuilt.
 
 Run `/verify-pr`. It layers CI status, docs consistency, AWS-resource cleanup, code
 review, and a **live-test of the changed behavior** on top of `/check`. Unit tests
