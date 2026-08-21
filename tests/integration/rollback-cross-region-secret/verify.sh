@@ -38,7 +38,7 @@
 #      roll-up. 2b2: tamper TWO properties out of band (the secret-bearing
 #      `Value` AND the ordinary `Description`) and assert the resource is now
 #      DRIFTED on Description only, still flagged, exiting 1 -- without the
-#      second property the resource stays `clean` and the revert below returns
+#      second property the resource stays `notCompared` and the revert below returns
 #      early, exercising no revert code at all. 2c: `drift --revert -y` must
 #      reach the per-resource refusal (`refused to re-resolve`, a string only
 #      the revert path produces), write NOTHING, and exit 2.
@@ -410,7 +410,8 @@ echo "[verify]   ok: drift exited 2, and the run says it REFUSED (not merely did
 # TWO properties are tampered, and the SECOND one is what makes this arm run at
 # all. `SecretEcho`'s only secret-bearing property is `Value`, whose STATE side
 # is the `{{resolve:ssm:...}}` token the comparator SKIPS -- so tampering `Value`
-# alone leaves the resource `clean`, `drifted` empty, and `runRevert` returns
+# alone leaves the resource `notCompared` (issue #2135; it was `clean` plus a
+# `referencesUnresolved` flag before), `drifted` empty, and `runRevert` returns
 # early with "nothing to revert". The whole phase then issued live writes for
 # zero signal, which is exactly why a real-AWS mutation probe of it came back
 # green. `Description` is an ordinary non-secret property of the SAME resource,

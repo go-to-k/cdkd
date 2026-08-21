@@ -351,6 +351,61 @@ function lambdaResource(expr: string, plain = 'ok'): ResourceState {
 }
 
 /**
+ * ONE resource that trips BOTH not-compared causes, in the order that makes
+ * both of them stick.
+ *
+ * `resolveStateSecretExpressions` walks leaves SEQUENTIALLY in key order, so
+ * the surviving-token leaf has to come FIRST: the refusal on the second leaf
+ * THROWS, and a throw on the first leaf would abort the pass before the
+ * survivor is ever seen, leaving only `secretResolutionFailed` set. In that
+ * order the resource reaches the construction site with
+ * `unresolvedTokens.size > 0` AND `secretResolutionFailed === true` -- the only
+ * shape in which the precedence between the two arms is observable at all.
+ *
+ * Every leaf outside `Environment.Variables` is ordinary, so nothing here can
+ * drift and the exit code is decided by the cause alone.
+ */
+function bothCausesResource(): ResourceState {
+  const bag = {
+    FunctionName: 'fn',
+    Environment: {
+      Variables: {
+        /** Walked FIRST: cdkd resolves `ssm-secure` for nobody, so the token SURVIVES. */
+        SSM_SECURE_PASSWORD: SSM_SECURE_EXPR,
+        /** Walked SECOND: region-less name + a foreign producer on record = REFUSED. */
+        SECRET_PASSWORD: NAME_EXPR,
+      },
+    },
+  };
+  return {
+    physicalId: 'fn',
+    resourceType: LAMBDA_TYPE,
+    properties: JSON.parse(JSON.stringify(bag)) as Record<string, unknown>,
+    observedProperties: JSON.parse(JSON.stringify(bag)) as Record<string, unknown>,
+  };
+}
+
+/**
+ * The live readback for {@link bothCausesResource}: the SAME key set (the walk
+ * is a union of baseline and AWS keys, so an extra or missing key would be
+ * drift of its own) with AWS holding resolved plaintext at both secret-bearing
+ * leaves. Neither is compared -- the state side still carries `{{resolve:`, so
+ * `calculateResourceDrift` skips it -- which is what keeps this run's exit code
+ * a function of the cause and not of drift.
+ */
+function bothCausesAws(): Record<string, unknown> {
+  return {
+    FunctionName: 'fn',
+    Environment: {
+      Variables: {
+        SSM_SECURE_PASSWORD: 'whatever-aws-holds-here',
+        SECRET_PASSWORD: IRELAND_PASSWORD,
+      },
+    },
+  };
+}
+
+/**
  * A consumer state record whose cross-stack reads name `producerRegions` —
  * exactly the `state.imports[].sourceRegion` / `state.outputReads[].sourceRegion`
  * evidence `producerRegionsFromState` reads, and the reason this command needs
@@ -1193,6 +1248,67 @@ describe('the drift EXIT CODE is scoped to REFUSALS, not to everything uncompare
     expect(parsed[0]!.notCompared.map((n) => n.logicalId).sort()).toEqual(['Refused', 'Survivor']);
     expect(exitSpy).toHaveBeenCalledWith(2);
   });
+
+  /**
+   * ONE RESOURCE CARRYING BOTH CAUSES — the case that fences the PRECEDENCE of
+   * the two arms, which nothing else in this suite does.
+   *
+   * Every other case here separates the causes across two RESOURCES, and a
+   * per-resource split is decided by which outcome each one gets, not by the
+   * order the two arms are written in: flip the ternary at the construction
+   * site and all of them stay green. The ordering is only observable when ONE
+   * resource sets BOTH flags, and it is reachable rather than theoretical --
+   * `onUnresolved` accumulates surviving tokens as the pass walks leaves and
+   * the refusal throws on a LATER leaf, so `unresolvedTokens` is already
+   * non-empty when `secretResolutionFailed` is set, and the `catch` does not
+   * clear it.
+   *
+   * Under the flipped order this resource classifies as `unresolvedToken`,
+   * `outcomeExitSignal` answers `none`, and the command EXITS 0 on a refused
+   * comparison -- the exact silent downgrade issues #2108 and #2135 exist to
+   * prevent. `refused` therefore has to win, and the direction is not
+   * symmetric: `unresolvedToken` must NOT drive a non-zero exit, because
+   * `ssm-secure` is a large pre-existing population that can never clear on a
+   * re-run, while `refused` must, because pre-#2108 that same population exited
+   * 1 and exiting 0 would be a downgrade.
+   */
+  it('ONE resource with BOTH causes is `refused`, not `unresolvedToken`: exits 2', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(makeState({ Fn: bothCausesResource() }, [PRODUCER_REGION]));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => bothCausesAws(),
+    });
+
+    const { output } = await runDrift(['Consumer']);
+
+    // THE PREMISE, asserted positively rather than assumed: this fixture only
+    // fences the ordering while it really does set BOTH flags on ONE resource.
+    // Each warning is emitted from its own branch -- the `catch` for the
+    // refusal, the `unresolvedTokens.size > 0` block for the survivor -- so the
+    // pair is direct evidence that both were true at the construction site. A
+    // later fixture change that stopped tripping one of them would leave this
+    // test passing over a premise it no longer has, and the ordering unfenced
+    // again.
+    const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(warnings.some((w) => w.includes('refused to resolve a dynamic reference'))).toBe(true);
+    expect(warnings.some((w) => w.includes(`cdkd cannot resolve ${SSM_SECURE_EXPR}`))).toBe(true);
+
+    // THE ASSERTION. Nothing drifted -- both secret-bearing leaves were
+    // SKIPPED, which is why `2` and not `1` is the code that must appear -- so
+    // the exit code is decided by the cause alone, and `2` is observable only
+    // when the cause resolved to `refused`.
+    expect(output).toContain('no drift detected');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+
+    // ...and the REPORT covers it under both causes alike, so the narrowing
+    // lives in the exit code only: the resource is inspected, not checked, and
+    // named in the block.
+    expect(output).toContain('0 of 1 resource fully checked');
+    expect(output).toContain('1 only partially compared');
+    const block = output.slice(output.indexOf('PARTIALLY compared'));
+    expect(block).toContain('! Fn (');
+  });
 });
 
 describe('every rendering agrees about what was NOT compared (issue #2135)', () => {
@@ -1266,7 +1382,7 @@ describe('every rendering agrees about what was NOT compared (issue #2135)', () 
     ]);
     expect(parsed[0]!.notCompared).toEqual([
       { logicalId: 'Refused', type: LAMBDA_TYPE, referencesUnresolved: true },
-    { logicalId: 'Survivor', type: LAMBDA_TYPE, referencesUnresolved: true },
+      { logicalId: 'Survivor', type: LAMBDA_TYPE, referencesUnresolved: true },
     ]);
     expect(parsed[0]!.drifted).toEqual([]);
   });

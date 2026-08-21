@@ -1005,6 +1005,61 @@ describe('cdkd drift', () => {
     expect(mockCcReadCurrentState).not.toHaveBeenCalled();
   });
 
+  /**
+   * The COUNT the report prints, which the `Custom::*` case above never
+   * asserts: it checks only that the skipped resource is not NAMED, and
+   * `no drift detected` stays true whether the counter says 2 or 3.
+   *
+   * The property is issue #323's other half -- a `Custom::*` resource is not
+   * "checked", because no read happens for it at all, so counting it would
+   * make the headline number claim coverage cdkd never had. Three resources on
+   * record, two of them read: the number a user reads off this line must be
+   * `2`, and it is the only place in the report where the difference is
+   * visible.
+   *
+   * Asserted as the exact rendered fragment rather than as a `not.toContain`,
+   * so it fails for the right reason: a report that stopped printing the count
+   * entirely would satisfy "does not say 3" while saying nothing at all.
+   */
+  it('counts only resources it actually read: a skipped `Custom::*` is not "checked" (issue #323)', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        // Read, and matching -> `clean`, so both are `checked`.
+        Bucket1: makeResource({
+          physicalId: 'b1',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b1' },
+        }),
+        Bucket2: makeResource({
+          physicalId: 'b2',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b2' },
+        }),
+        // Never read at all -> `skipped`, and the whole point of this case.
+        AutoDelete: makeResource({
+          physicalId: 'cr',
+          resourceType: 'Custom::S3AutoDeleteObjects',
+          properties: { ServiceToken: 'arn:aws:lambda:...:fn' },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async (physicalId: string) => ({ BucketName: physicalId }),
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect(error).toBeUndefined();
+    // THE ASSERTION: `2`, from a stack of three resources.
+    expect(output).toContain('no drift detected (2 resources checked, 0 unsupported)');
+    expect(output).not.toContain('3 resources checked');
+    // The premise, stated positively: the third resource really was on record
+    // and really was skipped rather than quietly dropped before the report.
+    expect(output).not.toContain('AutoDelete');
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
   it('reports providers without readCurrentState as drift unknown', async () => {
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(

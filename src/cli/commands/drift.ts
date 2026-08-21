@@ -344,8 +344,9 @@ class DriftDetectedError extends CdkdError {
  * fired. #2108 correctly stopped comparing against a foreign region's plaintext,
  * which made the same population report `notCompared`; without this the
  * command would exit 0 and print `no drift detected` for a stack whose
- * secret-bearing properties were never looked at. Round 1 of that change surfaced the refusal
- * in `--json` (`notCompared`) and in the human report, but the exit code -- the
+ * secret-bearing properties were never looked at. Round 1 of that change
+ * surfaced the refusal in `--json` (`notCompared`) and in the human report,
+ * but the exit code -- the
  * signal most CI gates actually read -- still said "pass".
  *
  * WHY EXIT 2 RATHER THAN 1. `2` is this repo's established "work completed but
@@ -4076,29 +4077,39 @@ function writeHumanReport(reports: StackDriftReport[]): void {
     // human-report count so "N resources checked" matches the user's
     // mental model. Skipped entries are still present in the outcomes
     // array and surface in `--json` output (as `skipped: [...]`).
-    let skippedCount = 0;
-    // Issue #2135: ONE exhaustive pass, so the counter below cannot silently
-    // absorb a new outcome variant into "checked". The count a user reads is
-    // the claim this whole report makes, and a variant that arrives without
-    // being named here would inflate it.
+    let inspectedCount = 0;
+    // Issue #2135: ONE exhaustive pass, and `inspected` is COUNTED UP inside
+    // it rather than subtracted from `outcomes.length` afterwards. Subtracting
+    // is what let the old shape absorb an unnamed variant into "checked"
+    // silently: a variant nobody named still landed in the total, because the
+    // total did not come from the enumeration. Counting up means a variant
+    // that arrives without an arm here is EXCLUDED rather than assumed
+    // checked, so the arithmetic that states the claim is the arithmetic the
+    // exhaustive pass drives. The `skipped` arm increments nothing, which IS
+    // the #323 exclusion above -- it is not an omission, and there is no
+    // separate skipped counter to keep in step with it.
     for (const o of report.outcomes) {
       matchOutcome<void>(o, {
         drifted: (d) => {
           drifted.push(d);
+          inspectedCount += 1;
         },
         unsupported: (u) => {
           unsupported.push(u);
+          inspectedCount += 1;
         },
-        skipped: () => {
-          skippedCount += 1;
-        },
+        skipped: () => {},
         // Both counted as inspected, and told apart by `notCompared` below:
         // a `clean` one was checked, a `notCompared` one was not.
-        clean: () => {},
-        notCompared: () => {},
+        clean: () => {
+          inspectedCount += 1;
+        },
+        notCompared: () => {
+          inspectedCount += 1;
+        },
       });
     }
-    const inspected = report.outcomes.length - skippedCount;
+    const inspected = inspectedCount;
     // Issue #2108: the `--json` `notCompared` roll-up, in the human report.
     // `✓ no drift detected` on a resource whose secret-bearing properties were
     // never compared is the same false reassurance the JSON field exists to
