@@ -1,3 +1,10 @@
+## [0.284.34](https://github.com/go-to-k/cdkd/compare/v0.284.33...v0.284.34) (2026-08-21)
+
+
+### Bug Fixes
+
+* **scrub:** follow a re-export chain, so a single-stack scrub cannot report clean over surviving plaintext ([#2153](https://github.com/go-to-k/cdkd/issues/2153)) ([6645942](https://github.com/go-to-k/cdkd/commit/6645942537366c2c0c1880e170da755c2feba146))
+
 ## [0.284.33](https://github.com/go-to-k/cdkd/compare/v0.284.32...v0.284.33) (2026-08-21)
 
 
