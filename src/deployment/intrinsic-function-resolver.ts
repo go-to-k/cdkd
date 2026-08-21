@@ -44,6 +44,7 @@ import {
   crossStackSourceKey,
   recordCrossStackExpression,
   clearRecordedCrossStackExpressions,
+  isSecretExpressionByVerdictOrSpelling,
   isSingleDynamicReferenceToken,
   type RecordedSecretValues,
 } from './secret-redaction.js';
@@ -4053,22 +4054,42 @@ export class IntrinsicFunctionResolver {
     // nested bag carrying one, has no single expression for the consumer's leaf,
     // and the persist path's condition 1 would refuse such a leaf anyway.
     //
-    // GATED ON THE RESOLUTION'S OWN SECRET VERDICT rather than on the token's
-    // spelling: presence in `recordedSecretValues` is written only where
-    // `resolveDynamicReferences` proved the reference secret, so an `ssm`
-    // reference that came back a plain `String` — public config that must stay
-    // RESOLVED in state (issue #1901) — is never recorded here and can never be
-    // handed back as an expression to persist. It is a PRESENCE test: the value
-    // this key maps to may well be a SIBLING's expression, since that map is
-    // exactly the one that collapsed.
+    // GATED ON THIS EXPRESSION'S OWN SECRET VERDICT, which takes TWO tests
+    // because neither is sufficient alone.
+    //
+    // `recordedSecretValues.has(reresolved)` says a secret with THIS PLAINTEXT
+    // was resolved somewhere in the pass. It is deliberately a PRESENCE test —
+    // the expression that key maps to may well be a SIBLING's, since that map is
+    // exactly the one that collapsed — which is also why it cannot answer for
+    // THIS token: the map is shared across the whole pass, so a PUBLIC
+    // `{{resolve:ssm:/x}}` whose value happens to equal a secret already
+    // recorded would pass it, and the public expression would then be persisted
+    // in place of a resolved value. That is issue #1901's perpetual-UPDATE
+    // class, and coinciding plaintexts are this issue's own premise rather than
+    // a contrived path, so the presence test alone is not the gate this comment
+    // used to claim it was.
+    //
+    // `isSecretExpressionByVerdictOrSpelling(value)` is the test that is
+    // actually ABOUT this token: `secretsmanager` by spelling, or an `ssm`
+    // reference this process PROVED to be a `SecureString`. A plain `String`
+    // parameter answers false — and answers false even if a stale memo once
+    // said otherwise, since a definitive public verdict RETRACTS it.
+    //
+    // Both, not either: presence proves the pass actually resolved this token to
+    // a usable needle, the verdict proves the token is a secret at all.
     if (
       sourceKey !== undefined &&
       typeof value === 'string' &&
       isSingleDynamicReferenceToken(value) &&
       typeof reresolved === 'string' &&
-      context.recordedSecretValues?.has(reresolved) === true
+      context.recordedSecretValues?.has(reresolved) === true &&
+      isSecretExpressionByVerdictOrSpelling(value)
     ) {
-      recordCrossStackExpression(sourceKey, value);
+      // The PLAINTEXT is recorded beside the expression, and the reader refuses
+      // any entry whose plaintext is not the bag it is certifying. That is what
+      // keeps a PROCESS-WIDE store honest beside PER-RESOURCE `secrets` maps
+      // when two stacks in two regions spell the identical key.
+      recordCrossStackExpression(sourceKey, value, reresolved);
     }
     return reresolved;
   }
