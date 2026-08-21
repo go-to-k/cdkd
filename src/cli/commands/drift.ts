@@ -4088,6 +4088,18 @@ function writeHumanReport(reports: StackDriftReport[]): void {
     // exhaustive pass drives. The `skipped` arm increments nothing, which IS
     // the #323 exclusion above -- it is not an omission, and there is no
     // separate skipped counter to keep in step with it.
+    //
+    // Two honest limits, stated so the paragraph above is not read as more
+    // than it is. `inspected` and `checked` are only ever READ inside the
+    // `drifted.length === 0` branch, so the `drifted` arm's increment cannot
+    // affect any number a user sees; it is kept because `inspected` means
+    // "outcomes that were not skipped", and an arm that silently stopped
+    // maintaining that would be a trap for the next reader who moves the
+    // read. And `unsupported` DOES count toward "N resources checked" even
+    // though nothing was read for it -- that is main's pre-existing
+    // arithmetic, preserved here deliberately rather than changed under cover
+    // of a refactor, and it is what makes a one-unsupported-resource stack
+    // print `1 resource checked, 1 unsupported`.
     for (const o of report.outcomes) {
       matchOutcome<void>(o, {
         drifted: (d) => {

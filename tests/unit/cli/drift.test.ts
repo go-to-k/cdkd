@@ -1051,13 +1051,52 @@ describe('cdkd drift', () => {
     const { output, error } = await runDrift(['TestStack']);
 
     expect(error).toBeUndefined();
-    // THE ASSERTION: `2`, from a stack of three resources.
+    // THE ASSERTION: `2`, from a stack of three resources. The exact rendered
+    // fragment rather than the absence of `3`, which a report that stopped
+    // printing the count at all would also satisfy.
     expect(output).toContain('no drift detected (2 resources checked, 0 unsupported)');
     expect(output).not.toContain('3 resources checked');
-    // The premise, stated positively: the third resource really was on record
-    // and really was skipped rather than quietly dropped before the report.
+    // Secondary only -- a resource silently DROPPED before the report would
+    // satisfy this too, so on its own it cannot state the premise. It adds
+    // just that the skipped resource is not rendered in the report body.
     expect(output).not.toContain('AutoDelete');
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('states the premise positively: the uncounted resource is on record as skipped', async () => {
+    // The positive half of the test above. `2 resources checked` is consistent
+    // both with "the third was skipped" (correct) and with "the third never
+    // reached the report at all" (a real defect that would look identical), so
+    // the exclusion is only meaningful alongside evidence the resource WAS
+    // seen and deliberately classified.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Bucket1: makeResource({ physicalId: 'b1', resourceType: 'AWS::S3::Bucket' }),
+        AutoDelete: makeResource({
+          physicalId: 'cr',
+          resourceType: 'Custom::S3AutoDeleteObjects',
+          properties: { ServiceToken: 'arn:aws:lambda:...:fn' },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async (physicalId: string) => ({ BucketName: physicalId }),
+    });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    const payload = JSON.parse(output) as Array<{
+      clean: Array<{ logicalId: string }>;
+      skipped: Array<{ logicalId: string; type: string }>;
+    }>;
+    // Named in `skipped[]`, with its type -- so it was on record and reached
+    // the classifier, rather than being dropped somewhere upstream.
+    expect(payload[0]?.skipped).toEqual([
+      { logicalId: 'AutoDelete', type: 'Custom::S3AutoDeleteObjects' },
+    ]);
+    // ...and it is NOT also in `clean`, which is what would let it be counted.
+    expect(payload[0]?.clean?.map((c) => c.logicalId)).toEqual(['Bucket1']);
   });
 
   it('reports providers without readCurrentState as drift unknown', async () => {
@@ -1079,7 +1118,16 @@ describe('cdkd drift', () => {
     expect(error).toBeUndefined();
     expect(output).toContain('? SomeRes (AWS::Lambda::Function)');
     expect(output).toContain('drift unknown');
-    expect(output).toContain('1 unsupported');
+    // The EXACT rendered fragment, not just the `1 unsupported` half. Issue
+    // #2135 moved `inspected` from `outcomes.length - skippedCount` to a
+    // count accumulated inside the exhaustive pass, which turned the
+    // `unsupported` contribution into its own branch; asserting only
+    // `'1 unsupported'` left that branch unfenced (deleting its increment
+    // kept every test in this directory green). Note the count says `1
+    // resource checked` for a resource cdkd never READ -- that is main's
+    // pre-existing arithmetic, preserved deliberately here rather than
+    // changed under cover of a refactor, and tracked separately.
+    expect(output).toContain('no drift detected (1 resource checked, 1 unsupported)');
     // Drift unknown is not drift -> exit 0.
     expect(exitSpy).not.toHaveBeenCalled();
   });

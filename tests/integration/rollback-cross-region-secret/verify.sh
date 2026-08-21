@@ -377,6 +377,37 @@ if [ "${REFS_UNRESOLVED}" != "true" ]; then
 fi
 echo "[verify]   ok: SecretEcho carries referencesUnresolved=true"
 
+# THE #2135 DISCRIMINATOR. Everything asserted above passes under the PRE-#2135
+# shape too: issue #2108 already emitted a derived `notCompared[]` roll-up and
+# the same exit code, so those assertions are a regression net for #2108 rather
+# than evidence about this change. What #2135 actually altered is MEMBERSHIP --
+# a refused resource used to be the `clean` outcome variant carrying a
+# `referencesUnresolved: true` rider, and is now its own outcome, so it must no
+# longer appear in `clean[]` at all. That is the one user-visible payload delta,
+# and it is asserted here rather than left to the unit suite.
+#
+# Stated as a POSITIVE fact about the array (`clean[]` was emitted, and its
+# membership is exactly what it should be) rather than as a bare absence: a run
+# that stopped before writing `clean[]`, or a jq path typo, would satisfy a
+# plain "SecretEcho is not in clean" and report success having compared nothing.
+CLEAN_IDS="$(jq -r '[.. | objects | select(has("clean")) | .clean[]?.logicalId] | unique | join(",")' \
+  "${DRIFT_CLEAN_JSON}")"
+if ! jq -e '[.. | objects | select(has("clean"))] | length > 0' "${DRIFT_CLEAN_JSON}" >/dev/null; then
+  echo "FAIL: drift --json emitted no clean[] array at all -- the absence assertion below would be vacuous" >&2
+  jq '.' "${DRIFT_CLEAN_JSON}" >&2 || cat "${DRIFT_CLEAN_JSON}" >&2
+  exit 1
+fi
+case ",${CLEAN_IDS}," in
+  *,SecretEcho,*)
+    echo "FAIL: SecretEcho is STILL in clean[] (got '${CLEAN_IDS}') -- pre-#2135 behaviour: a resource whose comparison was refused is being reported as clean-plus-a-flag" >&2
+    jq '.' "${DRIFT_CLEAN_JSON}" >&2 || cat "${DRIFT_CLEAN_JSON}" >&2
+    exit 1
+    ;;
+  *)
+    echo "[verify]   ok: SecretEcho is absent from clean[] (clean=[${CLEAN_IDS}]) -- notCompared is a first-class outcome, not a rider on clean"
+    ;;
+esac
+
 # THIRD marker, and the one a CI gate actually reads. Nothing drifted here, so
 # the exit code is the only thing standing between "cdkd compared everything and
 # found nothing" and "cdkd never compared the one property that could differ".
