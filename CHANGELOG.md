@@ -1,3 +1,10 @@
+## [0.284.37](https://github.com/go-to-k/cdkd/compare/v0.284.36...v0.284.37) (2026-08-21)
+
+
+### Bug Fixes
+
+* **scrub:** stop refusing an assembled reference and an untaken Fn::If branch ([#2164](https://github.com/go-to-k/cdkd/issues/2164)) ([1b7f379](https://github.com/go-to-k/cdkd/commit/1b7f379d24c11c47d7a8718b9c6d437e4d7e2b11))
+
 ## [0.284.36](https://github.com/go-to-k/cdkd/compare/v0.284.35...v0.284.36) (2026-08-21)
 
 
