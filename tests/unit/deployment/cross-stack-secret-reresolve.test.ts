@@ -326,10 +326,18 @@ describe('cross-stack reads re-resolve a REDACTED value (issue #1934)', () => {
     ] as const) {
       it(`resolves through ${label} even with two producer regions on record`, async () => {
         const resolver = new IntrinsicFunctionResolver(CONSUMER_REGION);
+        // Carried so the assertion below can see what the STRIPPED context still
+        // holds. The strip is a rest-destructure, so a second key landing in it
+        // by accident would silently drop a recording bag -- and the sibling
+        // case that does assert this takes the identity-return path, where no
+        // spread happens at all, so without this the spread branch has no local
+        // fence (round 3).
+        const recordedSecretValues = new Map<string, string>();
 
         const result = await resolver.resolve(
           { 'Fn::ImportValue': 'DbPassword' },
           buildContext({
+            recordedSecretValues,
             exportIndex: mockIndex({
               DbPassword: {
                 value: SECRET_EXPRESSION,
@@ -346,8 +354,43 @@ describe('cross-stack reads re-resolve a REDACTED value (issue #1934)', () => {
         );
 
         expect(result).toBe(expected);
+        // The stripped context must still carry the needle map, or the resolved
+        // plaintext reaches state.json unredacted.
+        expect(recordedSecretValues.get(expected)).toBe(SECRET_EXPRESSION);
       });
     }
+
+    it('an EMPTY producer region is UNKNOWN, so the refusal evidence is kept', async () => {
+      // The predicate fence (issue #2134 review round 3). `reresolveCrossStackValue`
+      // decides "is the origin known" and `resolverForProducerRegion` decides
+      // "do I need a sibling"; they must be the SAME test, and an earlier
+      // `!== undefined` made them disagree on `''`. The disagreement was
+      // fail-OPEN: the resolver treats `''` as unknown and answers from the
+      // CONSUMER's region, while the gate called the origin known and stripped
+      // the evidence that would have refused.
+      //
+      // `''` is reachable rather than theoretical -- the exports index is an
+      // unchecked `JSON.parse`, and its `ref.region ?? this.region` preserves an
+      // empty string.
+      const resolver = new IntrinsicFunctionResolver(CONSUMER_REGION);
+
+      await expect(
+        resolver.resolve(
+          { 'Fn::ImportValue': 'DbPassword' },
+          buildContext({
+            exportIndex: mockIndex({
+              DbPassword: {
+                value: SECRET_EXPRESSION,
+                producerStack: 'Producer',
+                producerRegion: '',
+              },
+            }),
+            stateBackend: mockBackend([]),
+            producerRegions: [CONSUMER_REGION, PRODUCER_REGION],
+          })
+        )
+      ).rejects.toMatchObject({ code: 'DYNAMIC_REFERENCE_REGION_AMBIGUOUS' });
+    });
 
     it('re-resolves on the index-MISS state.json scan path too', async () => {
       // The two arms return through different statements, so one being fixed

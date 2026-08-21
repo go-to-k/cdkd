@@ -4082,13 +4082,23 @@ export class IntrinsicFunctionResolver {
     // it verdicts `ambiguous` as soon as the consumer has two producers on
     // record.
     //
-    // Gated on `producerRegion !== undefined` rather than on whether a SIBLING
-    // was built, which is what round 1 got wrong: a producer in the consumer's
-    // OWN region yields `this`, so an identity test let the evidence through
-    // and refused the local case while the cross-region one worked. When the
-    // region really is unknown the evidence is kept, which is the fail-closed
+    // Gated on whether the producer region is KNOWN, rather than on whether a
+    // SIBLING was built, which is what round 1 got wrong: a producer in the
+    // consumer's OWN region yields `this`, so an identity test let the evidence
+    // through and refused the local case while the cross-region one worked.
+    // When the region really is unknown the evidence is KEPT -- the fail-closed
     // direction.
-    const pinnedContext = producerRegion !== undefined ? withoutProducerRegions(context) : context;
+    //
+    // TRUTHINESS, byte-for-byte the test `resolverForProducerRegion` itself
+    // uses (`if (!producerRegion) return this;`). Round 3 caught the earlier
+    // `!== undefined` as a SECOND SPELLING of one question, which is the same
+    // recurrence rounds 1 and 2 were: the two disagree on `''`, and they
+    // disagree on the fail-OPEN side -- the resolver treats `''` as unknown and
+    // answers from the CONSUMER's region, while `!== undefined` called the
+    // origin known and stripped the refusal's evidence. An empty region can
+    // reach here from an unchecked `JSON.parse` of the exports index, whose
+    // `ref.region ?? this.region` preserves `''`.
+    const pinnedContext = producerRegion ? withoutProducerRegions(context) : context;
     const walk = async (v: unknown): Promise<unknown> => {
       if (typeof v === 'string') {
         return v.includes('{{resolve:')
