@@ -2110,14 +2110,24 @@ The command produces four terminal states per resource:
   looked at.
 - **drift unknown** — the provider does not implement the optional
   `readCurrentState` method yet. Reported as `? <logicalId> (<type>)`
-  in a separate block at the bottom of each stack's report.
+  in a separate block at the bottom of each stack's report, and — like
+  everything else nothing was read for — **excluded from the summary's
+  "checked" count**, which reports it separately as `N unsupported`
+  (issue [#2141](https://github.com/go-to-k/cdkd/issues/2141)). A stack whose
+  only resource is unsupported prints
+  `no drift detected (0 resources checked, 1 unsupported)`.
 
 A **drifted** resource can be partially compared too — the changes it reports
 are real, but they are not the whole comparison — so it carries
 `referencesUnresolved: true` alongside them. Everything partially compared, that
 resource included, is rolled up under `notCompared` in `--json`, listed under a
 `PARTIALLY compared` block in the human report, and excluded from that report's
-"fully checked" count. A **clean** verdict never means anything but "compared
+"fully checked" count — as is anything **unsupported**, so both the `N checked`
+and the `N of M fully checked` spellings count only resources a comparison was
+attempted for. In the `N of M` spelling the unsupported total is reported
+outside the parenthetical (`1 of 3 resources fully checked (2 only partially
+compared), 1 unsupported`), so the bracketed figure accounts for exactly the
+gap between the two numbers rather than reading as a third share of `M`. A **clean** verdict never means anything but "compared
 and matched" (issue [#2135](https://github.com/go-to-k/cdkd/issues/2135)).
 
 Two different things land in that bucket, and only one of them changes the exit

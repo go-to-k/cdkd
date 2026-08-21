@@ -4089,26 +4089,34 @@ function writeHumanReport(reports: StackDriftReport[]): void {
     // the #323 exclusion above -- it is not an omission, and there is no
     // separate skipped counter to keep in step with it.
     //
-    // Two honest limits, stated so the paragraph above is not read as more
-    // than it is. `inspected` and `checked` are only ever READ inside the
+    // One honest limit, stated so the paragraph above is not read as more
+    // than it is: `inspected` and `checked` are only ever READ inside the
     // `drifted.length === 0` branch, so the `drifted` arm's increment cannot
-    // affect any number a user sees; it is kept because `inspected` means
-    // "outcomes that were not skipped", and an arm that silently stopped
+    // affect any number a user sees. It is kept because `inspected` means
+    // "outcomes cdkd actually read", and an arm that silently stopped
     // maintaining that would be a trap for the next reader who moves the
-    // read. And `unsupported` DOES count toward "N resources checked" even
-    // though nothing was read for it -- that is main's pre-existing
-    // arithmetic, preserved here deliberately rather than changed under cover
-    // of a refactor, and it is what makes a one-unsupported-resource stack
-    // print `1 resource checked, 1 unsupported`.
+    // read.
+    //
+    // Issue #2141: `unsupported` no longer increments. Two arms now
+    // contribute nothing, for the same reason from opposite directions --
+    // `skipped` because drift is not actionable there (#323) and
+    // `unsupported` because no read is possible at all -- so `inspected`
+    // counts exactly the outcomes a comparison was attempted for. A
+    // one-unsupported-resource stack therefore prints `0 resources checked,
+    // 1 unsupported` rather than claiming the resource was checked.
     for (const o of report.outcomes) {
       matchOutcome<void>(o, {
         drifted: (d) => {
           drifted.push(d);
           inspectedCount += 1;
         },
+        // Issue #2141: NOT counted. `readCurrentState` is absent for this
+        // type, so nothing was read and there is no comparison to report --
+        // counting it made `N resources checked` state a read that never
+        // happened. The resource is not lost: `unsupported.length` is printed
+        // on the same line, and `--json` carries it as `notSupported`.
         unsupported: (u) => {
           unsupported.push(u);
-          inspectedCount += 1;
         },
         skipped: () => {},
         // Both counted as inspected, and told apart by `notCompared` below:
@@ -4149,9 +4157,18 @@ function writeHumanReport(reports: StackDriftReport[]): void {
       // true; what changes is the claim that everything was looked at.
       if (notCompared.length > 0) {
         process.stdout.write(
+          // `unsupported` sits OUTSIDE the parenthetical, unlike the `✓`
+          // branch's trailing `, N unsupported`, and the asymmetry is the
+          // point: here there is a DENOMINATOR, so the parenthetical reads as
+          // a partition of it. Since issue #2141 took `unsupported` out of
+          // `inspected`, keeping it inside printed `1 of 3 ... (2 only
+          // partially compared, 1 unsupported)`, whose parts sum to 4 against
+          // a stated total of 3. Outside the parens the paren still explains
+          // exactly the `inspected - checked` gap and the numbers add up.
           `⚠ ${report.stackName} (${report.region}): no drift detected, but ` +
             `${checked} of ${inspected} resource${inspected === 1 ? '' : 's'} fully checked ` +
-            `(${notCompared.length} only partially compared, ${unsupported.length} unsupported)\n`
+            `(${notCompared.length} only partially compared), ` +
+            `${unsupported.length} unsupported\n`
         );
       } else {
         process.stdout.write(

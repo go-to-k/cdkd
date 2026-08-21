@@ -1387,6 +1387,90 @@ describe('every rendering agrees about what was NOT compared (issue #2135)', () 
     expect(parsed[0]!.drifted).toEqual([]);
   });
 
+  it('an UNSUPPORTED resource is outside the `N of M` denominator too (issue #2141)', async () => {
+    // The other site that reads `inspected`. The test above fences the `✓`
+    // branch's `N resources checked`; this one fences the `⚠` branch's
+    // `N of M ... fully checked`, which the same counter feeds.
+    //
+    // Four resources, three of them the mixed fixture above and a fourth whose
+    // provider returns nothing. The denominator must stay `3`: cdkd attempted
+    // a comparison for three resources and produced none for the fourth, so
+    // counting it would claim a read that never happened -- the same
+    // overstatement in the partially-compared rendering.
+    //
+    // WHICH ROUTE reaches `unsupported` here, stated because the obvious
+    // reading is wrong: the registry is mocked, so the queue's provider has no
+    // `readCurrentState` AND this file's Cloud Control double resolves
+    // `undefined`, which drift.ts turns into `unsupported`. Do not read that as
+    // the production shape for `AWS::SQS::Queue` -- it has a real provider WITH
+    // `readCurrentState` and is never unsupported -- nor as "no
+    // readCurrentState implies unsupported", because in production that case
+    // reaches the LIVE Cloud Control fallback, which can THROW rather than
+    // resolve `undefined` (issue #2151). The arithmetic under test does not
+    // depend on the route: every route pushes the same `unsupported` outcome,
+    // and the deny-list route -- the one needing no AWS call at all -- is
+    // covered against real AWS in `tests/integration/nested-stack/verify.sh`
+    // Phase A2.
+    //
+    // THE DISCRIMINATOR is `1 of 3`, and it pins BOTH numbers deliberately.
+    // Restoring the `unsupported` increment renders `2 of 4` -- the increment
+    // moves the NUMERATOR too, via `checked = inspected - notCompared.length`
+    // -- so a companion negative would have had to spell `of 4` rather than
+    // `1 of 4` to catch it. Pinning the whole fragment sidesteps that trap and
+    // needs no companion at all. The `1 unsupported` half alone would catch
+    // nothing: it is printed from `unsupported.length`, which the increment
+    // does not feed.
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState(
+        {
+          Matched: lambdaResource('plain-value'),
+          Refused: lambdaResource(NAME_EXPR),
+          Survivor: lambdaResource(SSM_SECURE_EXPR),
+          Unread: {
+            physicalId: 'q',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'q' },
+          },
+        },
+        [PRODUCER_REGION]
+      )
+    );
+    // Keyed on the TYPE, which is what `getProviderFor` passes: the Lambda
+    // resources keep the mixed provider, and the queue's provider implements
+    // nothing, which is what makes it `unsupported`.
+    mockRegistryGetProvider.mockImplementation((resourceType: string) =>
+      resourceType === LAMBDA_TYPE ? mixedProvider() : {}
+    );
+
+    const { output } = await runDrift(['Consumer']);
+
+    expect(output).toContain('1 of 3 resources fully checked');
+    // THE WHOLE LINE, because the fragments above cannot see how it is
+    // GROUPED. Issue #2141 moved `unsupported` out of the parenthetical: while
+    // it sat inside, this rendering printed `(2 only partially compared, 1
+    // unsupported)` against a stated total of `3`, so its parts summed to 4.
+    // Outside the parens the paren accounts for exactly the
+    // `inspected - checked` gap. Every `toContain` fragment in this test
+    // survives that regrouping unchanged -- measured, by reverting the regroup
+    // and watching all 32 tests in this file stay green -- so without this
+    // assertion the grouping is unfenced.
+    expect(output).toContain(
+      'no drift detected, but 1 of 3 resources fully checked ' +
+        '(2 only partially compared), 1 unsupported'
+    );
+    // The premise, stated positively: the fourth resource WAS seen and
+    // classified, rather than dropped upstream -- without this, `1 of 3` is
+    // also what a report that lost the queue entirely would print.
+    expect(output).toContain('1 unsupported');
+    expect(output).toContain('? Unread (AWS::SQS::Queue)');
+    // The partially-compared population is unchanged by the addition: the
+    // queue is reported under its own heading, not in this block.
+    const block = output.slice(output.indexOf('PARTIALLY compared'));
+    expect(block).not.toContain('! Unread (');
+    expect(output).toContain('2 only partially compared');
+  });
+
   it('a DRIFTED resource whose comparison was incomplete is in the human block too', async () => {
     // The half only `--json` used to hold. A drifted resource is never mistaken
     // for a clean one, so the flag shape survived here -- but the human report

@@ -1123,11 +1123,23 @@ describe('cdkd drift', () => {
     // count accumulated inside the exhaustive pass, which turned the
     // `unsupported` contribution into its own branch; asserting only
     // `'1 unsupported'` left that branch unfenced (deleting its increment
-    // kept every test in this directory green). Note the count says `1
-    // resource checked` for a resource cdkd never READ -- that is main's
-    // pre-existing arithmetic, preserved deliberately here rather than
-    // changed under cover of a refactor, and tracked separately.
-    expect(output).toContain('no drift detected (1 resource checked, 1 unsupported)');
+    // kept every test in this directory green).
+    //
+    // Issue #2141: the count is now `0`, and this is the assertion that
+    // fences it. Nothing was READ for `SomeRes`, so `1 resource checked`
+    // claimed a comparison that never happened. Restoring the increment
+    // renders `1 resource checked` and fails here.
+    //
+    // The route to `unsupported` here is the mocked registry returning a
+    // provider with no `readCurrentState` AND this suite's Cloud Control
+    // double resolving `undefined`. In PRODUCTION the second half is not
+    // guaranteed -- the live fallback can throw instead (issue #2151) -- so
+    // do not read this test as evidence about that path. It fences the
+    // arithmetic, which is identical whichever route produced the outcome. Both halves are in the one
+    // fragment on purpose: `0 resources checked` alone is also what a report
+    // that DROPPED the resource would print, and `1 unsupported` is what
+    // says it was seen and classified.
+    expect(output).toContain('no drift detected (0 resources checked, 1 unsupported)');
     // Drift unknown is not drift -> exit 0.
     expect(exitSpy).not.toHaveBeenCalled();
   });
