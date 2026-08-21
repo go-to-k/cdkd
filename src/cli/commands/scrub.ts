@@ -1145,6 +1145,22 @@ async function resolveForeignRegionTokens(
   //    still refuses if a future scanner emits a token this count did not see.
   // 2. PLACEHOLDER. A whole token that still contains `${` is a TRAILING
   //    `Fn::Sub` placeholder, which the count provably cannot see.
+  //
+  // KEPT, BUT NOW CONSERVATIVE RATHER THAN NECESSARY (issue
+  // [#2134](https://github.com/go-to-k/cdkd/issues/2134)). The region is now
+  // decided AFTER assembly, inside `resolveDynamicReferences`, so a leaf this
+  // guard refuses would be answered correctly if it were allowed through --
+  // routed to the region its ARN names, or refused per-reference on its own
+  // evidence. The guard only ever OVER-refuses, and it is loud and actionable,
+  // so it stays until relaxed deliberately with its own arm: issue
+  // [#2157](https://github.com/go-to-k/cdkd/issues/2157).
+  //
+  // What #2134 already covers, and this guard therefore no longer has to: a
+  // `Ref` / `Fn::FindInMap`-contributed opening never reaches this function at
+  // all (the walk returns such a leaf by identity), and a stack with no
+  // cross-stack read on record has an empty `foreignProducerRegions`, so the
+  // condition below is false. Both were the reachable halves of #2134's
+  // residual and both are now handled in the resolver.
   const secretTokens = tokens.filter(isSecretReferenceToken);
   if (
     (countSecretReferenceOpenings(leaf) !== secretTokens.length ||
@@ -2748,6 +2764,20 @@ export async function scrubStack(
       stackName: stack.stackName,
       stateBackend: resolverStateBackend,
       ...(recordedSecretValues && { recordedSecretValues }),
+      // Issue #2134: the evidence that arms the resolver's own region
+      // classification, which is what finally covers an ASSEMBLED reference.
+      // The pre-pass above (`pinCrossRegionSecrets`) can only classify a
+      // reference that is already whole in the raw template leaf; a reference
+      // built by `Fn::Sub` / `Fn::Join` / `Ref` does not exist until the
+      // resolver assembles it, and the resolver is where it is now judged.
+      //
+      // Passed UNFILTERED (`producerRegions`, not `foreignProducerRegions`):
+      // `classifyReplaySecretRegion` drops the consumer's own region itself,
+      // and handing it the pre-filtered list would work only by coincidence of
+      // the two filters agreeing. Scrub supplies it because a wrong-region
+      // answer here is a silent MISS -- the stack reported clean over
+      // plaintext it still holds -- so failing closed is the point.
+      producerRegions,
       bestEffort: true,
     });
     const resolveCrossStackReads = makeCrossStackPrePass({

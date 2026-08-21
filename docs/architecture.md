@@ -1023,6 +1023,14 @@ Each layer has clear responsibilities
 
 - CloudFormation Parameters supported (with default values and type coercion)
 - Dynamic References supported: `{{resolve:secretsmanager:...}}` and `{{resolve:ssm:...}}`
+- A reference is resolved in **the region it names**, not the region of the
+  stack that holds it. A `SECRET_ID` / parameter name spelled as a full ARN
+  carries its own region, and cdkd routes the lookup to a client pinned there
+  (issue [#2134](https://github.com/go-to-k/cdkd/issues/2134)). This is decided
+  AFTER the reference is assembled, so it holds for one built by `Fn::Sub` /
+  `Fn::Join` / `Ref` / `Fn::FindInMap` as well as for a literal one. A
+  region-LESS reference resolves in the stack's own region, which is the
+  CloudFormation behaviour; if that is not what you want, spell it as an ARN.
 - SECRET-bearing references are resolved for the AWS call but persisted as the
   UNRESOLVED expression, so no plaintext reaches `state.json` / the rollback
   journal / CLI output. Which references count as secret-bearing is decided by
