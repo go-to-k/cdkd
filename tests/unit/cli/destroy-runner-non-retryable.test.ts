@@ -94,7 +94,7 @@ describe('runDestroyForStack honors the non-retryable marker (issue #1778)', () 
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {
-        acquireLock: vi.fn(),
+        acquireLock: vi.fn().mockResolvedValue(true),
         releaseLock: vi.fn(),
       } as unknown as LockManager,
       providerRegistry: {

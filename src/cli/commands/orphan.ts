@@ -185,7 +185,23 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
     // state. Skip in --dry-run to keep dry-run a pure read.
     const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
     if (!options.dryRun) {
-      await lockManager.acquireLock(stackInfo.stackName, targetRegion, owner, 'orphan');
+      // Check the boolean (issue #2161): a bare `acquireLock` returns `false`
+      // for a live foreign lock without throwing, so the discarded return let
+      // orphan rewrite state under a concurrent deploy and then release that
+      // deploy's lock. Throwing on `!acquired` aborts before any state write.
+      const acquired = await lockManager.acquireLock(
+        stackInfo.stackName,
+        targetRegion,
+        owner,
+        'orphan'
+      );
+      if (!acquired) {
+        throw new Error(
+          `Could not acquire lock for stack '${stackInfo.stackName}' (${targetRegion}) — ` +
+            `another cdkd process holds it. Wait for it to finish, or run ` +
+            `'cdkd force-unlock ${stackInfo.stackName}' if you are certain no other process is active.`
+        );
+      }
     }
 
     try {

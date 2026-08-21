@@ -109,7 +109,7 @@ function makeCtx(mockProviderDelete: ReturnType<typeof vi.fn>) {
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {
-        acquireLock: vi.fn(),
+        acquireLock: vi.fn().mockResolvedValue(true),
         releaseLock: vi.fn(),
       } as unknown as LockManager,
       providerRegistry: {
@@ -144,7 +144,7 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
       ctx: {
         ...base.ctx,
         lockManager: {
-          acquireLock: vi.fn(),
+          acquireLock: vi.fn().mockResolvedValue(true),
           releaseLock,
         } as unknown as LockManager,
       },
@@ -224,7 +224,7 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
     const ctx = {
       ...base.ctx,
       lockManager: {
-        acquireLock: vi.fn(),
+        acquireLock: vi.fn().mockResolvedValue(true),
         releaseLock: vi.fn().mockImplementation(() => {
           // Fire only the runner's own handler — the one it still has armed at
           // this point — so the harness's SIGINT handling is untouched.
@@ -260,7 +260,7 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
     const ctx = {
       ...base.ctx,
       lockManager: {
-        acquireLock: vi.fn(),
+        acquireLock: vi.fn().mockResolvedValue(true),
         releaseLock: vi.fn().mockRejectedValue(new Error('S3 DeleteObject failed')),
       } as unknown as LockManager,
     };

@@ -128,7 +128,7 @@ describe('runDestroyForStack: a nested-stack child that did not go away (issues 
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {
-        acquireLock: vi.fn(),
+        acquireLock: vi.fn().mockResolvedValue(true),
         releaseLock: vi.fn(),
       } as unknown as LockManager,
       providerRegistry: {

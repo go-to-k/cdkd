@@ -1282,6 +1282,39 @@ describe('cdkd drift', () => {
   });
 
   describe('--accept (state ← AWS)', () => {
+    // Issue #2161: `acquireLock` reports contention by RESOLVING false (not
+    // throwing). `--accept` / `--revert` must refuse rather than mutate state /
+    // push to AWS under the foreign lock and then release it. Fences the
+    // `!acquired` check — reverting it would let this proceed.
+    it.each([['--accept'], ['--revert']] as const)(
+      '%s refuses when the lock is held (acquireLock resolves false)',
+      async (mode) => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Bucket1: makeResource({
+              physicalId: 'b',
+              resourceType: 'AWS::S3::Bucket',
+              properties: { VersioningConfiguration: { Status: 'Enabled' } },
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }),
+          update: vi.fn(),
+        });
+        mockAcquireLock.mockResolvedValue(false);
+
+        const { error } = await runDrift(['TestStack', mode, '--yes']);
+
+        // Aborted (the lock throw exits via exitOverride); the discriminator is
+        // that state was NOT written / released under the foreign lock.
+        expect(error).toBeDefined();
+        expect(mockSaveState).not.toHaveBeenCalled();
+        expect(mockReleaseLock).not.toHaveBeenCalled();
+      }
+    );
+
     it('writes the AWS-current values into state', async () => {
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValueOnce(

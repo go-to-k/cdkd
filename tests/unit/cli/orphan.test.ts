@@ -329,6 +329,32 @@ describe('cdkd orphan (per-resource)', () => {
     expect(mockReleaseLock).not.toHaveBeenCalled();
   });
 
+  // Issue #2161: `acquireLock` reports contention by RESOLVING false (not
+  // throwing). Orphan must refuse rather than rewrite state under the foreign
+  // lock and then release it. Fences the `!acquired` check specifically —
+  // reverting it would let this proceed and fail these assertions.
+  it('refuses when the lock is held (acquireLock resolves false)', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        {
+          stackName: 'MyStack',
+          displayName: 'MyStack',
+          template: templateWith({ Bucket: 'MyStack/Bucket' }),
+          region: 'us-east-1',
+        },
+      ],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    mockAcquireLock.mockResolvedValue(false);
+
+    // Aborts (the lock throw surfaces through the command's error handler as a
+    // process.exit); the discriminator is that it does NOT proceed to write /
+    // release under the foreign lock.
+    await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+    expect(mockSaveState).not.toHaveBeenCalled();
+    expect(mockReleaseLock).not.toHaveBeenCalled();
+  });
+
   it('disambiguates with --stack-region when state has multiple regions', async () => {
     mockSynthesize.mockResolvedValue({
       stacks: [

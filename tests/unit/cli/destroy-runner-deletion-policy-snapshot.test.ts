@@ -93,7 +93,7 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {
-        acquireLock: vi.fn(),
+        acquireLock: vi.fn().mockResolvedValue(true),
         releaseLock: vi.fn(),
       } as unknown as LockManager,
       providerRegistry: {

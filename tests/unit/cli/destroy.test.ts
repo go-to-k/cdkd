@@ -57,7 +57,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 
 vi.mock('../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => ({
-    acquireLock: vi.fn(),
+    acquireLock: vi.fn().mockResolvedValue(true),
     releaseLock: vi.fn(),
   })),
 }));

@@ -192,6 +192,34 @@ describe('cdkd state refresh-observed', () => {
     vi.clearAllMocks();
   });
 
+  // Issue #2161: `acquireLock` reports contention by RESOLVING false (not
+  // throwing). `state refresh-observed` must refuse rather than rewrite state
+  // under the foreign lock and then release it. Fences the `!acquired` check.
+  it('refuses when the lock is held (acquireLock resolves false)', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Bucket1: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b' },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ BucketName: 'b', Tags: [] }),
+    });
+    mockAcquireLock.mockResolvedValue(false);
+
+    const { error } = await runRefresh(['TestStack']);
+
+    // Aborted (the lock throw exits via the command's exitOverride); the
+    // discriminator is that state was NOT written / released under the lock.
+    expect(error).toBeDefined();
+    expect(mockSaveState).not.toHaveBeenCalled();
+    expect(mockReleaseLock).not.toHaveBeenCalled();
+  });
+
   it('refreshes observedProperties on every resource and saves the updated state', async () => {
     // The headline use case: resource has no observedProperties (older
     // v2 state), refresh-observed populates it from
