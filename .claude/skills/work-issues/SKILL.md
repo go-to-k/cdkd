@@ -847,6 +847,11 @@ One command can:
 git commit --dry-run -m "gate liveness probe"   # from the repo root, on main
 ```
 
+Run it as YOUR OWN Bash tool call. PreToolUse hooks gate the agent's tool calls
+and nothing else — the identical line typed by a human into a terminal bypasses
+the hook system entirely, so it always looks "unblocked" and proves nothing. That
+mistake was made while writing this rule.
+
 `--dry-run` commits nothing whatever the tree looks like. Expected: `Blocked by
 branch-gate` (the root is on `main`) or `Blocked by check-gate` (markers stale).
 Git's ordinary output instead means the gates are not firing, and every gate step
