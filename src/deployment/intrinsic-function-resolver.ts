@@ -662,26 +662,28 @@ function buildUnknownIntrinsicError(key: string): Error {
 }
 
 /**
- * The context a REGION-PINNED sibling resolver may be handed (issue #2134
- * review).
+ * The same context with the `producerRegions` EVIDENCE removed (issue #2134
+ * review rounds 1 and 2).
  *
- * Identical to the caller's, minus `producerRegions`. That field means "the
- * CONSUMER stack reads from these regions", and a sibling classifies with its
- * OWN region standing in for the consumer -- so inheriting it makes the sibling
- * measure a reference against a baseline that is not its own, and a reference
- * whose origin cdkd has already PROVEN can come back `ambiguous`.
+ * That field means "the CONSUMER stack reads from these regions", and it is
+ * only meaningful where the origin of a reference is genuinely UNKNOWN. Hand it
+ * to a resolution whose origin is already established and it re-judges a
+ * reference cdkd has just proven, verdicting `ambiguous`.
  *
- * Returned BY IDENTITY when the sibling is the caller itself
- * (`resolverForProducerRegion` returns `this` for a same-region or absent
- * target) or when there is no evidence to strip, so the ordinary path allocates
- * nothing and the delegation stays observationally identical.
+ * ROUND 1 stripped it by RESOLVER IDENTITY -- "is this a different instance?"
+ * -- and round 2 measured that that is the wrong question. When the producer
+ * lives in the CONSUMER's own region `resolverForProducerRegion` returns `this`,
+ * so the identity test passed the evidence straight through and a name-form
+ * reference read out of that producer was refused. The LOCAL producer failed
+ * while the CROSS-REGION one succeeded, which is backwards, and after the
+ * round-1 re-raise it aborted the whole stack's scrub rather than logging a
+ * debug line.
+ *
+ * The right question is whether the ORIGIN IS KNOWN, so each caller answers it
+ * for itself and this helper only performs the strip. Returned BY IDENTITY when
+ * there is no evidence to remove, so the ordinary path allocates nothing.
  */
-function siblingContext(
-  sibling: IntrinsicFunctionResolver,
-  parent: IntrinsicFunctionResolver,
-  context: ResolverContext | undefined
-): ResolverContext | undefined {
-  if (sibling === parent) return context;
+function withoutProducerRegions(context: ResolverContext | undefined): ResolverContext | undefined {
   if (context?.producerRegions === undefined) return context;
   const { producerRegions: _stripped, ...rest } = context;
   return rest;
@@ -4072,17 +4074,21 @@ export class IntrinsicFunctionResolver {
     if (!carriesDynamicReference(value)) return value;
 
     const resolver = this.resolverForProducerRegion(producerRegion);
-    // The evidence must NOT cross into a region-pinned sibling (issue #2134
-    // review). `producerRegions` says "this CONSUMER reads from these regions",
-    // and the sibling classifies with ITS OWN region as the consumer -- so with
-    // two or more distinct producers on record, a reference whose origin cdkd
-    // has just PROVEN (it read the value out of that producer's state) is
-    // re-judged against the wrong baseline and verdicts `ambiguous`. Measured
-    // by a reviewer: a sibling pinned to `us-west-2` carrying a consumer's
-    // `['us-west-2','eu-west-1']` refuses, while the same call with a single
-    // producer returns `local`. Stripping it leaves the sibling with the ARN /
-    // same-region arms, which is all it can legitimately answer here.
-    const pinnedContext = siblingContext(resolver, this, context);
+    // The evidence must NOT reach a re-resolution whose ORIGIN IS ALREADY KNOWN
+    // (issue #2134, rounds 1 and 2 of review). This method is handed the
+    // producer it read the value out of, so when `producerRegion` is defined
+    // the reference is attributed by construction -- consulting
+    // `producerRegions` there can only re-open a question already answered, and
+    // it verdicts `ambiguous` as soon as the consumer has two producers on
+    // record.
+    //
+    // Gated on `producerRegion !== undefined` rather than on whether a SIBLING
+    // was built, which is what round 1 got wrong: a producer in the consumer's
+    // OWN region yields `this`, so an identity test let the evidence through
+    // and refused the local case while the cross-region one worked. When the
+    // region really is unknown the evidence is kept, which is the fail-closed
+    // direction.
+    const pinnedContext = producerRegion !== undefined ? withoutProducerRegions(context) : context;
     const walk = async (v: unknown): Promise<unknown> => {
       if (typeof v === 'string') {
         return v.includes('{{resolve:')
@@ -5592,7 +5598,10 @@ export class IntrinsicFunctionResolver {
         // on that argument is how the other one broke.
         const foreign = await sibling.resolveDynamicReferences(
           fullMatch,
-          siblingContext(sibling, this, context)
+          // Unconditional here: this arm is reached only for an ARN-form token,
+          // whose region the ARN itself states, so the origin is known by
+          // construction and the evidence can only mislead.
+          withoutProducerRegions(context)
         );
         // Replacer FUNCTION for the same reason as every other substitution in
         // this method: a resolved secret legitimately containing `$&` would

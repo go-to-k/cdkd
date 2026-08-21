@@ -294,6 +294,14 @@ export class IntrinsicResolutionRefusalError extends CdkdError {
  * `Fn::Split`, all reachable through an `Fn::Sub`-built export name) must
  * REFUSE instead, since the user can fix the cause and re-run.
  */
+export class CrossAccountSecretRefusalError extends IntrinsicResolutionRefusalError {
+  constructor(message: string, cause?: Error) {
+    super(message, cause, 'INTRINSIC_RESOLUTION_REFUSAL_CROSS_ACCOUNT_SECRET');
+    this.name = 'CrossAccountSecretRefusalError';
+    Object.setPrototypeOf(this, CrossAccountSecretRefusalError.prototype);
+  }
+}
+
 /**
  * A `{{resolve:...}}` reference whose REGION cannot be established (issue
  * [#2134](https://github.com/go-to-k/cdkd/issues/2134)): it names no region,
@@ -314,20 +322,20 @@ export class IntrinsicResolutionRefusalError extends CdkdError {
  * {@link CrossAccountSecretRefusalError}, whose subclass identity marks the one
  * PERMANENT refusal `scrub.ts`'s `isByDesignRefusal` reports as unclearable.
  * Spelling the reference as a full ARN names its region and clears this.
+ *
+ * The CODE names the domain (`DYNAMIC_REFERENCE_REGION_AMBIGUOUS`) rather than
+ * carrying the base class's `INTRINSIC_RESOLUTION_REFUSAL_` prefix its one
+ * sibling uses. Deliberate: no consumer keys on that prefix, so it is not a
+ * contract, and the prefixed spelling would read
+ * `INTRINSIC_RESOLUTION_REFUSAL_DYNAMIC_REFERENCE_REGION_AMBIGUOUS`. Consumers
+ * that must act on this identify it by CLASS, which is what the subclass is
+ * for.
  */
 export class DynamicReferenceRegionAmbiguousError extends IntrinsicResolutionRefusalError {
   constructor(message: string, cause?: Error) {
     super(message, cause, 'DYNAMIC_REFERENCE_REGION_AMBIGUOUS');
     this.name = 'DynamicReferenceRegionAmbiguousError';
     Object.setPrototypeOf(this, DynamicReferenceRegionAmbiguousError.prototype);
-  }
-}
-
-export class CrossAccountSecretRefusalError extends IntrinsicResolutionRefusalError {
-  constructor(message: string, cause?: Error) {
-    super(message, cause, 'INTRINSIC_RESOLUTION_REFUSAL_CROSS_ACCOUNT_SECRET');
-    this.name = 'CrossAccountSecretRefusalError';
-    Object.setPrototypeOf(this, CrossAccountSecretRefusalError.prototype);
   }
 }
 

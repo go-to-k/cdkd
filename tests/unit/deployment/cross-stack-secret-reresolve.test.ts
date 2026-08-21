@@ -302,6 +302,53 @@ describe('cross-stack reads re-resolve a REDACTED value (issue #1934)', () => {
       });
     });
 
+    /**
+     * The EVIDENCE must not reach a re-resolution whose origin is already known
+     * (issue #2134, review rounds 1 and 2).
+     *
+     * `producerRegions` says "the CONSUMER reads from these regions" and exists
+     * to refuse a reference nothing can attribute. Here the origin IS
+     * attributed -- this method was handed the producer it read the value out
+     * of -- so consulting the evidence re-opens a settled question and refuses.
+     *
+     * Both regions are covered because round 1 fixed only ONE of them. It
+     * stripped the evidence by RESOLVER IDENTITY, and a producer in the
+     * CONSUMER's own region yields the same resolver, so the strip did not
+     * happen and the LOCAL case refused while the cross-region case worked --
+     * backwards, and after the round-1 re-raise it aborted the whole stack's
+     * scrub. The same-region case below is the one that was broken; keeping the
+     * cross-region twin beside it is what makes the pair discriminating rather
+     * than a single case that happens to pass.
+     */
+    for (const [label, producerRegion, expected] of [
+      ['a CROSS-REGION producer', PRODUCER_REGION, PRODUCER_REGION_PASSWORD],
+      ['a SAME-REGION producer', CONSUMER_REGION, CONSUMER_REGION_PASSWORD],
+    ] as const) {
+      it(`resolves through ${label} even with two producer regions on record`, async () => {
+        const resolver = new IntrinsicFunctionResolver(CONSUMER_REGION);
+
+        const result = await resolver.resolve(
+          { 'Fn::ImportValue': 'DbPassword' },
+          buildContext({
+            exportIndex: mockIndex({
+              DbPassword: {
+                value: SECRET_EXPRESSION,
+                producerStack: 'Producer',
+                producerRegion,
+              },
+            }),
+            stateBackend: mockBackend([]),
+            // TWO distinct regions: one is never foreign to itself, so a single
+            // entry cannot make the classifier answer `ambiguous` at all and
+            // the case would pass under the defect.
+            producerRegions: [CONSUMER_REGION, PRODUCER_REGION],
+          })
+        );
+
+        expect(result).toBe(expected);
+      });
+    }
+
     it('re-resolves on the index-MISS state.json scan path too', async () => {
       // The two arms return through different statements, so one being fixed
       // says nothing about the other.
