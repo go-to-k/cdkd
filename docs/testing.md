@@ -1478,6 +1478,20 @@ test -- and because there is no deletion cooldown to collide on across repeated
 runs. (An SSM reference CAN name a full ARN: `resolveSSMReference` joins its
 colon-split tail back together, so an ARN reaches `GetParameter` intact. That
 form takes the `named-region` arm and is covered by the unit tests, not here.)
+
+The same fixture also carries the `cdkd drift` half of that defect (issue
+[#2108](https://github.com/go-to-k/cdkd/issues/2108)), as phases 2b / 2c on the
+CLEAN v1 deploy rather than on the journal -- which is what makes #2108 the
+wider of the two: it is reachable from an ORDINARY drift run instead of only
+after a failed deploy. Phase 2b asserts `cdkd drift --json` reports `SecretEcho`
+in its `notCompared` roll-up, because a comparison the region refusal SKIPPED
+carries no marker otherwise and a CI consumer would read the skip as a clean
+bill of health. Phase 2c tampers the live echo parameter, runs
+`cdkd drift --revert -y`, and asserts the live value did NOT become the consumer
+region's secret -- pre-fix that is exactly what the revert wrote, since the
+state baseline was resolved through the consumer's region. It then restores the
+parameter, so the rollback arms below start from the state phase 2 left behind.
+
 ### SNS standalone-subscription update (`tests/integration/sns-subscription-update/`)
 
 `SNSSubscriptionProvider.update` had NO real-AWS coverage before issue

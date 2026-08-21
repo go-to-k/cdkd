@@ -287,6 +287,92 @@ fi
 echo "[verify]   ok: consumer state.outputReads records sourceRegion=${PRODUCER_REGION}"
 
 # ---------------------------------------------------------------------------
+# PHASE 2b: `cdkd drift` must not baseline a cross-region secret LOCALLY
+#           (issue #2108 -- the drift.ts twin of the replay defect below)
+# ---------------------------------------------------------------------------
+# This arm rides the CLEAN v1 deploy rather than the journal, because that is
+# precisely what makes #2108 wider than #2057: the defect is reachable from an
+# ORDINARY drift run, not only after a failed deploy. The discriminator is the
+# same one phase 0 already seeded -- one NAME, two regions, two DIFFERENT
+# values -- so a run where both regions agreed could not tell a correct
+# resolution from a wrong one.
+#
+# Pre-fix, `resolveStateSecretExpressions` built its resolvers from the
+# CONSUMER's region, so the state baseline for `SecretEcho.Value` resolved to
+# ${CONSUMER_SECRET} and `--revert` pushed THAT onto the live parameter.
+echo "[verify] phase 2b: 'cdkd drift' refuses to baseline the cross-region secret locally"
+
+DRIFT_JSON="$(mktemp)"
+DRIFT_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --json >"${DRIFT_JSON}" 2>/dev/null || DRIFT_RC=$?
+
+# The refusal must be visible in the MACHINE-READABLE payload. A skipped
+# comparison that carries no marker is indistinguishable from "no drift", and a
+# CI consumer of `cdkd drift --json` would read it as a clean bill of health.
+# Recursive descent so the assertion does not depend on whether the report is
+# wrapped in a `stacks[]` array.
+NOT_COMPARED="$(jq -r '[.. | objects | select(has("notCompared")) | .notCompared[]?.logicalId] | unique | join(",")' \
+  "${DRIFT_JSON}")"
+case ",${NOT_COMPARED}," in
+  *,SecretEcho,*)
+    echo "[verify]   ok: SecretEcho reported notCompared (drift rc=${DRIFT_RC})"
+    ;;
+  *)
+    echo "FAIL: drift --json did not mark SecretEcho notCompared (got '${NOT_COMPARED}') — a refused comparison is being reported as clean" >&2
+    jq '.' "${DRIFT_JSON}" >&2 || cat "${DRIFT_JSON}" >&2
+    rm -f "${DRIFT_JSON}"
+    exit 1
+    ;;
+esac
+
+# The wrong-region plaintext must never reach the report or the --json payload:
+# pre-fix it became the `secrets` needle, so it was both the value compared
+# against AND the string redaction was hunting for.
+for secret in "${PRODUCER_SECRET}" "${CONSUMER_SECRET}"; do
+  if grep -qF "${secret}" "${DRIFT_JSON}"; then
+    echo "FAIL: drift --json payload carries a SecureString plaintext" >&2
+    rm -f "${DRIFT_JSON}"
+    exit 1
+  fi
+done
+echo "[verify]   ok: no plaintext in the drift --json payload"
+rm -f "${DRIFT_JSON}"
+
+# Now the arm that WRITES. Tamper the live echo parameter so a revert has a
+# reason to touch it, then prove `--revert` does not push the consumer region's
+# secret over it. The sentinel is deliberately unlike either seeded value so it
+# cannot coincide with an assertion needle.
+TAMPER_SENTINEL="cdkd-2108-tampered-do-not-resolve"
+aws ssm put-parameter --name "${ECHO_PARAM}" --value "${TAMPER_SENTINEL}" \
+  --type String --overwrite --region "${CONSUMER_REGION}" >/dev/null
+echo "[verify] phase 2c: 'cdkd drift --revert' must not write a foreign region's secret"
+
+REVERT_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CONSUMER_STACK}" --revert -y \
+  --state-bucket "${STATE_BUCKET}" >/dev/null 2>&1 || REVERT_RC=$?
+
+POST_REVERT="$(aws ssm get-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}" \
+  --query 'Parameter.Value' --output text)"
+# THE assertion this arm exists for. Pre-fix this is exactly what happened.
+if [ "${POST_REVERT}" = "${CONSUMER_SECRET}" ]; then
+  echo "FAIL: drift --revert wrote the CONSUMER region's secret onto the live parameter (issue #2108 regressed)" >&2
+  exit 1
+fi
+echo "[verify]   ok: the live parameter did not receive the consumer region's secret (revert rc=${REVERT_RC})"
+
+# Restore, so phases 3+ start from exactly the state phase 2 left behind.
+aws ssm put-parameter --name "${ECHO_PARAM}" --value "${PRODUCER_SECRET}" \
+  --type String --overwrite --region "${CONSUMER_REGION}" >/dev/null
+RESTORED="$(aws ssm get-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}" \
+  --query 'Parameter.Value' --output text)"
+if [ "${RESTORED}" != "${PRODUCER_SECRET}" ]; then
+  echo "FAIL: could not restore the echo parameter after the #2108 arm; later phases would be measuring the wrong baseline" >&2
+  exit 1
+fi
+echo "[verify]   ok: echo parameter restored for the rollback arms"
+
+# ---------------------------------------------------------------------------
 # PHASE 3: failing consumer v2 under --no-rollback -> a journal to replay
 # ---------------------------------------------------------------------------
 echo "[verify] phase 3: deploy ${CONSUMER_STACK} v2 (Description change + INJECT_FAIL) --no-rollback (expect FAILURE)"
