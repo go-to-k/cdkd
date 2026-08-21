@@ -38,6 +38,11 @@ import { CloudControlProvider } from '../../provisioning/cloud-control-provider.
 import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import {
+  classifyReplaySecretRegion,
+  producerRegionsFromState,
+} from '../../deployment/rollback-executor.js';
 import { withRetry } from '../../deployment/retry.js';
 import { maskingRetryLogger } from '../../deployment/masking-retry-logger.js';
 import { isThrottlingError } from '../../deployment/retryable-errors.js';
@@ -137,8 +142,89 @@ type DriftOutcome =
        * the survivor's position holds.
        */
       referencesUnresolved: boolean;
+      /**
+       * Whether cdkd DELIBERATELY REFUSED to resolve this resource's dynamic
+       * references, as opposed to merely not having resolved them (issue
+       * #2108). True exactly when `resolveStateSecretExpressions` THREW; a
+       * `{{resolve:...}}` token that simply survived the pass does NOT set it.
+       *
+       * A DELIBERATE SECOND FLAG beside `referencesUnresolved`, and the reason
+       * the exit decision cannot reuse the first one is a population, not a
+       * nicety. `referencesUnresolved` is the OR of two causes, and its second
+       * cause — a surviving token, in practice `{{resolve:ssm-secure:...}}`,
+       * which cdkd resolves for NOBODY — is a large PRE-EXISTING population
+       * unrelated to #2108 and permanent by construction: it can never clear on
+       * a re-run. Driving the exit code off the OR would make `cdkd drift` exit
+       * non-zero forever, in CI, for every one of those users, over a defect
+       * this change did not introduce — the same "permanently non-zero" hazard
+       * `docs/cli-reference.md` already cites as a reason NOT to report an
+       * absent write-only credential as drift.
+       *
+       * So the split is: as INFORMATION both populations were genuinely not
+       * compared, and `referencesUnresolved` / the `notCompared` roll-up / the
+       * human `PARTIALLY compared` block continue to cover both unchanged. Only
+       * the EXIT CODE — the thing CI keys on — is confined to the population
+       * this change created.
+       *
+       * Two flags answering two nearly-identical questions is exactly the shape
+       * issue [#2135](https://github.com/go-to-k/cdkd/issues/2135) exists to
+       * fix structurally; until it lands, the second flag is the honest way to
+       * keep the blast radius correct.
+       */
+      comparisonRefused: boolean;
     }
-  | { kind: 'clean'; logicalId: string; resourceType: string }
+  /**
+   * No drift was REPORTED — which is not the same as "every property was
+   * compared", and issue #2108 is what made the difference matter.
+   *
+   * `referencesUnresolved` carries the same fact as the `drifted` variant's
+   * field of the same name, and it is on this variant because the refusal path
+   * ends HERE: a refused resource falls back to the unresolved baseline,
+   * `calculateResourceDrift` SKIPS every leaf still holding a `{{resolve:...}}`
+   * string, the change list comes back empty, and the resource is pushed as
+   * `clean`. Without the flag, `cdkd drift --json` reports a resource whose
+   * secret-bearing properties were never compared identically to one that was
+   * compared and matched — so a CI consumer gating on `drifted.length === 0`
+   * reads a SKIPPED comparison as a passing one. Pre-#2108 that resource
+   * reported (wrongly, but visibly) as drifted, so silently dropping it would
+   * be a regression this change introduced.
+   */
+  | {
+      kind: 'clean';
+      logicalId: string;
+      resourceType: string;
+      referencesUnresolved: boolean;
+      /**
+       * Whether cdkd DELIBERATELY REFUSED to resolve this resource's dynamic
+       * references, as opposed to merely not having resolved them (issue
+       * #2108). True exactly when `resolveStateSecretExpressions` THREW; a
+       * `{{resolve:...}}` token that simply survived the pass does NOT set it.
+       *
+       * A DELIBERATE SECOND FLAG beside `referencesUnresolved`, and the reason
+       * the exit decision cannot reuse the first one is a population, not a
+       * nicety. `referencesUnresolved` is the OR of two causes, and its second
+       * cause — a surviving token, in practice `{{resolve:ssm-secure:...}}`,
+       * which cdkd resolves for NOBODY — is a large PRE-EXISTING population
+       * unrelated to #2108 and permanent by construction: it can never clear on
+       * a re-run. Driving the exit code off the OR would make `cdkd drift` exit
+       * non-zero forever, in CI, for every one of those users, over a defect
+       * this change did not introduce — the same "permanently non-zero" hazard
+       * `docs/cli-reference.md` already cites as a reason NOT to report an
+       * absent write-only credential as drift.
+       *
+       * So the split is: as INFORMATION both populations were genuinely not
+       * compared, and `referencesUnresolved` / the `notCompared` roll-up / the
+       * human `PARTIALLY compared` block continue to cover both unchanged. Only
+       * the EXIT CODE — the thing CI keys on — is confined to the population
+       * this change created.
+       *
+       * Two flags answering two nearly-identical questions is exactly the shape
+       * issue [#2135](https://github.com/go-to-k/cdkd/issues/2135) exists to
+       * fix structurally; until it lands, the second flag is the honest way to
+       * keep the blast radius correct.
+       */
+      comparisonRefused: boolean;
+    }
   | { kind: 'unsupported'; logicalId: string; resourceType: string }
   /**
    * `skipped` is reserved for resource types where drift detection is not
@@ -189,6 +275,104 @@ class DriftDetectedError extends CdkdError {
     this.name = 'DriftDetectedError';
     Object.setPrototypeOf(this, DriftDetectedError.prototype);
   }
+}
+
+/**
+ * Detection found NO drift, but cdkd DELIBERATELY REFUSED to compare at least
+ * one resource's secret-bearing properties (issue #2108).
+ *
+ * SCOPED TO REFUSALS, not to everything the report calls `notCompared`. The
+ * roll-up also contains resources whose only problem is a surviving
+ * `{{resolve:ssm-secure:...}}` token — a pre-existing population cdkd resolves
+ * for nobody, which can never clear on a re-run, and which this change did not
+ * create. Exiting non-zero for them would break `cdkd drift` in CI forever over
+ * an unrelated defect, so the exit reads `comparisonRefused` and the report
+ * reads `referencesUnresolved`. See that field's note.
+ *
+ * WHY A NON-ZERO EXIT, and why it is a PRESERVATION rather than a new signal.
+ * Pre-#2108 that population resolved the reference in the WRONG region, the
+ * baseline could never equal what AWS held, and the resource was reported
+ * `drifted` -- so `cdkd drift` exited 1 and every CI gate keyed on the exit code
+ * fired. #2108 correctly stopped comparing against a foreign region's plaintext,
+ * which made the same population report `clean`; without this the command would
+ * exit 0 and print `no drift detected` for a stack whose secret-bearing
+ * properties were never looked at. Round 1 of that change surfaced the refusal
+ * in `--json` (`notCompared`) and in the human report, but the exit code -- the
+ * signal most CI gates actually read -- still said "pass".
+ *
+ * WHY EXIT 2 RATHER THAN 1. `2` is this repo's established "work completed but
+ * something was SKIPPED" code (`cdkd destroy` / `cdkd deploy` / `cdkd rollback`,
+ * and this command's own `--revert` partial failure), and the three outcomes are
+ * genuinely distinct: nothing drifted and everything was compared (0), drift was
+ * detected (1), nothing drifted but the comparison was incomplete (2). Drift
+ * WINS when both hold -- a drifted resource is the stronger, actionable signal
+ * and keeps exiting 1 exactly as it does today.
+ *
+ * SCOPE: detection-only mode. `--accept` / `--revert` keep their documented exit
+ * codes (an `--accept` that refuses a secret-bearing property still exits 0, and
+ * a partially-failed `--revert` still exits 2 through `PartialFailureError`) --
+ * those modes report per-resource refusals on their own paths, and changing them
+ * would alter what a remediation run means, which is not what this closes.
+ *
+ * WHAT DOES NOT TRIGGER IT: a stack whose properties reference
+ * `{{resolve:ssm-secure:...}}` still exits 0. Those properties genuinely are not
+ * compared and the report says so, but nothing REFUSED them — cdkd has never
+ * resolved that spelling — so the condition is permanent, unclearable by any
+ * action the user can take, and predates this change. It is reported as
+ * information and kept out of the exit code.
+ *
+ * Carries no message of its own for the same reason {@link DriftDetectedError}
+ * does -- the report was already printed.
+ */
+class DriftComparisonRefusedError extends CdkdError {
+  readonly silent: boolean = true;
+  readonly exitCode: number = 2;
+
+  constructor() {
+    super('drift comparison refused', 'DRIFT_COMPARISON_REFUSED');
+    this.name = 'DriftComparisonRefusedError';
+    Object.setPrototypeOf(this, DriftComparisonRefusedError.prototype);
+  }
+}
+
+/**
+ * Every outcome on one report that was only PARTIALLY compared -- `drifted` or
+ * `clean`, carrying `referencesUnresolved` (issue #2108).
+ *
+ * ONE spelling, because there are now THREE readers that must agree: the
+ * `--json` `notCompared` roll-up, the human report's `PARTIALLY compared` block,
+ * and the EXIT CODE. A predicate spelled per reader is how the payload and the
+ * exit code come to disagree about the same run.
+ */
+function notComparedOutcomes(
+  report: StackDriftReport
+): Array<Extract<DriftOutcome, { kind: 'drifted' | 'clean' }>> {
+  return report.outcomes.filter(
+    (o): o is Extract<DriftOutcome, { kind: 'drifted' | 'clean' }> =>
+      (o.kind === 'drifted' || o.kind === 'clean') && o.referencesUnresolved
+  );
+}
+
+/**
+ * Every outcome whose comparison cdkd DELIBERATELY REFUSED (issue #2108) — the
+ * strict subset of {@link notComparedOutcomes} that drives the EXIT CODE.
+ *
+ * Deliberately NOT the same predicate, and the asymmetry is the point: the
+ * REPORT covers everything that was not compared, because as information both
+ * populations matter equally, while the exit code covers only the population
+ * this change created. Driving it off `referencesUnresolved` would exit
+ * non-zero forever for every stack holding an `{{resolve:ssm-secure:...}}`
+ * reference — permanent, unclearable, and unrelated to this issue. See the
+ * `comparisonRefused` field note, and issue
+ * [#2135](https://github.com/go-to-k/cdkd/issues/2135) for the structural fix.
+ */
+function refusedComparisonOutcomes(
+  report: StackDriftReport
+): Array<Extract<DriftOutcome, { kind: 'drifted' | 'clean' }>> {
+  return report.outcomes.filter(
+    (o): o is Extract<DriftOutcome, { kind: 'drifted' | 'clean' }> =>
+      (o.kind === 'drifted' || o.kind === 'clean') && o.comparisonRefused
+  );
 }
 
 /**
@@ -320,14 +504,25 @@ async function driftCommand(
       writeHumanReport(reports);
     }
 
-    // Detection-only path: exit 0 / 1 based on whether drift was found,
+    // Detection-only path: exit 0 / 1 / 2 on what the run actually found,
     // regardless of subsequent flags. `--accept` / `--revert` take over
     // below if requested.
     const drifted = reports.some((r) => r.outcomes.some((o) => o.kind === 'drifted'));
+    // The REFUSED subset, not the not-compared roll-up: see
+    // `refusedComparisonOutcomes`. The roll-up still drives both renderings.
+    const anyRefused = reports.some((r) => refusedComparisonOutcomes(r).length > 0);
 
     if (!options.accept && !options.revert) {
       if (drifted) {
         throw new DriftDetectedError();
+      }
+      // Issue #2108. Ordered AFTER the drift check on purpose: a drifted
+      // resource is the stronger signal and keeps exiting 1 even when the same
+      // run also refused a comparison, so no consumer that gates on `1` loses a
+      // detection it gets today. See the class note for why this is a
+      // preservation of the pre-#2108 exit code rather than a new one.
+      if (anyRefused) {
+        throw new DriftComparisonRefusedError();
       }
       return;
     }
@@ -683,6 +878,232 @@ function collectDynamicReferencePaths(value: unknown, into: SecretPathSet, path 
 }
 
 /**
+ * The drift command's resolvers for ONE stack: the stack's own, plus one pinned
+ * sibling per FOREIGN region an ARN-named reference asks for (issue
+ * [#2108](https://github.com/go-to-k/cdkd/issues/2108)).
+ *
+ * The structural twin of the rollback replay's `ReplayResolvers`
+ * (`src/deployment/rollback-executor.ts`), and deliberately a SEPARATE class
+ * rather than an export of that one: the two are ~20 lines of caching around a
+ * constructor, and exporting the replay's would put a rollback-internal name on
+ * the drift command's contract for no behavioural gain. What is SHARED is the
+ * part with a decision in it — `classifyReplaySecretRegion`, imported.
+ *
+ * One instance per STACK, not per resource and not per op — the resolved-value
+ * cache lives on the resolver INSTANCE since issue
+ * [#1933](https://github.com/go-to-k/cdkd/issues/1933), so a resolver per
+ * resource would re-fetch every referenced secret once per resource. The pinned
+ * siblings are cached for the same reason: a 50-resource stack sharing one
+ * foreign ARN must pay one `GetSecretValue`, not fifty.
+ *
+ * A pinned sibling is a PLAIN resolver, deliberately NOT the resolver class's
+ * own `producerRegionGuest`, and the argument is `ReplayResolvers`' verbatim:
+ * {@link forRegion} is reached ONLY from a `named-region` verdict, which
+ * `classifyReplaySecretRegion` returns only when the SECRET_ID / parameter name
+ * starts with `arn:` and carries a region. So a pinned sibling only ever
+ * resolves an expression whose KEY EMBEDS THE REGION IT IS BEING RESOLVED IN,
+ * and the process-global `recordedSecretExpressions` store — keyed by the
+ * expression string alone — cannot have two regions sharing that key. If a
+ * future change ever routes a region-LESS expression here, the argument dies
+ * with it and the sibling needs the guest flag.
+ */
+class DriftSecretResolvers {
+  /** The stack's own resolver — every `local` verdict resolves through this. */
+  readonly primary: IntrinsicFunctionResolver;
+  private readonly pinned = new Map<string, IntrinsicFunctionResolver>();
+  private readonly stackRegion: string;
+
+  constructor(stackRegion: string) {
+    this.stackRegion = stackRegion;
+    this.primary = new IntrinsicFunctionResolver(stackRegion);
+  }
+
+  /** The resolver that must answer for `region` — `primary` when it is the stack's own. */
+  forRegion(region: string): IntrinsicFunctionResolver {
+    const target = canonicalizeRegion(region);
+    if (target === canonicalizeRegion(this.stackRegion)) return this.primary;
+    const cached = this.pinned.get(target);
+    if (cached) return cached;
+    const scoped = new IntrinsicFunctionResolver(target);
+    this.pinned.set(target, scoped);
+    return scoped;
+  }
+}
+
+/**
+ * A DELIBERATE refusal to resolve a state-recorded dynamic reference (issue
+ * #2108) — as opposed to a failure to READ one.
+ *
+ * The distinction is load-bearing for what the user is told: "could not
+ * resolve" sends a reader hunting for a missing `secretsmanager:GetSecretValue`
+ * grant, while a refusal is cdkd declining to resolve a reference it CAN read
+ * but cannot attribute to a region. Both call sites that catch
+ * `resolveStateSecretExpressions` pick their wording from this class.
+ *
+ * DEFINED POSITIVELY, and that is the whole point of the class existing rather
+ * than a second `err.code === ...` comparison at each site. Both sites used to
+ * enumerate the one code they knew (`DRIFT_SECRET_REGION_AMBIGUOUS`) while
+ * `DRIFT_SECRET_TOKEN_SCAN_MISMATCH` — whose own message says "Refusing rather
+ * than resolving" — silently took the read-failure wording. Enumerating bad
+ * shapes loses that race every time a third refusal is added; a refusal that
+ * has to declare itself one cannot be added without answering the question.
+ *
+ * The `code` stays per-refusal: it is what the message and any future
+ * programmatic consumer key on. What this class adds is the CATEGORY.
+ */
+class DriftSecretRefusalError extends CdkdError {
+  /** Marker read by {@link isDriftSecretRefusal}; see the class note. */
+  readonly driftSecretRefusal: boolean = true;
+
+  constructor(message: string, code: string) {
+    super(message, code);
+    this.name = 'DriftSecretRefusalError';
+    Object.setPrototypeOf(this, DriftSecretRefusalError.prototype);
+  }
+}
+
+/**
+ * Whether an error thrown out of `resolveStateSecretExpressions` is a
+ * deliberate REFUSAL rather than a failed read. See
+ * {@link DriftSecretRefusalError}.
+ */
+function isDriftSecretRefusal(err: unknown): boolean {
+  return err instanceof DriftSecretRefusalError;
+}
+
+/**
+ * The refusal a region-AMBIGUOUS drift reference throws (issue #2108).
+ *
+ * A plain throw: BOTH call sites already wrap `resolveStateSecretExpressions`
+ * in a per-resource catch that degrades instead of aborting the command, and
+ * the degradation each one performs is exactly the fail-closed behaviour this
+ * refusal wants.
+ *
+ *  - DETECTION falls back to the UNRESOLVED baseline, whose `{{resolve:...}}`
+ *    leaves `calculateResourceDrift` skips — so the secret-bearing property is
+ *    NOT COMPARED rather than compared against a foreign region's plaintext.
+ *    That is strictly better than the phantom drift this issue reports, and the
+ *    offline `seededSecretPaths` still masks the position.
+ *  - REVERT counts the resource as unresolvable and returns BEFORE
+ *    `provider.update`, so nothing is written. Refusing is strictly better than
+ *    the alternative it replaces: resolving a producer-region reference against
+ *    the consumer's region does not fail, it succeeds with the WRONG credential
+ *    and writes it to a live resource.
+ *
+ * Names the reference, the regions and the remedy. Never a resolved value:
+ * nothing has been resolved when this is thrown (the refusal runs over the
+ * WHOLE leaf before any reference in it is fetched), and the expression is the
+ * same string `state.json` already stores in the clear.
+ */
+function regionAmbiguousDriftSecretError(
+  logicalId: string,
+  propertyPath: string,
+  secretName: string,
+  foreignProducerRegions: readonly string[],
+  consumerRegion: string
+): DriftSecretRefusalError {
+  const where = propertyPath === '' ? '' : ` property '${propertyPath}'`;
+  return new DriftSecretRefusalError(
+    `${logicalId}${where}: the secret reference '${secretName}' carries no region of its own, ` +
+      `and this stack read across a region boundary (producer region(s) on record: ` +
+      `${foreignProducerRegions.join(', ')}), so it may have been resolved in one of those ` +
+      `rather than in '${consumerRegion}'. A secret of the same name in two regions is two ` +
+      `independent values, so cdkd would compare against — and with --revert WRITE — the WRONG ` +
+      `secret. Refusing instead. Spell the reference as a full ARN, which names its region and ` +
+      `is resolved there, then re-run 'cdkd drift'.`,
+    'DRIFT_SECRET_REGION_AMBIGUOUS'
+  );
+}
+
+/**
+ * Re-resolve one LEAF string, sending each `{{resolve:...}}` reference in it to
+ * the region {@link classifyReplaySecretRegion} says must answer (issue #2108).
+ *
+ * Mirrors the rollback replay's `resolveLeafByRegion` down to the ordering, and
+ * for the same reasons:
+ *
+ *  - Refuses FIRST, over the whole leaf, before any reference is fetched. A leaf
+ *    can splice several references together, and resolving the safe ones first
+ *    would leave half a credential fetched — and CACHED, and recorded as a
+ *    redaction needle — for a resource that is about to be refused anyway.
+ *  - With no foreign-region reference (every leaf on every pre-#2108 code path)
+ *    the leaf goes to `resolveDynamicReferences` WHOLE, byte-for-byte as before.
+ *    That method collects its matches from the ORIGINAL string, so a resolved
+ *    plaintext that is itself token-shaped is never re-resolved (issue #1917),
+ *    and this change does not want to relitigate any of it.
+ *  - With one, the leaf is rebuilt segment by segment so each reference can be
+ *    resolved by its OWN region's resolver, since `resolveDynamicReferences`
+ *    resolves every token in the string it is handed with the one resolver it
+ *    is called on. Each token is resolved ALONE and concatenated, so no resolved
+ *    value is re-scanned for tokens either.
+ *
+ * `dynamicReferenceTokens` returns the tokens in order and non-overlapping, so
+ * walking the leaf with a moving `indexOf` cursor reproduces their positions
+ * exactly, duplicates included.
+ */
+async function resolveDriftLeafByRegion(
+  leaf: string,
+  propertyPath: string,
+  logicalId: string,
+  consumerRegion: string,
+  producerRegions: readonly string[] | undefined,
+  resolvers: DriftSecretResolvers,
+  ctx: ResolverContext
+): Promise<string> {
+  // ONE spelling of the token scan, shared with `secret-redaction.ts` (issue
+  // #1936): a private regex here would answer a different question from the one
+  // the resolver is about to ask.
+  const tokens = dynamicReferenceTokens(leaf);
+  const verdicts = tokens.map(
+    (token) => [token, classifyReplaySecretRegion(token, consumerRegion, producerRegions)] as const
+  );
+
+  for (const [, verdict] of verdicts) {
+    if (verdict.kind === 'ambiguous') {
+      throw regionAmbiguousDriftSecretError(
+        logicalId,
+        propertyPath,
+        verdict.secretName,
+        verdict.foreignProducerRegions,
+        consumerRegion
+      );
+    }
+  }
+
+  if (!verdicts.some(([, verdict]) => verdict.kind === 'named-region')) {
+    return await resolvers.primary.resolveDynamicReferences(leaf, ctx);
+  }
+
+  let out = '';
+  let cursor = 0;
+  for (const [token, verdict] of verdicts) {
+    const at = leaf.indexOf(token, cursor);
+    // Unreachable while the tokens come from a scan of THIS string, so this is
+    // a guard against a future scanner change — and the direction it fails in
+    // is the point. Handing the leaf back to the primary resolver would send a
+    // token whose foreign region is already KNOWN to the consumer's region:
+    // issue #2108 verbatim, reintroduced by the guard meant to prevent a
+    // regression. Fail closed instead.
+    if (at < 0) {
+      throw new DriftSecretRefusalError(
+        `${logicalId}${propertyPath === '' ? '' : ` property '${propertyPath}'`}: could not ` +
+          `locate a scanned dynamic reference in the value it was scanned from. Refusing rather ` +
+          `than resolving it in '${consumerRegion}', which would be the wrong region for a ` +
+          `reference that names another one. This is an internal invariant failure — please ` +
+          `report it with the resource type and property path.`,
+        'DRIFT_SECRET_TOKEN_SCAN_MISMATCH'
+      );
+    }
+    out += leaf.slice(cursor, at);
+    const resolver =
+      verdict.kind === 'named-region' ? resolvers.forRegion(verdict.region) : resolvers.primary;
+    out += await resolver.resolveDynamicReferences(token, ctx);
+    cursor = at + token.length;
+  }
+  return out + leaf.slice(cursor);
+}
+
+/**
  * Re-resolve the SECRET dynamic references (`{{resolve:secretsmanager:...}}`,
  * and an `{{resolve:ssm:...}}` naming a `SecureString`) held by a bag read back
  * out of cdkd STATE (issue #1914).
@@ -720,18 +1141,46 @@ function collectDynamicReferencePaths(value: unknown, into: SecretPathSet, path 
  *
  * Returns the input by identity when it holds no dynamic reference, so the
  * non-secret path is unchanged down to object identity.
+ *
+ * Issue [#2108](https://github.com/go-to-k/cdkd/issues/2108): every reference
+ * is now routed to the region that must ANSWER for it rather than to the
+ * consumer's, through {@link DriftSecretResolvers} — see
+ * {@link resolveDriftLeafByRegion}.
  */
 async function resolveStateSecretExpressions(
   props: Record<string, unknown>,
-  resolver: IntrinsicFunctionResolver,
+  resolvers: DriftSecretResolvers,
   secrets: RecordedSecretValues,
   options: {
     secretPaths?: SecretPathSet;
     onUnresolved?: (tokens: string[], path: string) => void;
-  } = {}
+    /**
+     * Issue #2108: the stack's own region, and the FOREIGN producer regions its
+     * persisted cross-stack reads name (`producerRegionsFromState`). Together
+     * they are the whole input `classifyReplaySecretRegion` needs to decide
+     * which region must answer for each reference — see
+     * {@link resolveDriftLeafByRegion}. `logicalId` only names the resource in
+     * the refusal.
+     *
+     * ALL THREE ARE REQUIRED, and the whole options bag with them — there is no
+     * `= {}` default and no `??` fallback anywhere below. They used to be
+     * optional with defaults, which made the pre-#2108 defect the QUIET one: a
+     * caller that simply omits `producerRegions` gets `local` for every
+     * name-form reference and re-resolves a producer's expression in the
+     * consumer's region again, with nothing in the diff to see. An omitted
+     * `consumerRegion` was worse than that — `''` matches no recorded region,
+     * so EVERY producer region reads as foreign and every name-form reference
+     * refuses. The rollback twin cannot be misused this way because its
+     * evidence rides the required `RollbackExecutorContext`; requiring these
+     * gives this side the same property, enforced by the compiler.
+     */
+    logicalId: string;
+    consumerRegion: string;
+    producerRegions: readonly string[];
+  }
 ): Promise<Record<string, unknown>> {
   if (!containsDynamicReference(props)) return props;
-  const { secretPaths, onUnresolved } = options;
+  const { secretPaths, onUnresolved, producerRegions, logicalId, consumerRegion } = options;
   const ctx: ResolverContext = {
     template: { Resources: {} },
     resources: {},
@@ -740,7 +1189,17 @@ async function resolveStateSecretExpressions(
   const walk = async (v: unknown, path: string): Promise<unknown> => {
     if (typeof v === 'string') {
       if (!v.includes('{{resolve:')) return v;
-      const resolved = await resolver.resolveDynamicReferences(v, ctx);
+      // Issue #2108: decide the REGION of every reference in this leaf before
+      // any of them is fetched. See {@link classifyReplaySecretRegion}.
+      const resolved = await resolveDriftLeafByRegion(
+        v,
+        path,
+        logicalId,
+        consumerRegion,
+        producerRegions,
+        resolvers,
+        ctx
+      );
       // Only tokens that were in the INPUT. The scan runs over the RESOLVED
       // string, so a secret whose plaintext happens to contain
       // `{{resolve:...}}`-shaped text would otherwise be reported verbatim by
@@ -1090,7 +1549,24 @@ async function runDriftForStack(
     // clients. That is the provisioning half of the same ambient-singleton
     // problem, filed as issue
     // [#1981](https://github.com/go-to-k/cdkd/issues/1981).
-    const secretResolver = new IntrinsicFunctionResolver(region);
+    //
+    // Issue [#2108](https://github.com/go-to-k/cdkd/issues/2108) is the third
+    // scope note, and it is the one that made this a BAG of resolvers rather
+    // than a single one. #1957 fixed which region this resolver READS FOR — the
+    // stack's, rather than the ambient CLI one. It did NOT ask whether the
+    // stack's own region is the right region for a given EXPRESSION, and for a
+    // value that arrived through a cross-region cross-stack import it is not:
+    // since #1934 the consumer records the PRODUCER's region-less spelling, so
+    // re-resolving it here answered from a same-named secret in the wrong
+    // region. `DriftSecretResolvers` routes each reference to the region
+    // `classifyReplaySecretRegion` says must answer for it.
+    const secretResolvers = new DriftSecretResolvers(region);
+    // The FOREIGN-region evidence, read straight off the state record this
+    // command already loaded — `state.imports[].sourceRegion` /
+    // `state.outputReads[].sourceRegion`. The rollback lane (#2057) had to
+    // plumb this through `RollbackExecutorContext` because the replay site
+    // holds no state; here it is one call with nothing to thread.
+    const producerRegions = producerRegionsFromState(state);
     const entries = Object.entries(state.resources ?? {}).sort(([a], [b]) => a.localeCompare(b));
 
     for (const [logicalId, resource] of entries) {
@@ -1272,9 +1748,15 @@ async function runDriftForStack(
       try {
         comparisonBaseline = await resolveStateSecretExpressions(
           baseline,
-          secretResolver,
+          secretResolvers,
           secrets,
-          { secretPaths, onUnresolved: noteUnresolved }
+          {
+            secretPaths,
+            onUnresolved: noteUnresolved,
+            logicalId,
+            consumerRegion: region,
+            producerRegions,
+          }
         );
         // The record's `properties` are resolved into the SAME map and path set
         // (the resolved bag is thrown away — only those two are wanted) so a
@@ -1287,9 +1769,12 @@ async function runDriftForStack(
         // template side names a reference the baseline does not, since resolved
         // values are cached.
         if (useObserved) {
-          await resolveStateSecretExpressions(resource.properties ?? {}, secretResolver, secrets, {
+          await resolveStateSecretExpressions(resource.properties ?? {}, secretResolvers, secrets, {
             secretPaths,
             onUnresolved: noteUnresolved,
+            logicalId,
+            consumerRegion: region,
+            producerRegions,
           });
         }
       } catch (err) {
@@ -1314,11 +1799,48 @@ async function runDriftForStack(
         // answer is not lost with it — `seededSecretPaths` was computed offline
         // and takes over below, because the skip does not cover a drift
         // reported ABOVE a secret leaf.
+        //
+        // ACCEPTED COST ON THE #2108 REFUSAL PATH, stated so it is a recorded
+        // trade rather than a side effect. The refusal is per LEAF, not per
+        // resource: `resolveDriftLeafByRegion` classifies one leaf at a time and
+        // the pass walks them sequentially, so the map is NOT necessarily empty
+        // here. An ARN-form reference (verdict `named-region`) resolves and
+        // records its plaintext, and a name-form reference on a LATER leaf of
+        // the same resource can then refuse — and this clear discards the
+        // correctly-resolved needle along with everything else. An earlier
+        // wording claimed the map is always empty at this point because the
+        // refusal precedes any fetch; that is true only of the FIRST refusing
+        // leaf, and it made the clear look free when it is not.
+        //
+        // The blast radius is still bounded to this resource (the map is
+        // per-resource) and to paths whose state side carries no `{{resolve:`
+        // for `seededSecretPaths` to have seeded. Where it does bite
+        // is the KNOWN OVER-REFUSAL (a purely local name-form reference in a
+        // stack with any foreign producer region on record): pre-#2108 that
+        // resource resolved fine and the map held the CORRECT plaintext, which
+        // value-based redaction used to mask that value wherever it appeared —
+        // including at paths whose state side has no `{{resolve:` for the
+        // offline `seededSecretPaths` seed to find. Post-#2108 only the
+        // positional seed is left there. Kept anyway: the alternative is
+        // resolving the reference to build the needle, which is the wrong-region
+        // fetch this whole change exists to refuse.
         secretResolutionFailed = true;
         comparisonBaseline = baseline;
+        // A REFUSAL is not a failure to read, and saying "could not resolve"
+        // about a deliberate decision sends the reader hunting for an IAM
+        // problem that does not exist. Branch on the code and say which one it
+        // was. Both spellings keep the phrase `NOT compared`, which is the part
+        // that describes the CONSEQUENCE, and both stay to one line: this warns
+        // once per RESOURCE, and the over-refusal above makes the common
+        // `secretValueFromJson` shape hit it on every resource in the stack.
+        const refused = isDriftSecretRefusal(err);
         logger.warn(
-          `${logicalId} (${resource.resourceType}): could not resolve the dynamic reference(s) ` +
-            `this resource's state records, so its secret-bearing properties are NOT compared — ` +
+          `${logicalId} (${resource.resourceType}): ` +
+            (refused
+              ? `refused to resolve a dynamic reference this resource's state records, so its ` +
+                `secret-bearing properties are NOT compared — `
+              : `could not resolve the dynamic reference(s) this resource's state records, so ` +
+                `its secret-bearing properties are NOT compared — `) +
             // Masked BEFORE the map is cleared, and that ordering is the whole
             // reason the clear is below rather than above. The message comes
             // from an external system whose wording cdkd does not control, and
@@ -1451,8 +1973,22 @@ async function runDriftForStack(
         secrets,
         secretResolutionFailed ? seededSecretPaths : secretPaths
       );
+      const referencesUnresolved = secretResolutionFailed || unresolvedTokens.size > 0;
+      // NOT the OR: only the THROWN half. See the variant's field note — the
+      // surviving-token half is a pre-existing, permanent population that must
+      // not be driven into the exit code.
+      const comparisonRefused = secretResolutionFailed;
       if (reported.changes.length === 0) {
-        outcomes.push({ kind: 'clean', logicalId, resourceType: resource.resourceType });
+        // Carried on the CLEAN variant too (issue #2108): an empty change list
+        // here can mean "compared and equal" or "not compared at all", and only
+        // this flag tells the two apart. See the variant's own note.
+        outcomes.push({
+          kind: 'clean',
+          logicalId,
+          resourceType: resource.resourceType,
+          referencesUnresolved,
+          comparisonRefused,
+        });
       } else {
         outcomes.push({
           kind: 'drifted',
@@ -1461,7 +1997,8 @@ async function runDriftForStack(
           ...reported,
           awsProperties: aws,
           secrets,
-          referencesUnresolved: secretResolutionFailed || unresolvedTokens.size > 0,
+          referencesUnresolved,
+          comparisonRefused,
         });
       }
     }
@@ -2561,7 +3098,17 @@ async function runRevert(
     // plaintext -> expression (the redaction direction), and a revert needs the
     // resolution direction, against AWS as it is NOW rather than as it was when
     // the report was built.
-    const revertSecretResolver = new IntrinsicFunctionResolver(report.region);
+    //
+    // Issue [#2108](https://github.com/go-to-k/cdkd/issues/2108): a BAG of
+    // resolvers, one per region that must answer, because this is the arm that
+    // WRITES. `desiredProperties` goes straight to `provider.update`, so a
+    // reference re-resolved in the wrong region does not fail — it succeeds
+    // with a foreign credential and installs it on a live resource. Each
+    // reference is routed by `classifyReplaySecretRegion`, and a reference
+    // whose origin cannot be established is REFUSED before any update.
+    const revertSecretResolvers = new DriftSecretResolvers(report.region);
+    // The foreign-region evidence for this stack — see the detection site.
+    const revertProducerRegions = producerRegionsFromState(report.state);
     try {
       const tasks = driftedOutcomes.map((outcome) => async () => {
         const stateResource = report.state.resources[outcome.logicalId];
@@ -2620,9 +3167,14 @@ async function runRevert(
         try {
           desiredProperties = await resolveStateSecretExpressions(
             revertBaseline,
-            revertSecretResolver,
+            revertSecretResolvers,
             secrets,
-            { onUnresolved: noteUnresolved }
+            {
+              onUnresolved: noteUnresolved,
+              logicalId: outcome.logicalId,
+              consumerRegion: report.region,
+              producerRegions: revertProducerRegions,
+            }
           );
           // Mirrors the detection pass: `properties` are resolved into the same
           // map so a secret the OBSERVED baseline never captured is still a key
@@ -2631,19 +3183,30 @@ async function runRevert(
           if (stateResource.observedProperties !== undefined) {
             await resolveStateSecretExpressions(
               stateResource.properties ?? {},
-              revertSecretResolver,
+              revertSecretResolvers,
               secrets,
-              { onUnresolved: noteUnresolved }
+              {
+                onUnresolved: noteUnresolved,
+                logicalId: outcome.logicalId,
+                consumerRegion: report.region,
+                producerRegions: revertProducerRegions,
+              }
             );
           }
         } catch (err) {
           // Reported per-resource rather than aborting the run, and with its
           // OWN message: 'AWS update failed' would be a lie — no update was
           // attempted, the reference the state record names could not be read.
+          //
+          // Same split as the detection site (issue #2108): a region refusal is
+          // a decision, not a read failure, and calling it one sends the reader
+          // looking for an IAM problem that is not there.
           totalUnresolvable++;
           logger.error(
             `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
-              `could not re-resolve the dynamic reference(s) this resource's state records — ` +
+              (isDriftSecretRefusal(err)
+                ? `refused to re-resolve a dynamic reference this resource's state records — `
+                : `could not re-resolve the dynamic reference(s) this resource's state records — `) +
               `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
           );
           return;
@@ -3259,6 +3822,18 @@ async function confirmPrompt(prompt: string): Promise<boolean> {
  * JSON output shape — stable contract for tooling. Each stack carries
  * separate `drifted` / `notSupported` arrays so consumers don't have to
  * filter by `kind`.
+ *
+ * Issue [#2108](https://github.com/go-to-k/cdkd/issues/2108) added
+ * `referencesUnresolved` to every `drifted` and `clean` entry, plus the
+ * `notCompared` roll-up. All three are ADDITIVE — no existing key changed
+ * meaning — and they exist because `clean` was ambiguous in the one direction
+ * that matters: a resource whose secret-bearing properties cdkd REFUSED to
+ * resolve (so they were never compared) landed in `clean` looking exactly like
+ * a resource that was compared and matched. A CI job gating on
+ * `drifted.length === 0` therefore read a skipped comparison as a pass. The
+ * roll-up is there so such a job needs ONE key rather than a filter over two
+ * arrays: `notCompared.length === 0` is the honest "everything was actually
+ * checked" predicate.
  */
 interface StackDriftJson {
   stack: string;
@@ -3267,28 +3842,57 @@ interface StackDriftJson {
     logicalId: string;
     type: string;
     changes: Array<{ path: string; stateValue: unknown; awsValue: unknown }>;
+    referencesUnresolved: boolean;
   }>;
-  clean: Array<{ logicalId: string; type: string }>;
+  clean: Array<{ logicalId: string; type: string; referencesUnresolved: boolean }>;
   notSupported: Array<{ logicalId: string; type: string }>;
   /** Issue #323: Custom Resources (drift not applicable). */
   skipped: Array<{ logicalId: string; type: string }>;
+  /**
+   * Every resource — `drifted` or `clean` — that carries
+   * `referencesUnresolved: true`, i.e. whose secret-bearing properties were NOT
+   * compared. A drifted one belongs here too: the changes it DOES report are
+   * real, but they are not the whole comparison.
+   */
+  notCompared: Array<{ logicalId: string; type: string }>;
 }
 
 function writeJsonReport(reports: StackDriftReport[]): void {
   const payload: StackDriftJson[] = reports.map((r) => {
     const drifted = r.outcomes
       .filter((o): o is Extract<DriftOutcome, { kind: 'drifted' }> => o.kind === 'drifted')
-      .map((o) => ({ logicalId: o.logicalId, type: o.resourceType, changes: o.changes }));
+      .map((o) => ({
+        logicalId: o.logicalId,
+        type: o.resourceType,
+        changes: o.changes,
+        referencesUnresolved: o.referencesUnresolved,
+      }));
     const clean = r.outcomes
       .filter((o): o is Extract<DriftOutcome, { kind: 'clean' }> => o.kind === 'clean')
-      .map((o) => ({ logicalId: o.logicalId, type: o.resourceType }));
+      .map((o) => ({
+        logicalId: o.logicalId,
+        type: o.resourceType,
+        referencesUnresolved: o.referencesUnresolved,
+      }));
+    const notCompared = notComparedOutcomes(r).map((o) => ({
+      logicalId: o.logicalId,
+      type: o.resourceType,
+    }));
     const notSupported = r.outcomes
       .filter((o): o is Extract<DriftOutcome, { kind: 'unsupported' }> => o.kind === 'unsupported')
       .map((o) => ({ logicalId: o.logicalId, type: o.resourceType }));
     const skipped = r.outcomes
       .filter((o): o is Extract<DriftOutcome, { kind: 'skipped' }> => o.kind === 'skipped')
       .map((o) => ({ logicalId: o.logicalId, type: o.resourceType }));
-    return { stack: r.stackName, region: r.region, drifted, clean, notSupported, skipped };
+    return {
+      stack: r.stackName,
+      region: r.region,
+      drifted,
+      clean,
+      notSupported,
+      skipped,
+      notCompared,
+    };
   });
   process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
 }
@@ -3308,13 +3912,44 @@ function writeHumanReport(reports: StackDriftReport[]): void {
     // mental model. Skipped entries are still present in the outcomes
     // array and surface in `--json` output (as `skipped: [...]`).
     const skippedCount = report.outcomes.filter((o) => o.kind === 'skipped').length;
-    const checked = report.outcomes.length - skippedCount;
+    const inspected = report.outcomes.length - skippedCount;
+    // Issue #2108: the `--json` `notCompared` roll-up, in the human report.
+    // `✓ no drift detected` on a resource whose secret-bearing properties were
+    // never compared is the same false reassurance the JSON field exists to
+    // close, so it has to be said on BOTH renderings — the per-resource `NOT
+    // compared` warning is a logger line, which a user reading stdout (or
+    // piping it) does not necessarily see next to this summary.
+    //
+    // Computed HERE, above the summary line, because the count it produces is
+    // subtracted from `checked` below: a not-compared resource was inspected but
+    // NOT fully checked, and counting it as checked contradicted the block this
+    // same list prints a few lines down.
+    const notCompared = notComparedOutcomes(report);
+    const checked = inspected - notCompared.length;
 
     if (drifted.length === 0) {
-      process.stdout.write(
-        `✓ ${report.stackName} (${report.region}): no drift detected ` +
-          `(${checked} resource${checked === 1 ? '' : 's'} checked, ${unsupported.length} unsupported)\n`
-      );
+      // The glyph follows THIS REPORT's question — "was everything actually
+      // compared" — and NOT the exit code, which asks the narrower "did cdkd
+      // refuse anything" (issue #2108). The two differ for a stack whose only
+      // uncompared properties hold a surviving `{{resolve:ssm-secure:...}}`
+      // token: it warns here and still exits 0, deliberately. Keying the glyph
+      // on the exit code's subset instead would put a ✓ and a `1 resource
+      // checked` directly above a `PARTIALLY compared` block naming that same
+      // resource, which is the contradiction this branch exists to remove. The
+      // phrase `no drift detected` is kept in both spellings because it stays
+      // true; what changes is the claim that everything was looked at.
+      if (notCompared.length > 0) {
+        process.stdout.write(
+          `⚠ ${report.stackName} (${report.region}): no drift detected, but ` +
+            `${checked} of ${inspected} resource${inspected === 1 ? '' : 's'} fully checked ` +
+            `(${notCompared.length} only partially compared, ${unsupported.length} unsupported)\n`
+        );
+      } else {
+        process.stdout.write(
+          `✓ ${report.stackName} (${report.region}): no drift detected ` +
+            `(${checked} resource${checked === 1 ? '' : 's'} checked, ${unsupported.length} unsupported)\n`
+        );
+      }
     } else {
       const word = drifted.length === 1 ? 'resource' : 'resources';
       process.stdout.write(
@@ -3327,6 +3962,17 @@ function writeHumanReport(reports: StackDriftReport[]): void {
           process.stdout.write(`    + ${change.path}: ${formatScalar(change.awsValue)}\n`);
         }
         process.stdout.write('\n');
+      }
+    }
+
+    if (notCompared.length > 0) {
+      process.stdout.write(
+        `\n  ${notCompared.length} resource(s) only PARTIALLY compared — cdkd could not, or ` +
+          `refused to, resolve a dynamic reference their state records, so their ` +
+          `secret-bearing properties were NOT compared:\n`
+      );
+      for (const o of notCompared) {
+        process.stdout.write(`    ! ${o.logicalId} (${o.resourceType})\n`);
       }
     }
 
@@ -3371,8 +4017,10 @@ function stackRegionOption(): Option {
 export function createDriftCommand(): Command {
   const cmd = new Command('drift')
     .description(
-      'Detect drift between cdkd state and AWS reality. Exits 0 when no drift, 1 when drift is detected. ' +
-        'Pass --accept to update cdkd state from AWS, or --revert to push cdkd state values back into AWS.'
+      'Detect drift between cdkd state and AWS reality. Exits 0 when nothing drifted, 1 when drift is ' +
+        'detected, and 2 when nothing drifted but cdkd REFUSED to compare a resource, because a dynamic ' +
+        'reference its state records could not be attributed to a region. Pass --accept to update cdkd ' +
+        'state from AWS, or --revert to push cdkd state values back into AWS.'
     )
     .argument('[stacks...]', 'Stack name(s) to check (physical CloudFormation names)')
     .option('--all', 'Check every stack in the state bucket', false)
