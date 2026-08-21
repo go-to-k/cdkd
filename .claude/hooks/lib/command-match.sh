@@ -290,7 +290,7 @@ gate_segments_raw() {
           # is ONE echo, and splitting on that `;` blocked it (go-to-k/cdkd#2130
           # test review).
           if (c == "\\") { res = res c substr(line, i + 1, 1); i++; continue }
-          if ((c == "\"" || c == "'"'"'") && c != ignore_q) { q = c; res = res c; continue }
+          if ((c == "\"" || c == "'"'"'") && c != ignore_q && ignore_q != "BOTH") { q = c; res = res c; continue }
           if (c == "$" && substr(line, i + 1, 1) == "(") {
             # DUAL-EMIT (go-to-k/cdkd#2027 review). Splitting here truncated the
             # enclosing command: `git -C $(git rev-parse --show-toplevel) commit`
@@ -387,6 +387,10 @@ gate_segments_raw() {
         if (pending_tag != "" && terminated(pending_tag, i + 1) > 0) tag = pending_tag
       }
       if (pending != "") acc = acc flush_line(pending) "\n"
+      # If the input ended INSIDE a quoted span, the join above left `acc`
+      # without a trailing separator and the reader dropped the whole tail.
+      # Terminate it (go-to-k/cdkd#2027 review round 5, blocker 1).
+      if (acc != "" && substr(acc, length(acc), 1) != "\n") acc = acc "\n"
       # Drain the substitution bodies queued by flush_line, so a command
       # SUBSTITUTION is still scanned as a command in its own right. Bounded:
       # a body can queue more (nested substitutions), so cap the rounds rather
@@ -421,7 +425,14 @@ gate_segments_raw() {
       # the same place as the subshell gap). Re-run treating that character as
       # literal — a real shell would not accept the command anyway, and a gate
       # must fail LOUD, not open.
+      # Retry treating the offending quote character as literal. TWO passes, and
+      # over BOTH characters: text carrying one unbalanced apostrophe AND one
+      # unbalanced double quote never cleared `q` with a single retry, so every
+      # segment stayed data and the command vanished entirely -- zero segments,
+      # every gate disarmed (go-to-k/cdkd#2027 review round 5, blocker 1).
       if (q != "") { ignore_q = q; acc = run() }
+      if (q != "") { ignore_q = (ignore_q == "\"") ? "\047" : "\""; acc = run() }
+      if (q != "") { ignore_q = "BOTH"; acc = run() }
       printf "%s", acc
     }
   ' SEP_AMP="$GATE_SEP_AMP" SEP_SEMI="$GATE_SEP_SEMI" SEP_PIPE="$GATE_SEP_PIPE" \
@@ -448,8 +459,14 @@ gate_strip_prefix() {
     # do because it requires a trailing space. Without this,
     # `MSG="$(echo git commit -m x)"` shed only `MSG="$(echo` and the residue
     # matched the verb (go-to-k/cdkd#2027 review round 4).
-    if [[ "$s" =~ ^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=$GATE_QUOTED_VALUE[[:space:]]*(.*)$ ]]; then
-      s="${BASH_REMATCH[2]}"
+    # The boundary after the closing quote is load-bearing. Without it the rule
+    # matched the quoted PREFIX of a CONCATENATED value and dropped the rest, so
+    # `D="$HOME"/wt git commit -m x`, `FOO="bar"baz …` and `MSG="a"'"'"'b'"'"' …`
+    # stopped matching their verb entirely. Requiring whitespace-or-end means a
+    # concatenated value falls through to the bare alternation, exactly as it did
+    # before (go-to-k/cdkd#2027 review round 5, blocker 2).
+    if [[ "$s" =~ ^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=$GATE_QUOTED_VALUE([[:space:]]+(.*))?$ ]]; then
+      s="${BASH_REMATCH[3]}"
     fi
     if [[ "$s" =~ ^[[:space:]]*case[[:space:]]+[^[:space:]]+[[:space:]]+in[[:space:]]+(.*)$ ]]; then
       s="${BASH_REMATCH[1]}"
@@ -491,7 +508,12 @@ gate_unquote_span() {
 
 gate_segments() {
   local segment
-  while IFS= read -r segment; do
+  # `|| [ -n "$segment" ]`: `read` returns non-zero on a final line with no
+  # trailing newline and would DISCARD it. Belt and braces with the terminator
+  # added in the awk END rule -- either alone fixes the zero-segment case, and a
+  # reader that silently drops its last line is the wrong thing to leave armed
+  # (go-to-k/cdkd#2027 review round 5, blocker 1).
+  while IFS= read -r segment || [ -n "$segment" ]; do
     # NOT `${segment//"$GATE_SEP_AMP"/&}`: since bash 5.2 an `&` in the
     # replacement means the MATCHED TEXT, so the placeholder survived and a
     # quoted path containing `&` came back corrupted — the gate then failed to
@@ -737,7 +759,16 @@ gate_target_dir_strict() {
       # never reaches here and is not refused. An unreadable one is REMEMBERED
       # rather than refused on the spot, because an absolute `-C` in the verb
       # segment can still make it moot -- see below.
-      case "$cd_target" in *'$'*|*'`'*) unresolved_cd=1; continue ;; esac
+      # A GLOB, a brace expansion or a `~user` prefix is exactly as unreadable as
+      # a variable: the shell expands it and the command lands in a real repo,
+      # while this parser cannot say which one. `~/` and a bare `~` stay
+      # readable, because HOME is expanded here correctly
+      # (go-to-k/cdkd#2027 review round 5, minor 3).
+      case "$cd_target" in
+        *'$'*|*'`'*|*'*'*|*'?'*|*'{'*) unresolved_cd=1; continue ;;
+        '~'|'~/'*) : ;;
+        '~'*) unresolved_cd=1; continue ;;
+      esac
       [ -z "$cd_target" ] && continue
       cd_target=$(gate_expand_tilde "$cd_target")
       if [[ "$cd_target" == /* ]]; then
@@ -756,7 +787,11 @@ gate_target_dir_strict() {
     c_target=$(gate_leading_c_value "$segment")
     if [ -n "$c_target" ]; then
       c_target=$(gate_unquote "$c_target")
-      case "$c_target" in *'$'*|*'`'*) return 2 ;; esac
+      case "$c_target" in
+        *'$'*|*'`'*|*'*'*|*'?'*|*'{'*) return 2 ;;
+        '~'|'~/'*) : ;;
+        '~'*) return 2 ;;
+      esac
       c_target=$(gate_expand_tilde "$c_target")
       if [ -n "$c_target" ]; then
         if [[ "$c_target" == /* ]]; then

@@ -234,6 +234,13 @@ json_payload() { # <cwd> <command>
 # `$( )` and backticks are not variables, and a quoted path with a space is not
 # unreadable at all -- it is fully determinate, and belongs in the must-BLOCK
 # column rather than here.
+# A GLOB, a brace expansion and a `~user` prefix belong here for the same reason
+# as a variable: the shell expands them and the command lands in a real repo,
+# while this parser cannot say which one. They were missing until round 5, and
+# the reverted "not a git repository" branch meant they exited 0
+# (go-to-k/cdkd#2027 review round 5, minor 3). `~/` and a bare `~` are NOT
+# poison -- HOME is expanded here correctly, and refusing them would be a false
+# refusal, which is why the resolvable controls below still cover them.
 POISON=(
   '"$W"'
   '$W'
@@ -241,6 +248,9 @@ POISON=(
   '"$(git rev-parse --show-toplevel)"'
   '$(git rev-parse --show-toplevel)'
   '`pwd`'
+  '/tmp/wt/*/'
+  '/tmp/{a,b}/wt'
+  '~nobody/wt'
 )
 
 # =============================================================================
