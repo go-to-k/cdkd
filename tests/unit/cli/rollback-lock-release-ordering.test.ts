@@ -91,6 +91,7 @@ vi.mock('../../../src/cli/commands/state.js', async () => {
 });
 
 import { rollbackCommand } from '../../../src/cli/commands/rollback.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 const REGION = 'us-east-1';
 const STACK = 'S';
@@ -243,11 +244,12 @@ describe('rollbackCommand releases the lock BEFORE unregistering its signal hand
   });
 
   it('keeps the #1342 SIGTERM forwarder armed for the whole release round-trip', async () => {
-    // THE fence for the ordering WITHIN the teardown pair. A fix that released
-    // first but still called `unforwardSigterm()` before the release would pass
-    // the SIGINT case above and fail this one: CI cancellation delivers SIGTERM,
-    // and with the forwarder gone it takes the default terminate with the lock
-    // still held — the same stranded lock through a different signal.
+    // THE fence for the SIGTERM half of "release first" — NOT for the order
+    // within the teardown pair, which the file header explains is not a rule.
+    // A fix that reordered only the SIGINT half would pass the case above and
+    // fail this one: CI cancellation delivers SIGTERM, and with the forwarder
+    // already gone it takes the default terminate with the lock still held —
+    // the same stranded lock through a different signal.
     const before = process.listeners('SIGTERM');
     const { releaseLock, observed } = observingRelease();
     installSetup(releaseLock);
@@ -339,10 +341,14 @@ describe('rollbackCommand releases the lock BEFORE unregistering its signal hand
       return true;
     }) as typeof process.stderr.write;
 
+    // Fire ONLY the listeners the command added, not every registered one. A
+    // real signal would hit them all, but the harness may hold one of its own
+    // and invoking that could take the vitest worker down — so the fixture is
+    // narrowed to the listeners under test.
+    const preExisting = new Set(process.listeners('SIGINT'));
     const releaseLock = vi.fn().mockImplementation(() => {
-      // Invokes EVERY registered SIGINT listener, which is what a real signal
-      // does — the command's own handler is the one under test here.
       for (const listener of process.listeners('SIGINT')) {
+        if (preExisting.has(listener)) continue;
         (listener as unknown as () => void)();
       }
       return Promise.resolve(undefined);
@@ -360,6 +366,35 @@ describe('rollbackCommand releases the lock BEFORE unregistering its signal hand
     // resolves-cleanly assertion above evidence of a swallow rather than of an
     // absent handler.
     expect(written.join('')).toMatch(/Interrupted — stopping rollback/);
+  });
+
+  it('a REJECTING release warns and lets the original error through', async () => {
+    // The `.catch` on the release is load-bearing in two directions and nothing
+    // else in this file exercises it: without it the S3 failure REPLACES the
+    // command's real error (the user is told the lock could not be released,
+    // not why the rollback failed) and the diagnostic warn disappears. Deleting
+    // the `.catch` passes every other case in this file, which is how the gap
+    // was found; the twin `destroy-runner-lock-release-ordering.test.ts` has
+    // carried this arm all along.
+    //
+    // Note this is the REJECTION arm, distinct from the synchronous-throw case
+    // above: a rejection is swallowed by design, a synchronous throw is not,
+    // and the nested `finally` exists precisely because the `.catch` cannot
+    // cover the second.
+    const sigintBefore = process.listeners('SIGINT');
+    const sigtermBefore = process.listeners('SIGTERM');
+    const releaseLock = vi.fn().mockRejectedValue(new Error('S3 DeleteObject failed'));
+    installSetup(releaseLock);
+
+    // The rollback's OWN error survives — not the release failure.
+    await expect(rollbackCommand(STACK, { ...baseOpts })).rejects.toThrow(/Nothing to roll back/);
+
+    expect(releaseLock).toHaveBeenCalledOnce();
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    expect(warn.mock.calls.flat().join(' ')).toMatch(/Failed to release lock/);
+    // ...and the teardown still runs, so a failed release does not leak either.
+    expect(process.listeners('SIGINT')).toEqual(sigintBefore);
+    expect(process.listeners('SIGTERM')).toEqual(sigtermBefore);
   });
 
   it('INVERTED CONTROL — the acquire-failure path releases nothing and still leaks nothing', async () => {
