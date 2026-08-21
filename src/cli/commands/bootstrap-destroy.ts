@@ -32,7 +32,12 @@ import {
   type BootstrapMarker,
 } from '../../assets/asset-storage.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
-import { listAllStateKeys, describeStateKey } from './state-file-keys.js';
+import {
+  listAllStateKeys,
+  describeStateKey,
+  STATE_FILE_SUFFIX,
+  DEFAULT_STATE_PREFIX,
+} from './state-file-keys.js';
 
 /**
  * `cdkd bootstrap --destroy` — teardown of cdkd-created account resources
@@ -57,9 +62,6 @@ import { listAllStateKeys, describeStateKey } from './state-file-keys.js';
  * region is still opted in to asset storage (deleting their markers would
  * silently flip those regions back to legacy mode).
  */
-
-/** S3 key prefix for state files — same fixed value the create side uses. */
-const STATE_PREFIX = 'cdkd';
 
 export interface BootstrapDestroyOptions {
   stateBucket?: string;
@@ -141,7 +143,7 @@ export async function scanStateReferences(
     const body = await stateBackend.getRawObject(key);
     if (body === null) continue;
     if (names.some((name) => body.includes(name))) {
-      referencing.push(describeStateKey(key));
+      referencing.push(describeStateKey(key, STATE_FILE_SUFFIX, DEFAULT_STATE_PREFIX));
     }
   }
   return referencing;
@@ -403,7 +405,7 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
         region: effective.region,
         ...(options.profile && { profile: options.profile }),
       }),
-      { bucket: bucketName, prefix: STATE_PREFIX },
+      { bucket: bucketName, prefix: DEFAULT_STATE_PREFIX },
       { region: effective.region, ...(options.profile && { profile: options.profile }) }
     );
     try {
@@ -433,7 +435,7 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
   });
   const stateBackend = new S3StateBackend(
     markerS3Client,
-    { bucket: bucketName, prefix: STATE_PREFIX },
+    { bucket: bucketName, prefix: DEFAULT_STATE_PREFIX },
     { region, ...(options.profile && { profile: options.profile }) }
   );
 
@@ -619,7 +621,9 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
     if (options.includeStateBucket) {
       const stateKeys = await listAllStateKeys(stateBackend);
       if (stateKeys.length > 0) {
-        const listing = stateKeys.map((k) => `  - ${describeStateKey(k)}  [${k}]`).join('\n');
+        const listing = stateKeys
+          .map((k) => `  - ${describeStateKey(k, STATE_FILE_SUFFIX, DEFAULT_STATE_PREFIX)}  [${k}]`)
+          .join('\n');
         throw new CdkdError(
           `Refusing to delete state bucket '${bucketName}': ${stateKeys.length} stack(s) ` +
             `still have state in it:\n${listing}\n` +

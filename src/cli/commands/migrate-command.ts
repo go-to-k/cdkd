@@ -11,6 +11,7 @@ import { runImport, type RunImportOptions } from './import.js';
 import { retireCloudFormationStack } from './retire-cfn-stack.js';
 import { runMigrateLibrary, type RunMigrateLibraryResult } from './migrate/index.js';
 import { buildResourceMapping, type ResourceMappingResult } from './migrate/resource-mapper.js';
+import { DEFAULT_STATE_PREFIX } from './state-file-keys.js';
 import {
   readMappingFile,
   writeMappingFile,
@@ -255,7 +256,7 @@ export async function migrateCommandAction(
 
   const importOptions: RunImportOptions = {
     app: libResult.assemblyDir,
-    statePrefix: options.statePrefix ?? 'cdkd',
+    statePrefix: options.statePrefix ?? DEFAULT_STATE_PREFIX,
     resourceMappingInline: JSON.stringify(importMapping),
     auto: false,
     dryRun: false,
@@ -437,7 +438,9 @@ export function createMigrateCommand(): Command {
       new Option('--state-bucket <name>', 'cdkd state bucket. Defaults to cdkd-state-<accountId>.')
     )
     .addOption(
-      new Option('--state-prefix <prefix>', 'cdkd state prefix inside the bucket.').default('cdkd')
+      new Option('--state-prefix <prefix>', 'cdkd state prefix inside the bucket.').default(
+        DEFAULT_STATE_PREFIX
+      )
     )
     .addOption(new Option('--profile <name>', 'AWS profile name.'))
     .addOption(new Option('--role-arn <arn>', 'IAM role to assume before any AWS call.'))

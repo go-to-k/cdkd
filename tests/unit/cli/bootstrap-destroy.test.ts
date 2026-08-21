@@ -386,6 +386,56 @@ describe('cdkd bootstrap --destroy', () => {
     expectNothingDeleted();
   });
 
+  it('reference scan names the stack for a European Sovereign Cloud key (issue #2001)', async () => {
+    // This refusal is the one call site that prints NO raw key beside the
+    // descriptor, so a wrong descriptor is all the user gets — and it names the
+    // stack they are being told to destroy first. Pre-fix `eusc-de-east-1` was
+    // reported AS the stack name, sending them after a stack that does not
+    // exist.
+    stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+      if (prefix === '') return ['cdkd/SovereignStack/eusc-de-east-1/state.json', MARKER_KEY];
+      return [MARKER_KEY];
+    });
+    stateBackendMocks.getRawObject.mockImplementation(async (key: string) => {
+      if (key === MARKER_KEY) return MARKER_BODY;
+      return JSON.stringify({ resources: { Fn: { properties: { Code: ASSET_BUCKET } } } });
+    });
+
+    await expect(runDestroy(['--yes'])).rejects.toThrow(
+      /SovereignStack \(eusc-de-east-1\)/
+    );
+    expectNothingDeleted();
+  });
+
+  it('reference scan does not read a legacy region-shaped stack name as a region', async () => {
+    // The other direction, and the one the {2,4} widening opened: a legacy
+    // region-less key whose stack is named `demo-app-1`. Without the exact
+    // depth rule this refusal would name `cdkd` as the stack.
+    stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+      if (prefix === '') return ['cdkd/demo-app-1/state.json', MARKER_KEY];
+      return [MARKER_KEY];
+    });
+    stateBackendMocks.getRawObject.mockImplementation(async (key: string) => {
+      if (key === MARKER_KEY) return MARKER_BODY;
+      return JSON.stringify({ resources: { Fn: { properties: { Code: ASSET_BUCKET } } } });
+    });
+
+    // A negative assertion is the point here, so the message is captured rather
+    // than matched through `rejects.toThrow`: the failure mode is not "no
+    // refusal" but "refusal naming the wrong thing". An empty string on a
+    // non-throwing run fails the positive half, so the capture cannot pass
+    // vacuously.
+    let message = '';
+    try {
+      await runDestroy(['--yes']);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(/demo-app-1/);
+    expect(message).not.toMatch(/- cdkd\b/);
+    expectNothingDeleted();
+  });
+
   it('--force overrides the deployed-stack reference scan', async () => {
     stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
       if (prefix === '') return [`cdkd/MyStack/${REGION}/state.json`, MARKER_KEY];
@@ -585,6 +635,30 @@ describe('cdkd bootstrap --destroy', () => {
       await expect(
         runDestroy(['--yes', '--force', '--include-state-bucket'])
       ).rejects.toThrow(/PrefixedStack \(eu-west-1\)/);
+      expectNothingDeleted();
+    });
+
+    it('the teardown listing uses the DEPTH rule for a legacy region-shaped stack name', async () => {
+      // A region-shaped REGION segment is one the depth rule and the shape
+      // heuristic agree on, so the case above cannot pin the prefix threading
+      // -- drop the argument at the call site and it stays green. This shape is
+      // where they disagree, so it is the one that goes red.
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === '') return ['cdkd/demo-app-1/state.json'];
+        if (prefix === 'cdkd-bootstrap/') return [MARKER_KEY];
+        return [MARKER_KEY];
+      });
+
+      let message = '';
+      try {
+        await runDestroy(['--yes', '--force', '--include-state-bucket']);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toMatch(/still have state/);
+      expect(message).toMatch(/demo-app-1/);
+      // Without the threading this reads `- cdkd (demo-app-1)`.
+      expect(message).not.toMatch(/cdkd \(demo-app-1\)/);
       expectNothingDeleted();
     });
 
