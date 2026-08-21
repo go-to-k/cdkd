@@ -76,23 +76,14 @@ with its own region — so a region boundary is now also a cache boundary.
    evidence is on record those classify `ambiguous` and refuse before the
    assembled leaf is reached, and the arm would silently measure the wrong
    refusal in both polarities.
-9. Deletes region B's `SecureString` out of band, re-seeds the plaintext, and
-   scrubs the third stack again: the deferred reference's lookup now FAILS, and
-   `cdkd scrub` must WARN and refuse to report the stack clean while still
-   exiting 0 — a finding, not a refusal, because the error arrives from a
-   whole-bag resolution and cannot be attributed to that leaf. The parameter is
-   re-seeded immediately so step 11 can delete it under `set -e`.
-10. Destroys all three stacks, asserts all nine echo parameters and all three
-    state records are gone (tri-state gone probes), then deletes the seeded
-    parameters.
+9. Destroys all three stacks, asserts all nine echo parameters and all three
+   state records are gone (tri-state gone probes), then deletes the seeded
+   parameters.
 
 Pre-fix for #1933, step 5 fails on the second stack. Pre-fix for #1957, step 7
 leaves region B's plaintext in `state.json`. Pre-fix for #2157, step 8 exits 2
 with `SCRUB_SECRET_REFERENCE_UNCLASSIFIABLE` and the seeded plaintext survives —
-unbypassably, since scrub has no flag that overrides a refusal. Against the
-FIRST draft of that fix, step 9 prints `No plaintext secrets found` over a leaf
-nobody resolved, which is the residual three reviews caught and this step
-fences.
+unbypassably, since scrub has no flag that overrides a refusal.
 
 ## Run
 

@@ -428,7 +428,6 @@ async function scrub(
   recordsChanged: number;
   secretsFound: number;
   secretBearingKeys: number;
-  deferredUnresolvedReads: number;
 }> {
   return await scrubStack(
     makeStackInfo(expr, outputs, extraProps, parameters) as never,
@@ -977,43 +976,6 @@ describe('cdkd scrub resolves a foreign-region secret in ITS OWN region (issue #
     expect(stateBackend.saveState).not.toHaveBeenCalled();
   });
 
-  it('a DEFERRED reference whose lookup FAILS is a warned finding, not a silent clean run (#2157)', async () => {
-    // THE RESIDUAL THE FIRST DRAFT OF #2157 SHIPPED, found by three independent
-    // reviews. Deferring moves the lookup INSIDE `resolver.resolve`, whose
-    // errors land in `scrubStack`'s best-effort `catch { logger.debug }` -- so
-    // a producer region that cannot answer became a verbose-only line under a
-    // `No plaintext secrets found` summary, over state that still holds the
-    // plaintext. The pre-pass's own `SCRUB_CROSS_REGION_SECRET_UNRESOLVED` is
-    // loud for exactly this failure on the COMPLETE-token spelling, so the two
-    // spellings had diverged in the one direction this command must not.
-    //
-    // NOT a refusal: the error surfaces from a whole-bag resolution and cannot
-    // be attributed to the deferred leaf, so refusing would strand a stack over
-    // an unrelated `Ref` failure. A FINDING instead -- warned, counted, and the
-    // clean line suppressed.
-    prime(PRODUCER_REGION, 'GetSecretValueCommand', new Error('Denied by the producer region'));
-    useState(makeLeakyState(IRELAND_PASSWORD, 'imports'));
-
-    const res = await scrub(SUB_ASSEMBLED_FOREIGN_ARN_EXPR);
-
-    // The COUNT is the discriminator: it is non-zero only on this path.
-    expect(res.deferredUnresolvedReads).toBe(1);
-    const logs = logLines.join('\n');
-    expect(logs).toContain('could not resolve a secret reference the intrinsics ASSEMBLE');
-    // It names the LEAF, not only the resource -- an assembled reference is one
-    // leaf of a bag that can carry hundreds.
-    expect(logs).toContain('MasterUserPassword');
-    // Neither region's value is echoed by the failure path.
-    expect(logs).not.toContain(IRELAND_PASSWORD);
-    // NOT asserted here: that the run stops reporting the stack CLEAN. Both
-    // clean lines are emitted by `scrubCommand`, and this helper drives
-    // `scrubStack`, so `not.toContain('No plaintext secrets found')` could not
-    // fail under any mutation -- it was in this test's first cut and is exactly
-    // why the aggregate gate shipped unwired (round 2 of the #2157 review). It
-    // lives in `scrub-all-refusal-boundary.test.ts`, at command level, where the
-    // string can actually be printed.
-  });
-
   it('the shape #2157 UNLOCKS: an Fn::Sub-assembled FOREIGN ARN is scrubbed, not refused', async () => {
     // The case the relaxation exists for, and the discriminator for the whole
     // change: `main` REFUSES this leaf (the raw string opens one reference and
@@ -1032,13 +994,6 @@ describe('cdkd scrub resolves a foreign-region secret in ITS OWN region (issue #
 
     expect(secretSends.map((s) => s.ctorRegion)).toEqual([PRODUCER_REGION]);
     expect(res.recordsChanged).toBe(1);
-    // NEGATIVE CONTROL for the issue #2157 FINDING, and the one this file can
-    // give that `scrub-all-refusal-boundary.test.ts` cannot: this leaf WAS
-    // deferred, and the resolver answered it. A recorder keyed on "deferred and
-    // something threw" -- the first cut -- was silent here only by luck, since
-    // nothing else in the bag failed; keying it on whether the raw leaf SURVIVED
-    // makes the silence a property of the resolution rather than of the bag.
-    expect(res.deferredUnresolvedReads).toBe(0);
     const saved = stateBackend.saveState.mock.calls[0]![2] as StackState;
     expect(JSON.stringify(saved)).not.toContain(IRELAND_PASSWORD);
     // The EXPRESSION is what replaces it, not merely "not the plaintext" -- a

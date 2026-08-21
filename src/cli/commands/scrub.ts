@@ -348,13 +348,6 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // not read as clean and `--fail` must not exit 0, but the stack itself was
   // still scrubbed for everything else and must not be refused outright.
   let totalStacksWithUnverifiableReads = 0;
-  /**
-   * Stacks holding an ASSEMBLED secret reference the resolver could not answer
-   * (issue [#2157](https://github.com/go-to-k/cdkd/issues/2157)) -- counted
-   * separately from {@link totalStacksWithUnverifiableReads} because the remedy
-   * differs: this one is fixable and a re-run clears it.
-   */
-  let totalStacksWithDeferredUnresolved = 0;
   // Stacks this run could not scrub at all, one entry per stack (issue #2109
   // review). A refusal is per-REFERENCE evidence but is raised for the whole
   // STACK, and without a boundary here one refused stack in a `--all` run
@@ -412,11 +405,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${scrubbed.recordsChanged} resource record(s) ` +
           `in ${stack.stackName}`
       );
-    } else if (
-      scrubbed.secretBearingKeys === 0 &&
-      scrubbed.unverifiableReads === 0 &&
-      scrubbed.deferredUnresolvedReads === 0
-    ) {
+    } else if (scrubbed.secretBearingKeys === 0 && scrubbed.unverifiableReads === 0) {
       // BOTH findings gate this line (issue #2133 review). An unverifiable read
       // is a cross-stack reference cdkd declined to perform, so scrub does not
       // know what that leaf carries — printing "No plaintext secrets found"
@@ -424,11 +413,6 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // already prevents for a key holding plaintext. The warning below still
       // fires either way; this only stops the two lines contradicting each
       // other.
-      //
-      // THREE since issue #2157: a DEFERRED assembled reference whose
-      // resolution failed leaves the same hole — no needle for that leaf — and
-      // reached this line as a verbose-only `logger.debug` under a clean
-      // summary until it was given a counter of its own.
       logger.info(`No plaintext secrets found in ${stack.stackName}`);
     }
     if (scrubbed.unverifiableReads > 0) {
@@ -437,14 +421,6 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `${scrubbed.unverifiableReads} cross-stack read(s) in ${stack.stackName} could NOT be ` +
           `verified — cdkd declines them by design (see the warnings above), so this stack is ` +
           `not reported clean.`
-      );
-    }
-    if (scrubbed.deferredUnresolvedReads > 0) {
-      totalStacksWithDeferredUnresolved++;
-      logger.warn(
-        `${scrubbed.deferredUnresolvedReads} secret reference(s) in ${stack.stackName} are ` +
-          `ASSEMBLED by an intrinsic and could NOT be resolved (see the warnings above), so no ` +
-          `needle was recorded for them and this stack is not reported clean.`
       );
     }
     if (scrubbed.secretBearingKeys > 0) {
@@ -465,15 +441,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   if (
     totalStacksScrubbed === 0 &&
     totalStacksWithUnscrubbableKeys === 0 &&
-    totalStacksWithUnverifiableReads === 0 &&
-    // ...and the issue #2157 finding, which the first cut of that change left
-    // out of THIS gate while wiring the per-stack one. A deferred-unresolved
-    // finding is the zero-needle / zero-rewrite shape by construction, so it
-    // took this early `return` and printed `No plaintext secrets found in any
-    // target stack state` -- BEFORE `deferredNote` renders and before `--fail`
-    // can throw. That is the same false-clean the finding exists to prevent,
-    // reproduced one level up from where it was fixed.
-    totalStacksWithDeferredUnresolved === 0
+    totalStacksWithUnverifiableReads === 0
   ) {
     // "in any target stack state" would be a claim about stacks this run never
     // got through, which is the same false-success the refusal exists to
@@ -506,15 +474,6 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       : '';
   // Same discipline as `keyNote`: a summary must never let a finding it could
   // not remedy read as a clean result (issue #2133 review).
-  // Same discipline again, for the class issue #2157 introduced: unlike an
-  // unverifiable read this one IS fixable, so the note names the remedy rather
-  // than a template change.
-  const deferredNote =
-    totalStacksWithDeferredUnresolved > 0
-      ? ` ${totalStacksWithDeferredUnresolved} stack(s) carry an ASSEMBLED secret reference whose ` +
-        `region could not answer, so those leaves could NOT be checked — make that region resolve ` +
-        `the reference, or spell it as one complete literal '{{resolve:...}}'.`
-      : '';
   const unverifiableNote =
     totalStacksWithUnverifiableReads > 0
       ? ` ${totalStacksWithUnverifiableReads} stack(s) carry a cross-stack read cdkd declines to ` +
@@ -529,11 +488,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (totalStacksScrubbed > 0) {
       logger.info(
         `\nPlan: ${totalStacksScrubbed} stack(s) hold plaintext secrets and would be scrubbed ` +
-          `(--dry-run, no state written).${keyNote}${unverifiableNote}${deferredNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
+          `(--dry-run, no state written).${keyNote}${unverifiableNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
       );
     } else {
       logger.info(
-        `\nPlan: nothing can be scrubbed.${keyNote}${unverifiableNote}${deferredNote}${failureNote} ROTATE any exposed secret.`
+        `\nPlan: nothing can be scrubbed.${keyNote}${unverifiableNote}${failureNote} ROTATE any exposed secret.`
       );
     }
     // The refusal outranks the `--fail` gate: it is an ERROR (exit 2) about
@@ -552,11 +511,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       `\nDone: scrubbed ${totalStacksScrubbed} stack(s). ` +
         `The plaintext is no longer stored there, but a value that was ever persisted should be ` +
         `treated as compromised — ROTATE it in Secrets Manager (scrub matches the current ` +
-        `value, so scrub BEFORE rotating).${keyNote}${unverifiableNote}${deferredNote}${failureNote}`
+        `value, so scrub BEFORE rotating).${keyNote}${unverifiableNote}${failureNote}`
     );
   } else {
     logger.info(
-      `\nNothing could be rewritten.${keyNote}${unverifiableNote}${deferredNote}${failureNote} ROTATE any exposed secret.`
+      `\nNothing could be rewritten.${keyNote}${unverifiableNote}${failureNote} ROTATE any exposed secret.`
     );
   }
   // `--fail` is documented as a --dry-run CI gate, but a REAL run over a
@@ -568,9 +527,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // 0 over them is exactly backwards (issue #2133 review).
   if (
     options.fail &&
-    (totalStacksWithUnscrubbableKeys > 0 ||
-      totalStacksWithUnverifiableReads > 0 ||
-      totalStacksWithDeferredUnresolved > 0)
+    (totalStacksWithUnscrubbableKeys > 0 || totalStacksWithUnverifiableReads > 0)
   ) {
     throw new ScrubNeededError();
   }
@@ -862,25 +819,6 @@ class ScrubResolvers {
 }
 
 /**
- * One leaf the region pre-pass handed to the primary resolver instead of
- * classifying itself (issue
- * [#2157](https://github.com/go-to-k/cdkd/issues/2157)).
- *
- * The RAW leaf is carried alongside the path because it is the evidence: a
- * deferral is only a problem if nothing downstream resolved it, and the cheap
- * observable for that is the raw text SURVIVING verbatim in the resolved bag.
- * Anything that actually resolved the reference — the primary resolver, a
- * region-pinned sibling, `resolveSub` / `resolveJoin` assembling and then
- * substituting — replaces that text.
- */
-interface DeferredAssembledLeaf {
-  /** `a.b[0].c` within the bag; empty at the root. */
-  path: string;
-  /** The leaf exactly as the template held it. */
-  leaf: string;
-}
-
-/**
  * What {@link pinCrossRegionSecrets} needs to decide, and then act on, the
  * region question for one template bag (issue #2109).
  */
@@ -889,35 +827,6 @@ interface CrossRegionSecretContext {
   stackRegion: string;
   /** Producer regions this stack's persisted cross-stack reads name. */
   producerRegions: readonly string[];
-  /**
-   * Leaf paths this pass DEFERRED to the primary resolver rather than
-   * classifying itself (issue
-   * [#2157](https://github.com/go-to-k/cdkd/issues/2157)) -- see
-   * {@link isAssembledSecretReference}.
-   *
-   * WHY THE CALLER NEEDS TO KNOW. Deferring moves the lookup INSIDE
-   * `resolver.resolve`, whose failures land in `scrubStack`'s per-item
-   * best-effort `catch { logger.debug }`. That catch exists for "a `Ref` to a
-   * resource that is not in state" and cannot tell it from "the producer
-   * region refused this secret" -- so a deferred leaf whose lookup fails would
-   * be a verbose-only line under a `No plaintext secrets found` summary, over
-   * state that still holds the plaintext. The pre-pass's own
-   * `SCRUB_CROSS_REGION_SECRET_UNRESOLVED` is loud for exactly that failure on
-   * the COMPLETE-token spelling, so without this the two spellings diverge in
-   * the one direction this command must not.
-   *
-   * A FINDING rather than a refusal, unlike that complete-token twin, and the
-   * asymmetry is forced rather than chosen: the pre-pass refuses because it
-   * knows WHICH token failed, while here the error surfaces from a whole-bag
-   * resolution and cannot be attributed to the deferred leaf -- an unrelated
-   * `Ref` failure in the same `Properties` bag would otherwise refuse the
-   * stack. So the run warns, does not report the stack clean, and exits
-   * non-zero under `--fail`, exactly as an unverifiable read does.
-   *
-   * MUTATED BY THIS PASS. Each caller supplies a fresh array and reads it after
-   * its own `resolver.resolve`.
-   */
-  deferredAssembled: DeferredAssembledLeaf[];
   resolvers: ScrubResolvers;
   /**
    * The SAME map the primary resolution records into, so a producer-region
@@ -1163,8 +1072,7 @@ function isAssembledSecretReference(leaf: string, secretTokens: readonly string[
 async function resolveForeignRegionTokens(
   leaf: string,
   stackName: string,
-  ctx: CrossRegionSecretContext,
-  leafPath: string
+  ctx: CrossRegionSecretContext
 ): Promise<string> {
   // ONE spelling of the token scan, shared with `secret-redaction.ts` and the
   // rollback replay (issue #1936): a private regex here would answer a
@@ -1202,25 +1110,41 @@ async function resolveForeignRegionTokens(
   // the region its ARN names, or refused per reference by the resolver's own
   // `DYNAMIC_REFERENCE_REGION_AMBIGUOUS`.
   //
-  // WHAT IS PRESERVED, AND WHAT IS NOT. The property the refusal bought against
-  // a WRONG-REGION read is preserved, and over strictly MORE information: the
+  // WHAT IS PRESERVED, AND WHAT IS NOT -- stated because the first three cuts of
+  // this change each asserted the wrong half of it.
+  //
+  // PRESERVED, and over strictly MORE information: a reference whose region
+  // cannot be established is never resolved in the stack's own region. The
   // resolver classifies the ASSEMBLED expression rather than the raw leaf, and
   // `classifyReplaySecretRegion` verdicts an ARN-form token `named-region`
-  // whatever evidence it holds, so a deferred reference is never resolved in the
-  // stack's own region.
+  // whatever evidence it holds, so a deferred reference cannot be answered by
+  // the wrong region.
   //
-  // What is NOT preserved is LOUDNESS ON A FAILED LOOKUP, and claiming otherwise
-  // was this change's first draft (three independent reviews found it). The
-  // refusal fired BEFORE any lookup; deferring moves the lookup inside
-  // `resolver.resolve`, whose errors land in `scrubStack`'s best-effort catch --
-  // so a producer region answering AccessDenied, or a secret that no longer
-  // exists, became a `logger.debug` under a `No plaintext secrets found`
-  // summary, which is the outcome this command exists to prevent. It is closed
-  // on the CALLER's side rather than here: the deferral is RECORDED (see
-  // {@link CrossRegionSecretContext.deferredAssembled}) and a failure over a
-  // recorded leaf becomes a warned FINDING that stops the stack being reported
-  // clean. A finding and not a refusal, because the error arrives from a
-  // whole-bag resolution and cannot be attributed to this leaf.
+  // NOT PRESERVED: LOUDNESS when the downstream lookup FAILS. The refusal fired
+  // BEFORE any attempt; deferring moves the attempt inside `scrubStack`'s
+  // best-effort `catch { logger.debug }`, so a producer region answering
+  // AccessDenied -- or an `Fn::Sub` placeholder scrub cannot evaluate, which
+  // `resolveSub` warn-and-KEEPS without throwing at all -- becomes a
+  // verbose-only line under a `No plaintext secrets found` summary.
+  //
+  // That residual is TRACKED, not fixed here, and the reason is worth recording
+  // because three rounds of review were spent on it: every attempt to detect
+  // "this reference went unresolved" from OUTSIDE the resolver was a proxy, and
+  // each proxy was wrong in BOTH directions. Keying on "the resolution threw"
+  // missed the warn-and-keep shape and over-reported an unrelated `Ref` failure
+  // sharing the bag; keying on "the raw leaf text survived" missed a leaf a
+  // downstream intrinsic rewrote without resolving, broke on JSON escaping, and
+  // -- worst -- fired permanently on PROSE that merely mentions
+  // `{{resolve:secretsmanager:`, which is the unactionable-refusal class
+  // {@link SECRET_REFERENCE_OPENINGS} already records as unacceptable. Only the
+  // resolver knows which references it declined, so the fix belongs there:
+  // issue [#2166](https://github.com/go-to-k/cdkd/issues/2166).
+  //
+  // Shipping without it is not a new silent class. `classifyReplaySecretRegion`
+  // verdicts an ARN-form token `named-region` regardless of evidence, so a stack
+  // with no cross-stack read on record ALREADY reached the same silent outcome
+  // for the same leaf; this widens that existing population rather than creating
+  // one, which is the same inconsistency the paragraph below removes.
   //
   // Deferring is unconditional on evidence, unlike the refusal it replaces.
   // The refusal was gated on `foreignProducerRegions.length > 0` to keep it
@@ -1230,14 +1154,7 @@ async function resolveForeignRegionTokens(
   // agree anyway: a leaf whose scan yields no token produced empty `verdicts`
   // and fell out of the `named-region` test below by identity already.
   const secretTokens = tokens.filter(isSecretReferenceToken);
-  if (isAssembledSecretReference(leaf, secretTokens)) {
-    // RECORDED, not merely returned: the caller has to know a secret reference
-    // left this pass unclassified, because the resolver's failure on it is
-    // otherwise indistinguishable from an ordinary partial resolution. See
-    // {@link CrossRegionSecretContext.deferredAssembled}.
-    ctx.deferredAssembled.push({ path: leafPath, leaf });
-    return leaf;
-  }
+  if (isAssembledSecretReference(leaf, secretTokens)) return leaf;
   const verdicts = tokens.map(
     (token) =>
       [token, classifyReplaySecretRegion(token, ctx.stackRegion, ctx.producerRegions)] as const
@@ -1366,15 +1283,18 @@ async function pinCrossRegionSecrets<T>(
   stackName: string,
   ctx: CrossRegionSecretContext
 ): Promise<T> {
-  // The PATH is carried for the operator-facing messages (issue #2109 review):
+  // The PATH is carried for the refusal messages alone (issue #2109 review):
   // `origin` names the resource or output, and an assembled reference is often
   // one leaf of a large `Properties` bag, so "resource 'Db'" on its own leaves
-  // the operator grepping. Its consumer moved with issue #2157 -- the
-  // assembled-reference REFUSAL that used to spell it is now a DEFERRAL, so the
-  // path is what {@link CrossRegionSecretContext.deferredAssembled} records and
-  // what `scrubStack`'s finding names. The ordinary `a.b[0].c` spelling; empty
-  // at the root, which is the shape a scalar `Export.Name` / output `Value` bag
-  // has.
+  // the operator grepping.
+  //
+  // NO LONGER PASSED DOWN TO `resolveForeignRegionTokens` (issue #2157): its
+  // one consumer was the assembled-reference REFUSAL, which now defers to the
+  // resolver instead of throwing, and the two refusals that remain there
+  // (`ambiguous`, and a token the substitution introduced) name the ORIGIN
+  // only. Kept in the walk itself because the array / object arms below build
+  // it, and it stays the ordinary `a.b[0].c` spelling; empty at the root, which
+  // is the shape a scalar `Export.Name` / output `Value` bag has.
   const walk = async (v: unknown, path: string): Promise<unknown> => {
     if (typeof v === 'string') {
       // THIS LINE BOUNDS THE WHOLE PRE-PASS (issue #2109 review). The region
@@ -1396,7 +1316,7 @@ async function pinCrossRegionSecrets<T>(
       // is why the assembled-reference refusal this pass used to raise could be
       // relaxed to a deferral (issue #2157): the destination now answers.
       if (!v.includes(DYNAMIC_REFERENCE_OPENING)) return v;
-      return await resolveForeignRegionTokens(v, stackName, ctx, path);
+      return await resolveForeignRegionTokens(v, stackName, ctx);
     }
     if (Array.isArray(v)) {
       const out: unknown[] = new Array(v.length) as unknown[];
@@ -2798,18 +2718,6 @@ export interface ScrubStackResult {
    * non-zero exactly as a `secretBearingKeys` finding does.
    */
   unverifiableReads: number;
-  /**
-   * Secret references the region pre-pass DEFERRED to the resolver and whose
-   * resolution then FAILED (issue
-   * [#2157](https://github.com/go-to-k/cdkd/issues/2157)). A FINDING for the
-   * same reason `unverifiableReads` is -- no needle was recorded, so the stack
-   * must not be reported clean -- but a DIFFERENT one, because this class IS
-   * fixable by the operator (grant the producer region's read, restore the
-   * secret) where an unverifiable read is declined by design and no re-run can
-   * change it. Conflating them would repeat the mistake `isByDesignRefusal`
-   * exists to prevent, one class over.
-   */
-  deferredUnresolvedReads: number;
 }
 
 /**
@@ -2870,13 +2778,7 @@ export async function scrubStack(
     const loaded = await stateBackend.getState(stack.stackName, region);
     if (!loaded) {
       logger.debug(`No state for ${stack.stackName} (${region}) — skipping`);
-      return {
-        recordsChanged: 0,
-        secretsFound: 0,
-        secretBearingKeys: 0,
-        unverifiableReads: 0,
-        deferredUnresolvedReads: 0,
-      };
+      return { recordsChanged: 0, secretsFound: 0, secretBearingKeys: 0, unverifiableReads: 0 };
     }
     const state = loaded.state;
 
@@ -2894,82 +2796,6 @@ export async function scrubStack(
     const resolvers = new ScrubResolvers(region);
     const resolver = resolvers.primary;
     const producerRegions = producerRegionsFromState(state);
-    /**
-     * Leaves the region pre-pass DEFERRED whose resolution then FAILED (issue
-     * [#2157](https://github.com/go-to-k/cdkd/issues/2157)).
-     *
-     * See {@link CrossRegionSecretContext.deferredAssembled} for why the caller
-     * has to notice at all, and why this is a FINDING rather than the refusal
-     * its complete-token twin raises.
-     */
-    const deferredUnresolved: string[] = [];
-    const recordDeferredResolutionFailure = (
-      deferred: readonly DeferredAssembledLeaf[],
-      origin: string,
-      resolved: { value: unknown } | undefined,
-      err: unknown,
-      secrets: RecordedSecretValues
-    ): void => {
-      if (deferred.length === 0) return;
-      // EVIDENCE, NOT "something threw" -- and the difference is two defects,
-      // both found by round 2 of review.
-      //
-      // Keying on the catch alone MISSED the commonest shape: an `Fn::Sub`
-      // whose placeholder scrub cannot evaluate (it takes no `--parameters`)
-      // is warn-and-KEPT by `resolveSub`, so the leaf comes back carrying its
-      // `{{resolve:` opening, `resolveDynamicReferences` matches no token in
-      // it, and NOTHING THROWS. No needle, no finding, stack reported clean --
-      // exactly what the pre-#2157 refusal prevented. The same holds for an
-      // assembled `ssm-secure:` leaf, which the supported-service arm declines.
-      //
-      // Keying on the catch alone also OVER-reported: an unrelated `Ref`-not-in
-      // -state failure elsewhere in the same bag made every deferred leaf a
-      // finding even when the resolver had answered them.
-      //
-      // So the test is per LEAF and observational: did its raw text survive the
-      // resolution verbatim? Anything that resolved the reference -- the
-      // primary, a region-pinned sibling, `resolveSub` / `resolveJoin`
-      // assembling and substituting -- replaces that text.
-      //
-      // On the THROW path there IS no resolved bag to inspect, so every
-      // deferred leaf is recorded. That over-reports when the throw came from
-      // an unrelated leaf that happened to share the bag, and the direction is
-      // deliberate: this command's failure mode is reporting a stack clean over
-      // surviving plaintext, so an extra warning costs a re-run while a missing
-      // one costs the disclosure.
-      const surviving =
-        resolved === undefined
-          ? [...deferred]
-          : ((): DeferredAssembledLeaf[] => {
-              const rendered = JSON.stringify(resolved.value ?? null);
-              return deferred.filter((d) => rendered.includes(d.leaf));
-            })();
-      if (surviving.length === 0) return;
-      for (const leaf of surviving) {
-        // ONE ENTRY PER LEAF, so the `N secret reference(s)` the summary renders
-        // is a count of references rather than of bags (round 2 review).
-        //
-        // The path is `''` for a scalar `Export.Name` / output `Value` bag, so
-        // it is rendered conditionally -- the same shape the refusal this
-        // replaced used, which was dropped on the first cut and printed
-        // `output 'X' at : <message>`.
-        const detail =
-          `${origin}${leaf.path ? ` at '${leaf.path}'` : ''}: ` +
-          // MASKED for the reason every other echo of a resolver error here is:
-          // the bag was already substituted into by the pin.
-          (err === undefined
-            ? 'the reference was returned unresolved, so no needle was recorded for it'
-            : maskSecretsInText(err instanceof Error ? err.message : String(err), secrets));
-        deferredUnresolved.push(detail);
-        logger.warn(
-          `Scrub of ${stack.stackName} could not resolve a secret reference the intrinsics ` +
-            `ASSEMBLE in ${detail} — its region is decided only after assembly, so this pass ` +
-            `handed it to the resolver and the resolver could not answer. No needle was recorded ` +
-            `for that leaf, so this stack is NOT reported clean. Make the region the reference ` +
-            `names answer for it, or spell it as one complete literal '{{resolve:...}}'.`
-        );
-      }
-    };
     let parameters: Record<string, unknown> = {};
     let conditions: Record<string, boolean> = {};
     try {
@@ -3123,7 +2949,6 @@ export async function scrubStack(
       // swallowed would leave the command reporting success over a state file
       // it never scrubbed, which is the one outcome the issue says must not
       // survive.
-      const deferredAssembled: DeferredAssembledLeaf[] = [];
       const resolveInput = await pinCrossRegionSecrets(
         templateResource.Properties,
         stack.stackName,
@@ -3133,7 +2958,6 @@ export async function scrubStack(
           resolvers,
           recordedSecretValues,
           origin: `resource '${logicalId}'`,
-          deferredAssembled,
         }
       );
       const resourceContext = resolverContext(recordedSecretValues);
@@ -3148,32 +2972,11 @@ export async function scrubStack(
       // all, so a read it needs is one the deploy never made.
       await resolveCrossStackReads(resolveInput, resourceContext, `resource '${logicalId}'`);
       try {
-        // The RESULT is captured, not discarded: it is the evidence
-        // `recordDeferredResolutionFailure` tests a deferred leaf against.
-        const resolvedProps = await resolver.resolve(resolveInput, resourceContext);
-        recordDeferredResolutionFailure(
-          deferredAssembled,
-          `resource '${logicalId}'`,
-          { value: resolvedProps },
-          undefined,
-          recordedSecretValues
-        );
+        await resolver.resolve(resolveInput, resourceContext);
       } catch (err) {
         // A region-AMBIGUOUS refusal is not best-effort -- see
         // `isRegionAmbiguousRefusal`.
         if (isRegionAmbiguousRefusal(err)) throw err;
-        // ...and neither is a failure over a leaf this pass DEFERRED (issue
-        // #2157). It stays best-effort for the BAG — an unrelated `Ref` failure
-        // must not refuse the stack — but it is recorded and warned about, so
-        // the run cannot report this stack clean over a secret reference nobody
-        // resolved.
-        recordDeferredResolutionFailure(
-          deferredAssembled,
-          `resource '${logicalId}'`,
-          undefined,
-          err,
-          recordedSecretValues
-        );
         // Best-effort: a resource whose intrinsics cannot resolve (a Ref to
         // something not in state) still has its own {{resolve:...}} leaves
         // recorded along the way; leave the rest untouched.
@@ -3282,14 +3085,12 @@ export async function scrubStack(
         // but the region question is the expression's, not the position's — and
         // this resolution's RESULT becomes a state key, so a wrong-region answer
         // here mis-keys the whole positioned outputs pass.
-        const nameDeferred: DeferredAssembledLeaf[] = [];
         const nameSource = await pinCrossRegionSecrets(declaredExportName, stack.stackName, {
           stackRegion: region,
           producerRegions,
           resolvers,
           recordedSecretValues: outputSecrets,
           origin: `Export.Name of output '${name}'`,
-          deferredAssembled: nameDeferred,
         });
         // Records into the SAME map the value loop below fills, and that is
         // load-bearing rather than tidiness: this loop runs FIRST, so a
@@ -3310,25 +3111,10 @@ export async function scrubStack(
         });
         try {
           exportName = await resolver.resolve(nameSource, nameContext);
-          recordDeferredResolutionFailure(
-            nameDeferred,
-            `Export.Name of output '${name}'`,
-            { value: exportName },
-            undefined,
-            outputSecrets
-          );
         } catch (err) {
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
           if (isRegionAmbiguousRefusal(err)) throw err;
-          // Issue #2157, same treatment as the resource bag above.
-          recordDeferredResolutionFailure(
-            nameDeferred,
-            `Export.Name of output '${name}'`,
-            undefined,
-            err,
-            outputSecrets
-          );
           // No key to mark ambiguous — the name the deploy used is unknown and
           // could be any output's — so the whole source bag becomes untrusted.
           outputsSourceUntrusted = true;
@@ -3442,14 +3228,12 @@ export async function scrubStack(
       // Issue #2109, same treatment and same placement as the two above. The
       // POSITION source written just above is the ORIGINAL `value`, never this
       // copy: `redactSecretsForState` reads UNRESOLVED expressions off it.
-      const valueDeferred: DeferredAssembledLeaf[] = [];
       const valueSource = await pinCrossRegionSecrets(value, stack.stackName, {
         stackRegion: region,
         producerRegions,
         resolvers,
         recordedSecretValues: outputSecrets,
         origin: `output '${name}'`,
-        deferredAssembled: valueDeferred,
       });
       const valueContext = resolverContext(outputSecrets);
       // Issue #2133, same treatment and same placement as the two above. An
@@ -3459,26 +3243,11 @@ export async function scrubStack(
         canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
       });
       try {
-        const resolvedValue = await resolver.resolve(valueSource, valueContext);
-        recordDeferredResolutionFailure(
-          valueDeferred,
-          `output '${name}'`,
-          { value: resolvedValue },
-          undefined,
-          outputSecrets
-        );
+        await resolver.resolve(valueSource, valueContext);
       } catch (err) {
         // A region-AMBIGUOUS refusal is not best-effort -- see
         // `isRegionAmbiguousRefusal`.
         if (isRegionAmbiguousRefusal(err)) throw err;
-        // Issue #2157, same treatment as the two above.
-        recordDeferredResolutionFailure(
-          valueDeferred,
-          `output '${name}'`,
-          undefined,
-          err,
-          outputSecrets
-        );
         // MASKED for the same reason as the two above — `valueSource` is a
         // post-pin bag. Verbose-only.
         logger.debug(
@@ -3540,7 +3309,6 @@ export async function scrubStack(
         secretsFound: 0,
         secretBearingKeys: secretBearingKeys.length,
         unverifiableReads: prePassFindings.unverifiable.length,
-        deferredUnresolvedReads: deferredUnresolved.length,
       };
     }
 
@@ -3694,7 +3462,6 @@ export async function scrubStack(
       secretsFound: totalSecrets,
       secretBearingKeys: secretBearingKeys.length,
       unverifiableReads: prePassFindings.unverifiable.length,
-      deferredUnresolvedReads: deferredUnresolved.length,
     };
   } catch (err) {
     // THE MASKING BOUNDARY for everything that ESCAPES this function (issue

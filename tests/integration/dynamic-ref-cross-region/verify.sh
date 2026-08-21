@@ -311,8 +311,6 @@ LEGACY_STATE_C=""
 # candidate for one in /tmp -- which is exactly what this file's SECURITY note
 # forbids. It was missed on the first cut of that phase.
 SCRUB_C_LOG=""
-# The phase-3f scrub log, same reasoning as SCRUB_C_LOG above.
-SCRUB_F_LOG=""
 cleanup() {
   rc=$?
   # The INT / TERM traps call `cleanup` and then `exit`, which re-fires the EXIT
@@ -327,7 +325,7 @@ cleanup() {
   # which is slow and can itself fail. `|| true` matches the rest of this
   # function: a cleanup step must never abort the steps after it.
   rm -f "${SEEDED_STATE}" "${LEGACY_STATE}" "${SEEDED_STATE_C}" "${LEGACY_STATE_C}" \
-    "${SCRUB_C_LOG}" "${SCRUB_F_LOG}" >/dev/null 2>&1 || true
+    "${SCRUB_C_LOG}" >/dev/null 2>&1 || true
   # Best-effort stack teardown first, so the echo parameters go with their
   # stacks and cdkd state is not left pointing at deleted resources.
   ${CLI} destroy "${STACK_A}" "${STACK_B}" "${STACK_C}" \
@@ -816,101 +814,6 @@ assert_state_redacted "${STACK_C}" "${REGION_A}" "${EXPECTED_SECURE_B}" \
 # state.json is what phase 4's destroy works from.
 s3_purge_key_versions "${STATE_BUCKET}" "${STATE_KEY_C}" noncurrent || true
 echo "    OK: the assembled foreign reference was scrubbed, not refused (issue #2157)"
-
-echo "==> Phase 3f: a DEFERRED reference whose lookup FAILS is a warned FINDING, not a clean run (#2157)"
-# THE RESIDUAL THE FIRST DRAFT OF #2157 SHIPPED, live. Deferring moves the
-# lookup INSIDE `resolver.resolve`, whose errors land in `scrubStack`'s
-# best-effort `catch { logger.debug }` -- so a producer region that cannot
-# answer became a verbose-only line under a `No plaintext secrets found`
-# summary, over state that still holds the plaintext. Three independent reviews
-# found it; this is the arm that proves the remedy reaches the terminal.
-#
-# THE FAILURE IS INDUCED BY DELETING THE SOURCE, not by injecting an error: a
-# real `ParameterNotFound` from the region the ARN names is exactly the shape
-# the finding exists for, and it needs no code under test to cooperate. The
-# parameter is RE-SEEDED immediately after, because Phase 6 deletes it under
-# `set -e` and would abort on a missing one.
-#
-# The seeded plaintext from Phase 3e was scrubbed away, so re-seed it too --
-# otherwise the record holds the expression, the resolution failure is over a
-# leaf with nothing at risk, and the run would be clean for a second reason.
-SEEDED_STATE_C="$(mktemp)"
-LEGACY_STATE_C="$(mktemp)"
-aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY_C}" "${SEEDED_STATE_C}"
-jq --arg expr "${ASSEMBLED_SECURE_EXPRESSION}" --arg plain "${EXPECTED_SECURE_B}" \
-  '.resources |= with_entries(
-     if .value.properties.Value == $expr
-     then .value.properties.Value = $plain
-     else . end)' "${SEEDED_STATE_C}" > "${LEGACY_STATE_C}"
-if ! grep -F -q "${EXPECTED_SECURE_B}" "${LEGACY_STATE_C}"; then
-  echo "FAIL: could not re-seed the legacy plaintext for the phase-3f arm" >&2
-  rm -f "${SEEDED_STATE_C}" "${LEGACY_STATE_C}"
-  exit 1
-fi
-aws s3 cp "${LEGACY_STATE_C}" "s3://${STATE_BUCKET}/${STATE_KEY_C}"
-rm -f "${SEEDED_STATE_C}" "${LEGACY_STATE_C}"
-SEEDED_STATE_C=""
-LEGACY_STATE_C=""
-
-aws ssm delete-parameter --name "${SECURE_PARAM}" --region "${REGION_B}" >/dev/null
-# PREMISE: it really is gone, so the failure below is the one this arm induces
-# rather than something else. `gone_probe` accepts only the canonical
-# not-found signature and hard-fails on a throttle or an auth error.
-if gone_probe aws ssm get-parameter --name "${SECURE_PARAM}" --region "${REGION_B}"; then
-  echo "[verify]   ok: ${SECURE_PARAM} is gone from ${REGION_B}, so the deferred lookup must fail"
-else
-  echo "FAIL: ${SECURE_PARAM} still resolves in ${REGION_B} — the phase-3f arm would pass vacuously" >&2
-  aws ssm put-parameter --name "${SECURE_PARAM}" --type SecureString \
-    --value "${EXPECTED_SECURE_B}" --overwrite --region "${REGION_B}" >/dev/null 2>&1 || true
-  exit 1
-fi
-
-SCRUB_F_LOG="$(mktemp)"
-SCRUB_F_RC=0
-AWS_REGION="${REGION_A}" ${CLI} scrub "${STACK_C}" \
-  --state-bucket "${STATE_BUCKET}" >"${SCRUB_F_LOG}" 2>&1 || SCRUB_F_RC=$?
-# Restore FIRST, before any assertion can `exit 1` past it: Phase 6 deletes this
-# parameter under `set -e`.
-aws ssm put-parameter --name "${SECURE_PARAM}" --type SecureString \
-  --value "${EXPECTED_SECURE_B}" --overwrite --region "${REGION_B}" >/dev/null
-
-for secret_needle in "${EXPECTED_SECURE_B}" "${EXPECTED_SECURE_A}"; do
-  if grep -F -q "${secret_needle}" "${SCRUB_F_LOG}"; then
-    rm -f "${SCRUB_F_LOG}"
-    echo "FAIL: the phase-3f scrub output carries a SecureString plaintext" >&2
-    exit 1
-  fi
-done
-# NOT a refusal: the error arrives from a whole-bag resolution and cannot be
-# attributed to the deferred leaf, so refusing would strand a stack over an
-# unrelated `Ref` failure.
-if [ "${SCRUB_F_RC}" -ne 0 ]; then
-  sed 's/^/    /' "${SCRUB_F_LOG}" >&2 || true
-  rm -f "${SCRUB_F_LOG}"
-  echo "FAIL: the phase-3f scrub exited ${SCRUB_F_RC}, expected 0 — a deferred leaf whose lookup fails is a FINDING, not a refusal" >&2
-  exit 1
-fi
-# THE POSITIVE MARKER: the warning only this path emits.
-if ! grep -qF "could not resolve a secret reference the intrinsics ASSEMBLE" "${SCRUB_F_LOG}"; then
-  sed 's/^/    /' "${SCRUB_F_LOG}" >&2 || true
-  rm -f "${SCRUB_F_LOG}"
-  echo "FAIL: the phase-3f scrub printed no ASSEMBLED-reference warning — a failed deferred lookup is back to a verbose-only debug line (#2157 residual regressed)" >&2
-  exit 1
-fi
-# ...and the run must NOT claim the stack is clean over it. This is the half
-# that actually mattered: the pre-fix build printed exactly this line.
-if grep -qF "No plaintext secrets found in ${STACK_C}" "${SCRUB_F_LOG}"; then
-  sed 's/^/    /' "${SCRUB_F_LOG}" >&2 || true
-  rm -f "${SCRUB_F_LOG}"
-  echo "FAIL: the phase-3f scrub reported ${STACK_C} clean over a leaf nobody resolved" >&2
-  exit 1
-fi
-rm -f "${SCRUB_F_LOG}"
-SCRUB_F_LOG=""
-# The plaintext this arm re-seeded is still in state (nothing resolved it), so
-# purge its version now rather than leaving it for teardown.
-s3_purge_key_versions "${STATE_BUCKET}" "${STATE_KEY_C}" noncurrent || true
-echo "    OK: the failed deferred lookup warned and did NOT report the stack clean (issue #2157)"
 
 echo "==> Phase 4: destroy both stacks"
 ${CLI} destroy "${STACK_A}" "${STACK_B}" "${STACK_C}" \

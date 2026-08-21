@@ -296,7 +296,6 @@ describe('cdkd scrub - scrubStack', () => {
     });
     expect(res).toEqual({
       recordsChanged: 0,
-      deferredUnresolvedReads: 0,
       secretsFound: 0,
       secretBearingKeys: 0,
       unverifiableReads: 0,

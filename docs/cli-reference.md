@@ -2923,21 +2923,26 @@ expression in the consumer. `--dry-run` writes nothing, so the producer is never
 rewritten -- a dry run over a not-yet-scrubbed producer is exactly where this
 refusal is expected.
 
-**An ASSEMBLED secret reference whose region cannot answer is a finding too**
+**An ASSEMBLED secret reference is handed to the resolver rather than refused**
 (issue [go-to-k/cdkd#2157](https://github.com/go-to-k/cdkd/issues/2157)). A
 reference the intrinsics build out of parts -- an `Fn::Sub` placeholder inside
 it, an `Fn::Join` that splits it -- does not exist as a complete expression
 until it is resolved, so `scrub`'s region pre-pass cannot classify it and hands
-it to the resolver, which decides the region AFTER assembly and routes it to the
-region its ARN names. When that region then cannot answer -- a denied read, a
-deleted secret -- no needle is recorded for that leaf, so the stack is NOT
-reported clean: scrub warns naming the leaf, and `--fail` exits non-zero. It is
-a finding rather than the exit-2 refusal its complete-token twin raises
-(`SCRUB_CROSS_REGION_SECRET_UNRESOLVED`) because the failure surfaces from a
-whole-bag resolution and cannot be attributed to that leaf, so refusing would
-strand a stack over an unrelated unresolvable `Ref`. Unlike the by-design
-finding below, this one IS fixable: make that region resolve the reference, or
-spell it as one complete literal `{{resolve:...}}`, and re-run.
+it on; the resolver decides the region AFTER assembly and routes it to the region
+its ARN names, or refuses it as `ambiguous`. `scrub` used to refuse such a leaf
+outright (exit 2, no bypass flag) whenever the stack also had a foreign producer
+region on record, which made the whole stack unscrubbable over a reference cdkd
+can now resolve correctly.
+
+Known residual, tracked by issue
+[go-to-k/cdkd#2166](https://github.com/go-to-k/cdkd/issues/2166): if the
+downstream lookup then FAILS -- the region refuses the read, or an `Fn::Sub`
+placeholder cannot be evaluated (`scrub` takes no `--parameters`) -- that failure
+is reported only at `--verbose`, and the stack can still be summarised as clean.
+The COMPLETE-token spelling of the same failure is loud
+(`SCRUB_CROSS_REGION_SECRET_UNRESOLVED`, exit 2), so the two disagree until that
+issue lands. Run `cdkd scrub --verbose` when a stack you expect findings from
+reports clean.
 
 **A read cdkd declines BY DESIGN is a finding, not a refusal.** The
 cross-account `Fn::GetStackOutput` of a redacted value is never resolved: cdkd
