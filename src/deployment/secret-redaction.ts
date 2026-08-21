@@ -290,7 +290,7 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   `cdkd import` `properties`                 imported template    TEMPLATE_DERIVED_RULES                VALUE SCAN
  *   observed walk, template source             current template     TEMPLATE_SOURCED_RULES                VALUE SCAN
  *   `cdkd scrub` `properties`                  TODAY's template     TEMPLATE_SOURCED_RULES                VALUE SCAN
- *   `cdkd scrub` `outputs`                     TODAY's template     TEMPLATE_DERIVED_RULES                VALUE SCAN
+ *   `cdkd scrub` `outputs`                     TODAY's template     TEMPLATE_SOURCED_RULES                VALUE SCAN
  *   `cdkd scrub` observed walk                 REPOSITIONED props   STATE_SOURCED_CROSS_GENERATION_RULES  VALUE SCAN
  *   observed walk, own-record source           the record itself    STATE_SOURCED_READBACK_RULES          TAKE SOURCE
  *   `cdkd state refresh-observed`              the record itself    STATE_SOURCED_READBACK_RULES          TAKE SOURCE
@@ -311,16 +311,18 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  * observed walk, and a table claiming one row per write site cannot fold them
  * into it. The reverse direction found no orphan rows.
  *
- * The two OUTPUTS rows disagree, and the disagreement is recorded rather than
- * smoothed over. `deploy redactOutputs` moved to TEMPLATE_SOURCED for issue
+ * The two OUTPUTS rows now AGREE, and they got there one issue apart. `deploy
+ * redactOutputs` moved to TEMPLATE_SOURCED for issue
  * [#1943](https://github.com/go-to-k/cdkd/issues/1943): its bag can be the
  * PREVIOUS deploy's `state.outputs` (the no-change path persists
  * `persistedOutputs` while `outputsTemplateSource` is today's template), so
  * `descendArrays` — the only flag the two constants differ on — is a claim that
- * site cannot make. `cdkd scrub`'s outputs call still passes the default; the
- * two were split into their own rows because a single row could only be wrong
- * about one of them. Converging them is issue
- * [#2099](https://github.com/go-to-k/cdkd/issues/2099).
+ * site cannot make. `cdkd scrub`'s outputs call followed for issue
+ * [#2099](https://github.com/go-to-k/cdkd/issues/2099), whose whole subject was
+ * that this second row had been left on the default on a FALSE premise (that a
+ * template Output `Value` cannot be an array, which CloudFormation requires but
+ * cdkd does not enforce). They remain two rows rather than one because they are
+ * two write sites, and the table claims one row per write site.
  *
  * The `verdict` column answers ONLY the "bag leaf is a single complete
  * `{{resolve:...}}` token" question the table poses. The two
@@ -1939,8 +1941,14 @@ const ERROR_CAUSE_MASK_MAX_DEPTH = 20;
  * The `cause` chain of `root`, root first, stopping at the first non-`Error`
  * link, at a link already visited (so a cycle terminates instead of hanging),
  * or at {@link ERROR_CAUSE_MASK_MAX_DEPTH}.
+ *
+ * EXPORTED so a caller that RENDERS a chain walks exactly the links
+ * {@link maskSecretsInError} masked — the two sets must be the same one. A
+ * renderer with its own walk would eventually print a link past the depth cap,
+ * which by that function's contract still carries its ORIGINAL, unmasked
+ * message. `cdkd scrub`'s `--all` loop is the first such caller.
  */
-function errorCauseChain(root: Error): Error[] {
+export function errorCauseChain(root: Error): Error[] {
   const chain: Error[] = [];
   const seen = new Set<Error>();
   let current: unknown = root;

@@ -115,6 +115,8 @@ PRODUCER_OUTPUT_NAME="SharedSecret"
 SHARED_SECURE_PARAM="/cdkd/rollback-xregion/shared-secret"
 PRODUCER_PROBE_PARAM="/cdkd/rollback-xregion/producer-probe"
 ECHO_PARAM="/cdkd/rollback-xregion/echo"
+# The consumer's OWN region-less secret reference (issue #2109) — see the phase 2d note.
+LOCAL_SECRET_PARAM="/cdkd/rollback-xregion/local-secret"
 FAILING_QUEUE_NAME="${CONSUMER_STACK}-failing-queue"
 
 # Same NAME, two regions, two DIFFERENT values. Fake test data, but treated as
@@ -172,6 +174,7 @@ cleanup() {
   # Then direct AWS cleanup, in case destroy itself is what broke. This test
   # INTENTIONALLY fails a deploy, so the trap must not rely on a clean path.
   aws ssm delete-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}" >/dev/null 2>&1
+  aws ssm delete-parameter --name "${LOCAL_SECRET_PARAM}" --region "${CONSUMER_REGION}" >/dev/null 2>&1
   aws ssm delete-parameter --name "${PRODUCER_PROBE_PARAM}" --region "${PRODUCER_REGION}" >/dev/null 2>&1
   aws ssm delete-parameter --name "${SHARED_SECURE_PARAM}" --region "${PRODUCER_REGION}" >/dev/null 2>&1
   aws ssm delete-parameter --name "${SHARED_SECURE_PARAM}" --region "${CONSUMER_REGION}" >/dev/null 2>&1
@@ -202,6 +205,7 @@ echo "[verify] pre-run sweep: drop anything stranded by an earlier failed run"
 (
   set +e
   aws ssm delete-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}" >/dev/null 2>&1
+  aws ssm delete-parameter --name "${LOCAL_SECRET_PARAM}" --region "${CONSUMER_REGION}" >/dev/null 2>&1
   aws ssm delete-parameter --name "${PRODUCER_PROBE_PARAM}" --region "${PRODUCER_REGION}" >/dev/null 2>&1
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${CONSUMER_STACK}/" --recursive >/dev/null 2>&1
   aws s3 rm "s3://${STATE_BUCKET}/cdkd/${PRODUCER_STACK}/" --recursive >/dev/null 2>&1
@@ -563,6 +567,80 @@ fi
 echo "[verify]   ok: echo parameter restored for the rollback arms"
 
 # ---------------------------------------------------------------------------
+# PHASE 2d: `cdkd scrub` must REFUSE a region-ambiguous reference, not report
+#           success over a state file it could not scrub (issue #2109)
+# ---------------------------------------------------------------------------
+# WHY THIS ARM LIVES HERE AND NOT ON A SCRUB-SHAPED FIXTURE. `cdkd scrub` builds
+# its plaintext -> expression needle map by resolving the TEMPLATE, so it can
+# only classify a reference that is a LITERAL `{{resolve:...}}` there. Neither
+# stack on its own puts the literal and the evidence together: the PRODUCER's
+# template carries the literal but has no cross-stack read on record, so the
+# classifier answers `local`; the CONSUMER has the foreign `outputReads` but its
+# leaf is an `Fn::GetStackOutput` intrinsic with no literal at all. `LocalSecretEcho`
+# exists to close exactly that -- a region-LESS literal in the stack that DOES
+# carry foreign evidence. Without it a scrub arm here would pass with the fix
+# reverted.
+echo "[verify] phase 2d: 'cdkd scrub' refuses the region-ambiguous reference"
+
+SCRUB_STATE_BEFORE="$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - | shasum -a 256 | cut -d' ' -f1)"
+SCRUB_LOG="${LOGDIR}/scrub-consumer.log"
+SCRUB_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} scrub "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" >"${SCRUB_LOG}" 2>&1 || SCRUB_RC=$?
+
+assert_no_plaintext "scrub output" "${SCRUB_LOG}"
+
+# Silently succeeding is the one outcome this issue says must not survive, so a
+# zero exit is the failure -- not merely an unexpected value.
+if [ "${SCRUB_RC}" -eq 0 ]; then
+  echo "FAIL: cdkd scrub exited 0 over a state file it could not re-resolve — issue #2109 regressed" >&2
+  cat "${SCRUB_LOG}" >&2
+  exit 1
+fi
+
+# POSITIVE discriminator: the refusal must be the REGION one, naming the
+# reference and the producer region it could have come from. A non-zero exit
+# alone is a confluence point -- any scrub failure produces it.
+if ! grep -qF "cannot re-resolve the secret reference" "${SCRUB_LOG}"; then
+  echo "FAIL: scrub exited ${SCRUB_RC} but not with the region-ambiguity refusal" >&2
+  cat "${SCRUB_LOG}" >&2
+  exit 1
+fi
+for needle in "${SHARED_SECURE_PARAM}" "${PRODUCER_REGION}"; do
+  if ! grep -qF "${needle}" "${SCRUB_LOG}"; then
+    echo "FAIL: the scrub refusal does not name '${needle}'" >&2
+    cat "${SCRUB_LOG}" >&2
+    exit 1
+  fi
+done
+echo "[verify]   ok: scrub refused (rc=${SCRUB_RC}), naming the reference and ${PRODUCER_REGION}"
+
+# A refusal must leave the document alone. Pre-fix scrub REWROTE state using a
+# needle resolved in the wrong region.
+SCRUB_STATE_AFTER="$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - | shasum -a 256 | cut -d' ' -f1)"
+if [ "${SCRUB_STATE_BEFORE}" != "${SCRUB_STATE_AFTER}" ]; then
+  echo "FAIL: the refusing scrub still rewrote consumer state.json" >&2
+  exit 1
+fi
+echo "[verify]   ok: consumer state.json is byte-identical after the refusal"
+
+# NEGATIVE arm, and it is what stops the assertions above from passing on a
+# scrub that refuses everything: the PRODUCER carries the same region-less
+# literal but has NO cross-stack read on record, so the classifier must answer
+# `local` and scrub must complete normally.
+PROD_SCRUB_LOG="${LOGDIR}/scrub-producer.log"
+PROD_SCRUB_RC=0
+AWS_REGION="${PRODUCER_REGION}" ${CLI} scrub "${PRODUCER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" >"${PROD_SCRUB_LOG}" 2>&1 || PROD_SCRUB_RC=$?
+assert_no_plaintext "producer scrub output" "${PROD_SCRUB_LOG}"
+if grep -qF "cannot re-resolve the secret reference" "${PROD_SCRUB_LOG}"; then
+  echo "FAIL: scrub refused the PRODUCER, which has no foreign producer region on record — the refusal is firing on everything" >&2
+  cat "${PROD_SCRUB_LOG}" >&2
+  exit 1
+fi
+echo "[verify]   ok: the producer scrubs normally (rc=${PROD_SCRUB_RC}) — the refusal is scoped to foreign evidence"
+
+# ---------------------------------------------------------------------------
 # PHASE 3: failing consumer v2 under --no-rollback -> a journal to replay
 # ---------------------------------------------------------------------------
 echo "[verify] phase 3: deploy ${CONSUMER_STACK} v2 (Description change + INJECT_FAIL) --no-rollback (expect FAILURE)"
@@ -696,6 +774,8 @@ AWS_REGION="${CONSUMER_REGION}" ${CLI} destroy "${CONSUMER_STACK}" \
 
 assert_gone "echo parameter ${ECHO_PARAM} still exists after destroy" \
   aws ssm get-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}"
+assert_gone "local-secret parameter ${LOCAL_SECRET_PARAM} still exists after destroy" \
+  aws ssm get-parameter --name "${LOCAL_SECRET_PARAM}" --region "${CONSUMER_REGION}"
 assert_gone "consumer state file still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CONSUMER_STATE_KEY}"
 
