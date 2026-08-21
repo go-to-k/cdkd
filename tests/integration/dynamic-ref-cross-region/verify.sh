@@ -213,6 +213,11 @@ ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 
 STACK_A="CdkdDynamicRefCrossRegionAStack"
 STACK_B="CdkdDynamicRefCrossRegionBStack"
+# The issue #2157 scrub arm's own stack, in REGION A. It carries ONE assembled
+# foreign-ARN SECRET reference and no region-less one -- see
+# `AssembledForeignSecretStack` in lib/ for why it cannot share a stack with the
+# two above.
+STACK_C="CdkdDynamicRefAssembledSecretStack"
 ECHO_PARAM_A="${STACK_A}-echo"
 ECHO_PARAM_B="${STACK_B}-echo"
 SECURE_ECHO_PARAM_A="${STACK_A}-secure-echo"
@@ -264,6 +269,17 @@ export CDKD_IT_DYNREF_MIXED_PARAM="${MIXED_PARAM}"
 # the account id, which is resolved above.
 ASSEMBLED_FOREIGN_ARN="arn:aws:ssm:${REGION_B}:${ACCOUNT_ID}:parameter${SOURCE_PARAM}"
 export CDKD_IT_DYNREF_FOREIGN_ARN="${ASSEMBLED_FOREIGN_ARN}"
+# Issue #2157: the same construction for the SECURE parameter. The scrub arm
+# needs a SECRET at the assembled leaf -- a plain `String` is public config that
+# cdkd stores RESOLVED by design (issue #1901), so a plaintext seeded at such a
+# leaf is not something scrub would rewrite in either polarity.
+ASSEMBLED_FOREIGN_SECURE_ARN="arn:aws:ssm:${REGION_B}:${ACCOUNT_ID}:parameter${SECURE_PARAM}"
+export CDKD_IT_DYNREF_FOREIGN_SECURE_ARN="${ASSEMBLED_FOREIGN_SECURE_ARN}"
+ASSEMBLED_SECRET_ECHO_PARAM="${STACK_C}-assembled-foreign-secret-echo"
+# The expression cdkd persists for that leaf: the ASSEMBLED reference, not the
+# `Fn::Sub` node -- scrub restores what a deploy would store post-#1934, and a
+# deploy stores the reference rather than the intrinsic that built it.
+ASSEMBLED_SECURE_EXPRESSION="{{resolve:ssm:${ASSEMBLED_FOREIGN_SECURE_ARN}}}"
 
 echo "[verify] region-a=${REGION_A} region-b=${REGION_B} source-param=${SOURCE_PARAM}"
 
@@ -284,6 +300,19 @@ cleaned=0
 # no-op rather than a double delete.
 SEEDED_STATE=""
 LEGACY_STATE=""
+# The issue #2157 arm's own pair (phase 3e). Separate variables rather than
+# reusing the two above: phase 3d clears its own, and a single pair would make
+# the cleanup shred depend on which phase aborted.
+SEEDED_STATE_C=""
+LEGACY_STATE_C=""
+# The phase-3e scrub LOG. Registered here for the same reason the two state
+# scratch files are: it is the file the phase greps for a SecureString
+# plaintext, so an abort between the scrub and the `rm -f` would leave a
+# candidate for one in /tmp -- which is exactly what this file's SECURITY note
+# forbids. It was missed on the first cut of that phase.
+SCRUB_C_LOG=""
+# The phase-3f scrub log, same reasoning as SCRUB_C_LOG above.
+SCRUB_F_LOG=""
 cleanup() {
   rc=$?
   # The INT / TERM traps call `cleanup` and then `exit`, which re-fires the EXIT
@@ -297,10 +326,11 @@ cleanup() {
   # Shred the plaintext-bearing scratch files FIRST — before the AWS teardown,
   # which is slow and can itself fail. `|| true` matches the rest of this
   # function: a cleanup step must never abort the steps after it.
-  rm -f "${SEEDED_STATE}" "${LEGACY_STATE}" >/dev/null 2>&1 || true
+  rm -f "${SEEDED_STATE}" "${LEGACY_STATE}" "${SEEDED_STATE_C}" "${LEGACY_STATE_C}" \
+    "${SCRUB_C_LOG}" "${SCRUB_F_LOG}" >/dev/null 2>&1 || true
   # Best-effort stack teardown first, so the echo parameters go with their
   # stacks and cdkd state is not left pointing at deleted resources.
-  ${CLI} destroy "${STACK_A}" "${STACK_B}" \
+  ${CLI} destroy "${STACK_A}" "${STACK_B}" "${STACK_C}" \
     --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   # Then direct AWS cleanup in case destroy itself is what broke.
   aws ssm delete-parameter --name "${ECHO_PARAM_A}" --region "${REGION_A}" >/dev/null 2>&1 || true
@@ -311,6 +341,7 @@ cleanup() {
   aws ssm delete-parameter --name "${EMBEDDED_ECHO_PARAM_B}" --region "${REGION_B}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${MIXED_ECHO_PARAM_A}" --region "${REGION_A}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${MIXED_ECHO_PARAM_B}" --region "${REGION_B}" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --name "${ASSEMBLED_SECRET_ECHO_PARAM}" --region "${REGION_A}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${SOURCE_PARAM}" --region "${REGION_A}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${SOURCE_PARAM}" --region "${REGION_B}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${SECURE_PARAM}" --region "${REGION_A}" >/dev/null 2>&1 || true
@@ -319,7 +350,7 @@ cleanup() {
   aws ssm delete-parameter --name "${MIXED_PARAM}" --region "${REGION_B}" >/dev/null 2>&1 || true
   # Stale state/lock keys, in case the destroy above could not run.
   for region in "${REGION_A}" "${REGION_B}"; do
-    for stack in "${STACK_A}" "${STACK_B}"; do
+    for stack in "${STACK_A}" "${STACK_B}" "${STACK_C}"; do
       aws s3 rm "s3://${STATE_BUCKET}/cdkd/${stack}/${region}/state.json" >/dev/null 2>&1 || true
       aws s3 rm "s3://${STATE_BUCKET}/cdkd/${stack}/${region}/lock.json" >/dev/null 2>&1 || true
       # ...and purge the versions the delete markers above leave behind.
@@ -393,7 +424,7 @@ fi
 echo "    OK: ${MIXED_PARAM} seeded String in ${REGION_A} / SecureString in ${REGION_B}"
 
 echo "==> Phase 2: deploy BOTH stacks in ONE cdkd process (serial)"
-${CLI} deploy "${STACK_A}" "${STACK_B}" \
+${CLI} deploy "${STACK_A}" "${STACK_B}" "${STACK_C}" \
   --state-bucket "${STATE_BUCKET}" \
   --stack-concurrency 1 \
   --yes
@@ -474,6 +505,34 @@ if [ "${PLAIN_A_BESIDE}" != "${EXPECTED_A}" ]; then
   exit 1
 fi
 echo "    OK: the region-LESS reference beside it still resolved locally (${EXPECTED_A})"
+
+echo "==> Phase 3a-3: the ASSEMBLED FOREIGN *SECRET* reference resolved in region B, and is stored REDACTED"
+# The PREMISE for the issue #2157 scrub arm (phase 3e), and it has to be checked
+# before that arm can mean anything. Two independent things must hold:
+#
+#   1. the assembled reference was answered by REGION B, which is observable
+#      only because the two regions hold DIFFERENT values behind this name; and
+#   2. cdkd classified the result as a SECRET and persisted the EXPRESSION.
+#
+# If (2) failed -- a plain `String` would do it -- then a plaintext seeded at
+# that leaf in phase 3e is not something scrub would ever rewrite, and the arm
+# would pass with the fix reverted.
+ASSEMBLED_SECRET_LIVE="$(aws ssm get-parameter --name "${ASSEMBLED_SECRET_ECHO_PARAM}" \
+  --region "${REGION_A}" --query 'Parameter.Value' --output text)"
+# Never echoed on either branch: on the failing one this is a real SecureString
+# value, either region's.
+if [ "${ASSEMBLED_SECRET_LIVE}" = "${EXPECTED_SECURE_A}" ]; then
+  echo "FAIL: ${ASSEMBLED_SECRET_ECHO_PARAM} carries REGION A's SecureString value - the assembled" >&2
+  echo "      reference was resolved by the stack's own region instead of the one its ARN names" >&2
+  exit 1
+fi
+if [ "${ASSEMBLED_SECRET_LIVE}" != "${EXPECTED_SECURE_B}" ]; then
+  echo "FAIL: ${ASSEMBLED_SECRET_ECHO_PARAM} carries neither region's expected value (length ${#ASSEMBLED_SECRET_LIVE})" >&2
+  exit 1
+fi
+assert_state_redacted "${STACK_C}" "${REGION_A}" "${EXPECTED_SECURE_B}" \
+  "${ASSEMBLED_FOREIGN_SECURE_ARN}"
+echo "    OK: the assembled foreign SECRET resolved in ${REGION_B} and is stored as its expression"
 
 echo "==> Phase 3b: same assertion for the SecureString arm (values never printed)"
 ACTUAL_SECURE_A="$(aws ssm get-parameter --name "${SECURE_ECHO_PARAM_A}" --region "${REGION_A}" \
@@ -653,8 +712,208 @@ assert_state_redacted "${STACK_B}" "${REGION_B}" "${EXPECTED_SECURE_B}"
 s3_purge_key_versions "${STATE_BUCKET}" "${STATE_KEY_B}" noncurrent || true
 echo "    OK: scrub classified region B's SecureString against region B (issue #1957)"
 
+echo "==> Phase 3e: 'cdkd scrub' handles an ASSEMBLED foreign reference instead of REFUSING it (issue #2157)"
+# THE #2157 ARM. Before issue
+# [#2134](https://github.com/go-to-k/cdkd/issues/2134) scrub's pre-pass could
+# not classify a reference the intrinsics ASSEMBLE -- the shared token scan runs
+# on the RAW leaf and `[^}]+` cannot cross the `}` of an `Fn::Sub` placeholder --
+# so with a foreign producer region on record it REFUSED with
+# `SCRUB_SECRET_REFERENCE_UNCLASSIFIABLE`: exit 2, no bypass flag, the whole
+# stack unscrubbable while its state.json still held the plaintext. #2134 moved
+# the region decision into `resolveDynamicReferences`, which sees the COMPLETE
+# expression, and #2157 turned the refusal into a DEFERRAL so that decision is
+# the one taken.
+#
+# TWO SEEDS, and BOTH are required for the arm to arm at all:
+#
+#   a. the plaintext, in the legacy (pre-#1899) shape, so a successful scrub has
+#      something to REWRITE. Without it the arm's positive marker degenerates
+#      to "the command exited 0", which any early return also produces.
+#   b. `outputReads` naming REGION B, because the refusal being relaxed was
+#      GATED on foreign-region evidence being on record. `AssembledForeignSecretStack`
+#      makes no cross-stack read of its own, so nothing else puts a foreign
+#      region in this stack's state -- and with the bag absent the pre-fix code
+#      does not refuse either, i.e. the arm would be GREEN in both polarities.
+STATE_KEY_C="cdkd/${STACK_C}/${REGION_A}/state.json"
+SEEDED_STATE_C="$(mktemp)"
+LEGACY_STATE_C="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY_C}" "${SEEDED_STATE_C}"
+# Matched on the EXPRESSION rather than on a logical id, like phase 3d, so a CDK
+# logical-id change cannot silently turn this into a no-op seed.
+jq --arg expr "${ASSEMBLED_SECURE_EXPRESSION}" --arg plain "${EXPECTED_SECURE_B}" \
+   --arg stack "${STACK_B}" --arg region "${REGION_B}" \
+  '.resources |= with_entries(
+     if .value.properties.Value == $expr
+     then .value.properties.Value = $plain
+     else . end)
+   | .outputReads = [{sourceStack: $stack, sourceRegion: $region, outputName: "SeededForeignEvidence"}]' \
+  "${SEEDED_STATE_C}" > "${LEGACY_STATE_C}"
+# BOTH seeds proved to have landed. Phase 3a-3 already asserted this record held
+# the EXPRESSION and not the plaintext, so finding the plaintext here is evidence
+# the rewrite happened rather than a string the file may have carried all along.
+if ! grep -F -q "${EXPECTED_SECURE_B}" "${LEGACY_STATE_C}"; then
+  echo "FAIL: could not seed the legacy plaintext into ${STACK_C} state - no record held" >&2
+  echo "      the assembled expression, so the scrub arm would pass vacuously" >&2
+  rm -f "${SEEDED_STATE_C}" "${LEGACY_STATE_C}"
+  exit 1
+fi
+SEEDED_EVIDENCE="$(jq -r '[.outputReads[]?.sourceRegion] | join(",")' "${LEGACY_STATE_C}")"
+if [ "${SEEDED_EVIDENCE}" != "${REGION_B}" ]; then
+  echo "FAIL: seeded outputReads records region(s) '${SEEDED_EVIDENCE}', expected '${REGION_B}' -" >&2
+  echo "      with no FOREIGN producer region on record the pre-#2157 guard never armed," >&2
+  echo "      so this arm would pass under the reverted code too" >&2
+  rm -f "${SEEDED_STATE_C}" "${LEGACY_STATE_C}"
+  exit 1
+fi
+aws s3 cp "${LEGACY_STATE_C}" "s3://${STATE_BUCKET}/${STATE_KEY_C}"
+rm -f "${SEEDED_STATE_C}" "${LEGACY_STATE_C}"
+SEEDED_STATE_C=""
+LEGACY_STATE_C=""
+echo "    seeded: ${STACK_C} state holds the assembled reference's value as legacy plaintext, with ${REGION_B} on record"
+
+SCRUB_C_LOG="$(mktemp)"
+SCRUB_C_RC=0
+AWS_REGION="${REGION_A}" ${CLI} scrub "${STACK_C}" \
+  --state-bucket "${STATE_BUCKET}" >"${SCRUB_C_LOG}" 2>&1 || SCRUB_C_RC=$?
+# The log may echo the expression (which names the ARN, not the value); it must
+# never echo the value itself. BOTH regions' values are checked, not only the
+# one this arm expects: the log is `sed`-dumped to stderr on every failure path
+# below, and a WRONG-region resolution would have put region A's secret there --
+# the one case where the check matters most.
+for secret_needle in "${EXPECTED_SECURE_B}" "${EXPECTED_SECURE_A}"; do
+  if grep -F -q "${secret_needle}" "${SCRUB_C_LOG}"; then
+    rm -f "${SCRUB_C_LOG}"
+    SCRUB_C_LOG=""
+    echo "FAIL: the scrub output carries a SecureString plaintext" >&2
+    exit 1
+  fi
+done
+if [ "${SCRUB_C_RC}" -ne 0 ]; then
+  sed 's/^/    /' "${SCRUB_C_LOG}" >&2 || true
+  rm -f "${SCRUB_C_LOG}"
+  echo "FAIL: 'cdkd scrub ${STACK_C}' exited ${SCRUB_C_RC}, expected 0 - the assembled reference was" >&2
+  echo "      REFUSED rather than deferred to the resolver (issue #2157 regressed)" >&2
+  exit 1
+fi
+# THE POSITIVE MARKER. rc=0 alone is also what a scrub that found nothing
+# produces, and "the plaintext is gone" is also what a run that rewrote the
+# record to anything at all produces -- so require the count line AND the
+# expression. `assert_state_redacted` checks the second.
+if ! grep -qF "Scrubbed 1 resource record(s) in ${STACK_C}" "${SCRUB_C_LOG}"; then
+  sed 's/^/    /' "${SCRUB_C_LOG}" >&2 || true
+  rm -f "${SCRUB_C_LOG}"
+  echo "FAIL: scrub did not report rewriting exactly one record in ${STACK_C} - the assembled" >&2
+  echo "      reference resolved to something that did not match the seeded plaintext, which" >&2
+  echo "      means it was answered by the WRONG region" >&2
+  exit 1
+fi
+rm -f "${SCRUB_C_LOG}"
+SCRUB_C_LOG=""
+assert_state_redacted "${STACK_C}" "${REGION_A}" "${EXPECTED_SECURE_B}" \
+  "${ASSEMBLED_FOREIGN_SECURE_ARN}"
+# Same reasoning as phase 3d: purge the plaintext-bearing version now rather
+# than at teardown. NONCURRENT -- STACK_C is still deployed and its CURRENT
+# state.json is what phase 4's destroy works from.
+s3_purge_key_versions "${STATE_BUCKET}" "${STATE_KEY_C}" noncurrent || true
+echo "    OK: the assembled foreign reference was scrubbed, not refused (issue #2157)"
+
+echo "==> Phase 3f: a DEFERRED reference whose lookup FAILS is a warned FINDING, not a clean run (#2157)"
+# THE RESIDUAL THE FIRST DRAFT OF #2157 SHIPPED, live. Deferring moves the
+# lookup INSIDE `resolver.resolve`, whose errors land in `scrubStack`'s
+# best-effort `catch { logger.debug }` -- so a producer region that cannot
+# answer became a verbose-only line under a `No plaintext secrets found`
+# summary, over state that still holds the plaintext. Three independent reviews
+# found it; this is the arm that proves the remedy reaches the terminal.
+#
+# THE FAILURE IS INDUCED BY DELETING THE SOURCE, not by injecting an error: a
+# real `ParameterNotFound` from the region the ARN names is exactly the shape
+# the finding exists for, and it needs no code under test to cooperate. The
+# parameter is RE-SEEDED immediately after, because Phase 6 deletes it under
+# `set -e` and would abort on a missing one.
+#
+# The seeded plaintext from Phase 3e was scrubbed away, so re-seed it too --
+# otherwise the record holds the expression, the resolution failure is over a
+# leaf with nothing at risk, and the run would be clean for a second reason.
+SEEDED_STATE_C="$(mktemp)"
+LEGACY_STATE_C="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY_C}" "${SEEDED_STATE_C}"
+jq --arg expr "${ASSEMBLED_SECURE_EXPRESSION}" --arg plain "${EXPECTED_SECURE_B}" \
+  '.resources |= with_entries(
+     if .value.properties.Value == $expr
+     then .value.properties.Value = $plain
+     else . end)' "${SEEDED_STATE_C}" > "${LEGACY_STATE_C}"
+if ! grep -F -q "${EXPECTED_SECURE_B}" "${LEGACY_STATE_C}"; then
+  echo "FAIL: could not re-seed the legacy plaintext for the phase-3f arm" >&2
+  rm -f "${SEEDED_STATE_C}" "${LEGACY_STATE_C}"
+  exit 1
+fi
+aws s3 cp "${LEGACY_STATE_C}" "s3://${STATE_BUCKET}/${STATE_KEY_C}"
+rm -f "${SEEDED_STATE_C}" "${LEGACY_STATE_C}"
+SEEDED_STATE_C=""
+LEGACY_STATE_C=""
+
+aws ssm delete-parameter --name "${SECURE_PARAM}" --region "${REGION_B}" >/dev/null
+# PREMISE: it really is gone, so the failure below is the one this arm induces
+# rather than something else. `gone_probe` accepts only the canonical
+# not-found signature and hard-fails on a throttle or an auth error.
+if gone_probe aws ssm get-parameter --name "${SECURE_PARAM}" --region "${REGION_B}"; then
+  echo "[verify]   ok: ${SECURE_PARAM} is gone from ${REGION_B}, so the deferred lookup must fail"
+else
+  echo "FAIL: ${SECURE_PARAM} still resolves in ${REGION_B} — the phase-3f arm would pass vacuously" >&2
+  aws ssm put-parameter --name "${SECURE_PARAM}" --type SecureString \
+    --value "${EXPECTED_SECURE_B}" --overwrite --region "${REGION_B}" >/dev/null 2>&1 || true
+  exit 1
+fi
+
+SCRUB_F_LOG="$(mktemp)"
+SCRUB_F_RC=0
+AWS_REGION="${REGION_A}" ${CLI} scrub "${STACK_C}" \
+  --state-bucket "${STATE_BUCKET}" >"${SCRUB_F_LOG}" 2>&1 || SCRUB_F_RC=$?
+# Restore FIRST, before any assertion can `exit 1` past it: Phase 6 deletes this
+# parameter under `set -e`.
+aws ssm put-parameter --name "${SECURE_PARAM}" --type SecureString \
+  --value "${EXPECTED_SECURE_B}" --overwrite --region "${REGION_B}" >/dev/null
+
+for secret_needle in "${EXPECTED_SECURE_B}" "${EXPECTED_SECURE_A}"; do
+  if grep -F -q "${secret_needle}" "${SCRUB_F_LOG}"; then
+    rm -f "${SCRUB_F_LOG}"
+    echo "FAIL: the phase-3f scrub output carries a SecureString plaintext" >&2
+    exit 1
+  fi
+done
+# NOT a refusal: the error arrives from a whole-bag resolution and cannot be
+# attributed to the deferred leaf, so refusing would strand a stack over an
+# unrelated `Ref` failure.
+if [ "${SCRUB_F_RC}" -ne 0 ]; then
+  sed 's/^/    /' "${SCRUB_F_LOG}" >&2 || true
+  rm -f "${SCRUB_F_LOG}"
+  echo "FAIL: the phase-3f scrub exited ${SCRUB_F_RC}, expected 0 — a deferred leaf whose lookup fails is a FINDING, not a refusal" >&2
+  exit 1
+fi
+# THE POSITIVE MARKER: the warning only this path emits.
+if ! grep -qF "could not resolve a secret reference the intrinsics ASSEMBLE" "${SCRUB_F_LOG}"; then
+  sed 's/^/    /' "${SCRUB_F_LOG}" >&2 || true
+  rm -f "${SCRUB_F_LOG}"
+  echo "FAIL: the phase-3f scrub printed no ASSEMBLED-reference warning — a failed deferred lookup is back to a verbose-only debug line (#2157 residual regressed)" >&2
+  exit 1
+fi
+# ...and the run must NOT claim the stack is clean over it. This is the half
+# that actually mattered: the pre-fix build printed exactly this line.
+if grep -qF "No plaintext secrets found in ${STACK_C}" "${SCRUB_F_LOG}"; then
+  sed 's/^/    /' "${SCRUB_F_LOG}" >&2 || true
+  rm -f "${SCRUB_F_LOG}"
+  echo "FAIL: the phase-3f scrub reported ${STACK_C} clean over a leaf nobody resolved" >&2
+  exit 1
+fi
+rm -f "${SCRUB_F_LOG}"
+SCRUB_F_LOG=""
+# The plaintext this arm re-seeded is still in state (nothing resolved it), so
+# purge its version now rather than leaving it for teardown.
+s3_purge_key_versions "${STATE_BUCKET}" "${STATE_KEY_C}" noncurrent || true
+echo "    OK: the failed deferred lookup warned and did NOT report the stack clean (issue #2157)"
+
 echo "==> Phase 4: destroy both stacks"
-${CLI} destroy "${STACK_A}" "${STACK_B}" \
+${CLI} destroy "${STACK_A}" "${STACK_B}" "${STACK_C}" \
   --state-bucket "${STATE_BUCKET}" --force
 
 echo "==> Phase 5: assert no leftovers"
@@ -678,6 +937,10 @@ assert_gone "state.json for ${STACK_A} still present after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK_A}/${REGION_A}/state.json"
 assert_gone "state.json for ${STACK_B} still present after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK_B}/${REGION_B}/state.json"
+assert_gone "${ASSEMBLED_SECRET_ECHO_PARAM} still exists in ${REGION_A} after destroy" \
+  aws ssm get-parameter --name "${ASSEMBLED_SECRET_ECHO_PARAM}" --region "${REGION_A}"
+assert_gone "state.json for ${STACK_C} still present after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK_C}/${REGION_A}/state.json"
 
 echo "==> Phase 6: delete the seeded source parameters"
 aws ssm delete-parameter --name "${SOURCE_PARAM}" --region "${REGION_A}" >/dev/null
@@ -711,7 +974,15 @@ assert_gone "mixed-type source parameter still exists in ${REGION_B}" \
 # a disclosure, so the shape is identical: sweep here, then assert.
 trap - EXIT INT TERM
 for region in "${REGION_A}" "${REGION_B}"; do
-  for stack in "${STACK_A}" "${STACK_B}"; do
+  # STACK_C only ever exists in REGION A, so it is swept alongside STACK_A
+  # rather than through the cross product -- a prefix under REGION B would list
+  # nothing and the assertion would be a truthful zero about a key space that
+  # never existed, which is the shape `s3-versions.sh` warns about.
+  stacks="${STACK_A} ${STACK_B}"
+  if [ "${region}" = "${REGION_A}" ]; then
+    stacks="${stacks} ${STACK_C}"
+  fi
+  for stack in ${stacks}; do
     prefix="$(s3_stack_prefix "${stack}" "${region}")"
     s3_purge_prefix_versions "${STATE_BUCKET}" "${prefix}" all || true
     # ASSERT rather than assume. The sweep above used to run with nothing

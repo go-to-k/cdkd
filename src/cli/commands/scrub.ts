@@ -348,6 +348,13 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // not read as clean and `--fail` must not exit 0, but the stack itself was
   // still scrubbed for everything else and must not be refused outright.
   let totalStacksWithUnverifiableReads = 0;
+  /**
+   * Stacks holding an ASSEMBLED secret reference the resolver could not answer
+   * (issue [#2157](https://github.com/go-to-k/cdkd/issues/2157)) -- counted
+   * separately from {@link totalStacksWithUnverifiableReads} because the remedy
+   * differs: this one is fixable and a re-run clears it.
+   */
+  let totalStacksWithDeferredUnresolved = 0;
   // Stacks this run could not scrub at all, one entry per stack (issue #2109
   // review). A refusal is per-REFERENCE evidence but is raised for the whole
   // STACK, and without a boundary here one refused stack in a `--all` run
@@ -405,7 +412,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${scrubbed.recordsChanged} resource record(s) ` +
           `in ${stack.stackName}`
       );
-    } else if (scrubbed.secretBearingKeys === 0 && scrubbed.unverifiableReads === 0) {
+    } else if (
+      scrubbed.secretBearingKeys === 0 &&
+      scrubbed.unverifiableReads === 0 &&
+      scrubbed.deferredUnresolvedReads === 0
+    ) {
       // BOTH findings gate this line (issue #2133 review). An unverifiable read
       // is a cross-stack reference cdkd declined to perform, so scrub does not
       // know what that leaf carries — printing "No plaintext secrets found"
@@ -413,6 +424,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       // already prevents for a key holding plaintext. The warning below still
       // fires either way; this only stops the two lines contradicting each
       // other.
+      //
+      // THREE since issue #2157: a DEFERRED assembled reference whose
+      // resolution failed leaves the same hole — no needle for that leaf — and
+      // reached this line as a verbose-only `logger.debug` under a clean
+      // summary until it was given a counter of its own.
       logger.info(`No plaintext secrets found in ${stack.stackName}`);
     }
     if (scrubbed.unverifiableReads > 0) {
@@ -421,6 +437,14 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `${scrubbed.unverifiableReads} cross-stack read(s) in ${stack.stackName} could NOT be ` +
           `verified — cdkd declines them by design (see the warnings above), so this stack is ` +
           `not reported clean.`
+      );
+    }
+    if (scrubbed.deferredUnresolvedReads > 0) {
+      totalStacksWithDeferredUnresolved++;
+      logger.warn(
+        `${scrubbed.deferredUnresolvedReads} secret reference(s) in ${stack.stackName} are ` +
+          `ASSEMBLED by an intrinsic and could NOT be resolved (see the warnings above), so no ` +
+          `needle was recorded for them and this stack is not reported clean.`
       );
     }
     if (scrubbed.secretBearingKeys > 0) {
@@ -474,6 +498,15 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       : '';
   // Same discipline as `keyNote`: a summary must never let a finding it could
   // not remedy read as a clean result (issue #2133 review).
+  // Same discipline again, for the class issue #2157 introduced: unlike an
+  // unverifiable read this one IS fixable, so the note names the remedy rather
+  // than a template change.
+  const deferredNote =
+    totalStacksWithDeferredUnresolved > 0
+      ? ` ${totalStacksWithDeferredUnresolved} stack(s) carry an ASSEMBLED secret reference whose ` +
+        `region could not answer, so those leaves could NOT be checked — make that region resolve ` +
+        `the reference, or spell it as one complete literal '{{resolve:...}}'.`
+      : '';
   const unverifiableNote =
     totalStacksWithUnverifiableReads > 0
       ? ` ${totalStacksWithUnverifiableReads} stack(s) carry a cross-stack read cdkd declines to ` +
@@ -488,11 +521,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (totalStacksScrubbed > 0) {
       logger.info(
         `\nPlan: ${totalStacksScrubbed} stack(s) hold plaintext secrets and would be scrubbed ` +
-          `(--dry-run, no state written).${keyNote}${unverifiableNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
+          `(--dry-run, no state written).${keyNote}${unverifiableNote}${deferredNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
       );
     } else {
       logger.info(
-        `\nPlan: nothing can be scrubbed.${keyNote}${unverifiableNote}${failureNote} ROTATE any exposed secret.`
+        `\nPlan: nothing can be scrubbed.${keyNote}${unverifiableNote}${deferredNote}${failureNote} ROTATE any exposed secret.`
       );
     }
     // The refusal outranks the `--fail` gate: it is an ERROR (exit 2) about
@@ -511,11 +544,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       `\nDone: scrubbed ${totalStacksScrubbed} stack(s). ` +
         `The plaintext is no longer stored there, but a value that was ever persisted should be ` +
         `treated as compromised — ROTATE it in Secrets Manager (scrub matches the current ` +
-        `value, so scrub BEFORE rotating).${keyNote}${unverifiableNote}${failureNote}`
+        `value, so scrub BEFORE rotating).${keyNote}${unverifiableNote}${deferredNote}${failureNote}`
     );
   } else {
     logger.info(
-      `\nNothing could be rewritten.${keyNote}${unverifiableNote}${failureNote} ROTATE any exposed secret.`
+      `\nNothing could be rewritten.${keyNote}${unverifiableNote}${deferredNote}${failureNote} ROTATE any exposed secret.`
     );
   }
   // `--fail` is documented as a --dry-run CI gate, but a REAL run over a
@@ -527,7 +560,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // 0 over them is exactly backwards (issue #2133 review).
   if (
     options.fail &&
-    (totalStacksWithUnscrubbableKeys > 0 || totalStacksWithUnverifiableReads > 0)
+    (totalStacksWithUnscrubbableKeys > 0 ||
+      totalStacksWithUnverifiableReads > 0 ||
+      totalStacksWithDeferredUnresolved > 0)
   ) {
     throw new ScrubNeededError();
   }
@@ -776,32 +811,6 @@ function redactUnaccountedOutputs(
 }
 
 /**
- * The producer regions that are genuinely FOREIGN to this stack, canonicalized
- * and de-duplicated (issue #2109 review).
- *
- * The same filter {@link classifyReplaySecretRegion} applies to its own
- * `importedProducerRegions` argument, spelled here because the
- * unclassifiable-reference guard needs the answer WITHOUT an expression to hand
- * to the classifier. A same-region cross-stack read is the common case and
- * raises no cross-region question, so it must not arm a refusal.
- */
-function foreignRegionsOf(
-  producerRegions: readonly string[],
-  stackRegion: string
-): readonly string[] {
-  const seen = new Set<string>();
-  const foreign: string[] = [];
-  for (const candidate of producerRegions) {
-    const canonical = canonicalizeRegion(candidate);
-    if (!canonical || canonical === canonicalizeRegion(stackRegion)) continue;
-    if (seen.has(canonical)) continue;
-    seen.add(canonical);
-    foreign.push(candidate);
-  }
-  return foreign;
-}
-
-/**
  * The `cdkd scrub` resolvers: the stack's own, plus one pinned sibling per
  * FOREIGN region an ARN-named secret reference asks for (issue
  * [#2109](https://github.com/go-to-k/cdkd/issues/2109)).
@@ -854,16 +863,34 @@ interface CrossRegionSecretContext {
   /** Producer regions this stack's persisted cross-stack reads name. */
   producerRegions: readonly string[];
   /**
-   * The subset of {@link producerRegions} that is NOT this stack's own region,
-   * canonicalized and de-duplicated — the same filter
-   * {@link classifyReplaySecretRegion} applies internally, computed once here
-   * because {@link resolveForeignRegionTokens}'s unclassifiable-reference guard
-   * has to ask the question WITHOUT a classifiable expression to hand to the
-   * classifier. Same-region cross-stack reads are extremely common and carry no
-   * cross-region question at all, so a guard keyed on the UNFILTERED list would
-   * refuse ordinary single-region apps.
+   * Leaf paths this pass DEFERRED to the primary resolver rather than
+   * classifying itself (issue
+   * [#2157](https://github.com/go-to-k/cdkd/issues/2157)) -- see
+   * {@link isAssembledSecretReference}.
+   *
+   * WHY THE CALLER NEEDS TO KNOW. Deferring moves the lookup INSIDE
+   * `resolver.resolve`, whose failures land in `scrubStack`'s per-item
+   * best-effort `catch { logger.debug }`. That catch exists for "a `Ref` to a
+   * resource that is not in state" and cannot tell it from "the producer
+   * region refused this secret" -- so a deferred leaf whose lookup fails would
+   * be a verbose-only line under a `No plaintext secrets found` summary, over
+   * state that still holds the plaintext. The pre-pass's own
+   * `SCRUB_CROSS_REGION_SECRET_UNRESOLVED` is loud for exactly that failure on
+   * the COMPLETE-token spelling, so without this the two spellings diverge in
+   * the one direction this command must not.
+   *
+   * A FINDING rather than a refusal, unlike that complete-token twin, and the
+   * asymmetry is forced rather than chosen: the pre-pass refuses because it
+   * knows WHICH token failed, while here the error surfaces from a whole-bag
+   * resolution and cannot be attributed to the deferred leaf -- an unrelated
+   * `Ref` failure in the same `Properties` bag would otherwise refuse the
+   * stack. So the run warns, does not report the stack clean, and exits
+   * non-zero under `--fail`, exactly as an unverifiable read does.
+   *
+   * MUTATED BY THIS PASS. Each caller supplies a fresh array and reads it after
+   * its own `resolver.resolve`.
    */
-  foreignProducerRegions: readonly string[];
+  deferredAssembled: string[];
   resolvers: ScrubResolvers;
   /**
    * The SAME map the primary resolution records into, so a producer-region
@@ -962,7 +989,7 @@ const DYNAMIC_REFERENCE_OPENING = '{{resolve:';
  * followed by a service whose VALUE CloudFormation defines as a secret. Counted
  * against the number of WHOLE tokens of the same class the scan matched, which
  * is how an ASSEMBLED reference is detected without parsing intrinsics — see
- * {@link unclassifiableScrubSecretError}.
+ * {@link isAssembledSecretReference}.
  *
  * WHY THE SERVICE IS PART OF THE OPENING (issue #2109 review). Counting the bare
  * `{{resolve:` made the guard fire on any leaf that merely MENTIONS the syntax
@@ -1000,7 +1027,7 @@ const SECRET_REFERENCE_OPENINGS = [
 
 /**
  * What an `Fn::Sub` placeholder opens with. A whole token that CONTAINS one is
- * the third assembled shape — see {@link unclassifiableScrubSecretError}.
+ * the third assembled shape — see {@link isAssembledSecretReference}.
  */
 const SUB_PLACEHOLDER_OPENING = '${';
 
@@ -1017,16 +1044,17 @@ function isSecretReferenceToken(token: string): boolean {
 }
 
 /**
- * The refusal an ASSEMBLED reference raises (issue #2109 review): a leaf that
- * OPENS more SECRET references than the scan found COMPLETE tokens of that
- * class in it, or a whole token that still carries an `Fn::Sub` placeholder.
+ * Does this leaf ASSEMBLE a secret reference out of parts (issue #2109 review)
+ * — i.e. does it OPEN more SECRET references than the scan found COMPLETE
+ * tokens of that class in it, or carry a whole token that still holds an
+ * `Fn::Sub` placeholder?
  *
  * WHY THIS EXISTS, and it is the load-bearing half of this pre-pass rather than
  * an edge case. The region split runs on the RAW template leaf, BEFORE intrinsic
  * resolution, and the shared token scan is `\{\{resolve:[^}]+\}\}` — a class
  * that cannot cross a `}`. So none of the three shapes that assemble a
  * reference out of parts yields the ONE WHOLE token a literal reference does,
- * and the third one is why this guard needs two tests rather than one
+ * and the third one is why this predicate needs two tests rather than one
  * (all four rows MEASURED):
  *
  * ```text
@@ -1044,58 +1072,44 @@ function isSecretReferenceToken(token: string): boolean {
  * test: a WHOLE token that still contains `${` has not been assembled yet.
  * Neither a Secrets Manager secret name nor an SSM parameter name may contain
  * `$` or `{`, so the only false positive that test can produce is a JSON key
- * literally spelled `${...}` in a leaf that is NOT under an `Fn::Sub` — and
- * this guard is the fail-closed side of a command whose subject is a leaked
- * plaintext.
+ * literally spelled `${...}` in a leaf that is NOT under an `Fn::Sub` — and a
+ * false positive here now costs a DEFERRAL rather than a refusal, so it is
+ * cheaper than it was when this predicate raised
+ * `SCRUB_SECRET_REFERENCE_UNCLASSIFIABLE`.
  *
- * With no token there is nothing to classify: {@link pinCrossRegionSecrets}
- * returns the leaf BY IDENTITY, and `resolveJoin` / `resolveSub` then call
- * `resolveDynamicReferences` on the PRIMARY resolver once they have joined the
- * parts — issue #2109 verbatim, with the `ambiguous` refusal never firing. The
- * trailing-placeholder row got there a different way before this guard's second
- * test: the token WAS classified, and only downstream luck kept it safe (the
- * name form then classifies `ambiguous`, the ARN form fails into
- * `SCRUB_CROSS_REGION_SECRET_UNRESOLVED` because the id it looks up still has a
- * literal `${Field}` in it). Both are pinned by the suite rather than assumed.
- * Fixing all of this inside the resolver (classify AFTER assembly) is the
- * structurally right answer and is NOT what this does: the resolver's
- * dynamic-reference path is shared with deploy and is out of this change's
- * scope. This guard buys the same SAFETY property — a reference whose region
- * cannot be established is never resolved in the stack's own region — by
- * refusing instead.
+ * WHAT A `true` MEANS FOR THE CALLER, and it changed with issue
+ * [#2157](https://github.com/go-to-k/cdkd/issues/2157): the leaf is handed on
+ * BY IDENTITY, so the PRIMARY resolver classifies the reference once
+ * `resolveSub` / `resolveJoin` have assembled it. Before issue
+ * [#2134](https://github.com/go-to-k/cdkd/issues/2134) that was issue #2109
+ * verbatim — the resolver had no region question at all, so an identity return
+ * meant a foreign secret fetched against the stack's own endpoint, and this
+ * predicate therefore had to REFUSE (gated on a foreign producer region being
+ * on record, to keep it from refusing the world). #2134 put the classification
+ * in `resolveDynamicReferences`, which sees the COMPLETE expression, so the
+ * safety property the refusal bought — a reference whose region cannot be
+ * established is never resolved in the stack's own region — is now bought
+ * downstream over strictly more information.
  *
- * GATED ON A FOREIGN PRODUCER REGION BEING ON RECORD, which is what keeps it
- * from refusing the world. With no foreign region on record there is no
- * cross-region question to get wrong: every reference in the stack resolves
- * locally, which is what an assembled one would have done anyway, so proceeding
- * is exactly today's behavior. Two residuals, stated rather than hidden:
- * an assembled reference that names a FOREIGN ARN inside an `Fn::Sub` in a
- * stack with NO cross-stack read on record is still resolved locally; and an
- * `Fn::Join` that splits BEFORE the service name is not counted at all (see
- * {@link SECRET_REFERENCE_OPENINGS}). Closing either needs the resolver-side
- * classification above — issue
- * [#2134](https://github.com/go-to-k/cdkd/issues/2134).
+ * The trailing-placeholder row reached the resolver a different way before that
+ * second test existed: the truncated token WAS classified here, and only
+ * downstream luck kept it safe (the name form classifies `ambiguous`, the ARN
+ * form fails into `SCRUB_CROSS_REGION_SECRET_UNRESOLVED` because the id it
+ * looks up still has a literal `${Field}` in it). Post-#2157 it is deferred
+ * like the other three, and the resolver answers it on the assembled
+ * expression instead of on a token one brace short. Every row is pinned by the
+ * suite rather than assumed.
+ *
+ * Residual, unchanged and stated rather than hidden: an `Fn::Join` that splits
+ * BEFORE the service name opens no counted reference at all (see
+ * {@link SECRET_REFERENCE_OPENINGS}), so this predicate returns `false` for it
+ * and the leaf is returned by identity anyway — the same destination, reached
+ * without being noticed.
  */
-function unclassifiableScrubSecretError(
-  origin: string,
-  leafPath: string,
-  stackName: string,
-  foreignProducerRegions: readonly string[],
-  stackRegion: string
-): CdkdError {
-  return new ScrubRefusalError(
-    `Scrub of ${stackName} cannot classify a secret reference in ${origin}` +
-      `${leafPath ? ` at '${leafPath}'` : ''}: the value opens a '{{resolve:...}}' reference that ` +
-      `is ASSEMBLED by an intrinsic (an Fn::Sub placeholder inside it, or an Fn::Join that splits ` +
-      `it across parts), so the reference does not exist as a complete expression until AFTER it ` +
-      `is resolved — and its region therefore cannot be determined before resolution. This stack ` +
-      `read across a region boundary (producer region(s) on record: ` +
-      `${foreignProducerRegions.join(', ')}), so resolving it in '${stackRegion}' may look for a ` +
-      `different region's secret: scrub would then miss the plaintext it exists to remove and ` +
-      `report the stack clean. Refusing instead. Spell the reference as one complete literal ` +
-      `'{{resolve:secretsmanager:<full ARN>:SecretString:...}}' — an ARN names its own region — ` +
-      `then re-run 'cdkd scrub'.`,
-    'SCRUB_SECRET_REFERENCE_UNCLASSIFIABLE'
+function isAssembledSecretReference(leaf: string, secretTokens: readonly string[]): boolean {
+  return (
+    countSecretReferenceOpenings(leaf) !== secretTokens.length ||
+    secretTokens.some((token) => token.includes(SUB_PLACEHOLDER_OPENING))
   );
 }
 
@@ -1132,9 +1146,8 @@ async function resolveForeignRegionTokens(
   // FIRST, before any classification: does every SECRET reference this leaf
   // OPENS exist as a complete, already-assembled token the scan could see? Two
   // tests, because the shapes fail in two different ways — see
-  // {@link unclassifiableScrubSecretError} for the measured table, for the
-  // false positive counting bare `{{resolve:` produced, and for why the guard
-  // is gated on foreign-region evidence.
+  // {@link isAssembledSecretReference} for the measured table and for the
+  // false positive counting bare `{{resolve:` produced.
   //
   // 1. COUNT. Openings and tokens are filtered to the SAME secret spellings, so
   //    a complete non-secret reference cannot make the two disagree. `!==`
@@ -1147,34 +1160,56 @@ async function resolveForeignRegionTokens(
   // 2. PLACEHOLDER. A whole token that still contains `${` is a TRAILING
   //    `Fn::Sub` placeholder, which the count provably cannot see.
   //
-  // KEPT, BUT NOW CONSERVATIVE RATHER THAN NECESSARY (issue
-  // [#2134](https://github.com/go-to-k/cdkd/issues/2134)). The region is now
-  // decided AFTER assembly, inside `resolveDynamicReferences`, so a leaf this
-  // guard refuses would be answered correctly if it were allowed through --
-  // routed to the region its ARN names, or refused per-reference on its own
-  // evidence. The guard only ever OVER-refuses, and it is loud and actionable,
-  // so it stays until relaxed deliberately with its own arm: issue
-  // [#2157](https://github.com/go-to-k/cdkd/issues/2157).
+  // NOT A REFUSAL ANY MORE — it DEFERS (issue
+  // [#2157](https://github.com/go-to-k/cdkd/issues/2157)). Until issue
+  // [#2134](https://github.com/go-to-k/cdkd/issues/2134) this same condition
+  // threw `SCRUB_SECRET_REFERENCE_UNCLASSIFIABLE` whenever a foreign producer
+  // region was also on record, because there was then genuinely nowhere else
+  // the question could be asked: the reference did not exist as a complete
+  // expression anywhere, so nothing downstream could classify it either.
+  // #2134 moved the classification INTO `resolveDynamicReferences`, which runs
+  // on the ASSEMBLED expression (`resolveSub` / `resolveJoin` re-enter it with
+  // their result), and `scrubStack` supplies that resolver the same
+  // `producerRegions` evidence this pre-pass holds. So the leaf is now handed
+  // on BY IDENTITY and answered where the whole expression exists — routed to
+  // the region its ARN names, or refused per reference by the resolver's own
+  // `DYNAMIC_REFERENCE_REGION_AMBIGUOUS`.
   //
-  // What #2134 already covers, and this guard therefore no longer has to: a
-  // `Ref` / `Fn::FindInMap`-contributed opening never reaches this function at
-  // all (the walk returns such a leaf by identity), and a stack with no
-  // cross-stack read on record has an empty `foreignProducerRegions`, so the
-  // condition below is false. Both were the reachable halves of #2134's
-  // residual and both are now handled in the resolver.
+  // WHAT IS PRESERVED, AND WHAT IS NOT. The property the refusal bought against
+  // a WRONG-REGION read is preserved, and over strictly MORE information: the
+  // resolver classifies the ASSEMBLED expression rather than the raw leaf, and
+  // `classifyReplaySecretRegion` verdicts an ARN-form token `named-region`
+  // whatever evidence it holds, so a deferred reference is never resolved in the
+  // stack's own region.
+  //
+  // What is NOT preserved is LOUDNESS ON A FAILED LOOKUP, and claiming otherwise
+  // was this change's first draft (three independent reviews found it). The
+  // refusal fired BEFORE any lookup; deferring moves the lookup inside
+  // `resolver.resolve`, whose errors land in `scrubStack`'s best-effort catch --
+  // so a producer region answering AccessDenied, or a secret that no longer
+  // exists, became a `logger.debug` under a `No plaintext secrets found`
+  // summary, which is the outcome this command exists to prevent. It is closed
+  // on the CALLER's side rather than here: the deferral is RECORDED (see
+  // {@link CrossRegionSecretContext.deferredAssembled}) and a failure over a
+  // recorded leaf becomes a warned FINDING that stops the stack being reported
+  // clean. A finding and not a refusal, because the error arrives from a
+  // whole-bag resolution and cannot be attributed to this leaf.
+  //
+  // Deferring is unconditional on evidence, unlike the refusal it replaces.
+  // The refusal was gated on `foreignProducerRegions.length > 0` to keep it
+  // from refusing the world; deferral needs no such gate, because the reason
+  // to defer is that THIS pass cannot classify an unassembled leaf, which is
+  // true whatever evidence is on record. With no foreign region the two paths
+  // agree anyway: a leaf whose scan yields no token produced empty `verdicts`
+  // and fell out of the `named-region` test below by identity already.
   const secretTokens = tokens.filter(isSecretReferenceToken);
-  if (
-    (countSecretReferenceOpenings(leaf) !== secretTokens.length ||
-      secretTokens.some((token) => token.includes(SUB_PLACEHOLDER_OPENING))) &&
-    ctx.foreignProducerRegions.length > 0
-  ) {
-    throw unclassifiableScrubSecretError(
-      ctx.origin,
-      leafPath,
-      stackName,
-      ctx.foreignProducerRegions,
-      ctx.stackRegion
-    );
+  if (isAssembledSecretReference(leaf, secretTokens)) {
+    // RECORDED, not merely returned: the caller has to know a secret reference
+    // left this pass unclassified, because the resolver's failure on it is
+    // otherwise indistinguishable from an ordinary partial resolution. See
+    // {@link CrossRegionSecretContext.deferredAssembled}.
+    ctx.deferredAssembled.push(leafPath);
+    return leaf;
   }
   const verdicts = tokens.map(
     (token) =>
@@ -1304,33 +1339,35 @@ async function pinCrossRegionSecrets<T>(
   stackName: string,
   ctx: CrossRegionSecretContext
 ): Promise<T> {
-  // The PATH is carried for the refusal messages alone (issue #2109 review):
+  // The PATH is carried for the operator-facing messages (issue #2109 review):
   // `origin` names the resource or output, and an assembled reference is often
   // one leaf of a large `Properties` bag, so "resource 'Db'" on its own leaves
-  // the operator grepping. Built in the ordinary `a.b[0].c` spelling; empty at
-  // the root, which is the shape a scalar `Export.Name` / output `Value` bag
+  // the operator grepping. Its consumer moved with issue #2157 -- the
+  // assembled-reference REFUSAL that used to spell it is now a DEFERRAL, so the
+  // path is what {@link CrossRegionSecretContext.deferredAssembled} records and
+  // what `scrubStack`'s finding names. The ordinary `a.b[0].c` spelling; empty
+  // at the root, which is the shape a scalar `Export.Name` / output `Value` bag
   // has.
   const walk = async (v: unknown, path: string): Promise<unknown> => {
     if (typeof v === 'string') {
-      // THIS LINE BOUNDS THE WHOLE PRE-PASS, guard included (issue #2109
-      // review). Everything below — the region split AND the assembled-reference
-      // refusal in `resolveForeignRegionTokens` — arms only when the RAW leaf
-      // ITSELF carries a `{{resolve:` opening. A leaf whose opening is
-      // CONTRIBUTED by another intrinsic is returned by identity here and never
-      // reaches either, EVEN WITH a foreign producer region on record. So the
-      // guard does NOT cover assembled references generally; it covers the ones
-      // whose opening is visible in the template text.
+      // THIS LINE BOUNDS THE WHOLE PRE-PASS (issue #2109 review). The region
+      // split below arms only when the RAW leaf ITSELF carries a `{{resolve:`
+      // opening; a leaf whose opening is CONTRIBUTED by another intrinsic is
+      // returned by identity here and never reaches it.
       //
-      // The reachable shape, measured: a parameter `DbSecretRef` whose `Default`
-      // is a full foreign-ARN reference, used as
+      // NOT A GAP ANY MORE, and the reachable shape was measured: a parameter
+      // `DbSecretRef` whose `Default` is a full foreign-ARN reference, used as
       // `MasterUserPassword: { "Fn::Sub": "${DbSecretRef}" }`. This walk sees
-      // only `"${DbSecretRef}"`, returns it, and `resolveSub` then re-scans the
-      // SUBSTITUTED string and resolves the reference on the PRIMARY resolver —
-      // the stack is reported clean over the surviving plaintext. The same holds
-      // for a `Ref` / `Fn::FindInMap` that yields the opening. Closing it needs
-      // the resolver-side "classify AFTER assembly" fix, which is shared with
-      // deploy and is tracked by issue
-      // [#2134](https://github.com/go-to-k/cdkd/issues/2134).
+      // only `"${DbSecretRef}"` and returns it, and `resolveSub` then re-scans
+      // the SUBSTITUTED string — where, since issue
+      // [#2134](https://github.com/go-to-k/cdkd/issues/2134),
+      // `resolveDynamicReferences` classifies the assembled reference and routes
+      // it to the region its ARN names (or refuses it as `ambiguous`). Before
+      // #2134 this same path resolved the foreign reference against the stack's
+      // own endpoint and reported the stack clean over surviving plaintext. The
+      // same holds for a `Ref` / `Fn::FindInMap` that yields the opening, and it
+      // is why the assembled-reference refusal this pass used to raise could be
+      // relaxed to a deferral (issue #2157): the destination now answers.
       if (!v.includes(DYNAMIC_REFERENCE_OPENING)) return v;
       return await resolveForeignRegionTokens(v, stackName, ctx, path);
     }
@@ -1948,8 +1985,11 @@ function storedValueCarriesNoPlaintext(stored: unknown): boolean {
  *   {@link buildExportOwnerIndex} and `producerTemplates` are keyed by stack
  *   NAME alone, so the walk reads that name's template regardless of `Region`;
  * - a secret reachable only through the TRUE branch of an `Fn::If` in a
- *   producer's output: see {@link collectReExportHops}, which takes the FALSE
- *   branch for a condition it cannot evaluate.
+ *   producer's output: see {@link selectTakenConditionalBranches}, which takes
+ *   the FALSE branch for a condition it cannot evaluate -- and which, since
+ *   issue [#2150](https://github.com/go-to-k/cdkd/issues/2150), feeds BOTH the
+ *   literal scan below and {@link collectReExportHops} from that one
+ *   selection.
  */
 export function producerPublishesSecretExpression(
   templates: ReadonlyMap<string, CloudFormationTemplate>,
@@ -1996,7 +2036,12 @@ export function producerPublishesSecretExpression(
       // A hop that matched nothing: see WIDENING IS ROOT-ONLY above.
       continue;
     }
-    for (const subject of subjects) {
+    for (const rawSubject of subjects) {
+      // THE ONE SELECTION SITE (issue #2150), feeding BOTH halves of the
+      // question below — the literal scan and the hop walk. See
+      // {@link selectTakenConditionalBranches} for why an `Fn::If`'s untaken arm
+      // must not answer either, and for the residual that accepts.
+      const subject = selectTakenConditionalBranches(rawSubject);
       if (JSON.stringify(subject ?? null).includes('{{resolve:')) {
         // `via` is carried on the WIDENED verdict too (issue #2146 review).
         // Dropping it made the message assert the producer "publishes at least
@@ -2015,6 +2060,75 @@ export function producerPublishesSecretExpression(
     }
   }
   return NO_SECRET_EXPRESSION;
+}
+
+/**
+ * One node with every `Fn::If` collapsed to the branch scrub would TAKE
+ * (issues #2146 and [#2150](https://github.com/go-to-k/cdkd/issues/2150)).
+ *
+ * ONE SPELLING, consumed verbatim by both halves of "does this producer publish
+ * a secret expression?" — {@link collectReExportHops}, which follows the value
+ * onward, and {@link producerPublishesSecretExpression}'s literal
+ * `{{resolve:` scan, which tests the value itself. Those two are one question
+ * asked twice, and they DISAGREED between #2146 and #2150: the hop walk took
+ * the false branch while the scan `JSON.stringify`d the whole node and saw
+ * both. A producer whose output is
+ * `{"Fn::If": ["IsProd", "{{resolve:...}}", "plain"]}` deployed with `IsProd`
+ * false therefore verdicted `declared`, the discriminator read the deployed
+ * value `plain`, and scrub refused with `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT`
+ * — an UNCLEARABLE refusal, because no `cdkd scrub` of the producer can turn
+ * `plain` into an expression and there is no bypass flag, so every other secret
+ * in the consumer stack was stranded. A second spelling of the selection would
+ * only move where the two can drift apart again, so there is exactly one.
+ *
+ * WHICH BRANCH: the FALSE one, unconditionally, mirroring `resolveIf`'s
+ * unknown-condition arm. Every condition met on this path belongs to ANOTHER
+ * stack, and scrub evaluates conditions only for the stack it is scrubbing,
+ * from that template's parameter DEFAULTS (it takes no `--parameters`), so a
+ * producer's condition is not evaluable here.
+ *
+ * TWO SHAPES COLLAPSE MORE THAN THE SELECTED BRANCH, both fail-OPEN, both
+ * stated rather than implied because the old whole-node `JSON.stringify` saw
+ * them and this does not. Neither is CloudFormation-emittable, which is why
+ * they are accepted rather than fixed:
+ *
+ * - a MALFORMED `Fn::If` (args not a 3-tuple) collapses to `null` -- NO branch.
+ *   Which branch is live is unknowable, so neither a hop nor a `{{resolve:`
+ *   sighting may be claimed from it. CloudFormation refuses such a template, so
+ *   a producer that reads this way cannot have been deployed carrying one.
+ * - an object carrying `Fn::If` ALONGSIDE sibling keys keeps only the selected
+ *   branch, so a `{{resolve:` under a sibling is not seen. An intrinsic node has
+ *   exactly one key in any template CloudFormation accepts, and the hop walk
+ *   dropped those siblings before this function existed (its `Fn::If` arm
+ *   `return`ed rather than falling through), so this preserves that behaviour
+ *   rather than introducing it.
+ *
+ * Residual, and it is the direction this file accepts elsewhere: a secret
+ * reachable only through the TRUE branch is not detected, so that reference
+ * keeps its pre-#2133 outcome. The hop walk already took this trade for the
+ * chain it follows; #2150 extends it to the scan so that the two agree.
+ */
+function selectTakenConditionalBranches(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(selectTakenConditionalBranches);
+  if (node === null || typeof node !== 'object') return node;
+  const obj = node as Record<string, unknown>;
+  if ('Fn::If' in obj) {
+    const args = obj['Fn::If'];
+    return Array.isArray(args) && args.length === 3
+      ? selectTakenConditionalBranches(args[2])
+      : null;
+  }
+  // `Object.create(null)`, the same `__proto__` hazard `pinCrossRegionSecrets`,
+  // `redactByPath` and `reresolveCrossStackValue` answer this way: a JSON-parsed
+  // template can carry an OWN `__proto__` key, and assigning it onto an object
+  // LITERAL walks the prototype setter instead of defining the key -- so the
+  // key, and any `{{resolve:` under it, would vanish from the pruned copy and
+  // both consumers would go blind on that subtree. Fail-OPEN, which is the
+  // direction that matters: the verdict comes back `no` and the producer looks
+  // plaintext-free.
+  const out = Object.create(null) as Record<string, unknown>;
+  for (const [key, child] of Object.entries(obj)) out[key] = selectTakenConditionalBranches(child);
+  return out;
 }
 
 /** One step of a re-export chain: whose template to read next, under which key. */
@@ -2042,8 +2156,9 @@ interface ReExportHop {
  * routinely wrapped — `Fn::Join`ing an imported password into a URL is the
  * shape the live fixture uses.
  *
- * `Fn::If` IS NOT WALKED ON BOTH ARMS, and this is load-bearing rather than
- * tidy (issue #2146 review). `makeCrossStackPrePass` deliberately mirrors
+ * `Fn::If` NEVER REACHES THIS WALK, and the selection that used to live here
+ * is load-bearing rather than tidy (issue #2146 review). `makeCrossStackPrePass`
+ * deliberately mirrors
  * `resolveIf` — selected branch only — so that a conditional import of a
  * not-yet-deployed producer cannot refuse a whole stack, unbypassably, over a
  * reference the deploy never read. A hop walk that descended into both arms
@@ -2055,25 +2170,25 @@ interface ReExportHop {
  * flag. On main the same input answered `no`, so it would have been a
  * regression this change introduced.
  *
- * WHICH branch: the FALSE one, unconditionally. `resolveIf` selects FALSE for a
- * condition it cannot evaluate, and every condition here belongs to ANOTHER
- * stack — scrub evaluates conditions for the stack it is scrubbing, from that
- * template's parameter DEFAULTS, and has neither the parameters nor the
- * evaluation for a producer's. A MALFORMED `Fn::If` (args not a 3-tuple) yields
- * NO hop at all: which branch is live is unknowable, and the pre-pass's answer
- * there (walk it with refusals DISARMED) has no counterpart in a function whose
- * only output is "refuse or not".
- *
- * Residual, and it is the direction this file accepts elsewhere: a secret
- * reachable only through the TRUE branch is not detected, so that reference
- * keeps its pre-#2133 outcome. The asymmetry with the `{{resolve:` scan in
- * {@link producerPublishesSecretExpression} — which `JSON.stringify`s the whole
- * subject and therefore sees BOTH arms — is #2133's behaviour, unchanged here
- * on purpose: narrowing it would change which stacks that older refusal fires
- * on, which is not this change's subject.
+ * `selectedValue` IS THE CONTRACT, and it is why this function carries no
+ * `Fn::If` handling of its own: the only caller,
+ * {@link producerPublishesSecretExpression}, applies
+ * {@link selectTakenConditionalBranches} ONCE and hands the result to BOTH the
+ * literal `{{resolve:` scan and this walk, so a node reaching here holds no
+ * `Fn::If` at all. Issue [#2150](https://github.com/go-to-k/cdkd/issues/2150)
+ * collapsed the two to one site deliberately: the scan used to `JSON.stringify`
+ * the whole subject and therefore see BOTH arms while this walk took only the
+ * false one, and two spellings of one question are exactly how they came to
+ * disagree. A second selection HERE would restore that, and be worse than
+ * useless — measured on the #2150 lane, a per-site copy was invisible to every
+ * test in the suite, because the caller had already pruned, so deleting it
+ * changed nothing and no probe could fence it.
+ * {@link selectTakenConditionalBranches}'s own doc carries which branch is
+ * selected, what a malformed `Fn::If` yields, and the TRUE-branch residual both
+ * halves accept.
  */
 function collectReExportHops(
-  value: unknown,
+  selectedValue: unknown,
   templates: ReadonlyMap<string, CloudFormationTemplate>,
   exportOwners: ReadonlyMap<string, readonly string[]>
 ): ReExportHop[] {
@@ -2085,11 +2200,6 @@ function collectReExportHops(
     }
     if (node === null || typeof node !== 'object') return;
     const obj = node as Record<string, unknown>;
-    if ('Fn::If' in obj) {
-      const args = obj['Fn::If'];
-      if (Array.isArray(args) && args.length === 3) walk(args[2]);
-      return;
-    }
     const imported = obj['Fn::ImportValue'];
     if (typeof imported === 'string') {
       for (const owner of exportOwners.get(imported) ?? []) {
@@ -2107,7 +2217,7 @@ function collectReExportHops(
     }
     for (const child of Object.values(obj)) walk(child);
   };
-  walk(value);
+  walk(selectedValue);
   return hops;
 }
 
@@ -2661,6 +2771,18 @@ export interface ScrubStackResult {
    * non-zero exactly as a `secretBearingKeys` finding does.
    */
   unverifiableReads: number;
+  /**
+   * Secret references the region pre-pass DEFERRED to the resolver and whose
+   * resolution then FAILED (issue
+   * [#2157](https://github.com/go-to-k/cdkd/issues/2157)). A FINDING for the
+   * same reason `unverifiableReads` is -- no needle was recorded, so the stack
+   * must not be reported clean -- but a DIFFERENT one, because this class IS
+   * fixable by the operator (grant the producer region's read, restore the
+   * secret) where an unverifiable read is declined by design and no re-run can
+   * change it. Conflating them would repeat the mistake `isByDesignRefusal`
+   * exists to prevent, one class over.
+   */
+  deferredUnresolvedReads: number;
 }
 
 /**
@@ -2721,7 +2843,13 @@ export async function scrubStack(
     const loaded = await stateBackend.getState(stack.stackName, region);
     if (!loaded) {
       logger.debug(`No state for ${stack.stackName} (${region}) — skipping`);
-      return { recordsChanged: 0, secretsFound: 0, secretBearingKeys: 0, unverifiableReads: 0 };
+      return {
+        recordsChanged: 0,
+        secretsFound: 0,
+        secretBearingKeys: 0,
+        unverifiableReads: 0,
+        deferredUnresolvedReads: 0,
+      };
     }
     const state = loaded.state;
 
@@ -2739,7 +2867,39 @@ export async function scrubStack(
     const resolvers = new ScrubResolvers(region);
     const resolver = resolvers.primary;
     const producerRegions = producerRegionsFromState(state);
-    const foreignProducerRegions = foreignRegionsOf(producerRegions, region);
+    /**
+     * Leaves the region pre-pass DEFERRED whose resolution then FAILED (issue
+     * [#2157](https://github.com/go-to-k/cdkd/issues/2157)).
+     *
+     * See {@link CrossRegionSecretContext.deferredAssembled} for why the caller
+     * has to notice at all, and why this is a FINDING rather than the refusal
+     * its complete-token twin raises.
+     */
+    const deferredUnresolved: string[] = [];
+    const recordDeferredResolutionFailure = (
+      deferred: readonly string[],
+      origin: string,
+      err: unknown,
+      secrets: RecordedSecretValues
+    ): void => {
+      if (deferred.length === 0) return;
+      // The LEAF PATHS, not just the origin: a deferred reference is one leaf of
+      // a bag that can carry hundreds, and the remedy (make the producer region
+      // answer, or spell the reference as one complete literal) needs the leaf.
+      const detail =
+        `${origin} at ${deferred.join(', ')}: ` +
+        // MASKED for the reason every other echo of a resolver error here is:
+        // the bag was already substituted into by the pin.
+        maskSecretsInText(err instanceof Error ? err.message : String(err), secrets);
+      deferredUnresolved.push(detail);
+      logger.warn(
+        `Scrub of ${stack.stackName} could not resolve a secret reference the intrinsics ASSEMBLE ` +
+          `in ${detail} — its region is decided only after assembly, so this pass handed it to the ` +
+          `resolver and the resolver could not answer. No needle was recorded for that leaf, so ` +
+          `this stack is NOT reported clean. Make the region the reference names answer for it, or ` +
+          `spell it as one complete literal '{{resolve:...}}' so the failure names the reference.`
+      );
+    };
     let parameters: Record<string, unknown> = {};
     let conditions: Record<string, boolean> = {};
     try {
@@ -2893,16 +3053,17 @@ export async function scrubStack(
       // swallowed would leave the command reporting success over a state file
       // it never scrubbed, which is the one outcome the issue says must not
       // survive.
+      const deferredAssembled: string[] = [];
       const resolveInput = await pinCrossRegionSecrets(
         templateResource.Properties,
         stack.stackName,
         {
           stackRegion: region,
           producerRegions,
-          foreignProducerRegions,
           resolvers,
           recordedSecretValues,
           origin: `resource '${logicalId}'`,
+          deferredAssembled,
         }
       );
       const resourceContext = resolverContext(recordedSecretValues);
@@ -2922,6 +3083,17 @@ export async function scrubStack(
         // A region-AMBIGUOUS refusal is not best-effort -- see
         // `isRegionAmbiguousRefusal`.
         if (isRegionAmbiguousRefusal(err)) throw err;
+        // ...and neither is a failure over a leaf this pass DEFERRED (issue
+        // #2157). It stays best-effort for the BAG — an unrelated `Ref` failure
+        // must not refuse the stack — but it is recorded and warned about, so
+        // the run cannot report this stack clean over a secret reference nobody
+        // resolved.
+        recordDeferredResolutionFailure(
+          deferredAssembled,
+          `resource '${logicalId}'`,
+          err,
+          recordedSecretValues
+        );
         // Best-effort: a resource whose intrinsics cannot resolve (a Ref to
         // something not in state) still has its own {{resolve:...}} leaves
         // recorded along the way; leave the rest untouched.
@@ -3030,13 +3202,14 @@ export async function scrubStack(
         // but the region question is the expression's, not the position's — and
         // this resolution's RESULT becomes a state key, so a wrong-region answer
         // here mis-keys the whole positioned outputs pass.
+        const nameDeferred: string[] = [];
         const nameSource = await pinCrossRegionSecrets(declaredExportName, stack.stackName, {
           stackRegion: region,
           producerRegions,
-          foreignProducerRegions,
           resolvers,
           recordedSecretValues: outputSecrets,
           origin: `Export.Name of output '${name}'`,
+          deferredAssembled: nameDeferred,
         });
         // Records into the SAME map the value loop below fills, and that is
         // load-bearing rather than tidiness: this loop runs FIRST, so a
@@ -3061,6 +3234,13 @@ export async function scrubStack(
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
           if (isRegionAmbiguousRefusal(err)) throw err;
+          // Issue #2157, same treatment as the resource bag above.
+          recordDeferredResolutionFailure(
+            nameDeferred,
+            `Export.Name of output '${name}'`,
+            err,
+            outputSecrets
+          );
           // No key to mark ambiguous — the name the deploy used is unknown and
           // could be any output's — so the whole source bag becomes untrusted.
           outputsSourceUntrusted = true;
@@ -3174,13 +3354,14 @@ export async function scrubStack(
       // Issue #2109, same treatment and same placement as the two above. The
       // POSITION source written just above is the ORIGINAL `value`, never this
       // copy: `redactSecretsForState` reads UNRESOLVED expressions off it.
+      const valueDeferred: string[] = [];
       const valueSource = await pinCrossRegionSecrets(value, stack.stackName, {
         stackRegion: region,
         producerRegions,
-        foreignProducerRegions,
         resolvers,
         recordedSecretValues: outputSecrets,
         origin: `output '${name}'`,
+        deferredAssembled: valueDeferred,
       });
       const valueContext = resolverContext(outputSecrets);
       // Issue #2133, same treatment and same placement as the two above. An
@@ -3195,6 +3376,8 @@ export async function scrubStack(
         // A region-AMBIGUOUS refusal is not best-effort -- see
         // `isRegionAmbiguousRefusal`.
         if (isRegionAmbiguousRefusal(err)) throw err;
+        // Issue #2157, same treatment as the two above.
+        recordDeferredResolutionFailure(valueDeferred, `output '${name}'`, err, outputSecrets);
         // MASKED for the same reason as the two above — `valueSource` is a
         // post-pin bag. Verbose-only.
         logger.debug(
@@ -3256,6 +3439,7 @@ export async function scrubStack(
         secretsFound: 0,
         secretBearingKeys: secretBearingKeys.length,
         unverifiableReads: prePassFindings.unverifiable.length,
+        deferredUnresolvedReads: deferredUnresolved.length,
       };
     }
 
@@ -3409,6 +3593,7 @@ export async function scrubStack(
       secretsFound: totalSecrets,
       secretBearingKeys: secretBearingKeys.length,
       unverifiableReads: prePassFindings.unverifiable.length,
+      deferredUnresolvedReads: deferredUnresolved.length,
     };
   } catch (err) {
     // THE MASKING BOUNDARY for everything that ESCAPES this function (issue

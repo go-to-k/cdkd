@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
-import { DynamicRefCrossRegionStack } from '../lib/dynamic-ref-cross-region-stack.ts';
+import {
+  AssembledForeignSecretStack,
+  DynamicRefCrossRegionStack,
+} from '../lib/dynamic-ref-cross-region-stack.ts';
 
 const app = new cdk.App();
 
@@ -40,3 +43,19 @@ new DynamicRefCrossRegionStack(app, 'CdkdDynamicRefCrossRegionBStack', {
   secureSourceParameterName,
   mixedTypeSourceParameterName,
 });
+
+// The `cdkd scrub` arm for issue
+// [#2157](https://github.com/go-to-k/cdkd/issues/2157). Its own stack, in
+// region A, carrying ONE assembled foreign-ARN SECRET reference and no
+// region-less one -- see AssembledForeignSecretStack for why the two cannot
+// share a stack. Gated on the ARN so a bare `cdk synth` (and any caller that
+// has not seeded the secure parameter) still works.
+const foreignSecureParameterArn = process.env['CDKD_IT_DYNREF_FOREIGN_SECURE_ARN'];
+if (foreignSecureParameterArn) {
+  new AssembledForeignSecretStack(app, 'CdkdDynamicRefAssembledSecretStack', {
+    description:
+      'Scrubs an Fn::Sub-ASSEMBLED foreign-ARN SecureString reference (cdkd issue #2157)',
+    env: { region: regionA },
+    foreignSecureParameterArn,
+  });
+}

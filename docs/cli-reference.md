@@ -2838,7 +2838,14 @@ ones it could not examine. A conditional import does NOT refuse when its branch
 is not taken: the pre-pass walks `Fn::If` the way the resolver does, selected
 branch only, and neither does a `Fn::ImportValue` inside an output that this
 run's conditions SUPPRESS -- such an output wrote no state key, so there is
-nothing behind it to protect.
+nothing behind it to protect. The same branch selection now decides whether the
+PRODUCER's export counts as secret-bearing at all (issue
+[go-to-k/cdkd#2150](https://github.com/go-to-k/cdkd/issues/2150)): that test
+used to scan the whole output node as text, so an `Fn::If` whose UNTAKEN arm
+held a `{{resolve:...}}` expression made the export look secret-bearing while
+the deployed value was the plain branch -- and the refusal below then fired over
+a stored value nothing could turn into an expression, with no bypass flag. One
+selection now feeds both halves of the question.
 
 **Which branch scrub selects is evaluated against the template's DEFAULT
 parameter values.** `scrub` takes no `--parameters`, so it has nothing else to
@@ -2874,7 +2881,12 @@ multi-stack app that imports anything. That half is taken from the app's
 TEMPLATES, and the refusal fires only when they say the value carries a secret:
 either the producer declares that export from a `{{resolve:...}}` expression, or
 the producer RE-EXPORTS a value that a stack further up the chain declares from
-one (issue [go-to-k/cdkd#2146](https://github.com/go-to-k/cdkd/issues/2146)). An
+one (issue [go-to-k/cdkd#2146](https://github.com/go-to-k/cdkd/issues/2146)).
+Both arms read the export through the SAME `Fn::If` branch selection described
+above, so an expression sitting only in a branch this run does not select
+answers neither of them -- and the residual is stated rather than implied: a
+secret reachable only through that branch is not detected, which is the outcome
+that reference had before this refusal existed. An
 ordinary import of a bucket name or an ARN is unaffected under either arm. The chain arm
 is not a refinement: a middle stack's output IS the `Fn::ImportValue`, so asking
 that one template answered "not secret-bearing", and `cdkd scrub <the stack at
@@ -2910,6 +2922,22 @@ from the templates), so one run normally scrubs a producer and then resolves its
 expression in the consumer. `--dry-run` writes nothing, so the producer is never
 rewritten -- a dry run over a not-yet-scrubbed producer is exactly where this
 refusal is expected.
+
+**An ASSEMBLED secret reference whose region cannot answer is a finding too**
+(issue [go-to-k/cdkd#2157](https://github.com/go-to-k/cdkd/issues/2157)). A
+reference the intrinsics build out of parts -- an `Fn::Sub` placeholder inside
+it, an `Fn::Join` that splits it -- does not exist as a complete expression
+until it is resolved, so `scrub`'s region pre-pass cannot classify it and hands
+it to the resolver, which decides the region AFTER assembly and routes it to the
+region its ARN names. When that region then cannot answer -- a denied read, a
+deleted secret -- no needle is recorded for that leaf, so the stack is NOT
+reported clean: scrub warns naming the leaf, and `--fail` exits non-zero. It is
+a finding rather than the exit-2 refusal its complete-token twin raises
+(`SCRUB_CROSS_REGION_SECRET_UNRESOLVED`) because the failure surfaces from a
+whole-bag resolution and cannot be attributed to that leaf, so refusing would
+strand a stack over an unrelated unresolvable `Ref`. Unlike the by-design
+finding below, this one IS fixable: make that region resolve the reference, or
+spell it as one complete literal `{{resolve:...}}`, and re-run.
 
 **A read cdkd declines BY DESIGN is a finding, not a refusal.** The
 cross-account `Fn::GetStackOutput` of a redacted value is never resolved: cdkd

@@ -1,7 +1,14 @@
 import * as cdk from 'aws-cdk-lib';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
-import { EXPORT_NAME, SECRET_JSON_FIELD, SECRET_NAME, integSecretPlaintext } from './shared.ts';
+import {
+  CONDITIONAL_EXPORT_NAME,
+  CONDITIONAL_PLAIN_VALUE,
+  EXPORT_NAME,
+  SECRET_JSON_FIELD,
+  SECRET_NAME,
+  integSecretPlaintext,
+} from './shared.ts';
 
 /**
  * Producer fixture for issue #1934.
@@ -49,6 +56,41 @@ export class ProducerStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'CrossStackSecretArnOutput', {
       value: secret.secretArn,
       description: 'ARN of the fixture secret. Non-secret control for the redaction premise.',
+    });
+
+    // THE CONDITIONAL EXPORT (issue
+    // [#2150](https://github.com/go-to-k/cdkd/issues/2150)), and the shape that
+    // stranded an importing stack with no way out.
+    //
+    // The condition compares two DIFFERENT literals, so it is false at synth
+    // time, every run, on every account -- there is no parameter to set and no
+    // per-run variation. The deployed export value is therefore always
+    // `CONDITIONAL_PLAIN_VALUE`, while the TRUE arm the deployment never takes
+    // holds a real `{{resolve:secretsmanager:...}}` expression.
+    //
+    // `verify.sh` proves the premise (the producer's STORED value is the plain
+    // branch) before it asserts anything about the consumer, because an arm
+    // whose condition had come out TRUE would be inert: the stored value would
+    // then carry an expression, the discriminator would return early, and the
+    // refusal under test could not fire in either direction.
+    const useSecretBranch = new cdk.CfnCondition(this, 'CrossStackUseSecretBranch', {
+      expression: cdk.Fn.conditionEquals('crossstack-branch-a', 'crossstack-branch-b'),
+    });
+
+    new cdk.CfnOutput(this, 'CrossStackConditionalSecretOutput', {
+      value: cdk.Fn.conditionIf(
+        useSecretBranch.logicalId,
+        cdk.SecretValue.secretsManager(SECRET_NAME, {
+          jsonField: SECRET_JSON_FIELD,
+        }).unsafeUnwrap(),
+        CONDITIONAL_PLAIN_VALUE
+      ).toString(),
+      exportName: CONDITIONAL_EXPORT_NAME,
+      description:
+        'An Fn::If whose UNTAKEN arm carries a secret expression. The deployed ' +
+        'value is the plain branch, so a scan that sees both arms verdicts this ' +
+        'export secret-bearing and then refuses over a stored value nothing can ' +
+        'turn into an expression (issue 2150).',
     });
 
     new cdk.CfnOutput(this, 'CrossStackSecretPasswordOutput', {
