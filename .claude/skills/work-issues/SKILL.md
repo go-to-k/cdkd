@@ -799,6 +799,31 @@ The general shape: **a fence is not evidence until you have watched it go red on
 something you had not already counted.** Calibration tells you it is not noisy;
 only the spelling and deletion probes tell you it is load-bearing.
 
+Two more questions to ask of any fence you build, both learned on 2026-08-21
+from go-to-k/cdkd#2027, and both of which let a fence pass while testing less
+than it claims:
+
+- **Does it watch the OTHER direction?** A fence that asks only "is the bad
+  input refused?" never notices the gate starting to refuse GOOD input. That
+  lane's class fence had no such case, and two consecutive rounds shipped false
+  refusals — a commit message quoting `git -C $W`, a `--body` containing a
+  newline plus a command, `cd <newdir> && git init && git commit`,
+  `MSG=$(echo git commit -m x)` — every one of which the fence watched go by.
+  For a guard, the pair is "refuses what it must" AND "leaves alone what it
+  must"; only the second catches an over-tightening fix.
+- **Is it hermetic, and on WHICH axis?** Hermeticity is per-dependency, so
+  closing one axis says nothing about the others, and CI is where you find that
+  out one axis per round-trip. The same fence was pinned to a git SHA (failed in
+  CI's shallow clone — correctly, and loudly: `cannot read baseline … fence did
+  NOT run`), then vendored as a fixture, and then failed AGAIN because a `~`
+  expansion made its expected values depend on `$HOME`, so it passed only on the
+  machine whose table was recorded. Enumerate the axes up front — git history,
+  environment, cwd, clock, locale, user — and for each either pin it or record a
+  measured negative. Prefer PINNING over normalizing: a normalization layer sits
+  between the implementation and the assertions, which is exactly where a fence
+  goes green-but-inert, and pinning lets the case keep asserting an exact known
+  value instead of a token.
+
 You may fan out **one subagent per lane** (disjoint files) to run them
 concurrently — give each agent its worktree path, its allowed files, and an
 explicit "do NOT touch <the other lanes' / other agents' files>; STOP and report
@@ -1146,6 +1171,22 @@ Two things follow, and the second is the one that is easy to get backwards:
   a command entrypoint at round five is how round six happens. Take the narrow fix,
   file the structural one, and reference it from the narrow fix so the next reader
   sees the choice was made rather than missed.
+- **Ask whether the thing you keep patching is a CLASSIFIER, and if it is, stop
+  and build the differential fence in §5 before the next fix.** That section
+  already says hand-picked cases cannot fence a classifier — the failure is not
+  that the rule is missing, it is that nobody asks the question while inside a
+  cascade, because each round has a named blocker in hand and patching it feels
+  like progress. On 2026-08-21 go-to-k/cdkd#2027 ran FIVE rounds, each one
+  finding a spelling the previous had not (`git -C "$W"`, then a quoted path
+  containing a space plus `$( )`, then `gh -R`, then an apostrophe in a `--body`
+  that made the segmenter emit ZERO segments and disarm every gate), and rounds
+  3 and 4 each introduced regressions in the same two functions they were fixing
+  — five across two rounds. The segmenter IS a classifier: command text in,
+  "which gates consider this" out. The differential walk ended it in one round,
+  and it found the last two blockers by construction rather than by anyone
+  guessing a spelling. The tell is not the round count, it is that every round's
+  finding is *a new input class the code got wrong* rather than a new place the
+  logic was wrong.
 - **When the shape is "TWO SPELLINGS OF ONE QUESTION", the fix is to make both
   sites use ONE predicate verbatim — not to write a better second spelling.**
   This is the sub-case that keeps regenerating, because a better spelling looks
@@ -1263,6 +1304,21 @@ The `grep` is load-bearing: `kill -9` surfaces as rc=137, which is otherwise
 indistinguishable from any other crash. Pair it with a `Monitor` that emits on
 phase lines AND on log-growth stalling, so a wedge announces itself instead of
 being discovered hours later.
+
+**The harness's "completed, exit 0" is the exit code of the command you
+BACKGROUNDED, which is not always the job you care about.** Write
+`nohup <long job> > log 2>&1 & echo started` into a backgrounded call and the
+wrapper returns immediately: you get a completion notification with rc=0 while
+the job runs on for minutes. Measured 2026-08-21 — a full suite reported
+"completed (exit code 0)" and was still executing 90 seconds later, with the
+summary lines absent from its log because it had not reached them. Run the long
+job as the SOLE command of the backgrounded call (no trailing `&`), so the
+notification tracks the thing you are waiting on, and read the log's own
+terminal line rather than the notification. Two nearby traps in the same
+family: a shell whose `cd` was inside the backgrounded compound leaves the
+parent's `$VAR` unset, so a follow-up `grep "$LOG"` reads a path that never
+existed; and `grep -c` exits 1 on a count of zero, so a verification command
+ending in one reports FAILED for the very case it was checking for.
 
 **Check a fixture's unstated PRECONDITIONS before spending a run on it.** Integ
 fixtures guard themselves and refuse rather than explain, so a wrong region
