@@ -29,6 +29,17 @@
 #      the consumer's state record for it holds the region-LESS expression and
 #      neither plaintext, and (c) state.outputReads records
 #      sourceRegion=us-west-2, which is the evidence the fix keys on.
+#   2b/2b2/2c. The `cdkd drift` half (issue #2108), riding the CLEAN v1 deploy
+#      rather than the journal. 2b: `drift --json` on the untouched stack must
+#      mark SecretEcho `notCompared` + `referencesUnresolved` and exit 2 -- the
+#      exit code is the signal a CI gate reads, and pre-#2108 this population
+#      exited 1. 2b2: tamper TWO properties out of band (the secret-bearing
+#      `Value` AND the ordinary `Description`) and assert the resource is now
+#      DRIFTED on Description only, still flagged, exiting 1 -- without the
+#      second property the resource stays `clean` and the revert below returns
+#      early, exercising no revert code at all. 2c: `drift --revert -y` must
+#      reach the per-resource refusal (`refused to re-resolve`, a string only
+#      the revert path produces), write NOTHING, and exit 2.
 #   3. Deploy the CONSUMER v2 (Description change + injected SQS failure) under
 #      --no-rollback. Assert it FAILED, a journal exists, and the journal
 #      carries an UPDATE op for the echo parameter — without that op the
@@ -302,65 +313,198 @@ echo "[verify]   ok: consumer state.outputReads records sourceRegion=${PRODUCER_
 # ${CONSUMER_SECRET} and `--revert` pushed THAT onto the live parameter.
 echo "[verify] phase 2b: 'cdkd drift' refuses to baseline the cross-region secret locally"
 
-DRIFT_JSON="$(mktemp)"
+# Every artifact of this arm lives under LOGDIR, which `cleanup` removes
+# unconditionally on EXIT / INT / TERM. A bare `mktemp` was registered with
+# nothing, so a `set -e` abort between the create and the `rm -f` left a
+# state-derived payload sitting in /tmp for whoever looks next.
+DRIFT_CLEAN_JSON="${LOGDIR}/drift-clean.json"
+DRIFT_CLEAN_ERR="${LOGDIR}/drift-clean.err"
 DRIFT_RC=0
 AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CONSUMER_STACK}" \
-  --state-bucket "${STATE_BUCKET}" --json >"${DRIFT_JSON}" 2>/dev/null || DRIFT_RC=$?
+  --state-bucket "${STATE_BUCKET}" --json >"${DRIFT_CLEAN_JSON}" 2>"${DRIFT_CLEAN_ERR}" || DRIFT_RC=$?
 
-# The refusal must be visible in the MACHINE-READABLE payload. A skipped
-# comparison that carries no marker is indistinguishable from "no drift", and a
-# CI consumer of `cdkd drift --json` would read it as a clean bill of health.
+# Scan for plaintext BEFORE any assertion that can DUMP a payload to stderr.
+# Here the two seeded values are committed literals so a dump is harmless, but
+# this fixture is the shape a future secret-flow fixture will copy, and with a
+# randomly generated secret a failure dump would put the plaintext into the CI
+# log on exactly the regression run that matters.
+# The wrong-region plaintext must never reach the report or the --json payload:
+# pre-fix it became the `secrets` needle, so it was both the value compared
+# against AND the string redaction was hunting for.
+assert_no_plaintext() { # usage: assert_no_plaintext <label> <file>...
+  local label="$1"
+  shift
+  local secret file
+  for secret in "${PRODUCER_SECRET}" "${CONSUMER_SECRET}"; do
+    for file in "$@"; do
+      if grep -qF "${secret}" "${file}"; then
+        echo "FAIL: ${label} carries a SecureString plaintext" >&2
+        exit 1
+      fi
+    done
+  done
+  echo "[verify]   ok: no plaintext in ${label}"
+}
+assert_no_plaintext "the drift --json payload + stderr" "${DRIFT_CLEAN_JSON}" "${DRIFT_CLEAN_ERR}"
+
 # Recursive descent so the assertion does not depend on whether the report is
 # wrapped in a `stacks[]` array.
 NOT_COMPARED="$(jq -r '[.. | objects | select(has("notCompared")) | .notCompared[]?.logicalId] | unique | join(",")' \
-  "${DRIFT_JSON}")"
+  "${DRIFT_CLEAN_JSON}")"
 case ",${NOT_COMPARED}," in
   *,SecretEcho,*)
     echo "[verify]   ok: SecretEcho reported notCompared (drift rc=${DRIFT_RC})"
     ;;
   *)
-    echo "FAIL: drift --json did not mark SecretEcho notCompared (got '${NOT_COMPARED}') — a refused comparison is being reported as clean" >&2
-    jq '.' "${DRIFT_JSON}" >&2 || cat "${DRIFT_JSON}" >&2
-    rm -f "${DRIFT_JSON}"
+    echo "FAIL: drift --json did not mark SecretEcho notCompared (got '${NOT_COMPARED}') -- a refused comparison is being reported as clean" >&2
+    jq '.' "${DRIFT_CLEAN_JSON}" >&2 || cat "${DRIFT_CLEAN_JSON}" >&2
     exit 1
     ;;
 esac
 
-# The wrong-region plaintext must never reach the report or the --json payload:
-# pre-fix it became the `secrets` needle, so it was both the value compared
-# against AND the string redaction was hunting for.
-for secret in "${PRODUCER_SECRET}" "${CONSUMER_SECRET}"; do
-  if grep -qF "${secret}" "${DRIFT_JSON}"; then
-    echo "FAIL: drift --json payload carries a SecureString plaintext" >&2
-    rm -f "${DRIFT_JSON}"
-    exit 1
-  fi
-done
-echo "[verify]   ok: no plaintext in the drift --json payload"
-
 # Second positive marker, on the resource entry itself rather than the roll-up.
-REFS_UNRESOLVED="$(jq -r '[.. | objects | select(.logicalId == "SecretEcho") | .referencesUnresolved] | any' "${DRIFT_JSON}")"
+REFS_UNRESOLVED="$(jq -r '[.. | objects | select(.logicalId == "SecretEcho") | .referencesUnresolved] | any' "${DRIFT_CLEAN_JSON}")"
 if [ "${REFS_UNRESOLVED}" != "true" ]; then
   echo "FAIL: SecretEcho's drift entry does not carry referencesUnresolved=true (got '${REFS_UNRESOLVED}')" >&2
-  jq '.' "${DRIFT_JSON}" >&2 || cat "${DRIFT_JSON}" >&2
-  rm -f "${DRIFT_JSON}"
+  jq '.' "${DRIFT_CLEAN_JSON}" >&2 || cat "${DRIFT_CLEAN_JSON}" >&2
   exit 1
 fi
 echo "[verify]   ok: SecretEcho carries referencesUnresolved=true"
-rm -f "${DRIFT_JSON}"
 
-# Now the arm that WRITES. Tamper the live echo parameter so a revert has a
-# reason to touch it, then prove `--revert` does not push the consumer region's
-# secret over it. The sentinel is deliberately unlike either seeded value so it
-# cannot coincide with an assertion needle.
+# THIRD marker, and the one a CI gate actually reads. Nothing drifted here, so
+# the exit code is the only thing standing between "cdkd compared everything and
+# found nothing" and "cdkd never compared the one property that could differ".
+# 2 is this repo's "work completed but something was SKIPPED" code. Pre-#2108
+# this population exited 1 (it reported phantom drift), so a non-zero exit
+# PRESERVES what CI consumers already had -- 0 would be the silent downgrade.
+if [ "${DRIFT_RC}" -ne 2 ]; then
+  echo "FAIL: drift exited ${DRIFT_RC} on a stack whose only secret-bearing property was NOT compared; expected 2 (1 would mean something drifted, 0 that the skip is being reported as a pass)" >&2
+  jq '.' "${DRIFT_CLEAN_JSON}" >&2 || cat "${DRIFT_CLEAN_JSON}" >&2
+  exit 1
+fi
+echo "[verify]   ok: drift exited 2 (nothing drifted, nothing fully compared)"
+
+# ---------------------------------------------------------------------------
+# PHASE 2b2 + 2c: the arm that WRITES
+# ---------------------------------------------------------------------------
+# TWO properties are tampered, and the SECOND one is what makes this arm run at
+# all. `SecretEcho`'s only secret-bearing property is `Value`, whose STATE side
+# is the `{{resolve:ssm:...}}` token the comparator SKIPS -- so tampering `Value`
+# alone leaves the resource `clean`, `drifted` empty, and `runRevert` returns
+# early with "nothing to revert". The whole phase then issued live writes for
+# zero signal, which is exactly why a real-AWS mutation probe of it came back
+# green. `Description` is an ordinary non-secret property of the SAME resource,
+# so tampering it makes the resource genuinely drifted, the revert actually runs,
+# and it reaches the secret leaf and refuses there. The unit tests use this same
+# shape (a tampered public env var beside a refused secret one).
+#
+# `Description` is passed EXPLICITLY rather than relying on PutParameter's
+# overwrite semantics for an omitted optional field: this arm's premise must be
+# a property this fixture sets, not a side effect of what AWS does with a field
+# nobody named.
 TAMPER_SENTINEL="cdkd-2108-tampered-do-not-resolve"
+TAMPER_DESCRIPTION="cdkd-2108-tampered-description"
+ECHO_DESCRIPTION_V1="cross-region secret echo (v1)"
 aws ssm put-parameter --name "${ECHO_PARAM}" --value "${TAMPER_SENTINEL}" \
-  --type String --overwrite --region "${CONSUMER_REGION}" >/dev/null
-echo "[verify] phase 2c: 'cdkd drift --revert' must not write a foreign region's secret"
+  --type String --description "${TAMPER_DESCRIPTION}" \
+  --overwrite --region "${CONSUMER_REGION}" >/dev/null
 
+echo_description() { # the live Description; get-parameter does not return it
+  aws ssm describe-parameters --region "${CONSUMER_REGION}" \
+    --parameter-filters "Key=Name,Values=${ECHO_PARAM}" \
+    --query 'Parameters[0].Description' --output text
+}
+LIVE_DESCRIPTION="$(echo_description)"
+if [ "${LIVE_DESCRIPTION}" != "${TAMPER_DESCRIPTION}" ]; then
+  echo "FAIL: the out-of-band tamper did not take -- live Description is '${LIVE_DESCRIPTION}', expected '${TAMPER_DESCRIPTION}'. Phase 2c would exercise no revert code at all." >&2
+  exit 1
+fi
+echo "[verify]   ok: tampered both Value (secret-bearing) and Description (ordinary)"
+
+# PHASE 2b2: prove the revert has something to do BEFORE running it. Without
+# this the phase can go silently inert again -- a `clean` resource makes
+# `--revert` a no-op that still exits 0 and still passes every assertion below.
+echo "[verify] phase 2b2: the tampered resource is DRIFTED and still only PARTIALLY compared"
+DRIFT_TAMPERED_JSON="${LOGDIR}/drift-tampered.json"
+DRIFT_TAMPERED_ERR="${LOGDIR}/drift-tampered.err"
+DRIFT2_RC=0
+AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CONSUMER_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --json >"${DRIFT_TAMPERED_JSON}" 2>"${DRIFT_TAMPERED_ERR}" || DRIFT2_RC=$?
+assert_no_plaintext "the tampered-run --json payload + stderr" "${DRIFT_TAMPERED_JSON}" "${DRIFT_TAMPERED_ERR}"
+
+DRIFTED_PATHS="$(jq -r '[.. | objects | select(has("drifted")) | .drifted[]? | select(.logicalId == "SecretEcho") | .changes[]?.path] | join(",")' \
+  "${DRIFT_TAMPERED_JSON}")"
+case ",${DRIFTED_PATHS}," in
+  *,Description,*)
+    echo "[verify]   ok: SecretEcho is drifted on Description (paths: ${DRIFTED_PATHS})"
+    ;;
+  *)
+    echo "FAIL: SecretEcho does not report a Description drift (got '${DRIFTED_PATHS}') -- the revert below would return early and this phase would exercise NO revert code" >&2
+    jq '.' "${DRIFT_TAMPERED_JSON}" >&2 || cat "${DRIFT_TAMPERED_JSON}" >&2
+    exit 1
+    ;;
+esac
+
+# The tampered `Value` must NOT be among them: its state side is the
+# `{{resolve:...}}` token, so a reported change there would mean cdkd compared
+# the token against the live plaintext -- the phantom drift #2108 removes.
+case ",${DRIFTED_PATHS}," in
+  *,Value,*)
+    echo "FAIL: SecretEcho reports a Value drift -- the secret-bearing property is being compared after a refusal" >&2
+    exit 1
+    ;;
+esac
+
+# The flag on a DRIFTED entry, which the clean run above cannot reach: the
+# changes it DOES report are real, and a consumer must still not read them as
+# the whole comparison.
+REFS2="$(jq -r '[.. | objects | select(.logicalId == "SecretEcho") | .referencesUnresolved] | any' "${DRIFT_TAMPERED_JSON}")"
+if [ "${REFS2}" != "true" ]; then
+  echo "FAIL: the DRIFTED SecretEcho entry does not carry referencesUnresolved=true (got '${REFS2}')" >&2
+  exit 1
+fi
+# Drift wins the exit code: a consumer gating on 1 must not lose a detection it
+# gets today just because the same run also refused a secret comparison.
+if [ "${DRIFT2_RC}" -ne 1 ]; then
+  echo "FAIL: drift exited ${DRIFT2_RC} with a drifted resource on record; expected 1 (2 would mean the refusal outranked a real detection)" >&2
+  exit 1
+fi
+echo "[verify]   ok: drifted + partially compared exits 1, flag present on the drifted entry"
+
+echo "[verify] phase 2c: 'cdkd drift --revert' must not write a foreign region's secret"
+REVERT_LOG="${LOGDIR}/revert.log"
 REVERT_RC=0
 AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CONSUMER_STACK}" --revert -y \
-  --state-bucket "${STATE_BUCKET}" >/dev/null 2>&1 || REVERT_RC=$?
+  --state-bucket "${STATE_BUCKET}" >"${REVERT_LOG}" 2>&1 || REVERT_RC=$?
+assert_no_plaintext "the revert output" "${REVERT_LOG}"
+
+# THE DISCRIMINATOR for this phase, and it is POSITIVE: this string is produced
+# ONLY by the revert path's refusal branch. The detection path says "refused to
+# resolve"; only the revert says "re-resolve", and it is reached after
+# `runRevert` has already decided the resource needs updating. A phase that
+# returned early at "nothing to revert" cannot print it.
+if ! grep -q 'refused to re-resolve' "${REVERT_LOG}"; then
+  echo "FAIL: the revert never reached the per-resource refusal branch -- it either returned early (nothing drifted) or resolved the reference in the wrong region" >&2
+  sed 's/^/  /' "${REVERT_LOG}" >&2
+  exit 1
+fi
+# Named by the refusal so the message is actionable, and both regions so the
+# ambiguity it refuses is legible.
+for needle in "${SHARED_SECURE_PARAM}" "${PRODUCER_REGION}" "${CONSUMER_REGION}"; do
+  if ! grep -qF "${needle}" "${REVERT_LOG}"; then
+    echo "FAIL: the revert refusal does not name '${needle}'" >&2
+    sed 's/^/  /' "${REVERT_LOG}" >&2
+    exit 1
+  fi
+done
+# Partial failure: the resource never reached provider.update, so the run is
+# counted as one unresolvable resource and exits 2.
+if [ "${REVERT_RC}" -ne 2 ]; then
+  echo "FAIL: drift --revert exited ${REVERT_RC}, expected 2 (one resource refused, nothing written)" >&2
+  sed 's/^/  /' "${REVERT_LOG}" >&2
+  exit 1
+fi
+echo "[verify]   ok: the revert reached the refusal branch and exited 2"
 
 POST_REVERT="$(aws ssm get-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}" \
   --query 'Parameter.Value' --output text)"
@@ -370,21 +514,34 @@ POST_REVERT="$(aws ssm get-parameter --name "${ECHO_PARAM}" --region "${CONSUMER
 # this very assertion GREEN: the revert exited 2 instead of writing, so "the live
 # value is not the consumer region's secret" is a confluence point that a correct
 # refusal and an unrelated revert failure both produce. The discriminators are the
-# two positive markers asserted in phase 2b above; this check only guarantees that
-# whatever else happens, the foreign plaintext never lands on the live resource.
+# positive markers asserted above; this check only guarantees that whatever else
+# happens, the foreign plaintext never lands on the live resource.
 if [ "${POST_REVERT}" = "${CONSUMER_SECRET}" ]; then
   echo "FAIL: drift --revert wrote the CONSUMER region's secret onto the live parameter (issue #2108 regressed)" >&2
   exit 1
 fi
-echo "[verify]   ok: the live parameter did not receive the consumer region's secret (revert rc=${REVERT_RC})"
+# Nothing was written AT ALL: the refusal returns before provider.update, so the
+# non-secret property the revert was about is still tampered. This is what
+# separates "refused" from "reverted everything except the secret".
+POST_REVERT_DESCRIPTION="$(echo_description)"
+if [ "${POST_REVERT_DESCRIPTION}" != "${TAMPER_DESCRIPTION}" ]; then
+  echo "FAIL: the revert wrote Description ('${POST_REVERT_DESCRIPTION}') -- the refusal is expected to abandon the whole resource before provider.update" >&2
+  exit 1
+fi
+echo "[verify]   ok: nothing was written to the live parameter (revert rc=${REVERT_RC})"
 
-# Restore, so phases 3+ start from exactly the state phase 2 left behind.
+# Restore BOTH tampered properties, so phases 3+ start from exactly the state
+# phase 2 left behind. Description is restored explicitly for the same reason it
+# was tampered explicitly -- phase 3's v1 -> v2 UPDATE is a Description change,
+# and starting it from a tampered value would measure a different delta.
 aws ssm put-parameter --name "${ECHO_PARAM}" --value "${PRODUCER_SECRET}" \
-  --type String --overwrite --region "${CONSUMER_REGION}" >/dev/null
+  --type String --description "${ECHO_DESCRIPTION_V1}" \
+  --overwrite --region "${CONSUMER_REGION}" >/dev/null
 RESTORED="$(aws ssm get-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}" \
   --query 'Parameter.Value' --output text)"
-if [ "${RESTORED}" != "${PRODUCER_SECRET}" ]; then
-  echo "FAIL: could not restore the echo parameter after the #2108 arm; later phases would be measuring the wrong baseline" >&2
+RESTORED_DESCRIPTION="$(echo_description)"
+if [ "${RESTORED}" != "${PRODUCER_SECRET}" ] || [ "${RESTORED_DESCRIPTION}" != "${ECHO_DESCRIPTION_V1}" ]; then
+  echo "FAIL: could not restore the echo parameter after the #2108 arm (value='${RESTORED}', description='${RESTORED_DESCRIPTION}'); later phases would be measuring the wrong baseline" >&2
   exit 1
 fi
 echo "[verify]   ok: echo parameter restored for the rollback arms"

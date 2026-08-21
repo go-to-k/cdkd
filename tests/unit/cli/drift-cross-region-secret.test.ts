@@ -956,3 +956,137 @@ describe('cdkd drift routes an ARN-form ssm reference by its ARN region (issue #
     expect(sent.Environment.Variables['SECRET_PASSWORD']).toBe(IRELAND_PASSWORD);
   });
 });
+
+describe('cdkd drift EXIT CODE distinguishes "clean" from "not compared" (issue #2108)', () => {
+  /**
+   * The exit code is the signal most CI gates actually read, and it was the one
+   * round 1 of #2108 left saying "pass" for a refused comparison.
+   *
+   * DIRECTION MATTERS: pre-#2108 this population resolved the reference in the
+   * WRONG region, could never match, and reported `drifted` -- so it exited 1.
+   * Refusing correctly made it report `clean`, which would have exited 0. A
+   * non-zero exit therefore PRESERVES what those gates already had; leaving it
+   * at 0 would have been the silent downgrade.
+   *
+   * The four cases are the full truth table of the two independent facts the
+   * code decides on (did anything drift, was anything left uncompared), because
+   * a test of the refused case alone cannot tell a correct implementation from
+   * one that exits non-zero unconditionally.
+   */
+  it('refused-only: exits 2, not 0 -- nothing drifted, but nothing was fully compared either', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(NAME_EXPR) }, [PRODUCER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+    });
+
+    const { output } = await runDrift(['Consumer']);
+
+    // Still reports no drift -- the comparator skipped the only property that
+    // could have differed. The exit code is what stops that reading as a pass.
+    expect(output).toContain('no drift detected');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('drifted-only: exits 1, unchanged -- a fully compared resource that really differs', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    // Foreign ARN, so the reference RESOLVES (in the producer's region) and
+    // nothing is refused; the public `PLAIN` var is what drifts.
+    mockGetState.mockResolvedValue(makeState({ Fn: lambdaResource(PRODUCER_ARN_EXPR) }, []));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD, 'tampered'),
+    });
+
+    const { output } = await runDrift(['Consumer']);
+
+    expect(output).toContain('drift detected');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('clean with nothing refused: exits 0 -- the only case that is a clean bill of health', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(makeState({ Fn: lambdaResource(PRODUCER_ARN_EXPR) }, []));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+    });
+
+    const { error } = await runDrift(['Consumer']);
+
+    // No throw at all: `process.exit` is never reached, so the command returns.
+    expect(error).toBeUndefined();
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('both at once: exits 1 -- drift is the stronger signal and keeps its code', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    // Region-less reference WITH a foreign producer on record -> refused, and
+    // the public `PLAIN` var drifts, so the same resource is both.
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(NAME_EXPR) }, [PRODUCER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD, 'tampered'),
+    });
+
+    await runDrift(['Consumer']);
+
+    // 1, NOT 2: a consumer gating on `=== 1` must not lose a detection it gets
+    // today just because the same run also refused a secret comparison.
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(exitSpy).not.toHaveBeenCalledWith(2);
+  });
+
+  it('a DRIFTED entry carries referencesUnresolved: true and is rolled up under notCompared', async () => {
+    // The `clean` variant had both polarities pinned; the `drifted` one had
+    // NEITHER, and it is the harder half -- the changes it DOES report are real,
+    // so a consumer reading them as the whole comparison is exactly the false
+    // reassurance the flag exists to prevent. The integ's `..|objects` walk
+    // cannot stand in for this: it cannot tell which array a value came from.
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(NAME_EXPR) }, [PRODUCER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD, 'tampered'),
+    });
+
+    const { output } = await runDrift(['Consumer', '--json']);
+
+    const parsed = JSON.parse(output) as StackDriftJson[];
+    expect(parsed[0]!.clean).toEqual([]);
+    expect(parsed[0]!.drifted).toHaveLength(1);
+    expect(parsed[0]!.drifted[0]!.logicalId).toBe('Fn');
+    expect(parsed[0]!.drifted[0]!.referencesUnresolved).toBe(true);
+    // The reported change is the PUBLIC one; the secret-bearing path was skipped.
+    expect(parsed[0]!.drifted[0]!.changes.map((c) => c.path)).toEqual([
+      'Environment.Variables.PLAIN',
+    ]);
+    expect(parsed[0]!.notCompared).toEqual([{ logicalId: 'Fn', type: LAMBDA_TYPE }]);
+    expect(output).not.toContain(IRELAND_PASSWORD);
+    expect(output).not.toContain(TOKYO_PASSWORD);
+  });
+
+  it('the human summary counts a refused resource as inspected but NOT as checked', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(NAME_EXPR) }, [PRODUCER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+    });
+
+    const { output } = await runDrift(['Consumer']);
+
+    // `1 resource checked` was the pre-fix text, and it contradicted the
+    // `PARTIALLY compared` block printed two lines below it.
+    expect(output).toContain('0 of 1 resource fully checked');
+    expect(output).toContain('1 only partially compared');
+    expect(output).not.toContain('1 resource checked');
+    // The glyph follows the exit code, as it does for every other cdkd command
+    // that exits 2.
+    expect(output).toContain('⚠ Consumer');
+    expect(output).not.toContain('✓ Consumer');
+  });
+});

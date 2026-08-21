@@ -1433,6 +1433,7 @@
     "--deletion-protection",
     "--deployment-group-name",
     "--deployment-strategy-id",
+    "--description",
     "--destroy",
     "--detach",
     "--directory-id",

@@ -44,9 +44,17 @@ const DRIFT_SOURCE = 'src/cli/commands/drift.ts';
 const REPLAY_SOURCE = 'src/deployment/rollback-executor.ts';
 
 /**
- * The rollback spelling on the left, the drift spelling on the right. Ordered:
- * `execCtx.importedProducerRegions` must be rewritten before `execCtx.region`,
- * or the shorter key would eat the longer one's prefix.
+ * The rollback spelling on the left, the drift spelling on the right.
+ *
+ * ORDER DOES NOT MATTER, and this comment used to claim it did: it said
+ * `execCtx.importedProducerRegions` had to be rewritten before `execCtx.region`
+ * or the shorter key would eat the longer one's prefix. It would not —
+ * `execCtx.region` is not a prefix of `execCtx.importedProducerRegions` (they
+ * diverge at `execCtx.` + `r` vs `i`), so no rewrite here can consume another
+ * entry's text. No entry's left-hand side is a substring of any other's, which
+ * is the property that actually makes the loop order-independent; state it that
+ * way rather than as an ordering ritual, so a future entry is checked against
+ * the real condition.
  *
  * Every entry is a NAME difference forced by where each side's evidence lives —
  * the replay reads a required context object, the drift walk takes the same two

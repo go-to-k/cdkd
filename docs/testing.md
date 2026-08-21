@@ -1480,17 +1480,39 @@ colon-split tail back together, so an ARN reaches `GetParameter` intact. That
 form takes the `named-region` arm and is covered by the unit tests, not here.)
 
 The same fixture also carries the `cdkd drift` half of that defect (issue
-[#2108](https://github.com/go-to-k/cdkd/issues/2108)), as phases 2b / 2c on the
-CLEAN v1 deploy rather than on the journal -- which is what makes #2108 the
+[#2108](https://github.com/go-to-k/cdkd/issues/2108)), as phases 2b / 2b2 / 2c on
+the CLEAN v1 deploy rather than on the journal -- which is what makes #2108 the
 wider of the two: it is reachable from an ORDINARY drift run instead of only
 after a failed deploy. Phase 2b asserts `cdkd drift --json` reports `SecretEcho`
-in its `notCompared` roll-up, because a comparison the region refusal SKIPPED
-carries no marker otherwise and a CI consumer would read the skip as a clean
-bill of health. Phase 2c tampers the live echo parameter, runs
-`cdkd drift --revert -y`, and asserts the live value did NOT become the consumer
-region's secret -- pre-fix that is exactly what the revert wrote, since the
-state baseline was resolved through the consumer's region. It then restores the
-parameter, so the rollback arms below start from the state phase 2 left behind.
+in its `notCompared` roll-up and carries `referencesUnresolved`, because a
+comparison the region refusal SKIPPED carries no marker otherwise and a CI
+consumer would read the skip as a clean bill of health; it also asserts the
+EXIT CODE is `2`, which is the marker such a consumer actually reads (pre-#2108
+this population exited `1`, because it reported phantom drift).
+
+Phases 2b2 / 2c then tamper the live parameter and revert it, and the shape of
+that tamper is the load-bearing part. `SecretEcho`'s only secret-bearing
+property is `Value`, whose state side is the `{{resolve:ssm:...}}` token the
+comparator SKIPS, so tampering `Value` alone leaves the resource `clean` and
+`runRevert` returns early with "nothing to revert" -- the phase issued live
+writes and exercised no revert code at all. It therefore tampers a SECOND,
+ordinary property on the same resource (`Description`), and 2b2 asserts the
+resource is now reported drifted on `Description` (and NOT on `Value`), still
+flagged `referencesUnresolved`, exiting `1` -- drift outranks the refusal in the
+exit code. Phase 2c then runs `cdkd drift --revert -y` and asserts the run
+reached the per-resource refusal branch: the log carries `refused to re-resolve`
+(a string only the revert path produces -- detection says `refused to resolve`),
+the run exits `2`, and NEITHER property was written, since the refusal abandons
+the whole resource before `provider.update`.
+
+The live-value check that used to be phase 2c's headline is kept, but as a
+safety net rather than a discriminator, and its own comment records the
+measurement: run against real AWS with the region routing mutated back to
+pre-fix behaviour, the revert exited 2 instead of writing, so "the live value is
+not the consumer region's secret" is a confluence point a correct refusal and an
+unrelated revert failure both produce. The phase then restores both tampered
+properties, so the rollback arms below start from the state phase 2 left
+behind.
 
 ### SNS standalone-subscription update (`tests/integration/sns-subscription-update/`)
 

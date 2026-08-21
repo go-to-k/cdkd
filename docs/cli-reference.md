@@ -2092,9 +2092,10 @@ Exit codes:
 
 | Exit | Meaning |
 | --- | --- |
-| `0` | Every inspected stack has zero drift, OR `--accept` / `--revert` resolved every drift cleanly. `--accept` also exits `0` when it deliberately REFUSED a secret-bearing property whose AWS-current value it could not identify (see "Secret dynamic references" above) — the refusal is warned about by name and the drift is still reported on the next run. |
-| `1` | Drift detected on at least one resource on at least one stack (detection-only mode), OR the command crashed (no state found, AWS error, bad arguments). Both go through the default error handler — drift detection emits the rich human report before throwing, so the report is the only output for the drift case. |
-| `2` | `--revert` finished but one or more resources did not revert (`PartialFailureError`): a `provider.update` call failed, threw `ResourceUpdateNotSupportedError`, or — counted and reported separately, since it never reached `provider.update` at all — cdkd could not re-resolve the dynamic reference(s) the resource's state records (grant the caller `secretsmanager:GetSecretValue` / `ssm:GetParameter`, or fix the reference). Successful resources are now in sync; re-run `cdkd drift <stack>` to see what's left, then either `cdkd drift <stack> --revert` (for the recoverable failures) or `cdkd deploy <stack> --replace` (for the update-not-supported ones). |
+| `0` | Every inspected stack has zero drift **and every resource was fully compared**, OR `--accept` / `--revert` resolved every drift cleanly. `--accept` also exits `0` when it deliberately REFUSED a secret-bearing property whose AWS-current value it could not identify (see "Secret dynamic references" above) — the refusal is warned about by name and the drift is still reported on the next run. |
+| `1` | Drift detected on at least one resource on at least one stack (detection-only mode), OR the command crashed (no state found, AWS error, bad arguments). Both go through the default error handler — drift detection emits the rich human report before throwing, so the report is the only output for the drift case. Drift OUTRANKS a partial comparison: a run that both detects drift and leaves something uncompared exits `1`, not `2`. |
+| `2` (detection) | Nothing drifted, but at least one resource was only PARTIALLY compared — cdkd could not, or deliberately refused to, resolve a dynamic reference its state records, so that resource's secret-bearing properties were never compared (issue [#2108](https://github.com/go-to-k/cdkd/issues/2108)). The resources listed under `notCompared` in `--json` (and under the `PARTIALLY compared` block in the human report) are the ones this refers to. Reporting that run as `0` would be a clean bill of health for a comparison that did not happen — and before #2108 the same population exited `1`, because cdkd resolved the reference in the wrong region and reported phantom drift, so a non-zero exit is what CI consumers already had. Note this is PERMANENT for a stack whose properties reference `{{resolve:ssm-secure:...}}`, a spelling cdkd resolves for nobody: those properties are never compared, so such a stack exits `2` on every run. Gate on `--json`'s `drifted` array if you want "did anything change" alone. |
+| `2` (`--revert`) | `--revert` finished but one or more resources did not revert (`PartialFailureError`): a `provider.update` call failed, threw `ResourceUpdateNotSupportedError`, or — counted and reported separately, since it never reached `provider.update` at all — cdkd could not re-resolve the dynamic reference(s) the resource's state records (grant the caller `secretsmanager:GetSecretValue` / `ssm:GetParameter`, or fix the reference). Successful resources are now in sync; re-run `cdkd drift <stack>` to see what's left, then either `cdkd drift <stack> --revert` (for the recoverable failures) or `cdkd deploy <stack> --replace` (for the update-not-supported ones). |
 
 The command produces three terminal states per resource:
 
@@ -2106,6 +2107,15 @@ The command produces three terminal states per resource:
 - **drift unknown** — the provider does not implement the optional
   `readCurrentState` method yet. Reported as `? <logicalId> (<type>)`
   in a separate block at the bottom of each stack's report.
+
+Orthogonal to those three, a `drifted` or `clean` resource may additionally be
+**partially compared**: cdkd could not, or refused to, resolve a dynamic
+reference its state records, so its secret-bearing properties were not compared
+at all. Such resources carry `referencesUnresolved: true`, are rolled up under
+`notCompared` in `--json`, are listed under a `PARTIALLY compared` block in the
+human report, and are excluded from that report's "fully checked" count — a
+`clean` verdict there means "nothing else differed", not "everything was
+checked".
 
 **Secret dynamic references** (`{{resolve:secretsmanager:...}}`, and
 `{{resolve:ssm:...}}` naming a `SecureString` parameter) are compared
@@ -3084,7 +3094,7 @@ CI / bench scripts can react without grepping log output:
 | --- | --- | --- |
 | `0` | Success — command completed and no resources are in an error state | All commands |
 | `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception. **`cdkd drift` also exits `1` when drift is detected**, and **`cdkd diff --fail` exits `1` when any change is detected** (the operative meaning is "non-zero outcome", not "command crashed") | All commands (default for any thrown error) |
-| `2` | **Partial failure** — work completed but one or more resources failed OR was SKIPPED; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (per-resource delete failures, and per-resource **skips** — issue #1752), `cdkd deploy` (resources left UNADDRESSED — a skipped DELETE or a replacement's surviving predecessor; issue [#1960](https://github.com/go-to-k/cdkd/issues/1960), suppressible with `--allow-unaddressed`), `cdkd publish-assets` (per-stack asset publish failures), `cdkd rollback` (per-op failures / skipped-with-warning ops; the journal is kept for re-run) |
+| `2` | **Partial failure** — work completed but one or more resources failed, was SKIPPED, or was only partially COMPARED; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (per-resource delete failures, and per-resource **skips** — issue #1752), `cdkd deploy` (resources left UNADDRESSED — a skipped DELETE or a replacement's surviving predecessor; issue [#1960](https://github.com/go-to-k/cdkd/issues/1960), suppressible with `--allow-unaddressed`), `cdkd publish-assets` (per-stack asset publish failures), `cdkd rollback` (per-op failures / skipped-with-warning ops; the journal is kept for re-run), `cdkd drift` (nothing drifted, but a secret-bearing property could not be compared — issue [#2108](https://github.com/go-to-k/cdkd/issues/2108); re-running does NOT resolve this one, see the drift section) |
 
 The implementation hangs off a `PartialFailureError` class in
 `src/utils/error-handler.ts`. `handleError` reads the error's

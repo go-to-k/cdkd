@@ -218,6 +218,76 @@ class DriftDetectedError extends CdkdError {
 }
 
 /**
+ * Detection found NO drift, but at least one resource was only PARTIALLY
+ * compared -- a dynamic reference its state records could not be, or was
+ * deliberately refused, resolution (issue #2108).
+ *
+ * WHY A NON-ZERO EXIT, and why it is a PRESERVATION rather than a new signal.
+ * Pre-#2108 that population resolved the reference in the WRONG region, the
+ * baseline could never equal what AWS held, and the resource was reported
+ * `drifted` -- so `cdkd drift` exited 1 and every CI gate keyed on the exit code
+ * fired. #2108 correctly stopped comparing against a foreign region's plaintext,
+ * which made the same population report `clean`; without this the command would
+ * exit 0 and print `no drift detected` for a stack whose secret-bearing
+ * properties were never looked at. Round 1 of that change surfaced the refusal
+ * in `--json` (`notCompared`) and in the human report, but the exit code -- the
+ * signal most CI gates actually read -- still said "pass".
+ *
+ * WHY EXIT 2 RATHER THAN 1. `2` is this repo's established "work completed but
+ * something was SKIPPED" code (`cdkd destroy` / `cdkd deploy` / `cdkd rollback`,
+ * and this command's own `--revert` partial failure), and the three outcomes are
+ * genuinely distinct: nothing drifted and everything was compared (0), drift was
+ * detected (1), nothing drifted but the comparison was incomplete (2). Drift
+ * WINS when both hold -- a drifted resource is the stronger, actionable signal
+ * and keeps exiting 1 exactly as it does today.
+ *
+ * SCOPE: detection-only mode. `--accept` / `--revert` keep their documented exit
+ * codes (an `--accept` that refuses a secret-bearing property still exits 0, and
+ * a partially-failed `--revert` still exits 2 through `PartialFailureError`) --
+ * those modes report per-resource refusals on their own paths, and changing them
+ * would alter what a remediation run means, which is not what this closes.
+ *
+ * KNOWN CONSEQUENCE, stated because it is permanent rather than transient: a
+ * stack whose properties reference `{{resolve:ssm-secure:...}}` -- a spelling
+ * cdkd resolves for NOBODY -- carries `referencesUnresolved` on every run, so it
+ * exits 2 on every run. That is the honest answer (those properties are never
+ * compared, so the run is not a clean bill of health), and it is the same reason
+ * the report already lists them; a user who wants exit 0 there must either grant
+ * cdkd a resolvable reference or gate on `--json`'s `drifted` array instead.
+ *
+ * Carries no message of its own for the same reason {@link DriftDetectedError}
+ * does -- the report was already printed.
+ */
+class DriftNotComparedError extends CdkdError {
+  readonly silent: boolean = true;
+  readonly exitCode: number = 2;
+
+  constructor() {
+    super('drift comparison incomplete', 'DRIFT_NOT_COMPARED');
+    this.name = 'DriftNotComparedError';
+    Object.setPrototypeOf(this, DriftNotComparedError.prototype);
+  }
+}
+
+/**
+ * Every outcome on one report that was only PARTIALLY compared -- `drifted` or
+ * `clean`, carrying `referencesUnresolved` (issue #2108).
+ *
+ * ONE spelling, because there are now THREE readers that must agree: the
+ * `--json` `notCompared` roll-up, the human report's `PARTIALLY compared` block,
+ * and the EXIT CODE. A predicate spelled per reader is how the payload and the
+ * exit code come to disagree about the same run.
+ */
+function notComparedOutcomes(
+  report: StackDriftReport
+): Array<Extract<DriftOutcome, { kind: 'drifted' | 'clean' }>> {
+  return report.outcomes.filter(
+    (o): o is Extract<DriftOutcome, { kind: 'drifted' | 'clean' }> =>
+      (o.kind === 'drifted' || o.kind === 'clean') && o.referencesUnresolved
+  );
+}
+
+/**
  * `cdkd drift [<stack>...]` command implementation.
  *
  * Three operating modes (mutually exclusive):
@@ -346,14 +416,23 @@ async function driftCommand(
       writeHumanReport(reports);
     }
 
-    // Detection-only path: exit 0 / 1 based on whether drift was found,
+    // Detection-only path: exit 0 / 1 / 2 on what the run actually found,
     // regardless of subsequent flags. `--accept` / `--revert` take over
     // below if requested.
     const drifted = reports.some((r) => r.outcomes.some((o) => o.kind === 'drifted'));
+    const notCompared = reports.some((r) => notComparedOutcomes(r).length > 0);
 
     if (!options.accept && !options.revert) {
       if (drifted) {
         throw new DriftDetectedError();
+      }
+      // Issue #2108. Ordered AFTER the drift check on purpose: a drifted
+      // resource is the stronger signal and keeps exiting 1 even when the same
+      // run also refused a comparison, so no consumer that gates on `1` loses a
+      // detection it gets today. See the class note for why this is a
+      // preservation of the pre-#2108 exit code rather than a new one.
+      if (notCompared) {
+        throw new DriftNotComparedError();
       }
       return;
     }
@@ -762,6 +841,47 @@ class DriftSecretResolvers {
 }
 
 /**
+ * A DELIBERATE refusal to resolve a state-recorded dynamic reference (issue
+ * #2108) — as opposed to a failure to READ one.
+ *
+ * The distinction is load-bearing for what the user is told: "could not
+ * resolve" sends a reader hunting for a missing `secretsmanager:GetSecretValue`
+ * grant, while a refusal is cdkd declining to resolve a reference it CAN read
+ * but cannot attribute to a region. Both call sites that catch
+ * `resolveStateSecretExpressions` pick their wording from this class.
+ *
+ * DEFINED POSITIVELY, and that is the whole point of the class existing rather
+ * than a second `err.code === ...` comparison at each site. Both sites used to
+ * enumerate the one code they knew (`DRIFT_SECRET_REGION_AMBIGUOUS`) while
+ * `DRIFT_SECRET_TOKEN_SCAN_MISMATCH` — whose own message says "Refusing rather
+ * than resolving" — silently took the read-failure wording. Enumerating bad
+ * shapes loses that race every time a third refusal is added; a refusal that
+ * has to declare itself one cannot be added without answering the question.
+ *
+ * The `code` stays per-refusal: it is what the message and any future
+ * programmatic consumer key on. What this class adds is the CATEGORY.
+ */
+class DriftSecretRefusalError extends CdkdError {
+  /** Marker read by {@link isDriftSecretRefusal}; see the class note. */
+  readonly driftSecretRefusal: boolean = true;
+
+  constructor(message: string, code: string) {
+    super(message, code);
+    this.name = 'DriftSecretRefusalError';
+    Object.setPrototypeOf(this, DriftSecretRefusalError.prototype);
+  }
+}
+
+/**
+ * Whether an error thrown out of `resolveStateSecretExpressions` is a
+ * deliberate REFUSAL rather than a failed read. See
+ * {@link DriftSecretRefusalError}.
+ */
+function isDriftSecretRefusal(err: unknown): boolean {
+  return err instanceof DriftSecretRefusalError;
+}
+
+/**
  * The refusal a region-AMBIGUOUS drift reference throws (issue #2108).
  *
  * A plain throw: BOTH call sites already wrap `resolveStateSecretExpressions`
@@ -791,9 +911,9 @@ function regionAmbiguousDriftSecretError(
   secretName: string,
   foreignProducerRegions: readonly string[],
   consumerRegion: string
-): CdkdError {
+): DriftSecretRefusalError {
   const where = propertyPath === '' ? '' : ` property '${propertyPath}'`;
-  return new CdkdError(
+  return new DriftSecretRefusalError(
     `${logicalId}${where}: the secret reference '${secretName}' carries no region of its own, ` +
       `and this stack read across a region boundary (producer region(s) on record: ` +
       `${foreignProducerRegions.join(', ')}), so it may have been resolved in one of those ` +
@@ -875,7 +995,7 @@ async function resolveDriftLeafByRegion(
     // issue #2108 verbatim, reintroduced by the guard meant to prevent a
     // regression. Fail closed instead.
     if (at < 0) {
-      throw new CdkdError(
+      throw new DriftSecretRefusalError(
         `${logicalId}${propertyPath === '' ? '' : ` property '${propertyPath}'`}: could not ` +
           `locate a scanned dynamic reference in the value it was scanned from. Refusing rather ` +
           `than resolving it in '${consumerRegion}', which would be the wrong region for a ` +
@@ -1591,11 +1711,20 @@ async function runDriftForStack(
         // reported ABOVE a secret leaf.
         //
         // ACCEPTED COST ON THE #2108 REFUSAL PATH, stated so it is a recorded
-        // trade rather than a side effect: a refusal is thrown BEFORE anything
-        // is fetched, so the map is empty here and the clear costs nothing —
-        // but a refusal can also arrive AFTER an earlier resource on the same
-        // stack resolved its own references, and this map is per-resource, so
-        // what is lost is only this resource's own needles. Where it does bite
+        // trade rather than a side effect. The refusal is per LEAF, not per
+        // resource: `resolveDriftLeafByRegion` classifies one leaf at a time and
+        // the pass walks them sequentially, so the map is NOT necessarily empty
+        // here. An ARN-form reference (verdict `named-region`) resolves and
+        // records its plaintext, and a name-form reference on a LATER leaf of
+        // the same resource can then refuse — and this clear discards the
+        // correctly-resolved needle along with everything else. An earlier
+        // wording claimed the map is always empty at this point because the
+        // refusal precedes any fetch; that is true only of the FIRST refusing
+        // leaf, and it made the clear look free when it is not.
+        //
+        // The blast radius is still bounded to this resource (the map is
+        // per-resource) and to paths whose state side carries no `{{resolve:`
+        // for `seededSecretPaths` to have seeded. Where it does bite
         // is the KNOWN OVER-REFUSAL (a purely local name-form reference in a
         // stack with any foreign producer region on record): pre-#2108 that
         // resource resolved fine and the map held the CORRECT plaintext, which
@@ -1614,7 +1743,7 @@ async function runDriftForStack(
         // that describes the CONSEQUENCE, and both stay to one line: this warns
         // once per RESOURCE, and the over-refusal above makes the common
         // `secretValueFromJson` shape hit it on every resource in the stack.
-        const refused = err instanceof CdkdError && err.code === 'DRIFT_SECRET_REGION_AMBIGUOUS';
+        const refused = isDriftSecretRefusal(err);
         logger.warn(
           `${logicalId} (${resource.resourceType}): ` +
             (refused
@@ -2979,7 +3108,7 @@ async function runRevert(
           totalUnresolvable++;
           logger.error(
             `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
-              (err instanceof CdkdError && err.code === 'DRIFT_SECRET_REGION_AMBIGUOUS'
+              (isDriftSecretRefusal(err)
                 ? `refused to re-resolve a dynamic reference this resource's state records — `
                 : `could not re-resolve the dynamic reference(s) this resource's state records — `) +
               `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
@@ -3649,12 +3778,10 @@ function writeJsonReport(reports: StackDriftReport[]): void {
         type: o.resourceType,
         referencesUnresolved: o.referencesUnresolved,
       }));
-    const notCompared = r.outcomes
-      .filter(
-        (o): o is Extract<DriftOutcome, { kind: 'drifted' | 'clean' }> =>
-          (o.kind === 'drifted' || o.kind === 'clean') && o.referencesUnresolved
-      )
-      .map((o) => ({ logicalId: o.logicalId, type: o.resourceType }));
+    const notCompared = notComparedOutcomes(r).map((o) => ({
+      logicalId: o.logicalId,
+      type: o.resourceType,
+    }));
     const notSupported = r.outcomes
       .filter((o): o is Extract<DriftOutcome, { kind: 'unsupported' }> => o.kind === 'unsupported')
       .map((o) => ({ logicalId: o.logicalId, type: o.resourceType }));
@@ -3689,13 +3816,40 @@ function writeHumanReport(reports: StackDriftReport[]): void {
     // mental model. Skipped entries are still present in the outcomes
     // array and surface in `--json` output (as `skipped: [...]`).
     const skippedCount = report.outcomes.filter((o) => o.kind === 'skipped').length;
-    const checked = report.outcomes.length - skippedCount;
+    const inspected = report.outcomes.length - skippedCount;
+    // Issue #2108: the `--json` `notCompared` roll-up, in the human report.
+    // `✓ no drift detected` on a resource whose secret-bearing properties were
+    // never compared is the same false reassurance the JSON field exists to
+    // close, so it has to be said on BOTH renderings — the per-resource `NOT
+    // compared` warning is a logger line, which a user reading stdout (or
+    // piping it) does not necessarily see next to this summary.
+    //
+    // Computed HERE, above the summary line, because the count it produces is
+    // subtracted from `checked` below: a not-compared resource was inspected but
+    // NOT fully checked, and counting it as checked contradicted the block this
+    // same list prints a few lines down.
+    const notCompared = notComparedOutcomes(report);
+    const checked = inspected - notCompared.length;
 
     if (drifted.length === 0) {
-      process.stdout.write(
-        `✓ ${report.stackName} (${report.region}): no drift detected ` +
-          `(${checked} resource${checked === 1 ? '' : 's'} checked, ${unsupported.length} unsupported)\n`
-      );
+      // The glyph follows the EXIT CODE (issue #2108): a run that exits 2
+      // because something was only partially compared must not open with the
+      // same ✓ a fully-checked clean run does — that is the repo's convention
+      // for exit 2 (`cdkd destroy` / `cdkd deploy` switch the same way). The
+      // phrase `no drift detected` is kept in both spellings because it stays
+      // true; what changes is the claim that everything was looked at.
+      if (notCompared.length > 0) {
+        process.stdout.write(
+          `⚠ ${report.stackName} (${report.region}): no drift detected, but ` +
+            `${checked} of ${inspected} resource${inspected === 1 ? '' : 's'} fully checked ` +
+            `(${notCompared.length} only partially compared, ${unsupported.length} unsupported)\n`
+        );
+      } else {
+        process.stdout.write(
+          `✓ ${report.stackName} (${report.region}): no drift detected ` +
+            `(${checked} resource${checked === 1 ? '' : 's'} checked, ${unsupported.length} unsupported)\n`
+        );
+      }
     } else {
       const word = drifted.length === 1 ? 'resource' : 'resources';
       process.stdout.write(
@@ -3711,16 +3865,6 @@ function writeHumanReport(reports: StackDriftReport[]): void {
       }
     }
 
-    // Issue #2108: the `--json` `notCompared` roll-up, in the human report.
-    // `✓ no drift detected` on a resource whose secret-bearing properties were
-    // never compared is the same false reassurance the JSON field exists to
-    // close, so it has to be said on BOTH renderings — the per-resource `NOT
-    // compared` warning is a logger line, which a user reading stdout (or
-    // piping it) does not necessarily see next to this summary.
-    const notCompared = report.outcomes.filter(
-      (o): o is Extract<DriftOutcome, { kind: 'drifted' | 'clean' }> =>
-        (o.kind === 'drifted' || o.kind === 'clean') && o.referencesUnresolved
-    );
     if (notCompared.length > 0) {
       process.stdout.write(
         `\n  ${notCompared.length} resource(s) only PARTIALLY compared — cdkd could not, or ` +
@@ -3773,8 +3917,11 @@ function stackRegionOption(): Option {
 export function createDriftCommand(): Command {
   const cmd = new Command('drift')
     .description(
-      'Detect drift between cdkd state and AWS reality. Exits 0 when no drift, 1 when drift is detected. ' +
-        'Pass --accept to update cdkd state from AWS, or --revert to push cdkd state values back into AWS.'
+      'Detect drift between cdkd state and AWS reality. Exits 0 when every resource was compared and ' +
+        'none drifted, 1 when drift is detected, and 2 when nothing drifted but at least one resource was ' +
+        'only PARTIALLY compared (cdkd could not, or refused to, resolve a dynamic reference its state ' +
+        'records). Pass --accept to update cdkd state from AWS, or --revert to push cdkd state values back ' +
+        'into AWS.'
     )
     .argument('[stacks...]', 'Stack name(s) to check (physical CloudFormation names)')
     .option('--all', 'Check every stack in the state bucket', false)
