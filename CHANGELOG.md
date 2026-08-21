@@ -1,3 +1,10 @@
+## [0.284.28](https://github.com/go-to-k/cdkd/compare/v0.284.27...v0.284.28) (2026-08-21)
+
+
+### Bug Fixes
+
+* **drift:** resolve a cross-region secret reference in the region it names, not the consumer's ([#2137](https://github.com/go-to-k/cdkd/issues/2137)) ([25c0c7b](https://github.com/go-to-k/cdkd/commit/25c0c7b91495534670d75e67981b4745e878739b))
+
 ## [0.284.27](https://github.com/go-to-k/cdkd/compare/v0.284.26...v0.284.27) (2026-08-20)
 
 
