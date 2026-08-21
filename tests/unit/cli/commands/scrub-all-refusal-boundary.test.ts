@@ -16,7 +16,7 @@
  * the BLAST RADIUS narrows.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import type { StackState } from '../../../../src/types/state.js';
 import type { CloudFormationTemplate } from '../../../../src/types/resource.js';
 
@@ -36,10 +36,22 @@ const commandStateBackend = vi.hoisted(() => ({
   getState: vi.fn(),
   saveState: vi.fn().mockResolvedValue('etag-2'),
 }));
+/**
+ * What `expandMacrosForStacks` does to the templates it is handed (issue #2133
+ * review). The real one rewrites them IN PLACE, so anything that READS a
+ * template must run after it; `macroExpansion.apply` is the seam that makes
+ * that observable.
+ */
+const macroExpansion = vi.hoisted(() => ({
+  apply: undefined as ((stacks: unknown[]) => void) | undefined,
+}));
 vi.mock('../../../../src/synthesis/synthesizer.js', () => ({
   Synthesizer: vi.fn().mockImplementation(() => ({
     synthesize: vi.fn().mockImplementation(() => Promise.resolve({ stacks: synthStacks })),
-    expandMacrosForStacks: vi.fn().mockResolvedValue(undefined),
+    expandMacrosForStacks: vi.fn().mockImplementation((stacks: unknown[]) => {
+      macroExpansion.apply?.(stacks);
+      return Promise.resolve(undefined);
+    }),
   })),
   synthesisStatusMessage: () => 'synthesizing',
 }));
@@ -70,13 +82,54 @@ const NAME_EXPR = '{{resolve:secretsmanager:app/db:SecretString:password}}';
 // fakes the SDK clients to observe regions): this file's subject is the LOOP,
 // and the refusal it needs is raised by the region CLASSIFIER before any
 // resolver call, so a region-observable double would buy nothing.
-vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
+/**
+ * Issue #2133 review: when set, the doubled resolver raises the PERMANENT
+ * by-design refusal (`CrossAccountSecretRefusalError`, what the cross-account
+ * `Fn::GetStackOutput` arm raises) for an ISOLATED cross-stack node — the shape
+ * the pre-pass resolves. Single-key only, so the main resolution's whole-bag
+ * call still succeeds and the stack is still scrubbed for everything else.
+ *
+ * The SUBCLASS, not its base: five of the base class's six throw sites are
+ * user-FIXABLE and must refuse the stack rather than become a finding, which is
+ * the distinction the pre-pass now makes.
+ */
+const declineCrossStackRead = vi.hoisted(() => ({ on: false }));
+
+vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => {
+  // The module's non-class exports must survive the double: `scrub.ts` imports
+  // `carriesDynamicReference` from here (issue #2133), and a factory that names
+  // only the class turns every consumer into a "no such export" failure —
+  // which the loop then reports as a scrub FAILURE, not as the clean run this
+  // file's negative controls assert.
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  // Imported INSIDE the factory: a `vi.mock` factory is hoisted above this
+  // file's own imports, so a top-level binding may not be initialized yet when
+  // the factory runs.
+  const { CrossAccountSecretRefusalError } = await import(
+    '../../../../src/utils/error-handler.js'
+  );
+  return {
+  ...actual,
   IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
     resolveParameters: vi.fn().mockResolvedValue({}),
     evaluateConditions: vi.fn().mockResolvedValue({}),
     resolve: vi
       .fn()
       .mockImplementation((value: unknown, ctx: { recordedSecretValues?: Map<string, string> }) => {
+        const node = value as Record<string, unknown>;
+        if (
+          declineCrossStackRead.on &&
+          node &&
+          typeof node === 'object' &&
+          Object.keys(node).length === 1 &&
+          'Fn::GetStackOutput' in node
+        ) {
+          return Promise.reject(
+            new CrossAccountSecretRefusalError(
+              'Fn::GetStackOutput: cross-account reference to a redacted dynamic reference'
+            )
+          );
+        }
         const walk = (v: unknown): unknown => {
           if (v === NAME_EXPR) {
             ctx.recordedSecretValues?.set(SECRET_PLAINTEXT, NAME_EXPR);
@@ -93,7 +146,8 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
         return Promise.resolve(walk(value));
       }),
   })),
-}));
+  };
+});
 
 import { scrubCommand, type ScrubOptions } from '../../../../src/cli/commands/scrub.js';
 
@@ -140,6 +194,50 @@ function makeState(stackName: string, crossRegionRead: boolean): StackState {
     lastModified: 0,
   };
 }
+
+describe('cdkd scrub --all orders targets AFTER macro expansion (issue #2133 review)', () => {
+  afterEach(() => {
+    macroExpansion.apply = undefined;
+  });
+
+  it('a macro-introduced Fn::ImportValue still puts its producer FIRST', async () => {
+    // `orderScrubTargets` decides producer-before-consumer by SCANNING each
+    // target's template for `Fn::ImportValue`, and `expandMacrosForStacks`
+    // rewrites those templates in place. Ordering first therefore sorted
+    // PRE-expansion templates, so an import a macro introduces was invisible to
+    // the sort and its producer could be scrubbed SECOND — which is the whole
+    // ordering guarantee, since a consumer can only learn an imported secret's
+    // expression from an already-scrubbed producer.
+    vi.clearAllMocks();
+    synthStacks.length = 0;
+    // INPUT ORDER is consumer-first, so an unsorted run is distinguishable.
+    synthStacks.push(makeStackInfo('Consumer'), makeStackInfo('Producer'));
+    commandStateBackend.getState.mockImplementation((stackName: string) =>
+      Promise.resolve({ state: makeState(stackName, false), etag: 'etag-1' })
+    );
+    commandStateBackend.saveState.mockResolvedValue('etag-2');
+    macroExpansion.apply = (stacks): void => {
+      const stacksTyped = stacks as Array<{
+        stackName: string;
+        template: CloudFormationTemplate;
+      }>;
+      const consumer = stacksTyped.find((s) => s.stackName === 'Consumer')!;
+      (
+        consumer.template.Resources!['Db']!.Properties as Record<string, unknown>
+      )['DBSubnetGroupName'] = { 'Fn::ImportValue': 'Producer:Db' };
+      const producer = stacksTyped.find((s) => s.stackName === 'Producer')!;
+      producer.template.Outputs = { Db: { Value: 'v', Export: { Name: 'Producer:Db' } } };
+    };
+
+    await scrubCommand([], commandOptions()).catch(() => undefined);
+
+    // POSITIVE MARKER: both stacks really were visited, and the PRODUCER's
+    // state was read first.
+    const visited = commandStateBackend.getState.mock.calls.map((c) => String(c[0]));
+    expect(visited).toContain('Consumer');
+    expect(visited[0]).toBe('Producer');
+  });
+});
 
 describe('cdkd scrub --all: one stack refusing does not abandon the others (issue #2109)', () => {
   beforeEach(() => {
@@ -252,5 +350,72 @@ describe('cdkd scrub --all: one stack refusing does not abandon the others (issu
     // above actually measured rather than an absence of plaintext.
     const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
     expect(summary).toContain('would be scrubbed');
+  });
+});
+
+describe('cdkd scrub reports a read it DECLINED BY DESIGN (issue #2133 review)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    declineCrossStackRead.on = true;
+    synthStacks.length = 0;
+    const stack = makeStackInfo('CrossAccount') as {
+      stackName: string;
+      template: CloudFormationTemplate;
+    };
+    (
+      stack.template.Resources!['Db']!.Properties as Record<string, unknown>
+    )['DBSubnetGroupName'] = {
+      'Fn::GetStackOutput': {
+        StackName: 'Producer',
+        OutputName: 'DbSecret',
+        RoleArn: 'arn:aws:iam::999999999999:role/Reader',
+      },
+    };
+    synthStacks.push(stack);
+    // ALREADY scrubbed: the record holds the expression, so the ONLY finding
+    // this run can produce is the declined cross-stack read. Without it the run
+    // is a clean, exit-0 "no plaintext secrets found".
+    commandStateBackend.getState.mockImplementation((stackName: string) => {
+      const state = makeState(stackName, false);
+      state.resources['Db']!.properties['MasterUserPassword'] = NAME_EXPR;
+      return Promise.resolve({ state, etag: 'etag-1' });
+    });
+    commandStateBackend.saveState.mockResolvedValue('etag-2');
+  });
+
+  afterEach(() => {
+    declineCrossStackRead.on = false;
+  });
+
+  it('does not report the stack clean, and --fail exits non-zero over it', async () => {
+    const err = await scrubCommand([], commandOptions({ fail: true })).catch((e: unknown) => e);
+
+    // The stack was NOT refused — nothing failed, and the run reached its
+    // summary.
+    const errored = commandLogger.error.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errored).toBe('');
+    // ...it is REPORTED, in the per-stack warning and in the summary note...
+    const warned = commandLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('could NOT be verified');
+    const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(summary).not.toContain('No plaintext secrets found in any target stack state');
+    // ...nor the PER-STACK clean claim, which was printed on the strength of
+    // `secretBearingKeys === 0` alone and so contradicted the warning above it
+    // (issue #2133 review). scrub does not know what the declined read's leaf
+    // carries, so it cannot call this stack clean.
+    expect(summary).not.toContain('No plaintext secrets found in CrossAccount');
+    expect(summary).toContain('cross-stack read cdkd declines to perform');
+    // ...and `--fail` treats it as a finding, exit 1, not the exit-2 refusal.
+    expect((err as { code?: string }).code).toBe('SCRUB_NEEDED');
+  });
+
+  it('NEGATIVE CONTROL: without the declined read the same stack exits clean', async () => {
+    declineCrossStackRead.on = false;
+
+    const err = await scrubCommand([], commandOptions({ fail: true })).catch((e: unknown) => e);
+
+    expect(err).toBeUndefined();
+    const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(summary).toContain('No plaintext secrets found in any target stack state');
   });
 });

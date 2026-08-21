@@ -212,10 +212,17 @@ describe('IntrinsicResolutionRefusalError throw sites are non-retryable (#1874 r
     );
     const lines = source.split('\n');
 
+    // Matches the base class AND any SUBCLASS of it (issue #2133 review added
+    // `CrossAccountSecretRefusalError` for the one permanent site). Naming the
+    // base class alone let a site move into a subclass and silently leave this
+    // census — which is the same "a new site arrives unclassified" hole the
+    // census exists to close, arriving through the class name instead of
+    // through a new `throw`.
+    const REFUSAL_CONSTRUCTION = /new [A-Za-z]*RefusalError\(/;
     const marked: number[] = [];
     const unmarked: number[] = [];
     lines.forEach((line, i) => {
-      if (!line.includes('new IntrinsicResolutionRefusalError(')) return;
+      if (!REFUSAL_CONSTRUCTION.test(line)) return;
       // `markNonRetryable(` sits on the `throw` line, i.e. immediately above a
       // wrapped construction, or on the SAME line for a one-liner.
       const previous = lines[i - 1] ?? '';

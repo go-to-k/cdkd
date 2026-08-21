@@ -671,10 +671,18 @@ describe('cross-stack reads re-resolve a REDACTED value (issue #1934)', () => {
   });
 
   describe('the log lines stay non-disclosing', () => {
-    // Both call sites log BEFORE re-resolving, so the line carries the stored
-    // EXPRESSION. That ordering was carried only by a code comment ("Never move
-    // it after the call below") — and a comment is not a fence. The value being
-    // printed is a real secret, and `logger.info` is default verbosity.
+    // These lines used to print the STORED value, defended by "what a producer
+    // stores for a secret-bearing export is the `{{resolve:...}}` EXPRESSION".
+    // That premise is a property of POST-#1934 state only, and it is false by
+    // construction for `cdkd scrub`'s population — state an OLDER binary wrote,
+    // holding the PLAINTEXT — which reaches these lines at DEFAULT verbosity
+    // since scrub gained a `stateBackend` (issue
+    // [#2133](https://github.com/go-to-k/cdkd/issues/2133)). Masking could not
+    // save them either: the needle for the value is recorded by the
+    // re-resolution these lines deliberately precede. So the line now carries
+    // NO value at any verbosity — only the reference, the producer, and a
+    // non-disclosing SHAPE note, which is what these tests assert positively so
+    // that "no plaintext appears" cannot be satisfied by an empty log.
     it('prints the EXPRESSION, never the plaintext, for Fn::ImportValue', async () => {
       const resolver = new IntrinsicFunctionResolver(CONSUMER_REGION);
 
@@ -697,8 +705,13 @@ describe('cross-stack reads re-resolve a REDACTED value (issue #1934)', () => {
       expect(result).toBe(PRODUCER_REGION_PASSWORD);
       const line = logLines.find((l) => l.includes('Resolved Fn::ImportValue: DbPassword'));
       expect(line).toBeDefined();
-      expect(line).toContain(SECRET_EXPRESSION);
+      // POSITIVE marker: the producer is named and the value's SHAPE is stated,
+      // which is the whole reason the value used to be interpolated.
+      expect(line).toContain('from index: Producer');
+      expect(line).toContain('redacted dynamic reference');
+      // NEITHER the plaintext NOR the expression reaches the log now.
       expect(logLines.join('\n')).not.toContain(PRODUCER_REGION_PASSWORD);
+      expect(logLines.join('\n')).not.toContain(SECRET_EXPRESSION);
     });
 
     it('prints the EXPRESSION, never the plaintext, for Fn::GetStackOutput', async () => {
@@ -726,8 +739,151 @@ describe('cross-stack reads re-resolve a REDACTED value (issue #1934)', () => {
       expect(result).toBe(PRODUCER_REGION_PASSWORD);
       const line = logLines.find((l) => l.includes('Resolved Fn::GetStackOutput'));
       expect(line).toBeDefined();
-      expect(line).toContain(SECRET_EXPRESSION);
+      expect(line).toContain('OutputName=DbPassword');
+      expect(line).toContain('redacted dynamic reference');
       expect(logLines.join('\n')).not.toContain(PRODUCER_REGION_PASSWORD);
+      expect(logLines.join('\n')).not.toContain(SECRET_EXPRESSION);
+    });
+
+    it("masks the re-resolution's own ORIGIN line, which embeds the resolved export name", async () => {
+      // `reresolveCrossStackValue` logs `Re-resolving dynamic reference(s) in
+      // <origin>`, and `origin` is assembled from the RESOLVED `exportName` —
+      // a `resolveValue` result, so an export name built from a
+      // `{{resolve:...}}` reference IS a resolved secret. Every sibling line
+      // naming that identifier masks it; this one did not (issue #2133 review).
+      const resolver = new IntrinsicFunctionResolver(CONSUMER_REGION, { cfnFallback: false });
+      const recordedSecretValues = new Map<string, string>();
+
+      // The ARGUMENT is a secret reference, so resolving it both PRODUCES the
+      // export name and RECORDS the needle for it.
+      const result = await resolver.resolve(
+        { 'Fn::ImportValue': SECRET_EXPRESSION },
+        buildContext({
+          recordedSecretValues,
+          stateBackend: mockBackend([
+            {
+              stackName: 'Producer',
+              region: PRODUCER_REGION,
+              outputs: { [CONSUMER_REGION_PASSWORD]: SECRET_EXPRESSION },
+            },
+          ]),
+        })
+      );
+
+      // The read really happened and really re-resolved (else "no plaintext
+      // logged" is satisfied by nothing having run).
+      expect(result).toBe(PRODUCER_REGION_PASSWORD);
+      expect(recordedSecretValues.get(CONSUMER_REGION_PASSWORD)).toBe(SECRET_EXPRESSION);
+      const line = logLines.find((l) => l.includes('Re-resolving dynamic reference(s) in'));
+      expect(line).toBeDefined();
+      // POSITIVE: it still NAMES the reference and its producer...
+      expect(line).toContain("Fn::ImportValue '");
+      expect(line).toContain('producer Producer');
+      expect(line).toContain('***');
+      // ...and the export name's plaintext reaches no log line anywhere.
+      expect(logLines.join('\n')).not.toContain(CONSUMER_REGION_PASSWORD);
+    });
+
+    it('masks the DescribeStacks-fallback failure, which names the resolved stack name', async () => {
+      // The exact twin of `lookupCfnExport`'s own warn, and it prints at
+      // DEFAULT verbosity too. `lookupCfnStackOutputs` was never given a
+      // `context`, so it was the one sibling with nothing to mask against —
+      // while `stackName` reaches it straight from `resolveValue` (issue #2133
+      // review).
+      const resolver = new IntrinsicFunctionResolver(CONSUMER_REGION);
+      const recordedSecretValues = new Map<string, string>();
+
+      // Nothing is primed for CloudFormation, so `DescribeStacks` rejects with
+      // a non-ValidationError — the lookup-FAILED arm, which warns.
+      const err = await resolver
+        .resolve(
+          {
+            'Fn::GetStackOutput': { StackName: SECRET_EXPRESSION, OutputName: 'DbPassword' },
+          },
+          buildContext({ recordedSecretValues, stateBackend: mockBackend([]) })
+        )
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(Error);
+      expect(recordedSecretValues.get(CONSUMER_REGION_PASSWORD)).toBe(SECRET_EXPRESSION);
+      const warned = logLines.filter((l) => l.startsWith('warn')).join('\n');
+      // POSITIVE: the warning really did fire and still names the region and
+      // the remedy...
+      expect(warned).toContain('DescribeStacks fallback failed for stack');
+      expect(warned).toContain('***');
+      expect(warned).toContain('cloudformation:DescribeStacks');
+      // ...without the resolved stack name's plaintext.
+      expect(logLines.join('\n')).not.toContain(CONSUMER_REGION_PASSWORD);
+    });
+  });
+
+  describe("the `Available outputs` enumeration is bounded (issue #2133 review)", () => {
+    // These are the PRODUCER's output KEYS, and a key can itself hold plaintext
+    // (the `secretBearingStateKeyWarning` class, issue #1919, which `cdkd
+    // scrub` counts and deliberately never prints). They land in a top-level
+    // ERROR, i.e. the one thing on this path that reaches a CI log at default
+    // verbosity.
+    const LEAKED_KEY = 'leaked-export-key-plaintext-2133';
+
+    it('masks a key the caller recorded as a secret, and still names the others', async () => {
+      const resolver = new IntrinsicFunctionResolver(CONSUMER_REGION, { cfnFallback: false });
+
+      const err = (await resolver
+        .resolve(
+          {
+            'Fn::GetStackOutput': {
+              StackName: 'Producer',
+              OutputName: 'Missing',
+              Region: PRODUCER_REGION,
+            },
+          },
+          buildContext({
+            recordedSecretValues: new Map([[LEAKED_KEY, SECRET_EXPRESSION]]),
+            stateBackend: mockBackend([
+              {
+                stackName: 'Producer',
+                region: PRODUCER_REGION,
+                outputs: { [LEAKED_KEY]: 'v', Other: 'y' },
+              },
+            ]),
+          })
+        )
+        .catch((e: unknown) => e)) as Error;
+
+      // POSITIVE: the enumeration still happened and is still actionable...
+      expect(err.message).toContain('Available outputs:');
+      expect(err.message).toContain('Other');
+      expect(err.message).toContain('***');
+      // ...and the recorded plaintext is not in it.
+      expect(err.message).not.toContain(LEAKED_KEY);
+    });
+
+    it('caps the list, so one error cannot dump a producer key space', async () => {
+      const resolver = new IntrinsicFunctionResolver(CONSUMER_REGION, { cfnFallback: false });
+      const outputs: Record<string, unknown> = {};
+      for (let i = 0; i < 14; i++) outputs[`Out${i}`] = 'v';
+
+      const err = (await resolver
+        .resolve(
+          {
+            'Fn::GetStackOutput': {
+              StackName: 'Producer',
+              OutputName: 'Missing',
+              Region: PRODUCER_REGION,
+            },
+          },
+          buildContext({
+            stateBackend: mockBackend([
+              { stackName: 'Producer', region: PRODUCER_REGION, outputs },
+            ]),
+          })
+        )
+        .catch((e: unknown) => e)) as Error;
+
+      expect(err.message).toContain('Out0');
+      expect(err.message).toContain('Out9');
+      expect(err.message).not.toContain('Out10');
+      expect(err.message).toContain('(+4 more)');
     });
   });
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# verify.sh — cross-stack import of a REDACTED secret-bearing export (issue #1934).
+# verify.sh — cross-stack import of a REDACTED secret-bearing export
+# (issues #1934 and #2133).
 #
-# THE DEFECT. Since PR #1899 a secret-bearing output is persisted REDACTED:
+# THE DEFECT (#1934). Since PR #1899 a secret-bearing output is persisted REDACTED:
 # `state.outputs` and the exports index hold the unresolved
 # `{{resolve:secretsmanager:...}}` expression rather than the plaintext. A
 # cross-stack CONSUMER resolving `Fn::ImportValue` got that stored value back
@@ -9,6 +10,18 @@
 # predictable credential reference landing in a password field, not merely a
 # broken value. The fix re-resolves the imported value, in the PRODUCER's
 # region, before returning it.
+#
+# THE SECOND DEFECT (#2133), which shares this fixture because it needs exactly
+# the same two stacks. `cdkd scrub` removes secret plaintext from persisted
+# state, and it learns WHICH plaintexts to hunt for by re-resolving the template
+# and recording each resolved secret as a NEEDLE. Every resolve context
+# `scrubStack` built omitted `stateBackend`, which `resolveImportValue` requires,
+# so a secret arriving through `Fn::ImportValue` threw for want of a dependency,
+# the throw was swallowed by the per-item best-effort catch, no needle was
+# recorded, and scrub exited 0 reporting "no plaintext secrets found" over state
+# that may still have held it. The fix wires the backend into one context factory
+# AND lifts the cross-stack class out of that catch with a pre-pass that REFUSES
+# (`SCRUB_CROSS_STACK_READ_UNRESOLVED`, exit 2) when the read cannot be made.
 #
 # THE FIXTURE. Two stacks:
 #   Producer  — a Secrets Manager secret with a KNOWN, non-sensitive JSON value,
@@ -40,7 +53,52 @@
 #                     the EXIT CODE is asserted, not only the text: a guard
 #                     that greps output but never checks rc has shipped green
 #                     over exactly this defect in this repo before.
-#   5. TEARDOWN     — consumer first (the producer's destroy is refused while
+#   5. SCRUB        — `cdkd scrub` on the PRODUCER, which performs no
+#      NEGATIVE       cross-stack read at all: exit 0, nothing scrubbed, no
+#      CONTROL        refusal. Without it, a refusal firing on EVERYTHING (or a
+#                     "Scrubbed" line the command emits for any stack) would
+#                     satisfy assertion 7 for the wrong reason.
+#   6. SCRUB        — the consumer's state.json is hand-patched to hold the
+#      PREMISE        imported secret's PLAINTEXT, exactly as a pre-GHSA
+#                     binary left it, and that is READ BACK from S3 before
+#                     anything depends on it. A correct deploy never leaves
+#                     such a record (assertion 3 just proved so), so without
+#                     the seed both a fixed and a broken binary find nothing
+#                     and assertion 7 is vacuous. Its own phase, ahead of the
+#                     phase that needs it: this repo has shipped a live arm
+#                     that was INERT because the command returned early.
+#   7. SCRUB,       — `cdkd scrub` on the CONSUMER must exit 0 (rc CAPTURED,
+#      THE FIX        not inferred from text) AND print the POSITIVE marker
+#                     `Scrubbed 1 resource record(s) in <consumer>` plus
+#                     `Done: scrubbed 1 stack(s).`. Pre-fix it printed
+#                     `No plaintext secrets found` and exited 0, so those two
+#                     lines are emitted ONLY by the fixed path. "The plaintext
+#                     is gone" is a CONFLUENCE POINT — equally satisfied by a
+#                     correct scrub and by anything that stopped short — so it
+#                     is the stated secondary net, over the current object AND
+#                     over every surviving OBJECT VERSION (the bucket is
+#                     versioned; a delete marker is not removal).
+#   8. SCRUB        — the fix's other half, which assertion 7 cannot see: with
+#      REFUSES        the pre-pass deleted the context wiring alone still
+#                     resolves the import and 7 still passes. The producer's
+#                     state object is delete-markered so the read CANNOT
+#                     succeed, and scrub must then exit 2 naming the reference
+#                     — where pre-fix the same failure was swallowed and the
+#                     stack reported clean. Restored before any assertion runs.
+#   9. SCRUB        — the THIRD outcome of the same read, between 7 and 8: the
+#      REFUSES AN      read SUCCEEDS but the producer's own state.outputs still
+#      UNSCRUBBED      holds the BARE PLAINTEXT, as a pre-#1899 binary left it.
+#      PRODUCER        There is then no {{resolve:...}} expression anywhere for
+#                      scrub to write into the consumer's leaf, so it must
+#                      refuse (SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT, exit 2)
+#                      rather than report the stack clean. Assertion 7 cannot
+#                      reach it (its producer is scrubbed) and neither can 8
+#                      (its producer cannot be read at all); the discriminator
+#                      for exactly this branch was implemented WRONG three
+#                      times with the unit suite green through two of them, so
+#                      it gets a live arm of its own. The consumer is named
+#                      ALONE, never --all. Restored before any assertion runs.
+#  10. TEARDOWN     — consumer first (the producer's destroy is refused while
 #                     the consumer's state.imports[] names the export), 0
 #                     errors, state keys gone, SSM parameter gone, and the
 #                     secret FORCE-deleted rather than left in a 7-day
@@ -466,16 +524,577 @@ if [ "${CHANGE_COUNT}" != "0" ]; then
 fi
 pass "'cdkd diff --json' parsed the ${CONSUMER} tree and reports zero resource + output changes"
 
-# --- Assertion 5: TEARDOWN -------------------------------------------------
+# --- Assertions 5-8: `cdkd scrub` over an Fn::ImportValue-sourced secret ----
+#
+# ISSUE #2133. Every resolve context `scrubStack` built omitted `stateBackend`,
+# which both `resolveImportValue` and `getSameAccountStackState` require. A
+# secret arriving through `Fn::ImportValue` therefore threw for want of a
+# dependency, the throw landed in the per-item best-effort
+# `catch { logger.debug(...) }`, the plaintext never became a NEEDLE, and `cdkd
+# scrub` exited 0 reporting "No plaintext secrets found" over a `state.json`
+# that may still have held it. The fix wires the backend into one context
+# factory and lifts the cross-stack class OUT of that catch with a pre-pass that
+# REFUSES (`SCRUB_CROSS_STACK_READ_UNRESOLVED`, exit 2) when the read fails.
+#
+# WHY THE STATE HAS TO BE SEEDED. Scrub only rewrites a record that actually
+# HOLDS plaintext, and a correct deploy never leaves one — assertion 3 above
+# just proved this consumer's record holds the EXPRESSION. Against that state a
+# fixed and a broken binary both find nothing and the arm is vacuous. The seed
+# in step 7 writes the plaintext where a pre-GHSA-p5qg-v9gv-hc7w binary would
+# have left it, which is exactly the population `cdkd scrub` exists to repair.
+#
+# WHAT MAKES EACH STEP DISCRIMINATING, since "the plaintext is gone" on its own
+# is a CONFLUENCE POINT — equally satisfied by a correct scrub and by any
+# unrelated failure that stopped short of writing anything:
+#
+#   Step 6      — NEGATIVE CONTROL. `cdkd scrub` on the PRODUCER, which has no
+#   (assertion 5)  cross-stack read at all: exit 0, "No plaintext secrets
+#                  found", no "Scrubbed" line and no refusal. Without it, a
+#                  refusal that fired on EVERYTHING, or a "Scrubbed" line the
+#                  command emits for any stack it is pointed at, would satisfy
+#                  step 8 for the wrong reason.
+#   Step 7      — PREMISE. The seeded plaintext really IS in the consumer's
+#   (assertion 6)  state before scrub runs, read back through S3. Its own
+#                  phase, ahead of the phase that depends on it: this repo has
+#                  shipped a live arm that was INERT because the command
+#                  returned early and never reached the new code.
+#   Step 8      — THE FIX. The EXIT CODE is captured (`rc`), not merely grepped
+#   (assertion 7)  for, and a POSITIVE marker naming the work done is required:
+#                  `Scrubbed 1 resource record(s) in <consumer>` plus
+#                  `Done: scrubbed 1 stack(s).`. Pre-fix the command prints
+#                  `No plaintext secrets found in <consumer>` and exits 0, so
+#                  those two lines are emitted ONLY by the fixed path. The
+#                  plaintext's absence — from the current object AND from every
+#                  surviving OBJECT VERSION, since the state bucket is
+#                  versioned and a delete marker is not removal — is the
+#                  stated secondary net, never the discriminator.
+#   Step 9      — THE REFUSAL. The other half of the fix, and it needs its own
+#   (assertion 8)  phase because step 8 passes with the pre-pass deleted (the
+#                  context wiring alone resolves the import). The producer's
+#                  state object is delete-markered so the read CANNOT succeed,
+#                  and scrub must then exit 2 naming the reference — where
+#                  pre-fix it exited 0 reporting the stack clean. Restored
+#                  immediately, before any assertion runs, so no failure here
+#                  can leave the producer unmanageable; and `sweep` deletes the
+#                  secret by NAME on every abort path regardless.
+#   Step 10     — THE OTHER REFUSAL, and the branch NEITHER step above can
+#   (assertion 9)  enter. The read here SUCCEEDS — the producer's state is
+#                  readable — but what it hands back is a BARE PLAINTEXT,
+#                  because the producer's own `state.outputs` has not been
+#                  scrubbed yet. `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT`, exit
+#                  2, and its message names the producer plus the remedy that
+#                  actually works (`cdkd scrub <producer>` first). Step 8's
+#                  producer holds the EXPRESSION, so its read is healthy; step
+#                  9's producer cannot be read at all, so its read THROWS.
+#                  Only a producer whose state still stores the plaintext
+#                  reaches the discriminator, and that discriminator was
+#                  implemented WRONG three times — `carriesDynamicReference`
+#                  applied to the RESOLVED value (inverted), the producer's
+#                  TEMPLATE (true of both outcomes), and a needle count (wrong
+#                  in BOTH directions) — with the unit suite green through two
+#                  of them and only a real-AWS run catching the third. What
+#                  ships instead READS the producer's stored value and tests
+#                  `carriesDynamicReference` on IT, which is a statement about
+#                  a real state record and is therefore what this arm exercises.
+
+# Every SURVIVING object version under one stack's key space, grepped for this
+# run's plaintext. `head-object` reporting the state file gone proves nothing on
+# a VERSIONED bucket: `aws s3 rm` writes a DELETE MARKER, and every byte ever
+# written stays readable to anyone with `s3:GetObjectVersion` (issue #2096).
+#
+# `Versions[]` and not `([Versions, DeleteMarkers][])`: a delete marker carries a
+# VersionId too, and `get-object --version-id <marker>` answers 405
+# MethodNotAllowed — which would turn every marker into a spurious failure. A
+# marker has no body, so it can leak nothing.
+#
+# ROWS are counted, never `length(...)`: the AWS CLI applies `--query` PER PAGE
+# and concatenates, so a >1000-entry listing prints `1000\n189` and a numeric
+# test on that is a bash error rather than a count (../s3-versions.sh, trap 3).
+#
+# The zero-scanned refusal is what stops this from certifying the wrong key
+# space: a mistyped prefix lists nothing, every grep is skipped, and a bare
+# "no plaintext found" would be a truthful statement about nothing at all.
+assert_no_plaintext_in_versions() { # <prefix> <description>
+  local prefix="$1" desc="$2" rows key vid body scanned=0
+  if ! rows="$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" \
+      --prefix "${prefix}" --query 'Versions[].[Key,VersionId]' --output text 2>&1)"; then
+    fail "${desc}: could not list object versions under s3://${STATE_BUCKET}/${prefix} (${rows}) — an unverified sweep is not a clean one"
+  fi
+  # `|| [ -n "${key}" ]`: `$(...)` strips the trailing newline, so `read` returns
+  # non-zero on the LAST row and its body would never run (../s3-versions.sh,
+  # trap 2). A here-string rather than a pipe so `scanned` survives the loop.
+  while IFS=$'\t' read -r key vid || [ -n "${key}" ]; do
+    [ -n "${key}" ] || continue
+    [ -n "${vid}" ] || continue
+    [ "${vid}" != "None" ] || continue
+    # `/dev/stdout` puts the BODY on stdout followed by the response metadata
+    # JSON; both are captured, and the metadata cannot manufacture a match.
+    # `< /dev/null` so nothing in the loop can consume the row stream.
+    if ! body="$(aws s3api get-object --bucket "${STATE_BUCKET}" --key "${key}" \
+        --version-id "${vid}" /dev/stdout < /dev/null 2>&1)"; then
+      fail "${desc}: could not read s3://${STATE_BUCKET}/${key} version ${vid} (${body}) — undetermined, which certifies nothing"
+    fi
+    # -qF so a match is never echoed: this is the site that exists to DETECT a
+    # leak, and printing it here would disclose at the precise moment it failed.
+    if printf '%s' "${body}" | grep -qF "${EXPECTED_PLAINTEXT}"; then
+      fail "${desc}: s3://${STATE_BUCKET}/${key} version ${vid} STILL carries this run's plaintext"
+    fi
+    scanned=$((scanned + 1))
+  done <<< "${rows}"
+  if [ "${scanned}" -eq 0 ]; then
+    fail "${desc}: scanned ZERO object versions under s3://${STATE_BUCKET}/${prefix} — the prefix names nothing, so a clean verdict here would be about the wrong key space"
+  fi
+  pass "${desc}: ${scanned} surviving object version(s) scanned, none carries the plaintext"
+}
+
+# The expression the consumer's record is stored as, captured in step 4 rather
+# than re-spelled here: the seed below matches on it and step 8 asserts the
+# record came back to it, so a change in how cdkd spells the reference cannot
+# leave the seed a silent no-op while the assertions still read as meaningful.
+CONSUMER_EXPRESSION="${STATE_PARAM_VALUE}"
+
 echo ""
-echo "==> Step 6 (assertion 5): destroy Consumer, then Producer"
+echo "==> Step 6 (assertion 5 - NEGATIVE CONTROL): scrubbing the PRODUCER neither refuses nor claims a scrub"
+# The producer's template carries no `Fn::ImportValue` / `Fn::GetStackOutput` at
+# all, so the pre-pass must not fire for it, and its records hold no plaintext
+# scrub can identify (the fixture's own literal `SecretString` is not a
+# reference, so nothing recorded it as a needle). This is what makes step 8's
+# "Scrubbed 1 resource record(s)" a statement about the SEEDED consumer rather
+# than something `cdkd scrub` says about any stack it is pointed at.
+set +e
+PRODUCER_SCRUB_OUT=$(node "${LOCAL_DIST}" scrub "${PRODUCER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+PRODUCER_SCRUB_RC=$?
+set -e
+assert_no_plaintext "the producer scrub's output" "${PRODUCER_SCRUB_OUT}"
+if [ "${PRODUCER_SCRUB_RC}" -ne 0 ]; then
+  diag "${PRODUCER_SCRUB_OUT}"
+  fail "'cdkd scrub ${PRODUCER}' exited ${PRODUCER_SCRUB_RC} (expected 0) — the #2133 pre-pass is refusing a stack that performs no cross-stack read"
+fi
+case "${PRODUCER_SCRUB_OUT}" in
+  *'could not resolve the'*)
+    diag "${PRODUCER_SCRUB_OUT}"
+    fail "'cdkd scrub ${PRODUCER}' reported an unresolvable cross-stack read — the refusal is firing on a stack that has none, so step 8 could not distinguish the fix from a refusal that fires on everything"
+    ;;
+esac
+case "${PRODUCER_SCRUB_OUT}" in
+  *'Scrubbed '*)
+    diag "${PRODUCER_SCRUB_OUT}"
+    fail "'cdkd scrub ${PRODUCER}' claims it rewrote a record — nothing in the producer's state holds a plaintext scrub can identify, so the 'Scrubbed' marker step 8 asserts on would not discriminate"
+    ;;
+esac
+if ! printf '%s' "${PRODUCER_SCRUB_OUT}" | grep -qF "No plaintext secrets found in ${PRODUCER}"; then
+  # Sentinel: the stack NAME is printed by the summary independently of the
+  # no-finding wording, so its presence proves the output was captured and the
+  # PARSE, not the run, came up empty (.claude/rules/testing.md).
+  if printf '%s' "${PRODUCER_SCRUB_OUT}" | grep -qF "${PRODUCER}"; then
+    diag "${PRODUCER_SCRUB_OUT}"
+    fail "'cdkd scrub ${PRODUCER}' did not report 'No plaintext secrets found in ${PRODUCER}' — either it found something it should not have, or scrub's no-finding wording drifted and this grep is now blind"
+  fi
+  fail "'cdkd scrub ${PRODUCER}' printed neither the no-finding line nor the stack name — the output was not captured at all"
+fi
+pass "the producer scrub exits 0, refuses nothing, and rewrites nothing"
+
+echo ""
+echo "==> Step 7 (assertion 6 - PREMISE): seed the pre-#1899 shape and prove state HOLDS the plaintext"
+# COUPLING, stated because it is invisible locally and someone will otherwise
+# move one half: the grep after the patch proves the SEED LANDED only because
+# this read proves the same plaintext was ABSENT a moment earlier. Delete this
+# and that check degenerates into "the file contains a string it may well have
+# contained all along".
+PRE_SEED_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" -)
+assert_no_plaintext "the consumer's state immediately before the seed" "${PRE_SEED_RAW}"
+
+# Rewrite by MATCHING the stored expression rather than by naming a logical id,
+# so a CDK logical-id change cannot silently turn the seed into a no-op — and
+# require EXACTLY ONE match first, so it cannot be ambiguous either.
+SEED_TARGETS=$(printf '%s' "${PRE_SEED_RAW}" \
+  | jq --arg expr "${CONSUMER_EXPRESSION}" \
+       '[.resources | to_entries[] | select(.value.properties.Value == $expr)] | length')
+if [ "${SEED_TARGETS}" != "1" ]; then
+  fail "expected exactly ONE consumer record whose properties.Value is the imported expression, found ${SEED_TARGETS} — the seed would be ambiguous or a no-op and every assertion after it would pass vacuously"
+fi
+SEEDED_RAW=$(printf '%s' "${PRE_SEED_RAW}" \
+  | jq --arg expr "${CONSUMER_EXPRESSION}" --arg plain "${EXPECTED_PLAINTEXT}" '
+      .resources |= with_entries(
+        if .value.properties.Value == $expr
+        then .value.properties.Value = $plain
+        else . end)')
+if ! printf '%s' "${SEEDED_RAW}" | grep -qF "${EXPECTED_PLAINTEXT}"; then
+  fail "the pre-#1899 seed did not take — no plaintext in the patched document"
+fi
+printf '%s' "${SEEDED_RAW}" | aws s3 cp - "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}"
+
+# Read back FROM S3, through the same path `cdkd scrub` reads, rather than
+# trusting the document that was uploaded. This is the premise proper: without
+# it a green step 8 would say nothing, because a scrub that never reached the
+# new code also leaves behind a state file with no plaintext in it.
+SEEDED_STATE_JSON=$(node "${LOCAL_DIST}" state show "${CONSUMER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)
+SEEDED_PARAM_VALUE=$(printf '%s' "${SEEDED_STATE_JSON}" \
+  | jq -r '[.state.resources
+              | to_entries[]
+              | select(.value.resourceType=="AWS::SSM::Parameter")
+              | .value.properties.Value] | first // empty')
+if [ "${SEEDED_PARAM_VALUE}" != "${EXPECTED_PLAINTEXT}" ]; then
+  # Never printed: on the failure this guards it is either the expression (seed
+  # lost) or some other resolved value.
+  fail "the consumer's persisted properties.Value is not the seeded plaintext (length ${#SEEDED_PARAM_VALUE}) — scrub would have nothing to remove and step 8 would be vacuous"
+fi
+pass "the consumer's state.json now HOLDS the imported secret's plaintext, as an older cdkd would have left it"
+
+echo ""
+echo "==> Step 8 (assertion 7 - THE FIX): 'cdkd scrub' resolves the Fn::ImportValue and REWRITES the record"
+set +e
+SCRUB_OUT=$(node "${LOCAL_DIST}" scrub "${CONSUMER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+SCRUB_RC=$?
+set -e
+assert_no_plaintext "'cdkd scrub' output" "${SCRUB_OUT}"
+# THE EXIT CODE, captured and compared — not inferred from the text. A guard
+# that greps a command's output but never checks its rc has shipped green over
+# exactly the defect it was written for in this repo before.
+if [ "${SCRUB_RC}" -ne 0 ]; then
+  diag "${SCRUB_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' exited ${SCRUB_RC} (expected 0) — it could not scrub a state file whose imported secret IS resolvable"
+fi
+# THE POSITIVE MARKER, and the single assertion that discriminates issue #2133.
+# Pre-fix `Fn::ImportValue` never resolved, so the plaintext never became a
+# needle, `recordsChanged` stayed 0, and this line was `No plaintext secrets
+# found in <consumer>`. Exactly ONE record can change: the consumer owns one
+# resource record and declares no outputs, and step 7 proved exactly one record
+# was seeded.
+if ! printf '%s' "${SCRUB_OUT}" | grep -qF "Scrubbed 1 resource record(s) in ${CONSUMER}"; then
+  diag "${SCRUB_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' did not report 'Scrubbed 1 resource record(s)' — the seeded plaintext was never recognised, which is issue #2133 exactly: the Fn::ImportValue never resolved, so scrub had no needle and reported the stack clean"
+fi
+if ! printf '%s' "${SCRUB_OUT}" | grep -qF "Done: scrubbed 1 stack(s)."; then
+  diag "${SCRUB_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' did not print its 'Done: scrubbed 1 stack(s).' summary — the per-stack line and the summary disagree about whether anything was rewritten"
+fi
+case "${SCRUB_OUT}" in
+  *"No plaintext secrets found in ${CONSUMER}"*)
+    diag "${SCRUB_OUT}"
+    fail "'cdkd scrub ${CONSUMER}' reported the stack clean over state step 7 proved holds the plaintext — issue #2133's silent success"
+    ;;
+esac
+pass "scrub reported rc=0 and 'Scrubbed 1 resource record(s) in ${CONSUMER}'"
+
+# SECONDARY NET, stated as such: the record is back on its expression and the
+# plaintext is gone. Both are satisfied by a scrub that worked AND by anything
+# that stopped short, which is why neither is the discriminator above.
+SCRUBBED_STATE_JSON=$(node "${LOCAL_DIST}" state show "${CONSUMER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)
+SCRUBBED_PARAM_VALUE=$(printf '%s' "${SCRUBBED_STATE_JSON}" \
+  | jq -r '[.state.resources
+              | to_entries[]
+              | select(.value.resourceType=="AWS::SSM::Parameter")
+              | .value.properties.Value] | first // empty')
+if [ "${SCRUBBED_PARAM_VALUE}" != "${CONSUMER_EXPRESSION}" ]; then
+  case "${SCRUBBED_PARAM_VALUE}" in
+    '{{resolve:secretsmanager:'*)
+      fail "scrub rewrote properties.Value to a DIFFERENT secret expression (${SCRUBBED_PARAM_VALUE}) than the one the deploy stored (${CONSUMER_EXPRESSION})"
+      ;;
+    *)
+      fail "scrub left the consumer's properties.Value as something other than the imported expression (length ${#SCRUBBED_PARAM_VALUE})"
+      ;;
+  esac
+fi
+pass "the consumer's properties.Value is back to the expression: ${SCRUBBED_PARAM_VALUE}"
+
+SCRUBBED_STATE_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" -)
+assert_no_plaintext "the consumer's persisted state file after scrub" "${SCRUBBED_STATE_RAW}"
+
+# VERSIONS, not the current object. `aws s3 rm` only writes a delete marker on
+# this bucket, and the SEEDED version is a real disclosure of a real (fixture)
+# secret for as long as it survives — so purge the noncurrent versions now
+# rather than at teardown, then PROVE nothing under the prefix still carries it.
+#
+# `noncurrent` is load-bearing: the consumer is still DEPLOYED and its CURRENT
+# state.json is what the teardown below destroys from. Sweeping `all` here would
+# make step 11's destroy skip the stack entirely and orphan the SSM parameter.
+s3_purge_prefix_versions "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX}" noncurrent || true
+assert_no_plaintext_in_versions "${CONSUMER_STATE_PREFIX}" \
+  "the consumer's surviving state-object versions after scrub"
+
+echo ""
+echo "==> Step 9 (assertion 8 - THE REFUSAL): an UNREADABLE producer makes scrub REFUSE, not report clean"
+# The other half of #2133, and it needs its own phase: step 8 still passes with
+# the pre-pass deleted, because the context wiring alone is enough to resolve
+# the import. What only the pre-pass can do is turn a FAILED cross-stack read
+# from a `logger.debug` into an exit-2 refusal — pre-fix the same failure was
+# swallowed by the per-item best-effort catch and the stack was reported clean.
+#
+# The producer's state OBJECT is delete-markered so `Fn::ImportValue` cannot be
+# answered by anyone: `cdkd scrub` supplies no `exportIndex` (deliberately — the
+# index's scan arm would PATCH it, an S3 write from a command that performs no
+# AWS mutation), so the state.json scan is the only route and it is now blind.
+#
+# Backed up in a shell variable rather than a file: this document carries the
+# fixture's literal `SecretString`, and a scratch copy on disk would outlive an
+# abort. The restore runs BEFORE any assertion below, so no failure here can
+# leave the producer unmanageable — and `sweep` force-deletes the secret by NAME
+# on every abort path regardless of what state.json says.
+PRODUCER_STATE_BACKUP=$(aws s3 cp "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}" -)
+if ! printf '%s' "${PRODUCER_STATE_BACKUP}" \
+    | jq -e --arg k "${EXPORT_NAME}" '.outputs | has($k)' > /dev/null; then
+  fail "the producer state backup does not carry the ${EXPORT_NAME} output — refusing to delete an object this phase could not restore"
+fi
+aws s3api delete-object --bucket "${STATE_BUCKET}" --key "${PRODUCER_STATE_KEY}" > /dev/null
+set +e
+REFUSE_OUT=$(node "${LOCAL_DIST}" scrub "${CONSUMER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+REFUSE_RC=$?
+set -e
+# Restore FIRST, assert second.
+printf '%s' "${PRODUCER_STATE_BACKUP}" | aws s3 cp - "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}"
+PRODUCER_STATE_BACKUP=""
+RESTORED_EXPORT=$(aws s3 cp "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}" - \
+  | jq -r --arg k "${EXPORT_NAME}" '.outputs[$k] // empty')
+if [ "${RESTORED_EXPORT}" != "${STATE_EXPORT_VALUE}" ]; then
+  fail "the producer's state was NOT restored (its ${EXPORT_NAME} output reads back as a value of length ${#RESTORED_EXPORT}) — the teardown below cannot destroy the producer"
+fi
+pass "the producer's state was restored before any assertion ran"
+
+assert_no_plaintext "'cdkd scrub' refusal output" "${REFUSE_OUT}"
+# rc=2 SPECIFICALLY, not merely non-zero: `--fail` uses 1 for "plaintext was
+# found", and a CI gate reading the code alone must be able to tell "scrub
+# looked and found a leak" from "scrub refused to look" — the two call for
+# opposite responses (rotate the secret vs. deploy the producer and re-run).
+if [ "${REFUSE_RC}" -ne 2 ]; then
+  diag "${REFUSE_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' exited ${REFUSE_RC} with the producer's state unreadable (expected 2) — a 0 here is issue #2133 exactly: the unresolvable cross-stack read was swallowed and the stack reported clean"
+fi
+if ! printf '%s' "${REFUSE_OUT}" | grep -qF "could not resolve the Fn::ImportValue in resource"; then
+  diag "${REFUSE_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' exited 2 but never named the unresolvable Fn::ImportValue — the exit code came from somewhere other than the #2133 pre-pass"
+fi
+if ! printf '%s' "${REFUSE_OUT}" | grep -qF "1 stack(s) could not be scrubbed: ${CONSUMER}"; then
+  diag "${REFUSE_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' refused without naming the stack in its summary"
+fi
+pass "scrub refused with rc=2 and named the unresolvable Fn::ImportValue"
+
+echo ""
+echo "==> Step 10 (assertion 9 - THE OTHER REFUSAL): an UNSCRUBBED producer makes scrub REFUSE, not report clean"
+# The THIRD outcome of one cross-stack read, and the branch neither step above
+# enters. Step 8's producer state holds the {{resolve:...}} EXPRESSION, so the
+# read is healthy and the consumer is scrubbed. Step 9's producer state cannot
+# be read at all, so the read THROWS. Between them sits the population `cdkd
+# scrub` exists for: a producer whose state an OLDER binary wrote, so its
+# `state.outputs` still stores the resolved PLAINTEXT. The read then SUCCEEDS
+# and returns that plaintext, and there is no expression anywhere for scrub to
+# write into the consumer's leaf — so it must refuse
+# (`SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT`, exit 2) rather than report the stack
+# clean, which is the same silent success as #2133 reached one step later.
+#
+# WHY THIS ONE IS WORTH A REAL-AWS PHASE. The discriminator for exactly this
+# decision was implemented WRONG three times: `carriesDynamicReference` applied
+# to the RESOLVED value (inverted — `reresolveCrossStackValue` hands back a
+# plaintext in BOTH outcomes), the producer's TEMPLATE test (true of both, so it
+# refused every consumer of a secret-bearing export), and a needle-count test
+# (wrong in both directions). The unit suite was green through two of them,
+# because the signals were perfectly correlated across its matrix, and the real-
+# AWS arm is what caught the third. What ships now READS the producer's stored
+# `state.outputs[<key the read matched>]` and tests `carriesDynamicReference` on
+# THAT — a statement about a real state record, which is precisely the thing a
+# live producer supplies and a fixture cannot fake into existence.
+#
+# THE CONSUMER ALONE, NEVER `--all`, and this is a non-obvious way for the arm
+# to go vacuous rather than a stylistic choice. `orderScrubTargets` sorts
+# producers ahead of their consumers, so a `--all` run would scrub the PRODUCER
+# first, turn its stored plaintext back into the expression, and arrive at the
+# consumer with the condition already healed — a green phase over a code path it
+# never entered.
+#
+# THE SEED IS ON THE PRODUCER, NOT THE CONSUMER. The refusal is raised by the
+# pre-pass walking the consumer's TEMPLATE `Properties`, so it does not depend on
+# what the consumer's own state holds; step 8 left that record on its expression
+# and this phase leaves it there, which is what makes "the record was not
+# rewritten" below a meaningful secondary net.
+#
+# Backed up in a shell variable rather than a file, and restored BEFORE any
+# assertion runs, for the two reasons step 9 states: this document carries the
+# fixture's literal `SecretString`, and a scratch copy on disk would outlive an
+# abort.
+PRODUCER_STATE_BACKUP=$(aws s3 cp "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}" -)
+# The EXPORT-name key, not the output name. `resolveImportValue`'s state.json
+# scan matches `exportName in state.outputs`, records that same string as the
+# import's `exportName`, and the pre-pass then re-reads `state.outputs[<that
+# key>]` to classify it — so `CdkdCrossStackSecretPassword` is the one key the
+# seed has to change, and patching `CrossStackSecretPasswordOutput` instead
+# would be a silent no-op that every assertion below would pass over.
+#
+# Required to hold the EXPRESSION first, compared against the value step 2
+# captured. Without it the seed could be a no-op on a key that already held a
+# plaintext, and "the plaintext is there afterwards" would be evidence of
+# nothing — the same coupling step 7 spells out for its own seed.
+PRE_SEED_EXPORT=$(printf '%s' "${PRODUCER_STATE_BACKUP}" \
+  | jq -r --arg k "${EXPORT_NAME}" '.outputs[$k] // empty')
+if [ "${PRE_SEED_EXPORT}" != "${STATE_EXPORT_VALUE}" ]; then
+  fail "the producer's state.outputs[${EXPORT_NAME}] is not the expression step 2 recorded (length ${#PRE_SEED_EXPORT}) — the seed below would not be the pre-#1899 shape and this phase would test nothing"
+fi
+PRODUCER_SEEDED=$(printf '%s' "${PRODUCER_STATE_BACKUP}" \
+  | jq --arg k "${EXPORT_NAME}" --arg plain "${EXPECTED_PLAINTEXT}" '.outputs[$k] = $plain')
+printf '%s' "${PRODUCER_SEEDED}" | aws s3 cp - "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}"
+PRODUCER_SEEDED=""
+# Read back THROUGH cdkd, not from the document that was uploaded, exactly as
+# step 7 does: the premise this phase rests on is that `cdkd scrub` sees a
+# plaintext there, and only a read through the same path can say so.
+SEEDED_PRODUCER_EXPORT=$(node "${LOCAL_DIST}" state show "${PRODUCER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json \
+  | jq -r --arg k "${EXPORT_NAME}" '.state.outputs[$k] // empty')
+if [ "${SEEDED_PRODUCER_EXPORT}" != "${EXPECTED_PLAINTEXT}" ]; then
+  # Never printed: on the failure this guards it is either the expression (seed
+  # lost) or some other resolved value.
+  fail "the producer's persisted state.outputs[${EXPORT_NAME}] is not the seeded plaintext (length ${#SEEDED_PRODUCER_EXPORT}) — the read below would return an expression and the refusal under test could not fire"
+fi
+pass "the producer's state.outputs[${EXPORT_NAME}] now holds the BARE PLAINTEXT, as a pre-#1899 binary left it"
+
+# Captured BEFORE the scrub so "the consumer's record was not rewritten" can be
+# stated as a byte comparison rather than as a re-parse of one field.
+PRE_REFUSE_CONSUMER_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" -)
+set +e
+PLAINTEXT_PRODUCER_OUT=$(node "${LOCAL_DIST}" scrub "${CONSUMER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+PLAINTEXT_PRODUCER_RC=$?
+set -e
+# Restore FIRST, assert second — a failed assertion here must not leave the
+# producer's export holding a plaintext for the teardown below to destroy from.
+printf '%s' "${PRODUCER_STATE_BACKUP}" | aws s3 cp - "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}"
+PRODUCER_STATE_BACKUP=""
+RESTORED_SEEDED_EXPORT=$(aws s3 cp "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}" - \
+  | jq -r --arg k "${EXPORT_NAME}" '.outputs[$k] // empty')
+if [ "${RESTORED_SEEDED_EXPORT}" != "${STATE_EXPORT_VALUE}" ]; then
+  fail "the producer's state was NOT restored (its ${EXPORT_NAME} output reads back as a value of length ${#RESTORED_SEEDED_EXPORT}) — a later phase would inherit the seeded plaintext and the teardown could not destroy the producer"
+fi
+pass "the producer's state was restored before any assertion ran"
+
+# VERSION COVERAGE for the seed, stated because the shape differs from step 8's.
+# The seed wrote a NONCURRENT version of the producer's state.json carrying this
+# run's plaintext in its outputs bag, so purge those now rather than at teardown
+# — every phase such a version survives is extra time it is recoverable through
+# `GetObjectVersion` (issue #2096). `noncurrent` is load-bearing for the reason
+# step 8 gives: the producer is still DEPLOYED and its CURRENT state.json is what
+# step 11's destroy reads.
+#
+# No `assert_no_plaintext_in_versions` follows, and that is not an omission. The
+# producer's CURRENT object carries `EXPECTED_PLAINTEXT` BY CONSTRUCTION — the
+# fixture's template declares the secret's value as a literal `SecretString`, so
+# it sits in that resource's own state properties, which is why every leak grep
+# in this file is scoped to the outputs bag or to the CONSUMER. What proves
+# nothing survives on the producer side is the terminal
+# `s3_purge_prefix_versions ... all` + `s3_assert_versions_swept` pair below,
+# which already covers this seed: it asserts ZERO surviving versions under the
+# whole producer prefix.
+s3_purge_key_versions "${STATE_BUCKET}" "${PRODUCER_STATE_KEY}" noncurrent || true
+
+assert_no_plaintext "'cdkd scrub' unscrubbed-producer refusal output" "${PLAINTEXT_PRODUCER_OUT}"
+# THE DISCRIMINATOR, half one: rc CAPTURED above and compared to 2 SPECIFICALLY.
+# A guard that greps a command's output but never checks its rc has shipped
+# green over exactly the defect it was written for in this repo before, and
+# non-zero alone is not enough either — `--fail` uses 1 for "plaintext was
+# found", and a CI gate reading the code has to tell "scrub looked and found a
+# leak" from "scrub refused to look".
+if [ "${PLAINTEXT_PRODUCER_RC}" -ne 2 ]; then
+  diag "${PLAINTEXT_PRODUCER_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' exited ${PLAINTEXT_PRODUCER_RC} with the producer's export stored as a PLAINTEXT (expected 2) — a 0 here is the #2133 silent success reached one step later: the read returned a bare string, nothing became a needle, and the stack was reported clean"
+fi
+# THE DISCRIMINATOR, half two: WHICH refusal. Both this phase and step 9 exit 2
+# out of the same pre-pass, so the exit code alone cannot tell them apart, and a
+# regression that made every cross-stack read UNRESOLVABLE would satisfy the rc
+# check here while testing nothing about the plaintext-producer branch. The two
+# messages are disjoint by construction — this one says the read RESOLVED, step
+# 9's says it could NOT be resolved — so both polarities are asserted.
+#
+# NOT the error CODE: `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT` is carried on the
+# CdkdError and read by the unit suite, but `formatError` renders only
+# `<name>: <message>`, so no cdkd invocation ever prints the code string. The
+# message text below is the strongest marker the CLI actually emits.
+if ! printf '%s' "${PLAINTEXT_PRODUCER_OUT}" | grep -qF "resolved the Fn::ImportValue in resource"; then
+  # Sentinel (see .claude/rules/testing.md): the stack NAME is printed by the
+  # summary independently of the refusal wording, so its presence proves the
+  # output was captured and the PARSE, not the run, came up empty.
+  if printf '%s' "${PLAINTEXT_PRODUCER_OUT}" | grep -qF "${CONSUMER}"; then
+    diag "${PLAINTEXT_PRODUCER_OUT}"
+    fail "'cdkd scrub ${CONSUMER}' exited 2 but never said it RESOLVED the Fn::ImportValue — the exit code came from somewhere other than the unscrubbed-producer branch, or that refusal's wording drifted and this grep is now blind"
+  fi
+  fail "'cdkd scrub ${CONSUMER}' printed neither the refusal wording nor the stack name — the output was not captured at all"
+fi
+if printf '%s' "${PLAINTEXT_PRODUCER_OUT}" | grep -qF "could not resolve the Fn::ImportValue in resource"; then
+  diag "${PLAINTEXT_PRODUCER_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' refused with step 9's UNRESOLVABLE-read message instead — the producer's state is readable here, so this phase would be a duplicate of step 9 rather than a test of the plaintext-producer branch"
+fi
+# The producer is NAMED, and named as the producer rather than as the stack
+# being scrubbed: the whole point of this refusal over a bare failure is that it
+# tells the operator which OTHER stack to scrub first.
+if ! printf '%s' "${PLAINTEXT_PRODUCER_OUT}" | grep -qF "to a PLAINTEXT value: the producer stack '${PRODUCER}'"; then
+  diag "${PLAINTEXT_PRODUCER_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' refused without naming '${PRODUCER}' as the producer holding the plaintext"
+fi
+# `declares '<key>' from a {{resolve:...}} expression` is the `declared` verdict,
+# which is only reached when an output of the producer's template matched THIS
+# key by name or by literal `Export.Name`. The `widened` verdict spells itself
+# differently ("publishes at least one output ... could not match"), so this
+# grep also fences the key-matching half: a refusal that fired off the
+# all-outputs fallback would be a refusal reached for a weaker reason than the
+# one this fixture is built to exercise.
+if ! printf '%s' "${PLAINTEXT_PRODUCER_OUT}" | grep -qF "declares '${EXPORT_NAME}' from a {{resolve:...}} expression"; then
+  diag "${PLAINTEXT_PRODUCER_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' refused without the 'declared' verdict for ${EXPORT_NAME} — the producer template match fell back to the widened all-outputs scan, so the refusal came from an over-approximation rather than from this export"
+fi
+# THE REMEDY. A refusal that does not name the working fix strands the operator
+# on a command that can never succeed, which is why this branch refuses instead
+# of writing something into the leaf: there is no correct value to write.
+if ! printf '%s' "${PLAINTEXT_PRODUCER_OUT}" | grep -qF "'cdkd scrub ${PRODUCER}'"; then
+  diag "${PLAINTEXT_PRODUCER_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' refused without naming the remedy 'cdkd scrub ${PRODUCER}'"
+fi
+if ! printf '%s' "${PLAINTEXT_PRODUCER_OUT}" | grep -qF "1 stack(s) could not be scrubbed: ${CONSUMER}"; then
+  diag "${PLAINTEXT_PRODUCER_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' refused without naming the stack in its summary"
+fi
+pass "scrub refused with rc=2, named ${PRODUCER} as the unscrubbed producer, and named the remedy"
+
+# SECONDARY NET, stated as such: neither of the two below is the discriminator.
+# "scrub did not claim the stack was clean" is satisfied by any failure that
+# stopped short of the summary, and "the record was not rewritten" is satisfied
+# by every path that wrote nothing at all — a CONFLUENCE POINT in both cases.
+# The rc plus the refusal wording above is what says this branch was entered.
+case "${PLAINTEXT_PRODUCER_OUT}" in
+  *"No plaintext secrets found in ${CONSUMER}"*)
+    diag "${PLAINTEXT_PRODUCER_OUT}"
+    fail "'cdkd scrub ${CONSUMER}' reported the stack clean while refusing — the summary and the refusal contradict each other"
+    ;;
+esac
+case "${PLAINTEXT_PRODUCER_OUT}" in
+  *'Scrubbed '*)
+    diag "${PLAINTEXT_PRODUCER_OUT}"
+    fail "'cdkd scrub ${CONSUMER}' claims it rewrote a record while refusing — there is no expression to write, which is the whole reason this branch refuses"
+    ;;
+esac
+POST_REFUSE_CONSUMER_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" -)
+if [ "${POST_REFUSE_CONSUMER_RAW}" != "${PRE_REFUSE_CONSUMER_RAW}" ]; then
+  # The document is NOT echoed: on the failure this guards, the difference is
+  # whatever scrub decided to write into a secret-bearing leaf.
+  fail "the consumer's state.json changed across a REFUSED scrub — the refusal must write nothing, and fabricating a value into an imported secret's leaf is the #1934 break class this branch exists to avoid"
+fi
+assert_no_plaintext "the consumer's persisted state file after the refusal" "${POST_REFUSE_CONSUMER_RAW}"
+PRE_REFUSE_CONSUMER_RAW=""
+POST_REFUSE_CONSUMER_RAW=""
+pass "the consumer's state.json is byte-identical across the refusal and still carries no plaintext"
+
+# --- Assertion 10: TEARDOWN ------------------------------------------------
+echo ""
+echo "==> Step 11 (assertion 10): destroy Consumer, then Producer"
+
 node "${LOCAL_DIST}" destroy "${CONSUMER}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --force
 node "${LOCAL_DIST}" destroy "${PRODUCER}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --force
 
 echo ""
-echo "==> Step 7: no orphans left behind"
+echo "==> Step 12: no orphans left behind"
 assert_gone "consumer state still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CONSUMER_STATE_KEY}"
 assert_gone "producer state still exists after destroy" \

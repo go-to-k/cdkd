@@ -2806,6 +2806,87 @@ scrub cannot rewrite — a state KEY holding a secret, which needs an
 `Export.Name` change plus a redeploy, issue
 [#1919](https://github.com/go-to-k/cdkd/issues/1919)), 2 (error).
 
+**A cross-stack read that cannot be resolved is now a REFUSAL, not a silent
+pass** (issue [#2133](https://github.com/go-to-k/cdkd/issues/2133)). `scrub`
+learns which plaintexts to hunt for by re-resolving the template, so a leaf that
+arrives through `Fn::ImportValue` / `Fn::GetStackOutput` yields a needle only if
+the producer's state can actually be read. Until #2133 it could not be: no
+resolve context carried a state backend, the read threw, and the throw was
+absorbed by the per-item best-effort handler that exists so a partially
+resolvable template still gets scrubbed for everything else. With no needle
+nothing matched, so the command reported no plaintext found over state that may
+still have held it. Such a read is now attempted before the main pass and
+refuses with `SCRUB_CROSS_STACK_READ_UNRESOLVED` (exit 2) naming the resource or
+output it could not resolve. Everything else the best-effort handler swallows is
+unchanged -- a `Ref` to a resource absent from state still degrades to a partial
+scrub rather than failing the run, which is what that handler is for. Two
+consequences worth expecting: a stack whose producer state is unreadable (a
+deleted producer, a cross-account export, a missing state file) now exits 2
+where it previously exited 0, and under `--all` that refusal is per stack, so
+the remaining stacks are still scrubbed and the run ends non-zero naming the
+ones it could not examine. A conditional import does NOT refuse when its branch
+is not taken: the pre-pass walks `Fn::If` the way the resolver does, selected
+branch only, and neither does a `Fn::ImportValue` inside an output that this
+run's conditions SUPPRESS -- such an output wrote no state key, so there is
+nothing behind it to protect.
+
+**Which branch scrub selects is evaluated against the template's DEFAULT
+parameter values.** `scrub` takes no `--parameters`, so it has nothing else to
+evaluate a `Conditions` entry with, and a condition it cannot evaluate reads as
+false. For a stack deployed with NON-default parameters that means scrub can
+pick a branch the deploy never took -- and in a RESOURCE position, unlike an
+output position, a cross-stack read on that branch still refuses (exit 2), so
+the stack can be refused over a producer that legitimately does not exist for
+the parameters it was actually deployed with. An output position is already
+spared this: `state.outputs` records what the deploy really wrote, and a key
+absent from it disarms the refusal. There is no equivalent record for a
+resource-position branch, so the practical remedies are to make the read
+resolvable -- deploy or scrub the producer that branch names, which
+`cdkd scrub --all` does in one run by ordering producers before consumers --
+rather than to re-run unchanged.
+
+**A cross-stack read that SUCCEEDS but whose PRODUCER still stores the
+plaintext refuses too** (`SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT`, exit 2). scrub
+can only replace a stored plaintext with the `{{resolve:...}}` expression the
+PRODUCER holds, and a producer whose own state has not been scrubbed yet still
+holds the plaintext itself -- so the read succeeds, there is no expression to
+write, and the consumer would be reported clean over a record that still holds
+the secret. The verdict is taken by READING the producer's own stored value, not
+by inspecting what the read returned: the read RESOLVES a stored expression to
+plaintext before handing it over, so a healthy producer and an unscrubbed one
+are indistinguishable from the consumer's side. The refusal names the producer
+and the fix: `cdkd scrub <producer>` first, then re-run. It fires only when the
+producer's template declares that export from a `{{resolve:...}}` expression, so
+an ordinary import of a bucket name or an ARN is unaffected; a producer outside
+the synthesized app, and one whose export cdkd resolved through CloudFormation
+rather than through cdkd state, cannot be classified from the consumer's side
+and are not refused. When the producer's `Export.Name` is an intrinsic this run
+cannot reproduce, the check widens to every output of that producer -- an
+over-approximation in the safe direction, and the message says so rather than
+claiming the producer declares that particular key from an expression.
+
+`cdkd scrub --all` now scrubs PRODUCERS BEFORE CONSUMERS (CDK's own stack
+dependencies plus raw `Fn::ImportValue` / `Fn::GetStackOutput` edges inferred
+from the templates), so one run normally scrubs a producer and then resolves its
+expression in the consumer. `--dry-run` writes nothing, so the producer is never
+rewritten -- a dry run over a not-yet-scrubbed producer is exactly where this
+refusal is expected.
+
+**A read cdkd declines BY DESIGN is a finding, not a refusal.** The
+cross-account `Fn::GetStackOutput` of a redacted value is never resolved: cdkd
+will not look up a producer account's secret with the consumer's credentials.
+That read cannot be made to succeed by re-running, so refusing the whole stack
+would strand every other secret in it. Instead the stack is scrubbed for
+everything else, the read is reported (`N cross-stack read(s) in <stack> could
+NOT be verified`), the summary says so, and `--fail` exits non-zero -- the same
+treatment a secret-bearing output KEY gets. That treatment is scoped to THAT ONE
+read. Other refusals the resolver raises deliberately -- a stale placeholder
+ARN, an unresolvable account id, an unenriched `Fn::GetAtt`, `--strict-getatt`,
+a malformed `Fn::Split` -- are all things you can FIX in the template, so they
+refuse the stack (exit 2) with the resolver's own message, and a re-run after
+the fix scrubs it. They are reachable here whenever the reference's export name
+is built by an `Fn::Sub` over one of them.
+
 **SSM parameters are redacted by TYPE, not by spelling** (issue
 [#1901](https://github.com/go-to-k/cdkd/issues/1901)). The plain
 `{{resolve:ssm:...}}` form resolves with `WithDecryption`, so it yields a real

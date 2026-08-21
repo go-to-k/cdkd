@@ -197,7 +197,7 @@ function formatDuration(ms: number): string {
  * "the referenced thing does not exist" miss (issue
  * [#1740](https://github.com/go-to-k/cdkd/issues/1740)).
  *
- * The distinction exists for exactly one consumer: `Fn::Sub`'s variable
+ * The distinction exists for one consumer of THIS class: `Fn::Sub`'s variable
  * resolution, which speculatively tries `Ref` and then `Fn::GetAtt` and keeps
  * the raw `${...}` placeholder when neither resolves. That warn-and-keep is the
  * long-standing, deliberate behavior for a genuinely unknown variable — but a
@@ -208,11 +208,15 @@ function formatDuration(ms: number): string {
  *
  * Throwing this class rather than a bare `Error` is what lets that catch
  * re-raise a refusal (carrying its own message and remedy) while leaving the
- * not-found path on warn-and-keep. Nothing else branches on it.
+ * not-found path on warn-and-keep. Nothing else branches on THIS class;
+ * `cdkd scrub` branches on the {@link CrossAccountSecretRefusalError} SUBCLASS,
+ * for the reason group 3 below gives.
  *
- * **Throw sites split into two groups, and the enumeration is worth keeping
+ * **Throw sites split into three groups, and the enumeration is worth keeping
  * accurate** — an out-of-date one reads as "these are all of them", which is
- * how the #1730 site below went unlisted for three releases. All live in
+ * how the #1730 site below went unlisted for three releases, and how the
+ * cross-account `Fn::GetStackOutput` site in group 3 went unlisted from the
+ * day it shipped. All live in
  * `src/deployment/intrinsic-function-resolver.ts`:
  *
  * 1. Reachable from `Fn::Sub`'s `${LogicalId.Attribute}` form, i.e. the ones
@@ -226,26 +230,75 @@ function formatDuration(ms: number): string {
  *    inspects it: `resolveSplit`'s two refusals of a non-string value (#1874).
  *    `Fn::Sub` cannot syntactically contain an `Fn::Split`, so those change no
  *    behavior by being this class.
+ * 3. PERMANENT — the one site where no user action and no re-run can make the
+ *    read succeed: `resolveGetStackOutput`'s cross-account refusal to resolve a
+ *    producer account's redacted dynamic reference with the consumer's
+ *    credentials. It throws the SUBCLASS
+ *    {@link CrossAccountSecretRefusalError} rather than this class, because
+ *    every site in groups 1 and 2 is USER-FIXABLE (correct the stale
+ *    placeholder ARN, deploy the producer so STS resolves, enrich the
+ *    `Fn::GetAtt`, drop `--strict-getatt`, fix the malformed `Fn::Split`) and a
+ *    consumer that treats "permanent" as a property of the CLASS silently
+ *    downgrades all five. `cdkd scrub`'s cross-stack pre-pass is that consumer:
+ *    it records a permanent refusal as a FINDING and scrubs the rest of the
+ *    stack, but must REFUSE the stack for a fixable one, since a re-run after
+ *    the fix would scrub it (issue
+ *    [#2133](https://github.com/go-to-k/cdkd/issues/2133) review). Match on the
+ *    subclass, never on this class.
  *
  * The class is deliberately NOT `markNonRetryable` at construction, unlike
  * {@link ResourceUpdateNotSupportedError}: EXACTLY ONE of its throw sites is
  * genuinely time-dependent — the fabricated-account guard, where
  * `getAccountInfo` caches a fabricated answer for only 10s precisely so a
  * later attempt can heal — so a constructor-level marker would wrongly make
- * that one terminal. Every OTHER site marks at its own `throw`: all five
+ * that one terminal. Every OTHER site marks at its own `throw`: all six
  * decide from inputs a retry cannot change (a persisted state record, an
- * attribute-name suffix, a CLI flag, an already-resolved value's type), and
- * all five interpolate template-controlled text into their message, which the
+ * attribute-name suffix, a CLI flag, an already-resolved value's type, a
+ * template's literal `RoleArn`), and all six interpolate
+ * template-controlled text into their message, which the
  * SUBSTRING-matching retry classifiers can read as transient (issue #1838 —
  * a logical id like `MyDependencyViolationHandler` is enough). So the split is
  * "which SITE can heal", not "which class"; do not read the unmarked class as
  * a statement that these refusals are retryable.
  */
 export class IntrinsicResolutionRefusalError extends CdkdError {
-  constructor(message: string, cause?: Error) {
-    super(message, 'INTRINSIC_RESOLUTION_REFUSAL', cause);
+  constructor(message: string, cause?: Error, code = 'INTRINSIC_RESOLUTION_REFUSAL') {
+    super(message, code, cause);
     this.name = 'IntrinsicResolutionRefusalError';
     Object.setPrototypeOf(this, IntrinsicResolutionRefusalError.prototype);
+  }
+}
+
+/**
+ * The ONE refusal in group 3 of {@link IntrinsicResolutionRefusalError}: a
+ * cross-account `Fn::GetStackOutput` whose stored value is a redacted dynamic
+ * reference (issue [#2133](https://github.com/go-to-k/cdkd/issues/2133)
+ * review).
+ *
+ * A SUBCLASS rather than a flag, so the two properties stay independent:
+ * `instanceof IntrinsicResolutionRefusalError` is still true, which is what
+ * `resolveSub`'s catch re-raises on (making this refusal propagate out of an
+ * `Fn::Sub` instead of being laundered into a literal `${...}`), while
+ * consumers that need "no re-run can change this" match on THIS class and
+ * therefore cannot capture the five user-fixable siblings.
+ *
+ * `code` is distinct for the same reason a message is not: a consumer keying
+ * on `INTRINSIC_RESOLUTION_REFUSAL` would capture every sibling, and one
+ * keying on message text breaks the moment the wording improves.
+ *
+ * `cdkd scrub` is the consumer today. Its cross-stack pre-pass records a
+ * refusal of THIS class as an unverifiable FINDING — the rest of the stack is
+ * still scrubbed, and the run exits non-zero — because refusing the whole
+ * stack would strand every other secret in it forever. A sibling refusal
+ * (a stale placeholder ARN, an unenriched `Fn::GetAtt`, a malformed
+ * `Fn::Split`, all reachable through an `Fn::Sub`-built export name) must
+ * REFUSE instead, since the user can fix the cause and re-run.
+ */
+export class CrossAccountSecretRefusalError extends IntrinsicResolutionRefusalError {
+  constructor(message: string, cause?: Error) {
+    super(message, cause, 'INTRINSIC_RESOLUTION_REFUSAL_CROSS_ACCOUNT_SECRET');
+    this.name = 'CrossAccountSecretRefusalError';
+    Object.setPrototypeOf(this, CrossAccountSecretRefusalError.prototype);
   }
 }
 
