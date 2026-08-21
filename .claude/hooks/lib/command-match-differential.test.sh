@@ -16,6 +16,17 @@
 # enumerated table below. A hand-picked case can only find what its author
 # thought of; a differential finds everything the corpus covers.
 #
+# HERMETICITY HAS TWO AXES, and this fence needed both. Vendoring the baseline
+# closed the GIT axis (CI shallow-clones, so `git show <sha>` had nothing to
+# read). The ENVIRONMENT axis bit next: `~/repo` resolves through $HOME, so the
+# recorded cells only matched on the machine that recorded them. When extending
+# the corpus, ask of every new input: does this observable depend on ANYTHING
+# outside the input string -- the machine, the user, the cwd, the clock, the
+# locale? Audited at the time of writing: $HOME via `gate_expand_tilde` is the
+# only such read reaching an observable (the emitter passes a literal fallback
+# dir, so no $PWD dependence; no clock or TZ use; locale measured to make no
+# difference over this ASCII corpus). Both are pinned below.
+#
 # HOW IT IS BUCKETED. Each differing cell is classified by WHAT THE FUNCTION NOW
 # RETURNS -- not by which input produced it. Bucketing by input is how a total
 # regression ends up inside a bucket named "intended": you recognise the input,
@@ -261,8 +272,26 @@ while IFS= read -r b64; do
 done < "$2"
 EMIT_EOF
 
-bash "$TMPDIR/emit.sh" "$OLD_LIB" "$CORPUS" > "$TMPDIR/old.tsv" 2>/dev/null
-bash "$TMPDIR/emit.sh" "$NEW_LIB" "$CORPUS" > "$TMPDIR/new.tsv" 2>/dev/null
+# ENVIRONMENT PINNING. `gate_expand_tilde` reads $HOME, so `git -C ~/repo …`
+# resolved to a machine-specific path and the recorded cells only matched on the
+# machine that recorded them -- CI failed with `/Users/runner/repo` against a
+# table that said the recorder's own home path. Vendoring the baseline made this fence
+# hermetic with respect to GIT; this is the same class of dependency on a
+# different axis, the ENVIRONMENT.
+#
+# Pinned rather than normalized on purpose: normalizing means a transformation
+# layer sitting between the implementations and the assertions, which is exactly
+# where a fence can go green-but-inert. Pinning removes the variable instead of
+# rewriting its value, and it makes the `~` case assert an exact known result.
+# Removing the pin is self-detecting: every cell below would resolve under the
+# real $HOME and fail as an undeclared change.
+#
+# LC_ALL is pinned as insurance, not from a measurement -- C and en_US.UTF-8
+# were verified to produce byte-identical tables over this corpus, which is
+# ASCII-only. It matters if someone adds a non-ASCII input later.
+FENCE_HOME="/fence/home"
+HOME="$FENCE_HOME" LC_ALL=C bash "$TMPDIR/emit.sh" "$OLD_LIB" "$CORPUS" > "$TMPDIR/old.tsv" 2>/dev/null
+HOME="$FENCE_HOME" LC_ALL=C bash "$TMPDIR/emit.sh" "$NEW_LIB" "$CORPUS" > "$TMPDIR/new.tsv" 2>/dev/null
 
 old_rows=$(wc -l < "$TMPDIR/old.tsv" | tr -d ' ')
 new_rows=$(wc -l < "$TMPDIR/new.tsv" | tr -d ' ')
@@ -299,11 +328,11 @@ cat > "$ALLOWED" <<'ALLOWED_EOF'
 31	m:GATE_RE_GH_PR_MERGE	1	NOW_MATCH	gh -C backtick pr merge
 31	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	NOW_MATCH	gh -C backtick pr merge
 31	m:GATE_RE_GH_PR_WRITE	1	NOW_MATCH	gh -C backtick pr merge
-32	t:GATE_RE_GIT_COMMIT	/Users/goto/repo	TARGET	git -C tilde commit
-32	t:GATE_RE_GIT_COMMIT_OR_PUSH	/Users/goto/repo	TARGET	git -C tilde commit
-33	t:GATE_RE_GH_PR_MERGE	/Users/goto/repo	TARGET	gh -C tilde pr merge
-33	t:GATE_RE_GH_PR_CREATE_OR_MERGE	/Users/goto/repo	TARGET	gh -C tilde pr merge
-33	t:GATE_RE_GH_PR_WRITE	/Users/goto/repo	TARGET	gh -C tilde pr merge
+32	t:GATE_RE_GIT_COMMIT	/fence/home/repo	TARGET	git -C tilde commit
+32	t:GATE_RE_GIT_COMMIT_OR_PUSH	/fence/home/repo	TARGET	git -C tilde commit
+33	t:GATE_RE_GH_PR_MERGE	/fence/home/repo	TARGET	gh -C tilde pr merge
+33	t:GATE_RE_GH_PR_CREATE_OR_MERGE	/fence/home/repo	TARGET	gh -C tilde pr merge
+33	t:GATE_RE_GH_PR_WRITE	/fence/home/repo	TARGET	gh -C tilde pr merge
 44	t:GATE_RE_GIT_COMMIT	/two	TARGET	git -C twice
 44	t:GATE_RE_GIT_COMMIT_OR_PUSH	/two	TARGET	git -C twice
 46	t:GATE_RE_GIT_COMMIT	/abs/repo	TARGET	-C real plus mention
@@ -410,6 +439,24 @@ for spec in "NOW_MATCH:55" "NOW_MISS:5" "TARGET:8" "SEGCOUNT:12"; do
     ng "class $cls: only $seen cells observed, floor $floor -- the corpus stopped covering this class, so its absence is no longer evidence"
   fi
 done
+
+# ------------------------------------------------- machine independence guard
+# The audit that found the $HOME dependency was done by hand, once. This makes
+# it repeat itself: if any observable ever carries the INVOKING user's home
+# path, something in the resolver has started reading the environment again (or
+# the pin above was removed), and the tables have quietly become machine-
+# specific rather than input-specific.
+real_home="${HOME:-}"
+if [ -n "$real_home" ] && [ "$real_home" != "$FENCE_HOME" ]; then
+  leaked=$(cut -f3 "$TMPDIR/new.tsv" "$TMPDIR/old.tsv" 2>/dev/null | grep -F "$real_home" | sort -u | head -3)
+  if [ -z "$leaked" ]; then
+    ok "machine independence: no observable carries the invoking user's HOME ($real_home)"
+  else
+    ng "machine independence: observable(s) carry the invoking HOME, so this table is machine-specific: $(printf '%s' "$leaked" | tr '\n' ' ')"
+  fi
+else
+  ok "machine independence: invoking HOME is unset or equals the pinned value; guard not applicable"
+fi
 
 # ------------------------------------------------------------- the invariant
 # Not a case: a property. The segmenter must never return ZERO segments for a
