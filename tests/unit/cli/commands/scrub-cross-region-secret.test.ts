@@ -173,6 +173,17 @@ const IRELAND_PASSWORD = 'ireland-password-2109';
  * it the leaf is returned by identity, and `resolveSub` / `resolveJoin` then
  * hand the assembled expression to the PRIMARY resolver, which is issue #2109
  * verbatim with the ambiguous refusal never firing.
+ *
+ * THAT LAST CLAUSE IS NO LONGER TRUE, and is kept only to record what the
+ * guard was written against. Since issue
+ * [#2134](https://github.com/go-to-k/cdkd/issues/2134) the resolver classifies
+ * the ASSEMBLED expression itself, so a leaf this guard refuses would now be
+ * answered correctly if it were let through -- routed to the region its ARN
+ * names, or refused per-reference on its own evidence. The guard therefore
+ * only OVER-refuses today; it is kept because over-refusing is loud and
+ * actionable, and relaxing it deliberately is issue
+ * [#2157](https://github.com/go-to-k/cdkd/issues/2157). These cases still pin
+ * live behaviour and are correct as written.
  */
 const SUB_ASSEMBLED_EXPR = {
   'Fn::Sub': [
@@ -251,7 +262,15 @@ function makeStackInfo(
    * the guard at all — which is how the first draft of the prose cases below
    * passed with the guard mutated (measured).
    */
-  extraProps?: Record<string, unknown>
+  extraProps?: Record<string, unknown>,
+  /**
+   * Template `Parameters`. Needed only by the issue #2134 cases, which have to
+   * produce a leaf whose `{{resolve:` OPENING is contributed by an intrinsic --
+   * a `Default` holding the reference, referenced through `Fn::Sub`. Any leaf
+   * that spells the opening literally is caught by the pre-pass instead, which
+   * is a different guard.
+   */
+  parameters?: Record<string, unknown>
 ): {
   stackName: string;
   displayName: string;
@@ -265,6 +284,7 @@ function makeStackInfo(
     artifactId: 'Consumer',
     dependencyNames: [],
     template: {
+      ...(parameters && { Parameters: parameters }),
       Resources: {
         Db: {
           Type: 'AWS::RDS::DBInstance',
@@ -370,20 +390,103 @@ afterEach(() => {
 async function scrub(
   expr: unknown,
   outputs?: Record<string, unknown>,
-  extraProps?: Record<string, unknown>
+  extraProps?: Record<string, unknown>,
+  parameters?: Record<string, unknown>
 ): Promise<{
   recordsChanged: number;
   secretsFound: number;
   secretBearingKeys: number;
 }> {
   return await scrubStack(
-    makeStackInfo(expr, outputs, extraProps) as never,
+    makeStackInfo(expr, outputs, extraProps, parameters) as never,
     CONSUMER_REGION,
     stateBackend as never,
     lockManager as never,
     { dryRun: false, logger }
   );
 }
+
+describe('a region-AMBIGUOUS refusal is not swallowed by the best-effort catch (issue #2134)', () => {
+  /**
+   * THE GAP THAT SHIPPED THE BUG, closed at the level it lives at.
+   *
+   * The #2134 refusal is raised inside `resolveDynamicReferences`, and every
+   * unit test of it drove the RESOLVER directly -- so all of them were green
+   * while `scrubStack` wrapped that resolution in
+   * `try { ... } catch { logger.debug(...) }` and downgraded the refusal to a
+   * verbose line. The command then recorded no needle for the reference, left
+   * the plaintext in `state.json`, and returned normally with `secretsFound: 0`.
+   *
+   * That is strictly WORSE than not refusing at all: pre-#2134 this shape
+   * resolved locally, produced a needle, and the plaintext WAS scrubbed.
+   *
+   * THE SHAPE HAD TO BE CHOSEN, not guessed, and the first attempt was wrong.
+   * A leaf that spells `{{resolve:` literally -- including the template string
+   * of an `Fn::Sub` -- is caught by the PRE-PASS (`SCRUB_SECRET_REFERENCE_
+   * UNCLASSIFIABLE`), which is correctly placed OUTSIDE the catch and so proves
+   * nothing about it. The shape that reaches the resolver is the one issue
+   * #2134's scope-correction comment names: the OPENING itself is contributed
+   * by an intrinsic. Here a template `Parameter` holds the reference as its
+   * `Default` and the property is `{"Fn::Sub": "${DbSecretRef}"}`, so the raw
+   * leaf is `"${DbSecretRef}"` -- no opening at all, returned by identity,
+   * assembled only inside `resolveSub`.
+   */
+  const ASSEMBLED_VIA_PARAMETER = { 'Fn::Sub': '${DbSecretRef}' };
+  const PARAMETER_HOLDING_REFERENCE = { DbSecretRef: { Type: 'String', Default: NAME_EXPR } };
+
+  it('scrubStack THROWS rather than reporting a clean scrub', async () => {
+    useState(makeLeakyState(IRELAND_PASSWORD, 'imports', IRELAND_PASSWORD));
+
+    await expect(
+      scrub(ASSEMBLED_VIA_PARAMETER, undefined, undefined, PARAMETER_HOLDING_REFERENCE)
+    ).rejects.toMatchObject({ code: 'DYNAMIC_REFERENCE_REGION_AMBIGUOUS' });
+  });
+
+  it('the PRE-PASS did not fire -- this leaf really did reach the resolver', async () => {
+    // The premise, and it is load-bearing rather than decoration: if the
+    // pre-pass had refused, the test above would pass while saying nothing
+    // about the catch, which is exactly how its first draft failed. The two
+    // refusals carry DIFFERENT codes, so pinning the code above already
+    // separates them -- this asserts the negative directly so a future change
+    // that merged the codes could not quietly re-vacuum the case.
+    useState(makeLeakyState(IRELAND_PASSWORD, 'imports', IRELAND_PASSWORD));
+
+    await expect(
+      scrub(ASSEMBLED_VIA_PARAMETER, undefined, undefined, PARAMETER_HOLDING_REFERENCE)
+    ).rejects.not.toMatchObject({ code: 'SCRUB_SECRET_REFERENCE_UNCLASSIFIABLE' });
+  });
+
+  it('CONTROL: with NO cross-region read on record the same template scrubs normally', async () => {
+    // Without this the cases above are also what a scrub refusing EVERY
+    // assembled reference would produce -- a refusal that fires on everything
+    // satisfies every positive assertion about refusing. The EVIDENCE is what
+    // arms it, so removing the evidence must restore an ordinary, successful
+    // scrub of the identical template.
+    useState(makeLeakyState(TOKYO_PASSWORD, 'none', TOKYO_PASSWORD));
+
+    const result = await scrub(
+      ASSEMBLED_VIA_PARAMETER,
+      undefined,
+      undefined,
+      PARAMETER_HOLDING_REFERENCE
+    );
+
+    expect(result.secretsFound).toBeGreaterThan(0);
+  });
+
+  it('CONTROL: the wiring is what arms it -- this fails if scrub stops passing producerRegions', async () => {
+    // Aimed at a specific surviving mutation a reviewer found: deleting
+    // `producerRegions` from scrub's resolver context passed every suite,
+    // because nothing tied the COMMAND's wiring to the refusal. The first case
+    // above is that fence; this one states the dependency explicitly so a
+    // future reader sees which line it protects.
+    useState(makeLeakyState(IRELAND_PASSWORD, 'outputReads', IRELAND_PASSWORD));
+
+    await expect(
+      scrub(ASSEMBLED_VIA_PARAMETER, undefined, undefined, PARAMETER_HOLDING_REFERENCE)
+    ).rejects.toMatchObject({ code: 'DYNAMIC_REFERENCE_REGION_AMBIGUOUS' });
+  });
+});
 
 describe('cdkd scrub resolves a foreign-region secret in ITS OWN region (issue #2109)', () => {
   it('ARN naming a FOREIGN region: answered by a client CONSTRUCTED in that region, and the producer plaintext is what gets scrubbed', async () => {

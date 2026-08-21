@@ -14,6 +14,7 @@ import {
   withErrorHandling,
   CdkdError,
   CrossAccountSecretRefusalError,
+  DynamicReferenceRegionAmbiguousError,
 } from '../../utils/error-handler.js';
 import {
   Synthesizer,
@@ -2876,6 +2877,26 @@ export async function scrubStack(
       try {
         await resolver.resolve(resolveInput, resourceContext);
       } catch (err) {
+        // Issue #2134 review: a REGION-AMBIGUOUS refusal must NOT be
+        // swallowed here. Every other error reaching this catch means "one
+        // resource resolved partially, carry on" -- but this one means cdkd
+        // could not tell which region owns a secret reference, so no needle was
+        // recorded for it and the plaintext is still in `state.json`. Downgraded
+        // to a debug line, the command then reports `No plaintext secrets found`
+        // and exits 0 over exactly the state it exists to clean, which is the
+        // one outcome the pre-pass refusals are placed outside this catch to
+        // prevent. Re-raised so it reaches the caller like they do.
+        //
+        // By CAUSE CHAIN rather than a bare `instanceof`, for the reason
+        // `isByDesignRefusal` states one screen up: the refusal reaches this
+        // catch through `resolver.resolve`, which wraps in several places, so a
+        // top-link-only test silently swallows a wrapped one.
+        if (
+          err instanceof Error &&
+          errorCauseChain(err).some((l) => l instanceof DynamicReferenceRegionAmbiguousError)
+        ) {
+          throw err;
+        }
         // Best-effort: a resource whose intrinsics cannot resolve (a Ref to
         // something not in state) still has its own {{resolve:...}} leaves
         // recorded along the way; leave the rest untouched.
@@ -3012,6 +3033,26 @@ export async function scrubStack(
         try {
           exportName = await resolver.resolve(nameSource, nameContext);
         } catch (err) {
+          // Issue #2134 review: a REGION-AMBIGUOUS refusal must NOT be
+          // swallowed here. Every other error reaching this catch means "one
+          // resource resolved partially, carry on" -- but this one means cdkd
+          // could not tell which region owns a secret reference, so no needle was
+          // recorded for it and the plaintext is still in `state.json`. Downgraded
+          // to a debug line, the command then reports `No plaintext secrets found`
+          // and exits 0 over exactly the state it exists to clean, which is the
+          // one outcome the pre-pass refusals are placed outside this catch to
+          // prevent. Re-raised so it reaches the caller like they do.
+          //
+          // By CAUSE CHAIN rather than a bare `instanceof`, for the reason
+          // `isByDesignRefusal` states one screen up: the refusal reaches this
+          // catch through `resolver.resolve`, which wraps in several places, so a
+          // top-link-only test silently swallows a wrapped one.
+          if (
+            err instanceof Error &&
+            errorCauseChain(err).some((l) => l instanceof DynamicReferenceRegionAmbiguousError)
+          ) {
+            throw err;
+          }
           // No key to mark ambiguous — the name the deploy used is unknown and
           // could be any output's — so the whole source bag becomes untrusted.
           outputsSourceUntrusted = true;
@@ -3143,6 +3184,26 @@ export async function scrubStack(
       try {
         await resolver.resolve(valueSource, valueContext);
       } catch (err) {
+        // Issue #2134 review: a REGION-AMBIGUOUS refusal must NOT be
+        // swallowed here. Every other error reaching this catch means "one
+        // resource resolved partially, carry on" -- but this one means cdkd
+        // could not tell which region owns a secret reference, so no needle was
+        // recorded for it and the plaintext is still in `state.json`. Downgraded
+        // to a debug line, the command then reports `No plaintext secrets found`
+        // and exits 0 over exactly the state it exists to clean, which is the
+        // one outcome the pre-pass refusals are placed outside this catch to
+        // prevent. Re-raised so it reaches the caller like they do.
+        //
+        // By CAUSE CHAIN rather than a bare `instanceof`, for the reason
+        // `isByDesignRefusal` states one screen up: the refusal reaches this
+        // catch through `resolver.resolve`, which wraps in several places, so a
+        // top-link-only test silently swallows a wrapped one.
+        if (
+          err instanceof Error &&
+          errorCauseChain(err).some((l) => l instanceof DynamicReferenceRegionAmbiguousError)
+        ) {
+          throw err;
+        }
         // MASKED for the same reason as the two above — `valueSource` is a
         // post-pin bag. Verbose-only.
         logger.debug(

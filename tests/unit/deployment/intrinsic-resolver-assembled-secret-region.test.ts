@@ -161,11 +161,21 @@ function ctx(overrides: Partial<ResolverContext> = {}): ResolverContext {
   return { template: TEMPLATE, resources: {}, ...overrides };
 }
 
-/** Which regions were actually ASKED, in order. */
+/**
+ * Which regions were actually ASKED, in order.
+ *
+ * `ctorRegion` ALONE, deliberately: it is the constructor argument, so an
+ * UNPINNED client surfaces as `undefined` and fails the assertion loudly. An
+ * earlier version fell back to `s.region`, which resolves through
+ * `process.env.AWS_REGION` -- so an unpinned client would have read as the
+ * ambient region and a missing pin could have passed. (Instrumented by a
+ * reviewer: the fallback never fired in any case here, so removing it changes
+ * no result -- only what a future regression would look like.)
+ */
 function askedRegions(): Array<string | undefined> {
   return secretSends
     .filter((s) => s.command === 'GetSecretValueCommand')
-    .map((s) => s.ctorRegion ?? s.region);
+    .map((s) => s.ctorRegion);
 }
 
 /**
@@ -338,12 +348,16 @@ describe('the region a reference resolves in is decided AFTER assembly (issue #2
 
     it('delegating adds no round trips beyond what the local path costs', async () => {
       // PARITY with the control above is the invariant, not an absolute count:
-      // two occurrences, two fetches, exactly as a local reference costs -- so
-      // the pinned sibling is REUSED across occurrences rather than rebuilt.
-      // A sibling constructed per occurrence would still return the right value
-      // and still fetch twice, so the count alone cannot see that; what rules it
-      // out is that both fetches carry the SAME constructor region, which is the
-      // sibling's identity.
+      // two occurrences, two fetches, exactly as a local reference costs.
+      //
+      // WHAT THIS DOES NOT PROVE, stated because an earlier version of this
+      // comment claimed it: it does NOT rule out a sibling rebuilt per
+      // occurrence. A per-occurrence sibling is constructed with the same region
+      // string, so the constructor region is identical either way -- measured by
+      // a reviewer, who disabled the `producerRegionResolvers` memo and watched
+      // this test stay green. Sibling REUSE is a performance property; what is
+      // fenced here is that delegating costs no MORE round trips than the local
+      // path, which is the correctness-adjacent half.
       const resolver = new IntrinsicFunctionResolver(CONSUMER_REGION);
       const expr = SHAPES[0].build(PRODUCER_ARN);
 
@@ -357,6 +371,29 @@ describe('the region a reference resolves in is decided AFTER assembly (issue #2
   });
 
   describe('the comparison path is unaffected', () => {
+    it('a NAME-FORM reference with evidence is SKIPPED, not refused (placement fence)', async () => {
+      // THE CASE THAT PINS WHERE THE CLASSIFIER SITS, built by a reviewer after
+      // finding the placement unfenced. The classification is deliberately
+      // BELOW the `skipDynamicReferences` early-continue; moving it above still
+      // passed all 14 cases, because the only other skip test uses a foreign
+      // ARN, which delegates and returns the expression unchanged either way.
+      //
+      // Only a NAME-FORM reference WITH evidence separates the two placements:
+      // below the arm it is skipped (the comparison path fetches nothing, so
+      // there is nothing to attribute); above it, it refuses -- turning every
+      // `cdkd diff` over such a stack into an error.
+      const resolver = new IntrinsicFunctionResolver(CONSUMER_REGION);
+      const expr = `{{resolve:secretsmanager:${REF_NAME}:SecretString:password}}`;
+
+      const out = await resolver.resolve(
+        expr,
+        ctx({ skipDynamicReferences: true, producerRegions: [PRODUCER_REGION] })
+      );
+
+      expect(out).toBe(expr);
+      expect(askedRegions()).toEqual([]);
+    });
+
     it('skips a foreign reference rather than refusing or routing it', async () => {
       // `skipDynamicReferences` is the diff / no-op comparison path: it resolves
       // nothing at all, so classifying there could only manufacture a refusal

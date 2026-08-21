@@ -294,6 +294,35 @@ export class IntrinsicResolutionRefusalError extends CdkdError {
  * `Fn::Split`, all reachable through an `Fn::Sub`-built export name) must
  * REFUSE instead, since the user can fix the cause and re-run.
  */
+/**
+ * A `{{resolve:...}}` reference whose REGION cannot be established (issue
+ * [#2134](https://github.com/go-to-k/cdkd/issues/2134)): it names no region,
+ * and the stack it sits in is on record as reading across a region boundary.
+ *
+ * A SUBCLASS rather than a bare code, because the consumers that must not
+ * swallow it identify it by CLASS. `cdkd scrub` wraps its resolution passes in
+ * best-effort `catch { logger.debug }` blocks so that one unresolvable resource
+ * does not abandon the rest of the scrub -- and a refusal swallowed there is
+ * the exact outcome the refusal exists to prevent: no needle is recorded for
+ * the reference, the plaintext survives in `state.json`, and the command
+ * reports `No plaintext secrets found` and exits 0. The pre-pass refusals in
+ * `scrub.ts` are placed OUTSIDE those catches for the same reason; this one
+ * fires from inside `resolveDynamicReferences`, so it cannot be placed --
+ * it has to be re-raised.
+ *
+ * USER-FIXABLE, so it deliberately does NOT extend
+ * {@link CrossAccountSecretRefusalError}, whose subclass identity marks the one
+ * PERMANENT refusal `scrub.ts`'s `isByDesignRefusal` reports as unclearable.
+ * Spelling the reference as a full ARN names its region and clears this.
+ */
+export class DynamicReferenceRegionAmbiguousError extends IntrinsicResolutionRefusalError {
+  constructor(message: string, cause?: Error) {
+    super(message, cause, 'DYNAMIC_REFERENCE_REGION_AMBIGUOUS');
+    this.name = 'DynamicReferenceRegionAmbiguousError';
+    Object.setPrototypeOf(this, DynamicReferenceRegionAmbiguousError.prototype);
+  }
+}
+
 export class CrossAccountSecretRefusalError extends IntrinsicResolutionRefusalError {
   constructor(message: string, cause?: Error) {
     super(message, cause, 'INTRINSIC_RESOLUTION_REFUSAL_CROSS_ACCOUNT_SECRET');

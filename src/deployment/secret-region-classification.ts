@@ -112,7 +112,7 @@ function arnRegion(secretId: string): string | undefined {
 
 /**
  * The producer regions a stack's persisted cross-stack reads name, for
- * {@link RollbackExecutorContext.importedProducerRegions} (issue #2057).
+ * the replay's `RollbackExecutorContext.importedProducerRegions` (issue #2057).
  *
  * Both record kinds count, and for the same reason: each one is a value this
  * stack read out of ANOTHER region's state, so each one is a way a
@@ -190,7 +190,7 @@ export function producerRegionsFromState(
  *
  *  - **`ambiguous`** — the expression names no region (the plain name form) AND
  *    this stack has a foreign producer region on record
- *    ({@link RollbackExecutorContext.importedProducerRegions}). Nothing on hand
+ *    (the replay's `RollbackExecutorContext.importedProducerRegions`). Nothing on hand
  *    can establish the origin, so the replay refuses instead of guessing.
  *
  *    KNOWN OVER-REFUSAL, accepted deliberately, and WIDER THAN THE SSM CASE
