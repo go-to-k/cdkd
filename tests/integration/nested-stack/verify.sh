@@ -28,6 +28,12 @@
 #
 # What this exercises, in one run:
 #   Phase A (deploy)        - parent + child state files written.
+#   Phase A2 (drift, #2141) - `cdkd drift` over the parent; the summary counts
+#                             ONLY the SSM parameter as checked and reports the
+#                             nested stack separately as unsupported. This
+#                             parent is the discriminating shape: one readable
+#                             resource, one that reaches `unsupported` with no
+#                             AWS read attempted.
 #   Phase B (POSITIVE arm)  - a genuinely failing child delete => parent exits
 #                             non-zero, prints NO `Child ... deleted` line, and
 #                             PRESERVES the parent state.json WITH its Child row
@@ -178,6 +184,79 @@ if [ -z "${CHILD_BUCKET}" ]; then
   exit 1
 fi
 echo "PASS: child bucket resolved from child state: ${CHILD_BUCKET}"
+
+# ---------------------------------------------------------------------------
+# Phase A2: the drift summary counts only what cdkd READ (issue #2141).
+# ---------------------------------------------------------------------------
+# This parent is the discriminating shape, and it is why the arm lives here
+# rather than in a drift fixture: it holds exactly TWO resources, one of each
+# kind. `ParentReferenceToChildBucket` is an SSM parameter whose provider
+# implements `readCurrentState`, so it is genuinely compared; `Child` is an
+# `AWS::CloudFormation::Stack`, whose NestedStackProvider has no
+# `readCurrentState` AND which is on `CC_API_FALLBACK_DENY_LIST`, so it
+# short-circuits to `unsupported` with no AWS read attempted at all. A fixture
+# whose resources are all readable cannot tell the two arithmetics apart.
+#
+# Before #2141 the summary read `2 resources checked, 1 unsupported` -- it
+# counted `Child`, which cdkd never read. THE DISCRIMINATOR is the
+# `1 resource checked` half; the `1 unsupported` half is printed from a
+# different variable that the change does not touch, so asserting it alone
+# would pass under both arithmetics.
+#
+# Placed after Phase A and before Phase B deliberately: Phase B seeds an object
+# to provoke a FAILING destroy, so this is the last point at which the stack is
+# in its ordinary deployed state and a drift run must report nothing wrong.
+# `cdkd drift` detection takes no lock and writes nothing, so it cannot disturb
+# Phase B's premise.
+#
+# COUPLING THIS CREATES, stated so a future failure is not misread: the
+# `drift_rc -ne 0` check below ties this fixture -- a merge gate for the
+# nested-stack path -- to `AWS::SSM::Parameter` drift stability. If that
+# provider ever reports phantom drift, THIS test reds rather than a drift
+# fixture. The rc check is kept anyway because without it a run that died
+# before printing its summary would satisfy the greps below by never reaching
+# them.
+echo "=== Phase A2: drift counts only the resource cdkd actually read ==="
+set +e
+drift_out="$(node "${LOCAL_DIST}" drift "${STACK}" \
+  --region "${REGION}" --state-bucket "${BUCKET}" 2>&1)"
+drift_rc=$?
+set -e
+printf '%s\n' "${drift_out}"
+
+# Nothing has been changed out of band yet, so this must be a clean exit.
+# Asserted FIRST so a run that died before printing its summary cannot satisfy
+# the string checks below by never reaching them.
+if [ "${drift_rc}" -ne 0 ]; then
+  echo "FAIL: drift exited ${drift_rc}, expected 0 (nothing drifted, nothing refused)" >&2
+  exit 1
+fi
+
+if ! printf '%s' "${drift_out}" | grep -qF 'no drift detected (1 resource checked, 1 unsupported)'; then
+  echo "FAIL: drift summary did not read '1 resource checked, 1 unsupported' (issue #2141)" >&2
+  echo "      the pre-#2141 arithmetic renders '2 resources checked, 1 unsupported'" >&2
+  exit 1
+fi
+echo "PASS: the summary counts only the SSM parameter as checked"
+
+# The premise, stated positively. Without this, `1 resource checked` is also
+# what a report that LOST the nested stack entirely would print -- the number
+# would be right by accident, over a run that silently dropped a resource.
+if ! printf '%s' "${drift_out}" | grep -qF '? Child (AWS::CloudFormation::Stack)'; then
+  echo "FAIL: Child was not reported as drift unknown -- the count above is unearned" >&2
+  exit 1
+fi
+echo "PASS: the uncounted resource is on record as unsupported"
+
+# NEGATIVE CONTROL: the SSM parameter must NOT also be unsupported. A change
+# that made EVERY resource unsupported would print a self-consistent summary
+# and satisfy both assertions above, so the arm has to pin which side each
+# resource landed on.
+if printf '%s' "${drift_out}" | grep -qF '? ParentReferenceToChildBucket'; then
+  echo "FAIL: the parent SSM parameter reported as unsupported -- it has readCurrentState" >&2
+  exit 1
+fi
+echo "PASS: the parameter is the checked one, the nested stack the unsupported one"
 
 # ---------------------------------------------------------------------------
 # Phase B: make the child's bucket delete FAIL, then destroy the parent.
