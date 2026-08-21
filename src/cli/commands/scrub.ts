@@ -14,6 +14,7 @@ import {
   withErrorHandling,
   CdkdError,
   CrossAccountSecretRefusalError,
+  DynamicReferenceRegionAmbiguousError,
 } from '../../utils/error-handler.js';
 import {
   Synthesizer,
@@ -1145,6 +1146,22 @@ async function resolveForeignRegionTokens(
   //    still refuses if a future scanner emits a token this count did not see.
   // 2. PLACEHOLDER. A whole token that still contains `${` is a TRAILING
   //    `Fn::Sub` placeholder, which the count provably cannot see.
+  //
+  // KEPT, BUT NOW CONSERVATIVE RATHER THAN NECESSARY (issue
+  // [#2134](https://github.com/go-to-k/cdkd/issues/2134)). The region is now
+  // decided AFTER assembly, inside `resolveDynamicReferences`, so a leaf this
+  // guard refuses would be answered correctly if it were allowed through --
+  // routed to the region its ARN names, or refused per-reference on its own
+  // evidence. The guard only ever OVER-refuses, and it is loud and actionable,
+  // so it stays until relaxed deliberately with its own arm: issue
+  // [#2157](https://github.com/go-to-k/cdkd/issues/2157).
+  //
+  // What #2134 already covers, and this guard therefore no longer has to: a
+  // `Ref` / `Fn::FindInMap`-contributed opening never reaches this function at
+  // all (the walk returns such a leaf by identity), and a stack with no
+  // cross-stack read on record has an empty `foreignProducerRegions`, so the
+  // condition below is false. Both were the reachable halves of #2134's
+  // residual and both are now handled in the resolver.
   const secretTokens = tokens.filter(isSecretReferenceToken);
   if (
     (countSecretReferenceOpenings(leaf) !== secretTokens.length ||
@@ -2148,6 +2165,48 @@ interface CrossStackPrePassFindings {
 }
 
 /**
+ * Is this the issue #2134 refusal -- a `{{resolve:...}}` reference whose region
+ * cdkd cannot establish?
+ *
+ * WHY IT IS NOT BEST-EFFORT, which is the whole reason this predicate exists.
+ * `scrubStack` wraps each resolution pass in a `catch { logger.debug }` so one
+ * unresolvable resource does not abandon the rest of the scrub. Every other
+ * error reaching those catches means "this resource resolved partially, carry
+ * on". This one means cdkd could not tell which region owns a secret reference,
+ * so NO NEEDLE was recorded for it and the plaintext is still in `state.json` --
+ * and swallowed, the command then reports `No plaintext secrets found` and
+ * exits 0 over exactly the state it exists to clean. That is why the pre-pass
+ * refusals are placed OUTSIDE those catches; this one is raised from inside
+ * `resolveDynamicReferences`, so it cannot be placed and has to be re-raised.
+ *
+ * By CAUSE CHAIN rather than a bare `instanceof`, for the reason
+ * {@link isByDesignRefusal} states: the refusal reaches those catches through
+ * `resolver.resolve`, which wraps in several places, so a top-link-only test
+ * silently swallows a wrapped one.
+ *
+ * TWO SITES IN THIS CALL GRAPH STILL SWALLOW IT, named rather than left to be
+ * rediscovered (issue #2134 review round 2):
+ *
+ * - `evaluateConditions` (`intrinsic-function-resolver.ts`) warns and degrades
+ *   the condition to `false`. Accepted for now: a condition evaluates to a
+ *   boolean and carries no secret INTO state, and this file's own note above
+ *   `resolveCrossStackReads` records why the conditions pass is deliberately
+ *   not refusal-armed -- it runs BEFORE scrub knows which branch the deploy
+ *   took, so refusing there can reject a whole stack over a branch never taken.
+ *   The residual is that the FALSE branch is then selected, which that note
+ *   already states.
+ * - the `!nodeCanRefuse` arm of the cross-stack pre-pass, which debugs and
+ *   returns. Defensible: a SUPPRESSED output writes no state key, so there is
+ *   no persisted plaintext for a missing needle to leave behind.
+ */
+function isRegionAmbiguousRefusal(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    errorCauseChain(err).some((link) => link instanceof DynamicReferenceRegionAmbiguousError)
+  );
+}
+
+/**
  * Build the CROSS-STACK pre-pass for ONE stack's scrub (issue
  * [#2133](https://github.com/go-to-k/cdkd/issues/2133)).
  *
@@ -2748,6 +2807,20 @@ export async function scrubStack(
       stackName: stack.stackName,
       stateBackend: resolverStateBackend,
       ...(recordedSecretValues && { recordedSecretValues }),
+      // Issue #2134: the evidence that arms the resolver's own region
+      // classification, which is what finally covers an ASSEMBLED reference.
+      // The pre-pass above (`pinCrossRegionSecrets`) can only classify a
+      // reference that is already whole in the raw template leaf; a reference
+      // built by `Fn::Sub` / `Fn::Join` / `Ref` does not exist until the
+      // resolver assembles it, and the resolver is where it is now judged.
+      //
+      // Passed UNFILTERED (`producerRegions`, not `foreignProducerRegions`):
+      // `classifyReplaySecretRegion` drops the consumer's own region itself,
+      // and handing it the pre-filtered list would work only by coincidence of
+      // the two filters agreeing. Scrub supplies it because a wrong-region
+      // answer here is a silent MISS -- the stack reported clean over
+      // plaintext it still holds -- so failing closed is the point.
+      producerRegions,
       bestEffort: true,
     });
     const resolveCrossStackReads = makeCrossStackPrePass({
@@ -2846,6 +2919,9 @@ export async function scrubStack(
       try {
         await resolver.resolve(resolveInput, resourceContext);
       } catch (err) {
+        // A region-AMBIGUOUS refusal is not best-effort -- see
+        // `isRegionAmbiguousRefusal`.
+        if (isRegionAmbiguousRefusal(err)) throw err;
         // Best-effort: a resource whose intrinsics cannot resolve (a Ref to
         // something not in state) still has its own {{resolve:...}} leaves
         // recorded along the way; leave the rest untouched.
@@ -2982,6 +3058,9 @@ export async function scrubStack(
         try {
           exportName = await resolver.resolve(nameSource, nameContext);
         } catch (err) {
+          // A region-AMBIGUOUS refusal is not best-effort -- see
+          // `isRegionAmbiguousRefusal`.
+          if (isRegionAmbiguousRefusal(err)) throw err;
           // No key to mark ambiguous — the name the deploy used is unknown and
           // could be any output's — so the whole source bag becomes untrusted.
           outputsSourceUntrusted = true;
@@ -3113,6 +3192,9 @@ export async function scrubStack(
       try {
         await resolver.resolve(valueSource, valueContext);
       } catch (err) {
+        // A region-AMBIGUOUS refusal is not best-effort -- see
+        // `isRegionAmbiguousRefusal`.
+        if (isRegionAmbiguousRefusal(err)) throw err;
         // MASKED for the same reason as the two above — `valueSource` is a
         // post-pin bag. Verbose-only.
         logger.debug(

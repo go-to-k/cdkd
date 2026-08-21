@@ -31,9 +31,11 @@ import {
 } from '../utils/s3-endpoints.js';
 import {
   CrossAccountSecretRefusalError,
+  DynamicReferenceRegionAmbiguousError,
   IntrinsicResolutionRefusalError,
 } from '../utils/error-handler.js';
 import { markNonRetryable, isThrottlingError } from './retryable-errors.js';
+import { classifyReplaySecretRegion } from './secret-region-classification.js';
 import { withRetry } from './retry.js';
 import {
   maskSecretsInText,
@@ -660,6 +662,34 @@ function buildUnknownIntrinsicError(key: string): Error {
 }
 
 /**
+ * The same context with the `producerRegions` EVIDENCE removed (issue #2134
+ * review rounds 1 and 2).
+ *
+ * That field means "the CONSUMER stack reads from these regions", and it is
+ * only meaningful where the origin of a reference is genuinely UNKNOWN. Hand it
+ * to a resolution whose origin is already established and it re-judges a
+ * reference cdkd has just proven, verdicting `ambiguous`.
+ *
+ * ROUND 1 stripped it by RESOLVER IDENTITY -- "is this a different instance?"
+ * -- and round 2 measured that that is the wrong question. When the producer
+ * lives in the CONSUMER's own region `resolverForProducerRegion` returns `this`,
+ * so the identity test passed the evidence straight through and a name-form
+ * reference read out of that producer was refused. The LOCAL producer failed
+ * while the CROSS-REGION one succeeded, which is backwards, and after the
+ * round-1 re-raise it aborted the whole stack's scrub rather than logging a
+ * debug line.
+ *
+ * The right question is whether the ORIGIN IS KNOWN, so each caller answers it
+ * for itself and this helper only performs the strip. Returned BY IDENTITY when
+ * there is no evidence to remove, so the ordinary path allocates nothing.
+ */
+function withoutProducerRegions(context: ResolverContext | undefined): ResolverContext | undefined {
+  if (context?.producerRegions === undefined) return context;
+  const { producerRegions: _stripped, ...rest } = context;
+  return rest;
+}
+
+/**
  * Does `value` carry a CloudFormation dynamic reference anywhere inside it?
  *
  * Used as the identity fast path of {@link
@@ -801,6 +831,50 @@ export interface ResolverContext {
    * expression, so each reference pays that call at most once per process.
    */
   skipDynamicReferences?: boolean;
+
+  /**
+   * The FOREIGN-region evidence for the secret-region classification issue
+   * [#2134](https://github.com/go-to-k/cdkd/issues/2134) performs inside
+   * {@link IntrinsicFunctionResolver.resolveDynamicReferences} -- the producer
+   * regions this stack is on record as reading from, i.e.
+   * `producerRegionsFromState(state)` over `state.imports[].sourceRegion` plus
+   * `state.outputReads[].sourceRegion`.
+   *
+   * **Opt-in, and its ABSENCE is meaningful rather than a default.** Supplying
+   * it arms the `ambiguous` REFUSAL: a name-form secret reference in a stack
+   * that reads across a region boundary cannot be attributed to a region, so
+   * the resolver declines rather than fetching a possibly-different secret.
+   * Omitting it leaves every name-form reference `local`, which is the
+   * pre-#2134 behaviour exactly.
+   *
+   * **`cdkd deploy` deliberately does NOT supply it, and that is a decision
+   * rather than an omission.** The classifier's refusal is per-STACK, not
+   * per-reference -- the evidence cannot say WHICH reference crossed the
+   * boundary -- so arming it on deploy would refuse the ordinary CDK
+   * `secretValueFromJson` shape (a plain name-form reference) in any stack
+   * that also happens to hold one cross-region import, and templates that
+   * deploy today would stop deploying.
+   *
+   * **`cdkd scrub` is the ONLY supplier**, and the precision matters because an
+   * earlier draft of this paragraph named `cdkd drift` and the rollback replay
+   * as well. They do NOT supply it: each classifies per token in its own
+   * `*Resolvers` wrapper BEFORE calling the resolver, so a reference they route
+   * arrives already attributed and never reaches the arm below. Scrub supplies
+   * it because a wrong-region answer there is a silent MISS -- the stack
+   * reported clean over surviving plaintext -- and failing closed is the point.
+   *
+   * A supplier must also make the refusal SURVIVE its own error handling.
+   * Scrub wraps each resolution pass in a best-effort `catch`, so it re-raises
+   * {@link DynamicReferenceRegionAmbiguousError} explicitly; swallowed, the
+   * refusal produces exactly the silent success it exists to prevent (issue
+   * #2134 review). Any future supplier owes the same.
+   *
+   * The other half of #2134 needs no evidence at all and is therefore always
+   * armed, deploy included: a reference naming a full ARN says its own region,
+   * so it is routed to a resolver pinned there rather than fetched against
+   * this stack's endpoint.
+   */
+  producerRegions?: readonly string[];
 }
 
 /**
@@ -4000,9 +4074,42 @@ export class IntrinsicFunctionResolver {
     if (!carriesDynamicReference(value)) return value;
 
     const resolver = this.resolverForProducerRegion(producerRegion);
+    // The evidence must NOT reach a re-resolution whose ORIGIN IS ALREADY KNOWN
+    // (issue #2134, rounds 1 and 2 of review). This method is handed the
+    // producer it read the value out of, so when `producerRegion` is defined
+    // the reference is attributed by construction -- consulting
+    // `producerRegions` there can only re-open a question already answered, and
+    // it verdicts `ambiguous` as soon as the consumer has two producers on
+    // record.
+    //
+    // Gated on whether the producer region is KNOWN, rather than on whether a
+    // SIBLING was built, which is what round 1 got wrong: a producer in the
+    // consumer's OWN region yields `this`, so an identity test let the evidence
+    // through and refused the local case while the cross-region one worked.
+    // When the region really is unknown the evidence is KEPT -- the fail-closed
+    // direction.
+    //
+    // TRUTHINESS, byte-for-byte the test `resolverForProducerRegion` itself
+    // uses (`if (!producerRegion) return this;`). Round 3 caught the earlier
+    // `!== undefined` as a SECOND SPELLING of one question, which is the same
+    // recurrence rounds 1 and 2 were: the two disagree on `''`, and they
+    // disagree on the fail-OPEN side -- the resolver treats `''` as unknown and
+    // answers from the CONSUMER's region, while `!== undefined` called the
+    // origin known and stripped the refusal's evidence.
+    //
+    // An empty region is reachable through the exports index, via EITHER of two
+    // paths -- named separately because they are different code and an earlier
+    // draft of this comment fused them: `loadIndex` parses the stored file with
+    // an unchecked `JSON.parse`, so any `producerRegion` the file happens to
+    // hold arrives verbatim; and `rebuild` writes `ref.region ?? this.region`,
+    // where `??` passes an empty string through rather than replacing it. The
+    // index-HIT arm hands that value straight to this method.
+    const pinnedContext = producerRegion ? withoutProducerRegions(context) : context;
     const walk = async (v: unknown): Promise<unknown> => {
       if (typeof v === 'string') {
-        return v.includes('{{resolve:') ? await resolver.resolveDynamicReferences(v, context) : v;
+        return v.includes('{{resolve:')
+          ? await resolver.resolveDynamicReferences(v, pinnedContext)
+          : v;
       }
       if (Array.isArray(v)) {
         const out: unknown[] = new Array(v.length) as unknown[];
@@ -5421,6 +5528,101 @@ export class IntrinsicFunctionResolver {
       // through to the lookup below, which asks for the type WITHOUT decrypting.
       // (GHSA fix + issue #1901.)
       if (isKnownSecret && context?.skipDynamicReferences) {
+        continue;
+      }
+
+      // WHICH REGION MUST ANSWER for this reference (issue #2134). Asked HERE,
+      // token by token, because here is the first point at which the COMPLETE
+      // expression exists: `resolveSub` and `resolveJoin` both re-enter this
+      // method with their assembled result, so a reference whose opening or
+      // whose tail is contributed by a `Ref` / `Fn::Sub` / `Fn::FindInMap` /
+      // `Fn::Join` part is a whole token by the time it reaches this loop.
+      //
+      // The pre-#2134 answer was a PRE-PASS over the RAW template leaf in
+      // `cdkd scrub`, which by construction could not see such a reference --
+      // it scanned text in which the reference did not yet exist, found
+      // nothing to classify, and handed the leaf on. `resolveSub` then
+      // resolved the assembled expression on THIS resolver, so a foreign ARN
+      // was fetched against the stack's own regional endpoint. What that COSTS
+      // depends on the spelling, and the measurement corrected the issue's own
+      // framing: for an ARN-form reference SSM validates the region and answers
+      // `Incorrect region in: arn:aws:ssm:...`, so it is a hard FAILURE rather
+      // than a silent wrong-region read (probed against real AWS with this fix
+      // reverted). The SILENT miss belongs to the region-LESS spelling, where a
+      // same-named secret in the wrong region answers successfully -- which is
+      // what the `ambiguous` refusal below covers.
+      //
+      // Placed after the `skipDynamicReferences` arm on purpose -- but the
+      // reason is NARROWER than "the comparison path resolves no secret at
+      // all", which is false: that arm skips only a KNOWN secret, so a plain
+      // `ssm` reference of unknown type falls through it and IS fetched. What
+      // makes the placement safe is that the only `skipDynamicReferences`
+      // caller (`diff-recursive.ts`) supplies no `producerRegions`, so the
+      // refusal cannot arm there whichever side of the arm it sits on. Stated
+      // this way because the stronger claim would go stale the moment a second
+      // caller sets both.
+      // Placed BEFORE the cache lookup on purpose too -- a `named-region`
+      // token is resolved by a SIBLING and belongs in the sibling's cache, so
+      // this resolver must never hold an entry for it.
+      const regionVerdict = classifyReplaySecretRegion(
+        fullMatch,
+        // `explicitRegion` is the region that BINDS; `resolverRegion` is its
+        // fallback guess and is only reachable from test construction (see the
+        // fields' own docs). The guess is used rather than `''` because an
+        // empty consumer region reads EVERY recorded producer region as
+        // foreign, turning the refusal below into a blanket one.
+        this.explicitRegion ?? this.resolverRegion,
+        context?.producerRegions
+      );
+
+      if (regionVerdict.kind === 'ambiguous') {
+        // Non-retryable: this is a DECISION, not a transient failure, so a
+        // retry can only re-take it -- and the retry wrapper would otherwise
+        // spend the full backoff budget before surfacing the message that
+        // tells the user how to fix their template.
+        throw markNonRetryable(
+          new DynamicReferenceRegionAmbiguousError(
+            `Refusing to resolve the secret reference ${fullMatch}: it names ` +
+              `'${regionVerdict.secretName}' without a region, and this stack reads from ` +
+              `${regionVerdict.foreignProducerRegions.join(', ')} as well as its own ` +
+              `region. cdkd cannot tell which one must answer, and resolving against ` +
+              `the wrong one yields a different secret. Spell the reference as a full ARN ` +
+              `to say which region owns it.`
+          )
+        );
+      }
+
+      if (regionVerdict.kind === 'named-region') {
+        // Delegate the single TOKEN -- not the whole string -- to a resolver
+        // pinned to the region the ARN names. `resolverForProducerRegion`
+        // marks the sibling a `producerRegionGuest`, so it cannot pin a
+        // verdict in the process-global `recordedSecretExpressions` store: the
+        // #1933 hazard, where one region's `ssm` parameter TYPE decides
+        // another region's redaction.
+        //
+        // Exactly ONE level of recursion, and it is provable rather than
+        // argued: the sibling is constructed pinned to `verdict.region`, so
+        // when it re-enters this method the same classifier compares that ARN's
+        // region against its own and returns `local`. A name-form reference can
+        // never arrive here at all, because only the `named-region` arm
+        // delegates.
+        const sibling = this.resolverForProducerRegion(regionVerdict.region);
+        // Same evidence-stripping as `reresolveCrossStackValue` above, and for
+        // the same reason. Harmless on THIS path today -- the token is ARN-form
+        // by construction, so the sibling verdicts `local` whatever evidence it
+        // holds -- but the shape is identical, and leaving one site to depend
+        // on that argument is how the other one broke.
+        const foreign = await sibling.resolveDynamicReferences(
+          fullMatch,
+          // Unconditional here: this arm is reached only for an ARN-form token,
+          // whose region the ARN itself states, so the origin is known by
+          // construction and the evidence can only mislead.
+          withoutProducerRegions(context)
+        );
+        // Replacer FUNCTION for the same reason as every other substitution in
+        // this method: a resolved secret legitimately containing `$&` would
+        // otherwise splice the matched expression back into itself.
+        result = result.replace(fullMatch, () => foreign);
         continue;
       }
 

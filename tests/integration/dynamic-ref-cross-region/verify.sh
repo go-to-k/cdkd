@@ -225,6 +225,10 @@ EMBEDDED_ECHO_PARAM_B="${STACK_B}-secure-embedded-echo"
 # The MIXED-TYPE arm (issue #1957): one shared NAME whose TYPE differs by region.
 MIXED_ECHO_PARAM_A="${STACK_A}-mixed-echo"
 MIXED_ECHO_PARAM_B="${STACK_B}-mixed-echo"
+# The ASSEMBLED-FOREIGN arm (issue #2134). Region A's stack only -- the arm
+# proves a reference is answered by the region its ARN NAMES rather than by the
+# stack's own, so a copy on both stacks would make "foreign" ambiguous.
+ASSEMBLED_FOREIGN_ECHO_PARAM_A="${STACK_A}-assembled-foreign-echo"
 
 SOURCE_PARAM="/cdkd-test/dynref-cross-region-${ACCOUNT_ID}"
 EXPECTED_A="cdkd-dynref-region-a"
@@ -255,6 +259,11 @@ export CDKD_IT_DYNREF_REGION_B="${REGION_B}"
 export CDKD_IT_DYNREF_SOURCE_PARAM="${SOURCE_PARAM}"
 export CDKD_IT_DYNREF_SECURE_PARAM="${SECURE_PARAM}"
 export CDKD_IT_DYNREF_MIXED_PARAM="${MIXED_PARAM}"
+# Issue #2134: the FULL ARN of REGION B's copy of the shared String parameter,
+# handed to region A's stack. Built here rather than in the app because it needs
+# the account id, which is resolved above.
+ASSEMBLED_FOREIGN_ARN="arn:aws:ssm:${REGION_B}:${ACCOUNT_ID}:parameter${SOURCE_PARAM}"
+export CDKD_IT_DYNREF_FOREIGN_ARN="${ASSEMBLED_FOREIGN_ARN}"
 
 echo "[verify] region-a=${REGION_A} region-b=${REGION_B} source-param=${SOURCE_PARAM}"
 
@@ -412,6 +421,59 @@ if [ "${ACTUAL_B}" != "${EXPECTED_B}" ]; then
   exit 1
 fi
 echo "    OK: each region resolved its own value"
+
+echo "==> Phase 3a-2: the ASSEMBLED FOREIGN reference resolved in the region its ARN NAMES (issue #2134)"
+# The #2134 discriminator, and the reason it lives in THIS fixture: the two
+# regions already hold DIFFERENT values behind the same parameter name, which is
+# the only thing that makes "which region answered" observable at all.
+#
+# Region A's stack carries an `Fn::Sub`-ASSEMBLED reference to region B's ARN.
+# Pre-#2134 the pre-pass scanned the RAW leaf -- `{{resolve:ssm:${TargetArn}}}`,
+# an opening with no ARN behind it -- found nothing to attribute, and let
+# `resolveSub` resolve the assembled expression on the PRIMARY (region A)
+# resolver. So this echoes ${EXPECTED_A} pre-fix and ${EXPECTED_B} post-fix.
+#
+# WHAT THE LIVE MUTATION PROBE ACTUALLY SHOWED, recorded because it corrects the
+# sentence above and the issue's own framing. With the routing reverted and dist
+# rebuilt, this arm went RED -- but at DEPLOY time, not here: SSM validates the
+# ARN's region against the endpoint and answered
+# `Incorrect region in: arn:aws:ssm:us-west-2:...`, so the resource failed to
+# create and this assertion was never reached. For an ARN-form reference the
+# pre-fix behaviour is therefore a hard FAILURE, not a silent wrong-region read.
+#
+# The assertion below is still the right one and is NOT vacuous -- under the fix
+# it passes with a value that can only have come from region B -- but its red is
+# delivered by AWS rejecting the call rather than by a wrong value arriving. The
+# wrong-VALUE path is fenced by the unit matrix in
+# `tests/unit/deployment/intrinsic-resolver-assembled-secret-region.test.ts`,
+# whose fakes answer both regions successfully and so can tell the two apart.
+# The SILENT-miss shape the issue describes belongs to the region-LESS spelling,
+# which the `ambiguous` refusal covers.
+ASSEMBLED_FOREIGN_VALUE="$(aws ssm get-parameter --name "${ASSEMBLED_FOREIGN_ECHO_PARAM_A}" \
+  --region "${REGION_A}" --query 'Parameter.Value' --output text)"
+if [ "${ASSEMBLED_FOREIGN_VALUE}" != "${EXPECTED_B}" ]; then
+  echo "FAIL: ${ASSEMBLED_FOREIGN_ECHO_PARAM_A} = '${ASSEMBLED_FOREIGN_VALUE}', expected '${EXPECTED_B}'" >&2
+  if [ "${ASSEMBLED_FOREIGN_VALUE}" = "${EXPECTED_A}" ]; then
+    echo "      That is region A's value: the assembled reference was resolved" >&2
+    echo "      against this stack's OWN endpoint instead of the region its ARN" >&2
+    echo "      names -- the pre-#2134 behaviour." >&2
+  fi
+  exit 1
+fi
+echo "    OK: the assembled foreign reference resolved in ${REGION_B} (${EXPECTED_B})"
+
+# THE PREMISE, stated positively. `${EXPECTED_B}` alone is also what a run that
+# somehow resolved the LITERAL region-A parameter to region B's value would
+# print, so pin that the plain region-A echo beside it still carries region A's
+# value: the delegation must be per-REFERENCE, not a resolver-wide region flip.
+PLAIN_A_BESIDE="$(aws ssm get-parameter --name "${ECHO_PARAM_A}" \
+  --region "${REGION_A}" --query 'Parameter.Value' --output text)"
+if [ "${PLAIN_A_BESIDE}" != "${EXPECTED_A}" ]; then
+  echo "FAIL: the plain region-A echo reads '${PLAIN_A_BESIDE}', expected '${EXPECTED_A}'" >&2
+  echo "      The foreign delegation leaked to a sibling reference in the same stack." >&2
+  exit 1
+fi
+echo "    OK: the region-LESS reference beside it still resolved locally (${EXPECTED_A})"
 
 echo "==> Phase 3b: same assertion for the SecureString arm (values never printed)"
 ACTUAL_SECURE_A="$(aws ssm get-parameter --name "${SECURE_ECHO_PARAM_A}" --region "${REGION_A}" \

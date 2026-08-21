@@ -26,6 +26,15 @@ export interface DynamicRefCrossRegionStackProps extends cdk.StackProps {
    * which is what decides whether the resolved value is persisted in plaintext.
    */
   readonly mixedTypeSourceParameterName: string;
+  /**
+   * The FULL ARN of the OTHER region's copy of `sourceParameterName` (issue
+   * [#2134](https://github.com/go-to-k/cdkd/issues/2134)). Set on region A's
+   * stack only, so "foreign" is unambiguous.
+   *
+   * Undefined leaves the arm out entirely, which is what keeps region B's
+   * stack a control rather than a second copy of the same case.
+   */
+  readonly foreignParameterArn?: string;
 }
 
 /**
@@ -126,6 +135,39 @@ export class DynamicRefCrossRegionStack extends cdk.Stack {
     // The other two arms cannot show it: they are `SecureString` in BOTH
     // regions, so a cross-region answer still classifies as secret and the
     // redaction path runs either way.
+    // THE ASSEMBLED-FOREIGN arm (issue
+    // [#2134](https://github.com/go-to-k/cdkd/issues/2134)), and the only one
+    // here whose reference does not EXIST in the raw template text.
+    //
+    // `Fn::Sub` contributes the parameter id, so the leaf cdkd's pre-pass sees
+    // is `{{resolve:ssm:${TargetArn}}}` -- an opening with no ARN behind it.
+    // The pre-#2134 pre-pass scanned exactly that text, found nothing it could
+    // attribute to a region, and returned the leaf untouched; `resolveSub` then
+    // re-entered `resolveDynamicReferences` with the ASSEMBLED expression on
+    // the PRIMARY resolver, so the foreign ARN was looked up against THIS
+    // stack's regional endpoint.
+    //
+    // THE DISCRIMINATOR is which region's value lands in this parameter. The
+    // ARN names region B while the stack is in region A, and `verify.sh` seeds
+    // the two regions with DIFFERENT values -- so pre-fix this echoes region
+    // A's value and post-fix region B's. Both paths SUCCEED, which is why the
+    // assertion has to be the value rather than the absence of an error.
+    //
+    // Deliberately NOT a `SecureString`: this arm is about WHICH REGION
+    // ANSWERED, and the plain `String` source lets `verify.sh` assert the
+    // resolved value directly instead of inferring it.
+    if (props.foreignParameterArn !== undefined) {
+      new ssm.CfnParameter(this, 'AssembledForeignEchoParameter', {
+        type: 'String',
+        name: `${this.stackName}-assembled-foreign-echo`,
+        value: cdk.Fn.sub('{{resolve:ssm:${TargetArn}}}', {
+          TargetArn: props.foreignParameterArn,
+        }),
+        description:
+          "Echoes the OTHER region's value through an Fn::Sub-ASSEMBLED reference (cdkd issue #2134)",
+      });
+    }
+
     new ssm.CfnParameter(this, 'MixedTypeEchoParameter', {
       type: 'String',
       name: `${this.stackName}-mixed-echo`,

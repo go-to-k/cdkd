@@ -7,6 +7,8 @@ import {
   PartialFailureError,
   ResourceUpdateNotSupportedError,
   IntrinsicResolutionRefusalError,
+  CrossAccountSecretRefusalError,
+  DynamicReferenceRegionAmbiguousError,
   withErrorHandling,
 } from '../../../src/utils/error-handler.js';
 
@@ -286,5 +288,37 @@ describe('IntrinsicResolutionRefusalError (issue #1740)', () => {
     // The Fn::Sub catch is the ONLY consumer and branches on the class, not on
     // an exit code — pinning this keeps a future exitCode addition deliberate.
     expect((err as unknown as { exitCode?: number }).exitCode).toBeUndefined();
+  });
+});
+
+describe('DynamicReferenceRegionAmbiguousError classification (issue #2134)', () => {
+  /**
+   * Two DELIBERATE decisions, pinned because both are invisible at the call
+   * site and each has a consumer that acts on it.
+   */
+  it('IS an IntrinsicResolutionRefusalError, which is how scrub identifies it', () => {
+    const err = new DynamicReferenceRegionAmbiguousError('x');
+
+    expect(err).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(err).toBeInstanceOf(CdkdError);
+    expect(err.code).toBe('DYNAMIC_REFERENCE_REGION_AMBIGUOUS');
+  });
+
+  it('is NOT a CrossAccountSecretRefusalError -- it is user-fixable', () => {
+    // That subclass marks the ONE PERMANENT refusal, which `scrub.ts`'s
+    // `isByDesignRefusal` reports as unclearable by any re-run. This one clears
+    // the moment the reference is spelled as a full ARN, so matching there
+    // would tell the user their template cannot be fixed when it can.
+    expect(new DynamicReferenceRegionAmbiguousError('x')).not.toBeInstanceOf(
+      CrossAccountSecretRefusalError
+    );
+  });
+
+  it('survives a cause-chain wrap, which is how the re-raise finds it', () => {
+    // scrub walks the CAUSE CHAIN rather than testing the top link, because the
+    // refusal reaches its catches through `resolver.resolve`, which wraps.
+    const wrapped = new CdkdError('outer', 'OUTER', new DynamicReferenceRegionAmbiguousError('x'));
+
+    expect(wrapped.cause).toBeInstanceOf(DynamicReferenceRegionAmbiguousError);
   });
 });

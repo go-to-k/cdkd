@@ -81,7 +81,7 @@ drift-revert	2026-08-21T09:43:02Z	PASS		verify.sh	#2059 second broad-set arm: dr
 drift-revert-arrays	2026-08-13T08:30:39Z	PASS	230	verify.sh	issue 1783/1784 seams; 19 deleted 0 errors 0 orphans
 drift-revert-vpc	2026-08-20T02:22:00Z	PASS	346	verify.sh	#2032 lane broad arm (rollback-executor.ts is cross-cutting: real deletes + re-creates); 21 deleted / 0 errors, 0 orphans
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
-dynamic-ref-cross-region	2026-08-21T02:05:31Z	PASS	128	verify.sh	#2109 regression arm: two regions, same-named different-valued secrets, NO cross-stack read, so every verdict stays local and the scrub path must be unchanged; 0 surviving state versions
+dynamic-ref-cross-region	2026-08-21T14:04:53Z	PASS	130	verify.sh	#2134 live arm (Phase 3a-2), final re-run. Region A stack carries an Fn::Sub-ASSEMBLED reference to region B ARN -- synth-verified the raw leaf carries no ARN, the exact pre-pass blind spot. Real AWS resolved it in us-west-2 while the region-LESS reference beside it still resolved locally, so the delegation is per-REFERENCE. MUTATION-PROBED against real AWS: reverting the routing reds the arm at DEPLOY time with SSM answering "Incorrect region in: arn:aws:ssm:us-west-2:...", which CORRECTS the issue framing -- for an ARN-form reference the pre-fix behaviour is a hard failure, not a silent wrong-region read. 2 stacks destroyed, 0 errors, 0 orphans, 0 surviving state object versions
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
 dynamodb-globaltable	2026-08-20T11:10:22Z	PASS	1366	verify.sh	#1952 subject: 4 of the 10 threaded withRetry sites + index-busy delete loop; state cleared, 0 orphans
 dynamodb-gsi-update	2026-08-19T18:33:48Z	PASS	1104	verify.sh	issue 1997 maskSecrets adoption; GSI in-place UPDATE + WarmThroughput refusal warn path (the blocker site) exercised; destroy 1 deleted 0 errors, index-busy retry absorbed, 0 orphans
@@ -149,7 +149,7 @@ intrinsics-torture-2	2026-07-26T18:57:55Z	PASS	48	verify.sh	0727b sweep-b7 stale
 kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1398 lambda-eventsource re-verify, 5 del 0 err, 0 orph
 kinesis-stream-mode-switch	2026-08-12T11:25:31Z	PASS	99	verify.sh	issue #609 post-rebase run on 0.281.0; provisionedBy=sdk, diff clean; destroy 0 errors 0 orphans
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-08-21T07:50:33Z	PASS	85	verify.sh	#2133 broad-set arm for the multi-resource VPC/Lambda/IAM/DynamoDB paths a narrow feature integ never touches; 9 deleted 0 errors, 0 orphans
+lambda	2026-08-21T14:01:09Z	PASS	-	verify.sh	#2134 lane BROAD arm, final re-run (review round 4 nit touched intrinsic-function-resolver.ts, which is cross-cutting). Clean destroy, 0 errors, 0 orphans
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-config-field-removal	2026-08-11T13:09:08Z	PASS	132	verify.sh	issue #609 Lambda 4-prop backfill + review fixes; 5 del 0 err 0 orphans
