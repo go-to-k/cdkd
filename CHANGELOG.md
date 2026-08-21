@@ -1,3 +1,10 @@
+## [0.284.31](https://github.com/go-to-k/cdkd/compare/v0.284.30...v0.284.31) (2026-08-21)
+
+
+### Bug Fixes
+
+* **cli:** accept the European Sovereign Cloud partition in state keys, and stop guessing when the prefix is known ([#2145](https://github.com/go-to-k/cdkd/issues/2145)) ([7bedca6](https://github.com/go-to-k/cdkd/commit/7bedca67f702d6aca096c6983cb8cc6cd3491e5e))
+
 ## [0.284.30](https://github.com/go-to-k/cdkd/compare/v0.284.29...v0.284.30) (2026-08-21)
 
 
