@@ -1,3 +1,10 @@
+## [0.284.32](https://github.com/go-to-k/cdkd/compare/v0.284.31...v0.284.32) (2026-08-21)
+
+
+### Bug Fixes
+
+* **scrub:** resolve a cross-stack read so an imported secret can be scrubbed, and refuse when it cannot ([#2147](https://github.com/go-to-k/cdkd/issues/2147)) ([fdd8867](https://github.com/go-to-k/cdkd/commit/fdd886754706c559116775853d3fb364a2786eec))
+
 ## [0.284.31](https://github.com/go-to-k/cdkd/compare/v0.284.30...v0.284.31) (2026-08-21)
 
 
