@@ -89,7 +89,14 @@ cwd=$(jq -r '.cwd // empty' <<<"$input_json" 2>/dev/null || true)
 # A `cd` in ANY segment before the verb, then a `git -C <path>`, each honoured
 # only when it names a directory that exists (unchanged from the hand-rolled
 # form this replaces).
-candidate=$(gate_target_dir "$command" "$cwd" "$GATE_RE_GIT_CHECKOUT_RESTORE")
+# FAIL CLOSED on a target this parser cannot read (go-to-k/cdkd#2027): the
+# fallback below would check whether the named path is dirty in the SESSION's
+# tree while the discard lands in another one.
+if ! candidate=$(gate_target_dir_strict "$command" "$cwd" "$GATE_RE_GIT_CHECKOUT_RESTORE"); then
+  gate_refuse_unresolved_target "dirty-path-restore-gate" "$cwd" \
+    "" \
+    "CDKD_ALLOW_DIRTY_RESTORE=1 still bypasses this gate deliberately."
+fi
 [[ -d "$candidate" ]] && cwd="$candidate"
 
 git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0

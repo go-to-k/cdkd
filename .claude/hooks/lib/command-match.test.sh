@@ -482,6 +482,77 @@ want_match 1 "an ordinary task run"              'vp run test' "$C"
 # with a separator INSIDE the quotes, the one shape that can distinguish it.
 want_match 1 "separator inside a quoted body" 'gh issue create --body "run vp check && git commit -m x"' "$C"
 
+# --- gate_target_dir_strict (go-to-k/cdkd#2027) -------------------------------
+# The strict resolver's whole contract is the DISTINCTION its predecessor could
+# not express: "resolved to the fallback" vs "could not resolve at all". The
+# fallback form stays available for the non-blocking callers, so both are pinned
+# here side by side -- a change that collapsed them again would have to break
+# one of these two groups.
+
+# The subject must EXIST. Without this, `gate_target_dir_strict` disappearing
+# would turn every refusal case below into a pass rather than a failure.
+if declare -F gate_target_dir_strict >/dev/null && declare -F gate_refuse_unresolved_target >/dev/null; then
+  pass=$((pass + 1)); printf 'OK   %s\n' "the strict resolver and its refusal helper are defined"
+else
+  fail=$((fail + 1)); printf 'FAIL %s\n' "gate_target_dir_strict / gate_refuse_unresolved_target undefined"
+  fail_log+="FAIL the strict resolver is not defined; every refusal case below is vacuous\n"
+fi
+
+# want_strict <expected-dir|REFUSE> <label> <command> <fallback> <regex>
+want_strict() {
+  local want="$1" label="$2" cmd="$3" fallback="$4" re="$5" got rc
+  if got=$(gate_target_dir_strict "$cmd" "$fallback" "$re"); then rc=0; else rc=$?; fi
+  # ONLY rc 2 is a refusal. An absent function exits 127, which would otherwise
+  # satisfy every REFUSE case below and make this whole block a green no-op --
+  # the zero-red-probe failure, arriving through the harness rather than the
+  # subject.
+  if [ "$rc" = 2 ]; then got="REFUSE"; elif [ "$rc" != 0 ]; then got="ERR($rc)"; fi
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s\n' "$label"
+    fail_log+="FAIL $label\n  want: $want\n  got:  $got\n"
+  fi
+}
+
+# Resolvable shapes must behave EXACTLY like gate_target_dir.
+want_strict "/base"      "no target expression -> fallback"        'git commit -m x' /base "$C"
+want_strict "/abs/repo"  "absolute -C"                             'git -C /abs/repo commit -m x' /base "$C"
+want_strict "/base/sub"  "relative -C composes onto the fallback"  'git -C sub commit -m x' /base "$C"
+want_strict "/a b"       "quoted -C path containing a space"       'git -C "/a b" commit -m x' /base "$C"
+want_strict "/abs/one"   "resolvable cd before the verb"           'cd /abs/one && git commit -m x' /base "$C"
+
+# The refusals. Each is a spelling that used to resolve to something else and be
+# reported as a pass.
+want_strict REFUSE "unexpanded -C, double-quoted"   'git -C "$W" commit -m x' /base "$C"
+want_strict REFUSE "unexpanded -C, bare"            'git -C $W commit -m x' /base "$C"
+want_strict REFUSE "unexpanded -C, braced"          'git -C "${WORKTREE}" commit -m x' /base "$C"
+want_strict REFUSE "backtick in -C"                 'git -C "`pwd`" commit -m x' /base "$C"
+want_strict REFUSE "unexpanded cd before the verb"  'cd "$W" && git commit -m x' /base "$C"
+want_strict REFUSE "unexpanded cd + RELATIVE -C"    'cd "$W" && git -C sub commit -m x' /base "$C"
+want_strict REFUSE "unexpanded gh -C"               'gh -C "$W" pr merge 42 --squash' /base "$M"
+
+# The two shapes that must NOT be refused, because refusing them would be a new
+# foot-gun rather than a closed hole. Both were found by a red test, not by
+# reasoning: an absolute `-C` makes an earlier unreadable `cd` MOOT (the command
+# is perfectly determinate), and a `cd` AFTER the verb never steered it at all
+# -- the latter is the standing `git commit ... && cd <repo> && git pull` form.
+want_strict "/abs/side" "absolute -C cures an unresolvable cd" \
+  'cd "$W" && git -C /abs/side commit -m x' /base "$C"
+want_strict "/base"     "a cd AFTER the verb is not a refusal" \
+  'git commit -m x && cd "$W" && git pull' /base "$C"
+
+# `~` reaches a hook as a literal segment (no shell has expanded it), so the
+# resolver expands it rather than letting a caller refuse a good path.
+want_strict "$HOME/repo" "tilde in -C is expanded, not refused" \
+  'git -C ~/repo commit -m x' /base "$C"
+
+# The falling-back twin is unchanged for its callers: same inputs, no refusal.
+want_dir "/base" "gate_target_dir still FALLS BACK on an unexpanded -C" \
+  'git -C "$W" commit -m x' /base "$C"
+want_dir "/base" "gate_target_dir still FALLS BACK on an unexpanded cd" \
+  'cd "$W" && git commit -m x' /base "$C"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then

@@ -85,10 +85,13 @@ if [ "$is_commit" -eq 0 ] && [ "$is_pr" -eq 0 ]; then
 fi
 
 # Resolve where the command runs (cwd-aware; mirrors the other gates).
-target_dir="${hook_cwd:-$PWD}"
-cd_target="$(cmd_last_cd_target "$cmd" "$target_dir" "$git_commit_re")"
-if [[ -n "$cd_target" ]]; then
-  target_dir="$cd_target"
+# FAIL CLOSED on a target this parser cannot read (go-to-k/cdkd#2027). The
+# previous form read no `-C` at all and fell back to the payload cwd on an
+# unresolvable `cd`, so a command aimed at another tree was judged against the
+# session's own -- a silent wrong-tree pass rather than a refusal.
+__verb_ere="($git_commit_re|$gh_pr_re)"
+if ! target_dir=$(gate_target_dir_strict "$cmd" "${hook_cwd:-$PWD}" "$__verb_ere"); then
+  gate_refuse_unresolved_target "bughunt-clean-gate" "${hook_cwd:-$PWD}"
 fi
 
 # Not a git repo (or git unavailable) → nothing to gate.

@@ -19,6 +19,37 @@
 # leading `cd <path>` + last `git -C <path>` flag, exactly mirroring
 # branch-gate.sh / integ-local-gate.sh, so the markgate verify runs
 # against the worktree the commit will actually land in.
+#
+# WHY every "cannot evaluate" path now BLOCKS (cdkd #2027). Resolution
+# can fail, and until #2027 each failure was a silent `exit 0` — the
+# gate reported nothing and the commit went through unverified, which
+# is indistinguishable from a passing gate. The reproduced case: the
+# agent's own standard form
+#
+#     git -C "$W" add -A && git -C "$W" commit -F <file>
+#
+# reaches the hook with `$W` UNEXPANDED (the hook sees the command
+# text, not the shell's expansion of it). The `git -C` parse took the
+# literal token `$W`, treated it as a relative path, joined it onto the
+# payload cwd, and `git -C '<cwd>/$W' rev-parse` failed — landing on
+# the "not a git repo, silently pass" branch. Verified by driving the
+# hook directly: that payload returned exit 0 while the same commit
+# written with a literal absolute path returned exit 2.
+#
+# So an unexpanded path token, an unresolvable target directory, an
+# unrunnable markgate, and an unreadable `.markgate.yml` are all now
+# refusals naming what could not be evaluated. The refusals are bounded
+# by the repo opt-in below so a commit in a genuinely non-markgate repo
+# still passes through.
+#
+# The untrusted-`.mise.toml` half of #2027's report is NOT the fail-open
+# (`mise exec` on an untrusted config exits 1, measured), but it is why
+# the hook must name a remedy that survives having been tried: issuing
+# `mise trust` as an agent Bash tool call can abort inside this
+# environment's shell-snapshot wrapper and print nothing but a
+# `line 272: : command not found`, so the session reasonably believes the
+# worktree is trusted while it is not. The message therefore points at a
+# VERIFICATION command, not just at `mise trust`.
 
 # Shared command-position matcher (issue #1455): catches the guarded verb
 # after ANY chained command (`git push && gh pr create`), not just after an
@@ -53,6 +84,11 @@ input=$(cat 2>/dev/null || true)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
+# The guarded verb. Hoisted because the matcher, the `cd` walk and the
+# unresolvable-`cd` probe must all be given the SAME pattern — three
+# hand-copied literals is how they drift apart.
+COMMIT_VERB='git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+commit([[:space:]]|$|[|;&`)])'
+
 # Only gate git commit -- any other command passes through. The
 # matcher tolerates `git -C <path> commit` / `git -c <key>=<val> commit`
 # / `git --no-pager commit` / etc. by allowing zero or more flag tokens
@@ -62,57 +98,97 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # after a `&&` / `||` / `;` / `|` operator. That catches chained
 # invocations the old line-start anchor missed, while a quoted mention
 # still does not fire (it is removed rather than dodged by position).
-if ! cmd_matches_verb "$cmd" 'git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+commit([[:space:]]|$|[|;&`)])'; then
+if ! cmd_matches_verb "$cmd" "$COMMIT_VERB"; then
   exit 0
 fi
 
-# Resolve where the git command will actually run (cwd-aware; mirrors
-# branch-gate.sh / integ-local-gate.sh — keep these in sync if either
-# gains new resolution shapes).
-target_dir="${hook_cwd:-$PWD}"
+session_dir="${hook_cwd:-$PWD}"
 
-# `cd <path>` at the start of the command shifts the target dir.
-# Pass the current target as the BASE so chained relative cds compose
-# (`cd /abs/one && cd sub`); the helper returns a fully-resolved path.
-cd_target="$(cmd_last_cd_target "$cmd" "$target_dir" 'git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+commit([[:space:]]|$|[|;&`)])')"
-if [[ -n "$cd_target" ]]; then
-  target_dir="$cd_target"
-fi
+# The repo opt-in (issue #1259) is what BOUNDS the fail-closed refusals
+# below: this gate protects repos that follow the markgate convention,
+# and a session rooted in such a repo can still run git against OTHER
+# repos (a dotfiles checkout, a scratch clone) that have no markers at
+# all. Opt-in signal: a `.markgate.yml` at a repo's top level. When we
+# cannot even tell whether the session is in such a repo, we are not
+# entitled to refuse, so the refusal helper passes through instead.
+#
+# `opted_in` is set to 1 as soon as the RESOLVED TARGET repo is known to
+# carry `.markgate.yml`; before that point the session's own repo is the
+# best available proxy.
+opted_in=0
+session_opted_in() {
+  local top
+  top=$(git -C "$session_dir" rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ -n "$top" ] && [ -f "$top/.markgate.yml" ]
+}
 
-# `git -C <path>` beats any earlier cd; pick the LAST occurrence.
-if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
-  c_target=""
-  remaining="$cmd"
-  while [[ "$remaining" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-    c_target="${BASH_REMATCH[1]}"
-    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  done
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  if [[ "$c_target" != /* ]]; then
-    c_target="$target_dir/$c_target"
+# cannot_evaluate <what> [detail-line ...]
+#
+# FAIL CLOSED (issue #2027). Every caller is a state where the hook does
+# not know whether the commit is safe. Refusing is the only answer that
+# is not silently indistinguishable from "verified".
+cannot_evaluate() {
+  local what="$1"; shift
+  if [ "$opted_in" != 1 ] && ! session_opted_in; then
+    # Not a markgate repo as far as we can tell -- this gate has no
+    # standing here, and blocking would be pure friction.
+    exit 0
   fi
-  target_dir="$c_target"
+  echo "Blocked by check-gate: cannot evaluate whether the check / docs markers" >&2
+  echo "are fresh, so this gate is failing CLOSED rather than admitting an" >&2
+  echo "unverified commit (go-to-k/cdkd#2027)." >&2
+  echo "" >&2
+  echo "  could not evaluate: $what" >&2
+  # Indent EVERY line, including the lines inside a multi-line argument
+  # (a captured error body), so the block reads as one unit. Empty lines
+  # stay empty rather than becoming trailing whitespace.
+  local line
+  for line in "$@"; do
+    printf '%s\n' "$line" | sed 's/^\(.\)/  \1/' >&2
+  done
+  exit 2
+}
+
+# Where the git command will actually RUN. `gate_target_dir_strict` is the
+# SHARED resolver (lib/command-match.sh): it returns non-zero rather than
+# guessing when the command names its target with an expression this parser
+# cannot read. Both spellings that reach it are refused -- an unexpanded
+# `git -C "$W"`, which is the reproduced #2027 case, and an unexpanded
+# `cd "$W" &&`, which used to fall back to the payload cwd and verify a
+# DIFFERENT tree than the one the commit lands in.
+if ! target_dir=$(gate_target_dir_strict "$cmd" "$session_dir" "$COMMIT_VERB"); then
+  cannot_evaluate "the target working tree: this command names it with an unexpanded shell variable, so the hook cannot tell which worktree the commit lands in" \
+    "" \
+    "Re-run the commit with a literal absolute path:" \
+    "  git -C /abs/path/to/worktree commit -F <file>" \
+    "  cd /abs/path/to/worktree && git commit -F <file>" \
+    "(the hook sees the command TEXT, not your shell's expansion of it)"
 fi
 
-# If the resolved target dir is not a git repo, silently pass — we
-# can't audit what we can't see (mirrors branch-gate.sh).
+# An unresolvable target directory is a "cannot evaluate", NOT a pass.
+# Note what this costs when the resolution was RIGHT and the directory
+# simply is not a repo: nothing. `git commit` there would fail anyway,
+# so the only behavior change is a clearer error.
 if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
-  exit 0
+  cannot_evaluate "the target working tree: '$target_dir' is not a git repository" \
+    "" \
+    "Either the path is wrong, or this hook mis-resolved it. Re-run the" \
+    "commit from the worktree itself, or with a literal absolute path:" \
+    "  git -C /abs/path/to/worktree commit -F <file>"
 fi
 
-# Repo opt-in scope (mirrors branch-gate.sh, issue #1259): this gate protects
-# repos that follow the markgate convention. A session rooted in such a repo can
-# still run git / gh against OTHER repos (a dotfiles checkout, a scratch clone)
-# that have no markers at all, and blocking there is pure friction — the gate
-# would demand a marker the repo cannot have. Opt-in signal: a `.markgate.yml`
-# at the resolved target repo's top level. Repos without it pass through.
+# Repo opt-in scope (mirrors branch-gate.sh, issue #1259). Repos without a
+# top-level `.markgate.yml` are not markgate repos and pass through: the gate
+# would otherwise demand a marker the repo cannot have.
 target_top=$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || echo "")
 if [[ -z "$target_top" || ! -f "$target_top/.markgate.yml" ]]; then
   exit 0
 fi
+opted_in=1
 
-cd "$target_dir" 2>/dev/null || exit 0
+cd "$target_dir" 2>/dev/null || cannot_evaluate "the target working tree: '$target_dir' exists as a git repo but could not be entered (permissions?)" \
+  "" \
+  "Fix the directory permissions, then retry the commit."
 
 # Prefer the `.mise.toml`-pinned version via `mise exec --` so the repo's
 # canonical markgate wins over an older PATH binary (e.g. Homebrew). Falls
@@ -131,11 +207,45 @@ else
   exit 2
 fi
 
-"${markgate[@]}" verify check >/dev/null 2>&1
+# Prove the resolved markgate can RUN before trusting any verdict from
+# it. `markgate --version` exits 0 on every version this repo has
+# pinned; a failure here means the toolchain, not the marker, is the
+# problem. The motivating case is #2027's own environment: in a fresh
+# worktree whose `.mise.toml` has not been trusted, `mise exec` exits 1
+# with a "Config files ... are not trusted" error, and the pre-#2027
+# hook reported that as `run /check first` -- a remedy that sends the
+# user in a circle, since /check runs through the same untrusted mise.
+if ! mg_probe_err=$("${markgate[@]}" --version 2>&1); then
+  cannot_evaluate "markgate itself: the pinned binary could not be executed" \
+    "" \
+    "underlying error:" \
+    "$(printf '%s' "$mg_probe_err" | head -3 | sed 's/^/  /')" \
+    "" \
+    "Fix, from the target worktree -- and note that a bare 'mise trust' can" \
+    "silently NO-OP through this environment's shell-snapshot wrapper, so" \
+    "VERIFY rather than assuming the step took:" \
+    "  env -i HOME=\"\$HOME\" PATH=\"\$PATH\" bash -c 'cd <worktree> && mise trust && mise install'" \
+    "  mise exec -- markgate status check   # must print a state: line, not a mise ERROR"
+fi
+
+# markgate's exit codes separate a VERDICT from an ERROR: 0 fresh,
+# 1 stale / no marker, >=2 it could not evaluate at all (e.g. an
+# unparseable `.markgate.yml`). Verified against both 0.2.0 and 0.4.1.
+# Capture stderr so a >=2 can name the underlying reason.
+check_err=$("${markgate[@]}" verify check 2>&1 >/dev/null)
 check_status=$?
 
-"${markgate[@]}" verify docs >/dev/null 2>&1
+docs_err=$("${markgate[@]}" verify docs 2>&1 >/dev/null)
 docs_status=$?
+
+if [ "$check_status" -ge 2 ] || [ "$docs_status" -ge 2 ]; then
+  cannot_evaluate "the markgate configuration: 'markgate verify' could not read it" \
+    "" \
+    "underlying error:" \
+    "$(printf '%s\n%s' "$check_err" "$docs_err" | grep -v '^$' | head -3 | sed 's/^/  /')" \
+    "" \
+    "Fix .markgate.yml at the repo root, then retry the commit."
+fi
 
 if [ "$check_status" -eq 0 ] && [ "$docs_status" -eq 0 ]; then
   exit 0

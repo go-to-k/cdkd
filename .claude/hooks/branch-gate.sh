@@ -77,36 +77,17 @@ fi
 
 # Start from the Bash session's persisted cwd; fall back to the hook
 # process's own cwd if the payload did not include a `cwd` field.
-target_dir="${hook_cwd:-$PWD}"
-
-# `cd <path>` at the start of the command shifts the target dir. We
-# look at the FIRST `cd` and stop — chained `cd` patterns are rare
-# enough that handling only the leading one covers the realistic
-# foot-gun (the "cd into parent for tooling" case) without parsing
-# arbitrary shell.
-cd_target="$(cmd_last_cd_target "$cmd" "$target_dir" 'git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(commit|push)([[:space:]]|$|[|;&`)])')"
-if [[ -n "$cd_target" ]]; then
-  target_dir="$cd_target"
-fi
-
-# `git -C <path>` is git's own "run as if from <path>" flag and beats
-# any earlier cd. Find the LAST occurrence so a chained
-# `git -C /a foo && git -C /b commit` resolves to /b.
-if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
-  # Use a pattern that captures the last occurrence by greedy-skipping.
-  # bash regex doesn't support lookbehind, so re-scan from the end.
-  c_target=""
-  remaining="$cmd"
-  while [[ "$remaining" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-    c_target="${BASH_REMATCH[1]}"
-    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  done
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  if [[ "$c_target" != /* ]]; then
-    c_target="$target_dir/$c_target"
-  fi
-  target_dir="$c_target"
+# Where the git/gh command will actually RUN.
+#
+# This calls the SHARED resolver in lib/command-match.sh, replacing the
+# hand-rolled `-C` scan this hook used to carry. That copy captured the raw
+# token with no guard for an unexpanded `$VAR`, so the standard worktree
+# spelling `git -C "$W" ...` resolved to the literal `<cwd>/$W`, the repo
+# probe below failed, and the gate exited 0 over a tree it never looked at
+# (go-to-k/cdkd#2027). The strict resolver refuses instead of guessing.
+__verb_ere='git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(commit|push)([[:space:]]|$|[|;&`)])'
+if ! target_dir=$(gate_target_dir_strict "$cmd" "${hook_cwd:-$PWD}" "$__verb_ere"); then
+  gate_refuse_unresolved_target "branch-gate" "${hook_cwd:-$PWD}"
 fi
 
 # Repo opt-in scope (issue #1259): this gate protects repos that follow

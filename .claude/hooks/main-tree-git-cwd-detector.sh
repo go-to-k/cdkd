@@ -225,29 +225,30 @@ has_cd_before_verb() {
 
 eff_git="$base"
 if [[ "$git_hit" == 1 ]]; then
-  # An explicit `git -C <dir>` wins — the cwd-race-proof form. Read it
-  # first, because an ABSOLUTE `-C` makes an unresolvable `cd` moot:
-  # it, not the cwd, decides where this git call ran.
-  gc=""
-  if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-    gc="${BASH_REMATCH[1]}"
-    gc="${gc%\"}"; gc="${gc#\"}"; gc="${gc%\'}"; gc="${gc#\'}"
-  fi
-
+  # There is deliberately NO `git -C <dir>` handling here, and that is a
+  # narrowing of this hook, not an oversight (go-to-k/cdkd#2027). It used to
+  # carry the same hand-rolled `-C` scan the twelve BLOCKING gates carried, and
+  # in this hook the scan was UNREACHABLE: `GIT_VERB` requires every token
+  # between `git` and the verb to start with `-`, so the `-C` VALUE breaks the
+  # match and `git -C <path> commit` never reaches this block at all. Measured:
+  #
+  #   MATCH    git commit -m x
+  #   nomatch  git -C /tmp/x commit -m x
+  #   nomatch  git -C "$W" commit -m x
+  #
+  # So the branch could never fire, and removing it changes no behaviour. What
+  # remains is a real but SEPARATE gap -- this detector does not warn about the
+  # `git -C <main-tree> commit` shape at all -- which is a missed warning in a
+  # hook that only informs, the smaller harm its header already chooses. Fixing
+  # it means widening GIT_VERB, i.e. changing what the detector fires on, which
+  # is not what the #2027 fail-closed sweep is about.
   cdt="$(cmd_last_cd_target "$cmd" "$base" "$GIT_VERB")"
   if [[ -n "$cdt" ]]; then
     eff_git="$cdt"
-  elif [[ "$gc" != /* ]] && has_cd_before_verb "$cmd" "$GIT_VERB"; then
-    # A `cd` we cannot resolve, and no absolute `-C` to override it:
-    # stay silent rather than assert the cwd (header rule 4). A
-    # RELATIVE `-C` is suppressed too — it would be resolved against
-    # the unknown directory.
+  elif has_cd_before_verb "$cmd" "$GIT_VERB"; then
+    # A `cd` we cannot resolve: stay silent rather than assert the cwd
+    # (header rule 4).
     git_hit=0
-  fi
-
-  if [[ -n "$gc" ]]; then
-    [[ "$gc" != /* ]] && gc="$eff_git/$gc"
-    eff_git="$gc"
   fi
 fi
 

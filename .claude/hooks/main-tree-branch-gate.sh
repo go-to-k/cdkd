@@ -81,28 +81,17 @@ if ! cmd_matches_verb "$cmd" 'git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:sp
 fi
 
 # Resolve the target dir the same way branch-gate.sh does.
-target_dir="${hook_cwd:-$PWD}"
-
-# Pass the current target as the BASE so chained relative cds compose
-# (`cd /abs/one && cd sub`); the helper returns a fully-resolved path.
-cd_target="$(cmd_last_cd_target "$cmd" "$target_dir" 'git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(switch|checkout)([[:space:]]|$|[|;&`)])')"
-if [[ -n "$cd_target" ]]; then
-  target_dir="$cd_target"
-fi
-
-if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
-  c_target=""
-  remaining="$cmd"
-  while [[ "$remaining" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-    c_target="${BASH_REMATCH[1]}"
-    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  done
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  if [[ "$c_target" != /* ]]; then
-    c_target="$target_dir/$c_target"
-  fi
-  target_dir="$c_target"
+# Where the git/gh command will actually RUN.
+#
+# This calls the SHARED resolver in lib/command-match.sh, replacing the
+# hand-rolled `-C` scan this hook used to carry. That copy captured the raw
+# token with no guard for an unexpanded `$VAR`, so the standard worktree
+# spelling `git -C "$W" ...` resolved to the literal `<cwd>/$W`, the repo
+# probe below failed, and the gate exited 0 over a tree it never looked at
+# (go-to-k/cdkd#2027). The strict resolver refuses instead of guessing.
+__verb_ere='git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(switch|checkout)([[:space:]]|$|[|;&`)])'
+if ! target_dir=$(gate_target_dir_strict "$cmd" "${hook_cwd:-$PWD}" "$__verb_ere"); then
+  gate_refuse_unresolved_target "main-tree-branch-gate" "${hook_cwd:-$PWD}"
 fi
 
 # Is the target dir the main worktree (= the top-level of the

@@ -67,7 +67,13 @@ gate_matches "$cmd" "$GATE_RE_GIT_COMMIT" || exit 0
 # last `cd <path>` in ANY segment before the verb (the previous form saw only a
 # LEADING cd, so `git add -A && cd <wt> && git commit` resolved the wrong tree),
 # else the payload cwd.
-target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$GATE_RE_GIT_COMMIT")
+# FAIL CLOSED on a target this parser cannot read (go-to-k/cdkd#2027).
+# gate_target_dir would DROP an unexpanded `-C "$W"` and judge the payload
+# cwd instead -- measured as a silent pass when the violation lived in the
+# target tree and the cwd was clean.
+if ! target_dir=$(gate_target_dir_strict "$cmd" "${hook_cwd:-$PWD}" "$GATE_RE_GIT_COMMIT"); then
+  gate_refuse_unresolved_target "roundtrip-test-gate" "${hook_cwd:-$PWD}"
+fi
 
 # If the resolved target dir is not a git repo, silently pass — we
 # can't audit what we can't see (mirrors branch-gate.sh).

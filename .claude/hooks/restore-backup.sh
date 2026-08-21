@@ -104,25 +104,14 @@ fi
 # ------------------------------------------------------- resolve target
 # Same resolution order as branch-gate.sh: `git -C <path>` wins, then a
 # leading `cd <path> &&`, then the Bash tool's persisted cwd.
-target_dir="${hook_cwd:-$PWD}"
-
-if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-  cd_target="${BASH_REMATCH[1]}"
-  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
-  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
-  [[ "$cd_target" == /* ]] || cd_target="$target_dir/$cd_target"
-  target_dir="$cd_target"
-fi
-
-remaining="$cmd"
-while [[ "$remaining" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-  c_target="${BASH_REMATCH[1]}"
-  remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  [[ "$c_target" == /* ]] || c_target="$target_dir/$c_target"
-  target_dir="$c_target"
-done
+# The SHARED resolver, in its FALLING-BACK form -- deliberately NOT the strict
+# one the blocking gates use (go-to-k/cdkd#2027). This hook refuses nothing; it
+# takes a snapshot so a discard stops being irreversible. On an unexpanded
+# `git -C "$W"` the hand-rolled scan this replaces built `<cwd>/$W`, failed the
+# repo probe below and exited 0 having snapshotted NOTHING, which is the worst
+# of the three options. Snapshotting the payload cwd is the right answer here:
+# a snapshot of the wrong tree costs a few KB, a missing one costs the work.
+target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$prefix")
 
 git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1 || exit 0
 

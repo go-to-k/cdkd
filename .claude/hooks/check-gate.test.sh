@@ -7,6 +7,14 @@
 # is the post-#559 contract: markers land in the worktree where the
 # `git commit` actually runs, not always in the main tree.
 #
+# Since #2027 it also fences the FAIL-CLOSED contract: every state in
+# which the hook cannot evaluate the markers must REFUSE, not pass
+# through. The reproduced bug was `git -C "$W" commit` reaching the hook
+# with `$W` unexpanded, which resolved to a non-repo path and took the
+# old "not a git repo -> silent exit 0" branch. Each fail-closed case
+# below was verified to return 0 (i.e. to go RED) against the pre-#2027
+# hook.
+#
 # Run from the repo root: `bash .claude/hooks/check-gate.test.sh`.
 
 set -u
@@ -17,14 +25,19 @@ HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-gate.sh"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-# Two fixture git working trees. They have no markgate state of their
+# Fixture git working trees. They have no markgate state of their
 # own; we stub markgate via PATH and pin its verdict via env var.
 side_repo="$TMPDIR/side-repo"
 main_repo="$TMPDIR/main-repo"
+plain_repo="$TMPDIR/plain-repo"
 git init -q -b feature/x "$side_repo"
 git -C "$side_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 git init -q -b main "$main_repo"
 git -C "$main_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+# A git repo WITHOUT `.markgate.yml`: not a markgate repo, so the gate must
+# stay out of its way — including for the fail-closed refusals.
+git init -q -b feature/y "$plain_repo"
+git -C "$plain_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 
 # Repo opt-in signal (mirrors branch-gate.test.sh): the gate only fires in a
 # repo carrying a `.markgate.yml` at its top level, so the fixtures must have
@@ -32,7 +45,13 @@ git -C "$main_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 
 touch "$side_repo/.markgate.yml" "$main_repo/.markgate.yml"
 
 # Shim dir for mise + markgate. markgate's verdict comes from
-# $MARKGATE_MOCK_VERDICT (fresh -> exit 0, anything else -> exit 1).
+# $MARKGATE_MOCK_VERDICT:
+#   fresh          -> verify exits 0
+#   stale          -> verify exits 1 (a real VERDICT)
+#   badconfig      -> verify exits 2 (markgate could not evaluate at all;
+#                     real markgate 0.2.0 and 0.4.1 both use 2 for an
+#                     unparseable .markgate.yml)
+#   broken-binary  -> even `--version` fails, i.e. markgate cannot run
 # Each call appends $PWD to $CWD_TRACE_FILE so the test asserts the
 # resolved target dir.
 SHIM_DIR="$TMPDIR/bin"
@@ -41,7 +60,15 @@ CWD_TRACE_FILE="$TMPDIR/cwd-trace"
 
 cat > "$SHIM_DIR/mise" <<'MISE_EOF'
 #!/usr/bin/env bash
-# Pass-through `mise exec -- <cmd> <args>`.
+# Pass-through `mise exec -- <cmd> <args>`, unless the fixture asks us to
+# behave like a fresh worktree whose `.mise.toml` was never trusted — the
+# exact environment of go-to-k/cdkd#2027.
+if [ -n "${MISE_MOCK_UNTRUSTED:-}" ]; then
+  echo "mise ERROR error parsing config file: $PWD/.mise.toml" >&2
+  echo "mise ERROR Config files in $PWD/.mise.toml are not trusted." >&2
+  echo "Trust them with \`mise trust\`." >&2
+  exit 1
+fi
 if [ "$1" = "exec" ] && [ "$2" = "--" ]; then
   shift 2
   exec "$@"
@@ -55,9 +82,23 @@ cat > "$SHIM_DIR/markgate" <<MARKGATE_EOF
 echo "\$PWD" >> "$CWD_TRACE_FILE"
 verdict="\${MARKGATE_MOCK_VERDICT:-stale}"
 case "\$1" in
+  --version)
+    if [ "\$verdict" = "broken-binary" ]; then
+      echo "markgate: not executable" >&2
+      exit 127
+    fi
+    echo "0.4.1"
+    exit 0
+    ;;
   verify)
-    [ "\$verdict" = "fresh" ] && exit 0
-    exit 1
+    case "\$verdict" in
+      fresh) exit 0 ;;
+      badconfig)
+        echo "markgate: parse .markgate.yml: yaml: line 1: did not find expected ',' or ']'" >&2
+        exit 2
+        ;;
+      *) exit 1 ;;
+    esac
     ;;
   status)
     if [ "\$verdict" = "fresh" ]; then
@@ -79,15 +120,29 @@ pass=0
 fail=0
 fail_log=""
 
-# run_case <name> <expect_exit> <mg_verdict> <expect_cwd> <stdin_json>
+# Optional per-case environment, reset by run_case after every call.
+CASE_HOME=""
+CASE_UNTRUSTED_MISE=""
+
+# run_case <name> <expect_exit> <mg_verdict> <expect_cwd> <stdin_json> [expect_msg]
 #   expect_cwd: empty string skips the cwd assertion (used for
 #   pass-through cases that should never reach markgate).
+#   expect_msg: when non-empty, stderr must contain this literal
+#   substring — the fail-closed cases all exit 2, so the message is what
+#   tells "cannot evaluate" apart from "the marker is stale".
 run_case() {
   local name="$1"; local want="$2"; local verdict="$3"; local expect_cwd="$4"; local payload="$5"
+  local expect_msg="${6:-}"
   : > "$CWD_TRACE_FILE"
-  local got
-  printf '%s' "$payload" | MARKGATE_MOCK_VERDICT="$verdict" "$HOOK" >/dev/null 2>&1
+  local got err
+  err=$(printf '%s' "$payload" | env \
+    MARKGATE_MOCK_VERDICT="$verdict" \
+    ${CASE_HOME:+HOME="$CASE_HOME"} \
+    ${CASE_UNTRUSTED_MISE:+MISE_MOCK_UNTRUSTED=1} \
+    "$HOOK" 2>&1 >/dev/null)
   got=$?
+  CASE_HOME=""
+  CASE_UNTRUSTED_MISE=""
 
   local cwd_ok=1
   if [ -n "$expect_cwd" ]; then
@@ -96,7 +151,14 @@ run_case() {
     fi
   fi
 
-  if [[ "$got" == "$want" ]] && [ "$cwd_ok" -eq 1 ]; then
+  local msg_ok=1
+  if [ -n "$expect_msg" ]; then
+    if ! printf '%s' "$err" | grep -qF "$expect_msg"; then
+      msg_ok=0
+    fi
+  fi
+
+  if [[ "$got" == "$want" ]] && [ "$cwd_ok" -eq 1 ] && [ "$msg_ok" -eq 1 ]; then
     pass=$((pass + 1))
     printf 'OK   %s (exit %s)\n' "$name" "$got"
   else
@@ -104,6 +166,9 @@ run_case() {
     fail_log+="FAIL $name: want exit $want, got $got"
     if [ "$cwd_ok" -eq 0 ]; then
       fail_log+="; cwd mismatch (want '$expect_cwd', trace: $(cat "$CWD_TRACE_FILE" 2>/dev/null | tr '\n' '|'))"
+    fi
+    if [ "$msg_ok" -eq 0 ]; then
+      fail_log+="; message mismatch (want substring '$expect_msg', got: $(printf '%s' "$err" | tr '\n' '|'))"
     fi
     fail_log+="\n  payload: $payload\n"
     printf 'FAIL %s (want %s, got %s)\n' "$name" "$want" "$got"
@@ -119,8 +184,10 @@ run_case "git status passes through" 0 stale "" \
 # 2. Empty command passes through.
 run_case "empty stdin passes through" 0 stale "" ''
 
-# 3. Non-git target dir → silent pass (we can't audit what we can't see).
-run_case "non-git target dir allowed" 0 stale "" \
+# 3. Non-git cwd AND non-git target → silent pass. The session is not in a
+#    markgate repo, so the gate has no standing to refuse (this is the bound
+#    that keeps the #2027 fail-closed refusals off unrelated checkouts).
+run_case "non-git cwd + non-git target allowed" 0 stale "" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$TMPDIR")"
 
 # --- CWD-AWARE cases: marker verdict pinned to "stale" so the hook
@@ -174,11 +241,125 @@ run_case "git commit-tree passes through" 0 stale "" \
 # gate must pass through rather than demand a marker the repo cannot have.
 # Without this the gate blocked commits in unrelated checkouts a session
 # happened to touch.
-plain_repo="$TMPDIR/plain-repo"
-git init -q -b feature/y "$plain_repo"
-git -C "$plain_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 run_case "repo without .markgate.yml passes through" 0 stale "" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$plain_repo")"
+
+# --- FAIL-CLOSED cases (issue #2027) ----------------------------------------
+# Measured against the pre-#2027 hook, these split into two kinds, and the
+# difference is worth stating rather than flattening into "they all failed":
+#
+#   - SILENT PASS (old exit 0, the actual defect): cases 12-15, 16b and 24.
+#   - WRONG REMEDY (old exit 2, but naming the marker instead of the thing
+#     that could not be evaluated): cases 16, 18, 19 and 20. #19 is the worst
+#     of these — it told the user to run /check, which goes through the same
+#     untrusted mise and fails the same way, i.e. a loop.
+#
+# So each case asserts the MESSAGE as well as the exit code; on the message-
+# only ones the exit code alone cannot tell a refusal apart from a verdict.
+#
+# The rest (17, 17b, 21-23) are CONTROLS: green against both hooks by
+# construction, since they fence the direction the fix must NOT go — the
+# opt-in bound, an absolute `-C` overriding an unresolvable `cd`, and a `cd`
+# that happens after the verb. Stated rather than counted as fences.
+
+# 12. THE REPRODUCED BUG. The agent's standard commit form reaches the hook
+#     with `$W` unexpanded; the old parse joined the literal `$W` onto the
+#     payload cwd, `git -C '<cwd>/$W' rev-parse` failed, and the hook exited 0.
+run_case "git -C \"\$W\" (unexpanded) refuses" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" add -A && git -C \\"$W\\" commit -F /tmp/msg"}}' "$side_repo")" \
+  "unexpanded shell variable"
+
+# 13. Same, unquoted — `git -C $W commit`.
+run_case "git -C \$W (unquoted, unexpanded) refuses" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C $W commit -m x"}}' "$side_repo")" \
+  "unexpanded shell variable"
+
+# 14. Braced form — `git -C "${WORKTREE}" commit`.
+run_case "git -C \"\${WORKTREE}\" refuses" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"${WORKTREE}\\" commit -m x"}}' "$side_repo")" \
+  "unexpanded shell variable"
+
+# 15. A literal but non-existent `git -C` path: the resolution may be right
+#     (and the commit would fail anyway) or wrong (and the gate would be
+#     verifying nothing) — either way the hook does not know.
+run_case "git -C <nonexistent> refuses" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C %s/no-such-dir commit -m x"}}' "$side_repo" "$TMPDIR")" \
+  "is not a git repository"
+
+# 16. An unresolvable `cd` with no absolute `-C` to override it. The old hook
+#     fell back to the payload cwd and verified a DIFFERENT tree than the one
+#     the commit lands in — a pass earned by the wrong worktree's markers.
+run_case "cd \"\$W\" && git commit refuses" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"cd \\"$W\\" && git commit -m x"}}' "$side_repo")" \
+  "unexpanded shell variable"
+
+# 16b. The same unresolvable `cd`, but with the SESSION's markers FRESH. This
+#      is case 16's fail-open half: the old hook fell back to the payload cwd,
+#      found fresh markers there, and let the commit through — a pass earned by
+#      a worktree that is not the one being committed to. Old hook: exit 0.
+run_case "cd \"\$W\" && git commit refuses even when the cwd's markers are fresh" 2 fresh "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"cd \\"$W\\" && git commit -m x"}}' "$side_repo")" \
+  "unexpanded shell variable"
+
+# 17. Control for 16: an unresolvable `cd` is MOOT when an absolute `git -C`
+#     follows it, because the `-C` decides where git runs. Must resolve to
+#     side_repo and reach markgate normally.
+run_case "unresolvable cd + absolute git -C → -C wins" 2 stale "$side_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"cd \\"$W\\" && git -C %s commit -m x"}}' "$main_repo" "$side_repo")"
+
+# 17b. A `cd` AFTER the verb must not trip the refusal: the standing
+#      post-commit form `git commit ... && cd <repo> && git pull` cds only
+#      once the commit has already run, so it says nothing about where the
+#      commit landed. Pinned FRESH so a false refusal shows up as a plain
+#      exit-code difference rather than hiding inside a stale verdict.
+run_case "trailing cd after the verb does not refuse" 0 fresh "$side_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m x && cd \\"$W\\" && git pull"}}' "$side_repo")"
+
+# 18. markgate cannot be EXECUTED at all → refuse naming the toolchain, not
+#     the marker. (The old hook reported this as a stale-marker verdict.)
+run_case "markgate binary unrunnable refuses" 2 broken-binary "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$side_repo")" \
+  "could not be executed"
+
+# 19. The #2027 environment itself: a fresh worktree whose `.mise.toml` was
+#     never trusted, so `mise exec` fails before markgate ever runs. The
+#     remedy must be `mise trust`, not "run /check first" — /check runs
+#     through the same untrusted mise and would send the user in a circle.
+CASE_UNTRUSTED_MISE=1
+run_case "untrusted .mise.toml refuses with 'mise trust'" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$side_repo")" \
+  "mise trust"
+
+# 20. `.markgate.yml` unreadable: markgate exits 2 (its "could not evaluate"
+#     code, distinct from 1 = stale). Refuse naming the config.
+run_case "unparseable .markgate.yml refuses" 2 badconfig "$side_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$side_repo")" \
+  "markgate configuration"
+
+# --- The BOUND on fail-closed: it must not fire outside a markgate repo -----
+# The hook runs on every `git commit` the session makes anywhere, so a
+# refusal that fires in an unrelated checkout is a new foot-gun. The
+# session's own repo is the proxy for "does this gate have standing here".
+
+# 21. Unexpanded `git -C`, but the session sits in a repo with no
+#     `.markgate.yml` → pass through.
+run_case "unexpanded git -C in non-markgate repo passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" commit -m x"}}' "$plain_repo")"
+
+# 22. Unexpanded `git -C`, session cwd not a git repo at all → pass through.
+run_case "unexpanded git -C outside any repo passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" commit -m x"}}' "$TMPDIR")"
+
+# 23. Nonexistent `git -C` target from a non-markgate repo → pass through.
+run_case "nonexistent git -C target in non-markgate repo passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C %s/no-such-dir commit -m x"}}' "$plain_repo" "$TMPDIR")"
+
+# 24. A `~`-rooted path must still RESOLVE rather than trip the refusal: the
+#     hook sees the command text, so `~` arrives as a literal segment and is
+#     expanded here. HOME is pinned to the fixture root for this case.
+CASE_HOME="$TMPDIR"
+run_case "git -C ~/side-repo resolves (no false refusal)" 2 stale "$side_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C ~/side-repo commit -m x"}}' "$main_repo")"
 
 echo
 echo "Pass: $pass  Fail: $fail"

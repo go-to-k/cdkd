@@ -507,6 +507,127 @@ gate_target_dir() {
   printf '%s' "$target"
 }
 
+# gate_target_dir_strict <cmd> <fallback> <extended-regex>
+#
+# Same resolution as gate_target_dir, with one difference that is the whole
+# point: when the command carries a target expression this parser CANNOT read
+# -- an unexpanded `$VAR` or a backtick in a `cd` before the verb, or in the
+# matched segment's `-C` flag -- it prints nothing and returns 2 instead of
+# quietly resolving to something else.
+#
+# WHY a second function rather than changing gate_target_dir (go-to-k/cdkd#2027).
+# The two callers want opposite things from the same unknown:
+#
+#   - A BLOCKING gate must REFUSE. It is about to decide whether a command is
+#     safe; "I could not tell which tree this runs in" is not a pass. Measured
+#     on the pre-#2027 tree, the two ways of getting this wrong were equally
+#     silent: a hook that hand-rolled its own `-C` parse resolved `"$W"` to the
+#     literal `<cwd>/$W`, failed its `git -C ... rev-parse` probe and exited 0
+#     (12 hooks), while a hook that called gate_target_dir dropped the token and
+#     judged the PAYLOAD CWD instead -- so `git -C "$W" commit` from a clean
+#     worktree passed a staged violation that lived in the target tree
+#     (measured on provider-docs-gate and provider-integ-gate: exit 2 for the
+#     literal `-C <abs>` spelling, exit 0 for the `"$W"` one).
+#   - A NON-BLOCKING detector must stay QUIET, and a snapshotter (restore-backup)
+#     is better off snapshotting the fallback than snapshotting nothing. Those
+#     keep calling gate_target_dir.
+#
+# So the fallback behaviour is still available and still correct for its
+# callers; what changed is that a gate can now tell "resolved to the fallback"
+# from "could not resolve at all", which is the distinction the old single
+# return value could not carry.
+gate_target_dir_strict() {
+  local cmd="$1" fallback="$2" re="$3"
+  local target="$fallback" segment cd_target c_target remaining unresolved_cd=0
+  while IFS= read -r segment; do
+    if [[ "$segment" =~ ^cd[[:space:]]+$GATE_PATH_TOKEN ]]; then
+      cd_target=$(gate_unquote "${BASH_REMATCH[1]}")
+      # Only a cd BEFORE the verb steers the command; the loop breaks at the
+      # verb, so the standing `git commit ... && cd <repo> && git pull` form
+      # never reaches here and is not refused. An unreadable one is REMEMBERED
+      # rather than refused on the spot, because an absolute `-C` in the verb
+      # segment can still make it moot -- see below.
+      case "$cd_target" in *'$'*|*'`'*) unresolved_cd=1; continue ;; esac
+      [ -z "$cd_target" ] && continue
+      [[ "$cd_target" != /* ]] && cd_target="$target/$cd_target"
+      target="$cd_target"
+      continue
+    fi
+    [[ "$segment" =~ $re ]] || continue
+    if [[ "$segment" =~ (git|gh)[[:space:]]+-C[[:space:]]+$GATE_PATH_TOKEN ]]; then
+      c_target=""
+      remaining="$segment"
+      while [[ "$remaining" =~ (git|gh)[[:space:]]+-C[[:space:]]+$GATE_PATH_TOKEN ]]; do
+        c_target="${BASH_REMATCH[2]}"
+        remaining="${remaining#*"${BASH_REMATCH[0]}"}"
+      done
+      c_target=$(gate_unquote "$c_target")
+      case "$c_target" in *'$'*|*'`'*) return 2 ;; esac
+      if [ -n "$c_target" ]; then
+        if [[ "$c_target" == /* ]]; then
+          # An ABSOLUTE -C decides where the command runs whatever any earlier
+          # cd did, so an unreadable cd before it is no longer a reason to
+          # refuse. Refusing here would reject `cd "$W" && git -C /abs commit`,
+          # which is perfectly determinate.
+          target="$c_target"
+          unresolved_cd=0
+        else
+          # A RELATIVE -C is resolved against wherever the cds left us, so it
+          # inherits their uncertainty rather than curing it.
+          target="$target/$c_target"
+        fi
+      fi
+    fi
+    break
+  done < <(gate_segments "$cmd")
+  [ "$unresolved_cd" = 1 ] && return 2
+  # A `~` reaches a hook as a literal path segment -- the hook reads the command
+  # TEXT, so no shell has expanded it. Expand it here rather than letting the
+  # caller refuse a perfectly good `git -C ~/repo`.
+  if [ -n "${HOME:-}" ]; then
+    case "$target" in
+      "~") target="$HOME" ;;
+      "~/"*) target="$HOME/${target#\~/}" ;;
+      */~/*) target="$HOME/${target#*/\~/}" ;;
+      */~) target="$HOME" ;;
+    esac
+  fi
+  printf '%s' "$target"
+}
+
+# gate_refuse_unresolved_target <gate-name> <fallback-dir> [extra-line ...]
+#
+# The refusal half of gate_target_dir_strict, shared so every gate says the same
+# thing and names the same fix. EXITS the calling hook: 2 to refuse, or 0 when
+# this gate has no standing (below).
+#
+# BOUNDED BY THE REPO OPT-IN. These hooks fire on every git/gh command the agent
+# runs ANYWHERE, including in unrelated checkouts, so a refusal that fires
+# outside a markgate repo would be a brand-new foot-gun in exchange for closing
+# an old one. The session's own tree is the proxy for "does this gate apply
+# here": no top-level `.markgate.yml`, no refusal.
+gate_refuse_unresolved_target() {
+  local gate="$1" base="${2:-$PWD}" top line
+  shift 2 2>/dev/null || shift $#
+  top=$(git -C "$base" rev-parse --show-toplevel 2>/dev/null) || top=""
+  if [ -z "$top" ] || [ ! -f "$top/.markgate.yml" ]; then
+    exit 0
+  fi
+  echo "Blocked by $gate: this command names its target working tree with an" >&2
+  echo "expression the hook cannot read -- an unexpanded shell variable, or a" >&2
+  echo "backtick. The hook sees the command TEXT, not your shell's expansion of" >&2
+  echo "it, so it cannot tell which tree this would run in, and it will not pass" >&2
+  echo "a command it could not evaluate (go-to-k/cdkd#2027)." >&2
+  echo "" >&2
+  echo "  Re-run with a literal absolute path:" >&2
+  echo "    git -C /abs/path/to/worktree <verb> ..." >&2
+  echo "    cd /abs/path/to/worktree && <verb> ..." >&2
+  for line in "$@"; do
+    printf '%s\n' "$line" | sed 's/^\(.\)/  \1/' >&2
+  done
+  exit 2
+}
+
 # =============================================================================
 # Compatibility API — the spelling the 18 pre-#2129 gates already call
 # =============================================================================

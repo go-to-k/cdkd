@@ -228,6 +228,23 @@ run_case "gh issue body quoting 'git commit' on main allowed" 0 \
 run_case "echo body quoting 'git push' on main allowed" 0 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"echo \"reminder: git push origin main later\""}}' "$main_repo")"
 
+# --- Unexpanded target (go-to-k/cdkd#2027) -----------------------------------
+# `git -C "$W" ...` is the spelling this repo's own instructions hand people for
+# worktree commits, and the hand-rolled `-C` scan this gate used to carry
+# resolved it to the literal `<cwd>/$W`: the repo probe failed and the gate
+# exited 0 while sitting on `main`. Measured against the pre-fix hook, both
+# cases below returned 0.
+run_case "unexpanded git -C on main REFUSED" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" commit -m oops"}}' "$main_repo")"
+
+run_case "unexpanded git -C push on main REFUSED" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" push origin HEAD"}}' "$main_repo")"
+
+# The bound: the refusal must not fire outside a markgate repo, or closing this
+# hole opens a new one on every unrelated checkout the session touches.
+run_case "unexpanded git -C in a non-markgate repo passes through" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" commit -m x"}}' "$optout_repo")"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then
