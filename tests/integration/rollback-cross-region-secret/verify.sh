@@ -337,6 +337,16 @@ for secret in "${PRODUCER_SECRET}" "${CONSUMER_SECRET}"; do
   fi
 done
 echo "[verify]   ok: no plaintext in the drift --json payload"
+
+# Second positive marker, on the resource entry itself rather than the roll-up.
+REFS_UNRESOLVED="$(jq -r '[.. | objects | select(.logicalId == "SecretEcho") | .referencesUnresolved] | any' "${DRIFT_JSON}")"
+if [ "${REFS_UNRESOLVED}" != "true" ]; then
+  echo "FAIL: SecretEcho's drift entry does not carry referencesUnresolved=true (got '${REFS_UNRESOLVED}')" >&2
+  jq '.' "${DRIFT_JSON}" >&2 || cat "${DRIFT_JSON}" >&2
+  rm -f "${DRIFT_JSON}"
+  exit 1
+fi
+echo "[verify]   ok: SecretEcho carries referencesUnresolved=true"
 rm -f "${DRIFT_JSON}"
 
 # Now the arm that WRITES. Tamper the live echo parameter so a revert has a
@@ -354,7 +364,14 @@ AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CONSUMER_STACK}" --revert -y \
 
 POST_REVERT="$(aws ssm get-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}" \
   --query 'Parameter.Value' --output text)"
-# THE assertion this arm exists for. Pre-fix this is exactly what happened.
+# A SAFETY NET, deliberately NOT this arm's discriminator -- and that distinction
+# is measured, not assumed. Running this fixture against real AWS with the region
+# routing mutated back to pre-fix behaviour (every verdict forced to `local`) left
+# this very assertion GREEN: the revert exited 2 instead of writing, so "the live
+# value is not the consumer region's secret" is a confluence point that a correct
+# refusal and an unrelated revert failure both produce. The discriminators are the
+# two positive markers asserted in phase 2b above; this check only guarantees that
+# whatever else happens, the foreign plaintext never lands on the live resource.
 if [ "${POST_REVERT}" = "${CONSUMER_SECRET}" ]; then
   echo "FAIL: drift --revert wrote the CONSUMER region's secret onto the live parameter (issue #2108 regressed)" >&2
   exit 1
