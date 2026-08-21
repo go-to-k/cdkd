@@ -177,3 +177,69 @@ export class DynamicRefCrossRegionStack extends cdk.Stack {
     });
   }
 }
+
+/** Props for {@link AssembledForeignSecretStack}. */
+export interface AssembledForeignSecretStackProps extends cdk.StackProps {
+  /**
+   * The FULL ARN of the OTHER region's copy of the SECURE (SecureString)
+   * source parameter.
+   */
+  readonly foreignSecureParameterArn: string;
+}
+
+/**
+ * The `cdkd scrub` arm for issue
+ * [#2157](https://github.com/go-to-k/cdkd/issues/2157): ONE assembled,
+ * foreign-ARN, SECRET reference and nothing else.
+ *
+ * WHY IT IS A SEPARATE STACK rather than another parameter on region A's.
+ * `scrub`'s pre-pass refuses FIRST over the whole leaf set, and every leaf on
+ * {@link DynamicRefCrossRegionStack} spells its reference region-LESSLY. Once
+ * `verify.sh` seeds a foreign `outputReads` entry -- which this arm needs,
+ * because the guard #2157 relaxed was gated on foreign-region evidence being on
+ * record -- those region-less leaves classify `ambiguous` and refuse before the
+ * assembled one is ever reached. The arm would then measure the ambiguity
+ * refusal instead of the relaxation, in BOTH polarities, i.e. silently. Keeping
+ * the evidence on a stack that has no region-less reference is what makes the
+ * assembled leaf the only thing scrub can answer.
+ *
+ * THE SHAPE UNDER TEST. The raw template leaf is
+ * `{"Fn::Sub": ["{{resolve:ssm:${TargetArn}}}", {...}]}`. MEASURED rather than
+ * reasoned about, because the obvious reading is wrong: `[^}]+` stops at the
+ * `}` of `${TargetArn}` and the following `}}` closes the match ONE BRACE
+ * SHORT, so the scan returns exactly ONE whole-looking token for ONE opening --
+ * the COUNT clause of `isAssembledSecretReference` does NOT see this leaf. What
+ * catches it is the second clause: a whole token that still contains `${`. (The
+ * count clause's own shape is the MID-string placeholder, covered by the unit
+ * suite's `SUB_ASSEMBLED_FOREIGN_ARN_EXPR` and by its splice-beside-a-split
+ * case.)
+ *
+ * Pre-#2157 a hit on either clause, plus a
+ * foreign producer region on record, threw
+ * `SCRUB_SECRET_REFERENCE_UNCLASSIFIABLE` -- exit 2, no bypass flag, the whole
+ * stack unscrubbable while its state.json still held the plaintext. Post-#2157
+ * the leaf is deferred to the resolver, which sees the ASSEMBLED expression,
+ * routes it to the region the ARN names (issue #2134) and answers.
+ *
+ * SECURE, not the plain `String` source the #2134 arm uses: `cdkd scrub`'s
+ * subject is a SECRET, and a plain `String` parameter is public config that
+ * cdkd stores RESOLVED by design (issue #1901) -- so a plaintext seeded at
+ * such a leaf is not something scrub would ever rewrite, and the arm would pass
+ * vacuously in both directions.
+ */
+export class AssembledForeignSecretStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: AssembledForeignSecretStackProps) {
+    super(scope, id, props);
+
+    new ssm.CfnParameter(this, 'AssembledForeignSecretEcho', {
+      type: 'String',
+      name: `${this.stackName}-assembled-foreign-secret-echo`,
+      value: cdk.Fn.sub('{{resolve:ssm:${TargetArn}}}', {
+        TargetArn: props.foreignSecureParameterArn,
+      }),
+      description:
+        "Echoes the OTHER region's SecureString through an Fn::Sub-ASSEMBLED reference " +
+        '(cdkd issues 2134 and 2157)',
+    });
+  }
+}

@@ -2838,7 +2838,14 @@ ones it could not examine. A conditional import does NOT refuse when its branch
 is not taken: the pre-pass walks `Fn::If` the way the resolver does, selected
 branch only, and neither does a `Fn::ImportValue` inside an output that this
 run's conditions SUPPRESS -- such an output wrote no state key, so there is
-nothing behind it to protect.
+nothing behind it to protect. The same branch selection now decides whether the
+PRODUCER's export counts as secret-bearing at all (issue
+[go-to-k/cdkd#2150](https://github.com/go-to-k/cdkd/issues/2150)): that test
+used to scan the whole output node as text, so an `Fn::If` whose UNTAKEN arm
+held a `{{resolve:...}}` expression made the export look secret-bearing while
+the deployed value was the plain branch -- and the refusal below then fired over
+a stored value nothing could turn into an expression, with no bypass flag. One
+selection now feeds both halves of the question.
 
 **Which branch scrub selects is evaluated against the template's DEFAULT
 parameter values.** `scrub` takes no `--parameters`, so it has nothing else to
@@ -2874,7 +2881,12 @@ multi-stack app that imports anything. That half is taken from the app's
 TEMPLATES, and the refusal fires only when they say the value carries a secret:
 either the producer declares that export from a `{{resolve:...}}` expression, or
 the producer RE-EXPORTS a value that a stack further up the chain declares from
-one (issue [go-to-k/cdkd#2146](https://github.com/go-to-k/cdkd/issues/2146)). An
+one (issue [go-to-k/cdkd#2146](https://github.com/go-to-k/cdkd/issues/2146)).
+Both arms read the export through the SAME `Fn::If` branch selection described
+above, so an expression sitting only in a branch this run does not select
+answers neither of them -- and the residual is stated rather than implied: a
+secret reachable only through that branch is not detected, which is the outcome
+that reference had before this refusal existed. An
 ordinary import of a bucket name or an ARN is unaffected under either arm. The chain arm
 is not a refinement: a middle stack's output IS the `Fn::ImportValue`, so asking
 that one template answered "not secret-bearing", and `cdkd scrub <the stack at
@@ -2910,6 +2922,30 @@ from the templates), so one run normally scrubs a producer and then resolves its
 expression in the consumer. `--dry-run` writes nothing, so the producer is never
 rewritten -- a dry run over a not-yet-scrubbed producer is exactly where this
 refusal is expected.
+
+**An ASSEMBLED secret reference is handed to the resolver rather than refused**
+(issue [go-to-k/cdkd#2157](https://github.com/go-to-k/cdkd/issues/2157)). A
+reference the intrinsics build out of parts -- an `Fn::Sub` placeholder inside
+it, an `Fn::Join` that splits it -- does not exist as a complete expression
+until it is resolved, so `scrub`'s region pre-pass cannot classify it and hands
+it on; the resolver decides the region AFTER assembly and routes it to the region
+its ARN names, or refuses it as `ambiguous`. `scrub` used to refuse such a leaf
+outright (exit 2, no bypass flag) whenever the stack also had a foreign producer
+region on record, which made the whole stack unscrubbable over a reference cdkd
+can now resolve correctly.
+
+Known residual, tracked by issue
+[go-to-k/cdkd#2166](https://github.com/go-to-k/cdkd/issues/2166): if the
+downstream lookup then FAILS, the stack can still be summarised as CLEAN. Two
+shapes reach it and they are not equally quiet -- a region that refuses the read
+(a denied `GetSecretValue`, a deleted secret) is reported only at
+`--verbose`, while an `Fn::Sub` placeholder `scrub` cannot evaluate (it takes no
+`--parameters`) does print a `keeping placeholder` warning at default verbosity.
+Neither stops the summary line.
+The COMPLETE-token spelling of the first is loud
+(`SCRUB_CROSS_REGION_SECRET_UNRESOLVED`, exit 2), so the two disagree until that
+issue lands. Run `cdkd scrub --verbose` when a stack you expect findings from
+reports clean.
 
 **A read cdkd declines BY DESIGN is a finding, not a refusal.** The
 cross-account `Fn::GetStackOutput` of a redacted value is never resolved: cdkd

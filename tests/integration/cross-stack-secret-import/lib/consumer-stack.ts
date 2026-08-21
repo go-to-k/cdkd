@@ -1,7 +1,12 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
-import { EXPORT_NAME, PARAMETER_NAME, REEXPORT_NAME } from './shared.ts';
+import {
+  CONDITIONAL_EXPORT_NAME,
+  EXPORT_NAME,
+  PARAMETER_NAME,
+  REEXPORT_NAME,
+} from './shared.ts';
 
 /**
  * Consumer fixture for issue #1934.
@@ -29,10 +34,24 @@ export class ConsumerStack extends cdk.Stack {
     new ssm.StringParameter(this, 'ImportedSecretParam', {
       parameterName: PARAMETER_NAME,
       stringValue: importedSecret,
-      description:
-        'Holds the value imported from the producer stack via Fn::ImportValue. ' +
-        'Readable in the clear on purpose: it is what proves the consumer stopped ' +
-        'shipping the literal dynamic-reference token to AWS (issue 1934).',
+      // The DESCRIPTION carries the issue #2150 read, deliberately, so that arm
+      // adds NO resource record to this stack: every existing assertion here
+      // counts RESOURCE records (step 8 asserts exactly one is scrubbed), and a
+      // second SSM parameter would have moved those counts for a reason
+      // unrelated to what it tests.
+      //
+      // It is still a real cross-stack read -- the pre-pass walks the whole
+      // Properties bag, so `Description` reaches `resolveImportValue` exactly as
+      // `Value` does, records the producer, and puts the conditional export
+      // through `producerPublishesSecretExpression`. Pre-#2150 that verdicted
+      // `declared` off the UNTAKEN arm and refused the whole scrub with
+      // `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT`, so step 8 -- which has nothing
+      // to do with conditionals -- was the step that could no longer run.
+      description: cdk.Fn.join('', [
+        'Imported from the producer via Fn::ImportValue (issue 1934). Conditional ' +
+          'export (issue 2150) resolved to: ',
+        cdk.Fn.importValue(CONDITIONAL_EXPORT_NAME),
+      ]),
     });
 
     // RE-EXPORT, which makes this stack the MIDDLE of a three-stack chain

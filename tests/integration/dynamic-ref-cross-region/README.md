@@ -42,8 +42,9 @@ with its own region — so a region boundary is now also a cache boundary.
    #1957 arm — secret-ness is decided by the parameter's TYPE (issue #1901), so
    a lookup answered by the wrong region misclassifies as well as mis-resolves,
    and a misclassified value is persisted in PLAINTEXT.
-4. Deploys TWO stacks in ONE cdkd process, one per region, each declaring
-   FOUR SSM parameters: the `String` echo, the `SecureString` echo, a THIRD
+4. Deploys THREE stacks in ONE cdkd process — one per region, plus the
+   region-A-only `CdkdDynamicRefAssembledSecretStack` that step 8 scrubs. The
+   two regional ones each declare FOUR SSM parameters: the `String` echo, the `SecureString` echo, a THIRD
    that repeats the `SecureString` reference EMBEDDED in a longer string and
    `DependsOn` the second — so it always resolves on a cache HIT — and the
    mixed-type echo.
@@ -64,12 +65,25 @@ with its own region — so a region boundary is now also a cache boundary.
    pre-GHSA-p5qg-v9gv-hc7w binary wrote it, and asserts region B's record comes
    back holding the EXPRESSION rather than the plaintext. This is the #1957
    discriminator — see "Why `cdkd scrub` and not a concurrent deploy" below.
-8. Destroys both stacks, asserts all eight echo parameters and both state
-   records are gone (tri-state gone probes), then deletes the seeded
+8. Scrubs a THIRD stack, `CdkdDynamicRefAssembledSecretStack`, whose single
+   parameter carries an `Fn::Sub`-ASSEMBLED reference to region B's
+   `SecureString` ARN and no region-less reference at all, with `outputReads`
+   seeded to put region B on record as a foreign producer. `cdkd scrub` must
+   REWRITE that record rather than refusing it — the issue
+   [#2157](https://github.com/go-to-k/cdkd/issues/2157) arm. It needs its own
+   stack because scrub's pre-pass refuses over the whole leaf set: every leaf on
+   the two stacks above spells its reference region-LESSLY, so once foreign
+   evidence is on record those classify `ambiguous` and refuse before the
+   assembled leaf is reached, and the arm would silently measure the wrong
+   refusal in both polarities.
+9. Destroys all three stacks, asserts all nine echo parameters and all three
+   state records are gone (tri-state gone probes), then deletes the seeded
    parameters.
 
 Pre-fix for #1933, step 5 fails on the second stack. Pre-fix for #1957, step 7
-leaves region B's plaintext in `state.json`.
+leaves region B's plaintext in `state.json`. Pre-fix for #2157, step 8 exits 2
+with `SCRUB_SECRET_REFERENCE_UNCLASSIFIABLE` and the seeded plaintext survives —
+unbypassably, since scrub has no flag that overrides a refusal.
 
 ## Run
 

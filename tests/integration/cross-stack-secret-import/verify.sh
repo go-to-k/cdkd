@@ -204,6 +204,14 @@ ARN_OUTPUT="CrossStackSecretArnOutput"
 REEXPORT_NAME="CdkdCrossStackSecretReexport"
 REEXPORT_OUTPUT="ReexportedSecretOutput"
 CHAIN_PARAMETER_NAME="/cdkd-integ/cross-stack-secret-import/chained-secret"
+# The producer's CONDITIONAL export and the value its UNTAKEN-branch deployment
+# actually stores (issue
+# [#2150](https://github.com/go-to-k/cdkd/issues/2150)). Mirrors
+# `lib/shared.ts`; both spellings are in the `crossstack` vocabulary the naming
+# rule above requires, so neither can collide with the plaintext needle.
+CONDITIONAL_EXPORT_NAME="CdkdCrossStackConditionalSecret"
+CONDITIONAL_OUTPUT="CrossStackConditionalSecretOutput"
+CONDITIONAL_PLAIN_VALUE="crossstack-conditional-plain-branch"
 
 PRODUCER_STATE_KEY="cdkd/${PRODUCER}/${REGION}/state.json"
 CONSUMER_STATE_KEY="cdkd/${CONSUMER}/${REGION}/state.json"
@@ -435,6 +443,60 @@ esac
 PRODUCER_OUTPUTS=$(printf '%s' "${PRODUCER_STATE_JSON}" | jq -c '.state.outputs')
 assert_no_plaintext "the producer's persisted outputs bag" "${PRODUCER_OUTPUTS}"
 
+# --- Issue #2150 PREMISE: the conditional export stored its UNTAKEN branch ---
+#
+# THE WHOLE #2150 ARM IS INERT WITHOUT THIS, and inert in the silent direction.
+# The defect needs the producer's STORED value to carry no expression: that is
+# what turns the wrong `declared` verdict into
+# `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT`. If the condition had somehow evaluated
+# TRUE, the stored value would be the `{{resolve:...}}` expression, the
+# discriminator in `makeCrossStackPrePass` would return early, and step 8 would
+# pass under BOTH the fixed and the broken code -- reporting green over an arm
+# that tested nothing. The condition is a literal-false `Fn::Equals` in
+# `lib/producer-stack.ts`, so this asserts a property of cdkd's condition
+# evaluation, not of the run's environment.
+#
+# Checked on BOTH keys cdkd writes for an exported output -- the export ALIAS
+# and the logical output id -- because the pre-pass matches an export by either
+# spelling, so a wrong value under only one of them would still reach the
+# verdict.
+for cond_key in "${CONDITIONAL_EXPORT_NAME}" "${CONDITIONAL_OUTPUT}"; do
+  COND_STORED=$(printf '%s' "${PRODUCER_STATE_JSON}" \
+    | jq -r --arg k "${cond_key}" '.state.outputs[$k] // empty')
+  if [ "${COND_STORED}" != "${CONDITIONAL_PLAIN_VALUE}" ]; then
+    diag "producer output keys: $(printf '%s' "${PRODUCER_STATE_JSON}" | jq -c '.state.outputs | keys')"
+    fail "producer state.outputs[${cond_key}] is '${COND_STORED}', expected the untaken-branch literal '${CONDITIONAL_PLAIN_VALUE}' - the issue 2150 arm is INERT: with an expression stored there, scrub's discriminator returns early and step 8 would pass under the broken code too"
+  fi
+done
+pass "the conditional export stored its UNTAKEN branch ('${CONDITIONAL_PLAIN_VALUE}'), so the issue 2150 arm is armed"
+
+# ...and the TEMPLATE really does carry the secret expression in the arm the
+# deployment did NOT take. Without this the premise above is also satisfied by a
+# producer whose Fn::If lost its secret arm entirely, which would make the arm
+# inert the other way round: nothing for the old literal scan to have seen.
+# Synthesized HERE rather than read from a `cdk.out` the run happens to leave
+# behind: cdkd synthesizes into its own temporary directory, so there is no
+# fixture-local assembly to read, and a stale one from an earlier run would
+# answer for a template this run never deployed. `CDKD_INTEG_RUN_ID` is already
+# exported, so this subprocess synthesizes the same app the deploy did.
+COND_SYNTH_DIR=$(mktemp -d)
+CDK_OUTDIR="${COND_SYNTH_DIR}" node bin/app.ts >/dev/null
+COND_TEMPLATE_VALUE=$(node -e '
+const fs = require("fs");
+const t = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const v = t.Outputs?.[process.argv[2]]?.Value;
+process.stdout.write(JSON.stringify(v?.["Fn::If"]?.[1] ?? null));
+' "${COND_SYNTH_DIR}/${PRODUCER}.template.json" "${CONDITIONAL_OUTPUT}")
+rm -rf "${COND_SYNTH_DIR}"
+case "${COND_TEMPLATE_VALUE}" in
+  '"{{resolve:secretsmanager:'*)
+    pass "the conditional export's UNTAKEN arm carries a secret expression, which is what the old literal scan saw"
+    ;;
+  *)
+    fail "the conditional export's Fn::If ifTrue arm is ${COND_TEMPLATE_VALUE}, not a {{resolve:secretsmanager:...}} expression - the issue 2150 arm is INERT: there is nothing for a both-arms scan to have found"
+    ;;
+esac
+
 INDEX_BODY=$(aws s3 cp "s3://${STATE_BUCKET}/${INDEX_KEY}" -)
 INDEX_VALUE=$(printf '%s' "${INDEX_BODY}" \
   | jq -r --arg k "${EXPORT_NAME}" '.exports[$k].value // empty')
@@ -470,6 +532,28 @@ if [ "${LIVE_VALUE}" != "${EXPECTED_PLAINTEXT}" ]; then
   fail "the live SSM parameter does not carry the imported secret's value (expected the run's plaintext, got a value of length ${#LIVE_VALUE})"
 fi
 pass "the live SSM parameter carries the RESOLVED secret and no {{resolve: token"
+
+# The issue #2150 read, live. The conditional export reaches AWS through this
+# parameter's DESCRIPTION rather than a second resource, so that arm moves none
+# of the resource counts the steps below assert -- see `lib/consumer-stack.ts`.
+# Asserting it here proves the read happened at all: the pre-pass walks the whole
+# Properties bag, so a `Description` that came back without the branch value
+# would mean `resolveImportValue` never ran for that export and the verdict under
+# test was never reached.
+LIVE_DESCRIPTION=$(aws ssm describe-parameters \
+  --parameter-filters "Key=Name,Values=${PARAMETER_NAME}" \
+  --region "${REGION}" --query 'Parameters[0].Description' --output text)
+case "${LIVE_DESCRIPTION}" in
+  *"${CONDITIONAL_PLAIN_VALUE}")
+    pass "the live parameter description carries the conditional export's untaken-branch value, so that cross-stack read really resolved"
+    ;;
+  *'{{resolve:'*)
+    fail "the live parameter description holds a LITERAL dynamic-reference token - the conditional export shipped an unresolved expression to AWS"
+    ;;
+  *)
+    fail "the live parameter description does not end with '${CONDITIONAL_PLAIN_VALUE}' (got: ${LIVE_DESCRIPTION}) - the issue 2150 cross-stack read did not resolve, so nothing below exercises that verdict"
+    ;;
+esac
 
 # --- Assertion 3: the CONSUMER's own state stays redacted ------------------
 echo ""
@@ -793,6 +877,17 @@ fi
 pass "the consumer's state.json now HOLDS the imported secret's plaintext, as an older cdkd would have left it"
 
 echo ""
+# ALSO THE ISSUE #2150 DISCRIMINATOR, and that is why the conditional read was
+# put on THIS stack. `cdkd scrub <consumer>` performs two cross-stack reads: the
+# `Value`'s import of the secret-bearing export, and the `Description`'s import
+# of the producer's CONDITIONAL export. The second one used to verdict `declared`
+# off the `Fn::If` arm the deployment never took (the literal scan
+# `JSON.stringify`d the whole node), and the discriminator then read the stored
+# plain-branch value, found no expression, and raised
+# `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT` -- exit 2, no bypass flag, nothing a
+# scrub of the producer could ever clear. So on `main` this step exits 2 and the
+# consumer's real seeded secret is STRANDED; the assertions below are what say
+# it no longer is.
 echo "==> Step 8 (assertion 7 - THE FIX): 'cdkd scrub' resolves the Fn::ImportValue and REWRITES the record"
 set +e
 SCRUB_OUT=$(node "${LOCAL_DIST}" scrub "${CONSUMER}" \

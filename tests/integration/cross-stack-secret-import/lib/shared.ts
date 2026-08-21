@@ -82,3 +82,37 @@ export const REEXPORT_NAME = 'CdkdCrossStackSecretReexport';
  * independently and neither can stand in for the other.
  */
 export const CHAIN_PARAMETER_NAME = '/cdkd-integ/cross-stack-secret-import/chained-secret';
+
+/**
+ * `Output.Export.Name` of the producer's CONDITIONAL export (issue
+ * [#2150](https://github.com/go-to-k/cdkd/issues/2150)).
+ *
+ * Its `Value` is an `Fn::If` whose TRUE arm is a literal
+ * `{{resolve:secretsmanager:...}}` expression and whose FALSE arm is the plain
+ * {@link CONDITIONAL_PLAIN_VALUE}. The condition is a literal-false
+ * `Fn::Equals`, so the deployed value is ALWAYS the plain branch -- no
+ * parameter, no per-run variation, nothing to get wrong at deploy time.
+ *
+ * WHY THAT SHAPE STRANDS A STACK. `producerPublishesSecretExpression` used to
+ * answer "is this export secret-bearing?" with
+ * `JSON.stringify(value).includes('{{resolve:')`, which sees BOTH arms. The
+ * verdict was `declared`; the discriminator then read the producer's STORED
+ * value, found the plain branch, concluded the producer had not been scrubbed,
+ * and raised `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT`. That refusal is
+ * UNCLEARABLE -- no `cdkd scrub` of the producer can turn the plain branch into
+ * an expression, and there is no bypass flag -- so every other secret in the
+ * importing stack was stranded with it.
+ */
+export const CONDITIONAL_EXPORT_NAME = 'CdkdCrossStackConditionalSecret';
+
+/**
+ * The FALSE branch's value: what AWS and cdkd actually store for
+ * {@link CONDITIONAL_EXPORT_NAME}.
+ *
+ * Spelled in the fixture's `crossstack` vocabulary per the naming rule at the
+ * top of this file: it lands in the consumer's state.json, which `verify.sh`
+ * greps whole for the plaintext needle, so it must share no substring with it.
+ * It carries no `{{resolve:` of its own, which is the point -- the stored value
+ * having no expression is what turned the wrong verdict into a refusal.
+ */
+export const CONDITIONAL_PLAIN_VALUE = 'crossstack-conditional-plain-branch';
