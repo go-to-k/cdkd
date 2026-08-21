@@ -1,3 +1,10 @@
+## [0.284.36](https://github.com/go-to-k/cdkd/compare/v0.284.35...v0.284.36) (2026-08-21)
+
+
+### Bug Fixes
+
+* **resolver:** classify a dynamic reference REGION after intrinsic assembly ([#2158](https://github.com/go-to-k/cdkd/issues/2158)) ([d025a09](https://github.com/go-to-k/cdkd/commit/d025a09d2cda0ccf303eeb4cec124e00d7cf54a0))
+
 ## [0.284.35](https://github.com/go-to-k/cdkd/compare/v0.284.34...v0.284.35) (2026-08-21)
 
 
