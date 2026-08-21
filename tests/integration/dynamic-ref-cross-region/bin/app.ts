@@ -18,12 +18,19 @@ const secureSourceParameterName =
 const mixedTypeSourceParameterName =
   process.env['CDKD_IT_DYNREF_MIXED_PARAM'] ?? '/cdkd-test/dynref-cross-region-mixed';
 
+// The region-B ARN of the shared String parameter, for the #2134
+// assembled-foreign arm. Region A's stack ONLY: the arm exists to prove a
+// reference is answered by the region its ARN names rather than by the stack's
+// own, so putting it on both stacks would make "foreign" ambiguous.
+const foreignParameterArn = process.env['CDKD_IT_DYNREF_FOREIGN_ARN'];
+
 new DynamicRefCrossRegionStack(app, 'CdkdDynamicRefCrossRegionAStack', {
   description: 'Resolves a shared {{resolve:ssm:...}} expression in region A (cdkd issue #1933)',
   env: { region: regionA },
   sourceParameterName,
   secureSourceParameterName,
   mixedTypeSourceParameterName,
+  ...(foreignParameterArn ? { foreignParameterArn } : {}),
 });
 
 new DynamicRefCrossRegionStack(app, 'CdkdDynamicRefCrossRegionBStack', {
