@@ -294,7 +294,12 @@ describe('cdkd scrub - scrubStack', () => {
       dryRun: false,
       logger,
     });
-    expect(res).toEqual({ recordsChanged: 0, secretsFound: 0, secretBearingKeys: 0 });
+    expect(res).toEqual({
+      recordsChanged: 0,
+      secretsFound: 0,
+      secretBearingKeys: 0,
+      unverifiableReads: 0,
+    });
     expect(stateBackend.saveState).not.toHaveBeenCalled();
   });
 });

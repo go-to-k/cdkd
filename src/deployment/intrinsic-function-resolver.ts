@@ -29,7 +29,10 @@ import {
   s3BucketRegionalDomainName,
   s3BucketWebsiteUrl,
 } from '../utils/s3-endpoints.js';
-import { IntrinsicResolutionRefusalError } from '../utils/error-handler.js';
+import {
+  CrossAccountSecretRefusalError,
+  IntrinsicResolutionRefusalError,
+} from '../utils/error-handler.js';
 import { markNonRetryable, isThrottlingError } from './retryable-errors.js';
 import { withRetry } from './retry.js';
 import {
@@ -664,8 +667,14 @@ function buildUnknownIntrinsicError(key: string): Error {
  * `Record<string, unknown>` and deliberately NOT coerced to string — a
  * list-valued `Fn::GetAtt` persists a JSON array — so a secret-bearing output
  * is not always a bare string.
+ *
+ * EXPORTED for `cdkd scrub` (issue
+ * [#2133](https://github.com/go-to-k/cdkd/issues/2133)), which asks the inverse
+ * question of the same value: a cross-stack read that comes back carrying NO
+ * dynamic reference is one scrub could not turn into a needle, because a needle
+ * is only ever recorded by resolving a `{{resolve:...}}` expression.
  */
-function carriesDynamicReference(value: unknown): boolean {
+export function carriesDynamicReference(value: unknown): boolean {
   if (typeof value === 'string') return value.includes('{{resolve:');
   if (Array.isArray(value)) return value.some(carriesDynamicReference);
   if (value !== null && typeof value === 'object') {
@@ -1003,6 +1012,15 @@ const FABRICATED_ACCOUNT_INFO_TTL_MS = 10_000;
  * this adds at most ~15s of sleep, against re-running the whole deploy.
  */
 const MAX_DYNAMIC_REFERENCE_THROTTLE_RETRIES = 4;
+
+/**
+ * How many producer output KEYS an `Fn::GetStackOutput` not-found error may
+ * enumerate (issue #2133 review). See {@link
+ * IntrinsicFunctionResolver.describeAvailableOutputs} for why the list is
+ * bounded at all; the value is "enough to fix a typo, few enough that one error
+ * cannot dump a producer's whole key space".
+ */
+const MAX_LISTED_AVAILABLE_OUTPUTS = 10;
 
 /**
  * Test seam: overriding `sleep` lets unit tests drive the backoff schedule
@@ -3989,8 +4007,16 @@ export class IntrinsicFunctionResolver {
       return v;
     };
 
-    // Names the reference only — never the value, resolved or otherwise.
-    this.logger.debug(`Re-resolving dynamic reference(s) in ${origin}`);
+    // Names the reference only — never the value, resolved or otherwise — and
+    // MASKED (issue #2133 review). `origin` is assembled by the callers from
+    // the RESOLVED `exportName` / `outputName` / `stackName`, each of which is
+    // a `resolveValue` result and can therefore itself carry a resolved secret
+    // (an export name built by an `Fn::Sub` over a `{{resolve:...}}` string).
+    // Every other line naming those identifiers masks them; this one is the
+    // sibling that did not.
+    this.logger.debug(
+      `Re-resolving dynamic reference(s) in ${this.maskSecretsForLog(origin, context)}`
+    );
     return await walk(value);
   }
 
@@ -4099,7 +4125,14 @@ export class IntrinsicFunctionResolver {
       throw new Error('Fn::ImportValue: state backend is required for cross-stack references');
     }
 
-    this.logger.debug(`Resolving Fn::ImportValue: ${exportName}`);
+    // MASKED, and the export NAME rather than only the value (issue #2133
+    // review): `exportName` is the RESOLVED argument — `resolveValue` above
+    // runs `Fn::Sub` / `Fn::Join` / a `{{resolve:...}}` string through — so an
+    // export name assembled from a secret is a resolved secret in every line
+    // that names it. Same treatment as `Fn::Join` / `Fn::Sub` already give
+    // their results.
+    const loggedExportName = this.maskSecretsForLog(exportName, context);
+    this.logger.debug(`Resolving Fn::ImportValue: ${loggedExportName}`);
 
     // Hot path: consult the persistent exports index for O(1) lookup.
     // Skip self-references (a stack importing its own export) so the
@@ -4117,18 +4150,28 @@ export class IntrinsicFunctionResolver {
         entry = await context.exportIndex.lookup(exportName);
       } catch (err) {
         this.logger.warn(
-          `Exports index lookup failed for '${exportName}': ${err instanceof Error ? err.message : String(err)}; falling back to state.json scan`
+          `Exports index lookup failed for '${loggedExportName}': ${err instanceof Error ? err.message : String(err)}; falling back to state.json scan`
         );
         entry = undefined;
       }
       if (entry && (!context.stackName || entry.producerStack !== context.stackName)) {
         this.recordImport(context, exportName, entry.producerStack, entry.producerRegion);
-        // Logged BEFORE the re-resolution, deliberately: what the index holds
-        // for a secret-bearing export is the `{{resolve:...}}` EXPRESSION, so
-        // this line stays non-disclosing (issue #1934's own note). Never move
-        // it after the call below.
+        // NAMES the reference, never the VALUE (issue
+        // [#2133](https://github.com/go-to-k/cdkd/issues/2133)). This line used
+        // to interpolate `entry.value`, justified by "what the index holds for
+        // a secret-bearing export is the `{{resolve:...}}` EXPRESSION". That
+        // premise is true only of state a POST-#1934 binary wrote, and it is
+        // false by construction for the population `cdkd scrub` exists for:
+        // state an OLDER binary wrote, which holds the PLAINTEXT. Since scrub
+        // gained a `stateBackend` (#2133) it reaches this line, `--dry-run`
+        // included, and prints at DEFAULT verbosity. Masking could not rescue
+        // it either — the needle for THIS value is recorded by the
+        // re-resolution below, so at this point there is nothing to mask
+        // against. The shape note keeps the one fact that made the value worth
+        // logging (redacted vs literal) and discloses nothing.
         this.logger.info(
-          `Resolved Fn::ImportValue: ${exportName} = ${JSON.stringify(entry.value)} (from index: ${entry.producerStack} / ${entry.producerRegion})`
+          `Resolved Fn::ImportValue: ${loggedExportName} (from index: ${entry.producerStack} / ${entry.producerRegion}; ` +
+            `${carriesDynamicReference(entry.value) ? 'redacted dynamic reference' : 'literal value'})`
         );
         return await this.reresolveCrossStackValue(
           entry.value,
@@ -4143,7 +4186,7 @@ export class IntrinsicFunctionResolver {
     // stack's state.json. Same as the pre-index behavior.
     const allStacks = await context.stateBackend.listStacks();
     this.logger.debug(
-      `Found ${allStacks.length} state record(s) to search for export: ${exportName}`
+      `Found ${allStacks.length} state record(s) to search for export: ${loggedExportName}`
     );
 
     // Hoisted out of the loop so the re-resolution happens OUTSIDE the
@@ -4178,8 +4221,12 @@ export class IntrinsicFunctionResolver {
 
         if (state.outputs && exportName in state.outputs) {
           const value = state.outputs[exportName];
+          // No VALUE, for the reason the index arm above states (issue #2133).
+          // This is the arm `cdkd scrub` actually takes, since scrub
+          // deliberately supplies no `exportIndex`.
           this.logger.info(
-            `Resolved Fn::ImportValue: ${exportName} = ${JSON.stringify(value)} (from stack: ${refStack} / ${lookupRegion})`
+            `Resolved Fn::ImportValue: ${loggedExportName} (from stack: ${refStack} / ${lookupRegion}; ` +
+              `${carriesDynamicReference(value) ? 'redacted dynamic reference' : 'literal value'})`
           );
           // Patch the index with the just-discovered entry so subsequent
           // resolves hit the O(1) path. Best-effort — index write failures
@@ -4210,9 +4257,10 @@ export class IntrinsicFunctionResolver {
     }
 
     if (found) {
-      // Same as the index arm above: the patched index entry and the log line
-      // both carry the STORED (redacted) value; only what is handed to the
-      // consumer is re-resolved (issue #1934).
+      // Same as the index arm above: the patched index entry carries the
+      // STORED value; only what is handed to the consumer is re-resolved
+      // (issue #1934). The log line above no longer carries any value at all
+      // (issue #2133).
       return await this.reresolveCrossStackValue(
         found.value,
         found.lookupRegion,
@@ -4232,10 +4280,14 @@ export class IntrinsicFunctionResolver {
     // export-in-use protection cannot see cdkd consumers), so a CFn-sourced
     // import is a WEAK reference by design.
     if (this.cfnFallback) {
-      const cfnExport = await this.lookupCfnExport(exportName);
+      const cfnExport = await this.lookupCfnExport(exportName, context);
       if (cfnExport) {
+        // No VALUE (issue #2133). A CloudFormation export never passed through
+        // cdkd's redaction, so what it holds is whatever the producer
+        // published — a plaintext whenever the producer resolved one, which is
+        // the same disclosure as the two arms above.
         this.logger.info(
-          `Resolved Fn::ImportValue: ${exportName} = ${JSON.stringify(cfnExport.value)} ` +
+          `Resolved Fn::ImportValue: ${loggedExportName} ` +
             `(from CloudFormation exports${
               cfnExport.exportingStackId ? `; exporting stack: ${cfnExport.exportingStackId}` : ''
             }; weak reference — producer is not cdkd-managed)`
@@ -4272,7 +4324,8 @@ export class IntrinsicFunctionResolver {
    * the same not-found error anyway.
    */
   private async lookupCfnExport(
-    exportName: string
+    exportName: string,
+    context?: ResolverContext
   ): Promise<{ value: string; exportingStackId?: string } | undefined> {
     let listing = this.cfnExportsPromise;
     if (!listing) {
@@ -4297,13 +4350,47 @@ export class IntrinsicFunctionResolver {
       return undefined;
     } catch (error) {
       this.logger.warn(
-        `Fn::ImportValue: CloudFormation ListExports fallback failed for export '${exportName}' ` +
+        // MASKED for the reason `resolveImportValue`'s own lines are (issue
+        // #2133 review), and this one prints at DEFAULT verbosity.
+        `Fn::ImportValue: CloudFormation ListExports fallback failed for export ` +
+          `'${this.maskSecretsForLog(exportName, context)}' ` +
           `(region ${this.resolverRegion}): ${error instanceof Error ? error.message : String(error)}. ` +
           `Grant cloudformation:ListExports to resolve exports from CloudFormation-managed stacks, ` +
           `or pass --no-cfn-fallback to disable the fallback.`
       );
       return undefined;
     }
+  }
+
+  /**
+   * Render the `Available outputs: ...` tail of an `Fn::GetStackOutput`
+   * not-found error (issue #2133 review).
+   *
+   * These are the PRODUCER's `state.outputs` / CloudFormation output KEYS, and
+   * they land in a top-level ERROR — the one thing on this path that reaches a
+   * CI log at default verbosity. A key can itself hold plaintext: that is the
+   * `secretBearingStateKeyWarning` class (issue #1919), which `cdkd scrub`
+   * counts and deliberately never prints, so the enumeration must not be the
+   * one place that does.
+   *
+   * MASKED and CAPPED rather than dropped. Masking is the treatment every other
+   * identifier on this path already gets, and the cap bounds what one error can
+   * disclose (a producer with hundreds of outputs would otherwise dump all of
+   * them). Dropping the names entirely was considered and rejected: a typo'd
+   * `OutputName` is the overwhelmingly common cause, and the list is what makes
+   * the error actionable.
+   *
+   * Residual, stated rather than hidden: the needles belong to the CONSUMER's
+   * resolution, so a plaintext sitting in a PRODUCER key that this consumer
+   * never resolved is not maskable from here. The cap is what bounds that case;
+   * `cdkd scrub` reporting the producer's own `secretBearingKeys` is the remedy.
+   */
+  private describeAvailableOutputs(keys: string[], context?: ResolverContext): string {
+    if (keys.length === 0) return '(none)';
+    const shown = keys.slice(0, MAX_LISTED_AVAILABLE_OUTPUTS);
+    const rendered = shown.map((k) => this.maskSecretsForLog(k, context)).join(', ');
+    const hidden = keys.length - shown.length;
+    return hidden > 0 ? `${rendered} (+${hidden} more)` : rendered;
   }
 
   /** Full paginated ListExports walk backing {@link lookupCfnExport}'s memo. */
@@ -4331,7 +4418,8 @@ export class IntrinsicFunctionResolver {
    */
   private async lookupCfnStackOutputs(
     stackName: string,
-    region: string
+    region: string,
+    context?: ResolverContext
   ): Promise<Record<string, string> | undefined> {
     const cacheKey = `${region}\0${stackName}`;
     let fetch = this.cfnStackOutputsCache.get(cacheKey);
@@ -4352,8 +4440,15 @@ export class IntrinsicFunctionResolver {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(
+        // MASKED, the exact twin of `lookupCfnExport`'s own line (issue #2133
+        // review), and this one prints at DEFAULT verbosity too. `stackName`
+        // reaches here from `resolveGetStackOutput`'s `resolveValue` result, so
+        // a stack name assembled from a `{{resolve:...}}` reference is a
+        // resolved secret in every line that names it. The method took no
+        // `context` at all until now, which is why it was the one sibling with
+        // nothing to mask against; its only caller has one.
         `Fn::GetStackOutput: CloudFormation DescribeStacks fallback failed for stack ` +
-          `'${stackName}' (${region}): ${message}. ` +
+          `'${this.maskSecretsForLog(stackName, context)}' (${region}): ${message}. ` +
           `Grant cloudformation:DescribeStacks to resolve outputs from CloudFormation-managed ` +
           `stacks, or pass --no-cfn-fallback to disable the fallback.`
       );
@@ -4591,10 +4686,14 @@ export class IntrinsicFunctionResolver {
       );
     }
 
+    // MASKED, same reason as `Fn::ImportValue`'s export name (issue #2133
+    // review): both `StackName` and `OutputName` come back from `resolveValue`,
+    // so either can carry a resolved secret.
+    const loggedStackName = this.maskSecretsForLog(stackName, context);
+    const loggedOutputName = this.maskSecretsForLog(outputName, context);
     this.logger.debug(
-      `Resolving Fn::GetStackOutput: StackName=${stackName}, Region=${region}, OutputName=${outputName}${
-        roleArn ? `, RoleArn=${roleArn}` : ''
-      }`
+      `Resolving Fn::GetStackOutput: StackName=${loggedStackName}, Region=${region}, ` +
+        `OutputName=${loggedOutputName}${roleArn ? `, RoleArn=${roleArn}` : ''}`
     );
 
     // Cross-account branch: assume the role, derive the producer's
@@ -4612,19 +4711,22 @@ export class IntrinsicFunctionResolver {
       // exclusively (a cross-account CFn read would need a different
       // permission model; see the issue's out-of-scope note).
       if (!roleArn && this.cfnFallback) {
-        const cfnOutputs = await this.lookupCfnStackOutputs(stackName, region);
+        const cfnOutputs = await this.lookupCfnStackOutputs(stackName, region, context);
         if (cfnOutputs) {
           if (!(outputName in cfnOutputs)) {
-            const available = Object.keys(cfnOutputs).join(', ') || '(none)';
+            const available = this.describeAvailableOutputs(Object.keys(cfnOutputs), context);
             throw new Error(
               `Fn::GetStackOutput: output '${outputName}' not found in CloudFormation stack ` +
                 `'${stackName}' (${region}). Available outputs: ${available}`
             );
           }
           const value = cfnOutputs[outputName];
+          // No VALUE (issue #2133), same reason as the `Fn::ImportValue`
+          // CloudFormation fallback: a CFn stack output never passed through
+          // cdkd's redaction, so it is whatever the producer resolved.
           this.logger.info(
-            `Resolved Fn::GetStackOutput: StackName=${stackName}, Region=${region}, ` +
-              `OutputName=${outputName} -> ${JSON.stringify(value)} ` +
+            `Resolved Fn::GetStackOutput: StackName=${loggedStackName}, Region=${region}, ` +
+              `OutputName=${loggedOutputName} ` +
               `(from CloudFormation stack outputs; weak reference — producer is not cdkd-managed)`
           );
           // Deliberately NOT recorded into `recordedOutputReads` —
@@ -4650,7 +4752,7 @@ export class IntrinsicFunctionResolver {
 
     const outputs = stateData.state.outputs ?? {};
     if (!(outputName in outputs)) {
-      const available = Object.keys(outputs).join(', ') || '(none)';
+      const available = this.describeAvailableOutputs(Object.keys(outputs), context);
       throw new Error(
         `Fn::GetStackOutput: output '${outputName}' not found in stack '${stackName}' (${region}). ` +
           `Available outputs: ${available}`
@@ -4658,13 +4760,15 @@ export class IntrinsicFunctionResolver {
     }
 
     const value = outputs[outputName];
-    // Logged BEFORE the re-resolution below: what a producer's state holds for
-    // a secret-bearing output is the `{{resolve:...}}` EXPRESSION, so this line
-    // stays non-disclosing (issue #1934). Never move it after that call.
+    // NAMES the reference, never the VALUE (issue #2133) — the SIBLING of the
+    // `Fn::ImportValue` arms above and wrong for the same reason: "a producer's
+    // state holds the `{{resolve:...}}` EXPRESSION" is a property of
+    // POST-#1934 state, and `cdkd scrub`'s whole population is state written
+    // before that, holding the plaintext.
     this.logger.info(
-      `Resolved Fn::GetStackOutput: StackName=${stackName}, Region=${region}, OutputName=${outputName}${
-        roleArn ? `, RoleArn=${roleArn}` : ''
-      } -> ${JSON.stringify(value)}`
+      `Resolved Fn::GetStackOutput: StackName=${loggedStackName}, Region=${region}, ` +
+        `OutputName=${loggedOutputName}${roleArn ? `, RoleArn=${roleArn}` : ''} ` +
+        `(${carriesDynamicReference(value) ? 'redacted dynamic reference' : 'literal value'})`
     );
     // Schema v8 (issue #668): record same-account reads so
     // `findDownstreamConsumers` can name `Fn::GetStackOutput`
@@ -4694,10 +4798,15 @@ export class IntrinsicFunctionResolver {
     // shipping the literal token: a `{{resolve:...}}` string reaching AWS as a
     // password is a PREDICTABLE credential, not merely a broken value.
     //
-    // `IntrinsicResolutionRefusalError` so an `Fn::Sub` re-raises it instead of
-    // laundering it into a literal `${...}`, and non-retryable because the
-    // inputs (a persisted state record, a template's literal `RoleArn`) are
-    // ones no retry can change.
+    // `CrossAccountSecretRefusalError` — an `IntrinsicResolutionRefusalError`
+    // SUBCLASS, so an `Fn::Sub` still re-raises it instead of laundering it into
+    // a literal `${...}` — and non-retryable because the inputs (a persisted
+    // state record, a template's literal `RoleArn`) are ones no retry can
+    // change. The subclass exists because this is the ONE refusal in the family
+    // that is PERMANENT: the other five (a stale placeholder ARN, a fabricated
+    // account, an unenriched `Fn::GetAtt`, `--strict-getatt`, a malformed
+    // `Fn::Split`) are all user-fixable, so a consumer treating the base class
+    // as "no re-run can change this" downgrades all five (issue #2133 review).
     //
     // GATED ON THE DEPLOY PATH. Under `skipDynamicReferences` (the diff / no-op
     // comparison) nothing would be fetched from any account — a secret
@@ -4709,7 +4818,7 @@ export class IntrinsicFunctionResolver {
     // compares expression against expression.
     if (roleArn && !context.skipDynamicReferences && carriesDynamicReference(value)) {
       throw markNonRetryable(
-        new IntrinsicResolutionRefusalError(
+        new CrossAccountSecretRefusalError(
           `Fn::GetStackOutput: output '${outputName}' of stack '${stackName}' (${region}) is a ` +
             `redacted dynamic reference, and this is a CROSS-ACCOUNT reference (RoleArn ` +
             `${roleArn}). cdkd will not resolve a producer account's secret with the consumer's ` +

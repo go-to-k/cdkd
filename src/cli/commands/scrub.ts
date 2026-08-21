@@ -10,7 +10,11 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
+import {
+  withErrorHandling,
+  CdkdError,
+  CrossAccountSecretRefusalError,
+} from '../../utils/error-handler.js';
 import {
   Synthesizer,
   synthesisStatusMessage,
@@ -23,7 +27,11 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
-import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
+import {
+  IntrinsicFunctionResolver,
+  carriesDynamicReference,
+  type ResolverContext,
+} from '../../deployment/intrinsic-function-resolver.js';
 import {
   scrubResourceRecord,
   redactSecretsForState,
@@ -45,7 +53,12 @@ import {
 } from '../../deployment/rollback-executor.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import type { StackState } from '../../types/state.js';
+import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
+// Issue #2133 review: the SAME edge inference `cdkd deploy` orders with, so
+// scrub's `--all` order is producer-before-consumer for a RAW
+// `cdk.Fn.importValue` too — CDK emits no manifest dependency for one.
+import { inferCrossStackStackDeps } from '../../analyzer/cross-stack-deps.js';
 import { isUnresolvedValue, templateUsesSub } from '../../analyzer/outputs-diff.js';
 import {
   collectDeclaredOutputNames,
@@ -290,7 +303,24 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     throw new Error('No stacks matched.');
   }
 
+  // MACROS FIRST, then ordering (issue #2133 review). `expandMacrosForStacks`
+  // rewrites each target's template IN PLACE, and `orderScrubTargets` decides
+  // the order by SCANNING those templates for `Fn::ImportValue` — so ordering
+  // first meant a macro-introduced import was invisible to the sort and its
+  // producer could be scrubbed second. Expansion itself is order-independent
+  // (it takes the whole array and returns void), so the swap costs nothing.
+  //
+  // Residual: `appStacks` below is `allStacks`, and only the TARGETS are
+  // expanded, so a macro-introduced `{{resolve:` in a NON-target producer's
+  // template is still invisible to `producerPublishesSecretExpression`. That
+  // errs toward not refusing, i.e. the pre-#2133 outcome for that reference.
   await synthesizer.expandMacrosForStacks(targetStacks, synthOptions);
+
+  // PRODUCER FIRST (issue #2133 review). A consumer can only learn an imported
+  // secret's expression from a producer whose state has ALREADY been scrubbed,
+  // so the order decides whether one `--all` run finishes a legacy app or
+  // refuses half of it for a second run. See `orderScrubTargets`.
+  targetStacks = orderScrubTargets(targetStacks);
 
   const stateConfig = { bucket: stateBucket, prefix: options.statePrefix };
   const stateS3 = new AwsClients({
@@ -310,6 +340,13 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   // had not performed — the same invariant the export-name warning enforces:
   // a message must never assert what it did not do.
   let totalStacksWithUnscrubbableKeys = 0;
+  // Stacks carrying a cross-stack read cdkd DECLINED to perform by design
+  // (issue #2133 review) — today the cross-account `Fn::GetStackOutput` of a
+  // redacted value. Counted like `totalStacksWithUnscrubbableKeys` and for the
+  // same reason: it is a real finding no re-run can clear, so the summary must
+  // not read as clean and `--fail` must not exit 0, but the stack itself was
+  // still scrubbed for everything else and must not be refused outright.
+  let totalStacksWithUnverifiableReads = 0;
   // Stacks this run could not scrub at all, one entry per stack (issue #2109
   // review). A refusal is per-REFERENCE evidence but is raised for the whole
   // STACK, and without a boundary here one refused stack in a `--all` run
@@ -330,6 +367,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         dryRun: options.dryRun ?? false,
         roleArn: options.roleArn,
         logger,
+        // Every stack of the APP, not just this run's targets: the producer of
+        // an import may be one the user did not name (issue #2133 review).
+        appStacks: allStacks,
       });
     } catch (err) {
       // EVERY error, not only a `CdkdError` refusal. A stack whose state could
@@ -364,8 +404,23 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         `${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${scrubbed.recordsChanged} resource record(s) ` +
           `in ${stack.stackName}`
       );
-    } else if (scrubbed.secretBearingKeys === 0) {
+    } else if (scrubbed.secretBearingKeys === 0 && scrubbed.unverifiableReads === 0) {
+      // BOTH findings gate this line (issue #2133 review). An unverifiable read
+      // is a cross-stack reference cdkd declined to perform, so scrub does not
+      // know what that leaf carries — printing "No plaintext secrets found"
+      // over it is the same unearned clean claim the `secretBearingKeys` gate
+      // already prevents for a key holding plaintext. The warning below still
+      // fires either way; this only stops the two lines contradicting each
+      // other.
       logger.info(`No plaintext secrets found in ${stack.stackName}`);
+    }
+    if (scrubbed.unverifiableReads > 0) {
+      totalStacksWithUnverifiableReads++;
+      logger.warn(
+        `${scrubbed.unverifiableReads} cross-stack read(s) in ${stack.stackName} could NOT be ` +
+          `verified — cdkd declines them by design (see the warnings above), so this stack is ` +
+          `not reported clean.`
+      );
     }
     if (scrubbed.secretBearingKeys > 0) {
       // A leak this command cannot remedy still counts as a FINDING — the CI
@@ -382,7 +437,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     }
   }
 
-  if (totalStacksScrubbed === 0 && totalStacksWithUnscrubbableKeys === 0) {
+  if (
+    totalStacksScrubbed === 0 &&
+    totalStacksWithUnscrubbableKeys === 0 &&
+    totalStacksWithUnverifiableReads === 0
+  ) {
     // "in any target stack state" would be a claim about stacks this run never
     // got through, which is the same false-success the refusal exists to
     // prevent — so the sentence narrows to the stacks it actually reached.
@@ -412,6 +471,14 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       ? ` ${totalStacksWithUnscrubbableKeys} stack(s) hold plaintext in an output KEY, which cdkd scrub ` +
         `cannot rewrite — rename that output's Export.Name and redeploy.`
       : '';
+  // Same discipline as `keyNote`: a summary must never let a finding it could
+  // not remedy read as a clean result (issue #2133 review).
+  const unverifiableNote =
+    totalStacksWithUnverifiableReads > 0
+      ? ` ${totalStacksWithUnverifiableReads} stack(s) carry a cross-stack read cdkd declines to ` +
+        `perform, so their imported values could NOT be checked — export a non-secret value ` +
+        `(e.g. the secret's ARN) from the producer, or reference it from within its own account.`
+      : '';
 
   if (options.dryRun) {
     // Gated like its non-dry-run twin: with only key findings this would plan
@@ -420,11 +487,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     if (totalStacksScrubbed > 0) {
       logger.info(
         `\nPlan: ${totalStacksScrubbed} stack(s) hold plaintext secrets and would be scrubbed ` +
-          `(--dry-run, no state written).${keyNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
+          `(--dry-run, no state written).${keyNote}${unverifiableNote}${failureNote} ROTATE any exposed secret in Secrets Manager.`
       );
     } else {
       logger.info(
-        `\nPlan: nothing can be scrubbed.${keyNote}${failureNote} ROTATE any exposed secret.`
+        `\nPlan: nothing can be scrubbed.${keyNote}${unverifiableNote}${failureNote} ROTATE any exposed secret.`
       );
     }
     // The refusal outranks the `--fail` gate: it is an ERROR (exit 2) about
@@ -443,16 +510,26 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       `\nDone: scrubbed ${totalStacksScrubbed} stack(s). ` +
         `The plaintext is no longer stored there, but a value that was ever persisted should be ` +
         `treated as compromised — ROTATE it in Secrets Manager (scrub matches the current ` +
-        `value, so scrub BEFORE rotating).${keyNote}${failureNote}`
+        `value, so scrub BEFORE rotating).${keyNote}${unverifiableNote}${failureNote}`
     );
   } else {
-    logger.info(`\nNothing could be rewritten.${keyNote}${failureNote} ROTATE any exposed secret.`);
+    logger.info(
+      `\nNothing could be rewritten.${keyNote}${unverifiableNote}${failureNote} ROTATE any exposed secret.`
+    );
   }
   // `--fail` is documented as a --dry-run CI gate, but a REAL run over a
   // key-only leak would otherwise exit 0 — and that is the one finding class a
   // real run cannot fix, so exiting clean is exactly backwards.
   if (failures.length > 0) throw scrubStacksFailedError(failures);
-  if (options.fail && totalStacksWithUnscrubbableKeys > 0) throw new ScrubNeededError();
+  // `totalStacksWithUnverifiableReads` joins the key-only leak here for the
+  // reason stated on that counter: a real run cannot fix either one, so exiting
+  // 0 over them is exactly backwards (issue #2133 review).
+  if (
+    options.fail &&
+    (totalStacksWithUnscrubbableKeys > 0 || totalStacksWithUnverifiableReads > 0)
+  ) {
+    throw new ScrubNeededError();
+  }
 }
 
 /**
@@ -1268,6 +1345,772 @@ async function pinCrossRegionSecrets<T>(
 }
 
 /**
+ * Order scrub targets PRODUCER-BEFORE-CONSUMER (issue
+ * [#2133](https://github.com/go-to-k/cdkd/issues/2133) review).
+ *
+ * `cdkd scrub --all` used to walk the assembly's artifact order, which is not
+ * topological — `getAllStacks` iterates the manifest, and only `cdkd deploy`
+ * sorts. That ordering decides whether a legacy multi-stack app can be scrubbed
+ * in ONE run: a consumer importing a secret learns its expression only by
+ * reading the producer's state, and that state holds the expression only once
+ * the PRODUCER has been scrubbed. Reached in the other order the consumer gets
+ * a plaintext, has no needle, and is refused
+ * ({@link plaintextProducerCrossStackReadError}) until the user re-runs. Both
+ * orders are SAFE — the refusal is what makes them safe — but only one of them
+ * finishes the job in a single command.
+ *
+ * Edges come from BOTH sources `cdkd deploy` uses: CDK's own manifest
+ * dependencies (`dependencyNames`, emitted for a strong reference through
+ * `exportValue`) and {@link inferCrossStackStackDeps}, which scans the
+ * synthesized templates for a RAW `cdk.Fn.importValue` / `Fn::GetStackOutput`
+ * that CDK records no dependency for. Edges to stacks outside the target set
+ * are ignored: a producer that is not being scrubbed cannot be ordered.
+ *
+ * Cycles cannot happen through `Fn::ImportValue` on a deployable app, but a
+ * cycle in the INFERRED graph is possible (two stacks reading each other's
+ * outputs weakly), so the sort degrades to input order for whatever it cannot
+ * place rather than dropping or duplicating a stack. Ties keep input order, so
+ * a single-stack or dependency-free `--all` run is byte-identical to before.
+ */
+export function orderScrubTargets<
+  T extends {
+    stackName: string;
+    /**
+     * Optional HERE though `StackInfo` types it as required: the assembly
+     * reader always supplies it, but a caller assembling a stack record by
+     * hand may not, and an ordering helper must not be the thing that throws.
+     */
+    dependencyNames?: string[] | undefined;
+    template: CloudFormationTemplate;
+  },
+>(targets: readonly T[]): T[] {
+  if (targets.length < 2) return [...targets];
+  const inSet = new Set(targets.map((t) => t.stackName));
+  const inferred = inferCrossStackStackDeps(targets);
+  const producersOf = new Map<string, Set<string>>();
+  for (const target of targets) {
+    const producers = new Set<string>();
+    for (const dep of target.dependencyNames ?? []) {
+      if (inSet.has(dep) && dep !== target.stackName) producers.add(dep);
+    }
+    for (const dep of inferred.get(target.stackName) ?? []) {
+      if (inSet.has(dep) && dep !== target.stackName) producers.add(dep);
+    }
+    producersOf.set(target.stackName, producers);
+  }
+  const ordered: T[] = [];
+  const emitted = new Set<string>();
+  const pending = [...targets];
+  while (pending.length > 0) {
+    // First stack, IN INPUT ORDER, whose producers are all already emitted.
+    let index = pending.findIndex((t) =>
+      [...(producersOf.get(t.stackName) ?? [])].every((p) => emitted.has(p))
+    );
+    // A cycle in the inferred graph: nothing is ready, so take the head and
+    // keep going rather than looping forever or losing a stack.
+    if (index === -1) index = 0;
+    const [next] = pending.splice(index, 1);
+    if (!next) break;
+    ordered.push(next);
+    emitted.add(next.stackName);
+  }
+  return ordered;
+}
+
+/**
+ * A memoizing READ view over the state backend, for the resolutions ONE
+ * `scrubStack` call performs (issue #2133 review).
+ *
+ * `resolveImportValue` has no lookup cache of its own: each reference costs a
+ * `listStacks()` plus up to N `getState()` calls, and scrub resolves every
+ * cross-stack reference TWICE — once in the pre-pass (which must run before the
+ * best-effort catch can swallow a failure) and once in the main resolution
+ * (which must run because the pre-pass deliberately does not rewrite the bag).
+ * The view collapses both into one scan and one `getState` per (stack, region).
+ *
+ * `Object.create` rather than a hand-written wrapper object: the resolver also
+ * reads `stateBackend.prefix` and could reach for more, and a literal cast to
+ * `S3StateBackend` would turn the next such call into `undefined is not a
+ * function`. Prototype delegation keeps every other member — and
+ * `instanceof S3StateBackend` — intact.
+ *
+ * Deliberately NOT used for this stack's own `getState` / `saveState`: those go
+ * through the real backend, so the read-modify-write still sees S3 rather than
+ * a cache, and its ETag precondition still means what it says.
+ */
+function memoizeCrossStackStateReads(backend: S3StateBackend): S3StateBackend {
+  const view = Object.create(backend) as S3StateBackend;
+  let listed: ReturnType<S3StateBackend['listStacks']> | undefined;
+  const states = new Map<string, ReturnType<S3StateBackend['getState']>>();
+  view.listStacks = (): ReturnType<S3StateBackend['listStacks']> => {
+    listed ??= backend.listStacks();
+    return listed;
+  };
+  view.getState = (
+    stackName: string,
+    stateRegion: string
+  ): ReturnType<S3StateBackend['getState']> => {
+    const key = `${stackName}\u0000${stateRegion}`;
+    let pending = states.get(key);
+    if (!pending) {
+      pending = backend.getState(stackName, stateRegion);
+      states.set(key, pending);
+    }
+    return pending;
+  };
+  return view;
+}
+
+/**
+ * Is this template output one the deploy would NOT have written (issue #2133
+ * review)?
+ *
+ * The outputs passes deliberately run over EVERY declared output regardless of
+ * its `Condition`, so a secret carried by a (possibly spuriously) suppressed
+ * output still becomes a needle for the resource records that share it. That
+ * argument justifies RESOLVING a suppressed output, and nothing more — it does
+ * not justify REFUSING the whole stack when such a resolution fails, because a
+ * suppressed output produced no `state.outputs` key and so has nothing at risk.
+ * A dev-environment scrub would otherwise be refused outright by a prod-only
+ * `Value: {Fn::ImportValue: ProdOnlyExport}` whose producer does not exist in
+ * dev. So: resolve it best-effort, but disarm the refusal.
+ *
+ * An UNKNOWN condition counts as suppressed, matching `resolveIf`'s
+ * unknown-selects-FALSE rule and erring toward not refusing.
+ *
+ * STATE OVERRULES THE CONDITION (issue #2133 review). `conditions` degrades to
+ * `{}` whenever `evaluateConditions` throws, and even when it succeeds it is
+ * evaluated from TEMPLATE PARAMETER DEFAULTS — scrub takes no `--parameters` —
+ * so an output the deploy really did write reads as suppressed on any stack
+ * deployed with non-default parameters, which silently disarms the refusal for
+ * that position. `state.outputs` is the record of what the deploy ACTUALLY
+ * wrote (keyed by output NAME, plus the export-name alias), so a key present
+ * there is proof the output was not suppressed, whatever this run's
+ * best-effort condition evaluation concluded.
+ */
+function isOutputSuppressed(
+  name: string,
+  output: { Condition?: unknown },
+  conditions: Record<string, boolean>,
+  stateOutputs: Record<string, unknown>
+): boolean {
+  const condition = output.Condition;
+  if (typeof condition !== 'string') return false;
+  if (conditions[condition] === true) return false;
+  return !(name in stateOutputs);
+}
+
+/**
+ * The intrinsics that read ANOTHER stack's state (issue
+ * [#2133](https://github.com/go-to-k/cdkd/issues/2133)).
+ *
+ * Both require `context.stateBackend` — `resolveImportValue` throws without it,
+ * and `Fn::GetStackOutput` reaches the same requirement through
+ * `getSameAccountStackState` — which is exactly what scrub's three resolve
+ * contexts did not supply, so neither could ever resolve here.
+ */
+const CROSS_STACK_INTRINSIC_KEYS = ['Fn::ImportValue', 'Fn::GetStackOutput'] as const;
+
+/**
+ * The intrinsic keys {@link IntrinsicFunctionResolver}'s `resolveValue`
+ * dispatches on, IN ITS ORDER (issue #2133 review).
+ *
+ * The pre-pass below must decide which key of a multi-key node the RESOLVER
+ * would act on, because a node carrying a higher-precedence sibling never
+ * reaches its `Fn::ImportValue` at all. Testing the cross-stack keys first — as
+ * the first cut did — makes the pre-pass perform a READ the main resolution
+ * never performs, and a read that fails is a refusal over a reference the
+ * deploy never made. Isolation (`{ [key]: node[key] }`) does not answer this:
+ * it stops the pre-pass resolving something ELSE, it does not stop it resolving
+ * something EXTRA.
+ *
+ * `Condition` is deliberately absent. The resolver's `{Condition: <name>}` arm
+ * is gated on `context.conditionResolver`, which only `evaluateConditions`
+ * threads; in every context this pre-pass runs under, such a node is an
+ * ordinary object property literally named `Condition`.
+ *
+ * Fenced against the resolver's own dispatch order by
+ * `tests/unit/cli/commands/scrub-import-value-secret.test.ts`, so a new
+ * intrinsic added there cannot silently leave this copy behind.
+ */
+const RESOLVER_INTRINSIC_PRECEDENCE = [
+  'Ref',
+  'Fn::GetAtt',
+  'Fn::Join',
+  'Fn::Sub',
+  'Fn::Select',
+  'Fn::Split',
+  'Fn::If',
+  'Fn::Equals',
+  'Fn::And',
+  'Fn::Or',
+  'Fn::Not',
+  'Fn::ImportValue',
+  'Fn::GetStackOutput',
+  'Fn::FindInMap',
+  'Fn::Base64',
+  'Fn::GetAZs',
+  'Fn::Cidr',
+] as const;
+
+/** The key `resolveValue` would dispatch on for `node`, or `undefined`. */
+function effectiveIntrinsicKey(node: Record<string, unknown>): string | undefined {
+  return RESOLVER_INTRINSIC_PRECEDENCE.find((key) => key in node);
+}
+
+/**
+ * The refusal a cross-stack read raises when scrub cannot PERFORM it (issue
+ * [#2133](https://github.com/go-to-k/cdkd/issues/2133)).
+ *
+ * The value behind such a reference MAY be a secret — a producer stack exporting
+ * a `{{resolve:...}}` expression is exactly the shape issue #1934 persists — and
+ * scrub learns its plaintext ONLY by performing the read. A read that fails
+ * therefore leaves the command with no needle for that value, so a stored
+ * plaintext survives and the stack is reported clean. Refusing is the same bar
+ * issue #2109 sets for the cross-region case: reporting success over a document
+ * scrub could not examine is the one outcome that must not survive.
+ *
+ * MASKED for the reason `unresolvableForeignScrubSecretError` states — the bag
+ * this resolved through is one `pinCrossRegionSecrets` may already have
+ * substituted a foreign plaintext into, so a resolver error echoing its input
+ * can carry one, and the map is the same one this pass records into.
+ */
+function unresolvableCrossStackReadError(
+  origin: string,
+  stackName: string,
+  intrinsic: string,
+  path: string,
+  cause: unknown,
+  secrets: RecordedSecretValues
+): CdkdError {
+  return new ScrubRefusalError(
+    `Scrub of ${stackName} could not resolve the ${intrinsic} in ${origin}` +
+      `${path ? ` at ${path}` : ''}: ` +
+      `${maskSecretsInText(cause instanceof Error ? cause.message : String(cause), secrets)}. ` +
+      `Refusing rather than continuing: the value that reference carries may be a secret, and ` +
+      `scrub would then have no plaintext to look for — reporting the stack clean over state ` +
+      `that still holds it. Deploy the producer stack (or correct the reference) and re-run ` +
+      `'cdkd scrub'.`,
+    'SCRUB_CROSS_STACK_READ_UNRESOLVED'
+  );
+}
+
+/**
+ * The refusal a cross-stack read raises when it SUCCEEDED but the PRODUCER's
+ * own state record still stores the PLAINTEXT (issue
+ * [#2133](https://github.com/go-to-k/cdkd/issues/2133) review).
+ *
+ * That producer state is precisely the population `cdkd scrub` exists for:
+ * state an older binary wrote. Reading it hands the consumer a bare string,
+ * nothing lands in `recordedSecretValues`, `totalSecrets` stays 0 and the
+ * consumer is reported "No plaintext secrets found" while its record still
+ * holds that plaintext. That is the same silent success the issue exists to
+ * kill, reached one step later.
+ *
+ * There is no correct value to write here instead. What scrub must persist for
+ * an imported secret is the PRODUCER's `{{resolve:...}}` expression, and that
+ * expression exists only in the producer's state — the consumer's template
+ * carries `{"Fn::ImportValue": ...}`, which is a REFERENCE, not an expression.
+ * Writing the reference into a state leaf would fabricate an expression that
+ * `Fn::ImportValue` and the exports index re-apply verbatim to further
+ * consumers, the #1934 BREAK class this file already refuses one class over.
+ * So: refuse, and name the fix that actually works — scrub the producer first,
+ * which turns its stored plaintext into the expression this read then resolves.
+ */
+function plaintextProducerCrossStackReadError(
+  origin: string,
+  stackName: string,
+  intrinsic: string,
+  path: string,
+  producerStack: string,
+  exportKey: string,
+  verdict: SecretExpressionVerdict
+): CdkdError {
+  // The claim about the producer's TEMPLATE is only as precise as the match
+  // that produced it (issue #2133 review). `declared` matched an output by name
+  // or by literal `Export.Name`, so naming the key is exact; `widened` matched
+  // NO output — an intrinsic `Export.Name` scrub cannot reproduce — and the
+  // verdict came from scanning every output of the producer, so asserting that
+  // this key in particular is declared from an expression would be a statement
+  // the code did not check.
+  const templateClaim =
+    verdict === 'declared'
+      ? `declares '${exportKey}' from a {{resolve:...}} expression`
+      : `publishes at least one output from a {{resolve:...}} expression (this run could not ` +
+        `match '${exportKey}' to a declared output, so it cannot say which)`;
+  return new ScrubRefusalError(
+    `Scrub of ${stackName} resolved the ${intrinsic} in ${origin}` +
+      `${path ? ` at ${path}` : ''} to a PLAINTEXT value: the producer stack '${producerStack}' ` +
+      `${templateClaim}, but its own state still stores ` +
+      `the resolved plaintext rather than that expression. scrub has no expression to write in ` +
+      `this stack's place, so it cannot redact the imported secret and must not report this ` +
+      `stack clean. Scrub the producer first ('cdkd scrub ${producerStack}'), then re-run ` +
+      `'cdkd scrub ${stackName}' — the read will then return the expression and this stack is ` +
+      `scrubbed normally.`,
+    'SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT'
+  );
+}
+
+/**
+ * How confidently the producer's TEMPLATE says its export is secret-bearing
+ * (issue #2133 review).
+ *
+ * - `declared` — an output matched `key` by name or by literal `Export.Name`,
+ *   and ITS declared `Value` carries a `{{resolve:` expression.
+ * - `widened` — NO output matched `key`, so the test fell back to scanning
+ *   every output of the producer and at least one of them carries a
+ *   `{{resolve:` expression. The key is secret-bearing only by
+ *   over-approximation, which the refusal message must not overstate.
+ * - `no` — nothing in the producer's outputs carries a `{{resolve:` expression.
+ */
+type SecretExpressionVerdict = 'declared' | 'widened' | 'no';
+
+/**
+ * Is `key` an export the producer's TEMPLATE declares from a `{{resolve:...}}`
+ * expression (issue #2133 review)?
+ *
+ * This is HALF the discriminator, and the half the direct state read below
+ * cannot supply. From the consumer's side, "the producer stored a plaintext
+ * SECRET" and "the producer stored an ordinary non-secret value" are
+ * indistinguishable — a bucket name and a leaked password are both bare
+ * strings — so a refusal keyed on the producer's STORED value alone would fire
+ * on every multi-stack app that imports anything at all. An export whose
+ * declared `Value` contains no `{{resolve:` anywhere cannot be secret-bearing,
+ * so its plaintext is nothing to redact.
+ *
+ * What it deliberately does NOT answer is whether the producer's own STATE has
+ * been scrubbed down to that expression yet, which is the other half and the
+ * one the three earlier cuts of this file each got wrong. See the discriminator
+ * in {@link makeCrossStackPrePass}.
+ *
+ * `key` is the state.outputs KEY the read matched, which the deploy engine
+ * writes under BOTH the output name and the literal `Export.Name` — hence both
+ * are matched. When no output matches (an INTRINSIC `Export.Name`, which scrub
+ * cannot reproduce from here) the test widens to every output of the producer,
+ * which over-approximates in the SAFE direction: it can refuse a stack that
+ * imports a non-secret export from a producer that has some other secret
+ * output, and it never lets a secret-bearing one through. The widening is
+ * REPORTED rather than folded into a boolean, because the refusal message
+ * asserts what the producer declares and only the `declared` verdict has
+ * checked that for THIS key.
+ *
+ * Residual, stated rather than hidden: a producer that publishes a secret
+ * WITHOUT a literal `{{resolve:` in its template — one re-exporting a value it
+ * imported from a third stack, or reading one through `Ref` to a parameter —
+ * is not detected, and neither is a producer outside this app (whose template
+ * scrub never sees). Those keep the pre-#2133 outcome for that one reference.
+ */
+function producerPublishesSecretExpression(
+  template: CloudFormationTemplate,
+  key: string
+): SecretExpressionVerdict {
+  const outputs = (template.Outputs ?? {}) as Record<
+    string,
+    { Value?: unknown; Export?: { Name?: unknown } }
+  >;
+  const matched: unknown[] = [];
+  for (const [name, output] of Object.entries(outputs)) {
+    const exportName = output?.Export?.Name;
+    if (name === key || (typeof exportName === 'string' && exportName === key)) {
+      matched.push(output?.Value);
+    }
+  }
+  const widened = matched.length === 0;
+  const subjects = widened ? Object.values(outputs).map((o) => o?.Value) : matched;
+  const carries = subjects.some((value) => JSON.stringify(value ?? null).includes('{{resolve:'));
+  if (!carries) return 'no';
+  return widened ? 'widened' : 'declared';
+}
+
+/** What one stack's cross-stack pre-pass recorded that is not a refusal. */
+interface CrossStackPrePassFindings {
+  /**
+   * References cdkd DECLINED to resolve BY DESIGN (issue #2133 review) — today
+   * only the cross-account `Fn::GetStackOutput` of a redacted value, which
+   * `resolveGetStackOutput` refuses so a producer account's secret is never
+   * looked up with the consumer's credentials. Reported as a FINDING rather
+   * than a stack refusal: see {@link makeCrossStackPrePass}.
+   */
+  unverifiable: string[];
+}
+
+/**
+ * Build the CROSS-STACK pre-pass for ONE stack's scrub (issue
+ * [#2133](https://github.com/go-to-k/cdkd/issues/2133)).
+ *
+ * WHY THIS RUNS AT ALL, given the wiring in `scrubStack` already lets the main
+ * resolution perform these reads. The wiring is what makes an
+ * `Fn::ImportValue`-sourced secret RESOLVE; this pass is what makes a FAILED
+ * one LOUD, and what catches a SUCCEEDING one that produced no needle. A
+ * cross-stack read that throws inside `resolver.resolve` lands in the caller's
+ * best-effort `catch { logger.debug(...) }`, and that catch cannot tell "a
+ * `Ref` to a resource that is not in state" — which it exists for — from "the
+ * producer's state could not be read", which silently costs the command its
+ * needle. Lifting the second class OUT of the catch is the same placement issue
+ * #2109 uses for its own refusals, and it keeps the catch doing its job:
+ * everything it still swallows is now provably NOT a cross-stack read.
+ *
+ * THREE OUTCOMES per reference, and the split is the whole design:
+ * - the read FAILS for a reason a user can fix (producer not deployed, wrong
+ *   reference, an `AccessDenied` on the producer's state or on
+ *   `cloudformation:ListExports`, an unassumable `RoleArn`) — REFUSE the stack.
+ *   A re-run after the fix scrubs it, so refusing costs reachability only until
+ *   the cause is addressed.
+ * - the read is DECLINED BY DESIGN (`CrossAccountSecretRefusalError`) — record
+ *   an UNVERIFIABLE finding, scrub the rest of the stack, and let the run exit
+ *   non-zero. No user action can make that read succeed, so refusing the whole
+ *   stack would strand every OTHER secret in it forever — a reachability
+ *   regression against the pre-#2133 best-effort behaviour, in the command that
+ *   exists to remediate. This is the `secretBearingKeys` treatment (issue
+ *   #1919), applied to the same shape of finding: real, reported, unremediable.
+ *   The match is on that SUBCLASS, never on `IntrinsicResolutionRefusalError`:
+ *   five of its six throw sites are USER-FIXABLE and are reachable from here
+ *   whenever a cross-stack node's ARGUMENT is an `Fn::Sub` / `Fn::GetAtt` /
+ *   `Fn::Split` (`resolveSub` re-raises the class), so matching the base class
+ *   downgraded a fixable refusal to a finding and let scrub print
+ *   `No plaintext secrets found` and exit 0 over surviving plaintext.
+ * - the read SUCCEEDS but the PRODUCER's own state record still holds the
+ *   plaintext, for an export the producer's template declares from a
+ *   `{{resolve:...}}` expression — REFUSE, see
+ *   {@link plaintextProducerCrossStackReadError}.
+ *
+ * Each node is resolved on its OWN — `{ [key]: node[key] }` rather than the
+ * enclosing object — so a bag carrying an unrelated sibling key cannot make
+ * this pass resolve something else, and so a failure names the cross-stack read
+ * rather than whatever the whole node resolves to. Which key of a multi-key
+ * node is even eligible is decided by {@link RESOLVER_INTRINSIC_PRECEDENCE},
+ * mirroring the resolver, so the pass never performs a read the main resolution
+ * would not.
+ *
+ * The bag is NOT rewritten. The main resolution re-resolves these references
+ * itself, and the S3 reads behind them are shared with this pass by the
+ * memoizing backend view `scrubStack` builds (issue #2133 review — before that
+ * every reference cost `listStacks()` plus up to N `getState()` TWICE). What
+ * not rewriting buys back is the whole class of hazard a substituted value
+ * carries: a resolved cross-stack value that is itself intrinsic- or
+ * reference-shaped would be re-interpreted by the stack's own resolver, which
+ * is the shape `SCRUB_SECRET_RESOLUTION_REINTRODUCED_TOKEN` guards against one
+ * class over. The needles this records survive the main resolution failing for
+ * an unrelated reason, since `recordedSecretValues` is filled in place.
+ *
+ * `Fn::If` is walked the way {@link IntrinsicFunctionResolver} walks it — the
+ * SELECTED branch only, with an unknown condition selecting the FALSE branch,
+ * mirroring `resolveIf`. Reading a reference the main resolution would never
+ * touch would refuse a stack over a conditional import the deploy never made.
+ * A MALFORMED `Fn::If` (args not a 3-tuple) is walked with refusals DISARMED
+ * rather than skipped: which branch is live is unknowable, so a read inside it
+ * may be one the deploy never made — the exact hazard the selected-branch
+ * mirror exists to prevent — but any needle it does yield is still worth having.
+ */
+function makeCrossStackPrePass(deps: {
+  stackName: string;
+  resolver: IntrinsicFunctionResolver;
+  producerTemplates: ReadonlyMap<string, CloudFormationTemplate>;
+  findings: CrossStackPrePassFindings;
+  logger: ReturnType<typeof getLogger>;
+}): (
+  bag: unknown,
+  context: ResolverContext,
+  origin: string,
+  opts?: { canRefuse?: boolean }
+) => Promise<void> {
+  const { stackName, resolver, producerTemplates, findings, logger } = deps;
+
+  /**
+   * Is this a refusal NO RE-RUN can clear (issue #2133 review)?
+   *
+   * The predicate is the SUBCLASS, not `IntrinsicResolutionRefusalError`. That
+   * class has six throw sites and only ONE — `resolveGetStackOutput`'s
+   * cross-account arm — is permanent; the other five (a stale placeholder ARN,
+   * a fabricated account id, an unenriched `Fn::GetAtt`, `--strict-getatt`, a
+   * malformed `Fn::Split`) are all fixed by editing the template or deploying
+   * the producer. They are REACHABLE here, because `resolveSub` re-raises the
+   * class, so any cross-stack node whose ARGUMENT is an `Fn::Sub` /
+   * `Fn::GetAtt` / `Fn::Split` can carry one up to this catch. Matching the
+   * base class downgraded every one of them to a finding logged as "cdkd
+   * declines this read by design, so no re-run can change it" — false — and
+   * scrub then printed `No plaintext secrets found` and exited 0 without
+   * `--fail` while the consumer's state.json still held the imported plaintext.
+   *
+   * The CAUSE CHAIN rather than a bare `instanceof`: the refusal reaches this
+   * catch through `resolver.resolve`, which wraps in several places, and a
+   * top-link-only test silently reclassifies a wrapped permanent refusal as
+   * user-fixable — i.e. refuses the whole stack over something no user can fix.
+   */
+  const isByDesignRefusal = (err: unknown): boolean =>
+    err instanceof Error &&
+    errorCauseChain(err).some((link) => link instanceof CrossAccountSecretRefusalError);
+
+  return async function resolveCrossStackReads(bag, context, origin, opts): Promise<void> {
+    const canRefuse = opts?.canRefuse ?? true;
+    // The needle set this pass MASKS its messages against. It is no longer part
+    // of any verdict (issue #2133 review replaced the needle-count
+    // discriminator with a direct read of the producer's stored value), so the
+    // `?? new Map()` fallback now means "nothing to mask against" rather than
+    // "every read refuses".
+    const secrets = context.recordedSecretValues ?? new Map<string, string>();
+
+    /**
+     * The producer this reference actually resolved through, and the KEY it
+     * matched — read back out of the resolver's own recording bags.
+     *
+     * Keyed on the intrinsic UNDER TEST rather than "imports first, then output
+     * reads": `resolveImportValue` / `resolveGetStackOutput` each resolve their
+     * ARGUMENTS before recording their own read, so a nested cross-stack read
+     * inside the argument lands in the OTHER family's bag (or earlier in the
+     * same one). Preferring imports unconditionally made an
+     * `Fn::GetStackOutput` whose `StackName` contains an `Fn::ImportValue`
+     * report the INNER producer.
+     *
+     * `.at(-1)` for the same reason within one family: the outer read is
+     * recorded LAST, after its argument has resolved.
+     *
+     * An empty bag means the value did NOT come from a cdkd state record — the
+     * CloudFormation `ListExports` / `DescribeStacks` fallbacks record nothing
+     * deliberately (a CFn-managed producer is a weak reference), and the
+     * cross-account `Fn::GetStackOutput` arm records nothing either. cdkd never
+     * redacted those values, so there was never an expression to restore.
+     *
+     * Residual: an OUTER read that fell through to a CloudFormation fallback
+     * while its ARGUMENT performed a same-family cdkd read leaves the inner
+     * entry last, so the check below consults the wrong producer. Bounded by
+     * the key test — the inner key must also exist in the inner producer's
+     * outputs, which it does — and it can only produce a false REFUSAL naming a
+     * real unscrubbed producer, never a false clean.
+     */
+    const recordedProducer = (
+      key: string,
+      probe: ResolverContext
+    ): { stack: string; region: string; key: string } | undefined => {
+      if (key === 'Fn::GetStackOutput') {
+        const read = probe.recordedOutputReads?.at(-1);
+        return read
+          ? { stack: read.sourceStack, region: read.sourceRegion, key: read.outputName }
+          : undefined;
+      }
+      const imported = probe.recordedImports?.at(-1);
+      return imported
+        ? { stack: imported.sourceStack, region: imported.sourceRegion, key: imported.exportName }
+        : undefined;
+    };
+
+    /**
+     * The producer's STORED value for `key` — what its `state.json` actually
+     * holds, as opposed to what the read RETURNED.
+     *
+     * `undefined` when the producer's record cannot be read or does not carry
+     * the key, which is treated as "cannot classify" by the caller rather than
+     * as evidence of anything. Both are near-unreachable on the arms that get
+     * here (the read just succeeded against that record, through the SAME
+     * memoized `getState` promise this call resolves), so the read costs no
+     * extra AWS call.
+     */
+    const storedProducerValue = async (
+      producer: { stack: string; region: string; key: string },
+      backend: ResolverContext['stateBackend']
+    ): Promise<{ stored: unknown } | undefined> => {
+      if (!backend) return undefined;
+      let loaded: Awaited<ReturnType<NonNullable<ResolverContext['stateBackend']>['getState']>>;
+      try {
+        loaded = await backend.getState(producer.stack, producer.region);
+      } catch (err) {
+        logger.debug(
+          `Scrub of ${stackName}: could not re-read producer '${producer.stack}' ` +
+            `(${producer.region}) to classify its stored value: ` +
+            `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
+        );
+        return undefined;
+      }
+      const outputs = loaded?.state?.outputs;
+      if (!outputs || !(producer.key in outputs)) return undefined;
+      return { stored: outputs[producer.key] };
+    };
+
+    const readOne = async (
+      key: string,
+      node: Record<string, unknown>,
+      path: string,
+      nodeCanRefuse: boolean
+    ): Promise<void> => {
+      // A FRESH pair of recording bags per read, so the producer this
+      // particular reference resolved through is readable back out. They are
+      // the resolver's own bookkeeping (`recordImport` / `recordOutputRead`),
+      // not scrub's, and scrub persists neither — it only asks WHO answered.
+      const probe: ResolverContext = {
+        ...context,
+        recordedImports: [],
+        recordedOutputReads: [],
+      };
+      try {
+        await resolver.resolve({ [key]: node[key] }, probe);
+      } catch (err) {
+        // The `!nodeCanRefuse` test runs FIRST, ahead of the by-design branch
+        // (issue #2133 review). A finding is a PERMANENT exit-1 for the run,
+        // and the positions that carry `canRefuse: false` — a
+        // condition-suppressed output, a malformed `Fn::If` — are exactly the
+        // ones that wrote no `state.outputs` key and may name a read the deploy
+        // never made. Recording a finding there produces a standing failure
+        // over a reference with nothing at risk, which is what
+        // {@link isOutputSuppressed} exists to spare.
+        if (!nodeCanRefuse) {
+          logger.debug(
+            `Scrub of ${stackName}: ${key} in ${origin}${path ? ` at ${path}` : ''} could not be ` +
+              `resolved, and this position cannot refuse: ${maskSecretsInText(
+                err instanceof Error ? err.message : String(err),
+                secrets
+              )}`
+          );
+          return;
+        }
+        if (isByDesignRefusal(err)) {
+          const detail = `${key} in ${origin}${path ? ` at ${path}` : ''}: ${maskSecretsInText(
+            err instanceof Error ? err.message : String(err),
+            secrets
+          )}`;
+          findings.unverifiable.push(detail);
+          logger.warn(
+            `Scrub of ${stackName} cannot verify ${detail} — cdkd declines this read by design, ` +
+              `so no re-run can change it. The rest of the stack is still scrubbed; this stack ` +
+              `is NOT reported clean.`
+          );
+          return;
+        }
+        throw unresolvableCrossStackReadError(origin, stackName, key, path, err, secrets);
+      }
+      const producer = recordedProducer(key, probe);
+      if (!producer) return;
+      const producerTemplate = producerTemplates.get(producer.stack);
+      // The producer is not a stack of this app, so scrub has no template to
+      // classify the export with. Documented residual — see
+      // {@link producerPublishesSecretExpression}.
+      if (!producerTemplate) return;
+      const verdict = producerPublishesSecretExpression(producerTemplate, producer.key);
+      if (verdict === 'no') return;
+      // THE DISCRIMINATOR: read the producer's STORED value and test IT.
+      //
+      // The RESOLVED value cannot answer this, and neither can the template.
+      // `reresolveCrossStackValue` RESOLVES a stored expression to plaintext
+      // before returning it (issue #1934's whole point), so the healthy case
+      // (producer scrubbed, state holds the expression) and the broken one
+      // (producer unscrubbed, state holds the plaintext) BOTH arrive here with
+      // a plaintext in hand and both satisfy the template test. Three earlier
+      // cuts each tried to INFER the difference from the consumer's side and
+      // each was wrong in a different way: `carriesDynamicReference(resolved)`
+      // was inverted, the template test was true of both, and the needle-count
+      // test was wrong in BOTH directions — a COMPOSITE export keys the needle
+      // by the embedded SUBSTRING while `resolved` is the whole URI (so
+      // `secrets.has(resolved)` is false and a repeat reference refused a
+      // healthy producer), a NON-STRING resolved value could not be tested at
+      // all, and a needle recorded while resolving the reference's own ARGUMENT
+      // satisfied the count and suppressed a refusal that should have fired.
+      //
+      // Since round 1 wired `stateBackend` into these contexts, the proposition
+      // can be OBSERVED instead of inferred: the producer's stored value either
+      // carries a `{{resolve:` expression or it does not. That is exact for a
+      // composite value, for a non-string one, for the second reference to one
+      // export, and for an argument that records needles of its own — and it
+      // costs no extra AWS call, since the read below hits the same memoized
+      // `getState` promise the resolution just used.
+      //
+      // This SUBSUMES the old `carriesDynamicReference(resolved)` fast path:
+      // resolution never introduces an expression, so a resolved value carrying
+      // one (an `ssm-secure` reference cdkd resolves for nobody) implies the
+      // stored value carries one too, and this arm returns for it.
+      const stored = await storedProducerValue(producer, context.stateBackend);
+      // No readable producer record, or no such key in it — cannot classify, so
+      // do not refuse. DELIBERATELY UNFENCED, and measured rather than assumed:
+      // making this arm throw leaves all 60 tests in
+      // `scrub-import-value-secret.test.ts` green, because every arm that
+      // reaches here just read that record through the SAME memoized `getState`
+      // promise and matched that very key. The one route that could reach it is
+      // a stale exports INDEX (whose entry carries a value the producer's state
+      // no longer has), and `scrubStack` deliberately supplies no `exportIndex`
+      // — so writing a test for it would mean fabricating a state scrub cannot
+      // produce. Kept as the fail-open guard for a future caller that does.
+      if (!stored) return;
+      // The producer's state holds the EXPRESSION: it has been scrubbed, the
+      // read handed this stack a resolvable secret, and there is nothing wrong.
+      if (carriesDynamicReference(stored.stored)) return;
+      if (!nodeCanRefuse) {
+        logger.debug(
+          `Scrub of ${stackName}: ${key} in ${origin}${path ? ` at ${path}` : ''} resolved to a ` +
+            `plaintext from unscrubbed producer '${producer.stack}', and this position cannot refuse.`
+        );
+        return;
+      }
+      throw plaintextProducerCrossStackReadError(
+        origin,
+        stackName,
+        key,
+        path,
+        producer.stack,
+        producer.key,
+        verdict
+      );
+    };
+
+    const walk = async (v: unknown, path: string, nodeCanRefuse: boolean): Promise<void> => {
+      if (Array.isArray(v)) {
+        for (let i = 0; i < v.length; i++) await walk(v[i], `${path}[${i}]`, nodeCanRefuse);
+        return;
+      }
+      if (v === null || typeof v !== 'object') return;
+      const node = v as Record<string, unknown>;
+      const key = effectiveIntrinsicKey(node);
+      if (key === undefined) {
+        for (const [k, val] of Object.entries(node)) {
+          await walk(val, path ? `${path}.${k}` : k, nodeCanRefuse);
+        }
+        return;
+      }
+      if (key === 'Fn::If') {
+        const args = node['Fn::If'];
+        if (Array.isArray(args) && args.length === 3) {
+          const [conditionName, ifTrue, ifFalse] = args as [unknown, unknown, unknown];
+          const selected =
+            typeof conditionName === 'string' && context.conditions?.[conditionName] === true
+              ? ifTrue
+              : ifFalse;
+          await walk(selected, `${path}['Fn::If']`, nodeCanRefuse);
+          return;
+        }
+        // Malformed: walk the args with refusals DISARMED. Falling through to
+        // the plain object walk (the first cut's behaviour) let an unreadable
+        // import in the UNTAKEN branch refuse the stack — the exact hazard the
+        // selected-branch mirror exists to prevent.
+        await walk(args, `${path}['Fn::If']`, false);
+        return;
+      }
+      if ((CROSS_STACK_INTRINSIC_KEYS as readonly string[]).includes(key)) {
+        await readOne(key, node, path, nodeCanRefuse);
+        return;
+      }
+      // Some OTHER intrinsic wins this node, so the resolver resolves that
+      // one's ARGUMENT and never looks at a sibling key. Descend into the
+      // argument only — a cross-stack read nested inside an `Fn::Join` list is
+      // one the main resolution really does perform.
+      await walk(node[key], `${path}['${key}']`, nodeCanRefuse);
+    };
+
+    await walk(bag, '', canRefuse);
+  };
+}
+
+/** What one stack's scrub found. */
+export interface ScrubStackResult {
+  recordsChanged: number;
+  secretsFound: number;
+  secretBearingKeys: number;
+  /**
+   * Cross-stack references cdkd declined to resolve BY DESIGN (issue #2133
+   * review). A FINDING, not a refusal: the stack is still scrubbed for
+   * everything else, but it must not be reported clean, so the run exits
+   * non-zero exactly as a `secretBearingKeys` finding does.
+   */
+  unverifiableReads: number;
+}
+
+/**
  * Scrub one stack's state. Re-resolves the template's per-resource properties to
  * learn the resolved secret VALUES, then replaces those values in the state
  * record with their `{{resolve:...}}` expressions. Returns counts; performs no
@@ -1285,8 +2128,23 @@ export async function scrubStack(
   region: string,
   stateBackend: S3StateBackend,
   lockManager: LockManager,
-  opts: { dryRun: boolean; roleArn?: string | undefined; logger: ReturnType<typeof getLogger> }
-): Promise<{ recordsChanged: number; secretsFound: number; secretBearingKeys: number }> {
+  opts: {
+    dryRun: boolean;
+    roleArn?: string | undefined;
+    logger: ReturnType<typeof getLogger>;
+    /**
+     * Every stack of the synthesized app, NOT only this run's targets (issue
+     * #2133 review). Used for ONE question: when a cross-stack read comes back
+     * carrying no dynamic reference, does the PRODUCER's template declare that
+     * export from a `{{resolve:...}}` expression — i.e. is the plaintext scrub
+     * just received a secret whose expression the producer's own state has not
+     * been scrubbed down to yet? See `producerPublishesSecretExpression`.
+     * Optional so a caller that has no assembly in hand keeps the pre-#2133
+     * outcome (no refusal) rather than failing.
+     */
+    appStacks?: readonly StackInfo[] | undefined;
+  }
+): Promise<ScrubStackResult> {
   const { logger } = opts;
   const acquired = !opts.dryRun;
   if (acquired) {
@@ -1302,11 +2160,15 @@ export async function scrubStack(
   // changes nothing about how the body reads them.
   const perResourceSecrets = new Map<string, Map<string, string>>();
   const outputSecrets = new Map<string, string>();
+  // Filled by the cross-stack pre-pass; read by the return sites below. Hoisted
+  // beside the secret maps for the same reason they are: the value is needed
+  // after a throw could have happened.
+  const prePassFindings: CrossStackPrePassFindings = { unverifiable: [] };
   try {
     const loaded = await stateBackend.getState(stack.stackName, region);
     if (!loaded) {
       logger.debug(`No state for ${stack.stackName} (${region}) — skipping`);
-      return { recordsChanged: 0, secretsFound: 0, secretBearingKeys: 0 };
+      return { recordsChanged: 0, secretsFound: 0, secretBearingKeys: 0, unverifiableReads: 0 };
     }
     const state = loaded.state;
 
@@ -1334,13 +2196,98 @@ export async function scrubStack(
         `Parameter resolution skipped for ${stack.stackName}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
+    // Issue #2133: the ONE resolve context every resolution in this function
+    // uses, spelled once. The three inline copies it replaces were identical but
+    // for their secrets map, and all three were missing `stateBackend` — so
+    // `Fn::ImportValue` and `Fn::GetStackOutput` threw for want of a dependency
+    // in EVERY context scrub builds, the plaintext behind a cross-stack read
+    // never became a needle, and the command reported success over state that
+    // may still hold it. One factory is the fix for the CLASS rather than for
+    // the three instances: a fourth context cannot be written without the
+    // wiring, which is how the first three came to lack it.
+    //
+    // `exportIndex` is deliberately NOT supplied. It is a PERFORMANCE hint — the
+    // resolver falls back to the per-stack `state.json` scan, which is the
+    // pre-index behavior — and supplying it would let `resolveImportValue`'s
+    // scan arm PATCH the index, i.e. an S3 write from a command documented to
+    // perform no AWS mutation, `--dry-run` included.
+    //
+    // NOT quite "equally correct", which an earlier revision claimed (issue
+    // #2133 review). The scan walks `listStacks()` — every stack in EVERY
+    // region — and takes the FIRST record whose `state.outputs` carries the
+    // export name, while the index is keyed by export name alone. Two regions
+    // publishing the same export name can therefore make scrub resolve a
+    // DIFFERENT producer than the deploy did, and a wrong producer means a
+    // wrong needle: at best a miss, at worst the coinciding-literal rewrite
+    // issue #2109 is about. Not fixed here because the ordering lives in
+    // `resolveImportValue`'s scan and a deterministic tie-break is a resolver
+    // change (a lane owns that file), and because supplying the index is the
+    // one alternative and it costs the no-AWS-mutation property above. In
+    // practice a duplicate export name across regions is already an ambiguity
+    // the deploy shares.
+    //
+    // `recordedSecretValues` is optional because `evaluateConditions` passes
+    // none: it is PRODUCING `conditions` (so the spread below is empty there)
+    // and records no secrets today, which this issue does not change.
+    //
+    // The backend handed to the RESOLVER is a memoizing VIEW, not the real one
+    // (issue #2133 review). `resolveImportValue` has no lookup cache: every
+    // reference costs `listStacks()` plus up to N `getState()`, and the
+    // pre-pass and the main resolution each perform the read — so a template
+    // with k imports paid 2k scans. The view collapses them to one scan and one
+    // `getState` per (stack, region) for the whole of this function. It caches
+    // OTHER stacks' reads only in the sense that it caches every read the
+    // resolver makes; this stack's own state load and its `saveState` go
+    // through the REAL backend above and below, untouched. Sharing is safe
+    // because scrub mutates no other stack's state while this runs.
+    //
+    // Note this is a read cache, NOT a needle cache: the resolve itself still
+    // runs per reference, so each resource's own `recordedSecretValues` gets
+    // its own needles. Caching the RESOLVE instead would give the second
+    // consumer of one import no needle at all.
+    const resolverStateBackend = memoizeCrossStackStateReads(stateBackend);
+    const resolverContext = (recordedSecretValues?: RecordedSecretValues): ResolverContext => ({
+      template: stack.template,
+      resources: state.resources,
+      ...(Object.keys(parameters).length > 0 && { parameters }),
+      ...(Object.keys(conditions).length > 0 && { conditions }),
+      stackName: stack.stackName,
+      stateBackend: resolverStateBackend,
+      ...(recordedSecretValues && { recordedSecretValues }),
+      bestEffort: true,
+    });
+    const resolveCrossStackReads = makeCrossStackPrePass({
+      stackName: stack.stackName,
+      resolver,
+      producerTemplates: new Map(
+        (opts.appStacks ?? []).map((s) => [s.stackName, s.template] as const)
+      ),
+      findings: prePassFindings,
+      logger,
+    });
+    // NO cross-stack pre-pass over the CONDITIONS, and that is a decision
+    // rather than the omission it looks like (issue
+    // [#2133](https://github.com/go-to-k/cdkd/issues/2133) review). This call
+    // PRODUCES `conditions`, which the pre-pass itself consumes to decide which
+    // `Fn::If` branch is live — so a refusing pass here would have to run
+    // before scrub knows which references the deploy actually read, i.e. it
+    // could refuse the whole stack over a branch that was never taken, the
+    // exact hazard the selected-branch mirror exists to prevent. A condition
+    // also carries no secret INTO state: it evaluates to a boolean, and its
+    // operands are compared rather than persisted.
+    //
+    // The residual is real and named here rather than hidden: a cross-stack
+    // read inside a condition that cannot be performed degrades that condition
+    // to `false` (`bestEffort`), which then selects the FALSE branch of every
+    // `Fn::If` in BOTH passes below — so a needle living in the TRUE branch is
+    // silently not recorded. Bounded by the fact that scrub's branch selection
+    // is at least self-consistent, and that the condition resolves normally now
+    // that this context carries a `stateBackend` at all; what it cannot promise
+    // is agreeing with what the DEPLOY selected. Making that loud means
+    // deciding what an unevaluatable condition should do to a whole scrub,
+    // which is a different question from this issue's.
     try {
-      conditions = await resolver.evaluateConditions({
-        template: stack.template,
-        resources: state.resources,
-        ...(Object.keys(parameters).length > 0 && { parameters }),
-        bestEffort: true,
-      });
+      conditions = await resolver.evaluateConditions(resolverContext());
     } catch (err) {
       logger.debug(
         `Condition evaluation skipped for ${stack.stackName}: ${err instanceof Error ? err.message : String(err)}`
@@ -1352,6 +2299,22 @@ export async function scrubStack(
       const templateResource = templateResources[logicalId];
       if (!templateResource?.Properties) continue;
       const recordedSecretValues = new Map<string, string>();
+      // REGISTERED BEFORE the pin and the pre-pass, not after them (issue #2133
+      // review). The map is filled IN PLACE, so registering it early changes
+      // nothing about what the loop below reads — but `maskSecretsInError` at
+      // the bottom of this function masks against
+      // `allRecordedSecrets(outputSecrets, perResourceSecrets)`, and both
+      // `pinCrossRegionSecrets` and the cross-stack pre-pass can THROW after
+      // recording a foreign plaintext into this map. Registering afterwards
+      // left exactly that window unmasked: the escaping error, and every link
+      // of its cause chain that `formatError` / `util.inspect` walks, could
+      // carry a plaintext the boundary had no needle for.
+      //
+      // Unconditional, where the old registration was gated on
+      // `size > 0`. An empty map is what every reader already substitutes for a
+      // missing entry (`secrets ?? new Map()`), and `allRecordedSecrets`
+      // filters by needle length, so an empty entry contributes nothing.
+      perResourceSecrets.set(logicalId, recordedSecretValues);
       // Issue #2109: resolve any FOREIGN-region reference in its own region
       // first, and REFUSE one whose region cannot be established. Deliberately
       // OUTSIDE the best-effort catch below — a refusal that a `logger.debug`
@@ -1370,16 +2333,19 @@ export async function scrubStack(
           origin: `resource '${logicalId}'`,
         }
       );
+      const resourceContext = resolverContext(recordedSecretValues);
+      // Issue #2133, and OUTSIDE the best-effort catch below for the same reason
+      // the pin above is: a cross-stack read that failed silently would leave
+      // scrub with no needle for whatever that reference carries, and the
+      // command would report success over a state file it could not examine.
+      // REFUSAL ARMED here, unlike the two OUTPUT sites below, and the
+      // asymmetry is the point: this loop iterates `state.resources`, so the
+      // record EXISTS — the deploy created it and may have persisted the
+      // imported plaintext into it. A suppressed OUTPUT was never written at
+      // all, so a read it needs is one the deploy never made.
+      await resolveCrossStackReads(resolveInput, resourceContext, `resource '${logicalId}'`);
       try {
-        await resolver.resolve(resolveInput, {
-          template: stack.template,
-          resources: state.resources,
-          ...(Object.keys(parameters).length > 0 && { parameters }),
-          ...(Object.keys(conditions).length > 0 && { conditions }),
-          stackName: stack.stackName,
-          recordedSecretValues,
-          bestEffort: true,
-        });
+        await resolver.resolve(resolveInput, resourceContext);
       } catch (err) {
         // Best-effort: a resource whose intrinsics cannot resolve (a Ref to
         // something not in state) still has its own {{resolve:...}} leaves
@@ -1397,7 +2363,6 @@ export async function scrubStack(
             `${maskSecretsInText(err instanceof Error ? err.message : String(err), recordedSecretValues)}`
         );
       }
-      if (recordedSecretValues.size > 0) perResourceSecrets.set(logicalId, recordedSecretValues);
       // The unresolved template bag is this record's POSITION source (#1910).
       // Captured for EVERY templated resource, not only the secret-bearing ones,
       // because `scrubResourceRecord` uses it for the `observedProperties` walk
@@ -1498,24 +2463,25 @@ export async function scrubStack(
           recordedSecretValues: outputSecrets,
           origin: `Export.Name of output '${name}'`,
         });
+        // Records into the SAME map the value loop below fills, and that is
+        // load-bearing rather than tidiness: this loop runs FIRST, so a
+        // dynamic reference first resolved here warms the resolver's cache,
+        // and its cache-hit arm re-records only what it can still prove is
+        // secret. An unpinned ssm reference (#1901) would then be invisible
+        // when the value loop meets it, and its plaintext would survive the
+        // command that exists to remove it — `--dry-run --fail` reporting
+        // CLEAN on a leaking stack.
+        const nameContext = resolverContext(outputSecrets);
+        // Issue #2133, same treatment and same placement as the resource bag
+        // above: a name assembled from a cross-stack read that scrub cannot
+        // perform is a name it cannot reproduce, and swallowing that is how the
+        // whole outputs pass came to be positioned against a key the deploy
+        // never wrote.
+        await resolveCrossStackReads(nameSource, nameContext, `Export.Name of output '${name}'`, {
+          canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
+        });
         try {
-          exportName = await resolver.resolve(nameSource, {
-            template: stack.template,
-            resources: state.resources,
-            ...(Object.keys(parameters).length > 0 && { parameters }),
-            ...(Object.keys(conditions).length > 0 && { conditions }),
-            stackName: stack.stackName,
-            // Records into the SAME map the value loop below fills, and that is
-            // load-bearing rather than tidiness: this loop runs FIRST, so a
-            // dynamic reference first resolved here warms the resolver's cache,
-            // and its cache-hit arm re-records only what it can still prove is
-            // secret. An unpinned ssm reference (#1901) would then be invisible
-            // when the value loop meets it, and its plaintext would survive the
-            // command that exists to remove it — `--dry-run --fail` reporting
-            // CLEAN on a leaking stack.
-            recordedSecretValues: outputSecrets,
-            bestEffort: true,
-          });
+          exportName = await resolver.resolve(nameSource, nameContext);
         } catch (err) {
           // No key to mark ambiguous — the name the deploy used is unknown and
           // could be any output's — so the whole source bag becomes untrusted.
@@ -1616,6 +2582,17 @@ export async function scrubStack(
       // command whose job is to find it. The write above is the only thing a
       // suppressed output could get wrong, and the ambiguity set already covers
       // that.
+      //
+      // BOTH HALVES, because the first cut stated only this one and then let it
+      // carry more weight than it can (issue #2133 review). "Resolve a
+      // suppressed output for its needles" does NOT imply "refuse the stack
+      // when that resolution fails": a suppressed output wrote no
+      // `state.outputs` key, so there is no stored plaintext behind it to
+      // protect, while refusing would make a prod-only
+      // `Fn::ImportValue` unscrubbable in dev — every OTHER secret in the stack
+      // stranded over a reference the deploy never read. Hence the
+      // `canRefuse` flag on the pre-pass call below; see
+      // {@link isOutputSuppressed}.
       // Issue #2109, same treatment and same placement as the two above. The
       // POSITION source written just above is the ORIGINAL `value`, never this
       // copy: `redactSecretsForState` reads UNRESOLVED expressions off it.
@@ -1627,16 +2604,15 @@ export async function scrubStack(
         recordedSecretValues: outputSecrets,
         origin: `output '${name}'`,
       });
+      const valueContext = resolverContext(outputSecrets);
+      // Issue #2133, same treatment and same placement as the two above. An
+      // output that re-publishes an imported value is the ordinary shape here,
+      // and its plaintext becomes a needle only if the read succeeds.
+      await resolveCrossStackReads(valueSource, valueContext, `output '${name}'`, {
+        canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
+      });
       try {
-        await resolver.resolve(valueSource, {
-          template: stack.template,
-          resources: state.resources,
-          ...(Object.keys(parameters).length > 0 && { parameters }),
-          ...(Object.keys(conditions).length > 0 && { conditions }),
-          stackName: stack.stackName,
-          recordedSecretValues: outputSecrets,
-          bestEffort: true,
-        });
+        await resolver.resolve(valueSource, valueContext);
       } catch (err) {
         // MASKED for the same reason as the two above — `valueSource` is a
         // post-pin bag. Verbose-only.
@@ -1683,7 +2659,23 @@ export async function scrubStack(
     const totalSecrets =
       outputSecrets.size + [...perResourceSecrets.values()].reduce((n, m) => n + m.size, 0);
     if (totalSecrets === 0) {
-      return { recordsChanged: 0, secretsFound: 0, secretBearingKeys: 0 };
+      // NOT a blanket "nothing found": `unverifiableReads` is carried out even
+      // here, because a stack whose only cross-stack read cdkd declined by
+      // design has exactly this shape — zero needles — and reporting it clean
+      // is the outcome issue #2133 exists to prevent.
+      //
+      // `secretBearingKeys.length` is provably 0 on this branch and is carried
+      // for SHAPE only (issue #2133 review): `totalSecrets === 0` implies
+      // `outputSecrets.size === 0`, and `stateKeySecretExposure` needs a needle
+      // from that very map, so the loop above pushed nothing. The rationale
+      // above therefore covers `unverifiableReads` alone — it is the one field
+      // that can be non-zero here.
+      return {
+        recordsChanged: 0,
+        secretsFound: 0,
+        secretBearingKeys: secretBearingKeys.length,
+        unverifiableReads: prePassFindings.unverifiable.length,
+      };
     }
 
     // Rewrite each record with ITS OWN secrets, POSITIONED by its own unresolved
@@ -1835,6 +2827,7 @@ export async function scrubStack(
       recordsChanged,
       secretsFound: totalSecrets,
       secretBearingKeys: secretBearingKeys.length,
+      unverifiableReads: prePassFindings.unverifiable.length,
     };
   } catch (err) {
     // THE MASKING BOUNDARY for everything that ESCAPES this function (issue
