@@ -1,3 +1,10 @@
+## [0.284.33](https://github.com/go-to-k/cdkd/compare/v0.284.32...v0.284.33) (2026-08-21)
+
+
+### Bug Fixes
+
+* **deployment:** position-certify a cross-stack source leaf, scoped to the resolution pass ([#2152](https://github.com/go-to-k/cdkd/issues/2152)) ([146d1db](https://github.com/go-to-k/cdkd/commit/146d1db2a9edea9ef40b4a16c9e9d1455e9ffcf1))
+
 ## [0.284.32](https://github.com/go-to-k/cdkd/compare/v0.284.31...v0.284.32) (2026-08-21)
 
 
