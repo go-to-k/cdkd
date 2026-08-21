@@ -294,11 +294,12 @@ interface StackDriftJson {
     changes: Array<{ path: string; stateValue: unknown; awsValue: unknown }>;
     referencesUnresolved: boolean;
   }>;
-  clean: Array<{ logicalId: string; type: string; referencesUnresolved: boolean }>;
+  /** Issue #2135: compared-and-MATCHED only, so the flag is always `false`. */
+  clean: Array<{ logicalId: string; type: string; referencesUnresolved: false }>;
   notSupported: Array<{ logicalId: string; type: string }>;
   skipped: Array<{ logicalId: string; type: string }>;
   /** Issue #2108: the roll-up of every entry carrying `referencesUnresolved`. */
-  notCompared: Array<{ logicalId: string; type: string }>;
+  notCompared: Array<{ logicalId: string; type: string; referencesUnresolved: true }>;
 }
 
 function captureStdout(): { output: string[]; restore: () => void } {
@@ -346,6 +347,61 @@ function lambdaResource(expr: string, plain = 'ok'): ResourceState {
     resourceType: LAMBDA_TYPE,
     properties: JSON.parse(JSON.stringify(bag)) as Record<string, unknown>,
     observedProperties: JSON.parse(JSON.stringify(bag)) as Record<string, unknown>,
+  };
+}
+
+/**
+ * ONE resource that trips BOTH not-compared causes, in the order that makes
+ * both of them stick.
+ *
+ * `resolveStateSecretExpressions` walks leaves SEQUENTIALLY in key order, so
+ * the surviving-token leaf has to come FIRST: the refusal on the second leaf
+ * THROWS, and a throw on the first leaf would abort the pass before the
+ * survivor is ever seen, leaving only `secretResolutionFailed` set. In that
+ * order the resource reaches the construction site with
+ * `unresolvedTokens.size > 0` AND `secretResolutionFailed === true` -- the only
+ * shape in which the precedence between the two arms is observable at all.
+ *
+ * Every leaf outside `Environment.Variables` is ordinary, so nothing here can
+ * drift and the exit code is decided by the cause alone.
+ */
+function bothCausesResource(): ResourceState {
+  const bag = {
+    FunctionName: 'fn',
+    Environment: {
+      Variables: {
+        /** Walked FIRST: cdkd resolves `ssm-secure` for nobody, so the token SURVIVES. */
+        SSM_SECURE_PASSWORD: SSM_SECURE_EXPR,
+        /** Walked SECOND: region-less name + a foreign producer on record = REFUSED. */
+        SECRET_PASSWORD: NAME_EXPR,
+      },
+    },
+  };
+  return {
+    physicalId: 'fn',
+    resourceType: LAMBDA_TYPE,
+    properties: JSON.parse(JSON.stringify(bag)) as Record<string, unknown>,
+    observedProperties: JSON.parse(JSON.stringify(bag)) as Record<string, unknown>,
+  };
+}
+
+/**
+ * The live readback for {@link bothCausesResource}: the SAME key set (the walk
+ * is a union of baseline and AWS keys, so an extra or missing key would be
+ * drift of its own) with AWS holding resolved plaintext at both secret-bearing
+ * leaves. Neither is compared -- the state side still carries `{{resolve:`, so
+ * `calculateResourceDrift` skips it -- which is what keeps this run's exit code
+ * a function of the cause and not of drift.
+ */
+function bothCausesAws(): Record<string, unknown> {
+  return {
+    FunctionName: 'fn',
+    Environment: {
+      Variables: {
+        SSM_SECURE_PASSWORD: 'whatever-aws-holds-here',
+        SECRET_PASSWORD: IRELAND_PASSWORD,
+      },
+    },
   };
 }
 
@@ -665,10 +721,13 @@ describe('cdkd drift detection baselines against the PRODUCER region (issue #210
     expect(secretSends).toHaveLength(0);
     const parsed = JSON.parse(output) as StackDriftJson[];
     // `calculateResourceDrift` skips a state leaf still holding a
-    // `{{resolve:...}}` string, so the degraded baseline reports the resource
-    // clean rather than drifted-forever against the Tokyo password.
+    // `{{resolve:...}}` string, so the degraded baseline reports NO drift
+    // rather than drifting forever against the Tokyo password. Issue #2135:
+    // "no drift" is its own outcome here, `notCompared` -- `clean` means
+    // compared-and-matched and this resource was not compared at all.
     expect(parsed[0]!.drifted).toEqual([]);
-    expect(parsed[0]!.clean.map((c) => c.logicalId)).toEqual(['Fn']);
+    expect(parsed[0]!.clean).toEqual([]);
+    expect(parsed[0]!.notCompared.map((c) => c.logicalId)).toEqual(['Fn']);
     const text = logText();
     expect(text).toContain('NOT compared');
     // The detection twin of the revert-side wording split: this resource was
@@ -843,7 +902,7 @@ describe('cdkd drift --revert rebuilds a MIXED leaf around its references (issue
 });
 
 describe('cdkd drift --json marks a resource whose properties were NOT compared (issue #2108)', () => {
-  it('a refused resource is reported clean but flagged, and rolled up under notCompared', async () => {
+  it('a refused resource is reported under notCompared and NEVER under clean', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
     mockGetState.mockResolvedValue(
       makeState({ Fn: lambdaResource(NAME_EXPR) }, [PRODUCER_REGION])
@@ -855,18 +914,21 @@ describe('cdkd drift --json marks a resource whose properties were NOT compared 
     const { output } = await runDrift(['Consumer', '--json']);
 
     const parsed = JSON.parse(output) as StackDriftJson[];
-    // Still `clean` — the comparator SKIPS a state leaf holding a
-    // `{{resolve:...}}` string, so there is no change to report. What must not
-    // happen is a consumer reading that as "checked and fine": pre-#2108 this
-    // resource reported (wrongly, but visibly) as drifted, so a silent `clean`
-    // would be a regression this change introduced.
+    // No drift to report — the comparator SKIPS a state leaf holding a
+    // `{{resolve:...}}` string. What must not happen is a consumer reading that
+    // as "checked and fine": pre-#2108 this resource reported (wrongly, but
+    // visibly) as drifted, so a silent `clean` would be a regression this
+    // change introduced.
     expect(parsed[0]!.drifted).toEqual([]);
-    expect(parsed[0]!.clean).toEqual([
-      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true },
-    ]);
+    // Issue #2135, and the assertion the whole refactor exists for: the entry
+    // is OUT of `clean` entirely, not in it wearing a flag a reader has to
+    // remember to consult.
+    expect(parsed[0]!.clean).toEqual([]);
     // The roll-up a CI job can gate on with ONE key instead of a filter over
     // two arrays.
-    expect(parsed[0]!.notCompared).toEqual([{ logicalId: 'Fn', type: LAMBDA_TYPE }]);
+    expect(parsed[0]!.notCompared).toEqual([
+      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true },
+    ]);
   });
 
   it('a fully compared resource carries the flag as false and stays out of notCompared', async () => {
@@ -879,9 +941,10 @@ describe('cdkd drift --json marks a resource whose properties were NOT compared 
     const { output } = await runDrift(['Consumer', '--json']);
 
     const parsed = JSON.parse(output) as StackDriftJson[];
-    // The NEGATIVE twin. Without it the flag could be hard-coded `true` and the
-    // case above would still pass, which would make `notCompared` useless in
-    // exactly the direction that matters — everything looks unchecked.
+    // The NEGATIVE twin. Without it every resource could be routed to
+    // `notCompared` unconditionally and the case above would still pass, which
+    // would make the roll-up useless in exactly the direction that matters —
+    // everything looks unchecked.
     expect(parsed[0]!.clean).toEqual([
       { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: false },
     ]);
@@ -1074,7 +1137,9 @@ describe('cdkd drift EXIT CODE distinguishes "clean" from "not compared" (issue 
     expect(parsed[0]!.drifted[0]!.changes.map((c) => c.path)).toEqual([
       'Environment.Variables.PLAIN',
     ]);
-    expect(parsed[0]!.notCompared).toEqual([{ logicalId: 'Fn', type: LAMBDA_TYPE }]);
+    expect(parsed[0]!.notCompared).toEqual([
+      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true },
+    ]);
     expect(output).not.toContain(IRELAND_PASSWORD);
     expect(output).not.toContain(TOKYO_PASSWORD);
   });
@@ -1104,17 +1169,18 @@ describe('cdkd drift EXIT CODE distinguishes "clean" from "not compared" (issue 
 
 describe('the drift EXIT CODE is scoped to REFUSALS, not to everything uncompared (issue #2108)', () => {
   /**
-   * The narrowing this group exists to hold. `referencesUnresolved` is the OR of
-   * two causes -- cdkd REFUSED to resolve, or a `{{resolve:...}}` token simply
-   * survived -- and the second one is a large PRE-EXISTING population
-   * (`ssm-secure`, which cdkd resolves for nobody) that predates issue #2108 and
-   * can never clear on a re-run. Driving the exit code off the OR would make
-   * `cdkd drift` exit non-zero forever, in CI, for every one of those users,
-   * over a defect this change did not introduce.
+   * The narrowing this group exists to hold. "Not compared" has TWO causes --
+   * cdkd REFUSED to resolve, or a `{{resolve:...}}` token simply survived -- and
+   * the second one is a large PRE-EXISTING population (`ssm-secure`, which cdkd
+   * resolves for nobody) that predates issue #2108 and can never clear on a
+   * re-run. Driving the exit code off both would make `cdkd drift` exit non-zero
+   * forever, in CI, for every one of those users, over a defect this change did
+   * not introduce.
    *
    * So the report and the exit code deliberately answer DIFFERENT questions, and
-   * the pair of cases below is what keeps them apart. The exit reads
-   * `comparisonRefused`; `notCompared` / `referencesUnresolved` / the human
+   * the pair of cases below is what keeps them apart. Since issue #2135 the
+   * cause is one field on the `notCompared` outcome: the exit reads
+   * `notComparedCause === 'refused'`, while `notCompared` / the human
    * `PARTIALLY compared` block still cover both populations, because as
    * INFORMATION both were genuinely not compared.
    */
@@ -1154,10 +1220,10 @@ describe('the drift EXIT CODE is scoped to REFUSALS, not to everything uncompare
     // Without this the narrowing could have been implemented by simply dropping
     // the population from the report, which would delete information rather
     // than re-scope the exit code.
-    expect(parsed[0]!.clean).toEqual([
+    expect(parsed[0]!.clean).toEqual([]);
+    expect(parsed[0]!.notCompared).toEqual([
       { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true },
     ]);
-    expect(parsed[0]!.notCompared).toEqual([{ logicalId: 'Fn', type: LAMBDA_TYPE }]);
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
@@ -1181,5 +1247,166 @@ describe('the drift EXIT CODE is scoped to REFUSALS, not to everything uncompare
     const parsed = JSON.parse(output) as StackDriftJson[];
     expect(parsed[0]!.notCompared.map((n) => n.logicalId).sort()).toEqual(['Refused', 'Survivor']);
     expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  /**
+   * ONE RESOURCE CARRYING BOTH CAUSES — the case that fences the PRECEDENCE of
+   * the two arms, which nothing else in this suite does.
+   *
+   * Every other case here separates the causes across two RESOURCES, and a
+   * per-resource split is decided by which outcome each one gets, not by the
+   * order the two arms are written in: flip the ternary at the construction
+   * site and all of them stay green. The ordering is only observable when ONE
+   * resource sets BOTH flags, and it is reachable rather than theoretical --
+   * `onUnresolved` accumulates surviving tokens as the pass walks leaves and
+   * the refusal throws on a LATER leaf, so `unresolvedTokens` is already
+   * non-empty when `secretResolutionFailed` is set, and the `catch` does not
+   * clear it.
+   *
+   * Under the flipped order this resource classifies as `unresolvedToken`,
+   * `outcomeExitSignal` answers `none`, and the command EXITS 0 on a refused
+   * comparison -- the exact silent downgrade issues #2108 and #2135 exist to
+   * prevent. `refused` therefore has to win, and the direction is not
+   * symmetric: `unresolvedToken` must NOT drive a non-zero exit, because
+   * `ssm-secure` is a large pre-existing population that can never clear on a
+   * re-run, while `refused` must, because pre-#2108 that same population exited
+   * 1 and exiting 0 would be a downgrade.
+   */
+  it('ONE resource with BOTH causes is `refused`, not `unresolvedToken`: exits 2', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(makeState({ Fn: bothCausesResource() }, [PRODUCER_REGION]));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => bothCausesAws(),
+    });
+
+    const { output } = await runDrift(['Consumer']);
+
+    // THE PREMISE, asserted positively rather than assumed: this fixture only
+    // fences the ordering while it really does set BOTH flags on ONE resource.
+    // Each warning is emitted from its own branch -- the `catch` for the
+    // refusal, the `unresolvedTokens.size > 0` block for the survivor -- so the
+    // pair is direct evidence that both were true at the construction site. A
+    // later fixture change that stopped tripping one of them would leave this
+    // test passing over a premise it no longer has, and the ordering unfenced
+    // again.
+    const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(warnings.some((w) => w.includes('refused to resolve a dynamic reference'))).toBe(true);
+    expect(warnings.some((w) => w.includes(`cdkd cannot resolve ${SSM_SECURE_EXPR}`))).toBe(true);
+
+    // THE ASSERTION. Nothing drifted -- both secret-bearing leaves were
+    // SKIPPED, which is why `2` and not `1` is the code that must appear -- so
+    // the exit code is decided by the cause alone, and `2` is observable only
+    // when the cause resolved to `refused`.
+    expect(output).toContain('no drift detected');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+
+    // ...and the REPORT covers it under both causes alike, so the narrowing
+    // lives in the exit code only: the resource is inspected, not checked, and
+    // named in the block.
+    expect(output).toContain('0 of 1 resource fully checked');
+    expect(output).toContain('1 only partially compared');
+    const block = output.slice(output.indexOf('PARTIALLY compared'));
+    expect(block).toContain('! Fn (');
+  });
+});
+
+describe('every rendering agrees about what was NOT compared (issue #2135)', () => {
+  /**
+   * The acceptance this refactor was filed for: the exit code, `--json`, the
+   * human `PARTIALLY compared` block and the `N of M fully checked` counter all
+   * answer from the SAME outcome variant, so they cannot drift apart the way
+   * they did across two review rounds on the #2108 lane.
+   *
+   * One state, three resources chosen so each rendering has to make a different
+   * call about each: one compared-and-matched, one refused (the exit-code
+   * population), and one carrying a surviving `{{resolve:ssm-secure:...}}`
+   * token, which is reported but deliberately NOT in the exit code. Asserting
+   * them together is the point -- each rendering on its own was already correct
+   * at some round or other.
+   */
+  function mixedState(): ReturnType<typeof makeState> {
+    return makeState(
+      {
+        Matched: lambdaResource('plain-value'),
+        Refused: lambdaResource(NAME_EXPR),
+        Survivor: lambdaResource(SSM_SECURE_EXPR),
+      },
+      [PRODUCER_REGION]
+    );
+  }
+
+  /** AWS agrees with state for every resource, so nothing can drift. */
+  function mixedProvider(): { readCurrentState: (p: string, l: string) => Promise<unknown> } {
+    return {
+      readCurrentState: async (_physicalId: string, logicalId: string) =>
+        logicalId === 'Matched' ? awsEnv('plain-value') : awsEnv(IRELAND_PASSWORD),
+    };
+  }
+
+  it('the human counter, its PARTIALLY block and the exit code tell the same story', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(mixedState());
+    mockRegistryGetProvider.mockReturnValue(mixedProvider());
+
+    const { output } = await runDrift(['Consumer']);
+
+    // 1 of 3, not 3 of 3: two resources were inspected and never compared, and
+    // the counter is the number a user actually reads off this report.
+    expect(output).toContain('1 of 3 resources fully checked');
+    expect(output).toContain('2 only partially compared');
+    // The SAME two, named -- a count that agrees with a block listing different
+    // resources would still be a report that contradicts itself.
+    const block = output.slice(output.indexOf('PARTIALLY compared'));
+    expect(block).toContain('! Refused (');
+    expect(block).toContain('! Survivor (');
+    expect(block).not.toContain('! Matched (');
+    // ...and the exit code, which is the narrower question: only `Refused` is a
+    // refusal, so 2 rather than 0, and never 1 (nothing drifted).
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+  });
+
+  it('--json rolls up exactly the resources the human report withheld from `checked`', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(mixedState());
+    mockRegistryGetProvider.mockReturnValue(mixedProvider());
+
+    const { output } = await runDrift(['Consumer', '--json']);
+
+    const parsed = JSON.parse(output) as StackDriftJson[];
+    // The positive marker on the OTHER side of the same run: `clean` holds the
+    // one resource the counter called `checked`, and nothing else.
+    expect(parsed[0]!.clean).toEqual([
+      { logicalId: 'Matched', type: LAMBDA_TYPE, referencesUnresolved: false },
+    ]);
+    expect(parsed[0]!.notCompared).toEqual([
+      { logicalId: 'Refused', type: LAMBDA_TYPE, referencesUnresolved: true },
+      { logicalId: 'Survivor', type: LAMBDA_TYPE, referencesUnresolved: true },
+    ]);
+    expect(parsed[0]!.drifted).toEqual([]);
+  });
+
+  it('a DRIFTED resource whose comparison was incomplete is in the human block too', async () => {
+    // The half only `--json` used to hold. A drifted resource is never mistaken
+    // for a clean one, so the flag shape survived here -- but the human report
+    // must still say the reported changes are not the whole comparison, or a
+    // reader fixes the one drift shown and believes the resource is done.
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(NAME_EXPR) }, [PRODUCER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD, 'tampered'),
+    });
+
+    const { output } = await runDrift(['Consumer']);
+
+    expect(output).toContain('drift detected on 1 resource');
+    const block = output.slice(output.indexOf('PARTIALLY compared'));
+    expect(block).toContain('! Fn (');
+    // Drift outranks the refusal in the exit code, and the block does not
+    // change that.
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

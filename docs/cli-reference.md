@@ -2097,25 +2097,28 @@ Exit codes:
 | `2` (detection) | Nothing drifted, but cdkd **deliberately REFUSED** to compare at least one resource: a dynamic reference its state records could not be attributed to a region, so its secret-bearing properties were not compared (issue [#2108](https://github.com/go-to-k/cdkd/issues/2108)). Reporting that run as `0` would be a clean bill of health for a comparison that did not happen — and before #2108 the same population exited `1`, because cdkd resolved the reference in the wrong region and reported phantom drift, so a non-zero exit is what CI consumers already had. **This is narrower than `notCompared`, deliberately.** A resource whose only uncompared properties hold a surviving `{{resolve:ssm-secure:...}}` token is listed under `notCompared` and in the `PARTIALLY compared` block, but does **not** produce this exit code: cdkd has never resolved that spelling, so the condition is permanent and unclearable by any action you can take, and exiting non-zero for it would fail such a stack's CI forever over something unrelated. Fix the refusal by spelling the reference as a full ARN, which names its region. |
 | `2` (`--revert`) | `--revert` finished but one or more resources did not revert (`PartialFailureError`): a `provider.update` call failed, threw `ResourceUpdateNotSupportedError`, or — counted and reported separately, since it never reached `provider.update` at all — cdkd could not re-resolve the dynamic reference(s) the resource's state records (grant the caller `secretsmanager:GetSecretValue` / `ssm:GetParameter`, or fix the reference). Successful resources are now in sync; re-run `cdkd drift <stack>` to see what's left, then either `cdkd drift <stack> --revert` (for the recoverable failures) or `cdkd deploy <stack> --replace` (for the update-not-supported ones). |
 
-The command produces three terminal states per resource:
+The command produces four terminal states per resource:
 
 - **drifted** — at least one property differs between state and AWS.
   Reported as `~ <logicalId> (<type>)` with one `+/-` line per
   property path that diverged.
-- **clean** — every state-recorded property matches AWS. Counted in
-  the per-stack summary but not listed individually.
+- **clean** — every state-recorded property was compared against AWS and
+  matched. Counted in the per-stack summary but not listed individually.
+- **not compared** — nothing differed, but cdkd did not compare every
+  property: it could not, or refused to, resolve a dynamic reference the
+  resource's state records, so its secret-bearing properties were never
+  looked at.
 - **drift unknown** — the provider does not implement the optional
   `readCurrentState` method yet. Reported as `? <logicalId> (<type>)`
   in a separate block at the bottom of each stack's report.
 
-Orthogonal to those three, a `drifted` or `clean` resource may additionally be
-**partially compared**: cdkd could not, or refused to, resolve a dynamic
-reference its state records, so its secret-bearing properties were not compared
-at all. Such resources carry `referencesUnresolved: true`, are rolled up under
-`notCompared` in `--json`, are listed under a `PARTIALLY compared` block in the
-human report, and are excluded from that report's "fully checked" count — a
-`clean` verdict there means "nothing else differed", not "everything was
-checked".
+A **drifted** resource can be partially compared too — the changes it reports
+are real, but they are not the whole comparison — so it carries
+`referencesUnresolved: true` alongside them. Everything partially compared, that
+resource included, is rolled up under `notCompared` in `--json`, listed under a
+`PARTIALLY compared` block in the human report, and excluded from that report's
+"fully checked" count. A **clean** verdict never means anything but "compared
+and matched" (issue [#2135](https://github.com/go-to-k/cdkd/issues/2135)).
 
 Two different things land in that bucket, and only one of them changes the exit
 code:
@@ -2341,14 +2344,23 @@ Still reporting `drift unknown` (deferred):
 ]
 ```
 
-`referencesUnresolved` (on every `drifted` and `clean` entry) and the
-`notCompared` roll-up answer one question `clean` alone cannot: **was
-the comparison complete?** When cdkd cannot resolve — or deliberately
-REFUSES to resolve — a dynamic reference a resource's state records,
-that resource's secret-bearing properties are not compared at all. The
-comparator skips those leaves, so the resource reports `clean` with an
-empty change list, which is indistinguishable from "compared and
-matched" unless the flag says otherwise.
+The `notCompared` roll-up answers one question `clean` alone cannot:
+**was the comparison complete?** When cdkd cannot resolve — or
+deliberately REFUSES to resolve — a dynamic reference a resource's state
+records, that resource's secret-bearing properties are not compared at
+all. The comparator skips those leaves, so nothing is reported as
+drifted, which on its own is indistinguishable from "compared and
+matched".
+
+Such a resource appears under `notCompared` and **not** under `clean`
+(issue [#2135](https://github.com/go-to-k/cdkd/issues/2135)): `clean`
+means compared-and-matched and nothing else, so its entries always carry
+`referencesUnresolved: false`. A `drifted` entry can carry
+`referencesUnresolved: true` — the changes it reports are real, but they
+are not the whole comparison — and it is rolled up under `notCompared`
+as well. Entries in `notCompared` carry `referencesUnresolved: true`
+themselves, so the fact is readable off an entry and not only off which
+array it sits in.
 
 So a CI job that gates on drift should read `notCompared`, not just
 `drifted`:

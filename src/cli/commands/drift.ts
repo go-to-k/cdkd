@@ -65,16 +65,73 @@ import type { ReadCurrentStateContext, ResourceProvider } from '../../types/reso
 import type { ResourceState, StackState } from '../../types/state.js';
 
 /**
+ * Why cdkd did not compare every property a resource records.
+ *
+ * Carried by the {@link DriftOutcome} `notCompared` variant, and by a `drifted`
+ * outcome whose reported changes are real but are not the whole comparison.
+ *
+ * ONE ENUMERATION rather than the pre-#2135 pair of booleans
+ * (`referencesUnresolved`, the OR of both causes, plus `comparisonRefused` for
+ * the first one alone). The two flags answered the same question at two widths,
+ * and the width is what the EXIT CODE turns on:
+ *
+ *   - `refused` — cdkd DELIBERATELY REFUSED to resolve this resource's dynamic
+ *     references (issue #2108). True exactly when
+ *     `resolveStateSecretExpressions` THREW. This is the population the exit
+ *     code is scoped to: it is what this change created, it is actionable (spell
+ *     the reference as a full ARN, which names its region), and pre-#2108 the
+ *     same resources exited `1` because the wrong-region resolution reported
+ *     phantom drift — so a non-zero exit PRESERVES what CI consumers had.
+ *   - `unresolvedToken` — a `{{resolve:...}}` token simply survived the pass, in
+ *     practice `{{resolve:ssm-secure:...}}`, which cdkd resolves for NOBODY.
+ *     A large PRE-EXISTING population unrelated to #2108 and permanent by
+ *     construction: it can never clear on a re-run. Driving the exit code off it
+ *     would make `cdkd drift` exit non-zero forever, in CI, for every one of
+ *     those users, over a defect this change did not introduce — the same
+ *     "permanently non-zero" hazard `docs/cli-reference.md` already cites as a
+ *     reason NOT to report an absent write-only credential as drift.
+ *
+ * So the split is: as INFORMATION both causes mean the resource was not fully
+ * compared, and the `--json` `notCompared` roll-up / the human `PARTIALLY
+ * compared` block cover both unchanged. Only the EXIT CODE — the thing CI keys
+ * on — is confined to `refused`.
+ *
+ * A resource hitting BOTH causes is `refused`: that is the wider signal of the
+ * two, and it is what the pre-#2135 `comparisonRefused = secretResolutionFailed`
+ * said for the same resource.
+ */
+export type NotComparedCause = 'refused' | 'unresolvedToken';
+
+/**
  * Per-resource drift outcome surfaced by the drift command.
  *
- * The three terminal states are:
+ * The terminal states are:
  *   - `drifted` — at least one property differs between state and AWS.
- *   - `clean` — every state-recorded property matches AWS.
+ *   - `clean` — every state-recorded property was compared against AWS and
+ *     matched. This variant carries NO completeness flag, by construction: a
+ *     resource cdkd did not fully compare is a `notCompared` outcome, never a
+ *     `clean` one, so "clean" cannot mean anything but "compared and matched".
+ *   - `notCompared` — nothing drifted, but cdkd did not compare every property
+ *     the resource records, so "no drift" is not a clean bill of health.
  *   - `unsupported` — the provider does not implement `readCurrentState`
  *     yet (the optional method returned `undefined`). Reported separately
  *     so users see what's still uncovered.
+ *   - `skipped` — drift detection is not conceptually applicable (see the
+ *     member's own note).
+ *
+ * Issue [#2135](https://github.com/go-to-k/cdkd/issues/2135) is why
+ * `notCompared` is a MEMBER rather than a `clean` carrying a boolean rider.
+ * Under the flag shape every consumer had to REMEMBER to consult the flag, and
+ * the default behaviour of forgetting was to report a resource cdkd never
+ * checked as one with no drift. That happened twice on the #2108 lane in
+ * successive review rounds — round 1: `--json` reported such a resource as plain
+ * `clean`; round 2: the exit code read the refusal as a pass — and the third
+ * consumer would have been whichever one got written next. As a MEMBER, a
+ * consumer that does not name it does not COMPILE: every consumer routes its
+ * outcomes through {@link matchOutcome}, whose handler record is a mapped type
+ * over `DriftOutcome['kind']`.
  */
-type DriftOutcome =
+export type DriftOutcome =
   | {
       kind: 'drifted';
       logicalId: string;
@@ -130,100 +187,54 @@ type DriftOutcome =
        */
       maskedPaths: SecretPathSet;
       /**
-       * Whether cdkd failed to fully resolve this resource's dynamic
-       * references — the lookup threw, OR a `{{resolve:...}}` token survived
-       * the pass (issue #1914).
+       * Why this resource's comparison was INCOMPLETE, or `undefined` when
+       * every property was compared (issues #1914 / #2108 / #2135).
        *
-       * Read by `printRevertPlan`, which derives its tag / untemplated-key
+       * A drifted resource can also be a partially compared one: the changes it
+       * DOES report are real, but they are not the whole comparison, so it is
+       * rolled up under `notCompared` alongside the variant of that name. The
+       * EXIT CODE does not read this field — a `drifted` outcome already exits
+       * `1`, which outranks the refusal signal.
+       *
+       * Also read by `printRevertPlan`, which derives its tag / untemplated-key
        * lists from the deliberately-unredacted `awsProperties` and masks them
        * with `secrets`. `secrets.size === 0` is NOT the same question: a
        * resource with one resolvable `secretsmanager` reference AND one
        * `ssm-secure` survivor has a non-empty map that still cannot mask what
        * the survivor's position holds.
+       *
+       * Required rather than optional so the construction site must SAY which
+       * of the three states applies; `undefined` is the fully-compared one.
        */
-      referencesUnresolved: boolean;
-      /**
-       * Whether cdkd DELIBERATELY REFUSED to resolve this resource's dynamic
-       * references, as opposed to merely not having resolved them (issue
-       * #2108). True exactly when `resolveStateSecretExpressions` THREW; a
-       * `{{resolve:...}}` token that simply survived the pass does NOT set it.
-       *
-       * A DELIBERATE SECOND FLAG beside `referencesUnresolved`, and the reason
-       * the exit decision cannot reuse the first one is a population, not a
-       * nicety. `referencesUnresolved` is the OR of two causes, and its second
-       * cause — a surviving token, in practice `{{resolve:ssm-secure:...}}`,
-       * which cdkd resolves for NOBODY — is a large PRE-EXISTING population
-       * unrelated to #2108 and permanent by construction: it can never clear on
-       * a re-run. Driving the exit code off the OR would make `cdkd drift` exit
-       * non-zero forever, in CI, for every one of those users, over a defect
-       * this change did not introduce — the same "permanently non-zero" hazard
-       * `docs/cli-reference.md` already cites as a reason NOT to report an
-       * absent write-only credential as drift.
-       *
-       * So the split is: as INFORMATION both populations were genuinely not
-       * compared, and `referencesUnresolved` / the `notCompared` roll-up / the
-       * human `PARTIALLY compared` block continue to cover both unchanged. Only
-       * the EXIT CODE — the thing CI keys on — is confined to the population
-       * this change created.
-       *
-       * Two flags answering two nearly-identical questions is exactly the shape
-       * issue [#2135](https://github.com/go-to-k/cdkd/issues/2135) exists to
-       * fix structurally; until it lands, the second flag is the honest way to
-       * keep the blast radius correct.
-       */
-      comparisonRefused: boolean;
+      notComparedCause: NotComparedCause | undefined;
     }
+  /**
+   * Every state-recorded property was compared against AWS and matched.
+   *
+   * Carries no completeness marker on purpose (issue #2135): the refusal path
+   * does NOT end here. A resource whose dynamic references cdkd could not — or
+   * refused to — resolve falls back to the unresolved baseline,
+   * `calculateResourceDrift` SKIPS every leaf still holding a `{{resolve:...}}`
+   * string, and the change list comes back empty; that resource is pushed as
+   * `notCompared`, so it can never be mistaken here for one that was compared
+   * and matched. Pre-#2108 it reported (wrongly, but visibly) as drifted, so
+   * silently folding it into `clean` would be a regression #2108 introduced.
+   */
+  | { kind: 'clean'; logicalId: string; resourceType: string }
   /**
    * No drift was REPORTED — which is not the same as "every property was
    * compared", and issue #2108 is what made the difference matter.
    *
-   * `referencesUnresolved` carries the same fact as the `drifted` variant's
-   * field of the same name, and it is on this variant because the refusal path
-   * ends HERE: a refused resource falls back to the unresolved baseline,
-   * `calculateResourceDrift` SKIPS every leaf still holding a `{{resolve:...}}`
-   * string, the change list comes back empty, and the resource is pushed as
-   * `clean`. Without the flag, `cdkd drift --json` reports a resource whose
-   * secret-bearing properties were never compared identically to one that was
-   * compared and matched — so a CI consumer gating on `drifted.length === 0`
-   * reads a SKIPPED comparison as a passing one. Pre-#2108 that resource
-   * reported (wrongly, but visibly) as drifted, so silently dropping it would
-   * be a regression this change introduced.
+   * A CI consumer gating on `drifted.length === 0` reads a SKIPPED comparison
+   * as a passing one unless this is a state of its own, which is exactly what
+   * issue #2135 makes it. `notComparedCause` decides the run's EXIT CODE; see
+   * {@link NotComparedCause}.
    */
   | {
-      kind: 'clean';
+      kind: 'notCompared';
       logicalId: string;
       resourceType: string;
-      referencesUnresolved: boolean;
-      /**
-       * Whether cdkd DELIBERATELY REFUSED to resolve this resource's dynamic
-       * references, as opposed to merely not having resolved them (issue
-       * #2108). True exactly when `resolveStateSecretExpressions` THREW; a
-       * `{{resolve:...}}` token that simply survived the pass does NOT set it.
-       *
-       * A DELIBERATE SECOND FLAG beside `referencesUnresolved`, and the reason
-       * the exit decision cannot reuse the first one is a population, not a
-       * nicety. `referencesUnresolved` is the OR of two causes, and its second
-       * cause — a surviving token, in practice `{{resolve:ssm-secure:...}}`,
-       * which cdkd resolves for NOBODY — is a large PRE-EXISTING population
-       * unrelated to #2108 and permanent by construction: it can never clear on
-       * a re-run. Driving the exit code off the OR would make `cdkd drift` exit
-       * non-zero forever, in CI, for every one of those users, over a defect
-       * this change did not introduce — the same "permanently non-zero" hazard
-       * `docs/cli-reference.md` already cites as a reason NOT to report an
-       * absent write-only credential as drift.
-       *
-       * So the split is: as INFORMATION both populations were genuinely not
-       * compared, and `referencesUnresolved` / the `notCompared` roll-up / the
-       * human `PARTIALLY compared` block continue to cover both unchanged. Only
-       * the EXIT CODE — the thing CI keys on — is confined to the population
-       * this change created.
-       *
-       * Two flags answering two nearly-identical questions is exactly the shape
-       * issue [#2135](https://github.com/go-to-k/cdkd/issues/2135) exists to
-       * fix structurally; until it lands, the second flag is the honest way to
-       * keep the blast radius correct.
-       */
-      comparisonRefused: boolean;
+      notComparedCause: NotComparedCause;
     }
   | { kind: 'unsupported'; logicalId: string; resourceType: string }
   /**
@@ -236,6 +247,43 @@ type DriftOutcome =
    * by far the most common case).
    */
   | { kind: 'skipped'; logicalId: string; resourceType: string };
+
+/** A `drifted` outcome — the one variant `--accept` / `--revert` act on. */
+type DriftedOutcome = Extract<DriftOutcome, { kind: 'drifted' }>;
+
+/** Every outcome that reports a resource as NOT fully compared. */
+type NotComparedOutcome = Extract<DriftOutcome, { kind: 'drifted' | 'notCompared' }>;
+
+/**
+ * Route one outcome to the handler for its variant.
+ *
+ * The mechanism issue [#2135](https://github.com/go-to-k/cdkd/issues/2135) asks
+ * for, and the reason every consumer in this file goes through it rather than
+ * filtering on `o.kind === '...'`: `handlers` is a MAPPED TYPE over
+ * `DriftOutcome['kind']`, so it must name EVERY variant. Adding a member to the
+ * union turns every call site that has not been updated into a compile error
+ * ("property '<kind>' is missing"), instead of leaving it to fall through to
+ * whatever it happened to do before. A `.filter()` predicate cannot do that —
+ * it keeps compiling and silently stops matching the new state.
+ *
+ * A handler that deliberately does nothing with a variant still has to be
+ * written out, which is the point: the author of the next variant has to decide,
+ * per consumer, what it means there.
+ *
+ * Exported, with {@link DriftOutcome} and {@link NotComparedCause}, so
+ * `tests/unit/cli/drift-outcome.test-d.ts` can fence the mapped type itself:
+ * relaxing it to a `Partial` record would silently un-fence every consumer in
+ * this file while changing no runtime behaviour, so no runtime test can see it.
+ */
+export function matchOutcome<T>(
+  outcome: DriftOutcome,
+  handlers: { [K in DriftOutcome['kind']]: (outcome: Extract<DriftOutcome, { kind: K }>) => T }
+): T {
+  // The one cast, confined to this line: TypeScript cannot correlate the
+  // handler picked out of the record with the outcome that picked it, even
+  // though `kind` decides both. Every call site above is fully checked.
+  return (handlers[outcome.kind] as (o: DriftOutcome) => T)(outcome);
+}
 
 /**
  * Aggregated drift report for one stack — what gets printed (or emitted as
@@ -286,18 +334,19 @@ class DriftDetectedError extends CdkdError {
  * `{{resolve:ssm-secure:...}}` token — a pre-existing population cdkd resolves
  * for nobody, which can never clear on a re-run, and which this change did not
  * create. Exiting non-zero for them would break `cdkd drift` in CI forever over
- * an unrelated defect, so the exit reads `comparisonRefused` and the report
- * reads `referencesUnresolved`. See that field's note.
+ * an unrelated defect, so the exit reads the `refused` cause alone while the
+ * report covers both. See `NotComparedCause` and `outcomeExitSignal`.
  *
  * WHY A NON-ZERO EXIT, and why it is a PRESERVATION rather than a new signal.
  * Pre-#2108 that population resolved the reference in the WRONG region, the
  * baseline could never equal what AWS held, and the resource was reported
  * `drifted` -- so `cdkd drift` exited 1 and every CI gate keyed on the exit code
  * fired. #2108 correctly stopped comparing against a foreign region's plaintext,
- * which made the same population report `clean`; without this the command would
- * exit 0 and print `no drift detected` for a stack whose secret-bearing
- * properties were never looked at. Round 1 of that change surfaced the refusal
- * in `--json` (`notCompared`) and in the human report, but the exit code -- the
+ * which made the same population report `notCompared`; without this the
+ * command would exit 0 and print `no drift detected` for a stack whose
+ * secret-bearing properties were never looked at. Round 1 of that change
+ * surfaced the refusal in `--json` (`notCompared`) and in the human report,
+ * but the exit code -- the
  * signal most CI gates actually read -- still said "pass".
  *
  * WHY EXIT 2 RATHER THAN 1. `2` is this repo's established "work completed but
@@ -336,43 +385,69 @@ class DriftComparisonRefusedError extends CdkdError {
 }
 
 /**
- * Every outcome on one report that was only PARTIALLY compared -- `drifted` or
- * `clean`, carrying `referencesUnresolved` (issue #2108).
+ * Every outcome on one report that was only PARTIALLY compared -- the
+ * `notCompared` variant, plus a `drifted` one whose `notComparedCause` is set
+ * (issues #2108 / #2135).
  *
- * ONE spelling, because there are now THREE readers that must agree: the
- * `--json` `notCompared` roll-up, the human report's `PARTIALLY compared` block,
- * and the EXIT CODE. A predicate spelled per reader is how the payload and the
- * exit code come to disagree about the same run.
+ * ONE spelling, because TWO renderings must agree about the same run: the
+ * `--json` `notCompared` roll-up and the human report's `PARTIALLY compared`
+ * block (whose count is also what the `N of M fully checked` line subtracts).
+ * A roll-up spelled per reader is how the payload and the human summary come to
+ * disagree.
+ *
+ * The EXIT CODE deliberately does NOT read this — see {@link outcomeExitSignal}
+ * and {@link NotComparedCause} for why it is scoped to refusals alone.
  */
-function notComparedOutcomes(
-  report: StackDriftReport
-): Array<Extract<DriftOutcome, { kind: 'drifted' | 'clean' }>> {
-  return report.outcomes.filter(
-    (o): o is Extract<DriftOutcome, { kind: 'drifted' | 'clean' }> =>
-      (o.kind === 'drifted' || o.kind === 'clean') && o.referencesUnresolved
+function notComparedOutcomes(report: StackDriftReport): NotComparedOutcome[] {
+  return report.outcomes.flatMap((o) =>
+    matchOutcome<NotComparedOutcome[]>(o, {
+      // The changes a drifted resource reports are real, but when a cause is set
+      // they are not the WHOLE comparison, so it belongs in the roll-up too.
+      drifted: (d) => (d.notComparedCause === undefined ? [] : [d]),
+      notCompared: (n) => [n],
+      // `clean` means compared-and-matched and nothing else — that is the
+      // guarantee #2135 bought by making `notCompared` a variant.
+      clean: () => [],
+      // Never compared either, but for a reason that has nothing to do with a
+      // dynamic reference: reported under their own headings so the
+      // `PARTIALLY compared` block stays about references.
+      unsupported: () => [],
+      skipped: () => [],
+    })
   );
 }
 
 /**
- * Every outcome whose comparison cdkd DELIBERATELY REFUSED (issue #2108) — the
- * strict subset of {@link notComparedOutcomes} that drives the EXIT CODE.
+ * What one outcome contributes to the run's EXIT CODE (issues #2108 / #2135).
  *
- * Deliberately NOT the same predicate, and the asymmetry is the point: the
- * REPORT covers everything that was not compared, because as information both
- * populations matter equally, while the exit code covers only the population
- * this change created. Driving it off `referencesUnresolved` would exit
- * non-zero forever for every stack holding an `{{resolve:ssm-secure:...}}`
- * reference — permanent, unclearable, and unrelated to this issue. See the
- * `comparisonRefused` field note, and issue
- * [#2135](https://github.com/go-to-k/cdkd/issues/2135) for the structural fix.
+ * The exit-code CONSUMER, kept as an exhaustive `matchOutcome` so a new outcome
+ * variant cannot inherit `none` by omission — reporting a resource cdkd never
+ * compared as a pass is precisely the round-2 defect #2135 exists to make
+ * impossible.
+ *
+ * `refused` is a STRICT SUBSET of what {@link notComparedOutcomes} rolls up, and
+ * the asymmetry is the point: the REPORT covers everything that was not
+ * compared, because as information both causes matter equally, while the exit
+ * code covers only the population #2108 created. Exiting non-zero on
+ * `unresolvedToken` would break `cdkd drift` in CI forever for every stack
+ * holding an `{{resolve:ssm-secure:...}}` reference — permanent, unclearable,
+ * and unrelated. See {@link NotComparedCause}.
+ *
+ * A `drifted` outcome reports `drifted` even when its own comparison was
+ * refused: drift is the stronger, actionable signal and the caller ranks it
+ * first, so a consumer gating on `1` loses nothing it gets today.
  */
-function refusedComparisonOutcomes(
-  report: StackDriftReport
-): Array<Extract<DriftOutcome, { kind: 'drifted' | 'clean' }>> {
-  return report.outcomes.filter(
-    (o): o is Extract<DriftOutcome, { kind: 'drifted' | 'clean' }> =>
-      (o.kind === 'drifted' || o.kind === 'clean') && o.comparisonRefused
-  );
+function outcomeExitSignal(outcome: DriftOutcome): 'drifted' | 'refused' | 'none' {
+  return matchOutcome<'drifted' | 'refused' | 'none'>(outcome, {
+    drifted: () => 'drifted',
+    notCompared: (n) => (n.notComparedCause === 'refused' ? 'refused' : 'none'),
+    clean: () => 'none',
+    // A provider that cannot read a resource back, and a type drift does not
+    // apply to, are both pre-existing and permanent — same "unclearable in CI"
+    // argument as `unresolvedToken`, and both predate #2108 entirely.
+    unsupported: () => 'none',
+    skipped: () => 'none',
+  });
 }
 
 /**
@@ -507,10 +582,14 @@ async function driftCommand(
     // Detection-only path: exit 0 / 1 / 2 on what the run actually found,
     // regardless of subsequent flags. `--accept` / `--revert` take over
     // below if requested.
-    const drifted = reports.some((r) => r.outcomes.some((o) => o.kind === 'drifted'));
-    // The REFUSED subset, not the not-compared roll-up: see
-    // `refusedComparisonOutcomes`. The roll-up still drives both renderings.
-    const anyRefused = reports.some((r) => refusedComparisonOutcomes(r).length > 0);
+    //
+    // Issue #2135: read through `outcomeExitSignal` rather than off a `kind`
+    // comparison, so a new outcome variant cannot quietly join the "nothing to
+    // report" side. The REFUSED subset is deliberately narrower than the
+    // not-compared roll-up both renderings use; see that function.
+    const signals = reports.flatMap((r) => r.outcomes.map(outcomeExitSignal));
+    const drifted = signals.includes('drifted');
+    const anyRefused = signals.includes('refused');
 
     if (!options.accept && !options.revert) {
       if (drifted) {
@@ -1973,22 +2052,34 @@ async function runDriftForStack(
         secrets,
         secretResolutionFailed ? seededSecretPaths : secretPaths
       );
-      const referencesUnresolved = secretResolutionFailed || unresolvedTokens.size > 0;
-      // NOT the OR: only the THROWN half. See the variant's field note — the
-      // surviving-token half is a pre-existing, permanent population that must
-      // not be driven into the exit code.
-      const comparisonRefused = secretResolutionFailed;
+      // ONE field where issues #1914 / #2108 carried two booleans, and the
+      // ordering is what the old `comparisonRefused = secretResolutionFailed`
+      // said: a resource that BOTH threw and kept a surviving token is
+      // `refused`, the wider of the two signals. See `NotComparedCause`.
+      const notComparedCause: NotComparedCause | undefined = secretResolutionFailed
+        ? 'refused'
+        : unresolvedTokens.size > 0
+          ? 'unresolvedToken'
+          : undefined;
       if (reported.changes.length === 0) {
-        // Carried on the CLEAN variant too (issue #2108): an empty change list
-        // here can mean "compared and equal" or "not compared at all", and only
-        // this flag tells the two apart. See the variant's own note.
-        outcomes.push({
-          kind: 'clean',
-          logicalId,
-          resourceType: resource.resourceType,
-          referencesUnresolved,
-          comparisonRefused,
-        });
+        if (notComparedCause !== undefined) {
+          // Issue #2135: its OWN variant rather than a `clean` carrying a flag.
+          // An empty change list here can mean "compared and equal" or "not
+          // compared at all", and a consumer that has to remember to ask which
+          // reports the second as the first by default.
+          outcomes.push({
+            kind: 'notCompared',
+            logicalId,
+            resourceType: resource.resourceType,
+            notComparedCause,
+          });
+        } else {
+          outcomes.push({
+            kind: 'clean',
+            logicalId,
+            resourceType: resource.resourceType,
+          });
+        }
       } else {
         outcomes.push({
           kind: 'drifted',
@@ -1997,8 +2088,7 @@ async function runDriftForStack(
           ...reported,
           awsProperties: aws,
           secrets,
-          referencesUnresolved,
-          comparisonRefused,
+          notComparedCause,
         });
       }
     }
@@ -2123,8 +2213,23 @@ async function runAccept(
   const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
 
   for (const report of reports) {
-    const driftedOutcomes = report.outcomes.filter(
-      (o): o is Extract<DriftOutcome, { kind: 'drifted' }> => o.kind === 'drifted'
+    // Issue #2135: an exhaustive `matchOutcome` rather than a `kind` filter, so
+    // a new outcome variant has to say what `--accept` does with it instead of
+    // being dropped by a predicate that keeps compiling.
+    const driftedOutcomes = report.outcomes.flatMap((o) =>
+      matchOutcome<DriftedOutcome[]>(o, {
+        drifted: (d) => [d],
+        // `--accept` writes AWS-current values into state, and only a drifted
+        // outcome carries any. `notCompared` is the one worth saying out loud:
+        // cdkd never READ those properties, so there is nothing to accept, and
+        // writing anything for them would persist a comparison that did not
+        // happen. The drift keeps being reported on the next run, which is the
+        // honest outcome.
+        clean: () => [],
+        notCompared: () => [],
+        unsupported: () => [],
+        skipped: () => [],
+      })
     );
     if (driftedOutcomes.length === 0) {
       continue;
@@ -2775,7 +2880,7 @@ export function preserveLiveValuesAtUnresolvedTokens(
       //
       // (`secrets` itself is NOT necessarily empty here: a resource can hold
       // one resolvable `secretsmanager` reference AND one `ssm-secure`
-      // survivor, which is exactly the shape `referencesUnresolved` describes.
+      // survivor, which is exactly the shape a `notComparedCause` describes.
       // Reading the sentence above as "the map is empty" would make the guards
       // below look unreachable, and they are not.)
       //
@@ -3080,8 +3185,21 @@ async function runRevert(
   let totalUnresolvable = 0;
 
   for (const report of reports) {
-    const driftedOutcomes = report.outcomes.filter(
-      (o): o is Extract<DriftOutcome, { kind: 'drifted' }> => o.kind === 'drifted'
+    // Issue #2135: exhaustive for the same reason `--accept` is — and the
+    // stakes are higher here, since this is the arm that WRITES to AWS.
+    const driftedOutcomes = report.outcomes.flatMap((o) =>
+      matchOutcome<DriftedOutcome[]>(o, {
+        drifted: (d) => [d],
+        // Only a drifted outcome has a state value worth pushing back. A
+        // `notCompared` one must never be swept in with `clean`: cdkd could not
+        // resolve what its state records, so it does not know what to write —
+        // and a revert that guesses installs a wrong value on a live resource,
+        // which is the #2108 defect this file already refuses per resource.
+        clean: () => [],
+        notCompared: () => [],
+        unsupported: () => [],
+        skipped: () => [],
+      })
     );
     if (driftedOutcomes.length === 0) {
       continue;
@@ -3630,8 +3748,19 @@ async function runRevert(
  */
 function printAcceptPlan(reports: StackDriftReport[]): void {
   for (const report of reports) {
-    const drifted = report.outcomes.filter(
-      (o): o is Extract<DriftOutcome, { kind: 'drifted' }> => o.kind === 'drifted'
+    // Issue #2135: the plan asks the same exhaustive question `runAccept` does —
+    // a plan that silently omits a variant the real run acts on (or vice versa)
+    // is worse than either behaviour alone.
+    const drifted = report.outcomes.flatMap((o) =>
+      matchOutcome<DriftedOutcome[]>(o, {
+        drifted: (d) => [d],
+        clean: () => [],
+        // Named, not defaulted: there is no state write to plan for a resource
+        // whose properties were never compared.
+        notCompared: () => [],
+        unsupported: () => [],
+        skipped: () => [],
+      })
     );
     if (drifted.length === 0) continue;
     process.stdout.write(
@@ -3663,8 +3792,18 @@ function printAcceptPlan(reports: StackDriftReport[]): void {
  */
 function printRevertPlan(reports: StackDriftReport[]): void {
   for (const report of reports) {
-    const drifted = report.outcomes.filter(
-      (o): o is Extract<DriftOutcome, { kind: 'drifted' }> => o.kind === 'drifted'
+    // Issue #2135: same exhaustive question `runRevert` asks, for the same
+    // reason the accept plan asks it.
+    const drifted = report.outcomes.flatMap((o) =>
+      matchOutcome<DriftedOutcome[]>(o, {
+        drifted: (d) => [d],
+        clean: () => [],
+        // Named, not defaulted: nothing is pushed back for a resource cdkd
+        // could not resolve, and `runRevert` refuses it there too.
+        notCompared: () => [],
+        unsupported: () => [],
+        skipped: () => [],
+      })
     );
     if (drifted.length === 0) continue;
     process.stdout.write(
@@ -3702,10 +3841,12 @@ function printRevertPlan(reports: StackDriftReport[]): void {
         // locates positions, and masking a KEY needs the VALUE. Suppress the
         // lists instead and say why.
         //
-        // Keyed on `referencesUnresolved` rather than on an empty map: a
-        // resource with one resolvable reference and one survivor has a
-        // non-empty map that still cannot mask the survivor's position.
-        const cannotMaskKeys = o.referencesUnresolved;
+        // Keyed on `notComparedCause` rather than on an empty map: a resource
+        // with one resolvable reference and one survivor has a non-empty map
+        // that still cannot mask the survivor's position. BOTH causes withhold
+        // — the question here is whether the map can name what the position
+        // holds, which a refusal and a surviving token answer the same way.
+        const cannotMaskKeys = o.notComparedCause !== undefined;
         if (cannotMaskKeys && preserved.length > 0) {
           process.stdout.write(
             `    ! ${preserved.length} AWS-authored tag(s) will be preserved, but cdkd could not ` +
@@ -3751,7 +3892,7 @@ function printRevertPlan(reports: StackDriftReport[]): void {
           stateResource.properties ?? {},
           o.awsProperties
         );
-        if (o.referencesUnresolved && unbaselined.length > 0) {
+        if (o.notComparedCause !== undefined && unbaselined.length > 0) {
           // Same withholding as the tag list above, and it must say something:
           // silently skipping the block left the user with no signal at all.
           process.stdout.write(
@@ -3825,8 +3966,7 @@ async function confirmPrompt(prompt: string): Promise<boolean> {
  *
  * Issue [#2108](https://github.com/go-to-k/cdkd/issues/2108) added
  * `referencesUnresolved` to every `drifted` and `clean` entry, plus the
- * `notCompared` roll-up. All three are ADDITIVE — no existing key changed
- * meaning — and they exist because `clean` was ambiguous in the one direction
+ * `notCompared` roll-up, because `clean` was ambiguous in the one direction
  * that matters: a resource whose secret-bearing properties cdkd REFUSED to
  * resolve (so they were never compared) landed in `clean` looking exactly like
  * a resource that was compared and matched. A CI job gating on
@@ -3834,6 +3974,16 @@ async function confirmPrompt(prompt: string): Promise<boolean> {
  * roll-up is there so such a job needs ONE key rather than a filter over two
  * arrays: `notCompared.length === 0` is the honest "everything was actually
  * checked" predicate.
+ *
+ * Issue [#2135](https://github.com/go-to-k/cdkd/issues/2135) then took the
+ * ambiguity out of `clean` itself: an uncompared resource is now reported ONLY
+ * under `notCompared`, never in `clean`, because a flag a reader has to
+ * remember to consult defaults to the wrong answer when they forget. Every key
+ * keeps its name and meaning; what changed is which ARRAY such a resource
+ * appears in. `clean[].referencesUnresolved` is therefore `false` for every
+ * entry now — kept rather than dropped so a consumer reading the documented key
+ * still finds it, and narrowed to the literal `false` so the invariant is
+ * stated where the contract is.
  */
 interface StackDriftJson {
   stack: string;
@@ -3844,46 +3994,66 @@ interface StackDriftJson {
     changes: Array<{ path: string; stateValue: unknown; awsValue: unknown }>;
     referencesUnresolved: boolean;
   }>;
-  clean: Array<{ logicalId: string; type: string; referencesUnresolved: boolean }>;
+  /**
+   * Compared against AWS and MATCHED — every entry, since #2135. The flag is
+   * `false` by construction here; see the note above the interface.
+   */
+  clean: Array<{ logicalId: string; type: string; referencesUnresolved: false }>;
   notSupported: Array<{ logicalId: string; type: string }>;
   /** Issue #323: Custom Resources (drift not applicable). */
   skipped: Array<{ logicalId: string; type: string }>;
   /**
-   * Every resource — `drifted` or `clean` — that carries
-   * `referencesUnresolved: true`, i.e. whose secret-bearing properties were NOT
-   * compared. A drifted one belongs here too: the changes it DOES report are
-   * real, but they are not the whole comparison.
+   * Every resource whose secret-bearing properties were NOT compared: the
+   * `notCompared` outcomes, plus any `drifted` one carrying a
+   * `notComparedCause`. A drifted one belongs here too — the changes it DOES
+   * report are real, but they are not the whole comparison.
+   *
+   * Entries carry `referencesUnresolved: true` so the fact is readable off the
+   * entry itself and not only off which array it sits in.
    */
-  notCompared: Array<{ logicalId: string; type: string }>;
+  notCompared: Array<{ logicalId: string; type: string; referencesUnresolved: true }>;
 }
 
 function writeJsonReport(reports: StackDriftReport[]): void {
   const payload: StackDriftJson[] = reports.map((r) => {
-    const drifted = r.outcomes
-      .filter((o): o is Extract<DriftOutcome, { kind: 'drifted' }> => o.kind === 'drifted')
-      .map((o) => ({
-        logicalId: o.logicalId,
-        type: o.resourceType,
-        changes: o.changes,
-        referencesUnresolved: o.referencesUnresolved,
-      }));
-    const clean = r.outcomes
-      .filter((o): o is Extract<DriftOutcome, { kind: 'clean' }> => o.kind === 'clean')
-      .map((o) => ({
-        logicalId: o.logicalId,
-        type: o.resourceType,
-        referencesUnresolved: o.referencesUnresolved,
-      }));
-    const notCompared = notComparedOutcomes(r).map((o) => ({
+    const drifted: StackDriftJson['drifted'] = [];
+    const clean: StackDriftJson['clean'] = [];
+    const notSupported: StackDriftJson['notSupported'] = [];
+    const skipped: StackDriftJson['skipped'] = [];
+    // Issue #2135: ONE exhaustive pass instead of four `kind` filters, so a new
+    // outcome variant cannot be omitted from the payload by nobody noticing —
+    // the mapped-type handler record refuses to compile until it is named here.
+    for (const o of r.outcomes) {
+      matchOutcome<void>(o, {
+        drifted: (d) => {
+          drifted.push({
+            logicalId: d.logicalId,
+            type: d.resourceType,
+            changes: d.changes,
+            referencesUnresolved: d.notComparedCause !== undefined,
+          });
+        },
+        // `false` is not a fact about this resource any more, it is a fact about
+        // the array: since #2135 an uncompared resource is never in it.
+        clean: (c) => {
+          clean.push({ logicalId: c.logicalId, type: c.resourceType, referencesUnresolved: false });
+        },
+        // Rolled up below, together with the drifted-but-incomplete ones, by
+        // the single spelling both renderings share.
+        notCompared: () => {},
+        unsupported: (u) => {
+          notSupported.push({ logicalId: u.logicalId, type: u.resourceType });
+        },
+        skipped: (sk) => {
+          skipped.push({ logicalId: sk.logicalId, type: sk.resourceType });
+        },
+      });
+    }
+    const notCompared: StackDriftJson['notCompared'] = notComparedOutcomes(r).map((o) => ({
       logicalId: o.logicalId,
       type: o.resourceType,
+      referencesUnresolved: true,
     }));
-    const notSupported = r.outcomes
-      .filter((o): o is Extract<DriftOutcome, { kind: 'unsupported' }> => o.kind === 'unsupported')
-      .map((o) => ({ logicalId: o.logicalId, type: o.resourceType }));
-    const skipped = r.outcomes
-      .filter((o): o is Extract<DriftOutcome, { kind: 'skipped' }> => o.kind === 'skipped')
-      .map((o) => ({ logicalId: o.logicalId, type: o.resourceType }));
     return {
       stack: r.stackName,
       region: r.region,
@@ -3899,20 +4069,59 @@ function writeJsonReport(reports: StackDriftReport[]): void {
 
 function writeHumanReport(reports: StackDriftReport[]): void {
   for (const report of reports) {
-    const drifted = report.outcomes.filter(
-      (o): o is Extract<DriftOutcome, { kind: 'drifted' }> => o.kind === 'drifted'
-    );
-    const unsupported = report.outcomes.filter(
-      (o): o is Extract<DriftOutcome, { kind: 'unsupported' }> => o.kind === 'unsupported'
-    );
+    const drifted: DriftedOutcome[] = [];
+    const unsupported: Array<Extract<DriftOutcome, { kind: 'unsupported' }>> = [];
     // Issue #323: `skipped` (currently only `Custom::*`) is intentionally
     // NOT counted as "checked" — drift on Custom Resources is not
     // actionable from `cdkd drift` (no read happens). Excluded from the
     // human-report count so "N resources checked" matches the user's
     // mental model. Skipped entries are still present in the outcomes
     // array and surface in `--json` output (as `skipped: [...]`).
-    const skippedCount = report.outcomes.filter((o) => o.kind === 'skipped').length;
-    const inspected = report.outcomes.length - skippedCount;
+    let inspectedCount = 0;
+    // Issue #2135: ONE exhaustive pass, and `inspected` is COUNTED UP inside
+    // it rather than subtracted from `outcomes.length` afterwards. Subtracting
+    // is what let the old shape absorb an unnamed variant into "checked"
+    // silently: a variant nobody named still landed in the total, because the
+    // total did not come from the enumeration. Counting up means a variant
+    // that arrives without an arm here is EXCLUDED rather than assumed
+    // checked, so the arithmetic that states the claim is the arithmetic the
+    // exhaustive pass drives. The `skipped` arm increments nothing, which IS
+    // the #323 exclusion above -- it is not an omission, and there is no
+    // separate skipped counter to keep in step with it.
+    //
+    // Two honest limits, stated so the paragraph above is not read as more
+    // than it is. `inspected` and `checked` are only ever READ inside the
+    // `drifted.length === 0` branch, so the `drifted` arm's increment cannot
+    // affect any number a user sees; it is kept because `inspected` means
+    // "outcomes that were not skipped", and an arm that silently stopped
+    // maintaining that would be a trap for the next reader who moves the
+    // read. And `unsupported` DOES count toward "N resources checked" even
+    // though nothing was read for it -- that is main's pre-existing
+    // arithmetic, preserved here deliberately rather than changed under cover
+    // of a refactor, and it is what makes a one-unsupported-resource stack
+    // print `1 resource checked, 1 unsupported`.
+    for (const o of report.outcomes) {
+      matchOutcome<void>(o, {
+        drifted: (d) => {
+          drifted.push(d);
+          inspectedCount += 1;
+        },
+        unsupported: (u) => {
+          unsupported.push(u);
+          inspectedCount += 1;
+        },
+        skipped: () => {},
+        // Both counted as inspected, and told apart by `notCompared` below:
+        // a `clean` one was checked, a `notCompared` one was not.
+        clean: () => {
+          inspectedCount += 1;
+        },
+        notCompared: () => {
+          inspectedCount += 1;
+        },
+      });
+    }
+    const inspected = inspectedCount;
     // Issue #2108: the `--json` `notCompared` roll-up, in the human report.
     // `✓ no drift detected` on a resource whose secret-bearing properties were
     // never compared is the same false reassurance the JSON field exists to

@@ -1500,7 +1500,7 @@ holds a surviving `{{resolve:ssm-secure:...}}` token is reported and still exits
 Phases 2b2 / 2c then tamper the live parameter and revert it, and the shape of
 that tamper is the load-bearing part. `SecretEcho`'s only secret-bearing
 property is `Value`, whose state side is the `{{resolve:ssm:...}}` token the
-comparator SKIPS, so tampering `Value` alone leaves the resource `clean` and
+comparator SKIPS, so tampering `Value` alone leaves the resource `notCompared` and
 `runRevert` returns early with "nothing to revert" -- the phase issued live
 writes and exercised no revert code at all. It therefore tampers a SECOND,
 ordinary property on the same resource (`Description`), and 2b2 asserts the
