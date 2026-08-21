@@ -1,3 +1,10 @@
+## [0.284.29](https://github.com/go-to-k/cdkd/compare/v0.284.28...v0.284.29) (2026-08-21)
+
+
+### Bug Fixes
+
+* **scrub:** resolve a cross-region secret in the region it names, and refuse when it cannot be classified ([#2138](https://github.com/go-to-k/cdkd/issues/2138)) ([b89f371](https://github.com/go-to-k/cdkd/commit/b89f37161edb9144c690033d974c2cdb6e7f1f49))
+
 ## [0.284.28](https://github.com/go-to-k/cdkd/compare/v0.284.27...v0.284.28) (2026-08-21)
 
 
