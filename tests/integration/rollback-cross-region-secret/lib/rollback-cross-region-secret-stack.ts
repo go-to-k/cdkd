@@ -79,6 +79,26 @@ export const PRODUCER_OUTPUT_NAME = 'SharedSecret';
 export const SHARED_SECURE_PARAM_NAME = '/cdkd/rollback-xregion/shared-secret';
 export const PRODUCER_PROBE_PARAM_NAME = '/cdkd/rollback-xregion/producer-probe';
 export const CONSUMER_ECHO_PARAM_NAME = '/cdkd/rollback-xregion/echo';
+
+/**
+ * The consumer's OWN, region-LESS secret reference (issue
+ * [#2109](https://github.com/go-to-k/cdkd/issues/2109)).
+ *
+ * `cdkd scrub` builds its plaintext -> expression needle map by resolving the
+ * TEMPLATE, so it can only classify a reference that is a LITERAL
+ * `{{resolve:...}}` there. `SecretEcho`'s value is an `Fn::GetStackOutput`
+ * intrinsic, which carries no such literal -- and the producer stack, which
+ * does carry one, has no cross-stack read on record for the classifier to call
+ * foreign. So neither stack on its own puts the LITERAL and the EVIDENCE in the
+ * same place, and a scrub arm dropped on either would pass with the fix
+ * reverted.
+ *
+ * This parameter closes that: it lives in the CONSUMER (whose state records
+ * `outputReads[].sourceRegion = us-west-2`) and its value is the region-LESS
+ * expression, so the pre-pass classifies a real token against real foreign
+ * evidence and must REFUSE rather than resolve it locally.
+ */
+export const CONSUMER_LOCAL_SECRET_PARAM_NAME = '/cdkd/rollback-xregion/local-secret';
 /**
  * The echo parameter's value with `WITH_XREGION` off — an ordinary local
  * literal carrying no dynamic reference at all, so the deploy records no
@@ -130,6 +150,17 @@ export class RbXregionConsumerStack extends cdk.Stack {
       // The v1 -> v2 delta. An UPDATE of THIS resource is what puts a revert op
       // carrying the region-less expression into the rollback journal.
       description: `cross-region secret echo (${markerValue})`,
+    });
+
+    // Unconditional, unlike the two env-gated resources below: every arm of this
+    // fixture wants it present, and it never changes between v1 and v2 so it
+    // contributes no rollback op. See CONSUMER_LOCAL_SECRET_PARAM_NAME for why
+    // it has to live in the CONSUMER specifically.
+    new ssm.CfnParameter(this, 'LocalSecretEcho', {
+      type: 'String',
+      name: CONSUMER_LOCAL_SECRET_PARAM_NAME,
+      value: SHARED_SECRET_EXPRESSION,
+      description: 'region-less secret reference resolved by the CONSUMER itself',
     });
 
     // `WITH_XREGION` decides whether this deploy reads across the region

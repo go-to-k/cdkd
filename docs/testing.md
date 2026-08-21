@@ -1521,6 +1521,29 @@ unrelated revert failure both produce. The phase then restores both tampered
 properties, so the rollback arms below start from the state phase 2 left
 behind.
 
+Phase 2d is the `cdkd scrub` arm for issue
+[#2109](https://github.com/go-to-k/cdkd/issues/2109), and why it needed a new
+resource is worth recording, because the obvious hosts cannot discriminate it.
+`cdkd scrub` builds its plaintext -> expression needle map by resolving the
+TEMPLATE, so it classifies only a reference that appears there as a LITERAL
+`{{resolve:...}}`. Neither stack put the literal and the evidence in one place:
+the producer's template carries the literal but records no cross-stack read, so
+the classifier answers `local`; the consumer records
+`outputReads[].sourceRegion = us-west-2` but its leaf is an `Fn::GetStackOutput`
+intrinsic with no literal at all. `tests/integration/dynamic-ref-cross-region/`
+has the two-region seeding and no cross-stack machinery whatsoever. An arm on any
+of those would have passed with the fix reverted.
+
+`LocalSecretEcho` closes it -- a region-LESS literal reference in the CONSUMER,
+the stack that carries the foreign evidence. Phase 2d asserts `cdkd scrub` exits
+NON-ZERO with the region-ambiguity refusal naming both the reference and the
+producer region (a non-zero exit alone is a confluence point any scrub failure
+produces), and that `state.json` is byte-identical afterwards, since a refusal
+must leave the document alone. It then scrubs the PRODUCER as the negative
+control: the same region-less literal with no foreign read on record must
+classify `local` and scrub normally. That control is what stops the positive
+assertions from being satisfied by a refusal that fires on everything.
+
 ### SNS standalone-subscription update (`tests/integration/sns-subscription-update/`)
 
 `SNSSubscriptionProvider.update` had NO real-AWS coverage before issue
