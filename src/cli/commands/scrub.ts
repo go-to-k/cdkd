@@ -1123,9 +1123,13 @@ async function resolveForeignRegionTokens(
   // NOT PRESERVED: LOUDNESS when the downstream lookup FAILS. The refusal fired
   // BEFORE any attempt; deferring moves the attempt inside `scrubStack`'s
   // best-effort `catch { logger.debug }`, so a producer region answering
-  // AccessDenied -- or an `Fn::Sub` placeholder scrub cannot evaluate, which
-  // `resolveSub` warn-and-KEEPS without throwing at all -- becomes a
-  // verbose-only line under a `No plaintext secrets found` summary.
+  // AccessDenied becomes a VERBOSE-ONLY line under a `No plaintext secrets
+  // found` summary. The neighbouring shape -- an `Fn::Sub` placeholder scrub
+  // cannot evaluate, which `resolveSub` warn-and-KEEPS without throwing at all
+  // -- is less bad than that, and worth stating separately rather than lumping
+  // in: `resolveSub` warns at DEFAULT verbosity (`subPlaceholderWarning`), so
+  // the user does see a line, just not one that stops the summary from claiming
+  // the stack is clean.
   //
   // That residual is TRACKED, not fixed here, and the reason is worth recording
   // because three rounds of review were spent on it: every attempt to detect
@@ -1283,19 +1287,22 @@ async function pinCrossRegionSecrets<T>(
   stackName: string,
   ctx: CrossRegionSecretContext
 ): Promise<T> {
-  // The PATH is carried for the refusal messages alone (issue #2109 review):
-  // `origin` names the resource or output, and an assembled reference is often
-  // one leaf of a large `Properties` bag, so "resource 'Db'" on its own leaves
-  // the operator grepping.
+  // NO PATH IS THREADED HERE, and its absence is a decision rather than an
+  // oversight (issue #2109 review, revisited by issue
+  // [#2157](https://github.com/go-to-k/cdkd/issues/2157)). The walk used to
+  // build an `a.b[0].c` spelling for exactly ONE consumer: the
+  // assembled-reference REFUSAL, which named the leaf because such a reference
+  // is often one leaf of a `Properties` bag carrying hundreds. That refusal is
+  // now a DEFERRAL, and the two refusals left in `resolveForeignRegionTokens`
+  // (`ambiguous`, and a token the substitution introduced) name `ctx.origin`
+  // only -- so the path had no reader left and was being built at every node of
+  // every bag for nothing.
   //
-  // NO LONGER PASSED DOWN TO `resolveForeignRegionTokens` (issue #2157): its
-  // one consumer was the assembled-reference REFUSAL, which now defers to the
-  // resolver instead of throwing, and the two refusals that remain there
-  // (`ambiguous`, and a token the substitution introduced) name the ORIGIN
-  // only. Kept in the walk itself because the array / object arms below build
-  // it, and it stays the ordinary `a.b[0].c` spelling; empty at the root, which
-  // is the shape a scalar `Export.Name` / output `Value` bag has.
-  const walk = async (v: unknown, path: string): Promise<unknown> => {
+  // Giving those two refusals a leaf path would be a real improvement and is a
+  // DELIBERATE non-goal here: it changes user-visible message TEXT, which is a
+  // different subject from relaxing an over-refusal. The cross-stack pre-pass
+  // below keeps its own `path` because its refusals do read it.
+  const walk = async (v: unknown): Promise<unknown> => {
     if (typeof v === 'string') {
       // THIS LINE BOUNDS THE WHOLE PRE-PASS (issue #2109 review). The region
       // split below arms only when the RAW leaf ITSELF carries a `{{resolve:`
@@ -1322,7 +1329,7 @@ async function pinCrossRegionSecrets<T>(
       const out: unknown[] = new Array(v.length) as unknown[];
       let changed = false;
       for (let i = 0; i < v.length; i++) {
-        out[i] = await walk(v[i], `${path}[${i}]`);
+        out[i] = await walk(v[i]);
         if (out[i] !== v[i]) changed = true;
       }
       return changed ? out : v;
@@ -1335,14 +1342,14 @@ async function pinCrossRegionSecrets<T>(
       const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
       let changed = false;
       for (const [k, val] of Object.entries(v)) {
-        out[k] = await walk(val, path ? `${path}.${k}` : k);
+        out[k] = await walk(val);
         if (out[k] !== val) changed = true;
       }
       return changed ? out : v;
     }
     return v;
   };
-  return (await walk(bag, '')) as T;
+  return (await walk(bag)) as T;
 }
 
 /**

@@ -2936,10 +2936,13 @@ can now resolve correctly.
 
 Known residual, tracked by issue
 [go-to-k/cdkd#2166](https://github.com/go-to-k/cdkd/issues/2166): if the
-downstream lookup then FAILS -- the region refuses the read, or an `Fn::Sub`
-placeholder cannot be evaluated (`scrub` takes no `--parameters`) -- that failure
-is reported only at `--verbose`, and the stack can still be summarised as clean.
-The COMPLETE-token spelling of the same failure is loud
+downstream lookup then FAILS, the stack can still be summarised as CLEAN. Two
+shapes reach it and they are not equally quiet -- a region that refuses the read
+(a denied `GetSecretValue`, a deleted secret) is reported only at
+`--verbose`, while an `Fn::Sub` placeholder `scrub` cannot evaluate (it takes no
+`--parameters`) does print a `keeping placeholder` warning at default verbosity.
+Neither stops the summary line.
+The COMPLETE-token spelling of the first is loud
 (`SCRUB_CROSS_REGION_SECRET_UNRESOLVED`, exit 2), so the two disagree until that
 issue lands. Run `cdkd scrub --verbose` when a stack you expect findings from
 reports clean.
