@@ -1,3 +1,10 @@
+## [0.284.35](https://github.com/go-to-k/cdkd/compare/v0.284.34...v0.284.35) (2026-08-21)
+
+
+### Bug Fixes
+
+* **drift:** exclude an unsupported resource from the "N resources checked" count ([#2155](https://github.com/go-to-k/cdkd/issues/2155)) ([ed96346](https://github.com/go-to-k/cdkd/commit/ed9634626eb1389a4bd17d15e6480b2dbdefbe2d))
+
 ## [0.284.34](https://github.com/go-to-k/cdkd/compare/v0.284.33...v0.284.34) (2026-08-21)
 
 
