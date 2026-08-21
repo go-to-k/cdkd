@@ -2395,11 +2395,25 @@ Two placement rules go with it:
     its strong-ref refusal path; both now read the same way, and
     `destroy-runner-lock-release-ordering.test.ts` pins it by observing which
     listeners are registered at the moment `releaseLock` is entered.
-    `deploy-engine.ts` still unregisters first and is safe only because
-    `deploy.ts` holds a handler that outlives it — stated at that call site,
-    because a surviving instance of a corrected anti-pattern has to explain
-    itself. `rollback.ts` is the remaining unfixed instance
-    ([#2118](https://github.com/go-to-k/cdkd/issues/2118)).
+    `rollback.ts` had the same defect until
+    [#2118](https://github.com/go-to-k/cdkd/issues/2118), whose fix adds one
+    thing worth copying into any command you write: both unregistrations sit in
+    a nested `finally`, because the `.catch()` on a release covers a rejection
+    and not a synchronous throw. It is pinned by
+    `rollback-lock-release-ordering.test.ts`, which measures the SIGINT and the
+    SIGTERM listener sets SEPARATELY — a fix that reordered only the SIGINT half
+    would leave `unforwardSigterm()` running before the release, and CI
+    cancellation delivers SIGTERM, so that half strands the lock on its own.
+    **What is NOT a rule is the order within the teardown pair**, and the first
+    cut of that fix asserted it in four places before a review round measured
+    it: the two calls are adjacent and synchronous, so no signal can be
+    delivered between them, and `unforwardSigterm()` first does not empty the
+    SIGINT set anyway because the command's own handler is still registered.
+    Order them for readability; the requirement is release-before-unregister.
+    `deploy-engine.ts` is now the only site that still unregisters first, and
+    is safe only because `deploy.ts` holds a handler that outlives it — stated
+    at that call site, because a surviving instance of a corrected anti-pattern
+    has to explain itself.
 
     **And the corollary's own corollary: keeping the handler armed for longer
     moves the window a signal can arrive in, so re-check anything that READS the

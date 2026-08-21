@@ -222,12 +222,15 @@ function armSharedSigintHandler(): void {
       //
       // The window THIS handler could fire in with a lock held was
       // `destroy-runner.ts`'s `finally`, and reordering that block closed it.
-      // That is a claim about this handler, NOT about the repo: `rollback.ts`
-      // unregisters before releasing too, so a Ctrl-C there empties the listener
-      // set and takes Node's default terminate with the lock held — same
-      // outcome, reached without this handler being involved at all. Tracked as
-      // https://github.com/go-to-k/cdkd/issues/2118; until it lands, "no window
-      // remains" would be false for the codebase even while it is true here.
+      // `rollback.ts` had the same unregister-before-release window — reached
+      // without this handler being involved at all, since its own SIGINT
+      // handler was gone by then and Node's default terminate took the process
+      // with the lock held — and issue #2118 closed that one the same way. No
+      // lock-holding command unregisters before releasing any more, so "no
+      // window remains" is now true of the codebase and not only of this
+      // handler. `deploy-engine.ts` still unregisters first and is the one
+      // deliberate exception: `deploy.ts` holds a top-level SIGINT handler that
+      // outlives it, so the listener set is never empty under its lock.
       process.stderr.write(
         '\nInterrupted.\n' +
           'If the next run reports a stack lock, release it with: cdkd force-unlock <stack-name>\n'

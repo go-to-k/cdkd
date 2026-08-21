@@ -292,9 +292,12 @@ export async function rollbackCommand(
       await setup.lockManager.acquireLockWithRetry(stackName, region, undefined, 'rollback');
     } catch (error) {
       // The try/finally that owns the listener cleanup starts below — clean
-      // up here so an acquire failure does not leak the handlers.
-      unforwardSigterm();
+      // up here so an acquire failure does not leak the handlers. No lock is
+      // held on this path (`acquireLockWithRetry` throws only after the lock
+      // was NOT taken), so there is nothing to release first; the pair is
+      // ordered to match the teardown below rather than to contradict it.
       process.removeListener('SIGINT', sigintHandler);
+      unforwardSigterm();
       throw error;
     }
 
@@ -592,13 +595,39 @@ export async function rollbackCommand(
       }
       logger.info(`\nRollback of '${stackName}' (${region}) complete.`);
     } finally {
-      unforwardSigterm();
-      process.removeListener('SIGINT', sigintHandler);
-      await setup.lockManager.releaseLock(stackName, region).catch((err) => {
-        logger.warn(
-          `Failed to release lock for '${stackName}' (${region}): ${err instanceof Error ? err.message : String(err)}`
-        );
-      });
+      // Release FIRST, unregister LAST (issue #2118). While the release
+      // round-trip is in flight the lock is still held, so the handlers must
+      // stay armed: with them gone the process has ZERO SIGINT listeners and a
+      // Ctrl-C landing there takes Node's default terminate, the release never
+      // completes, and the lock sits for its full 30-minute TTL — blocking the
+      // next `cdkd rollback` / `deploy` / `destroy` on that stack. Same rule
+      // `destroy-runner.ts` states for its strong-ref refusal path, and the
+      // mirror of issue #1348 at the other end of the lock's life.
+      //
+      // The unregistration lives in its own `finally` as defence in depth: the
+      // `.catch` below covers a REJECTION, not a synchronous throw. Nothing in
+      // `LockManager` can throw synchronously today (`releaseLock` is `async`,
+      // so even a client-construction failure surfaces as a rejection), so this
+      // guards a shape rather than a live leak — worth keeping because the leak
+      // it would prevent is per-command and permanent.
+      //
+      // The order WITHIN the pair is consistency, not mechanism, and is called
+      // out because an earlier draft of this comment claimed otherwise. The two
+      // calls are adjacent and synchronous, so no signal can be delivered
+      // between them; and `unforwardSigterm()` first would NOT empty the
+      // listener set, because `sigintHandler` is still registered at that point.
+      // Removing this command's own handler last simply keeps the whole block
+      // reading in one direction — the real requirement is the release above.
+      try {
+        await setup.lockManager.releaseLock(stackName, region).catch((err) => {
+          logger.warn(
+            `Failed to release lock for '${stackName}' (${region}): ${err instanceof Error ? err.message : String(err)}`
+          );
+        });
+      } finally {
+        process.removeListener('SIGINT', sigintHandler);
+        unforwardSigterm();
+      }
     }
   } finally {
     // Restore the process-global client set BEFORE disposing ours, so a

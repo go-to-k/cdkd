@@ -1982,10 +1982,9 @@ export class DeployEngine {
       // Remove SIGINT handler.
       //
       // This unregisters BEFORE the lock release further down, which is the
-      // ordering `destroy-runner.ts` and (once
-      // https://github.com/go-to-k/cdkd/issues/2118 lands) `rollback.ts` were
-      // both corrected AWAY from — so the surviving instance owes an
-      // explanation. It is safe HERE for a reason neither of those had:
+      // ordering `destroy-runner.ts` (issues #2053 / #1952) and `rollback.ts`
+      // (issue #2118) were both corrected AWAY from — so the last remaining
+      // instance owes an explanation. It is safe HERE for a reason neither of those had:
       // `deploy.ts` registers its own top-level SIGINT handler that outlives
       // this whole method, so the process is never left with zero listeners
       // while the lock is held. `destroy.ts` / `state.ts` register none, which
