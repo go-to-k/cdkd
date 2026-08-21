@@ -294,9 +294,10 @@ describe('rollbackCommand releases the lock BEFORE unregistering its signal hand
 
   it('holds the same ordering on the SUCCESS path, where a journal is replayed', async () => {
     // Every case above reaches the `finally` through the "Nothing to roll back"
-    // throw. That is the same block, but the replay is the only path on which
-    // the provider-side interrupt watch is ever armed -- so an ordering that
-    // held only for the throw path would fence the cheaper half of the defect.
+    // throw. That is the same block, but this is the path a user is actually on
+    // when the lock matters: journal replayed, state saved, journal popped, and
+    // only then the release. An ordering that held for the early-throw path but
+    // not here would fence the half nobody hits.
     const before = process.listeners('SIGINT');
     const { releaseLock, observed } = observingRelease();
     installReplayableSetup(releaseLock);
@@ -326,9 +327,21 @@ describe('rollbackCommand releases the lock BEFORE unregistering its signal hand
     //
     // What this case exists to stop is a later change quietly making that a
     // PartialFailureError because the destroy-runner precedent looks binding.
+    // Capture stderr by REPLACING the writer: the handler's notice is the only
+    // observable proof it ran, and without asserting on it this case passes
+    // VACUOUSLY under an ordering regression — with the handler unregistered
+    // before the release there is nothing left to fire, the command still
+    // resolves, and the test still goes green while fencing nothing.
+    const written: string[] = [];
+    const realWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      written.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
+      return true;
+    }) as typeof process.stderr.write;
+
     const releaseLock = vi.fn().mockImplementation(() => {
-      // Fire only the listeners live at this moment -- the command's own
-      // handler among them -- so the harness's own SIGINT handling is untouched.
+      // Invokes EVERY registered SIGINT listener, which is what a real signal
+      // does — the command's own handler is the one under test here.
       for (const listener of process.listeners('SIGINT')) {
         (listener as unknown as () => void)();
       }
@@ -336,8 +349,17 @@ describe('rollbackCommand releases the lock BEFORE unregistering its signal hand
     });
     installReplayableSetup(releaseLock);
 
-    await expect(rollbackCommand(STACK, { ...baseOpts })).resolves.toBeUndefined();
+    try {
+      await expect(rollbackCommand(STACK, { ...baseOpts })).resolves.toBeUndefined();
+    } finally {
+      process.stderr.write = realWrite;
+    }
+
     expect(releaseLock).toHaveBeenCalledOnce();
+    // The handler REALLY fired during the release — this is what makes the
+    // resolves-cleanly assertion above evidence of a swallow rather than of an
+    // absent handler.
+    expect(written.join('')).toMatch(/Interrupted — stopping rollback/);
   });
 
   it('INVERTED CONTROL — the acquire-failure path releases nothing and still leaks nothing', async () => {
