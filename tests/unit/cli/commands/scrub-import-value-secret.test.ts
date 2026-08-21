@@ -106,7 +106,13 @@ vi.mock('../../../../src/utils/logger.js', () => {
 import { AwsClients, setAwsClients, resetAwsClients } from '../../../../src/utils/aws-clients.js';
 import { resetAccountInfoCache } from '../../../../src/deployment/intrinsic-function-resolver.js';
 import { clearRecordedSecretExpressions } from '../../../../src/deployment/secret-redaction.js';
-import { scrubStack, orderScrubTargets } from '../../../../src/cli/commands/scrub.js';
+import {
+  scrubStack,
+  orderScrubTargets,
+  producerPublishesSecretExpression,
+  buildExportOwnerIndex,
+  scrubRefusalWording,
+} from '../../../../src/cli/commands/scrub.js';
 import { IntrinsicFunctionResolver } from '../../../../src/deployment/intrinsic-function-resolver.js';
 import {
   CrossAccountSecretRefusalError,
@@ -2038,5 +2044,1050 @@ describe('the plaintext-producer refusal masks its export key (issue #2133 revie
     expect(message).not.toContain(SHORT_SECRET);
     // Nor anywhere in the run's log output.
     expect(logLines.join('\n')).not.toContain(SHORT_SECRET);
+  });
+});
+
+/**
+ * A RE-EXPORT chain must not defeat the plaintext-producer refusal (issue
+ * [#2146](https://github.com/go-to-k/cdkd/issues/2146)).
+ *
+ * The #2133 gate asked ONE template — the direct producer's — for a literal
+ * `{{resolve:`. A middle stack that merely re-exports someone else's export has
+ * none, so the verdict was `no`, the pre-pass returned early, and `cdkd scrub
+ * <the consumer>` printed `No plaintext secrets found` and exited 0 while the
+ * consumer's record still held the imported plaintext. That is the #2133 silent
+ * success reached through a re-export instead of a direct import.
+ *
+ * `cdkd scrub --all` hides it (`orderScrubTargets` scrubs producers first), so
+ * every case here scrubs ONE stack, which is what a user does when told to
+ * scrub a named stack.
+ */
+describe('cdkd scrub follows a RE-EXPORT chain (issue #2146)', () => {
+  const ROOT = 'RootProducer';
+  const ROOT_EXPORT = 'RootProducer:DbSecret';
+  const MID = 'MidReexporter';
+  const MID_EXPORT = 'MidReexporter:DbSecret';
+  const SECOND_MID = 'SecondReexporter';
+  const SECOND_MID_EXPORT = 'SecondReexporter:DbSecret';
+  const THIRD_MID = 'ThirdReexporter';
+  const THIRD_MID_EXPORT = 'ThirdReexporter:DbSecret';
+  /** A stack whose export is ORDINARY, for the Fn::If branch that must not refuse. */
+  const PLAIN_STACK = 'PlainPublisher';
+  const PLAIN_EXPORT = 'PlainPublisher:BucketName';
+
+  /** Every stack's STATE outputs, keyed by stack name; anything absent has no record. */
+  function useChainState(states: Record<string, Record<string, unknown>>): void {
+    stateBackend.listStacks.mockResolvedValue(
+      Object.keys(states).map((stackName) => ({ stackName, region: REGION }))
+    );
+    stateBackend.getState.mockImplementation((stackName: string) => {
+      const outputs = states[stackName];
+      if (outputs) {
+        return Promise.resolve({
+          state: {
+            version: 8,
+            region: REGION,
+            stackName,
+            resources: {},
+            outputs,
+            lastModified: 0,
+          } as StackState,
+          etag: `${stackName}-1`,
+        });
+      }
+      if (stackName === CONSUMER) return Promise.resolve({ state: consumerState, etag: 'c-1' });
+      return Promise.resolve(null);
+    });
+  }
+
+  function chainStack(
+    stackName: string,
+    outputs: Record<string, unknown>
+  ): { stackName: string; template: CloudFormationTemplate; dependencyNames: string[] } {
+    return {
+      stackName,
+      dependencyNames: [],
+      template: { Resources: {}, Outputs: outputs } as CloudFormationTemplate,
+    };
+  }
+
+  /** The root of every chain below: the only stack whose template holds a literal expression. */
+  const rootStack = chainStack(ROOT, {
+    DbSecret: { Value: SECRET_EXPR, Export: { Name: ROOT_EXPORT } },
+  });
+
+  it('REFUSES when the middle stack re-exports a secret and its own state still holds the plaintext', async () => {
+    // The #2146 shape exactly: MID's template declares no `{{resolve:` — its
+    // output IS the import — so the single-template gate returned `no` here and
+    // the consumer was reported clean over the plaintext below.
+    useChainState({
+      [MID]: { [MID_EXPORT]: PLAINTEXT },
+      [ROOT]: { [ROOT_EXPORT]: SECRET_EXPR },
+    });
+
+    const err = await scrub(
+      { MasterUserPassword: { 'Fn::ImportValue': MID_EXPORT }, MasterUsername: 'admin' },
+      {
+        appStacks: [
+          rootStack,
+          chainStack(MID, {
+            DbSecret: {
+              Value: { 'Fn::ImportValue': ROOT_EXPORT },
+              Export: { Name: MID_EXPORT },
+            },
+          }),
+        ],
+      }
+    ).catch((e: unknown) => e);
+
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
+    const message = (err as Error).message;
+    // It names the DIRECT producer (whose state holds the plaintext) ...
+    expect(message).toContain(`producer stack '${MID}'`);
+    // ... says the evidence came through a re-export rather than claiming MID
+    // declares an expression it does not ...
+    expect(message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
+    // ... and prescribes the order that actually clears it: MID cannot store
+    // the expression until ROOT has been scrubbed down to one.
+    expect(message).toContain(`'cdkd scrub ${ROOT}', then 'cdkd scrub ${MID}'`);
+    // Nothing is written for a stack scrub could not redact.
+    expect(stateBackend.saveState).not.toHaveBeenCalled();
+    expect(lockManager.releaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('RESOLVES instead when the middle stack HAS been scrubbed — the chain is not a blanket refusal', async () => {
+    // Same three templates, other polarity: MID's state holds the EXPRESSION,
+    // so the read re-resolves it, that records the needle, and the consumer's
+    // stored plaintext is rewritten. A mutation that refuses on every `chained`
+    // verdict passes the case above and fails this one.
+    useChainState({
+      [MID]: { [MID_EXPORT]: SECRET_EXPR },
+      [ROOT]: { [ROOT_EXPORT]: SECRET_EXPR },
+    });
+
+    const res = await scrub(
+      { MasterUserPassword: { 'Fn::ImportValue': MID_EXPORT }, MasterUsername: 'admin' },
+      {
+        appStacks: [
+          rootStack,
+          chainStack(MID, {
+            DbSecret: {
+              Value: { 'Fn::ImportValue': ROOT_EXPORT },
+              Export: { Name: MID_EXPORT },
+            },
+          }),
+        ],
+      }
+    );
+
+    const saved = savedState();
+    // THE discriminator: `MasterUsername`'s template side is the public literal
+    // `admin`, so only the needle the cross-stack read produced can reach it.
+    expect(saved.resources['Db']!.properties['MasterUsername']).toBe(SECRET_EXPR);
+    expect(saved.resources['Db']!.properties['MasterUserPassword']).toBe(SECRET_EXPR);
+    expect(JSON.stringify(saved)).not.toContain(PLAINTEXT);
+    expect(res.recordsChanged).toBe(1);
+  });
+
+  it('follows a chain TWO hops deep and names every stack in scrub order', async () => {
+    // Consumer -> MID -> SECOND_MID -> ROOT. Pins the ORDER of the walk's
+    // `via`, which is what the remedy is built from: reversed, head first.
+    useChainState({
+      [MID]: { [MID_EXPORT]: PLAINTEXT },
+      [SECOND_MID]: { [SECOND_MID_EXPORT]: PLAINTEXT },
+      [ROOT]: { [ROOT_EXPORT]: SECRET_EXPR },
+    });
+
+    const err = await scrub(
+      { MasterUserPassword: { 'Fn::ImportValue': MID_EXPORT }, MasterUsername: 'admin' },
+      {
+        appStacks: [
+          rootStack,
+          chainStack(SECOND_MID, {
+            DbSecret: {
+              Value: { 'Fn::ImportValue': ROOT_EXPORT },
+              Export: { Name: SECOND_MID_EXPORT },
+            },
+          }),
+          chainStack(MID, {
+            // WRAPPED in an `Fn::Join`, the shape a re-export actually takes
+            // when a stack builds a connection string out of an imported
+            // secret — so the hop is found by walking the whole value, not just
+            // its top level.
+            DbSecret: {
+              Value: { 'Fn::Join': ['', ['prefix-', { 'Fn::ImportValue': SECOND_MID_EXPORT }]] },
+              Export: { Name: MID_EXPORT },
+            },
+          }),
+        ],
+      }
+    ).catch((e: unknown) => e);
+
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
+    const message = (err as Error).message;
+    expect(message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
+    expect(message).toContain(`(through '${SECOND_MID}')`);
+    expect(message).toContain(
+      `'cdkd scrub ${ROOT}', then 'cdkd scrub ${SECOND_MID}', then 'cdkd scrub ${MID}'`
+    );
+  });
+
+  it('TERMINATES on a cycle in the export graph and still finds the secret behind it', async () => {
+    // MID re-exports BOTH a cycle partner and the root; the partner re-exports
+    // MID's own export. What this case pins is the COMMAND's answer over a
+    // cyclic graph — it refuses, and for the right reason. TERMINATION itself is
+    // pinned by the BUDGETED walk cases below, not here (issue #2146 review):
+    // the walk is synchronous, so removing its visited set wedges this test
+    // instead of failing it, and a hang is a CI job timeout rather than a
+    // named defect.
+    useChainState({
+      [MID]: { [MID_EXPORT]: PLAINTEXT },
+      [ROOT]: { [ROOT_EXPORT]: SECRET_EXPR },
+    });
+
+    const err = await scrub(
+      { MasterUserPassword: { 'Fn::ImportValue': MID_EXPORT }, MasterUsername: 'admin' },
+      {
+        appStacks: [
+          rootStack,
+          chainStack(SECOND_MID, {
+            // Straight back to MID: the cycle.
+            DbSecret: {
+              Value: { 'Fn::ImportValue': MID_EXPORT },
+              Export: { Name: SECOND_MID_EXPORT },
+            },
+          }),
+          chainStack(MID, {
+            DbSecret: {
+              Value: {
+                'Fn::Join': [
+                  '',
+                  [
+                    { 'Fn::ImportValue': SECOND_MID_EXPORT },
+                    ':',
+                    { 'Fn::ImportValue': ROOT_EXPORT },
+                  ],
+                ],
+              },
+              Export: { Name: MID_EXPORT },
+            },
+          }),
+        ],
+      }
+    ).catch((e: unknown) => e);
+
+    // It came back at all (a non-terminating walk times this test out), and it
+    // came back with the RIGHT answer rather than by giving up.
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
+    expect((err as Error).message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
+  });
+
+  it('TERMINATES on a cycle with no secret anywhere, and does not refuse over it', async () => {
+    // The over-approximation polarity of the case above: two stacks re-exporting
+    // each other, nothing secret-bearing in the whole graph, and the command
+    // must scrub the stack normally rather than refuse over the cycle. As above,
+    // the BOUND that makes termination a fast red assertion lives in the
+    // budgeted walk cases below.
+    useChainState({ [MID]: { [MID_EXPORT]: 'an-ordinary-bucket-name' } });
+
+    const res = await scrub(
+      {
+        MasterUserPassword: { 'Fn::ImportValue': MID_EXPORT },
+        // The stack's OWN secret, so a completed run is observable.
+        MasterUsername: SECRET_EXPR,
+      },
+      {
+        appStacks: [
+          chainStack(SECOND_MID, {
+            DbSecret: {
+              Value: { 'Fn::ImportValue': MID_EXPORT },
+              Export: { Name: SECOND_MID_EXPORT },
+            },
+          }),
+          chainStack(MID, {
+            DbSecret: {
+              Value: { 'Fn::ImportValue': SECOND_MID_EXPORT },
+              Export: { Name: MID_EXPORT },
+            },
+          }),
+        ],
+      }
+    );
+
+    // POSITIVE MARKER: the run reached the rewrite rather than merely not
+    // throwing.
+    expect(res.recordsChanged).toBe(1);
+    expect(savedState().resources['Db']!.properties['MasterUsername']).toBe(SECRET_EXPR);
+  });
+
+  it('a DIRECT import is still classified `declared`, not chained', async () => {
+    // The unchanged polarity, asserted from the NEW branch's side: the walk must
+    // not relabel a producer that declares the expression itself, or the message
+    // would name a chain it never crossed and prescribe a scrub order with an
+    // extra stack in it.
+    useProducerOutputs({ [EXPORT_NAME]: PLAINTEXT });
+
+    const err = await scrub(
+      { MasterUserPassword: { 'Fn::ImportValue': EXPORT_NAME }, MasterUsername: 'admin' },
+      { appStacks: [makeProducerStackInfo(SECRET_PRODUCER_OUTPUTS)] }
+    ).catch((e: unknown) => e);
+
+    const message = (err as Error).message;
+    expect(message).toContain(`declares '${EXPORT_NAME}' from a {{resolve:...}}`);
+    expect(message).not.toContain('RE-EXPORTING');
+    expect(message).toContain(`Scrub the producer first ('cdkd scrub ${PRODUCER}')`);
+  });
+
+  it('a WIDENED root keeps the widened claim even when the expression was found up the chain', async () => {
+    // MID's `Export.Name` is an intrinsic scrub cannot reproduce, so the read's
+    // key matches no declared output and the test widens to all of them. The
+    // expression is then found one hop up — but the claim must stay the widened
+    // one, because nothing checked that THIS key is the output that re-exports it.
+    useChainState({
+      [MID]: { [MID_EXPORT]: PLAINTEXT },
+      [ROOT]: { [ROOT_EXPORT]: SECRET_EXPR },
+    });
+
+    const err = await scrub(
+      { MasterUserPassword: { 'Fn::ImportValue': MID_EXPORT }, MasterUsername: 'admin' },
+      {
+        appStacks: [
+          rootStack,
+          chainStack(MID, {
+            DbSecret: {
+              Value: { 'Fn::ImportValue': ROOT_EXPORT },
+              Export: { Name: { 'Fn::Sub': '${AWS::StackName}-DbSecret' } },
+            },
+          }),
+        ],
+      }
+    ).catch((e: unknown) => e);
+
+    // It still refuses (the widening is what makes it fire at all) ...
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
+    const message = (err as Error).message;
+    // ... with BOTH halves of the widened claim: this key matched no declared
+    // output, and the run cannot say which output is the secret-bearing one.
+    expect(message).toContain('publishes at least one output');
+    expect(message).toContain('could not match');
+    // ... and it does NOT claim the producer publishes an output FROM an
+    // expression, which is the one thing the walk proved false about it — it
+    // says the output RE-EXPORTS one, and names the stack that declares it
+    // (issue #2146 review; the first cut dropped `via` on the widened verdict
+    // and asserted exactly the falsified claim).
+    expect(message).toContain(
+      `publishes at least one output that RE-EXPORTS a value '${ROOT}' declares from a ` +
+        `{{resolve:...}} expression`
+    );
+    expect(message).not.toContain('output from a {{resolve:...}} expression');
+    // ... and the remedy is the whole chain, not the single command that would
+    // land the user in a second refusal.
+    expect(message).toContain(`'cdkd scrub ${ROOT}', then 'cdkd scrub ${MID}'`);
+  });
+
+  it('an upstream export produced OUTSIDE the app is the documented residual, not a refusal', async () => {
+    // The boundary of the walk: MID re-exports an export no stack in the
+    // assembly declares, so there is no template to follow into. Refusing here
+    // would be unclearable — no `cdkd scrub` of anything can turn a foreign
+    // export into an expression — so the pre-#2133 outcome is kept for it.
+    useChainState({ [MID]: { [MID_EXPORT]: 'value-from-outside-the-app' } });
+
+    const res = await scrub(
+      {
+        MasterUserPassword: { 'Fn::ImportValue': MID_EXPORT },
+        MasterUsername: SECRET_EXPR,
+      },
+      {
+        appStacks: [
+          chainStack(MID, {
+            DbSecret: {
+              Value: { 'Fn::ImportValue': 'SomeForeignStack:Export' },
+              Export: { Name: MID_EXPORT },
+            },
+          }),
+        ],
+      }
+    );
+
+    expect(res.recordsChanged).toBe(1);
+    expect(savedState().resources['Db']!.properties['MasterUsername']).toBe(SECRET_EXPR);
+  });
+
+  it('an Fn::If in the producer\'s output does NOT refuse over the UNTAKEN branch', async () => {
+    // THE UNCLEARABLE-REFUSAL CLASS, end to end (issue #2146 review). The middle
+    // stack publishes a secret import in the TRUE branch and a plain one in the
+    // FALSE branch; scrub cannot evaluate ANOTHER stack's conditions, so it
+    // mirrors `resolveIf`'s unknown-condition arm and takes FALSE. Refusing here
+    // would strand this consumer forever: nothing can turn the middle stack's
+    // non-secret stored value into an expression, and there is no bypass flag.
+    useChainState({
+      [MID]: { [MID_EXPORT]: 'an-ordinary-bucket-name' },
+      [ROOT]: { [ROOT_EXPORT]: SECRET_EXPR },
+    });
+
+    const res = await scrub(
+      {
+        MasterUserPassword: { 'Fn::ImportValue': MID_EXPORT },
+        // The stack's OWN secret, so a completed run is observable.
+        MasterUsername: SECRET_EXPR,
+      },
+      {
+        appStacks: [
+          rootStack,
+          chainStack(PLAIN_STACK, {
+            Plain: { Value: { Ref: 'SomeBucket' }, Export: { Name: PLAIN_EXPORT } },
+          }),
+          chainStack(MID, {
+            DbSecret: {
+              Value: {
+                'Fn::If': [
+                  'IsProd',
+                  { 'Fn::ImportValue': ROOT_EXPORT },
+                  { 'Fn::ImportValue': PLAIN_EXPORT },
+                ],
+              },
+              Export: { Name: MID_EXPORT },
+            },
+          }),
+        ],
+      }
+    );
+
+    // POSITIVE MARKER: the run reached the rewrite rather than merely not
+    // throwing.
+    expect(res.recordsChanged).toBe(1);
+    expect(savedState().resources['Db']!.properties['MasterUsername']).toBe(SECRET_EXPR);
+  });
+
+  it('an Fn::If in the producer\'s output STILL refuses over the branch scrub takes', async () => {
+    // The other polarity of the case above, and the reason it is a pair: the
+    // FALSE arm carries the secret-bearing re-export, so the walk follows it and
+    // the refusal fires exactly as it does without the `Fn::If`.
+    useChainState({
+      [MID]: { [MID_EXPORT]: PLAINTEXT },
+      [ROOT]: { [ROOT_EXPORT]: SECRET_EXPR },
+    });
+
+    const err = await scrub(
+      { MasterUserPassword: { 'Fn::ImportValue': MID_EXPORT }, MasterUsername: 'admin' },
+      {
+        appStacks: [
+          rootStack,
+          chainStack(PLAIN_STACK, {
+            Plain: { Value: { Ref: 'SomeBucket' }, Export: { Name: PLAIN_EXPORT } },
+          }),
+          chainStack(MID, {
+            DbSecret: {
+              Value: {
+                'Fn::If': [
+                  'IsProd',
+                  { 'Fn::ImportValue': PLAIN_EXPORT },
+                  { 'Fn::ImportValue': ROOT_EXPORT },
+                ],
+              },
+              Export: { Name: MID_EXPORT },
+            },
+          }),
+        ],
+      }
+    ).catch((e: unknown) => e);
+
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
+    expect((err as Error).message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
+  });
+
+  it('refuses through an Fn::GetStackOutput re-export, not only an Fn::ImportValue one', async () => {
+    // The other hop kind, end to end. The middle stack reads the root's output
+    // BY NAME rather than importing its export, which is the form
+    // `Fn::GetStackOutput` takes — and which the walk resolves through the
+    // literal `StackName` / `OutputName` pair instead of the export index.
+    useChainState({
+      [MID]: { [MID_EXPORT]: PLAINTEXT },
+      [ROOT]: { [ROOT_EXPORT]: SECRET_EXPR },
+    });
+
+    const err = await scrub(
+      { MasterUserPassword: { 'Fn::ImportValue': MID_EXPORT }, MasterUsername: 'admin' },
+      {
+        appStacks: [
+          rootStack,
+          chainStack(MID, {
+            DbSecret: {
+              Value: { 'Fn::GetStackOutput': { StackName: ROOT, OutputName: 'DbSecret' } },
+              Export: { Name: MID_EXPORT },
+            },
+          }),
+        ],
+      }
+    ).catch((e: unknown) => e);
+
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
+    expect((err as Error).message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
+  });
+
+  it('RESOLVES through a TWO-HOP chain, not only through one hop', async () => {
+    // The resolve polarity at depth 2 (the two-hop case above is refuse-only).
+    // Every stack in the chain holds the expression, so the read re-resolves it,
+    // records the needle, and the consumer's seeded plaintext is rewritten —
+    // which is what says the walk's extra hop did not cost the RESOLVE path.
+    useChainState({
+      [MID]: { [MID_EXPORT]: SECRET_EXPR },
+      [SECOND_MID]: { [SECOND_MID_EXPORT]: SECRET_EXPR },
+      [ROOT]: { [ROOT_EXPORT]: SECRET_EXPR },
+    });
+
+    const res = await scrub(
+      { MasterUserPassword: { 'Fn::ImportValue': MID_EXPORT }, MasterUsername: 'admin' },
+      {
+        appStacks: [
+          rootStack,
+          chainStack(SECOND_MID, {
+            DbSecret: {
+              Value: { 'Fn::ImportValue': ROOT_EXPORT },
+              Export: { Name: SECOND_MID_EXPORT },
+            },
+          }),
+          chainStack(MID, {
+            DbSecret: {
+              Value: { 'Fn::ImportValue': SECOND_MID_EXPORT },
+              Export: { Name: MID_EXPORT },
+            },
+          }),
+        ],
+      }
+    );
+
+    const saved = savedState();
+    expect(saved.resources['Db']!.properties['MasterUsername']).toBe(SECRET_EXPR);
+    expect(JSON.stringify(saved)).not.toContain(PLAINTEXT);
+    expect(res.recordsChanged).toBe(1);
+  });
+
+  it('lists EVERY intermediate stack when the chain is three hops long', async () => {
+    // Pins the `through 'A', 'B'` join and the four-command scrub order — the
+    // two-hop case can be satisfied by a builder that only ever emits one
+    // intermediate.
+    useChainState({
+      [MID]: { [MID_EXPORT]: PLAINTEXT },
+      [SECOND_MID]: { [SECOND_MID_EXPORT]: PLAINTEXT },
+      [THIRD_MID]: { [THIRD_MID_EXPORT]: PLAINTEXT },
+      [ROOT]: { [ROOT_EXPORT]: SECRET_EXPR },
+    });
+
+    const err = await scrub(
+      { MasterUserPassword: { 'Fn::ImportValue': MID_EXPORT }, MasterUsername: 'admin' },
+      {
+        appStacks: [
+          rootStack,
+          chainStack(THIRD_MID, {
+            DbSecret: {
+              Value: { 'Fn::ImportValue': ROOT_EXPORT },
+              Export: { Name: THIRD_MID_EXPORT },
+            },
+          }),
+          chainStack(SECOND_MID, {
+            DbSecret: {
+              Value: { 'Fn::ImportValue': THIRD_MID_EXPORT },
+              Export: { Name: SECOND_MID_EXPORT },
+            },
+          }),
+          chainStack(MID, {
+            DbSecret: {
+              Value: { 'Fn::ImportValue': SECOND_MID_EXPORT },
+              Export: { Name: MID_EXPORT },
+            },
+          }),
+        ],
+      }
+    ).catch((e: unknown) => e);
+
+    const message = (err as Error).message;
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
+    expect(message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
+    expect(message).toContain(`(through '${SECOND_MID}', '${THIRD_MID}')`);
+    expect(message).toContain(
+      `'cdkd scrub ${ROOT}', then 'cdkd scrub ${THIRD_MID}', then 'cdkd scrub ${SECOND_MID}', ` +
+        `then 'cdkd scrub ${MID}'`
+    );
+  });
+  it('memoizes the verdict per (producer, KEY), not per producer', async () => {
+    // ONE producer, TWO exports, OPPOSITE verdicts, both read in a single scrub:
+    // the ordinary one FIRST so its `no` is the entry already in the cache when
+    // the secret-bearing one is looked up. A memo keyed by producer stack alone
+    // returns that `no` for the second read, the pre-pass returns early, and the
+    // stack is reported clean over the plaintext it still holds — the #2133
+    // silent success reintroduced by a cache, which no assertion on the walk
+    // itself would see.
+    useChainState({
+      [MID]: {
+        [PLAIN_EXPORT]: 'an-ordinary-bucket-name',
+        [MID_EXPORT]: PLAINTEXT,
+      },
+      [ROOT]: { [ROOT_EXPORT]: SECRET_EXPR },
+    });
+
+    const err = await scrub(
+      {
+        // Read FIRST (object property order is the pre-pass's walk order).
+        MasterUserPassword: { 'Fn::ImportValue': PLAIN_EXPORT },
+        MasterUsername: { 'Fn::ImportValue': MID_EXPORT },
+      },
+      {
+        appStacks: [
+          rootStack,
+          chainStack(MID, {
+            // Ordinary: matches its key, carries no expression and no hop.
+            Plain: { Value: { Ref: 'SomeBucket' }, Export: { Name: PLAIN_EXPORT } },
+            // Secret-bearing by re-export, from the SAME stack.
+            DbSecret: {
+              Value: { 'Fn::ImportValue': ROOT_EXPORT },
+              Export: { Name: MID_EXPORT },
+            },
+          }),
+        ],
+      }
+    ).catch((e: unknown) => e);
+
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
+    // It refused for the SECOND export, not the first — the message names the
+    // key that is actually secret-bearing.
+    expect((err as Error).message).toContain(`publishes '${MID_EXPORT}' by RE-EXPORTING`);
+    expect((err as Error).message).toContain(`by RE-EXPORTING a value that '${ROOT}' declares`);
+  });
+});
+
+/**
+ * The re-export WALK itself, exercised directly (issue #2146 review).
+ *
+ * WHY THIS BLOCK CALLS THE FUNCTION rather than going through `scrubStack` like
+ * everything above it. Two of these properties are unreachable from the command
+ * surface at a cost that pays for itself:
+ *
+ * - TERMINATION could only be pinned by HANGING. The walk is fully SYNCHRONOUS,
+ *   so removing its visited set does not fail a test — it wedges the worker,
+ *   no vitest timeout can fire (nothing yields), and CI reports a job timeout
+ *   with a message pointing nowhere near the cause. A budget on template reads
+ *   turns that into a red assertion in milliseconds, and names the defect.
+ * - The `Fn::GetStackOutput` hop and the non-root NO-WIDENING rule need a
+ *   producer template whose output names a stack + output directly; the second
+ *   is reachable ONLY through the first, since an `Fn::ImportValue` hop is
+ *   looked up BY export name and therefore always matches at the far end.
+ *
+ * The end-to-end polarities of the same behaviours stay on `scrubStack` below,
+ * so nothing here stands in for "the command refuses".
+ */
+describe('the re-export walk (issue #2146 review)', () => {
+  const EXPR = '{{resolve:secretsmanager:prod/db:SecretString:password}}';
+
+  function tpl(outputs: Record<string, unknown>): CloudFormationTemplate {
+    return { Resources: {}, Outputs: outputs } as CloudFormationTemplate;
+  }
+  /** An output that RE-EXPORTS `value` under `exportName`. */
+  function reexport(exportName: string, value: unknown): Record<string, unknown> {
+    return { Value: value, Export: { Name: exportName } };
+  }
+
+  /**
+   * A templates map that THROWS once the walk has read more templates than the
+   * pair space can justify. `buildExportOwnerIndex` iterates entries rather than
+   * calling `get`, so the count is the walk's own.
+   */
+  class BudgetMap extends Map<string, CloudFormationTemplate> {
+    calls = 0;
+    constructor(
+      entries: readonly (readonly [string, CloudFormationTemplate])[],
+      readonly budget: number
+    ) {
+      super(entries as [string, CloudFormationTemplate][]);
+    }
+    override get(key: string): CloudFormationTemplate | undefined {
+      this.calls += 1;
+      if (this.calls > this.budget) {
+        throw new Error(`the walk read ${this.calls} templates, over the ${this.budget} budget`);
+      }
+      return super.get(key);
+    }
+  }
+
+  function verdictOf(
+    templates: ReadonlyMap<string, CloudFormationTemplate>,
+    producerStack: string,
+    key: string
+  ): { kind: string; via: readonly string[] } {
+    return producerPublishesSecretExpression(
+      templates,
+      buildExportOwnerIndex(templates),
+      producerStack,
+      key
+    );
+  }
+
+  it('TERMINATES on a cycle within a BOUNDED number of template reads', async () => {
+    // Three stacks re-exporting each other in a ring, none secret-bearing. The
+    // pair space is 3, so a walk with a visited set reads at most a handful of
+    // templates; one without reads unboundedly and never returns.
+    const templates = new BudgetMap(
+      [
+        ['A', tpl({ Out: reexport('A-Export', { 'Fn::ImportValue': 'B-Export' }) })],
+        ['B', tpl({ Out: reexport('B-Export', { 'Fn::ImportValue': 'C-Export' }) })],
+        ['C', tpl({ Out: reexport('C-Export', { 'Fn::ImportValue': 'A-Export' }) })],
+      ],
+      8
+    );
+
+    const verdict = verdictOf(templates, 'A', 'A-Export');
+
+    // It came back, it came back with the right answer, and it came back
+    // WITHOUT re-reading a pair it had already expanded.
+    expect(verdict.kind).toBe('no');
+    expect(templates.calls).toBeLessThanOrEqual(8);
+  });
+
+  it('TERMINATES on a cycle that DOES lead to a secret, still within the budget', async () => {
+    // A ring at depth 1 and the secret THREE hops down the other branch, so the
+    // bound cannot be met by reaching the secret before the ring costs anything:
+    // without the visited set the shallow ring re-expands at every level and
+    // blows the budget BEFORE the deep root is ever read. Six distinct pairs, so
+    // a deduping walk reads six templates and returns the full chain.
+    const templates = new BudgetMap(
+      [
+        [
+          'A',
+          tpl({
+            Out: reexport('A-Export', {
+              'Fn::Join': [
+                '',
+                [{ 'Fn::ImportValue': 'Ring-Export' }, { 'Fn::ImportValue': 'P1-Export' }],
+              ],
+            }),
+          }),
+        ],
+        // Straight back to A: the ring.
+        ['Ring', tpl({ Out: reexport('Ring-Export', { 'Fn::ImportValue': 'A-Export' }) })],
+        ['P1', tpl({ Out: reexport('P1-Export', { 'Fn::ImportValue': 'P2-Export' }) })],
+        ['P2', tpl({ Out: reexport('P2-Export', { 'Fn::ImportValue': 'P3-Export' }) })],
+        ['P3', tpl({ Out: reexport('P3-Export', { 'Fn::ImportValue': 'R-Export' }) })],
+        ['R', tpl({ Out: reexport('R-Export', EXPR) })],
+      ],
+      8
+    );
+
+    const verdict = verdictOf(templates, 'A', 'A-Export');
+
+    expect(verdict.kind).toBe('chained');
+    expect(verdict.via).toEqual(['P1', 'P2', 'P3', 'R']);
+    expect(templates.calls).toBeLessThanOrEqual(8);
+  });
+
+  it('follows a LITERAL Fn::GetStackOutput hop', async () => {
+    const templates = new Map<string, CloudFormationTemplate>([
+      [
+        'Mid',
+        tpl({
+          Out: reexport('Mid-Export', {
+            'Fn::GetStackOutput': { StackName: 'Root', OutputName: 'Password' },
+          }),
+        }),
+      ],
+      ['Root', tpl({ Password: { Value: EXPR } })],
+    ]);
+
+    expect(verdictOf(templates, 'Mid', 'Mid-Export')).toEqual({ kind: 'chained', via: ['Root'] });
+  });
+
+  it('does NOT follow an Fn::GetStackOutput whose slots are not literal, or whose stack is foreign', async () => {
+    // The negative polarity of the branch above: an assembled `StackName`, an
+    // assembled `OutputName`, and a stack outside the app each yield NO hop, so
+    // the verdict stays `no` rather than guessing a producer.
+    const root = tpl({ Password: { Value: EXPR } });
+    const assembledStack = tpl({
+      Out: reexport('Mid-Export', {
+        'Fn::GetStackOutput': {
+          StackName: { 'Fn::Sub': '${Env}-Root' },
+          OutputName: 'Password',
+        },
+      }),
+    });
+    const assembledOutput = tpl({
+      Out: reexport('Mid-Export', {
+        'Fn::GetStackOutput': { StackName: 'Root', OutputName: { Ref: 'WhichOutput' } },
+      }),
+    });
+    const foreignStack = tpl({
+      Out: reexport('Mid-Export', {
+        'Fn::GetStackOutput': { StackName: 'NotInThisApp', OutputName: 'Password' },
+      }),
+    });
+
+    for (const mid of [assembledStack, assembledOutput, foreignStack]) {
+      const templates = new Map<string, CloudFormationTemplate>([
+        ['Mid', mid],
+        ['Root', root],
+      ]);
+      expect(verdictOf(templates, 'Mid', 'Mid-Export').kind).toBe('no');
+    }
+  });
+
+  it('does NOT widen at a HOP whose key matches no output there', async () => {
+    // The invariant that keeps a refusal clearable: one hop up, the key is a
+    // LITERAL name read out of a template, so a miss means that template does
+    // not declare it — and widening to the upstream stack's OTHER outputs would
+    // refuse this consumer over an unrelated secret two stacks away.
+    const templates = new Map<string, CloudFormationTemplate>([
+      [
+        'Mid',
+        tpl({
+          Out: reexport('Mid-Export', {
+            'Fn::GetStackOutput': { StackName: 'Root', OutputName: 'NotDeclaredHere' },
+          }),
+        }),
+      ],
+      // Root DOES have a secret-bearing output — under a different name.
+      ['Root', tpl({ SomeOtherOutput: { Value: EXPR } })],
+    ]);
+
+    expect(verdictOf(templates, 'Mid', 'Mid-Export').kind).toBe('no');
+  });
+
+  it('follows EVERY owner of a duplicated export name, not just the first', async () => {
+    // Two stacks declare one export name. Insertion order puts the NON-secret
+    // twin first, so a single-owner index (first writer wins) follows it, finds
+    // nothing, and reports a stack clean over surviving plaintext. Scrub reads
+    // TEMPLATES, where a duplicate is routine (never deployed, or deployed to
+    // two regions), so the over-approximation is the only safe reading.
+    const templates = new Map<string, CloudFormationTemplate>([
+      ['Mid', tpl({ Out: reexport('Mid-Export', { 'Fn::ImportValue': 'Shared-Export' }) })],
+      ['PlainTwin', tpl({ Out: reexport('Shared-Export', { Ref: 'SomeBucket' }) })],
+      ['SecretTwin', tpl({ Out: reexport('Shared-Export', EXPR) })],
+    ]);
+
+    expect(verdictOf(templates, 'Mid', 'Mid-Export')).toEqual({
+      kind: 'chained',
+      via: ['SecretTwin'],
+    });
+  });
+
+  it('names the NEAREST secret-bearing stack when two paths reach one (diamond)', async () => {
+    // Both branches of the diamond end at a secret-bearing stack, one hop apart.
+    // BFS visits the nearer frame first, so the stack the message names is
+    // decided by DISTANCE rather than by object key order.
+    const templates = new Map<string, CloudFormationTemplate>([
+      [
+        'Mid',
+        tpl({
+          Out: reexport('Mid-Export', {
+            'Fn::Join': [
+              '',
+              [{ 'Fn::ImportValue': 'Far-Export' }, { 'Fn::ImportValue': 'Near-Export' }],
+            ],
+          }),
+        }),
+      ],
+      ['Far', tpl({ Out: reexport('Far-Export', { 'Fn::ImportValue': 'Deep-Export' }) })],
+      ['Deep', tpl({ Out: reexport('Deep-Export', EXPR) })],
+      ['Near', tpl({ Out: reexport('Near-Export', EXPR) })],
+    ]);
+
+    const verdict = verdictOf(templates, 'Mid', 'Mid-Export');
+    expect(verdict.kind).toBe('chained');
+    expect(verdict.via).toEqual(['Near']);
+  });
+
+  it('takes only the FALSE branch of an Fn::If, and no branch of a malformed one', async () => {
+    // The condition belongs to ANOTHER stack, which scrub never evaluates, so
+    // the walk mirrors `resolveIf`'s unknown-condition arm. Both polarities in
+    // one case, because the pair is the whole point: a hop in the FALSE branch
+    // is followed, one that exists ONLY in the TRUE branch is not.
+    const root = tpl({ Out: reexport('Root-Export', EXPR) });
+    const plain = tpl({ Out: reexport('Plain-Export', { Ref: 'SomeBucket' }) });
+    const withIf = (ifTrue: unknown, ifFalse: unknown): CloudFormationTemplate =>
+      tpl({ Out: reexport('Mid-Export', { 'Fn::If': ['IsProd', ifTrue, ifFalse] }) });
+    const build = (mid: CloudFormationTemplate): Map<string, CloudFormationTemplate> =>
+      new Map<string, CloudFormationTemplate>([
+        ['Mid', mid],
+        ['Root', root],
+        ['Plain', plain],
+      ]);
+
+    // FALSE branch carries the re-export -> followed.
+    expect(
+      verdictOf(
+        build(withIf({ 'Fn::ImportValue': 'Plain-Export' }, { 'Fn::ImportValue': 'Root-Export' })),
+        'Mid',
+        'Mid-Export'
+      )
+    ).toEqual({ kind: 'chained', via: ['Root'] });
+
+    // TRUE branch only -> NOT followed. A refusal here could never be cleared:
+    // nothing can turn the producer's non-secret stored value into an
+    // expression, and there is no bypass flag.
+    expect(
+      verdictOf(
+        build(withIf({ 'Fn::ImportValue': 'Root-Export' }, { 'Fn::ImportValue': 'Plain-Export' })),
+        'Mid',
+        'Mid-Export'
+      ).kind
+    ).toBe('no');
+
+    // MALFORMED (not a 3-tuple) -> no hop from either arm, since which one is
+    // live is unknowable and this function's only output is refuse-or-not.
+    const malformed = tpl({
+      Out: reexport('Mid-Export', { 'Fn::If': [{ 'Fn::ImportValue': 'Root-Export' }] }),
+    });
+    expect(verdictOf(build(malformed), 'Mid', 'Mid-Export').kind).toBe('no');
+  });
+
+  it('yields no hop for EVERY malformed Fn::If shape, not only the 1-element one', async () => {
+    // The `Array.isArray(args) && args.length === 3` guard has four ways to be
+    // false and only one of them was pinned. A shape that slipped past it would
+    // fall through to the generic child walk — which is exactly the both-arms
+    // behaviour the guard exists to prevent, reachable again through a
+    // malformed node.
+    const root = tpl({ Out: reexport('Root-Export', EXPR) });
+    const midWith = (args: unknown): CloudFormationTemplate =>
+      tpl({ Out: reexport('Mid-Export', { 'Fn::If': args }) });
+    const hop = { 'Fn::ImportValue': 'Root-Export' };
+
+    for (const args of [
+      [hop, hop], // 2-tuple
+      ['IsProd', hop, hop, hop], // 4-tuple
+      hop, // not an array at all
+      'IsProd', // a bare string
+      null,
+    ]) {
+      const templates = new Map<string, CloudFormationTemplate>([
+        ['Mid', midWith(args)],
+        ['Root', root],
+      ]);
+      expect(verdictOf(templates, 'Mid', 'Mid-Export').kind).toBe('no');
+    }
+
+    // ...and the CONTROL: the same hop in a WELL-FORMED node's false arm is
+    // still followed, so the loop above is not passing because hops stopped
+    // working altogether.
+    const wellFormed = new Map<string, CloudFormationTemplate>([
+      ['Mid', midWith(['IsProd', 'unused', hop])],
+      ['Root', root],
+    ]);
+    expect(verdictOf(wellFormed, 'Mid', 'Mid-Export')).toEqual({
+      kind: 'chained',
+      via: ['Root'],
+    });
+  });
+});
+
+/**
+ * The refusal WORDING, over verdict shapes the walk does not produce today
+ * (issue #2146 review).
+ *
+ * Two of these are unreachable from the command surface and are the reason this
+ * block calls the wording builder directly: a `chained` verdict with an EMPTY
+ * `via` (the arm that used to fall through to the widened "could not say which",
+ * which is false of every chained verdict), and a `via` that names the DIRECT
+ * PRODUCER — real walk output, since the visited set is keyed by `(stack, key)`
+ * and a chain may return to a stack under a different output key.
+ */
+describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
+  const KEY = 'App:DbSecret';
+
+  it('DECLARED names the key and prescribes one command', async () => {
+    const { templateClaim, remedy } = scrubRefusalWording({ kind: 'declared', via: [] }, KEY, 'P', []);
+
+    expect(templateClaim).toBe(`declares '${KEY}' from a {{resolve:...}} expression`);
+    expect(remedy).toBe("Scrub the producer first ('cdkd scrub P')");
+  });
+
+  it('WIDENED without a chain keeps both halves of its hedge', async () => {
+    const { templateClaim, remedy } = scrubRefusalWording({ kind: 'widened', via: [] }, KEY, 'P', []);
+
+    expect(templateClaim).toContain('publishes at least one output from a {{resolve:...}} expression');
+    expect(templateClaim).toContain(`could not match '${KEY}' to a declared output`);
+    expect(remedy).toBe("Scrub the producer first ('cdkd scrub P')");
+  });
+
+  it('WIDENED with a chain says the output RE-EXPORTS one, and still hedges', async () => {
+    const { templateClaim, remedy } = scrubRefusalWording(
+      { kind: 'widened', via: ['R'] },
+      KEY,
+      'P',
+      ['R']
+    );
+
+    // The hedge survives — this key still matched no declared output ...
+    expect(templateClaim).toContain('could not match');
+    // ... but the claim no longer says an output of P carries the expression,
+    // which is the thing the walk proved false about P.
+    expect(templateClaim).toContain("publishes at least one output that RE-EXPORTS a value 'R'");
+    expect(templateClaim).not.toContain('output from a {{resolve:...}} expression');
+    expect(remedy).toBe(
+      "Scrub the producers first, from the head of the chain ('cdkd scrub R', then 'cdkd scrub P')"
+    );
+  });
+
+  it('CHAINED with an empty via does NOT borrow the widened hedge', async () => {
+    // Unreachable today (`chained` only returns from a non-root frame, whose
+    // `via` has at least one entry), and the arm that caught it was the widened
+    // wording — which asserts "could not match '<key>' to a declared output",
+    // false of every chained verdict by construction, since a chained one
+    // MATCHED the key and left through its value.
+    const { templateClaim } = scrubRefusalWording({ kind: 'chained', via: [] }, KEY, 'P', []);
+
+    expect(templateClaim).toContain(`publishes '${KEY}' by RE-EXPORTING a value`);
+    expect(templateClaim).not.toContain('could not match');
+    expect(templateClaim).not.toContain('at least one output');
+  });
+
+  it('a chain that RETURNS to the producer names each command once', async () => {
+    // `A -> B -> A`: the walk left A under the consumer's key and found the
+    // expression in ANOTHER of A's outputs. Both halves must survive: the claim
+    // still names A (B declares nothing), and the remedy runs each command once.
+    const { templateClaim, remedy } = scrubRefusalWording(
+      { kind: 'chained', via: ['B', 'A'] },
+      KEY,
+      'A',
+      ['B', 'A']
+    );
+
+    expect(templateClaim).toContain(`by RE-EXPORTING a value that 'A' declares`);
+    expect(templateClaim).toContain("(through 'B')");
+    expect(remedy).toBe(
+      "Scrub the producers first, from the head of the chain ('cdkd scrub B', then 'cdkd scrub A')"
+    );
+    // THE ASSERTION: no command is repeated, and the DIRECT producer is last.
+    const commands = [...remedy.matchAll(/'cdkd scrub ([^']+)'/g)].map((m) => m[1]);
+    expect(commands).toEqual(['B', 'A']);
+  });
+
+  it('a SELF-import chain collapses to one command and no "through" list', async () => {
+    // `A -> A`: same stack, different output key. Left undeduplicated this read
+    // "producer 'A' ... a value that 'A' declares ... (through 'A')" with
+    // `cdkd scrub A` twice.
+    const { templateClaim, remedy } = scrubRefusalWording(
+      { kind: 'chained', via: ['A', 'A'] },
+      KEY,
+      'A',
+      ['A', 'A']
+    );
+
+    expect(templateClaim).toContain(`by RE-EXPORTING a value that 'A' declares`);
+    expect(templateClaim).not.toContain('(through');
+    expect(remedy).toBe("Scrub the producer first ('cdkd scrub A')");
+  });
+
+  it('a three-stack chain keeps every distinct stack, in scrub order', async () => {
+    // The control for the two de-duplication cases above: nothing is dropped
+    // when nothing repeats.
+    const { remedy } = scrubRefusalWording({ kind: 'chained', via: ['B', 'C', 'R'] }, KEY, 'P', [
+      'B',
+      'C',
+      'R',
+    ]);
+
+    expect([...remedy.matchAll(/'cdkd scrub ([^']+)'/g)].map((m) => m[1])).toEqual([
+      'R',
+      'C',
+      'B',
+      'P',
+    ]);
   });
 });

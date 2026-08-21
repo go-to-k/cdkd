@@ -2855,15 +2855,44 @@ the secret. The verdict is taken by READING the producer's own stored value, not
 by inspecting what the read returned: the read RESOLVES a stored expression to
 plaintext before handing it over, so a healthy producer and an unscrubbed one
 are indistinguishable from the consumer's side. The refusal names the producer
-and the fix: `cdkd scrub <producer>` first, then re-run. It fires only when the
-producer's template declares that export from a `{{resolve:...}}` expression, so
-an ordinary import of a bucket name or an ARN is unaffected; a producer outside
-the synthesized app, and one whose export cdkd resolved through CloudFormation
-rather than through cdkd state, cannot be classified from the consumer's side
-and are not refused. When the producer's `Export.Name` is an intrinsic this run
-cannot reproduce, the check widens to every output of that producer -- an
-over-approximation in the safe direction, and the message says so rather than
-claiming the producer declares that particular key from an expression.
+and the fix: `cdkd scrub <producer>` first, then re-run.
+
+Whether the export is SECRET-BEARING AT ALL is the half of the question the
+stored value cannot answer either -- a bucket name and a leaked password are
+both bare strings, so refusing on the stored value alone would refuse every
+multi-stack app that imports anything. That half is taken from the app's
+TEMPLATES, and the refusal fires only when they say the value carries a secret:
+either the producer declares that export from a `{{resolve:...}}` expression, or
+the producer RE-EXPORTS a value that a stack further up the chain declares from
+one (issue [go-to-k/cdkd#2146](https://github.com/go-to-k/cdkd/issues/2146)). An
+ordinary import of a bucket name or an ARN is unaffected under either arm. The chain arm
+is not a refinement: a middle stack's output IS the `Fn::ImportValue`, so asking
+that one template answered "not secret-bearing", and `cdkd scrub <the stack at
+the end of the chain>` then reported clean over its own surviving plaintext --
+invisibly under `--all`, which scrubs producers first and so heals the chain
+before that stack is reached, and reachably under the single-stack form this
+page documents. The walk follows `Fn::ImportValue` / `Fn::GetStackOutput`
+through the synthesized templates and terminates on a cycle by never revisiting
+a `(stack, export)` pair; for a chain the remedy names EVERY stack in it, head
+first, because a middle stack cannot store the expression until its own producer
+has been scrubbed. What remains unclassifiable from the consumer's side is still
+not refused: a producer outside the synthesized app, one whose export cdkd
+resolved through CloudFormation rather than through cdkd state, a re-export
+whose upstream reference cannot be read statically (an assembled export name, or
+an `Fn::GetStackOutput` whose stack or output name is itself an intrinsic), and
+one whose upstream export is declared under a name this run cannot reproduce --
+which usually means an intrinsic `Export.Name` one hop up, so a stack DOES
+declare it and the walk simply cannot match it. When the producer's
+`Export.Name` is an intrinsic this run cannot reproduce, the check widens to
+every output of THAT producer -- an over-approximation in the safe direction,
+and the message says so rather than claiming the producer declares that
+particular key from an expression. Note the asymmetry, which is deliberate: the
+same input WIDENS at the direct producer and is DROPPED one hop up. At the root
+the key came from an actual read, so some output of that producer really did
+answer it and refusing over the set is the safe reading; one hop up the key is a
+literal name read out of a template, so a miss means that template does not
+declare it, and widening there would refuse the consumer over an unrelated
+secret two stacks away in a refusal no `cdkd scrub` could clear.
 
 `cdkd scrub --all` now scrubs PRODUCERS BEFORE CONSUMERS (CDK's own stack
 dependencies plus raw `Fn::ImportValue` / `Fn::GetStackOutput` edges inferred

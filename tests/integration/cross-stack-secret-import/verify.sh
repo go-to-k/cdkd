@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # verify.sh — cross-stack import of a REDACTED secret-bearing export
-# (issues #1934 and #2133).
+# (issues #1934, #2133 and #2146).
 #
 # THE DEFECT (#1934). Since PR #1899 a secret-bearing output is persisted REDACTED:
 # `state.outputs` and the exports index hold the unresolved
@@ -23,14 +23,29 @@
 # AND lifts the cross-stack class out of that catch with a pre-pass that REFUSES
 # (`SCRUB_CROSS_STACK_READ_UNRESOLVED`, exit 2) when the read cannot be made.
 #
-# THE FIXTURE. Two stacks:
+# THE THIRD DEFECT (#2146), which needs one more stack on the same chain. The
+# #2133 refusal gates on the DIRECT producer's template carrying a literal
+# `{{resolve:`. A stack that merely RE-EXPORTS someone else's export has none, so
+# scrubbing the stack at the END of such a chain returned early, found no needle,
+# and printed "No plaintext secrets found" while that stack's record still held
+# the imported plaintext — the #2133 silent success reached through a re-export.
+# The fix follows the chain through the app's templates (visited-set termination,
+# so a cycle halts) and refuses naming the head of the chain.
+#
+# THE FIXTURE. Three stacks:
 #   Producer  — a Secrets Manager secret with a KNOWN, non-sensitive JSON value,
 #               plus a `CfnOutput` whose value is the {{resolve:...}} token and
 #               which carries `Export.Name: CdkdCrossStackSecretPassword`.
 #   Consumer  — an SSM `String` parameter whose value is
 #               `Fn::ImportValue(CdkdCrossStackSecretPassword)`. SSM is readable
 #               back in the clear, which is the only way to prove what cdkd
-#               actually SENT to AWS.
+#               actually SENT to AWS. It ALSO re-exports what it imported, as
+#               `Export.Name: CdkdCrossStackSecretReexport` — which makes it the
+#               MIDDLE of the chain and gives it a template with no literal
+#               `{{resolve:` anywhere in it.
+#   ChainConsumer — an SSM `String` parameter whose value is
+#               `Fn::ImportValue(CdkdCrossStackSecretReexport)`, two hops from
+#               the secret. Scrubbing THIS stack alone is issue #2146.
 #
 # THE ASSERTIONS, in the order that makes a failure legible:
 #   1. PREMISE      — the producer's state.outputs AND the exports index hold
@@ -98,9 +113,23 @@
 #                      times with the unit suite green through two of them, so
 #                      it gets a live arm of its own. The consumer is named
 #                      ALONE, never --all. Restored before any assertion runs.
-#  10. TEARDOWN     — consumer first (the producer's destroy is refused while
-#                     the consumer's state.imports[] names the export), 0
-#                     errors, state keys gone, SSM parameter gone, and the
+#  10. RE-EXPORT    — the #2146 pair, on the stack at the END of the chain,
+#      CHAIN           scrubbed ALONE. (a) with every stack healthy, scrub must
+#                      RESOLVE through the re-export and rewrite the plaintext
+#                      seeded into that stack — a walk that refuses on every
+#                      re-export passes (b) and fails here. (b) with the MIDDLE
+#                      stack's state.outputs seeded back to the pre-#1899
+#                      plaintext, scrub must exit 2, name the middle stack as the
+#                      producer, say the evidence came by RE-EXPORT from the
+#                      PRODUCER, and prescribe the chain in scrub order. Pre-fix
+#                      (b) exited 0 reporting the stack clean, because the middle
+#                      template carries no literal {{resolve: to gate on. The
+#                      message must NOT be the `declared` verdict — that would
+#                      mean the middle template grew an expression and this phase
+#                      had silently become a duplicate of assertion 9.
+#  11. TEARDOWN     — down the chain (each destroy is refused while the stack
+#                     below still names the export in its state.imports[]), 0
+#                     errors, state keys gone, both SSM parameters gone, and the
 #                     secret FORCE-deleted rather than left in a 7-day
 #                     pending-deletion window.
 #
@@ -156,6 +185,10 @@ cd "$(dirname "$0")"
 REGION="${AWS_REGION:-us-east-1}"
 PRODUCER="CdkdCrossStackSecretProducer"
 CONSUMER="CdkdCrossStackSecretConsumer"
+# The stack at the END of the re-export chain (issue #2146). The CONSUMER is the
+# middle link: it imports the producer's export and RE-EXPORTS it, so this stack
+# sits two hops from the only template that declares a `{{resolve:` expression.
+CHAIN_CONSUMER="CdkdCrossStackSecretChainConsumer"
 
 # These MUST stay byte-identical to `lib/shared.ts`. See that file's NAMING
 # RULE comment for why none of them may share a substring with
@@ -167,9 +200,14 @@ EXPORT_NAME="CdkdCrossStackSecretPassword"
 PARAMETER_NAME="/cdkd-integ/cross-stack-secret-import/imported-secret"
 PASSWORD_OUTPUT="CrossStackSecretPasswordOutput"
 ARN_OUTPUT="CrossStackSecretArnOutput"
+# The consumer's own export, and the chain consumer's SSM sink (issue #2146).
+REEXPORT_NAME="CdkdCrossStackSecretReexport"
+REEXPORT_OUTPUT="ReexportedSecretOutput"
+CHAIN_PARAMETER_NAME="/cdkd-integ/cross-stack-secret-import/chained-secret"
 
 PRODUCER_STATE_KEY="cdkd/${PRODUCER}/${REGION}/state.json"
 CONSUMER_STATE_KEY="cdkd/${CONSUMER}/${REGION}/state.json"
+CHAIN_STATE_KEY="cdkd/${CHAIN_CONSUMER}/${REGION}/state.json"
 # Everything each stack owns in the bucket: state.json, lock.json,
 # rollback-journal.json and deployments/**. The shared exports index
 # (`cdkd/_index/...`) is deliberately NOT swept -- it is not this stack's key
@@ -177,6 +215,7 @@ CONSUMER_STATE_KEY="cdkd/${CONSUMER}/${REGION}/state.json"
 # prove it carries the expression rather than the plaintext.
 PRODUCER_STATE_PREFIX="$(s3_stack_prefix "${PRODUCER}" "${REGION}")"
 CONSUMER_STATE_PREFIX="$(s3_stack_prefix "${CONSUMER}" "${REGION}")"
+CHAIN_STATE_PREFIX="$(s3_stack_prefix "${CHAIN_CONSUMER}" "${REGION}")"
 INDEX_KEY="cdkd/_index/${REGION}/exports.json"
 
 # One run id for the whole script, exported BEFORE any cdkd invocation: every
@@ -251,8 +290,11 @@ sweep() {
   (
     set +eu
     if [ -f "${LOCAL_DIST}" ]; then
-      # Consumer FIRST: the producer's destroy is refused while the consumer's
-      # state.imports[] still names the export.
+      # DOWN THE CHAIN: each stack's destroy is refused while the stack below it
+      # still names its export in state.imports[], so the order is chain
+      # consumer, consumer, producer.
+      node "${LOCAL_DIST}" state destroy "${CHAIN_CONSUMER}" --state-bucket "${STATE_BUCKET:-}" \
+        --region "${REGION}" --yes >/dev/null 2>&1
       node "${LOCAL_DIST}" state destroy "${CONSUMER}" --state-bucket "${STATE_BUCKET:-}" \
         --region "${REGION}" --yes >/dev/null 2>&1
       node "${LOCAL_DIST}" state destroy "${PRODUCER}" --state-bucket "${STATE_BUCKET:-}" \
@@ -262,9 +304,11 @@ sweep() {
     # force-deleted: a scheduled deletion holds the NAME for its recovery
     # window and would block the next run's create.
     aws ssm delete-parameter --name "${PARAMETER_NAME}" --region "${REGION}" >/dev/null 2>&1
+    aws ssm delete-parameter --name "${CHAIN_PARAMETER_NAME}" --region "${REGION}" >/dev/null 2>&1
     aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
       --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1
     if [ -n "${STATE_BUCKET:-}" ]; then
+      aws s3 rm "s3://${STATE_BUCKET}/cdkd/${CHAIN_CONSUMER}/${REGION}/lock.json" >/dev/null 2>&1
       aws s3 rm "s3://${STATE_BUCKET}/cdkd/${CONSUMER}/${REGION}/lock.json" >/dev/null 2>&1
       aws s3 rm "s3://${STATE_BUCKET}/cdkd/${PRODUCER}/${REGION}/lock.json" >/dev/null 2>&1
       # `aws s3 rm` / `state destroy` only leave DELETE MARKERS on a versioned
@@ -279,6 +323,7 @@ sweep() {
       # SIGINT run's 130 into a 1.
       s3_purge_prefix_versions "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX:-}" noncurrent || true
       s3_purge_prefix_versions "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX:-}" noncurrent || true
+      s3_purge_prefix_versions "${STATE_BUCKET}" "${CHAIN_STATE_PREFIX:-}" noncurrent || true
     fi
   )
 }
@@ -313,14 +358,18 @@ assert_gone "producer state exists before the run - clean up first" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${PRODUCER_STATE_KEY}"
 assert_gone "consumer state exists before the run - clean up first" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CONSUMER_STATE_KEY}"
+assert_gone "chain consumer state exists before the run - clean up first" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHAIN_STATE_KEY}"
 wait_gone 6 "the SSM parameter exists before the run - a stale value could stand in for the imported one" \
   aws ssm get-parameter --name "${PARAMETER_NAME}" --region "${REGION}"
+wait_gone 6 "the chained SSM parameter exists before the run - a stale value could stand in for the chained one" \
+  aws ssm get-parameter --name "${CHAIN_PARAMETER_NAME}" --region "${REGION}"
 wait_gone 6 "the fixture secret exists before the run" \
   aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}"
 pass "clean slate"
 
 echo ""
-echo "==> Step 1: deploy Producer + Consumer"
+echo "==> Step 1: deploy Producer + Consumer + ChainConsumer"
 node "${LOCAL_DIST}" deploy --all --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 # --- Assertion 1: PREMISE -------------------------------------------------
@@ -762,8 +811,10 @@ fi
 # Pre-fix `Fn::ImportValue` never resolved, so the plaintext never became a
 # needle, `recordsChanged` stayed 0, and this line was `No plaintext secrets
 # found in <consumer>`. Exactly ONE record can change: the consumer owns one
-# resource record and declares no outputs, and step 7 proved exactly one record
-# was seeded.
+# resource record, and step 7 proved exactly one record was seeded. (It DOES
+# declare an output since issue #2146 made it the middle of the chain -- the
+# count is of RESOURCE records, which outputs are not, and the outputs bag is
+# left holding its expression by that seed.)
 if ! printf '%s' "${SCRUB_OUT}" | grep -qF "Scrubbed 1 resource record(s) in ${CONSUMER}"; then
   diag "${SCRUB_OUT}"
   fail "'cdkd scrub ${CONSUMER}' did not report 'Scrubbed 1 resource record(s)' — the seeded plaintext was never recognised, which is issue #2133 exactly: the Fn::ImportValue never resolved, so scrub had no needle and reported the stack clean"
@@ -1084,23 +1135,325 @@ PRE_REFUSE_CONSUMER_RAW=""
 POST_REFUSE_CONSUMER_RAW=""
 pass "the consumer's state.json is byte-identical across the refusal and still carries no plaintext"
 
-# --- Assertion 10: TEARDOWN ------------------------------------------------
-echo ""
-echo "==> Step 11 (assertion 10): destroy Consumer, then Producer"
 
+echo ""
+echo "==> Step 11 (assertion 10 - THE RE-EXPORT CHAIN): scrubbing the stack at the END of the chain"
+# Issue #2146. Everything above tests a DIRECT import: the consumer reads an
+# export whose producer TEMPLATE declares it from a literal
+# `{{resolve:secretsmanager:...}}` expression, and scrub's producer-plaintext
+# gate answers "is this export secret-bearing at all" by looking for exactly
+# that literal in exactly that one template.
+#
+# A RE-EXPORT has none. The CONSUMER's `ReexportedSecretOutput` declares
+# `{"Fn::ImportValue": "<the producer's export>"}`, so the gate looked at the
+# consumer's template, found no `{{resolve:`, returned `no`, and the pre-pass
+# returned early — and with the consumer's own `state.outputs` still holding a
+# plaintext (the pre-#1899 shape step 10 seeds for the producer), `cdkd scrub
+# <chain consumer>` printed `No plaintext secrets found` and exited 0 over a
+# record that still held the imported secret. That is the #2133 silent success
+# reached through a re-export instead of a direct import.
+#
+# THE CHAIN CONSUMER ALONE, NEVER `--all`, for the reason step 10 gives one link
+# lower down: `orderScrubTargets` sorts producers ahead of consumers, so an
+# `--all` run scrubs producer, then consumer, and reaches the chain consumer with
+# the condition already healed — green over a code path it never entered. A user
+# told to "scrub that stack" runs exactly the single-stack command this phase
+# runs.
+#
+# TWO HALVES, and neither can stand in for the other. 11a is the RESOLVE half:
+# with every stack healthy the walk must NOT refuse, and the chain must produce
+# the needle that rewrites this stack's seeded plaintext — a fix that refuses on
+# every re-export would pass 11b and fail here. 11b is the REFUSAL half: with the
+# middle stack's state seeded back to the pre-#1899 plaintext, scrub must exit 2
+# naming the chain, where pre-#2146 it exited 0 reporting the stack clean.
+
+# --- 11a: the chain RESOLVES end to end ------------------------------------
+CHAIN_STATE_JSON=$(node "${LOCAL_DIST}" state show "${CHAIN_CONSUMER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)
+CHAIN_PARAM_VALUE=$(printf '%s' "${CHAIN_STATE_JSON}" \
+  | jq -r '[.state.resources
+              | to_entries[]
+              | select(.value.resourceType=="AWS::SSM::Parameter")
+              | .value.properties.Value] | first // empty')
+case "${CHAIN_PARAM_VALUE}" in
+  '{{resolve:secretsmanager:'*)
+    pass "chain consumer state properties.Value kept the expression two hops from the secret: ${CHAIN_PARAM_VALUE}"
+    ;;
+  '')
+    fail "could not read the chained SSM parameter's persisted Value from ${CHAIN_CONSUMER}'s state"
+    ;;
+  *)
+    fail "chain consumer state properties.Value is NOT the {{resolve:...}} expression - the re-resolved plaintext was persisted two hops down the chain"
+    ;;
+esac
+# The LIVE resource carries the RESOLVED secret, which is what says the chain
+# actually delivered the value rather than a token or an empty string. Without
+# it every assertion below could hold over a chain that resolved to nothing.
+CHAIN_LIVE_VALUE=$(aws ssm get-parameter --name "${CHAIN_PARAMETER_NAME}" \
+  --region "${REGION}" --query 'Parameter.Value' --output text)
+if [ "${CHAIN_LIVE_VALUE}" != "${EXPECTED_PLAINTEXT}" ]; then
+  # Never echoed: on the failure this guards, the value is either the literal
+  # token or some other resolved value.
+  fail "the chained SSM parameter does not hold this run's plaintext (length ${#CHAIN_LIVE_VALUE}) — the re-export chain did not deliver the secret, so nothing below tests the chain"
+fi
+pass "the chained SSM parameter holds the resolved secret, so the chain delivered it end to end"
+
+# PREMISE for 11b's seed: the middle stack's own export is stored as the
+# EXPRESSION today, under BOTH keys the deploy writes (the output name and the
+# `Export.Name` alias). The seed below patches the alias — the one
+# `resolveImportValue`'s scan matches and the pre-pass then re-reads — so a
+# change that stopped writing it would make the seed a silent no-op.
+MIDDLE_STATE_JSON=$(node "${LOCAL_DIST}" state show "${CONSUMER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)
+MIDDLE_REEXPORT_VALUE=$(printf '%s' "${MIDDLE_STATE_JSON}" \
+  | jq -r --arg k "${REEXPORT_NAME}" '.state.outputs[$k] // empty')
+MIDDLE_REEXPORT_BY_NAME=$(printf '%s' "${MIDDLE_STATE_JSON}" \
+  | jq -r --arg k "${REEXPORT_OUTPUT}" '.state.outputs[$k] // empty')
+case "${MIDDLE_REEXPORT_VALUE}" in
+  '{{resolve:secretsmanager:'*)
+    pass "the middle stack's state.outputs[${REEXPORT_NAME}] holds the expression: ${MIDDLE_REEXPORT_VALUE}"
+    ;;
+  '')
+    fail "the middle stack's state.outputs carries no ${REEXPORT_NAME} key (keys: $(printf '%s' "${MIDDLE_STATE_JSON}" | jq -c '.state.outputs | keys')) — the re-export never reached state and the chain under test does not exist"
+    ;;
+  *)
+    fail "the middle stack's state.outputs[${REEXPORT_NAME}] is NOT the {{resolve:...}} expression (length ${#MIDDLE_REEXPORT_VALUE}) — the re-exported secret was persisted as a plaintext, which is a #1899 redaction regression rather than the #2146 case"
+    ;;
+esac
+if [ "${MIDDLE_REEXPORT_BY_NAME}" != "${MIDDLE_REEXPORT_VALUE}" ]; then
+  fail "the middle stack's state.outputs[${REEXPORT_OUTPUT}] and [${REEXPORT_NAME}] disagree — the export alias no longer mirrors the output, so the seed below would patch a key the read does not match"
+fi
+
+# Seed the chain consumer's record with the plaintext, the pre-GHSA shape, by
+# MATCHING the stored expression rather than a logical id — and require exactly
+# one match first, so the seed can be neither ambiguous nor a no-op. Same
+# construction as step 7, one link further down the chain.
+PRE_SEED_CHAIN_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${CHAIN_STATE_KEY}" -)
+assert_no_plaintext "the chain consumer's state immediately before the seed" "${PRE_SEED_CHAIN_RAW}"
+CHAIN_SEED_TARGETS=$(printf '%s' "${PRE_SEED_CHAIN_RAW}" \
+  | jq --arg expr "${CHAIN_PARAM_VALUE}" \
+       '[.resources | to_entries[] | select(.value.properties.Value == $expr)] | length')
+if [ "${CHAIN_SEED_TARGETS}" != "1" ]; then
+  fail "expected exactly ONE chain consumer record whose properties.Value is the imported expression, found ${CHAIN_SEED_TARGETS} — the seed would be ambiguous or a no-op and every assertion after it would pass vacuously"
+fi
+CHAIN_SEEDED_RAW=$(printf '%s' "${PRE_SEED_CHAIN_RAW}" \
+  | jq --arg expr "${CHAIN_PARAM_VALUE}" --arg plain "${EXPECTED_PLAINTEXT}" '
+      .resources |= with_entries(
+        if .value.properties.Value == $expr
+        then .value.properties.Value = $plain
+        else . end)')
+if ! printf '%s' "${CHAIN_SEEDED_RAW}" | grep -qF "${EXPECTED_PLAINTEXT}"; then
+  fail "the pre-#1899 seed did not take on the chain consumer — no plaintext in the patched document"
+fi
+printf '%s' "${CHAIN_SEEDED_RAW}" | aws s3 cp - "s3://${STATE_BUCKET}/${CHAIN_STATE_KEY}"
+CHAIN_SEEDED_RAW=""
+PRE_SEED_CHAIN_RAW=""
+SEEDED_CHAIN_VALUE=$(node "${LOCAL_DIST}" state show "${CHAIN_CONSUMER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json \
+  | jq -r '[.state.resources
+              | to_entries[]
+              | select(.value.resourceType=="AWS::SSM::Parameter")
+              | .value.properties.Value] | first // empty')
+if [ "${SEEDED_CHAIN_VALUE}" != "${EXPECTED_PLAINTEXT}" ]; then
+  fail "the chain consumer's persisted properties.Value is not the seeded plaintext (length ${#SEEDED_CHAIN_VALUE}) — scrub would have nothing to remove and 11a would be vacuous"
+fi
+pass "the chain consumer's state.json now HOLDS the imported secret's plaintext, as an older cdkd would have left it"
+
+set +e
+CHAIN_SCRUB_OUT=$(node "${LOCAL_DIST}" scrub "${CHAIN_CONSUMER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+CHAIN_SCRUB_RC=$?
+set -e
+assert_no_plaintext "'cdkd scrub ${CHAIN_CONSUMER}' output" "${CHAIN_SCRUB_OUT}"
+if [ "${CHAIN_SCRUB_RC}" -ne 0 ]; then
+  diag "${CHAIN_SCRUB_OUT}"
+  fail "'cdkd scrub ${CHAIN_CONSUMER}' exited ${CHAIN_SCRUB_RC} (expected 0) — every stack in the chain is healthy here, so a refusal means the chain walk refuses on a re-export it should have cleared"
+fi
+if ! printf '%s' "${CHAIN_SCRUB_OUT}" | grep -qF "Scrubbed 1 resource record(s) in ${CHAIN_CONSUMER}"; then
+  diag "${CHAIN_SCRUB_OUT}"
+  fail "'cdkd scrub ${CHAIN_CONSUMER}' did not report 'Scrubbed 1 resource record(s)' — the seeded plaintext two hops from the secret was never recognised"
+fi
+case "${CHAIN_SCRUB_OUT}" in
+  *"No plaintext secrets found in ${CHAIN_CONSUMER}"*)
+    diag "${CHAIN_SCRUB_OUT}"
+    fail "'cdkd scrub ${CHAIN_CONSUMER}' reported the stack clean over state this phase proved holds the plaintext"
+    ;;
+esac
+RESCRUBBED_CHAIN_VALUE=$(node "${LOCAL_DIST}" state show "${CHAIN_CONSUMER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json \
+  | jq -r '[.state.resources
+              | to_entries[]
+              | select(.value.resourceType=="AWS::SSM::Parameter")
+              | .value.properties.Value] | first // empty')
+if [ "${RESCRUBBED_CHAIN_VALUE}" != "${CHAIN_PARAM_VALUE}" ]; then
+  fail "scrub left the chain consumer's properties.Value as something other than the imported expression (length ${#RESCRUBBED_CHAIN_VALUE})"
+fi
+# Assigned first rather than inlined as `"$(aws s3 cp ...)"`: under `set -e` a
+# failed command substitution in ARGUMENT position does not abort, so the
+# assertion would run over an empty string and pass over nothing.
+SCRUBBED_CHAIN_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${CHAIN_STATE_KEY}" -)
+assert_no_plaintext "the chain consumer's persisted state file after scrub" "${SCRUBBED_CHAIN_RAW}"
+SCRUBBED_CHAIN_RAW=""
+# The seeded version is a real disclosure for as long as it survives, and
+# `noncurrent` for the reason step 8 gives: this stack is still DEPLOYED and its
+# CURRENT state.json is what the teardown destroys from.
+s3_purge_prefix_versions "${STATE_BUCKET}" "${CHAIN_STATE_PREFIX}" noncurrent || true
+assert_no_plaintext_in_versions "${CHAIN_STATE_PREFIX}" \
+  "the chain consumer's surviving state-object versions after scrub"
+pass "11a: scrub resolved the RE-EXPORTED secret and rewrote the record it was seeded into"
+
+# --- 11b: an unscrubbed MIDDLE stack makes scrub REFUSE --------------------
+# Backed up in a shell variable rather than a file, for the reason steps 9 and 10
+# give: this document carries the run's plaintext once seeded, and a scratch copy
+# on disk would outlive an abort.
+CONSUMER_STATE_BACKUP=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" -)
+PRE_SEED_REEXPORT=$(printf '%s' "${CONSUMER_STATE_BACKUP}" \
+  | jq -r --arg k "${REEXPORT_NAME}" '.outputs[$k] // empty')
+if [ "${PRE_SEED_REEXPORT}" != "${MIDDLE_REEXPORT_VALUE}" ]; then
+  fail "the middle stack's state.outputs[${REEXPORT_NAME}] is not the expression read a moment ago (length ${#PRE_SEED_REEXPORT}) — the seed below would not be the pre-#1899 shape and this phase would test nothing"
+fi
+MIDDLE_SEEDED=$(printf '%s' "${CONSUMER_STATE_BACKUP}" \
+  | jq --arg k "${REEXPORT_NAME}" --arg plain "${EXPECTED_PLAINTEXT}" '.outputs[$k] = $plain')
+printf '%s' "${MIDDLE_SEEDED}" | aws s3 cp - "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}"
+MIDDLE_SEEDED=""
+SEEDED_MIDDLE_REEXPORT=$(node "${LOCAL_DIST}" state show "${CONSUMER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json \
+  | jq -r --arg k "${REEXPORT_NAME}" '.state.outputs[$k] // empty')
+if [ "${SEEDED_MIDDLE_REEXPORT}" != "${EXPECTED_PLAINTEXT}" ]; then
+  fail "the middle stack's persisted state.outputs[${REEXPORT_NAME}] is not the seeded plaintext (length ${#SEEDED_MIDDLE_REEXPORT}) — the read below would return an expression and the refusal under test could not fire"
+fi
+pass "the middle stack's re-exported output now holds the BARE PLAINTEXT, as a pre-#1899 binary left it"
+
+PRE_REFUSE_CHAIN_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${CHAIN_STATE_KEY}" -)
+set +e
+CHAIN_REFUSE_OUT=$(node "${LOCAL_DIST}" scrub "${CHAIN_CONSUMER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+CHAIN_REFUSE_RC=$?
+set -e
+# Restore FIRST, assert second — a failed assertion here must not leave the
+# middle stack's export holding a plaintext for the teardown to destroy from.
+printf '%s' "${CONSUMER_STATE_BACKUP}" | aws s3 cp - "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}"
+CONSUMER_STATE_BACKUP=""
+RESTORED_REEXPORT=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - \
+  | jq -r --arg k "${REEXPORT_NAME}" '.outputs[$k] // empty')
+if [ "${RESTORED_REEXPORT}" != "${MIDDLE_REEXPORT_VALUE}" ]; then
+  fail "the middle stack's state was NOT restored (its ${REEXPORT_NAME} output reads back as a value of length ${#RESTORED_REEXPORT}) — a later phase would inherit the seeded plaintext and the teardown could not destroy the stack"
+fi
+pass "the middle stack's state was restored before any assertion ran"
+# The seed wrote a NONCURRENT version of the middle stack's state.json carrying
+# this run's plaintext in its outputs bag; purge it now rather than at teardown,
+# for the reason step 10 gives.
+s3_purge_key_versions "${STATE_BUCKET}" "${CONSUMER_STATE_KEY}" noncurrent || true
+
+assert_no_plaintext "'cdkd scrub ${CHAIN_CONSUMER}' re-export refusal output" "${CHAIN_REFUSE_OUT}"
+# THE DISCRIMINATOR, half one: rc CAPTURED and compared to 2 specifically. A 0
+# here is issue #2146 verbatim — the walk stopped at the middle template, found
+# no `{{resolve:`, and reported a stack holding a plaintext as clean.
+if [ "${CHAIN_REFUSE_RC}" -ne 2 ]; then
+  diag "${CHAIN_REFUSE_OUT}"
+  fail "'cdkd scrub ${CHAIN_CONSUMER}' exited ${CHAIN_REFUSE_RC} with the RE-EXPORTED value stored as a PLAINTEXT (expected 2) — this is issue #2146: the producer-plaintext gate asked only the middle stack's template, which declares no {{resolve:, so the stack was reported clean over surviving plaintext"
+fi
+# THE DISCRIMINATOR, half two: WHICH refusal, and it must be the PLAINTEXT one.
+# The middle stack's state is perfectly readable here, so an "unresolvable read"
+# refusal would mean the chain broke rather than that the gate followed it.
+if ! printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "resolved the Fn::ImportValue in resource"; then
+  # Sentinel: the stack NAME is printed by the summary independently of the
+  # refusal wording, so its presence proves the output was captured and the
+  # PARSE, not the run, came up empty (.claude/rules/testing.md).
+  if printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "${CHAIN_CONSUMER}"; then
+    diag "${CHAIN_REFUSE_OUT}"
+    fail "'cdkd scrub ${CHAIN_CONSUMER}' exited 2 but never said it RESOLVED the Fn::ImportValue — the exit code came from somewhere other than the plaintext-producer branch, or that refusal's wording drifted and this grep is now blind"
+  fi
+  fail "'cdkd scrub ${CHAIN_CONSUMER}' printed neither the refusal wording nor the stack name — the output was not captured at all"
+fi
+if printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "could not resolve the Fn::ImportValue in resource"; then
+  diag "${CHAIN_REFUSE_OUT}"
+  fail "'cdkd scrub ${CHAIN_CONSUMER}' refused with the UNRESOLVABLE-read message — the middle stack's state is readable here, so the chain broke rather than the gate following it"
+fi
+# It names the DIRECT producer — the middle stack, whose state holds the
+# plaintext — rather than the stack being scrubbed or the root of the chain.
+if ! printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "to a PLAINTEXT value: the producer stack '${CONSUMER}'"; then
+  diag "${CHAIN_REFUSE_OUT}"
+  fail "'cdkd scrub ${CHAIN_CONSUMER}' refused without naming '${CONSUMER}' as the producer holding the plaintext"
+fi
+# THE #2146 ASSERTION. Only a walk that FOLLOWED the re-export can emit this: it
+# names the stack at the head of the chain, which appears nowhere in the middle
+# stack's template except as the export name it imports.
+if ! printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "by RE-EXPORTING a value that '${PRODUCER}' declares from a {{resolve:...}} expression"; then
+  diag "${CHAIN_REFUSE_OUT}"
+  fail "'cdkd scrub ${CHAIN_CONSUMER}' refused without saying the evidence came through a RE-EXPORT naming '${PRODUCER}' — the verdict did not follow the chain, so this refusal fired for some other reason"
+fi
+# ...and it is NOT the `declared` verdict, which would mean the middle stack's
+# own template carries a literal `{{resolve:` — the fixture shape this phase
+# exists to exclude. A drift that put an expression into the middle stack would
+# make every assertion above pass for the DIRECT-import reason step 10 already
+# covers, leaving #2146 untested.
+if printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "declares '${REEXPORT_NAME}' from a {{resolve:...}} expression"; then
+  diag "${CHAIN_REFUSE_OUT}"
+  fail "'cdkd scrub ${CHAIN_CONSUMER}' refused with the DIRECT-import 'declared' verdict — the middle stack's template now carries a literal expression, so this phase is a duplicate of step 10 rather than a test of the chain"
+fi
+# THE REMEDY, and for a chain it is more than one command: the middle stack can
+# only store the expression once the head of the chain has been scrubbed, so a
+# refusal naming only the middle stack sends the operator into a second refusal.
+if ! printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "'cdkd scrub ${PRODUCER}', then 'cdkd scrub ${CONSUMER}'"; then
+  diag "${CHAIN_REFUSE_OUT}"
+  fail "'cdkd scrub ${CHAIN_CONSUMER}' refused without prescribing the chain in scrub order ('cdkd scrub ${PRODUCER}', then 'cdkd scrub ${CONSUMER}')"
+fi
+if ! printf '%s' "${CHAIN_REFUSE_OUT}" | grep -qF "1 stack(s) could not be scrubbed: ${CHAIN_CONSUMER}"; then
+  diag "${CHAIN_REFUSE_OUT}"
+  fail "'cdkd scrub ${CHAIN_CONSUMER}' refused without naming the stack in its summary"
+fi
+pass "11b: scrub refused with rc=2, followed the re-export to ${PRODUCER}, and prescribed the chain in scrub order"
+
+# SECONDARY NET, stated as such: both are satisfied by any path that stopped
+# short, which is why the rc and the wording above are the discriminators.
+case "${CHAIN_REFUSE_OUT}" in
+  *"No plaintext secrets found in ${CHAIN_CONSUMER}"*)
+    diag "${CHAIN_REFUSE_OUT}"
+    fail "'cdkd scrub ${CHAIN_CONSUMER}' reported the stack clean while refusing — the summary and the refusal contradict each other"
+    ;;
+esac
+case "${CHAIN_REFUSE_OUT}" in
+  *'Scrubbed '*)
+    diag "${CHAIN_REFUSE_OUT}"
+    fail "'cdkd scrub ${CHAIN_CONSUMER}' claims it rewrote a record while refusing — there is no expression to write, which is the whole reason this branch refuses"
+    ;;
+esac
+POST_REFUSE_CHAIN_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${CHAIN_STATE_KEY}" -)
+if [ "${POST_REFUSE_CHAIN_RAW}" != "${PRE_REFUSE_CHAIN_RAW}" ]; then
+  fail "the chain consumer's state.json changed across a REFUSED scrub — the refusal must write nothing, and fabricating a value into an imported secret's leaf is the #1934 break class this branch exists to avoid"
+fi
+assert_no_plaintext "the chain consumer's persisted state file after the refusal" "${POST_REFUSE_CHAIN_RAW}"
+PRE_REFUSE_CHAIN_RAW=""
+POST_REFUSE_CHAIN_RAW=""
+pass "the chain consumer's state.json is byte-identical across the refusal and still carries no plaintext"
+
+# --- Assertion 11: TEARDOWN ------------------------------------------------
+echo ""
+echo "==> Step 12 (assertion 11): destroy ChainConsumer, then Consumer, then Producer"
+
+# DOWN THE CHAIN. Each destroy is refused while the stack below still names the
+# export in its state.imports[], so this order is a property of the fixture
+# rather than a preference.
+node "${LOCAL_DIST}" destroy "${CHAIN_CONSUMER}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --force
 node "${LOCAL_DIST}" destroy "${CONSUMER}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --force
 node "${LOCAL_DIST}" destroy "${PRODUCER}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --force
 
 echo ""
-echo "==> Step 12: no orphans left behind"
+echo "==> Step 13: no orphans left behind"
+assert_gone "chain consumer state still exists after destroy" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHAIN_STATE_KEY}"
 assert_gone "consumer state still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CONSUMER_STATE_KEY}"
 assert_gone "producer state still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${PRODUCER_STATE_KEY}"
 wait_gone 6 "the imported-value SSM parameter still exists after destroy" \
   aws ssm get-parameter --name "${PARAMETER_NAME}" --region "${REGION}"
+wait_gone 6 "the chained-value SSM parameter still exists after destroy" \
+  aws ssm get-parameter --name "${CHAIN_PARAMETER_NAME}" --region "${REGION}"
 # describe-secret SUCCEEDS for a secret merely SCHEDULED for deletion (it
 # returns DeletedDate), so this also catches a destroy that left a 7-day
 # pending-deletion secret holding the name. Only a FORCE delete makes it 404.
@@ -1121,6 +1474,11 @@ else
   if [ "${STILL_INDEXED}" != "no" ]; then
     fail "the exports index still carries ${EXPORT_NAME} after the producer was destroyed"
   fi
+  REEXPORT_STILL_INDEXED=$(printf '%s' "${INDEX_AFTER}" \
+    | jq -r --arg k "${REEXPORT_NAME}" 'if ((.exports // {}) | has($k)) then "yes" else "no" end')
+  if [ "${REEXPORT_STILL_INDEXED}" != "no" ]; then
+    fail "the exports index still carries ${REEXPORT_NAME} after the middle stack was destroyed"
+  fi
   assert_no_plaintext "the exports index after teardown" "${INDEX_AFTER}"
 fi
 pass "no orphan state, parameter, secret or exports-index entry"
@@ -1139,8 +1497,10 @@ sweep
 trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX}" all || true
 s3_purge_prefix_versions "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX}" all || true
+s3_purge_prefix_versions "${STATE_BUCKET}" "${CHAIN_STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX}" "cross-stack-secret-import producer state teardown"
 s3_assert_versions_swept "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX}" "cross-stack-secret-import consumer state teardown"
+s3_assert_versions_swept "${STATE_BUCKET}" "${CHAIN_STATE_PREFIX}" "cross-stack-secret-import chain consumer state teardown"
 
 echo ""
 echo "==> All cross-stack-secret-import assertions passed"

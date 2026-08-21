@@ -61,3 +61,24 @@ export function integSecretPlaintext(): string {
   const runId = process.env['CDKD_INTEG_RUN_ID'] ?? 'local';
   return `integ-1934-${runId}`;
 }
+
+/**
+ * `Output.Export.Name` on the CONSUMER, which RE-EXPORTS the value it imported
+ * from the producer (issue
+ * [#2146](https://github.com/go-to-k/cdkd/issues/2146)).
+ *
+ * This is what turns the fixture from a two-stack import into a CHAIN: the
+ * consumer's template declares this output as `{"Fn::ImportValue":
+ * "CdkdCrossStackSecretPassword"}` — no literal `{{resolve:` anywhere in it —
+ * which is exactly the shape that defeated scrub's producer-plaintext refusal,
+ * since that gate asked only the DIRECT producer's template for an expression.
+ */
+export const REEXPORT_NAME = 'CdkdCrossStackSecretReexport';
+
+/**
+ * The SSM parameter at the END of the chain, written by the chain consumer.
+ *
+ * Distinct from {@link PARAMETER_NAME} so both consumers can be read back
+ * independently and neither can stand in for the other.
+ */
+export const CHAIN_PARAMETER_NAME = '/cdkd-integ/cross-stack-secret-import/chained-secret';
