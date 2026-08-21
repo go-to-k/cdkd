@@ -465,7 +465,15 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   if (
     totalStacksScrubbed === 0 &&
     totalStacksWithUnscrubbableKeys === 0 &&
-    totalStacksWithUnverifiableReads === 0
+    totalStacksWithUnverifiableReads === 0 &&
+    // ...and the issue #2157 finding, which the first cut of that change left
+    // out of THIS gate while wiring the per-stack one. A deferred-unresolved
+    // finding is the zero-needle / zero-rewrite shape by construction, so it
+    // took this early `return` and printed `No plaintext secrets found in any
+    // target stack state` -- BEFORE `deferredNote` renders and before `--fail`
+    // can throw. That is the same false-clean the finding exists to prevent,
+    // reproduced one level up from where it was fixed.
+    totalStacksWithDeferredUnresolved === 0
   ) {
     // "in any target stack state" would be a claim about stacks this run never
     // got through, which is the same false-success the refusal exists to
@@ -854,6 +862,25 @@ class ScrubResolvers {
 }
 
 /**
+ * One leaf the region pre-pass handed to the primary resolver instead of
+ * classifying itself (issue
+ * [#2157](https://github.com/go-to-k/cdkd/issues/2157)).
+ *
+ * The RAW leaf is carried alongside the path because it is the evidence: a
+ * deferral is only a problem if nothing downstream resolved it, and the cheap
+ * observable for that is the raw text SURVIVING verbatim in the resolved bag.
+ * Anything that actually resolved the reference — the primary resolver, a
+ * region-pinned sibling, `resolveSub` / `resolveJoin` assembling and then
+ * substituting — replaces that text.
+ */
+interface DeferredAssembledLeaf {
+  /** `a.b[0].c` within the bag; empty at the root. */
+  path: string;
+  /** The leaf exactly as the template held it. */
+  leaf: string;
+}
+
+/**
  * What {@link pinCrossRegionSecrets} needs to decide, and then act on, the
  * region question for one template bag (issue #2109).
  */
@@ -890,7 +917,7 @@ interface CrossRegionSecretContext {
    * MUTATED BY THIS PASS. Each caller supplies a fresh array and reads it after
    * its own `resolver.resolve`.
    */
-  deferredAssembled: string[];
+  deferredAssembled: DeferredAssembledLeaf[];
   resolvers: ScrubResolvers;
   /**
    * The SAME map the primary resolution records into, so a producer-region
@@ -1208,7 +1235,7 @@ async function resolveForeignRegionTokens(
     // left this pass unclassified, because the resolver's failure on it is
     // otherwise indistinguishable from an ordinary partial resolution. See
     // {@link CrossRegionSecretContext.deferredAssembled}.
-    ctx.deferredAssembled.push(leafPath);
+    ctx.deferredAssembled.push({ path: leafPath, leaf });
     return leaf;
   }
   const verdicts = tokens.map(
@@ -2877,28 +2904,71 @@ export async function scrubStack(
      */
     const deferredUnresolved: string[] = [];
     const recordDeferredResolutionFailure = (
-      deferred: readonly string[],
+      deferred: readonly DeferredAssembledLeaf[],
       origin: string,
+      resolved: { value: unknown } | undefined,
       err: unknown,
       secrets: RecordedSecretValues
     ): void => {
       if (deferred.length === 0) return;
-      // The LEAF PATHS, not just the origin: a deferred reference is one leaf of
-      // a bag that can carry hundreds, and the remedy (make the producer region
-      // answer, or spell the reference as one complete literal) needs the leaf.
-      const detail =
-        `${origin} at ${deferred.join(', ')}: ` +
-        // MASKED for the reason every other echo of a resolver error here is:
-        // the bag was already substituted into by the pin.
-        maskSecretsInText(err instanceof Error ? err.message : String(err), secrets);
-      deferredUnresolved.push(detail);
-      logger.warn(
-        `Scrub of ${stack.stackName} could not resolve a secret reference the intrinsics ASSEMBLE ` +
-          `in ${detail} — its region is decided only after assembly, so this pass handed it to the ` +
-          `resolver and the resolver could not answer. No needle was recorded for that leaf, so ` +
-          `this stack is NOT reported clean. Make the region the reference names answer for it, or ` +
-          `spell it as one complete literal '{{resolve:...}}' so the failure names the reference.`
-      );
+      // EVIDENCE, NOT "something threw" -- and the difference is two defects,
+      // both found by round 2 of review.
+      //
+      // Keying on the catch alone MISSED the commonest shape: an `Fn::Sub`
+      // whose placeholder scrub cannot evaluate (it takes no `--parameters`)
+      // is warn-and-KEPT by `resolveSub`, so the leaf comes back carrying its
+      // `{{resolve:` opening, `resolveDynamicReferences` matches no token in
+      // it, and NOTHING THROWS. No needle, no finding, stack reported clean --
+      // exactly what the pre-#2157 refusal prevented. The same holds for an
+      // assembled `ssm-secure:` leaf, which the supported-service arm declines.
+      //
+      // Keying on the catch alone also OVER-reported: an unrelated `Ref`-not-in
+      // -state failure elsewhere in the same bag made every deferred leaf a
+      // finding even when the resolver had answered them.
+      //
+      // So the test is per LEAF and observational: did its raw text survive the
+      // resolution verbatim? Anything that resolved the reference -- the
+      // primary, a region-pinned sibling, `resolveSub` / `resolveJoin`
+      // assembling and substituting -- replaces that text.
+      //
+      // On the THROW path there IS no resolved bag to inspect, so every
+      // deferred leaf is recorded. That over-reports when the throw came from
+      // an unrelated leaf that happened to share the bag, and the direction is
+      // deliberate: this command's failure mode is reporting a stack clean over
+      // surviving plaintext, so an extra warning costs a re-run while a missing
+      // one costs the disclosure.
+      const surviving =
+        resolved === undefined
+          ? [...deferred]
+          : ((): DeferredAssembledLeaf[] => {
+              const rendered = JSON.stringify(resolved.value ?? null);
+              return deferred.filter((d) => rendered.includes(d.leaf));
+            })();
+      if (surviving.length === 0) return;
+      for (const leaf of surviving) {
+        // ONE ENTRY PER LEAF, so the `N secret reference(s)` the summary renders
+        // is a count of references rather than of bags (round 2 review).
+        //
+        // The path is `''` for a scalar `Export.Name` / output `Value` bag, so
+        // it is rendered conditionally -- the same shape the refusal this
+        // replaced used, which was dropped on the first cut and printed
+        // `output 'X' at : <message>`.
+        const detail =
+          `${origin}${leaf.path ? ` at '${leaf.path}'` : ''}: ` +
+          // MASKED for the reason every other echo of a resolver error here is:
+          // the bag was already substituted into by the pin.
+          (err === undefined
+            ? 'the reference was returned unresolved, so no needle was recorded for it'
+            : maskSecretsInText(err instanceof Error ? err.message : String(err), secrets));
+        deferredUnresolved.push(detail);
+        logger.warn(
+          `Scrub of ${stack.stackName} could not resolve a secret reference the intrinsics ` +
+            `ASSEMBLE in ${detail} — its region is decided only after assembly, so this pass ` +
+            `handed it to the resolver and the resolver could not answer. No needle was recorded ` +
+            `for that leaf, so this stack is NOT reported clean. Make the region the reference ` +
+            `names answer for it, or spell it as one complete literal '{{resolve:...}}'.`
+        );
+      }
     };
     let parameters: Record<string, unknown> = {};
     let conditions: Record<string, boolean> = {};
@@ -3053,7 +3123,7 @@ export async function scrubStack(
       // swallowed would leave the command reporting success over a state file
       // it never scrubbed, which is the one outcome the issue says must not
       // survive.
-      const deferredAssembled: string[] = [];
+      const deferredAssembled: DeferredAssembledLeaf[] = [];
       const resolveInput = await pinCrossRegionSecrets(
         templateResource.Properties,
         stack.stackName,
@@ -3078,7 +3148,16 @@ export async function scrubStack(
       // all, so a read it needs is one the deploy never made.
       await resolveCrossStackReads(resolveInput, resourceContext, `resource '${logicalId}'`);
       try {
-        await resolver.resolve(resolveInput, resourceContext);
+        // The RESULT is captured, not discarded: it is the evidence
+        // `recordDeferredResolutionFailure` tests a deferred leaf against.
+        const resolvedProps = await resolver.resolve(resolveInput, resourceContext);
+        recordDeferredResolutionFailure(
+          deferredAssembled,
+          `resource '${logicalId}'`,
+          { value: resolvedProps },
+          undefined,
+          recordedSecretValues
+        );
       } catch (err) {
         // A region-AMBIGUOUS refusal is not best-effort -- see
         // `isRegionAmbiguousRefusal`.
@@ -3091,6 +3170,7 @@ export async function scrubStack(
         recordDeferredResolutionFailure(
           deferredAssembled,
           `resource '${logicalId}'`,
+          undefined,
           err,
           recordedSecretValues
         );
@@ -3202,7 +3282,7 @@ export async function scrubStack(
         // but the region question is the expression's, not the position's — and
         // this resolution's RESULT becomes a state key, so a wrong-region answer
         // here mis-keys the whole positioned outputs pass.
-        const nameDeferred: string[] = [];
+        const nameDeferred: DeferredAssembledLeaf[] = [];
         const nameSource = await pinCrossRegionSecrets(declaredExportName, stack.stackName, {
           stackRegion: region,
           producerRegions,
@@ -3230,6 +3310,13 @@ export async function scrubStack(
         });
         try {
           exportName = await resolver.resolve(nameSource, nameContext);
+          recordDeferredResolutionFailure(
+            nameDeferred,
+            `Export.Name of output '${name}'`,
+            { value: exportName },
+            undefined,
+            outputSecrets
+          );
         } catch (err) {
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
@@ -3238,6 +3325,7 @@ export async function scrubStack(
           recordDeferredResolutionFailure(
             nameDeferred,
             `Export.Name of output '${name}'`,
+            undefined,
             err,
             outputSecrets
           );
@@ -3354,7 +3442,7 @@ export async function scrubStack(
       // Issue #2109, same treatment and same placement as the two above. The
       // POSITION source written just above is the ORIGINAL `value`, never this
       // copy: `redactSecretsForState` reads UNRESOLVED expressions off it.
-      const valueDeferred: string[] = [];
+      const valueDeferred: DeferredAssembledLeaf[] = [];
       const valueSource = await pinCrossRegionSecrets(value, stack.stackName, {
         stackRegion: region,
         producerRegions,
@@ -3371,13 +3459,26 @@ export async function scrubStack(
         canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
       });
       try {
-        await resolver.resolve(valueSource, valueContext);
+        const resolvedValue = await resolver.resolve(valueSource, valueContext);
+        recordDeferredResolutionFailure(
+          valueDeferred,
+          `output '${name}'`,
+          { value: resolvedValue },
+          undefined,
+          outputSecrets
+        );
       } catch (err) {
         // A region-AMBIGUOUS refusal is not best-effort -- see
         // `isRegionAmbiguousRefusal`.
         if (isRegionAmbiguousRefusal(err)) throw err;
         // Issue #2157, same treatment as the two above.
-        recordDeferredResolutionFailure(valueDeferred, `output '${name}'`, err, outputSecrets);
+        recordDeferredResolutionFailure(
+          valueDeferred,
+          `output '${name}'`,
+          undefined,
+          err,
+          outputSecrets
+        );
         // MASKED for the same reason as the two above — `valueSource` is a
         // post-pin bag. Verbose-only.
         logger.debug(
