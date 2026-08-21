@@ -4,6 +4,7 @@ import {
   DEFAULT_RESOURCE_TIMEOUT_MS,
 } from '../deployment/deploy-engine.js';
 import { getLogger } from '../utils/logger.js';
+import { DEFAULT_STATE_PREFIX } from './commands/state-file-keys.js';
 
 /**
  * Parse context key=value pairs from CLI arguments into a Record
@@ -114,7 +115,9 @@ export const stateOptions = [
     '--state-bucket <bucket>',
     'S3 bucket for state storage. Falls back to CDKD_STATE_BUCKET env or cdk.json'
   ),
-  new Option('--state-prefix <prefix>', 'S3 key prefix for state files').default('cdkd'),
+  new Option('--state-prefix <prefix>', 'S3 key prefix for state files').default(
+    DEFAULT_STATE_PREFIX
+  ),
 ];
 
 /**

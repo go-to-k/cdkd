@@ -14,6 +14,7 @@ import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling, normalizeAwsError, CdkdError } from '../../utils/error-handler.js';
 import { bootstrapDestroyCommand } from './bootstrap-destroy.js';
+import { DEFAULT_STATE_PREFIX } from './state-file-keys.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
@@ -164,7 +165,7 @@ async function bootstrapCommand(options: {
         region: effective.region,
         ...(options.profile && { profile: options.profile }),
       }),
-      { bucket: bucketName, prefix: 'cdkd' },
+      { bucket: bucketName, prefix: DEFAULT_STATE_PREFIX },
       { region: effective.region, ...(options.profile && { profile: options.profile }) }
     );
     try {
@@ -374,7 +375,7 @@ async function bootstrapCommand(options: {
       });
       const stateBackend = new S3StateBackend(
         markerS3Client,
-        { bucket: bucketName, prefix: 'cdkd' },
+        { bucket: bucketName, prefix: DEFAULT_STATE_PREFIX },
         { region, ...(options.profile && { profile: options.profile }) }
       );
       try {

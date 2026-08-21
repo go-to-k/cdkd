@@ -32,6 +32,8 @@ import {
   listAllLockKeys,
   describeStateKey,
   LOCK_FILE_SUFFIX,
+  STATE_FILE_SUFFIX,
+  DEFAULT_STATE_PREFIX,
 } from './state-file-keys.js';
 
 /**
@@ -645,7 +647,7 @@ async function scanReferencedAssets(
     try {
       parsed = JSON.parse(body);
     } catch (error) {
-      const described = describeStateKey(key);
+      const described = describeStateKey(key, STATE_FILE_SUFFIX, DEFAULT_STATE_PREFIX);
       const regionMatch = /^(\S+) \((\S+)\)$/.exec(described);
       const inspectHint = regionMatch
         ? `cdkd state show ${regionMatch[1]} --stack-region ${regionMatch[2]}`
@@ -1022,7 +1024,7 @@ export async function gcCommand(options: GcOptions): Promise<void> {
   });
   const stateBackend = new S3StateBackend(
     markerS3Client,
-    { bucket: bucketName, prefix: 'cdkd' },
+    { bucket: bucketName, prefix: DEFAULT_STATE_PREFIX },
     { region: effective.region, ...(options.profile && { profile: options.profile }) }
   );
 
@@ -1111,7 +1113,7 @@ export async function gcCommand(options: GcOptions): Promise<void> {
     const lockKeys = await listAllLockKeys(stateBackend);
     if (lockKeys.length > 0) {
       const listing = lockKeys
-        .map((k) => `  - ${describeStateKey(k, LOCK_FILE_SUFFIX)}  [${k}]`)
+        .map((k) => `  - ${describeStateKey(k, LOCK_FILE_SUFFIX, DEFAULT_STATE_PREFIX)}  [${k}]`)
         .join('\n');
       throw new CdkdError(
         `Refusing to gc while ${lockKeys.length} stack(s) hold an active lock ` +

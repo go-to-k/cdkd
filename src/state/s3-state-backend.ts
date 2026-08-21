@@ -43,7 +43,12 @@ export interface StackStateRef {
  * deep — split off into a constant so call sites can clearly distinguish
  * "two-segment legacy key" from "three-segment new key".
  */
-const LEGACY_KEY_DEPTH = 2;
+/**
+ * `{stack}/state.json` — one segment plus the file, i.e. the v1 region-less
+ * layout. Exported because `state-file-keys.ts` classifies the same layouts
+ * from the other side and the two must not drift (issue #2001).
+ */
+export const LEGACY_KEY_DEPTH = 2;
 /** The `version: 2` region-prefixed key. */
 const NEW_KEY_DEPTH = 3;
 

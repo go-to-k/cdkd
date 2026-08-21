@@ -502,6 +502,99 @@ describe('cdkd gc', () => {
     expectNothingDeleted();
   });
 
+  describe('European Sovereign Cloud state keys (issue #2001)', () => {
+    // The downstream half of the `REGION_SEGMENT` widening. `gc` does not just
+    // DISPLAY the described key — the corrupt-state abort builds a recovery
+    // COMMAND out of it — so this is where the "which way does the mismatch
+    // fail" audit becomes executable. Pre-fix `describeStateKey` reported the
+    // region AS the stack name for this partition, and the hint named a stack
+    // that does not exist.
+    const EUSC_STATE_KEY = 'cdkd/PaymentsApi/eusc-de-east-1/state.json';
+
+    it('builds the recovery hint from the DEPTH rule, not the shape heuristic', async () => {
+      // The eusc case below fences the {2,4} widening; this one fences the
+      // prefix threading, which the widening cannot substitute for. A legacy
+      // `cdkd/demo-app-1/state.json` is read as `cdkd (demo-app-1)` by the
+      // shape heuristic, so the hint would name `cdkd` as the stack and
+      // `demo-app-1` as its region -- wrong in both arguments.
+      const LEGACY_KEY = 'cdkd/demo-app-1/state.json';
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === '') return [MARKER_KEY, LEGACY_KEY];
+        return [];
+      });
+      stateBackendMocks.getRawObject.mockImplementation(async (key: string) => {
+        if (key === MARKER_KEY) return MARKER_BODY;
+        if (key === LEGACY_KEY) return 'this is { not json';
+        return null;
+      });
+
+      let message = '';
+      try {
+        await runGc(['--yes']);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toMatch(/cdkd state show demo-app-1/);
+      expect(message).not.toMatch(/--stack-region demo-app-1/);
+      expectNothingDeleted();
+    });
+
+    it('names the stack and its region in the corrupt-state recovery hint', async () => {
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === '') return [MARKER_KEY, EUSC_STATE_KEY];
+        return [];
+      });
+      stateBackendMocks.getRawObject.mockImplementation(async (key: string) => {
+        if (key === MARKER_KEY) return MARKER_BODY;
+        if (key === EUSC_STATE_KEY) return 'this is { not json';
+        return null;
+      });
+
+      // Both halves matter: the stack name AND the --stack-region flag. Pre-fix
+      // the hint was `cdkd state show eusc-de-east-1` with no flag at all.
+      await expect(runGc(['--yes'])).rejects.toThrow(
+        /cdkd state show PaymentsApi --stack-region eusc-de-east-1/
+      );
+      expectNothingDeleted();
+    });
+
+    it('names the stack, not the region, in the lock-guard listing', async () => {
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === '')
+          return [MARKER_KEY, STATE_KEY, 'cdkd/LockedStack/eusc-de-east-1/lock.json'];
+        return [];
+      });
+
+      await expect(runGc(['--yes'])).rejects.toThrow(/LockedStack \(eusc-de-east-1\)/);
+      expectNothingDeleted();
+    });
+
+    it('does not read a LEGACY region-shaped stack name as a region in that listing', async () => {
+      // The case above cannot pin the prefix THREADING, because a
+      // region-shaped region segment is one the depth rule and the shape
+      // heuristic agree on -- drop the prefix argument at the call site and it
+      // stays green. A legacy region-less key whose stack is named
+      // `demo-app-1` is where the two disagree, so this is the case that goes
+      // red if the threading is ever removed.
+      stateBackendMocks.listRawKeys.mockImplementation(async (prefix: string) => {
+        if (prefix === '') return [MARKER_KEY, STATE_KEY, 'cdkd/demo-app-1/lock.json'];
+        return [];
+      });
+
+      let message = '';
+      try {
+        await runGc(['--yes']);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toMatch(/demo-app-1/);
+      // Without the threading the descriptor is `cdkd (demo-app-1)` -- the
+      // state PREFIX reported as the stack name.
+      expect(message).not.toMatch(/cdkd \(demo-app-1\)/);
+      expectNothingDeleted();
+    });
+  });
+
   it('--dry-run prints the plan and performs zero mutations without prompting', async () => {
     await runGc(['--dry-run']);
 

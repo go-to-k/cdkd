@@ -1038,9 +1038,13 @@ export const dynamicReferenceRetryDelays: { sleep?: (ms: number) => Promise<void
  * a hostname that does not exist and the SDK fails loudly.
  *
  * Note the sibling pattern in `src/cli/commands/state-file-keys.ts` is NOT
- * reusable here: it requires `^[a-z]{2}(-[a-z]+)+-\d+$`, which rejects
- * `eusc-de-east-1` (the European Sovereign Cloud partition's four-letter
- * prefix).
+ * reusable here, and the reason is structural rather than a gap in its
+ * coverage: it is SHAPE-based because its job is the opposite one — telling a
+ * region segment apart from a stack name sitting in the same key position —
+ * so it must enumerate the shape this predicate refuses to. (Its prefix was
+ * exactly `^[a-z]{2}` until issue #2001, which is what made it reject the
+ * European Sovereign Cloud partition's four-letter `eusc-de-east-1`; it now
+ * takes `{2,4}`, and is still the wrong tool here.)
  *
  * Callers must {@link canonicalizeRegion} first — `US-EAST-1` is a documented
  * input and is lowercase-canonical, not invalid.
