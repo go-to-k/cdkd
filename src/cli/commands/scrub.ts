@@ -1596,6 +1596,106 @@ function unresolvableCrossStackReadError(
 }
 
 /**
+ * The two sentences the plaintext-producer refusal is built from: what the
+ * producer's TEMPLATE is being claimed to say, and the remedy that clears it
+ * (issues [#2133](https://github.com/go-to-k/cdkd/issues/2133) review and
+ * [#2146](https://github.com/go-to-k/cdkd/issues/2146) review).
+ *
+ * SEPARATE FROM THE ERROR BUILDER so both can be tested over verdict shapes the
+ * walk does not produce today. The one below — `chained` with an EMPTY `via` —
+ * is exactly such a shape: unreachable, because `chained` only ever returns
+ * from a non-root frame whose `via` therefore has at least one entry, and yet
+ * the arm that used to catch it was the WIDENED wording, which asserts "this run
+ * could not match '<key>' to a declared output" — false of every `chained`
+ * verdict, since a chained one matched the key and left through its value.
+ *
+ * WHICH SIGNAL KEYS WHICH ARM, since this file has now been round-tripped on it
+ * once. The CLAIM keys on `kind`: only `widened` may say "could not say which",
+ * and no amount of chain changes that. WHAT the claim names keys on the chain:
+ * a `widened` verdict CAN have crossed a re-export, and saying "publishes at
+ * least one output from a `{{resolve:...}}` expression" when the walk has just
+ * established that none of its outputs does is the same over-claim in the other
+ * direction.
+ *
+ * `via` IS DE-DUPLICATED, and may name the producer itself (issue #2146 review).
+ * A chain that returns to the direct producer under a DIFFERENT output key —
+ * `A -> B -> A`, or a self-import `A -> A` — is a real walk result, since the
+ * visited set is keyed by `(stack, key)` rather than by stack. Left as-is it
+ * rendered "producer 'A' ... RE-EXPORTING a value that 'A' declares ... (through
+ * 'A')" and a remedy running `cdkd scrub A` two or three times, which reads as a
+ * bug in the tool rather than as advice. The claim de-duplicates
+ * ORDER-PRESERVINGLY keeping the FIRST occurrence (so the stack that declares
+ * the expression stays last, where `chainRoot` reads it), and the remedy keeps
+ * the LAST (so the DIRECT producer — the one actually holding the plaintext —
+ * stays at the end of the order, where the user must scrub it).
+ *
+ * Naming the producer inside its own chain is left standing rather than
+ * filtered: for `A -> B -> A` it is A that declares the expression, under an
+ * output the consumer's key did not match, so dropping it would move the claim
+ * onto B, which declares nothing.
+ */
+export function scrubRefusalWording(
+  verdict: SecretExpressionVerdict,
+  loggedExportKey: string,
+  loggedProducerStack: string,
+  loggedVia: readonly string[]
+): { templateClaim: string; remedy: string } {
+  const chain = dedupePreservingOrder(loggedVia, 'first');
+  const chainRoot = chain[chain.length - 1];
+  const through =
+    chain.length > 1
+      ? ` (through ${chain
+          .slice(0, -1)
+          .map((s) => `'${s}'`)
+          .join(', ')})`
+      : '';
+  const templateClaim =
+    verdict.kind === 'declared'
+      ? `declares '${loggedExportKey}' from a {{resolve:...}} expression`
+      : verdict.kind === 'chained'
+        ? chainRoot !== undefined
+          ? `publishes '${loggedExportKey}' by RE-EXPORTING a value that '${chainRoot}' declares ` +
+            `from a {{resolve:...}} expression${through}`
+          : `publishes '${loggedExportKey}' by RE-EXPORTING a value another stack of this app ` +
+            `declares from a {{resolve:...}} expression`
+        : chainRoot !== undefined
+          ? `publishes at least one output that RE-EXPORTS a value '${chainRoot}' declares from ` +
+            `a {{resolve:...}} expression${through} (this run could not match ` +
+            `'${loggedExportKey}' to a declared output, so it cannot say which)`
+          : `publishes at least one output from a {{resolve:...}} expression (this run could not ` +
+            `match '${loggedExportKey}' to a declared output, so it cannot say which)`;
+  // A CHAIN is scrubbed from its HEAD, and naming only the direct producer would
+  // send the user into a second refusal: that producer can only store the
+  // expression once ITS own producer has been scrubbed down to one.
+  const scrubOrder = dedupePreservingOrder(
+    [...chain].reverse().concat(loggedProducerStack),
+    'last'
+  );
+  const remedy =
+    scrubOrder.length > 1
+      ? `Scrub the producers first, from the head of the chain (` +
+        `${scrubOrder.map((s) => `'cdkd scrub ${s}'`).join(', then ')})`
+      : `Scrub the producer first ('cdkd scrub ${loggedProducerStack}')`;
+  return { templateClaim, remedy };
+}
+
+/**
+ * `values` with repeats removed, keeping either the FIRST or the LAST occurrence
+ * of each and preserving the order of the ones kept.
+ */
+function dedupePreservingOrder(values: readonly string[], keep: 'first' | 'last'): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const ordered = keep === 'last' ? [...values].reverse() : values;
+  for (const value of ordered) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return keep === 'last' ? out.reverse() : out;
+}
+
+/**
  * The refusal a cross-stack read raises when it SUCCEEDED but the PRODUCER's
  * own state record still stores the PLAINTEXT (issue
  * [#2133](https://github.com/go-to-k/cdkd/issues/2133) review).
@@ -1654,11 +1754,20 @@ function plaintextProducerCrossStackReadError(
   // verdict came from scanning every output of the producer, so asserting that
   // this key in particular is declared from an expression would be a statement
   // the code did not check.
-  const templateClaim =
-    verdict === 'declared'
-      ? `declares '${loggedExportKey}' from a {{resolve:...}} expression`
-      : `publishes at least one output from a {{resolve:...}} expression (this run could not ` +
-        `match '${loggedExportKey}' to a declared output, so it cannot say which)`;
+  //
+  // The RE-EXPORT case (issue #2146): the direct producer's own outputs carry no
+  // `{{resolve:`, and the evidence came from following its re-exported import up
+  // to the stack that does declare one. The message names THAT stack, because
+  // the remedy differs — see below.
+  //
+  // Both halves are built by {@link scrubRefusalWording}, which is where the
+  // `widened` / `chained` split and the chain de-duplication live.
+  const { templateClaim, remedy } = scrubRefusalWording(
+    verdict,
+    loggedExportKey,
+    loggedProducerStack,
+    verdict.via.map((s) => maskSecretsInText(s, secrets))
+  );
   return new ScrubRefusalError(
     `Scrub of ${stackName} resolved the ${intrinsic} in ${origin}` +
       `${path ? ` at ${path}` : ''} to a PLAINTEXT value: the producer stack ` +
@@ -1666,7 +1775,7 @@ function plaintextProducerCrossStackReadError(
       `${templateClaim}, but its own state still stores ` +
       `the resolved plaintext rather than that expression. scrub has no expression to write in ` +
       `this stack's place, so it cannot redact the imported secret and must not report this ` +
-      `stack clean. Scrub the producer first ('cdkd scrub ${loggedProducerStack}'), then re-run ` +
+      `stack clean. ${remedy}, then re-run ` +
       `'cdkd scrub ${stackName}' — the read will then return the expression and this stack is ` +
       `scrubbed normally.`,
     'SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT'
@@ -1680,12 +1789,37 @@ function plaintextProducerCrossStackReadError(
  * - `declared` — an output matched `key` by name or by literal `Export.Name`,
  *   and ITS declared `Value` carries a `{{resolve:` expression.
  * - `widened` — NO output matched `key`, so the test fell back to scanning
- *   every output of the producer and at least one of them carries a
- *   `{{resolve:` expression. The key is secret-bearing only by
- *   over-approximation, which the refusal message must not overstate.
- * - `no` — nothing in the producer's outputs carries a `{{resolve:` expression.
+ *   every output of the producer, and one of them carries a `{{resolve:`
+ *   expression or RE-EXPORTS a value some stack up the chain declares from one.
+ *   The key is secret-bearing only by over-approximation, which the refusal
+ *   message must not overstate. `via` is populated when the evidence came from
+ *   up the chain, for the reason the `chained` entry gives — WITHOUT it the
+ *   message claimed the producer "publishes at least one output from a
+ *   `{{resolve:...}}` expression" when the walk had just established that none
+ *   of them does, and the remedy degraded to the single `cdkd scrub <producer>`
+ *   that sends the user into a second refusal.
+ * - `chained` — no output of the producer carries a `{{resolve:` expression
+ *   itself, but a matched output RE-EXPORTS an import whose own producer (or
+ *   one further up the chain) declares one (issue
+ *   [#2146](https://github.com/go-to-k/cdkd/issues/2146)). `via` names the
+ *   stacks the walk crossed, nearest first, ending at the one whose template
+ *   carries the literal expression.
+ * - `no` — neither the producer's outputs nor anything reachable from them by
+ *   re-export carries a `{{resolve:` expression.
  */
-type SecretExpressionVerdict = 'declared' | 'widened' | 'no';
+interface SecretExpressionVerdict {
+  kind: 'declared' | 'widened' | 'chained' | 'no';
+  /**
+   * The stacks the evidence was followed THROUGH, nearest producer first, the
+   * stack that declares the expression last. Populated for `chained` and for a
+   * `widened` verdict whose evidence came from up the chain; EMPTY otherwise,
+   * so the refusal message can never name a chain the walk did not cross.
+   */
+  via: readonly string[];
+}
+
+/** The `no` verdict, shared so the walk allocates nothing for the common case. */
+const NO_SECRET_EXPRESSION: SecretExpressionVerdict = { kind: 'no', via: [] };
 
 /**
  * Can the producer's STORED value be a legacy plaintext secret at all (issue
@@ -1739,32 +1873,266 @@ function storedValueCarriesNoPlaintext(stored: unknown): boolean {
  * asserts what the producer declares and only the `declared` verdict has
  * checked that for THIS key.
  *
- * Residual, stated rather than hidden: a producer that publishes a secret
- * WITHOUT a literal `{{resolve:` in its template — one re-exporting a value it
- * imported from a third stack, or reading one through `Ref` to a parameter —
- * is not detected, and neither is a producer outside this app (whose template
- * scrub never sees). Those keep the pre-#2133 outcome for that one reference.
+ * RE-EXPORT CHAINS ARE FOLLOWED (issue
+ * [#2146](https://github.com/go-to-k/cdkd/issues/2146)). A MIDDLE stack whose
+ * output is `{"Fn::ImportValue": "<upstream export>"}` declares no literal
+ * `{{resolve:` of its own, so the single-template test returned `no` for it and
+ * the consumer at the END of the chain was reported CLEAN over its surviving
+ * plaintext — the #2133 silent success, reached through a re-export instead of
+ * a direct import. (`cdkd scrub --all` masks it: `orderScrubTargets` scrubs
+ * producers first, so the middle stack stores the expression by the time the
+ * consumer is reached. `cdkd scrub <one stack>` does not.) This walk therefore
+ * follows a matched output's `Fn::ImportValue` (through the export-name index)
+ * and its `Fn::GetStackOutput` (through the literal `StackName` / `OutputName`)
+ * into the next producer's template, and keeps going until it finds an
+ * expression or runs out of reachable outputs.
+ *
+ * TERMINATION IS A VISITED SET over `(stack, key)` pairs, NOT a hop cap. Each
+ * pair expands deterministically, so a second visit can never yield evidence
+ * the first did not, and the pair space is finite (stacks x outputs) — so the
+ * walk halts on a CYCLE (two stacks re-exporting each other; no deploy can
+ * produce one, a template can express one) while losing no reach. A depth cap
+ * was rejected because it is lossy in the one direction that matters: a chain
+ * longer than the cap would return `no`, which is exactly the silent success
+ * this walk exists to kill.
+ *
+ * WIDENING IS ROOT-ONLY, and that means WHERE THE FALLBACK FIRES, not what a
+ * widened subject may expand into. The all-outputs fallback fires for the DIRECT
+ * producer alone, where the key came from a read and may match nothing because
+ * the producer's `Export.Name` is an intrinsic scrub cannot reproduce. One hop
+ * up the key is a LITERAL export / output name read out of a template, so a miss
+ * there means that template genuinely does not declare it, and widening THERE
+ * would refuse the consumer over an unrelated secret two stacks away that no
+ * scrub could ever clear.
+ *
+ * A widened root's subjects DO still expand into hops, deliberately, and the
+ * trade is stated rather than hidden (issue #2146 review — an earlier revision
+ * of this comment read as if they did not, which contradicted the code). Not
+ * expanding them would make an intrinsic-`Export.Name` producer that re-exports
+ * a secret undetectable — the exact silent success this walk exists to kill,
+ * reintroduced for the one population the widening exists for. Expanding them
+ * extends #2133's accepted over-approximation ("it can refuse a stack that
+ * imports a non-secret export from a producer that has some other secret
+ * output") by one hop, in the direction that repo rule calls safe; and the
+ * refusal it produces now names the head of the chain and the order to scrub it
+ * in, so it is at least as actionable as the root widening it extends.
+ *
+ * Residuals, stated rather than hidden. Each keeps the pre-#2133 outcome for
+ * that one reference — a possible false CLEAN, never a refusal:
+ * - a producer that publishes a secret with NO literal `{{resolve:` and no
+ *   followable re-export: one reading it through `Ref` to a parameter, or
+ *   re-exporting an export whose producer is outside this app (whose template
+ *   scrub never sees), and a producer outside this app at all;
+ * - a NON-LITERAL `Fn::ImportValue` argument (an `Fn::Sub`-assembled export
+ *   name) and a NON-LITERAL or foreign `Fn::GetStackOutput` `StackName` /
+ *   `OutputName`: the hop cannot be resolved statically, and guessing one would
+ *   refuse over a reference the walk never established;
+ * - a `Fn::GetStackOutput` naming a stack of this app in ANOTHER REGION:
+ *   {@link buildExportOwnerIndex} and `producerTemplates` are keyed by stack
+ *   NAME alone, so the walk reads that name's template regardless of `Region`;
+ * - a secret reachable only through the TRUE branch of an `Fn::If` in a
+ *   producer's output: see {@link collectReExportHops}, which takes the FALSE
+ *   branch for a condition it cannot evaluate.
  */
-function producerPublishesSecretExpression(
-  template: CloudFormationTemplate,
+export function producerPublishesSecretExpression(
+  templates: ReadonlyMap<string, CloudFormationTemplate>,
+  exportOwners: ReadonlyMap<string, readonly string[]>,
+  producerStack: string,
   key: string
 ): SecretExpressionVerdict {
-  const outputs = (template.Outputs ?? {}) as Record<
-    string,
-    { Value?: unknown; Export?: { Name?: unknown } }
-  >;
-  const matched: unknown[] = [];
-  for (const [name, output] of Object.entries(outputs)) {
-    const exportName = output?.Export?.Name;
-    if (name === key || (typeof exportName === 'string' && exportName === key)) {
-      matched.push(output?.Value);
+  interface Frame {
+    stack: string;
+    key: string;
+    /** Stacks crossed to reach this frame, nearest first. Empty at the root. */
+    via: readonly string[];
+  }
+  const seen = new Set<string>([`${producerStack}\u0000${key}`]);
+  const queue: Frame[] = [{ stack: producerStack, key, via: [] }];
+  // Set by the ROOT frame only (BFS visits it first), and read by every later
+  // frame: a widened root can only ever justify the widened claim, however
+  // precise the hop that finally found the expression was.
+  let widened = false;
+  while (queue.length > 0) {
+    const frame = queue.shift();
+    if (!frame) break;
+    const template = templates.get(frame.stack);
+    if (!template) continue;
+    const outputs = (template.Outputs ?? {}) as Record<
+      string,
+      { Value?: unknown; Export?: { Name?: unknown } }
+    >;
+    const matched: unknown[] = [];
+    for (const [name, output] of Object.entries(outputs)) {
+      const exportName = output?.Export?.Name;
+      if (name === frame.key || (typeof exportName === 'string' && exportName === frame.key)) {
+        matched.push(output?.Value);
+      }
+    }
+    const isRoot = frame.via.length === 0;
+    let subjects: unknown[];
+    if (matched.length > 0) {
+      subjects = matched;
+    } else if (isRoot) {
+      widened = true;
+      subjects = Object.values(outputs).map((o) => o?.Value);
+    } else {
+      // A hop that matched nothing: see WIDENING IS ROOT-ONLY above.
+      continue;
+    }
+    for (const subject of subjects) {
+      if (JSON.stringify(subject ?? null).includes('{{resolve:')) {
+        // `via` is carried on the WIDENED verdict too (issue #2146 review).
+        // Dropping it made the message assert the producer "publishes at least
+        // one output from a {{resolve:...}} expression" in the one case the
+        // walk had just proven otherwise, and cut the remedy back to the single
+        // command the chain remedy exists to replace.
+        if (widened) return { kind: 'widened', via: frame.via };
+        return isRoot ? { kind: 'declared', via: [] } : { kind: 'chained', via: frame.via };
+      }
+      for (const hop of collectReExportHops(subject, templates, exportOwners)) {
+        const id = `${hop.stack}\u0000${hop.key}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        queue.push({ stack: hop.stack, key: hop.key, via: [...frame.via, hop.stack] });
+      }
     }
   }
-  const widened = matched.length === 0;
-  const subjects = widened ? Object.values(outputs).map((o) => o?.Value) : matched;
-  const carries = subjects.some((value) => JSON.stringify(value ?? null).includes('{{resolve:'));
-  if (!carries) return 'no';
-  return widened ? 'widened' : 'declared';
+  return NO_SECRET_EXPRESSION;
+}
+
+/** One step of a re-export chain: whose template to read next, under which key. */
+interface ReExportHop {
+  stack: string;
+  key: string;
+}
+
+/**
+ * The re-export hops one output VALUE carries (issue #2146).
+ *
+ * Only STATICALLY resolvable references produce a hop, mirroring
+ * {@link inferCrossStackStackDeps}: an `Fn::ImportValue` of a literal export
+ * name (looked up in `exportOwners`) and an `Fn::GetStackOutput` whose
+ * `StackName` and `OutputName` are both literal strings and whose stack is one
+ * of this app's. An assembled name resolves to a hop the walk cannot follow,
+ * which keeps the pre-#2146 outcome for that value rather than guessing.
+ *
+ * EVERY owner of a duplicated export name is returned, not the first (issue
+ * #2146 review). See {@link buildExportOwnerIndex}: picking one silently
+ * decides the verdict on insertion order, and the visited set makes following
+ * all of them cheap and terminating.
+ *
+ * The WHOLE node is walked, not just its top level, because a re-export is
+ * routinely wrapped — `Fn::Join`ing an imported password into a URL is the
+ * shape the live fixture uses.
+ *
+ * `Fn::If` IS NOT WALKED ON BOTH ARMS, and this is load-bearing rather than
+ * tidy (issue #2146 review). `makeCrossStackPrePass` deliberately mirrors
+ * `resolveIf` — selected branch only — so that a conditional import of a
+ * not-yet-deployed producer cannot refuse a whole stack, unbypassably, over a
+ * reference the deploy never read. A hop walk that descended into both arms
+ * broke that mirror and produced something worse: a producer whose output is
+ * `{"Fn::If": ["IsProd", {"Fn::ImportValue": "ProdSecret"}, {"Fn::ImportValue":
+ * "DevPlain"}]}`, deployed in dev with a benign stored value, yielded a
+ * `chained` verdict and a refusal NO `cdkd scrub` can clear — nothing can turn
+ * that producer's non-secret value into an expression, and there is no bypass
+ * flag. On main the same input answered `no`, so it would have been a
+ * regression this change introduced.
+ *
+ * WHICH branch: the FALSE one, unconditionally. `resolveIf` selects FALSE for a
+ * condition it cannot evaluate, and every condition here belongs to ANOTHER
+ * stack — scrub evaluates conditions for the stack it is scrubbing, from that
+ * template's parameter DEFAULTS, and has neither the parameters nor the
+ * evaluation for a producer's. A MALFORMED `Fn::If` (args not a 3-tuple) yields
+ * NO hop at all: which branch is live is unknowable, and the pre-pass's answer
+ * there (walk it with refusals DISARMED) has no counterpart in a function whose
+ * only output is "refuse or not".
+ *
+ * Residual, and it is the direction this file accepts elsewhere: a secret
+ * reachable only through the TRUE branch is not detected, so that reference
+ * keeps its pre-#2133 outcome. The asymmetry with the `{{resolve:` scan in
+ * {@link producerPublishesSecretExpression} — which `JSON.stringify`s the whole
+ * subject and therefore sees BOTH arms — is #2133's behaviour, unchanged here
+ * on purpose: narrowing it would change which stacks that older refusal fires
+ * on, which is not this change's subject.
+ */
+function collectReExportHops(
+  value: unknown,
+  templates: ReadonlyMap<string, CloudFormationTemplate>,
+  exportOwners: ReadonlyMap<string, readonly string[]>
+): ReExportHop[] {
+  const hops: ReExportHop[] = [];
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+    const obj = node as Record<string, unknown>;
+    if ('Fn::If' in obj) {
+      const args = obj['Fn::If'];
+      if (Array.isArray(args) && args.length === 3) walk(args[2]);
+      return;
+    }
+    const imported = obj['Fn::ImportValue'];
+    if (typeof imported === 'string') {
+      for (const owner of exportOwners.get(imported) ?? []) {
+        hops.push({ stack: owner, key: imported });
+      }
+    }
+    const read = obj['Fn::GetStackOutput'];
+    if (read !== null && typeof read === 'object' && !Array.isArray(read)) {
+      const args = read as Record<string, unknown>;
+      const stack = args['StackName'];
+      const outputName = args['OutputName'];
+      if (typeof stack === 'string' && typeof outputName === 'string' && templates.has(stack)) {
+        hops.push({ stack, key: outputName });
+      }
+    }
+    for (const child of Object.values(obj)) walk(child);
+  };
+  walk(value);
+  return hops;
+}
+
+/**
+ * `Export.Name` -> EVERY app stack that declares it (issue #2146), for literal
+ * export names only. Built ONCE per stack scrub rather than per reference,
+ * since {@link producerPublishesSecretExpression} needs it on every cross-stack
+ * read the pre-pass performs.
+ *
+ * ALL OWNERS, not the first (issue #2146 review). `inferCrossStackStackDeps`
+ * keeps one because it is choosing a deploy EDGE and either choice orders the
+ * graph; this index decides whether a value is SECRET-BEARING, where following
+ * the wrong twin returns `no` and reports a stack clean over surviving
+ * plaintext. Two stacks declaring one export name is an AWS-side error, but
+ * scrub reads TEMPLATES — an app that has never been deployed, or one deployed
+ * to two regions, presents it routinely — so there IS a better answer than the
+ * first writer: take the over-approximation and follow both. The visited set
+ * bounds the cost and guarantees termination either way.
+ *
+ * Keyed by stack NAME with no region, which is the residual
+ * {@link producerPublishesSecretExpression} lists: an `Fn::GetStackOutput`
+ * naming this app's stack in another region reads the template of the name,
+ * since `producerTemplates` has no region either.
+ */
+export function buildExportOwnerIndex(
+  templates: ReadonlyMap<string, CloudFormationTemplate>
+): ReadonlyMap<string, readonly string[]> {
+  const owners = new Map<string, string[]>();
+  for (const [stackName, template] of templates) {
+    const outputs = (template.Outputs ?? {}) as Record<string, { Export?: { Name?: unknown } }>;
+    for (const output of Object.values(outputs)) {
+      const name = output?.Export?.Name;
+      if (typeof name !== 'string' || name === '') continue;
+      const existing = owners.get(name);
+      if (existing) {
+        if (!existing.includes(stackName)) existing.push(stackName);
+      } else {
+        owners.set(name, [stackName]);
+      }
+    }
+  }
+  return owners;
 }
 
 /** What one stack's cross-stack pre-pass recorded that is not a refusal. */
@@ -1874,6 +2242,25 @@ function makeCrossStackPrePass(deps: {
   opts?: { canRefuse?: boolean }
 ) => Promise<void> {
   const { stackName, resolver, producerTemplates, findings, logger } = deps;
+  // Built once per stack scrub: every cross-stack read this pass performs asks
+  // the same question of the same set of templates (issue #2146).
+  const exportOwners = buildExportOwnerIndex(producerTemplates);
+  // ...and the ANSWER is memoized per (producer, key) too (issue #2146 review).
+  // The walk is pure in `producerTemplates` / `exportOwners`, which do not
+  // change during one stack's scrub, while `readOne` runs once per REFERENCE
+  // OCCURRENCE — so a template importing one export at ten leaves re-walked the
+  // reachable space and `JSON.stringify`d every output of a widened root ten
+  // times.
+  const verdicts = new Map<string, SecretExpressionVerdict>();
+  const secretExpressionVerdict = (stack: string, key: string): SecretExpressionVerdict => {
+    const id = `${stack}\u0000${key}`;
+    let verdict = verdicts.get(id);
+    if (!verdict) {
+      verdict = producerPublishesSecretExpression(producerTemplates, exportOwners, stack, key);
+      verdicts.set(id, verdict);
+    }
+    return verdict;
+  };
 
   /**
    * Is this a refusal NO RE-RUN can clear (issue #2133 review)?
@@ -1945,8 +2332,8 @@ function makeCrossStackPrePass(deps: {
      *   wrong-account lookup that refusal exists to prevent.
      *
      * The OUTCOME is the same today either way — a cross-account producer is
-     * never in `appStacks`, so the `!producerTemplate` return below fires first
-     * regardless — but a future change that widened `producerTemplates` would
+     * never in `appStacks`, so the `producerTemplates.has(...)` return below
+     * fires first regardless — but a future change that widened `producerTemplates` would
      * be relying on this sentence, so it must not claim the second arm has no
      * expression behind it.
      *
@@ -2058,13 +2445,12 @@ function makeCrossStackPrePass(deps: {
       }
       const producer = recordedProducer(key, probe);
       if (!producer) return;
-      const producerTemplate = producerTemplates.get(producer.stack);
       // The producer is not a stack of this app, so scrub has no template to
-      // classify the export with. Documented residual — see
-      // {@link producerPublishesSecretExpression}.
-      if (!producerTemplate) return;
-      const verdict = producerPublishesSecretExpression(producerTemplate, producer.key);
-      if (verdict === 'no') return;
+      // classify the export with — and no chain to follow out of it either.
+      // Documented residual — see {@link producerPublishesSecretExpression}.
+      if (!producerTemplates.has(producer.stack)) return;
+      const verdict = secretExpressionVerdict(producer.stack, producer.key);
+      if (verdict.kind === 'no') return;
       // THE DISCRIMINATOR: read the producer's STORED value and test IT.
       //
       // The RESOLVED value cannot answer this, and neither can the template.
