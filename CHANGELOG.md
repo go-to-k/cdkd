@@ -1,3 +1,10 @@
+## [0.284.30](https://github.com/go-to-k/cdkd/compare/v0.284.29...v0.284.30) (2026-08-21)
+
+
+### Bug Fixes
+
+* **rollback:** release the stack lock before unregistering the signal handlers ([#2144](https://github.com/go-to-k/cdkd/issues/2144)) ([0bb792e](https://github.com/go-to-k/cdkd/commit/0bb792e040090ef6a0529d93bdb191a7b0ad9ed8))
+
 ## [0.284.29](https://github.com/go-to-k/cdkd/compare/v0.284.28...v0.284.29) (2026-08-21)
 
 
