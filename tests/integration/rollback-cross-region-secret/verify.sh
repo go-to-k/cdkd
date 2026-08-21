@@ -33,7 +33,9 @@
 #      rather than the journal. 2b: `drift --json` on the untouched stack must
 #      mark SecretEcho `notCompared` + `referencesUnresolved` and exit 2 -- the
 #      exit code is the signal a CI gate reads, and pre-#2108 this population
-#      exited 1. 2b2: tamper TWO properties out of band (the secret-bearing
+#      exited 1. The phase also asserts the run REPORTED a refusal, since the
+#      exit code is scoped to refusals rather than to the whole `notCompared`
+#      roll-up. 2b2: tamper TWO properties out of band (the secret-bearing
 #      `Value` AND the ordinary `Description`) and assert the resource is now
 #      DRIFTED on Description only, still flagged, exiting 1 -- without the
 #      second property the resource stays `clean` and the revert below returns
@@ -377,12 +379,26 @@ echo "[verify]   ok: SecretEcho carries referencesUnresolved=true"
 # 2 is this repo's "work completed but something was SKIPPED" code. Pre-#2108
 # this population exited 1 (it reported phantom drift), so a non-zero exit
 # PRESERVES what CI consumers already had -- 0 would be the silent downgrade.
+#
+# The exit code is scoped to comparisons cdkd REFUSED, which is a strict subset
+# of the `notCompared` roll-up asserted above: a resource whose only uncompared
+# property holds a surviving `{{resolve:ssm-secure:...}}` token is rolled up and
+# still exits 0, because cdkd resolves that spelling for nobody and the
+# condition can never clear. This fixture's SecretEcho IS a refusal (the
+# resolution THREW on the region ambiguity), so 2 is the expected code -- but
+# assert WHY rather than trusting the number, since a 2 arriving from the wider
+# bucket would mean the narrowing had been lost.
+if ! grep -q 'refused to resolve' "${DRIFT_CLEAN_ERR}"; then
+  echo "FAIL: the drift run did not report a REFUSAL, so an exit 2 here would not be coming from the population the exit code is scoped to" >&2
+  sed 's/^/  /' "${DRIFT_CLEAN_ERR}" >&2
+  exit 1
+fi
 if [ "${DRIFT_RC}" -ne 2 ]; then
-  echo "FAIL: drift exited ${DRIFT_RC} on a stack whose only secret-bearing property was NOT compared; expected 2 (1 would mean something drifted, 0 that the skip is being reported as a pass)" >&2
+  echo "FAIL: drift exited ${DRIFT_RC} on a stack whose only secret-bearing property was REFUSED; expected 2 (1 would mean something drifted, 0 that the refusal is being reported as a pass)" >&2
   jq '.' "${DRIFT_CLEAN_JSON}" >&2 || cat "${DRIFT_CLEAN_JSON}" >&2
   exit 1
 fi
-echo "[verify]   ok: drift exited 2 (nothing drifted, nothing fully compared)"
+echo "[verify]   ok: drift exited 2, and the run says it REFUSED (not merely did not compare)"
 
 # ---------------------------------------------------------------------------
 # PHASE 2b2 + 2c: the arm that WRITES

@@ -1488,7 +1488,14 @@ in its `notCompared` roll-up and carries `referencesUnresolved`, because a
 comparison the region refusal SKIPPED carries no marker otherwise and a CI
 consumer would read the skip as a clean bill of health; it also asserts the
 EXIT CODE is `2`, which is the marker such a consumer actually reads (pre-#2108
-this population exited `1`, because it reported phantom drift).
+this population exited `1`, because it reported phantom drift). That assertion
+is on the REFUSAL population specifically: the exit code is scoped to
+comparisons cdkd declined, not to everything it did not compare, so the phase
+also asserts the run's own output says `refused to resolve` -- without that, an
+exit `2` could have come from the broader `notCompared` bucket, which is
+deliberately kept out of the exit code (a stack whose only uncompared property
+holds a surviving `{{resolve:ssm-secure:...}}` token is reported and still exits
+`0`; the unit suite covers that half, since this fixture has no such resource).
 
 Phases 2b2 / 2c then tamper the live parameter and revert it, and the shape of
 that tamper is the load-bearing part. `SecretEcho`'s only secret-bearing

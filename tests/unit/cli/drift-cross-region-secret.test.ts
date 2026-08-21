@@ -269,6 +269,17 @@ const PRODUCER_SSM_ARN = `arn:aws:ssm:${PRODUCER_REGION}:111122223333:parameter$
 const SSM_ARN_EXPR = `{{resolve:ssm:${PRODUCER_SSM_ARN}}}`;
 
 /**
+ * The spelling cdkd resolves for NOBODY. CloudFormation resolves `ssm-secure`
+ * SERVER-side, so `resolveDynamicReferences` warns and hands the literal back
+ * rather than throwing -- the token SURVIVES the pass, which marks the resource
+ * `referencesUnresolved` WITHOUT anything having been refused.
+ *
+ * That distinction is the whole reason this constant exists: it is the
+ * pre-existing population that must NOT be driven into the exit code.
+ */
+const SSM_SECURE_EXPR = `{{resolve:ssm-secure:${SSM_PARAM}}}`;
+
+/**
  * The `--json` payload shape, restated here rather than imported: `drift.ts`
  * keeps `StackDriftJson` private and the comment above it calls the shape a
  * "stable contract for tooling", so a test that asserts against a local copy is
@@ -1088,5 +1099,87 @@ describe('cdkd drift EXIT CODE distinguishes "clean" from "not compared" (issue 
     // that exits 2.
     expect(output).toContain('⚠ Consumer');
     expect(output).not.toContain('✓ Consumer');
+  });
+});
+
+describe('the drift EXIT CODE is scoped to REFUSALS, not to everything uncompared (issue #2108)', () => {
+  /**
+   * The narrowing this group exists to hold. `referencesUnresolved` is the OR of
+   * two causes -- cdkd REFUSED to resolve, or a `{{resolve:...}}` token simply
+   * survived -- and the second one is a large PRE-EXISTING population
+   * (`ssm-secure`, which cdkd resolves for nobody) that predates issue #2108 and
+   * can never clear on a re-run. Driving the exit code off the OR would make
+   * `cdkd drift` exit non-zero forever, in CI, for every one of those users,
+   * over a defect this change did not introduce.
+   *
+   * So the report and the exit code deliberately answer DIFFERENT questions, and
+   * the pair of cases below is what keeps them apart. The exit reads
+   * `comparisonRefused`; `notCompared` / `referencesUnresolved` / the human
+   * `PARTIALLY compared` block still cover both populations, because as
+   * INFORMATION both were genuinely not compared.
+   */
+  it('a SURVIVING ssm-secure token alone exits 0 — it is reported, never refused', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    // No foreign producer on record, so nothing can be refused; the token is
+    // simply one cdkd cannot resolve at all.
+    mockGetState.mockResolvedValue(makeState({ Fn: lambdaResource(SSM_SECURE_EXPR) }, []));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv('whatever-aws-holds-here'),
+    });
+
+    const { output, error } = await runDrift(['Consumer']);
+
+    // Nothing was fetched: `ssm-secure` never reaches a resolver.
+    expect(secretSends).toHaveLength(0);
+    expect(ssmSends).toHaveLength(0);
+    // THE ASSERTION. This population exited 0 before #2108 and must keep doing
+    // so -- it is permanent, so a non-zero exit here can never be cleared.
+    expect(error).toBeUndefined();
+    expect(exitSpy).not.toHaveBeenCalled();
+    // ...and it is still REPORTED, which is the half that does not change: the
+    // exit code is narrower than the report on purpose, not by omission.
+    expect(output).toContain('PARTIALLY compared');
+  });
+
+  it('the same run still marks it notCompared in --json, so only the exit code is narrowed', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(makeState({ Fn: lambdaResource(SSM_SECURE_EXPR) }, []));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv('whatever-aws-holds-here'),
+    });
+
+    const { output } = await runDrift(['Consumer', '--json']);
+
+    const parsed = JSON.parse(output) as StackDriftJson[];
+    // Without this the narrowing could have been implemented by simply dropping
+    // the population from the report, which would delete information rather
+    // than re-scope the exit code.
+    expect(parsed[0]!.clean).toEqual([
+      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true },
+    ]);
+    expect(parsed[0]!.notCompared).toEqual([{ logicalId: 'Fn', type: LAMBDA_TYPE }]);
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('a refusal in the SAME run does exit 2, so the two causes are told apart per resource', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    // Two resources: one merely unresolvable, one genuinely refused. If the exit
+    // decision could not tell them apart per RESOURCE, this case and the first
+    // one could not both hold.
+    mockGetState.mockResolvedValue(
+      makeState(
+        { Survivor: lambdaResource(SSM_SECURE_EXPR), Refused: lambdaResource(NAME_EXPR) },
+        [PRODUCER_REGION]
+      )
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+    });
+
+    const { output } = await runDrift(['Consumer', '--json']);
+
+    const parsed = JSON.parse(output) as StackDriftJson[];
+    expect(parsed[0]!.notCompared.map((n) => n.logicalId).sort()).toEqual(['Refused', 'Survivor']);
+    expect(exitSpy).toHaveBeenCalledWith(2);
   });
 });

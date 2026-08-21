@@ -142,6 +142,36 @@ type DriftOutcome =
        * the survivor's position holds.
        */
       referencesUnresolved: boolean;
+      /**
+       * Whether cdkd DELIBERATELY REFUSED to resolve this resource's dynamic
+       * references, as opposed to merely not having resolved them (issue
+       * #2108). True exactly when `resolveStateSecretExpressions` THREW; a
+       * `{{resolve:...}}` token that simply survived the pass does NOT set it.
+       *
+       * A DELIBERATE SECOND FLAG beside `referencesUnresolved`, and the reason
+       * the exit decision cannot reuse the first one is a population, not a
+       * nicety. `referencesUnresolved` is the OR of two causes, and its second
+       * cause — a surviving token, in practice `{{resolve:ssm-secure:...}}`,
+       * which cdkd resolves for NOBODY — is a large PRE-EXISTING population
+       * unrelated to #2108 and permanent by construction: it can never clear on
+       * a re-run. Driving the exit code off the OR would make `cdkd drift` exit
+       * non-zero forever, in CI, for every one of those users, over a defect
+       * this change did not introduce — the same "permanently non-zero" hazard
+       * `docs/cli-reference.md` already cites as a reason NOT to report an
+       * absent write-only credential as drift.
+       *
+       * So the split is: as INFORMATION both populations were genuinely not
+       * compared, and `referencesUnresolved` / the `notCompared` roll-up / the
+       * human `PARTIALLY compared` block continue to cover both unchanged. Only
+       * the EXIT CODE — the thing CI keys on — is confined to the population
+       * this change created.
+       *
+       * Two flags answering two nearly-identical questions is exactly the shape
+       * issue [#2135](https://github.com/go-to-k/cdkd/issues/2135) exists to
+       * fix structurally; until it lands, the second flag is the honest way to
+       * keep the blast radius correct.
+       */
+      comparisonRefused: boolean;
     }
   /**
    * No drift was REPORTED — which is not the same as "every property was
@@ -164,6 +194,36 @@ type DriftOutcome =
       logicalId: string;
       resourceType: string;
       referencesUnresolved: boolean;
+      /**
+       * Whether cdkd DELIBERATELY REFUSED to resolve this resource's dynamic
+       * references, as opposed to merely not having resolved them (issue
+       * #2108). True exactly when `resolveStateSecretExpressions` THREW; a
+       * `{{resolve:...}}` token that simply survived the pass does NOT set it.
+       *
+       * A DELIBERATE SECOND FLAG beside `referencesUnresolved`, and the reason
+       * the exit decision cannot reuse the first one is a population, not a
+       * nicety. `referencesUnresolved` is the OR of two causes, and its second
+       * cause — a surviving token, in practice `{{resolve:ssm-secure:...}}`,
+       * which cdkd resolves for NOBODY — is a large PRE-EXISTING population
+       * unrelated to #2108 and permanent by construction: it can never clear on
+       * a re-run. Driving the exit code off the OR would make `cdkd drift` exit
+       * non-zero forever, in CI, for every one of those users, over a defect
+       * this change did not introduce — the same "permanently non-zero" hazard
+       * `docs/cli-reference.md` already cites as a reason NOT to report an
+       * absent write-only credential as drift.
+       *
+       * So the split is: as INFORMATION both populations were genuinely not
+       * compared, and `referencesUnresolved` / the `notCompared` roll-up / the
+       * human `PARTIALLY compared` block continue to cover both unchanged. Only
+       * the EXIT CODE — the thing CI keys on — is confined to the population
+       * this change created.
+       *
+       * Two flags answering two nearly-identical questions is exactly the shape
+       * issue [#2135](https://github.com/go-to-k/cdkd/issues/2135) exists to
+       * fix structurally; until it lands, the second flag is the honest way to
+       * keep the blast radius correct.
+       */
+      comparisonRefused: boolean;
     }
   | { kind: 'unsupported'; logicalId: string; resourceType: string }
   /**
@@ -218,9 +278,16 @@ class DriftDetectedError extends CdkdError {
 }
 
 /**
- * Detection found NO drift, but at least one resource was only PARTIALLY
- * compared -- a dynamic reference its state records could not be, or was
- * deliberately refused, resolution (issue #2108).
+ * Detection found NO drift, but cdkd DELIBERATELY REFUSED to compare at least
+ * one resource's secret-bearing properties (issue #2108).
+ *
+ * SCOPED TO REFUSALS, not to everything the report calls `notCompared`. The
+ * roll-up also contains resources whose only problem is a surviving
+ * `{{resolve:ssm-secure:...}}` token — a pre-existing population cdkd resolves
+ * for nobody, which can never clear on a re-run, and which this change did not
+ * create. Exiting non-zero for them would break `cdkd drift` in CI forever over
+ * an unrelated defect, so the exit reads `comparisonRefused` and the report
+ * reads `referencesUnresolved`. See that field's note.
  *
  * WHY A NON-ZERO EXIT, and why it is a PRESERVATION rather than a new signal.
  * Pre-#2108 that population resolved the reference in the WRONG region, the
@@ -247,25 +314,24 @@ class DriftDetectedError extends CdkdError {
  * those modes report per-resource refusals on their own paths, and changing them
  * would alter what a remediation run means, which is not what this closes.
  *
- * KNOWN CONSEQUENCE, stated because it is permanent rather than transient: a
- * stack whose properties reference `{{resolve:ssm-secure:...}}` -- a spelling
- * cdkd resolves for NOBODY -- carries `referencesUnresolved` on every run, so it
- * exits 2 on every run. That is the honest answer (those properties are never
- * compared, so the run is not a clean bill of health), and it is the same reason
- * the report already lists them; a user who wants exit 0 there must either grant
- * cdkd a resolvable reference or gate on `--json`'s `drifted` array instead.
+ * WHAT DOES NOT TRIGGER IT: a stack whose properties reference
+ * `{{resolve:ssm-secure:...}}` still exits 0. Those properties genuinely are not
+ * compared and the report says so, but nothing REFUSED them — cdkd has never
+ * resolved that spelling — so the condition is permanent, unclearable by any
+ * action the user can take, and predates this change. It is reported as
+ * information and kept out of the exit code.
  *
  * Carries no message of its own for the same reason {@link DriftDetectedError}
  * does -- the report was already printed.
  */
-class DriftNotComparedError extends CdkdError {
+class DriftComparisonRefusedError extends CdkdError {
   readonly silent: boolean = true;
   readonly exitCode: number = 2;
 
   constructor() {
-    super('drift comparison incomplete', 'DRIFT_NOT_COMPARED');
-    this.name = 'DriftNotComparedError';
-    Object.setPrototypeOf(this, DriftNotComparedError.prototype);
+    super('drift comparison refused', 'DRIFT_COMPARISON_REFUSED');
+    this.name = 'DriftComparisonRefusedError';
+    Object.setPrototypeOf(this, DriftComparisonRefusedError.prototype);
   }
 }
 
@@ -284,6 +350,28 @@ function notComparedOutcomes(
   return report.outcomes.filter(
     (o): o is Extract<DriftOutcome, { kind: 'drifted' | 'clean' }> =>
       (o.kind === 'drifted' || o.kind === 'clean') && o.referencesUnresolved
+  );
+}
+
+/**
+ * Every outcome whose comparison cdkd DELIBERATELY REFUSED (issue #2108) — the
+ * strict subset of {@link notComparedOutcomes} that drives the EXIT CODE.
+ *
+ * Deliberately NOT the same predicate, and the asymmetry is the point: the
+ * REPORT covers everything that was not compared, because as information both
+ * populations matter equally, while the exit code covers only the population
+ * this change created. Driving it off `referencesUnresolved` would exit
+ * non-zero forever for every stack holding an `{{resolve:ssm-secure:...}}`
+ * reference — permanent, unclearable, and unrelated to this issue. See the
+ * `comparisonRefused` field note, and issue
+ * [#2135](https://github.com/go-to-k/cdkd/issues/2135) for the structural fix.
+ */
+function refusedComparisonOutcomes(
+  report: StackDriftReport
+): Array<Extract<DriftOutcome, { kind: 'drifted' | 'clean' }>> {
+  return report.outcomes.filter(
+    (o): o is Extract<DriftOutcome, { kind: 'drifted' | 'clean' }> =>
+      (o.kind === 'drifted' || o.kind === 'clean') && o.comparisonRefused
   );
 }
 
@@ -420,7 +508,9 @@ async function driftCommand(
     // regardless of subsequent flags. `--accept` / `--revert` take over
     // below if requested.
     const drifted = reports.some((r) => r.outcomes.some((o) => o.kind === 'drifted'));
-    const notCompared = reports.some((r) => notComparedOutcomes(r).length > 0);
+    // The REFUSED subset, not the not-compared roll-up: see
+    // `refusedComparisonOutcomes`. The roll-up still drives both renderings.
+    const anyRefused = reports.some((r) => refusedComparisonOutcomes(r).length > 0);
 
     if (!options.accept && !options.revert) {
       if (drifted) {
@@ -431,8 +521,8 @@ async function driftCommand(
       // run also refused a comparison, so no consumer that gates on `1` loses a
       // detection it gets today. See the class note for why this is a
       // preservation of the pre-#2108 exit code rather than a new one.
-      if (notCompared) {
-        throw new DriftNotComparedError();
+      if (anyRefused) {
+        throw new DriftComparisonRefusedError();
       }
       return;
     }
@@ -1884,6 +1974,10 @@ async function runDriftForStack(
         secretResolutionFailed ? seededSecretPaths : secretPaths
       );
       const referencesUnresolved = secretResolutionFailed || unresolvedTokens.size > 0;
+      // NOT the OR: only the THROWN half. See the variant's field note — the
+      // surviving-token half is a pre-existing, permanent population that must
+      // not be driven into the exit code.
+      const comparisonRefused = secretResolutionFailed;
       if (reported.changes.length === 0) {
         // Carried on the CLEAN variant too (issue #2108): an empty change list
         // here can mean "compared and equal" or "not compared at all", and only
@@ -1893,6 +1987,7 @@ async function runDriftForStack(
           logicalId,
           resourceType: resource.resourceType,
           referencesUnresolved,
+          comparisonRefused,
         });
       } else {
         outcomes.push({
@@ -1903,6 +1998,7 @@ async function runDriftForStack(
           awsProperties: aws,
           secrets,
           referencesUnresolved,
+          comparisonRefused,
         });
       }
     }
@@ -3832,10 +3928,14 @@ function writeHumanReport(reports: StackDriftReport[]): void {
     const checked = inspected - notCompared.length;
 
     if (drifted.length === 0) {
-      // The glyph follows the EXIT CODE (issue #2108): a run that exits 2
-      // because something was only partially compared must not open with the
-      // same ✓ a fully-checked clean run does — that is the repo's convention
-      // for exit 2 (`cdkd destroy` / `cdkd deploy` switch the same way). The
+      // The glyph follows THIS REPORT's question — "was everything actually
+      // compared" — and NOT the exit code, which asks the narrower "did cdkd
+      // refuse anything" (issue #2108). The two differ for a stack whose only
+      // uncompared properties hold a surviving `{{resolve:ssm-secure:...}}`
+      // token: it warns here and still exits 0, deliberately. Keying the glyph
+      // on the exit code's subset instead would put a ✓ and a `1 resource
+      // checked` directly above a `PARTIALLY compared` block naming that same
+      // resource, which is the contradiction this branch exists to remove. The
       // phrase `no drift detected` is kept in both spellings because it stays
       // true; what changes is the claim that everything was looked at.
       if (notCompared.length > 0) {
@@ -3917,11 +4017,10 @@ function stackRegionOption(): Option {
 export function createDriftCommand(): Command {
   const cmd = new Command('drift')
     .description(
-      'Detect drift between cdkd state and AWS reality. Exits 0 when every resource was compared and ' +
-        'none drifted, 1 when drift is detected, and 2 when nothing drifted but at least one resource was ' +
-        'only PARTIALLY compared (cdkd could not, or refused to, resolve a dynamic reference its state ' +
-        'records). Pass --accept to update cdkd state from AWS, or --revert to push cdkd state values back ' +
-        'into AWS.'
+      'Detect drift between cdkd state and AWS reality. Exits 0 when nothing drifted, 1 when drift is ' +
+        'detected, and 2 when nothing drifted but cdkd REFUSED to compare a resource, because a dynamic ' +
+        'reference its state records could not be attributed to a region. Pass --accept to update cdkd ' +
+        'state from AWS, or --revert to push cdkd state values back into AWS.'
     )
     .argument('[stacks...]', 'Stack name(s) to check (physical CloudFormation names)')
     .option('--all', 'Check every stack in the state bucket', false)
