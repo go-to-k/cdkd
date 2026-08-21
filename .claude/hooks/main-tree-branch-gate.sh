@@ -172,7 +172,11 @@ fi
 # passed a branch switch in the main tree (go-to-k/cdkd#2027 review, blocker 1 --
 # found by the class fence, not by review). Collapse every quoted span to one
 # space-free token first; this parser only needs the subcommand and the first
-# non-flag argument, and neither is ever read out of a quoted span.
+# non-flag argument. The branch NAME is read from it, so `git switch "main"`
+# arrives as QUOTEDSPAN and is treated as a non-main branch (it blocks, the safe
+# direction) while `git checkout "feat/x"` is likewise not recognised as a local
+# branch and passes. Both are quoted spellings nobody writes; stated rather than
+# claimed away (go-to-k/cdkd#2027 review round 4).
 cmd_for_parse=$(printf '%s' "$cmd" | sed 's/"[^"]*"/QUOTEDSPAN/g; s/'"'"'[^'"'"']*'"'"'/QUOTEDSPAN/g')
 subcmd_args=$(printf '%s' "$cmd_for_parse" | awk '
   {

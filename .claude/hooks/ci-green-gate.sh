@@ -71,7 +71,11 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # `__verb_ere` unset at match time, and under `set -u` that aborted the hook
 # with rc=1 on EVERY command -- a gate that errors is a gate that does not
 # gate. Caught by its own suite going 0/13.
-__verb_ere="^(CDKD_SKIP_CI_GREEN_GATE=1[[:space:]]+)?${GATE_RE_GH_PR_MERGE#^}"
+# No `CDKD_SKIP_CI_GREEN_GATE=1` alternative here: `gate_strip_prefix` already
+# removes a leading env assignment before the verb is matched, so carrying one
+# was dead pattern (go-to-k/cdkd#2027 review round 4). The env var is still
+# honoured -- as an env var, read below.
+__verb_ere="$GATE_RE_GH_PR_MERGE"
 if ! gate_matches "$cmd" "$__verb_ere"; then
   exit 0
 fi

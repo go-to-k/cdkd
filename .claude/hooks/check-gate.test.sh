@@ -279,12 +279,14 @@ run_case "git -C \"\${WORKTREE}\" refuses" 2 stale "" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"${WORKTREE}\\" commit -m x"}}' "$side_repo")" \
   "unexpanded shell variable"
 
-# 15. A literal but non-existent `git -C` path: the resolution may be right
-#     (and the commit would fail anyway) or wrong (and the gate would be
-#     verifying nothing) — either way the hook does not know.
-run_case "git -C <nonexistent> refuses" 2 stale "" \
-  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C %s/no-such-dir commit -m x"}}' "$side_repo" "$TMPDIR")" \
-  "is not a git repository"
+# 15. A literal but non-existent `git -C` path PASSES, as it did before #2027.
+#     Round 3 refused it; round 4 reverted that, because the UNREADABLE
+#     spellings are now refused earlier by the strict resolver, so what reaches
+#     the repo probe is a literal path that simply is not a repository -- git
+#     fails on its own and the gate learns nothing by refusing. Refusing also
+#     broke `cd <newdir> && git init && git commit` (case 23e).
+run_case "git -C <nonexistent> passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C %s/no-such-dir commit -m x"}}' "$side_repo" "$TMPDIR")"
 
 # 16. An unresolvable `cd` with no absolute `-C` to override it. The old hook
 #     fell back to the payload cwd and verified a DIFFERENT tree than the one
@@ -354,11 +356,44 @@ run_case "unexpanded git -C refuses from outside any repo" 2 stale "" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" commit -m x"}}' "$TMPDIR")" \
   "unexpanded shell variable"
 
-# 23. A readable but nonexistent `-C` target, from a non-markgate cwd → refused
-#     for the OTHER reason (not a git repository), which the message must say.
-run_case "nonexistent git -C target refuses from a non-markgate cwd" 2 stale "" \
-  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C %s/no-such-dir commit -m x"}}' "$plain_repo" "$TMPDIR")" \
-  "is not a git repository"
+# 23. Same from a non-markgate cwd: still a pass, for the same reason as 15.
+run_case "nonexistent git -C target passes from a non-markgate cwd" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C %s/no-such-dir commit -m x"}}' "$plain_repo" "$TMPDIR")"
+
+# 23a. A READABLE LITERAL `-C` into a repo that carries no `.markgate.yml` must
+#      PASS. This is the bound the fail-closed work must not eat, and until
+#      review round 4 nothing pinned it.
+run_case "readable literal -C into a non-markgate repo passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C %s commit -m x"}}' "$side_repo" "$plain_repo")"
+
+# --- Regressions this branch introduced and then fixed (review round 4) -----
+# Each was measured rc=2 on the round-3 tree and rc=0 before the branch, so they
+# pin the FALSE-REFUSAL direction, which the class fence does not watch: it only
+# asks whether an unreadable target is refused, never whether a readable command
+# is left alone.
+
+# 23c. An ordinary variable assignment from a command substitution. `neutralise`
+#      wrapped the span in quotes and the assignment stripper stopped at the
+#      first space, so the residue `commit -m x)"` matched the verb.
+run_case "variable assignment from a substitution is not a commit" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"MSG=$(echo git commit -m x)"}}' "$side_repo")"
+
+# 23d. A NEWLINE inside a quoted --body used to promote every following line to
+#      a segment start, so prose in an issue comment was read as a command and
+#      refused with a remedy naming a `-C` the invocation does not carry.
+run_case "a verb quoted inside a multi-line --body does not fire" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh issue comment 1 --body \\"we ran:\\ngit -C $W commit -F f\\nand it failed\\""}}' "$side_repo")"
+
+# 23e. Creating a repo and committing in it, in one command. The target does not
+#      exist when the hook runs, and the old refusal told the author to "re-run
+#      with a literal absolute path", which could never clear it.
+run_case "cd <newdir> && git init && git commit is not refused" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"cd %s/brand-new && git init && git commit -m init"}}' "$side_repo" "$TMPDIR")"
+
+# 23f. A command substitution RUNS its body whether or not it is quoted, so the
+#      quoted spelling must fire exactly like the unquoted one.
+run_case "a commit inside a QUOTED substitution still fires" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"echo \\"$(git commit -m x)\\""}}' "$side_repo")"
 
 # 23b. The ORDINARY opt-in is untouched: a READABLE target in a repo with no
 #      `.markgate.yml` still passes through, so unrelated checkouts stay ungated.

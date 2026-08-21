@@ -342,13 +342,22 @@ gate_segments_raw() {
         if (c == "&") { res = res SEP_AMP; continue }
         if (c == ";") { res = res SEP_SEMI; continue }
         if (c == "|") { res = res SEP_PIPE; continue }
-        if (c == "$" && substr(line, i + 1, 1) == "(") { res = res SEP_SUBST "("; i++; continue }
+        if (c == "$" && substr(line, i + 1, 1) == "(") {
+          # Queue the body here as well as on the unquoted branch: a command
+          # substitution RUNS whatever it contains, quoted or not, so
+          # `echo "$(git commit -m x)"` is a commit (go-to-k/cdkd#2027 review
+          # round 4 -- the header of this file already said so, while only the
+          # unquoted branch acted on it).
+          cp = close_paren(line, i + 2)
+          if (cp > 0) extra = extra substr(line, i + 2, cp - i - 2) "\n"
+          res = res SEP_SUBST "("; i++; continue
+        }
         res = res c
       }
       return res
     }
     # One full pass. Runs twice at most: see the END rule.
-    function run(   i, line, t, acc, rounds, batch, elines, nlines, ei) {
+    function run(   i, line, t, acc, rounds, batch, elines, nlines, ei, __seg) {
       q = ""; tag = ""; pending = ""; acc = ""; extra = ""
       for (i = 1; i <= total; i++) {
         line = lines[i]
@@ -365,7 +374,16 @@ gate_segments_raw() {
           pending = line
           continue
         }
-        acc = acc flush_line(line) "\n"
+        # A line that ends INSIDE a quoted span is not a segment boundary: the
+        # span continues. Emitting "\n" here promoted every line of a quoted
+        # `--body "…"` to a segment START, so prose in a PR body or an issue
+        # comment was read as a command -- `gh issue comment 1 --body "we ran:
+        # <newline> git -C $W commit -F f"` refused with a remedy naming a `-C`
+        # the invocation does not carry (go-to-k/cdkd#2027 review round 4).
+        # Newline inside a quoted span is DATA, so it joins as a space.
+        __seg = flush_line(line)
+        if (q != "") acc = acc __seg " "
+        else acc = acc __seg "\n"
         if (pending_tag != "" && terminated(pending_tag, i + 1) > 0) tag = pending_tag
       }
       if (pending != "") acc = acc flush_line(pending) "\n"
@@ -373,6 +391,10 @@ gate_segments_raw() {
       # SUBSTITUTION is still scanned as a command in its own right. Bounded:
       # a body can queue more (nested substitutions), so cap the rounds rather
       # than trusting the input to terminate.
+      # Bounded so a pathological input cannot spin. Hitting the cap DROPS the
+      # remaining bodies, i.e. stops scanning commands, so it is announced on
+      # stderr rather than swallowed -- a silent drop here is the fail-open
+      # direction this file exists to avoid (go-to-k/cdkd#2027 review round 4).
       rounds = 0
       while (extra != "" && rounds < 8) {
         batch = extra; extra = ""; q = ""
@@ -382,6 +404,9 @@ gate_segments_raw() {
           acc = acc flush_line(elines[ei]) "\n"
         }
         rounds++
+      }
+      if (extra != "") {
+        printf "gate_segments: substitution nesting deeper than 8; %d byte(s) of command text were NOT scanned\n", length(extra) > "/dev/stderr"
       }
       return acc
     }
@@ -418,12 +443,26 @@ gate_strip_prefix() {
   local prev=""
   while [ "$s" != "$prev" ]; do
     prev="$s"
+    # A leading assignment whose value is QUOTED, consumed whole -- including
+    # when it is the WHOLE segment, which the general alternation below cannot
+    # do because it requires a trailing space. Without this,
+    # `MSG="$(echo git commit -m x)"` shed only `MSG="$(echo` and the residue
+    # matched the verb (go-to-k/cdkd#2027 review round 4).
+    if [[ "$s" =~ ^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=$GATE_QUOTED_VALUE[[:space:]]*(.*)$ ]]; then
+      s="${BASH_REMATCH[2]}"
+    fi
     if [[ "$s" =~ ^[[:space:]]*case[[:space:]]+[^[:space:]]+[[:space:]]+in[[:space:]]+(.*)$ ]]; then
       s="${BASH_REMATCH[1]}"
     fi
     if [[ "$s" =~ ^[[:space:]]*[^\(\)\|\;\&[:space:]]+\)[[:space:]]*(.*)$ ]]; then
       s="${BASH_REMATCH[1]}"
     fi
+    # The QUOTED-value form of an assignment is handled by the dedicated rule
+    # above; this alternation keeps the original bare-value shape ON PURPOSE.
+    # Adding a group here shifted every later capture index and silently stopped
+    # stripping `VAR=value <verb>`, so `GH_PAGER=cat gh pr edit …` and
+    # `CDKD_ALLOW_DIRTY_RESTORE=1 git checkout -- …` stopped matching their verbs
+    # (caught by their own suites, go-to-k/cdkd#2027 review round 4).
     if [[ "$s" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|command|nohup|time|timeout[[:space:]]+[^[:space:]]+|exec|then|do|else|elif|if|while|until|!|sudo|xargs|-[A-Za-z][^[:space:]]*|\{|\()[[:space:]]+(.*)$ ]]; then
       s="${BASH_REMATCH[2]}"
     fi
@@ -499,13 +538,27 @@ gate_matches() {
 # both quote characters inside one bracket expression.
 GATE_PATH_TOKEN='("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+)'
 
+# A QUOTED value alone (no bare alternative). Held in a variable for the same
+# reason as GATE_PATH_TOKEN: the `'"'"'` idiom that embeds a single quote only
+# works in assignment context, and writing it inline inside a function produced
+# a pattern that silently never matched (go-to-k/cdkd#2027 review round 4).
+GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
+
 # The regexes, kept here so every gate spells its verb the same way. Each is
 # anchored at the START of a segment; `git -C <path>` / `git -c k=v` and
 # `gh -C <path>` are absorbed — including a QUOTED path containing spaces, which
 # an earlier version could not parse, so `git -C "/a b" commit` matched nothing
 # and ran ungated (go-to-k/cdk-local#542 review).
 GATE_FLAGS='([[:space:]]+-[^[:space:]]+([[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]-][^[:space:]]*))?)*'
-GATE_GH_C='([[:space:]]+-C[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+))?'
+# Every gh GLOBAL FLAG before the subcommand, not just `-C`. The `-C`-only form
+# meant a repo flag ahead of the verb made the verb unreachable, so
+# `gh -R owner/repo pr merge 1 --squash` matched NOTHING and walked past every
+# merge gate while the same command without `-R` was refused (measured on
+# verify-pr-gate / integ-destroy-gate / pr-review-gate; go-to-k/cdkd#2027 review
+# round 4). `gate_leading_c_value` already treated `-R` / `--repo` as gh flags,
+# so the two halves of this file disagreed with each other. Same shape as
+# GATE_FLAGS, and like it this contributes THREE capture groups.
+GATE_GH_C="$GATE_FLAGS"
 GATE_RE_GIT_COMMIT="^git${GATE_FLAGS}[[:space:]]+commit([[:space:]]|$)"
 GATE_RE_GIT_PUSH="^git${GATE_FLAGS}[[:space:]]+push([[:space:]]|$)"
 GATE_RE_GH_PR_CREATE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+create([[:space:]]|$)"
@@ -593,7 +646,7 @@ gate_leading_c_value() {
         val="${BASH_REMATCH[1]}"
         rest="${BASH_REMATCH[4]}"
         ;;
-      -c|--git-dir|--work-tree|-R|--repo)
+      -c|--git-dir|--work-tree|--namespace|--exec-path|--config-env|-R|--repo)
         # Flags that consume the following token; skip it so a value is never
         # mistaken for the verb.
         [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]] && rest="${BASH_REMATCH[4]}"
@@ -732,11 +785,14 @@ gate_target_dir_strict() {
 # thing and names the same fix. EXITS the calling hook: 2 to refuse, or 0 when
 # this gate has no standing (below).
 #
-# BOUNDED BY THE REPO OPT-IN. These hooks fire on every git/gh command the agent
-# runs ANYWHERE, including in unrelated checkouts, so a refusal that fires
-# outside a markgate repo would be a brand-new foot-gun in exchange for closing
-# an old one. The session's own tree is the proxy for "does this gate apply
-# here": no top-level `.markgate.yml`, no refusal.
+# BOUNDED BY THE REPO OPT-IN, and the bound is answered from THIS HOOK's own
+# checkout -- NOT from the payload cwd, which is what it used to consult. These
+# hooks fire on every git/gh command the agent runs ANYWHERE, so the bound still
+# matters; what changed is who answers it. Asking the cwd "is this a gating
+# repo?" is asking the drifted thing, precisely when the target is unknown, and
+# it produced a silent pass on the very command this refusal exists for. The
+# payload cwd survives only as a fallback for a copy of these hooks vendored
+# somewhere without a `.markgate.yml`.
 gate_refuse_unresolved_target() {
   local gate="$1" base="${2:-$PWD}" own line
   shift 2 2>/dev/null || shift $#

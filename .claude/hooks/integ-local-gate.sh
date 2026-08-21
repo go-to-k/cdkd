@@ -137,7 +137,11 @@ cd "$target_dir" 2>/dev/null || exit 0
 # (conservative — we cannot cheaply enumerate the incoming diff there).
 LOCAL_SCOPE_REGEX='^src/local/|^src/cli/commands/local-[A-Za-z0-9_-]*\.ts$|^tests/integration/local-'
 
-if printf '%s' "$cmd" | grep -qE 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge'; then
+# The SHARED matcher, not a local grep. The hand-rolled copy absorbed only a
+# `-C` with an unquoted value, so `gh -C "/a b" pr merge <N>` and
+# `gh -R <repo> pr merge <N>` skipped the PR-diff scope check below and took the
+# `git merge` branch instead (go-to-k/cdkd#2027 review round 4).
+if gate_matches "$cmd" "$GATE_RE_GH_PR_MERGE"; then
   pr_number=""
   args="${cmd#*merge}"
   # shellcheck disable=SC2086
@@ -196,7 +200,7 @@ fi
 # the unconditional verify) on `--abort` / `--continue` / `--quit`,
 # octopus (2+ refs), a ref we cannot resolve, or an unparsable shape.
 if gate_matches "$cmd" "$GATE_RE_GIT_MERGE" \
-  && ! printf '%s' "$cmd" | grep -qE 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge'; then
+  && ! gate_matches "$cmd" "$GATE_RE_GH_PR_MERGE"; then
   merge_ref=""
   parse_ok=1
   # Locate the `merge` subcommand token by walking the git invocation's

@@ -78,8 +78,16 @@ if [ ! -r "$_gate_lib" ]; then
 fi
 # shellcheck source=/dev/null
 . "$_gate_lib"
-if ! declare -F gate_matches >/dev/null 2>&1; then
-  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
+# Guard EVERY helper this hook calls, not just the first one. A truncated
+# library that still defined `gate_matches` left `gate_target_dir_strict`
+# undefined, and an undefined function exits 127 -- which the caller reads as
+# "could not resolve" and refuses, so that one fails safe, while an undefined
+# `gate_matches` exits 127 into an `if !` and passes. The window is exactly what
+# this guard exists to close (go-to-k/cdkd#2027 review round 4).
+if ! declare -F gate_matches >/dev/null 2>&1 \
+  || ! declare -F gate_target_dir_strict >/dev/null 2>&1 \
+  || ! declare -F gate_refuse_unresolved_target >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but its API is incomplete (truncated file?)." >&2
   exit 2
 fi
 gate_matches "$cmd" "$GATE_RE_GIT_COMMIT" || exit 0

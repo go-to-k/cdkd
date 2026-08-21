@@ -107,17 +107,18 @@ fi
 
 session_dir="${hook_cwd:-$PWD}"
 
-# The repo opt-in (issue #1259) is what BOUNDS the fail-closed refusals
-# below: this gate protects repos that follow the markgate convention,
-# and a session rooted in such a repo can still run git against OTHER
-# repos (a dotfiles checkout, a scratch clone) that have no markers at
-# all. Opt-in signal: a `.markgate.yml` at a repo's top level. When we
-# cannot even tell whether the session is in such a repo, we are not
-# entitled to refuse, so the refusal helper passes through instead.
+# The repo opt-in (issue #1259) BOUNDS the fail-closed refusals below: this gate
+# protects repos that follow the markgate convention, and a session rooted in
+# such a repo can still run git against OTHER repos (a dotfiles checkout, a
+# scratch clone). Opt-in signal: a `.markgate.yml` at a repo's top level.
 #
-# `opted_in` is set to 1 as soon as the RESOLVED TARGET repo is known to
-# carry `.markgate.yml`; before that point the session's own repo is the
-# best available proxy.
+# WHICH repo is asked changed in review round 4: it is THIS HOOK's own checkout,
+# not the payload cwd. The cwd was the drifted thing -- a session whose cwd had
+# wandered out of the worktree got a silent pass on exactly the command the
+# refusal exists for. The cwd remains a fallback for a vendored copy.
+#
+# `opted_in` is set to 1 as soon as the RESOLVED TARGET repo is known to carry
+# `.markgate.yml`.
 opted_in=0
 session_opted_in() {
   # THIS HOOK's own checkout answers the policy question, not the payload cwd --
@@ -179,21 +180,17 @@ fi
 # Note what this costs when the resolution was RIGHT and the directory
 # simply is not a repo: nothing. `git commit` there would fail anyway,
 # so the only behavior change is a clearer error.
+# A target that resolves but is not a git repo passes through, as it did before
+# #2027. That refusal was added when this branch still had no other guard for a
+# target it could not read -- but `gate_target_dir_strict` above now refuses the
+# UNREADABLE spellings outright, so what reaches here is a LITERAL path that
+# simply is not a repository, and the gate learns nothing by refusing it: git
+# fails on its own. Refusing was also actively wrong for the ordinary
+# `cd <newdir> && git init && git commit -m init`, where the directory is a repo
+# by the time the commit runs and the message told the author to "re-run with a
+# literal absolute path", which could never clear it (review round 4).
 if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
-  # Only a target the COMMAND NAMED is worth refusing over. If the command named
-  # none, the target is the payload cwd, which was handed to us -- our resolution
-  # cannot be wrong about it, and a `git commit` in a non-repo directory fails on
-  # its own. Refusing there would be noise. When a `-C` or a `cd` DID name
-  # something and it resolved to a non-repo, either the resolution is wrong (the
-  # dangerous case) or the command fails anyway (costless), so refuse.
-  if [ "$target_dir" = "$session_dir" ]; then
-    exit 0
-  fi
-  cannot_evaluate "the target working tree: '$target_dir' is not a git repository" \
-    "" \
-    "Either the path is wrong, or this hook mis-resolved it. Re-run the" \
-    "commit from the worktree itself, or with a literal absolute path:" \
-    "  git -C /abs/path/to/worktree commit -F <file>"
+  exit 0
 fi
 
 # Repo opt-in scope (mirrors branch-gate.sh, issue #1259). Repos without a

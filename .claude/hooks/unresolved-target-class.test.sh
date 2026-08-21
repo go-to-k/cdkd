@@ -93,9 +93,14 @@ handrolled_hit() { # <file> -> 0 when the file appears to parse `-C` itself
   # of 38 hooks, including two that touch no command text at all.
   local body
   body=$(sed 's/^[[:space:]]*#.*$//' "$1")
-  # A bash regex test that reaches for `-C` followed by a character class -- the
-  # shape every hand-rolled copy had, in either POSIX class spelling.
-  printf '%s\n' "$body" | grep -qE '=~.*-C\[\[:(space|blank):\]\]' && return 0
+  # `-C` followed by a POSIX character class, ANYWHERE in code. Requiring a `=~`
+  # on the same line missed the grep form that integ-local-gate still carried
+  # (`grep -qE '"'"'gh([[:space:]]+-C[[:space:]]+...'"'"'`), which is how fence 1
+  # printed an OK line while two live hand-rolled copies sat in the tree
+  # (go-to-k/cdkd#2027 review round 4). Nothing legitimate spells this: the one
+  # place allowed to know the shape is lib/command-match.sh, which is not in the
+  # population.
+  printf '%s\n' "$body" | grep -qE -- '-C\[\[:(space|blank):\]\]' && return 0
   # The same test written with a literal space instead of a class.
   printf '%s\n' "$body" | grep -qE '=~.*[^[:alnum:]]-C[[:space:]]' && return 0
   # An extraction pipeline rather than a regex test.
@@ -128,12 +133,15 @@ PLANT
 cat > "$plant_dir/v3.sh" <<'PLANT'
 target=$(printf '%s' "$cmd" | grep -oE 'git -C [^ ]+' | awk '{print $3}')
 PLANT
+cat > "$plant_dir/v4.sh" <<'PLANT'
+if printf '%s' "$cmd" | grep -qE 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge'; then :; fi
+PLANT
 missed=""
 for v in "$plant_dir"/v*.sh; do
   handrolled_hit "$v" || missed="$missed $(basename "$v")"
 done
 if [ -z "$missed" ]; then
-  ok "fence 1 guard: all 3 planted VARIANTS are caught (not just the spelling the pattern was written from)"
+  ok "fence 1 guard: all 4 planted VARIANTS are caught (not just the spelling the pattern was written from)"
 else
   ng "fence 1 guard: planted variants missed:$missed -- fence 1 is narrower than it looks"
 fi
@@ -343,13 +351,13 @@ exercised_count=$(printf '%s' "$exercised_list" | wc -w | tr -d ' ')
 # current value tolerates exactly the drop it exists to reveal: the previous
 # `>= 6` against an actual 9 stayed green with check-gate AND branch-gate
 # reduced to `exit 0`.
-EXPECTED_EXERCISED="branch-gate check-gate dirty-path-restore-gate gh-pr-edit-deprecation-gate integ-broad-gate integ-destroy-gate integ-local-gate integ-schema-migration-gate main-tree-branch-gate post-merge-orphan-push-gate pr-review-gate provider-docs-gate provider-integ-gate ref-segment-audit-gate state-destroy-force-gate verify-pr-gate"
+EXPECTED_EXERCISED="branch-gate check-gate ci-green-gate dirty-path-restore-gate gh-pr-edit-deprecation-gate integ-broad-gate integ-destroy-gate integ-local-gate integ-schema-migration-gate main-tree-branch-gate post-merge-orphan-push-gate pr-review-gate provider-docs-gate provider-integ-gate ref-segment-audit-gate state-destroy-force-gate verify-pr-gate"
 missing=""
 for want in $EXPECTED_EXERCISED; do
   case " $exercised_list " in *" $want "*) ;; *) missing="$missing $want" ;; esac
 done
 if [ -z "$missing" ]; then
-  ok "fence 3: all 16 baseline hooks still block their literal control ($exercised_count exercised)"
+  ok "fence 3: all 17 baseline hooks still block their literal control ($exercised_count exercised)"
 else
   ng "fence 3: these gates no longer block ANY literal control -- they have gone quiet:$missing"
 fi
