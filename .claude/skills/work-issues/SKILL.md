@@ -1154,11 +1154,32 @@ visible by reading the script:
   exit code, a string only the deep path prints, a field in the `--json`
   payload — and demote the negative to a stated safety net, recording the
   measurement so nobody re-promotes it.
+- **Every assertion in the arm PREDATES your change, so the run is somebody
+  else's regression net.** The cheapest arm to reach for is a fixture that
+  already asserts something near your subject — and if you changed none of those
+  assertions, a green run says only that you broke nothing. On 2026-08-21 a lane
+  ran `rollback-cross-region-secret` for a `cdkd drift` outcome-type change and
+  recorded it as the live evidence; a review found every drift assertion in that
+  `verify.sh` byte-identical to `origin/main` (the PR had touched three comment
+  lines there) and all of them passing under the PRE-change shape, because an
+  earlier issue already emitted the roll-up and the same exit code. The one
+  user-visible delta — a refused resource leaving `clean[]` — was asserted
+  nowhere: `grep '\.clean' verify.sh` returned zero hits. So before believing an
+  inherited arm, run `git diff origin/main -- <the fixture>` and ask which
+  assertion could only pass AFTER your change. If none, the arm is a regression
+  net for a different issue; add the discriminating one. And guard it against
+  vacuity in the same breath — the added assertion there was an ABSENCE from an
+  array, which a run that died before writing that array would also satisfy, so
+  it first requires the array to have been emitted at all.
 
 The probe is one extra run of a fixture you are already running: revert the fix,
-rebuild, run, confirm the arm goes RED, restore, rebuild. Both arms this run
-were probed; one passed the probe and one failed it, which is the whole argument
-for doing it rather than reasoning about it. Also add a NEGATIVE CONTROL inside
+rebuild, run, confirm the arm goes RED, restore, rebuild. **Probe each HALF of a
+multi-part fix separately, not just the whole.** On 2026-08-21 a scrub lane's
+three probes were the whole argument: reverting everything reproduced the bug,
+reverting only the wiring red one assertion, and reverting only the pre-pass left
+that assertion PASSING while a different one red — which is what proved the two
+halves were independently fenced rather than one arm covering both. A single
+all-or-nothing revert cannot tell those apart. Also add a NEGATIVE CONTROL inside
 the arm — a sibling case that must NOT trip the new behaviour — or a refusal
 that fires on everything satisfies every positive assertion you just wrote.
 
