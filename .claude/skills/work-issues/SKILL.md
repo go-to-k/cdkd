@@ -670,6 +670,54 @@ occurring in the finished line. Both probes ran the same mutation; only one coul
 see it. Before trusting a green, ask what property of the INPUT the defect
 depends on.
 
+**When the change alters a CLASSIFIER, hand-picked cases cannot fence it —
+measure the DELTA against the old implementation.** A classifier is any function
+deciding which of several shapes an input is: a region-vs-stack-name predicate,
+a route selector, an error categoriser. Its defects live in the shapes nobody
+thought to write down, so a suite of chosen values goes green on exactly the
+regressions that matter. On 2026-08-21 issue go-to-k/cdkd#2001 shipped THREE
+green revisions that way. Each fixed the case the previous review named and
+broke a neighbouring one: widening a region pattern's length bound fixed the
+`eusc-` partition and started reading five idiomatic stack names (`api-prod-1`,
+`demo-app-1`) as regions; an exact segment-depth rule fixed those under the
+default prefix and mis-split legacy keys under a NESTED one; narrowing that rule
+fixed the nested spelling and still left six shapes regressed under FOREIGN
+prefixes, where the rule cannot reach at all. Every revision passed a suite that
+grew a case per round.
+
+The fence that ends it is a differential walk: enumerate the input space, run
+BOTH the new implementation and a transcription of the old one, and fail on any
+difference outside an explicitly enumerated set of intended classes. That
+inverts the burden — a shape nobody imagined is a failure by default rather than
+a silent pass — and it is what finally showed the delta was three classes when
+the code comments said two. Two ways it goes inert, both measured on that lane:
+
+- **Classify by the resulting VALUE, not by the input's shape.** The first cut
+  bucketed a differing cell by which key it was, so mutating the fix to return
+  the prefix outright — a total regression of the thing the PR added — left
+  every cell inside the "intended repair" bucket and the fence stayed GREEN
+  while nine ordinary cases caught it. Each arm must assert what the function
+  now returns.
+- **Carry a floor per class.** The walk reaches a class only if the input pool
+  contains it; one class was real, intended and never reached, so a pool that
+  quietly stops covering one would pass as "no regressions".
+
+The transcription is the only real cost, and it is cheap for a predicate. Get it
+from `git show origin/main:<path>` rather than from memory, and confirm the two
+agree on the cells where they SHOULD agree before trusting the cells where they
+differ.
+
+**A VALUE import from a module other suites `vi.mock` reds those suites.** The
+`type`-only import that module already had is invisible to the mock; adding a
+runtime one is not, and the failure names the EXPORT rather than the
+mock (`[vitest] No "<CONST>" export ...`), so it reads as a missing symbol in
+the module you just edited rather than as a mocking problem in a suite you did
+not touch. Measured on the same lane: importing one constant into
+`state-file-keys.ts` reddened `gc.test.ts` and `bootstrap-destroy.test.ts`,
+neither of which imports it. When two modules must agree on a constant and one
+of them is widely mocked, spell it in both and fence the pair with a test that
+imports both — the sync is what matters, not the single definition.
+
 **Run probes with `vp test run <path>`, never `vp run test <path>`.** The
 latter goes through the Vite+ task runner, where `test` is CACHED: a repeat
 invocation prints `◉ cache hit, replaying` and re-reports the previous run's
@@ -892,6 +940,16 @@ retry with `>>` then appends to nothing and ships a fragment: go-to-k/cdk-local#
 opened carrying only its review section, with no `Closes` line, and silently lost
 the issue auto-close. Write the body file in one call, run the gated command in the
 next, and re-create rather than append after any refusal.
+
+**Its worst signature is not an absent file but a STALE one from an earlier
+session**, since these paths are conventional (`/tmp/pr-body.md`) and shared.
+The gate then inspects that file and reports violations from content this
+session never wrote — measured 2026-08-21, when a `gh pr create` whose heredoc
+had not run was refused for four bare `#N` refs belonging to a lane from days
+earlier, none of which were in the draft on screen. If a gate names text you do
+not recognise, check the file's mtime before hunting for the text. Give body
+files a per-session name (the scratchpad directory, plus a suffix) for the same
+reason §5 gives probe files one.
 
 **"All green" is the EXIT CODE, not the summary.** A run can report every test
 passing and still exit non-zero, and this repo's runner prints the two facts on
@@ -1318,6 +1376,20 @@ marker correctly went stale, buying a second real-AWS run at merge time. Push
 first so CI starts, then re-run the integ alongside it; the two are independent
 and serializing them wastes the CI wall-clock.
 
+**Check a reviewer's PREMISE before acting on the finding, and say so when you
+decline.** Reviewers are read-only and reason from what they can see, so a
+suggestion can be correct in form and rest on a reachability claim that is
+false — and acting is not free, since a "just add a sentence" edit to a gated
+file buys a real-AWS cycle. On 2026-08-21 a reviewer asked that
+`deploy-engine.ts`'s call-site comment name a second guarantor, because the
+engine is also constructed from `NestedStackProvider.update`. Tracing it took two
+greps: `rollback.ts` builds a DESTROY-mode nested-stack context, so
+`requireDeployContext` throws before a child engine exists, and the only
+deploy-mode context is `deploy.ts`'s own — the guarantor is identical on every
+reachable path and the comment was already complete. Record the trace in the PR
+body and the commit: a declined finding with evidence is a decision the next
+reader can re-judge, while a silently dropped one looks like an oversight.
+
 **When two reviewers CONTRADICT each other, settle it in the code yourself
 before forwarding either.** On 2026-08-20 the spec reviewer explicitly CLEARED
 the evidence-persistence issue the security reviewer called a blocker, both
@@ -1367,8 +1439,16 @@ are looking at two additions or one contested sentence.
 gh pr merge <n> --squash --delete-branch     # squash is the repo's only method
 ```
 
-(`--delete-branch` removes the REMOTE branch but fails on the local one while its
-worktree exists — expected. The worktree removal below does NOT then clear it:
+(**`--delete-branch` prints a bare `fatal:` line and the merge SUCCEEDED anyway —
+read it as the expected artifact, not a failed merge.** Run from the PR's own
+worktree, as this flow requires, `gh` deletes the remote branch, then tries to
+check out the default branch to delete the local one and cannot:
+`failed to run git: fatal: 'main' is already used by worktree at '<main tree>'`.
+Measured twice on 2026-08-21 (PRs go-to-k/cdkd#2144 and go-to-k/cdkd#2145): both
+merged, and NOTHING in the output says so. Confirm with
+`gh pr view <N> --json state` before reacting; the natural reaction — re-running
+the merge — then blocks on a gate for an already-merged PR and reads as a second
+failure. The worktree removal below does NOT then clear it:
 `git worktree remove` deletes the worktree, never the branch, so the local ref
 survives both steps and you must finish with an explicit `git branch -D <branch>`.
 It has to be `-D`: this repo squash-merges, so the branch tip is never an ancestor of
@@ -1723,9 +1803,13 @@ Every worktree THIS run added is gone by §9 and you are back on `main`, where
 worktree:
 
 ```bash
-# Date-suffix the branch: a merged branch is deleted, and re-pushing that same
-# name is refused by post-merge-orphan-push-gate on the next run.
-B=chore/work-issues-retro-$(date +%Y%m%d)
+# Suffix the branch to UTC MINUTE, not day. A merged branch is deleted, and
+# re-pushing that name is refused by post-merge-orphan-push-gate — which a bare
+# date suffix does not avoid, because more than one run lands per day. Measured
+# 2026-08-21: this step's own `$(date +%Y%m%d)` name collided with PR
+# go-to-k/cdkd#2139, merged 02:35Z the same morning, and the push was blocked
+# after the retro was already written and committed.
+B=chore/work-issues-retro-$(date -u +%Y%m%d-%H%M)
 git worktree add ".claude/worktrees/${B##*/}" -b "$B" origin/main
 cd ".claude/worktrees/${B##*/}"
 mise trust && mise install    # untrusted .mise.toml: vp / markgate will not resolve
