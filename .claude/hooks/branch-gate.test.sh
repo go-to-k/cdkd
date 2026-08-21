@@ -228,6 +228,34 @@ run_case "gh issue body quoting 'git commit' on main allowed" 0 \
 run_case "echo body quoting 'git push' on main allowed" 0 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"echo \"reminder: git push origin main later\""}}' "$main_repo")"
 
+# --- Unexpanded target (go-to-k/cdkd#2027) -----------------------------------
+# `git -C "$W" ...` is the spelling this repo's own instructions hand people for
+# worktree commits, and the hand-rolled `-C` scan this gate used to carry
+# resolved it to the literal `<cwd>/$W`: the repo probe failed and the gate
+# exited 0 while sitting on `main`. Measured against the pre-fix hook, both
+# cases below returned 0.
+run_case "unexpanded git -C on main REFUSED" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" commit -m oops"}}' "$main_repo")"
+
+run_case "unexpanded git -C push on main REFUSED" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" push origin HEAD"}}' "$main_repo")"
+
+# The bound moved, DELIBERATELY (go-to-k/cdkd#2027 review, minor 5). It used to
+# ask the PAYLOAD CWD "is this a markgate repo?" -- i.e. it consulted the cwd
+# precisely when the target was unknown, so a session whose cwd had drifted out
+# of the worktree got a silent pass on the very command the refusal exists for.
+# The question is now answered from the HOOK's own checkout, so an unreadable
+# target is refused wherever the cwd happens to be. The friction is bounded: it
+# takes a command that names its target with a variable to trigger it.
+run_case "unexpanded git -C refuses even from a non-markgate cwd" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" commit -m x"}}' "$optout_repo")"
+
+# The ORDINARY opt-in is untouched: a READABLE target in a repo with no
+# `.markgate.yml` still passes through, which is what keeps this gate off the
+# unrelated checkouts a session touches.
+run_case "readable target in a non-markgate repo still passes through" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$optout_repo")"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then

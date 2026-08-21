@@ -40,6 +40,9 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F cmd_matches_verb >/dev/null \
+  || ! declare -F gate_matches >/dev/null \
+  || ! declare -F gate_target_dir_strict >/dev/null \
+  || ! declare -F gate_refuse_unresolved_target >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
@@ -64,7 +67,18 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # after a `&&` / `||` / `;` / `|` operator. That catches chained
 # invocations the old line-start anchor missed, while a quoted mention
 # still does not fire (it is removed rather than dodged by position).
-if ! cmd_matches_verb "$cmd" '(CDKD_SKIP_CI_GREEN_GATE=1[[:space:]]+)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])'; then
+# Defined HERE, before its first use: assigning it after the matcher left
+# `__verb_ere` unset at match time, and under `set -u` that aborted the hook
+# with rc=1 on EVERY command -- a gate that errors is a gate that does not
+# gate. Caught by its own suite going 0/13.
+# No `CDKD_SKIP_CI_GREEN_GATE=1` alternative here: `gate_strip_prefix` already
+# removes a leading env assignment before the verb is matched, so carrying one
+# was dead pattern (go-to-k/cdkd#2027 review round 4). The bypass is still
+# honoured: it is grepped out of the COMMAND TEXT a few lines below, not read
+# from the environment, so dropping the alternation from the verb changes
+# nothing about it.
+__verb_ere="$GATE_RE_GH_PR_MERGE"
+if ! gate_matches "$cmd" "$__verb_ere"; then
   exit 0
 fi
 
@@ -75,28 +89,16 @@ if printf '%s' "$cmd" | grep -qE '(^|[[:space:]])CDKD_SKIP_CI_GREEN_GATE=1([[:sp
 fi
 
 # Resolve the directory the gh command will run in (cwd-aware, #559).
-target_dir="${hook_cwd:-$PWD}"
-
-# Pass the current target as the BASE so chained relative cds compose
-# (`cd /abs/one && cd sub`); the helper returns a fully-resolved path.
-cd_target="$(cmd_last_cd_target "$cmd" "$target_dir" '(CDKD_SKIP_CI_GREEN_GATE=1[[:space:]]+)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])')"
-if [[ -n "$cd_target" ]]; then
-  target_dir="$cd_target"
-fi
-
-if [[ "$cmd" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
-  c_target=""
-  remaining="$cmd"
-  while [[ "$remaining" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-    c_target="${BASH_REMATCH[1]}"
-    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  done
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  if [[ "$c_target" != /* ]]; then
-    c_target="$target_dir/$c_target"
-  fi
-  target_dir="$c_target"
+# Where the git/gh command will actually RUN.
+#
+# This calls the SHARED resolver in lib/command-match.sh, replacing the
+# hand-rolled `-C` scan this hook used to carry. That copy captured the raw
+# token with no guard for an unexpanded `$VAR`, so the standard worktree
+# spelling `git -C "$W" ...` resolved to the literal `<cwd>/$W`, the repo
+# probe below failed, and the gate exited 0 over a tree it never looked at
+# (go-to-k/cdkd#2027). The strict resolver refuses instead of guessing.
+if ! target_dir=$(gate_target_dir_strict "$cmd" "${hook_cwd:-$PWD}" "$__verb_ere"); then
+  gate_refuse_unresolved_target "ci-green-gate" "${hook_cwd:-$PWD}"
 fi
 
 if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then

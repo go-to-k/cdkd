@@ -212,6 +212,21 @@ git -C "$plain_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m
 run_case "repo without .markgate.yml passes through" 0 stale "" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr create --fill"}}' "$plain_repo")"
 
+# --- Unexpanded target (go-to-k/cdkd#2027) -----------------------------------
+# The hand-rolled `gh -C` scan this gate used to carry resolved `gh -C "$W"` to
+# the literal `<cwd>/$W`, failed the repo probe, and exited 0 -- so the PR gate
+# was bypassed by the same worktree spelling the instructions recommend. Both
+# cases returned 0 against the pre-fix hook.
+run_case "unexpanded gh -C on pr merge REFUSED" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh -C \\"$W\\" pr merge 42 --squash"}}' "$main_repo")"
+
+run_case "unexpanded gh -C on pr create REFUSED" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh -C \\"$W\\" pr create --title x"}}' "$main_repo")"
+
+# An unresolvable `cd` is equally unreadable and equally refused.
+run_case "unexpanded cd before gh pr merge REFUSED" 2 fresh "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"cd \\"$W\\" && gh pr merge 42 --squash"}}' "$main_repo")"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then

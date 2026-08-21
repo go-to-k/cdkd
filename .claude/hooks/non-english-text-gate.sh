@@ -86,8 +86,16 @@ if [ ! -r "$_gate_lib" ]; then
 fi
 # shellcheck source=/dev/null
 . "$_gate_lib"
-if ! declare -F gate_matches >/dev/null 2>&1; then
-  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
+# Guard EVERY helper this hook calls, not just the first one. A truncated
+# library that still defined `gate_matches` left `gate_target_dir_strict`
+# undefined, and an undefined function exits 127 -- which the caller reads as
+# "could not resolve" and refuses, so that one fails safe, while an undefined
+# `gate_matches` exits 127 into an `if !` and passes. The window is exactly what
+# this guard exists to close (go-to-k/cdkd#2027 review round 4).
+if ! declare -F gate_matches >/dev/null 2>&1 \
+  || ! declare -F gate_target_dir_strict >/dev/null 2>&1 \
+  || ! declare -F gate_refuse_unresolved_target >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but its API is incomplete (truncated file?)." >&2
   exit 2
 fi
 gate_matches "$cmd" "$GATE_RE_GH_PR_WRITE" || exit 0
@@ -95,7 +103,13 @@ gate_matches "$cmd" "$GATE_RE_GH_PR_WRITE" || exit 0
 # Where the gh command actually runs: the last `gh -C <path>` wins, else the
 # last `cd <path>` in ANY segment before the verb (the previous form saw only a
 # LEADING cd), else the payload cwd.
-target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$GATE_RE_GH_PR_WRITE")
+# FAIL CLOSED on a target this parser cannot read (go-to-k/cdkd#2027).
+# gate_target_dir would DROP an unexpanded `-C "$W"` and judge the payload
+# cwd instead -- measured as a silent pass when the violation lived in the
+# target tree and the cwd was clean.
+if ! target_dir=$(gate_target_dir_strict "$cmd" "${hook_cwd:-$PWD}" "$GATE_RE_GH_PR_WRITE"); then
+  gate_refuse_unresolved_target "non-english-text-gate" "${hook_cwd:-$PWD}"
+fi
 
 # If the resolved target dir is not a git repo, silently pass.
 if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
@@ -116,8 +130,13 @@ fi
 #   `gh pr merge <N>` / `gh pr edit <N>` — N is the explicit arg.
 #   `gh pr create` / `gh pr merge` (no arg) — current branch's PR.
 pr_number=""
-if [[ "$cmd" =~ gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+(merge|edit)[[:space:]]+([0-9]+) ]]; then
-  pr_number="${BASH_REMATCH[3]}"
+# `$GATE_GH_C` rather than a local `-C` pattern, for the same reason as
+# dirty-path-restore-gate: the local one could not read a quoted path, and it
+# stopped at `-C` so a `gh -R <repo> pr merge <N>` hid the number. It absorbs
+# every global flag and contributes 3 capture groups, so the verb is [4] and the
+# number is [5].
+if [[ "$cmd" =~ gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(merge|edit)[[:space:]]+([0-9]+) ]]; then
+  pr_number="${BASH_REMATCH[5]}"
 fi
 
 if [[ -z "$pr_number" ]]; then

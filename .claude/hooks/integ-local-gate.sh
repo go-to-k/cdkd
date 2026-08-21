@@ -52,6 +52,9 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F cmd_matches_verb >/dev/null \
+  || ! declare -F gate_matches >/dev/null \
+  || ! declare -F gate_target_dir_strict >/dev/null \
+  || ! declare -F gate_refuse_unresolved_target >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
@@ -85,53 +88,29 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # after a `&&` / `||` / `;` / `|` operator. That catches chained
 # invocations the old line-start anchor missed, while a quoted mention
 # still does not fire (it is removed rather than dodged by position).
-if ! { cmd_matches_verb "$cmd" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])' \
-     || cmd_matches_verb "$cmd" 'git[^|;&]*[[:space:]]merge([[:space:]]|$|[|;&`)])'; }; then
+# BOTH guarded verbs, from the library constants: a hand-copied spelling here
+# is what let `-C "/a b"` and `-C "$(...)"` past every gate (go-to-k/cdkd#2027
+# review). Built by stripping each constant's `^` and re-anchoring once.
+__verb_ere="^(${GATE_RE_GH_PR_MERGE#^}|${GATE_RE_GIT_MERGE#^})"
+if ! gate_matches "$cmd" "$__verb_ere"; then
   exit 0
 fi
 
 # Start from the Bash session's persisted cwd; fall back to the hook
 # process's own cwd if the payload did not include a `cwd` field.
-target_dir="${hook_cwd:-$PWD}"
-
-# Leading `cd <path> && ...` shifts the target dir.
-# Pass the current target as the BASE so chained relative cds compose
-# (`cd /abs/one && cd sub`); the helper returns a fully-resolved path.
-cd_target="$(cmd_last_cd_target "$cmd" "$target_dir" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])')"
-if [[ -n "$cd_target" ]]; then
-  target_dir="$cd_target"
-fi
-
-# Last `git -C <path>` wins.
-if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
-  c_target=""
-  remaining="$cmd"
-  while [[ "$remaining" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-    c_target="${BASH_REMATCH[1]}"
-    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  done
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  if [[ "$c_target" != /* ]]; then
-    c_target="$target_dir/$c_target"
-  fi
-  target_dir="$c_target"
-fi
-
-# Last `gh -C <path>` wins (gh's "run as if from <path>" flag).
-if [[ "$cmd" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
-  c_target=""
-  remaining="$cmd"
-  while [[ "$remaining" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-    c_target="${BASH_REMATCH[1]}"
-    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  done
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  if [[ "$c_target" != /* ]]; then
-    c_target="$target_dir/$c_target"
-  fi
-  target_dir="$c_target"
+# Where the git/gh command will actually RUN.
+#
+# This calls the SHARED resolver in lib/command-match.sh, replacing the
+# hand-rolled `-C` scan this hook used to carry. That copy captured the raw
+# token with no guard for an unexpanded `$VAR`, so the standard worktree
+# spelling `git -C "$W" ...` resolved to the literal `<cwd>/$W`, the repo
+# probe below failed, and the gate exited 0 over a tree it never looked at
+# (go-to-k/cdkd#2027). The strict resolver refuses instead of guessing.
+# `__verb_ere` is the one defined at the matcher above -- both verbs, from the
+# library constants. Resolving against a DIFFERENT spelling than the one that
+# matched is how a `-C` goes unread.
+if ! target_dir=$(gate_target_dir_strict "$cmd" "${hook_cwd:-$PWD}" "$__verb_ere"); then
+  gate_refuse_unresolved_target "integ-local-gate" "${hook_cwd:-$PWD}"
 fi
 
 # If the resolved target dir is not a git repo, silently pass — we
@@ -158,7 +137,11 @@ cd "$target_dir" 2>/dev/null || exit 0
 # (conservative — we cannot cheaply enumerate the incoming diff there).
 LOCAL_SCOPE_REGEX='^src/local/|^src/cli/commands/local-[A-Za-z0-9_-]*\.ts$|^tests/integration/local-'
 
-if printf '%s' "$cmd" | grep -qE 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge'; then
+# The SHARED matcher, not a local grep. The hand-rolled copy absorbed only a
+# `-C` with an unquoted value, so `gh -C "/a b" pr merge <N>` and
+# `gh -R <repo> pr merge <N>` skipped the PR-diff scope check below and took the
+# `git merge` branch instead (go-to-k/cdkd#2027 review round 4).
+if gate_matches "$cmd" "$GATE_RE_GH_PR_MERGE"; then
   pr_number=""
   args="${cmd#*merge}"
   # shellcheck disable=SC2086
@@ -216,8 +199,8 @@ fi
 # `gh pr merge <N>` path above. Bail conservatively (fall through to
 # the unconditional verify) on `--abort` / `--continue` / `--quit`,
 # octopus (2+ refs), a ref we cannot resolve, or an unparsable shape.
-if cmd_matches_verb "$cmd" 'git[^|;&]*[[:space:]]merge([[:space:]]|$|[|;&`)])' \
-  && ! printf '%s' "$cmd" | grep -qE 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge'; then
+if gate_matches "$cmd" "$GATE_RE_GIT_MERGE" \
+  && ! gate_matches "$cmd" "$GATE_RE_GH_PR_MERGE"; then
   merge_ref=""
   parse_ok=1
   # Locate the `merge` subcommand token by walking the git invocation's

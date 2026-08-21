@@ -86,43 +86,42 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # after a `&&` / `||` / `;` / `|` operator. That catches chained
 # invocations the old line-start anchor missed, while a quoted mention
 # still does not fire (it is removed rather than dodged by position).
-prefix='git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?)*[[:space:]]+'
+# `GATE_FLAGS` rather than a hand-copied flag pattern: the local copy had no
+# QUOTED alternative for a flag value, so `git -C "/a b" checkout -- f` matched
+# nothing and no snapshot was taken (go-to-k/cdkd#2027 review, blocker 1).
+prefix="^git${GATE_FLAGS}[[:space:]]+"
 verb=""
-if cmd_matches_verb "$cmd" "${prefix}checkout([[:space:]]+-[^[:space:]]+)*[[:space:]]+(--|\.)([[:space:]]|$)"; then
-  verb="checkout"
-elif cmd_matches_verb "$cmd" "${prefix}restore([[:space:]]|$)"; then
-  verb="restore"
-elif cmd_matches_verb "$cmd" "${prefix}reset([[:space:]]+-[^[:space:]]+)*[[:space:]]+--hard([[:space:]]|$)"; then
-  verb="reset-hard"
-elif cmd_matches_verb "$cmd" "${prefix}clean([[:space:]]+-[^[:space:]]*f[^[:space:]]*)"; then
-  verb="clean"
-elif cmd_matches_verb "$cmd" "${prefix}stash([[:space:]]|$)"; then
-  verb="stash"
+# `matched_re` is the ERE that actually fired, and it is what gets handed to the
+# resolver below. Passing a verbless prefix instead made `gate_target_dir` stop
+# at the FIRST `git <anything>` segment, so
+# `git -C /one status && git -C /two checkout -- f.txt` snapshotted /one while
+# /two was the tree being wiped -- a snapshot of a tree nobody is destroying is
+# the same as no snapshot at all, which is the loss this hook exists to prevent.
+matched_re=""
+if gate_matches "$cmd" "${prefix}checkout([[:space:]]+-[^[:space:]]+)*[[:space:]]+(--|\.)([[:space:]]|$)"; then
+  verb="checkout"; matched_re="${prefix}checkout([[:space:]]+-[^[:space:]]+)*[[:space:]]+(--|\.)([[:space:]]|$)"
+elif gate_matches "$cmd" "${prefix}restore([[:space:]]|$)"; then
+  verb="restore"; matched_re="${prefix}restore([[:space:]]|$)"
+elif gate_matches "$cmd" "${prefix}reset([[:space:]]+-[^[:space:]]+)*[[:space:]]+--hard([[:space:]]|$)"; then
+  verb="reset-hard"; matched_re="${prefix}reset([[:space:]]+-[^[:space:]]+)*[[:space:]]+--hard([[:space:]]|$)"
+elif gate_matches "$cmd" "${prefix}clean([[:space:]]+-[^[:space:]]*f[^[:space:]]*)"; then
+  verb="clean"; matched_re="${prefix}clean([[:space:]]+-[^[:space:]]*f[^[:space:]]*)"
+elif gate_matches "$cmd" "${prefix}stash([[:space:]]|$)"; then
+  verb="stash"; matched_re="${prefix}stash([[:space:]]|$)"
 fi
 [ -n "$verb" ] || exit 0
 
 # ------------------------------------------------------- resolve target
 # Same resolution order as branch-gate.sh: `git -C <path>` wins, then a
 # leading `cd <path> &&`, then the Bash tool's persisted cwd.
-target_dir="${hook_cwd:-$PWD}"
-
-if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-  cd_target="${BASH_REMATCH[1]}"
-  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
-  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
-  [[ "$cd_target" == /* ]] || cd_target="$target_dir/$cd_target"
-  target_dir="$cd_target"
-fi
-
-remaining="$cmd"
-while [[ "$remaining" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-  c_target="${BASH_REMATCH[1]}"
-  remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  [[ "$c_target" == /* ]] || c_target="$target_dir/$c_target"
-  target_dir="$c_target"
-done
+# The SHARED resolver, in its FALLING-BACK form -- deliberately NOT the strict
+# one the blocking gates use (go-to-k/cdkd#2027). This hook refuses nothing; it
+# takes a snapshot so a discard stops being irreversible. On an unexpanded
+# `git -C "$W"` the hand-rolled scan this replaces built `<cwd>/$W`, failed the
+# repo probe below and exited 0 having snapshotted NOTHING, which is the worst
+# of the three options. Snapshotting the payload cwd is the right answer here:
+# a snapshot of the wrong tree costs a few KB, a missing one costs the work.
+target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$matched_re")
 
 git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1 || exit 0
 

@@ -74,8 +74,16 @@ if [ ! -r "$_gate_lib" ]; then
 fi
 # shellcheck source=/dev/null
 . "$_gate_lib"
-if ! declare -F gate_matches >/dev/null 2>&1; then
-  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
+# Guard EVERY helper this hook calls, not just the first one. A truncated
+# library that still defined `gate_matches` left `gate_target_dir_strict`
+# undefined, and an undefined function exits 127 -- which the caller reads as
+# "could not resolve" and refuses, so that one fails safe, while an undefined
+# `gate_matches` exits 127 into an `if !` and passes. The window is exactly what
+# this guard exists to close (go-to-k/cdkd#2027 review round 4).
+if ! declare -F gate_matches >/dev/null 2>&1 \
+  || ! declare -F gate_target_dir_strict >/dev/null 2>&1 \
+  || ! declare -F gate_refuse_unresolved_target >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh loaded but its API is incomplete (truncated file?)." >&2
   exit 2
 fi
 gate_matches "$command" "$GATE_RE_GIT_CHECKOUT_RESTORE" || exit 0
@@ -89,7 +97,14 @@ cwd=$(jq -r '.cwd // empty' <<<"$input_json" 2>/dev/null || true)
 # A `cd` in ANY segment before the verb, then a `git -C <path>`, each honoured
 # only when it names a directory that exists (unchanged from the hand-rolled
 # form this replaces).
-candidate=$(gate_target_dir "$command" "$cwd" "$GATE_RE_GIT_CHECKOUT_RESTORE")
+# FAIL CLOSED on a target this parser cannot read (go-to-k/cdkd#2027): the
+# fallback below would check whether the named path is dirty in the SESSION's
+# tree while the discard lands in another one.
+if ! candidate=$(gate_target_dir_strict "$command" "$cwd" "$GATE_RE_GIT_CHECKOUT_RESTORE"); then
+  gate_refuse_unresolved_target "dirty-path-restore-gate" "$cwd" \
+    "" \
+    "CDKD_ALLOW_DIRTY_RESTORE=1 still bypasses this gate deliberately."
+fi
 [[ -d "$candidate" ]] && cwd="$candidate"
 
 git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
@@ -100,14 +115,18 @@ git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 #                                 so `git checkout <branch>` never matches
 #   git restore [flags] <path>... path-scoped by default
 paths=""
-if [[ "$command" =~ git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+checkout[[:space:]]+(.*)$ ]]; then
-  rest="${BASH_REMATCH[2]}"
+# `$GATE_FLAGS` rather than a local `-C` pattern: the local one had no quoted
+# alternative, so `git -C "/a b" checkout -- f` matched nothing and the gate
+# passed a destructive discard (go-to-k/cdkd#2027 review, blocker 1). GATE_FLAGS
+# contributes 3 capture groups, so the argument tail is [4], not [2].
+if [[ "$command" =~ git${GATE_FLAGS}[[:space:]]+checkout[[:space:]]+(.*)$ ]]; then
+  rest="${BASH_REMATCH[4]}"
   case " $rest " in
     *" -- "*) paths="${rest#*-- }" ;;
     *) exit 0 ;;
   esac
-elif [[ "$command" =~ git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+restore[[:space:]]+(.*)$ ]]; then
-  rest="${BASH_REMATCH[2]}"
+elif [[ "$command" =~ git${GATE_FLAGS}[[:space:]]+restore[[:space:]]+(.*)$ ]]; then
+  rest="${BASH_REMATCH[4]}"
   # The subject is padded (`" $rest "`), so a trailing-space pattern covers the
   # end-of-string case too — the unpadded `*" --staged"` variants would be dead
   # patterns that can never match.
