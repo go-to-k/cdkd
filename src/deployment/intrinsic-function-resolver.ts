@@ -4095,9 +4095,15 @@ export class IntrinsicFunctionResolver {
     // recurrence rounds 1 and 2 were: the two disagree on `''`, and they
     // disagree on the fail-OPEN side -- the resolver treats `''` as unknown and
     // answers from the CONSUMER's region, while `!== undefined` called the
-    // origin known and stripped the refusal's evidence. An empty region can
-    // reach here from an unchecked `JSON.parse` of the exports index, whose
-    // `ref.region ?? this.region` preserves `''`.
+    // origin known and stripped the refusal's evidence.
+    //
+    // An empty region is reachable through the exports index, via EITHER of two
+    // paths -- named separately because they are different code and an earlier
+    // draft of this comment fused them: `loadIndex` parses the stored file with
+    // an unchecked `JSON.parse`, so any `producerRegion` the file happens to
+    // hold arrives verbatim; and `rebuild` writes `ref.region ?? this.region`,
+    // where `??` passes an empty string through rather than replacing it. The
+    // index-HIT arm hands that value straight to this method.
     const pinnedContext = producerRegion ? withoutProducerRegions(context) : context;
     const walk = async (v: unknown): Promise<unknown> => {
       if (typeof v === 'string') {
