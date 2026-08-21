@@ -77,7 +77,7 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-07-27T09:43:47Z	PASS	140	verify.sh	1160 removal phase 2b final-tree run, destroy 3/0, 0 orphans
 docdb-neptune	2026-07-27T06:16:35Z	PASS	1560	verify.sh	#1160 neptune+docdb removal steps 3b-3d verified; destroy w/o remove-protection 14/0 errors, 0 orphans
 docker-image-asset	2026-08-14T00:41:19Z	PASS	73	verify.sh	PR 1890 review (image-function readback skip); deploy+ECR push+invoke+destroy 2 del 0 err, 0 orph; live probe: both ZIP-only Lambda getters reject with InvalidParameterValueException on a PackageType=Image function
-drift-revert	2026-08-13T08:34:06Z	PASS	215	verify.sh	broad set; 13 deleted 0 errors 0 orphans
+drift-revert	2026-08-21T09:43:02Z	PASS		verify.sh	#2059 second broad-set arm: drift --revert is the channel a wrongly-certified expression would reach a live resource through, so it covers the harm the pairing fix prevents. 13 deleted / 0 errors, watchdog silent, 0 state.json, 0 orphans
 drift-revert-arrays	2026-08-13T08:30:39Z	PASS	230	verify.sh	issue 1783/1784 seams; 19 deleted 0 errors 0 orphans
 drift-revert-vpc	2026-08-20T02:22:00Z	PASS	346	verify.sh	#2032 lane broad arm (rollback-executor.ts is cross-cutting: real deletes + re-creates); 21 deleted / 0 errors, 0 orphans
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
@@ -117,7 +117,7 @@ eventbridge-pipes	2026-08-10T11:50:46Z	PASS	179	verify.sh	0810 P0/P1 sweep b2; 6
 eventbridge-scheduler	2026-08-01T10:00:06Z	PASS	46	verify.sh	0801 regression sweep; ok, 0 orphans
 eventbus-policy	2026-08-11T10:54:05Z	PASS	56	verify.sh	new fixture (issue 1608): deploy/diff/update/destroy clean, 0 orphans
 eventsourcemapping-race	2026-08-13T16:32:07Z	PASS	89	verify.sh	#1815 partition predicates; ESM create+process+no-orphan destroy, 5 del 0 err 0 orph
-export	2026-08-21T07:50:33Z	PASS	224	verify.sh	#2133 broad-set arm: intrinsic-function-resolver.ts is cross-cutting, so integ-broad applies; export/import is the closest broad fixture to the changed code; 0 errors, 0 orphans
+export	2026-08-21T10:20:57Z	PASS		verify.sh	#2059 broad-set arm RE-RUN on the round-3 tree, after the association store was rescoped from process-wide to per-resolution-pass (a WeakMap keyed by the secrets bag). The earlier export/drift-revert runs attested to the round-2 code; integ-broad's sentinel binding does not stale on a source edit, so the re-run is by rule rather than by marker. rc=0, watchdog silent, CFn stack deleted, 0 state.json, 0 orphans
 export-nested-stack	2026-08-10T04:45:42Z	PASS	153	verify.sh	0810 sweep b3; export->CFn nested adopt + CFn delete clean, 0 orph
 fifo-sqs-event-source	2026-07-27T06:44:00Z	PASS	111	verify.sh	final-tree gate refresh for #1256; destroy 6/0 errors, 0 orphans
 fsx-lustre	2026-08-02T05:30:54Z	PASS	899	verify.sh	0802 heavy TTL sweep; deploy+update+destroy ok, 0 orphans, no final backup

@@ -41,6 +41,10 @@ import {
   forgetSecretExpression,
   isRecordedSecretExpression,
   clearRecordedSecretExpressions,
+  crossStackSourceKey,
+  recordCrossStackExpression,
+  isSecretExpressionByVerdictOrSpelling,
+  isSingleDynamicReferenceToken,
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
@@ -1238,6 +1242,11 @@ export function resetAccountInfoCache(): void {
   // (issues #1901 / #1916) — keeping them would let a stale verdict decide
   // secret-ness for a reference this call just asked to forget.
   recordedSecretExpressions.clear();
+  // The issue #2059 cross-stack associations are deliberately NOT cleared here,
+  // and need no clearing at all: they are scoped to the resolution pass's own
+  // `recordedSecretValues` bag through a `WeakMap`, so they die with it. A
+  // module-level store cleared from here was the first shape, and is what let
+  // one stack's expression be certified onto another stack's leaf.
   // Also reset EC2 instance attribute cache
   for (const key of Object.keys(cachedEc2InstanceAttributes)) {
     delete cachedEc2InstanceAttributes[key];
@@ -3985,7 +3994,8 @@ export class IntrinsicFunctionResolver {
     value: unknown,
     producerRegion: string | undefined,
     context: ResolverContext,
-    origin: string
+    origin: string,
+    sourceKey: string | undefined
   ): Promise<unknown> {
     if (!carriesDynamicReference(value)) return value;
 
@@ -4026,7 +4036,71 @@ export class IntrinsicFunctionResolver {
     this.logger.debug(
       `Re-resolving dynamic reference(s) in ${this.maskSecretsForLog(origin, context)}`
     );
-    return await walk(value);
+    const reresolved = await walk(value);
+
+    // THE RECORDING SEAM for issue
+    // [#2059](https://github.com/go-to-k/cdkd/issues/2059). This is the only
+    // point in the process holding BOTH halves of the association the persist
+    // path needs: the consumer's source LEAF (via `sourceKey`, computed by the
+    // caller from the raw intrinsic with `crossStackSourceKey`) and the WHOLE
+    // `{{resolve:...}}` token the producer stored. Without it a colliding pair
+    // — an `:AWSCURRENT` and an `:AWSPREVIOUS` export of one secret, momentarily
+    // equal during a rotation — collapses in the plaintext-keyed
+    // `recordedSecretValues`, and `secret-redaction.ts` persists the SIBLING's
+    // expression, which `resolveReplayProps` then applies to the live resource
+    // on a rollback or a `cdkd drift --revert`.
+    //
+    // WHOLE-TOKEN ONLY. A producer value that merely EMBEDS a reference, or a
+    // nested bag carrying one, has no single expression for the consumer's leaf,
+    // and the persist path's condition 1 would refuse such a leaf anyway.
+    //
+    // GATED ON THIS EXPRESSION'S OWN SECRET VERDICT, which takes TWO tests
+    // because neither is sufficient alone.
+    //
+    // `recordedSecretValues.has(reresolved)` says a secret with THIS PLAINTEXT
+    // was resolved somewhere in the pass. It is deliberately a PRESENCE test —
+    // the expression that key maps to may well be a SIBLING's, since that map is
+    // exactly the one that collapsed — which is also why it cannot answer for
+    // THIS token: the map is shared across the whole pass, so a PUBLIC
+    // `{{resolve:ssm:/x}}` whose value happens to equal a secret already
+    // recorded would pass it, and the public expression would then be persisted
+    // in place of a resolved value. That is issue #1901's perpetual-UPDATE
+    // class, and coinciding plaintexts are this issue's own premise rather than
+    // a contrived path, so the presence test alone is not the gate this comment
+    // used to claim it was.
+    //
+    // `isSecretExpressionByVerdictOrSpelling(value)` is the test that is
+    // actually ABOUT this token: `secretsmanager` by spelling, or an `ssm`
+    // reference this process PROVED to be a `SecureString`. A plain `String`
+    // parameter answers false — for the consumer's own region, where a
+    // definitive public verdict RETRACTS a stale memo.
+    //
+    // NOT for a CROSS-REGION producer, and the exception belongs here rather
+    // than being left to be rediscovered: `pinSecretVerdict` returns early for
+    // a producer-region GUEST, so a guest's definitive `String` verdict never
+    // retracts a `SecureString` memo the consumer's own resolver pinned for the
+    // same spelling — and this then answers `true` for a producer-region
+    // parameter that is really public. The cost is bounded to a spurious UPDATE
+    // (#1901's class) and can never be a plaintext, since what gets persisted is
+    // still an EXPRESSION. Closing it means keying the verdict store by region.
+    //
+    // Both, not either: presence proves the pass actually resolved this token to
+    // a usable needle, the verdict proves the token is a secret at all.
+    if (
+      sourceKey !== undefined &&
+      typeof value === 'string' &&
+      isSingleDynamicReferenceToken(value) &&
+      typeof reresolved === 'string' &&
+      context.recordedSecretValues?.has(reresolved) === true &&
+      isSecretExpressionByVerdictOrSpelling(value)
+    ) {
+      // Recorded INTO THIS PASS's own bag, which is what keeps two stacks that
+      // spell the identical key (an `Fn::ImportValue` key carries no region)
+      // from reading each other's associations at all. The plaintext beside the
+      // expression then refuses a MISALIGNED entry inside the one pass.
+      recordCrossStackExpression(context.recordedSecretValues, sourceKey, value, reresolved);
+    }
+    return reresolved;
   }
 
   /**
@@ -4120,6 +4194,15 @@ export class IntrinsicFunctionResolver {
     importValueArg: unknown,
     context: ResolverContext
   ): Promise<unknown> {
+    // The canonical key for the issue #2059 association, computed from the RAW
+    // argument rather than from the resolved `exportName` below. The persist
+    // path holds the UNRESOLVED template leaf and nothing else, so the two keys
+    // are byte-identical only when both are built from the same spelling by the
+    // same function — and an export name that is itself an `Fn::Sub` / `Ref`
+    // has no key at all, which is the refusal the redaction path falls back
+    // from.
+    const sourceKey = crossStackSourceKey({ 'Fn::ImportValue': importValueArg });
+
     // First, resolve the export name (it might contain intrinsic functions)
     const exportName = await this.resolveValue(importValueArg, context);
 
@@ -4186,7 +4269,8 @@ export class IntrinsicFunctionResolver {
           entry.value,
           entry.producerRegion,
           context,
-          `Fn::ImportValue '${exportName}' (producer ${entry.producerStack} / ${entry.producerRegion})`
+          `Fn::ImportValue '${exportName}' (producer ${entry.producerStack} / ${entry.producerRegion})`,
+          sourceKey
         );
       }
     }
@@ -4274,7 +4358,8 @@ export class IntrinsicFunctionResolver {
         found.value,
         found.lookupRegion,
         context,
-        `Fn::ImportValue '${exportName}' (producer ${found.refStack} / ${found.lookupRegion})`
+        `Fn::ImportValue '${exportName}' (producer ${found.refStack} / ${found.lookupRegion})`,
+        sourceKey
       );
     }
 
@@ -4605,6 +4690,13 @@ export class IntrinsicFunctionResolver {
       throw new Error('Fn::GetStackOutput: OutputName is required');
     }
 
+    // Same as `Fn::ImportValue`'s: built from the RAW args, so the persist
+    // path's key over the unresolved template leaf is the same string (issue
+    // #2059). A non-literal `StackName` / `OutputName` / `Region` / `RoleArn`
+    // yields no key, and the redaction path then falls back to today's
+    // behaviour rather than guessing.
+    const sourceKey = crossStackSourceKey({ 'Fn::GetStackOutput': args });
+
     const stackName = await this.resolveValue(args['StackName'], context);
     if (typeof stackName !== 'string' || stackName === '') {
       throw new Error(
@@ -4842,7 +4934,8 @@ export class IntrinsicFunctionResolver {
       value,
       region,
       context,
-      `Fn::GetStackOutput '${outputName}' (producer ${stackName} / ${region})`
+      `Fn::GetStackOutput '${outputName}' (producer ${stackName} / ${region})`,
+      sourceKey
     );
   }
 
