@@ -240,10 +240,21 @@ run_case "unexpanded git -C on main REFUSED" 2 \
 run_case "unexpanded git -C push on main REFUSED" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" push origin HEAD"}}' "$main_repo")"
 
-# The bound: the refusal must not fire outside a markgate repo, or closing this
-# hole opens a new one on every unrelated checkout the session touches.
-run_case "unexpanded git -C in a non-markgate repo passes through" 0 \
+# The bound moved, DELIBERATELY (go-to-k/cdkd#2027 review, minor 5). It used to
+# ask the PAYLOAD CWD "is this a markgate repo?" -- i.e. it consulted the cwd
+# precisely when the target was unknown, so a session whose cwd had drifted out
+# of the worktree got a silent pass on the very command the refusal exists for.
+# The question is now answered from the HOOK's own checkout, so an unreadable
+# target is refused wherever the cwd happens to be. The friction is bounded: it
+# takes a command that names its target with a variable to trigger it.
+run_case "unexpanded git -C refuses even from a non-markgate cwd" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" commit -m x"}}' "$optout_repo")"
+
+# The ORDINARY opt-in is untouched: a READABLE target in a repo with no
+# `.markgate.yml` still passes through, which is what keeps this gate off the
+# unrelated checkouts a session touches.
+run_case "readable target in a non-markgate repo still passes through" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$optout_repo")"
 
 echo
 echo "Pass: $pass  Fail: $fail"

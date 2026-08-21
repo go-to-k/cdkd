@@ -40,6 +40,9 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F cmd_matches_verb >/dev/null \
+  || ! declare -F gate_matches >/dev/null \
+  || ! declare -F gate_target_dir_strict >/dev/null \
+  || ! declare -F gate_refuse_unresolved_target >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
@@ -64,7 +67,12 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # after a `&&` / `||` / `;` / `|` operator. That catches chained
 # invocations the old line-start anchor missed, while a quoted mention
 # still does not fire (it is removed rather than dodged by position).
-if ! cmd_matches_verb "$cmd" '(CDKD_SKIP_CI_GREEN_GATE=1[[:space:]]+)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])'; then
+# Defined HERE, before its first use: assigning it after the matcher left
+# `__verb_ere` unset at match time, and under `set -u` that aborted the hook
+# with rc=1 on EVERY command -- a gate that errors is a gate that does not
+# gate. Caught by its own suite going 0/13.
+__verb_ere="^(CDKD_SKIP_CI_GREEN_GATE=1[[:space:]]+)?${GATE_RE_GH_PR_MERGE#^}"
+if ! gate_matches "$cmd" "$__verb_ere"; then
   exit 0
 fi
 
@@ -83,7 +91,6 @@ fi
 # spelling `git -C "$W" ...` resolved to the literal `<cwd>/$W`, the repo
 # probe below failed, and the gate exited 0 over a tree it never looked at
 # (go-to-k/cdkd#2027). The strict resolver refuses instead of guessing.
-__verb_ere='(CDKD_SKIP_CI_GREEN_GATE=1[[:space:]]+)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])'
 if ! target_dir=$(gate_target_dir_strict "$cmd" "${hook_cwd:-$PWD}" "$__verb_ere"); then
   gate_refuse_unresolved_target "ci-green-gate" "${hook_cwd:-$PWD}"
 fi

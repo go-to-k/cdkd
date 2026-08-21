@@ -547,6 +547,40 @@ want_strict "/base"     "a cd AFTER the verb is not a refusal" \
 want_strict "$HOME/repo" "tilde in -C is expanded, not refused" \
   'git -C ~/repo commit -m x' /base "$C"
 
+# The spellings the REVIEW found, which the first round of this fix did not
+# cover: a substitution is not a variable, and a quoted path with a space is not
+# unreadable at all -- it is determinate, and must RESOLVE rather than refuse.
+want_strict REFUSE "quoted command substitution in -C"   'git -C "$(git rev-parse --show-toplevel)" commit -m x' /base "$C"
+want_strict REFUSE "UNQUOTED command substitution in -C" 'git -C $(git rev-parse --show-toplevel) commit -m x' /base "$C"
+want_strict REFUSE "backtick substitution in -C"         'git -C `pwd` commit -m x' /base "$C"
+want_strict "/a b"  "quoted -C path with a space RESOLVES" 'git -C "/a b" commit -m x' /base "$C"
+
+# Anchoring: a `-C` inside an ARGUMENT is prose, not a target. Refusing it named
+# a flag the command does not carry and prescribed a fix that could not clear it.
+want_strict "/base"     "a -C mentioned inside a commit message is not a target" \
+  'git commit -m "repro: git -C $W commit failed"' /base "$C"
+want_strict "/abs/repo" "a real -C is not overridden by a mention in an argument" \
+  'git -C /abs/repo commit -m "see git -C $W commit"' /base "$C"
+want_strict "/two"      "repeated -C takes the LAST, like git itself" \
+  'git -C /one -C /two commit -m x' /base "$C"
+
+# The third must-not-refuse shape, alongside the absolute `-C` and the trailing
+# `cd`: an ABSOLUTE cd also makes an earlier unreadable one moot.
+want_strict "/abs/wt" "an absolute cd cures an earlier unreadable cd" \
+  'cd "$W" && cd /abs/wt && git commit -F f' /base "$C"
+want_strict REFUSE    "a RELATIVE cd after an unreadable one stays unreadable" \
+  'cd "$W" && cd sub && git commit -F f' /base "$C"
+
+# Tilde expands only where a shell would expand it.
+want_strict "/tmp/~/x" "a MID-PATH tilde is left alone (no shell expands it)" \
+  'git -C /tmp/~/x commit -m x' /base "$C"
+
+# The segmenter must still scan a substitution BODY as a command in its own
+# right -- the dual-emit change keeps the enclosing command intact, and this is
+# the half that must not be lost in exchange.
+want_match 0 "verb inside a command substitution still matches" 'out=$(git commit -m x)' "$C"
+want_match 0 "verb inside a subshell still matches"             '(git commit -m x)' "$C"
+
 # The falling-back twin is unchanged for its callers: same inputs, no refusal.
 want_dir "/base" "gate_target_dir still FALLS BACK on an unexpanded -C" \
   'git -C "$W" commit -m x' /base "$C"

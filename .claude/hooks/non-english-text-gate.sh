@@ -122,8 +122,11 @@ fi
 #   `gh pr merge <N>` / `gh pr edit <N>` — N is the explicit arg.
 #   `gh pr create` / `gh pr merge` (no arg) — current branch's PR.
 pr_number=""
-if [[ "$cmd" =~ gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+(merge|edit)[[:space:]]+([0-9]+) ]]; then
-  pr_number="${BASH_REMATCH[3]}"
+# `$GATE_GH_C` rather than a local `-C` pattern, for the same reason as
+# dirty-path-restore-gate: the local one could not read a quoted path. It
+# contributes 2 capture groups, so the verb is [3] and the number is [4].
+if [[ "$cmd" =~ gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(merge|edit)[[:space:]]+([0-9]+) ]]; then
+  pr_number="${BASH_REMATCH[4]}"
 fi
 
 if [[ -z "$pr_number" ]]; then

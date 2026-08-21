@@ -53,6 +53,9 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F cmd_matches_verb >/dev/null \
+  || ! declare -F gate_matches >/dev/null \
+  || ! declare -F gate_target_dir_strict >/dev/null \
+  || ! declare -F gate_refuse_unresolved_target >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
@@ -79,7 +82,7 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # trigger string in a quoted arg body.
 is_pr_create=0
 is_api_patch=0
-if cmd_matches_verb "$cmd" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+create([[:space:]]|$)'; then
+if gate_matches "$cmd" "$GATE_RE_GH_PR_CREATE"; then
   is_pr_create=1
 fi
 # Two steps on purpose. `cmd_matches_verb` confirms `gh api` runs in command
@@ -91,7 +94,7 @@ fi
 # `fix:` title edit through, which is the PR #562 incident this gate exists to
 # stop. Reading raw is safe only for the endpoint, and only after the verb has
 # been confirmed above.
-if cmd_matches_verb "$cmd" 'gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+api([[:space:]]|$)' \
+if gate_matches "$cmd" "$GATE_RE_GH_API" \
   && printf '%s' "$cmd" | grep -qE 'pulls/[0-9]+'; then
   is_api_patch=1
 fi
@@ -117,7 +120,7 @@ fi
 # (go-to-k/cdkd#2027). The strict resolver refuses instead of guessing.
 # BOTH guarded verbs (`gh pr create` and the `gh api .../pulls/<N>` title edit),
 # or the `-C` of the one left out would go unread.
-__verb_ere='gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+(pr[[:space:]]+create|api)([[:space:]]|$)'
+__verb_ere="^(${GATE_RE_GH_PR_CREATE#^}|${GATE_RE_GH_API#^})"
 if ! target_dir=$(gate_target_dir_strict "$cmd" "${hook_cwd:-$PWD}" "$__verb_ere"); then
   gate_refuse_unresolved_target "pr-title-prefix-scope-gate" "${hook_cwd:-$PWD}"
 fi

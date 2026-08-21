@@ -62,6 +62,9 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F cmd_matches_verb >/dev/null \
+  || ! declare -F gate_matches >/dev/null \
+  || ! declare -F gate_target_dir_strict >/dev/null \
+  || ! declare -F gate_refuse_unresolved_target >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
@@ -87,7 +90,7 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # The guarded verb. Hoisted because the matcher, the `cd` walk and the
 # unresolvable-`cd` probe must all be given the SAME pattern — three
 # hand-copied literals is how they drift apart.
-COMMIT_VERB='git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+commit([[:space:]]|$|[|;&`)])'
+COMMIT_VERB="$GATE_RE_GIT_COMMIT"
 
 # Only gate git commit -- any other command passes through. The
 # matcher tolerates `git -C <path> commit` / `git -c <key>=<val> commit`
@@ -117,7 +120,14 @@ session_dir="${hook_cwd:-$PWD}"
 # best available proxy.
 opted_in=0
 session_opted_in() {
-  local top
+  # THIS HOOK's own checkout answers the policy question, not the payload cwd --
+  # see gate_refuse_unresolved_target in lib/command-match.sh for why asking the
+  # cwd errs open exactly when the target is unknown (go-to-k/cdkd#2027 review,
+  # minor 5). The payload cwd remains the fallback for a vendored copy.
+  local own top
+  # __hook_dir is <repo>/.claude/hooks, so the repo root is two up.
+  own="${__hook_dir}/../.."
+  [ -f "$own/.markgate.yml" ] && return 0
   top=$(git -C "$session_dir" rev-parse --show-toplevel 2>/dev/null) || return 1
   [ -n "$top" ] && [ -f "$top/.markgate.yml" ]
 }
@@ -170,6 +180,15 @@ fi
 # simply is not a repo: nothing. `git commit` there would fail anyway,
 # so the only behavior change is a clearer error.
 if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
+  # Only a target the COMMAND NAMED is worth refusing over. If the command named
+  # none, the target is the payload cwd, which was handed to us -- our resolution
+  # cannot be wrong about it, and a `git commit` in a non-repo directory fails on
+  # its own. Refusing there would be noise. When a `-C` or a `cd` DID name
+  # something and it resolved to a non-repo, either the resolution is wrong (the
+  # dangerous case) or the command fails anyway (costless), so refuse.
+  if [ "$target_dir" = "$session_dir" ]; then
+    exit 0
+  fi
   cannot_evaluate "the target working tree: '$target_dir' is not a git repository" \
     "" \
     "Either the path is wrong, or this hook mis-resolved it. Re-run the" \

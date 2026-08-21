@@ -278,7 +278,7 @@ in_main_tree() {
   local d="$1" top mt
   [[ -d "$d" ]] || return 1
   top=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) || return 1
-  mt=$(git -C "$d" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+  mt=$(git -C "$d" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10); exit}')
   [[ -n "$mt" ]] || return 1
   top=$(canon "$top")
   mt=$(canon "$mt")
@@ -306,7 +306,7 @@ fi
 # exist, a main-tree command is just ordinary main-tree work and the
 # branch-gate already governs the git half — stay quiet.
 feature_wts=$(git -C "$main_tree" worktree list --porcelain 2>/dev/null \
-  | awk '/^worktree /{print $2}' \
+  | awk '/^worktree /{print substr($0, 10)}' \
   | grep -F "$main_tree/.claude/worktrees/" || true)
 [[ -n "$feature_wts" ]] || exit 0
 

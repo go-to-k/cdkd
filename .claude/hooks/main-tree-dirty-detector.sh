@@ -44,7 +44,7 @@ probe_dir="${hook_cwd:-$PWD}"
 [[ -d "$probe_dir" ]] || probe_dir="$PWD"
 
 # Resolve the MAIN worktree (first entry of `git worktree list`).
-main_tree=$(git -C "$probe_dir" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+main_tree=$(git -C "$probe_dir" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10); exit}')
 [[ -n "$main_tree" ]] || exit 0
 
 # Repo opt-in scope (issue #1259): warn only for repos following the

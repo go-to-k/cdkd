@@ -232,6 +232,43 @@ gate_segments_raw() {
     # That is fail-open, the direction that silently disables a gate, and it is
     # why this program buffers instead of streaming (issue #1455, kept through
     # the #2129 convergence and shared with cdk-local / cdk-real-drift).
+    # The index just past the `)` closing a `$(` that starts at `from`, or 0 when
+    # it is unbalanced. Depth-counted so `$(a $(b) c)` is one span.
+    function close_paren(line, from,   j, depth, c) {
+      depth = 1
+      for (j = from; j <= length(line); j++) {
+        c = substr(line, j, 1)
+        if (c == "(") depth++
+        else if (c == ")") { depth--; if (depth == 0) return j }
+      }
+      return 0
+    }
+    # Separators inside a substitution span are DATA to the ENCLOSING command,
+    # so neutralise them the same way a quoted span does. The body of the span is
+    # emitted separately (see `extra`), which is what keeps `out=$(git commit)`
+    # firing while `git -C $(pwd) commit` also stays one command.
+    # The span is re-emitted WRAPPED IN DOUBLE QUOTES, which is what makes an
+    # unquoted substitution parse as ONE argument token. Without that,
+    # `git -C $(git rev-parse --show-toplevel) commit` still failed to match:
+    # the flag-value alternative stops at the first space, so `rev-parse` looked
+    # like a bare word and the verb was never reached. An inner double quote is
+    # rewritten to a single quote so the wrapper cannot be unbalanced -- the
+    # copy queued in `extra` keeps the original text, so nothing is lost for the
+    # pass that scans the body as a command.
+    function neutralise(s,   k, c, out) {
+      out = ""
+      for (k = 1; k <= length(s); k++) {
+        c = substr(s, k, 1)
+        if (c == "&") out = out SEP_AMP
+        else if (c == ";") out = out SEP_SEMI
+        else if (c == "|") out = out SEP_PIPE
+        else if (c == "$") out = out SEP_SUBST
+        else if (c == "`") out = out SEP_SUBST
+        else if (c == "\"") out = out "'"'"'"
+        else out = out c
+      }
+      return "\"" out "\""
+    }
     function terminated(t, from,   j, u) {
       for (j = from; j <= total; j++) {
         u = lines[j]
@@ -254,10 +291,34 @@ gate_segments_raw() {
           # test review).
           if (c == "\\") { res = res c substr(line, i + 1, 1); i++; continue }
           if ((c == "\"" || c == "'"'"'") && c != ignore_q) { q = c; res = res c; continue }
-          if (c == "$" && substr(line, i + 1, 1) == "(") { res = res "\n"; i++; continue }
+          if (c == "$" && substr(line, i + 1, 1) == "(") {
+            # DUAL-EMIT (go-to-k/cdkd#2027 review). Splitting here truncated the
+            # enclosing command: `git -C $(git rev-parse --show-toplevel) commit`
+            # became the segment `git -C `, matched no verb, and EVERY blocking
+            # gate exited 0 on a fully determinate commit. Keep the span inline
+            # (neutralised, so it cannot split) and queue the body for its own
+            # pass, so `out=$(git commit)` still fires too.
+            cp = close_paren(line, i + 2)
+            if (cp > 0) {
+              extra = extra substr(line, i + 2, cp - i - 2) "\n"
+              res = res neutralise(substr(line, i, cp - i + 1))
+              i = cp
+              continue
+            }
+            res = res "\n"; i++; continue
+          }
           # Process substitution runs its body too: `diff <(git commit) …`.
           if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") { res = res "\n"; i++; continue }
-          if (c == "`") { res = res "\n"; continue }
+          if (c == "`") {
+            bt = index(substr(line, i + 1), "`")
+            if (bt > 0) {
+              extra = extra substr(line, i + 1, bt - 1) "\n"
+              res = res neutralise(substr(line, i, bt + 1))
+              i = i + bt
+              continue
+            }
+            res = res "\n"; continue
+          }
           if (c == "&" || c == ";" || c == "|") { res = res "\n"; continue }
           if (c == "<" && substr(line, i + 1, 1) == "<") {
             # `<<<` is a here-string, not a heredoc opener.
@@ -287,8 +348,8 @@ gate_segments_raw() {
       return res
     }
     # One full pass. Runs twice at most: see the END rule.
-    function run(   i, line, t, acc) {
-      q = ""; tag = ""; pending = ""; acc = ""
+    function run(   i, line, t, acc, rounds, batch, elines, nlines, ei) {
+      q = ""; tag = ""; pending = ""; acc = ""; extra = ""
       for (i = 1; i <= total; i++) {
         line = lines[i]
         if (tag != "") {                  # inside a heredoc body: data, not commands
@@ -308,6 +369,20 @@ gate_segments_raw() {
         if (pending_tag != "" && terminated(pending_tag, i + 1) > 0) tag = pending_tag
       }
       if (pending != "") acc = acc flush_line(pending) "\n"
+      # Drain the substitution bodies queued by flush_line, so a command
+      # SUBSTITUTION is still scanned as a command in its own right. Bounded:
+      # a body can queue more (nested substitutions), so cap the rounds rather
+      # than trusting the input to terminate.
+      rounds = 0
+      while (extra != "" && rounds < 8) {
+        batch = extra; extra = ""; q = ""
+        nlines = split(batch, elines, "\n")
+        for (ei = 1; ei <= nlines; ei++) {
+          if (elines[ei] == "") continue
+          acc = acc flush_line(elines[ei]) "\n"
+        }
+        rounds++
+      }
       return acc
     }
     { line = $0; sub(/\r$/, "", line); lines[NR] = line }
@@ -464,6 +539,73 @@ gate_unquote() {
   printf '%s' "$p"
 }
 
+# gate_expand_tilde <token>
+# A `~` reaches a hook as a literal character: it reads the command TEXT, and no
+# shell has expanded anything. Expand a LEADING `~/` only, which is the one form
+# a shell expands -- rewriting a mid-path `/tmp/~/x` would invent a path no
+# shell would ever produce (go-to-k/cdkd#2027 review nit).
+gate_expand_tilde() {
+  local p="$1"
+  if [ -n "${HOME:-}" ]; then
+    case "$p" in
+      "~") p="$HOME" ;;
+      "~/"*) p="$HOME/${p#\~/}" ;;
+    esac
+  fi
+  printf '%s' "$p"
+}
+
+# gate_leading_c_value <segment>
+#
+# The value of the LAST `-C` among the segment's LEADING FLAGS -- the ones
+# between the `git`/`gh` word and the verb -- or nothing. Printed with its
+# quoting intact so the caller can tell `"$W"` from a literal path.
+#
+# ANCHORING is the point (go-to-k/cdkd#2027 review, minor 4). The scan this
+# replaces was an unanchored search of the whole segment for `(git|gh) -C
+# <token>`, taking the last hit, while segments deliberately carry their
+# original quoted text. So ARGUMENT PROSE was read as the target:
+#
+#   git commit -m "repro: git -C $W commit failed"
+#
+# refused with a message claiming the command "names its target working tree
+# with an unexpanded shell variable" when it names no `-C` at all, and told the
+# author to re-run with a literal path, which cannot clear it. The body of THIS
+# PR contains that exact string. Walking only the leading flags cannot see into
+# an argument, and stops at the verb.
+#
+# It also fixes `git -C /one -C /two commit`, which the unanchored scan resolved
+# to `/one` (only the first `-C` sits next to the command word) while git itself
+# uses `/two`. Last-wins, like git.
+gate_leading_c_value() {
+  local seg="$1" tok rest val=""
+  # Strip the leading command word; anything else is not a git/gh invocation.
+  [[ "$seg" =~ ^[[:space:]]*(git|gh)[[:space:]]+(.*)$ ]] || return 1
+  rest="${BASH_REMATCH[2]}"
+  while [ -n "$rest" ]; do
+    [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]] || break
+    tok="${BASH_REMATCH[1]}"
+    rest="${BASH_REMATCH[4]}"
+    case "$tok" in
+      -C)
+        # The next token is the value, whatever it looks like.
+        [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]] || break
+        val="${BASH_REMATCH[1]}"
+        rest="${BASH_REMATCH[4]}"
+        ;;
+      -c|--git-dir|--work-tree|-R|--repo)
+        # Flags that consume the following token; skip it so a value is never
+        # mistaken for the verb.
+        [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]] && rest="${BASH_REMATCH[4]}"
+        ;;
+      -*) : ;;
+      *) break ;;   # the verb: leading flags are over
+    esac
+  done
+  [ -n "$val" ] && printf '%s' "$val"
+  return 0
+}
+
 # gate_target_dir <cmd> <fallback> <extended-regex>
 # The working tree the gated command will actually run in:
 #   1. a `-C <path>` inside the MATCHED segment wins (git -C / gh -C), else
@@ -487,20 +629,15 @@ gate_target_dir() {
       continue
     fi
     [[ "$segment" =~ $re ]] || continue
-    # Last `-C <path>` in this segment wins over any earlier cd.
-    if [[ "$segment" =~ (git|gh)[[:space:]]+-C[[:space:]]+$GATE_PATH_TOKEN ]]; then
-      c_target=""
-      remaining="$segment"
-      while [[ "$remaining" =~ (git|gh)[[:space:]]+-C[[:space:]]+$GATE_PATH_TOKEN ]]; do
-        c_target="${BASH_REMATCH[2]}"
-        remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-      done
-      c_target=$(gate_unquote "$c_target")
-      case "$c_target" in *'$'*|*'`'*) c_target="" ;; esac
-      if [ -n "$c_target" ]; then
-        [[ "$c_target" != /* ]] && c_target="$target/$c_target"
-        target="$c_target"
-      fi
+    # Last `-C <path>` among the LEADING FLAGS wins over any earlier cd. Only
+    # the leading flags, so argument prose mentioning `-C` is not read as a
+    # target (see gate_leading_c_value).
+    c_target=$(gate_unquote "$(gate_leading_c_value "$segment")")
+    case "$c_target" in *'$'*|*'`'*) c_target="" ;; esac
+    if [ -n "$c_target" ]; then
+      c_target=$(gate_expand_tilde "$c_target")
+      [[ "$c_target" != /* ]] && c_target="$target/$c_target"
+      target="$c_target"
     fi
     break
   done < <(gate_segments "$cmd")
@@ -549,20 +686,25 @@ gate_target_dir_strict() {
       # segment can still make it moot -- see below.
       case "$cd_target" in *'$'*|*'`'*) unresolved_cd=1; continue ;; esac
       [ -z "$cd_target" ] && continue
-      [[ "$cd_target" != /* ]] && cd_target="$target/$cd_target"
-      target="$cd_target"
+      cd_target=$(gate_expand_tilde "$cd_target")
+      if [[ "$cd_target" == /* ]]; then
+        # An ABSOLUTE cd decides the working directory outright, so an earlier
+        # unreadable one no longer matters: `cd "$W" && cd /abs/wt && git commit`
+        # is fully determinate. Same argument the `-C` branch already made
+        # (go-to-k/cdkd#2027 review, minor 6).
+        target="$cd_target"
+        unresolved_cd=0
+      else
+        target="$target/$cd_target"
+      fi
       continue
     fi
     [[ "$segment" =~ $re ]] || continue
-    if [[ "$segment" =~ (git|gh)[[:space:]]+-C[[:space:]]+$GATE_PATH_TOKEN ]]; then
-      c_target=""
-      remaining="$segment"
-      while [[ "$remaining" =~ (git|gh)[[:space:]]+-C[[:space:]]+$GATE_PATH_TOKEN ]]; do
-        c_target="${BASH_REMATCH[2]}"
-        remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-      done
+    c_target=$(gate_leading_c_value "$segment")
+    if [ -n "$c_target" ]; then
       c_target=$(gate_unquote "$c_target")
       case "$c_target" in *'$'*|*'`'*) return 2 ;; esac
+      c_target=$(gate_expand_tilde "$c_target")
       if [ -n "$c_target" ]; then
         if [[ "$c_target" == /* ]]; then
           # An ABSOLUTE -C decides where the command runs whatever any earlier
@@ -581,17 +723,6 @@ gate_target_dir_strict() {
     break
   done < <(gate_segments "$cmd")
   [ "$unresolved_cd" = 1 ] && return 2
-  # A `~` reaches a hook as a literal path segment -- the hook reads the command
-  # TEXT, so no shell has expanded it. Expand it here rather than letting the
-  # caller refuse a perfectly good `git -C ~/repo`.
-  if [ -n "${HOME:-}" ]; then
-    case "$target" in
-      "~") target="$HOME" ;;
-      "~/"*) target="$HOME/${target#\~/}" ;;
-      */~/*) target="$HOME/${target#*/\~/}" ;;
-      */~) target="$HOME" ;;
-    esac
-  fi
   printf '%s' "$target"
 }
 
@@ -607,11 +738,33 @@ gate_target_dir_strict() {
 # an old one. The session's own tree is the proxy for "does this gate apply
 # here": no top-level `.markgate.yml`, no refusal.
 gate_refuse_unresolved_target() {
-  local gate="$1" base="${2:-$PWD}" top line
+  local gate="$1" base="${2:-$PWD}" own line
   shift 2 2>/dev/null || shift $#
-  top=$(git -C "$base" rev-parse --show-toplevel 2>/dev/null) || top=""
-  if [ -z "$top" ] || [ ! -f "$top/.markgate.yml" ]; then
-    exit 0
+  # The opt-in is answered from THIS HOOK's own checkout, not from the payload
+  # cwd (go-to-k/cdkd#2027 review, minor 5). Asking the cwd "is this a gating
+  # repo?" is asking the drifted thing whether to enforce: measured, a session
+  # whose cwd had wandered out of the worktree got rc=0 and a silent pass on the
+  # very command this refusal exists for -- #2027 surviving inside its own fix.
+  # A hook only runs because it was loaded from a repo that installs it, so its
+  # own root answers the policy question without depending on where the shell
+  # happens to be.
+  #
+  # This does NOT reintroduce go-to-k/cdkd#559, which was about the marker
+  # STORE: #559 removed BASH_SOURCE from the resolution of WHERE `markgate
+  # verify` runs, because that has to follow the worktree the command targets.
+  # Callers still resolve that from the payload cwd; only the "does this gate
+  # apply at all" question is answered here, and each worktree carries its own
+  # `.claude/hooks` and `.markgate.yml` (verified), so this stays per-worktree.
+  # lib/command-match.sh -> <repo>/.claude/hooks/lib, so the root is three up.
+  own="${BASH_SOURCE[0]%/*}/../../.."
+  if [ ! -f "$own/.markgate.yml" ]; then
+    # Fall back to the payload cwd rather than refusing everywhere: a copy of
+    # these hooks vendored somewhere without a `.markgate.yml` has no standing.
+    local top
+    top=$(git -C "$base" rev-parse --show-toplevel 2>/dev/null) || top=""
+    if [ -z "$top" ] || [ ! -f "$top/.markgate.yml" ]; then
+      exit 0
+    fi
   fi
   echo "Blocked by $gate: this command names its target working tree with an" >&2
   echo "expression the hook cannot read -- an unexpanded shell variable, or a" >&2

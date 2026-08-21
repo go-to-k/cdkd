@@ -107,14 +107,18 @@ git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 #                                 so `git checkout <branch>` never matches
 #   git restore [flags] <path>... path-scoped by default
 paths=""
-if [[ "$command" =~ git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+checkout[[:space:]]+(.*)$ ]]; then
-  rest="${BASH_REMATCH[2]}"
+# `$GATE_FLAGS` rather than a local `-C` pattern: the local one had no quoted
+# alternative, so `git -C "/a b" checkout -- f` matched nothing and the gate
+# passed a destructive discard (go-to-k/cdkd#2027 review, blocker 1). GATE_FLAGS
+# contributes 3 capture groups, so the argument tail is [4], not [2].
+if [[ "$command" =~ git${GATE_FLAGS}[[:space:]]+checkout[[:space:]]+(.*)$ ]]; then
+  rest="${BASH_REMATCH[4]}"
   case " $rest " in
     *" -- "*) paths="${rest#*-- }" ;;
     *) exit 0 ;;
   esac
-elif [[ "$command" =~ git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+restore[[:space:]]+(.*)$ ]]; then
-  rest="${BASH_REMATCH[2]}"
+elif [[ "$command" =~ git${GATE_FLAGS}[[:space:]]+restore[[:space:]]+(.*)$ ]]; then
+  rest="${BASH_REMATCH[4]}"
   # The subject is padded (`" $rest "`), so a trailing-space pattern covers the
   # end-of-string case too — the unpadded `*" --staged"` variants would be dead
   # patterns that can never match.

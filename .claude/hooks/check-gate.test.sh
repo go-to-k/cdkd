@@ -336,23 +336,34 @@ run_case "unparseable .markgate.yml refuses" 2 badconfig "$side_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$side_repo")" \
   "markgate configuration"
 
-# --- The BOUND on fail-closed: it must not fire outside a markgate repo -----
-# The hook runs on every `git commit` the session makes anywhere, so a
-# refusal that fires in an unrelated checkout is a new foot-gun. The
-# session's own repo is the proxy for "does this gate have standing here".
+# --- The BOUND on fail-closed, and where it MOVED --------------------------
+# It used to ask the PAYLOAD CWD whether this is a markgate repo -- consulting
+# the cwd exactly when the target is unknown, so a drifted cwd produced a silent
+# pass on the very command the refusal exists for (go-to-k/cdkd#2027 review,
+# minor 5). It now asks the HOOK's own checkout. Cases 21-23 therefore assert
+# the OPPOSITE of what they did in the first round, and that is the point.
 
-# 21. Unexpanded `git -C`, but the session sits in a repo with no
-#     `.markgate.yml` → pass through.
-run_case "unexpanded git -C in non-markgate repo passes through" 0 stale "" \
-  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" commit -m x"}}' "$plain_repo")"
+# 21. Unexpanded `git -C` with the session in a repo carrying no
+#     `.markgate.yml` → still refused: the hook knows which repo IT belongs to.
+run_case "unexpanded git -C refuses from a non-markgate cwd" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" commit -m x"}}' "$plain_repo")" \
+  "unexpanded shell variable"
 
-# 22. Unexpanded `git -C`, session cwd not a git repo at all → pass through.
-run_case "unexpanded git -C outside any repo passes through" 0 stale "" \
-  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" commit -m x"}}' "$TMPDIR")"
+# 22. Unexpanded `git -C` with a cwd that is not a git repo at all → refused.
+run_case "unexpanded git -C refuses from outside any repo" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C \\"$W\\" commit -m x"}}' "$TMPDIR")" \
+  "unexpanded shell variable"
 
-# 23. Nonexistent `git -C` target from a non-markgate repo → pass through.
-run_case "nonexistent git -C target in non-markgate repo passes through" 0 stale "" \
-  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C %s/no-such-dir commit -m x"}}' "$plain_repo" "$TMPDIR")"
+# 23. A readable but nonexistent `-C` target, from a non-markgate cwd → refused
+#     for the OTHER reason (not a git repository), which the message must say.
+run_case "nonexistent git -C target refuses from a non-markgate cwd" 2 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -C %s/no-such-dir commit -m x"}}' "$plain_repo" "$TMPDIR")" \
+  "is not a git repository"
+
+# 23b. The ORDINARY opt-in is untouched: a READABLE target in a repo with no
+#      `.markgate.yml` still passes through, so unrelated checkouts stay ungated.
+run_case "readable target in a non-markgate repo still passes through" 0 stale "" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$plain_repo")"
 
 # 24. A `~`-rooted path must still RESOLVE rather than trip the refusal: the
 #     hook sees the command text, so `~` arrives as a literal segment and is
