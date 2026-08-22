@@ -127,6 +127,17 @@ cleanup() {
     fi
     ${CLI} state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes
   fi
+  # Lambda auto-creates a log group per function and nothing in the template
+  # owns it, so neither cdkd nor CloudFormation deletes it on destroy. Left
+  # alone it survives every run with the default never-expire retention. Not
+  # gated on rc: the success path calls this function too, and that is the
+  # path that leaks.
+  for lg in $(aws logs describe-log-groups --region "${REGION}" \
+    --log-group-name-prefix "/aws/lambda/${STACK}" \
+    --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
+    aws logs delete-log-group --region "${REGION}" --log-group-name "${lg}" >/dev/null 2>&1
+  done
+
   # Renewal writes a new object VERSION every two minutes, so this fixture
   # produces more lock.json versions than any other. NONCURRENT-only here:
   # this also runs from the failure traps, where a live state.json may be the
@@ -249,6 +260,18 @@ if [ -n "${LEFTOVER_ROLES}" ] && [ "${LEFTOVER_ROLES}" != "None" ]; then
 fi
 
 cleanup
+
+# Asserted AFTER cleanup, because the log groups are cleanup's job rather than
+# destroy's. Without this the sweep could quietly stop matching and the leak
+# would be invisible for exactly as long as nobody listed the account.
+LEFTOVER_LOGS="$(aws logs describe-log-groups --region "${REGION}" \
+  --log-group-name-prefix "/aws/lambda/${STACK}" \
+  --query "join(' ', sort(logGroups[].logGroupName))" --output text)"
+if [ -n "${LEFTOVER_LOGS}" ] && [ "${LEFTOVER_LOGS}" != "None" ]; then
+  echo "[verify] FAIL: log groups survived cleanup: ${LEFTOVER_LOGS}" >&2
+  exit 1
+fi
+
 trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "stack-lock-renewal state teardown"
