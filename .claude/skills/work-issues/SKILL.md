@@ -540,6 +540,32 @@ grep -rn "<the mishandled call / property / assumption>" src/ | grep -v test
 grep -rln "implements ResourceProvider" src/provisioning/providers/   # per-implementer audits
 ```
 
+**Grep for the SHAPE, not for a NAME — a name finds only the copies you already
+knew about.** This is the sweep's own version of the defect it exists to
+prevent, and it is easy to miss because the grep looks thorough and returns
+hits. On 2026-08-23, go-to-k/cdkd#2176 asked for exactly this sweep over a
+duplicated secret-masking walk. The sweep grepped `maskDeep` and
+`MASK_WALK_MAX_DEPTH` — the identifiers the known copies used — found four, and
+shipped a PR whose comments, docs and follow-up issue all said "four". There
+were SIX: two more copies spelled the function `maskLeaf` / `maskLeafValue` and
+declared no named constant to grep for. Three independent reviewers caught it,
+in the PR written to close the issue that warns about precisely this ("a
+per-provider fix that misses siblings just moves the hole"). Grep for a
+structural line the copies must share whatever they are called — here
+`typeof value === 'string'` beside an `Object.fromEntries`, or simply
+`Object.entries(.*).map` — and only then confirm by name:
+
+```bash
+# Structural first (finds a renamed copy), name second (confirms what you found).
+grep -rn "<a line the shape cannot omit>" src/ | grep -v test
+```
+
+**And count the population BEFORE you fix, then assert the count afterwards.**
+A sweep that reports a NUMBER in its commit message, its docs and its follow-up
+issue has committed to that number in three places; re-deriving it from the
+post-fix tree cannot detect a copy the sweep never saw, because the fix removed
+the very thing you would grep for.
+
 **N sites of one root cause is ONE issue and ONE PR, never N issues.** This is
 the single largest source of unbounded backlog growth: split into N, each site
 pays the full fixed cost — triage, claim, worktree, review tier, integ run,
@@ -1272,6 +1298,22 @@ visible by reading the script:
   signal. Give the fixture a second, ORDINARY difference alongside the one under
   test, and add a phase that proves the premise (the resource really is drifted,
   on the ordinary property) before the phase that depends on it.
+- **The arm is INERT because its PREMISE is out of scope, and the tell is that
+  BOTH counts come back zero.** A masking arm asks two questions at once — did
+  the plaintext leak, and did the mask fire — and the reassuring answer to the
+  first (`0`) is produced just as readily by an arm that never reached the code
+  as by one that passed. Read them as a PAIR: `0 leaks AND 0 masks` is not a
+  pass, it is an arm that did nothing. Measured 2026-08-23 on
+  go-to-k/cdkd#2176: the first live arm made an SSM parameter's NAME a
+  `{{resolve:ssm-secure:...}}` reference, and cdkd deliberately does not resolve
+  that spelling (`docs/scenario-coverage.md` says so) — so nothing was ever
+  plaintext, nothing needed masking, and both greps returned `0`. Switching to
+  `{{resolve:ssm:...}}` against a SecureString made the arm real. The same run
+  had a SECOND inert attempt from a different cause: a deliberately malformed
+  tag meant to force the failure path was dropped by CDK at synth, so the deploy
+  simply succeeded. Before trusting an arm, prove its premise independently —
+  here, that the resolved value actually reached AWS (the created resource was
+  named with the secret) — and only then read its assertions.
 - **The assertion is a negative, so it is a confluence point.** "The bad value
   was not written" is satisfied by a correct refusal AND by any unrelated
   failure that stopped short. Measured: with the fix mutated back to pre-fix
