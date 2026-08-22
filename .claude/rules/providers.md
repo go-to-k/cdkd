@@ -1023,6 +1023,52 @@ re-creates inside `update()` would fire that refusal on a replay with no way
 to detect it. None of the five does today (required-field validation only,
 which correctly stays a hard error).
 
+### Retiring what a FAILING create already materialized
+
+Issue #2169. For a create shaped `<one API call that materializes the
+resource>` then `<a wait for it to become usable>`, the wait can fail with the
+resource alive in AWS. Nothing recorded it, because the create never returned —
+so it was invisible to `cdkd state show`, unreachable by `cdkd destroy`, and
+re-created by the next deploy, one orphan per attempt. The reported case is
+`AWS::CertificateManager::Certificate`: `RequestCertificate` returns an ARN
+immediately, and the `ISSUED` wait times out by construction while the DNS
+validation records are not live.
+
+The fix is to delete it in the provider's own `catch` and re-throw the ORIGINAL
+error (`ACMCertificateProvider.cleanupRequestedCertificate`).
+
+Rules:
+
+- **Track the id from the AWS response**, not from a name computed before the
+  call, so a failure BEFORE the request deletes nothing.
+  `ProvisioningError.physicalId` is NOT that signal: 462 call sites across 75
+  provider files pass one and it is usually the INTENDED name
+  (`IAMRoleProvider.create` hands its catch the `roleName` it derived
+  regardless of whether `CreateRole` ran). Its only consumer is
+  `cleanupFailedCreateRemnant` in `cloud-control-provider.ts`, Cloud-Control
+  only.
+- **The cleanup degrades the message, never replaces it.** A cleanup that could
+  not delete appends a line naming the survivor plus the manual retire command.
+- **Do NOT record the remnant in state instead.** This was tried first and it
+  is a trap: the recorded properties ARE the template's, so the next deploy
+  diffs `NO_CHANGE` and never touches the resource again — `cdkd deploy` prints
+  "No changes detected" and exits 0 over something still unusable, and the
+  consumer fails with no explanation. A loud failure turned silent is worse
+  than the orphan. Making the diff re-provision it needs a marker on the state
+  record, i.e. a schema bump, to buy what deleting gives for free.
+- **Prove the delete is SAFE for that service rather than assuming it.** For
+  ACM it is, from AWS's own docs: the validation CNAME is derived from the
+  domain and the account, not the certificate, and you can "replace a deleted
+  certificate" without repeating validation.
+- **Release the idempotency token when the cleanup succeeded.** ACM answers a
+  repeat of the same token within an hour with the SAME certificate — which no
+  longer exists. Keep it when the cleanup FAILED: there the survivor is exactly
+  what a retry should be handed.
+
+This also covers the replacement path for free: `update()` re-creates via the
+same `create()`, so a replacement whose wait fails aborts with the OLD resource
+still live and still in state, and nothing orphaned.
+
 ### Masking a resolved property value in a provider log line
 
 A provider's `properties` bag arrives RESOLVED, so a

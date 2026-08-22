@@ -101,4 +101,72 @@ describe('acquireIdempotencyToken (issue #2039)', () => {
     });
     expect(shorter.value.length).toBe(20);
   });
+
+  // Issue #2169: ACM's `RequestCertificate` documents `Pattern: \w+`, and a
+  // hyphen is not in `\w`, so the default spelling is REJECTED by the API
+  // rather than merely un-deduplicated.
+  it("emits a \\w-only value under charset 'alphanumeric', with the same stability guarantees", () => {
+    const first = acquireIdempotencyToken({
+      scope: 'RequestCertificate',
+      logicalId: 'Cert',
+      maxLength: 32,
+      charset: 'alphanumeric',
+    });
+
+    expect(first.value).toMatch(/^\w+$/);
+    expect(first.value).not.toContain('-');
+    expect(first.value.length).toBe(32);
+
+    // Same create -> same token, exactly as on the default charset.
+    expect(
+      acquireIdempotencyToken({
+        scope: 'RequestCertificate',
+        logicalId: 'Cert',
+        maxLength: 32,
+        charset: 'alphanumeric',
+      }).value
+    ).toBe(first.value);
+
+    first.release();
+    expect(
+      acquireIdempotencyToken({
+        scope: 'RequestCertificate',
+        logicalId: 'Cert',
+        maxLength: 32,
+        charset: 'alphanumeric',
+      }).value
+    ).not.toBe(first.value);
+  });
+
+  it('keys the memo by charset and length, so two shapes cannot hand each other their spelling', () => {
+    // The memo returns the FIRST value minted for a key verbatim. If the key
+    // ignored these, a second call site asking for `alphanumeric` would be
+    // handed the hyphenated spelling already in flight -- which ACM's
+    // `RequestCertificate` (`Pattern: \w+`) REJECTS outright rather than merely
+    // failing to deduplicate.
+    const alphanumeric = acquireIdempotencyToken({
+      scope: 'RequestCertificate',
+      logicalId: 'Cert',
+      maxLength: 32,
+      charset: 'alphanumeric',
+    });
+    const dflt = acquireIdempotencyToken({ scope: 'RequestCertificate', logicalId: 'Cert' });
+    const shorter = acquireIdempotencyToken({
+      scope: 'RequestCertificate',
+      logicalId: 'Cert',
+      maxLength: 32,
+      charset: 'default',
+    });
+
+    // Each shape keeps its own contract rather than inheriting the first one's.
+    expect(alphanumeric.value).toMatch(/^\w{32}$/);
+    expect(alphanumeric.value).not.toContain('-');
+    expect(dflt.value).toMatch(/^cdkd-[0-9a-f]+$/);
+    expect(dflt.value.length).toBe(64);
+    expect(shorter.value).toMatch(/^cdkd-[0-9a-f]+$/);
+    expect(shorter.value.length).toBe(32);
+
+    // ...and no two of them collide.
+    expect(new Set([alphanumeric.value, dflt.value, shorter.value]).size).toBe(3);
+  });
 });

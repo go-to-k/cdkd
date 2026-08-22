@@ -17,6 +17,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { acquireIdempotencyToken, type IdempotencyToken } from './idempotency-token.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -79,6 +80,19 @@ function isCertificateInUseError(error: unknown): boolean {
  * short-circuits the loop and returns immediately with the ARN — downstream
  * consumers (CloudFront, ALB) will fail to start if they reach the cert
  * before it issues, but that's the documented trade-off.
+ *
+ * **A create that fails after requesting DELETES its certificate** (issue
+ * [#2169](https://github.com/go-to-k/cdkd/issues/2169)). `RequestCertificate`
+ * materializes the certificate immediately and everything after it can fail —
+ * most commonly the ISSUED wait, which a DNS-validated certificate whose
+ * validation records are not live yet exhausts by construction. Before this,
+ * the ARN was thrown away with the error: the certificate existed in AWS with
+ * nothing naming it (absent from state, so invisible to `cdkd state show` and
+ * unreachable by `cdkd destroy`), and the next `cdkd deploy` requested another
+ * one — an orphan per attempt. `create()` now retires the certificate it just
+ * requested before re-throwing, so a failed deploy leaves nothing behind and a
+ * retry starts clean. See {@link ACMCertificateProvider.cleanupRequestedCertificate}
+ * for why deleting is safe and why it is preferred over recording the remnant.
  *
  * **CloudFront cross-region note**: ACM certificates referenced by a
  * CloudFront Distribution MUST live in `us-east-1`. cdkd does not enforce
@@ -184,6 +198,42 @@ export class ACMCertificateProvider implements ResourceProvider {
       input['Tags'] = tags;
     }
 
+    // Issue #2039's mechanism applied to `RequestCertificate` (issue #2169
+    // names its absence). The engine's outer `withRetry` re-invokes `create()`
+    // from the top on a transient failure, and since issue #2026 a bare HTTP
+    // 5xx counts as one — so a request that actually SUCCEEDED server-side
+    // before the connection broke would mint a SECOND certificate, with the
+    // first left un-named by anything. `acquireIdempotencyToken` returns the
+    // same value for every attempt of one logical create and a fresh one after
+    // a success, which is exactly ACM's contract ("if you call
+    // RequestCertificate multiple times with the same idempotency token within
+    // one hour, ACM ... will issue only one").
+    //
+    // `charset: 'alphanumeric'` / `maxLength: 32` are ACM's documented
+    // constraints on the field (`Pattern: \w+`, `Maximum length of 32`); the
+    // helper's default `cdkd-<hex>` spelling contains a hyphen, which `\w`
+    // does not accept, so the request would be REJECTED rather than merely
+    // un-deduplicated.
+    //
+    // Note this closes the IN-PROCESS duplicate window only. ACM retires the
+    // token after an hour and cdkd mints a per-process nonce into it anyway, so
+    // a re-run of `cdkd deploy` after a failed one is a genuinely new request —
+    // that half is what `cleanupRequestedCertificate` addresses, by leaving the
+    // failed attempt's certificate deleted so there is nothing to accumulate.
+    const idempotencyToken = acquireIdempotencyToken({
+      scope: 'RequestCertificate',
+      logicalId,
+      maxLength: 32,
+      charset: 'alphanumeric',
+    });
+    input['IdempotencyToken'] = idempotencyToken.value;
+
+    // The certificate this call brought into being, tracked from the moment AWS
+    // confirms it (issue #2169). Everything after `RequestCertificate` can
+    // fail, and until this existed the ARN left the method only inside an
+    // error's message TEXT -- which nothing downstream can act on.
+    let requestedArn: string | undefined;
+
     try {
       const response = await this.acmClient.send(
         new RequestCertificateCommand(input as unknown as RequestCertificateRequest)
@@ -196,17 +246,23 @@ export class ACMCertificateProvider implements ResourceProvider {
           logicalId
         );
       }
+      requestedArn = certificateArn;
       this.logger.debug(`Requested ACM certificate: ${certificateArn}`);
 
       const noWait = process.env['CDKD_NO_WAIT'] === 'true';
       if (!noWait) {
-        await this.waitForCertificateIssued(certificateArn, logicalId);
+        await this.waitForCertificateIssued(certificateArn, logicalId, resourceType);
       } else {
         this.logger.warn(
           `Skipping wait for ACM certificate ${logicalId} (CDKD_NO_WAIT=true). ` +
             `Downstream consumers (CloudFront / ALB) will fail until the cert reaches ISSUED.`
         );
       }
+
+      // Success path only, per `acquireIdempotencyToken`'s contract: releasing
+      // on failure would hand the next attempt a different token and reinstate
+      // the duplicate window the token exists to close.
+      idempotencyToken.release();
 
       return {
         physicalId: certificateArn,
@@ -216,16 +272,172 @@ export class ACMCertificateProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // Issue #2169: retire the certificate this call created before the error
+      // leaves. `requestedArn` is set only once AWS has answered, so a failure
+      // BEFORE the request (a missing DomainName, a rejected input) deletes
+      // nothing.
+      const survivorNote = requestedArn
+        ? await this.cleanupRequestedCertificate(requestedArn, logicalId, idempotencyToken)
+        : undefined;
+
       // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner
       // ProvisioningError replaces its precise message with this outer one.
-      if (error instanceof CdkdError) throw error;
+      // This is also what carries the ARN out of the two
+      // `waitForCertificateIssued` throws (issue #2169) -- they are
+      // `ProvisioningError`s whose `physicalId` is the certificate, and
+      // re-wrapping them here would drop it. The one thing worth overriding
+      // that for is a cleanup that FAILED: the user needs the survivor's id
+      // more than they need the original wording preserved byte-for-byte, so
+      // that case appends rather than passing through silently.
+      if (error instanceof CdkdError) {
+        if (survivorNote === undefined) throw error;
+        throw new ProvisioningError(
+          `${error.message} ${survivorNote}`,
+          resourceType,
+          logicalId,
+          requestedArn,
+          error
+        );
+      }
       const cause = error instanceof Error ? error : undefined;
+      const detail = error instanceof Error ? error.message : String(error);
       throw new ProvisioningError(
-        `Failed to create ACM certificate ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create ACM certificate ${logicalId}: ${detail}` +
+          (survivorNote === undefined ? '' : ` ${survivorNote}`),
         resourceType,
         logicalId,
-        undefined,
+        // The reporter's own ask (issue #2169): the ARN `RequestCertificate`
+        // returned survives the failure instead of being dropped. It names a
+        // DELETED certificate on the ordinary path, and a live one when the
+        // cleanup could not retire it -- which is what `survivorNote` says.
+        requestedArn,
         cause
+      );
+    }
+  }
+
+  /**
+   * Retire the certificate a FAILED `create()` just requested, so the failure
+   * leaves nothing behind (issue
+   * [#2169](https://github.com/go-to-k/cdkd/issues/2169)).
+   *
+   * Returns `undefined` when the certificate is gone, or a one-line note naming
+   * the survivor when it could not be deleted. Never throws: the original
+   * create error is what the user needs to see, and a cleanup failure must
+   * degrade that message rather than replace it.
+   *
+   * ## Why DELETING is right, when the obvious objection is that it throws away
+   * the user's DNS work
+   *
+   * It does not. ACM derives a domain's validation CNAME from the domain and
+   * the account, not from the certificate, and documents that the record "must
+   * be added to your DNS database only once": *"Without the need to repeat
+   * validation, you can request additional ACM certificates for your fully
+   * qualified domain name (FQDN) for as long as the CNAME record remains in
+   * place ... You can also replace a deleted certificate."*
+   * (https://docs.aws.amazon.com/acm/latest/userguide/dns-validation.html)
+   * So the CNAMEs a user adds after seeing this failure validate the NEXT
+   * certificate too, and the retry issues normally. The intuition that a
+   * `PENDING_VALIDATION` certificate is precious does not hold for ACM.
+   *
+   * ## Why not RECORD the remnant in cdkd state instead
+   *
+   * That was this fix's first shape, and it does not work. A state record makes
+   * the next deploy diff the resource as `NO_CHANGE` -- the recorded properties
+   * ARE the template's -- so cdkd would never touch that certificate again:
+   * `cdkd deploy` would print "No changes detected" and exit 0 over a
+   * certificate that is still unusable, and the CloudFront / ALB consuming it
+   * would fail with no explanation. Turning a loud failure into a silent one is
+   * worse than the orphan it fixes. Making the diff re-provision it instead
+   * needs a marker on the state record -- a schema bump -- to buy behaviour
+   * that deleting gives for free.
+   *
+   * ## The "keep it" escape hatch already exists
+   *
+   * A user who WANTS the certificate to outlive the deploy has
+   * `CDKD_NO_WAIT=true` (`cdkd deploy --no-wait`), which returns success with
+   * the certificate recorded in state and never reaches this path. "Wait for
+   * it" and "keep it even if the wait fails" are different requests, and cdkd
+   * already has a flag for the second.
+   */
+  /**
+   * The region an ACM ARN names, for the manual retire command. Taken from the
+   * ARN rather than from the client so the command a user pastes matches the
+   * certificate it names even when their shell default differs. Falls back to
+   * the literal placeholder for a shape this cannot parse -- a wrong region
+   * would make the command silently address a different account/region.
+   */
+  private regionOfArn(arn: string): string {
+    return arn.split(':')[3] || '<region>';
+  }
+
+  private async cleanupRequestedCertificate(
+    certificateArn: string,
+    logicalId: string,
+    idempotencyToken: IdempotencyToken
+  ): Promise<string | undefined> {
+    try {
+      await this.acmClient.send(new DeleteCertificateCommand({ CertificateArn: certificateArn }));
+      this.logger.info(
+        `Deleted the ACM certificate ${certificateArn} that the failed create of ${logicalId} requested, ` +
+          `so nothing is left behind. DNS validation records you have already added stay valid for the retry.`
+      );
+      // Retire the TOKEN too, and this is load-bearing rather than tidiness:
+      // ACM answers a repeat of the same idempotency token within an hour with
+      // the SAME certificate -- which no longer exists. Without this the next
+      // attempt (including the replacement create inside `update()`, which
+      // shares this key) could be handed the ARN just deleted.
+      idempotencyToken.release();
+      return undefined;
+    } catch (cleanupError) {
+      // Matched by CLASS with a NAME fallback, on the same reasoning
+      // `isCertificateInUseError` above sets out: a re-thrown error can lose
+      // the SDK class while keeping its identity. Deliberately only the TOP
+      // error, not the cause chain that helper walks -- this catches the error
+      // `acmClient.send` raised directly, and nothing between here and the SDK
+      // wraps it. Getting it wrong is not cosmetic: a missed not-found tells
+      // the user to delete an ARN that does not exist AND keeps the idempotency
+      // token, which is the hazard the release below exists to prevent.
+      if (
+        cleanupError instanceof ResourceNotFoundException ||
+        (cleanupError instanceof Error && cleanupError.name === 'ResourceNotFoundException')
+      ) {
+        // Already gone: nothing was left behind either way.
+        //
+        // Logged rather than silent, because this is the ONE arm that releases
+        // the token without having proved the certificate is gone -- it takes
+        // AWS's word for it. If that answer were ever wrong (a spurious or
+        // eventually-consistent not-found), the next attempt mints a SECOND
+        // certificate and the first is orphaned with nothing naming it, which
+        // is the accumulation this whole change exists to end. A line here is
+        // what makes that case findable afterwards instead of invisible.
+        this.logger.info(
+          `The ACM certificate ${certificateArn} that the failed create of ${logicalId} requested was already gone; nothing to clean up.`
+        );
+        idempotencyToken.release();
+        return undefined;
+      }
+      const detail = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      this.logger.warn(
+        `Could not delete the ACM certificate ${certificateArn} that the failed create of ${logicalId} requested: ${detail}`
+      );
+      // Deliberately NOT releasing the token here: the certificate is still
+      // there, so a retry being answered with that same one is the outcome we
+      // want rather than a hazard -- and it is what stops a retry from adding a
+      // SECOND survivor.
+      //
+      // The raw `detail` stays in the warn above and out of this note, which is
+      // spliced into the THROWN message. `isRetryableTransientError` classifies
+      // by substring-matching that message against
+      // `RETRYABLE_ERROR_MESSAGE_PATTERNS`, so an AWS cleanup error whose text
+      // happened to contain `does not exist` or `DependencyViolation` would
+      // re-classify a terminal create failure as transient. Every word below is
+      // therefore ours and pattern-free by construction.
+      return (
+        `The certificate ${certificateArn} this attempt created could NOT be deleted, ` +
+        `and cdkd is not tracking it -- retire it with ` +
+        `\`aws acm delete-certificate --certificate-arn ${certificateArn} --region ${this.regionOfArn(certificateArn)}\` ` +
+        `(the reason is in the warning above).`
       );
     }
   }
@@ -255,6 +467,14 @@ export class ACMCertificateProvider implements ResourceProvider {
     );
     if (changedImmutable) {
       this.logger.debug(`${changedImmutable} changed, replacing ACM certificate: ${physicalId}`);
+      // Issue #2169 covers this call too, for free: if the new certificate's
+      // ISSUED wait fails, `create()`'s own catch retires it before the error
+      // leaves, so the replacement aborts with the OLD certificate still live,
+      // still in state, and no orphan. Recording the new one instead was never
+      // available here — the state record for this logical id names the old
+      // certificate, which cdkd must stay able to delete — which is a second
+      // reason the delete policy is the right one for this provider rather
+      // than a merely convenient one.
       const createResult = await this.create(logicalId, resourceType, properties);
       // What the inner delete left behind, if anything. `undefined` means the
       // old certificate is genuinely gone; a string is the short reason that
@@ -531,11 +751,29 @@ export class ACMCertificateProvider implements ResourceProvider {
    * Throws on `VALIDATION_TIMED_OUT` / `FAILED` (terminal failures) and on
    * polling-cap exhaustion (treated as timeout). SIGINT short-circuits the
    * loop and returns control to the deploy engine's cleanup path.
+   *
+   * Both throws are `ProvisioningError`s carrying `certificateArn` as their
+   * `physicalId` (issue
+   * [#2169](https://github.com/go-to-k/cdkd/issues/2169)). They used to be
+   * plain `Error`s whose only reference to the certificate was the message
+   * TEXT, which is not something a caller can act on. The certificate is real
+   * by the time either fires, so the error that reports the failure is the one
+   * piece of the failure path that should still be able to name it.
+   *
+   * Says nothing about what happens to the certificate afterwards: the caller
+   * owns that. `create()`'s catch retires it (see
+   * {@link ACMCertificateProvider.cleanupRequestedCertificate}) and appends a
+   * note to this message only when that cleanup could NOT.
    */
-  private async waitForCertificateIssued(certificateArn: string, logicalId: string): Promise<void> {
+  private async waitForCertificateIssued(
+    certificateArn: string,
+    logicalId: string,
+    resourceType: string
+  ): Promise<void> {
     this.logger.debug(`Waiting for ACM certificate ${certificateArn} to reach ISSUED status...`);
     let interrupted = false;
-    let validationOptionsLogged = false;
+    /** The last validation-record block printed, so we re-print only on a CHANGE. */
+    let lastValidationOptions: string | undefined;
 
     const sigintHandler = () => {
       interrupted = true;
@@ -572,15 +810,42 @@ export class ACMCertificateProvider implements ResourceProvider {
           status === 'REVOKED' ||
           status === 'EXPIRED'
         ) {
-          throw new Error(
+          throw new ProvisioningError(
             `ACM certificate ${logicalId} (${certificateArn}) entered terminal status ${status} during validation. ` +
-              `Check ACM console / DNS records to diagnose.`
+              `Check ACM console / DNS records to diagnose.`,
+            resourceType,
+            logicalId,
+            certificateArn
           );
         }
 
-        if (status === 'PENDING_VALIDATION' && !validationOptionsLogged && validations.length > 0) {
-          this.logValidationOptions(validations);
-          validationOptionsLogged = true;
+        // Print the validation records whenever what we can show has CHANGED,
+        // rather than latching after the first attempt (issue #2169, review
+        // rounds 2 and 3). Two failure modes made a latch wrong, and the second
+        // is why this is content-based rather than a smarter boolean:
+        //
+        //  - The first `DescribeCertificate` fires seconds after
+        //    `RequestCertificate`, and ACM commonly answers it with
+        //    `DomainValidationOptions` carrying no `ResourceRecord` yet -- the
+        //    API reference warns of exactly that delay. Latching there printed
+        //    a header with nothing under it and suppressed every later poll.
+        //  - For a certificate with SANs, ACM fills those records in per
+        //    domain and not necessarily together. Latching on "I printed
+        //    SOMETHING" then shows one domain's CNAME and permanently hides
+        //    the rest, which is the same dead end one level down.
+        //
+        // Both used to be survivable because the certificate outlived the
+        // failed deploy and the records could be read from the ACM console.
+        // This provider now DELETES it, so whatever this loop printed is
+        // generally the user's only copy -- and if no poll ever carried a
+        // `ResourceRecord`, there is no copy at all, which is why the message
+        // below tells them to re-run rather than to look further up.
+        if (status === 'PENDING_VALIDATION') {
+          const rendered = this.renderValidationOptions(validations);
+          if (rendered !== undefined && rendered !== lastValidationOptions) {
+            this.logger.info(rendered);
+            lastValidationOptions = rendered;
+          }
         }
 
         this.logger.debug(
@@ -597,9 +862,24 @@ export class ACMCertificateProvider implements ResourceProvider {
         }
       }
 
-      throw new Error(
+      throw new ProvisioningError(
         `ACM certificate ${logicalId} (${certificateArn}) did not reach ISSUED status within ${(this.maxPollAttempts * this.pollIntervalMs) / 1000}s. ` +
-          `If your DNS zone is manually managed, you may need to increase --resource-timeout AWS::CertificateManager::Certificate=<duration> or set CDKD_NO_WAIT=true.`
+          // Conditional, because the certificate is about to be deleted and
+          // this sentence is the user's instruction for what to do next. If no
+          // poll ever carried a `ResourceRecord`, nothing was printed and
+          // "printed above" sends them looking for output that does not exist.
+          (lastValidationOptions === undefined
+            ? `AWS had not published this certificate's validation records before the wait ran out, so none were printed — ` +
+              `re-run the deploy to request them again. `
+            : `Add the validation records printed above to your DNS zone and re-run the deploy. `) +
+          `ACM reuses a domain's validation CNAME across certificates, so records you add now validate the next attempt. ` +
+          `To wait LONGER, raise CDKD_ACM_POLL_ATTEMPTS / CDKD_ACM_POLL_INTERVAL_MS — this cap is the provider's OWN ` +
+          `and is what just fired; --resource-timeout alone will not lengthen it. Past ~30m also raise ` +
+          `--resource-timeout AWS::CertificateManager::Certificate=<duration>, or the engine's per-resource deadline ` +
+          `becomes the shorter of the two. Or set CDKD_NO_WAIT=true to keep the certificate and validate it out of band.`,
+        resourceType,
+        logicalId,
+        certificateArn
       );
     } finally {
       process.removeListener('SIGINT', sigintHandler);
@@ -611,7 +891,7 @@ export class ACMCertificateProvider implements ResourceProvider {
    * user can copy / paste them into Route 53 / Cloudflare / etc. while the
    * cert is still PENDING_VALIDATION.
    */
-  private logValidationOptions(validations: DomainValidation[]): void {
+  private renderValidationOptions(validations: DomainValidation[]): string | undefined {
     const lines: string[] = [
       'ACM certificate is PENDING_VALIDATION. Add the following DNS records to validate:',
     ];
@@ -619,12 +899,20 @@ export class ACMCertificateProvider implements ResourceProvider {
       if (v.ValidationMethod === 'DNS' && v.ResourceRecord) {
         const r = v.ResourceRecord;
         lines.push(`  ${v.DomainName} — ${r.Type} ${r.Name} -> ${r.Value}`);
-      } else if (v.ValidationMethod === 'EMAIL') {
-        const emails = (v.ValidationEmails ?? []).join(', ');
-        lines.push(`  ${v.DomainName} — confirmation email sent to: ${emails || '<none>'}`);
+      } else if (v.ValidationMethod === 'EMAIL' && (v.ValidationEmails ?? []).length > 0) {
+        lines.push(
+          `  ${v.DomainName} — confirmation email sent to: ${v.ValidationEmails!.join(', ')}`
+        );
       }
+      // Anything else is a domain AWS has not filled in yet. Skipped rather
+      // than rendered as a placeholder: a `<none>` line reads like an answer,
+      // and it would make this block differ from the one printed once the real
+      // value arrives only in ways the user cannot act on.
     }
-    this.logger.info(lines.join('\n'));
+    // Header alone: nothing actionable to show on this poll. Returning
+    // `undefined` (rather than the bare header) is what stops a lone header
+    // going out and, with it, the caller recording it as "already shown".
+    return lines.length === 1 ? undefined : lines.join('\n');
   }
 
   private async updateTags(

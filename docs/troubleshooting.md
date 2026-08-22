@@ -1216,6 +1216,70 @@ aws cloudfront delete-distribution --id <ID> --if-match <NewETag>
 Then re-run `cdkd deploy`. The next run derives a fresh caller reference, so it
 will not collide with the deleted one.
 
+### Issue: an ACM certificate deploy fails with "did not reach ISSUED status"
+
+```
+ACM certificate SiteCert (arn:aws:acm:us-east-1:123456789012:certificate/...) did not reach
+ISSUED status within 600s.
+```
+
+A DNS-validated certificate only reaches `ISSUED` once its validation records
+are live in your DNS zone. On a first deploy those records usually do not exist
+yet — cdkd prints them on its first `PENDING_VALIDATION` poll — so the wait runs
+out. This is a real failure, not a cosmetic one: anything downstream
+(CloudFront, an ALB listener) cannot use a certificate that has not issued.
+
+**The certificate is not orphaned.** cdkd deletes the certificate it requested
+before the error is reported (issue
+[#2169](https://github.com/go-to-k/cdkd/issues/2169)), so a failed deploy leaves
+nothing behind and repeated attempts do not accumulate certificates in your
+account. Before this, each failed attempt left one that nothing tracked.
+
+Add the printed CNAME records to your DNS zone, then re-run the deploy:
+
+```bash
+cdkd deploy <stack>
+```
+
+**Adding those records is not wasted work**, even though the certificate they
+were printed for is gone: ACM derives a domain's validation CNAME from the
+domain and the account rather than from the certificate, and documents that you
+can [replace a deleted certificate](https://docs.aws.amazon.com/acm/latest/userguide/dns-validation.html)
+without repeating validation. The records you added validate the next attempt's
+certificate.
+
+Two ways to change what the deploy does about the wait:
+
+```bash
+# Wait LONGER. This is the provider's OWN cap -- 60 polls x 10s = 10 minutes --
+# and it is what fires, so raising it is what makes cdkd wait longer.
+CDKD_ACM_POLL_ATTEMPTS=180 cdkd deploy <stack>          # 30 minutes
+
+# Do not wait at all. The certificate is created, RECORDED IN STATE, and the
+# deploy returns immediately -- downstream consumers will fail until it issues,
+# but the certificate survives for you to validate out of band. This is the
+# supported way to keep a PENDING_VALIDATION certificate across runs.
+CDKD_NO_WAIT=true cdkd deploy <stack>
+```
+
+**`--resource-timeout` cannot make this wait longer**, which is the opposite of
+the intuition. It is the engine's per-resource deadline (30 minutes by default)
+wrapped AROUND the provider, so it can only cut the 10-minute poll cap short —
+`--resource-timeout AWS::CertificateManager::Certificate=45m` changes nothing.
+Setting it BELOW the cap is worth avoiding for a second reason: the deadline
+abandons the create from outside rather than cancelling it, so the cleanup that
+retires the certificate may run after the deploy has already reported failure,
+or not at all if the process exits first.
+
+If the message also says the certificate **could NOT be deleted**, the cleanup
+itself failed (a throttle, a permissions gap). The message names the ARN and
+the exact command; cdkd is not tracking that certificate, so `cdkd destroy`
+will not remove it:
+
+```bash
+aws acm delete-certificate --certificate-arn <arn> --region <region>
+```
+
 ### Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`
 
 After a deploy fails with `--no-rollback`, is interrupted with Ctrl+C, or its

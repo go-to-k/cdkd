@@ -57,7 +57,14 @@ un-issued certificate makes a downstream CloudFront / ALB create fail
 outright rather than merely arrive early, so the fast side would trade a
 wait for a broken deploy. Terraform users express the same wait as a
 separate `aws_acm_certificate_validation` resource, which cdkd has no
-equivalent of.
+equivalent of. When that wait runs out, cdkd DELETES the certificate it
+requested rather than abandoning it, so a failed deploy leaves nothing behind
+and repeated attempts do not accumulate certificates (issue
+[#2169](https://github.com/go-to-k/cdkd/issues/2169)). That costs nothing: ACM
+reuses a domain's validation CNAME across certificates, so records you add after
+the failure validate the retry. `--no-wait` is the supported way to KEEP a
+`PENDING_VALIDATION` certificate instead — see
+[troubleshooting.md](troubleshooting.md).
 
 Three wait modes, least to most waiting:
 
@@ -98,7 +105,7 @@ functional once AWS finishes the async deployment.
 | `AWS::DocDB::DBCluster` / `AWS::DocDB::DBInstance` | Return after Create call | Wait for `available` (5–10 min) | same as default | Waits | Waits |
 | `AWS::Neptune::DBCluster` / `AWS::Neptune::DBInstance` | Return after Create call | Wait for `available` (5–10 min) | same as default | Waits | Waits |
 | `AWS::ElastiCache::CacheCluster` etc. | Return after Create call | Wait for `available` | same as default | Waits | Waits |
-| `AWS::CertificateManager::Certificate` | Return after `RequestCertificate` (cert is `PENDING_VALIDATION`; downstream CloudFront/ALB fail until it issues) | Wait for `ISSUED` (DNS/EMAIL validation) | same as default | Waits | Does not wait (`aws_acm_certificate` returns while `PENDING_VALIDATION`; waiting is a separate `aws_acm_certificate_validation` resource) |
+| `AWS::CertificateManager::Certificate` | Return after `RequestCertificate` (cert is `PENDING_VALIDATION` and RECORDED IN STATE; downstream CloudFront/ALB fail until it issues) | Wait for `ISSUED` (DNS/EMAIL validation); if the wait fails, the certificate this deploy requested is DELETED so nothing is orphaned (issue [#2169](https://github.com/go-to-k/cdkd/issues/2169)) | same as default | Waits | Does not wait (`aws_acm_certificate` returns while `PENDING_VALIDATION`; waiting is a separate `aws_acm_certificate_validation` resource) |
 | `AWS::EC2::NatGateway` | Return after `CreateNatGateway` (gateway is `pending`; AWS finishes async) | Wait for `available` (1–2 min) | same as default | Waits | Waits |
 | `AWS::EC2::Instance` | Return after `RunInstances` (instance is `pending`; `PublicIp` / `PrivateIp` attributes may be empty, and the IAM instance profile association is not verified — see below) | Wait for `running` (30–60 s) | same as default | Waits for `running` | Waits for `running` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | Return after `CreateLoadBalancer` (LB is `provisioning`; `DNSName` 503s until active). Also skips the capacity-reservation stabilize poll below | Wait for `active` (90–180 s). When the template sets `MinimumLoadBalancerCapacity` with `EnableCapacityReservationProvisionStabilize: true`, additionally poll `DescribeCapacityReservation` until every zone is `provisioned` (bounded ~10 min; timeout warns and continues, a `failed` zone errors) | same as default | Waits for `active`; the stabilize flag is the CFn-native opt-in to the same reservation wait | Waits for `active` |

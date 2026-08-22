@@ -1453,6 +1453,45 @@ implementation. Three details are worth copying:
     only, which correctly stays a hard error), so there is no live gap; this is
     a constraint on the NEXT provider, not a description of the current tree.
 
+  - **Retire what your create materialized before the error leaves.** A create
+    shaped `<one API call that materializes the resource>` then `<a wait for it
+    to become usable>` can fail with the resource already alive in AWS. Before
+    issue [#2169](https://github.com/go-to-k/cdkd/issues/2169) an
+    `AWS::CertificateManager::Certificate` in that state was simply LOST: the
+    create never returned, so nothing was written to state, and it was
+    invisible to `cdkd state show`, unreachable by `cdkd destroy`, and
+    re-requested by the next `cdkd deploy` — an orphan per attempt. Delete it
+    in your own `catch`, best-effort, and re-throw the ORIGINAL error.
+
+    Three points that decide whether you get this right:
+
+    - **Track the id from the API response, not from the name you computed.**
+      Set the local only once AWS has confirmed the resource exists, so a
+      failure BEFORE the call deletes nothing. Do NOT reuse
+      `ProvisioningError.physicalId` as this signal — 462 call sites across 75
+      provider files pass one, and on a create path it is usually the intended
+      name computed beforehand (`IAMRoleProvider.create` hands its catch the
+      `roleName` it derived, whether or not `CreateRole` ever ran).
+    - **Never let the cleanup replace the diagnosis.** The create's own error
+      is what the user needs; a cleanup that FAILED appends a line naming the
+      survivor and the manual command to retire it, and a cleanup that threw
+      must never surface instead of the original.
+    - **Do not record the remnant in state as an alternative.** It looks like
+      the tidier answer and it is a trap: the recorded properties ARE the
+      template's, so the next deploy diffs the resource as `NO_CHANGE` and
+      never touches it again — `cdkd deploy` prints "No changes detected" and
+      exits 0 over a resource that is still unusable. Turning a loud failure
+      into a silent one is worse than the orphan. Making the diff re-provision
+      it instead needs a marker on the state record, i.e. a schema bump.
+
+    Whether deleting is SAFE is a per-service question you have to answer, not
+    assume. For ACM it is, and the reason is documented rather than inferred:
+    the DNS validation CNAME is derived from the domain and the account, not
+    from the certificate, and AWS states you can "replace a deleted
+    certificate" without repeating validation — so the records a user adds
+    after the failure validate the retry's certificate too. If your service has
+    no such property, say so and choose differently.
+
   - **`maskSecrets` — mask a resolved property value before you log it.**
     Both `CreateContext` and `UpdateContext` extend a shared
     `SecretMaskingContext`, whose one optional field is

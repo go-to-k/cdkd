@@ -103,26 +103,59 @@ export interface AcquireIdempotencyTokenOptions {
   logicalId: string;
   /**
    * Max token length the target API accepts. Defaults to 64, EC2's documented
-   * `Maximum 64 ASCII characters` limit. The value is always `[-a-z0-9]`, so
-   * truncation stays within every API's accepted character set.
+   * `Maximum 64 ASCII characters` limit. The value is always `[-a-z0-9]` (or
+   * `[a-z0-9]` under `charset: 'alphanumeric'`), so truncation stays within
+   * every API's accepted character set.
    */
   maxLength?: number;
+  /**
+   * Which characters the target API accepts in the token.
+   *
+   * `'default'` (the default) emits `cdkd-<hex>`. `'alphanumeric'` drops the
+   * separator and emits `cdkd<hex>`, for an API whose token pattern is `\w+`
+   * — ACM's `RequestCertificate` is the case that forced this option: its
+   * documented constraint is `Maximum length of 32` and `Pattern: \w+`, and a
+   * hyphen is not in `\w`, so the default spelling is REJECTED rather than
+   * silently accepted. Part of the memo KEY, so the two spellings are distinct
+   * tokens rather than one value reshaped -- see {@link tokenKey} for why that
+   * matters. Neither is weaker: both are the same sha256 digest truncated to
+   * the caller's length.
+   */
+  charset?: 'default' | 'alphanumeric';
 }
 
-const tokenKey = (scope: string, logicalId: string): string =>
+const tokenKey = (
+  scope: string,
+  logicalId: string,
+  maxLength: number,
+  charset: 'default' | 'alphanumeric'
+): string =>
   // Stack name AND region: what identifies a resource in cdkd's state layout is
   // `{stackName}/{region}/{logicalId}`, and this map is process-global, so one
   // process deploying the same stack to two regions (`cdkd deploy --all`) would
   // otherwise hand both creates the same token and have the second answered
   // with the first region's resource. Both are absent outside a `withStackName`
   // scope / an unset AWS_REGION, which only unit tests hit.
-  `${scope}\u0000${process.env['AWS_REGION'] ?? ''}\u0000${getCurrentStackName() ?? ''}\u0000${logicalId}`;
+  // `maxLength` and `charset` are part of the KEY, not just of the derivation:
+  // the memo returns the first value minted for a key verbatim, so two call
+  // sites sharing `(scope, logicalId)` with different shapes would silently get
+  // each other's spelling. For an API like ACM's `RequestCertificate`, whose
+  // token pattern is `\w+`, that lands as a REJECTED request rather than a
+  // merely sub-optimal one. Unreachable today (scopes are unique per API) and
+  // kept structural rather than contingent on that staying true.
+  `${scope}\u0000${process.env['AWS_REGION'] ?? ''}\u0000${getCurrentStackName() ?? ''}\u0000${logicalId}\u0000${maxLength}\u0000${charset}`;
 
-const derive = (key: string, generation: number, maxLength: number): string => {
+const derive = (
+  key: string,
+  generation: number,
+  maxLength: number,
+  charset: 'default' | 'alphanumeric'
+): string => {
   const digest = createHash('sha256')
     .update(`${PROCESS_NONCE}\u0000${key}\u0000${generation}`)
     .digest('hex');
-  return `cdkd-${digest}`.slice(0, maxLength);
+  const separator = charset === 'alphanumeric' ? '' : '-';
+  return `cdkd${separator}${digest}`.slice(0, maxLength);
 };
 
 /**
@@ -137,10 +170,10 @@ const derive = (key: string, generation: number, maxLength: number): string => {
  * ```
  */
 export function acquireIdempotencyToken(options: AcquireIdempotencyTokenOptions): IdempotencyToken {
-  const { scope, logicalId, maxLength = 64 } = options;
-  const key = tokenKey(scope, logicalId);
+  const { scope, logicalId, maxLength = 64, charset = 'default' } = options;
+  const key = tokenKey(scope, logicalId, maxLength, charset);
   const existing = inFlight.get(key);
-  const value = existing ?? derive(key, generations.get(key) ?? 0, maxLength);
+  const value = existing ?? derive(key, generations.get(key) ?? 0, maxLength, charset);
   if (existing === undefined) {
     inFlight.set(key, value);
   }
