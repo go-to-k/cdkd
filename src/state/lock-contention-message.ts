@@ -75,7 +75,11 @@ export interface LockContentionArgs {
    * accurate statement is that the holder survived the retry window.
    */
   heldClause?: string | undefined;
-  /** Appended verbatim after the recovery line (e.g. export's no-changeset note). */
+  /**
+   * Appended verbatim after the HEAD sentence — i.e. BEFORE the advice and
+   * before the recovery command, which is deliberately last so it can be
+   * pasted (e.g. export's no-changeset note).
+   */
   suffix?: string | undefined;
 }
 
@@ -107,7 +111,14 @@ function shellQuote(value: string): string {
  */
 export function buildForceUnlockCommand(
   stackName: string,
-  region: string,
+  /**
+   * The lock's region, or `undefined` for a LEGACY lock key, which has none.
+   * A first cut made the legacy caller pass `''` and the emptiness guard below
+   * then suppressed the whole command — so that branch always fell through to
+   * a hand-built, UNQUOTED fallback, shipping exactly the paste defect this
+   * function exists to prevent.
+   */
+  region: string | undefined,
   recovery?: LockRecoveryContext
 ): string {
   // Sanitize BEFORE quoting. Quoting alone already neutralizes an injected
@@ -116,15 +127,19 @@ export function buildForceUnlockCommand(
   // its own forgery surface. A control character has no legitimate place in a
   // stack name or a region, so drop it and then quote what remains.
   const safeStack = displaySafe(stackName, { asciiOnly: true });
-  const safeRegion = displaySafe(region, { asciiOnly: true });
+  // An ABSENT region is legitimate (a legacy lock key); an UNRENDERABLE one is
+  // not. Only the second suppresses.
+  const safeRegion = region === undefined ? undefined : displaySafe(region, { asciiOnly: true });
   // A value that sanitizes to NOTHING must not become an empty ARGUMENT:
   // `force-unlock.ts` treats a falsy `--stack-region` as "not supplied" and
   // widens the release to EVERY region holding that stack name — the opposite
   // of what a region-qualified hint is for. Emitting no command is the honest
   // answer; the message still names what could not be rendered.
-  if (!safeStack || !safeRegion) return '';
+  if (!safeStack || safeRegion === '') return '';
   const parts = [
-    `cdkd force-unlock ${shellQuote(safeStack)} --stack-region ${shellQuote(safeRegion)}`,
+    safeRegion === undefined
+      ? `cdkd force-unlock ${shellQuote(safeStack)}`
+      : `cdkd force-unlock ${shellQuote(safeStack)} --stack-region ${shellQuote(safeRegion)}`,
   ];
   if (recovery?.profile) parts.push(`--profile ${shellQuote(recovery.profile)}`);
   if (recovery?.stateBucket) parts.push(`--state-bucket ${shellQuote(recovery.stateBucket)}`);

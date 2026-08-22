@@ -136,6 +136,7 @@ describe('runDestroyForStack — empty-state cleanup takes the lock (issue #2171
 
   it('refuses when the lock is held, and deletes nothing', async () => {
     const h = makeCtx({ acquired: false });
+    const before = process.listeners('SIGINT');
 
     await expect(runDestroyForStack('TestStack', emptyState(), h.ctx)).rejects.toThrow(
       /Could not acquire lock/
@@ -144,6 +145,10 @@ describe('runDestroyForStack — empty-state cleanup takes the lock (issue #2171
     // The foreign lock must be left alone — releasing here is exactly the
     // owner-blind delete issue #2161 removed from the main path.
     expect(h.releaseLock).not.toHaveBeenCalled();
+    // ...and the listener must go with it. The source-text pin cannot see this
+    // one: its window is satisfied by the SIBLING cleanup on the throw path a
+    // few lines up, so deleting THIS removeListener left it green.
+    expect(process.listeners('SIGINT')).toEqual(before);
   });
 
   it('RE-READS under the lock and refuses when the record is no longer empty', async () => {
@@ -221,6 +226,31 @@ describe('runDestroyForStack — empty-state cleanup takes the lock (issue #2171
     expect(exitSpy).toHaveBeenCalledWith(130);
 
     expect(result.skippedEmpty).toBe(true);
+    exitSpy.mockRestore();
+  });
+
+  it('reports the drain on the RESULT so a --all run does not walk on', async () => {
+    // `result.interrupted ||= emptyInterrupted` was asserted nowhere: the drain
+    // test above fires its signals AFTER the call resolved, by which point the
+    // assignment has already run with `false`. Firing from INSIDE the branch is
+    // what makes the flag observable.
+    const h = makeCtx({ acquired: true, recheck: null });
+    const exitSpy = vi
+      .spyOn(process, 'exit')
+      .mockImplementation((() => undefined) as unknown as typeof process.exit);
+    h.getState.mockImplementation(async () => {
+      // Mid-branch: the handler is registered and the lock is held.
+      (process.listeners('SIGINT').at(-1) as NodeJS.SignalsListener)('SIGINT');
+      return null;
+    });
+
+    const result = await runDestroyForStack('TestStack', emptyState(), h.ctx);
+
+    expect(result.interrupted).toBe(true);
+    expect(result.skippedEmpty).toBe(true);
+    // A first signal DRAINS: the cleanup still completed.
+    expect(h.deleteState).toHaveBeenCalled();
+    expect(exitSpy).not.toHaveBeenCalled();
     exitSpy.mockRestore();
   });
 

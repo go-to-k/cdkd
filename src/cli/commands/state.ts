@@ -1051,7 +1051,7 @@ async function stateOrphanCommand(
             // sentence — the provenance this file already cites two lines down
             // as the reason to route the hint through the shared builder.
             const where = target.region
-              ? displaySafe(target.region, { asciiOnly: true })
+              ? displaySafe(target.region, { asciiOnly: true }) || UNRENDERABLE
               : '(legacy)';
             throw new Error(
               `Stack '${displaySafe(stackName, { asciiOnly: true })}' (${where}) is locked. ` +
@@ -1060,22 +1060,19 @@ async function stateOrphanCommand(
                 // or a legacy state body, so a raw `\n` here forged a second
                 // instruction line INSIDE the quotes. It also picks up the
                 // bucket / prefix / profile qualification this hint lacked.
-                (target.region
-                  ? `Run: ${buildForceUnlockCommand(stackName, target.region, {
-                      profile: options.profile,
-                      stateBucket: setup.bucket,
-                      statePrefix: options.statePrefix,
-                    })} first, `
-                  : // No region to qualify with, but the NAME still needs
-                    // quoting — a `'` in it otherwise breaks the paste.
-                    `Run: ${
-                      buildForceUnlockCommand(stackName, '', {
-                        profile: options.profile,
-                        stateBucket: setup.bucket,
-                        statePrefix: options.statePrefix,
-                      }) ||
-                      `cdkd force-unlock ${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}`
-                    } first, `) +
+                // ONE call. A legacy lock key has no region, which the
+                // builder expresses as `undefined` — passing `''` made its
+                // emptiness guard suppress the whole command, so that branch
+                // ALWAYS fell through to a hand-built UNQUOTED fallback that
+                // also dropped --profile / --state-bucket, i.e. exactly the
+                // wrong-lock-object harm this hint exists to prevent.
+                `Run: ${
+                  buildForceUnlockCommand(stackName, target.region, {
+                    profile: options.profile,
+                    stateBucket: setup.bucket,
+                    statePrefix: options.statePrefix,
+                  }) || `cdkd force-unlock ${UNRENDERABLE}`
+                } first, ` +
                 `or pass --force to remove anyway.`
             );
           }
@@ -2086,7 +2083,13 @@ async function warnOnLiveForeignLock(
 ): Promise<void> {
   try {
     const info = await lockManager.getLockInfo(stackName, region);
-    if (!info || info.expiresAt <= Date.now()) return;
+    // An UNREADABLE expiry WARNS rather than staying quiet: a missed warning
+    // destroys a live lock silently, while a spurious one costs a line.
+    // `NaN <= now` is false, so a truncated lock.json already reached here —
+    // this makes that deliberate rather than accidental.
+    if (!info) return;
+    const expiryKnown = Number.isFinite(info.expiresAt);
+    if (expiryKnown && info.expiresAt <= Date.now()) return;
     const safeStack = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
     const where = region
       ? `${safeStack} (${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE})`
@@ -2100,12 +2103,14 @@ async function warnOnLiveForeignLock(
     logger.warn(
       `Force-releasing a LIVE lock on ${where} ` +
         // Agrees with `lock-contention-message.ts`: an unusable owner withholds
-        // the "still running" CERTIFICATION but not the expiry, which the lock
-        // file definitely carries. The two modules answered differently before.
+        // the "still running" CERTIFICATION but not the expiry, when the lock
+        // file carries a readable one.
         `${owner ? `held by ${owner}${operation}` : 'held by an unnamed holder'}. ` +
-        (owner
+        (owner && expiryKnown
           ? `That process is still running and will keep writing; its next state write `
-          : `The lock has not expired, so a process may still be writing; its next state write `) +
+          : expiryKnown
+            ? `The lock has not expired, so a process may still be writing; its next state write `
+            : `The lock records no readable expiry, so a process may still be writing; its next state write `) +
         `may recreate the record being removed here.`
     );
   } catch {

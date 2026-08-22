@@ -69,10 +69,16 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 }));
 
 const mockAcquireLock = vi.fn<() => Promise<boolean>>();
+// Issue #2170: production calls `getLockInfo` to name the holder. Without it
+// on the mock the call THREW, the best-effort catch swallowed it, and the
+// assertion below still matched the degraded wording — so the test certified
+// nothing about this change.
+const mockGetLockInfo = vi.fn<() => Promise<unknown>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => ({
     acquireLock: mockAcquireLock,
+    getLockInfo: mockGetLockInfo,
     releaseLock: mockReleaseLock,
   })),
 }));

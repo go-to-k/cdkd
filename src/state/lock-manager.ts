@@ -302,12 +302,21 @@ export class LockManager {
       }
 
       const bodyString = await response.Body.transformToString();
-      // `?? {}`: `JSON.parse('null')` is `null`, and reading `.owner` off it
-      // threw inside this `try` -- the catch rewrapped it as a `LockError`, so
-      // a lock.json containing `null` turned "no lock" into a hard failure for
+      // A body that parses to `null` (or to any non-object) is NOT a lock.
+      // Reading `.owner` off it threw inside this `try` and the catch rewrapped
+      // it as a `LockError`, turning "no lock" into a hard failure for
       // `isLocked`, `state orphan`, `state list` and `acquireLock`'s
-      // PreconditionFailed branch. Pre-delta that read as absent.
-      const parsed = (JSON.parse(bodyString) ?? {}) as LockInfo;
+      // PreconditionFailed branch. Returning `null` — rather than an empty
+      // `LockInfo`, which a first cut did — is what actually restores the
+      // pre-existing behaviour: `isLocked` is `lockInfo !== null`, so an empty
+      // object would report the stack as LOCKED and make `state orphan` refuse
+      // to remove a record whose lock.json is `null`.
+      const raw: unknown = JSON.parse(bodyString);
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+        this.logger.debug(`Lock file for stack ${stackName} is not an object; treating as absent`);
+        return null;
+      }
+      const parsed = raw as LockInfo;
       // Sanitize the DISPLAY fields HERE, at the single point every reader
       // goes through (issue #2170). `owner` and `operation` are attacker-
       // influenced for anyone who can write the state bucket, and they reach a

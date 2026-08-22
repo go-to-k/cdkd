@@ -324,7 +324,22 @@ describe('LockManager', () => {
 
       const result = await lockManager.getLockInfo('test-stack', 'us-east-1');
 
-      expect(result?.owner).toBe('');
+      // NULL, not an empty LockInfo: `isLocked` is `lockInfo !== null`, so an
+      // empty object would report the stack as LOCKED and make `state orphan`
+      // refuse to remove a record whose lock.json is `null`.
+      expect(result).toBeNull();
+    });
+
+    it('reports a null-bodied lock as UNLOCKED, matching pre-change behaviour', async () => {
+      // `isLocked` is `getLockInfo(...) !== null`, so this is the assertion
+      // that actually pins the semantics — the first cut returned an empty
+      // `LockInfo` and silently flipped `state orphan` into refusing to remove
+      // a record whose lock.json is `null`.
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve('null') },
+      });
+
+      expect(await lockManager.isLocked('test-stack', 'us-east-1')).toBe(false);
     });
 
     it('should return null when no lock exists', async () => {
