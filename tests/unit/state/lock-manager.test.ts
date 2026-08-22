@@ -268,6 +268,80 @@ describe('LockManager', () => {
       expect(result).toEqual(lockInfo);
     });
 
+    it('sanitizes owner / operation at the SOURCE so every reader inherits it', async () => {
+      // Issue #2170 round 3: `owner` and `operation` are attacker-influenced
+      // for anyone who can write the state bucket, and they reach FIVE readers
+      // — a TTY, two `LockError` messages, the contention message, and
+      // `state orphan`'s warning. The first pass sanitized ONE of them, which
+      // is why the rule now lives HERE rather than at each reader: a reader
+      // added later inherits it instead of inheriting nothing.
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({
+                owner: 'alice@host:1\r\u001b[2KFORGED: run rm -rf /',
+                operation: 'deploy\u2028also-forged',
+                expiresAt: Date.now() + 60_000,
+              })
+            ),
+        },
+      });
+
+      const result = await lockManager.getLockInfo('test-stack', 'us-east-1');
+
+      expect(result?.owner).not.toContain('\r');
+      expect(result?.owner).not.toContain('\u001b');
+      expect(result?.operation).not.toContain('\u2028');
+      // The readable text survives — this is sanitization, not redaction.
+      expect(result?.owner).toContain('alice@host:1');
+      expect(result?.operation).toContain('deploy');
+    });
+
+    it('renders an ABSENT owner as empty rather than the word "undefined"', async () => {
+      // The parse is an unvalidated `as LockInfo`. `String(undefined)` is a
+      // TRUTHY `'undefined'`, so a consumer keying "is there a holder?" on the
+      // value printed `held by undefined` AND certified the holder as live.
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () => Promise.resolve(JSON.stringify({ expiresAt: Date.now() })),
+        },
+      });
+
+      const result = await lockManager.getLockInfo('test-stack', 'us-east-1');
+
+      expect(result?.owner).toBe('');
+    });
+
+    it('reads a `null` lock body as ABSENT, not as a hard failure', async () => {
+      // Round-4 regression: `JSON.parse('null')` is `null`, so reading `.owner`
+      // off it threw INSIDE the try and the catch rewrapped it as a LockError
+      // — turning "no lock" into a hard failure for `isLocked`, `state orphan`,
+      // `state list` and `acquireLock`'s PreconditionFailed branch.
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve('null') },
+      });
+
+      const result = await lockManager.getLockInfo('test-stack', 'us-east-1');
+
+      // NULL, not an empty LockInfo: `isLocked` is `lockInfo !== null`, so an
+      // empty object would report the stack as LOCKED and make `state orphan`
+      // refuse to remove a record whose lock.json is `null`.
+      expect(result).toBeNull();
+    });
+
+    it('reports a null-bodied lock as UNLOCKED, matching pre-change behaviour', async () => {
+      // `isLocked` is `getLockInfo(...) !== null`, so this is the assertion
+      // that actually pins the semantics — the first cut returned an empty
+      // `LockInfo` and silently flipped `state orphan` into refusing to remove
+      // a record whose lock.json is `null`.
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve('null') },
+      });
+
+      expect(await lockManager.isLocked('test-stack', 'us-east-1')).toBe(false);
+    });
+
     it('should return null when no lock exists', async () => {
       const noSuchKeyError = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(noSuchKeyError);
@@ -370,6 +444,24 @@ describe('LockManager', () => {
       expect(s3Client.send).toHaveBeenCalledTimes(2);
     });
 
+    it('deletes a lock whose body cdkd cannot read (issue #2170)', async () => {
+      // The contract is that a stuck lock never makes a state record
+      // unremovable. A body of `42` reads as absent through `getLockInfo` while
+      // still failing every `IfNoneMatch: '*'` acquire, so gating the delete on
+      // a readable lock broke that contract in the other direction.
+      s3Client.send
+        .mockResolvedValueOnce({ Body: { transformToString: () => Promise.resolve('42') } })
+        .mockResolvedValueOnce({});
+
+      await lockManager.forceReleaseLock('test-stack', 'us-east-1');
+
+      const deletes = s3Client.send.mock.calls.filter(
+        (c: unknown[]) =>
+          (c[0] as { constructor: { name: string } }).constructor.name === 'DeleteObjectCommand'
+      );
+      expect(deletes, 'an unreadable lock body must still be deleted').toHaveLength(1);
+    });
+
     it('should release expired lock', async () => {
       const expiredLock: LockInfo = {
         owner: 'old-user@host:789',
@@ -388,14 +480,19 @@ describe('LockManager', () => {
       expect(s3Client.send).toHaveBeenCalledTimes(2);
     });
 
-    it('should do nothing when no lock exists', async () => {
+    it('still issues the DELETE when no lock exists (issue #2170)', async () => {
       const noSuchKeyError = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(noSuchKeyError);
 
       await lockManager.forceReleaseLock('test-stack', 'us-east-1');
 
-      // Only GetObject was called, no DeleteObject
-      expect(s3Client.send).toHaveBeenCalledTimes(1);
+      // The DELETE is unconditional now (issue #2170): `getLockInfo` returns
+      // `null` for BOTH an absent key and an UNREADABLE body, and gating on it
+      // meant a lock.json holding `42` could never be force-released while it
+      // still failed every acquire. A DELETE against a key that is genuinely
+      // absent is an idempotent no-op, which is the cheaper side to be wrong on
+      // for a command the user ran explicitly.
+      expect(s3Client.send).toHaveBeenCalledTimes(2);
     });
   });
 

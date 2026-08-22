@@ -16,6 +16,10 @@ import {
 } from '../../provisioning/final-snapshot.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { LockManager } from '../../state/lock-manager.js';
+import {
+  buildLockContentionMessage,
+  forceQuitRecoveryClause,
+} from '../../state/lock-contention-message.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import {
   IMPLICIT_DELETE_DEPENDENCIES,
@@ -80,6 +84,15 @@ export interface DestroyRunnerContext {
 
   /** Caller's --profile, if any. */
   profile?: string;
+
+  /**
+   * Caller's `--state-prefix`. Threaded for the recovery hints alone (issue
+   * #2170): `cdkd force-unlock` re-resolves the prefix from its own default,
+   * so a destroy run under `--state-prefix team-a` was suggesting a command
+   * that would force-delete a DIFFERENT team's lock in a shared bucket -- the
+   * very failure #2170 exists to close, on the command that most needs it.
+   */
+  statePrefix?: string;
 
   /** State bucket — needed for custom-resource ResponseURL pre-signing. */
   stateBucket: string;
@@ -412,10 +425,135 @@ export async function runDestroyForStack(
   // recorded one.
   const regionForState = state.region ?? ctx.baseRegion;
   if (resourceCount === 0) {
+    // Issue #2171: this used to delete the state record with NO lock at all,
+    // sitting well above the acquire further down. A record reads as empty for
+    // exactly one interval that is not idle — the start of a concurrent
+    // `cdkd deploy`, before its first resource lands — so the unlocked delete
+    // removed the state file out from under a live deploy holding the lock.
+    //
+    // Take the lock, then RE-READ: the snapshot this function was handed was
+    // taken by the caller before any of this, so emptiness has to be
+    // re-established under the lock rather than inherited from it.
     logger.info(`Stack ${stackName} has no resources, cleaning up state...`);
-    await ctx.stateBackend.deleteState(stackName, regionForState);
-    logger.info(`${green('✓')} State deleted`);
+    // Issue #1348's rule applies to THIS acquire too, and the fence in
+    // `tests/unit/cli/signal-before-lock-ordering.test.ts` caught the first
+    // cut of this fix without one: register the handler BEFORE acquiring, or a
+    // Ctrl-C landing between the acquire and the release strands the lock for
+    // its full TTL. The window is short but it covers an S3 read and two S3
+    // writes. `lockHeld` gates the release exactly as the main path's does, so
+    // a signal arriving before the acquire returns cannot delete a lock this
+    // process does not own.
+    let emptyLockHeld = false;
+    let emptyInterrupted = false;
+    const emptySigintHandler = (): void => {
+      // TWO-SIGNAL contract, matching the main handler below. The first cut of
+      // this branch force-quit on the FIRST signal, which is a REGRESSION and
+      // not merely impolite: a nested-stack child reaches here through
+      // `NestedStackProvider.delete`, listeners fire in registration order, so
+      // the PARENT's handler sets its drain flag and returns and then this one
+      // would kill the process -- the parent's `finally` never runs and ITS
+      // lock is stranded for the full TTL. Recording the signal and letting
+      // three S3 round-trips finish is both graceful and correct here.
+      if (emptyInterrupted) {
+        if (emptyLockHeld) {
+          void ctx.lockManager.releaseLock(stackName, regionForState).catch(() => {
+            /* best-effort: the recovery line below is the real guarantee */
+          });
+          process.stderr.write(
+            `\nForce-quit: stack lock may not be released.` +
+              `${forceQuitRecoveryClause(stackName, regionForState, {
+                profile: ctx.profile,
+                stateBucket: ctx.stateBucket,
+                statePrefix: ctx.statePrefix,
+              })}\n`
+          );
+        }
+        process.exit(130);
+      }
+      emptyInterrupted = true;
+      // stderr, NOT `logger.info`, for two reasons the main handler already
+      // acts on: `logger.info` reaches stdout and can EPIPE, and a throw inside
+      // a SIGINT listener is UNCAUGHT -- the process would die holding the lock
+      // with no recovery line; and under `cdkd deploy` (nested-stack removal)
+      // the logger writes into the per-stack buffer that is only flushed at
+      // stack end, so the first Ctrl-C would produce no feedback at all.
+      try {
+        process.stderr.write(
+          `\nInterrupt received - finishing the state cleanup for ${stackName} ` +
+            `(press Ctrl-C again to force-quit)\n`
+        );
+      } catch {
+        /* the drain itself is what matters; the notice is best-effort */
+      }
+    };
+    process.setMaxListeners(Math.max(process.getMaxListeners(), 100));
+    process.on('SIGINT', emptySigintHandler);
+    let emptyAcquired: boolean;
+    try {
+      emptyAcquired = await ctx.lockManager.acquireLock(
+        stackName,
+        regionForState,
+        undefined,
+        'destroy'
+      );
+    } catch (acquireErr) {
+      // `acquireLock` THROWS (a LockError) on an S3 failure, as distinct from
+      // returning `false` on contention -- and only the boolean path below
+      // removed the listener, so a 5xx / AccessDenied leaked a handler that
+      // then pre-empts every later drain. Both sibling sites already wrap
+      // their acquire for exactly this.
+      process.removeListener('SIGINT', emptySigintHandler);
+      throw acquireErr;
+    }
+    if (!emptyAcquired) {
+      process.removeListener('SIGINT', emptySigintHandler);
+      throw new Error(
+        await buildLockContentionMessage({
+          lockManager: ctx.lockManager,
+          stackName,
+          region: regionForState,
+          recovery: {
+            profile: ctx.profile,
+            stateBucket: ctx.stateBucket,
+            statePrefix: ctx.statePrefix,
+          },
+        })
+      );
+    }
+    emptyLockHeld = true;
+    try {
+      const recheck = await ctx.stateBackend.getState(stackName, regionForState);
+      const stillEmpty = !recheck || Object.keys(recheck.state.resources).length === 0;
+      if (!stillEmpty) {
+        // A concurrent writer populated the record between the caller's read
+        // and this lock. Deleting now would drop resources cdkd tracks, so
+        // refuse and let the user re-run against the record as it now stands.
+        throw new Error(
+          `Stack '${stackName}' (${regionForState}) was empty when this run started but ` +
+            `now has ${Object.keys(recheck.state.resources).length} resource(s) — another ` +
+            `cdkd process deployed into it. Re-run the destroy to act on the current state.`
+        );
+      }
+      await ctx.stateBackend.deleteState(stackName, regionForState);
+      logger.info(`${green('✓')} State deleted`);
+    } finally {
+      // Release BEFORE unregistering, matching the strong-ref path below: the
+      // reverse order leaves the lock held with no handler, so a Ctrl-C in the
+      // release round-trip becomes a 30-minute stranded lock.
+      try {
+        await ctx.lockManager.releaseLock(stackName, regionForState);
+      } catch (releaseErr) {
+        logger.warn(
+          `Failed to release lock after empty-state cleanup: ${releaseErr instanceof Error ? releaseErr.message : String(releaseErr)}`
+        );
+      } finally {
+        process.removeListener('SIGINT', emptySigintHandler);
+      }
+    }
     result.skippedEmpty = true;
+    // A first Ctrl-C here drains rather than exiting, so the caller must be
+    // told -- otherwise `destroy --all` walks on to the next stack.
+    result.interrupted ||= emptyInterrupted;
     return result;
   }
 
@@ -615,8 +753,17 @@ export async function runDestroyForStack(
           /* best-effort: the recovery line below is the real guarantee */
         });
         process.stderr.write(
-          `\nForce-quit: stack lock may not be released. If the next run reports a lock, run: ` +
-            `cdkd force-unlock ${stackName}\n`
+          `\nForce-quit: stack lock may not be released.` +
+            // Region-qualified for the same reason the contention messages are
+            // (issue #2170), and it matters MORE here: by this point
+            // `deleteState` may already have removed the record `force-unlock`
+            // would otherwise infer the region from. Through the shared clause
+            // so a suppressed command cannot leave the banner ending in `run: `.
+            `${forceQuitRecoveryClause(stackName, regionForState, {
+              profile: ctx.profile,
+              stateBucket: ctx.stateBucket,
+              statePrefix: ctx.statePrefix,
+            })}\n`
         );
       }
       process.exit(130);
@@ -666,14 +813,22 @@ export async function runDestroyForStack(
       'destroy'
     );
     if (!acquired) {
-      // Plain `Error`, matching the five sibling sites (import / orphan / state
-      // / drift) and the `cdkd export` precedent this mirrors, so identical
-      // contention surfaces the same way across every command (issue #2161).
+      // Plain `Error`, matching the sibling sites (import / orphan / state /
+      // drift / export), so identical contention surfaces the same way across
+      // every command (issue #2161). The text — including the holder's
+      // identity and the fully-qualified recovery command — is built in one
+      // place so the nine sites cannot drift apart again (issue #2170).
       throw new Error(
-        `Could not acquire lock for stack '${stackName}' (${regionForState}) — ` +
-          `another cdkd process holds it. Wait for it to finish, or run ` +
-          `'cdkd force-unlock ${stackName} --stack-region ${regionForState}' if you are ` +
-          `certain no other process is active.`
+        await buildLockContentionMessage({
+          lockManager: ctx.lockManager,
+          stackName,
+          region: regionForState,
+          recovery: {
+            profile: ctx.profile,
+            stateBucket: ctx.stateBucket,
+            statePrefix: ctx.statePrefix,
+          },
+        })
       );
     }
   } catch (error) {

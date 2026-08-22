@@ -459,6 +459,7 @@ export async function rollbackCommand(
               exportIndexStore: setup.exportIndexStore,
               destroyOptions: {
                 ...(options.profile && { profile: options.profile }),
+                statePrefix: options.statePrefix,
               },
             },
             () =>

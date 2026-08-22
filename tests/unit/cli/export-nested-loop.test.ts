@@ -381,6 +381,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', ()
     };
 
     const result = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
       rootStackName: 'Root',
       rootRegion: 'us-east-1',
       rootStackInfoNestedTemplates: {},
@@ -527,6 +528,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — parent + leaf', () => {
     };
 
     const result = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
       rootStackName: 'Root',
       rootRegion: 'us-east-1',
       rootStackInfoNestedTemplates: { Child: childPath },
@@ -705,6 +707,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — parent + leaf', () => {
     };
 
     const result = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
       rootStackName: 'Root',
       rootRegion: 'us-east-1',
       rootStackInfoNestedTemplates: { Child: childPath },
@@ -771,6 +774,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
     const { client: cfnClient, calls } = buildCfnClient();
 
     const result = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
       rootStackName: 'Root',
       rootRegion: 'us-east-1',
       rootStackInfoNestedTemplates: {},
@@ -825,6 +829,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
 
     await expect(
       runPerStackImportLoop({
+        lockRecovery: { stateBucket: 'bkt' },
         rootStackName: 'Root',
         rootRegion: 'us-east-1',
         rootStackInfoNestedTemplates: {},
@@ -872,6 +877,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
 
     await expect(
       runPerStackImportLoop({
+        lockRecovery: { stateBucket: 'bkt' },
         rootStackName: 'Root',
         rootRegion: 'us-east-1',
         rootStackInfoNestedTemplates: {},
@@ -968,6 +974,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
 
       await expect(
         runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
           rootStackName: 'Root',
           rootRegion: 'us-east-1',
           rootStackInfoNestedTemplates: { Child: childPath },
@@ -1069,6 +1076,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
 
       await expect(
         runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
           rootStackName: 'Root',
           rootRegion: 'us-east-1',
           rootStackInfoNestedTemplates: { Child: childPath },
@@ -1187,6 +1195,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
 
       await expect(
         runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
           rootStackName: 'Root',
           rootRegion: 'us-east-1',
           rootStackInfoNestedTemplates: { Child: childPath },
@@ -1350,6 +1359,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — 3-level tree (post-Phase-
       };
 
       const result = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
         rootStackName: 'Root',
         rootRegion: 'us-east-1',
         rootStackInfoNestedTemplates: { Middle: middlePath },
@@ -1510,6 +1520,7 @@ describe('runPerStackImportLoop (issue #464 PR B2) — Phase 2 UPDATE per stack'
       };
 
       const result = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
         rootStackName: 'Root',
         rootRegion: 'us-east-1',
         rootStackInfoNestedTemplates: { Child: childPath },
@@ -1720,6 +1731,7 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
     };
 
     const result = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
       rootStackName: 'Root',
       rootRegion: 'us-east-1',
       rootStackInfoNestedTemplates: { Child: childPath },
@@ -1817,6 +1829,7 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
     };
 
     const result = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
       rootStackName: 'Root',
       rootRegion: 'us-east-1',
       rootStackInfoNestedTemplates: { Child: childPath },
@@ -1877,6 +1890,7 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
 
     await expect(
       runPerStackImportLoop({
+        lockRecovery: { stateBucket: 'bkt' },
         rootStackName: 'Root',
         rootRegion: 'us-east-1',
         rootStackInfoNestedTemplates: {},
@@ -1922,6 +1936,7 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
     const { client: cfnClient, calls } = buildCfnClient();
 
     const result = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
       rootStackName: 'Root',
       rootRegion: 'us-east-1',
       rootStackInfoNestedTemplates: {},
@@ -2045,6 +2060,7 @@ describe('runPerStackImportLoop (issue #1791) — deps.ec2Client hand-off', () =
     const { tree, stateBackend, cfnClient, calls, lockManager } = buildPreheal();
 
     const result = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
       rootStackName: 'Root',
       rootRegion: 'us-east-1',
       rootStackInfoNestedTemplates: {},
@@ -2089,6 +2105,7 @@ describe('runPerStackImportLoop (issue #1791) — deps.ec2Client hand-off', () =
 
     await expect(
       runPerStackImportLoop({
+        lockRecovery: { stateBucket: 'bkt' },
         rootStackName: 'Root',
         rootRegion: 'us-east-1',
         rootStackInfoNestedTemplates: {},

@@ -138,10 +138,16 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 }));
 
 const mockAcquireLock = vi.fn<() => Promise<boolean>>();
+// Issue #2170: production calls `getLockInfo` to name the holder. Without it
+// on the mock the call THREW, the best-effort catch swallowed it, and the
+// assertion below still matched the degraded wording — so the test certified
+// nothing about this change.
+const mockGetLockInfo = vi.fn<() => Promise<unknown>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => ({
     acquireLock: mockAcquireLock,
+    getLockInfo: mockGetLockInfo,
     releaseLock: mockReleaseLock,
   })),
 }));
@@ -324,10 +330,23 @@ describe('cdkd import', () => {
       import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
     }));
     mockAcquireLock.mockResolvedValue(false);
+    mockGetLockInfo.mockResolvedValue({
+      owner: 'other@host:1',
+      operation: 'deploy',
+      expiresAt: Date.now() + 600_000,
+    });
 
     await expect(runImport(['import', '--app', 'x', '--yes'])).rejects.toThrow();
     // The LOCK error surfaced (not some other abort).
-    expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toMatch(/Could not acquire lock/);
+    const importMsg = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(importMsg).toMatch(/Could not acquire lock/);
+    // The holder is NAMED and the command is QUALIFIED (issue #2170) -- the
+    // bare `/Could not acquire lock/` above was true before this change too.
+    expect(importMsg).toContain('held by other@host:1');
+    // `--state-bucket` is what `recovery` supplies; `--stack-region` does NOT,
+    // so asserting only the region left `recovery: {...}` droppable — the
+    // probe for that came back green until this line named the bucket.
+    expect(importMsg).toMatch(/cdkd force-unlock \S+ --stack-region \S+ --state-bucket test-bucket/);
     expect(mockSaveState).not.toHaveBeenCalled();
     expect(mockReleaseLock).not.toHaveBeenCalled();
   });

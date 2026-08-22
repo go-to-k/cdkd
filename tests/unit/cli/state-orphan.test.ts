@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const errorSpy = vi.hoisted(() => vi.fn());
+const warnSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
@@ -8,7 +9,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: infoSpy,
-    warn: vi.fn(),
+    warn: warnSpy,
     error: errorSpy,
     child: () => ({
       debug: vi.fn(),
@@ -52,10 +53,14 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 
 const mockIsLocked = vi.fn<(stackName: string, region?: string) => Promise<boolean>>();
 const mockForceReleaseLock = vi.fn<(stackName: string, region?: string) => Promise<void>>();
+// Issue #2171: the force-release below is unconditional by design, so the only
+// useful signal is naming the owner at the moment it destroys a LIVE lock.
+const mockGetLockInfo = vi.fn<(stackName: string, region?: string) => Promise<unknown>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => ({
     isLocked: mockIsLocked,
     forceReleaseLock: mockForceReleaseLock,
+    getLockInfo: mockGetLockInfo,
   })),
 }));
 
@@ -108,6 +113,9 @@ describe('cdkd state orphan', () => {
     mockDeleteState.mockResolvedValue();
     mockListStacks.mockReset();
     mockIsLocked.mockReset();
+    warnSpy.mockReset();
+    mockGetLockInfo.mockReset();
+    mockGetLockInfo.mockResolvedValue(null);
     mockForceReleaseLock.mockReset();
     mockForceReleaseLock.mockResolvedValue();
     mockVerifyBucketExists.mockReset();
@@ -253,5 +261,127 @@ describe('cdkd state orphan', () => {
     expect(mockDeleteState).not.toHaveBeenCalledWith('B', 'us-east-1');
     expect(mockForceReleaseLock).toHaveBeenCalledWith('A', 'us-east-1');
     expect(mockForceReleaseLock).not.toHaveBeenCalledWith('B', 'us-east-1');
+  });
+
+  describe('live-lock warning before the force-release (issue #2171)', () => {
+    // `forceReleaseLock` takes no lock of its own and deletes whatever is
+    // there, including an in-flight deploy's. That is deliberate — a stuck
+    // lock must not make a state record unremovable — but it was SILENT, and
+    // the write it enables has already happened by the time anyone notices.
+    it('names the owner and operation when the lock it destroys is still live', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockIsLocked.mockResolvedValue(false);
+      mockGetLockInfo.mockResolvedValue({
+        owner: 'alice@host:4242',
+        operation: 'deploy',
+        expiresAt: Date.now() + 15 * 60_000,
+      });
+
+      await runStateOrphan(['orphan', 'MyStack', '--yes']);
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toMatch(/Force-releasing a LIVE lock/);
+      expect(warned).toContain('alice@host:4242');
+      expect(warned).toContain('operation: deploy');
+      // The removal the user asked for still happens — this is a warning, not
+      // a refusal.
+      expect(mockForceReleaseLock).toHaveBeenCalledWith('MyStack', 'us-east-1');
+      expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
+    });
+
+    it('passes the holder through unchanged — sanitization is NOT re-done here', async () => {
+      // `LockManager.getLockInfo` sanitizes `owner` / `operation` at the source
+      // so all five readers inherit it (issue #2170 round 3). This reader must
+      // therefore NOT carry a second spelling of the rule — that asymmetry is
+      // what the source fix removed. The source-level fence lives in
+      // `tests/unit/state/lock-manager.test.ts`, where the real `getLockInfo`
+      // runs; a mock here would only be testing the mock.
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockIsLocked.mockResolvedValue(false);
+      mockGetLockInfo.mockResolvedValue({
+        owner: 'alice@host:1',
+        operation: 'deploy',
+        expiresAt: Date.now() + 60_000,
+      });
+
+      await runStateOrphan(['orphan', 'MyStack', '--yes']);
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('held by alice@host:1');
+      expect(warned).toContain('operation: deploy');
+    });
+
+    it('sanitizes the REGION too — it is an S3 key segment', async () => {
+      // Round 4: the region was still hand-interpolated raw, one clause from a
+      // sanitized stack name in the same sentence. `listStacks` derives it from
+      // an S3 key, and S3 keys admit newlines.
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1\nFORGED' }]);
+      mockIsLocked.mockResolvedValue(false);
+      mockGetLockInfo.mockResolvedValue({
+        owner: 'alice@host:1',
+        expiresAt: Date.now() + 60_000,
+      });
+
+      await runStateOrphan(['orphan', 'MyStack', '--yes']);
+
+      const lines = warnSpy.mock.calls.map((c) => String(c[0]));
+      const warned = lines.find((l) => l.includes('Force-releasing'));
+      expect(warned, 'the live-lock warning did not fire').toBeDefined();
+      expect(warned).not.toContain('\n');
+      expect(warned).toContain('FORGED');
+    });
+
+    it('withholds the still-running claim for an unnamed holder, keeping the rest', async () => {
+      // Agrees with lock-contention-message.ts: an unusable owner withholds
+      // the CERTIFICATION, not the fact that the lock has not expired.
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockIsLocked.mockResolvedValue(false);
+      mockGetLockInfo.mockResolvedValue({ owner: '', expiresAt: Date.now() + 60_000 });
+
+      await runStateOrphan(['orphan', 'MyStack', '--yes']);
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('held by an unnamed holder');
+      expect(warned).not.toContain('That process is still running');
+      expect(warned).toContain('has not expired');
+    });
+
+    it('stays quiet for an EXPIRED lock', async () => {
+      // An expired lock is exactly what force-unlock exists for; warning about
+      // it would train the user to ignore the line that matters.
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockIsLocked.mockResolvedValue(false);
+      mockGetLockInfo.mockResolvedValue({ owner: 'bob@host:1', expiresAt: Date.now() - 60_000 });
+
+      await runStateOrphan(['orphan', 'MyStack', '--yes']);
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).not.toMatch(/Force-releasing a LIVE lock/);
+      expect(mockForceReleaseLock).toHaveBeenCalledWith('MyStack', 'us-east-1');
+    });
+
+    it('stays quiet when there is no lock at all', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockIsLocked.mockResolvedValue(false);
+      mockGetLockInfo.mockResolvedValue(null);
+
+      await runStateOrphan(['orphan', 'MyStack', '--yes']);
+
+      expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(
+        /Force-releasing a LIVE lock/
+      );
+    });
+
+    it('never blocks the removal on a failing lock read', async () => {
+      // Best-effort in both directions: the user asked for the record to go.
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockIsLocked.mockResolvedValue(false);
+      mockGetLockInfo.mockRejectedValue(new Error('AccessDenied'));
+
+      await runStateOrphan(['orphan', 'MyStack', '--yes']);
+
+      expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
+      expect(mockForceReleaseLock).toHaveBeenCalledWith('MyStack', 'us-east-1');
+    });
   });
 });

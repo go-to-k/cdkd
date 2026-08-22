@@ -10,6 +10,7 @@ import type { LockInfo } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { LockError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import { hostname } from 'os';
@@ -301,7 +302,36 @@ export class LockManager {
       }
 
       const bodyString = await response.Body.transformToString();
-      const lockInfo = JSON.parse(bodyString) as LockInfo;
+      // A body that parses to `null` (or to any non-object) is NOT a lock.
+      // Reading `.owner` off it threw inside this `try` and the catch rewrapped
+      // it as a `LockError`, turning "no lock" into a hard failure for
+      // `isLocked`, `state orphan`, `state list` and `acquireLock`'s
+      // PreconditionFailed branch. Returning `null` — rather than an empty
+      // `LockInfo`, which a first cut did — is what actually restores the
+      // pre-existing behaviour: `isLocked` is `lockInfo !== null`, so an empty
+      // object would report the stack as LOCKED and make `state orphan` refuse
+      // to remove a record whose lock.json is `null`.
+      const raw: unknown = JSON.parse(bodyString);
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+        this.logger.debug(`Lock file for stack ${stackName} is not an object; treating as absent`);
+        return null;
+      }
+      const parsed = raw as LockInfo;
+      // Sanitize the DISPLAY fields HERE, at the single point every reader
+      // goes through (issue #2170). `owner` and `operation` are attacker-
+      // influenced for anyone who can write the state bucket, and they reach a
+      // TTY, a thrown `LockError`, and the persisted deployment-events store —
+      // five readers, of which the first pass at this fix sanitized ONE.
+      // Doing it per-reader is how the next reader inherits nothing.
+      //
+      // The parse is an unvalidated `as LockInfo`, so `displaySafe` also
+      // absorbs a non-string / absent value rather than letting `.replace`
+      // throw further downstream.
+      const lockInfo: LockInfo = {
+        ...parsed,
+        owner: displaySafe(parsed.owner),
+        ...(parsed.operation !== undefined && { operation: displaySafe(parsed.operation) }),
+      };
 
       this.logger.debug(`Lock info for stack: ${stackName}:`, lockInfo);
 
@@ -374,20 +404,28 @@ export class LockManager {
    * `{prefix}/{stackName}/lock.json` file.
    */
   async forceReleaseLock(stackName: string, region: string | undefined): Promise<void> {
-    const lockInfo = await this.getLockInfo(stackName, region);
-
-    if (!lockInfo) {
-      this.logger.warn(
-        `No lock to force release for stack: ${stackName}${region ? ` (${region})` : ''}`
-      );
-      return;
-    }
+    // The DELETE is UNCONDITIONAL, and that is this method's whole contract: a
+    // stuck lock must never make a state record unremovable. `getLockInfo` is
+    // consulted for the LOG LINE only. Gating the delete on it (which a
+    // previous revision did, once `getLockInfo` began returning `null` for an
+    // unreadable body) breaks the contract in the other direction -- a
+    // lock.json holding `42` or `[]` reads as absent while still failing every
+    // `IfNoneMatch: '*'` acquire, so `cdkd force-unlock` would report "no lock"
+    // and delete nothing, forever. A DELETE against a key that genuinely is
+    // not there is an idempotent no-op, so the cost of always issuing it is one
+    // API call on a command the user ran explicitly.
+    const where = `${stackName}${region ? ` (${region})` : ''}`;
+    const lockInfo = await this.getLockInfo(stackName, region).catch(() => null);
 
     this.logger.warn(
-      `Force releasing lock for stack: ${stackName}${region ? ` (${region})` : ''}, ` +
-        `owner: ${lockInfo.owner}` +
-        `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +
-        `, expired: ${this.isLockExpired(lockInfo)}`
+      lockInfo
+        ? `Force releasing lock for stack: ${where}, ` +
+            `owner: ${lockInfo.owner}` +
+            `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +
+            `, expired: ${this.isLockExpired(lockInfo)}`
+        : `Force releasing lock for stack: ${where} (no lock body read — ` +
+            `absent or unparseable; deleting the object either way, since a ` +
+            `lock cdkd cannot read is a lock nothing else can clear)`
     );
 
     await this.deleteLock(stackName, region);

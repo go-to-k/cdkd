@@ -21,6 +21,12 @@ import { getLogger } from '../../utils/logger.js';
 import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
+import { displaySafe } from '../../utils/display-safe.js';
+import { UNRENDERABLE, buildForceUnlockCommand } from '../../state/lock-contention-message.js';
+import {
+  buildLockContentionMessage,
+  type LockRecoveryContext,
+} from '../../state/lock-contention-message.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -1039,10 +1045,41 @@ async function stateOrphanCommand(
         for (const target of targets) {
           const locked = await setup.lockManager.isLocked(stackName, target.region);
           if (locked) {
-            const where = target.region ?? '(legacy)';
+            // The REGION needs the same treatment as the stack name beside
+            // it (issue #2170 round 4): it is an S3 key segment or a legacy
+            // state body, so a planted `\n` forged a line in this very
+            // sentence — the provenance this file already cites two lines down
+            // as the reason to route the hint through the shared builder.
+            const where = target.region
+              ? displaySafe(target.region, { asciiOnly: true }) || UNRENDERABLE
+              : '(legacy)';
             throw new Error(
-              `Stack '${stackName}' (${where}) is locked. ` +
-                `Run 'cdkd force-unlock ${stackName}${target.region ? ` --stack-region ${target.region}` : ''}' first, ` +
+              `Stack '${displaySafe(stackName, { asciiOnly: true })}' (${where}) is locked. ` +
+                // Through the shared builder rather than hand-interpolated
+                // (issue #2170): `target.region` comes from an S3 key segment
+                // or a legacy state body, so a raw `\n` here forged a second
+                // instruction line INSIDE the quotes. It also picks up the
+                // bucket / prefix / profile qualification this hint lacked.
+                // ONE call. A legacy lock key has no region, which the
+                // builder expresses as `undefined` — passing `''` made its
+                // emptiness guard suppress the whole command, so that branch
+                // ALWAYS fell through to a hand-built UNQUOTED fallback that
+                // also dropped --profile / --state-bucket, i.e. exactly the
+                // wrong-lock-object harm this hint exists to prevent.
+                `Run: ${
+                  buildForceUnlockCommand(stackName, target.region, {
+                    profile: options.profile,
+                    stateBucket: setup.bucket,
+                    statePrefix: options.statePrefix,
+                  }) ||
+                  // The builder suppresses for TWO reasons now — an
+                  // unrenderable value AND one sanitization ALTERED — so a
+                  // `<unrenderable>` placeholder would contradict the same
+                  // sentence above, which renders `my stack` perfectly well.
+                  `a command cdkd cannot show safely: the recorded name or ` +
+                    `region would not survive a command line intact, so inspect ` +
+                    `the lock object directly`
+                } first, ` +
                 `or pass --force to remove anyway.`
             );
           }
@@ -1077,11 +1114,18 @@ async function stateOrphanCommand(
       // pass `undefined` to delete the legacy key; deleteState handles both.
       for (const target of targets) {
         if (target.region) {
+          // Issue #2171: this force-release takes no lock of its own and
+          // deletes whatever is there, including a LIVE one belonging to an
+          // in-flight deploy. That is deliberate — a stuck lock must not make
+          // a state record unremovable — but it was silent, so say what is
+          // being destroyed. Best-effort: a failed read must not block the rm.
+          await warnOnLiveForeignLock(setup.lockManager, stackName, target.region, logger);
           await setup.stateBackend.deleteState(stackName, target.region);
           await setup.lockManager.forceReleaseLock(stackName, target.region);
         } else {
           // Pure legacy record without a region body field: just sweep the
           // legacy key (which is what the no-region forceReleaseLock targets).
+          await warnOnLiveForeignLock(setup.lockManager, stackName, undefined, logger);
           await setup.lockManager.forceReleaseLock(stackName, undefined);
         }
         logger.info(`✓ Removed state for stack: ${formatStackRef(target)}`);
@@ -1326,6 +1370,7 @@ async function stateDestroyCommand(
             exportIndexStore: setup.exportIndexStore,
             destroyOptions: {
               ...(options.profile && { profile: options.profile }),
+              statePrefix: options.statePrefix,
               ...(options.removeProtection === true && { removeProtection: true }),
               ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
               ...(options.resourceWarnAfter?.globalMs !== undefined && {
@@ -1351,6 +1396,7 @@ async function stateDestroyCommand(
               baseRegion: setup.region,
               ...(options.profile && { profile: options.profile }),
               stateBucket: setup.bucket,
+              statePrefix: options.statePrefix,
               // --yes covers both the --all batch prompt above (already consumed)
               // and the per-stack prompt inside the runner. Per-stack prompts are
               // skipped when `options.yes` is set OR `--all` was set (the user
@@ -1975,7 +2021,15 @@ async function stateRefreshObservedCommand(
         setup.stateBackend,
         setup.lockManager,
         providerRegistry,
-        { dryRun: options.dryRun ?? false, logger }
+        {
+          dryRun: options.dryRun ?? false,
+          logger,
+          lockRecovery: {
+            profile: options.profile,
+            stateBucket: setup.bucket,
+            statePrefix: options.statePrefix,
+          },
+        }
       );
       totalRefreshed += counts.refreshed;
       totalUnsupported += counts.unsupported;
@@ -2014,6 +2068,64 @@ async function stateRefreshObservedCommand(
 const NO_RECORDED_SECRETS: RecordedSecretValues = new Map();
 
 /**
+ * Warn before `cdkd state orphan` force-releases a lock that is still LIVE.
+ *
+ * `forceReleaseLock` is unconditional by design — a stuck lock must never make
+ * a state record unremovable — but it deletes an in-flight `cdkd deploy`'s lock
+ * just as readily as a stale one, and it did so silently (issue #2171). The
+ * write it enables has already happened by the time anyone notices, so the
+ * only useful thing is to name the owner at the moment of the release.
+ *
+ * Best-effort in both directions: an expired lock is not worth a line, and a
+ * failed read must not block the removal the user asked for.
+ *
+ * (Issue #2171's own text called this command `cdkd state rm`; no such command
+ * exists -- this file registers it as `orphan`.)
+ */
+async function warnOnLiveForeignLock(
+  lockManager: LockManager,
+  stackName: string,
+  region: string | undefined,
+  logger: ReturnType<typeof getLogger>
+): Promise<void> {
+  try {
+    const info = await lockManager.getLockInfo(stackName, region);
+    // An UNREADABLE expiry WARNS rather than staying quiet: a missed warning
+    // destroys a live lock silently, while a spurious one costs a line.
+    // `NaN <= now` is false, so a truncated lock.json already reached here —
+    // this makes that deliberate rather than accidental.
+    if (!info) return;
+    const expiryKnown = Number.isFinite(info.expiresAt);
+    if (expiryKnown && info.expiresAt <= Date.now()) return;
+    const safeStack = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
+    const where = region
+      ? `${safeStack} (${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE})`
+      : `${safeStack} (legacy lock key)`;
+    // `owner` / `operation` arrive ALREADY sanitized: `getLockInfo` does it at
+    // the source so every reader inherits it (issue #2170 round 3). Re-doing it
+    // here would put a second spelling of the rule at one of five readers,
+    // which is the asymmetry that fix removed.
+    const owner = info.owner;
+    const operation = info.operation ? `, operation: ${info.operation}` : '';
+    logger.warn(
+      `Force-releasing a LIVE lock on ${where} ` +
+        // Agrees with `lock-contention-message.ts`: an unusable owner withholds
+        // the "still running" CERTIFICATION but not the expiry, when the lock
+        // file carries a readable one.
+        `${owner ? `held by ${owner}${operation}` : 'held by an unnamed holder'}. ` +
+        (owner && expiryKnown
+          ? `That process is still running and will keep writing; its next state write `
+          : expiryKnown
+            ? `The lock has not expired, so a process may still be writing; its next state write `
+            : `The lock records no readable expiry, so a process may still be writing; its next state write `) +
+        `may recreate the record being removed here.`
+    );
+  } catch {
+    // Best-effort: never block `state orphan` on a lock read.
+  }
+}
+
+/**
  * Refresh the `observedProperties` of every resource in one stack
  * record. Returns counts so the caller can aggregate across `--all`.
  *
@@ -2028,9 +2140,16 @@ async function refreshObservedForStack(
   stateBackend: S3StateBackend,
   lockManager: LockManager,
   providerRegistry: ProviderRegistry,
-  opts: { dryRun: boolean; logger: ReturnType<typeof getLogger> }
+  opts: {
+    dryRun: boolean;
+    logger: ReturnType<typeof getLogger>;
+    // Threaded so the contention message can name the SAME lock object this
+    // call was working on, rather than whatever `force-unlock` would re-resolve
+    // from the ambient profile (issue #2170).
+    lockRecovery?: LockRecoveryContext;
+  }
 ): Promise<{ refreshed: number; unsupported: number; failed: number }> {
-  const { logger } = opts;
+  const { logger, lockRecovery } = opts;
 
   const result = await stateBackend.getState(stackName, region);
   if (!result) {
@@ -2083,10 +2202,12 @@ async function refreshObservedForStack(
   );
   if (!acquired) {
     throw new Error(
-      `Could not acquire lock for stack '${stackName}' (${region}) — ` +
-        `another cdkd process holds it. Wait for it to finish, or run ` +
-        `'cdkd force-unlock ${stackName} --stack-region ${region}' if you are ` +
-        `certain no other process is active.`
+      await buildLockContentionMessage({
+        lockManager,
+        stackName,
+        region,
+        recovery: lockRecovery,
+      })
     );
   }
   try {

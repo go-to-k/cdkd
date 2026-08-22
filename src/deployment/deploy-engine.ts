@@ -1493,9 +1493,14 @@ export class DeployEngine {
       throw error;
     }
 
-    renderer.start();
-
     try {
+      // Started INSIDE this `try` (issue #2171): `start()` writes to stdout and
+      // can throw (EPIPE on `cdkd deploy | head`), and it sits AFTER the lock
+      // acquisition, so a throw outside would strand the lock for its full TTL.
+      // This is the same move issue #2161 made in `destroy-runner.ts`; the two
+      // commands had the identical shape and only one of them was fixed.
+      renderer.start();
+
       // 1. Load current state
       const currentStateData = await this.stateBackend.getState(stackName, this.stackRegion);
       const currentState: StackState = currentStateData?.state ?? {
@@ -1976,8 +1981,19 @@ export class DeployEngine {
         attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
       };
     } finally {
-      // Stop live renderer (clears any remaining in-flight task display)
-      renderer.stop();
+      // Stop live renderer (clears any remaining in-flight task display).
+      //
+      // Guarded for the same reason `start()` moved inside the `try` above
+      // (issue #2171): `stop()` writes to stdout, and it is the FIRST statement
+      // of the `finally` that releases the lock — a throw here would abort the
+      // teardown before `releaseLock` and re-open the strand one line later.
+      try {
+        renderer.stop();
+      } catch {
+        // Deliberately silent: the whole point is that the stdout channel is
+        // failing, so logging the failure through it is another throw on the
+        // same pre-`releaseLock` path.
+      }
 
       // Remove SIGINT handler.
       //

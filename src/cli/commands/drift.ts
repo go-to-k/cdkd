@@ -16,6 +16,10 @@ import {
 } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
+import {
+  buildLockContentionMessage,
+  type LockRecoveryContext,
+} from '../../state/lock-contention-message.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
 import { updatePartialMessage, updatePartialReason } from '../../deployment/update-outcome.js';
@@ -2187,9 +2191,17 @@ async function runAccept(
   stateBackend: S3StateBackend,
   stateConfig: { bucket: string; prefix: string },
   awsClients: AwsClients,
-  options: { yes?: boolean; dryRun?: boolean }
+  options: { yes?: boolean; dryRun?: boolean; profile?: string | undefined }
 ): Promise<void> {
   const logger = getLogger();
+  // The recovery command a contention message suggests must resolve to the
+  // SAME lock object this command was working on — `cdkd force-unlock`
+  // re-resolves the bucket from the ambient profile otherwise (issue #2170).
+  const lockRecovery: LockRecoveryContext = {
+    profile: options.profile,
+    stateBucket: stateConfig.bucket,
+    statePrefix: stateConfig.prefix,
+  };
 
   // Print a per-resource summary of the planned state mutations BEFORE we
   // ask for confirmation (or short-circuit on --dry-run). Mirrors `cdkd
@@ -2248,10 +2260,12 @@ async function runAccept(
     );
     if (!acquired) {
       throw new Error(
-        `Could not acquire lock for stack '${report.stackName}' (${report.region}) — ` +
-          `another cdkd process holds it. Wait for it to finish, or run ` +
-          `'cdkd force-unlock ${report.stackName} --stack-region ${report.region}' if you are ` +
-          `certain no other process is active.`
+        await buildLockContentionMessage({
+          lockManager,
+          stackName: report.stackName,
+          region: report.region,
+          recovery: lockRecovery,
+        })
       );
     }
     try {
@@ -3168,9 +3182,17 @@ async function runRevert(
   stateBackend: S3StateBackend,
   stateConfig: { bucket: string; prefix: string },
   awsClients: AwsClients,
-  options: { yes?: boolean; dryRun?: boolean; concurrency?: number }
+  options: { yes?: boolean; dryRun?: boolean; concurrency?: number; profile?: string | undefined }
 ): Promise<void> {
   const logger = getLogger();
+  // The recovery command a contention message suggests must resolve to the
+  // SAME lock object this command was working on — `cdkd force-unlock`
+  // re-resolves the bucket from the ambient profile otherwise (issue #2170).
+  const lockRecovery: LockRecoveryContext = {
+    profile: options.profile,
+    stateBucket: stateConfig.bucket,
+    statePrefix: stateConfig.prefix,
+  };
 
   printRevertPlan(reports);
 
@@ -3236,10 +3258,12 @@ async function runRevert(
     );
     if (!acquired) {
       throw new Error(
-        `Could not acquire lock for stack '${report.stackName}' (${report.region}) — ` +
-          `another cdkd process holds it. Wait for it to finish, or run ` +
-          `'cdkd force-unlock ${report.stackName} --stack-region ${report.region}' if you are ` +
-          `certain no other process is active.`
+        await buildLockContentionMessage({
+          lockManager,
+          stackName: report.stackName,
+          region: report.region,
+          recovery: lockRecovery,
+        })
       );
     }
     // Provider-reported narrowings, keyed by logical id (issue #1644).
@@ -3260,10 +3284,10 @@ async function runRevert(
     // with a foreign credential and installs it on a live resource. Each
     // reference is routed by `classifyReplaySecretRegion`, and a reference
     // whose origin cannot be established is REFUSED before any update.
-    const revertSecretResolvers = new DriftSecretResolvers(report.region);
-    // The foreign-region evidence for this stack — see the detection site.
-    const revertProducerRegions = producerRegionsFromState(report.state);
     try {
+      const revertSecretResolvers = new DriftSecretResolvers(report.region);
+      // The foreign-region evidence for this stack — see the detection site.
+      const revertProducerRegions = producerRegionsFromState(report.state);
       const tasks = driftedOutcomes.map((outcome) => async () => {
         const stateResource = report.state.resources[outcome.logicalId];
         if (!stateResource) {

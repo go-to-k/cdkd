@@ -32,22 +32,32 @@ Locked by: user@hostname:12345, operation: deploy
 - Previous process crashed and lock remains
 
 > **Note:** The message above is what `cdkd deploy` prints — it **retries** a
-> held lock a few times before giving up. Seven other commands
-> (`cdkd destroy` / `cdkd state destroy`, `cdkd import`, `cdkd export`,
-> `cdkd orphan`, `cdkd drift --accept` / `--revert`, and
-> `cdkd state refresh-observed`)
-> instead **fail fast** on contention (except `cdkd export`'s nested-stack
-> children, which retry briefly first) with a different message, and do
-> **not** proceed while another process holds the lock:
+> held lock a few times before giving up. The commands that WRITE state
+> without deploying — `cdkd destroy`, `cdkd state destroy`, `cdkd import`,
+> `cdkd export`, `cdkd orphan`, `cdkd drift --accept`, `cdkd drift --revert`
+> and `cdkd state refresh-observed` — instead **fail fast** on contention
+> (except `cdkd export`'s nested-stack children, which retry briefly first)
+> with a different message, and do **not** proceed while another process holds
+> the lock:
 >
 > ```text
-> Could not acquire lock for stack 'MyStack' (us-east-1) — another cdkd process holds it. Wait for it to finish, or run 'cdkd force-unlock MyStack --stack-region us-east-1' if you are certain no other process is active.
+> Could not acquire lock for stack 'MyStack' (us-east-1) — held by alice@host:4242, operation: deploy, expires in ~12m. That process is still running — wait for it to finish. Only if you are certain it is gone, run: cdkd force-unlock MyStack --stack-region us-east-1
 > ```
 >
-> The recovery is the same in both cases: wait for the other process, or
-> `cdkd force-unlock <stack> --stack-region <region>` to clear a stale lock
-> (pass `--stack-region` so `force-unlock` targets the right region even for a
-> first-time import or a nested-stack child that has no state record yet).
+> **Read the holder before acting on the suggestion.** cdkd cleans up an
+> EXPIRED lock automatically, so a lock that reaches this message is LIVE —
+> in practice a `cdkd deploy` that is still running. Running `force-unlock`
+> on it deletes that process's lock and lets a second writer into the same
+> stack, which is the failure this refusal exists to prevent. Use it only
+> when you know the named process is gone (a crashed CI job, a killed
+> terminal). When the holder cannot be read (an S3 permission gap), the
+> message falls back to `another cdkd process holds it`.
+>
+> The recovery command carries every flag that decides WHICH lock it resolves
+> to — `--stack-region`, plus `--profile` / `--state-bucket` / `--state-prefix`
+> when you passed them. Run it as printed: `force-unlock` re-resolves the state
+> bucket from the ambient profile otherwise, so a shortened command can clear a
+> same-named stack's lock in a different account.
 
 > **Note:** A first `Ctrl-C` during `cdkd destroy` / `cdkd state destroy` no
 > longer strands the lock — the graceful-SIGINT handler (issue

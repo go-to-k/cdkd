@@ -218,7 +218,12 @@ function armSharedSigintHandler(): void {
       // omitted. This handler cannot know whether a stack lock is held — it has
       // no command context — so the hint is a guess it cannot verify and cannot
       // afford to skip: it is the only thing between a user and a 30-minute TTL.
-      // `destroy-runner.ts`'s own force-quit arm prints the same command.
+      // `destroy-runner.ts`'s own force-quit arms print a FULLY QUALIFIED
+      // command (region / profile / bucket / prefix) since issue #2170; this
+      // one deliberately stays a placeholder, because it has no command
+      // context to qualify with. Do not "align" the two: a placeholder is
+      // honest here, and inventing defaults would point the user at a
+      // different lock object -- which is the harm #2170 closed.
       //
       // The window THIS handler could fire in with a lock held was
       // `destroy-runner.ts`'s `finally`, and reordering that block closed it.

@@ -28,11 +28,16 @@ import type { AwsClients } from '../../../src/utils/aws-clients.js';
  * source, which is the false green this fence exists to prevent.
  */
 
+// A STABLE `info` spy, hoisted so a test can make it throw. The previous mock
+// returned a fresh object per `getLogger()` call, so the captured instance was
+// unreachable and the `logger.info` that issue #2170 moved inside the acquire
+// `try` could be hoisted back out with the whole suite green.
+const infoSpy = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
-    info: vi.fn(),
+    info: infoSpy,
     warn: vi.fn(),
     error: vi.fn(),
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
@@ -261,7 +266,9 @@ describe('a cross-region destroy restores region + clients when the lock is held
 
     const before = process.listeners('SIGINT');
 
-    await expect(runDestroyForStack('TestStack', state, crossCtx)).rejects.toThrow();
+    await expect(runDestroyForStack('TestStack', state, crossCtx)).rejects.toThrow(
+      /scan failed under the lock/
+    );
 
     // The lock the runner DID hold is released (not a foreign lock — it is ours
     // here), and the region-scoped client + globals are restored.
@@ -372,6 +379,65 @@ describe('a cross-region destroy restores region + clients when the lock is held
     expect(process.env['AWS_REGION']).toBe(REGION);
     expect(awsClientsMock.setAwsClients).toHaveBeenLastCalledWith(baseAwsClients);
     expect(process.listeners('SIGINT')).toEqual(before);
+  });
+
+  it('restores region + removes the listener when the Acquiring-lock log throws (issue #2170)', async () => {
+    // PR #2165 moved `logger.info('Acquiring lock...')` INSIDE the acquire
+    // `try` because it reaches `process.stdout.write` and can EPIPE
+    // (`cdkd destroy | head`) — it sits after `regionSwitched = true` and after
+    // the SIGINT registration, so a throw outside the `try` leaks both. That
+    // move shipped UNFENCED (issue #2170 item 3): the logger mock returned a
+    // fresh object per call, so nothing could make `info` throw and the move
+    // was revertible with the whole suite green.
+    //
+    // The discriminator is the pair below — region restored AND listener gone.
+    // Reverting the move (hoisting the log above the `try`) turns both red,
+    // because the catch that performs them is never entered.
+    const stackRegion = 'us-west-2';
+    const baseAwsClients = { marker: 'base' } as unknown as AwsClients;
+    const acquireLock = vi.fn().mockResolvedValue(true);
+    const releaseLock = vi.fn().mockResolvedValue(undefined);
+    const epipe = Object.assign(new Error('acquiring-lock log EPIPE'), { code: 'EPIPE' });
+    infoSpy.mockImplementation((msg: unknown) => {
+      // Only the Acquiring-lock line throws; every other info() must still
+      // work, or the test would pass off an unrelated failure as this one.
+      if (typeof msg === 'string' && msg.includes('Acquiring lock for stack')) throw epipe;
+    });
+    const crossCtx = {
+      stateBackend: {
+        saveState: vi.fn().mockResolvedValue('"etag"'),
+        deleteState: vi.fn(),
+        listStacks: vi.fn().mockResolvedValue([]),
+      } as unknown as S3StateBackend,
+      lockManager: { acquireLock, releaseLock } as unknown as LockManager,
+      providerRegistry: {
+        getProviderFor: () => ({ provider: { delete: vi.fn() } }),
+      } as unknown as ProviderRegistry,
+      baseAwsClients,
+      baseRegion: REGION,
+      stateBucket: 'test-bucket',
+      skipConfirmation: true,
+    } as unknown as Parameters<typeof runDestroyForStack>[2];
+    const state = makeState();
+    state.region = stackRegion;
+
+    const before = process.listeners('SIGINT');
+
+    await expect(runDestroyForStack('TestStack', state, crossCtx)).rejects.toThrow(
+      /acquiring-lock log EPIPE/
+    );
+
+    // The log throws BEFORE the acquire resolves, so no lock was ever taken —
+    // releasing here would delete a lock this process does not own.
+    expect(releaseLock).not.toHaveBeenCalled();
+    // ...but the cross-region globals and the SIGINT listener, both claimed
+    // before the log, must be given back.
+    expect(process.env['AWS_REGION']).toBe(REGION);
+    expect(awsClientsMock.setAwsClients).toHaveBeenLastCalledWith(baseAwsClients);
+    expect(awsClientsMock.instances[0]!.destroy).toHaveBeenCalledOnce();
+    expect(process.listeners('SIGINT')).toEqual(before);
+
+    infoSpy.mockReset();
   });
 
   it('releases the lock + restores region when renderer.start() throws AFTER the lock (issue #2161)', async () => {

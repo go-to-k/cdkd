@@ -330,6 +330,9 @@ export class NestedStackProvider implements ResourceProvider {
         skipConfirmation: true,
         ...(ctx.exportIndexStore && { exportIndexStore: ctx.exportIndexStore }),
         ...(ctx.destroyOptions?.profile && { profile: ctx.destroyOptions.profile }),
+        ...(ctx.destroyOptions?.statePrefix !== undefined && {
+          statePrefix: ctx.destroyOptions.statePrefix,
+        }),
         ...(deleteContext?.removeProtection === true && { removeProtection: true }),
         // `--skip-final-snapshot` reaches a whole-nested-stack removal from
         // BOTH directions: `cdkd destroy` / `state destroy` thread it via

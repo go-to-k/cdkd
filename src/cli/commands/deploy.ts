@@ -312,7 +312,9 @@ async function deployCommand(
       // path) — the lock TTL reclaims them automatically otherwise.
       process.stderr.write(
         '\nForce-quit: stack locks may not be released. ' +
-          'If the next run reports a lock, run: cdkd force-unlock <stackName>\n'
+          'If the next run reports a lock, run this for EACH stack it names ' +
+          '(the region-qualified form — see the message that run prints): ' +
+          'cdkd force-unlock <stackName> --stack-region <region>\n'
       );
       process.exit(130);
     }
@@ -934,6 +936,15 @@ async function deployCommand(
             dagBuilder,
             diffCalculator,
             options: deployEngineOptions,
+            // A template-removal DELETE of an `AWS::CloudFormation::Stack` row
+            // recurses into `runDestroyForStack` from here, so the child's
+            // recovery hints need the run's prefix exactly as the destroy
+            // commands' do (issue #2170). This was the fourth entry point and
+            // the one the review found still open.
+            destroyOptions: {
+              statePrefix: options.statePrefix,
+              ...(options.profile && { profile: options.profile }),
+            },
             ...(assetRedirect && { assetRedirect }),
           },
           () => stackDeployEngine.deploy(stackInfo.stackName, stackInfo.template)

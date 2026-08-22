@@ -30,7 +30,7 @@ export const STATE_FILE_SUFFIX = '/state.json';
  * Note this is only the DEFAULT. Other commands accept `--state-prefix`, so
  * the whole-bucket listings deliberately do not scope to it.
  */
-export const DEFAULT_STATE_PREFIX = 'cdkd';
+export { DEFAULT_STATE_PREFIX } from '../../state/state-prefix.js';
 
 /**
  * Segments left under a known prefix for the legacy `{prefix}/{stack}` layout.
