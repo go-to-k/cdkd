@@ -1,3 +1,10 @@
+## [0.284.39](https://github.com/go-to-k/cdkd/compare/v0.284.38...v0.284.39) (2026-08-22)
+
+
+### Bug Fixes
+
+* **state:** name the lock holder in the contention refusal and close three unlocked siblings ([#2172](https://github.com/go-to-k/cdkd/issues/2172)) ([30cea9b](https://github.com/go-to-k/cdkd/commit/30cea9b44584d7fe341606a6e99c1a53c5e9d4a8))
+
 ## [0.284.38](https://github.com/go-to-k/cdkd/compare/v0.284.37...v0.284.38) (2026-08-22)
 
 
