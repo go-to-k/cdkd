@@ -47,6 +47,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { maskDeep } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -2618,19 +2619,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     // realistic shapes are an unresolved intrinsic like `{ Ref: '<secret>' }` or
     // a mis-nested array — i.e. the secret is a NESTED leaf every time, and a
     // scalar-only mask would decline exactly the values this warning prints.
-    const maskLeaf = (value: unknown): unknown => {
-      if (typeof value === 'string') return maskSecrets(value);
-      if (Array.isArray(value)) return value.map(maskLeaf);
-      if (value !== null && typeof value === 'object') {
-        return Object.fromEntries(
-          Object.entries(value as Record<string, unknown>).map(([k, v]) => [
-            maskSecrets(k),
-            maskLeaf(v),
-          ])
-        );
-      }
-      return value;
-    };
+    // Issue #2176: delegates to the shared walk in `../masked-retry-logger.js`.
+    // This was one of SIX hand-rolled copies, and one of the FOUR that carried
+    // no depth cap.
+    const maskLeaf = (value: unknown): unknown => maskDeep(value, maskSecrets);
     if (value == null) return undefined;
     if (typeof value !== 'object' || Array.isArray(value)) {
       return value as Record<string, Record<string, string>>;

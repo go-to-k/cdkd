@@ -70,6 +70,7 @@ import {
   resolveDynamoDbDeleteBudgetMs,
 } from './dynamodb-delete-budget.js';
 import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
+import { maskDeep } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -825,17 +826,11 @@ export const deleteTableRetryDelays: { sleep?: (ms: number) => Promise<void> } =
  * leaf is stringified — and escaped — identically.
  */
 function maskLeafValue(value: unknown, maskSecrets: SecretMasker): unknown {
-  if (typeof value === 'string') return maskSecrets(value);
-  if (Array.isArray(value)) return value.map((v) => maskLeafValue(v, maskSecrets));
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
-        maskSecrets(k),
-        maskLeafValue(v, maskSecrets),
-      ])
-    );
-  }
-  return value;
+  // Issue #2176: delegates to the shared walk. This was one of SIX hand-rolled
+  // copies and one of the FOUR that carried no depth cap. Kept as a named
+  // wrapper only so this file's many call sites keep reading as
+  // `maskLeafValue(...)`; the signature is identical to `maskDeep`'s.
+  return maskDeep(value, maskSecrets);
 }
 
 export class DynamoDBTableProvider implements ResourceProvider {
@@ -3485,7 +3480,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
         `${scope}: WarmThroughput member(s) ${coerced.dropped.join(', ')} in ` +
           `${JSON.stringify(maskLeafValue(value, maskSecrets))} are not a number DynamoDB ` +
           `accepts, so they were dropped from the request, which leaves ` +
-          `${JSON.stringify(coerced.spec)}. Check for an unresolved intrinsic or a ` +
+          // Masked for CONSISTENCY with the sibling argument above, not because
+          // this one can leak: `coerceWarmThroughput` admits only
+          // `toFiniteNumber` results into `spec`, and its keys are cdkd
+          // literals, so the walk is a no-op here BY CONSTRUCTION today. It is
+          // written anyway so the site stays correct if that coercion is ever
+          // widened -- and stated plainly so nobody reads it as a closed leak.
+          `${JSON.stringify(maskLeafValue(coerced.spec, maskSecrets))}. Check for an ` +
+          `unresolved intrinsic or a ` +
           `non-numeric value.`
       );
     }

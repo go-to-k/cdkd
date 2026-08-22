@@ -105,8 +105,10 @@ import {
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
+import type { MaskerFn } from '../masked-retry-logger.js';
 import type {
   CreateContext,
+  UpdateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceDeleteResult,
@@ -595,7 +597,8 @@ export class EC2Provider implements ResourceProvider {
           properties,
           // A reverse-replacement rollback creates from a STATE record, so the
           // refusal downgrades here exactly as it does on the update path.
-          context?.replayingState === true ? (message) => this.logger.warn(message) : undefined
+          context?.replayingState === true ? (message) => this.logger.warn(message) : undefined,
+          context?.maskSecrets
         );
       case 'AWS::EC2::SubnetRouteTableAssociation':
         return this.createSubnetRouteTableAssociation(logicalId, resourceType, properties);
@@ -608,7 +611,8 @@ export class EC2Provider implements ResourceProvider {
           properties,
           // A reverse-replacement rollback creates from a STATE record, so the
           // refusal downgrades here exactly as it does on the update path.
-          context?.replayingState === true ? (message) => this.logger.warn(message) : undefined
+          context?.replayingState === true ? (message) => this.logger.warn(message) : undefined,
+          context?.maskSecrets
         );
       case 'AWS::EC2::Instance':
         return this.createInstance(logicalId, resourceType, properties, context);
@@ -632,7 +636,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     try {
       return await this.applyUpdate(
@@ -640,7 +645,8 @@ export class EC2Provider implements ResourceProvider {
         physicalId,
         resourceType,
         properties,
-        previousProperties
+        previousProperties,
+        context
       );
     } catch (error) {
       // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
@@ -663,7 +669,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::EC2::VPC':
@@ -692,7 +699,8 @@ export class EC2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::EC2::SubnetRouteTableAssociation':
         return this.updateSubnetRouteTableAssociation(logicalId, physicalId);
@@ -710,7 +718,8 @@ export class EC2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::EC2::Instance':
         return this.updateInstance(
@@ -1696,9 +1705,16 @@ export class EC2Provider implements ResourceProvider {
         allocationId,
         // A reverse-replacement rollback creates from a STATE record, so the
         // refusal downgrades to a warning.
-        context?.replayingState === true
-          ? { onRefusal: (message) => this.logger.warn(message) }
-          : undefined
+        {
+          // Issue #2176: the refusal QUOTES the offending segment value, on the
+          // thrown arm (durable) and the warn arm (terminal) alike, so the masker
+          // goes through unconditionally -- it is absent on the paths that have no
+          // context, where it degrades to identity.
+          maskSecrets: context?.maskSecrets,
+          ...(context?.replayingState === true && {
+            onRefusal: (message: string) => this.logger.warn(message),
+          }),
+        }
       ),
       attributes: {
         AllocationId: allocationId,
@@ -1883,9 +1899,16 @@ export class EC2Provider implements ResourceProvider {
         { name: 'internetGatewayId', value: internetGatewayId },
         { name: 'vpcId', value: vpcId },
       ],
-      context?.replayingState === true
-        ? { onRefusal: (message) => this.logger.warn(message) }
-        : undefined
+      {
+        // Issue #2176: the refusal QUOTES the offending segment value, on the
+        // thrown arm (durable) and the warn arm (terminal) alike, so the masker
+        // goes through unconditionally -- it is absent on the paths that have no
+        // context, where it degrades to identity.
+        maskSecrets: context?.maskSecrets,
+        ...(context?.replayingState === true && {
+          onRefusal: (message: string) => this.logger.warn(message),
+        }),
+      }
     );
 
     try {
@@ -2315,7 +2338,8 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    onMultipleDestinations?: (message: string) => void
+    onMultipleDestinations?: (message: string) => void,
+    maskSecrets?: MaskerFn
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Route ${logicalId}`);
 
@@ -2413,7 +2437,15 @@ export class EC2Provider implements ResourceProvider {
         { name: 'routeTableId', value: routeTableId },
         { name: 'destination', value: destination },
       ],
-      onMultipleDestinations ? { onRefusal: onMultipleDestinations } : undefined
+      // Issue #2176: the masker goes through unconditionally, and the refusal
+      // arm stays conditional. Threaded a round later than its 13 siblings
+      // because this helper takes a CALLBACK rather than a context, so the
+      // thread stopped one layer short of the dispatcher that holds one. The
+      // UPDATE twin is threaded too (round 3): `.claude/rules/providers.md`
+      // notes the update arm is the one a multi-destination bag actually
+      // reaches, so closing only the create side would have left the reachable
+      // half open.
+      { maskSecrets, ...(onMultipleDestinations && { onRefusal: onMultipleDestinations }) }
     );
 
     try {
@@ -2464,7 +2496,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    maskSecrets?: MaskerFn
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Route ${logicalId}: ${physicalId}`);
 
@@ -2493,11 +2526,15 @@ export class EC2Provider implements ResourceProvider {
         //
         // `rollback-executor.ts`'s revert arm and `cdkd drift --revert` both
         // call update() with a cdkd STATE record as the desired bag, and this
-        // method has no context parameter to tell that apart from a template
-        // update — so the refusal downgrades to a warning on every update, per
+        // method receives only a MASKER from the update context (issue #2176),
+        // not `replayingState`, so it still cannot tell that apart from a
+        // template update — so the refusal downgrades to a warning on every update, per
         // the "an UPDATE-path refusal is a replay refusal too" rule. The route
         // was already deleted above; throwing here would strand it.
-        (message) => this.logger.warn(message)
+        (message) => this.logger.warn(message),
+        // Issue #2176 round 3: the re-create is what packs the composite id, so
+        // the masker has to reach IT rather than being used in this frame.
+        maskSecrets
       );
       return {
         physicalId: createResult.physicalId,
@@ -3102,7 +3139,8 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    onUnusableProtocol?: (message: string) => void
+    onUnusableProtocol?: (message: string) => void,
+    maskSecrets?: MaskerFn
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SecurityGroupIngress ${logicalId}`);
 
@@ -3155,7 +3193,15 @@ export class EC2Provider implements ResourceProvider {
         { name: 'fromPort', value: fromPort ?? '-1' },
         { name: 'toPort', value: toPort ?? '-1' },
       ],
-      onUnusableProtocol ? { onRefusal: onUnusableProtocol } : undefined
+      // Issue #2176: the masker goes through unconditionally, and the refusal
+      // arm stays conditional. Threaded a round later than its 13 siblings
+      // because this helper takes a CALLBACK rather than a context, so the
+      // thread stopped one layer short of the dispatcher that holds one. The
+      // UPDATE twin is threaded too (round 3): `.claude/rules/providers.md`
+      // notes the update arm is the one a multi-destination bag actually
+      // reaches, so closing only the create side would have left the reachable
+      // half open.
+      { maskSecrets, ...(onUnusableProtocol && { onRefusal: onUnusableProtocol }) }
     );
 
     try {
@@ -3322,7 +3368,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    maskSecrets?: MaskerFn
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SecurityGroupIngress ${logicalId}: ${physicalId}`);
 
@@ -3348,7 +3395,10 @@ export class EC2Provider implements ResourceProvider {
         // The revoke above has already committed, and on a rollback replay
         // `properties` is a STATE record — so warn and default rather than
         // strand the rule deleted with no template-side remedy.
-        (message) => this.logger.warn(message)
+        (message) => this.logger.warn(message),
+        // Issue #2176 round 3: the re-create is what packs the composite id, so
+        // the masker has to reach IT rather than being used in this frame.
+        maskSecrets
       );
       return {
         physicalId: createResult.physicalId,
@@ -4701,9 +4751,16 @@ export class EC2Provider implements ResourceProvider {
         { name: 'ruleNumber', value: ruleNumber },
         { name: 'egress', value: egress },
       ],
-      context?.replayingState === true
-        ? { onRefusal: (message) => this.logger.warn(message) }
-        : undefined
+      {
+        // Issue #2176: the refusal QUOTES the offending segment value, on the
+        // thrown arm (durable) and the warn arm (terminal) alike, so the masker
+        // goes through unconditionally -- it is absent on the paths that have no
+        // context, where it degrades to identity.
+        maskSecrets: context?.maskSecrets,
+        ...(context?.replayingState === true && {
+          onRefusal: (message: string) => this.logger.warn(message),
+        }),
+      }
     );
 
     try {
