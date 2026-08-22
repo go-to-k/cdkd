@@ -1,3 +1,10 @@
+## [0.284.38](https://github.com/go-to-k/cdkd/compare/v0.284.37...v0.284.38) (2026-08-22)
+
+
+### Bug Fixes
+
+* **state:** fail fast when a stack lock is held instead of running under contention and releasing it ([#2165](https://github.com/go-to-k/cdkd/issues/2165)) ([46a7ca5](https://github.com/go-to-k/cdkd/commit/46a7ca5434c16ca8ccf6db637112384bbf3436f3))
+
 ## [0.284.37](https://github.com/go-to-k/cdkd/compare/v0.284.36...v0.284.37) (2026-08-21)
 
 
