@@ -18,12 +18,15 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
+  UpdateContext,
 } from '../../types/resource.js';
 
 /**
@@ -178,15 +181,17 @@ export class SSMParameterProvider implements ResourceProvider {
    * whole body is wrapped: an unexpected failure degrades to "no Arn recorded"
    * exactly as the fabricated-account arm does.
    */
-  private async buildParameterArn(name: string): Promise<string | undefined> {
+  private async buildParameterArn(name: string, mask: MaskerFn): Promise<string | undefined> {
     try {
-      return await this.buildParameterArnUnguarded(name);
+      return await this.buildParameterArnUnguarded(name, mask);
     } catch (error) {
       this.logger.warn(
-        `Could not build the Arn attribute for SSM parameter ${name}: ` +
-          `${error instanceof Error ? error.message : String(error)}. The parameter itself is ` +
-          `unaffected; the Arn is NOT recorded, so an Fn::GetAtt on it will fail until a later ` +
-          `deploy records it.`
+        mask(
+          `Could not build the Arn attribute for SSM parameter ${name}: ` +
+            `${error instanceof Error ? error.message : String(error)}. The parameter itself is ` +
+            `unaffected; the Arn is NOT recorded, so an Fn::GetAtt on it will fail until a later ` +
+            `deploy records it.`
+        )
       );
       return undefined;
     }
@@ -208,15 +213,20 @@ export class SSMParameterProvider implements ResourceProvider {
    * import RECORDED it, so the fix belongs at the import boundary — where
    * `import()` now refuses it — and not here. Do not re-add it.
    */
-  private async buildParameterArnUnguarded(name: string): Promise<string | undefined> {
+  private async buildParameterArnUnguarded(
+    name: string,
+    mask: MaskerFn
+  ): Promise<string | undefined> {
     const region = await this.ssmClient.config.region();
     const accountInfo = await getAccountInfo(region);
     if (accountInfo.fabricated) {
       this.logger.warn(
-        `Cannot determine the AWS account (STS is unreachable, and the resolved account id is ` +
-          `a placeholder), so the Arn attribute for SSM parameter ${name} would be fabricated ` +
-          `and is NOT recorded. An Fn::GetAtt on it will fail until a later deploy resolves ` +
-          `the account.`
+        mask(
+          `Cannot determine the AWS account (STS is unreachable, and the resolved account id is ` +
+            `a placeholder), so the Arn attribute for SSM parameter ${name} would be fabricated ` +
+            `and is NOT recorded. An Fn::GetAtt on it will fail until a later deploy resolves ` +
+            `the account.`
+        )
       );
       return undefined;
     }
@@ -252,9 +262,20 @@ export class SSMParameterProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating SSM parameter ${logicalId}`);
+    // Issue #2176: ONE masked sink per operation, rather than a `mask(...)` at
+    // each interpolation. `properties['Name']` reaches five message sites here
+    // (one of them a paste-ready `--name '<value>'` remediation command), and a
+    // line added later is masked by construction instead of by remembering.
+    // Absent context means identity, which is the back-compatible default the
+    // contract mandates -- `create()` is also reached from the import path,
+    // from `cdkd drift --revert`, and from tests.
+    const mask = maskerOrIdentity(context?.maskSecrets);
+    const warn = (message: string): void => this.logger.warn(mask(message));
+    const debug = (message: string): void => this.logger.debug(mask(message));
+    debug(`Creating SSM parameter ${logicalId}`);
 
     const name =
       (properties['Name'] as string | undefined) ||
@@ -317,25 +338,25 @@ export class SSMParameterProvider implements ResourceProvider {
       } catch (innerError) {
         try {
           await this.ssmClient.send(new DeleteParameterCommand({ Name: name }));
-          this.logger.debug(
+          debug(
             `Cleaned up partially-created SSM parameter ${logicalId} (${name}) after wiring failure`
           );
         } catch (cleanupError) {
-          this.logger.warn(
+          warn(
             `Failed to clean up partially-created SSM parameter ${logicalId} (${name}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws ssm delete-parameter --name '${name}'`
           );
         }
         throw innerError;
       }
 
-      this.logger.debug(`Successfully created SSM parameter ${logicalId}: ${name}`);
+      debug(`Successfully created SSM parameter ${logicalId}: ${name}`);
 
       // Built AFTER the cleanup-guarded wiring block on purpose (issue #1824):
       // a failure here must NOT trigger the best-effort `DeleteParameter` above,
       // which would destroy a successfully created parameter over a missing
       // attribute. `buildParameterArn` never throws (enforced in its own body,
       // not assumed here), so it cannot fail the create either.
-      const arn = await this.buildParameterArn(name);
+      const arn = await this.buildParameterArn(name, mask);
 
       return {
         physicalId: name,
@@ -368,9 +389,14 @@ export class SSMParameterProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating SSM parameter ${logicalId}: ${physicalId}`);
+    // Issue #2176 -- see `create()` for why this is one sink rather than a mask
+    // per call site.
+    const mask = maskerOrIdentity(context?.maskSecrets);
+    const debug = (message: string): void => this.logger.debug(mask(message));
+    debug(`Updating SSM parameter ${logicalId}: ${physicalId}`);
 
     const type = (properties['Type'] as string | undefined) || 'String';
     const value = properties['Value'] as string | undefined;
@@ -461,7 +487,7 @@ export class SSMParameterProvider implements ResourceProvider {
       // also records why the DEGRADED case here still returns the partial map
       // (dropping `Arn`, a loud failure) rather than no attributes at all
       // (keeping a superseded `Value`, a silent wrong answer).
-      const arn = await this.buildParameterArn(physicalId);
+      const arn = await this.buildParameterArn(physicalId, mask);
 
       return {
         physicalId,

@@ -58,7 +58,7 @@ import { isTruthyCfnBoolean } from '../data-delete-intent.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { createMaskedRetryLogger, maskerOrIdentity } from '../masked-retry-logger.js';
+import { createMaskedRetryLogger, maskDeep, maskerOrIdentity } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -78,50 +78,6 @@ import type {
 export const capacityReservationDelays = {
   sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 };
-
-/**
- * Depth cap for {@link maskDeep}. Bounds a self-referential bag rather than
- * hanging; `JSON.stringify` would throw on one anyway, and a throw is the
- * better failure of the two.
- */
-const MASK_WALK_MAX_DEPTH = 8;
-
-/**
- * Mask every string LEAF and KEY of an arbitrary value, returning a structure
- * safe to `JSON.stringify` into a log line (issue #2050).
- *
- * The ordering is the whole point. `maskSecretsInText` matches by literal
- * occurrence, and `JSON.stringify` escapes `"`, `\` and newlines — so a Secrets
- * Manager JSON document (the commonest real secret shape) does not occur in the
- * stringified text and survives a mask applied afterwards. Masking the leaves
- * first also hands the masker each RAW value, which reaches
- * `maskSecretsInText`'s whole-value arm at any length instead of only the
- * substring arm's 4-character floor. See the "three gaps" note in
- * `src/deployment/secret-redaction.ts`.
- *
- * Keys are masked as well as values: `JSON.stringify` renders them into the
- * same line, so a resolved secret used as a map key would otherwise escape.
- *
- * `cognito-provider.ts` carries an equivalent private walk for its own
- * stringified warnings. Two copies is the current cost of keeping this a leaf;
- * a THIRD site is the point at which this should move into
- * `../masked-retry-logger.ts` (already the shared provider-side masking module)
- * and all three converge on it.
- */
-function maskDeep(value: unknown, mask: (text: string) => string, depth = 0): unknown {
-  if (typeof value === 'string') return mask(value);
-  if (depth >= MASK_WALK_MAX_DEPTH) return value;
-  if (Array.isArray(value)) return value.map((entry) => maskDeep(entry, mask, depth + 1));
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
-        mask(k),
-        maskDeep(v, mask, depth + 1),
-      ])
-    );
-  }
-  return value;
-}
 
 /** CFn shape of an `AWS::ElasticLoadBalancingV2::TargetGroup.Targets` entry. */
 interface CfnTargetDescription {

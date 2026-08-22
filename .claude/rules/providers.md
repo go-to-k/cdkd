@@ -1102,6 +1102,15 @@ Rules for a provider:
 - **Apply it to any line interpolating a value from `properties`.** The unhappy
   path is usually the one that prints — a warning about a mis-shaped value
   exists precisely to name that value.
+- **Know which sink you are protecting, because they are not equally covered.**
+  A provider's own `this.logger.*` line reaches NO engine sink at all, so it is
+  unmasked outright. A THROWN message is masked by `DeployEngine` at the
+  message level on all three of its sinks (the error line, the durable
+  `deployments/{runId}.jsonl` event via `maskSecretsInEvent`, and the re-thrown
+  cause via `maskSecretsInError`) — so its residual is only the escaping and
+  length gaps below. Both still need masking; the difference is how much is left
+  when you skip it. Issue #2176 measured the full picture across all ~80
+  providers.
 - **Mask the VALUE before stringifying it; the message is a fallback.** Two
   independent reasons, and the first is the one that bites:
   - **Escaping.** A masker matches by literal occurrence. `JSON.stringify`
@@ -1117,7 +1126,16 @@ Rules for a provider:
   Do both: walk the value masking every string leaf (and key) before
   interpolating, AND route the assembled message through the masker. Walk
   rather than test the top level, since a secret nested in an object leaf is
-  stringified — and escaped — identically.
+  stringified — and escaped — identically. The masker is idempotent, so the
+  overlap between the two passes is free.
+
+  **Use `maskDeep` from `src/provisioning/masked-retry-logger.ts` for the walk
+  — do NOT hand-roll one.** Issue #2176 found FOUR private copies
+  (`elbv2-provider.ts`, `cognito-provider.ts`, `sns-topic-provider.ts`,
+  `dynamodb-table-provider.ts`) and two of them had already lost the depth cap,
+  so a self-referential bag recursed until the stack overflowed instead of being
+  bounded. These copies encode a security contract: a hardening applied to one
+  silently leaves the others behind.
 - **Read it defensively.** `context?.maskSecrets ?? ((t: string) => t)`.
   Absent means unmasked, which is the back-compatible default that let this
   ship without editing ~130 providers. `create()` / `update()` are also called
@@ -1128,6 +1146,15 @@ Rules for a provider:
   `cognito-provider.ts` builds
   `const warn = (m: string) => logger?.warn(maskSecrets(m));` once and routes
   every warning through it, so a warning added later is masked by construction.
+  `ssm-parameter-provider.ts`'s `create()` is the reference for the whole shape
+  (issue #2176): one `mask`, one `warn`, one `debug`, built at the top of the
+  operation and used everywhere below.
+
+  **Per-site masking DOES drift, measured rather than predicted.** Issue #2176's
+  sweep found raw `${JSON.stringify(...)}` sites sitting in files that had
+  ALREADY been hardened for this contract — `dynamodb-table-provider.ts` masked
+  one argument of a `warn` call and left the other beside it raw. A sink is what
+  makes the next line correct by default.
 - **Mask in the OPERATION POLLER, not in the arm that calls it.** Where the
   service is operation-based — Cloud Map's `Create*Namespace` /
   `Update*Namespace` return an `OperationId` and report the rejection later in

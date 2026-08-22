@@ -1,6 +1,15 @@
 /**
- * Bind a caller's secret masker into the two sinks a provider hands to
- * `withRetry` (issue #2050).
+ * The shared provider-side secret-masking module.
+ *
+ * Two capabilities, both built on a masker the DEPLOY ENGINE supplies through
+ * `CreateContext` / `UpdateContext`: {@link createMaskedRetryLogger}, which
+ * binds it into the two sinks a provider hands to `withRetry` (issue #2050),
+ * and {@link maskDeep}, which masks a value's leaves BEFORE it is stringified
+ * into a message (issue #2176). Providers reach for the second whenever they
+ * interpolate anything derived from the `properties` bag; see its own note for
+ * why masking the finished message is not a substitute.
+ *
+ * ## `createMaskedRetryLogger`
  *
  * WHY THIS EXISTS. `withRetry` interpolates the AWS error message VERBATIM
  * into its per-attempt `debug` line and into the give-up `warn` summary added
@@ -82,4 +91,71 @@ export function createMaskedRetryLogger(
     debug: (message: string) => logger.debug(mask(message)),
     warn: (message: string) => logger.warn(mask(message)),
   };
+}
+
+/**
+ * Depth cap for {@link maskDeep}. Bounds a self-referential bag rather than
+ * recursing until the stack blows; `JSON.stringify` would throw on one anyway,
+ * and a throw is the better failure of the two.
+ *
+ * Deliberately generous. Every shape these warnings exist to describe is a
+ * scalar, a list of scalars, or a small record, so the walk does not reach
+ * depth 2 in practice — the cap is a guard, not a real bound, and no plausible
+ * mis-shape should be left unmasked by it.
+ */
+export const MASK_WALK_MAX_DEPTH = 8;
+
+/**
+ * Mask every string LEAF and KEY of an arbitrary value, returning a structure
+ * safe to `JSON.stringify` into a log line or an error message (issue
+ * [#2176](https://github.com/go-to-k/cdkd/issues/2176)).
+ *
+ * THE ORDERING IS THE WHOLE POINT, and it is why masking the finished message
+ * is not a substitute. `maskSecretsInText` matches by literal occurrence, so:
+ *
+ *  1. ESCAPING. `JSON.stringify` escapes `"`, `\` and newlines, so a secret
+ *     containing any of them no longer OCCURS in the stringified text and a
+ *     mask applied afterwards cannot find it. That is not an exotic case — it
+ *     is every Secrets Manager JSON document, the commonest real secret shape.
+ *     Measured on the pre-fix tree for #2176: a plaintext of
+ *     `{"user":"admin","pw":"hunter2"}` interpolated as
+ *     `${JSON.stringify(value)}` came through a message-level mask COMPLETELY
+ *     unchanged, while masking the leaves first rendered it `"***"`.
+ *  2. LENGTH. A finished message is always longer than the value inside it, so
+ *     it can only ever reach `maskSecretsInText`'s SUBSTRING arm, which ignores
+ *     needles below `MIN_NEEDLE_LENGTH` (4). Handing the masker each RAW leaf
+ *     reaches the WHOLE-VALUE arm, which has no floor. Measured the same way: a
+ *     3-character secret survived `Value 'abc' at 'pin' failed ...` intact.
+ *
+ * Neither pass subsumes the other, so providers do BOTH — this walk on the
+ * value, and the assembled message through the masker as well. The masker is
+ * idempotent, so the overlap is free.
+ *
+ * Keys are masked as well as values: `JSON.stringify` renders them into the
+ * same line, so a resolved secret used as a map key would otherwise escape.
+ *
+ * WHY THIS LIVES HERE rather than as a private walk per provider. Three
+ * hand-rolled copies had already accumulated — `elbv2-provider.ts`,
+ * `cognito-provider.ts` and `sns-topic-provider.ts` — and `elbv2-provider.ts`
+ * carried the standing instruction that "a THIRD site is the point at which
+ * this should move into `../masked-retry-logger.ts` ... and all three converge
+ * on it". That trigger had fired and been missed, and the copies had already
+ * begun to diverge exactly as predicted: SNS's `maskLeaf` carried NO depth cap,
+ * so a self-referential bag recursed until the stack overflowed instead of
+ * being bounded at depth 8 like the other two. These copies encode a security
+ * contract, and a hardening applied to one silently leaves the others behind.
+ */
+export function maskDeep(value: unknown, mask: MaskerFn, depth = 0): unknown {
+  if (typeof value === 'string') return mask(value);
+  if (depth >= MASK_WALK_MAX_DEPTH) return value;
+  if (Array.isArray(value)) return value.map((entry) => maskDeep(entry, mask, depth + 1));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+        mask(k),
+        maskDeep(v, mask, depth + 1),
+      ])
+    );
+  }
+  return value;
 }

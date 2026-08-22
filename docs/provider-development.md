@@ -1521,6 +1521,16 @@ implementation. Three details are worth copying:
     route the assembled message through the masker too (catches interpolations
     added later, and text the leaf pass never sees). The mask is idempotent, so
     the layers compose.
+    **Use `maskDeep` from
+    [src/provisioning/masked-retry-logger.ts](../src/provisioning/masked-retry-logger.ts)
+    for the leaf pass — do NOT hand-roll one.** Issue
+    [#2176](https://github.com/go-to-k/cdkd/issues/2176) found FOUR private
+    copies of that walk, and two of them (`sns-topic-provider.ts`,
+    `dynamodb-table-provider.ts`) had already lost the depth cap the other two
+    carried, so a self-referential bag recursed until the stack overflowed
+    rather than being bounded. A walk that encodes a security contract drifts
+    the moment it is copied: a hardening applied to one copy silently leaves the
+    rest behind.
     It covers cdkd's
     dynamic-reference secret model only — a `NoEcho: true` template PARAMETER
     is outside that model and is not masked by it, and that residual is
@@ -1554,7 +1564,16 @@ implementation. Three details are worth copying:
     is `buildMfaConfigRequest` in
     [src/provisioning/providers/cognito-provider.ts](../src/provisioning/providers/cognito-provider.ts),
     which routes every warning through one masked sink rather than masking at
-    each call.
+    each call; `create()` in
+    [src/provisioning/providers/ssm-parameter-provider.ts](../src/provisioning/providers/ssm-parameter-provider.ts)
+    is the same shape for a whole operation (one `mask`, one `warn`, one
+    `debug`, built at the top and used everywhere below).
+    **Per-site masking DOES drift, and that is measured rather than
+    predicted.** Issue #2176's sweep found raw `${JSON.stringify(...)}` sites in
+    files ALREADY hardened for this contract —
+    `dynamodb-table-provider.ts` masked one argument of a `warn` call and left
+    the argument beside it raw. A sink is what makes the next line added below
+    it correct by default.
 
   The parameter is optional, so a provider with no pre-flight needs no change.
   A provider that HAS one threads `context` from `create()` to its check and

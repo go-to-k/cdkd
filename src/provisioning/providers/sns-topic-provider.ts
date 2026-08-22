@@ -23,6 +23,7 @@ import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { maskDeep } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1110,19 +1111,13 @@ export function buildDeliveryStatusAttributeMap(
   // warning. `JSON.stringify` escapes `"` / `\` / newlines, so a secret carrying
   // any of them no longer OCCURS in the finished line and the outer sink alone
   // would miss it — which is every Secrets Manager JSON document.
-  const maskLeaf = (value: unknown): unknown => {
-    if (typeof value === 'string') return maskSecrets(value);
-    if (Array.isArray(value)) return value.map(maskLeaf);
-    if (value !== null && typeof value === 'object') {
-      return Object.fromEntries(
-        Object.entries(value as Record<string, unknown>).map(([k, v]) => [
-          maskSecrets(k),
-          maskLeaf(v),
-        ])
-      );
-    }
-    return value;
-  };
+  //
+  // Issue #2176 hoisted the walk itself into `../masked-retry-logger.js`. This
+  // file's private copy was the THIRD, which is the trigger `elbv2-provider.ts`
+  // had recorded for converging them — and it had already DIVERGED: it carried
+  // no depth cap, so a self-referential bag recursed until the stack overflowed
+  // instead of being bounded at `MASK_WALK_MAX_DEPTH` like the other two.
+  const maskLeaf = (value: unknown): unknown => maskDeep(value, maskSecrets);
   const seenProtocols = new Set<SnsDeliveryStatusProtocol>();
   if (!Array.isArray(logging)) {
     if (onMalformed === 'throw') {

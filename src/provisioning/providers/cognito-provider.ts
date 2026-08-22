@@ -41,6 +41,7 @@ import { generateResourceName } from '../resource-name.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString, type ConfigStringOptions } from '../config-shape.js';
+import { maskDeep } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -193,16 +194,6 @@ function readDeclaredMfaConfiguration(raw: unknown, options: ConfigStringOptions
   const value = requireConfigString(raw, '', MFA_CONFIGURATION_PATH, options);
   return value.trim() === '' ? '' : value;
 }
-
-/**
- * Depth cap for the pre-stringify secret walk in {@link buildMfaConfigRequest}.
- *
- * Only a guard against a self-referential bag, not a real bound: a resolved
- * `EnabledMfas` is a list of factor-name scalars, so the walk never reaches
- * depth 2 on any shape this warning exists to describe. Deliberately generous
- * so no plausible mis-shape is left unmasked by it.
- */
-const MASK_WALK_MAX_DEPTH = 8;
 
 /**
  * Read `EnabledMfas` as the pair (recognized list, "the template asked for a
@@ -597,25 +588,12 @@ function buildMfaConfigRequest(
   // alongside the values. The depth cap keeps a self-referential bag from
   // hanging here; `JSON.stringify` below would throw on one anyway, and a hang
   // is a worse failure than the throw this preserves.
-  const maskDeep = (v: unknown, depth = 0): unknown => {
-    if (typeof v === 'string') return maskSecrets(v);
-    if (depth >= MASK_WALK_MAX_DEPTH) return v;
-    if (Array.isArray(v)) return v.map((e) => maskDeep(e, depth + 1));
-    if (v !== null && typeof v === 'object') {
-      return Object.fromEntries(
-        Object.entries(v as Record<string, unknown>).map(([k, x]) => [
-          maskSecrets(k),
-          maskDeep(x, depth + 1),
-        ])
-      );
-    }
-    return v;
-  };
+  const maskLeaves = (v: unknown): unknown => maskDeep(v, maskSecrets);
   const dropped: string[] = unrecognizedFactors.map(
-    (f) => JSON.stringify(maskDeep(f)) ?? String(f)
+    (f) => JSON.stringify(maskLeaves(f)) ?? String(f)
   );
   if (enabledMfasMalformed) {
-    dropped.push(`${JSON.stringify(maskDeep(properties['EnabledMfas']))} (not a list)`);
+    dropped.push(`${JSON.stringify(maskLeaves(properties['EnabledMfas']))} (not a list)`);
   }
   if (dropped.length > 0) {
     // THREE outcomes. It was four until issue #1977 made OFF-plus-a-factor-block
