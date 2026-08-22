@@ -172,6 +172,56 @@ describe('runDestroyForStack — empty-state cleanup takes the lock (issue #2171
     expect(h.acquireLock).toHaveBeenCalledWith('TestStack', REGION, undefined, 'destroy');
   });
 
+  it('removes its SIGINT listener when the acquire THROWS, not just when it returns false', async () => {
+    // `acquireLock` throws a LockError on an S3 failure, which is a DIFFERENT
+    // path from the contention `false`. The first cut removed the listener only
+    // on the boolean path, so a 5xx leaked a handler that then pre-empts every
+    // later drain in the process.
+    const h = makeCtx({ acquired: true });
+    h.acquireLock.mockRejectedValue(new Error('S3 unavailable'));
+    const before = process.listeners('SIGINT');
+
+    await expect(runDestroyForStack('TestStack', emptyState(), h.ctx)).rejects.toThrow(
+      'S3 unavailable'
+    );
+
+    expect(process.listeners('SIGINT')).toEqual(before);
+    expect(h.releaseLock).not.toHaveBeenCalled();
+  });
+
+  it('DRAINS on the first SIGINT rather than exiting the process', async () => {
+    // A nested-stack child reaches this branch through
+    // `NestedStackProvider.delete`, and listeners fire in registration order —
+    // so a handler that exits on the FIRST signal kills the process after the
+    // PARENT's handler has merely set its drain flag, stranding the parent's
+    // lock for its full TTL. The contract here is the main handler's: first
+    // signal records, second force-quits.
+    const h = makeCtx({ acquired: true, recheck: null });
+    const exitSpy = vi
+      .spyOn(process, 'exit')
+      .mockImplementation((() => undefined) as unknown as typeof process.exit);
+    let handler: NodeJS.SignalsListener | undefined;
+    h.acquireLock.mockImplementation(async () => {
+      // Captured while the branch owns it — this is the only window in which
+      // the handler is registered.
+      handler = process.listeners('SIGINT').at(-1) as NodeJS.SignalsListener;
+      return true;
+    });
+
+    const result = await runDestroyForStack('TestStack', emptyState(), h.ctx);
+    expect(handler, 'no SIGINT handler was registered by the empty branch').toBeDefined();
+
+    // Firing it once must NOT exit.
+    handler!('SIGINT');
+    expect(exitSpy).not.toHaveBeenCalled();
+    // Second signal force-quits.
+    handler!('SIGINT');
+    expect(exitSpy).toHaveBeenCalledWith(130);
+
+    expect(result.skippedEmpty).toBe(true);
+    exitSpy.mockRestore();
+  });
+
   it('releases the lock even when the delete itself fails', async () => {
     const h = makeCtx({ acquired: true, recheck: null });
     h.deleteState.mockRejectedValue(new Error('S3 down'));

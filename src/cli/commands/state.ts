@@ -1362,6 +1362,7 @@ async function stateDestroyCommand(
               baseRegion: setup.region,
               ...(options.profile && { profile: options.profile }),
               stateBucket: setup.bucket,
+              statePrefix: options.statePrefix,
               // --yes covers both the --all batch prompt above (already consumed)
               // and the per-stack prompt inside the runner. Per-stack prompts are
               // skipped when `options.yes` is set OR `--all` was set (the user
@@ -2033,16 +2034,7 @@ async function stateRefreshObservedCommand(
 const NO_RECORDED_SECRETS: RecordedSecretValues = new Map();
 
 /**
- * Refresh the `observedProperties` of every resource in one stack
- * record. Returns counts so the caller can aggregate across `--all`.
- *
- * `dryRun: true` skips the lock + saveState + provider call entirely
- * and just reports how many resources would be refreshed; this is a
- * cheap "preview the scope" mode that doesn't need AWS credentials
- * for the underlying SDK reads.
- */
-/**
- * Warn before `cdkd state rm` force-releases a lock that is still LIVE.
+ * Warn before `cdkd state orphan` force-releases a lock that is still LIVE.
  *
  * `forceReleaseLock` is unconditional by design — a stuck lock must never make
  * a state record unremovable — but it deletes an in-flight `cdkd deploy`'s lock
@@ -2052,6 +2044,9 @@ const NO_RECORDED_SECRETS: RecordedSecretValues = new Map();
  *
  * Best-effort in both directions: an expired lock is not worth a line, and a
  * failed read must not block the removal the user asked for.
+ *
+ * (Issue #2171's own text called this command `cdkd state rm`; no such command
+ * exists -- this file registers it as `orphan`.)
  */
 async function warnOnLiveForeignLock(
   lockManager: LockManager,
@@ -2070,10 +2065,19 @@ async function warnOnLiveForeignLock(
         `may recreate the record being removed here.`
     );
   } catch {
-    // Best-effort: never block `state rm` on a lock read.
+    // Best-effort: never block `state orphan` on a lock read.
   }
 }
 
+/**
+ * Refresh the `observedProperties` of every resource in one stack
+ * record. Returns counts so the caller can aggregate across `--all`.
+ *
+ * `dryRun: true` skips the lock + saveState + provider call entirely
+ * and just reports how many resources would be refreshed; this is a
+ * cheap "preview the scope" mode that doesn't need AWS credentials
+ * for the underlying SDK reads.
+ */
 async function refreshObservedForStack(
   stackName: string,
   region: string,

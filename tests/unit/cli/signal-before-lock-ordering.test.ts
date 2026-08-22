@@ -88,14 +88,26 @@ describe('SIGINT handler registration precedes lock acquisition (issue #1348)', 
       `${site.file} / ${site.label}: registration of ${site.handler} not found`
     ).toBeGreaterThan(-1);
 
-    // The acquire this site OWNS is the first one at or after its own
-    // registration — that pairing is what the file-level indexOf could not do.
+    // The acquire this site OWNS is the first one after its own registration
+    // AND BEFORE THE NEXT registration in the file. The bound is what makes
+    // this falsifiable: without it, moving a registration BELOW its own
+    // acquire (the exact #1348 defect) still matched the NEXT site's acquire
+    // and the pin stayed green — measured on a scratch copy, reg=19591 pairing
+    // with the main site's acquire at 25032.
+    const nextRegisterIdx = live.indexOf(`process.on('SIGINT',`, registerIdx + 1);
+    const searchEnd = nextRegisterIdx > -1 ? nextRegisterIdx : live.length;
     const acquireIdx = live.indexOf(site.acquire, registerIdx);
     expect(
       acquireIdx,
       `${site.file} / ${site.label}: no lock acquisition after the ${site.handler} registration — ` +
         `either the handler is registered AFTER the acquire (the issue #1348 defect) or the site is gone`
     ).toBeGreaterThan(-1);
+    expect(
+      acquireIdx,
+      `${site.file} / ${site.label}: the first acquire after the ${site.handler} registration ` +
+        `belongs to a LATER site — this site's own acquire is above its registration, ` +
+        `which is the issue #1348 defect`
+    ).toBeLessThan(searchEnd);
   });
 
   it.each(sites)('$file / $label cleans its listener up when the acquire fails', (site) => {
@@ -105,7 +117,12 @@ describe('SIGINT handler registration precedes lock acquisition (issue #1348)', 
     const live = liveSource(site.file);
     const registerIdx = live.indexOf(`process.on('SIGINT', ${site.handler})`);
     const acquireIdx = live.indexOf(site.acquire, registerIdx);
-    const window = live.slice(acquireIdx, acquireIdx + 900);
+    // Bounded at the NEXT registration for the same reason as the pin above,
+    // and at 900 chars so a `finally`'s own removeListener further down cannot
+    // satisfy a site whose acquire-failure path has none.
+    const nextRegisterIdx = live.indexOf(`process.on('SIGINT',`, registerIdx + 1);
+    const hardEnd = nextRegisterIdx > -1 ? nextRegisterIdx : live.length;
+    const window = live.slice(acquireIdx, Math.min(acquireIdx + 900, hardEnd));
     expect(
       window.includes(`process.removeListener('SIGINT', ${site.handler})`),
       `${site.file} / ${site.label}: no ${site.handler} cleanup on the acquire-failure path`

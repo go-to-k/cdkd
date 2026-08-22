@@ -312,7 +312,9 @@ async function deployCommand(
       // path) — the lock TTL reclaims them automatically otherwise.
       process.stderr.write(
         '\nForce-quit: stack locks may not be released. ' +
-          'If the next run reports a lock, run: cdkd force-unlock <stackName>\n'
+          'If the next run reports a lock, run this for EACH stack it names ' +
+          '(the region-qualified form — see the message that run prints): ' +
+          'cdkd force-unlock <stackName> --stack-region <region>\n'
       );
       process.exit(130);
     }

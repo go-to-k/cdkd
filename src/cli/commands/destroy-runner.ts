@@ -85,6 +85,15 @@ export interface DestroyRunnerContext {
   /** Caller's --profile, if any. */
   profile?: string;
 
+  /**
+   * Caller's `--state-prefix`. Threaded for the recovery hints alone (issue
+   * #2170): `cdkd force-unlock` re-resolves the prefix from its own default,
+   * so a destroy run under `--state-prefix team-a` was suggesting a command
+   * that would force-delete a DIFFERENT team's lock in a shared bucket -- the
+   * very failure #2170 exists to close, on the command that most needs it.
+   */
+  statePrefix?: string;
+
   /** State bucket — needed for custom-resource ResponseURL pre-signing. */
   stateBucket: string;
 
@@ -435,29 +444,57 @@ export async function runDestroyForStack(
     // a signal arriving before the acquire returns cannot delete a lock this
     // process does not own.
     let emptyLockHeld = false;
+    let emptyInterrupted = false;
     const emptySigintHandler = (): void => {
-      if (emptyLockHeld) {
-        void ctx.lockManager.releaseLock(stackName, regionForState).catch(() => {
-          /* best-effort: the recovery line below is the real guarantee */
-        });
-        process.stderr.write(
-          `\nForce-quit: stack lock may not be released. If the next run reports a lock, run: ` +
-            `${buildForceUnlockCommand(stackName, regionForState, {
-              profile: ctx.profile,
-              stateBucket: ctx.stateBucket,
-            })}\n`
-        );
+      // TWO-SIGNAL contract, matching the main handler below. The first cut of
+      // this branch force-quit on the FIRST signal, which is a REGRESSION and
+      // not merely impolite: a nested-stack child reaches here through
+      // `NestedStackProvider.delete`, listeners fire in registration order, so
+      // the PARENT's handler sets its drain flag and returns and then this one
+      // would kill the process -- the parent's `finally` never runs and ITS
+      // lock is stranded for the full TTL. Recording the signal and letting
+      // three S3 round-trips finish is both graceful and correct here.
+      if (emptyInterrupted) {
+        if (emptyLockHeld) {
+          void ctx.lockManager.releaseLock(stackName, regionForState).catch(() => {
+            /* best-effort: the recovery line below is the real guarantee */
+          });
+          process.stderr.write(
+            `\nForce-quit: stack lock may not be released. If the next run reports a lock, run: ` +
+              `${buildForceUnlockCommand(stackName, regionForState, {
+                profile: ctx.profile,
+                stateBucket: ctx.stateBucket,
+                statePrefix: ctx.statePrefix,
+              })}\n`
+          );
+        }
+        process.exit(130);
+        return;
       }
-      process.exit(130);
+      emptyInterrupted = true;
+      logger.info(
+        `\nInterrupt received - finishing the state cleanup for ${stackName} (press Ctrl-C again to force-quit)`
+      );
     };
     process.setMaxListeners(Math.max(process.getMaxListeners(), 100));
     process.on('SIGINT', emptySigintHandler);
-    const emptyAcquired = await ctx.lockManager.acquireLock(
-      stackName,
-      regionForState,
-      undefined,
-      'destroy'
-    );
+    let emptyAcquired: boolean;
+    try {
+      emptyAcquired = await ctx.lockManager.acquireLock(
+        stackName,
+        regionForState,
+        undefined,
+        'destroy'
+      );
+    } catch (acquireErr) {
+      // `acquireLock` THROWS (a LockError) on an S3 failure, as distinct from
+      // returning `false` on contention -- and only the boolean path below
+      // removed the listener, so a 5xx / AccessDenied leaked a handler that
+      // then pre-empts every later drain. Both sibling sites already wrap
+      // their acquire for exactly this.
+      process.removeListener('SIGINT', emptySigintHandler);
+      throw acquireErr;
+    }
     if (!emptyAcquired) {
       process.removeListener('SIGINT', emptySigintHandler);
       throw new Error(
@@ -468,6 +505,7 @@ export async function runDestroyForStack(
           recovery: {
             profile: ctx.profile,
             stateBucket: ctx.stateBucket,
+            statePrefix: ctx.statePrefix,
           },
         })
       );
@@ -503,6 +541,9 @@ export async function runDestroyForStack(
       }
     }
     result.skippedEmpty = true;
+    // A first Ctrl-C here drains rather than exiting, so the caller must be
+    // told -- otherwise `destroy --all` walks on to the next stack.
+    result.interrupted ||= emptyInterrupted;
     return result;
   }
 
@@ -710,6 +751,7 @@ export async function runDestroyForStack(
             `${buildForceUnlockCommand(stackName, regionForState, {
               profile: ctx.profile,
               stateBucket: ctx.stateBucket,
+              statePrefix: ctx.statePrefix,
             })}\n`
         );
       }
@@ -773,6 +815,7 @@ export async function runDestroyForStack(
           recovery: {
             profile: ctx.profile,
             stateBucket: ctx.stateBucket,
+            statePrefix: ctx.statePrefix,
           },
         })
       );

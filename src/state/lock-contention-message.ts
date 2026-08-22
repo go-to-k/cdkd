@@ -20,6 +20,7 @@
  * two of three. `subject` now varies only the noun.
  */
 
+import { DEFAULT_STATE_PREFIX } from '../cli/commands/state-file-keys.js';
 import type { LockManager } from './lock-manager.js';
 
 /**
@@ -41,7 +42,13 @@ export interface LockRecoveryContext {
    * account ambiguity `--profile` alone leaves open.
    */
   stateBucket?: string | undefined;
-  /** The caller's `--state-prefix`, when it is not the default. */
+  /**
+   * The caller's `--state-prefix`. `--state-prefix` carries a commander
+   * DEFAULT (`DEFAULT_STATE_PREFIX`), so every site supplies a value and an
+   * unconditional emit would append `--state-prefix cdkd` to every hint — noise
+   * that also trains the reader to skim the flags that DO matter. Only a
+   * non-default prefix is emitted.
+   */
   statePrefix?: string | undefined;
 }
 
@@ -64,8 +71,24 @@ export interface LockContentionArgs {
   suffix?: string | undefined;
 }
 
+/**
+ * Strip control characters from a value read out of `lock.json`.
+ *
+ * `owner` and `operation` are attacker-influenced for anyone who can write the
+ * state bucket, and this string reaches a TTY AND the persisted deployment-
+ * events store. A `\r` or an ANSI escape there can forge a plausible extra
+ * instruction line under cdkd's own output.
+ */
+function sanitizeForDisplay(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+}
+
 /** Render `expiresIn` without implying more precision than a clock skew allows. */
 function formatRemaining(ms: number): string {
+  // A hand-written / truncated lock.json can omit `expiresAt`, which arrives
+  // here as NaN and used to render `expires in ~NaNm`.
+  if (!Number.isFinite(ms)) return 'at an unknown time';
   if (ms <= 0) return 'already expired';
   const minutes = Math.round(ms / 60_000);
   if (minutes < 1) return 'in under a minute';
@@ -75,7 +98,7 @@ function formatRemaining(ms: number): string {
 function shellQuote(value: string): string {
   // A profile / prefix / bucket with a space or a quote would otherwise produce
   // a suggestion that silently truncates when pasted.
-  return /^[A-Za-z0-9._/@:+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+  return /^[A-Za-z0-9._/@:~+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
@@ -87,10 +110,20 @@ export function buildForceUnlockCommand(
   region: string,
   recovery?: LockRecoveryContext
 ): string {
-  const parts = [`cdkd force-unlock ${shellQuote(stackName)} --stack-region ${region}`];
+  // Sanitize BEFORE quoting. Quoting alone already neutralizes an injected
+  // `\ncurl ... | sh` (inside `'...'` it is a literal, not a separator), but it
+  // leaves a MULTI-LINE "recovery command" on the operator's terminal, which is
+  // its own forgery surface. A control character has no legitimate place in a
+  // stack name or a region, so drop it and then quote what remains.
+  const parts = [
+    `cdkd force-unlock ${shellQuote(sanitizeForDisplay(stackName))} ` +
+      `--stack-region ${shellQuote(sanitizeForDisplay(region))}`,
+  ];
   if (recovery?.profile) parts.push(`--profile ${shellQuote(recovery.profile)}`);
   if (recovery?.stateBucket) parts.push(`--state-bucket ${shellQuote(recovery.stateBucket)}`);
-  if (recovery?.statePrefix) parts.push(`--state-prefix ${shellQuote(recovery.statePrefix)}`);
+  if (recovery?.statePrefix && recovery.statePrefix !== DEFAULT_STATE_PREFIX) {
+    parts.push(`--state-prefix ${shellQuote(recovery.statePrefix)}`);
+  }
   return parts.join(' ');
 }
 
@@ -106,22 +139,38 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
   const { lockManager, stackName, region, subject = 'stack', recovery, heldClause, suffix } = args;
 
   let held = heldClause ?? 'another cdkd process holds it';
+  let sawHolder = false;
   try {
     const info = await lockManager.getLockInfo(stackName, region);
     if (info) {
-      const operation = info.operation ? `, operation: ${info.operation}` : '';
+      sawHolder = true;
+      const operation = info.operation ? `, operation: ${sanitizeForDisplay(info.operation)}` : '';
       const expires = formatRemaining(info.expiresAt - Date.now());
-      held = `${heldClause ? `${heldClause} — ` : ''}held by ${info.owner}${operation}, expires ${expires}`;
+      held = `${heldClause ? `${heldClause} — ` : ''}held by ${sanitizeForDisplay(info.owner)}${operation}, expires ${expires}`;
     }
   } catch {
     // Best-effort: keep the evidence-free wording rather than masking the
     // contention with a read error.
   }
 
+  // The steer is stronger when the holder is KNOWN, because the module header's
+  // point applies: `acquireLock` reaps an expired lock, so a holder we can name
+  // is by construction still live. Telling that user only "if you are certain
+  // no other process is active" invites the force-unlock this whole refusal
+  // exists to prevent.
+  const advice = sawHolder
+    ? `That process is still running — wait for it to finish. Only if you are certain it is gone, run:`
+    : `Wait for it to finish, or if you are certain no other process is active, run:`;
+
+  // The command goes LAST and UNWRAPPED. Wrapping it in quotes was a live
+  // defect: `shellQuote` also quotes, so a value needing it produced
+  // `run 'cdkd force-unlock 'Root~Child' ...'` — unpastable, i.e. exactly the
+  // truncation `shellQuote` exists to prevent. Trailing means there is no
+  // sentence left to delimit it from.
   const recoveryCommand = buildForceUnlockCommand(stackName, region, recovery);
   return (
-    `Could not acquire lock for ${subject} '${stackName}' (${region}) — ${held}. ` +
-    `Wait for it to finish, or run '${recoveryCommand}' if you are certain no other process is active.` +
-    (suffix ? ` ${suffix}` : '')
+    `Could not acquire lock for ${subject} '${stackName}' (${region}) — ${held}.` +
+    (suffix ? ` ${suffix}` : '') +
+    ` ${advice} ${recoveryCommand}`
   );
 }

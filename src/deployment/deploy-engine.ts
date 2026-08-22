@@ -1981,8 +1981,19 @@ export class DeployEngine {
         attributeFallbackCount: this.resolver.getPhysicalIdFallbackCount(),
       };
     } finally {
-      // Stop live renderer (clears any remaining in-flight task display)
-      renderer.stop();
+      // Stop live renderer (clears any remaining in-flight task display).
+      //
+      // Guarded for the same reason `start()` moved inside the `try` above
+      // (issue #2171): `stop()` writes to stdout, and it is the FIRST statement
+      // of the `finally` that releases the lock — a throw here would abort the
+      // teardown before `releaseLock` and re-open the strand one line later.
+      try {
+        renderer.stop();
+      } catch (stopErr) {
+        this.logger.debug(
+          `Failed to stop the live renderer: ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`
+        );
+      }
 
       // Remove SIGINT handler.
       //

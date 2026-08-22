@@ -623,6 +623,7 @@ async function destroyCommand(
               baseRegion: region,
               ...(options.profile && { profile: options.profile }),
               stateBucket,
+              statePrefix: options.statePrefix,
               skipConfirmation: options.yes || options.force,
               removeProtection: options.removeProtection === true,
               skipFinalSnapshot: options.skipFinalSnapshot === true,
