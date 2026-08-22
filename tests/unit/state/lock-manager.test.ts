@@ -313,6 +313,20 @@ describe('LockManager', () => {
       expect(result?.owner).toBe('');
     });
 
+    it('reads a `null` lock body as ABSENT, not as a hard failure', async () => {
+      // Round-4 regression: `JSON.parse('null')` is `null`, so reading `.owner`
+      // off it threw INSIDE the try and the catch rewrapped it as a LockError
+      // — turning "no lock" into a hard failure for `isLocked`, `state orphan`,
+      // `state list` and `acquireLock`'s PreconditionFailed branch.
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve('null') },
+      });
+
+      const result = await lockManager.getLockInfo('test-stack', 'us-east-1');
+
+      expect(result?.owner).toBe('');
+    });
+
     it('should return null when no lock exists', async () => {
       const noSuchKeyError = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(noSuchKeyError);

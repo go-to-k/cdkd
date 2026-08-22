@@ -289,26 +289,61 @@ describe('cdkd state orphan', () => {
       expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
     });
 
-    it('renders a hostile owner safely — the sanitization is at the SOURCE', async () => {
-      // `LockManager.getLockInfo` sanitizes `owner` / `operation` so all five
-      // readers inherit it; this fence proves THIS reader is one of them
-      // rather than re-spelling the rule. Production goes through the real
-      // `getLockInfo`, so the mock returns what that method would return.
+    it('passes the holder through unchanged — sanitization is NOT re-done here', async () => {
+      // `LockManager.getLockInfo` sanitizes `owner` / `operation` at the source
+      // so all five readers inherit it (issue #2170 round 3). This reader must
+      // therefore NOT carry a second spelling of the rule — that asymmetry is
+      // what the source fix removed. The source-level fence lives in
+      // `tests/unit/state/lock-manager.test.ts`, where the real `getLockInfo`
+      // runs; a mock here would only be testing the mock.
       mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
       mockIsLocked.mockResolvedValue(false);
       mockGetLockInfo.mockResolvedValue({
-        owner: 'alice@host:1\r\u001b[2KFORGED',
-        operation: 'deploy\nalso-forged',
+        owner: 'alice@host:1',
+        operation: 'deploy',
         expiresAt: Date.now() + 60_000,
       });
 
       await runStateOrphan(['orphan', 'MyStack', '--yes']);
 
       const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(warned).toMatch(/Force-releasing a LIVE lock/);
-      expect(warned).not.toContain('\r');
-      expect(warned).not.toContain('\u001b');
-      expect(warned.split('\n').filter((l) => l.includes('Force-releasing'))).toHaveLength(1);
+      expect(warned).toContain('held by alice@host:1');
+      expect(warned).toContain('operation: deploy');
+    });
+
+    it('sanitizes the REGION too — it is an S3 key segment', async () => {
+      // Round 4: the region was still hand-interpolated raw, one clause from a
+      // sanitized stack name in the same sentence. `listStacks` derives it from
+      // an S3 key, and S3 keys admit newlines.
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1\nFORGED' }]);
+      mockIsLocked.mockResolvedValue(false);
+      mockGetLockInfo.mockResolvedValue({
+        owner: 'alice@host:1',
+        expiresAt: Date.now() + 60_000,
+      });
+
+      await runStateOrphan(['orphan', 'MyStack', '--yes']);
+
+      const lines = warnSpy.mock.calls.map((c) => String(c[0]));
+      const warned = lines.find((l) => l.includes('Force-releasing'));
+      expect(warned, 'the live-lock warning did not fire').toBeDefined();
+      expect(warned).not.toContain('\n');
+      expect(warned).toContain('FORGED');
+    });
+
+    it('withholds the still-running claim for an unnamed holder, keeping the rest', async () => {
+      // Agrees with lock-contention-message.ts: an unusable owner withholds
+      // the CERTIFICATION, not the fact that the lock has not expired.
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockIsLocked.mockResolvedValue(false);
+      mockGetLockInfo.mockResolvedValue({ owner: '', expiresAt: Date.now() + 60_000 });
+
+      await runStateOrphan(['orphan', 'MyStack', '--yes']);
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('held by an unnamed holder');
+      expect(warned).not.toContain('That process is still running');
+      expect(warned).toContain('has not expired');
     });
 
     it('stays quiet for an EXPIRED lock', async () => {

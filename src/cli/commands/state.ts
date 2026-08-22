@@ -22,7 +22,7 @@ import { PartialFailureError, withErrorHandling } from '../../utils/error-handle
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { displaySafe } from '../../utils/display-safe.js';
-import { buildForceUnlockCommand } from '../../state/lock-contention-message.js';
+import { UNRENDERABLE, buildForceUnlockCommand } from '../../state/lock-contention-message.js';
 import {
   buildLockContentionMessage,
   type LockRecoveryContext,
@@ -1045,7 +1045,14 @@ async function stateOrphanCommand(
         for (const target of targets) {
           const locked = await setup.lockManager.isLocked(stackName, target.region);
           if (locked) {
-            const where = target.region ?? '(legacy)';
+            // The REGION needs the same treatment as the stack name beside
+            // it (issue #2170 round 4): it is an S3 key segment or a legacy
+            // state body, so a planted `\n` forged a line in this very
+            // sentence — the provenance this file already cites two lines down
+            // as the reason to route the hint through the shared builder.
+            const where = target.region
+              ? displaySafe(target.region, { asciiOnly: true })
+              : '(legacy)';
             throw new Error(
               `Stack '${displaySafe(stackName, { asciiOnly: true })}' (${where}) is locked. ` +
                 // Through the shared builder rather than hand-interpolated
@@ -1059,7 +1066,16 @@ async function stateOrphanCommand(
                       stateBucket: setup.bucket,
                       statePrefix: options.statePrefix,
                     })} first, `
-                  : `Run 'cdkd force-unlock ${displaySafe(stackName, { asciiOnly: true })}' first, `) +
+                  : // No region to qualify with, but the NAME still needs
+                    // quoting — a `'` in it otherwise breaks the paste.
+                    `Run: ${
+                      buildForceUnlockCommand(stackName, '', {
+                        profile: options.profile,
+                        stateBucket: setup.bucket,
+                        statePrefix: options.statePrefix,
+                      }) ||
+                      `cdkd force-unlock ${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}`
+                    } first, `) +
                 `or pass --force to remove anyway.`
             );
           }
@@ -2071,16 +2087,25 @@ async function warnOnLiveForeignLock(
   try {
     const info = await lockManager.getLockInfo(stackName, region);
     if (!info || info.expiresAt <= Date.now()) return;
-    const where = region ? `${stackName} (${region})` : `${stackName} (legacy lock key)`;
-    // Through the SHARED sanitizer, not a second hand-rolled answer: this is
-    // the same terminal-and-events-store surface `lock-contention-message.ts`
-    // closes, and the review found it still open because the rule was widened
-    // by hand one module at a time.
-    const owner = displaySafe(info.owner);
-    const operation = info.operation ? `, operation: ${displaySafe(info.operation)}` : '';
+    const safeStack = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
+    const where = region
+      ? `${safeStack} (${displaySafe(region, { asciiOnly: true }) || UNRENDERABLE})`
+      : `${safeStack} (legacy lock key)`;
+    // `owner` / `operation` arrive ALREADY sanitized: `getLockInfo` does it at
+    // the source so every reader inherits it (issue #2170 round 3). Re-doing it
+    // here would put a second spelling of the rule at one of five readers,
+    // which is the asymmetry that fix removed.
+    const owner = info.owner;
+    const operation = info.operation ? `, operation: ${info.operation}` : '';
     logger.warn(
-      `Force-releasing a LIVE lock on ${where} held by ${owner || '<unrenderable>'}${operation}. ` +
-        `That process is still running and will keep writing; its next state write ` +
+      `Force-releasing a LIVE lock on ${where} ` +
+        // Agrees with `lock-contention-message.ts`: an unusable owner withholds
+        // the "still running" CERTIFICATION but not the expiry, which the lock
+        // file definitely carries. The two modules answered differently before.
+        `${owner ? `held by ${owner}${operation}` : 'held by an unnamed holder'}. ` +
+        (owner
+          ? `That process is still running and will keep writing; its next state write `
+          : `The lock has not expired, so a process may still be writing; its next state write `) +
         `may recreate the record being removed here.`
     );
   } catch {

@@ -302,7 +302,12 @@ export class LockManager {
       }
 
       const bodyString = await response.Body.transformToString();
-      const parsed = JSON.parse(bodyString) as LockInfo;
+      // `?? {}`: `JSON.parse('null')` is `null`, and reading `.owner` off it
+      // threw inside this `try` -- the catch rewrapped it as a `LockError`, so
+      // a lock.json containing `null` turned "no lock" into a hard failure for
+      // `isLocked`, `state orphan`, `state list` and `acquireLock`'s
+      // PreconditionFailed branch. Pre-delta that read as absent.
+      const parsed = (JSON.parse(bodyString) ?? {}) as LockInfo;
       // Sanitize the DISPLAY fields HERE, at the single point every reader
       // goes through (issue #2170). `owner` and `operation` are attacker-
       // influenced for anyone who can write the state bucket, and they reach a

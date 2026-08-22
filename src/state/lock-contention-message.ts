@@ -58,7 +58,7 @@ export interface LockRecoveryContext {
  * rather than inlined so the message and the command-suppression branch cannot
  * disagree about what "unrenderable" looks like.
  */
-const UNRENDERABLE = '<unrenderable>';
+export const UNRENDERABLE = '<unrenderable>';
 
 /** What the contended lock is on — varies the noun, nothing else. */
 export type LockSubject = 'stack' | 'nested stack' | 'nested-stack child';
@@ -180,12 +180,15 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
       // still running" — more confident than the pre-sanitize behaviour, which
       // threw into the catch and gave the cautious wording. Same empty-value
       // rule the command suppression applies.
-      if (owner) {
-        held = `${heldClause ? `${heldClause} — ` : ''}held by ${owner}${operation}, expires ${expires}`;
-        // LAST: anything above can still throw, and setting it earlier paired
-        // the degraded wording with the confident advice.
-        sawHolder = true;
-      }
+      // The EXPIRY is independent evidence and survives an unusable owner --
+      // the previous revision dropped both, which threw away the one fact the
+      // lock file definitely carries. Only the "still running" CERTIFICATION
+      // is withheld, since that is what an owner-less record cannot support.
+      const holder = owner ? `held by ${owner}${operation}` : `held by an unnamed holder`;
+      held = `${heldClause ? `${heldClause} — ` : ''}${holder}, expires ${expires}`;
+      // LAST, and only for a NAMED holder: setting it earlier paired the
+      // degraded wording with the confident advice.
+      if (owner) sawHolder = true;
     }
   } catch {
     // Best-effort: keep the evidence-free wording rather than masking the
@@ -197,9 +200,12 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
   // is by construction still live. Telling that user only "if you are certain
   // no other process is active" invites the force-unlock this whole refusal
   // exists to prevent.
+  // Built WITHOUT the trailing connector. The previous revision appended
+  // `, run:` here and un-appended it by regex on the suppression path, so a
+  // reword would silently produce `..., run: No recovery command can be shown`.
   const advice = sawHolder
-    ? `That process is still running — wait for it to finish. Only if you are certain it is gone, run:`
-    : `Wait for it to finish, or if you are certain no other process is active, run:`;
+    ? `That process is still running — wait for it to finish. Only if you are certain it is gone`
+    : `Wait for it to finish, or if you are certain no other process is active`;
 
   // The command goes LAST and UNWRAPPED. Wrapping it in quotes was a live
   // defect: `shellQuote` also quotes, so a value needing it produced
@@ -225,12 +231,12 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
   // stack name. The advice itself still applies.
   if (!recoveryCommand) {
     return (
-      `${head} ${advice.replace(/, run:$/, '.')} ` +
-      `No recovery command can be shown: the stack name or region recorded for ` +
-      `this lock has no renderable characters left after sanitization — inspect ` +
-      `the lock object directly.`
+      `${head} ${advice}. ` +
+      `No recovery command can be shown: the name or region recorded for this ` +
+      `lock has no renderable characters left after sanitization — inspect the ` +
+      `lock object directly.`
     );
   }
 
-  return `${head} ${advice} ${recoveryCommand}`;
+  return `${head} ${advice}, run: ${recoveryCommand}`;
 }

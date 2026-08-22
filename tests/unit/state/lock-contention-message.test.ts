@@ -123,10 +123,15 @@ describe('buildLockContentionMessage (issue #2170)', () => {
         ...base,
         lockManager: lockManagerReturning({ owner, expiresAt: Date.now() + 60_000 }),
       });
-      expect(msg, `owner=${JSON.stringify(owner)}`).toContain('another cdkd process holds it');
-      expect(msg, `owner=${JSON.stringify(owner)}`).not.toContain('That process is still running');
-      expect(msg, `owner=${JSON.stringify(owner)}`).not.toContain('held by undefined');
-      expect(msg, `owner=${JSON.stringify(owner)}`).not.toMatch(/held by\s*,/);
+      const why = `owner=${JSON.stringify(owner)}`;
+      // The CERTIFICATION is withheld...
+      expect(msg, why).not.toContain('That process is still running');
+      expect(msg, why).not.toContain('held by undefined');
+      expect(msg, why).not.toMatch(/held by\s*,/);
+      // ...but the EXPIRY is independent evidence the lock file definitely
+      // carries, so dropping it too threw away the one usable fact.
+      expect(msg, why).toContain('held by an unnamed holder');
+      expect(msg, why).toMatch(/expires in ~\d+m/);
     }
   });
 
@@ -223,6 +228,26 @@ describe('buildLockContentionMessage (issue #2170)', () => {
       subject: 'nested-stack child',
     });
     expect(msg).toContain('held it through the retry window — held by carol@host:9');
+  });
+
+  it('reads correctly on BOTH paths — the connector is not un-built by regex', async () => {
+    // The previous revision built `advice` with a trailing `, run:` and
+    // stripped it by regex on the suppression path, so a reword would have
+    // silently produced `..., run: No recovery command can be shown`.
+    const withCommand = await buildLockContentionMessage({
+      ...base,
+      lockManager: lockManagerReturning(null),
+    });
+    expect(withCommand).toMatch(/active, run: cdkd force-unlock /);
+
+    const suppressed = await buildLockContentionMessage({
+      lockManager: lockManagerReturning(null),
+      stackName: '\u0000',
+      region: 'us-east-1',
+    });
+    expect(suppressed).not.toContain('run:');
+    expect(suppressed).toContain('No recovery command can be shown');
+    expect(suppressed).toContain('<unrenderable>');
   });
 
   it('carries a caller-supplied suffix BEFORE the recovery command', async () => {
