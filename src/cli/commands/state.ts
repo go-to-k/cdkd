@@ -1071,7 +1071,14 @@ async function stateOrphanCommand(
                     profile: options.profile,
                     stateBucket: setup.bucket,
                     statePrefix: options.statePrefix,
-                  }) || `cdkd force-unlock ${UNRENDERABLE}`
+                  }) ||
+                  // The builder suppresses for TWO reasons now — an
+                  // unrenderable value AND one sanitization ALTERED — so a
+                  // `<unrenderable>` placeholder would contradict the same
+                  // sentence above, which renders `my stack` perfectly well.
+                  `a command cdkd cannot show safely: the recorded name or ` +
+                    `region would not survive a command line intact, so inspect ` +
+                    `the lock object directly`
                 } first, ` +
                 `or pass --force to remove anyway.`
             );

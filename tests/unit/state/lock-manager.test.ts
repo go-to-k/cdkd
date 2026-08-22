@@ -480,7 +480,7 @@ describe('LockManager', () => {
       expect(s3Client.send).toHaveBeenCalledTimes(2);
     });
 
-    it('should do nothing when no lock exists', async () => {
+    it('still issues the DELETE when no lock exists (issue #2170)', async () => {
       const noSuchKeyError = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(noSuchKeyError);
 

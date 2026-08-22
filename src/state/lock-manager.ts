@@ -404,14 +404,6 @@ export class LockManager {
    * `{prefix}/{stackName}/lock.json` file.
    */
   async forceReleaseLock(stackName: string, region: string | undefined): Promise<void> {
-    // `getLockInfo` is for the LOG LINE ONLY -- the delete below is
-    // unconditional, and that is the whole contract of this method: a stuck
-    // lock must never make a state record unremovable. Gating the delete on a
-    // readable lock (which a previous revision did, once `getLockInfo` began
-    // returning `null` for a corrupt body) breaks it in the other direction --
-    // a lock.json holding `42` or `[]` reads as absent here while still
-    // failing every `IfNoneMatch: '*'` acquire, so `cdkd force-unlock` would
-    // print "no lock to release" and delete nothing, forever.
     // The DELETE is UNCONDITIONAL, and that is this method's whole contract: a
     // stuck lock must never make a state record unremovable. `getLockInfo` is
     // consulted for the LOG LINE only. Gating the delete on it (which a
@@ -431,9 +423,9 @@ export class LockManager {
             `owner: ${lockInfo.owner}` +
             `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +
             `, expired: ${this.isLockExpired(lockInfo)}`
-        : `Force releasing lock for stack: ${where} (no readable lock body — ` +
-            `deleting the object anyway, since a lock cdkd cannot read is a ` +
-            `lock nothing else can clear)`
+        : `Force releasing lock for stack: ${where} (no lock body read — ` +
+            `absent or unparseable; deleting the object either way, since a ` +
+            `lock cdkd cannot read is a lock nothing else can clear)`
     );
 
     await this.deleteLock(stackName, region);

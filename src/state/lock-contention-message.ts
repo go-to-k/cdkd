@@ -174,7 +174,8 @@ export function forceQuitRecoveryClause(
   return command
     ? ` If the next run reports a lock, run: ${command}`
     : ` Inspect the lock object directly: the name or region recorded for this ` +
-        `stack has no renderable characters left after sanitization.`;
+        `stack cannot be reproduced safely on a command line, so any command ` +
+        `shown here would address a different lock.`;
 }
 
 /**
