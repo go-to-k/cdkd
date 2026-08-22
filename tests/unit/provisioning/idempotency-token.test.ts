@@ -101,4 +101,62 @@ describe('acquireIdempotencyToken (issue #2039)', () => {
     });
     expect(shorter.value.length).toBe(20);
   });
+
+  // Issue #2169: ACM's `RequestCertificate` documents `Pattern: \w+`, and a
+  // hyphen is not in `\w`, so the default spelling is REJECTED by the API
+  // rather than merely un-deduplicated.
+  it("emits a \\w-only value under charset 'alphanumeric', with the same stability guarantees", () => {
+    const first = acquireIdempotencyToken({
+      scope: 'RequestCertificate',
+      logicalId: 'Cert',
+      maxLength: 32,
+      charset: 'alphanumeric',
+    });
+
+    expect(first.value).toMatch(/^\w+$/);
+    expect(first.value).not.toContain('-');
+    expect(first.value.length).toBe(32);
+
+    // Same create -> same token, exactly as on the default charset.
+    expect(
+      acquireIdempotencyToken({
+        scope: 'RequestCertificate',
+        logicalId: 'Cert',
+        maxLength: 32,
+        charset: 'alphanumeric',
+      }).value
+    ).toBe(first.value);
+
+    first.release();
+    expect(
+      acquireIdempotencyToken({
+        scope: 'RequestCertificate',
+        logicalId: 'Cert',
+        maxLength: 32,
+        charset: 'alphanumeric',
+      }).value
+    ).not.toBe(first.value);
+  });
+
+  it('is the SAME digest under either charset, so the narrower set is not a weaker token', () => {
+    // `maxLength` is applied AFTER the prefix is joined on, so both spellings
+    // are asked for a length no truncation can reach -- otherwise the shorter
+    // prefix would simply keep one more hex digit and the comparison would be
+    // about truncation rather than about the digest.
+    const alphanumeric = acquireIdempotencyToken({
+      scope: 'RequestCertificate',
+      logicalId: 'Cert',
+      maxLength: 100,
+      charset: 'alphanumeric',
+    });
+    alphanumeric.release();
+    resetIdempotencyTokensForTests();
+    const dflt = acquireIdempotencyToken({
+      scope: 'RequestCertificate',
+      logicalId: 'Cert',
+      maxLength: 100,
+    });
+
+    expect(alphanumeric.value).toBe(dflt.value.replace('-', ''));
+  });
 });

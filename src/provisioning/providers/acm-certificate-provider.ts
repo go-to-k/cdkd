@@ -17,6 +17,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { acquireIdempotencyToken } from './idempotency-token.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -24,6 +25,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
 } from '../../types/resource.js';
 
 /**
@@ -80,6 +82,27 @@ function isCertificateInUseError(error: unknown): boolean {
  * consumers (CloudFront, ALB) will fail to start if they reach the cert
  * before it issues, but that's the documented trade-off.
  *
+ * **A create that fails after requesting keeps its certificate** (issue
+ * [#2169](https://github.com/go-to-k/cdkd/issues/2169)). `RequestCertificate`
+ * materializes the certificate immediately and everything after it can fail —
+ * most commonly the ISSUED wait, which a DNS-validated certificate whose
+ * records are not live yet exhausts by construction. `create()` therefore
+ * reports the ARN through {@link CreateContext.reportMaterialized} the moment
+ * AWS returns it, and the engine writes it into state when the create fails.
+ * The certificate is then visible to `cdkd state show`, deleted by
+ * `cdkd destroy`, and ADOPTED by the next `cdkd deploy` — which reaches
+ * `update()` instead of `create()`, so no second certificate is requested.
+ * `update()` resumes the ISSUED wait for a certificate that is still
+ * PENDING_VALIDATION, so that re-run reaches the same verdict the create would
+ * have rather than reporting success on an unusable certificate.
+ *
+ * The remnant is deliberately KEPT rather than deleted (the Cloud Control
+ * provider's `cleanupFailedCreateRemnant` makes the opposite call for its own
+ * case). A `PENDING_VALIDATION` certificate is exactly the thing the user has
+ * just added DNS records for, ACM goes on validating it asynchronously after
+ * cdkd stops waiting, and deleting it would throw that away and restart a
+ * validation cycle that can take hours.
+ *
  * **CloudFront cross-region note**: ACM certificates referenced by a
  * CloudFront Distribution MUST live in `us-east-1`. cdkd does not enforce
  * this — it's the developer's responsibility to deploy the certificate
@@ -126,7 +149,8 @@ export class ACMCertificateProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Requesting ACM certificate ${logicalId}`);
 
@@ -184,6 +208,36 @@ export class ACMCertificateProvider implements ResourceProvider {
       input['Tags'] = tags;
     }
 
+    // Issue #2039's mechanism applied to `RequestCertificate` (issue #2169
+    // names its absence). The engine's outer `withRetry` re-invokes `create()`
+    // from the top on a transient failure, and since issue #2026 a bare HTTP
+    // 5xx counts as one — so a request that actually SUCCEEDED server-side
+    // before the connection broke would mint a SECOND certificate, with the
+    // first left un-named by anything. `acquireIdempotencyToken` returns the
+    // same value for every attempt of one logical create and a fresh one after
+    // a success, which is exactly ACM's contract ("if you call
+    // RequestCertificate multiple times with the same idempotency token within
+    // one hour, ACM ... will issue only one").
+    //
+    // `charset: 'alphanumeric'` / `maxLength: 32` are ACM's documented
+    // constraints on the field (`Pattern: \w+`, `Maximum length of 32`); the
+    // helper's default `cdkd-<hex>` spelling contains a hyphen, which `\w`
+    // does not accept, so the request would be REJECTED rather than merely
+    // un-deduplicated.
+    //
+    // Note this closes the IN-PROCESS duplicate window only. ACM retires the
+    // token after an hour and cdkd mints a per-process nonce into it anyway, so
+    // a re-run of `cdkd deploy` after a failed one is a genuinely new request —
+    // that half is what `reportMaterialized` below addresses, by making the
+    // first certificate part of the stack's state so the re-run ADOPTS it.
+    const idempotencyToken = acquireIdempotencyToken({
+      scope: 'RequestCertificate',
+      logicalId,
+      maxLength: 32,
+      charset: 'alphanumeric',
+    });
+    input['IdempotencyToken'] = idempotencyToken.value;
+
     try {
       const response = await this.acmClient.send(
         new RequestCertificateCommand(input as unknown as RequestCertificateRequest)
@@ -198,15 +252,43 @@ export class ACMCertificateProvider implements ResourceProvider {
       }
       this.logger.debug(`Requested ACM certificate: ${certificateArn}`);
 
+      // Issue #2169: the certificate EXISTS from this line on, and everything
+      // after it can fail — the ISSUED wait is bounded and a DNS-validated
+      // certificate whose records are not live yet reliably exhausts it, and
+      // the engine's own `--resource-timeout` can abort this method from
+      // outside without it reaching a single `catch` of its own. Reporting the
+      // ARN here rather than on the way out is what makes it survive BOTH: the
+      // engine keeps the report and, if the create fails, writes it into state.
+      // Without it the certificate is orphaned with nothing naming it, and the
+      // next deploy requests another one.
+      context?.reportMaterialized?.(certificateArn, {
+        Arn: certificateArn,
+        CertificateArn: certificateArn,
+      });
+
       const noWait = process.env['CDKD_NO_WAIT'] === 'true';
       if (!noWait) {
-        await this.waitForCertificateIssued(certificateArn, logicalId);
+        // `recorded` is the PRESENCE of the report channel, not an assumption
+        // about it. Without one — the replacement create inside `update()`,
+        // `drift --revert`, a direct call — nothing will write this
+        // certificate to state, and the wait's failure message must not claim
+        // otherwise: telling a user `cdkd destroy` will clean up a certificate
+        // cdkd does not track is worse than saying nothing, because it is the
+        // sentence that stops them looking.
+        await this.waitForCertificateIssued(certificateArn, logicalId, resourceType, {
+          recorded: context?.reportMaterialized !== undefined,
+        });
       } else {
         this.logger.warn(
           `Skipping wait for ACM certificate ${logicalId} (CDKD_NO_WAIT=true). ` +
             `Downstream consumers (CloudFront / ALB) will fail until the cert reaches ISSUED.`
         );
       }
+
+      // Success path only, per `acquireIdempotencyToken`'s contract: releasing
+      // on failure would hand the next attempt a different token and reinstate
+      // the duplicate window the token exists to close.
+      idempotencyToken.release();
 
       return {
         physicalId: certificateArn,
@@ -218,6 +300,9 @@ export class ACMCertificateProvider implements ResourceProvider {
     } catch (error) {
       // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner
       // ProvisioningError replaces its precise message with this outer one.
+      // This is also what carries the ARN out of the two `waitForCertificateIssued`
+      // throws (issue #2169) — they are `ProvisioningError`s whose `physicalId`
+      // is the certificate, and re-wrapping them here would drop it.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -255,6 +340,14 @@ export class ACMCertificateProvider implements ResourceProvider {
     );
     if (changedImmutable) {
       this.logger.debug(`${changedImmutable} changed, replacing ACM certificate: ${physicalId}`);
+      // KNOWN GAP, issue [#2173](https://github.com/go-to-k/cdkd/issues/2173):
+      // this create gets no `CreateContext`, so its ISSUED wait timing out
+      // still orphans the NEW certificate the way issue #2169 describes for
+      // the plain-create path. Recording it is not the fix — the state record
+      // for this logical id still names the OLD certificate, which is live and
+      // which cdkd must stay able to delete — so the remedy is a policy choice
+      // (delete the new one, or report it as a survivor) that #2173 decides.
+      // The wait's message names the new ARN either way, so it is findable.
       const createResult = await this.create(logicalId, resourceType, properties);
       // What the inner delete left behind, if anything. `undefined` means the
       // old certificate is genuinely gone; a string is the short reason that
@@ -345,6 +438,43 @@ export class ACMCertificateProvider implements ResourceProvider {
         previousProperties['Tags'] as Array<{ Key: string; Value: string }> | undefined
       );
 
+      // Issue #2169: RESUME the ISSUED wait for a certificate that is still
+      // PENDING_VALIDATION.
+      //
+      // Once a create that timed out waiting for validation records leaves its
+      // certificate in state, the NEXT `cdkd deploy` finds a state record and
+      // takes this path instead of `create()` — which is the whole point, since
+      // it is what stops a second certificate being requested. But the tag /
+      // options work above says nothing about validation, so without this the
+      // re-run would report the resource as updated and exit 0 while the
+      // certificate is still unusable, and the CloudFront / ALB that depends on
+      // it would fail with no explanation. The re-run has to reach the same
+      // verdict the create would have.
+      //
+      // Gated on the status being PENDING_VALIDATION, NOT on "not ISSUED": an
+      // ordinary update of an EXPIRED / REVOKED / INACTIVE certificate
+      // succeeded before this existed, and `waitForCertificateIssued` treats
+      // every one of those as a terminal failure — so waiting unconditionally
+      // would newly break deploys that have nothing to do with this issue
+      // (typically the very deploy replacing the expired certificate). A
+      // status reached DURING the wait is a different matter and stays fatal.
+      // `CDKD_NO_WAIT` is honoured exactly as on the create path.
+      if (process.env['CDKD_NO_WAIT'] !== 'true') {
+        const current = await this.acmClient.send(
+          new DescribeCertificateCommand({ CertificateArn: physicalId })
+        );
+        if (current.Certificate?.Status === 'PENDING_VALIDATION') {
+          this.logger.info(
+            `ACM certificate ${logicalId} (${physicalId}) is still PENDING_VALIDATION; waiting for it to be issued`
+          );
+          // Reached only from a state record, so the certificate is tracked by
+          // definition here.
+          await this.waitForCertificateIssued(physicalId, logicalId, resourceType, {
+            recorded: true,
+          });
+        }
+      }
+
       return {
         physicalId,
         wasReplaced: false,
@@ -354,6 +484,11 @@ export class ACMCertificateProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // Same #1272 pass-through as `create()`: the resumed ISSUED wait above
+      // throws a `ProvisioningError` whose message already names the
+      // certificate, the status it reached and what to do next, and re-wrapping
+      // it would bury that behind a generic "failed to update" label.
+      if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update ACM certificate ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -531,8 +666,35 @@ export class ACMCertificateProvider implements ResourceProvider {
    * Throws on `VALIDATION_TIMED_OUT` / `FAILED` (terminal failures) and on
    * polling-cap exhaustion (treated as timeout). SIGINT short-circuits the
    * loop and returns control to the deploy engine's cleanup path.
+   *
+   * Both throws are `ProvisioningError`s carrying `certificateArn` as their
+   * `physicalId` (issue
+   * [#2169](https://github.com/go-to-k/cdkd/issues/2169)). They used to be
+   * plain `Error`s whose only reference to the certificate was the message
+   * TEXT, which is not something a caller can act on. The certificate is real
+   * by the time either fires, so the error that reports the failure is the one
+   * piece of the failure path that should still be able to name it — the
+   * durable half is `create()`'s `reportMaterialized` call, which does not
+   * depend on this method throwing at all.
+   *
+   * `recorded` says whether this certificate will end up in cdkd's state, and
+   * exists only so the failure message tells the truth for BOTH callers: the
+   * engine-driven create (and the resumed wait on an already-recorded
+   * certificate) can promise `cdkd destroy` will clean it up, while a create
+   * with no report channel — the replacement inside `update()`, `drift
+   * --revert` — cannot, and there the message points at manual retirement
+   * instead.
    */
-  private async waitForCertificateIssued(certificateArn: string, logicalId: string): Promise<void> {
+  private async waitForCertificateIssued(
+    certificateArn: string,
+    logicalId: string,
+    resourceType: string,
+    options: { recorded: boolean }
+  ): Promise<void> {
+    const trackingNote = options.recorded
+      ? `The certificate is recorded in this stack's state: re-run \`cdkd deploy\` to wait for the SAME certificate, or \`cdkd destroy\` to delete it.`
+      : `cdkd is NOT tracking this certificate, so \`cdkd destroy\` will not remove it — retire it with ` +
+        `\`aws acm delete-certificate --certificate-arn ${certificateArn}\`, or adopt it with \`cdkd import\`.`;
     this.logger.debug(`Waiting for ACM certificate ${certificateArn} to reach ISSUED status...`);
     let interrupted = false;
     let validationOptionsLogged = false;
@@ -572,9 +734,12 @@ export class ACMCertificateProvider implements ResourceProvider {
           status === 'REVOKED' ||
           status === 'EXPIRED'
         ) {
-          throw new Error(
+          throw new ProvisioningError(
             `ACM certificate ${logicalId} (${certificateArn}) entered terminal status ${status} during validation. ` +
-              `Check ACM console / DNS records to diagnose.`
+              `Check ACM console / DNS records to diagnose. ${trackingNote}`,
+            resourceType,
+            logicalId,
+            certificateArn
           );
         }
 
@@ -597,9 +762,14 @@ export class ACMCertificateProvider implements ResourceProvider {
         }
       }
 
-      throw new Error(
+      throw new ProvisioningError(
         `ACM certificate ${logicalId} (${certificateArn}) did not reach ISSUED status within ${(this.maxPollAttempts * this.pollIntervalMs) / 1000}s. ` +
-          `If your DNS zone is manually managed, you may need to increase --resource-timeout AWS::CertificateManager::Certificate=<duration> or set CDKD_NO_WAIT=true.`
+          `Add the validation records printed above to your DNS zone. ` +
+          `If your zone is manually managed, you may need to increase --resource-timeout AWS::CertificateManager::Certificate=<duration> or set CDKD_NO_WAIT=true. ` +
+          `${trackingNote}`,
+        resourceType,
+        logicalId,
+        certificateArn
       );
     } finally {
       process.removeListener('SIGINT', sigintHandler);

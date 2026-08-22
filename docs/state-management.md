@@ -1271,6 +1271,36 @@ await s3StateBackend.saveState(stackName, newState);
 
 **On Next Execution**: Diff calculation will detect only failed resources as `CREATE` and retry them.
 
+#### The one exception: a CREATE that failed AFTER AWS created the resource
+
+"Only successful resources" has a deliberate carve-out (issue
+[#2169](https://github.com/go-to-k/cdkd/issues/2169)). Some creates are one API
+call that materializes the resource followed by a wait for it to become usable,
+and the wait can fail with the resource already alive — the reported case is an
+`AWS::CertificateManager::Certificate` whose `ISSUED` wait times out because the
+DNS validation records are not live yet. Recording nothing there does not mean
+"nothing was created"; it means a live AWS resource that state does not name.
+
+So a provider can tell the engine "this create has materialized `<physical id>`"
+(`CreateContext.reportMaterialized`, see
+[provider-development.md](provider-development.md)), and when that create then
+fails the engine writes a normal resource record for it, which the partial save
+above persists. Consequences worth knowing:
+
+- `cdkd state show` lists it, and `cdkd destroy` deletes it — the resource is
+  under management even though the deploy failed.
+- The next `cdkd deploy` sees a state record, so the resource is an `UPDATE`
+  rather than a `CREATE`: it is ADOPTED instead of being created a second time.
+  Providers that use this are expected to make that re-run reach an honest
+  verdict (the ACM provider resumes the `ISSUED` wait for a certificate that is
+  still `PENDING_VALIDATION`, rather than reporting success on an unusable one).
+- `cdkd rollback --revert-failed` can delete it, since the failed operation now
+  has a physical id and a matching state record.
+
+The record is written only when the provider explicitly reports it, and never
+over a record that already exists — a replacement's logical id still points at
+the OLD resource, which cdkd must remain able to delete.
+
 ## Deletion (Destroy) and State Management
 
 ### Destroy Flow

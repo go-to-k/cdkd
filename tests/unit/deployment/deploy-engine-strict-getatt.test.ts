@@ -382,7 +382,12 @@ describe('DeployEngine - strict output failure persists provisioning state (#111
       // those fences exist to catch. This site and the property-driven
       // replacement are the ONLY fences covering the main CREATE path, so the
       // loose form would have removed cover from the most-travelled site.
-      { maskSecrets: expect.any(Function) }
+      // `reportMaterialized` (issue #2169) belongs to the plain-CREATE path
+      // ONLY: the replacement create sites deliberately do not carry it,
+      // because their logical id already owns a physical resource cdkd must
+      // stay able to delete. Keeping the object exact is what fences that
+      // asymmetry from both sides.
+      { maskSecrets: expect.any(Function), reportMaterialized: expect.any(Function) }
     );
     // ...and (no prior etag → per-resource saves are no-ops, no rollback ran)
     // the failure persist is the ONLY save — without it, ZERO state is

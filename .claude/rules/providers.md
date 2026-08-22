@@ -1023,6 +1023,58 @@ re-creates inside `update()` would fire that refusal on a replay with no way
 to detect it. None of the five does today (required-field validation only,
 which correctly stays a hard error).
 
+### Reporting a resource a FAILING create already materialized
+
+`CreateContext.reportMaterialized` (issue #2169). For a create shaped `<one API
+call that materializes the resource>` then `<a wait for it to become usable>`,
+the wait can fail with the resource alive in AWS. Nothing recorded it, because
+the create never returned — so it was invisible to `cdkd state show`,
+unreachable by `cdkd destroy`, and re-created by the next deploy. The reported
+case is `AWS::CertificateManager::Certificate`: `RequestCertificate` returns an
+ARN immediately, and the `ISSUED` wait times out by construction while the DNS
+validation records are not live.
+
+`ProvisioningError.physicalId` is NOT the channel for this, which is the part
+that misleads: 462 call sites across 75 provider files already pass one, and on
+a create path it is usually the resource's INTENDED name computed before the
+API call (`IAMRoleProvider.create` derives `roleName` and hands it to the
+catch regardless of whether `CreateRole` ran), so a reader cannot tell "I named
+this" from "I created this". Its only consumer is `cleanupFailedCreateRemnant`
+in `cloud-control-provider.ts`, which is Cloud-Control-only. Carrying the id on the error is also not enough on its own —
+the deploy engine re-wraps a provider error and takes the physical id from
+STATE, and a `--resource-timeout` abort means the provider never reaches its own
+`throw` at all.
+
+Rules:
+
+- **Call it at the AWS response**, not in a `catch` / `finally`. The
+  per-resource deadline aborts the create from outside; a report on the way out
+  never happens on the run that needed it.
+- **Only report what AWS confirmed.** Never a pre-computed name, never a
+  resource the create merely adopted.
+- **The engine only RECORDS; keep-vs-delete is the provider's call, and it must
+  be stated.** Cloud Control deletes its remnant (it occupies the name a retry
+  needs); ACM keeps its certificate (the user has just added DNS records for it,
+  and ACM keeps validating asynchronously). A provider that KEEPS one owes the
+  adopting deploy an honest verdict — ACM's `update()` resumes the `ISSUED` wait
+  for a still-`PENDING_VALIDATION` certificate, gated on that status
+  specifically so an ordinary update of an EXPIRED / REVOKED certificate does
+  not newly start failing.
+- **Gate the failure MESSAGE on whether the callback was actually supplied.**
+  `create()` also runs with no context (the replacement inside `update()`,
+  `drift --revert`), and there nothing records the resource. A message
+  promising `cdkd destroy` will clean it up is then worse than silence — it is
+  the sentence that stops the user looking. ACM's
+  `waitForCertificateIssued` takes a `recorded` option for exactly this and
+  prints the manual `aws acm delete-certificate` command otherwise.
+
+Not on `UpdateContext`, so a provider re-creating inside its own `update()`
+reports nothing: that logical id already points at the OLD resource, and
+overwriting the record would orphan the one cdkd still manages. The engine
+refuses that overwrite independently. So the REPLACEMENT case is still open --
+issue #2173 -- and its remedy is a policy choice (delete the new resource, or
+report it as a survivor), not another report.
+
 ### Masking a resolved property value in a provider log line
 
 A provider's `properties` bag arrives RESOLVED, so a

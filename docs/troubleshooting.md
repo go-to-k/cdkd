@@ -1216,6 +1216,53 @@ aws cloudfront delete-distribution --id <ID> --if-match <NewETag>
 Then re-run `cdkd deploy`. The next run derives a fresh caller reference, so it
 will not collide with the deleted one.
 
+### Issue: an ACM certificate deploy fails with "did not reach ISSUED status"
+
+```
+ACM certificate SiteCert (arn:aws:acm:us-east-1:123456789012:certificate/...) did not reach
+ISSUED status within 600s.
+```
+
+A DNS-validated certificate only reaches `ISSUED` once its validation records
+are live in your DNS zone. On a first deploy those records usually do not exist
+yet — cdkd prints them on its first `PENDING_VALIDATION` poll — so the wait
+runs out. This is a real failure, not a cosmetic one: anything downstream
+(CloudFront, an ALB listener) cannot use a certificate that has not issued.
+
+**The certificate is NOT orphaned.** cdkd records it in the stack's state as
+soon as `RequestCertificate` returns (issue
+[#2169](https://github.com/go-to-k/cdkd/issues/2169)), so:
+
+```bash
+cdkd state show <stack>            # the certificate is listed, with its ARN
+```
+
+Add the printed CNAME records to your DNS zone, then just re-run the deploy:
+
+```bash
+cdkd deploy <stack>
+```
+
+The re-run finds the certificate in state, so it **re-uses the same one** and
+resumes waiting for it to be issued rather than requesting a second
+certificate. If you would rather not wait at all, `cdkd destroy <stack>`
+deletes it like any other managed resource.
+
+Two flags for a zone that is slow or manually managed:
+
+```bash
+# Wait longer than the provider's own 10-minute cap.
+cdkd deploy <stack> --resource-timeout AWS::CertificateManager::Certificate=45m
+
+# Do not wait at all. The certificate is created and recorded, and the deploy
+# returns immediately -- downstream consumers will fail until it issues.
+CDKD_NO_WAIT=true cdkd deploy <stack>
+```
+
+Note that `--resource-timeout` only RAISES the ceiling; the provider's internal
+poll cap is `CDKD_ACM_POLL_ATTEMPTS` x `CDKD_ACM_POLL_INTERVAL_MS`
+(60 x 10s by default), and whichever is shorter wins.
+
 ### Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`
 
 After a deploy fails with `--no-rollback`, is interrupted with Ctrl+C, or its

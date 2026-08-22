@@ -595,6 +595,69 @@ export interface CreateContext extends SecretMaskingContext {
    * throw-free". See `.claude/rules/providers.md` for the full write-up.
    */
   replayingState?: boolean;
+
+  /**
+   * Tell the engine "this create has MATERIALIZED a real AWS resource, and
+   * here is its physical id" — at the moment the id becomes known, not when
+   * the create finishes (issue
+   * [#2169](https://github.com/go-to-k/cdkd/issues/2169)).
+   *
+   * ## What it is for
+   *
+   * A provider whose create is `<one API call that materializes the resource>`
+   * followed by `<a wait for it to become usable>` can fail with the resource
+   * already existing in AWS. Before this existed that resource was simply
+   * LOST: the create never returned, so nothing was written to state.
+   *
+   * `ProvisioningError`'s `physicalId` is NOT the channel for it, which is the
+   * part that misleads. 462 call sites across 75 provider files already pass
+   * one, and on a create path it is usually the resource's *intended* name
+   * computed BEFORE the API call — `IAMRoleProvider.create` derives `roleName`
+   * and hands it to the catch's `ProvisioningError` whether or not `CreateRole`
+   * ever ran — so a reader cannot tell "I named this" from "I created this".
+   * Its only consumer is `cleanupFailedCreateRemnant` in
+   * `cloud-control-provider.ts`, which is Cloud-Control-only.
+   *
+   * Reporting through this callback rather than on the error also survives a
+   * failure the error cannot represent: the per-resource deadline
+   * (`--resource-timeout`) abandons the create from OUTSIDE, so the provider
+   * never reaches a `throw` of its own. That only helps for a report the
+   * provider had already made, which is why the timing below is part of the
+   * contract rather than a detail.
+   *
+   * ## What the engine does with it
+   *
+   * When the create then FAILS, the engine writes a normal state record for
+   * the reported id (see `deploy-engine.ts`), so the pre-rollback partial-state
+   * save persists it. The resource becomes visible to `cdkd state show`,
+   * deletable by `cdkd destroy`, revertable by `cdkd rollback --revert-failed`,
+   * and ADOPTED by the next `cdkd deploy` (which now takes the UPDATE path)
+   * rather than duplicated. When the create SUCCEEDS the report is discarded —
+   * the returned {@link ResourceCreateResult} is the record.
+   *
+   * ## The contract a provider must honour
+   *
+   * Only call it once the AWS API has CONFIRMED the resource exists (the
+   * create response returned its id). Reporting a speculative or
+   * pre-computed name would put a state record on a resource that may not
+   * exist, and the next `cdkd destroy` would then try to delete it. Reporting
+   * a resource the create did NOT bring into being (an adopted pre-existing
+   * one) would hand a user's own resource to this stack's lifecycle.
+   *
+   * Absent on the replacement path: `update()` receives an
+   * {@link UpdateContext}, which carries no such callback, so a provider that
+   * re-creates inside its own `update()` reports nothing. That is deliberate —
+   * the logical id already has a state record pointing at the OLD physical
+   * resource there, and overwriting it would orphan the resource cdkd still
+   * manages. The engine independently refuses to overwrite an existing record.
+   * The consequence is a real remaining gap rather than a solved case: a
+   * REPLACEMENT whose wait fails still orphans the new resource, tracked as
+   * issue [#2173](https://github.com/go-to-k/cdkd/issues/2173).
+   *
+   * Optional, and calling it is never required: a provider that does not
+   * report simply keeps the pre-#2169 behavior.
+   */
+  reportMaterialized?: (physicalId: string, attributes?: Record<string, unknown>) => void;
 }
 
 /**

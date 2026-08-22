@@ -103,10 +103,23 @@ export interface AcquireIdempotencyTokenOptions {
   logicalId: string;
   /**
    * Max token length the target API accepts. Defaults to 64, EC2's documented
-   * `Maximum 64 ASCII characters` limit. The value is always `[-a-z0-9]`, so
-   * truncation stays within every API's accepted character set.
+   * `Maximum 64 ASCII characters` limit. The value is always `[-a-z0-9]` (or
+   * `[a-z0-9]` under `charset: 'alphanumeric'`), so truncation stays within
+   * every API's accepted character set.
    */
   maxLength?: number;
+  /**
+   * Which characters the target API accepts in the token.
+   *
+   * `'default'` (the default) emits `cdkd-<hex>`. `'alphanumeric'` drops the
+   * separator and emits `cdkd<hex>`, for an API whose token pattern is `\w+`
+   * — ACM's `RequestCertificate` is the case that forced this option: its
+   * documented constraint is `Maximum length of 32` and `Pattern: \w+`, and a
+   * hyphen is not in `\w`, so the default spelling is REJECTED rather than
+   * silently accepted. The two spellings are the same digest, so a call site
+   * never gets a weaker guarantee by asking for the narrower set.
+   */
+  charset?: 'default' | 'alphanumeric';
 }
 
 const tokenKey = (scope: string, logicalId: string): string =>
@@ -118,11 +131,17 @@ const tokenKey = (scope: string, logicalId: string): string =>
   // scope / an unset AWS_REGION, which only unit tests hit.
   `${scope}\u0000${process.env['AWS_REGION'] ?? ''}\u0000${getCurrentStackName() ?? ''}\u0000${logicalId}`;
 
-const derive = (key: string, generation: number, maxLength: number): string => {
+const derive = (
+  key: string,
+  generation: number,
+  maxLength: number,
+  charset: 'default' | 'alphanumeric'
+): string => {
   const digest = createHash('sha256')
     .update(`${PROCESS_NONCE}\u0000${key}\u0000${generation}`)
     .digest('hex');
-  return `cdkd-${digest}`.slice(0, maxLength);
+  const separator = charset === 'alphanumeric' ? '' : '-';
+  return `cdkd${separator}${digest}`.slice(0, maxLength);
 };
 
 /**
@@ -137,10 +156,10 @@ const derive = (key: string, generation: number, maxLength: number): string => {
  * ```
  */
 export function acquireIdempotencyToken(options: AcquireIdempotencyTokenOptions): IdempotencyToken {
-  const { scope, logicalId, maxLength = 64 } = options;
+  const { scope, logicalId, maxLength = 64, charset = 'default' } = options;
   const key = tokenKey(scope, logicalId);
   const existing = inFlight.get(key);
-  const value = existing ?? derive(key, generations.get(key) ?? 0, maxLength);
+  const value = existing ?? derive(key, generations.get(key) ?? 0, maxLength, charset);
   if (existing === undefined) {
     inFlight.set(key, value);
   }

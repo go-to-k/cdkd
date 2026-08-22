@@ -38,6 +38,8 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ACMCertificateProvider } from '../../../src/provisioning/providers/acm-certificate-provider.js';
+import { resetIdempotencyTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 const ARN = 'arn:aws:acm:us-east-1:123456789012:certificate/abc123';
 
@@ -64,6 +66,11 @@ describe('ACMCertificateProvider', () => {
     // Default to --no-wait so create() tests don't enter the poll loop unless
     // they explicitly disable.
     process.env['CDKD_NO_WAIT'] = 'true';
+    // The token store is module-global and keyed by (scope, region, stack,
+    // logical id), so without this a token left in flight by one test would be
+    // handed to the next one that creates the same logical id -- which is
+    // exactly what the "fresh token after a success" test must be able to see.
+    resetIdempotencyTokensForTests();
     provider = new ACMCertificateProvider();
   });
 
@@ -217,6 +224,185 @@ describe('ACMCertificateProvider', () => {
           ValidationMethod: 'DNS',
         })
       ).rejects.toThrow(/did not reach ISSUED/);
+    });
+  });
+
+  // Issue #2169: a create that fails AFTER RequestCertificate returned leaves a
+  // real certificate in AWS. These fence the two halves that keep it from being
+  // lost -- the report that lets the engine record it, and the ARN on the way
+  // out -- plus the idempotency token that stops an in-process retry minting a
+  // second one.
+  describe('create: a certificate that outlives its failed create (#2169)', () => {
+    const CERT_ATTRS = { Arn: ARN, CertificateArn: ARN };
+
+    it('reports the ARN to the engine as soon as RequestCertificate returns, BEFORE the wait', async () => {
+      process.env['CDKD_NO_WAIT'] = '';
+      const reported: Array<[string, Record<string, unknown> | undefined]> = [];
+      // Records what had been reported by the time the FIRST poll ran. A report
+      // deferred to the end of create() would leave this empty, and would be
+      // lost entirely to an outer `--resource-timeout` abort.
+      let reportedBeforeFirstPoll: number | undefined;
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      mockSend.mockImplementationOnce(() => {
+        reportedBeforeFirstPoll = reported.length;
+        return Promise.resolve({ Certificate: { Status: 'ISSUED' } });
+      });
+
+      await provider.create(
+        'MyCert',
+        'AWS::CertificateManager::Certificate',
+        { DomainName: 'example.com', ValidationMethod: 'DNS' },
+        { reportMaterialized: (id, attrs) => reported.push([id, attrs]) }
+      );
+
+      expect(reportedBeforeFirstPoll).toBe(1);
+      expect(reported).toEqual([[ARN, CERT_ATTRS]]);
+    });
+
+    it('reports the ARN even though the ISSUED wait then times out', async () => {
+      process.env['CDKD_NO_WAIT'] = '';
+      const reported: Array<[string, Record<string, unknown> | undefined]> = [];
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      for (let i = 0; i < 10; i++) {
+        mockSend.mockResolvedValueOnce({
+          Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: [] },
+        });
+      }
+
+      await expect(
+        provider.create(
+          'MyCert',
+          'AWS::CertificateManager::Certificate',
+          { DomainName: 'example.com', ValidationMethod: 'DNS' },
+          { reportMaterialized: (id, attrs) => reported.push([id, attrs]) }
+        )
+      ).rejects.toThrow(/did not reach ISSUED/);
+
+      expect(reported).toEqual([[ARN, CERT_ATTRS]]);
+    });
+
+    it('carries the ARN on the poll-cap-exhausted error as physicalId, not only in the message', async () => {
+      process.env['CDKD_NO_WAIT'] = '';
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      for (let i = 0; i < 10; i++) {
+        mockSend.mockResolvedValueOnce({
+          Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: [] },
+        });
+      }
+
+      const error = await provider
+        .create('MyCert', 'AWS::CertificateManager::Certificate', {
+          DomainName: 'example.com',
+          ValidationMethod: 'DNS',
+        })
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect((error as ProvisioningError).physicalId).toBe(ARN);
+      expect((error as ProvisioningError).logicalId).toBe('MyCert');
+      expect((error as ProvisioningError).resourceType).toBe(
+        'AWS::CertificateManager::Certificate'
+      );
+    });
+
+    it('carries the ARN on the terminal-status error as physicalId', async () => {
+      process.env['CDKD_NO_WAIT'] = '';
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      mockSend.mockResolvedValueOnce({ Certificate: { Status: 'VALIDATION_TIMED_OUT' } });
+
+      const error = await provider
+        .create('MyCert', 'AWS::CertificateManager::Certificate', {
+          DomainName: 'example.com',
+          ValidationMethod: 'DNS',
+        })
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect((error as ProvisioningError).physicalId).toBe(ARN);
+    });
+
+    // The failure message makes a PROMISE about cleanup, and the promise is
+    // only true when a report channel exists to put the certificate in state.
+    // A create with no channel -- the replacement inside `update()`, a
+    // `drift --revert` -- must not tell the user `cdkd destroy` covers it.
+    it('promises cdkd cleanup ONLY when the engine can record the certificate', async () => {
+      process.env['CDKD_NO_WAIT'] = '';
+      const primePolls = (): void => {
+        mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+        for (let i = 0; i < 10; i++) {
+          mockSend.mockResolvedValueOnce({
+            Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: [] },
+          });
+        }
+      };
+      const props = { DomainName: 'example.com', ValidationMethod: 'DNS' };
+
+      primePolls();
+      const reported = await provider
+        .create('MyCert', 'AWS::CertificateManager::Certificate', props, {
+          reportMaterialized: () => {},
+        })
+        .catch((e: unknown) => (e as Error).message);
+
+      mockSend.mockReset();
+      primePolls();
+      const unreported = await provider
+        .create('MyCert', 'AWS::CertificateManager::Certificate', props)
+        .catch((e: unknown) => (e as Error).message);
+
+      expect(reported).toContain("recorded in this stack's state");
+      expect(reported).not.toContain('NOT tracking');
+
+      expect(unreported).toContain('NOT tracking');
+      // Names the exact retirement command, since cdkd will not issue it.
+      expect(unreported).toContain(`aws acm delete-certificate --certificate-arn ${ARN}`);
+      expect(unreported).not.toContain("recorded in this stack's state");
+    });
+
+    it('sends an IdempotencyToken ACM will accept (\\w+, <= 32 chars)', async () => {
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+
+      await provider.create('MyCert', 'AWS::CertificateManager::Certificate', {
+        DomainName: 'example.com',
+      });
+
+      const token = callsOfType(RequestCertificateCommand)[0].input.IdempotencyToken as string;
+      // ACM's documented constraints: `Pattern: \w+`, `Maximum length of 32`.
+      // The helper's DEFAULT spelling is `cdkd-<hex>`, whose hyphen is not in
+      // `\w` -- so this asserts the narrower charset was actually asked for,
+      // and would fail on the default.
+      expect(token).toMatch(/^\w{1,32}$/);
+    });
+
+    it('re-uses the same IdempotencyToken across retries of one create, and a fresh one after a success', async () => {
+      // Attempt 1 fails at the request itself -- the shape that mints a second
+      // certificate when the failure was a 5xx whose request had landed.
+      mockSend.mockRejectedValueOnce(new Error('503 Service Unavailable'));
+      await expect(
+        provider.create('MyCert', 'AWS::CertificateManager::Certificate', {
+          DomainName: 'example.com',
+        })
+      ).rejects.toThrow(/503/);
+
+      // Attempt 2 (what the engine's withRetry does) succeeds.
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      await provider.create('MyCert', 'AWS::CertificateManager::Certificate', {
+        DomainName: 'example.com',
+      });
+
+      // A LATER create of the same logical id -- e.g. a `--replace` re-create --
+      // must not be answered with the certificate the previous one produced.
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      await provider.create('MyCert', 'AWS::CertificateManager::Certificate', {
+        DomainName: 'example.com',
+      });
+
+      const tokens = callsOfType(RequestCertificateCommand).map(
+        (c) => c.input.IdempotencyToken as string
+      );
+      expect(tokens).toHaveLength(3);
+      expect(tokens[0]).toBe(tokens[1]);
+      expect(tokens[2]).not.toBe(tokens[1]);
     });
   });
 
@@ -471,6 +657,98 @@ describe('ACMCertificateProvider', () => {
 
       expect(callsOfType(UpdateCertificateOptionsCommand)).toHaveLength(0);
       expect(callsOfType(AddTagsToCertificateCommand)).toHaveLength(1);
+    });
+  });
+
+  // Issue #2169: once a failed create's certificate is in state, the NEXT
+  // deploy reaches update() instead of create(). These fence that the re-run
+  // reaches the same verdict the create would have.
+  describe('update: resuming the ISSUED wait for an adopted certificate (#2169)', () => {
+    it('waits for a PENDING_VALIDATION certificate and succeeds once it is ISSUED', async () => {
+      process.env['CDKD_NO_WAIT'] = '';
+      // No tag / options change, so the only calls are the status probe and
+      // then the resumed wait's polls.
+      mockSend.mockResolvedValueOnce({ Certificate: { Status: 'PENDING_VALIDATION' } });
+      mockSend.mockResolvedValueOnce({
+        Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: [] },
+      });
+      mockSend.mockResolvedValueOnce({ Certificate: { Status: 'ISSUED' } });
+
+      const result = await provider.update(
+        'MyCert',
+        ARN,
+        'AWS::CertificateManager::Certificate',
+        { DomainName: 'example.com', ValidationMethod: 'DNS' },
+        { DomainName: 'example.com', ValidationMethod: 'DNS' }
+      );
+
+      expect(result.physicalId).toBe(ARN);
+      expect(result.wasReplaced).toBe(false);
+      expect(callsOfType(DescribeCertificateCommand)).toHaveLength(3);
+    });
+
+    it('fails the update when the adopted certificate is still not issued', async () => {
+      process.env['CDKD_NO_WAIT'] = '';
+      mockSend.mockResolvedValueOnce({ Certificate: { Status: 'PENDING_VALIDATION' } });
+      for (let i = 0; i < 10; i++) {
+        mockSend.mockResolvedValueOnce({
+          Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: [] },
+        });
+      }
+
+      const error = await provider
+        .update(
+          'MyCert',
+          ARN,
+          'AWS::CertificateManager::Certificate',
+          { DomainName: 'example.com', ValidationMethod: 'DNS' },
+          { DomainName: 'example.com', ValidationMethod: 'DNS' }
+        )
+        .catch((e: unknown) => e);
+
+      // The wait's own message survives -- not re-wrapped behind a generic
+      // "Failed to update ACM certificate".
+      expect((error as Error).message).toMatch(/did not reach ISSUED/);
+      expect((error as ProvisioningError).physicalId).toBe(ARN);
+    });
+
+    // The gate is PENDING_VALIDATION specifically, not "anything but ISSUED":
+    // an ordinary update of an expired / revoked certificate succeeded before
+    // #2169 and must keep succeeding, since `waitForCertificateIssued` treats
+    // those as terminal failures.
+    it.each(['ISSUED', 'EXPIRED', 'REVOKED', 'INACTIVE'] as const)(
+      'does not wait when the certificate status is %s',
+      async (status) => {
+        process.env['CDKD_NO_WAIT'] = '';
+        mockSend.mockResolvedValueOnce({ Certificate: { Status: status } });
+
+        const result = await provider.update(
+          'MyCert',
+          ARN,
+          'AWS::CertificateManager::Certificate',
+          { DomainName: 'example.com', ValidationMethod: 'DNS' },
+          { DomainName: 'example.com', ValidationMethod: 'DNS' }
+        );
+
+        expect(result.physicalId).toBe(ARN);
+        // Exactly one DescribeCertificate: the status probe. A resumed wait
+        // would add at least one more.
+        expect(callsOfType(DescribeCertificateCommand)).toHaveLength(1);
+      }
+    );
+
+    it('skips the status probe entirely under CDKD_NO_WAIT', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+
+      await provider.update(
+        'MyCert',
+        ARN,
+        'AWS::CertificateManager::Certificate',
+        { DomainName: 'example.com', ValidationMethod: 'DNS' },
+        { DomainName: 'example.com', ValidationMethod: 'DNS' }
+      );
+
+      expect(callsOfType(DescribeCertificateCommand)).toHaveLength(0);
     });
   });
 

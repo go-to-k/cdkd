@@ -1453,6 +1453,59 @@ implementation. Three details are worth copying:
     only, which correctly stays a hard error), so there is no live gap; this is
     a constraint on the NEXT provider, not a description of the current tree.
 
+  - **`reportMaterialized` — say so the moment AWS has actually created the
+    resource, if your create can still fail afterwards.** A create shaped
+    `<one API call that materializes the resource>` then `<a wait for it to
+    become usable>` can fail with the resource already alive in AWS. Before
+    issue [#2169](https://github.com/go-to-k/cdkd/issues/2169) that resource
+    was simply LOST: the create never returned, so nothing was written to
+    state, and it was invisible to `cdkd state show`, unreachable by
+    `cdkd destroy`, and re-created from scratch by the next `cdkd deploy`.
+    Call `context?.reportMaterialized?.(physicalId, attributes)` as soon as the
+    AWS response carries the id, and the deploy engine writes a normal state
+    record for it if the create then fails — after which the next deploy
+    ADOPTS the resource through `update()` instead of duplicating it.
+
+    Three points that decide whether you get this right:
+
+    - **Report at the API response, not on the way out.** The engine's
+      per-resource deadline (`--resource-timeout`) aborts a create from the
+      OUTSIDE, so a provider that reports in its own `catch` / `finally`
+      reports nothing at all on exactly the run that blew its budget. That is
+      the case the #2169 reporter actually hit.
+    - **Only report what AWS confirmed exists.** Do NOT report the name you
+      computed before the call — that is what `ProvisioningError.physicalId`
+      usually carries on a create path (462 call sites across 75 provider
+      files pass one; `IAMRoleProvider.create` hands its catch the `roleName`
+      it derived, whether or not `CreateRole` ever ran), and it is why that
+      field cannot serve as this signal. A record for a resource that was
+      never created sends the next `cdkd destroy` chasing it. Never report a
+      resource your create merely ADOPTED — that hands a user's own resource
+      to this stack's lifecycle.
+    - **Then decide keep vs delete, and say which you chose.** The engine only
+      RECORDS; whether the remnant should survive is the provider's judgment.
+      `CloudControlProvider.cleanupFailedCreateRemnant` deletes (a half-created
+      Cloud Control resource just occupies the name a retry needs), whereas
+      `ACMCertificateProvider` keeps: a `PENDING_VALIDATION` certificate is
+      exactly the thing the user has just added DNS records for, and ACM goes
+      on validating it after cdkd stops waiting. A provider that keeps one owes
+      the user the other half — ACM's `update()` RESUMES the `ISSUED` wait for
+      a still-pending certificate, so the adopting deploy reaches the same
+      verdict the create would have instead of reporting success on an
+      unusable resource. And keep the failure MESSAGE honest about which of
+      the two happened: `create()` is also called with no context at all (the
+      replacement inside `update()`, `drift --revert`), and there nothing will
+      record the resource — a message promising `cdkd destroy` will clean it
+      up is worse than silence, because it is the sentence that stops the user
+      looking. Gate the claim on whether the callback was actually supplied,
+      as `waitForCertificateIssued`'s `recorded` option does.
+
+    Available on `CreateContext` only, so a provider that re-creates inside its
+    own `update()` reports nothing — deliberately, since the logical id already
+    has a record pointing at the OLD resource there and overwriting it would
+    orphan the one cdkd still manages. The engine refuses that overwrite
+    independently.
+
   - **`maskSecrets` — mask a resolved property value before you log it.**
     Both `CreateContext` and `UpdateContext` extend a shared
     `SecretMaskingContext`, whose one optional field is
