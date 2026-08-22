@@ -21,6 +21,67 @@ import { hostname } from 'os';
 export interface LockManagerOptions {
   /** Lock TTL in minutes (default: 30) */
   ttlMinutes?: number;
+  /**
+   * Disable the background renewal loop (default: false).
+   *
+   * Only for tests that need a lock to actually reach its TTL. Production
+   * callers must never set this: a lock that stops being renewed is exactly
+   * the pre-issue-#2168 behaviour, where an operation outliving its TTL
+   * silently loses mutual exclusion.
+   */
+  disableRenewal?: boolean;
+}
+
+/**
+ * Upper bound on the gap between lock renewals.
+ *
+ * Deliberately a fixed wall-clock ceiling rather than a pure fraction of the
+ * TTL. A fraction alone (TTL/4 = 7.5 min at the default) makes renewal
+ * unobservable in any deploy shorter than that, so nothing short of a
+ * multi-hour fixture could ever prove the loop runs -- and an untestable
+ * heartbeat is one that goes dead silently. At 2 min the default 30 min TTL
+ * tolerates FOURTEEN consecutive missed renewals before it lapses, and an
+ * ordinary broad-set integ (~8 min) performs three.
+ */
+const MAX_RENEWAL_INTERVAL_MS = 2 * 60 * 1000;
+
+/**
+ * Renew after at most a quarter of the TTL, so a short TTL still gets three
+ * chances to renew before it lapses. This is what binds the two numbers
+ * together for a caller that shortens `ttlMinutes`.
+ */
+const RENEWAL_TTL_FRACTION = 4;
+
+/** Floor, so a pathologically small TTL cannot spin the event loop. */
+const MIN_RENEWAL_INTERVAL_MS = 1000;
+
+/**
+ * A lock this process currently believes it holds.
+ *
+ * `etag` is the S3 ETag of the lock object as this process last wrote it, and
+ * it is what makes both renewal and release CONDITIONAL: every subsequent
+ * write carries `IfMatch: etag`, so a process that has already lost the lock
+ * can neither resurrect its own expiry nor delete the new owner's lock.
+ */
+interface HeldLock {
+  stackName: string;
+  region: string;
+  key: string;
+  info: LockInfo;
+  etag: string | undefined;
+  timer: NodeJS.Timeout | undefined;
+  /**
+   * The renewal currently in flight, if any.
+   *
+   * `releaseLock` awaits it before reading `etag`. Without that, a renewal
+   * that lands between `stopRenewal()` and the DELETE leaves the caller
+   * holding the PREVIOUS ETag, S3 answers 412, and this process refuses to
+   * release its OWN lock -- stranding it for a full TTL behind a warning that
+   * blames a process that does not exist.
+   */
+  renewing: Promise<void> | undefined;
+  /** Set once S3 has told us the object is no longer the one we wrote. */
+  lost: boolean;
 }
 
 /**
@@ -45,6 +106,10 @@ export class LockManager {
   private s3Client: S3Client;
   private config: StateBackendConfig;
   private readonly ttlMs: number;
+  private readonly renewalIntervalMs: number;
+  private readonly renewalDisabled: boolean;
+  /** Locks held by THIS process, keyed by S3 lock key. */
+  private readonly heldLocks = new Map<string, HeldLock>();
   private clientResolved = false;
   private resolveInFlight: Promise<void> | null = null;
 
@@ -53,6 +118,11 @@ export class LockManager {
     this.config = config;
     const ttlMinutes = options?.ttlMinutes ?? 30;
     this.ttlMs = ttlMinutes * 60 * 1000;
+    this.renewalDisabled = options?.disableRenewal === true;
+    this.renewalIntervalMs = Math.max(
+      MIN_RENEWAL_INTERVAL_MS,
+      Math.min(MAX_RENEWAL_INTERVAL_MS, Math.floor(this.ttlMs / RENEWAL_TTL_FRACTION))
+    );
   }
 
   /**
@@ -199,55 +269,58 @@ export class LockManager {
     try {
       this.logger.debug(`Attempting to acquire lock for stack: ${stackName} (${region})`);
 
-      const lockBody = JSON.stringify(lockInfo, null, 2);
-      await this.s3Client.send(
-        new PutObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: key,
-          Body: lockBody,
-          ContentLength: Buffer.byteLength(lockBody),
-          ContentType: 'application/json',
-          IfNoneMatch: '*', // Only succeed if object doesn't exist
-        })
-      );
+      const etag = await this.putLockObject(key, lockInfo);
 
       this.logger.debug(`Lock acquired for stack: ${stackName} (${region}), owner: ${lockOwner}`);
+      this.trackHeldLock({ stackName, region, key, info: lockInfo, etag });
       return true;
     } catch (error) {
       // Check for PreconditionFailed error (S3 condition not met - lock already exists)
       if (error instanceof S3ServiceException && error.name === 'PreconditionFailed') {
         this.logger.debug(`Lock already exists for stack: ${stackName} (${region})`);
 
-        // Check if the existing lock is expired
-        const existingLock = await this.getLockInfo(stackName, region);
-        if (existingLock && this.isLockExpired(existingLock)) {
-          this.logger.info(
-            `Expired lock detected for stack: ${stackName} (${region}, owner: ${existingLock.owner}, ` +
-              `expired ${this.formatDuration(now - existingLock.expiresAt)} ago). Cleaning up...`
+        // Check if the existing lock is expired.
+        //
+        // Read the ETag alongside the body: it is what makes the takeover
+        // DELETE below conditional. Since issue #2168 a live holder renews its
+        // lock, so "expired" now means the owner has been silent for a whole
+        // TTL -- but a renewal that merely lost a race with this read is
+        // indistinguishable from a dead owner, and an unconditional delete
+        // here would discard that renewed lock. `IfMatch` on the exact bytes
+        // we just judged expired closes the window.
+        const existing = await this.getLockRecord(stackName, region);
+        if (existing && this.isLockExpired(existing.info)) {
+          this.logger.warn(
+            `Taking over an EXPIRED lock for stack: ${stackName} (${region}, owner: ${existing.info.owner}, ` +
+              `expired ${this.formatDuration(now - existing.info.expiresAt)} ago). A live cdkd process renews its ` +
+              `lock well inside the TTL, so this normally means the previous owner crashed or was suspended -- ` +
+              `if it is in fact still running, both processes will now be writing to the same stack.`
           );
 
           // Delete the expired lock and retry acquisition
-          await this.deleteLock(stackName, region);
+          try {
+            await this.deleteLock(stackName, region, existing.etag);
+          } catch (deleteError) {
+            if (this.isNotOursError(deleteError)) {
+              // The lock changed between our read and our delete -- either the
+              // owner renewed it or a third process took it over first. Either
+              // way it is NOT ours to remove, and it is NOT free.
+              this.logger.debug(
+                `Expired lock for stack ${stackName} (${region}) changed before takeover; treating as contended`
+              );
+              return false;
+            }
+            throw deleteError;
+          }
 
           // Retry once after cleaning up expired lock
           try {
-            const retryBody = JSON.stringify(lockInfo, null, 2);
-            await this.s3Client.send(
-              new PutObjectCommand({
-                Bucket: this.config.bucket,
-                ...(await this.ownerParam()),
-                Key: key,
-                Body: retryBody,
-                ContentLength: Buffer.byteLength(retryBody),
-                ContentType: 'application/json',
-                IfNoneMatch: '*',
-              })
-            );
+            const retryEtag = await this.putLockObject(key, lockInfo);
 
             this.logger.debug(
               `Lock acquired for stack: ${stackName} (${region}) after expired lock cleanup, owner: ${lockOwner}`
             );
+            this.trackHeldLock({ stackName, region, key, info: lockInfo, etag: retryEtag });
             return true;
           } catch (retryError) {
             if (
@@ -275,6 +348,32 @@ export class LockManager {
   }
 
   /**
+   * Write the lock object and return the ETag S3 assigned it.
+   *
+   * `condition` defaults to `IfNoneMatch: '*'` (acquisition -- succeed only if
+   * no current version exists). Renewal passes `IfMatch: <etag>` instead.
+   */
+  private async putLockObject(
+    key: string,
+    lockInfo: LockInfo,
+    condition: { IfNoneMatch: string } | { IfMatch: string } = { IfNoneMatch: '*' }
+  ): Promise<string | undefined> {
+    const body = JSON.stringify(lockInfo, null, 2);
+    const response = await this.s3Client.send(
+      new PutObjectCommand({
+        Bucket: this.config.bucket,
+        ...(await this.ownerParam()),
+        Key: key,
+        Body: body,
+        ContentLength: Buffer.byteLength(body),
+        ContentType: 'application/json',
+        ...condition,
+      })
+    );
+    return response.ETag;
+  }
+
+  /**
    * Get current lock information.
    *
    * `region` is required for the new region-scoped lock layout. Pass
@@ -282,6 +381,22 @@ export class LockManager {
    * file (e.g. for state-listing tools that don't yet know the region).
    */
   async getLockInfo(stackName: string, region: string | undefined): Promise<LockInfo | null> {
+    const record = await this.getLockRecord(stackName, region);
+    return record ? record.info : null;
+  }
+
+  /**
+   * `getLockInfo` plus the S3 ETag of the object the info came from.
+   *
+   * Internal because the ETag is only meaningful to code that then issues a
+   * CONDITIONAL write or delete against the exact bytes it read (issue #2168):
+   * the expired-lock takeover in `acquireLock`. Every public reader wants the
+   * body alone.
+   */
+  private async getLockRecord(
+    stackName: string,
+    region: string | undefined
+  ): Promise<{ info: LockInfo; etag: string | undefined } | null> {
     await this.ensureClientForBucket();
 
     const key = this.getLockKey(stackName, region);
@@ -335,7 +450,7 @@ export class LockManager {
 
       this.logger.debug(`Lock info for stack: ${stackName}:`, lockInfo);
 
-      return lockInfo;
+      return { info: lockInfo, etag: response.ETag };
     } catch (error) {
       if (error instanceof NoSuchKey) {
         this.logger.debug(`No lock exists for stack: ${stackName}`);
@@ -367,26 +482,86 @@ export class LockManager {
   }
 
   /**
-   * Release a lock for a stack
+   * Release a lock for a stack.
+   *
+   * The DELETE is CONDITIONAL on the ETag this process last wrote (issue
+   * #2168). Before that it was an owner-blind unconditional delete, which is
+   * what turned a single lost lock into a cascade: an operation that outlived
+   * its TTL had its lock taken over by a second process, then deleted the
+   * SECOND process's lock on its way out, freeing the stack for a third.
+   *
+   * A `PreconditionFailed` therefore means "the object here is not the one I
+   * wrote", and the correct response is to leave it alone -- not to raise, as
+   * the operation itself has already finished and its caller has nothing to do
+   * about it. Every other failure falls back to the unconditional delete, so a
+   * bucket policy that denies the `s3:GetObject` an ETag-conditional delete
+   * requires cannot leave a lock stranded forever.
    */
   async releaseLock(stackName: string, region: string): Promise<void> {
     await this.ensureClientForBucket();
 
     const key = this.getLockKey(stackName, region);
+    const held = this.heldLocks.get(key);
+    if (held) {
+      this.stopRenewal(held);
+      // Settle any renewal already in flight FIRST: it is what decides both
+      // `etag` and `lost` below, and reading them past it is the race this
+      // await exists to close.
+      await held.renewing?.catch(() => undefined);
+      this.heldLocks.delete(key);
+    }
+
+    if (held?.lost) {
+      this.logger.warn(
+        `Not releasing the lock for stack '${stackName}' (${region}): this process lost it while the ` +
+          `operation was still running, so the lock present now belongs to someone else.`
+      );
+      return;
+    }
 
     try {
       this.logger.debug(`Releasing lock for stack: ${stackName} (${region})`);
 
-      await this.s3Client.send(
-        new DeleteObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: key,
-        })
-      );
+      await this.deleteLock(stackName, region, held?.etag);
 
       this.logger.debug(`Lock released for stack: ${stackName} (${region})`);
     } catch (error) {
+      if (this.isForeignLockError(error)) {
+        this.logger.warn(
+          `Not releasing the lock for stack '${stackName}' (${region}): it has been replaced since this ` +
+            `process acquired it, so another cdkd process now holds it. Leaving it in place.`
+        );
+        return;
+      }
+
+      if (this.isGoneError(error)) {
+        this.logger.debug(`Lock for stack ${stackName} (${region}) was already gone`);
+        return;
+      }
+
+      if (held?.etag !== undefined) {
+        // The conditional delete failed for a reason that is NOT "this is not
+        // my lock" -- most plausibly a bucket policy that denies the
+        // `s3:GetObject` an ETag-conditional delete needs, or a transport
+        // error. Falling back to the unconditional delete keeps this exactly
+        // as reliable as it was before the condition was added; the safety win
+        // is confined to the case S3 positively told us about.
+        this.logger.debug(
+          `Conditional lock release for stack ${stackName} (${region}) failed ` +
+            `(${error instanceof Error ? error.message : String(error)}); retrying unconditionally`
+        );
+        try {
+          await this.deleteLock(stackName, region);
+          this.logger.debug(`Lock released for stack: ${stackName} (${region})`);
+          return;
+        } catch (fallbackError) {
+          throw new LockError(
+            `Failed to release lock for stack '${stackName}' (${region}): ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
+            fallbackError instanceof Error ? fallbackError : undefined
+          );
+        }
+      }
+
       throw new LockError(
         `Failed to release lock for stack '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`,
         error instanceof Error ? error : undefined
@@ -414,6 +589,10 @@ export class LockManager {
     // and delete nothing, forever. A DELETE against a key that genuinely is
     // not there is an idempotent no-op, so the cost of always issuing it is one
     // API call on a command the user ran explicitly.
+    //
+    // For the same reason it is unconditional with respect to issue #2168's
+    // ETag too: `force-unlock` exists precisely to remove a lock this process
+    // does NOT own.
     const where = `${stackName}${region ? ` (${region})` : ''}`;
     const lockInfo = await this.getLockInfo(stackName, region).catch(() => null);
 
@@ -428,13 +607,32 @@ export class LockManager {
             `lock cdkd cannot read is a lock nothing else can clear)`
     );
 
+    // If this process happens to be the holder, stop renewing before the
+    // delete -- otherwise the next tick would re-create the very lock the user
+    // asked to remove.
+    const held = this.heldLocks.get(this.getLockKey(stackName, region));
+    if (held) {
+      this.stopRenewal(held);
+      this.heldLocks.delete(held.key);
+    }
+
     await this.deleteLock(stackName, region);
   }
 
   /**
-   * Internal method to delete the lock file from S3
+   * Internal method to delete the lock file from S3.
+   *
+   * When `etag` is supplied the delete is conditional (`IfMatch`), so it
+   * removes the object ONLY while it is still byte-identical to the one the
+   * caller read or wrote. S3 evaluates the condition against the CURRENT
+   * version, which is the right unit here even on the versioned state bucket:
+   * the current version IS the live lock.
    */
-  private async deleteLock(stackName: string, region: string | undefined): Promise<void> {
+  private async deleteLock(
+    stackName: string,
+    region: string | undefined,
+    etag?: string
+  ): Promise<void> {
     await this.ensureClientForBucket();
 
     const key = this.getLockKey(stackName, region);
@@ -444,8 +642,164 @@ export class LockManager {
         Bucket: this.config.bucket,
         ...(await this.ownerParam()),
         Key: key,
+        ...(etag !== undefined && { IfMatch: etag }),
       })
     );
+  }
+
+  /**
+   * Record a lock this process now holds and start renewing it.
+   */
+  private trackHeldLock(args: {
+    stackName: string;
+    region: string;
+    key: string;
+    info: LockInfo;
+    etag: string | undefined;
+  }): void {
+    const previous = this.heldLocks.get(args.key);
+    if (previous) this.stopRenewal(previous);
+
+    const held: HeldLock = {
+      stackName: args.stackName,
+      region: args.region,
+      key: args.key,
+      info: args.info,
+      etag: args.etag,
+      timer: undefined,
+      renewing: undefined,
+      lost: false,
+    };
+    this.heldLocks.set(args.key, held);
+
+    if (this.renewalDisabled) {
+      this.logger.debug(
+        `Lock renewal is disabled; the lock for ${args.stackName} (${args.region}) will lapse at its TTL`
+      );
+      return;
+    }
+
+    if (args.etag === undefined) {
+      // Every real S3 PutObject response carries an ETag; only a test double
+      // omits it. Renewing without one would mean an UNCONDITIONAL overwrite,
+      // which is the one thing renewal must never do -- a process that has
+      // already lost the lock would resurrect its own expiry on top of the new
+      // owner's lock. Degrading to the pre-#2168 behaviour (lapse at the TTL)
+      // is the safe direction.
+      this.logger.debug(
+        `No ETag returned when acquiring the lock for ${args.stackName} (${args.region}); ` +
+          `renewal disabled for this lock`
+      );
+      return;
+    }
+
+    this.startRenewal(held);
+  }
+
+  private startRenewal(held: HeldLock): void {
+    const timer = setInterval(() => {
+      void this.renewLock(held);
+    }, this.renewalIntervalMs);
+    // Never hold the process open for a heartbeat.
+    timer.unref?.();
+    held.timer = timer;
+  }
+
+  private stopRenewal(held: HeldLock): void {
+    if (held.timer !== undefined) {
+      clearInterval(held.timer);
+      held.timer = undefined;
+    }
+  }
+
+  /**
+   * Push the lock's `expiresAt` forward, conditional on still owning it.
+   *
+   * This is what makes the TTL mean "the owner has been silent for TTL"
+   * instead of "the operation has been running for TTL". Before issue #2168
+   * there was no renewal at all, so any operation slower than the TTL -- an
+   * FSx or EMR resource waiting up to an hour, or simply a large stack --
+   * had its lock treated as free by the next process while it was still
+   * running.
+   */
+  private renewLock(held: HeldLock): Promise<void> {
+    if (held.lost || held.renewing !== undefined || held.etag === undefined) {
+      return Promise.resolve();
+    }
+    const inFlight = this.doRenewLock(held).finally(() => {
+      held.renewing = undefined;
+    });
+    held.renewing = inFlight;
+    return inFlight;
+  }
+
+  private async doRenewLock(held: HeldLock): Promise<void> {
+    const currentEtag = held.etag;
+    // Re-asserted rather than inherited from `renewLock`'s guard: this method
+    // is what performs the UNCONDITIONAL-write-forbidding decision, so the
+    // condition it depends on has to be visible here.
+    if (currentEtag === undefined) return;
+    try {
+      const renewed: LockInfo = { ...held.info, expiresAt: Date.now() + this.ttlMs };
+      const etag = await this.putLockObject(held.key, renewed, { IfMatch: currentEtag });
+      held.info = renewed;
+      held.etag = etag;
+      if (etag === undefined) {
+        // Cannot chain another conditional write without one. Stop rather than
+        // fall back to an unconditional overwrite.
+        this.stopRenewal(held);
+        this.logger.debug(
+          `Lock renewal for ${held.stackName} (${held.region}) returned no ETag; stopping renewal`
+        );
+        return;
+      }
+      this.logger.debug(
+        `Renewed lock for stack: ${held.stackName} (${held.region}) until ` +
+          `${new Date(renewed.expiresAt).toISOString()}`
+      );
+    } catch (error) {
+      if (this.isNotOursError(error)) {
+        held.lost = true;
+        this.stopRenewal(held);
+        this.logger.warn(
+          `Lost the lock for stack '${held.stackName}' (${held.region}) while the operation was still ` +
+            `running: the lock object has been replaced or removed. Another cdkd process may now be ` +
+            `writing to this stack concurrently. This process will not delete the current lock when it ` +
+            `finishes.`
+        );
+        return;
+      }
+      // Transient (throttling, network, 409 on a concurrent request). Keep the
+      // interval running -- the TTL tolerates many consecutive misses, and
+      // giving up on the first one would re-open the very window this closes.
+      this.logger.debug(
+        `Lock renewal for stack ${held.stackName} (${held.region}) failed, will retry: ` +
+          `${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  /** S3 told us the object is not the one we wrote (someone else replaced it). */
+  private isForeignLockError(error: unknown): boolean {
+    return error instanceof S3ServiceException && error.name === 'PreconditionFailed';
+  }
+
+  /** S3 told us the object is not there at all. */
+  private isGoneError(error: unknown): boolean {
+    if (error instanceof NoSuchKey) return true;
+    return (
+      error instanceof S3ServiceException &&
+      (error.name === 'NoSuchKey' || error.$metadata.httpStatusCode === 404)
+    );
+  }
+
+  /**
+   * Either of the two ways S3 can tell us the lock we thought we held is no
+   * longer ours: replaced by someone else (412) or deleted outright (404, e.g.
+   * by `cdkd force-unlock`). Both mean stop renewing and do not delete.
+   */
+  private isNotOursError(error: unknown): boolean {
+    return this.isForeignLockError(error) || this.isGoneError(error);
   }
 
   /**

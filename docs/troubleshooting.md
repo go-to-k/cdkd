@@ -31,6 +31,15 @@ Locked by: user@hostname:12345, operation: deploy
 - Another process is deploying the same stack
 - Previous process crashed and lock remains
 
+> **A lock is only reclaimed once its holder stops renewing it.** Since issue
+> [#2168](https://github.com/go-to-k/cdkd/issues/2168) the holding process
+> re-writes the lock's `expiresAt` every couple of minutes while it runs, so
+> the 30-minute TTL measures **silence, not duration**. A long deploy no longer
+> loses its lock partway through, and conversely a lock you find expired really
+> does belong to a process that is gone. If you were waiting out a TTL to work
+> around a slow operation, that is no longer a thing that happens -- and if a
+> lock is not expiring, the process holding it is alive.
+
 > **Note:** The message above is what `cdkd deploy` prints — it **retries** a
 > held lock a few times before giving up. The commands that WRITE state
 > without deploying — `cdkd destroy`, `cdkd state destroy`, `cdkd import`,
