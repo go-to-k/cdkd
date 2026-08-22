@@ -68,8 +68,8 @@ describe('ACMCertificateProvider', () => {
     process.env['CDKD_NO_WAIT'] = 'true';
     // The token store is module-global and keyed by (scope, region, stack,
     // logical id), so without this a token left in flight by one test would be
-    // handed to the next one that creates the same logical id -- which is
-    // exactly what the "fresh token after a success" test must be able to see.
+    // handed to the next one creating the same logical id -- which is exactly
+    // what the "fresh token after a success" test must be able to see.
     resetIdempotencyTokensForTests();
     provider = new ACMCertificateProvider();
   });
@@ -227,139 +227,150 @@ describe('ACMCertificateProvider', () => {
     });
   });
 
-  // Issue #2169: a create that fails AFTER RequestCertificate returned leaves a
-  // real certificate in AWS. These fence the two halves that keep it from being
-  // lost -- the report that lets the engine record it, and the ARN on the way
-  // out -- plus the idempotency token that stops an in-process retry minting a
-  // second one.
-  describe('create: a certificate that outlives its failed create (#2169)', () => {
-    const CERT_ATTRS = { Arn: ARN, CertificateArn: ARN };
-
-    it('reports the ARN to the engine as soon as RequestCertificate returns, BEFORE the wait', async () => {
-      process.env['CDKD_NO_WAIT'] = '';
-      const reported: Array<[string, Record<string, unknown> | undefined]> = [];
-      // Records what had been reported by the time the FIRST poll ran. A report
-      // deferred to the end of create() would leave this empty, and would be
-      // lost entirely to an outer `--resource-timeout` abort.
-      let reportedBeforeFirstPoll: number | undefined;
-      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
-      mockSend.mockImplementationOnce(() => {
-        reportedBeforeFirstPoll = reported.length;
-        return Promise.resolve({ Certificate: { Status: 'ISSUED' } });
-      });
-
-      await provider.create(
-        'MyCert',
-        'AWS::CertificateManager::Certificate',
-        { DomainName: 'example.com', ValidationMethod: 'DNS' },
-        { reportMaterialized: (id, attrs) => reported.push([id, attrs]) }
-      );
-
-      expect(reportedBeforeFirstPoll).toBe(1);
-      expect(reported).toEqual([[ARN, CERT_ATTRS]]);
-    });
-
-    it('reports the ARN even though the ISSUED wait then times out', async () => {
-      process.env['CDKD_NO_WAIT'] = '';
-      const reported: Array<[string, Record<string, unknown> | undefined]> = [];
+  // Issue #2169: before this, a create whose ISSUED wait failed threw the ARN
+  // away inside a message string. The certificate stayed in AWS with nothing
+  // naming it -- absent from state, so `cdkd destroy` could not reach it -- and
+  // every retry requested another one.
+  describe('create: a failed create leaves no certificate behind (#2169)', () => {
+    /** Primes RequestCertificate + enough PENDING polls to exhaust the cap. */
+    function primeTimeout(): void {
       mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
       for (let i = 0; i < 10; i++) {
         mockSend.mockResolvedValueOnce({
           Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: [] },
         });
       }
+    }
+    const PROPS = { DomainName: 'example.com', ValidationMethod: 'DNS' };
+
+    it('deletes the certificate it requested when the ISSUED wait exhausts', async () => {
+      process.env['CDKD_NO_WAIT'] = '';
+      primeTimeout();
+      mockSend.mockResolvedValueOnce({}); // DeleteCertificate
 
       await expect(
-        provider.create(
-          'MyCert',
-          'AWS::CertificateManager::Certificate',
-          { DomainName: 'example.com', ValidationMethod: 'DNS' },
-          { reportMaterialized: (id, attrs) => reported.push([id, attrs]) }
-        )
+        provider.create('MyCert', 'AWS::CertificateManager::Certificate', PROPS)
       ).rejects.toThrow(/did not reach ISSUED/);
 
-      expect(reported).toEqual([[ARN, CERT_ATTRS]]);
+      const deletes = callsOfType(DeleteCertificateCommand);
+      expect(deletes).toHaveLength(1);
+      expect(deletes[0].input.CertificateArn).toBe(ARN);
     });
 
-    it('carries the ARN on the poll-cap-exhausted error as physicalId, not only in the message', async () => {
-      process.env['CDKD_NO_WAIT'] = '';
-      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
-      for (let i = 0; i < 10; i++) {
-        mockSend.mockResolvedValueOnce({
-          Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: [] },
-        });
-      }
-
-      const error = await provider
-        .create('MyCert', 'AWS::CertificateManager::Certificate', {
-          DomainName: 'example.com',
-          ValidationMethod: 'DNS',
-        })
-        .catch((e: unknown) => e);
-
-      expect(error).toBeInstanceOf(ProvisioningError);
-      expect((error as ProvisioningError).physicalId).toBe(ARN);
-      expect((error as ProvisioningError).logicalId).toBe('MyCert');
-      expect((error as ProvisioningError).resourceType).toBe(
-        'AWS::CertificateManager::Certificate'
-      );
-    });
-
-    it('carries the ARN on the terminal-status error as physicalId', async () => {
+    it('deletes it when the wait ends on a terminal status too', async () => {
       process.env['CDKD_NO_WAIT'] = '';
       mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
       mockSend.mockResolvedValueOnce({ Certificate: { Status: 'VALIDATION_TIMED_OUT' } });
+      mockSend.mockResolvedValueOnce({}); // DeleteCertificate
+
+      await expect(
+        provider.create('MyCert', 'AWS::CertificateManager::Certificate', PROPS)
+      ).rejects.toThrow(/VALIDATION_TIMED_OUT/);
+
+      expect(callsOfType(DeleteCertificateCommand)[0].input.CertificateArn).toBe(ARN);
+    });
+
+    it('carries the requested ARN out on the error as physicalId, not only in the message', async () => {
+      // The reporter's own ask. Kept even though the certificate is now
+      // deleted: `physicalId` is what a caller can act on, and it is the field
+      // the failed-CREATE handling reads.
+      process.env['CDKD_NO_WAIT'] = '';
+      primeTimeout();
+      mockSend.mockResolvedValueOnce({});
 
       const error = await provider
-        .create('MyCert', 'AWS::CertificateManager::Certificate', {
-          DomainName: 'example.com',
-          ValidationMethod: 'DNS',
-        })
+        .create('MyCert', 'AWS::CertificateManager::Certificate', PROPS)
         .catch((e: unknown) => e);
 
       expect(error).toBeInstanceOf(ProvisioningError);
       expect((error as ProvisioningError).physicalId).toBe(ARN);
     });
 
-    // The failure message makes a PROMISE about cleanup, and the promise is
-    // only true when a report channel exists to put the certificate in state.
-    // A create with no channel -- the replacement inside `update()`, a
-    // `drift --revert` -- must not tell the user `cdkd destroy` covers it.
-    it('promises cdkd cleanup ONLY when the engine can record the certificate', async () => {
+    it('carries the ARN on a NON-cdkd failure after the request too', async () => {
+      // The assertion above only exercises the pass-through branch: the wait's
+      // own error is already a `ProvisioningError` carrying the ARN, so it
+      // would pass even if `create()`'s own wrap still dropped it (which it
+      // did before #2169). This drives a RAW AWS failure after
+      // `RequestCertificate` has answered, which is the only path through that
+      // wrap.
       process.env['CDKD_NO_WAIT'] = '';
-      const primePolls = (): void => {
-        mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
-        for (let i = 0; i < 10; i++) {
-          mockSend.mockResolvedValueOnce({
-            Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: [] },
-          });
-        }
-      };
-      const props = { DomainName: 'example.com', ValidationMethod: 'DNS' };
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      mockSend.mockRejectedValueOnce(new Error('DescribeCertificate exploded'));
+      mockSend.mockResolvedValueOnce({}); // DeleteCertificate
 
-      primePolls();
-      const reported = await provider
-        .create('MyCert', 'AWS::CertificateManager::Certificate', props, {
-          reportMaterialized: () => {},
-        })
-        .catch((e: unknown) => (e as Error).message);
+      const error = await provider
+        .create('MyCert', 'AWS::CertificateManager::Certificate', PROPS)
+        .catch((e: unknown) => e);
 
-      mockSend.mockReset();
-      primePolls();
-      const unreported = await provider
-        .create('MyCert', 'AWS::CertificateManager::Certificate', props)
-        .catch((e: unknown) => (e as Error).message);
-
-      expect(reported).toContain("recorded in this stack's state");
-      expect(reported).not.toContain('NOT tracking');
-
-      expect(unreported).toContain('NOT tracking');
-      // Names the exact retirement command, since cdkd will not issue it.
-      expect(unreported).toContain(`aws acm delete-certificate --certificate-arn ${ARN}`);
-      expect(unreported).not.toContain("recorded in this stack's state");
+      expect((error as Error).message).toMatch(/Failed to create ACM certificate MyCert/);
+      expect((error as ProvisioningError).physicalId).toBe(ARN);
+      // ...and the certificate that raw failure left behind is still retired.
+      expect(callsOfType(DeleteCertificateCommand)[0].input.CertificateArn).toBe(ARN);
     });
 
-    it('sends an IdempotencyToken ACM will accept (\\w+, <= 32 chars)', async () => {
+    it('deletes NOTHING when the failure happened before AWS returned an ARN', async () => {
+      // Polarity twin. A rejected RequestCertificate created no certificate, so
+      // a cleanup here would be a delete aimed at nothing -- or, with a
+      // different id source, at something else.
+      process.env['CDKD_NO_WAIT'] = '';
+      mockSend.mockRejectedValueOnce(new Error('InvalidDomainValidationOptionsException'));
+
+      const error = await provider
+        .create('MyCert', 'AWS::CertificateManager::Certificate', PROPS)
+        .catch((e: unknown) => e);
+
+      expect(callsOfType(DeleteCertificateCommand)).toHaveLength(0);
+      expect((error as ProvisioningError).physicalId).toBeUndefined();
+    });
+
+    it('does not delete anything when the create SUCCEEDS', async () => {
+      process.env['CDKD_NO_WAIT'] = '';
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      mockSend.mockResolvedValueOnce({ Certificate: { Status: 'ISSUED' } });
+
+      const result = await provider.create(
+        'MyCert',
+        'AWS::CertificateManager::Certificate',
+        PROPS
+      );
+
+      expect(result.physicalId).toBe(ARN);
+      expect(callsOfType(DeleteCertificateCommand)).toHaveLength(0);
+    });
+
+    it('surfaces the survivor when the cleanup delete itself fails', async () => {
+      // A cleanup that cannot retire the certificate must say so IN the error
+      // the user sees -- a warn line alone is the thing they scroll past -- and
+      // must not replace the original diagnosis.
+      process.env['CDKD_NO_WAIT'] = '';
+      primeTimeout();
+      mockSend.mockRejectedValueOnce(new Error('ThrottlingException'));
+
+      const message = await provider
+        .create('MyCert', 'AWS::CertificateManager::Certificate', PROPS)
+        .catch((e: unknown) => (e as Error).message);
+
+      expect(message).toMatch(/did not reach ISSUED/);
+      expect(message).toMatch(/could NOT be deleted/);
+      expect(message).toContain(`aws acm delete-certificate --certificate-arn ${ARN}`);
+    });
+
+    it('treats a not-found on the cleanup as already gone, with no survivor note', async () => {
+      process.env['CDKD_NO_WAIT'] = '';
+      primeTimeout();
+      mockSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ message: 'not found', $metadata: {} })
+      );
+
+      const message = await provider
+        .create('MyCert', 'AWS::CertificateManager::Certificate', PROPS)
+        .catch((e: unknown) => (e as Error).message);
+
+      expect(message).toMatch(/did not reach ISSUED/);
+      expect(message).not.toMatch(/could NOT be deleted/);
+    });
+
+    it('sends an IdempotencyToken ACM will accept (\w+, <= 32 chars)', async () => {
       mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
 
       await provider.create('MyCert', 'AWS::CertificateManager::Certificate', {
@@ -374,7 +385,7 @@ describe('ACMCertificateProvider', () => {
       expect(token).toMatch(/^\w{1,32}$/);
     });
 
-    it('re-uses the same IdempotencyToken across retries of one create, and a fresh one after a success', async () => {
+    it('re-uses one token across retries of a create, and mints a fresh one once the certificate is gone', async () => {
       // Attempt 1 fails at the request itself -- the shape that mints a second
       // certificate when the failure was a 5xx whose request had landed.
       mockSend.mockRejectedValueOnce(new Error('503 Service Unavailable'));
@@ -384,14 +395,15 @@ describe('ACMCertificateProvider', () => {
         })
       ).rejects.toThrow(/503/);
 
-      // Attempt 2 (what the engine's withRetry does) succeeds.
+      // Attempt 2 (what the engine's withRetry does) must send the SAME token,
+      // so ACM answers with the certificate attempt 1 may already have made.
       mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
       await provider.create('MyCert', 'AWS::CertificateManager::Certificate', {
         DomainName: 'example.com',
       });
 
-      // A LATER create of the same logical id -- e.g. a `--replace` re-create --
-      // must not be answered with the certificate the previous one produced.
+      // A later create of the same logical id must NOT be answered with that
+      // certificate.
       mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
       await provider.create('MyCert', 'AWS::CertificateManager::Certificate', {
         DomainName: 'example.com',
@@ -403,6 +415,48 @@ describe('ACMCertificateProvider', () => {
       expect(tokens).toHaveLength(3);
       expect(tokens[0]).toBe(tokens[1]);
       expect(tokens[2]).not.toBe(tokens[1]);
+    });
+
+    it('retires the token when the cleanup deleted the certificate, so a retry is not handed a deleted ARN', async () => {
+      // ACM answers a repeat of the same token within an hour with the SAME
+      // certificate. Once cleanup has deleted it, reusing the token would hand
+      // the next attempt an ARN that no longer exists.
+      process.env['CDKD_NO_WAIT'] = '';
+      primeTimeout();
+      mockSend.mockResolvedValueOnce({}); // DeleteCertificate succeeds
+      await expect(
+        provider.create('MyCert', 'AWS::CertificateManager::Certificate', PROPS)
+      ).rejects.toThrow();
+
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      process.env['CDKD_NO_WAIT'] = 'true';
+      await provider.create('MyCert', 'AWS::CertificateManager::Certificate', PROPS);
+
+      const tokens = callsOfType(RequestCertificateCommand).map(
+        (c) => c.input.IdempotencyToken as string
+      );
+      expect(tokens[1]).not.toBe(tokens[0]);
+    });
+
+    it('KEEPS the token when the cleanup could not delete, so the retry is answered with the survivor', async () => {
+      // The opposite polarity of the test above, and the reason the release is
+      // conditional rather than unconditional: the certificate is still there,
+      // so being handed that same one is the outcome we want.
+      process.env['CDKD_NO_WAIT'] = '';
+      primeTimeout();
+      mockSend.mockRejectedValueOnce(new Error('ThrottlingException'));
+      await expect(
+        provider.create('MyCert', 'AWS::CertificateManager::Certificate', PROPS)
+      ).rejects.toThrow();
+
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      process.env['CDKD_NO_WAIT'] = 'true';
+      await provider.create('MyCert', 'AWS::CertificateManager::Certificate', PROPS);
+
+      const tokens = callsOfType(RequestCertificateCommand).map(
+        (c) => c.input.IdempotencyToken as string
+      );
+      expect(tokens[1]).toBe(tokens[0]);
     });
   });
 
@@ -657,98 +711,6 @@ describe('ACMCertificateProvider', () => {
 
       expect(callsOfType(UpdateCertificateOptionsCommand)).toHaveLength(0);
       expect(callsOfType(AddTagsToCertificateCommand)).toHaveLength(1);
-    });
-  });
-
-  // Issue #2169: once a failed create's certificate is in state, the NEXT
-  // deploy reaches update() instead of create(). These fence that the re-run
-  // reaches the same verdict the create would have.
-  describe('update: resuming the ISSUED wait for an adopted certificate (#2169)', () => {
-    it('waits for a PENDING_VALIDATION certificate and succeeds once it is ISSUED', async () => {
-      process.env['CDKD_NO_WAIT'] = '';
-      // No tag / options change, so the only calls are the status probe and
-      // then the resumed wait's polls.
-      mockSend.mockResolvedValueOnce({ Certificate: { Status: 'PENDING_VALIDATION' } });
-      mockSend.mockResolvedValueOnce({
-        Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: [] },
-      });
-      mockSend.mockResolvedValueOnce({ Certificate: { Status: 'ISSUED' } });
-
-      const result = await provider.update(
-        'MyCert',
-        ARN,
-        'AWS::CertificateManager::Certificate',
-        { DomainName: 'example.com', ValidationMethod: 'DNS' },
-        { DomainName: 'example.com', ValidationMethod: 'DNS' }
-      );
-
-      expect(result.physicalId).toBe(ARN);
-      expect(result.wasReplaced).toBe(false);
-      expect(callsOfType(DescribeCertificateCommand)).toHaveLength(3);
-    });
-
-    it('fails the update when the adopted certificate is still not issued', async () => {
-      process.env['CDKD_NO_WAIT'] = '';
-      mockSend.mockResolvedValueOnce({ Certificate: { Status: 'PENDING_VALIDATION' } });
-      for (let i = 0; i < 10; i++) {
-        mockSend.mockResolvedValueOnce({
-          Certificate: { Status: 'PENDING_VALIDATION', DomainValidationOptions: [] },
-        });
-      }
-
-      const error = await provider
-        .update(
-          'MyCert',
-          ARN,
-          'AWS::CertificateManager::Certificate',
-          { DomainName: 'example.com', ValidationMethod: 'DNS' },
-          { DomainName: 'example.com', ValidationMethod: 'DNS' }
-        )
-        .catch((e: unknown) => e);
-
-      // The wait's own message survives -- not re-wrapped behind a generic
-      // "Failed to update ACM certificate".
-      expect((error as Error).message).toMatch(/did not reach ISSUED/);
-      expect((error as ProvisioningError).physicalId).toBe(ARN);
-    });
-
-    // The gate is PENDING_VALIDATION specifically, not "anything but ISSUED":
-    // an ordinary update of an expired / revoked certificate succeeded before
-    // #2169 and must keep succeeding, since `waitForCertificateIssued` treats
-    // those as terminal failures.
-    it.each(['ISSUED', 'EXPIRED', 'REVOKED', 'INACTIVE'] as const)(
-      'does not wait when the certificate status is %s',
-      async (status) => {
-        process.env['CDKD_NO_WAIT'] = '';
-        mockSend.mockResolvedValueOnce({ Certificate: { Status: status } });
-
-        const result = await provider.update(
-          'MyCert',
-          ARN,
-          'AWS::CertificateManager::Certificate',
-          { DomainName: 'example.com', ValidationMethod: 'DNS' },
-          { DomainName: 'example.com', ValidationMethod: 'DNS' }
-        );
-
-        expect(result.physicalId).toBe(ARN);
-        // Exactly one DescribeCertificate: the status probe. A resumed wait
-        // would add at least one more.
-        expect(callsOfType(DescribeCertificateCommand)).toHaveLength(1);
-      }
-    );
-
-    it('skips the status probe entirely under CDKD_NO_WAIT', async () => {
-      process.env['CDKD_NO_WAIT'] = 'true';
-
-      await provider.update(
-        'MyCert',
-        ARN,
-        'AWS::CertificateManager::Certificate',
-        { DomainName: 'example.com', ValidationMethod: 'DNS' },
-        { DomainName: 'example.com', ValidationMethod: 'DNS' }
-      );
-
-      expect(callsOfType(DescribeCertificateCommand)).toHaveLength(0);
     });
   });
 

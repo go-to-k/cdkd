@@ -12,25 +12,23 @@
 #   - cdkd state records the cert with the ARN as physicalId.
 #   - DeleteCertificate succeeds against a PENDING_VALIDATION cert.
 #   - The --no-wait code path returns immediately + warns the user.
-#   - Phase 0 (issue #2169): a create whose ISSUED wait EXHAUSTS keeps its
-#     certificate. The same synthetic domain that never validates is what
-#     makes this arm cheap -- the poll cap is squeezed to 3 x 5s via
+#   - Phase 0 (issue #2169): a create whose ISSUED wait fails DELETES the
+#     certificate it requested. The same synthetic domain that never validates
+#     is what makes this arm cheap -- the poll cap is squeezed to 3 x 5s via
 #     CDKD_ACM_POLL_ATTEMPTS / CDKD_ACM_POLL_INTERVAL_MS, so the timeout the
-#     reporter waited 10 minutes for happens in 15 seconds. It asserts the
-#     failed deploy still RECORDS the certificate, and that re-running the
-#     same failing deploy ADOPTS it instead of requesting a second one.
+#     reporter waited 10 minutes for happens in seconds. It asserts the account
+#     holds ZERO certificates for this fixture afterwards, and still zero after
+#     a second failing deploy -- the accumulation the issue reports.
 #
 # What this does NOT exercise:
 #   - The poll-until-ISSUED happy path (needs a real DNS zone the test
 #     account controls). Ship a follow-up integ once that lands.
-#   - Phase 0's RESUMED ISSUED wait. Measured 2026-08-23: AWS moves an
-#     `example.test` certificate to FAILED within the first poll, so by the
-#     re-run the status is terminal and `update()` takes the ordinary path --
-#     which is why phase 0 reads the status before asserting the re-run's exit
-#     code. What phase 0 DOES prove live is the load-bearing half: the failed
-#     create's certificate is recorded, the re-run adopts it (1 certificate,
-#     not 2) and `cdkd destroy` retires it. The PENDING_VALIDATION branch of
-#     the resumed wait is unit-fenced only.
+#   - Phase 0's poll-cap-exhaustion throw specifically. Measured 2026-08-23:
+#     AWS moves an `example.test` certificate to FAILED within the first poll,
+#     so the wait usually ends on the TERMINAL-status throw rather than on cap
+#     exhaustion. Both throws run the same cleanup, and phase 0 asserts on the
+#     account state rather than on which message appeared, so the arm is
+#     correct either way -- but it does not discriminate the two throws.
 #   - The ACM-SPECIFIC in-use rejection (issue #1922): a certificate is only
 #     attachable to a CloudFront distribution / ALB once ISSUED, which needs
 #     that same DNS zone. Phase 2 below therefore drives the SAME code path
@@ -67,21 +65,6 @@ acm_arns_for_fixture() {
   aws acm list-certificates --region "${REGION}" \
     --query "CertificateSummaryList[?contains(DomainName, 'cdkd-integ-${stack_lc}')].CertificateArn" \
     --output text
-}
-
-state_cert_arn() {
-  aws s3 cp "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" - --region "${REGION}" 2>/dev/null |
-    python3 -c '
-import json, sys
-try:
-    s = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-for v in s.get("resources", {}).values():
-    if v.get("resourceType") == "AWS::CertificateManager::Certificate":
-        print(v.get("physicalId", ""))
-        break
-'
 }
 
 cleanup() {
@@ -159,28 +142,42 @@ trap cleanup EXIT
 trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
 
-# --- Phase 0: a create whose ISSUED wait times out keeps its cert (#2169) ---
+# --- Phase 0: a failed create leaves no certificate behind (#2169) -----------
 #
 # Before this, `RequestCertificate` returned an ARN, the poll-until-ISSUED wait
 # ran out, and the throw carried the ARN only inside its message text -- so the
-# certificate existed in AWS with nothing naming it, and every re-run requested
+# certificate stayed in AWS with nothing naming it, and every re-run requested
 # another one. The reporter hit exactly this while migrating a real environment
 # and had to find the certificate by hand and `cdkd import` it.
 #
 # Reproduced honestly rather than simulated: this is a real `RequestCertificate`
-# against real ACM, and the wait genuinely exhausts, because `example.test` can
+# against real ACM, and the wait genuinely fails, because `example.test` can
 # never be DNS-validated. Only the CAP is shrunk (3 polls x 5s instead of
 # 60 x 10s), which is the same code path on a shorter clock.
 #
-# The load-bearing assertion is the certificate COUNT after the second failing
-# deploy. Pre-fix it is 2 -- the second run takes the CREATE path again, since
-# nothing recorded the first certificate. Post-fix it is 1: the record makes the
-# second run an UPDATE that adopts the same certificate and resumes its wait.
-# Asserting only "state has an ARN" would pass on a run that quietly doubled.
-echo "=== Phase 0: ISSUED-wait timeout keeps its certificate (issue #2169) ==="
+# The load-bearing assertion is the certificate COUNT in the account, taken
+# twice. Pre-fix it is 1 then 2 -- one orphan per attempt, which is the issue's
+# actual complaint. Post-fix it is 0 then 0. Counting the ACCOUNT rather than
+# reading state is deliberate: state is exactly what the pre-fix code failed to
+# write, so a state-based assertion cannot see the orphan at all.
+echo "=== Phase 0: a failed create leaves no certificate behind (issue #2169) ==="
+
+fixture_cert_count() {
+  local all
+  all=$(acm_arns_for_fixture)
+  printf '%s' "${all}" | tr '\t' '\n' | grep -c 'arn:aws:acm:' || true
+}
+
+# Nothing of ours may exist yet, or the counts below prove nothing.
+phase0_before=$(fixture_cert_count)
+if [[ "${phase0_before}" -ne 0 ]]; then
+  echo "FAIL: ${phase0_before} certificate(s) for this fixture existed BEFORE phase 0:"
+  acm_arns_for_fixture
+  exit 1
+fi
 
 # The deploy MUST fail: an un-issued certificate is a real failure, and a run
-# that exits 0 here would mean the wait was skipped rather than exhausted.
+# that exits 0 here would mean the wait was skipped rather than exercised.
 set +e
 CDKD_ACM_POLL_ATTEMPTS=3 CDKD_ACM_POLL_INTERVAL_MS=5000 \
   $CDKD deploy --region "${REGION}" --state-bucket "${BUCKET}"
@@ -192,90 +189,64 @@ if [[ "${phase0_rc}" -eq 0 ]]; then
 fi
 echo "PASS: deploy failed as expected (rc=${phase0_rc})"
 
-phase0_arn=$(state_cert_arn)
-if [[ "${phase0_arn}" != arn:aws:acm:* ]]; then
-  echo "FAIL: the failed deploy left no certificate ARN in state (got: '${phase0_arn}')"
-  echo "      This is the #2169 orphan: the certificate below exists with nothing naming it."
+# ListCertificates lags DeleteCertificate, so poll rather than probe once.
+for attempt in 1 2 3 4 5; do
+  phase0_after=$(fixture_cert_count)
+  [[ "${phase0_after}" -eq 0 ]] && break
+  [[ "${attempt}" -lt 5 ]] && sleep 6
+done
+if [[ "${phase0_after}" -ne 0 ]]; then
+  echo "FAIL: the failed create left ${phase0_after} certificate(s) behind -- this is the #2169 orphan:"
   acm_arns_for_fixture
+  # Hand them to the cleanup trap so a failing assertion does not also leak.
+  ORIGINAL_ARN=$(acm_arns_for_fixture | tr '\t' '\n' | head -1)
   exit 1
 fi
-# Hand it to the cleanup trap NOW: everything below can fail, and from this
-# point on a real certificate exists.
-ORIGINAL_ARN="${phase0_arn}"
-echo "PASS: the failed deploy recorded ${phase0_arn} in state"
+echo "PASS: the failed create retired its own certificate -- 0 left behind"
 
-phase0_status=$(aws acm describe-certificate --certificate-arn "${phase0_arn}" \
-  --region "${REGION}" --query 'Certificate.Status' --output text)
-case "${phase0_status}" in
-  PENDING_VALIDATION|FAILED)
-    echo "PASS: the recorded ARN names a real certificate (${phase0_status})"
-    ;;
-  *)
-    echo "FAIL: recorded ARN is not a non-ISSUED certificate: ${phase0_status}"
-    exit 1
-    ;;
-esac
+# A failed create must also leave no state record: recording one would make the
+# next deploy diff it as NO_CHANGE and silently exit 0 over a certificate that
+# does not exist any more.
+phase0_state=$(aws s3 cp "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" - --region "${REGION}" 2>/dev/null || true)
+if printf '%s' "${phase0_state}" | grep -q 'AWS::CertificateManager::Certificate'; then
+  echo "FAIL: state records a certificate the failed create deleted:"
+  printf '%s\n' "${phase0_state}"
+  exit 1
+fi
+echo "PASS: no state record for the deleted certificate"
 
 # Re-run the SAME failing deploy. This is the retry the reporter did, and the
-# one that used to orphan another certificate.
-#
-# Read the status again FIRST, because the expected exit code depends on it and
-# AWS moves it on its own: `example.test` starts PENDING_VALIDATION and AWS
-# fast-fails invalid-TLD validations to FAILED after a while (phase 1 documents
-# the same two-valued expectation). The resumed ISSUED wait is gated on
-# PENDING_VALIDATION specifically -- an EXPIRED / REVOKED / FAILED certificate
-# takes the ordinary update path, which is deliberate -- so pinning the exit
-# code unconditionally would make this arm fail whenever AWS happened to move
-# first, which is a flake and not a finding.
-phase0_status_before_rerun=$(aws acm describe-certificate --certificate-arn "${phase0_arn}" \
-  --region "${REGION}" --query 'Certificate.Status' --output text)
+# one that used to orphan a SECOND certificate.
 set +e
 CDKD_ACM_POLL_ATTEMPTS=3 CDKD_ACM_POLL_INTERVAL_MS=5000 \
   $CDKD deploy --region "${REGION}" --state-bucket "${BUCKET}"
 phase0_rerun_rc=$?
 set -e
-if [[ "${phase0_status_before_rerun}" == "PENDING_VALIDATION" ]]; then
-  # A green re-run here would mean the adopting UPDATE reported success on an
-  # un-issued certificate -- exactly what `update()`'s resumed ISSUED wait
-  # exists to prevent, and what a downstream CloudFront / ALB would then fail on.
-  if [[ "${phase0_rerun_rc}" -eq 0 ]]; then
-    echo "FAIL: the re-run exited 0 while the certificate is still PENDING_VALIDATION"
-    exit 1
-  fi
-  echo "PASS: the re-run failed too (rc=${phase0_rerun_rc}) -- the resumed wait still says unusable"
-else
-  echo "NOTE: certificate had already moved to ${phase0_status_before_rerun} before the re-run;"
-  echo "      the resumed-wait exit code is not asserted for a terminal status (rc=${phase0_rerun_rc})."
-fi
-
-phase0_rerun_arn=$(state_cert_arn)
-if [[ "${phase0_rerun_arn}" != "${phase0_arn}" ]]; then
-  echo "FAIL: the re-run re-pointed state from ${phase0_arn} to ${phase0_rerun_arn}"
+# Still a failure, and that is the point: the certificate is still unusable, so
+# the honest verdict is the same one. This is what recording the remnant would
+# have destroyed -- the re-run would have diffed NO_CHANGE and exited 0.
+if [[ "${phase0_rerun_rc}" -eq 0 ]]; then
+  echo "FAIL: the re-run exited 0 while the certificate still cannot be validated"
   exit 1
 fi
+echo "PASS: the re-run failed too (rc=${phase0_rerun_rc}) -- no silent success"
 
-phase0_all=$(acm_arns_for_fixture)
-phase0_count=$(printf '%s' "${phase0_all}" | tr '\t' '\n' | grep -c 'arn:aws:acm:' || true)
-if [[ "${phase0_count}" -ne 1 ]]; then
-  echo "FAIL: expected exactly 1 certificate for this fixture after the re-run, found ${phase0_count}:"
-  echo "${phase0_all}"
+for attempt in 1 2 3 4 5; do
+  phase0_after2=$(fixture_cert_count)
+  [[ "${phase0_after2}" -eq 0 ]] && break
+  [[ "${attempt}" -lt 5 ]] && sleep 6
+done
+if [[ "${phase0_after2}" -ne 0 ]]; then
+  echo "FAIL: after two failed deploys the account holds ${phase0_after2} certificate(s) for this fixture:"
+  acm_arns_for_fixture
+  ORIGINAL_ARN=$(acm_arns_for_fixture | tr '\t' '\n' | head -1)
   exit 1
 fi
-echo "PASS: the re-run adopted the SAME certificate -- 1 certificate, not 2"
+echo "PASS: two failed deploys, still 0 certificates -- no accumulation"
 
-# Back to a clean slate so phase 1 below starts from no state, exactly as it
-# did before this arm existed. This ALSO proves the recorded remnant is
-# destroyable, which is half of what recording it buys.
-echo "=== Phase 0: destroying so the adopted certificate is retired by cdkd ==="
-$CDKD destroy --region "${REGION}" --state-bucket "${BUCKET}" --force
-if [[ -n "$(acm_arns_for_fixture)" ]]; then
-  # Not fatal on its own: ListCertificates lags DeleteCertificate. The trap's
-  # polled sweep is the authority, and ORIGINAL_ARN is still set for it.
-  echo "NOTE: certificate still listed immediately after destroy (ListCertificates lags)"
-else
-  echo "PASS: cdkd destroy retired the recorded certificate"
-  ORIGINAL_ARN=""
-fi
+# Drop the state file phase 0's failed deploys wrote (outputs / empty resources),
+# so phase 1 below starts from no state exactly as it did before this arm.
+aws s3 rm "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" --region "${REGION}" >/dev/null 2>&1 || true
 
 echo "=== Deploying stack ${STACK} (no-wait) ==="
 CDKD_NO_WAIT=true $CDKD deploy --region "${REGION}" --state-bucket "${BUCKET}"

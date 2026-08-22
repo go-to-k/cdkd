@@ -1225,28 +1225,28 @@ ISSUED status within 600s.
 
 A DNS-validated certificate only reaches `ISSUED` once its validation records
 are live in your DNS zone. On a first deploy those records usually do not exist
-yet — cdkd prints them on its first `PENDING_VALIDATION` poll — so the wait
-runs out. This is a real failure, not a cosmetic one: anything downstream
+yet — cdkd prints them on its first `PENDING_VALIDATION` poll — so the wait runs
+out. This is a real failure, not a cosmetic one: anything downstream
 (CloudFront, an ALB listener) cannot use a certificate that has not issued.
 
-**The certificate is NOT orphaned.** cdkd records it in the stack's state as
-soon as `RequestCertificate` returns (issue
-[#2169](https://github.com/go-to-k/cdkd/issues/2169)), so:
+**The certificate is not orphaned.** cdkd deletes the certificate it requested
+before the error is reported (issue
+[#2169](https://github.com/go-to-k/cdkd/issues/2169)), so a failed deploy leaves
+nothing behind and repeated attempts do not accumulate certificates in your
+account. Before this, each failed attempt left one that nothing tracked.
 
-```bash
-cdkd state show <stack>            # the certificate is listed, with its ARN
-```
-
-Add the printed CNAME records to your DNS zone, then just re-run the deploy:
+Add the printed CNAME records to your DNS zone, then re-run the deploy:
 
 ```bash
 cdkd deploy <stack>
 ```
 
-The re-run finds the certificate in state, so it **re-uses the same one** and
-resumes waiting for it to be issued rather than requesting a second
-certificate. If you would rather not wait at all, `cdkd destroy <stack>`
-deletes it like any other managed resource.
+**Adding those records is not wasted work**, even though the certificate they
+were printed for is gone: ACM derives a domain's validation CNAME from the
+domain and the account rather than from the certificate, and documents that you
+can [replace a deleted certificate](https://docs.aws.amazon.com/acm/latest/userguide/dns-validation.html)
+without repeating validation. The records you added validate the next attempt's
+certificate.
 
 Two flags for a zone that is slow or manually managed:
 
@@ -1254,14 +1254,25 @@ Two flags for a zone that is slow or manually managed:
 # Wait longer than the provider's own 10-minute cap.
 cdkd deploy <stack> --resource-timeout AWS::CertificateManager::Certificate=45m
 
-# Do not wait at all. The certificate is created and recorded, and the deploy
-# returns immediately -- downstream consumers will fail until it issues.
+# Do not wait at all. The certificate is created, RECORDED IN STATE, and the
+# deploy returns immediately -- downstream consumers will fail until it issues,
+# but the certificate survives for you to validate out of band. This is the
+# supported way to keep a PENDING_VALIDATION certificate across runs.
 CDKD_NO_WAIT=true cdkd deploy <stack>
 ```
 
 Note that `--resource-timeout` only RAISES the ceiling; the provider's internal
 poll cap is `CDKD_ACM_POLL_ATTEMPTS` x `CDKD_ACM_POLL_INTERVAL_MS`
 (60 x 10s by default), and whichever is shorter wins.
+
+If the message also says the certificate **could NOT be deleted**, the cleanup
+itself failed (a throttle, a permissions gap). The message names the ARN and
+the exact command; cdkd is not tracking that certificate, so `cdkd destroy`
+will not remove it:
+
+```bash
+aws acm delete-certificate --certificate-arn <arn> --region <region>
+```
 
 ### Reverting a failed `--no-rollback` / interrupted deploy: `cdkd rollback`
 

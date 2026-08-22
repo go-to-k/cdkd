@@ -864,25 +864,6 @@ export class DeployEngine {
   private attemptedResolvedProps = new Map<string, Record<string, unknown>>();
 
   /**
-   * Physical resources a still-running CREATE has already MATERIALIZED in AWS,
-   * keyed by logical id (issue
-   * [#2169](https://github.com/go-to-k/cdkd/issues/2169)).
-   *
-   * Written by the {@link CreateContext.reportMaterialized} callback the CREATE
-   * branch hands the provider, and read only when that CREATE fails: the entry
-   * is promoted into the state record so the pre-rollback partial-state save
-   * persists a resource that would otherwise exist in AWS with nothing naming
-   * it. Cleared immediately before each CREATE and again once the failure path
-   * has read it, so an entry only ever describes the create in flight.
-   *
-   * The value is the COMPLETE `ResourceState` rather than a bare id, because
-   * the fields around the id — dependencies, template attributes, the routing
-   * layer — are only in scope at the call site, and a record missing them
-   * would be deleted in the wrong DAG order by a later `cdkd destroy`.
-   */
-  private materializedCreates = new Map<string, ResourceState>();
-
-  /**
    * Target region for this stack. Required — load-bearing for the
    * region-prefixed S3 state key and recorded in state.json for
    * cross-region destroy.
@@ -3106,40 +3087,6 @@ export class DeployEngine {
       });
     } catch (error) {
       renderer.removeTask(logicalId);
-      // Issue #2169: a CREATE that failed AFTER materializing its resource.
-      // Promote what the provider reported into the state record, so the
-      // pre-rollback partial-state save persists it instead of leaving a live
-      // AWS resource that nothing names. Placed FIRST in the catch so the
-      // failure event and the wrapped error below both see the id.
-      //
-      // Runs here rather than inside `provisionResourceBody` on purpose: the
-      // per-resource deadline (`--resource-timeout`) aborts the body from
-      // OUTSIDE, so a create that blew its budget never reaches a handler of
-      // its own. (#2169's own report is not that case — ACM's internal 10-min
-      // poll cap fires well inside the 30-min default — but the same provider
-      // becomes that case under `--resource-timeout <type>=5m`.) The report is
-      // read from wherever it landed, so the deadline path is covered as long
-      // as the provider reported before being abandoned; the create promise
-      // keeps running detached, and a report arriving after this point is
-      // simply never read.
-      //
-      // The `!stateResources[logicalId]` guard is what keeps a REPLACEMENT
-      // honest: there the record already points at the OLD physical resource,
-      // which cdkd still manages and must still be able to delete, so a report
-      // from a replacement's inner create must never overwrite it. (No such
-      // report exists today — `update()` takes an `UpdateContext`, which has
-      // no `reportMaterialized` — so this is defense in depth against a future
-      // provider threading one through.)
-      const materialized = this.materializedCreates.get(logicalId);
-      this.materializedCreates.delete(logicalId);
-      if (materialized && !stateResources[logicalId]) {
-        stateResources[logicalId] = materialized;
-        this.logger.warn(
-          `${logicalId} (${resourceType}) failed after AWS had already created ${materialized.physicalId}. ` +
-            `cdkd has recorded it in this stack's state, so \`cdkd destroy\` will delete it and the next ` +
-            `\`cdkd deploy\` will reuse it instead of creating a second one.`
-        );
-      }
       const message = error instanceof Error ? error.message : String(error);
       // Issue #2038: MASKED, and at a strictly higher log level than the retry
       // give-up summary one statement below it. `perResourceSecrets` is
@@ -3171,13 +3118,6 @@ export class DeployEngine {
         ...(stateResources[logicalId]?.provisionedBy
           ? { provisionedBy: stateResources[logicalId]?.provisionedBy }
           : labelRouting && { provisionedBy: labelRouting }),
-        // Issue #2169: a physical id, when one is known, is the single datum a
-        // post-mortem of a failed op actually needs — and after the promotion
-        // above a failed CREATE has one too. It is an ID, not a property, so
-        // it does not widen what the "error metadata only" note above fences.
-        ...(stateResources[logicalId]?.physicalId && {
-          physicalId: stateResources[logicalId]?.physicalId,
-        }),
         durationMs: Date.now() - resourceStartedAt,
         error: extractDeploymentEventError(error),
       });
@@ -3605,25 +3545,6 @@ export class DeployEngine {
             ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
             : resolvedProps;
 
-        // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
-        // so that deletion order is correct even without implicit type-based deps.
-        // Hoisted ABOVE the create call (issue #2169) because
-        // `reportMaterialized` below builds a complete state record from them
-        // while the create is still in flight — the record a FAILED create
-        // leaves behind has to carry the same dependency edges as a successful
-        // one, or `cdkd destroy` would delete it in the wrong order.
-        const dependencies = this.extractAllDependencies(template, logicalId);
-        const templateAttrs = this.extractTemplateAttributes(template, logicalId);
-
-        // Clear BEFORE the create, not after it (issue #2169): the entry must
-        // only ever describe the create currently in flight, and this is the
-        // one point that is guaranteed to run ahead of every attempt of it.
-        // Deliberately OUTSIDE `withRetry`'s callback — a retry whose first
-        // attempt materialized a resource and whose second failed before
-        // reaching AWS must still record the first attempt's resource, which is
-        // the one that actually exists.
-        this.materializedCreates.delete(logicalId);
-
         const result = await this.withRetry(
           () =>
             createProvider.create(logicalId, resourceType, createProps, {
@@ -3634,29 +3555,17 @@ export class DeployEngine {
               // text and the resolver's debug line). Give it the capability
               // rather than the bag — see `SecretMaskingContext`.
               maskSecrets: createSecretMasker(createSecrets),
-              // Issue #2169: the provider's channel for "the AWS call returned
-              // and this resource now EXISTS", reported the moment the id is
-              // known rather than when the create finishes. Only the FAILURE
-              // path reads it (see `provisionResource`'s catch) — a create that
-              // returns writes the record from `result` below, which is the
-              // authoritative one.
-              reportMaterialized: (physicalId, attributes) => {
-                this.materializedCreates.set(logicalId, {
-                  physicalId,
-                  resourceType,
-                  properties: resolvedProps,
-                  ...(attributes && { attributes }),
-                  ...(dependencies && dependencies.length > 0 && { dependencies }),
-                  ...templateAttrs,
-                  provisionedBy: createDecision.provisionedBy,
-                });
-              },
             }),
           logicalId,
           undefined,
           undefined,
           createProvider
         );
+
+        // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
+        // so that deletion order is correct even without implicit type-based deps
+        const dependencies = this.extractAllDependencies(template, logicalId);
+        const templateAttrs = this.extractTemplateAttributes(template, logicalId);
 
         stateResources[logicalId] = {
           physicalId: result.physicalId,

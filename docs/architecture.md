@@ -578,12 +578,7 @@ await executor.execute(concurrency, async (node) => {
 
 - Catch errors per resource
 - Continue with other resources even if some fail
-- Save only successful resources to state — with one carve-out: a CREATE that
-  failed AFTER AWS materialized its resource records that resource too, so it
-  is not orphaned (issue
-  [#2169](https://github.com/go-to-k/cdkd/issues/2169); the provider opts in via
-  `CreateContext.reportMaterialized`, see
-  [state-management.md](state-management.md#the-one-exception-a-create-that-failed-after-aws-created-the-resource))
+- Save only successful resources to state
 
 #### `intrinsic-function-resolver.ts`
 

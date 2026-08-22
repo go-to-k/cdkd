@@ -216,12 +216,7 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
       // those fences exist to catch. This site and the property-driven
       // replacement are the ONLY fences covering the main CREATE path, so the
       // loose form would have removed cover from the most-travelled site.
-      // `reportMaterialized` (issue #2169) belongs to the plain-CREATE path
-      // ONLY: the replacement create sites deliberately do not carry it,
-      // because their logical id already owns a physical resource cdkd must
-      // stay able to delete. Keeping the object exact is what fences that
-      // asymmetry from both sides.
-      { maskSecrets: expect.any(Function), reportMaterialized: expect.any(Function) }
+      { maskSecrets: expect.any(Function) }
     );
     // C was never started (skipped due to B failure). Asserted on the logical
     // ids rather than as a `not.toHaveBeenCalledWith(...)`: that form is
@@ -440,15 +435,14 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
       'CcRouted',
       'AWS::Lambda::Function',
       expect.any(Object),
-      // 4th arg: the `CreateContext` carrying issue #1932 item 3's masker and
-      // issue #2169's materialized-resource report.
-      { maskSecrets: expect.any(Function), reportMaterialized: expect.any(Function) }
+      // 4th arg: the `CreateContext` carrying issue #1932 item 3's masker.
+      { maskSecrets: expect.any(Function) }
     );
     expect(sdkProvider.create).toHaveBeenCalledWith(
       'Failing',
       'AWS::S3::Bucket',
       expect.any(Object),
-      { maskSecrets: expect.any(Function), reportMaterialized: expect.any(Function) }
+      { maskSecrets: expect.any(Function) }
     );
 
     // The rollback delete for CcRouted MUST have gone through the CC

@@ -144,13 +144,6 @@ export interface DeploymentEvent {
    * partial UPDATE (issue #1819) that is the SURVIVOR's id — the predecessor a
    * replacement failed to retire — NOT the row's current one, which the
    * accompanying `RESOURCE_SUCCEEDED` carries.
-   *
-   * `RESOURCE_FAILED`: the id of the resource the failed op leaves behind, when
-   * cdkd knows one (issue
-   * [#2169](https://github.com/go-to-k/cdkd/issues/2169)). Present for a failed
-   * UPDATE / DELETE, whose target already had a state record, and for a failed
-   * CREATE that got far enough to materialize its resource. Absent for a CREATE
-   * that failed before AWS produced an id — there is nothing to name.
    */
   physicalId?: string;
   /** Per-resource events: routing layer (#614), when known. */

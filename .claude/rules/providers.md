@@ -1023,57 +1023,51 @@ re-creates inside `update()` would fire that refusal on a replay with no way
 to detect it. None of the five does today (required-field validation only,
 which correctly stays a hard error).
 
-### Reporting a resource a FAILING create already materialized
+### Retiring what a FAILING create already materialized
 
-`CreateContext.reportMaterialized` (issue #2169). For a create shaped `<one API
-call that materializes the resource>` then `<a wait for it to become usable>`,
-the wait can fail with the resource alive in AWS. Nothing recorded it, because
-the create never returned — so it was invisible to `cdkd state show`,
-unreachable by `cdkd destroy`, and re-created by the next deploy. The reported
-case is `AWS::CertificateManager::Certificate`: `RequestCertificate` returns an
-ARN immediately, and the `ISSUED` wait times out by construction while the DNS
+Issue #2169. For a create shaped `<one API call that materializes the
+resource>` then `<a wait for it to become usable>`, the wait can fail with the
+resource alive in AWS. Nothing recorded it, because the create never returned —
+so it was invisible to `cdkd state show`, unreachable by `cdkd destroy`, and
+re-created by the next deploy, one orphan per attempt. The reported case is
+`AWS::CertificateManager::Certificate`: `RequestCertificate` returns an ARN
+immediately, and the `ISSUED` wait times out by construction while the DNS
 validation records are not live.
 
-`ProvisioningError.physicalId` is NOT the channel for this, which is the part
-that misleads: 462 call sites across 75 provider files already pass one, and on
-a create path it is usually the resource's INTENDED name computed before the
-API call (`IAMRoleProvider.create` derives `roleName` and hands it to the
-catch regardless of whether `CreateRole` ran), so a reader cannot tell "I named
-this" from "I created this". Its only consumer is `cleanupFailedCreateRemnant`
-in `cloud-control-provider.ts`, which is Cloud-Control-only. Carrying the id on the error is also not enough on its own —
-the deploy engine re-wraps a provider error and takes the physical id from
-STATE, and a `--resource-timeout` abort means the provider never reaches its own
-`throw` at all.
+The fix is to delete it in the provider's own `catch` and re-throw the ORIGINAL
+error (`ACMCertificateProvider.cleanupRequestedCertificate`).
 
 Rules:
 
-- **Call it at the AWS response**, not in a `catch` / `finally`. The
-  per-resource deadline aborts the create from outside; a report on the way out
-  never happens on the run that needed it.
-- **Only report what AWS confirmed.** Never a pre-computed name, never a
-  resource the create merely adopted.
-- **The engine only RECORDS; keep-vs-delete is the provider's call, and it must
-  be stated.** Cloud Control deletes its remnant (it occupies the name a retry
-  needs); ACM keeps its certificate (the user has just added DNS records for it,
-  and ACM keeps validating asynchronously). A provider that KEEPS one owes the
-  adopting deploy an honest verdict — ACM's `update()` resumes the `ISSUED` wait
-  for a still-`PENDING_VALIDATION` certificate, gated on that status
-  specifically so an ordinary update of an EXPIRED / REVOKED certificate does
-  not newly start failing.
-- **Gate the failure MESSAGE on whether the callback was actually supplied.**
-  `create()` also runs with no context (the replacement inside `update()`,
-  `drift --revert`), and there nothing records the resource. A message
-  promising `cdkd destroy` will clean it up is then worse than silence — it is
-  the sentence that stops the user looking. ACM's
-  `waitForCertificateIssued` takes a `recorded` option for exactly this and
-  prints the manual `aws acm delete-certificate` command otherwise.
+- **Track the id from the AWS response**, not from a name computed before the
+  call, so a failure BEFORE the request deletes nothing.
+  `ProvisioningError.physicalId` is NOT that signal: 462 call sites across 75
+  provider files pass one and it is usually the INTENDED name
+  (`IAMRoleProvider.create` hands its catch the `roleName` it derived
+  regardless of whether `CreateRole` ran). Its only consumer is
+  `cleanupFailedCreateRemnant` in `cloud-control-provider.ts`, Cloud-Control
+  only.
+- **The cleanup degrades the message, never replaces it.** A cleanup that could
+  not delete appends a line naming the survivor plus the manual retire command.
+- **Do NOT record the remnant in state instead.** This was tried first and it
+  is a trap: the recorded properties ARE the template's, so the next deploy
+  diffs `NO_CHANGE` and never touches the resource again — `cdkd deploy` prints
+  "No changes detected" and exits 0 over something still unusable, and the
+  consumer fails with no explanation. A loud failure turned silent is worse
+  than the orphan. Making the diff re-provision it needs a marker on the state
+  record, i.e. a schema bump, to buy what deleting gives for free.
+- **Prove the delete is SAFE for that service rather than assuming it.** For
+  ACM it is, from AWS's own docs: the validation CNAME is derived from the
+  domain and the account, not the certificate, and you can "replace a deleted
+  certificate" without repeating validation.
+- **Release the idempotency token when the cleanup succeeded.** ACM answers a
+  repeat of the same token within an hour with the SAME certificate — which no
+  longer exists. Keep it when the cleanup FAILED: there the survivor is exactly
+  what a retry should be handed.
 
-Not on `UpdateContext`, so a provider re-creating inside its own `update()`
-reports nothing: that logical id already points at the OLD resource, and
-overwriting the record would orphan the one cdkd still manages. The engine
-refuses that overwrite independently. So the REPLACEMENT case is still open --
-issue #2173 -- and its remedy is a policy choice (delete the new resource, or
-report it as a survivor), not another report.
+This also covers the replacement path for free: `update()` re-creates via the
+same `create()`, so a replacement whose wait fails aborts with the OLD resource
+still live and still in state, and nothing orphaned.
 
 ### Masking a resolved property value in a provider log line
 
