@@ -444,6 +444,24 @@ describe('LockManager', () => {
       expect(s3Client.send).toHaveBeenCalledTimes(2);
     });
 
+    it('deletes a lock whose body cdkd cannot read (issue #2170)', async () => {
+      // The contract is that a stuck lock never makes a state record
+      // unremovable. A body of `42` reads as absent through `getLockInfo` while
+      // still failing every `IfNoneMatch: '*'` acquire, so gating the delete on
+      // a readable lock broke that contract in the other direction.
+      s3Client.send
+        .mockResolvedValueOnce({ Body: { transformToString: () => Promise.resolve('42') } })
+        .mockResolvedValueOnce({});
+
+      await lockManager.forceReleaseLock('test-stack', 'us-east-1');
+
+      const deletes = s3Client.send.mock.calls.filter(
+        (c: unknown[]) =>
+          (c[0] as { constructor: { name: string } }).constructor.name === 'DeleteObjectCommand'
+      );
+      expect(deletes, 'an unreadable lock body must still be deleted').toHaveLength(1);
+    });
+
     it('should release expired lock', async () => {
       const expiredLock: LockInfo = {
         owner: 'old-user@host:789',
@@ -468,8 +486,13 @@ describe('LockManager', () => {
 
       await lockManager.forceReleaseLock('test-stack', 'us-east-1');
 
-      // Only GetObject was called, no DeleteObject
-      expect(s3Client.send).toHaveBeenCalledTimes(1);
+      // The DELETE is unconditional now (issue #2170): `getLockInfo` returns
+      // `null` for BOTH an absent key and an UNREADABLE body, and gating on it
+      // meant a lock.json holding `42` could never be force-released while it
+      // still failed every acquire. A DELETE against a key that is genuinely
+      // absent is an idempotent no-op, which is the cheaper side to be wrong on
+      // for a command the user ran explicitly.
+      expect(s3Client.send).toHaveBeenCalledTimes(2);
     });
   });
 

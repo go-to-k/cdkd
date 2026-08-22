@@ -126,16 +126,23 @@ export function buildForceUnlockCommand(
   // leaves a MULTI-LINE "recovery command" on the operator's terminal, which is
   // its own forgery surface. A control character has no legitimate place in a
   // stack name or a region, so drop it and then quote what remains.
+  // A value that sanitization CHANGED cannot be named in a command: the
+  // command would address a DIFFERENT lock. `myΩstack` sanitizes to
+  // `my stack`, and telling an operator to force-unlock that is the
+  // wrong-lock-object harm this whole module exists to close — the same
+  // reason an EMPTY value suppresses, one step earlier.
   const safeStack = displaySafe(stackName, { asciiOnly: true });
-  // An ABSENT region is legitimate (a legacy lock key); an UNRENDERABLE one is
-  // not. Only the second suppresses.
+  const stackIsExact = safeStack === stackName;
+  // An ABSENT region is legitimate (a legacy lock key); an UNRENDERABLE or an
+  // ALTERED one is not.
   const safeRegion = region === undefined ? undefined : displaySafe(region, { asciiOnly: true });
+  const regionIsExact = region === undefined || safeRegion === region;
   // A value that sanitizes to NOTHING must not become an empty ARGUMENT:
   // `force-unlock.ts` treats a falsy `--stack-region` as "not supplied" and
   // widens the release to EVERY region holding that stack name — the opposite
   // of what a region-qualified hint is for. Emitting no command is the honest
   // answer; the message still names what could not be rendered.
-  if (!safeStack || safeRegion === '') return '';
+  if (!safeStack || safeRegion === '' || !stackIsExact || !regionIsExact) return '';
   const parts = [
     safeRegion === undefined
       ? `cdkd force-unlock ${shellQuote(safeStack)}`
@@ -248,8 +255,9 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
     return (
       `${head} ${advice}. ` +
       `No recovery command can be shown: the name or region recorded for this ` +
-      `lock has no renderable characters left after sanitization — inspect the ` +
-      `lock object directly.`
+      `lock contains characters that cannot be reproduced safely on a command ` +
+      `line, so any command shown here would address a different lock — ` +
+      `inspect the lock object directly.`
     );
   }
 

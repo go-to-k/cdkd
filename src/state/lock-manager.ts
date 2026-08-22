@@ -404,20 +404,36 @@ export class LockManager {
    * `{prefix}/{stackName}/lock.json` file.
    */
   async forceReleaseLock(stackName: string, region: string | undefined): Promise<void> {
-    const lockInfo = await this.getLockInfo(stackName, region);
-
-    if (!lockInfo) {
-      this.logger.warn(
-        `No lock to force release for stack: ${stackName}${region ? ` (${region})` : ''}`
-      );
-      return;
-    }
+    // `getLockInfo` is for the LOG LINE ONLY -- the delete below is
+    // unconditional, and that is the whole contract of this method: a stuck
+    // lock must never make a state record unremovable. Gating the delete on a
+    // readable lock (which a previous revision did, once `getLockInfo` began
+    // returning `null` for a corrupt body) breaks it in the other direction --
+    // a lock.json holding `42` or `[]` reads as absent here while still
+    // failing every `IfNoneMatch: '*'` acquire, so `cdkd force-unlock` would
+    // print "no lock to release" and delete nothing, forever.
+    // The DELETE is UNCONDITIONAL, and that is this method's whole contract: a
+    // stuck lock must never make a state record unremovable. `getLockInfo` is
+    // consulted for the LOG LINE only. Gating the delete on it (which a
+    // previous revision did, once `getLockInfo` began returning `null` for an
+    // unreadable body) breaks the contract in the other direction -- a
+    // lock.json holding `42` or `[]` reads as absent while still failing every
+    // `IfNoneMatch: '*'` acquire, so `cdkd force-unlock` would report "no lock"
+    // and delete nothing, forever. A DELETE against a key that genuinely is
+    // not there is an idempotent no-op, so the cost of always issuing it is one
+    // API call on a command the user ran explicitly.
+    const where = `${stackName}${region ? ` (${region})` : ''}`;
+    const lockInfo = await this.getLockInfo(stackName, region).catch(() => null);
 
     this.logger.warn(
-      `Force releasing lock for stack: ${stackName}${region ? ` (${region})` : ''}, ` +
-        `owner: ${lockInfo.owner}` +
-        `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +
-        `, expired: ${this.isLockExpired(lockInfo)}`
+      lockInfo
+        ? `Force releasing lock for stack: ${where}, ` +
+            `owner: ${lockInfo.owner}` +
+            `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +
+            `, expired: ${this.isLockExpired(lockInfo)}`
+        : `Force releasing lock for stack: ${where} (no readable lock body — ` +
+            `deleting the object anyway, since a lock cdkd cannot read is a ` +
+            `lock nothing else can clear)`
     );
 
     await this.deleteLock(stackName, region);

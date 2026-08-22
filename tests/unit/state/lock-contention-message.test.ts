@@ -70,6 +70,16 @@ describe('buildForceUnlockCommand (issue #2170)', () => {
     );
   });
 
+  it('emits NO command when sanitization ALTERED the value', () => {
+    // `myΩstack` sanitizes to `my stack` — a DIFFERENT stack. Naming it in a
+    // force-unlock command is the wrong-lock-object harm this module exists to
+    // close, so an altered value suppresses exactly as an empty one does.
+    expect(buildForceUnlockCommand('my\u03a9stack', 'us-east-1')).toBe('');
+    expect(buildForceUnlockCommand('MyStack', 'us-east-1\u200b')).toBe('');
+    // An EXACT value is unaffected.
+    expect(buildForceUnlockCommand('MyStack', 'us-east-1')).toContain('cdkd force-unlock MyStack');
+  });
+
   it('emits NO command when a value has nothing renderable left', () => {
     // `--stack-region ''` is FALSY to force-unlock, which treats it as
     // "not supplied" and widens the release to EVERY region holding the stack
