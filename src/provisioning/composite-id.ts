@@ -158,7 +158,9 @@ export interface CompositeIdOptions {
    * open in every caller nobody got to. Absent means unmasked, the
    * back-compatible default the contract mandates.
    */
-  readonly maskSecrets?: MaskerFn;
+  // `| undefined` explicitly: the repo runs `exactOptionalPropertyTypes`, and
+  // every caller passes `context?.maskSecrets`, which is optional at its source.
+  readonly maskSecrets?: MaskerFn | undefined;
 }
 
 /** Render `<a>|<b>|<c>` from the segment names. */

@@ -473,10 +473,10 @@ export class SSMParameterProvider implements ResourceProvider {
             })
           );
         }
-        this.logger.debug(`Updated tags for SSM parameter ${physicalId}`);
+        debug(`Updated tags for SSM parameter ${physicalId}`);
       }
 
-      this.logger.debug(`Successfully updated SSM parameter ${logicalId}`);
+      debug(`Successfully updated SSM parameter ${logicalId}`);
 
       // Re-report `Arn` here even though an in-place update cannot change it
       // (issue #1824): an update result's `attributes` REPLACE the state

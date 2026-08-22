@@ -1130,12 +1130,14 @@ Rules for a provider:
   overlap between the two passes is free.
 
   **Use `maskDeep` from `src/provisioning/masked-retry-logger.ts` for the walk
-  — do NOT hand-roll one.** Issue #2176 found FOUR private copies
-  (`elbv2-provider.ts`, `cognito-provider.ts`, `sns-topic-provider.ts`,
-  `dynamodb-table-provider.ts`) and two of them had already lost the depth cap,
-  so a self-referential bag recursed until the stack overflowed instead of being
-  bounded. These copies encode a security contract: a hardening applied to one
-  silently leaves the others behind.
+  — do NOT hand-roll one.** Issue #2176 found SIX private copies
+  (`elbv2`, `cognito`, `sns-topic`, `dynamodb-table`, `dynamodb-globaltable`,
+  `apigatewayv2`), FOUR of which had no depth cap. These copies encode a
+  security contract: a hardening applied to one silently leaves the others
+  behind. Two of the six were nearly missed a second time because the sweep
+  grepped for the known copies' SPELLINGS (`maskDeep`, `MASK_WALK_MAX_DEPTH`)
+  rather than for the walk's SHAPE — the survivors were named `maskLeaf` /
+  `maskLeafValue` with no named constant.
 - **Read it defensively.** `context?.maskSecrets ?? ((t: string) => t)`.
   Absent means unmasked, which is the back-compatible default that let this
   ship without editing ~130 providers. `create()` / `update()` are also called

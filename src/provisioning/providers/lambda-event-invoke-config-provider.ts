@@ -199,9 +199,16 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       qualifier,
       // A reverse-replacement rollback creates from a STATE record, so the
       // refusal downgrades to a warning, matching the `Qualifier` guard above.
-      context?.replayingState === true
-        ? { onRefusal: (message) => this.logger.warn(message) }
-        : undefined
+      {
+        // Issue #2176: the refusal QUOTES the offending segment value, on the
+        // thrown arm (durable) and the warn arm (terminal) alike, so the masker
+        // goes through unconditionally -- it is absent on the paths that have no
+        // context, where it degrades to identity.
+        maskSecrets: context?.maskSecrets,
+        ...(context?.replayingState === true && {
+          onRefusal: (message: string) => this.logger.warn(message),
+        }),
+      }
     );
 
     try {

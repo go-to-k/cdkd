@@ -14,14 +14,24 @@
  */
 import { describe, expect, it } from 'vite-plus/test';
 
-import { MASK_WALK_MAX_DEPTH, maskDeep } from '../../../src/provisioning/masked-retry-logger.js';
+import {
+  MASK_WALK_DEPTH_CAP_MARKER,
+  MASK_WALK_MAX_DEPTH,
+  maskDeep,
+} from '../../../src/provisioning/masked-retry-logger.js';
 import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 
+/**
+ * The REAL shape: `Map<plaintext, the {{resolve:...}} expression it came from>`
+ * (`RecordedSecretValues` in `secret-redaction.ts`). Built without a cast on
+ * purpose — an earlier draft wrapped the value in `{ reference }` and cast the
+ * map, which type-checked only because `maskSecretsInText` reads `size` / `has`
+ * / `keys` and never the values, so the fixture could drift from the producer
+ * without any test noticing.
+ */
 function bagOf(...values: string[]): RecordedSecretValues {
-  return new Map(
-    values.map((v) => [v, { reference: `{{resolve:secretsmanager:${v}}}` }])
-  ) as unknown as RecordedSecretValues;
+  return new Map(values.map((v) => [v, `{{resolve:secretsmanager:${v}}}`]));
 }
 
 describe('maskDeep (issue #2176)', () => {
@@ -89,13 +99,19 @@ describe('maskDeep (issue #2176)', () => {
 
     const walked = maskDeep(cyclic, mask) as Record<string, unknown>;
     expect(walked['name']).toBe(SECRET_MASK);
+    // The recursion terminated at the cap rather than by dropping the branch.
+    expect(JSON.stringify(walked)).toContain(MASK_WALK_DEPTH_CAP_MARKER);
   });
 
-  it('stops DESCENDING at the depth cap, but masks a string leaf at any depth', () => {
-    // Pins the ordering inside the walk, which is easy to get backwards: the
-    // `typeof value === 'string'` check runs BEFORE the depth test, so a scalar
-    // is masked however deep it sits. The cap bounds only the descent into
-    // CONTAINERS — which is what makes a self-referential bag terminate.
+  it('SUBSTITUTES at the depth cap rather than returning the subtree raw', () => {
+    // The cap must fail CLOSED. Returning the container raw would stringify
+    // every leaf and key below it in plaintext — silent disclosure — whereas
+    // substituting is silent truncation (issue #2176 security review).
+    //
+    // Also pins the ordering inside the walk, which is easy to get backwards:
+    // the `typeof value === 'string'` check runs BEFORE the depth test, so a
+    // scalar is masked however deep it sits; the cap bounds only descent into
+    // CONTAINERS.
     const secret = 'too-deep-secret';
     const mask = createSecretMasker(bagOf(secret));
 
@@ -105,19 +121,35 @@ describe('maskDeep (issue #2176)', () => {
       return v;
     };
 
-    // The leaf sits AT the cap: still a string, so still masked.
-    expect(JSON.stringify(maskDeep(nest(MASK_WALK_MAX_DEPTH), mask))).not.toContain(secret);
+    // The leaf sits AT the cap: still a string, so still masked normally.
+    const atCap = JSON.stringify(maskDeep(nest(MASK_WALK_MAX_DEPTH), mask));
+    expect(atCap).not.toContain(secret);
+    expect(atCap).toContain(SECRET_MASK);
 
-    // One level deeper the walk meets an OBJECT at the cap and returns it whole,
-    // so the leaf inside it is never visited. This is the accepted bound, pinned
-    // rather than claimed unreachable.
-    expect(JSON.stringify(maskDeep(nest(MASK_WALK_MAX_DEPTH + 1), mask))).toContain(secret);
+    // One deeper, the walk meets an OBJECT at the cap. The secret must be gone
+    // AND the marker present — "not present" alone would also be satisfied by a
+    // walk that dropped the subtree or returned an empty object.
+    const past = JSON.stringify(maskDeep(nest(MASK_WALK_MAX_DEPTH + 1), mask));
+    expect(past).not.toContain(secret);
+    expect(past).toContain(MASK_WALK_DEPTH_CAP_MARKER);
+  });
+
+  it('keeps its depth-cap marker equal to SECRET_MASK', () => {
+    // `masked-retry-logger.ts` is a LEAF module and deliberately does not import
+    // `secret-redaction.ts`, so the marker is spelled twice. This is the fence
+    // that keeps the two spellings from drifting apart.
+    expect(MASK_WALK_DEPTH_CAP_MARKER).toBe(SECRET_MASK);
   });
 
   it('is idempotent, which is what lets a provider mask the value AND the message', () => {
     const secret = 'idempotence-probe-secret';
     const mask = createSecretMasker(bagOf(secret));
     const once = maskDeep({ a: secret }, mask);
+    // Assert what the FIRST pass produced before asserting the second changes
+    // nothing. Without this line the case passes under `maskDeep = (v) => v`,
+    // under a constant-returning masker, and under a drop-everything walk —
+    // it constrained nothing at all.
+    expect(once).toEqual({ a: SECRET_MASK });
     expect(maskDeep(once, mask)).toEqual(once);
   });
 });

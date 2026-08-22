@@ -106,6 +106,16 @@ export function createMaskedRetryLogger(
 export const MASK_WALK_MAX_DEPTH = 8;
 
 /**
+ * What {@link maskDeep} substitutes for a subtree it declines to descend into.
+ *
+ * MUST equal `SECRET_MASK` in `src/deployment/secret-redaction.ts`. It is
+ * spelled here rather than imported so this module keeps its single-import leaf
+ * property (see the module note above); the two are fenced against drift by a
+ * test that imports both.
+ */
+export const MASK_WALK_DEPTH_CAP_MARKER = '***';
+
+/**
  * Mask every string LEAF and KEY of an arbitrary value, returning a structure
  * safe to `JSON.stringify` into a log line or an error message (issue
  * [#2176](https://github.com/go-to-k/cdkd/issues/2176)).
@@ -134,20 +144,38 @@ export const MASK_WALK_MAX_DEPTH = 8;
  * Keys are masked as well as values: `JSON.stringify` renders them into the
  * same line, so a resolved secret used as a map key would otherwise escape.
  *
- * WHY THIS LIVES HERE rather than as a private walk per provider. Three
+ * WHY THIS LIVES HERE rather than as a private walk per provider. SIX
  * hand-rolled copies had already accumulated — `elbv2-provider.ts`,
- * `cognito-provider.ts` and `sns-topic-provider.ts` — and `elbv2-provider.ts`
- * carried the standing instruction that "a THIRD site is the point at which
- * this should move into `../masked-retry-logger.ts` ... and all three converge
- * on it". That trigger had fired and been missed, and the copies had already
- * begun to diverge exactly as predicted: SNS's `maskLeaf` carried NO depth cap,
- * so a self-referential bag recursed until the stack overflowed instead of
- * being bounded at depth 8 like the other two. These copies encode a security
+ * `cognito-provider.ts`, `sns-topic-provider.ts`, `dynamodb-table-provider.ts`,
+ * `dynamodb-globaltable-provider.ts` and `apigatewayv2-provider.ts` — and
+ * `elbv2-provider.ts` carried the standing instruction that "a THIRD site is
+ * the point at which this should move into `../masked-retry-logger.ts` ... and
+ * all three converge on it". That trigger had fired and been missed twice over,
+ * and the copies had already diverged exactly as predicted: FOUR of the six
+ * carried NO depth cap at all.
+ *
+ * Worth recording how the last two were nearly missed AGAIN, because it is the
+ * same failure one level up: the first sweep for this issue grepped for
+ * `maskDeep` / `MASK_WALK_MAX_DEPTH` — the SPELLINGS the known copies used —
+ * and the two survivors spell it `maskLeaf` / `maskLeafValue` with no named
+ * constant. Grep for the SHAPE, not the name. These copies encode a security
  * contract, and a hardening applied to one silently leaves the others behind.
  */
 export function maskDeep(value: unknown, mask: MaskerFn, depth = 0): unknown {
   if (typeof value === 'string') return mask(value);
-  if (depth >= MASK_WALK_MAX_DEPTH) return value;
+  // At the cap, SUBSTITUTE the subtree rather than returning it. Returning it
+  // raw is silent DISCLOSURE -- every string leaf and key below this point
+  // would be stringified in plaintext -- whereas substituting is silent
+  // TRUNCATION, which is the failure a masker should prefer (issue #2176
+  // security review).
+  //
+  // Stating the cap's real justification, because the obvious one is wrong: a
+  // template-derived bag cannot be CYCLIC, so "guards against infinite
+  // recursion" over-claims. What the cap actually bounds is unbounded WORK on a
+  // pathologically deep bag, and what makes its direction matter is that this
+  // helper is shared -- a future consumer may well walk something deeper than
+  // the depth-2 shapes today's callers pass.
+  if (depth >= MASK_WALK_MAX_DEPTH) return MASK_WALK_DEPTH_CAP_MARKER;
   if (Array.isArray(value)) return value.map((entry) => maskDeep(entry, mask, depth + 1));
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(

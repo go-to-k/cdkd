@@ -349,7 +349,7 @@ function buildMfaConfigRequest(
   // A finished message is always longer than the value inside it, so it can
   // only ever reach `maskSecretsInText`'s SUBSTRING arm, which ignores needles
   // below `MIN_NEEDLE_LENGTH` (4). A 1-3 character secret therefore survives
-  // this sink. `maskLeaf` below is the inner layer: it hands the masker the raw
+  // this sink. `maskLeaves` below is the inner layer: it hands the masker the raw
   // string, which reaches the WHOLE-VALUE arm at any length. Neither layer
   // subsumes the other — the sink catches a secret embedded in a structure and
   // any interpolation added later, the leaf pass catches the short ones — and

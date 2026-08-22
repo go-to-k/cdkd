@@ -23,10 +23,16 @@ import type { RecordedSecretValues } from '../../../src/deployment/secret-redact
 /** A value carrying the separator, so the refusal actually fires. */
 const OFFENDING = 'tok|en-with-separator';
 
+/**
+ * The REAL shape: `Map<plaintext, the {{resolve:...}} expression it came from>`
+ * (`RecordedSecretValues` in `secret-redaction.ts`). Built without a cast on
+ * purpose — an earlier draft wrapped the value in `{ reference }` and cast the
+ * map, which type-checked only because `maskSecretsInText` reads `size` / `has`
+ * / `keys` and never the values, so the fixture could drift from the producer
+ * without any test noticing.
+ */
 function bag(...values: string[]): RecordedSecretValues {
-  return new Map(
-    values.map((v) => [v, { reference: `{{resolve:secretsmanager:${v}}}` }])
-  ) as unknown as RecordedSecretValues;
+  return new Map(values.map((v) => [v, `{{resolve:secretsmanager:${v}}}`]));
 }
 
 describe('compositeIdSeparatorRefusal masking (issue #2176)', () => {
@@ -89,6 +95,11 @@ describe('compositeIdSeparatorRefusal masking (issue #2176)', () => {
   });
 
   it('packCompositeId forwards the masker to the THROWN arm (the durable sink)', () => {
+    // `expect.assertions` states the intent: without it, a `packCompositeId`
+    // that stopped refusing would fall through to the `throw` below, be caught
+    // by this same `catch`, and the case would still fail — but for the wrong
+    // reason, and a reader could not tell the two apart.
+    expect.assertions(3);
     const mask = createSecretMasker(bag(OFFENDING));
     try {
       packCompositeId('AWS::S3Tables::Table', 'Table', [{ name: 'TableName', value: OFFENDING }], {
@@ -97,6 +108,7 @@ describe('compositeIdSeparatorRefusal masking (issue #2176)', () => {
       throw new Error('expected a refusal');
     } catch (error) {
       const message = (error as Error).message;
+      expect(message).not.toBe('expected a refusal');
       expect(message).not.toContain(OFFENDING);
       expect(message).toContain(`TableName '${SECRET_MASK}'`);
     }

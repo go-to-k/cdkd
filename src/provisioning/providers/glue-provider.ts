@@ -797,9 +797,16 @@ export class GlueProvider implements ResourceProvider {
       // refusal downgrades to a warning: the user cannot edit a state record
       // from their template, and a table recorded by an older binary under the
       // ambiguous id must still be restorable.
-      context?.replayingState === true
-        ? { onRefusal: (message) => this.logger.warn(message) }
-        : undefined
+      {
+        // Issue #2176: the refusal QUOTES the offending segment value, on the
+        // thrown arm (durable) and the warn arm (terminal) alike, so the masker
+        // goes through unconditionally -- it is absent on the paths that have no
+        // context, where it degrades to identity.
+        maskSecrets: context?.maskSecrets,
+        ...(context?.replayingState === true && {
+          onRefusal: (message: string) => this.logger.warn(message),
+        }),
+      }
     );
 
     try {

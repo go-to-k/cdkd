@@ -1524,13 +1524,13 @@ implementation. Three details are worth copying:
     **Use `maskDeep` from
     [src/provisioning/masked-retry-logger.ts](../src/provisioning/masked-retry-logger.ts)
     for the leaf pass — do NOT hand-roll one.** Issue
-    [#2176](https://github.com/go-to-k/cdkd/issues/2176) found FOUR private
-    copies of that walk, and two of them (`sns-topic-provider.ts`,
-    `dynamodb-table-provider.ts`) had already lost the depth cap the other two
-    carried, so a self-referential bag recursed until the stack overflowed
-    rather than being bounded. A walk that encodes a security contract drifts
-    the moment it is copied: a hardening applied to one copy silently leaves the
-    rest behind.
+    [#2176](https://github.com/go-to-k/cdkd/issues/2176) found SIX private
+    copies of that walk, FOUR of which had lost the depth cap. A walk that
+    encodes a security contract drifts the moment it is copied: a hardening
+    applied to one copy silently leaves the rest behind. Grep for the walk's
+    SHAPE rather than a name — two of the six were nearly missed twice because
+    they spell it `maskLeaf` / `maskLeafValue` and declare no named depth
+    constant to grep for.
     It covers cdkd's
     dynamic-reference secret model only — a `NoEcho: true` template PARAMETER
     is outside that model and is not masked by it, and that residual is

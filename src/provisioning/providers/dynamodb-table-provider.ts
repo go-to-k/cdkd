@@ -826,12 +826,10 @@ export const deleteTableRetryDelays: { sleep?: (ms: number) => Promise<void> } =
  * leaf is stringified — and escaped — identically.
  */
 function maskLeafValue(value: unknown, maskSecrets: SecretMasker): unknown {
-  // Issue #2176: delegates to the shared walk. This was the FOURTH hand-rolled
-  // copy (with `elbv2-provider.ts`, `cognito-provider.ts` and
-  // `sns-topic-provider.ts`), and like SNS's it carried NO depth cap — so a
-  // self-referential bag recursed until the stack overflowed instead of being
-  // bounded. Kept as a named wrapper because this file's call sites read
-  // better with the argument order reversed.
+  // Issue #2176: delegates to the shared walk. This was one of SIX hand-rolled
+  // copies and one of the FOUR that carried no depth cap. Kept as a named
+  // wrapper only so this file's many call sites keep reading as
+  // `maskLeafValue(...)`; the signature is identical to `maskDeep`'s.
   return maskDeep(value, maskSecrets);
 }
 
@@ -3482,6 +3480,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
         `${scope}: WarmThroughput member(s) ${coerced.dropped.join(', ')} in ` +
           `${JSON.stringify(maskLeafValue(value, maskSecrets))} are not a number DynamoDB ` +
           `accepts, so they were dropped from the request, which leaves ` +
+          // Masked for CONSISTENCY with the sibling argument above, not because
+          // this one can leak: `coerceWarmThroughput` admits only
+          // `toFiniteNumber` results into `spec`, and its keys are cdkd
+          // literals, so the walk is a no-op here BY CONSTRUCTION today. It is
+          // written anyway so the site stays correct if that coercion is ever
+          // widened -- and stated plainly so nobody reads it as a closed leak.
           `${JSON.stringify(maskLeafValue(coerced.spec, maskSecrets))}. Check for an ` +
           `unresolved intrinsic or a ` +
           `non-numeric value.`
