@@ -266,7 +266,7 @@ servicediscovery-namespaces	2026-08-20T03:39:32Z	PASS	136	verify.sh	issues 2058/
 ses-identity	2026-08-10T10:50:49Z	PASS	180	verify.sh	upstream SES CC 403 resolved; all 3 phases clean (issue #1468)
 sg-circular-dependency	2026-08-18T04:47:12Z	PASS	150	verify.sh	final run on the merge base (rebased onto 8e33f535); #1791 healing + ambiguity arms; 19 del 0 err 0 orph
 sns-event-source	2026-08-01T10:07:21Z	PASS	59	verify.sh	0801 regression sweep; e2e delivery ok, log groups swept, 0 orphans
-sns-inline-subscription	2026-07-27T11:04:52Z	PASS	53	verify.sh	issue #1267 SNS topic update wrap; 3 del 0 err
+sns-inline-subscription	2026-08-22T18:33:34Z	PASS	53	verify.sh	issue 2176 masking sweep; rc 0, destroy 3 deleted 0 errors, orphans clean
 sns-pending-subscription	2026-07-30T12:40:16Z	PASS	22	verify.sh	issue #1301 re-run after review fixes, clean
 sns-sqs-event	2026-08-19T18:36:23Z	PASS	91	verify.sh	issue 1997 maskSecrets adoption; sns-topic delivery-status + throw arms exercised; clean destroy, 0 orphans
 sns-subscription-filter	2026-08-10T05:38:11Z	PASS	39	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
