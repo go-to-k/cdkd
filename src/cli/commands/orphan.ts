@@ -15,6 +15,7 @@ import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
+import { buildLockContentionMessage } from '../../state/lock-contention-message.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
@@ -197,10 +198,16 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       );
       if (!acquired) {
         throw new Error(
-          `Could not acquire lock for stack '${stackInfo.stackName}' (${targetRegion}) — ` +
-            `another cdkd process holds it. Wait for it to finish, or run ` +
-            `'cdkd force-unlock ${stackInfo.stackName} --stack-region ${targetRegion}' if you are ` +
-            `certain no other process is active.`
+          await buildLockContentionMessage({
+            lockManager,
+            stackName: stackInfo.stackName,
+            region: targetRegion,
+            recovery: {
+              profile: options.profile,
+              stateBucket,
+              statePrefix: options.statePrefix,
+            },
+          })
         );
       }
     }

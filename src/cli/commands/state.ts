@@ -21,6 +21,10 @@ import { getLogger } from '../../utils/logger.js';
 import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
+import {
+  buildLockContentionMessage,
+  type LockRecoveryContext,
+} from '../../state/lock-contention-message.js';
 import { ExportIndexStore } from '../../state/export-index-store.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -1077,11 +1081,18 @@ async function stateOrphanCommand(
       // pass `undefined` to delete the legacy key; deleteState handles both.
       for (const target of targets) {
         if (target.region) {
+          // Issue #2171: this force-release takes no lock of its own and
+          // deletes whatever is there, including a LIVE one belonging to an
+          // in-flight deploy. That is deliberate — a stuck lock must not make
+          // a state record unremovable — but it was silent, so say what is
+          // being destroyed. Best-effort: a failed read must not block the rm.
+          await warnOnLiveForeignLock(setup.lockManager, stackName, target.region, logger);
           await setup.stateBackend.deleteState(stackName, target.region);
           await setup.lockManager.forceReleaseLock(stackName, target.region);
         } else {
           // Pure legacy record without a region body field: just sweep the
           // legacy key (which is what the no-region forceReleaseLock targets).
+          await warnOnLiveForeignLock(setup.lockManager, stackName, undefined, logger);
           await setup.lockManager.forceReleaseLock(stackName, undefined);
         }
         logger.info(`✓ Removed state for stack: ${formatStackRef(target)}`);
@@ -1975,7 +1986,15 @@ async function stateRefreshObservedCommand(
         setup.stateBackend,
         setup.lockManager,
         providerRegistry,
-        { dryRun: options.dryRun ?? false, logger }
+        {
+          dryRun: options.dryRun ?? false,
+          logger,
+          lockRecovery: {
+            profile: options.profile,
+            stateBucket: setup.bucket,
+            statePrefix: options.statePrefix,
+          },
+        }
       );
       totalRefreshed += counts.refreshed;
       totalUnsupported += counts.unsupported;
@@ -2022,15 +2041,55 @@ const NO_RECORDED_SECRETS: RecordedSecretValues = new Map();
  * cheap "preview the scope" mode that doesn't need AWS credentials
  * for the underlying SDK reads.
  */
+/**
+ * Warn before `cdkd state rm` force-releases a lock that is still LIVE.
+ *
+ * `forceReleaseLock` is unconditional by design — a stuck lock must never make
+ * a state record unremovable — but it deletes an in-flight `cdkd deploy`'s lock
+ * just as readily as a stale one, and it did so silently (issue #2171). The
+ * write it enables has already happened by the time anyone notices, so the
+ * only useful thing is to name the owner at the moment of the release.
+ *
+ * Best-effort in both directions: an expired lock is not worth a line, and a
+ * failed read must not block the removal the user asked for.
+ */
+async function warnOnLiveForeignLock(
+  lockManager: LockManager,
+  stackName: string,
+  region: string | undefined,
+  logger: ReturnType<typeof getLogger>
+): Promise<void> {
+  try {
+    const info = await lockManager.getLockInfo(stackName, region);
+    if (!info || info.expiresAt <= Date.now()) return;
+    const where = region ? `${stackName} (${region})` : `${stackName} (legacy lock key)`;
+    const operation = info.operation ? `, operation: ${info.operation}` : '';
+    logger.warn(
+      `Force-releasing a LIVE lock on ${where} held by ${info.owner}${operation}. ` +
+        `That process is still running and will keep writing; its next state write ` +
+        `may recreate the record being removed here.`
+    );
+  } catch {
+    // Best-effort: never block `state rm` on a lock read.
+  }
+}
+
 async function refreshObservedForStack(
   stackName: string,
   region: string,
   stateBackend: S3StateBackend,
   lockManager: LockManager,
   providerRegistry: ProviderRegistry,
-  opts: { dryRun: boolean; logger: ReturnType<typeof getLogger> }
+  opts: {
+    dryRun: boolean;
+    logger: ReturnType<typeof getLogger>;
+    // Threaded so the contention message can name the SAME lock object this
+    // call was working on, rather than whatever `force-unlock` would re-resolve
+    // from the ambient profile (issue #2170).
+    lockRecovery?: LockRecoveryContext;
+  }
 ): Promise<{ refreshed: number; unsupported: number; failed: number }> {
-  const { logger } = opts;
+  const { logger, lockRecovery } = opts;
 
   const result = await stateBackend.getState(stackName, region);
   if (!result) {
@@ -2083,10 +2142,12 @@ async function refreshObservedForStack(
   );
   if (!acquired) {
     throw new Error(
-      `Could not acquire lock for stack '${stackName}' (${region}) — ` +
-        `another cdkd process holds it. Wait for it to finish, or run ` +
-        `'cdkd force-unlock ${stackName} --stack-region ${region}' if you are ` +
-        `certain no other process is active.`
+      await buildLockContentionMessage({
+        lockManager,
+        stackName,
+        region,
+        recovery: lockRecovery,
+      })
     );
   }
   try {

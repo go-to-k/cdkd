@@ -46,6 +46,10 @@ import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import {
+  buildLockContentionMessage,
+  type LockRecoveryContext,
+} from '../../state/lock-contention-message.js';
+import {
   IntrinsicFunctionResolver,
   type ResolverContext,
 } from '../../deployment/intrinsic-function-resolver.js';
@@ -2418,6 +2422,13 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
 
   try {
     const stateConfig = { bucket: stateBucket, prefix: options.statePrefix };
+    // Every contention message this command raises (top-level and per nested
+    // child) points at the SAME lock object it was working on (issue #2170).
+    const lockRecovery: LockRecoveryContext = {
+      profile: options.profile,
+      stateBucket,
+      statePrefix: options.statePrefix,
+    };
     const stateBackend = new S3StateBackend(awsClients.s3, stateConfig, {
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
@@ -2605,11 +2616,11 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     // is a pure read.
     //
     // `acquireLock` returns `false` (rather than throwing) when another
-    // live, non-expired lock holder exists. Most cdkd commands discard
-    // this return value, but export is uniquely irreversible — once the
-    // CFn IMPORT changeset executes and cdkd state is deleted, we cannot
-    // back out — so we refuse the operation rather than racing a
-    // concurrent `cdkd deploy` / `cdkd destroy` on the same stack.
+    // live, non-expired lock holder exists. EVERY cdkd write command checks
+    // that return value since issue #2161 — export was simply the first,
+    // because it is uniquely irreversible: once the CFn IMPORT changeset
+    // executes and cdkd state is deleted, there is no backing out. Do not
+    // read this comment as licence to discard the boolean elsewhere.
     const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
     if (!options.dryRun) {
       const acquired = await lockManager.acquireLock(
@@ -2620,10 +2631,12 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       );
       if (!acquired) {
         throw new Error(
-          `Could not acquire lock for stack '${resolvedStackName}' (${targetRegion}) — ` +
-            `another cdkd process holds it. Wait for it to finish, or run ` +
-            `'cdkd force-unlock ${resolvedStackName} --stack-region ${targetRegion}' if you are ` +
-            `certain no other process is active.`
+          await buildLockContentionMessage({
+            lockManager,
+            stackName: resolvedStackName,
+            region: targetRegion,
+            recovery: lockRecovery,
+          })
         );
       }
     }
@@ -2699,6 +2712,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
 
         const childOverrides = parseCfnChildStackNameOverrides(options.cfnChildStackName);
         const result = await runPerStackImportLoop({
+          lockRecovery,
           rootStackName: resolvedStackName,
           rootRegion: targetRegion,
           rootStackInfoNestedTemplates: rootNestedTemplatePaths,
@@ -5818,6 +5832,13 @@ export async function runPerStackImportLoop(args: {
   rootParameters: Parameter[];
   deps: RunPerStackImportLoopDeps;
   options: RunPerStackImportLoopOptions;
+  /**
+   * Threaded from `exportCommand` so a per-child contention message names the
+   * same bucket / profile the root resolved — `cdkd force-unlock` re-resolves
+   * both from the ambient profile otherwise, and a nested child never has a
+   * state record to infer its region from (issue #2170).
+   */
+  lockRecovery: LockRecoveryContext;
 }): Promise<PerStackImportLoopResult> {
   const logger = getLogger();
   const {
@@ -6021,11 +6042,15 @@ export async function runPerStackImportLoop(args: {
         );
       } catch (err) {
         throw new Error(
-          `Could not acquire lock for nested-stack child '${node.stackName}' (${node.region}) — ` +
-            `another cdkd process held it through the retry window. Wait for it to finish, or run ` +
-            `'cdkd force-unlock ${node.stackName} --stack-region ${node.region}' if you are ` +
-            `certain no other process is active. ` +
-            `No CloudFormation changeset has been submitted; cdkd state is unchanged.`,
+          await buildLockContentionMessage({
+            lockManager: deps.lockManager,
+            stackName: node.stackName,
+            region: node.region,
+            subject: 'nested-stack child',
+            heldClause: 'another cdkd process held it through the retry window',
+            recovery: args.lockRecovery,
+            suffix: 'No CloudFormation changeset has been submitted; cdkd state is unchanged.',
+          }),
           { cause: err instanceof Error ? err : undefined }
         );
       }

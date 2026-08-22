@@ -16,6 +16,10 @@ import {
 } from '../../provisioning/final-snapshot.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { LockManager } from '../../state/lock-manager.js';
+import {
+  buildForceUnlockCommand,
+  buildLockContentionMessage,
+} from '../../state/lock-contention-message.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import {
   IMPLICIT_DELETE_DEPENDENCIES,
@@ -412,9 +416,92 @@ export async function runDestroyForStack(
   // recorded one.
   const regionForState = state.region ?? ctx.baseRegion;
   if (resourceCount === 0) {
+    // Issue #2171: this used to delete the state record with NO lock at all,
+    // sitting well above the acquire further down. A record reads as empty for
+    // exactly one interval that is not idle — the start of a concurrent
+    // `cdkd deploy`, before its first resource lands — so the unlocked delete
+    // removed the state file out from under a live deploy holding the lock.
+    //
+    // Take the lock, then RE-READ: the snapshot this function was handed was
+    // taken by the caller before any of this, so emptiness has to be
+    // re-established under the lock rather than inherited from it.
     logger.info(`Stack ${stackName} has no resources, cleaning up state...`);
-    await ctx.stateBackend.deleteState(stackName, regionForState);
-    logger.info(`${green('✓')} State deleted`);
+    // Issue #1348's rule applies to THIS acquire too, and the fence in
+    // `tests/unit/cli/signal-before-lock-ordering.test.ts` caught the first
+    // cut of this fix without one: register the handler BEFORE acquiring, or a
+    // Ctrl-C landing between the acquire and the release strands the lock for
+    // its full TTL. The window is short but it covers an S3 read and two S3
+    // writes. `lockHeld` gates the release exactly as the main path's does, so
+    // a signal arriving before the acquire returns cannot delete a lock this
+    // process does not own.
+    let emptyLockHeld = false;
+    const emptySigintHandler = (): void => {
+      if (emptyLockHeld) {
+        void ctx.lockManager.releaseLock(stackName, regionForState).catch(() => {
+          /* best-effort: the recovery line below is the real guarantee */
+        });
+        process.stderr.write(
+          `\nForce-quit: stack lock may not be released. If the next run reports a lock, run: ` +
+            `${buildForceUnlockCommand(stackName, regionForState, {
+              profile: ctx.profile,
+              stateBucket: ctx.stateBucket,
+            })}\n`
+        );
+      }
+      process.exit(130);
+    };
+    process.setMaxListeners(Math.max(process.getMaxListeners(), 100));
+    process.on('SIGINT', emptySigintHandler);
+    const emptyAcquired = await ctx.lockManager.acquireLock(
+      stackName,
+      regionForState,
+      undefined,
+      'destroy'
+    );
+    if (!emptyAcquired) {
+      process.removeListener('SIGINT', emptySigintHandler);
+      throw new Error(
+        await buildLockContentionMessage({
+          lockManager: ctx.lockManager,
+          stackName,
+          region: regionForState,
+          recovery: {
+            profile: ctx.profile,
+            stateBucket: ctx.stateBucket,
+          },
+        })
+      );
+    }
+    emptyLockHeld = true;
+    try {
+      const recheck = await ctx.stateBackend.getState(stackName, regionForState);
+      const stillEmpty = !recheck || Object.keys(recheck.state.resources).length === 0;
+      if (!stillEmpty) {
+        // A concurrent writer populated the record between the caller's read
+        // and this lock. Deleting now would drop resources cdkd tracks, so
+        // refuse and let the user re-run against the record as it now stands.
+        throw new Error(
+          `Stack '${stackName}' (${regionForState}) was empty when this run started but ` +
+            `now has ${Object.keys(recheck.state.resources).length} resource(s) — another ` +
+            `cdkd process deployed into it. Re-run the destroy to act on the current state.`
+        );
+      }
+      await ctx.stateBackend.deleteState(stackName, regionForState);
+      logger.info(`${green('✓')} State deleted`);
+    } finally {
+      // Release BEFORE unregistering, matching the strong-ref path below: the
+      // reverse order leaves the lock held with no handler, so a Ctrl-C in the
+      // release round-trip becomes a 30-minute stranded lock.
+      try {
+        await ctx.lockManager.releaseLock(stackName, regionForState);
+      } catch (releaseErr) {
+        logger.warn(
+          `Failed to release lock after empty-state cleanup: ${releaseErr instanceof Error ? releaseErr.message : String(releaseErr)}`
+        );
+      } finally {
+        process.removeListener('SIGINT', emptySigintHandler);
+      }
+    }
     result.skippedEmpty = true;
     return result;
   }
@@ -616,7 +703,14 @@ export async function runDestroyForStack(
         });
         process.stderr.write(
           `\nForce-quit: stack lock may not be released. If the next run reports a lock, run: ` +
-            `cdkd force-unlock ${stackName}\n`
+            // Region-qualified for the same reason the contention messages are
+            // (issue #2170), and it matters MORE here: by this point
+            // `deleteState` may already have removed the record `force-unlock`
+            // would otherwise infer the region from.
+            `${buildForceUnlockCommand(stackName, regionForState, {
+              profile: ctx.profile,
+              stateBucket: ctx.stateBucket,
+            })}\n`
         );
       }
       process.exit(130);
@@ -666,14 +760,21 @@ export async function runDestroyForStack(
       'destroy'
     );
     if (!acquired) {
-      // Plain `Error`, matching the five sibling sites (import / orphan / state
-      // / drift) and the `cdkd export` precedent this mirrors, so identical
-      // contention surfaces the same way across every command (issue #2161).
+      // Plain `Error`, matching the sibling sites (import / orphan / state /
+      // drift / export), so identical contention surfaces the same way across
+      // every command (issue #2161). The text — including the holder's
+      // identity and the fully-qualified recovery command — is built in one
+      // place so the nine sites cannot drift apart again (issue #2170).
       throw new Error(
-        `Could not acquire lock for stack '${stackName}' (${regionForState}) — ` +
-          `another cdkd process holds it. Wait for it to finish, or run ` +
-          `'cdkd force-unlock ${stackName} --stack-region ${regionForState}' if you are ` +
-          `certain no other process is active.`
+        await buildLockContentionMessage({
+          lockManager: ctx.lockManager,
+          stackName,
+          region: regionForState,
+          recovery: {
+            profile: ctx.profile,
+            stateBucket: ctx.stateBucket,
+          },
+        })
       );
     }
   } catch (error) {

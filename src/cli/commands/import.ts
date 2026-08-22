@@ -17,6 +17,10 @@ import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
+import {
+  buildLockContentionMessage,
+  type LockRecoveryContext,
+} from '../../state/lock-contention-message.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -189,6 +193,13 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
 
   try {
     const stateConfig = { bucket: stateBucket, prefix: options.statePrefix };
+    // Every contention message this command (and its nested recursion) raises
+    // points at the SAME lock object it was working on (issue #2170).
+    const lockRecovery: LockRecoveryContext = {
+      profile: options.profile,
+      stateBucket,
+      statePrefix: options.statePrefix,
+    };
     const stateBackend = new S3StateBackend(awsClients.s3, stateConfig, {
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
@@ -615,10 +626,16 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     );
     if (!acquired) {
       throw new Error(
-        `Could not acquire lock for stack '${stackInfo.stackName}' (${targetRegion}) — ` +
-          `another cdkd process holds it. Wait for it to finish, or run ` +
-          `'cdkd force-unlock ${stackInfo.stackName} --stack-region ${targetRegion}' if you are ` +
-          `certain no other process is active.`
+        await buildLockContentionMessage({
+          lockManager,
+          stackName: stackInfo.stackName,
+          region: targetRegion,
+          recovery: {
+            profile: options.profile,
+            stateBucket,
+            statePrefix: options.statePrefix,
+          },
+        })
       );
     }
 
@@ -811,6 +828,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       // released in reverse on both success and failure.
       if (migrationCfnStackName && migrationTree && accountIdForNestedSynth) {
         await importNestedStackChildrenRecursive({
+          lockRecovery,
           parentStackName: stackInfo.stackName,
           parentRegion: targetRegion,
           parentNestedTemplates: stackInfo.nestedTemplates ?? {},
@@ -1865,6 +1883,13 @@ async function importNestedStackChildrenRecursive(args: {
   accountId: string;
   logger: ReturnType<typeof getLogger>;
   /**
+   * Threaded down the recursion so a CHILD's contention message names the same
+   * bucket / profile the parent resolved. `cdkd force-unlock` re-resolves both
+   * from the ambient profile otherwise, and a nested child never has a state
+   * record to fall back on (issue #2170).
+   */
+  lockRecovery: LockRecoveryContext;
+  /**
    * Issue #1002 PR 2 — §6 mapping table when the region is in cdkd-assets
    * mode. Each child template read below gets the §7 rewrite (nested
    * templates bypass the top-level rewrite in `importCommand`). Per issue
@@ -1942,10 +1967,13 @@ async function importNestedStackChildrenRecursive(args: {
     );
     if (!childAcquired) {
       throw new Error(
-        `Could not acquire lock for nested stack '${childStackName}' (${childRegion}) — ` +
-          `another cdkd process holds it. Wait for it to finish, or run ` +
-          `'cdkd force-unlock ${childStackName} --stack-region ${childRegion}' if you are ` +
-          `certain no other process is active.`
+        await buildLockContentionMessage({
+          lockManager,
+          stackName: childStackName,
+          region: childRegion,
+          subject: 'nested stack',
+          recovery: args.lockRecovery,
+        })
       );
     }
     try {
@@ -2032,6 +2060,7 @@ async function importNestedStackChildrenRecursive(args: {
       // outer `finally`).
       if (childTreeNode.nested.size > 0) {
         await importNestedStackChildrenRecursive({
+          lockRecovery: args.lockRecovery,
           parentStackName: childStackName,
           parentRegion: childRegion,
           // Grandchild template paths live alongside the child template

@@ -1493,9 +1493,14 @@ export class DeployEngine {
       throw error;
     }
 
-    renderer.start();
-
     try {
+      // Started INSIDE this `try` (issue #2171): `start()` writes to stdout and
+      // can throw (EPIPE on `cdkd deploy | head`), and it sits AFTER the lock
+      // acquisition, so a throw outside would strand the lock for its full TTL.
+      // This is the same move issue #2161 made in `destroy-runner.ts`; the two
+      // commands had the identical shape and only one of them was fixed.
+      renderer.start();
+
       // 1. Load current state
       const currentStateData = await this.stateBackend.getState(stackName, this.stackRegion);
       const currentState: StackState = currentStateData?.state ?? {
