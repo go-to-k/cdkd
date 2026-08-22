@@ -102,6 +102,14 @@ export interface NestedStackProviderContext {
    * `runDestroyForStack` sees the same per-resource deadlines.
    */
   destroyOptions?: {
+    /**
+     * The run's `--state-prefix`, carried purely so a CHILD's contention
+     * message and force-quit hint name the same lock object the parent was
+     * working on (issue #2170). Without it a nested child's hint resolves the
+     * DEFAULT prefix — the wrong-lock-object class #2170 exists to close, on
+     * the population (`Parent~Child`) that has no state record to fall back on.
+     */
+    statePrefix?: string;
     resourceWarnAfterMs?: number;
     resourceTimeoutMs?: number;
     resourceWarnAfterByType?: Record<string, number>;

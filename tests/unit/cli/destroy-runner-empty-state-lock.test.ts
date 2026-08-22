@@ -78,6 +78,7 @@ function makeCtx(opts: {
   /** What the RE-READ under the lock finds. */
   recheck?: Awaited<ReturnType<S3StateBackend['getState']>>;
   getLockInfo?: unknown;
+  statePrefix?: string;
 }) {
   const acquireLock = vi.fn().mockResolvedValue(opts.acquired ?? true);
   const releaseLock = vi.fn().mockResolvedValue(undefined);
@@ -113,6 +114,7 @@ function makeCtx(opts: {
       baseAwsClients: {} as AwsClients,
       baseRegion: REGION,
       stateBucket: 'test-bucket',
+      ...(opts.statePrefix !== undefined && { statePrefix: opts.statePrefix }),
       skipConfirmation: true,
     } as unknown as Parameters<typeof runDestroyForStack>[2],
   };
@@ -220,6 +222,32 @@ describe('runDestroyForStack — empty-state cleanup takes the lock (issue #2171
 
     expect(result.skippedEmpty).toBe(true);
     exitSpy.mockRestore();
+  });
+
+  it('carries --state-prefix into the recovery hint when it is not the default', async () => {
+    // `force-unlock` re-resolves the prefix from its own default, so a run
+    // under `--state-prefix team-a` that suggested a bare command would send
+    // the user at a DIFFERENT team's lock in a shared bucket — the
+    // wrong-lock-object class #2170 exists to close.
+    const h = makeCtx({ acquired: false, statePrefix: 'team-a' });
+    h.ctx.lockManager.getLockInfo = vi.fn().mockResolvedValue(null);
+
+    await expect(runDestroyForStack('TestStack', emptyState(), h.ctx)).rejects.toThrow(
+      /--state-prefix team-a/
+    );
+  });
+
+  it('omits --state-prefix when it is the default', async () => {
+    const h = makeCtx({ acquired: false, statePrefix: 'cdkd' });
+    h.ctx.lockManager.getLockInfo = vi.fn().mockResolvedValue(null);
+
+    await expect(runDestroyForStack('TestStack', emptyState(), h.ctx)).rejects.toThrow(
+      /Could not acquire lock/
+    );
+    const thrown = await runDestroyForStack('TestStack', emptyState(), h.ctx).catch(
+      (e: Error) => e.message
+    );
+    expect(thrown).not.toContain('--state-prefix');
   });
 
   it('releases the lock even when the delete itself fails', async () => {

@@ -20,7 +20,7 @@
  * two of three. `subject` now varies only the noun.
  */
 
-import { DEFAULT_STATE_PREFIX } from '../cli/commands/state-file-keys.js';
+import { DEFAULT_STATE_PREFIX } from './state-prefix.js';
 import type { LockManager } from './lock-manager.js';
 
 /**
@@ -79,9 +79,23 @@ export interface LockContentionArgs {
  * events store. A `\r` or an ANSI escape there can forge a plausible extra
  * instruction line under cdkd's own output.
  */
-function sanitizeForDisplay(value: string): string {
-  // eslint-disable-next-line no-control-regex
-  return value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+function sanitizeForDisplay(value: unknown): string {
+  // `String(...)` rather than a `string` parameter: `getLockInfo` returns
+  // `JSON.parse(body) as LockInfo`, so a hand-written lock.json can carry a
+  // number / object / null here, and `value.replace` then threw INTO the
+  // caller's best-effort catch.
+  //
+  // The class is wider than C0 + DEL, which a first cut used and which misses
+  // every one of these: U+0085 (NEL) and the C1 range (xterm treats U+009B as
+  // CSI in UTF-8), U+2028 / U+2029 (this string is PERSISTED and re-rendered by
+  // JSON / web log viewers), and the bidi overrides U+202A-U+202E / U+2066-
+  // U+2069, which visually REORDER the very command being pasted.
+  return (
+    String(value)
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, ' ')
+      .trim()
+  );
 }
 
 /** Render `expiresIn` without implying more precision than a clock skew allows. */
@@ -98,7 +112,12 @@ function formatRemaining(ms: number): string {
 function shellQuote(value: string): string {
   // A profile / prefix / bucket with a space or a quote would otherwise produce
   // a suggestion that silently truncates when pasted.
-  return /^[A-Za-z0-9._/@:~+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+  // `~` is deliberately NOT here. It was added for `Parent~Child` (every
+  // nested-stack child name) when the command was still wrapped in `'...'` and
+  // the two quotings composed into something unpastable. That wrapper is gone,
+  // so a quoted `'Root~Child'` pastes fine and the widening bought nothing —
+  // while costing tilde expansion on a value an S3 key can carry.
+  return /^[A-Za-z0-9._/@:+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
@@ -115,9 +134,16 @@ export function buildForceUnlockCommand(
   // leaves a MULTI-LINE "recovery command" on the operator's terminal, which is
   // its own forgery surface. A control character has no legitimate place in a
   // stack name or a region, so drop it and then quote what remains.
+  const safeStack = sanitizeForDisplay(stackName);
+  const safeRegion = sanitizeForDisplay(region);
+  // A value that sanitizes to NOTHING must not become an empty ARGUMENT:
+  // `force-unlock.ts` treats a falsy `--stack-region` as "not supplied" and
+  // widens the release to EVERY region holding that stack name — the opposite
+  // of what a region-qualified hint is for. Emitting no command is the honest
+  // answer; the message still names what could not be rendered.
+  if (!safeStack || !safeRegion) return '';
   const parts = [
-    `cdkd force-unlock ${shellQuote(sanitizeForDisplay(stackName))} ` +
-      `--stack-region ${shellQuote(sanitizeForDisplay(region))}`,
+    `cdkd force-unlock ${shellQuote(safeStack)} --stack-region ${shellQuote(safeRegion)}`,
   ];
   if (recovery?.profile) parts.push(`--profile ${shellQuote(recovery.profile)}`);
   if (recovery?.stateBucket) parts.push(`--state-bucket ${shellQuote(recovery.stateBucket)}`);
@@ -143,10 +169,12 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
   try {
     const info = await lockManager.getLockInfo(stackName, region);
     if (info) {
-      sawHolder = true;
       const operation = info.operation ? `, operation: ${sanitizeForDisplay(info.operation)}` : '';
       const expires = formatRemaining(info.expiresAt - Date.now());
       held = `${heldClause ? `${heldClause} — ` : ''}held by ${sanitizeForDisplay(info.owner)}${operation}, expires ${expires}`;
+      // LAST: anything above can still throw, and setting it earlier paired the
+      // degraded wording with the confident "still running" advice.
+      sawHolder = true;
     }
   } catch {
     // Best-effort: keep the evidence-free wording rather than masking the
@@ -168,8 +196,26 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
   // truncation `shellQuote` exists to prevent. Trailing means there is no
   // sentence left to delimit it from.
   const recoveryCommand = buildForceUnlockCommand(stackName, region, recovery);
+  // `buildForceUnlockCommand` returns '' when the stack name or region could
+  // not be rendered at all. Suggesting nothing beats suggesting a command that
+  // would release every region's lock for this stack name.
+  if (!recoveryCommand) {
+    return (
+      `Could not acquire lock for ${subject} '${sanitizeForDisplay(stackName)}' ` +
+      `(${sanitizeForDisplay(region)}) — ${held}.` +
+      (suffix ? ` ${suffix}` : '') +
+      ` The stack name or region in this stack's state record contains no ` +
+      `renderable characters, so no recovery command can be suggested; inspect ` +
+      `the lock object directly.`
+    );
+  }
+  // The PROSE head needs the same sanitization as the command. Applying it only
+  // inside `buildForceUnlockCommand` left the fix half-done: `region` comes
+  // from the state.json BODY, so a `\n`-bearing one still produced a
+  // multi-line message — the forgery surface, one clause earlier.
   return (
-    `Could not acquire lock for ${subject} '${stackName}' (${region}) — ${held}.` +
+    `Could not acquire lock for ${subject} '${sanitizeForDisplay(stackName)}' ` +
+    `(${sanitizeForDisplay(region)}) — ${held}.` +
     (suffix ? ` ${suffix}` : '') +
     ` ${advice} ${recoveryCommand}`
   );

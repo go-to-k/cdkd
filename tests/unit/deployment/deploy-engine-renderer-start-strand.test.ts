@@ -187,6 +187,23 @@ describe('DeployEngine — renderer.start() cannot strand the lock (issue #2171)
     expect(mockLockManager.releaseLock).toHaveBeenCalledWith(stackName, 'us-east-1');
   });
 
+  it('releases the lock when renderer.stop() throws in the finally', async () => {
+    // `stop()` is the FIRST statement of the `finally` that releases the lock
+    // and it writes to stdout, so a throw there aborts the teardown before
+    // `releaseLock` — re-opening the strand one line after `start()` closed it.
+    mockStateBackend.getState.mockResolvedValue({ state: makeState(), etag: 'etag-old' });
+    renderer.stop.mockImplementationOnce(() => {
+      throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    });
+
+    const engine = makeEngine();
+    // The ordinary path must still SUCCEED — a failing teardown notice is not
+    // a failed deploy.
+    await engine.deploy(stackName, template);
+
+    expect(mockLockManager.releaseLock).toHaveBeenCalledWith(stackName, 'us-east-1');
+  });
+
   it('still starts the renderer and releases the lock on the ordinary path', async () => {
     // Non-vacuity: the fence above must not pass merely because the deploy
     // never reaches `start()` in this harness.

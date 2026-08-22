@@ -1989,10 +1989,10 @@ export class DeployEngine {
       // teardown before `releaseLock` and re-open the strand one line later.
       try {
         renderer.stop();
-      } catch (stopErr) {
-        this.logger.debug(
-          `Failed to stop the live renderer: ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`
-        );
+      } catch {
+        // Deliberately silent: the whole point is that the stdout channel is
+        // failing, so logging the failure through it is another throw on the
+        // same pre-`releaseLock` path.
       }
 
       // Remove SIGINT handler.

@@ -469,12 +469,22 @@ export async function runDestroyForStack(
           );
         }
         process.exit(130);
-        return;
       }
       emptyInterrupted = true;
-      logger.info(
-        `\nInterrupt received - finishing the state cleanup for ${stackName} (press Ctrl-C again to force-quit)`
-      );
+      // stderr, NOT `logger.info`, for two reasons the main handler already
+      // acts on: `logger.info` reaches stdout and can EPIPE, and a throw inside
+      // a SIGINT listener is UNCAUGHT -- the process would die holding the lock
+      // with no recovery line; and under `cdkd deploy` (nested-stack removal)
+      // the logger writes into the per-stack buffer that is only flushed at
+      // stack end, so the first Ctrl-C would produce no feedback at all.
+      try {
+        process.stderr.write(
+          `\nInterrupt received - finishing the state cleanup for ${stackName} ` +
+            `(press Ctrl-C again to force-quit)\n`
+        );
+      } catch {
+        /* the drain itself is what matters; the notice is best-effort */
+      }
     };
     process.setMaxListeners(Math.max(process.getMaxListeners(), 100));
     process.on('SIGINT', emptySigintHandler);

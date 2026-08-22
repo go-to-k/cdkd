@@ -1337,6 +1337,7 @@ async function stateDestroyCommand(
             exportIndexStore: setup.exportIndexStore,
             destroyOptions: {
               ...(options.profile && { profile: options.profile }),
+              statePrefix: options.statePrefix,
               ...(options.removeProtection === true && { removeProtection: true }),
               ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
               ...(options.resourceWarnAfter?.globalMs !== undefined && {
