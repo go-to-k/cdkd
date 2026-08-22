@@ -326,6 +326,8 @@ describe('cdkd import', () => {
     mockAcquireLock.mockResolvedValue(false);
 
     await expect(runImport(['import', '--app', 'x', '--yes'])).rejects.toThrow();
+    // The LOCK error surfaced (not some other abort).
+    expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toMatch(/Could not acquire lock/);
     expect(mockSaveState).not.toHaveBeenCalled();
     expect(mockReleaseLock).not.toHaveBeenCalled();
   });
@@ -814,6 +816,18 @@ describe('cdkd import', () => {
       const childSave = mockSaveState.mock.calls.find((c) => (c as unknown[])[0] === 'P~Child');
       expect(childSave).toBeUndefined();
       expect(mockReleaseLock).not.toHaveBeenCalledWith('P~Child', expect.anything());
+      // POSITIVE markers so the fence cannot go inert on a fixture change: the
+      // CHILD acquire was actually attempted, and the CHILD lock error (not a
+      // root-side failure in the hand-built tree) is what surfaced.
+      expect(mockAcquireLock).toHaveBeenCalledWith(
+        'P~Child',
+        expect.any(String),
+        expect.any(String),
+        'import'
+      );
+      expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toMatch(
+        /Could not acquire lock for nested stack/
+      );
     } finally {
       rmSync(tmpdirPath, { recursive: true, force: true });
     }

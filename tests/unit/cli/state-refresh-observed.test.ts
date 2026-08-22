@@ -213,9 +213,10 @@ describe('cdkd state refresh-observed', () => {
 
     const { error } = await runRefresh(['TestStack']);
 
-    // Aborted (the lock throw exits via the command's exitOverride); the
-    // discriminator is that state was NOT written / released under the lock.
+    // The LOCK error surfaced (not some other abort), and state was NOT written
+    // / released under the foreign lock.
     expect(error).toBeDefined();
+    expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toMatch(/Could not acquire lock/);
     expect(mockSaveState).not.toHaveBeenCalled();
     expect(mockReleaseLock).not.toHaveBeenCalled();
   });

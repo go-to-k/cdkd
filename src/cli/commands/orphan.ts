@@ -199,7 +199,8 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
         throw new Error(
           `Could not acquire lock for stack '${stackInfo.stackName}' (${targetRegion}) — ` +
             `another cdkd process holds it. Wait for it to finish, or run ` +
-            `'cdkd force-unlock ${stackInfo.stackName}' if you are certain no other process is active.`
+            `'cdkd force-unlock ${stackInfo.stackName} --stack-region ${targetRegion}' if you are ` +
+            `certain no other process is active.`
         );
       }
     }

@@ -2085,7 +2085,8 @@ async function refreshObservedForStack(
     throw new Error(
       `Could not acquire lock for stack '${stackName}' (${region}) — ` +
         `another cdkd process holds it. Wait for it to finish, or run ` +
-        `'cdkd force-unlock ${stackName}' if you are certain no other process is active.`
+        `'cdkd force-unlock ${stackName} --stack-region ${region}' if you are ` +
+        `certain no other process is active.`
     );
   }
   try {

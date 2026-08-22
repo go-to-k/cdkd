@@ -1299,17 +1299,22 @@ describe('cdkd drift', () => {
             }),
           })
         );
+        const updateMock = vi.fn();
         mockRegistryGetProvider.mockReturnValue({
           readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }),
-          update: vi.fn(),
+          update: updateMock,
         });
         mockAcquireLock.mockResolvedValue(false);
 
         const { error } = await runDrift(['TestStack', mode, '--yes']);
 
-        // Aborted (the lock throw exits via exitOverride); the discriminator is
-        // that state was NOT written / released under the foreign lock.
+        // The LOCK error surfaced (not some other abort), and nothing ran under
+        // the foreign lock — state was not written / released, and (the
+        // load-bearing part for `--revert`) the provider's live-AWS `update`
+        // never fired.
         expect(error).toBeDefined();
+        expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toMatch(/Could not acquire lock/);
+        expect(updateMock).not.toHaveBeenCalled();
         expect(mockSaveState).not.toHaveBeenCalled();
         expect(mockReleaseLock).not.toHaveBeenCalled();
       }

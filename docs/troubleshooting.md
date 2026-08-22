@@ -31,6 +31,24 @@ Locked by: user@hostname:12345, operation: deploy
 - Another process is deploying the same stack
 - Previous process crashed and lock remains
 
+> **Note:** The message above is what `cdkd deploy` prints — it **retries** a
+> held lock a few times before giving up. Seven other commands
+> (`cdkd destroy` / `cdkd state destroy`, `cdkd import`, `cdkd export`,
+> `cdkd orphan`, `cdkd drift --accept` / `--revert`, and
+> `cdkd state refresh-observed`)
+> instead **fail fast** on contention (except `cdkd export`'s nested-stack
+> children, which retry briefly first) with a different message, and do
+> **not** proceed while another process holds the lock:
+>
+> ```text
+> Could not acquire lock for stack 'MyStack' (us-east-1) — another cdkd process holds it. Wait for it to finish, or run 'cdkd force-unlock MyStack --stack-region us-east-1' if you are certain no other process is active.
+> ```
+>
+> The recovery is the same in both cases: wait for the other process, or
+> `cdkd force-unlock <stack> --stack-region <region>` to clear a stale lock
+> (pass `--stack-region` so `force-unlock` targets the right region even for a
+> first-time import or a nested-stack child that has no state record yet).
+
 > **Note:** A first `Ctrl-C` during `cdkd destroy` / `cdkd state destroy` no
 > longer strands the lock — the graceful-SIGINT handler (issue
 > [#816](https://github.com/go-to-k/cdkd/issues/816)) finishes any in-flight

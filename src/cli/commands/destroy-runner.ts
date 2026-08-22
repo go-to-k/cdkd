@@ -643,8 +643,14 @@ export async function runDestroyForStack(
   process.setMaxListeners(Math.max(process.getMaxListeners(), 100));
   process.on('SIGINT', sigintHandler);
 
-  logger.info(`\nAcquiring lock for stack ${stackName}...`);
   try {
+    // Inside the `try` (not before it): `logger.info` reaches
+    // `process.stdout.write`, which can EPIPE (`cdkd destroy | head`) — and this
+    // sits after `regionSwitched = true` and the SIGINT registration, so a throw
+    // outside the `try` would leak the listener and the cross-region globals,
+    // the same two leaks this fix closes everywhere else (same reasoning as
+    // `renderer.start()` below).
+    logger.info(`\nAcquiring lock for stack ${stackName}...`);
     // Check the boolean return (issue #2161): `acquireLock` returns `false`
     // WITHOUT throwing when a live foreign lock is held, and the discarding
     // call this replaced treated that as success — so `destroy` ran against a
@@ -666,7 +672,8 @@ export async function runDestroyForStack(
       throw new Error(
         `Could not acquire lock for stack '${stackName}' (${regionForState}) — ` +
           `another cdkd process holds it. Wait for it to finish, or run ` +
-          `'cdkd force-unlock ${stackName}' if you are certain no other process is active.`
+          `'cdkd force-unlock ${stackName} --stack-region ${regionForState}' if you are ` +
+          `certain no other process is active.`
       );
     }
   } catch (error) {

@@ -345,12 +345,28 @@ describe('cdkd orphan (per-resource)', () => {
       ],
     });
     mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    // Stub state so a REVERT of the `!acquired` guard would REACH `saveState`
+    // (without this, the reverted path throws "No state found" at getState
+    // first and the saveState assertion below would be vacuous).
+    mockGetState.mockResolvedValue({
+      state: {
+        version: 2,
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        resources: { Bucket: { physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: {} } },
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"e"',
+    });
     mockAcquireLock.mockResolvedValue(false);
 
     // Aborts (the lock throw surfaces through the command's error handler as a
     // process.exit); the discriminator is that it does NOT proceed to write /
     // release under the foreign lock.
     await expect(runOrphan(['MyStack/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow();
+    // The LOCK error surfaced (not some other abort).
+    expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toMatch(/Could not acquire lock/);
     expect(mockSaveState).not.toHaveBeenCalled();
     expect(mockReleaseLock).not.toHaveBeenCalled();
   });

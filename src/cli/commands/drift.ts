@@ -2250,7 +2250,8 @@ async function runAccept(
       throw new Error(
         `Could not acquire lock for stack '${report.stackName}' (${report.region}) — ` +
           `another cdkd process holds it. Wait for it to finish, or run ` +
-          `'cdkd force-unlock ${report.stackName}' if you are certain no other process is active.`
+          `'cdkd force-unlock ${report.stackName} --stack-region ${report.region}' if you are ` +
+          `certain no other process is active.`
       );
     }
     try {
@@ -3237,7 +3238,8 @@ async function runRevert(
       throw new Error(
         `Could not acquire lock for stack '${report.stackName}' (${report.region}) — ` +
           `another cdkd process holds it. Wait for it to finish, or run ` +
-          `'cdkd force-unlock ${report.stackName}' if you are certain no other process is active.`
+          `'cdkd force-unlock ${report.stackName} --stack-region ${report.region}' if you are ` +
+          `certain no other process is active.`
       );
     }
     // Provider-reported narrowings, keyed by logical id (issue #1644).
