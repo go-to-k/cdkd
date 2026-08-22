@@ -93,13 +93,20 @@ describe('maskDeep (issue #2176)', () => {
   it('terminates on a SELF-REFERENTIAL bag instead of overflowing the stack', () => {
     // The divergence the convergence fixed: `sns-topic-provider.ts`'s private
     // copy had no depth cap, so this input recursed until the stack blew.
-    const mask = createSecretMasker(bagOf('s3cret'));
-    const cyclic: Record<string, unknown> = { name: 's3cret' };
+    // `name` is deliberately NOT a secret. An earlier revision made it one and
+    // then asserted the marker appears somewhere in the output — which the
+    // MASKED SECRET also satisfies, since both render as `***`. That case
+    // passed even when the cap returned `undefined`, i.e. it missed the exact
+    // mutation its own comment claimed it caught (round-2 reviewer, measured).
+    const mask = createSecretMasker(bagOf('an-unrelated-secret'));
+    const cyclic: Record<string, unknown> = { name: 'plain-name' };
     cyclic['self'] = cyclic;
 
     const walked = maskDeep(cyclic, mask) as Record<string, unknown>;
-    expect(walked['name']).toBe(SECRET_MASK);
-    // The recursion terminated at the cap rather than by dropping the branch.
+    // Terminated rather than overflowing, and the shallow leaf is untouched.
+    expect(walked['name']).toBe('plain-name');
+    // The cycle was cut by SUBSTITUTION, not by dropping the branch: the only
+    // `***` that can appear here comes from the cap.
     expect(JSON.stringify(walked)).toContain(MASK_WALK_DEPTH_CAP_MARKER);
   });
 
@@ -108,30 +115,52 @@ describe('maskDeep (issue #2176)', () => {
     // every leaf and key below it in plaintext — silent disclosure — whereas
     // substituting is silent truncation (issue #2176 security review).
     //
-    // Also pins the ordering inside the walk, which is easy to get backwards:
-    // the `typeof value === 'string'` check runs BEFORE the depth test, so a
-    // scalar is masked however deep it sits; the cap bounds only descent into
-    // CONTAINERS.
-    const secret = 'too-deep-secret';
-    const mask = createSecretMasker(bagOf(secret));
+    // The leaf is deliberately NOT a secret, and that is what makes this pin
+    // the BOUNDARY. An earlier revision nested the secret itself and asserted
+    // "no plaintext, marker present" on both sides of the cap — which is
+    // vacuous, because a masked secret and the cap marker are the SAME token
+    // (`***`), so the case passed with the cap set to 7 or 9 just as happily.
+    // Measured, not reasoned: a round-2 reviewer re-ran the walk under three
+    // cap values and all four assertions held. A non-secret leaf separates
+    // them — it must survive VERBATIM at the cap and become the marker one
+    // level deeper.
+    //
+    // What this does NOT fence, stated so nobody reads more into it: the cap's
+    // VALUE. The nesting is built from `MASK_WALK_MAX_DEPTH`, so it moves with
+    // the constant and the case stays green if the cap is retuned to 7 or 9 —
+    // measured. That is deliberate (the value is a tuning knob, not a
+    // contract); what IS fenced is the boundary's SHAPE. Probed: flipping `>=`
+    // to `>` reds this case, and returning `undefined` at the cap reds it and
+    // the cyclic case below.
+    const plain = 'sentinel-not-a-secret';
+    const mask = createSecretMasker(bagOf('an-unrelated-secret'));
 
     const nest = (levels: number): unknown => {
-      let v: unknown = secret;
+      let v: unknown = plain;
       for (let i = 0; i < levels; i++) v = { nested: v };
       return v;
     };
 
-    // The leaf sits AT the cap: still a string, so still masked normally.
+    // AT the cap the walk still reaches the string, which is not a secret, so
+    // it comes through untouched.
     const atCap = JSON.stringify(maskDeep(nest(MASK_WALK_MAX_DEPTH), mask));
-    expect(atCap).not.toContain(secret);
-    expect(atCap).toContain(SECRET_MASK);
+    expect(atCap).toContain(plain);
+    expect(atCap).not.toContain(MASK_WALK_DEPTH_CAP_MARKER);
 
-    // One deeper, the walk meets an OBJECT at the cap. The secret must be gone
-    // AND the marker present — "not present" alone would also be satisfied by a
-    // walk that dropped the subtree or returned an empty object.
+    // One deeper the walk meets an OBJECT at the cap and substitutes.
     const past = JSON.stringify(maskDeep(nest(MASK_WALK_MAX_DEPTH + 1), mask));
-    expect(past).not.toContain(secret);
+    expect(past).not.toContain(plain);
     expect(past).toContain(MASK_WALK_DEPTH_CAP_MARKER);
+  });
+
+  it('masks a string leaf at ANY depth — the cap bounds only descent', () => {
+    // The ordering inside the walk, pinned separately from the boundary above:
+    // `typeof value === 'string'` runs BEFORE the depth test.
+    const secret = 'deep-secret-leaf';
+    const mask = createSecretMasker(bagOf(secret));
+    let v: unknown = secret;
+    for (let i = 0; i < MASK_WALK_MAX_DEPTH; i++) v = { nested: v };
+    expect(JSON.stringify(maskDeep(v, mask))).not.toContain(secret);
   });
 
   it('keeps its depth-cap marker equal to SECRET_MASK', () => {

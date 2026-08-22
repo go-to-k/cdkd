@@ -94,14 +94,18 @@ export function createMaskedRetryLogger(
 }
 
 /**
- * Depth cap for {@link maskDeep}. Bounds a self-referential bag rather than
- * recursing until the stack blows; `JSON.stringify` would throw on one anyway,
- * and a throw is the better failure of the two.
+ * Depth cap for {@link maskDeep}.
+ *
+ * What it actually bounds is unbounded WORK on a pathologically deep bag — see
+ * the rationale at the cap itself, which is the authority. It is NOT primarily
+ * a cycle guard: a template-derived bag cannot be cyclic, so that justification
+ * over-claims (issue #2176 security review). It does still terminate one, which
+ * is why the walk is safe to share with a caller that might hand it something
+ * other than a template bag.
  *
  * Deliberately generous. Every shape these warnings exist to describe is a
  * scalar, a list of scalars, or a small record, so the walk does not reach
- * depth 2 in practice — the cap is a guard, not a real bound, and no plausible
- * mis-shape should be left unmasked by it.
+ * depth 2 in practice.
  */
 export const MASK_WALK_MAX_DEPTH = 8;
 

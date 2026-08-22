@@ -105,6 +105,7 @@ import {
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
+import type { MaskerFn } from '../masked-retry-logger.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -595,7 +596,8 @@ export class EC2Provider implements ResourceProvider {
           properties,
           // A reverse-replacement rollback creates from a STATE record, so the
           // refusal downgrades here exactly as it does on the update path.
-          context?.replayingState === true ? (message) => this.logger.warn(message) : undefined
+          context?.replayingState === true ? (message) => this.logger.warn(message) : undefined,
+          context?.maskSecrets
         );
       case 'AWS::EC2::SubnetRouteTableAssociation':
         return this.createSubnetRouteTableAssociation(logicalId, resourceType, properties);
@@ -608,7 +610,8 @@ export class EC2Provider implements ResourceProvider {
           properties,
           // A reverse-replacement rollback creates from a STATE record, so the
           // refusal downgrades here exactly as it does on the update path.
-          context?.replayingState === true ? (message) => this.logger.warn(message) : undefined
+          context?.replayingState === true ? (message) => this.logger.warn(message) : undefined,
+          context?.maskSecrets
         );
       case 'AWS::EC2::Instance':
         return this.createInstance(logicalId, resourceType, properties, context);
@@ -2329,7 +2332,8 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    onMultipleDestinations?: (message: string) => void
+    onMultipleDestinations?: (message: string) => void,
+    maskSecrets?: MaskerFn
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Route ${logicalId}`);
 
@@ -2427,7 +2431,11 @@ export class EC2Provider implements ResourceProvider {
         { name: 'routeTableId', value: routeTableId },
         { name: 'destination', value: destination },
       ],
-      onMultipleDestinations ? { onRefusal: onMultipleDestinations } : undefined
+      // Issue #2176: the masker goes through unconditionally, and the refusal
+      // arm stays conditional. Threaded a round later than its 13 siblings
+      // because this helper takes a CALLBACK rather than a context, so the
+      // thread stopped one layer short of the dispatcher that holds one.
+      { maskSecrets, ...(onMultipleDestinations && { onRefusal: onMultipleDestinations }) }
     );
 
     try {
@@ -3116,7 +3124,8 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    onUnusableProtocol?: (message: string) => void
+    onUnusableProtocol?: (message: string) => void,
+    maskSecrets?: MaskerFn
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SecurityGroupIngress ${logicalId}`);
 
@@ -3169,7 +3178,11 @@ export class EC2Provider implements ResourceProvider {
         { name: 'fromPort', value: fromPort ?? '-1' },
         { name: 'toPort', value: toPort ?? '-1' },
       ],
-      onUnusableProtocol ? { onRefusal: onUnusableProtocol } : undefined
+      // Issue #2176: the masker goes through unconditionally, and the refusal
+      // arm stays conditional. Threaded a round later than its 13 siblings
+      // because this helper takes a CALLBACK rather than a context, so the
+      // thread stopped one layer short of the dispatcher that holds one.
+      { maskSecrets, ...(onUnusableProtocol && { onRefusal: onUnusableProtocol }) }
     );
 
     try {

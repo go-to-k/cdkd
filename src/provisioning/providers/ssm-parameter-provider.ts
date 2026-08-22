@@ -372,7 +372,15 @@ export class SSMParameterProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to create SSM parameter ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        // Issue #2176: the AWS message is masked RAW, before interpolation.
+        // `PutParameter` quotes the offending `Name` / `Value` back on an
+        // `AllowedPattern` rejection, and this text reaches the durable
+        // `deployments/*.jsonl`. Masking raw reaches the whole-value arm (no
+        // length floor); the `cause` is left alone so the classifiers still
+        // see the original error object.
+        `Failed to create SSM parameter ${logicalId}: ${mask(
+          error instanceof Error ? error.message : String(error)
+        )}`,
         resourceType,
         logicalId,
         undefined,
@@ -501,7 +509,15 @@ export class SSMParameterProvider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Failed to update SSM parameter ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        // Issue #2176: the AWS message is masked RAW, before interpolation.
+        // `PutParameter` quotes the offending `Name` / `Value` back on an
+        // `AllowedPattern` rejection, and this text reaches the durable
+        // `deployments/*.jsonl`. Masking raw reaches the whole-value arm (no
+        // length floor); the `cause` is left alone so the classifiers still
+        // see the original error object.
+        `Failed to update SSM parameter ${logicalId}: ${mask(
+          error instanceof Error ? error.message : String(error)
+        )}`,
         resourceType,
         logicalId,
         physicalId,
