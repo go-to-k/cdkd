@@ -178,12 +178,19 @@ poll_lock() {
     # the analyzer blind to the one failure this arm exists to catch: a lock
     # that vanishes mid-deploy simply stops producing samples, and every
     # surviving row still satisfies "not expired" and "advanced".
-    if aws s3api get-object --bucket "${STATE_BUCKET}" --key "${LOCK_KEY}" "${LOCK_BODY}" >/dev/null 2>&1; then
+    # Three outcomes, not two. A blind `else -> absent` reports a THROTTLE as a
+    # missing lock, failing the run with a message that accuses the fix; and
+    # skipping the sample instead is the original blindness. So: a confirmed
+    # not-found is `absent` (a real gap), anything else undetermined is
+    # `unknown` and is neither counted nor held against the run.
+    if out="$(aws s3api get-object --bucket "${STATE_BUCKET}" --key "${LOCK_KEY}" "${LOCK_BODY}" 2>&1)"; then
       printf '%s %s\n' "$(date -u +%s)" \
-        "$(node -e 'const fs=require("fs");try{process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).expiresAt))}catch{process.stdout.write("x")}' "${LOCK_BODY}")" \
+        "$(node -e 'const fs=require("fs");try{process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).expiresAt))}catch{process.stdout.write("unparsable")}' "${LOCK_BODY}")" \
         >> "${SAMPLES}"
-    else
+    elif printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
       printf '%s absent\n' "$(date -u +%s)" >> "${SAMPLES}"
+    else
+      printf '%s unknown\n' "$(date -u +%s)" >> "${SAMPLES}"
     fi
     sleep 15
   done
@@ -209,21 +216,30 @@ fi
 
 SAMPLES_FILE="${SAMPLES}" node -e '
   const fs = require("fs");
+  const fail = (m) => { console.error(`[verify] FAIL: ${m}`); process.exit(1); };
+  // `unknown` (an undetermined probe -- throttle, transport) is dropped: it is
+  // evidence of nothing. `absent` AND `unparsable` are both gaps -- filtering
+  // the unparsable ones out, as an earlier cut did, restores exactly the
+  // blindness this analyzer exists to remove, since a lock whose body stops
+  // parsing mid-deploy is at least as alarming as one that vanishes.
   const all = fs.readFileSync(process.env.SAMPLES_FILE, "utf8")
     .split("\n").filter(Boolean)
     .map((l) => l.split(" "))
-    .filter(([, e]) => e !== "x")
-    .map(([t, e]) => ({ atMs: Number(t) * 1000, expiresAt: e === "absent" ? null : Number(e) }));
-  const fail = (m) => { console.error(`[verify] FAIL: ${m}`); process.exit(1); };
-  // Absent samples are legitimate only BEFORE the deploy acquires the lock and
-  // AFTER it releases. One in between means the lock disappeared while the
-  // operation was still running -- which is the whole defect.
+    .filter(([, e]) => e !== "unknown")
+    .map(([t, e]) => ({
+      atMs: Number(t) * 1000,
+      expiresAt: e === "absent" || e === "unparsable" ? null : Number(e),
+      why: e,
+    }));
+  // A gap is legitimate only BEFORE the deploy acquires the lock and AFTER it
+  // releases. One in between means the lock disappeared while the operation
+  // was still running -- which is the whole defect.
   const first = all.findIndex((r) => r.expiresAt !== null);
   const last = all.length - 1 - [...all].reverse().findIndex((r) => r.expiresAt !== null);
   if (first < 0) fail("the lock was never observed at all during the deploy");
   const gaps = all.slice(first, last + 1).filter((r) => r.expiresAt === null);
   if (gaps.length > 0) {
-    fail(`the lock was ABSENT at ${gaps.length} sample(s) while the deploy was still holding it`);
+    fail(`the lock was ${gaps.map((g) => g.why).join("/")} at ${gaps.length} sample(s) while the deploy was still holding it`);
   }
   const rows = all.slice(first, last + 1);
   if (rows.length < 2) fail(`only ${rows.length} parsable lock sample(s)`);

@@ -341,10 +341,14 @@ describe('a cross-region destroy restores region + clients when the lock is held
 
     const before = process.listeners('SIGINT');
 
-    // The rejected release surfaces, but the region/clients are still restored.
-    await expect(runDestroyForStack('TestStack', state, crossCtx)).rejects.toThrow(
-      /S3 DeleteObject failed/
-    );
+    // Issue #2168 made a failed release non-fatal here: `releaseLock` now
+    // RAISES on failures it used to absorb, and letting one out of the main
+    // `finally` would replace a real destroy error and abort a `--all` run
+    // over a lock that lapses on its own. What this test fences is unchanged
+    // and is asserted below -- the cross-region restore still happens on a
+    // path where the release failed.
+    await expect(runDestroyForStack('TestStack', state, crossCtx)).resolves.toBeDefined();
+    expect(releaseLock).toHaveBeenCalledOnce();
 
     expect(awsClientsMock.instances[0]!.destroy).toHaveBeenCalledOnce();
     expect(process.env['AWS_REGION']).toBe(REGION);
