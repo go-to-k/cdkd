@@ -132,6 +132,12 @@ describe('maskDeep (issue #2176)', () => {
     // contract); what IS fenced is the boundary's SHAPE. Probed: flipping `>=`
     // to `>` reds this case, and returning `undefined` at the cap reds it and
     // the cyclic case below.
+    //
+    // The `atCap` arm below also fences the walk's ORDERING (the string check
+    // runs BEFORE the depth test). A separate case asserting "a secret leaf is
+    // masked at any depth" was written for that and DELETED: a masked secret
+    // and the cap marker are both `***`, so it passed with the order flipped —
+    // the same confluence this case was rewritten to escape.
     const plain = 'sentinel-not-a-secret';
     const mask = createSecretMasker(bagOf('an-unrelated-secret'));
 
@@ -151,16 +157,6 @@ describe('maskDeep (issue #2176)', () => {
     const past = JSON.stringify(maskDeep(nest(MASK_WALK_MAX_DEPTH + 1), mask));
     expect(past).not.toContain(plain);
     expect(past).toContain(MASK_WALK_DEPTH_CAP_MARKER);
-  });
-
-  it('masks a string leaf at ANY depth — the cap bounds only descent', () => {
-    // The ordering inside the walk, pinned separately from the boundary above:
-    // `typeof value === 'string'` runs BEFORE the depth test.
-    const secret = 'deep-secret-leaf';
-    const mask = createSecretMasker(bagOf(secret));
-    let v: unknown = secret;
-    for (let i = 0; i < MASK_WALK_MAX_DEPTH; i++) v = { nested: v };
-    expect(JSON.stringify(maskDeep(v, mask))).not.toContain(secret);
   });
 
   it('keeps its depth-cap marker equal to SECRET_MASK', () => {

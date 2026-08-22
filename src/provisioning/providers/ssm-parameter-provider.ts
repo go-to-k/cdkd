@@ -375,9 +375,13 @@ export class SSMParameterProvider implements ResourceProvider {
         // Issue #2176: the AWS message is masked RAW, before interpolation.
         // `PutParameter` quotes the offending `Name` / `Value` back on an
         // `AllowedPattern` rejection, and this text reaches the durable
-        // `deployments/*.jsonl`. Masking raw reaches the whole-value arm (no
-        // length floor); the `cause` is left alone so the classifiers still
-        // see the original error object.
+        // `deployments/*.jsonl`. Stating precisely what this buys, because the
+        // obvious phrasing over-claims: an AWS SENTENCE never equals the
+        // plaintext, so this reaches `maskSecretsInText`'s SUBSTRING arm and
+        // its `MIN_NEEDLE_LENGTH` (4) floor still applies -- a 1-3 character
+        // secret is NOT covered here. It is masked before interpolation anyway
+        // so the engine is not the only boundary. The `cause` is left alone so
+        // the retry classifiers still see the original error object.
         `Failed to create SSM parameter ${logicalId}: ${mask(
           error instanceof Error ? error.message : String(error)
         )}`,
@@ -512,9 +516,13 @@ export class SSMParameterProvider implements ResourceProvider {
         // Issue #2176: the AWS message is masked RAW, before interpolation.
         // `PutParameter` quotes the offending `Name` / `Value` back on an
         // `AllowedPattern` rejection, and this text reaches the durable
-        // `deployments/*.jsonl`. Masking raw reaches the whole-value arm (no
-        // length floor); the `cause` is left alone so the classifiers still
-        // see the original error object.
+        // `deployments/*.jsonl`. Stating precisely what this buys, because the
+        // obvious phrasing over-claims: an AWS SENTENCE never equals the
+        // plaintext, so this reaches `maskSecretsInText`'s SUBSTRING arm and
+        // its `MIN_NEEDLE_LENGTH` (4) floor still applies -- a 1-3 character
+        // secret is NOT covered here. It is masked before interpolation anyway
+        // so the engine is not the only boundary. The `cause` is left alone so
+        // the retry classifiers still see the original error object.
         `Failed to update SSM parameter ${logicalId}: ${mask(
           error instanceof Error ? error.message : String(error)
         )}`,

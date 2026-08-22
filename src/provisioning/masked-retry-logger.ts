@@ -47,9 +47,11 @@ import type { RetryLogger } from '../deployment/retry.js';
  *
  * Structurally identical to `SecretMasker` in `src/types/resource.ts` (which
  * re-exports it from the deployment layer) and assignable both ways. Spelled
- * locally so this module keeps its single-import leaf property; the providers
- * that call in here import the contract's own `SecretMasker` and pass it
- * straight through.
+ * locally so this module keeps its single-import leaf property. Providers use
+ * whichever name is closer to hand -- most pass the contract's own
+ * `SecretMasker` straight through, while a helper that only forwards the
+ * capability (`ec2-provider.ts`, `ssm-parameter-provider.ts`) imports
+ * `MaskerFn` from here. Both are the same type.
  */
 export type MaskerFn = (text: string) => string;
 

@@ -108,6 +108,7 @@ import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import type { MaskerFn } from '../masked-retry-logger.js';
 import type {
   CreateContext,
+  UpdateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceDeleteResult,
@@ -635,7 +636,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     try {
       return await this.applyUpdate(
@@ -643,7 +645,8 @@ export class EC2Provider implements ResourceProvider {
         physicalId,
         resourceType,
         properties,
-        previousProperties
+        previousProperties,
+        context
       );
     } catch (error) {
       // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
@@ -666,7 +669,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::EC2::VPC':
@@ -695,7 +699,8 @@ export class EC2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::EC2::SubnetRouteTableAssociation':
         return this.updateSubnetRouteTableAssociation(logicalId, physicalId);
@@ -713,7 +718,8 @@ export class EC2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::EC2::Instance':
         return this.updateInstance(
@@ -2434,7 +2440,11 @@ export class EC2Provider implements ResourceProvider {
       // Issue #2176: the masker goes through unconditionally, and the refusal
       // arm stays conditional. Threaded a round later than its 13 siblings
       // because this helper takes a CALLBACK rather than a context, so the
-      // thread stopped one layer short of the dispatcher that holds one.
+      // thread stopped one layer short of the dispatcher that holds one. The
+      // UPDATE twin is threaded too (round 3): `.claude/rules/providers.md`
+      // notes the update arm is the one a multi-destination bag actually
+      // reaches, so closing only the create side would have left the reachable
+      // half open.
       { maskSecrets, ...(onMultipleDestinations && { onRefusal: onMultipleDestinations }) }
     );
 
@@ -2486,7 +2496,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    maskSecrets?: MaskerFn
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Route ${logicalId}: ${physicalId}`);
 
@@ -2515,11 +2526,15 @@ export class EC2Provider implements ResourceProvider {
         //
         // `rollback-executor.ts`'s revert arm and `cdkd drift --revert` both
         // call update() with a cdkd STATE record as the desired bag, and this
-        // method has no context parameter to tell that apart from a template
-        // update — so the refusal downgrades to a warning on every update, per
+        // method receives only a MASKER from the update context (issue #2176),
+        // not `replayingState`, so it still cannot tell that apart from a
+        // template update — so the refusal downgrades to a warning on every update, per
         // the "an UPDATE-path refusal is a replay refusal too" rule. The route
         // was already deleted above; throwing here would strand it.
-        (message) => this.logger.warn(message)
+        (message) => this.logger.warn(message),
+        // Issue #2176 round 3: the re-create is what packs the composite id, so
+        // the masker has to reach IT rather than being used in this frame.
+        maskSecrets
       );
       return {
         physicalId: createResult.physicalId,
@@ -3181,7 +3196,11 @@ export class EC2Provider implements ResourceProvider {
       // Issue #2176: the masker goes through unconditionally, and the refusal
       // arm stays conditional. Threaded a round later than its 13 siblings
       // because this helper takes a CALLBACK rather than a context, so the
-      // thread stopped one layer short of the dispatcher that holds one.
+      // thread stopped one layer short of the dispatcher that holds one. The
+      // UPDATE twin is threaded too (round 3): `.claude/rules/providers.md`
+      // notes the update arm is the one a multi-destination bag actually
+      // reaches, so closing only the create side would have left the reachable
+      // half open.
       { maskSecrets, ...(onUnusableProtocol && { onRefusal: onUnusableProtocol }) }
     );
 
@@ -3349,7 +3368,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    maskSecrets?: MaskerFn
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SecurityGroupIngress ${logicalId}: ${physicalId}`);
 
@@ -3375,7 +3395,10 @@ export class EC2Provider implements ResourceProvider {
         // The revoke above has already committed, and on a rollback replay
         // `properties` is a STATE record — so warn and default rather than
         // strand the rule deleted with no template-side remedy.
-        (message) => this.logger.warn(message)
+        (message) => this.logger.warn(message),
+        // Issue #2176 round 3: the re-create is what packs the composite id, so
+        // the masker has to reach IT rather than being used in this frame.
+        maskSecrets
       );
       return {
         physicalId: createResult.physicalId,
