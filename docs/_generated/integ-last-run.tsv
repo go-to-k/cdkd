@@ -50,7 +50,7 @@ cognito	2026-08-19T18:44:46Z	PASS	191	verify.sh	re-run after rounds 3-4 + rebase
 cognito-custom-attribute-add	2026-08-10T11:50:46Z	PASS	47	verify.sh	0810 P0/P1 sweep b2; AddCustomAttributes reaches AWS, 3 phases
 cognito-identity-pool	2026-08-10T11:50:46Z	PASS	45	verify.sh	0810 P0/P1 sweep b1; identity+user pool gone, orph clean
 cognito-lambda-triggers	2026-08-10T04:23:28Z	PASS	58	verify.sh	0810 sweep b2; post-#1395 SignInPolicy, triggers fired, 8 del 0 err, 0 orph
-cognito-resource-server	2026-07-26T19:36:49Z	PASS	85	verify.sh	0727b sweep-b11 staleness re-run (rc=0); account clean
+cognito-resource-server	2026-08-22T19:12:07Z	PASS	90	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
 cognito-userpool-user-ref	2026-07-26T19:16:39Z	PASS	95	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 composite-stack	2026-07-26T18:43:33Z	PASS	39	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 conditions	2026-08-10T05:29:23Z	PASS	22	verify.sh	0810 P2 sweep b8; Fn::If suppressed prod bucket, 0 orph
@@ -89,7 +89,7 @@ dynamodb-ondemand	2026-08-13T06:15:30Z	PASS	580	verify.sh	#1760 Table drift/Warm
 dynamodb-sse	2026-08-01T10:07:21Z	PASS	40	verify.sh	0801 regression sweep; SSE mapping ok, 0 orphans
 dynamodb-stream-filter	2026-08-10T05:13:55Z	PASS	57	verify.sh	0810 sweep b5; stream filter criteria, 0 err 0 orph
 dynamodb-streams	2026-08-10T05:13:55Z	PASS	81	verify.sh	0810 sweep b5; streams+ESM+StreamSpec UPDATE, 0 err 0 orph
-dynamodb-tableclass-switch	2026-07-26T19:36:49Z	PASS	62	verify.sh	0727b sweep-b11 staleness re-run (rc=0); account clean
+dynamodb-tableclass-switch	2026-08-22T19:12:07Z	PASS	72	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
 dynamodb-ttl-attr-change	2026-08-10T11:50:46Z	PASS	57	verify.sh	0810 P0/P1 sweep b3; TTL attr change refused w/ actionable error, AWS TTL unchanged
 ec2-instance	2026-08-20T03:05:00Z	PASS	94	verify.sh	#2039 lane: ClientToken carried, AWS answered IdempotentParameterMismatch on the replay (token registered), exactly 1 live instance; 10 deleted / 0 errors, 0 orphans. First attempt FAILED on a FIXTURE defect (run-instances has no --min-count/--max-count; CLI v2 spells it --count) which the vacuity guard caught - the count assertion alone would have passed green
 ec2-instance-fanout	2026-07-30T06:24:02Z	PASS	150	verify.sh	new fixture (#1292): 10-inst cold fan-out converged, 13 propagation retries, 0 throttles, 32s deploy
@@ -157,7 +157,7 @@ lambda-destinations	2026-08-10T05:50:57Z	PASS	70	verify.sh	0810 P2 sweep b10; rc
 lambda-durable-replacement	2026-08-12T03:07:25Z	PASS	300	verify.sh	#1636 re-run after rebase onto #1641; generated-name refusal + --replace fallback, 2 del/0 err
 lambda-env-removal	2026-08-10T11:50:46Z	PASS	62	verify.sh	0810 P0/P1 sweep b1; nested-map-key env removal, 3 phases, orph clean
 lambda-esm-self-managed-kafka	2026-08-09T04:24:56Z	PASS	215	verify.sh	#1384 enum key + state-spelling inverse asserted; destroy 5 deleted, 0 errors, 0 orphans
-lambda-event-invoke-config-update	2026-07-26T18:20:27Z	PASS	80	verify.sh	0727b sweep-b3 staleness re-run (rc=0); account clean
+lambda-event-invoke-config-update	2026-08-22T19:12:07Z	PASS	74	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
 lambda-layer-version-update	2026-07-26T21:13:17Z	PASS	82	verify.sh	re-run post review fixes (tab-safe version list); account clean
 lambda-log-retention	2026-08-10T05:38:11Z	PASS	69	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 lambda-microvm-image	2026-08-10T06:32:58Z	PASS	533	verify.sh	0810 P2 sweep b11r; 1st attempt blocked by stale local aws-cli 2.34.27 (no lambda-microvms service; cli_auto_prompt crashed non-TTY) - NOT a cdkd bug. PASS after brew upgrade awscli 2.36.19: async create, tag drift revert, --no-wait, 3 del 0 err
@@ -239,7 +239,7 @@ rollback-deletion-policy-snapshot	2026-08-08T16:34:46Z	PASS	107	verify.sh	P0 fir
 rollback-failure-injection	2026-08-20T02:05:00Z	PASS	393	verify.sh	#2032 lane: exercises the reverse-replacement replay path the nested propagation retry changes; 17 deleted / 0 errors, 0 orphans (state, Lambda, IAM, VPC all clean)
 rollback-replay-effective-props	2026-08-13T05:57:36Z	PASS	191	verify.sh	1741 prune + 1742 ordering at 882fcef8; measured; 0 orphans
 rollback-sqs-cooldown	2026-08-20T01:42:30Z	PASS	156	verify.sh	#2032 lane: the direct twin of the change (name-cooldown arm). Live evidence the nested inner retry engages: retry cadence 1s/2s/4s/8s (inner default schedule) not the outer 2s/4s/8s/10s; 8 attempts absorbed the cooldown, destroy 1 deleted / 0 errors, 0 orphans
-route53	2026-08-14T02:04:32Z	PASS	331	verify.sh	Issue #1875 import-path arm, 2.5d made discriminating (drops the two NameServers outputs before the redeploy; the no-change path kept the persisted map verbatim on a resolve failure, so the arm was green with the fix reverted). Mutation probe with zone attributes blanked to {} REDs on the #1875 symptom. 8 created / 8 deleted, 0 errors, 0 orphans
+route53	2026-08-22T19:12:07Z	PASS	267	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
 s3-analytics-inventory	2026-08-13T00:49:56Z	PASS	135	verify.sh	1707/1717/1718 live after review round 3; 49 assertions, 0 orphans
 s3-asset-deploy	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
 s3-cloudfront	2026-08-20T11:58:20Z	PASS	226	verify.sh	#2079 lane: real Distribution created with the retry-stable acquireIdempotencyToken CallerReference, updated, drift-checked and deleted; AWS accepted the new token and release() ran on the success path. Does NOT reach the retried-500 replay (not inducible) -- that arm is unit-only, stated in the PR. Destroy clean, 0 distributions left in the account
@@ -249,7 +249,7 @@ s3-lifecycle	2026-08-13T07:25:36Z	PASS	540	verify.sh	#1754/#1755/#1759 lifecycle
 s3-object-lock	2026-08-10T04:16:05Z	PASS	44	verify.sh	0810 staleness sweep b1; s3-bucket-provider re-verify, 0 err, 0 orph
 s3-replication-and-filter	2026-08-11T15:11:16Z	PASS	110	verify.sh	issue #1605 versioning+logging replay downgrade; 7 del/0 err, 0 orph
 s3-subconfig-removal	2026-08-12T17:31:00Z	PASS		verify.sh	rc 0, 1 deleted 0 errors, re-run on the rebased tree, orphan sweep clean
-s3-tables	2026-08-12T09:24:42Z	PASS	49	verify.sh	rc ok, 5 deleted 0 errors, orph clean
+s3-tables	2026-08-22T19:12:07Z	PASS	46	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
 s3-vectors	2026-08-09T03:50:21Z	PASS	230	verify.sh	#1385 CMK encryption asserted; destroy 0 errors, 0 orphans
 scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 scheduler-custom-group	2026-07-26T19:25:15Z	PASS	103	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
@@ -265,7 +265,7 @@ servicediscovery	2026-08-20T11:10:22Z	PASS	110	verify.sh	#2053: 4 threaded sites
 servicediscovery-namespaces	2026-08-20T03:39:32Z	PASS	136	verify.sh	issues 2058/2063 maskSecrets threading, re-run after rebase onto 0.284.17; six namespace arms + pollOperation via async operation-based create/update/delete; destroy 2 deleted 0 errors, hosted zone gone, 0 orphans
 ses-identity	2026-08-10T10:50:49Z	PASS	180	verify.sh	upstream SES CC 403 resolved; all 3 phases clean (issue #1468)
 sg-circular-dependency	2026-08-18T04:47:12Z	PASS	150	verify.sh	final run on the merge base (rebased onto 8e33f535); #1791 healing + ambiguity arms; 19 del 0 err 0 orph
-sns-event-source	2026-08-01T10:07:21Z	PASS	59	verify.sh	0801 regression sweep; e2e delivery ok, log groups swept, 0 orphans
+sns-event-source	2026-08-22T19:12:07Z	PASS		verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
 sns-inline-subscription	2026-08-22T18:33:34Z	PASS	53	verify.sh	issue 2176 masking sweep; rc 0, destroy 3 deleted 0 errors, orphans clean
 sns-pending-subscription	2026-07-30T12:40:16Z	PASS	22	verify.sh	issue #1301 re-run after review fixes, clean
 sns-sqs-event	2026-08-19T18:36:23Z	PASS	91	verify.sh	issue 1997 maskSecrets adoption; sns-topic delivery-status + throw arms exercised; clean destroy, 0 orphans
