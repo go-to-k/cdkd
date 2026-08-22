@@ -1016,6 +1016,15 @@ ETag additionally requires `s3:GetObject`, so a policy granting only
 implemented the header answers `501`. Those fall back to an unconditional
 delete so such a setup cannot end up with a stranded lock.
 
+Even then the ownership is re-checked by hand before the condition is dropped,
+because S3 authorizes a request *before* it evaluates a precondition: a policy
+that scopes `s3:GetObject` away from `lock.json` turns a genuine `412` into a
+`403`, and an unconditional retry there would delete the lock of whoever took
+over. cdkd skips that read while its own deadline is still in the future
+(nobody can have legitimately taken over yet) and otherwise refuses only on a
+lock it can read *and* positively attribute to someone else -- an unreadable
+lock is the very case the fallback exists for.
+
 Every other failure raises, which is what release has always done. In
 particular a `409` (S3's answer to a concurrent operation on the key) and a
 `503` are **not** fallback-worthy: the first is the contended case by
@@ -1024,6 +1033,11 @@ with the response lost, so an unconditional retry would delete whichever lock
 exists by then. The heartbeat is already stopped at that point, so the worst
 outcome is a lock that lapses at its TTL -- recoverable, unlike a lock deleted
 out from under a live writer.
+
+**A failed release never fails the command.** Every caller wraps it and logs a
+warning, so a throttled or conflicted release is reported without replacing the
+error the command was actually about -- and without aborting a `cdkd destroy
+--all` run at the first stack over a lock that clears itself.
 
 A second `releaseLock` for the same key is a no-op rather than an owner-blind
 delete: the entry is tombstoned, not dropped. This matters because the

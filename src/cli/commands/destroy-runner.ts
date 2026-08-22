@@ -1645,7 +1645,20 @@ export async function runDestroyForStack(
       await saveChain;
 
       logger.debug('Releasing lock...');
-      await ctx.lockManager.releaseLock(stackName, regionForState);
+      // A failed release must never become the error this command reports.
+      // Since issue #2168 `releaseLock` raises rather than silently dropping
+      // its ownership condition, so a 409 / 503 / throttle here would
+      // otherwise REPLACE a real destroy failure -- and, on a successful
+      // destroy, abort a `--all` run at the first stack over a lock that
+      // lapses on its own. Matches the three sibling sites and
+      // `deploy-engine.ts`.
+      try {
+        await ctx.lockManager.releaseLock(stackName, regionForState);
+      } catch (releaseErr) {
+        logger.warn(
+          `Failed to release lock for stack '${stackName}': ${releaseErr instanceof Error ? releaseErr.message : String(releaseErr)}`
+        );
+      }
     } finally {
       // Each call registers and removes its own function reference — important
       // for nested-stack recursion, where one handler exists per level.

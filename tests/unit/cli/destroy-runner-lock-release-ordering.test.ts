@@ -169,6 +169,27 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
     expect(during.length).toBe(before.length + 1);
   });
 
+  it('a FAILING release warns instead of failing the destroy (issue #2168)', async () => {
+    // Since #2168 `releaseLock` RAISES rather than silently dropping its
+    // ownership condition -- a 409 / 503 / throttle now reaches the caller.
+    // This site sits in the main `finally`, so an uncaught throw here would
+    // replace a real destroy error and, on a successful destroy, abort a
+    // `--all` run at the first stack over a lock that lapses on its own.
+    const mockProviderDelete = vi.fn().mockResolvedValue(undefined);
+    const { ctx, deleteState } = makeCtx(mockProviderDelete);
+    const releaseLock = vi.fn().mockRejectedValue(new Error('SlowDown'));
+    (ctx.lockManager as unknown as { releaseLock: unknown }).releaseLock = releaseLock;
+
+    const result = await runDestroyForStack('TestStack', makeState('Table'), ctx);
+
+    expect(releaseLock).toHaveBeenCalledOnce();
+    // The destroy itself still succeeded and still cleaned up its state.
+    expect(result.errorCount).toBe(0);
+    expect(result.interrupted).toBe(false);
+    expect(mockProviderDelete).toHaveBeenCalledOnce();
+    expect(deleteState).toHaveBeenCalled();
+  });
+
   it('...and removes it once the release has resolved', async () => {
     // The other half: keeping it armed must not mean leaking it. One leaked
     // handler per stack would also keep the shared interrupt watch from ever
@@ -255,6 +276,12 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
   it('removes it even when the release THROWS', async () => {
     // Without the inner `finally` a failing release leaks the handler, and the
     // leak is worse than the failure: it is per stack on a `--all` run.
+    //
+    // This used to assert that the rejection PROPAGATED. Issue #2168 changed
+    // that deliberately -- `releaseLock` now raises on failures it used to
+    // absorb, and letting one out of here would replace a real destroy error
+    // and abort a `--all` run over a lock that lapses on its own -- so the
+    // assertion moves to what this test was written to fence: the handler.
     const before = process.listeners('SIGINT');
     const base = makeCtx(vi.fn().mockResolvedValue(undefined));
     const ctx = {
@@ -265,9 +292,7 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
       } as unknown as LockManager,
     };
 
-    await expect(runDestroyForStack('TestStack', makeState('Table'), ctx)).rejects.toThrow(
-      'S3 DeleteObject failed'
-    );
+    await expect(runDestroyForStack('TestStack', makeState('Table'), ctx)).resolves.toBeDefined();
 
     expect(process.listeners('SIGINT')).toEqual(before);
   });

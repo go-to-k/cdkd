@@ -197,6 +197,18 @@ async function main() {
     }
     await next.releaseLock(stackName, region);
     if ((await readLock()) !== null) fail('post-vanish lock was not released');
+    // ASSERT the answer, do not merely print it. `releaseLock`'s branching
+    // depends on this being a not-found rather than a 412: on 412 it would
+    // print "another cdkd process now holds it" about a lock that does not
+    // exist, and this arm would pass either way. Pinning it here means a
+    // change in S3's behaviour fails the run instead of silently invalidating
+    // the branch.
+    if (!/404|NoSuchKey|NotFound/i.test(observed)) {
+      fail(
+        `a conditional delete against an absent object answered "${observed}", not a not-found. ` +
+          `isGoneError no longer covers this case, so releaseLock will misreport it as a foreign lock.`
+      );
+    }
     pass(`released cleanly after the lock vanished underneath (S3 answered: ${observed})`);
   }
 
