@@ -1,3 +1,10 @@
+## [0.284.41](https://github.com/go-to-k/cdkd/compare/v0.284.40...v0.284.41) (2026-08-22)
+
+
+### Bug Fixes
+
+* **providers:** converge six secret-masking walks, mask the composite-id refusal, and record the cross-provider audit ([#2180](https://github.com/go-to-k/cdkd/issues/2180)) ([64296fd](https://github.com/go-to-k/cdkd/commit/64296fdfcdfe5fa80c8de771e881958c0da452d9))
+
 ## [0.284.40](https://github.com/go-to-k/cdkd/compare/v0.284.39...v0.284.40) (2026-08-22)
 
 
