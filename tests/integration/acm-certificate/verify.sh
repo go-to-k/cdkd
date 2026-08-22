@@ -176,15 +176,23 @@ fixture_cert_count() {
     echo "ACM probe FAILED (aws exited ${rc}): ${all}" >&2
     return "${rc}"
   fi
-  printf '%s' "${all}" | tr '\t' '\n' | grep -c 'arn:aws:acm:' || true
+  # `|| true` would swallow rc>=2 (a real grep failure) as well as rc 1 (zero
+  # matches, which is the answer we want), and an empty stdout then reads as
+  # "0 certificates" -- a PASS over a probe that never ran.
+  printf '%s' "${all}" | tr '\t' '\n' | grep -c 'arn:aws:acm:' || [[ $? -eq 1 ]]
 }
 
 # Retire every fixture certificate still standing. Used by the FAIL branches so
 # a failing assertion never also leaks -- `head -1` was wrong there, since the
 # pre-fix behaviour this arm detects leaves TWO.
 retire_all_fixture_certs() {
-  local arn
-  for arn in $(acm_arns_for_fixture 2>/dev/null | tr '\t' '\n'); do
+  local arn listing
+  if ! listing=$(acm_arns_for_fixture 2>&1); then
+    echo "  WARNING: could not list certificates to retire them (${listing});"
+    echo "           check by hand: aws acm list-certificates --region ${REGION}"
+    return
+  fi
+  for arn in $(printf '%s' "${listing}" | tr '\t' '\n'); do
     [[ "${arn}" == arn:aws:acm:* ]] || continue
     echo "  retiring leaked certificate ${arn}"
     aws acm delete-certificate --certificate-arn "${arn}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -238,7 +246,10 @@ echo "PASS: the failed create retired its own certificate -- 0 left behind"
 # Tri-state, not `|| true`: "no state file" and "the probe broke" are different
 # answers, and only the first one is a PASS here.
 phase0_state=$(aws s3 cp "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" - --region "${REGION}" 2>&1) && phase0_state_rc=0 || phase0_state_rc=$?
-if [[ "${phase0_state_rc}" -ne 0 ]] && ! printf '%s' "${phase0_state}" | grep -qiE 'NoSuchKey|does not exist|Not Found|404'; then
+# Anchored: a bare `404` matches any account id containing those digits in a
+# URI the error echoes back, and a bare `does not exist` also matches
+# NoSuchBucket -- both would turn a broken probe into a PASS.
+if [[ "${phase0_state_rc}" -ne 0 ]] && ! printf '%s' "${phase0_state}" | grep -qE 'NoSuchKey|\(404\)|Not Found'; then
   echo "FAIL: could not read state to check it, and the error is not a missing key:"
   printf '%s\n' "${phase0_state}"
   exit 1

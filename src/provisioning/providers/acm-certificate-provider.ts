@@ -360,6 +360,17 @@ export class ACMCertificateProvider implements ResourceProvider {
    * it" and "keep it even if the wait fails" are different requests, and cdkd
    * already has a flag for the second.
    */
+  /**
+   * The region an ACM ARN names, for the manual retire command. Taken from the
+   * ARN rather than from the client so the command a user pastes matches the
+   * certificate it names even when their shell default differs. Falls back to
+   * the literal placeholder for a shape this cannot parse -- a wrong region
+   * would make the command silently address a different account/region.
+   */
+  private regionOfArn(arn: string): string {
+    return arn.split(':')[3] || '<region>';
+  }
+
   private async cleanupRequestedCertificate(
     certificateArn: string,
     logicalId: string,
@@ -379,17 +390,30 @@ export class ACMCertificateProvider implements ResourceProvider {
       idempotencyToken.release();
       return undefined;
     } catch (cleanupError) {
-      // Matched by CLASS first with a NAME fallback, for the same reason
-      // `isCertificateInUseError` above gives: a wrapped or re-thrown error can
-      // lose the SDK class while keeping its identity. Getting this wrong is
-      // not cosmetic here -- a missed not-found tells the user to delete an ARN
-      // that does not exist AND keeps the idempotency token, which is the very
-      // hazard the release below exists to prevent.
+      // Matched by CLASS with a NAME fallback, on the same reasoning
+      // `isCertificateInUseError` above sets out: a re-thrown error can lose
+      // the SDK class while keeping its identity. Deliberately only the TOP
+      // error, not the cause chain that helper walks -- this catches the error
+      // `acmClient.send` raised directly, and nothing between here and the SDK
+      // wraps it. Getting it wrong is not cosmetic: a missed not-found tells
+      // the user to delete an ARN that does not exist AND keeps the idempotency
+      // token, which is the hazard the release below exists to prevent.
       if (
         cleanupError instanceof ResourceNotFoundException ||
         (cleanupError instanceof Error && cleanupError.name === 'ResourceNotFoundException')
       ) {
         // Already gone: nothing was left behind either way.
+        //
+        // Logged rather than silent, because this is the ONE arm that releases
+        // the token without having proved the certificate is gone -- it takes
+        // AWS's word for it. If that answer were ever wrong (a spurious or
+        // eventually-consistent not-found), the next attempt mints a SECOND
+        // certificate and the first is orphaned with nothing naming it, which
+        // is the accumulation this whole change exists to end. A line here is
+        // what makes that case findable afterwards instead of invisible.
+        this.logger.info(
+          `The ACM certificate ${certificateArn} that the failed create of ${logicalId} requested was already gone; nothing to clean up.`
+        );
         idempotencyToken.release();
         return undefined;
       }
@@ -412,7 +436,7 @@ export class ACMCertificateProvider implements ResourceProvider {
       return (
         `The certificate ${certificateArn} this attempt created could NOT be deleted, ` +
         `and cdkd is not tracking it -- retire it with ` +
-        `\`aws acm delete-certificate --certificate-arn ${certificateArn}\` ` +
+        `\`aws acm delete-certificate --certificate-arn ${certificateArn} --region ${this.regionOfArn(certificateArn)}\` ` +
         `(the reason is in the warning above).`
       );
     }
@@ -748,7 +772,8 @@ export class ACMCertificateProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Waiting for ACM certificate ${certificateArn} to reach ISSUED status...`);
     let interrupted = false;
-    let validationOptionsLogged = false;
+    /** The last validation-record block printed, so we re-print only on a CHANGE. */
+    let lastValidationOptions: string | undefined;
 
     const sigintHandler = () => {
       interrupted = true;
@@ -794,22 +819,33 @@ export class ACMCertificateProvider implements ResourceProvider {
           );
         }
 
-        // Latch on whether a record line was actually EMITTED, not on having
-        // called the printer (issue #2169 review round 2). The first
-        // `DescribeCertificate` fires seconds after `RequestCertificate`, and
-        // ACM commonly answers it with `DomainValidationOptions` that carry
-        // `DomainName` / `ValidationMethod` but NO `ResourceRecord` yet -- the
-        // API reference warns of exactly that delay. Latching on the CALL then
-        // printed the header with no records under it and suppressed every
-        // later poll, so the CNAMEs were never shown at all.
+        // Print the validation records whenever what we can show has CHANGED,
+        // rather than latching after the first attempt (issue #2169, review
+        // rounds 2 and 3). Two failure modes made a latch wrong, and the second
+        // is why this is content-based rather than a smarter boolean:
         //
-        // That used to be survivable because the certificate outlived the
-        // failed deploy and the user could read its records from the ACM
-        // console. This PR deletes it, so the poll output is now the ONLY
-        // source of those records and losing them is a dead end rather than an
-        // inconvenience.
-        if (status === 'PENDING_VALIDATION' && !validationOptionsLogged && validations.length > 0) {
-          validationOptionsLogged = this.logValidationOptions(validations);
+        //  - The first `DescribeCertificate` fires seconds after
+        //    `RequestCertificate`, and ACM commonly answers it with
+        //    `DomainValidationOptions` carrying no `ResourceRecord` yet -- the
+        //    API reference warns of exactly that delay. Latching there printed
+        //    a header with nothing under it and suppressed every later poll.
+        //  - For a certificate with SANs, ACM fills those records in per
+        //    domain and not necessarily together. Latching on "I printed
+        //    SOMETHING" then shows one domain's CNAME and permanently hides
+        //    the rest, which is the same dead end one level down.
+        //
+        // Both used to be survivable because the certificate outlived the
+        // failed deploy and the records could be read from the ACM console.
+        // This provider now DELETES it, so whatever this loop printed is
+        // generally the user's only copy -- and if no poll ever carried a
+        // `ResourceRecord`, there is no copy at all, which is why the message
+        // below tells them to re-run rather than to look further up.
+        if (status === 'PENDING_VALIDATION') {
+          const rendered = this.renderValidationOptions(validations);
+          if (rendered !== undefined && rendered !== lastValidationOptions) {
+            this.logger.info(rendered);
+            lastValidationOptions = rendered;
+          }
         }
 
         this.logger.debug(
@@ -828,11 +864,19 @@ export class ACMCertificateProvider implements ResourceProvider {
 
       throw new ProvisioningError(
         `ACM certificate ${logicalId} (${certificateArn}) did not reach ISSUED status within ${(this.maxPollAttempts * this.pollIntervalMs) / 1000}s. ` +
-          `Add the validation records printed above to your DNS zone and re-run the deploy — ACM reuses a domain's ` +
-          `validation CNAME across certificates, so records you add now validate the next attempt. ` +
-          `To wait LONGER, raise CDKD_ACM_POLL_ATTEMPTS / CDKD_ACM_POLL_INTERVAL_MS — this cap is the provider's own, ` +
-          `and --resource-timeout can only shorten it. Or set CDKD_NO_WAIT=true to keep the certificate and ` +
-          `validate it out of band.`,
+          // Conditional, because the certificate is about to be deleted and
+          // this sentence is the user's instruction for what to do next. If no
+          // poll ever carried a `ResourceRecord`, nothing was printed and
+          // "printed above" sends them looking for output that does not exist.
+          (lastValidationOptions === undefined
+            ? `AWS had not published this certificate's validation records before the wait ran out, so none were printed — ` +
+              `re-run the deploy to request them again. `
+            : `Add the validation records printed above to your DNS zone and re-run the deploy. `) +
+          `ACM reuses a domain's validation CNAME across certificates, so records you add now validate the next attempt. ` +
+          `To wait LONGER, raise CDKD_ACM_POLL_ATTEMPTS / CDKD_ACM_POLL_INTERVAL_MS — this cap is the provider's OWN ` +
+          `and is what just fired; --resource-timeout alone will not lengthen it. Past ~30m also raise ` +
+          `--resource-timeout AWS::CertificateManager::Certificate=<duration>, or the engine's per-resource deadline ` +
+          `becomes the shorter of the two. Or set CDKD_NO_WAIT=true to keep the certificate and validate it out of band.`,
         resourceType,
         logicalId,
         certificateArn
@@ -847,7 +891,7 @@ export class ACMCertificateProvider implements ResourceProvider {
    * user can copy / paste them into Route 53 / Cloudflare / etc. while the
    * cert is still PENDING_VALIDATION.
    */
-  private logValidationOptions(validations: DomainValidation[]): boolean {
+  private renderValidationOptions(validations: DomainValidation[]): string | undefined {
     const lines: string[] = [
       'ACM certificate is PENDING_VALIDATION. Add the following DNS records to validate:',
     ];
@@ -855,19 +899,20 @@ export class ACMCertificateProvider implements ResourceProvider {
       if (v.ValidationMethod === 'DNS' && v.ResourceRecord) {
         const r = v.ResourceRecord;
         lines.push(`  ${v.DomainName} — ${r.Type} ${r.Name} -> ${r.Value}`);
-      } else if (v.ValidationMethod === 'EMAIL') {
-        const emails = (v.ValidationEmails ?? []).join(', ');
-        lines.push(`  ${v.DomainName} — confirmation email sent to: ${emails || '<none>'}`);
+      } else if (v.ValidationMethod === 'EMAIL' && (v.ValidationEmails ?? []).length > 0) {
+        lines.push(
+          `  ${v.DomainName} — confirmation email sent to: ${v.ValidationEmails!.join(', ')}`
+        );
       }
+      // Anything else is a domain AWS has not filled in yet. Skipped rather
+      // than rendered as a placeholder: a `<none>` line reads like an answer,
+      // and it would make this block differ from the one printed once the real
+      // value arrives only in ways the user cannot act on.
     }
-    // Nothing actionable to show yet: AWS has not filled in `ResourceRecord`
-    // (or the validation emails) for any domain. Print nothing and report
-    // `false` so the caller keeps asking on the next poll -- a lone header with
-    // no records under it is worse than silence, because it looks like the
-    // records were shown.
-    if (lines.length === 1) return false;
-    this.logger.info(lines.join('\n'));
-    return true;
+    // Header alone: nothing actionable to show on this poll. Returning
+    // `undefined` (rather than the bare header) is what stops a lone header
+    // going out and, with it, the caller recording it as "already shown".
+    return lines.length === 1 ? undefined : lines.join('\n');
   }
 
   private async updateTags(

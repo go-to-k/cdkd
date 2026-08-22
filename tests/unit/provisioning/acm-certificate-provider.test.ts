@@ -445,6 +445,10 @@ describe('ACMCertificateProvider', () => {
         .create('MyCert', 'AWS::CertificateManager::Certificate', PROPS)
         .catch((e: unknown) => (e as Error).message);
 
+      // Positive marker first: a bare negative assertion passes under ANY
+      // unrelated early failure, so it has to be pinned to the run that
+      // actually reached the cleanup.
+      expect(message).toMatch(/did not reach ISSUED/);
       expect(message).not.toMatch(/could NOT be deleted/);
     });
 
@@ -505,6 +509,146 @@ describe('ACMCertificateProvider', () => {
         String(c[0]).includes('Add the following DNS records')
       );
       expect(headers).toHaveLength(1);
+    });
+
+    it('keeps printing until EVERY domain has its record, not just the first', async () => {
+      // A SAN certificate gets one DomainValidationOptions entry per domain and
+      // ACM fills their ResourceRecords independently. Latching after any
+      // successful print shows domain A's CNAME and hides domain B's forever --
+      // the same dead end one level down, and unrecoverable now that the
+      // certificate is deleted.
+      process.env['CDKD_NO_WAIT'] = '';
+      const recordFor = (d: string) => ({
+        DomainName: d,
+        ValidationMethod: 'DNS',
+        ResourceRecord: { Type: 'CNAME', Name: `_x.${d}.`, Value: `_y.${d}.acm.aws.` },
+      });
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      // Poll 1: only the apex has a record.
+      mockSend.mockResolvedValueOnce({
+        Certificate: {
+          Status: 'PENDING_VALIDATION',
+          DomainValidationOptions: [
+            recordFor('example.com'),
+            { DomainName: 'www.example.com', ValidationMethod: 'DNS' },
+          ],
+        },
+      });
+      // Poll 2: AWS has filled in the SAN too.
+      mockSend.mockResolvedValueOnce({
+        Certificate: {
+          Status: 'PENDING_VALIDATION',
+          DomainValidationOptions: [recordFor('example.com'), recordFor('www.example.com')],
+        },
+      });
+      mockSend.mockResolvedValueOnce({ Certificate: { Status: 'ISSUED' } });
+
+      await provider.create('MyCert', 'AWS::CertificateManager::Certificate', PROPS);
+
+      const printed = loggerSpy.info.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(printed).toContain('_x.example.com.');
+      expect(printed).toContain('_x.www.example.com.');
+    });
+
+    it('does not re-print the same records on every poll', async () => {
+      // The other half of dropping the latch: identical content must not be
+      // repeated once per 10s poll.
+      process.env['CDKD_NO_WAIT'] = '';
+      const opts = {
+        Status: 'PENDING_VALIDATION',
+        DomainValidationOptions: [
+          {
+            DomainName: 'example.com',
+            ValidationMethod: 'DNS',
+            ResourceRecord: { Type: 'CNAME', Name: '_abc.example.com.', Value: '_def.acm.aws.' },
+          },
+        ],
+      };
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      mockSend.mockResolvedValueOnce({ Certificate: opts });
+      mockSend.mockResolvedValueOnce({ Certificate: opts });
+      mockSend.mockResolvedValueOnce({ Certificate: { Status: 'ISSUED' } });
+
+      await provider.create('MyCert', 'AWS::CertificateManager::Certificate', PROPS);
+
+      const headers = loggerSpy.info.mock.calls.filter((c) =>
+        String(c[0]).includes('Add the following DNS records')
+      );
+      expect(headers).toHaveLength(1);
+    });
+
+    it('prints nothing for an EMAIL validation with no addresses yet', async () => {
+      // The old printer emitted `confirmation email sent to: <none>`, which
+      // counted as "something was shown" and closed the latch over a domain
+      // that had nothing to show.
+      process.env['CDKD_NO_WAIT'] = '';
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      mockSend.mockResolvedValueOnce({
+        Certificate: {
+          Status: 'PENDING_VALIDATION',
+          DomainValidationOptions: [{ DomainName: 'example.com', ValidationMethod: 'EMAIL' }],
+        },
+      });
+      mockSend.mockResolvedValueOnce({
+        Certificate: {
+          Status: 'PENDING_VALIDATION',
+          DomainValidationOptions: [
+            {
+              DomainName: 'example.com',
+              ValidationMethod: 'EMAIL',
+              ValidationEmails: ['admin@example.com'],
+            },
+          ],
+        },
+      });
+      mockSend.mockResolvedValueOnce({ Certificate: { Status: 'ISSUED' } });
+
+      await provider.create('MyCert', 'AWS::CertificateManager::Certificate', PROPS);
+
+      const printed = loggerSpy.info.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(printed).not.toContain('<none>');
+      expect(printed).toContain('admin@example.com');
+    });
+
+    it('says records were NOT printed when AWS never published any', async () => {
+      // The certificate is deleted on the way out, so "add the records printed
+      // above" is actively misleading when nothing was printed.
+      process.env['CDKD_NO_WAIT'] = '';
+      mockSend.mockResolvedValueOnce({ CertificateArn: ARN });
+      for (let i = 0; i < 10; i++) {
+        mockSend.mockResolvedValueOnce({
+          Certificate: {
+            Status: 'PENDING_VALIDATION',
+            DomainValidationOptions: [{ DomainName: 'example.com', ValidationMethod: 'DNS' }],
+          },
+        });
+      }
+      mockSend.mockResolvedValueOnce({});
+
+      const message = await provider
+        .create('MyCert', 'AWS::CertificateManager::Certificate', PROPS)
+        .catch((e: unknown) => (e as Error).message);
+
+      expect(message).toMatch(/had not published this certificate's validation records/);
+      expect(message).not.toMatch(/printed above/);
+      // ...and it still names the real lever for waiting longer.
+      expect(message).toContain('CDKD_ACM_POLL_ATTEMPTS');
+    });
+
+    it('puts the cleanup reason in the warn, since the thrown note omits it', async () => {
+      // The note says "the reason is in the warning above", so that warn is
+      // load-bearing rather than decorative.
+      process.env['CDKD_NO_WAIT'] = '';
+      primeTimeout();
+      mockSend.mockRejectedValueOnce(new Error('ThrottlingException: slow down'));
+
+      await expect(
+        provider.create('MyCert', 'AWS::CertificateManager::Certificate', PROPS)
+      ).rejects.toThrow();
+
+      const warned = loggerSpy.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain(ARN);
+      expect(warned).toContain('ThrottlingException: slow down');
     });
 
     it('leaves the OLD certificate alone when a REPLACEMENT create fails', async () => {

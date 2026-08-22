@@ -116,8 +116,10 @@ export interface AcquireIdempotencyTokenOptions {
    * — ACM's `RequestCertificate` is the case that forced this option: its
    * documented constraint is `Maximum length of 32` and `Pattern: \w+`, and a
    * hyphen is not in `\w`, so the default spelling is REJECTED rather than
-   * silently accepted. The two spellings are the same digest, so a call site
-   * never gets a weaker guarantee by asking for the narrower set.
+   * silently accepted. Part of the memo KEY, so the two spellings are distinct
+   * tokens rather than one value reshaped -- see {@link tokenKey} for why that
+   * matters. Neither is weaker: both are the same sha256 digest truncated to
+   * the caller's length.
    */
   charset?: 'default' | 'alphanumeric';
 }
