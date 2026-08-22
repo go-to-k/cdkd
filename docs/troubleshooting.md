@@ -1248,11 +1248,12 @@ can [replace a deleted certificate](https://docs.aws.amazon.com/acm/latest/userg
 without repeating validation. The records you added validate the next attempt's
 certificate.
 
-Two flags for a zone that is slow or manually managed:
+Two ways to change what the deploy does about the wait:
 
 ```bash
-# Wait longer than the provider's own 10-minute cap.
-cdkd deploy <stack> --resource-timeout AWS::CertificateManager::Certificate=45m
+# Wait LONGER. This is the provider's OWN cap -- 60 polls x 10s = 10 minutes --
+# and it is what fires, so raising it is what makes cdkd wait longer.
+CDKD_ACM_POLL_ATTEMPTS=180 cdkd deploy <stack>          # 30 minutes
 
 # Do not wait at all. The certificate is created, RECORDED IN STATE, and the
 # deploy returns immediately -- downstream consumers will fail until it issues,
@@ -1261,9 +1262,14 @@ cdkd deploy <stack> --resource-timeout AWS::CertificateManager::Certificate=45m
 CDKD_NO_WAIT=true cdkd deploy <stack>
 ```
 
-Note that `--resource-timeout` only RAISES the ceiling; the provider's internal
-poll cap is `CDKD_ACM_POLL_ATTEMPTS` x `CDKD_ACM_POLL_INTERVAL_MS`
-(60 x 10s by default), and whichever is shorter wins.
+**`--resource-timeout` cannot make this wait longer**, which is the opposite of
+the intuition. It is the engine's per-resource deadline (30 minutes by default)
+wrapped AROUND the provider, so it can only cut the 10-minute poll cap short —
+`--resource-timeout AWS::CertificateManager::Certificate=45m` changes nothing.
+Setting it BELOW the cap is worth avoiding for a second reason: the deadline
+abandons the create from outside rather than cancelling it, so the cleanup that
+retires the certificate may run after the deploy has already reported failure,
+or not at all if the process exits first.
 
 If the message also says the certificate **could NOT be deleted**, the cleanup
 itself failed (a throttle, a permissions gap). The message names the ARN and

@@ -122,14 +122,26 @@ export interface AcquireIdempotencyTokenOptions {
   charset?: 'default' | 'alphanumeric';
 }
 
-const tokenKey = (scope: string, logicalId: string): string =>
+const tokenKey = (
+  scope: string,
+  logicalId: string,
+  maxLength: number,
+  charset: 'default' | 'alphanumeric'
+): string =>
   // Stack name AND region: what identifies a resource in cdkd's state layout is
   // `{stackName}/{region}/{logicalId}`, and this map is process-global, so one
   // process deploying the same stack to two regions (`cdkd deploy --all`) would
   // otherwise hand both creates the same token and have the second answered
   // with the first region's resource. Both are absent outside a `withStackName`
   // scope / an unset AWS_REGION, which only unit tests hit.
-  `${scope}\u0000${process.env['AWS_REGION'] ?? ''}\u0000${getCurrentStackName() ?? ''}\u0000${logicalId}`;
+  // `maxLength` and `charset` are part of the KEY, not just of the derivation:
+  // the memo returns the first value minted for a key verbatim, so two call
+  // sites sharing `(scope, logicalId)` with different shapes would silently get
+  // each other's spelling. For an API like ACM's `RequestCertificate`, whose
+  // token pattern is `\w+`, that lands as a REJECTED request rather than a
+  // merely sub-optimal one. Unreachable today (scopes are unique per API) and
+  // kept structural rather than contingent on that staying true.
+  `${scope}\u0000${process.env['AWS_REGION'] ?? ''}\u0000${getCurrentStackName() ?? ''}\u0000${logicalId}\u0000${maxLength}\u0000${charset}`;
 
 const derive = (
   key: string,
@@ -157,7 +169,7 @@ const derive = (
  */
 export function acquireIdempotencyToken(options: AcquireIdempotencyTokenOptions): IdempotencyToken {
   const { scope, logicalId, maxLength = 64, charset = 'default' } = options;
-  const key = tokenKey(scope, logicalId);
+  const key = tokenKey(scope, logicalId, maxLength, charset);
   const existing = inFlight.get(key);
   const value = existing ?? derive(key, generations.get(key) ?? 0, maxLength, charset);
   if (existing === undefined) {

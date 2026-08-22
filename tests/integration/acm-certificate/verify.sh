@@ -162,14 +162,40 @@ trap '(exit 143); cleanup; exit 143' TERM
 # write, so a state-based assertion cannot see the orphan at all.
 echo "=== Phase 0: a failed create leaves no certificate behind (issue #2169) ==="
 
+# Prints the count on stdout and returns the PROBE's status. A failed
+# `ListCertificates` prints nothing, and `[[ "" -ne 0 ]]` is false -- so without
+# propagating the status, a throttle or an AccessDenied reads as "0
+# certificates" and this arm prints PASS over an orphan it never looked for.
+# That matters more here than anywhere else in the file: this count IS the
+# real-AWS evidence for a newly-added destructive call. `cleanup`'s sweep
+# already does this correctly; phase 0 now matches it.
 fixture_cert_count() {
-  local all
-  all=$(acm_arns_for_fixture)
+  local all rc
+  all=$(acm_arns_for_fixture 2>&1) && rc=0 || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    echo "ACM probe FAILED (aws exited ${rc}): ${all}" >&2
+    return "${rc}"
+  fi
   printf '%s' "${all}" | tr '\t' '\n' | grep -c 'arn:aws:acm:' || true
 }
 
+# Retire every fixture certificate still standing. Used by the FAIL branches so
+# a failing assertion never also leaks -- `head -1` was wrong there, since the
+# pre-fix behaviour this arm detects leaves TWO.
+retire_all_fixture_certs() {
+  local arn
+  for arn in $(acm_arns_for_fixture 2>/dev/null | tr '\t' '\n'); do
+    [[ "${arn}" == arn:aws:acm:* ]] || continue
+    echo "  retiring leaked certificate ${arn}"
+    aws acm delete-certificate --certificate-arn "${arn}" --region "${REGION}" >/dev/null 2>&1 || true
+  done
+}
+
 # Nothing of ours may exist yet, or the counts below prove nothing.
-phase0_before=$(fixture_cert_count)
+if ! phase0_before=$(fixture_cert_count); then
+  echo "FAIL: could not establish the pre-phase-0 certificate count; refusing to assert on it"
+  exit 1
+fi
 if [[ "${phase0_before}" -ne 0 ]]; then
   echo "FAIL: ${phase0_before} certificate(s) for this fixture existed BEFORE phase 0:"
   acm_arns_for_fixture
@@ -191,15 +217,17 @@ echo "PASS: deploy failed as expected (rc=${phase0_rc})"
 
 # ListCertificates lags DeleteCertificate, so poll rather than probe once.
 for attempt in 1 2 3 4 5; do
-  phase0_after=$(fixture_cert_count)
+  if ! phase0_after=$(fixture_cert_count); then
+    echo "FAIL: could not verify what the failed create left behind"
+    exit 1
+  fi
   [[ "${phase0_after}" -eq 0 ]] && break
   [[ "${attempt}" -lt 5 ]] && sleep 6
 done
 if [[ "${phase0_after}" -ne 0 ]]; then
   echo "FAIL: the failed create left ${phase0_after} certificate(s) behind -- this is the #2169 orphan:"
   acm_arns_for_fixture
-  # Hand them to the cleanup trap so a failing assertion does not also leak.
-  ORIGINAL_ARN=$(acm_arns_for_fixture | tr '\t' '\n' | head -1)
+  retire_all_fixture_certs
   exit 1
 fi
 echo "PASS: the failed create retired its own certificate -- 0 left behind"
@@ -207,8 +235,15 @@ echo "PASS: the failed create retired its own certificate -- 0 left behind"
 # A failed create must also leave no state record: recording one would make the
 # next deploy diff it as NO_CHANGE and silently exit 0 over a certificate that
 # does not exist any more.
-phase0_state=$(aws s3 cp "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" - --region "${REGION}" 2>/dev/null || true)
-if printf '%s' "${phase0_state}" | grep -q 'AWS::CertificateManager::Certificate'; then
+# Tri-state, not `|| true`: "no state file" and "the probe broke" are different
+# answers, and only the first one is a PASS here.
+phase0_state=$(aws s3 cp "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" - --region "${REGION}" 2>&1) && phase0_state_rc=0 || phase0_state_rc=$?
+if [[ "${phase0_state_rc}" -ne 0 ]] && ! printf '%s' "${phase0_state}" | grep -qiE 'NoSuchKey|does not exist|Not Found|404'; then
+  echo "FAIL: could not read state to check it, and the error is not a missing key:"
+  printf '%s\n' "${phase0_state}"
+  exit 1
+fi
+if [[ "${phase0_state_rc}" -eq 0 ]] && printf '%s' "${phase0_state}" | grep -q 'AWS::CertificateManager::Certificate'; then
   echo "FAIL: state records a certificate the failed create deleted:"
   printf '%s\n' "${phase0_state}"
   exit 1
@@ -232,21 +267,27 @@ fi
 echo "PASS: the re-run failed too (rc=${phase0_rerun_rc}) -- no silent success"
 
 for attempt in 1 2 3 4 5; do
-  phase0_after2=$(fixture_cert_count)
+  if ! phase0_after2=$(fixture_cert_count); then
+    echo "FAIL: could not verify the certificate count after the re-run"
+    exit 1
+  fi
   [[ "${phase0_after2}" -eq 0 ]] && break
   [[ "${attempt}" -lt 5 ]] && sleep 6
 done
 if [[ "${phase0_after2}" -ne 0 ]]; then
   echo "FAIL: after two failed deploys the account holds ${phase0_after2} certificate(s) for this fixture:"
   acm_arns_for_fixture
-  ORIGINAL_ARN=$(acm_arns_for_fixture | tr '\t' '\n' | head -1)
+  retire_all_fixture_certs
   exit 1
 fi
 echo "PASS: two failed deploys, still 0 certificates -- no accumulation"
 
-# Drop the state file phase 0's failed deploys wrote (outputs / empty resources),
-# so phase 1 below starts from no state exactly as it did before this arm.
+# Drop what phase 0's failed deploys wrote -- the state file AND the
+# rollback-journal sibling they leave behind -- so phase 1 below starts from a
+# clean prefix exactly as it did before this arm existed. `deployments/` is
+# append-only run history and is deliberately kept.
 aws s3 rm "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" --region "${REGION}" >/dev/null 2>&1 || true
+aws s3 rm "s3://${BUCKET}/cdkd/${STACK}/${REGION}/rollback-journal.json" --region "${REGION}" >/dev/null 2>&1 || true
 
 echo "=== Deploying stack ${STACK} (no-wait) ==="
 CDKD_NO_WAIT=true $CDKD deploy --region "${REGION}" --state-bucket "${BUCKET}"

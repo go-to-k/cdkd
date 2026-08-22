@@ -379,7 +379,16 @@ export class ACMCertificateProvider implements ResourceProvider {
       idempotencyToken.release();
       return undefined;
     } catch (cleanupError) {
-      if (cleanupError instanceof ResourceNotFoundException) {
+      // Matched by CLASS first with a NAME fallback, for the same reason
+      // `isCertificateInUseError` above gives: a wrapped or re-thrown error can
+      // lose the SDK class while keeping its identity. Getting this wrong is
+      // not cosmetic here -- a missed not-found tells the user to delete an ARN
+      // that does not exist AND keeps the idempotency token, which is the very
+      // hazard the release below exists to prevent.
+      if (
+        cleanupError instanceof ResourceNotFoundException ||
+        (cleanupError instanceof Error && cleanupError.name === 'ResourceNotFoundException')
+      ) {
         // Already gone: nothing was left behind either way.
         idempotencyToken.release();
         return undefined;
@@ -390,11 +399,21 @@ export class ACMCertificateProvider implements ResourceProvider {
       );
       // Deliberately NOT releasing the token here: the certificate is still
       // there, so a retry being answered with that same one is the outcome we
-      // want rather than a hazard.
+      // want rather than a hazard -- and it is what stops a retry from adding a
+      // SECOND survivor.
+      //
+      // The raw `detail` stays in the warn above and out of this note, which is
+      // spliced into the THROWN message. `isRetryableTransientError` classifies
+      // by substring-matching that message against
+      // `RETRYABLE_ERROR_MESSAGE_PATTERNS`, so an AWS cleanup error whose text
+      // happened to contain `does not exist` or `DependencyViolation` would
+      // re-classify a terminal create failure as transient. Every word below is
+      // therefore ours and pattern-free by construction.
       return (
-        `The certificate ${certificateArn} this attempt created could NOT be deleted (${detail}), ` +
+        `The certificate ${certificateArn} this attempt created could NOT be deleted, ` +
         `and cdkd is not tracking it -- retire it with ` +
-        `\`aws acm delete-certificate --certificate-arn ${certificateArn}\`.`
+        `\`aws acm delete-certificate --certificate-arn ${certificateArn}\` ` +
+        `(the reason is in the warning above).`
       );
     }
   }
@@ -775,9 +794,22 @@ export class ACMCertificateProvider implements ResourceProvider {
           );
         }
 
+        // Latch on whether a record line was actually EMITTED, not on having
+        // called the printer (issue #2169 review round 2). The first
+        // `DescribeCertificate` fires seconds after `RequestCertificate`, and
+        // ACM commonly answers it with `DomainValidationOptions` that carry
+        // `DomainName` / `ValidationMethod` but NO `ResourceRecord` yet -- the
+        // API reference warns of exactly that delay. Latching on the CALL then
+        // printed the header with no records under it and suppressed every
+        // later poll, so the CNAMEs were never shown at all.
+        //
+        // That used to be survivable because the certificate outlived the
+        // failed deploy and the user could read its records from the ACM
+        // console. This PR deletes it, so the poll output is now the ONLY
+        // source of those records and losing them is a dead end rather than an
+        // inconvenience.
         if (status === 'PENDING_VALIDATION' && !validationOptionsLogged && validations.length > 0) {
-          this.logValidationOptions(validations);
-          validationOptionsLogged = true;
+          validationOptionsLogged = this.logValidationOptions(validations);
         }
 
         this.logger.debug(
@@ -798,9 +830,9 @@ export class ACMCertificateProvider implements ResourceProvider {
         `ACM certificate ${logicalId} (${certificateArn}) did not reach ISSUED status within ${(this.maxPollAttempts * this.pollIntervalMs) / 1000}s. ` +
           `Add the validation records printed above to your DNS zone and re-run the deploy — ACM reuses a domain's ` +
           `validation CNAME across certificates, so records you add now validate the next attempt. ` +
-          `If your zone is manually managed, you may need to increase ` +
-          `--resource-timeout AWS::CertificateManager::Certificate=<duration>, or set CDKD_NO_WAIT=true to keep ` +
-          `the certificate and validate it out of band.`,
+          `To wait LONGER, raise CDKD_ACM_POLL_ATTEMPTS / CDKD_ACM_POLL_INTERVAL_MS — this cap is the provider's own, ` +
+          `and --resource-timeout can only shorten it. Or set CDKD_NO_WAIT=true to keep the certificate and ` +
+          `validate it out of band.`,
         resourceType,
         logicalId,
         certificateArn
@@ -815,7 +847,7 @@ export class ACMCertificateProvider implements ResourceProvider {
    * user can copy / paste them into Route 53 / Cloudflare / etc. while the
    * cert is still PENDING_VALIDATION.
    */
-  private logValidationOptions(validations: DomainValidation[]): void {
+  private logValidationOptions(validations: DomainValidation[]): boolean {
     const lines: string[] = [
       'ACM certificate is PENDING_VALIDATION. Add the following DNS records to validate:',
     ];
@@ -828,7 +860,14 @@ export class ACMCertificateProvider implements ResourceProvider {
         lines.push(`  ${v.DomainName} — confirmation email sent to: ${emails || '<none>'}`);
       }
     }
+    // Nothing actionable to show yet: AWS has not filled in `ResourceRecord`
+    // (or the validation emails) for any domain. Print nothing and report
+    // `false` so the caller keeps asking on the next poll -- a lone header with
+    // no records under it is worse than silence, because it looks like the
+    // records were shown.
+    if (lines.length === 1) return false;
     this.logger.info(lines.join('\n'));
+    return true;
   }
 
   private async updateTags(

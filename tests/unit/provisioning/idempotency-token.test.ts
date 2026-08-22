@@ -138,25 +138,35 @@ describe('acquireIdempotencyToken (issue #2039)', () => {
     ).not.toBe(first.value);
   });
 
-  it('is the SAME digest under either charset, so the narrower set is not a weaker token', () => {
-    // `maxLength` is applied AFTER the prefix is joined on, so both spellings
-    // are asked for a length no truncation can reach -- otherwise the shorter
-    // prefix would simply keep one more hex digit and the comparison would be
-    // about truncation rather than about the digest.
+  it('keys the memo by charset and length, so two shapes cannot hand each other their spelling', () => {
+    // The memo returns the FIRST value minted for a key verbatim. If the key
+    // ignored these, a second call site asking for `alphanumeric` would be
+    // handed the hyphenated spelling already in flight -- which ACM's
+    // `RequestCertificate` (`Pattern: \w+`) REJECTS outright rather than merely
+    // failing to deduplicate.
     const alphanumeric = acquireIdempotencyToken({
       scope: 'RequestCertificate',
       logicalId: 'Cert',
-      maxLength: 100,
+      maxLength: 32,
       charset: 'alphanumeric',
     });
-    alphanumeric.release();
-    resetIdempotencyTokensForTests();
-    const dflt = acquireIdempotencyToken({
+    const dflt = acquireIdempotencyToken({ scope: 'RequestCertificate', logicalId: 'Cert' });
+    const shorter = acquireIdempotencyToken({
       scope: 'RequestCertificate',
       logicalId: 'Cert',
-      maxLength: 100,
+      maxLength: 32,
+      charset: 'default',
     });
 
-    expect(alphanumeric.value).toBe(dflt.value.replace('-', ''));
+    // Each shape keeps its own contract rather than inheriting the first one's.
+    expect(alphanumeric.value).toMatch(/^\w{32}$/);
+    expect(alphanumeric.value).not.toContain('-');
+    expect(dflt.value).toMatch(/^cdkd-[0-9a-f]+$/);
+    expect(dflt.value.length).toBe(64);
+    expect(shorter.value).toMatch(/^cdkd-[0-9a-f]+$/);
+    expect(shorter.value.length).toBe(32);
+
+    // ...and no two of them collide.
+    expect(new Set([alphanumeric.value, dflt.value, shorter.value]).size).toBe(3);
   });
 });
