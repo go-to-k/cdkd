@@ -936,6 +936,15 @@ async function deployCommand(
             dagBuilder,
             diffCalculator,
             options: deployEngineOptions,
+            // A template-removal DELETE of an `AWS::CloudFormation::Stack` row
+            // recurses into `runDestroyForStack` from here, so the child's
+            // recovery hints need the run's prefix exactly as the destroy
+            // commands' do (issue #2170). This was the fourth entry point and
+            // the one the review found still open.
+            destroyOptions: {
+              statePrefix: options.statePrefix,
+              ...(options.profile && { profile: options.profile }),
+            },
             ...(assetRedirect && { assetRedirect }),
           },
           () => stackDeployEngine.deploy(stackInfo.stackName, stackInfo.template)

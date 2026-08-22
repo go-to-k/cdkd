@@ -21,6 +21,8 @@ import { getLogger } from '../../utils/logger.js';
 import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
+import { displaySafe } from '../../utils/display-safe.js';
+import { buildForceUnlockCommand } from '../../state/lock-contention-message.js';
 import {
   buildLockContentionMessage,
   type LockRecoveryContext,
@@ -1045,8 +1047,19 @@ async function stateOrphanCommand(
           if (locked) {
             const where = target.region ?? '(legacy)';
             throw new Error(
-              `Stack '${stackName}' (${where}) is locked. ` +
-                `Run 'cdkd force-unlock ${stackName}${target.region ? ` --stack-region ${target.region}` : ''}' first, ` +
+              `Stack '${displaySafe(stackName, { asciiOnly: true })}' (${where}) is locked. ` +
+                // Through the shared builder rather than hand-interpolated
+                // (issue #2170): `target.region` comes from an S3 key segment
+                // or a legacy state body, so a raw `\n` here forged a second
+                // instruction line INSIDE the quotes. It also picks up the
+                // bucket / prefix / profile qualification this hint lacked.
+                (target.region
+                  ? `Run: ${buildForceUnlockCommand(stackName, target.region, {
+                      profile: options.profile,
+                      stateBucket: setup.bucket,
+                      statePrefix: options.statePrefix,
+                    })} first, `
+                  : `Run 'cdkd force-unlock ${displaySafe(stackName, { asciiOnly: true })}' first, `) +
                 `or pass --force to remove anyway.`
             );
           }
@@ -2059,9 +2072,14 @@ async function warnOnLiveForeignLock(
     const info = await lockManager.getLockInfo(stackName, region);
     if (!info || info.expiresAt <= Date.now()) return;
     const where = region ? `${stackName} (${region})` : `${stackName} (legacy lock key)`;
-    const operation = info.operation ? `, operation: ${info.operation}` : '';
+    // Through the SHARED sanitizer, not a second hand-rolled answer: this is
+    // the same terminal-and-events-store surface `lock-contention-message.ts`
+    // closes, and the review found it still open because the rule was widened
+    // by hand one module at a time.
+    const owner = displaySafe(info.owner);
+    const operation = info.operation ? `, operation: ${displaySafe(info.operation)}` : '';
     logger.warn(
-      `Force-releasing a LIVE lock on ${where} held by ${info.owner}${operation}. ` +
+      `Force-releasing a LIVE lock on ${where} held by ${owner || '<unrenderable>'}${operation}. ` +
         `That process is still running and will keep writing; its next state write ` +
         `may recreate the record being removed here.`
     );

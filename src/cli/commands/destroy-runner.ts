@@ -17,8 +17,8 @@ import {
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { LockManager } from '../../state/lock-manager.js';
 import {
-  buildForceUnlockCommand,
   buildLockContentionMessage,
+  forceQuitRecoveryClause,
 } from '../../state/lock-contention-message.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import {
@@ -460,8 +460,8 @@ export async function runDestroyForStack(
             /* best-effort: the recovery line below is the real guarantee */
           });
           process.stderr.write(
-            `\nForce-quit: stack lock may not be released. If the next run reports a lock, run: ` +
-              `${buildForceUnlockCommand(stackName, regionForState, {
+            `\nForce-quit: stack lock may not be released.` +
+              `${forceQuitRecoveryClause(stackName, regionForState, {
                 profile: ctx.profile,
                 stateBucket: ctx.stateBucket,
                 statePrefix: ctx.statePrefix,
@@ -753,12 +753,13 @@ export async function runDestroyForStack(
           /* best-effort: the recovery line below is the real guarantee */
         });
         process.stderr.write(
-          `\nForce-quit: stack lock may not be released. If the next run reports a lock, run: ` +
+          `\nForce-quit: stack lock may not be released.` +
             // Region-qualified for the same reason the contention messages are
             // (issue #2170), and it matters MORE here: by this point
             // `deleteState` may already have removed the record `force-unlock`
-            // would otherwise infer the region from.
-            `${buildForceUnlockCommand(stackName, regionForState, {
+            // would otherwise infer the region from. Through the shared clause
+            // so a suppressed command cannot leave the banner ending in `run: `.
+            `${forceQuitRecoveryClause(stackName, regionForState, {
               profile: ctx.profile,
               stateBucket: ctx.stateBucket,
               statePrefix: ctx.statePrefix,

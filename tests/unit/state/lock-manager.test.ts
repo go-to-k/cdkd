@@ -268,6 +268,51 @@ describe('LockManager', () => {
       expect(result).toEqual(lockInfo);
     });
 
+    it('sanitizes owner / operation at the SOURCE so every reader inherits it', async () => {
+      // Issue #2170 round 3: `owner` and `operation` are attacker-influenced
+      // for anyone who can write the state bucket, and they reach FIVE readers
+      // — a TTY, two `LockError` messages, the contention message, and
+      // `state orphan`'s warning. The first pass sanitized ONE of them, which
+      // is why the rule now lives HERE rather than at each reader: a reader
+      // added later inherits it instead of inheriting nothing.
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({
+                owner: 'alice@host:1\r\u001b[2KFORGED: run rm -rf /',
+                operation: 'deploy\u2028also-forged',
+                expiresAt: Date.now() + 60_000,
+              })
+            ),
+        },
+      });
+
+      const result = await lockManager.getLockInfo('test-stack', 'us-east-1');
+
+      expect(result?.owner).not.toContain('\r');
+      expect(result?.owner).not.toContain('\u001b');
+      expect(result?.operation).not.toContain('\u2028');
+      // The readable text survives — this is sanitization, not redaction.
+      expect(result?.owner).toContain('alice@host:1');
+      expect(result?.operation).toContain('deploy');
+    });
+
+    it('renders an ABSENT owner as empty rather than the word "undefined"', async () => {
+      // The parse is an unvalidated `as LockInfo`. `String(undefined)` is a
+      // TRUTHY `'undefined'`, so a consumer keying "is there a holder?" on the
+      // value printed `held by undefined` AND certified the holder as live.
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () => Promise.resolve(JSON.stringify({ expiresAt: Date.now() })),
+        },
+      });
+
+      const result = await lockManager.getLockInfo('test-stack', 'us-east-1');
+
+      expect(result?.owner).toBe('');
+    });
+
     it('should return null when no lock exists', async () => {
       const noSuchKeyError = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(noSuchKeyError);

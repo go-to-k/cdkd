@@ -289,6 +289,28 @@ describe('cdkd state orphan', () => {
       expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
     });
 
+    it('renders a hostile owner safely — the sanitization is at the SOURCE', async () => {
+      // `LockManager.getLockInfo` sanitizes `owner` / `operation` so all five
+      // readers inherit it; this fence proves THIS reader is one of them
+      // rather than re-spelling the rule. Production goes through the real
+      // `getLockInfo`, so the mock returns what that method would return.
+      mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+      mockIsLocked.mockResolvedValue(false);
+      mockGetLockInfo.mockResolvedValue({
+        owner: 'alice@host:1\r\u001b[2KFORGED',
+        operation: 'deploy\nalso-forged',
+        expiresAt: Date.now() + 60_000,
+      });
+
+      await runStateOrphan(['orphan', 'MyStack', '--yes']);
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toMatch(/Force-releasing a LIVE lock/);
+      expect(warned).not.toContain('\r');
+      expect(warned).not.toContain('\u001b');
+      expect(warned.split('\n').filter((l) => l.includes('Force-releasing'))).toHaveLength(1);
+    });
+
     it('stays quiet for an EXPIRED lock', async () => {
       // An expired lock is exactly what force-unlock exists for; warning about
       // it would train the user to ignore the line that matters.

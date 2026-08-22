@@ -112,6 +112,24 @@ describe('buildLockContentionMessage (issue #2170)', () => {
     expect(msg).toContain('That process is still running');
   });
 
+  it('does NOT certify "still running" for a lock with no usable owner', async () => {
+    // `getLockInfo` is an unvalidated `JSON.parse(...) as LockInfo`. An absent
+    // or blank owner is not evidence of a live holder, and printing
+    // `held by undefined` while asserting "That process is still running" is
+    // MORE confident than the pre-sanitize behaviour, which threw into the
+    // catch and gave the cautious wording.
+    for (const owner of [undefined, '', '   ', '\u0000']) {
+      const msg = await buildLockContentionMessage({
+        ...base,
+        lockManager: lockManagerReturning({ owner, expiresAt: Date.now() + 60_000 }),
+      });
+      expect(msg, `owner=${JSON.stringify(owner)}`).toContain('another cdkd process holds it');
+      expect(msg, `owner=${JSON.stringify(owner)}`).not.toContain('That process is still running');
+      expect(msg, `owner=${JSON.stringify(owner)}`).not.toContain('held by undefined');
+      expect(msg, `owner=${JSON.stringify(owner)}`).not.toMatch(/held by\s*,/);
+    }
+  });
+
   it('names the holder, the operation and the expiry', async () => {
     // The finding this closes: the message asked the user to decide whether
     // another process was live while printing none of the evidence.

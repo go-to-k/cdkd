@@ -10,6 +10,7 @@ import type { LockInfo } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { LockError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import { hostname } from 'os';
@@ -301,7 +302,22 @@ export class LockManager {
       }
 
       const bodyString = await response.Body.transformToString();
-      const lockInfo = JSON.parse(bodyString) as LockInfo;
+      const parsed = JSON.parse(bodyString) as LockInfo;
+      // Sanitize the DISPLAY fields HERE, at the single point every reader
+      // goes through (issue #2170). `owner` and `operation` are attacker-
+      // influenced for anyone who can write the state bucket, and they reach a
+      // TTY, a thrown `LockError`, and the persisted deployment-events store —
+      // five readers, of which the first pass at this fix sanitized ONE.
+      // Doing it per-reader is how the next reader inherits nothing.
+      //
+      // The parse is an unvalidated `as LockInfo`, so `displaySafe` also
+      // absorbs a non-string / absent value rather than letting `.replace`
+      // throw further downstream.
+      const lockInfo: LockInfo = {
+        ...parsed,
+        owner: displaySafe(parsed.owner),
+        ...(parsed.operation !== undefined && { operation: displaySafe(parsed.operation) }),
+      };
 
       this.logger.debug(`Lock info for stack: ${stackName}:`, lockInfo);
 

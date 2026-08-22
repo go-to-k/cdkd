@@ -20,6 +20,7 @@
  * two of three. `subject` now varies only the noun.
  */
 
+import { displaySafe } from '../utils/display-safe.js';
 import { DEFAULT_STATE_PREFIX } from './state-prefix.js';
 import type { LockManager } from './lock-manager.js';
 
@@ -52,6 +53,13 @@ export interface LockRecoveryContext {
   statePrefix?: string | undefined;
 }
 
+/**
+ * Stand-in for a value with nothing renderable left after sanitization. Named
+ * rather than inlined so the message and the command-suppression branch cannot
+ * disagree about what "unrenderable" looks like.
+ */
+const UNRENDERABLE = '<unrenderable>';
+
 /** What the contended lock is on — varies the noun, nothing else. */
 export type LockSubject = 'stack' | 'nested stack' | 'nested-stack child';
 
@@ -69,33 +77,6 @@ export interface LockContentionArgs {
   heldClause?: string | undefined;
   /** Appended verbatim after the recovery line (e.g. export's no-changeset note). */
   suffix?: string | undefined;
-}
-
-/**
- * Strip control characters from a value read out of `lock.json`.
- *
- * `owner` and `operation` are attacker-influenced for anyone who can write the
- * state bucket, and this string reaches a TTY AND the persisted deployment-
- * events store. A `\r` or an ANSI escape there can forge a plausible extra
- * instruction line under cdkd's own output.
- */
-function sanitizeForDisplay(value: unknown): string {
-  // `String(...)` rather than a `string` parameter: `getLockInfo` returns
-  // `JSON.parse(body) as LockInfo`, so a hand-written lock.json can carry a
-  // number / object / null here, and `value.replace` then threw INTO the
-  // caller's best-effort catch.
-  //
-  // The class is wider than C0 + DEL, which a first cut used and which misses
-  // every one of these: U+0085 (NEL) and the C1 range (xterm treats U+009B as
-  // CSI in UTF-8), U+2028 / U+2029 (this string is PERSISTED and re-rendered by
-  // JSON / web log viewers), and the bidi overrides U+202A-U+202E / U+2066-
-  // U+2069, which visually REORDER the very command being pasted.
-  return (
-    String(value)
-      // eslint-disable-next-line no-control-regex
-      .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, ' ')
-      .trim()
-  );
 }
 
 /** Render `expiresIn` without implying more precision than a clock skew allows. */
@@ -134,8 +115,8 @@ export function buildForceUnlockCommand(
   // leaves a MULTI-LINE "recovery command" on the operator's terminal, which is
   // its own forgery surface. A control character has no legitimate place in a
   // stack name or a region, so drop it and then quote what remains.
-  const safeStack = sanitizeForDisplay(stackName);
-  const safeRegion = sanitizeForDisplay(region);
+  const safeStack = displaySafe(stackName, { asciiOnly: true });
+  const safeRegion = displaySafe(region, { asciiOnly: true });
   // A value that sanitizes to NOTHING must not become an empty ARGUMENT:
   // `force-unlock.ts` treats a falsy `--stack-region` as "not supplied" and
   // widens the release to EVERY region holding that stack name — the opposite
@@ -154,6 +135,27 @@ export function buildForceUnlockCommand(
 }
 
 /**
+ * The force-quit banner's recovery sentence.
+ *
+ * Exported so the two `destroy-runner.ts` banners do not each decide what to
+ * say when {@link buildForceUnlockCommand} suppresses — a banner ending in a
+ * bare `run: ` is the shape the review found, and two copies of the branch is
+ * how the next one drifts. Returns a leading-space clause so the caller can
+ * concatenate it unconditionally.
+ */
+export function forceQuitRecoveryClause(
+  stackName: string,
+  region: string,
+  recovery?: LockRecoveryContext
+): string {
+  const command = buildForceUnlockCommand(stackName, region, recovery);
+  return command
+    ? ` If the next run reports a lock, run: ${command}`
+    : ` Inspect the lock object directly: the name or region recorded for this ` +
+        `stack has no renderable characters left after sanitization.`;
+}
+
+/**
  * Build the contention message, reading the holder's identity best-effort.
  *
  * The `getLockInfo` read is one GetObject and is deliberately NOT allowed to
@@ -169,12 +171,21 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
   try {
     const info = await lockManager.getLockInfo(stackName, region);
     if (info) {
-      const operation = info.operation ? `, operation: ${sanitizeForDisplay(info.operation)}` : '';
+      const operation = info.operation ? `, operation: ${displaySafe(info.operation)}` : '';
       const expires = formatRemaining(info.expiresAt - Date.now());
-      held = `${heldClause ? `${heldClause} — ` : ''}held by ${sanitizeForDisplay(info.owner)}${operation}, expires ${expires}`;
-      // LAST: anything above can still throw, and setting it earlier paired the
-      // degraded wording with the confident "still running" advice.
-      sawHolder = true;
+      const owner = displaySafe(info.owner);
+      // An ABSENT / empty owner is not evidence of a live holder. `getLockInfo`
+      // is an unvalidated `JSON.parse(...) as LockInfo`, so `String(undefined)`
+      // would otherwise print `held by undefined` AND certify "that process is
+      // still running" — more confident than the pre-sanitize behaviour, which
+      // threw into the catch and gave the cautious wording. Same empty-value
+      // rule the command suppression applies.
+      if (owner) {
+        held = `${heldClause ? `${heldClause} — ` : ''}held by ${owner}${operation}, expires ${expires}`;
+        // LAST: anything above can still throw, and setting it earlier paired
+        // the degraded wording with the confident advice.
+        sawHolder = true;
+      }
     }
   } catch {
     // Best-effort: keep the evidence-free wording rather than masking the
@@ -196,27 +207,30 @@ export async function buildLockContentionMessage(args: LockContentionArgs): Prom
   // truncation `shellQuote` exists to prevent. Trailing means there is no
   // sentence left to delimit it from.
   const recoveryCommand = buildForceUnlockCommand(stackName, region, recovery);
-  // `buildForceUnlockCommand` returns '' when the stack name or region could
-  // not be rendered at all. Suggesting nothing beats suggesting a command that
-  // would release every region's lock for this stack name.
+
+  // ONE head sentence, built once. The previous revision rebuilt it in an
+  // early-return branch for the unrenderable case, and the two had ALREADY
+  // drifted (the branch dropped `advice`) — which is the divergence this module
+  // exists to end, reproduced inside the module itself.
+  const safeStack = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
+  const safeRegion = displaySafe(region, { asciiOnly: true }) || UNRENDERABLE;
+  const head =
+    `Could not acquire lock for ${subject} '${safeStack}' (${safeRegion}) — ${held}.` +
+    (suffix ? ` ${suffix}` : '');
+
+  // `buildForceUnlockCommand` returns '' when a value has nothing renderable
+  // left. Suppress only the COMMAND — suggesting one that would carry an empty
+  // `--stack-region` is worse than suggesting none, because force-unlock reads
+  // a falsy value as "not supplied" and widens to every region holding the
+  // stack name. The advice itself still applies.
   if (!recoveryCommand) {
     return (
-      `Could not acquire lock for ${subject} '${sanitizeForDisplay(stackName)}' ` +
-      `(${sanitizeForDisplay(region)}) — ${held}.` +
-      (suffix ? ` ${suffix}` : '') +
-      ` The stack name or region in this stack's state record contains no ` +
-      `renderable characters, so no recovery command can be suggested; inspect ` +
+      `${head} ${advice.replace(/, run:$/, '.')} ` +
+      `No recovery command can be shown: the stack name or region recorded for ` +
+      `this lock has no renderable characters left after sanitization — inspect ` +
       `the lock object directly.`
     );
   }
-  // The PROSE head needs the same sanitization as the command. Applying it only
-  // inside `buildForceUnlockCommand` left the fix half-done: `region` comes
-  // from the state.json BODY, so a `\n`-bearing one still produced a
-  // multi-line message — the forgery surface, one clause earlier.
-  return (
-    `Could not acquire lock for ${subject} '${sanitizeForDisplay(stackName)}' ` +
-    `(${sanitizeForDisplay(region)}) — ${held}.` +
-    (suffix ? ` ${suffix}` : '') +
-    ` ${advice} ${recoveryCommand}`
-  );
+
+  return `${head} ${advice} ${recoveryCommand}`;
 }
