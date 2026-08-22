@@ -93,7 +93,7 @@ dynamodb-tableclass-switch	2026-08-22T19:12:07Z	PASS	72	verify.sh	issue 2176 mas
 dynamodb-ttl-attr-change	2026-08-10T11:50:46Z	PASS	57	verify.sh	0810 P0/P1 sweep b3; TTL attr change refused w/ actionable error, AWS TTL unchanged
 ec2-instance	2026-08-22T19:51:10Z	PASS	92	verify.sh	issue 2176 round-3 masking sweep; rc 0, destroy 0 errors, orphans clean
 ec2-instance-fanout	2026-07-30T06:24:02Z	PASS	150	verify.sh	new fixture (#1292): 10-inst cold fan-out converged, 13 propagation retries, 0 throttles, 32s deploy
-ec2-route-targets	2026-08-22T19:51:10Z	PASS	528	verify.sh	issue 2176 round-3 masking sweep; rc 0, destroy 0 errors, orphans clean
+ec2-route-targets	2026-08-22T20:17:46Z	PASS	463	verify.sh	issue 2176 round-4; re-run after EC2 update-path masker threading; 0 errors, orphans clean
 ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit DESTROY FlowLog LogGroup; 20 deleted 0 retained 0 orphans
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
 ecr-scanning	2026-08-09T06:01:13Z	PASS	55	verify.sh	#1392 exclusion-filter create + filters-only update + filterType asserts; 2 del/0 err, 0 orphans
