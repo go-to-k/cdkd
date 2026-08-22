@@ -1007,10 +1007,28 @@ await s3Client.send(
 
 A `PreconditionFailed` here means the lock present is somebody else's; cdkd
 leaves it in place and warns rather than raising, because the operation itself
-has already finished and the caller has nothing to do about it. Any OTHER
-failure falls back to an unconditional delete, so a bucket policy that denies
-the `s3:GetObject` an ETag-conditional delete requires cannot leave a lock
-stranded.
+has already finished and the caller has nothing to do about it.
+
+The condition is dropped for exactly one class of failure: **the endpoint or
+the policy will not evaluate it at all.** A conditional delete with a specific
+ETag additionally requires `s3:GetObject`, so a policy granting only
+`s3:DeleteObject` answers `403`, and an S3-compatible endpoint that has not
+implemented the header answers `501`. Those fall back to an unconditional
+delete so such a setup cannot end up with a stranded lock.
+
+Every other failure raises, which is what release has always done. In
+particular a `409` (S3's answer to a concurrent operation on the key) and a
+`503` are **not** fallback-worthy: the first is the contended case by
+definition, and the second may mean the conditional delete already succeeded
+with the response lost, so an unconditional retry would delete whichever lock
+exists by then. The heartbeat is already stopped at that point, so the worst
+outcome is a lock that lapses at its TTL -- recoverable, unlike a lock deleted
+out from under a live writer.
+
+A second `releaseLock` for the same key is a no-op rather than an owner-blind
+delete: the entry is tombstoned, not dropped. This matters because the
+force-quit paths fire an un-awaited release while the main `finally` may still
+be in one.
 
 `cdkd force-unlock` is deliberately **not** conditional: it exists precisely to
 remove a lock this process does not own.
@@ -1068,7 +1086,20 @@ This is what makes the TTL mean **"the owner has been silent for 30 minutes"**
 rather than **"the operation has been running for 30 minutes"**. The default TTL
 tolerates fourteen consecutive missed renewals (a throttle, a network blip)
 before it lapses; a renewal that fails for any reason other than "this lock is
-no longer mine" is simply retried on the next tick.
+no longer mine" is simply retried on the next tick. If they fail long enough
+that the deadline actually passes, cdkd says so once at `warn` -- otherwise
+half an hour of failing renewals would read exactly like a healthy run while
+another process becomes free to take the lock.
+
+A `412` on a renewal is not taken at face value. A conditional `PutObject` that
+S3 applied but whose response was lost -- or an SDK-internal retry of it --
+leaves the cached ETag one version behind, so the next attempt legitimately
+conflicts with cdkd's own write. cdkd reads the object once to tell the two
+apart and adopts the renewal when the stored body is byte-for-byte what it just
+wrote (same owner, same acquisition timestamp, same millisecond deadline).
+Without that check the process would declare a lock it still owns lost, warn
+about a concurrent writer that does not exist, and then refuse to release its
+own lock.
 
 Before issue [#2168](https://github.com/go-to-k/cdkd/issues/2168) there was no
 renewal at all, so any operation slower than the TTL silently stopped being
@@ -1079,6 +1110,12 @@ exceeds 30 minutes in aggregate regardless of resource type.
 
 Two consequences worth knowing:
 
+- **A lock whose `expiresAt` is not a finite number counts as EXPIRED.** That
+  field arrives from the state bucket unvalidated, and `Infinity` / `NaN` /
+  a string would otherwise pin the stack forever: no acquisition would ever
+  succeed again and only `cdkd force-unlock` could clear it. Treating it as
+  expired grants no new power -- anyone who can write that value could equally
+  have deleted the object -- and it is the recoverable direction.
 - **A lock that reaches its `expiresAt` now genuinely means an absent owner** --
   a crashed process, a `SIGKILL`, or a machine that slept. cdkd logs the
   takeover at `warn` level naming the previous owner, because on the remaining

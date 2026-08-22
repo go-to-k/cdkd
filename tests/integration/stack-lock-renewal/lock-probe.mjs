@@ -151,14 +151,56 @@ async function main() {
     if (held?.owner !== 'probe-owner-taker') {
       fail(`takeover did not install the new owner: ${JSON.stringify(held)}`);
     }
-    pass('took over an expired lock via a conditional delete plus a fresh acquire');
+    // Deliberately does NOT claim the delete's `IfMatch` did any work: an
+    // unconditional takeover delete passes this arm identically, because
+    // nothing here changes the object between the read and the delete. The
+    // condition is fenced by unit tests; what this arm settles is that the
+    // conditional call is ACCEPTED by real S3 and the takeover still works.
+    pass('took over an expired lock (conditional delete accepted by S3, fresh acquire succeeded)');
 
     await taker.releaseLock(stackName, region);
     if ((await readLock()) !== null) fail('takeover lock was not released');
     pass('takeover lock released');
   }
 
-  if (passed !== 7) fail(`expected 7 receipts, got ${passed}`);
+  // --- 6. Conditional delete against an object that is GONE ---------------
+  // The SDK model documents the absent-object outcome for
+  // `IfMatchLastModifiedTime` / `IfMatchSize` but NOT for `DeleteObject`'s
+  // plain `IfMatch`, so whether S3 answers 404 or 412 here is unverified from
+  // the docs -- and the two land in opposite branches. If it were 412,
+  // `releaseLock` would print "another cdkd process now holds it" about a lock
+  // that does not exist. The answer is printed, not just asserted, so the run
+  // RECORDS what S3 actually did.
+  {
+    const lm = new LockManager(s3, config, { ttlMinutes: 30, disableRenewal: true });
+    if ((await lm.acquireLock(stackName, region, 'probe-owner-vanish', 'vanish-probe')) !== true) {
+      fail('could not acquire for the vanishing-lock arm');
+    }
+    // Someone force-unlocked underneath us.
+    await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: KEY }));
+
+    let observed = 'no error';
+    try {
+      await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: KEY, IfMatch: '"deadbeef"' }));
+    } catch (err) {
+      observed = `${err?.name ?? 'unknown'} / ${err?.$metadata?.httpStatusCode ?? '?'}`;
+    }
+
+    // Whatever S3 answered, releasing must be quiet and must not resurrect or
+    // remove anything, and the stack must be acquirable again straight away.
+    await lm.releaseLock(stackName, region);
+    if ((await readLock()) !== null) fail('release re-created a lock that had been removed');
+
+    const next = new LockManager(s3, config, { ttlMinutes: 30, disableRenewal: true });
+    if ((await next.acquireLock(stackName, region, 'probe-owner-next', 'after-vanish')) !== true) {
+      fail('a stack whose lock was removed underneath its holder was not re-acquirable');
+    }
+    await next.releaseLock(stackName, region);
+    if ((await readLock()) !== null) fail('post-vanish lock was not released');
+    pass(`released cleanly after the lock vanished underneath (S3 answered: ${observed})`);
+  }
+
+  if (passed !== 8) fail(`expected 8 receipts, got ${passed}`);
   console.log(`[probe] all ${passed} lock probes passed`);
 }
 
