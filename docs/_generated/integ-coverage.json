@@ -4145,6 +4145,7 @@
         "sns-event-source",
         "sns-sqs-event",
         "sqs-esm-max-concurrency",
+        "stack-lock-renewal",
         "stepfunctions",
         "tags-propagation",
         "update-replace",
@@ -4462,6 +4463,9 @@
           "l2"
         ],
         "sqs-esm-max-concurrency": [
+          "l2"
+        ],
+        "stack-lock-renewal": [
           "l2"
         ],
         "stepfunctions": [

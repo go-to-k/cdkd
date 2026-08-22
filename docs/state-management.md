@@ -936,9 +936,15 @@ Deletion order: Function → Role → Bucket (reverse)
 interface LockInfo {
   owner: string        // Process identifier (e.g., "user@hostname:12345")
   timestamp: number    // Lock acquisition time (Unix timestamp, milliseconds)
+  expiresAt: number    // Lock expiry (Unix timestamp, milliseconds); RENEWED while the holder lives
   operation?: string   // Operation in progress (e.g., "deploy", "destroy")
 }
 ```
+
+`expiresAt` moves forward roughly every two minutes for as long as the holding
+process is alive (see "Lock renewal" below), so it is not the time the
+operation started plus the TTL -- it is the deadline by which the holder must
+next check in.
 
 #### Example
 
@@ -946,6 +952,7 @@ interface LockInfo {
 {
   "owner": "goto@macbook:12345",
   "timestamp": 1710835200000,
+  "expiresAt": 1710837000000,
   "operation": "deploy"
 }
 ```
@@ -984,57 +991,106 @@ await s3Client.send(
 
 #### Lock Release (Release)
 
+The DELETE is **conditional on the ETag this process last wrote**, so a process
+can only ever delete the lock object it still owns:
+
 ```typescript
-// Simply DeleteObject
+// IfMatch: the ETag returned when this process wrote (or last renewed) the lock
 await s3Client.send(
   new DeleteObjectCommand({
     Bucket: stateBucket,
     Key: `cdkd/${stackName}/${region}/lock.json`,
+    IfMatch: heldEtag,
   })
 );
 ```
+
+A `PreconditionFailed` here means the lock present is somebody else's; cdkd
+leaves it in place and warns rather than raising, because the operation itself
+has already finished and the caller has nothing to do about it. Any OTHER
+failure falls back to an unconditional delete, so a bucket policy that denies
+the `s3:GetObject` an ETag-conditional delete requires cannot leave a lock
+stranded.
+
+`cdkd force-unlock` is deliberately **not** conditional: it exists precisely to
+remove a lock this process does not own.
+
+Before issue [#2168](https://github.com/go-to-k/cdkd/issues/2168) this was an
+owner-blind unconditional delete, which is what turned a single lapsed lock
+into a cascade -- a process whose lock had been taken over deleted the *new*
+owner's lock on its way out, freeing the stack for a third writer.
 
 #### Retry Logic
 
 ```typescript
 async acquireLockWithRetry(
   stackName: string,
+  region: string,
+  owner?: string,
+  operation?: string,
   maxRetries = 3,
-  retryDelay = 5000  // 5 seconds
+  retryDelay = 2000  // 2 seconds
 ): Promise<void> {
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const acquired = await this.acquireLock(stackName);
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // acquireLock reaps an EXPIRED foreign lock itself and retries once, so a
+    // `false` here always means a LIVE lock held by someone else.
+    if (await this.acquireLock(stackName, region, owner, operation)) return;
 
-    if (acquired) {
-      return;
-    }
-
-    // Get lock information
-    const lockInfo = await this.getLockInfo(stackName);
-
-    // Force release if lock is old
-    const age = Date.now() - lockInfo.timestamp;
-    if (age >= this.lockTTL) {  // Default 30 minutes
-      await this.forceReleaseLock(stackName);
-      continue;
-    }
-
-    // Wait if still fresh
-    if (attempt < maxRetries - 1) {
+    const lockInfo = await this.getLockInfo(stackName, region);
+    if (lockInfo && attempt < maxRetries) {
+      // Reports the holder and how long until its deadline, then waits.
       await sleep(retryDelay);
-      continue;
     }
   }
 
-  throw new LockError('Failed to acquire lock after retries');
+  throw new LockError('Failed to acquire lock after retries');  // names owner + expiry
 }
 ```
+
+Expiry is decided by the lock's own `expiresAt` field, not by its age: a live
+holder keeps pushing that field forward, so "old" and "abandoned" are different
+questions and only the second one frees the lock.
 
 ### Lock TTL (Time To Live)
 
 Default: **30 minutes**
 
-Even if a process crashes, after 30 minutes the old lock is considered stale and can be force released.
+### Lock renewal
+
+The holding process **renews its lock in the background**, re-writing
+`expiresAt` at most every **2 minutes** (or every quarter of the TTL, whichever
+is shorter) for as long as the operation runs. Each renewal is a conditional
+`PutObject` carrying `IfMatch` with the ETag of the object this process last
+wrote, so a process that has already lost the lock cannot resurrect its own
+expiry on top of the new owner's.
+
+This is what makes the TTL mean **"the owner has been silent for 30 minutes"**
+rather than **"the operation has been running for 30 minutes"**. The default TTL
+tolerates fourteen consecutive missed renewals (a throttle, a network blip)
+before it lapses; a renewal that fails for any reason other than "this lock is
+no longer mine" is simply retried on the next tick.
+
+Before issue [#2168](https://github.com/go-to-k/cdkd/issues/2168) there was no
+renewal at all, so any operation slower than the TTL silently stopped being
+mutually exclusive while it was still running. That is reachable without
+anything exotic: `AWS::FSx::FileSystem`, `AWS::EMR::Cluster` and Custom
+Resources each wait up to an hour on their own, and a large enough stack
+exceeds 30 minutes in aggregate regardless of resource type.
+
+Two consequences worth knowing:
+
+- **A lock that reaches its `expiresAt` now genuinely means an absent owner** --
+  a crashed process, a `SIGKILL`, or a machine that slept. cdkd logs the
+  takeover at `warn` level naming the previous owner, because on the remaining
+  chance that the process IS alive, two writers are now operating on the stack.
+- **The state bucket is versioned**, so each renewal adds one `lock.json`
+  object version. A 30-minute deploy writes about fifteen. They are noncurrent
+  the moment the next renewal lands and are removed with the lock itself, but a
+  bucket without a lifecycle rule on noncurrent versions accumulates them.
+
+If the holding process dies without releasing, the lock stops being renewed and
+is reclaimed by the next `cdkd` invocation once `expiresAt` passes -- or
+immediately with `cdkd force-unlock <stack>`.
 
 ### Deploy interruption (Ctrl-C)
 
