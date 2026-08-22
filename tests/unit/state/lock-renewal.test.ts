@@ -66,6 +66,34 @@ const PRECONDITION_FAILED = (): S3ServiceException =>
     $metadata: { httpStatusCode: 412 },
   } as never);
 
+const ACCESS_DENIED = (): S3ServiceException =>
+  new S3ServiceException({
+    name: 'AccessDenied',
+    $fault: 'client',
+    $metadata: { httpStatusCode: 403 },
+  } as never);
+
+const CONFLICT = (): S3ServiceException =>
+  new S3ServiceException({
+    name: 'ConditionalRequestConflict',
+    $fault: 'client',
+    $metadata: { httpStatusCode: 409 },
+  } as never);
+
+const SLOW_DOWN = (): S3ServiceException =>
+  new S3ServiceException({
+    name: 'SlowDown',
+    $fault: 'server',
+    $metadata: { httpStatusCode: 503 },
+  } as never);
+
+const NO_SUCH_BUCKET = (): S3ServiceException =>
+  new S3ServiceException({
+    name: 'NoSuchBucket',
+    $fault: 'client',
+    $metadata: { httpStatusCode: 404 },
+  } as never);
+
 const NOT_FOUND = (): S3ServiceException =>
   new S3ServiceException({
     name: 'NotFound',
@@ -215,6 +243,131 @@ describe('LockManager lock renewal and conditional release (issue #2168)', () =>
       expect(deletes()).toHaveLength(0);
     });
 
+    it('adopts its own renewal when a 412 was caused by a lost response, not a takeover', async () => {
+      // A conditional PUT S3 APPLIED but whose response never arrived (or an
+      // SDK-internal retry of it) leaves the cached ETag one version behind,
+      // so the retry's `IfMatch` 412s even though the lock is still ours.
+      vi.useFakeTimers();
+      const manager = await acquireWith('"etag-1"');
+      const acquiredBody = JSON.parse(puts()[0]['Body'] as string) as LockInfo;
+
+      let renewalBody: LockInfo | undefined;
+      s3Client.send.mockImplementationOnce((cmd: { input: { Body: string } }) => {
+        renewalBody = JSON.parse(cmd.input.Body) as LockInfo;
+        return Promise.reject(PRECONDITION_FAILED());
+      });
+      // The disambiguating read: the object holds exactly what we just wrote.
+      s3Client.send.mockImplementationOnce(() =>
+        Promise.resolve({
+          ETag: '"etag-2"',
+          Body: { transformToString: () => Promise.resolve(JSON.stringify(renewalBody)) },
+        })
+      );
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+
+      expect(logs.warn).not.toHaveBeenCalled();
+
+      // It keeps renewing, now chained on the ETag the read reported.
+      s3Client.send.mockResolvedValueOnce({ ETag: '"etag-3"' });
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+      expect(puts()[2]['IfMatch']).toBe('"etag-2"');
+
+      // And it still releases its OWN lock, which is what the pessimistic
+      // reading would have refused to do.
+      s3Client.send.mockResolvedValueOnce({});
+      await manager.releaseLock('test-stack', 'us-east-1');
+      expect(deletes()).toHaveLength(1);
+      expect(deletes()[0]['IfMatch']).toBe('"etag-3"');
+      expect(acquiredBody.timestamp).toBe(renewalBody?.timestamp);
+    });
+
+    // `adoptOwnWrite` is a CONJUNCTION -- owner, expiresAt, timestamp and a
+    // present ETag must all match. A single "somebody else" fixture differs in
+    // every clause at once, so it fences NONE of them: delete any one check
+    // and it still fails for the others' sake. Each clause therefore gets a
+    // body that differs in exactly that one field.
+    const adoptionRejectedBy = (
+      mutate: (body: LockInfo) => Record<string, unknown>,
+      etag: string | undefined
+    ): void => {
+      let renewalBody: LockInfo | undefined;
+      s3Client.send.mockImplementationOnce((cmd: { input: { Body: string } }) => {
+        renewalBody = JSON.parse(cmd.input.Body) as LockInfo;
+        return Promise.reject(PRECONDITION_FAILED());
+      });
+      s3Client.send.mockImplementationOnce(() =>
+        Promise.resolve({
+          ...(etag !== undefined && { ETag: etag }),
+          Body: {
+            transformToString: () =>
+              Promise.resolve(JSON.stringify(mutate(renewalBody as LockInfo))),
+          },
+        })
+      );
+    };
+
+    const expectLost = async (manager: LockManager): Promise<void> => {
+      expect(logs.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        "Lost the lock for stack 'test-stack'"
+      );
+      await manager.releaseLock('test-stack', 'us-east-1');
+      expect(deletes()).toHaveLength(0);
+    };
+
+    it('does not adopt a 412 body whose OWNER differs', async () => {
+      vi.useFakeTimers();
+      const manager = await acquireWith('"etag-1"');
+      adoptionRejectedBy((b) => ({ ...b, owner: 'someone-else' }), '"etag-other"');
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+      await expectLost(manager);
+    });
+
+    it('does not adopt a 412 body whose EXPIRESAT differs', async () => {
+      // The likeliest real shape: another process renewing its own lock -- the
+      // owner could even collide after a pid reuse, but the millisecond it
+      // stamped will not.
+      vi.useFakeTimers();
+      const manager = await acquireWith('"etag-1"');
+      adoptionRejectedBy((b) => ({ ...b, expiresAt: b.expiresAt + 1 }), '"etag-other"');
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+      await expectLost(manager);
+    });
+
+    it('does not adopt a 412 body whose TIMESTAMP differs', async () => {
+      // Same owner string, same expiry, different acquisition: a distinct lock.
+      vi.useFakeTimers();
+      const manager = await acquireWith('"etag-1"');
+      adoptionRejectedBy((b) => ({ ...b, timestamp: b.timestamp - 1 }), '"etag-other"');
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+      await expectLost(manager);
+    });
+
+    it('does not adopt a matching body that came back with NO ETag', async () => {
+      // Adopting `undefined` would leave nothing to chain the next conditional
+      // write onto, and would make the eventual release unconditional.
+      vi.useFakeTimers();
+      const manager = await acquireWith('"etag-1"');
+      adoptionRejectedBy((b) => ({ ...b }), undefined);
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+      await expectLost(manager);
+    });
+
+    it('declares the lock lost when the disambiguating read itself fails', async () => {
+      // An unreadable lock is not evidence of ownership.
+      vi.useFakeTimers();
+      const manager = await acquireWith('"etag-1"');
+
+      s3Client.send.mockRejectedValueOnce(PRECONDITION_FAILED());
+      s3Client.send.mockRejectedValueOnce(new Error('AccessDenied'));
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+
+      expect(logs.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        "Lost the lock for stack 'test-stack'"
+      );
+      await manager.releaseLock('test-stack', 'us-east-1');
+      expect(deletes()).toHaveLength(0);
+    });
+
     it('stops renewing when the lock object was deleted outright (404)', async () => {
       vi.useFakeTimers();
       const manager = await acquireWith('"etag-1"');
@@ -245,6 +398,127 @@ describe('LockManager lock renewal and conditional release (issue #2168)', () =>
 
       s3Client.send.mockResolvedValueOnce({});
       await manager.releaseLock('test-stack', 'us-east-1');
+    });
+
+    it('skips a tick while a renewal is still in flight, rather than racing itself', async () => {
+      // Two concurrent renewals share one ETag; the loser 412s, and without
+      // this guard that reads as a takeover -- so the process would declare
+      // its OWN lock lost and then refuse to release it.
+      vi.useFakeTimers();
+      const manager = await acquireWith('"etag-1"');
+
+      let settle: (v: { ETag: string }) => void = () => {};
+      s3Client.send.mockReturnValueOnce(
+        new Promise<{ ETag: string }>((resolve) => {
+          settle = resolve;
+        })
+      );
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+      expect(puts()).toHaveLength(2);
+
+      // A second tick fires while the first is still outstanding.
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+      expect(puts()).toHaveLength(2);
+
+      settle({ ETag: '"etag-2"' });
+      await vi.advanceTimersByTimeAsync(0);
+      s3Client.send.mockResolvedValueOnce({});
+      await manager.releaseLock('test-stack', 'us-east-1');
+      expect(logs.warn).not.toHaveBeenCalled();
+    });
+
+    it('respects the 1s floor so a tiny TTL cannot spin the loop', async () => {
+      vi.useFakeTimers();
+      // 3s TTL: a quarter is 750ms, which the floor lifts to 1000ms.
+      const manager = await acquireWith('"etag-1"', { ttlMinutes: 0.05 });
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(puts()).toHaveLength(1);
+      s3Client.send.mockResolvedValueOnce({ ETag: '"etag-2"' });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(puts()).toHaveLength(2);
+
+      s3Client.send.mockResolvedValueOnce({});
+      await manager.releaseLock('test-stack', 'us-east-1');
+    });
+
+    it('warns once, not never, when renewals fail long enough to pass the deadline', async () => {
+      // Fourteen consecutive failures at the default TTL are ~28 minutes of
+      // output byte-identical to a healthy run, while the process keeps
+      // deleting AWS resources past its own expiry.
+      vi.useFakeTimers();
+      const manager = await acquireWith('"etag-1"', { ttlMinutes: 4 });
+
+      for (let i = 0; i < 6; i += 1) {
+        s3Client.send.mockRejectedValueOnce(new Error('ThrottlingException'));
+        await vi.advanceTimersByTimeAsync(60 * 1000);
+      }
+
+      const warned = logs.warn.mock.calls.map((c) => String(c[0]));
+      expect(warned.filter((w) => w.includes('has been failing long enough'))).toHaveLength(1);
+
+      s3Client.send.mockResolvedValueOnce({});
+      await manager.releaseLock('test-stack', 'us-east-1');
+    });
+
+    it('stops renewing but KEEPS its ETag when a renewal returns none and cannot be re-read', async () => {
+      vi.useFakeTimers();
+      const manager = await acquireWith('"etag-1"');
+
+      s3Client.send.mockResolvedValueOnce({}); // renewal: applied, no ETag
+      s3Client.send.mockRejectedValueOnce(new Error('AccessDenied')); // re-read fails
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+
+      // The heartbeat is gone -- asserted on the TIMER, since `renewLock`
+      // also short-circuits and no S3 assertion can tell the two apart.
+      expect(vi.getTimerCount()).toBe(0);
+
+      // And the release stays CONDITIONAL. Clearing the ETag here would make
+      // it unconditional, which is the owner-blind delete this change removes.
+      s3Client.send.mockRejectedValueOnce(PRECONDITION_FAILED());
+      await manager.releaseLock('test-stack', 'us-east-1');
+      expect(deletes()[0]['IfMatch']).toBe('"etag-1"');
+    });
+
+    it('recovers the ETag by reading when a renewal returns none', async () => {
+      vi.useFakeTimers();
+      const manager = await acquireWith('"etag-1"');
+
+      let renewalBody: LockInfo | undefined;
+      s3Client.send.mockImplementationOnce((cmd: { input: { Body: string } }) => {
+        renewalBody = JSON.parse(cmd.input.Body) as LockInfo;
+        return Promise.resolve({});
+      });
+      s3Client.send.mockImplementationOnce(() =>
+        Promise.resolve({
+          ETag: '"etag-2"',
+          Body: { transformToString: () => Promise.resolve(JSON.stringify(renewalBody)) },
+        })
+      );
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+
+      // Renewal continues on the recovered handle.
+      s3Client.send.mockResolvedValueOnce({ ETag: '"etag-3"' });
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+      expect(puts()[2]['IfMatch']).toBe('"etag-2"');
+
+      s3Client.send.mockResolvedValueOnce({});
+      await manager.releaseLock('test-stack', 'us-east-1');
+      expect(deletes()[0]['IfMatch']).toBe('"etag-3"');
+    });
+
+    it('replaces a previous heartbeat when the same key is acquired twice', async () => {
+      vi.useFakeTimers();
+      const manager = await acquireWith('"etag-1"');
+      expect(vi.getTimerCount()).toBe(1);
+
+      s3Client.send.mockResolvedValueOnce({ ETag: '"etag-2"' });
+      await manager.acquireLock('test-stack', 'us-east-1');
+      expect(vi.getTimerCount()).toBe(1);
+
+      s3Client.send.mockResolvedValueOnce({});
+      await manager.releaseLock('test-stack', 'us-east-1');
+      expect(vi.getTimerCount()).toBe(0);
     });
 
     it('does not renew when S3 returned no ETag, rather than overwriting unconditionally', async () => {
@@ -380,12 +654,13 @@ describe('LockManager lock renewal and conditional release (issue #2168)', () =>
       expect(deletes()).toHaveLength(1);
     });
 
-    it('falls back to an unconditional delete when the conditional one fails for another reason', async () => {
+    it('falls back to an unconditional delete only when the condition cannot be EVALUATED', async () => {
       const manager = await acquireWith('"etag-1"');
-      // e.g. a bucket policy denying the s3:GetObject an ETag-conditional
-      // delete needs. Before #2168 this delete had no condition at all, so
-      // the fallback is what keeps release exactly as reliable as it was.
-      s3Client.send.mockRejectedValueOnce(new Error('AccessDenied'));
+      // A bucket policy granting s3:DeleteObject but not the s3:GetObject an
+      // ETag-conditional delete additionally requires. Before #2168 this
+      // delete had no condition at all, so the fallback is what keeps release
+      // exactly as reliable as it was for such a policy.
+      s3Client.send.mockRejectedValueOnce(ACCESS_DENIED());
       s3Client.send.mockResolvedValueOnce({});
 
       await expect(manager.releaseLock('test-stack', 'us-east-1')).resolves.toBeUndefined();
@@ -395,13 +670,91 @@ describe('LockManager lock renewal and conditional release (issue #2168)', () =>
       expect(deletes()[1]['IfMatch']).toBeUndefined();
     });
 
+    it('falls back on a 501 from an endpoint that does not implement the header', async () => {
+      const manager = await acquireWith('"etag-1"');
+      s3Client.send.mockRejectedValueOnce(
+        new S3ServiceException({
+          name: 'NotImplemented',
+          $fault: 'server',
+          $metadata: { httpStatusCode: 501 },
+        } as never)
+      );
+      s3Client.send.mockResolvedValueOnce({});
+
+      await expect(manager.releaseLock('test-stack', 'us-east-1')).resolves.toBeUndefined();
+      expect(deletes()).toHaveLength(2);
+      expect(deletes()[1]['IfMatch']).toBeUndefined();
+    });
+
+    it('does NOT drop the condition on a 409, which means a concurrent operation on the key', async () => {
+      // S3 answers a conflicting concurrent operation with 409. That is the
+      // CONTENDED case, so retrying without the condition would delete
+      // whichever lock exists by then -- the hole this change closes.
+      const manager = await acquireWith('"etag-1"');
+      s3Client.send.mockRejectedValueOnce(CONFLICT());
+
+      await expect(manager.releaseLock('test-stack', 'us-east-1')).rejects.toThrow(LockError);
+      expect(deletes()).toHaveLength(1);
+      expect(deletes()[0]['IfMatch']).toBe('"etag-1"');
+    });
+
+    it('does NOT drop the condition on a 503, where the delete may already have landed', async () => {
+      const manager = await acquireWith('"etag-1"');
+      s3Client.send.mockRejectedValueOnce(SLOW_DOWN());
+
+      await expect(manager.releaseLock('test-stack', 'us-east-1')).rejects.toThrow(LockError);
+      expect(deletes()).toHaveLength(1);
+    });
+
     it('raises a LockError when the unconditional fallback also fails', async () => {
       const manager = await acquireWith('"etag-1"');
-      s3Client.send.mockRejectedValueOnce(new Error('AccessDenied'));
+      s3Client.send.mockRejectedValueOnce(ACCESS_DENIED());
       s3Client.send.mockRejectedValueOnce(new Error('still denied'));
 
       await expect(manager.releaseLock('test-stack', 'us-east-1')).rejects.toThrow(LockError);
       expect(deletes()).toHaveLength(2);
+    });
+
+    it('treats a bare 412 with no PreconditionFailed name as a foreign lock', async () => {
+      const manager = await acquireWith('"etag-1"');
+      s3Client.send.mockRejectedValueOnce(
+        new S3ServiceException({
+          name: 'S3ServiceException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 412 },
+        } as never)
+      );
+
+      await expect(manager.releaseLock('test-stack', 'us-east-1')).resolves.toBeUndefined();
+      expect(deletes()).toHaveLength(1);
+    });
+
+    it('treats a 404 carrying no NoSuchKey name as already gone', async () => {
+      const manager = await acquireWith('"etag-1"');
+      s3Client.send.mockRejectedValueOnce(NOT_FOUND());
+
+      await expect(manager.releaseLock('test-stack', 'us-east-1')).resolves.toBeUndefined();
+      expect(deletes()).toHaveLength(1);
+    });
+
+    it('does NOT read NoSuchBucket as a missing lock', async () => {
+      // It is a 404 that says nothing about the lock. Read as "gone" it would
+      // resolve where this used to raise.
+      const manager = await acquireWith('"etag-1"');
+      s3Client.send.mockRejectedValueOnce(NO_SUCH_BUCKET());
+
+      await expect(manager.releaseLock('test-stack', 'us-east-1')).rejects.toThrow(LockError);
+    });
+
+    it('ignores a second release instead of deleting whatever lock is there now', async () => {
+      // Reachable: destroy-runner's force-quit paths fire an un-awaited
+      // `void releaseLock(...)` while the main `finally` may be mid-release.
+      const manager = await acquireWith('"etag-1"');
+      s3Client.send.mockResolvedValueOnce({});
+      await manager.releaseLock('test-stack', 'us-east-1');
+      await manager.releaseLock('test-stack', 'us-east-1');
+
+      expect(deletes()).toHaveLength(1);
     });
 
     it('issues no delete at all once the lock is known lost', async () => {
@@ -488,6 +841,45 @@ describe('LockManager lock renewal and conditional release (issue #2168)', () =>
       expect(puts()).toHaveLength(1);
     });
 
+    it('renews and releases CONDITIONALLY after taking over an expired lock', async () => {
+      // The takeover path has its own acquire, so it has its own chance to
+      // forget to track the lock -- and a lock that is not tracked is neither
+      // renewed nor conditionally released, i.e. the pre-fix cascade,
+      // reintroduced on the path this change adds.
+      vi.useFakeTimers();
+      const manager = new LockManager(s3Client as unknown as S3Client, config);
+      primeExpiredRead('"stale-etag"');
+      s3Client.send.mockResolvedValueOnce({});
+      s3Client.send.mockResolvedValueOnce({ ETag: '"mine"' });
+      expect(await manager.acquireLock('test-stack', 'us-east-1')).toBe(true);
+
+      s3Client.send.mockResolvedValueOnce({ ETag: '"mine-2"' });
+      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+      const renewal = puts()[puts().length - 1];
+      expect(renewal['IfMatch']).toBe('"mine"');
+
+      s3Client.send.mockResolvedValueOnce({});
+      await manager.releaseLock('test-stack', 'us-east-1');
+      expect(deletes()[deletes().length - 1]['IfMatch']).toBe('"mine-2"');
+    });
+
+    it('treats a 404 on the takeover delete as contention rather than raising', async () => {
+      const manager = new LockManager(s3Client as unknown as S3Client, config);
+      primeExpiredRead('"stale-etag"');
+      s3Client.send.mockRejectedValueOnce(NOT_FOUND());
+
+      expect(await manager.acquireLock('test-stack', 'us-east-1')).toBe(false);
+      expect(puts()).toHaveLength(1);
+    });
+
+    it('propagates a takeover delete that failed for an unrelated reason', async () => {
+      const manager = new LockManager(s3Client as unknown as S3Client, config);
+      primeExpiredRead('"stale-etag"');
+      s3Client.send.mockRejectedValueOnce(new Error('ThrottlingException'));
+
+      await expect(manager.acquireLock('test-stack', 'us-east-1')).rejects.toThrow();
+    });
+
     it('warns rather than merely informs, now that a live holder renews', async () => {
       const manager = new LockManager(s3Client as unknown as S3Client, config);
       primeExpiredRead('"stale-etag"');
@@ -499,6 +891,44 @@ describe('LockManager lock renewal and conditional release (issue #2168)', () =>
       const warned = logs.warn.mock.calls.map((c) => String(c[0])).join('\n');
       expect(warned).toContain('Taking over an EXPIRED lock');
       expect(warned).toContain('owner-b');
+
+      s3Client.send.mockResolvedValueOnce({});
+      await manager.releaseLock('test-stack', 'us-east-1');
+    });
+  });
+
+  describe('input validation', () => {
+    it('refuses a non-positive TTL instead of spinning at the interval floor', () => {
+      expect(() => new LockManager(s3Client as unknown as S3Client, config, { ttlMinutes: 0 })).toThrow(
+        LockError
+      );
+      expect(() => new LockManager(s3Client as unknown as S3Client, config, { ttlMinutes: -5 })).toThrow(
+        LockError
+      );
+      expect(
+        () => new LockManager(s3Client as unknown as S3Client, config, { ttlMinutes: Number.NaN })
+      ).toThrow(LockError);
+    });
+
+    it('treats a non-finite expiresAt as EXPIRED so a hostile lock cannot pin the stack', async () => {
+      // `expiresAt` reaches the code through an unvalidated cast, so anyone
+      // who can write the state bucket picks it. `Infinity` would make
+      // `Date.now() >= x` false forever: no acquire ever succeeds again.
+      const manager = new LockManager(s3Client as unknown as S3Client, config);
+      s3Client.send.mockRejectedValueOnce(PRECONDITION_FAILED());
+      s3Client.send.mockResolvedValueOnce({
+        ETag: '"hostile"',
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({ owner: 'squatter', timestamp: 0, expiresAt: 'never' })
+            ),
+        },
+      });
+      s3Client.send.mockResolvedValueOnce({});
+      s3Client.send.mockResolvedValueOnce({ ETag: '"mine"' });
+
+      expect(await manager.acquireLock('test-stack', 'us-east-1')).toBe(true);
 
       s3Client.send.mockResolvedValueOnce({});
       await manager.releaseLock('test-stack', 'us-east-1');

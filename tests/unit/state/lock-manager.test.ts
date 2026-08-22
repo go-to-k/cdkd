@@ -97,6 +97,27 @@ describe('LockManager', () => {
     lockManager = new LockManager(s3Client as unknown as S3Client, config);
   });
 
+  // Every primer in this file resolves `{}`, i.e. a PutObject response with no
+  // ETag -- a shape real S3 never returns. Since issue #2168 that is its own
+  // branch (no renewal, unconditional release), so without the test below this
+  // whole file would silently be exercising a test-double-only path. The
+  // renewal / conditional-release behaviour itself lives in
+  // `lock-renewal.test.ts`; this one only keeps the file honest about which
+  // branch its other 34 tests are on.
+  describe('realistic acquire (S3 always returns an ETag)', () => {
+    it('releases conditionally on the ETag S3 assigned', async () => {
+      s3Client.send.mockResolvedValueOnce({ ETag: '"real-etag"' });
+      expect(await lockManager.acquireLock('test-stack', 'us-east-1')).toBe(true);
+
+      s3Client.send.mockResolvedValueOnce({});
+      await lockManager.releaseLock('test-stack', 'us-east-1');
+
+      const del = s3Client.send.mock.calls[1][0];
+      expect(del.input.Key).toBe('stacks/test-stack/us-east-1/lock.json');
+      expect(del.input.IfMatch).toBe('"real-etag"');
+    });
+  });
+
   describe('constructor with TTL options', () => {
     it('should use default TTL of 30 minutes', async () => {
       const manager = new LockManager(s3Client as unknown as S3Client, config);

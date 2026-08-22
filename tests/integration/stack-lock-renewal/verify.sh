@@ -161,8 +161,8 @@ echo "${PROBE_OUT}"
 # a probe that exited 0 without running (a bad import path, an early return)
 # from reading as a pass.
 PROBE_PASSES="$(printf '%s\n' "${PROBE_OUT}" | grep -c '^\[probe\] PASS ' || true)"
-if [ "${PROBE_PASSES}" -ne 7 ]; then
-  echo "[verify] FAIL: expected 7 probe receipts, saw ${PROBE_PASSES}" >&2
+if [ "${PROBE_PASSES}" -ne 8 ]; then
+  echo "[verify] FAIL: expected 8 probe receipts, saw ${PROBE_PASSES}" >&2
   exit 1
 fi
 echo "[verify] step 2 ok (${PROBE_PASSES} receipts)"
@@ -174,10 +174,16 @@ SAMPLES="$(mktemp)"
 LOCK_BODY="$(mktemp)"
 poll_lock() {
   while :; do
+    # An unreadable lock is RECORDED as `absent`, not skipped. Skipping makes
+    # the analyzer blind to the one failure this arm exists to catch: a lock
+    # that vanishes mid-deploy simply stops producing samples, and every
+    # surviving row still satisfies "not expired" and "advanced".
     if aws s3api get-object --bucket "${STATE_BUCKET}" --key "${LOCK_KEY}" "${LOCK_BODY}" >/dev/null 2>&1; then
       printf '%s %s\n' "$(date -u +%s)" \
         "$(node -e 'const fs=require("fs");try{process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).expiresAt))}catch{process.stdout.write("x")}' "${LOCK_BODY}")" \
         >> "${SAMPLES}"
+    else
+      printf '%s absent\n' "$(date -u +%s)" >> "${SAMPLES}"
     fi
     sleep 15
   done
@@ -203,12 +209,23 @@ fi
 
 SAMPLES_FILE="${SAMPLES}" node -e '
   const fs = require("fs");
-  const rows = fs.readFileSync(process.env.SAMPLES_FILE, "utf8")
+  const all = fs.readFileSync(process.env.SAMPLES_FILE, "utf8")
     .split("\n").filter(Boolean)
     .map((l) => l.split(" "))
     .filter(([, e]) => e !== "x")
-    .map(([t, e]) => ({ atMs: Number(t) * 1000, expiresAt: Number(e) }));
+    .map(([t, e]) => ({ atMs: Number(t) * 1000, expiresAt: e === "absent" ? null : Number(e) }));
   const fail = (m) => { console.error(`[verify] FAIL: ${m}`); process.exit(1); };
+  // Absent samples are legitimate only BEFORE the deploy acquires the lock and
+  // AFTER it releases. One in between means the lock disappeared while the
+  // operation was still running -- which is the whole defect.
+  const first = all.findIndex((r) => r.expiresAt !== null);
+  const last = all.length - 1 - [...all].reverse().findIndex((r) => r.expiresAt !== null);
+  if (first < 0) fail("the lock was never observed at all during the deploy");
+  const gaps = all.slice(first, last + 1).filter((r) => r.expiresAt === null);
+  if (gaps.length > 0) {
+    fail(`the lock was ABSENT at ${gaps.length} sample(s) while the deploy was still holding it`);
+  }
+  const rows = all.slice(first, last + 1);
   if (rows.length < 2) fail(`only ${rows.length} parsable lock sample(s)`);
   // 1. The lock never lapsed while the deploy was running. This is the
   //    property the whole issue is about, and it is checked at every sample
@@ -222,12 +239,12 @@ SAMPLES_FILE="${SAMPLES}" node -e '
   // 2. It actually got RENEWED. Without this the arm passes vacuously on any
   //    deploy shorter than the TTL, which is every deploy -- the TTL is 30
   //    minutes and this one is ~3.
-  const first = rows[0].expiresAt;
-  const last = rows[rows.length - 1].expiresAt;
-  if (!(last > first)) {
-    fail(`expiresAt never advanced across ${rows.length} samples (${first} -> ${last}): the CLI did not renew`);
+  const firstExp = rows[0].expiresAt;
+  const lastExp = rows[rows.length - 1].expiresAt;
+  if (!(lastExp > firstExp)) {
+    fail(`expiresAt never advanced across ${rows.length} samples (${firstExp} -> ${lastExp}): the CLI did not renew`);
   }
-  console.log(`[verify] arm B ok: ${rows.length} samples, expiresAt advanced by ${Math.round((last - first) / 1000)}s, never lapsed`);
+  console.log(`[verify] arm B ok: ${rows.length} samples, expiresAt advanced by ${Math.round((lastExp - firstExp) / 1000)}s, never lapsed, never absent`);
 ' || exit 1
 
 rm -f "${SAMPLES}" "${LOCK_BODY}"
