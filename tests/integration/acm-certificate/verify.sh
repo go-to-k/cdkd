@@ -23,6 +23,14 @@
 # What this does NOT exercise:
 #   - The poll-until-ISSUED happy path (needs a real DNS zone the test
 #     account controls). Ship a follow-up integ once that lands.
+#   - Phase 0's RESUMED ISSUED wait. Measured 2026-08-23: AWS moves an
+#     `example.test` certificate to FAILED within the first poll, so by the
+#     re-run the status is terminal and `update()` takes the ordinary path --
+#     which is why phase 0 reads the status before asserting the re-run's exit
+#     code. What phase 0 DOES prove live is the load-bearing half: the failed
+#     create's certificate is recorded, the re-run adopts it (1 certificate,
+#     not 2) and `cdkd destroy` retires it. The PENDING_VALIDATION branch of
+#     the resumed wait is unit-fenced only.
 #   - The ACM-SPECIFIC in-use rejection (issue #1922): a certificate is only
 #     attachable to a CloudFront distribution / ALB once ISSUED, which needs
 #     that same DNS zone. Phase 2 below therefore drives the SAME code path
