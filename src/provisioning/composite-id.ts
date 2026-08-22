@@ -1,5 +1,6 @@
 import type { ResourceDeleteResult } from '../types/resource.js';
 import { ProvisioningError } from '../utils/error-handler.js';
+import { maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
 
 /**
  * Refuse a composite physicalId whose segments would make it ambiguous
@@ -140,6 +141,26 @@ export interface CompositeIdOptions {
    * `.claude/rules/providers.md`.
    */
   readonly onRefusal?: (message: string) => void;
+
+  /**
+   * The caller's secret masker, from `CreateContext` / `UpdateContext` (issue
+   * [#2176](https://github.com/go-to-k/cdkd/issues/2176)).
+   *
+   * The refusal sentence QUOTES the offending segment value back, and a segment
+   * is read straight off the `properties` bag — which is RESOLVED by the time a
+   * provider sees it, so a `{{resolve:secretsmanager:...}}` segment is
+   * plaintext here. The message reaches a durable sink on the throwing arm
+   * (`deployments/{runId}.jsonl`, which outlives `cdkd destroy`) and the
+   * terminal on the `onRefusal` arm.
+   *
+   * Masking here rather than at each of the 22 call sites is deliberate: this
+   * is ONE root cause with many callers, and a per-caller fix leaves the hole
+   * open in every caller nobody got to. Absent means unmasked, the
+   * back-compatible default the contract mandates.
+   */
+  // `| undefined` explicitly: the repo runs `exactOptionalPropertyTypes`, and
+  // every caller passes `context?.maskSecrets`, which is optional at its source.
+  readonly maskSecrets?: MaskerFn | undefined;
 }
 
 /** Render `<a>|<b>|<c>` from the segment names. */
@@ -158,7 +179,8 @@ function idShape(segments: readonly CompositeIdSegment[]): string {
 export function compositeIdSeparatorRefusal(
   resourceType: string,
   logicalId: string,
-  segments: readonly CompositeIdSegment[]
+  segments: readonly CompositeIdSegment[],
+  maskSecrets?: MaskerFn
 ): string | undefined {
   // The STRINGIFIED form, not `typeof value === 'string'` — identical for a
   // real string, and the only spelling that catches the array / boxed shapes an
@@ -168,8 +190,16 @@ export function compositeIdSeparatorRefusal(
   );
   if (offending.length === 0) return undefined;
 
+  // Issue #2176: the value is masked RAW, before it is quoted into the
+  // sentence, and the ordering is the point rather than a style choice. Handing
+  // the masker the whole finished message could only reach
+  // `maskSecretsInText`'s SUBSTRING arm, which ignores needles below
+  // `MIN_NEEDLE_LENGTH` (4); handing it the raw value reaches the WHOLE-VALUE
+  // arm, which matches at any length. The segment NAME is a cdkd-authored
+  // field label, never template data, so it is left alone.
+  const mask = maskerOrIdentity(maskSecrets);
   const named = offending
-    .map((segment) => `${segment.name} '${String(segment.value)}'`)
+    .map((segment) => `${segment.name} '${mask(String(segment.value))}'`)
     .join(' and ');
 
   return (
@@ -198,7 +228,12 @@ export function packCompositeId(
   segments: readonly CompositeIdSegment[],
   options?: CompositeIdOptions
 ): string {
-  const refusal = compositeIdSeparatorRefusal(resourceType, logicalId, segments);
+  const refusal = compositeIdSeparatorRefusal(
+    resourceType,
+    logicalId,
+    segments,
+    options?.maskSecrets
+  );
   if (refusal !== undefined) {
     if (options?.onRefusal) {
       options.onRefusal(

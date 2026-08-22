@@ -522,9 +522,16 @@ export class S3TablesProvider implements ResourceProvider {
         { name: 'tableBucketARN', value: tableBucketARN },
         { name: 'namespace', value: namespaceName },
       ],
-      context?.replayingState === true
-        ? { onRefusal: (message) => this.logger.warn(message) }
-        : undefined
+      {
+        // Issue #2176: the refusal QUOTES the offending segment value, on the
+        // thrown arm (durable) and the warn arm (terminal) alike, so the masker
+        // goes through unconditionally -- it is absent on the paths that have no
+        // context, where it degrades to identity.
+        maskSecrets: context?.maskSecrets,
+        ...(context?.replayingState === true && {
+          onRefusal: (message: string) => this.logger.warn(message),
+        }),
+      }
     );
 
     try {
@@ -677,9 +684,16 @@ export class S3TablesProvider implements ResourceProvider {
         { name: 'namespace', value: namespace },
         { name: 'name', value: name },
       ],
-      context?.replayingState === true
-        ? { onRefusal: (message) => this.logger.warn(message) }
-        : undefined
+      {
+        // Issue #2176: the refusal QUOTES the offending segment value, on the
+        // thrown arm (durable) and the warn arm (terminal) alike, so the masker
+        // goes through unconditionally -- it is absent on the paths that have no
+        // context, where it degrades to identity.
+        maskSecrets: context?.maskSecrets,
+        ...(context?.replayingState === true && {
+          onRefusal: (message: string) => this.logger.warn(message),
+        }),
+      }
     );
 
     try {

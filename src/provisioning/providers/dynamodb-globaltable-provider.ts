@@ -87,6 +87,7 @@ import {
   resolveDynamoDbDeleteBudgetMs,
 } from './dynamodb-delete-budget.js';
 import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
+import { maskDeep } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -182,25 +183,17 @@ const DRIFT_STRIPPED_INDEX_MEMBERS: ReadonlyArray<{ listKey: string; member: str
  * by value rather than by position, so the two layers compose.
  *
  * Walks rather than testing the top level, because a secret nested in an object
- * or array leaf is stringified — and escaped — identically. The sibling
- * `dynamodb-table-provider.ts` carries the same helper; it is duplicated rather
- * than shared because these two files deliberately hold no common module today
- * beyond the narrow rule modules (`dynamodb-warm-throughput.ts`,
- * `dynamodb-index-busy-delete.ts`), each of which exists for a MEASURED
- * divergence rather than for convenience.
+ * or array leaf is stringified — and escaped — identically.
+ *
+ * Issue #2176 hoisted the walk into `../masked-retry-logger.js`. The previous
+ * note here said the helper was "duplicated rather than shared because these two
+ * files deliberately hold no common module today" — that rationale expired the
+ * moment a shared LEAF module existed for exactly this, and it had already cost
+ * something: this copy carried NO depth cap, so it was one of SIX copies that
+ * had drifted apart on the one property that matters.
  */
 function maskLeafValue(value: unknown, maskSecrets: SecretMasker): unknown {
-  if (typeof value === 'string') return maskSecrets(value);
-  if (Array.isArray(value)) return value.map((v) => maskLeafValue(v, maskSecrets));
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
-        maskSecrets(k),
-        maskLeafValue(v, maskSecrets),
-      ])
-    );
-  }
-  return value;
+  return maskDeep(value, maskSecrets);
 }
 
 export class DynamoDBGlobalTableProvider implements ResourceProvider {

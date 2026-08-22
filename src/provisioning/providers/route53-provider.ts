@@ -42,6 +42,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
+  UpdateContext,
 } from '../../types/resource.js';
 
 /**
@@ -311,7 +312,8 @@ export class Route53Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::Route53::HostedZone':
@@ -323,7 +325,7 @@ export class Route53Provider implements ResourceProvider {
           previousProperties
         );
       case 'AWS::Route53::RecordSet':
-        return this.updateRecordSet(logicalId, physicalId, resourceType, properties);
+        return this.updateRecordSet(logicalId, physicalId, resourceType, properties, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -1046,9 +1048,16 @@ export class Route53Provider implements ResourceProvider {
       // A reverse-replacement rollback creates from a STATE record, so the
       // refusal downgrades to a warning — no template edit can repair a value
       // an older binary already recorded.
-      context?.replayingState === true
-        ? { onRefusal: (message) => this.logger.warn(message) }
-        : undefined
+      {
+        // Issue #2176: the refusal QUOTES the offending segment value, on the
+        // thrown arm (durable) and the warn arm (terminal) alike, so the masker
+        // goes through unconditionally -- it is absent on the paths that have no
+        // context, where it degrades to identity.
+        maskSecrets: context?.maskSecrets,
+        ...(context?.replayingState === true && {
+          onRefusal: (message: string) => this.logger.warn(message),
+        }),
+      }
     );
 
     try {
@@ -1094,7 +1103,8 @@ export class Route53Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Route 53 record set ${logicalId}: ${physicalId}`);
 
@@ -1129,7 +1139,11 @@ export class Route53Provider implements ResourceProvider {
         { name: 'recordName', value: recordName },
         { name: 'recordType', value: recordType },
       ],
-      { onRefusal: (message) => this.logger.warn(message) }
+      {
+        onRefusal: (message: string) => this.logger.warn(message),
+        // Issue #2176 -- see the sibling create site.
+        maskSecrets: context?.maskSecrets,
+      }
     );
 
     try {

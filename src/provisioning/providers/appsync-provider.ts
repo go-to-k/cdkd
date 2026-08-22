@@ -2570,9 +2570,16 @@ export class AppSyncProvider implements ResourceProvider {
       // A reverse-replacement rollback creates from a STATE record, so the
       // refusal downgrades to a warning — no template edit can repair a value
       // recorded by an older binary.
-      context?.replayingState === true
-        ? { onRefusal: (message) => this.logger.warn(message) }
-        : undefined
+      {
+        // Issue #2176: the refusal QUOTES the offending segment value, on the
+        // thrown arm (durable) and the warn arm (terminal) alike, so the masker
+        // goes through unconditionally -- it is absent on the paths that have no
+        // context, where it degrades to identity.
+        maskSecrets: context?.maskSecrets,
+        ...(context?.replayingState === true && {
+          onRefusal: (message: string) => this.logger.warn(message),
+        }),
+      }
     );
 
     let reportedArn: string | undefined;
@@ -2716,9 +2723,16 @@ export class AppSyncProvider implements ResourceProvider {
       ],
       // A reverse-replacement rollback creates from a STATE record, so the
       // refusal downgrades to a warning.
-      context?.replayingState === true
-        ? { onRefusal: (message) => this.logger.warn(message) }
-        : undefined
+      {
+        // Issue #2176: the refusal QUOTES the offending segment value, on the
+        // thrown arm (durable) and the warn arm (terminal) alike, so the masker
+        // goes through unconditionally -- it is absent on the paths that have no
+        // context, where it degrades to identity.
+        maskSecrets: context?.maskSecrets,
+        ...(context?.replayingState === true && {
+          onRefusal: (message: string) => this.logger.warn(message),
+        }),
+      }
     );
 
     let reportedArn: string | undefined;
@@ -2880,9 +2894,16 @@ export class AppSyncProvider implements ResourceProvider {
         { name: 'apiId', value: apiId },
         { name: 'apiKeyId', value: apiKeyId },
       ],
-      context?.replayingState === true
-        ? { onRefusal: (message) => this.logger.warn(message) }
-        : undefined
+      {
+        // Issue #2176: the refusal QUOTES the offending segment value, on the
+        // thrown arm (durable) and the warn arm (terminal) alike, so the masker
+        // goes through unconditionally -- it is absent on the paths that have no
+        // context, where it degrades to identity.
+        maskSecrets: context?.maskSecrets,
+        ...(context?.replayingState === true && {
+          onRefusal: (message: string) => this.logger.warn(message),
+        }),
+      }
     );
 
     // Always rebuilt — `CreateApiKey` reports no ARN at all — so this is the
