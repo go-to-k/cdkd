@@ -1304,7 +1304,7 @@ visible by reading the script:
   first (`0`) is produced just as readily by an arm that never reached the code
   as by one that passed. Read them as a PAIR: `0 leaks AND 0 masks` is not a
   pass, it is an arm that did nothing. Measured 2026-08-23 on
-  go-to-k/cdkd#2176: the first live arm made a property's value a
+  go-to-k/cdkd#2176: the first live arm made an SSM parameter's NAME a
   `{{resolve:ssm-secure:...}}` reference, and cdkd deliberately does not resolve
   that spelling (`docs/scenario-coverage.md` says so) — so nothing was ever
   plaintext, nothing needed masking, and both greps returned `0`. Switching to
