@@ -2071,7 +2071,24 @@ async function refreshObservedForStack(
   }
 
   const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
-  await lockManager.acquireLock(stackName, region, owner, 'state-refresh-observed');
+  // Check the boolean (issue #2161): a bare `acquireLock` returns `false` for a
+  // live foreign lock without throwing, so the discarded return let `state
+  // refresh-observed` rewrite state under a concurrent deploy and then release
+  // that deploy's lock. Throwing on `!acquired` aborts before any state write.
+  const acquired = await lockManager.acquireLock(
+    stackName,
+    region,
+    owner,
+    'state-refresh-observed'
+  );
+  if (!acquired) {
+    throw new Error(
+      `Could not acquire lock for stack '${stackName}' (${region}) — ` +
+        `another cdkd process holds it. Wait for it to finish, or run ` +
+        `'cdkd force-unlock ${stackName} --stack-region ${region}' if you are ` +
+        `certain no other process is active.`
+    );
+  }
   try {
     let refreshed = 0;
     let unsupported = 0;

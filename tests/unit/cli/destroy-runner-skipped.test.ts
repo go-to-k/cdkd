@@ -96,7 +96,7 @@ describe('runDestroyForStack skipped-delete accounting (issue #1752)', () => {
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {
-        acquireLock: vi.fn(),
+        acquireLock: vi.fn().mockResolvedValue(true),
         releaseLock: vi.fn(),
       } as unknown as LockManager,
       providerRegistry: {

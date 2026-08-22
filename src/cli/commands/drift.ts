@@ -2235,7 +2235,25 @@ async function runAccept(
       continue;
     }
 
-    await lockManager.acquireLock(report.stackName, report.region, owner, 'drift-accept');
+    // Check the boolean (issue #2161): a bare `acquireLock` returns `false` for
+    // a live foreign lock without throwing, so the discarded return let `drift
+    // --accept` mutate state under a concurrent deploy and then release that
+    // deploy's lock via the `finally` below. Throwing on `!acquired` aborts
+    // before that `try` is entered.
+    const acquired = await lockManager.acquireLock(
+      report.stackName,
+      report.region,
+      owner,
+      'drift-accept'
+    );
+    if (!acquired) {
+      throw new Error(
+        `Could not acquire lock for stack '${report.stackName}' (${report.region}) — ` +
+          `another cdkd process holds it. Wait for it to finish, or run ` +
+          `'cdkd force-unlock ${report.stackName} --stack-region ${report.region}' if you are ` +
+          `certain no other process is active.`
+      );
+    }
     try {
       // Build the mutated resources map. The drift comparator's baseline
       // is `observedProperties ?? properties` (see runDriftForStack), so
@@ -3205,7 +3223,25 @@ async function runRevert(
       continue;
     }
 
-    await lockManager.acquireLock(report.stackName, report.region, owner, 'drift-revert');
+    // Check the boolean (issue #2161): a bare `acquireLock` returns `false` for
+    // a live foreign lock without throwing, so the discarded return let `drift
+    // --revert` issue `provider.update` against live AWS under a concurrent
+    // deploy and then release that deploy's lock. Throwing on `!acquired`
+    // aborts before any provider call.
+    const acquired = await lockManager.acquireLock(
+      report.stackName,
+      report.region,
+      owner,
+      'drift-revert'
+    );
+    if (!acquired) {
+      throw new Error(
+        `Could not acquire lock for stack '${report.stackName}' (${report.region}) — ` +
+          `another cdkd process holds it. Wait for it to finish, or run ` +
+          `'cdkd force-unlock ${report.stackName} --stack-region ${report.region}' if you are ` +
+          `certain no other process is active.`
+      );
+    }
     // Provider-reported narrowings, keyed by logical id (issue #1644).
     // Collected inside the concurrent tasks and applied to state ONCE, under
     // the same lock, after they all settle.

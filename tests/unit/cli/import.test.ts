@@ -137,7 +137,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
   })),
 }));
 
-const mockAcquireLock = vi.fn<() => Promise<void>>();
+const mockAcquireLock = vi.fn<() => Promise<boolean>>();
 const mockReleaseLock = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => ({
@@ -249,7 +249,7 @@ describe('cdkd import', () => {
     mockSaveState.mockReset();
     mockSaveState.mockResolvedValue('"new-etag"');
     mockAcquireLock.mockReset();
-    mockAcquireLock.mockResolvedValue();
+    mockAcquireLock.mockResolvedValue(true);
     mockReleaseLock.mockReset();
     mockReleaseLock.mockResolvedValue();
     mockSynthesize.mockReset();
@@ -304,6 +304,32 @@ describe('cdkd import', () => {
 
     await expect(runImport(['import'])).rejects.toThrow();
     expect(errorSpy.mock.calls[0]?.[0]).toMatch(/requires a CDK app/);
+  });
+
+  // Issue #2161: `acquireLock` reports contention by RESOLVING false (not
+  // throwing). Import must refuse rather than write state under the foreign
+  // lock and then release it. Fences the `!acquired` check.
+  it('refuses when the lock is held (acquireLock resolves false)', async () => {
+    const cdkBucket = 'cdk-hnb659fds-assets-111111111111-us-east-1';
+    const tmpl = template({
+      MyBucket: {
+        Type: 'AWS::S3::Bucket',
+        Properties: { BucketName: 'b', DataUrl: `s3://${cdkBucket}/k.zip` },
+        Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+      },
+    });
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+    mockHasProvider.mockReturnValue(true);
+    mockGetProvider.mockImplementation(() => ({
+      import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+    }));
+    mockAcquireLock.mockResolvedValue(false);
+
+    await expect(runImport(['import', '--app', 'x', '--yes'])).rejects.toThrow();
+    // The LOCK error surfaced (not some other abort).
+    expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toMatch(/Could not acquire lock/);
+    expect(mockSaveState).not.toHaveBeenCalled();
+    expect(mockReleaseLock).not.toHaveBeenCalled();
   });
 
   it('rejects auto-mode import when state already exists without --force', async () => {
@@ -708,6 +734,100 @@ describe('cdkd import', () => {
       );
       expect(childNotice).toBeDefined();
       expect(String(childNotice![0])).toContain('P~Child');
+    } finally {
+      rmSync(tmpdirPath, { recursive: true, force: true });
+    }
+  });
+
+  // Issue #2161: the NESTED-child acquire (import.ts:1936) has its own
+  // `!acquired` check. Here the root acquire succeeds but the child's returns
+  // false — import must refuse the child rather than write its state and
+  // release the foreign child lock. Fences the child-side check independently
+  // of the top-level one above.
+  it('refuses a nested child when its lock is held (child acquireLock resolves false)', async () => {
+    const cdkBucket = 'cdk-hnb659fds-assets-111111111111-us-east-1';
+    const cdkdBucket = 'cdkd-assets-111111111111-us-east-1';
+    const { buildAssetRedirectMap } = await import('../../../src/assets/asset-redirect.js');
+    mockCreateAssetRedirectResolver.mockReturnValueOnce(
+      async () =>
+        buildAssetRedirectMap(
+          { version: '38.0.0', files: {}, dockerImages: {} },
+          {
+            assetBucket: cdkdBucket,
+            containerRepo: 'cdkd-container-assets-111111111111-us-east-1',
+            assetSupportVersion: 1,
+            createdAt: '2026-07-15T00:00:00.000Z',
+          },
+          '111111111111',
+          'us-east-1'
+        )
+    );
+    const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-lock-'));
+    try {
+      const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+      writeFileSync(
+        childTemplatePath,
+        JSON.stringify({
+          Resources: {
+            ChildPolicy: {
+              Type: 'AWS::IAM::Policy',
+              Properties: { PolicyName: 'p', DataUrl: `s3://${cdkBucket}/k.zip` },
+            },
+          },
+        })
+      );
+      const tmpl = template({
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+      });
+      mockSynthesize.mockResolvedValue({
+        stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+      });
+      mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'p', attributes: {} })),
+      });
+      const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+      mockGetCfnResourceTree.mockResolvedValue({
+        stackName: 'P',
+        physicalId: 'P',
+        resources: new Map([['Child', childArn]]),
+        nested: new Map([
+          [
+            'Child',
+            {
+              stackName: childArn,
+              physicalId: childArn,
+              resources: new Map([['ChildPolicy', 'p']]),
+              nested: new Map(),
+            },
+          ],
+        ]),
+      });
+      // Root acquire succeeds; the CHILD acquire reports contention.
+      mockAcquireLock.mockReset();
+      mockAcquireLock.mockResolvedValueOnce(true).mockResolvedValue(false);
+
+      await expect(
+        runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation'])
+      ).rejects.toThrow();
+
+      // The child state was NOT written under the foreign child lock, and the
+      // child's lock was NOT released.
+      const childSave = mockSaveState.mock.calls.find((c) => (c as unknown[])[0] === 'P~Child');
+      expect(childSave).toBeUndefined();
+      expect(mockReleaseLock).not.toHaveBeenCalledWith('P~Child', expect.anything());
+      // POSITIVE markers so the fence cannot go inert on a fixture change: the
+      // CHILD acquire was actually attempted, and the CHILD lock error (not a
+      // root-side failure in the hand-built tree) is what surfaced.
+      expect(mockAcquireLock).toHaveBeenCalledWith(
+        'P~Child',
+        expect.any(String),
+        expect.any(String),
+        'import'
+      );
+      expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toMatch(
+        /Could not acquire lock for nested stack/
+      );
     } finally {
       rmSync(tmpdirPath, { recursive: true, force: true });
     }

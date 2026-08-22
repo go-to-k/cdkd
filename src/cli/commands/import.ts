@@ -602,7 +602,25 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // another process is mid-deploy (the dry-run plan would lie about the
     // current AWS state otherwise).
     const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
-    await lockManager.acquireLock(stackInfo.stackName, targetRegion, owner, 'import');
+    // Check the boolean return (issue #2161): `acquireLock` returns `false`
+    // (does not throw) when another process holds a live lock, and the
+    // discarded return let import proceed under contention and later release
+    // the other owner's lock via the `try` below (whose `finally` releases).
+    // Throwing on `!acquired` aborts before that `try` is entered.
+    const acquired = await lockManager.acquireLock(
+      stackInfo.stackName,
+      targetRegion,
+      owner,
+      'import'
+    );
+    if (!acquired) {
+      throw new Error(
+        `Could not acquire lock for stack '${stackInfo.stackName}' (${targetRegion}) — ` +
+          `another cdkd process holds it. Wait for it to finish, or run ` +
+          `'cdkd force-unlock ${stackInfo.stackName} --stack-region ${targetRegion}' if you are ` +
+          `certain no other process is active.`
+      );
+    }
 
     try {
       const rows: ImportRow[] = [];
@@ -1912,7 +1930,24 @@ async function importNestedStackChildrenRecursive(args: {
       }
     }
 
-    await lockManager.acquireLock(childStackName, childRegion, lockOwner, 'import');
+    // Check the boolean (issue #2161): a bare `acquireLock` returns `false`
+    // for a live foreign lock, which the discarded return treated as acquired,
+    // so a nested-child import ran under contention and released the other
+    // owner's lock via the `try` below. See the top-level import site above.
+    const childAcquired = await lockManager.acquireLock(
+      childStackName,
+      childRegion,
+      lockOwner,
+      'import'
+    );
+    if (!childAcquired) {
+      throw new Error(
+        `Could not acquire lock for nested stack '${childStackName}' (${childRegion}) — ` +
+          `another cdkd process holds it. Wait for it to finish, or run ` +
+          `'cdkd force-unlock ${childStackName} --stack-region ${childRegion}' if you are ` +
+          `certain no other process is active.`
+      );
+    }
     try {
       // Compose the child's import overrides from the child tree's flat
       // resource map, through the same shared filter as the root walk

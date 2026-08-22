@@ -133,7 +133,7 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
     mockSaveState.mockReset().mockResolvedValue('"etag"');
     mockDeleteState.mockReset().mockResolvedValue(undefined);
     mockProviderDelete.mockReset();
-    mockAcquireLock.mockReset();
+    mockAcquireLock.mockReset().mockResolvedValue(true);
     mockReleaseLock.mockReset();
     mockRemoveStack.mockReset().mockResolvedValue(undefined);
     warnSpy.mockReset();

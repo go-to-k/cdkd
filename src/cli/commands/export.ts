@@ -2622,7 +2622,8 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         throw new Error(
           `Could not acquire lock for stack '${resolvedStackName}' (${targetRegion}) — ` +
             `another cdkd process holds it. Wait for it to finish, or run ` +
-            `'cdkd force-unlock ${resolvedStackName}' if you are certain no other process is active.`
+            `'cdkd force-unlock ${resolvedStackName} --stack-region ${targetRegion}' if you are ` +
+            `certain no other process is active.`
         );
       }
     }
@@ -6022,7 +6023,8 @@ export async function runPerStackImportLoop(args: {
         throw new Error(
           `Could not acquire lock for nested-stack child '${node.stackName}' (${node.region}) — ` +
             `another cdkd process held it through the retry window. Wait for it to finish, or run ` +
-            `'cdkd force-unlock ${node.stackName}' if you are certain no other process is active. ` +
+            `'cdkd force-unlock ${node.stackName} --stack-region ${node.region}' if you are ` +
+            `certain no other process is active. ` +
             `No CloudFormation changeset has been submitted; cdkd state is unchanged.`,
           { cause: err instanceof Error ? err : undefined }
         );

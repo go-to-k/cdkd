@@ -54,7 +54,7 @@ describe('runDestroyForStack - #808 deployment events', () => {
       // No outputs -> needsStrongRefCheck is false, scanActiveConsumers skipped.
     } as unknown as S3StateBackend;
     const lockManager = {
-      acquireLock: vi.fn().mockResolvedValue(undefined),
+      acquireLock: vi.fn().mockResolvedValue(true),
       releaseLock: vi.fn().mockResolvedValue(undefined),
     } as unknown as LockManager;
     const providerRegistry = {

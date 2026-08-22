@@ -1282,6 +1282,44 @@ describe('cdkd drift', () => {
   });
 
   describe('--accept (state ← AWS)', () => {
+    // Issue #2161: `acquireLock` reports contention by RESOLVING false (not
+    // throwing). `--accept` / `--revert` must refuse rather than mutate state /
+    // push to AWS under the foreign lock and then release it. Fences the
+    // `!acquired` check — reverting it would let this proceed.
+    it.each([['--accept'], ['--revert']] as const)(
+      '%s refuses when the lock is held (acquireLock resolves false)',
+      async (mode) => {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Bucket1: makeResource({
+              physicalId: 'b',
+              resourceType: 'AWS::S3::Bucket',
+              properties: { VersioningConfiguration: { Status: 'Enabled' } },
+            }),
+          })
+        );
+        const updateMock = vi.fn();
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }),
+          update: updateMock,
+        });
+        mockAcquireLock.mockResolvedValue(false);
+
+        const { error } = await runDrift(['TestStack', mode, '--yes']);
+
+        // The LOCK error surfaced (not some other abort), and nothing ran under
+        // the foreign lock — state was not written / released, and (the
+        // load-bearing part for `--revert`) the provider's live-AWS `update`
+        // never fired.
+        expect(error).toBeDefined();
+        expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toMatch(/Could not acquire lock/);
+        expect(updateMock).not.toHaveBeenCalled();
+        expect(mockSaveState).not.toHaveBeenCalled();
+        expect(mockReleaseLock).not.toHaveBeenCalled();
+      }
+    );
+
     it('writes the AWS-current values into state', async () => {
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValueOnce(

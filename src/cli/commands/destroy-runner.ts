@@ -497,22 +497,67 @@ export async function runDestroyForStack(
   const stackRegion = state.region;
   let destroyProviderRegistry = ctx.providerRegistry;
   let destroyAwsClients: AwsClients | undefined;
+  // Set the moment `AWS_REGION` is switched, so the restore below runs even
+  // when the switch is only PARTIAL — a throw while building the region-scoped
+  // clients / provider registry leaves the env vars switched but
+  // `destroyAwsClients` unbuilt (issue #2161).
+  let regionSwitched = false;
+  // Restore the process-global region + AWS clients this function switched
+  // (below) for a cross-region stack. Called from the main `finally` AND from
+  // every exit BEFORE that `finally`'s `try` is entered — the cross-region
+  // setup below, the lock-acquisition failure, and the strong-ref refusal
+  // (issue #2161) — without it, ordinary lock contention (or any pre-lock
+  // failure) on a cross-region destroy would leave `AWS_REGION` / the global
+  // client pointed at the target stack for the rest of a `--all` run.
+  // Idempotent: `regionSwitched` is claimed (cleared) FIRST, so a repeated
+  // call — the success path reaches it from the main `finally` after an exit
+  // path may already have run it — is a clean no-op and cannot double-destroy
+  // the client. The global region / clients are restored BEFORE `destroy()`, so
+  // a throwing `destroy()` cannot skip the restoration that actually matters.
+  const restoreBaseRegionAndClients = (): void => {
+    if (!regionSwitched) return;
+    regionSwitched = false;
+    const switchedClients = destroyAwsClients;
+    destroyAwsClients = undefined;
+    process.env['AWS_REGION'] = ctx.baseRegion;
+    process.env['AWS_DEFAULT_REGION'] = ctx.baseRegion;
+    setAwsClients(ctx.baseAwsClients);
+    // Swallow a teardown failure: this runs from exit paths (before the SIGINT
+    // listener is removed) and from the success `finally` (where a `releaseLock`
+    // rejection is propagating), so a throwing `destroy()` must not skip the
+    // listener removal NOR mask the error that actually matters (issue #2161).
+    try {
+      switchedClients?.destroy();
+    } catch (destroyError) {
+      logger.debug(
+        `Failed to destroy region-scoped AWS clients: ${destroyError instanceof Error ? destroyError.message : String(destroyError)}`
+      );
+    }
+  };
   if (stackRegion && stackRegion !== ctx.baseRegion) {
     logger.info(`Stack region: ${stackRegion}`);
     process.env['AWS_REGION'] = stackRegion;
     process.env['AWS_DEFAULT_REGION'] = stackRegion;
+    regionSwitched = true;
 
-    destroyAwsClients = new AwsClients({
-      region: stackRegion,
-      ...(ctx.profile && { profile: ctx.profile }),
-    });
-    setAwsClients(destroyAwsClients);
+    try {
+      destroyAwsClients = new AwsClients({
+        region: stackRegion,
+        ...(ctx.profile && { profile: ctx.profile }),
+      });
+      setAwsClients(destroyAwsClients);
 
-    destroyProviderRegistry = new ProviderRegistry();
-    registerAllProviders(destroyProviderRegistry);
-    destroyProviderRegistry.setCustomResourceResponseBucket(ctx.stateBucket);
-    if (ctx.allowUnsupportedTypes?.length) {
-      destroyProviderRegistry.allowUnsupportedTypes(ctx.allowUnsupportedTypes);
+      destroyProviderRegistry = new ProviderRegistry();
+      registerAllProviders(destroyProviderRegistry);
+      destroyProviderRegistry.setCustomResourceResponseBucket(ctx.stateBucket);
+      if (ctx.allowUnsupportedTypes?.length) {
+        destroyProviderRegistry.allowUnsupportedTypes(ctx.allowUnsupportedTypes);
+      }
+    } catch (setupError) {
+      // A failure here is before the main try/finally too, so restore the
+      // (possibly partial) region/client switch rather than leaking it.
+      restoreBaseRegionAndClients();
+      throw setupError;
     }
   }
 
@@ -598,12 +643,45 @@ export async function runDestroyForStack(
   process.setMaxListeners(Math.max(process.getMaxListeners(), 100));
   process.on('SIGINT', sigintHandler);
 
-  logger.info(`\nAcquiring lock for stack ${stackName}...`);
   try {
-    await ctx.lockManager.acquireLock(stackName, regionForState, undefined, 'destroy');
+    // Inside the `try` (not before it): `logger.info` reaches
+    // `process.stdout.write`, which can EPIPE (`cdkd destroy | head`) — and this
+    // sits after `regionSwitched = true` and the SIGINT registration, so a throw
+    // outside the `try` would leak the listener and the cross-region globals,
+    // the same two leaks this fix closes everywhere else (same reasoning as
+    // `renderer.start()` below).
+    logger.info(`\nAcquiring lock for stack ${stackName}...`);
+    // Check the boolean return (issue #2161): `acquireLock` returns `false`
+    // WITHOUT throwing when a live foreign lock is held, and the discarding
+    // call this replaced treated that as success — so `destroy` ran against a
+    // stack another process (e.g. an in-flight `cdkd deploy`) held the lock on
+    // and released that process's lock on the way out. Throwing on `!acquired`
+    // aborts before `lockHeld = true`, so the release path never runs and the
+    // foreign lock is untouched. Mirrors the fail-fast pattern `cdkd export`
+    // already uses.
+    const acquired = await ctx.lockManager.acquireLock(
+      stackName,
+      regionForState,
+      undefined,
+      'destroy'
+    );
+    if (!acquired) {
+      // Plain `Error`, matching the five sibling sites (import / orphan / state
+      // / drift) and the `cdkd export` precedent this mirrors, so identical
+      // contention surfaces the same way across every command (issue #2161).
+      throw new Error(
+        `Could not acquire lock for stack '${stackName}' (${regionForState}) — ` +
+          `another cdkd process holds it. Wait for it to finish, or run ` +
+          `'cdkd force-unlock ${stackName} --stack-region ${regionForState}' if you are ` +
+          `certain no other process is active.`
+      );
+    }
   } catch (error) {
-    // The main try/finally (which owns the listener removal) starts further
-    // below — clean up here so an acquire failure does not leak the handler.
+    // The main try/finally (which owns the listener removal + region restore)
+    // starts further below — clean up here so an acquire failure does not leak
+    // the SIGINT handler NOR the process-global region / AWS clients this
+    // function switched for a cross-region stack (issue #2161).
+    restoreBaseRegionAndClients();
     process.removeListener('SIGINT', sigintHandler);
     throw error;
   }
@@ -638,6 +716,12 @@ export async function runDestroyForStack(
           `Failed to release lock after strong-ref refusal/failure: ${releaseErr instanceof Error ? releaseErr.message : String(releaseErr)}`
         );
       }
+      // This exit also happens BEFORE the main try/finally that restores the
+      // process-global region / clients, so a cross-region destroy refused (or
+      // failed) at the strong-ref scan would otherwise leak them for the rest
+      // of a `--all` run — the same class as the acquire-failure path above
+      // (issue #2161).
+      restoreBaseRegionAndClients();
       process.removeListener('SIGINT', sigintHandler);
     };
     let consumers: Awaited<ReturnType<typeof scanActiveConsumers>>;
@@ -744,12 +828,17 @@ export async function runDestroyForStack(
     });
   };
 
-  // Start the live area only now — the earlier phases (lock, strong-ref
-  // scan) log plain lines; the renderer itself was created before the lock
-  // acquisition above so the SIGINT handler could reference it.
-  renderer.start();
-
   try {
+    // Start the live area only now — the earlier phases (lock, strong-ref
+    // scan) log plain lines; the renderer itself was created before the lock
+    // acquisition above so the SIGINT handler could reference it. Started
+    // INSIDE this `try` (issue #2161): `start()` writes to stdout and can throw
+    // (EPIPE on `cdkd destroy | head`), and this is the first statement after
+    // `lockHeld = true`, so a throw outside the `try` would strand the lock and
+    // leak the cross-region region/clients — the main `finally` below releases
+    // and restores both.
+    renderer.start();
+
     logger.info('Building dependency graph...');
 
     const template = {
@@ -1406,6 +1495,11 @@ export async function runDestroyForStack(
       // Each call registers and removes its own function reference — important
       // for nested-stack recursion, where one handler exists per level.
       process.removeListener('SIGINT', sigintHandler);
+      // Restore the cross-region switch HERE, in the guaranteed `finally`, so a
+      // throwing `releaseLock` above cannot skip it and leak the target region
+      // / global clients into the rest of a `--all` run (issue #2161). The
+      // helper is idempotent, so any earlier exit-path call is a no-op.
+      restoreBaseRegionAndClients();
     }
 
     // RE-SYNC the interrupt outcome, because the reordering above MOVED the
@@ -1428,14 +1522,8 @@ export async function runDestroyForStack(
     // SIGINT handler of its own, where `deploy.ts` does — and closing THAT is
     // https://github.com/go-to-k/cdkd/issues/2117 rather than this line.
     result.interrupted ||= draining;
-
-    // Restore base region/clients if we switched.
-    if (destroyAwsClients) {
-      destroyAwsClients.destroy();
-      process.env['AWS_REGION'] = ctx.baseRegion;
-      process.env['AWS_DEFAULT_REGION'] = ctx.baseRegion;
-      setAwsClients(ctx.baseAwsClients);
-    }
+    // (The cross-region region/client restore now runs in the inner `finally`
+    // above, so it happens even if `releaseLock` rejected — issue #2161.)
   }
 
   return result;
