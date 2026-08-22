@@ -1,3 +1,10 @@
+## [0.284.40](https://github.com/go-to-k/cdkd/compare/v0.284.39...v0.284.40) (2026-08-22)
+
+
+### Bug Fixes
+
+* **acm:** delete a failed create's certificate instead of orphaning it ([#2175](https://github.com/go-to-k/cdkd/issues/2175)) ([8ae71cb](https://github.com/go-to-k/cdkd/commit/8ae71cb67762b7c411fb62e9520d0fc030fd8f7e))
+
 ## [0.284.39](https://github.com/go-to-k/cdkd/compare/v0.284.38...v0.284.39) (2026-08-22)
 
 
