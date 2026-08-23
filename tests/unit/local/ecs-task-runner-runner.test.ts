@@ -923,3 +923,30 @@ describe('cleanupEcsRun — keepRunning + ordering (G2)', () => {
     expect(state.dockerVolumeNames).toEqual([]);
   });
 });
+
+
+describe('runEcsTask — secret values stay off argv (issue #2183)', () => {
+  it('passes a resolved secret value-less on argv and hands the value to the spawn env', async () => {
+    captured.responder = (_cmd: string, args: string[]) =>
+      args[0] === 'run' ? { stdout: 'cid\n' } : { stdout: '' };
+    const c = makeContainer({
+      name: 'app',
+      secrets: [{ name: 'DB_PASS', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:db' }],
+    });
+    const state = createEcsRunState();
+    await runEcsTask(makeTask({ containers: [c] }), baseOptions(), state);
+
+    const runCall = dockerRunCalls()[0]!;
+    const joined = runCall.args.join(' ');
+    // The resolveEcsSecrets stub resolves `DB_PASS` -> `resolved-DB_PASS`. The
+    // fix must keep that value OFF the argv (only the value-less `-e DB_PASS`
+    // flag appears) and deliver it through the spawn env instead — this is the
+    // orchestrator-level fence that a bypass at the execFile call would trip.
+    expect(runCall.args).toContain('DB_PASS');
+    expect(joined).not.toContain('DB_PASS=resolved-DB_PASS');
+    expect(joined).not.toContain('resolved-DB_PASS');
+    expect((runCall.opts as { env?: Record<string, string> }).env?.['DB_PASS']).toBe(
+      'resolved-DB_PASS'
+    );
+  });
+});

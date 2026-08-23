@@ -1,9 +1,14 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
-import { getDockerCmd } from '../utils/docker-cmd.js';
+import { dockerSpawnEnvWithSensitive, getDockerCmd } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
-import { DockerRunnerError, pullImage, removeContainer } from './docker-runner.js';
+import {
+  DockerRunnerError,
+  SENSITIVE_ENV_KEYS,
+  pullImage,
+  removeContainer,
+} from './docker-runner.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -174,8 +179,19 @@ async function createNetworkAndSidecar(args: {
     }
   }
   if (cluster) sidecarEnv['CLUSTER'] = cluster;
+  // AWS credentials go to the sidecar as `-e KEY` (no `=value`) so they are
+  // read from the spawn-time process env rather than the `docker run` argv,
+  // where any local reader of `/proc/<pid>/cmdline` could see them. Mirrors
+  // `runDetached` in `docker-runner.ts`. Non-credential env (e.g. CLUSTER)
+  // stays as `-e KEY=value`.
+  const sidecarSensitiveEnv: Record<string, string> = {};
   for (const [k, v] of Object.entries(sidecarEnv)) {
-    sidecarArgs.push('-e', `${k}=${v}`);
+    if (SENSITIVE_ENV_KEYS.has(k)) {
+      sidecarArgs.push('-e', k);
+      sidecarSensitiveEnv[k] = v;
+    } else {
+      sidecarArgs.push('-e', `${k}=${v}`);
+    }
   }
   sidecarArgs.push(METADATA_ENDPOINT_IMAGE);
 
@@ -183,6 +199,9 @@ async function createNetworkAndSidecar(args: {
   try {
     const { stdout } = await execFileAsync(getDockerCmd(), sidecarArgs, {
       maxBuffer: 10 * 1024 * 1024,
+      // The `-e KEY` (value-less) credential flags read their values from
+      // here, so credentials never reach the `docker run` argv.
+      env: dockerSpawnEnvWithSensitive(sidecarSensitiveEnv),
     });
     return stdout.trim();
   } catch (err) {

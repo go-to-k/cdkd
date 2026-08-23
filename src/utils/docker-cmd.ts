@@ -291,6 +291,97 @@ export function formatDockerLoginError(stderr: string, endpoint: string): string
   return trimmed;
 }
 
+/**
+ * Env vars the docker CLI itself reads to decide how / where to run. A resolved
+ * ECS secret (or SecureString) whose NAME collides with one of these must NOT
+ * override it in the docker client's own process environment: a secret named
+ * `DOCKER_HOST` would redirect the client to a different daemon, and `PATH`
+ * would break locating the docker binary. See issue
+ * https://github.com/go-to-k/cdkd/issues/2183.
+ */
+export const DOCKER_CLIENT_ENV_KEYS: ReadonlySet<string> = new Set([
+  // Process-level vars the client needs to run at all (incl. Windows HOME).
+  'PATH',
+  'HOME',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  // Connection / transport (docs.docker.com/reference/cli/docker) — a colliding
+  // secret here could redirect the client to a different daemon or downgrade TLS.
+  'DOCKER_HOST',
+  'DOCKER_CONTEXT',
+  'DOCKER_CONFIG',
+  'DOCKER_CERT_PATH',
+  'DOCKER_TLS',
+  'DOCKER_TLS_VERIFY',
+  'DOCKER_API_VERSION',
+  // Execution / behavior.
+  'DOCKER_DEFAULT_PLATFORM',
+  'DOCKER_CUSTOM_HEADERS',
+  'DOCKER_CONTENT_TRUST',
+  'DOCKER_CONTENT_TRUST_SERVER',
+  'DOCKER_HIDE_LEGACY_COMMANDS',
+  'BUILDKIT_PROGRESS',
+  // Proxy vars the client honors for registry connections — a colliding secret
+  // could route the client's traffic (incl. image pulls) through an attacker.
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'FTP_PROXY',
+  'ALL_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'ftp_proxy',
+  'all_proxy',
+]);
+
+/**
+ * Build the environment for a `docker run` that forwards value-less `-e KEY`
+ * flags (the pattern that keeps secret VALUES off the argv / `/proc/<pid>/cmdline`).
+ * The child gets the full parent env plus the sensitive passthrough, but the
+ * docker client's own critical vars ({@link DOCKER_CLIENT_ENV_KEYS}) are kept
+ * authoritative from `process.env`, so a user-controlled secret NAME cannot
+ * hijack the client (issue #2183). A pathological secret whose name is one of
+ * those keys therefore forwards the host value to the container rather than the
+ * secret — an acceptable edge for a name that is itself hostile to a container.
+ */
+const DOCKER_CLIENT_ENV_KEYS_UPPER: ReadonlySet<string> = new Set(
+  [...DOCKER_CLIENT_ENV_KEYS].map((k) => k.toUpperCase())
+);
+
+/**
+ * Is `key` the name of a var the docker client reads? Case-INSENSITIVE, because
+ * Windows environment lookups are, so a lowercase `docker_host` must be caught
+ * too (issue #2183).
+ */
+export function isDockerClientEnvKey(key: string): boolean {
+  return DOCKER_CLIENT_ENV_KEYS_UPPER.has(key.toUpperCase());
+}
+
+/**
+ * The sensitive keys that collide with a docker-client var (case-insensitive),
+ * so a caller can warn that they were not forwarded.
+ */
+export function dockerClientEnvCollisions(sensitiveEnv: Record<string, string>): string[] {
+  return Object.keys(sensitiveEnv).filter(isDockerClientEnvKey);
+}
+
+export function dockerSpawnEnvWithSensitive(
+  sensitiveEnv: Record<string, string>
+): NodeJS.ProcessEnv {
+  // Start from the client's OWN environment and add only the sensitive keys
+  // that do NOT name a docker-client var. A colliding secret is never written,
+  // so it can neither hijack the client (redirect the daemon, break PATH) nor
+  // leave a stale value behind — regardless of whether the host set that var.
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const [k, v] of Object.entries(sensitiveEnv)) {
+    if (isDockerClientEnvKey(k)) continue;
+    env[k] = v;
+  }
+  return env;
+}
+
 function mergeEnv(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
   const merged: NodeJS.ProcessEnv = { ...process.env };
   for (const [k, v] of Object.entries(overrides)) {

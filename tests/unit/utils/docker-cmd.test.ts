@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 import {
+  dockerClientEnvCollisions,
+  dockerSpawnEnvWithSensitive,
   formatDockerLoginError,
   getDockerCmd,
   runDockerStreaming,
@@ -228,5 +230,68 @@ describe('formatDockerLoginError', () => {
 
   it('handles an empty stderr cleanly', () => {
     expect(formatDockerLoginError('', endpoint)).toBe('');
+  });
+});
+
+
+describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
+  it('passes an ordinary secret value through to the child env, newlines intact', () => {
+    const env = dockerSpawnEnvWithSensitive({ MY_DB_PASSWORD: 'p@ss\nword' });
+    // Multi-line values (PEM keys etc.) survive — the reason this uses the env
+    // channel rather than a line-based --env-file.
+    expect(env['MY_DB_PASSWORD']).toBe('p@ss\nword');
+  });
+
+  it('does NOT let a secret named after a docker-client var hijack the client env', () => {
+    const savedHost = process.env['DOCKER_HOST'];
+    const savedPath = process.env['PATH'];
+    process.env['DOCKER_HOST'] = 'unix:///var/run/docker.sock';
+    try {
+      const env = dockerSpawnEnvWithSensitive({
+        DOCKER_HOST: 'tcp://attacker.example:2375',
+        PATH: '/tmp/evil',
+        REAL_SECRET: 'ok',
+      });
+      // The docker client's own critical vars stay authoritative...
+      expect(env['DOCKER_HOST']).toBe('unix:///var/run/docker.sock');
+      expect(env['PATH']).toBe(savedPath);
+      expect(env['PATH']).not.toBe('/tmp/evil');
+      // ...while an ordinary secret still passes through.
+      expect(env['REAL_SECRET']).toBe('ok');
+    } finally {
+      if (savedHost === undefined) delete process.env['DOCKER_HOST'];
+      else process.env['DOCKER_HOST'] = savedHost;
+    }
+  });
+
+  it('protects docker-client vars case-insensitively (Windows env keys are case-insensitive)', () => {
+    const savedHost = process.env['DOCKER_HOST'];
+    delete process.env['DOCKER_HOST'];
+    try {
+      const env = dockerSpawnEnvWithSensitive({ docker_host: 'tcp://attacker.example:2375' });
+      // A lowercase collision must not define the client's DOCKER_HOST in any case.
+      expect(env['docker_host']).toBeUndefined();
+      expect(env['DOCKER_HOST']).toBeUndefined();
+    } finally {
+      if (savedHost !== undefined) process.env['DOCKER_HOST'] = savedHost;
+    }
+  });
+
+  it('dockerClientEnvCollisions reports colliding names case-insensitively', () => {
+    expect(
+      dockerClientEnvCollisions({ docker_host: 'x', MY_SECRET: 'y', PATH: 'z' }).sort()
+    ).toEqual(['PATH', 'docker_host']);
+    expect(dockerClientEnvCollisions({ ONLY_SAFE: 'v' })).toEqual([]);
+  });
+
+  it('drops a docker-client var the host never set, even if a secret defines it', () => {
+    const saved = process.env['DOCKER_CONTEXT'];
+    delete process.env['DOCKER_CONTEXT'];
+    try {
+      const env = dockerSpawnEnvWithSensitive({ DOCKER_CONTEXT: 'evil-context' });
+      expect(env['DOCKER_CONTEXT']).toBeUndefined();
+    } finally {
+      if (saved !== undefined) process.env['DOCKER_CONTEXT'] = saved;
+    }
   });
 });
