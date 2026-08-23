@@ -1,3 +1,10 @@
+## [0.284.42](https://github.com/go-to-k/cdkd/compare/v0.284.41...v0.284.42) (2026-08-23)
+
+
+### Bug Fixes
+
+* **state:** renew the stack lock while an operation runs, and release it conditionally ([#2182](https://github.com/go-to-k/cdkd/issues/2182)) ([62c2e62](https://github.com/go-to-k/cdkd/commit/62c2e62e3a99a2c17768a3f26ea936cb4abf4ed4))
+
 ## [0.284.41](https://github.com/go-to-k/cdkd/compare/v0.284.40...v0.284.41) (2026-08-22)
 
 
