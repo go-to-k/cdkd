@@ -1949,6 +1949,11 @@
       "scenarios": []
     },
     {
+      "name": "stack-lock-renewal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "state-destroy",
       "annotated": true,
       "scenarios": []
@@ -2833,6 +2838,7 @@
     "sns-subscription-filter",
     "sns-subscription-update",
     "sqs-esm-max-concurrency",
+    "stack-lock-renewal",
     "stepfunctions-s3-definition",
     "synthetics-canary"
   ]

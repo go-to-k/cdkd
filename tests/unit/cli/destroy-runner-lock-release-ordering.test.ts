@@ -24,15 +24,13 @@ import type { AwsClients } from '../../../src/utils/aws-clients.js';
  * flight the handler stays armed."
  */
 
+// STABLE spies, not a per-call factory: since issue #2168 a failed release is
+// reported by a WARNING rather than by a throw, so the warning is the only
+// evidence the failure happened at all -- and a fresh mock per `getLogger()`
+// call cannot be asserted on.
+const logs = { setLevel: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 vi.mock('../../../src/utils/logger.js', () => ({
-  getLogger: () => ({
-    setLevel: vi.fn(),
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
-  }),
+  getLogger: () => ({ ...logs, child: () => logs }),
 }));
 
 // Keep the import graph light: the runner only touches these on the
@@ -169,6 +167,27 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
     expect(during.length).toBe(before.length + 1);
   });
 
+  it('a FAILING release warns instead of failing the destroy (issue #2168)', async () => {
+    // Since #2168 `releaseLock` RAISES rather than silently dropping its
+    // ownership condition -- a 409 / 503 / throttle now reaches the caller.
+    // This site sits in the main `finally`, so an uncaught throw here would
+    // replace a real destroy error and, on a successful destroy, abort a
+    // `--all` run at the first stack over a lock that lapses on its own.
+    const mockProviderDelete = vi.fn().mockResolvedValue(undefined);
+    const { ctx, deleteState } = makeCtx(mockProviderDelete);
+    const releaseLock = vi.fn().mockRejectedValue(new Error('SlowDown'));
+    (ctx.lockManager as unknown as { releaseLock: unknown }).releaseLock = releaseLock;
+
+    const result = await runDestroyForStack('TestStack', makeState('Table'), ctx);
+
+    expect(releaseLock).toHaveBeenCalledOnce();
+    // The destroy itself still succeeded and still cleaned up its state.
+    expect(result.errorCount).toBe(0);
+    expect(result.interrupted).toBe(false);
+    expect(mockProviderDelete).toHaveBeenCalledOnce();
+    expect(deleteState).toHaveBeenCalled();
+  });
+
   it('...and removes it once the release has resolved', async () => {
     // The other half: keeping it armed must not mean leaking it. One leaked
     // handler per stack would also keep the shared interrupt watch from ever
@@ -255,6 +274,12 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
   it('removes it even when the release THROWS', async () => {
     // Without the inner `finally` a failing release leaks the handler, and the
     // leak is worse than the failure: it is per stack on a `--all` run.
+    //
+    // This used to assert that the rejection PROPAGATED. Issue #2168 changed
+    // that deliberately -- `releaseLock` now raises on failures it used to
+    // absorb, and letting one out of here would replace a real destroy error
+    // and abort a `--all` run over a lock that lapses on its own -- so the
+    // assertion moves to what this test was written to fence: the handler.
     const before = process.listeners('SIGINT');
     const base = makeCtx(vi.fn().mockResolvedValue(undefined));
     const ctx = {
@@ -265,10 +290,39 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
       } as unknown as LockManager,
     };
 
-    await expect(runDestroyForStack('TestStack', makeState('Table'), ctx)).rejects.toThrow(
-      'S3 DeleteObject failed'
-    );
+    await expect(runDestroyForStack('TestStack', makeState('Table'), ctx)).resolves.toBeDefined();
 
+    // Assert the failure was OBSERVED. Without this the rejecting-release
+    // fixture proves nothing: the inner catch makes the throw invisible, so
+    // the test becomes byte-equivalent to its resolved-release sibling and
+    // stops discriminating anything -- which is what a review round found it
+    // had silently become.
+    expect(logs.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'Failed to release lock'
+    );
     expect(process.listeners('SIGINT')).toEqual(before);
+  });
+
+  it('removes it when the LOGGING throws, the one path left that reaches the finally', async () => {
+    // Since the release is caught, nothing else in that inner `try` can throw
+    // -- which means the inner `finally` had become indistinguishable from
+    // code inlined at the end of the try, and every test here passed with it
+    // emptied. This is the remaining live path, and it is not hypothetical:
+    // this repo has measured `threw=EPIPE releaseLock=0 leakedListeners=1`
+    // from stdout under `--verbose | head`.
+    const before = process.listeners('SIGINT');
+    const { ctx } = makeCtx(vi.fn().mockResolvedValue(undefined));
+    logs.debug.mockImplementation((msg: unknown) => {
+      if (String(msg).includes('Releasing lock')) throw new Error('EPIPE: broken pipe');
+    });
+
+    try {
+      await expect(runDestroyForStack('TestStack', makeState('Table'), ctx)).rejects.toThrow(
+        /EPIPE/
+      );
+      expect(process.listeners('SIGINT')).toEqual(before);
+    } finally {
+      logs.debug.mockReset();
+    }
   });
 });
