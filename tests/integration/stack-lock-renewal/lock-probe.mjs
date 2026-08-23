@@ -203,7 +203,10 @@ async function main() {
     // exist, and this arm would pass either way. Pinning it here means a
     // change in S3's behaviour fails the run instead of silently invalidating
     // the branch.
-    if (!/404|NoSuchKey|NotFound/i.test(observed)) {
+    // `no error` is a PASS, not a failure: if the conditional delete succeeds
+    // outright, `releaseLock` never enters the catch and the branch under
+    // discussion is not reached at all. Only a DIFFERENT error is a problem.
+    if (!/404|NoSuchKey|NotFound|no error/i.test(observed)) {
       fail(
         `a conditional delete against an absent object answered "${observed}", not a not-found. ` +
           `isGoneError no longer covers this case, so releaseLock will misreport it as a foreign lock.`

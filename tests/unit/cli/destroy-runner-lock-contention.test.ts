@@ -348,7 +348,12 @@ describe('a cross-region destroy restores region + clients when the lock is held
     // and is asserted below -- the cross-region restore still happens on a
     // path where the release failed.
     await expect(runDestroyForStack('TestStack', state, crossCtx)).resolves.toBeDefined();
+    // The rejection must be OBSERVED, not merely absorbed -- otherwise this
+    // fixture stops creating the condition the test names and the case
+    // silently becomes a duplicate of the happy path.
     expect(releaseLock).toHaveBeenCalledOnce();
+    expect(releaseLock.mock.results[0]!.type).toBe('return');
+    await expect(releaseLock.mock.results[0]!.value).rejects.toThrow(/S3 DeleteObject failed/);
 
     expect(awsClientsMock.instances[0]!.destroy).toHaveBeenCalledOnce();
     expect(process.env['AWS_REGION']).toBe(REGION);

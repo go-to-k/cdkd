@@ -1650,7 +1650,7 @@ export async function runDestroyForStack(
       // its ownership condition, so a 409 / 503 / throttle here would
       // otherwise REPLACE a real destroy failure -- and, on a successful
       // destroy, abort a `--all` run at the first stack over a lock that
-      // lapses on its own. Matches the three sibling sites and
+      // lapses on its own. Matches the four sibling sites and
       // `deploy-engine.ts`.
       try {
         await ctx.lockManager.releaseLock(stackName, regionForState);

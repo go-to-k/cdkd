@@ -340,18 +340,26 @@ export class LockManager {
             await this.deleteLock(stackName, region, existing.etag);
           } catch (deleteError) {
             if (this.isConditionUnsupportedError(deleteError)) {
-              // Same escape hatch as `releaseLock`: a policy granting only
-              // `s3:DeleteObject`, or an endpoint without the header, cannot
-              // evaluate the condition at all. Without this, the expired lock
-              // is unreclaimable except via `force-unlock` -- and the lock we
-              // are deleting was ALREADY judged expired, so dropping the
-              // condition here costs the narrow window in which its owner
-              // renewed between our read and this call.
-              this.logger.debug(
-                `Conditional takeover delete for stack ${stackName} (${region}) is not supported here; ` +
-                  `retrying unconditionally`
+              // Do NOT retry unconditionally here, even though `releaseLock`
+              // has an escape hatch for the same error class. The `IfMatch` is
+              // what makes concurrent REAPING safe: two processes that judge
+              // the same lock expired both try to delete it, the first wins
+              // and the second gets a 412 and reports contention. Drop the
+              // condition and both win -- each deletes whatever is present,
+              // then each `IfNoneMatch: '*'` PUT succeeds against the key it
+              // just emptied, and the stack has two holders with nothing to
+              // say so. The owner's own renewal landing between our read and
+              // this call is the second way to reach it, and the renewal loop
+              // deliberately keeps retrying past expiry. Refusing costs an
+              // unreclaimable expired lock under one specific policy, which
+              // `force-unlock` clears; the alternative costs mutual exclusion.
+              this.logger.warn(
+                `Cannot take over the expired lock for stack '${stackName}' (${region}): this endpoint ` +
+                  `or policy will not evaluate a conditional delete, and removing it unconditionally ` +
+                  `could delete a lock another process has since taken. Clear it with cdkd force-unlock, ` +
+                  `or grant s3:GetObject on the lock key -- a delete conditioned on an ETag requires it.`
               );
-              await this.deleteLock(stackName, region);
+              return false;
             } else if (this.isNotOursError(deleteError)) {
               // The lock changed between our read and our delete -- either the
               // owner renewed it or a third process took it over first. Either
@@ -555,12 +563,20 @@ export class LockManager {
    * -- recoverable, unlike one deleted out from under a live writer.
    *
    * Callers must therefore tolerate a throw here. Every one of them wraps it
-   * (see `deploy-engine.ts` and the four sites in `destroy-runner.ts`): a
+   * (`deploy-engine.ts`, the five sites in `destroy-runner.ts`, and ten more across
+   * `export` / `drift` / `import` / `scrub` / `state` / `orphan` / `rollback`): a
    * failed release is a warning, never the error a command reports.
    */
-  releaseLock(stackName: string, region: string): Promise<void> {
-    // The claim is SYNCHRONOUS -- before any `await` -- so a second caller
-    // cannot slip past it while the first is still resolving its S3 client.
+  async releaseLock(stackName: string, region: string): Promise<void> {
+    // `async` is load-bearing in BOTH directions. The body of an async
+    // function runs synchronously up to its first `await`, and there is none
+    // before the claim below -- so a second caller still cannot slip past it.
+    // And every throw in here becomes a REJECTION: `logger.debug` reaches
+    // stdout, which this repo has measured throwing EPIPE synchronously under
+    // `--verbose | head`, and ten call sites attach only a `.catch()`. Two of
+    // them are `void releaseLock(...).catch(...)` inside a SIGINT force-quit
+    // handler, where a synchronous throw is an uncaughtException that kills
+    // the handler before its recovery banner prints.
     const key = this.getLockKey(stackName, region);
     const held = this.heldLocks.get(key);
     if (held?.releasing) {
@@ -633,7 +649,10 @@ export class LockManager {
         if (!(await this.stillOursByBody(held))) {
           this.logger.warn(
             `Not releasing the lock for stack '${stackName}' (${region}): the conditional delete could ` +
-              `not be evaluated here, and the lock present belongs to another process. Leaving it in place.`
+              `not be evaluated here, and this process could not confirm the lock is still its own. ` +
+              `Leaving it in place rather than risk deleting another process's lock. It expires on its ` +
+              `own, or clear it with cdkd force-unlock. If this repeats, grant s3:GetObject on the lock ` +
+              `key -- a delete conditioned on an ETag requires it.`
           );
           return;
         }
@@ -661,18 +680,39 @@ export class LockManager {
   }
 
   /**
-   * Best-effort "is the stored lock still the one this process acquired?".
+   * Is the stored lock still the one this process acquired?
    *
-   * Used only where the ETag condition could not be evaluated. Answers TRUE
-   * when it cannot tell, because the caller's alternative is to strand the
-   * lock -- so only a lock it can read AND positively attribute to somebody
-   * else returns false.
+   * Used only where the ETag condition could not be EVALUATED, to decide
+   * whether dropping it is safe. Two earlier cuts of this were wrong in
+   * opposite directions and both are worth stating, because the shape recurs:
+   *
+   * - It short-circuited on `Date.now() < held.info.expiresAt`, reasoning that
+   *   nobody could have taken over while our own deadline was ahead. But
+   *   `forceReleaseLock` deletes regardless of expiry -- that is its whole
+   *   contract -- so a user running `cdkd force-unlock` mid-operation is a
+   *   LEGITIMATE takeover the shortcut cannot see. Cross-machine clock skew
+   *   reaches the same state without anyone running anything. The shortcut is
+   *   gone; the read costs one GetObject on an already-failed path.
+   *
+   * - It answered TRUE when the read FAILED, to avoid stranding a lock. That
+   *   made it inert in exactly the case it exists for: the documented trigger
+   *   for the 403 is a policy granting `s3:DeleteObject` without the
+   *   `s3:GetObject` a conditional delete needs -- under which this read fails
+   *   too. So the guard would wave through precisely the situation it was
+   *   added to catch. A failed read now REFUSES.
+   *
+   * The remaining asymmetry is deliberate and is this method's stated rule: a
+   * stranded lock is bounded by the TTL and clearable with `force-unlock`,
+   * while a lock deleted out from under a live writer is neither.
    */
   private async stillOursByBody(held: HeldLock): Promise<boolean> {
-    // Nobody can have legitimately taken over while our own durable deadline
-    // is still in the future, so no read is needed.
-    if (Date.now() < held.info.expiresAt) return true;
-    const record = await this.getLockRecord(held.stackName, held.region).catch(() => null);
+    let record: { info: LockInfo; etag: string | undefined } | null;
+    try {
+      record = await this.getLockRecord(held.stackName, held.region);
+    } catch {
+      return false;
+    }
+    // Nothing there: the unconditional delete would be a no-op anyway.
     if (!record) return true;
     return this.sameLockIdentity(record.info, held.info);
   }
@@ -881,6 +921,12 @@ export class LockManager {
         // exists to remove. A stale ETag instead makes that release refuse,
         // which strands the lock until its TTL: recoverable, and the safe
         // direction of the two.
+        // The PUT succeeded -- only its ETag is missing -- so the stored
+        // object IS `renewed`. Recording that keeps the eventual "it clears at
+        // ..." message truthful; leaving `held.info` behind made it name a
+        // deadline earlier than the real one, so a user who waited it out
+        // found the lock still there.
+        held.info = renewed;
         held.etagUncertain = true;
         this.stopRenewal(held);
         this.logger.debug(
@@ -973,6 +1019,9 @@ export class LockManager {
     }
     held.info = renewed;
     held.etag = record.etag;
+    // An adopted renewal is a successful one: re-arm, or a later expiry
+    // episode after an adopt would be silent.
+    held.warnedPastExpiry = false;
     this.logger.debug(
       `Lock renewal for stack ${held.stackName} (${held.region}) reported a conflict, but the object ` +
         `holds this process's own renewal -- adopting it and continuing`

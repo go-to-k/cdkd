@@ -1020,10 +1020,21 @@ Even then the ownership is re-checked by hand before the condition is dropped,
 because S3 authorizes a request *before* it evaluates a precondition: a policy
 that scopes `s3:GetObject` away from `lock.json` turns a genuine `412` into a
 `403`, and an unconditional retry there would delete the lock of whoever took
-over. cdkd skips that read while its own deadline is still in the future
-(nobody can have legitimately taken over yet) and otherwise refuses only on a
-lock it can read *and* positively attribute to someone else -- an unreadable
-lock is the very case the fallback exists for.
+over. The re-read happens unconditionally -- **not** skipped when cdkd's own
+deadline is still in the future, because `cdkd force-unlock` deletes regardless
+of expiry, so a user running it mid-operation is a legitimate takeover no
+deadline can rule out (cross-machine clock skew reaches the same state with
+nobody running anything). A read that FAILS refuses: on the very policy this
+fallback exists for, the read fails too, so answering "proceed" there would
+leave the check inert in exactly the situation it was added to catch.
+
+The expired-lock takeover has **no** such fallback, deliberately. Its `IfMatch`
+is what makes concurrent reaping safe -- two processes that both judge a lock
+expired race to delete it, the first wins and the second gets a `412` and
+reports contention. Without the condition both would win, each would then
+acquire against the key it just emptied, and the stack would have two holders.
+An expired lock under a policy that cannot evaluate the condition is cleared
+with `cdkd force-unlock`.
 
 Every other failure raises, which is what release has always done. In
 particular a `409` (S3's answer to a concurrent operation on the key) and a

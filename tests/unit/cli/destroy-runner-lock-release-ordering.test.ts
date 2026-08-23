@@ -24,15 +24,13 @@ import type { AwsClients } from '../../../src/utils/aws-clients.js';
  * flight the handler stays armed."
  */
 
+// STABLE spies, not a per-call factory: since issue #2168 a failed release is
+// reported by a WARNING rather than by a throw, so the warning is the only
+// evidence the failure happened at all -- and a fresh mock per `getLogger()`
+// call cannot be asserted on.
+const logs = { setLevel: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 vi.mock('../../../src/utils/logger.js', () => ({
-  getLogger: () => ({
-    setLevel: vi.fn(),
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
-  }),
+  getLogger: () => ({ ...logs, child: () => logs }),
 }));
 
 // Keep the import graph light: the runner only touches these on the
@@ -294,6 +292,37 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
 
     await expect(runDestroyForStack('TestStack', makeState('Table'), ctx)).resolves.toBeDefined();
 
+    // Assert the failure was OBSERVED. Without this the rejecting-release
+    // fixture proves nothing: the inner catch makes the throw invisible, so
+    // the test becomes byte-equivalent to its resolved-release sibling and
+    // stops discriminating anything -- which is what a review round found it
+    // had silently become.
+    expect(logs.warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'Failed to release lock'
+    );
     expect(process.listeners('SIGINT')).toEqual(before);
+  });
+
+  it('removes it when the LOGGING throws, the one path left that reaches the finally', async () => {
+    // Since the release is caught, nothing else in that inner `try` can throw
+    // -- which means the inner `finally` had become indistinguishable from
+    // code inlined at the end of the try, and every test here passed with it
+    // emptied. This is the remaining live path, and it is not hypothetical:
+    // this repo has measured `threw=EPIPE releaseLock=0 leakedListeners=1`
+    // from stdout under `--verbose | head`.
+    const before = process.listeners('SIGINT');
+    const { ctx } = makeCtx(vi.fn().mockResolvedValue(undefined));
+    logs.debug.mockImplementation((msg: unknown) => {
+      if (String(msg).includes('Releasing lock')) throw new Error('EPIPE: broken pipe');
+    });
+
+    try {
+      await expect(runDestroyForStack('TestStack', makeState('Table'), ctx)).rejects.toThrow(
+        /EPIPE/
+      );
+      expect(process.listeners('SIGINT')).toEqual(before);
+    } finally {
+      logs.debug.mockReset();
+    }
   });
 });
