@@ -328,14 +328,24 @@ export class LockManager {
         // we just judged expired closes the window.
         const existing = await this.getLockRecord(stackName, region);
         if (existing && this.isLockExpired(existing.info)) {
-          this.logger.warn(
-            `Taking over an EXPIRED lock for stack: ${stackName} (${region}, owner: ${existing.info.owner}, ` +
-              `expired ${this.formatDuration(now - existing.info.expiresAt)} ago). A live cdkd process renews its ` +
-              `lock well inside the TTL, so this normally means the previous owner crashed or was suspended -- ` +
-              `if it is in fact still running, both processes will now be writing to the same stack.`
-          );
+          if (existing.etag === undefined) {
+            // Without an ETag `deleteLock` is UNCONDITIONAL, which is exactly
+            // what the refusal below exists to prevent -- and it would happen
+            // silently, with none of that reasoning applied. `trackHeldLock`
+            // guards the analogous case for renewal; this site did not.
+            this.logger.warn(
+              `Cannot take over the expired lock for stack '${stackName}' (${region}): its current ` +
+                `version could not be identified, so removing it could delete a lock another process ` +
+                `has since taken. Clear it with cdkd force-unlock.`
+            );
+            return false;
+          }
 
-          // Delete the expired lock and retry acquisition
+          // Delete the expired lock and retry acquisition. The announcement
+          // comes AFTER it succeeds: every branch below can refuse, and a
+          // banner saying "both processes will now be writing to the same
+          // stack" printed ahead of a refusal that took nothing over is the
+          // same log-untruthfulness this change fixes elsewhere.
           try {
             await this.deleteLock(stackName, region, existing.etag);
           } catch (deleteError) {
@@ -356,8 +366,7 @@ export class LockManager {
               this.logger.warn(
                 `Cannot take over the expired lock for stack '${stackName}' (${region}): this endpoint ` +
                   `or policy will not evaluate a conditional delete, and removing it unconditionally ` +
-                  `could delete a lock another process has since taken. Clear it with cdkd force-unlock, ` +
-                  `or grant s3:GetObject on the lock key -- a delete conditioned on an ETag requires it.`
+                  `could delete a lock another process has since taken. Clear it with cdkd force-unlock.`
               );
               return false;
             } else if (this.isNotOursError(deleteError)) {
@@ -372,6 +381,13 @@ export class LockManager {
               throw deleteError;
             }
           }
+
+          this.logger.warn(
+            `Took over an EXPIRED lock for stack: ${stackName} (${region}, owner: ${existing.info.owner}, ` +
+              `expired ${this.formatDuration(now - existing.info.expiresAt)} ago). A live cdkd process renews its ` +
+              `lock well inside the TTL, so this normally means the previous owner crashed or was suspended -- ` +
+              `if it is in fact still running, both processes are now writing to the same stack.`
+          );
 
           // Retry once after cleaning up expired lock
           try {
@@ -562,9 +578,9 @@ export class LockManager {
    * by then, so the worst outcome of raising is a lock that lapses at its TTL
    * -- recoverable, unlike one deleted out from under a live writer.
    *
-   * Callers must therefore tolerate a throw here. Every one of them wraps it
-   * (`deploy-engine.ts`, the five sites in `destroy-runner.ts`, and ten more across
-   * `export` / `drift` / `import` / `scrub` / `state` / `orphan` / `rollback`): a
+   * Callers must therefore tolerate a throw here, and all sixteen do: four
+   * wrap it in `try`/`catch` (`deploy-engine.ts` plus three in
+   * `destroy-runner.ts`) and twelve attach a `.catch()`: a
    * failed release is a warning, never the error a command reports.
    */
   async releaseLock(stackName: string, region: string): Promise<void> {
@@ -573,7 +589,7 @@ export class LockManager {
     // before the claim below -- so a second caller still cannot slip past it.
     // And every throw in here becomes a REJECTION: `logger.debug` reaches
     // stdout, which this repo has measured throwing EPIPE synchronously under
-    // `--verbose | head`, and ten call sites attach only a `.catch()`. Two of
+    // `--verbose | head`, and twelve call sites attach only a `.catch()`. Two of
     // them are `void releaseLock(...).catch(...)` inside a SIGINT force-quit
     // handler, where a synchronous throw is an uncaughtException that kills
     // the handler before its recovery banner prints.
@@ -608,6 +624,18 @@ export class LockManager {
       this.logger.warn(
         `Not releasing the lock for stack '${stackName}' (${region}): this process lost it while the ` +
           `operation was still running, so the lock present now belongs to someone else.`
+      );
+      return;
+    }
+
+    if (held && held.etag === undefined && !(await this.stillOursByBody(held))) {
+      // No ETag means the DELETE below would be UNCONDITIONAL -- the
+      // owner-blind delete this whole change removes, arriving by omission
+      // rather than by decision. Confirm ownership by body first, or leave it.
+      this.logger.warn(
+        `Not releasing the lock for stack '${stackName}' (${region}): this process never learned which ` +
+          `version of the lock it wrote, and could not confirm the one present is its own. It expires ` +
+          `on its own, or clear it with cdkd force-unlock.`
       );
       return;
     }
@@ -712,8 +740,14 @@ export class LockManager {
     } catch {
       return false;
     }
-    // Nothing there: the unconditional delete would be a no-op anyway.
-    if (!record) return true;
+    // NOT "nothing is there". `getLockRecord` also answers `null` for a body
+    // that parses to `42` / `[]` / `null`: the object EXISTS -- it still fails
+    // every `IfNoneMatch: '*'` acquire, which is the whole reason
+    // `forceReleaseLock` deletes unconditionally -- and it is not this
+    // process's. And even for a genuine absence, the gap between this read and
+    // the delete is a window in which another process acquires. There is
+    // nothing to release in either state, so refuse.
+    if (!record) return false;
     return this.sameLockIdentity(record.info, held.info);
   }
 

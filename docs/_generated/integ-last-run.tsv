@@ -273,7 +273,7 @@ sns-subscription-filter	2026-08-10T05:38:11Z	PASS	39	verify.sh	0810 P2 sweep b9;
 sns-subscription-update	2026-08-20T11:53:45Z	PASS	70	verify.sh	#1967 new fixture, 4 phases. First real-AWS coverage of SNSSubscriptionProvider.update at all: phase 2 proves the internal replacement ran (SubscriptionArn changed, exactly one subscription, state in sync); phase 3 corrupts the physicalId so Unsubscribe throws and asserts cdkd ABORTS -- deploy exit 1, no Subscribe issued, old subscription untouched. Destroy clean, 0 orphans
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-08-10T04:23:28Z	PASS	76	verify.sh	0810 sweep b2; lambda-eventsource re-verify, 5 del 0 err, 0 orph
-stack-lock-renewal	2026-08-23T02:17:22Z	PASS	545	verify.sh	issue #2168 lock renewal round 4; 8 probe receipts (count enforced by the script) + renewal observed across the deploy, never lapsed never absent; destroy 0 err 0 orph
+stack-lock-renewal	2026-08-23T02:58:02Z	PASS	539	verify.sh	issue #2168 lock renewal final: 8 probe receipts (S3 answers NoSuchKey/404 for a conditional delete of an absent object) + 29 deploy samples, expiresAt +363s never lapsed never absent; destroy 0 err 0 orph
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
 state-info-command	2026-08-02T05:07:05Z	PASS	31	verify.sh	new verify.sh (#1335): state info human+json, flag+env sources, 1 del/0 err, 0 orphans
 stepfunctions	2026-08-10T05:24:30Z	PASS	58	verify.sh	0810 P2 sweep b7; SM ACTIVE + async-delete poll, 0 orph

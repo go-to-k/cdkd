@@ -219,6 +219,10 @@ describe('LockManager', () => {
         operation: 'deploy',
       };
       s3Client.send.mockResolvedValueOnce({
+        // Real S3 always returns an ETag, and since issue #2168 the takeover
+        // needs it: the delete is conditional on the exact bytes judged
+        // expired, and without one it refuses rather than deleting blind.
+        ETag: '"expired-etag"',
         Body: { transformToString: () => Promise.resolve(JSON.stringify(expiredLock)) },
       });
 
@@ -247,6 +251,10 @@ describe('LockManager', () => {
         expiresAt: Date.now() - 30 * 60 * 1000,
       };
       s3Client.send.mockResolvedValueOnce({
+        // Real S3 always returns an ETag, and since issue #2168 the takeover
+        // needs it: the delete is conditional on the exact bytes judged
+        // expired, and without one it refuses rather than deleting blind.
+        ETag: '"expired-etag"',
         Body: { transformToString: () => Promise.resolve(JSON.stringify(expiredLock)) },
       });
 
@@ -492,6 +500,10 @@ describe('LockManager', () => {
       };
 
       s3Client.send.mockResolvedValueOnce({
+        // Real S3 always returns an ETag, and since issue #2168 the takeover
+        // needs it: the delete is conditional on the exact bytes judged
+        // expired, and without one it refuses rather than deleting blind.
+        ETag: '"expired-etag"',
         Body: { transformToString: () => Promise.resolve(JSON.stringify(expiredLock)) },
       });
       s3Client.send.mockResolvedValueOnce({});
@@ -566,6 +578,10 @@ describe('LockManager', () => {
         expiresAt: Date.now() - 30 * 60 * 1000,
       };
       s3Client.send.mockResolvedValueOnce({
+        // Real S3 always returns an ETag, and since issue #2168 the takeover
+        // needs it: the delete is conditional on the exact bytes judged
+        // expired, and without one it refuses rather than deleting blind.
+        ETag: '"expired-etag"',
         Body: { transformToString: () => Promise.resolve(JSON.stringify(expiredLock)) },
       });
 
