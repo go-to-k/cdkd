@@ -393,7 +393,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     if (options.detach) {
       logger.info('Task containers started in detached mode; cdkd is exiting.');
       logger.info(
-        `Use 'docker ps --filter network=${result.state.network?.networkName ?? '<network>'}' to inspect; ` +
+        `Use 'docker ps -a --filter network=${result.state.network?.networkName ?? '<network>'}' to inspect; ` +
           `tear down with 'docker rm -f' and 'docker network rm'.`
       );
       // Detach mode skips cleanup — the caller manages container lifecycle.

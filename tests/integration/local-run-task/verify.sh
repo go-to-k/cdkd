@@ -23,7 +23,7 @@ NGINX_IMAGE="public.ecr.aws/nginx/nginx:alpine"
 
 cleanup() {
   echo "==> Cleanup: stopping any leftover containers"
-  docker ps --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -59,4 +59,21 @@ if [[ "${HTTP_CODE}" != "200" ]]; then
 fi
 
 echo ""
+
+# Tear down explicitly so the assertion below has something to assert ABOUT --
+# this fixture runs `--detach`, so without this the containers are still Up and
+# only the EXIT trap would remove them (mirrors local-run-task-awsvpc).
+cleanup
+
+# Assert the teardown actually swept. `-a` is load-bearing: a print-and-exit
+# task container is already `Exited` here, so a running-only check passes while
+# the orphan remains — the leak that survived every run of the sibling fixture.
+LEFTOVER_CONTAINERS=$(docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
+if [[ "${LEFTOVER_CONTAINERS}" -ne 0 ]]; then
+  echo "FAIL: ${LEFTOVER_CONTAINERS} container(s) still present after cleanup"
+  docker ps -a --filter "name=cdkd-local-"
+  exit 1
+fi
+echo "==> Teardown clean: 0 containers (incl. exited)"
+
 echo "==> All local-run-task tests passed"

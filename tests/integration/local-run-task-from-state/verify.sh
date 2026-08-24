@@ -89,13 +89,17 @@ docker pull "${BUSYBOX_IMAGE}"
 # cdkd destroy, then docker rm orphan containers + networks. Runs on
 # every exit path (including SIGINT and FAIL).
 DEPLOYED_REPO=""
+# NOTE: `docker ps -a`, not `docker ps`. The step-4c env/secret container is a
+# busybox that prints and EXITS, so by teardown time it is already `Exited` and
+# a running-only `docker ps` never lists it — it survived every run until the
+# issue 2183 pre-merge integs caught it twice in a row.
 cleanup() {
   rc=$?
   set +e
   echo "[verify] cleanup (exit ${rc}) — emptying repo + destroying stack + tearing down docker"
 
   # Sweep local docker containers + networks first (cheap, low-risk).
-  docker ps --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
 
   # Empty the ECR repository so cdkd destroy can remove it. If we never
@@ -168,7 +172,7 @@ run_and_curl_task() {
   # Tear down THIS task's containers + network before moving on so the
   # next task can claim the 169.254.170.0/24 subnet.
   echo "[verify]   tearing down ${shape_label} task containers + network"
-  docker ps --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
 }
 
@@ -238,7 +242,7 @@ assert_in_logs "TABLE_ARN=arn:aws:dynamodb:${REGION}:${ACCOUNT_ID}:table/${DEPLO
 assert_in_logs "ENDPOINT=local-${REGION}-${DEPLOYED_TABLE}"
 assert_in_logs "JOINED=${DEPLOYED_TABLE}|literal"
 # The generated secret is JSON like {"user":"cdkd","password":"<16char>"}
-# (~38-42 chars); assert a non-trivial DB_SECRET_LEN was injected. Cheap
+# (~38-45 chars); assert a non-trivial DB_SECRET_LEN was injected. Cheap
 # regex: at least two digits, i.e. >= 10 chars resolved.
 if ! echo "${ENV_LOGS}" | grep -qE 'DB_SECRET_LEN=[0-9]{2,}'; then
   echo "[verify] FAIL: DB_SECRET was not resolved to a non-empty value"
@@ -246,8 +250,26 @@ if ! echo "${ENV_LOGS}" | grep -qE 'DB_SECRET_LEN=[0-9]{2,}'; then
 fi
 
 # Teardown the env task before moving on.
-docker ps --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
 docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+
+# Assert the teardown actually swept — the reason the exited env-task container
+# survived every run before this was that NOTHING checked afterwards. Mirrors
+# local-run-task-awsvpc/verify.sh. `-a` is load-bearing: the env container
+# prints and exits, so a running-only check passes while the orphan remains.
+LEFTOVER_CONTAINERS=$(docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
+if [[ "${LEFTOVER_CONTAINERS}" -ne 0 ]]; then
+  echo "[verify] FAIL: ${LEFTOVER_CONTAINERS} container(s) still present after teardown"
+  docker ps -a --filter "name=cdkd-local-"
+  exit 1
+fi
+LEFTOVER_NETWORKS=$(docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | wc -l | tr -d ' ')
+if [[ "${LEFTOVER_NETWORKS}" -ne 0 ]]; then
+  echo "[verify] FAIL: ${LEFTOVER_NETWORKS} network(s) still present after teardown"
+  docker network ls --filter "name=cdkd-local-task-"
+  exit 1
+fi
+echo "[verify]   teardown clean: 0 containers (incl. exited), 0 task networks"
 
 echo ""
 echo "[verify] All checks passed: --from-state substituted ECR Repository ref (Fn::Sub + Fn::Join) AND env-var / Ref-secret intrinsics (issue #291) against deployed cdkd state."

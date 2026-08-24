@@ -1074,6 +1074,11 @@ describe('runEcsTask — per-container secret isolation + client-env collisions 
     const msg = warnSpy.mock.calls.map((call) => String(call[0])).join('\n');
     expect(msg).toContain('PATH=/tmp/evil:');
     expect(msg).toContain("empty, or containing '=' / NUL");
+    // The key is rendered QUOTED. Without that, a collision on the empty key
+    // renders as nothing and the warning names no secret at all — the exact
+    // "opaque error naming no secret" failure the guard exists to avoid
+    // (#2186 round-6 nit). Plain `.join(', ')` here would leave this green.
+    expect(msg).toContain('"PATH=/tmp/evil:"');
   });
 
   it("reports a later container's dropped secret even when an earlier container's docker run fails (issue #2183 review)", async () => {

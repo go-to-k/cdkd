@@ -184,7 +184,11 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
     # All three queries MUST return empty. If any lists IDs, the
     # marker is NOT set and the user is shown the orphan container /
     # network IDs to clean up via `docker rm -f` / `docker network rm`.
-    docker ps --filter name=cdkd-local- --format '{{.ID}}'
+    # `-a`, not a bare `docker ps`: a print-and-exit task container is already
+    # `Exited` by the time this runs, so a running-only sweep reports clean over
+    # a real orphan. That blind spot let one survive every `local-run-task-from-state`
+    # run until it was caught twice in a row while gating #2183.
+    docker ps -a --filter name=cdkd-local- --format '{{.ID}}'
     docker network ls --filter name=cdkd-local-task- --format '{{.ID}}'
     docker network ls --filter name=cdkd-local-svc- --format '{{.ID}}'
     ```

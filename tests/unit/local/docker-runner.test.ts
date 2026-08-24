@@ -501,6 +501,13 @@ describe('runDetached', () => {
     // The warning names the key AND the malformed cause (not only "shares a name").
     const msg = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(msg).toContain('PATH=/tmp/evil:');
+      // QUOTED. A bare `join` renders the EMPTY-key collision as nothing, so
+      // the warning would name no var at all -- the "opaque error naming no
+      // secret" case the guard exists for. Mirrors the ECS twin's fence.
+      expect(msg).toContain('"PATH=/tmp/evil:"');
+      // The remediation is the operator's next step; without it the warning
+      // says what went wrong and not what to do.
+      expect(msg).toContain('Rename the env var if the container needs it.');
     expect(msg).toContain("malformed name (empty, or containing '=' / NUL)");
   });
 

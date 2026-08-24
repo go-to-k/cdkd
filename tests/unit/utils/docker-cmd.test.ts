@@ -467,7 +467,8 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     // The good shape is "non-empty, no `=`, no NUL"; every complement takes the
     // fail-closed collision path in ONE predicate rather than being closed one
     // spelling at a time. The empty key would emit `-e ''` (docker rejects it
-    // with an opaque error naming no secret); a NUL-bearing key truncates.
+    // with an opaque error naming no secret); a NUL-bearing key makes Node
+    // refuse to spawn at all (ERR_INVALID_ARG_VALUE) rather than truncating.
     for (const key of ['', 'FOO\0BAR', 'A=B', 'PATH=x:']) {
       expect(isMalformedEnvKey(key)).toBe(true);
       const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(
@@ -485,6 +486,55 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     expect(ok.flags).toEqual(['-e', 'MY_SECRET']);
     expect(ok.sensitiveEnv['MY_SECRET']).toBe('v');
     expect(ok.collisions).toEqual([]);
+  });
+
+  // OVER-refusal is the direction the positive rule newly makes possible, and
+  // the direction the old `||`-ed bad-shape clauses structurally could not fail
+  // in. Asserting one all-caps good name (`MY_SECRET` above) does not cover it:
+  // a tightened rule such as `/^[A-Z_][A-Z0-9_]*$/` silently fail-closed-drops
+  // every lowercase / dotted / hyphenated secret name and leaves the whole
+  // suite green (measured). These names are all legal ECS secret names.
+  it.each([
+    'my_secret',
+    'db.password',
+    'my-secret',
+    'Mixed_Case',
+    'SECRET1',
+    '1LEADING_DIGIT',
+    'trailing_underscore_',
+    'ssh_private_key', // lowercase twin of a delivered SSH_* name
+    // Beyond [A-Za-z0-9_.-]: a rule tightened to `/^[\w.-]+$/` drops all of
+    // these and left the suite green before they were listed. A Linux environ
+    // NAME may hold any byte except `=` and NUL, and the JSDoc explicitly
+    // promises the newline case -- which had no test behind it.
+    'MY SECRET',
+    'SECRET+PLUS',
+    'SECRET:COLON',
+    'SECRET@AT',
+    'SECRET%PCT',
+    'パスワード',
+    'SECRET\nTRAILING_NEWLINE',
+    // Every row above happens to start and end with a non-whitespace,
+    // non-dash character and to be at least 2 chars long, so tightenings that
+    // forbid outer whitespace, a leading dash, or a 1-char name all passed
+    // with the suite green. Note the row above puts its newline INTERNALLY --
+    // it does not exercise the anchor claim in WELL_FORMED_ENV_KEY's JSDoc,
+    // which is only discriminated by a name ENDING in a newline.
+    ' LEADING_SPACE',
+    'TRAILING_SPACE ',
+    'TRAILING_NEWLINE\n',
+    '-DASH_LEADING',
+    'X',
+  ])('delivers the well-formed name %s rather than refusing it', (key) => {
+    expect(isMalformedEnvKey(key)).toBe(false);
+    const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(
+      { [key]: 'v' },
+      new Set([key])
+    );
+    expect(collisions).toEqual([]);
+    expect(flags).toEqual(['-e', key]);
+    expect(sensitiveEnv[key]).toBe('v');
+    expect(dockerSpawnEnvWithSensitive({ [key]: 'v' })[key]).toBe('v');
   });
 
   it.each([

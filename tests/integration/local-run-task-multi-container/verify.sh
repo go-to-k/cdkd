@@ -17,7 +17,7 @@ BUSYBOX_IMAGE="public.ecr.aws/docker/library/busybox:1.36"
 
 cleanup() {
   echo "==> Cleanup: stopping any leftover containers"
-  docker ps --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -41,7 +41,10 @@ ${CDKD} synth >/dev/null
 
 # Capture the run output so we can assert on the `[app]`-prefixed line.
 OUT_FILE=$(mktemp)
-trap 'rm -f "${OUT_FILE}"' EXIT
+# Compose with the container cleanup registered above -- a bare
+# `trap '...' EXIT` here REPLACES it, so a mid-run failure would leave the task
+# containers behind (bash keeps one handler per signal).
+trap 'rm -f "${OUT_FILE}"; cleanup' EXIT
 
 echo "==> Running multi-container task"
 # Run synchronously so `cdkd local run-task` waits for the essential
@@ -59,4 +62,17 @@ if ! grep -q '\[app\] hello from app' "${OUT_FILE}"; then
 fi
 
 echo ""
+
+# This fixture runs synchronously, so CDKD tears the containers down itself --
+# the assertion therefore checks cdkd's own teardown, not the script's. `-a` is
+# load-bearing: these containers print and exit, so a running-only check passes
+# while an orphan remains (the leak that survived every run of the sibling).
+LEFTOVER_CONTAINERS=$(docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
+if [[ "${LEFTOVER_CONTAINERS}" -ne 0 ]]; then
+  echo "FAIL: ${LEFTOVER_CONTAINERS} container(s) still present after cleanup"
+  docker ps -a --filter "name=cdkd-local-"
+  exit 1
+fi
+echo "==> Teardown clean: 0 containers (incl. exited)"
+
 echo "==> Multi-container local-run-task test passed"

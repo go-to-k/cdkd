@@ -169,8 +169,8 @@ launchtemplate-asg-inplace	2026-08-19T23:10:58Z	PASS	87	verify.sh	issue 1997 mas
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 local-ecs-service-connect	2026-07-26T20:40:20Z	PASS	23	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
-local-invoke	2026-08-13T16:02:59Z	PASS	-	verify.sh	issue 1836 post-rebase re-run on current main; step 6 upper-cased AWS_REGION arrives canonical in-container, raw spelling absent; docker sweep clean
-local-invoke-agentcore	2026-08-13T11:40:45Z	PASS	-	verify.sh	final run after the issue 1814 fourth-chain fold; 21/21, docker sweep clean
+local-invoke	2026-08-24T17:31:38Z	PASS	35	verify.sh	gated the issue 2184 merge (runDetached via partitionSensitiveEnv); 6/6 invokes, docker sweep empty incl. stopped
+local-invoke-agentcore	2026-08-24T17:29:58Z	FAIL	10	verify.sh	FIXTURE STALENESS, not a cdkd defect: aws-cdk-lib 2.244.0 dropped the aws-bedrockagentcore L2 constructs the fixture imports (the L1 Cfn* exports remain; the L2s Runtime / AgentCoreRuntime / AgentRuntimeArtifact it imports are gone), so it dies at synth before any assertion. Tracked in issue 2191
 local-invoke-agentcore-from-state	2026-07-26T20:40:20Z	PASS	86	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
 local-invoke-buildkit	2026-07-26T20:35:19Z	PASS	18	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
 local-invoke-container	2026-08-13T14:36:45Z	PASS	-	verify.sh	issue 1792/1793 no-regression check only (fixture exercises the plain lower-case ECR host); 4/4 container invokes, docker sweep clean
@@ -183,11 +183,11 @@ local-invoke-layers	2026-07-26T20:29:11Z	PASS	17	verify.sh	0727b sweep-L4 stalen
 local-invoke-provided	2026-07-26T20:29:11Z	PASS	32	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
 local-invoke-python	2026-07-26T20:22:00Z	PASS	23	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
 local-invoke-ruby	2026-07-26T20:22:00Z	PASS	33	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
-local-run-task	2026-08-13T10:02:43Z	PASS	13	verify.sh	#1795/#1801 region+ECR host case fold; detach+curl 200, 0 docker orphans
+local-run-task	2026-08-24T18:03:52Z	PASS	15	verify.sh	issue 2183 follow-up; teardown widened to docker ps -a + a post-cleanup leftover assertion; re-run after the local-run-task.ts hint fix (task containers omit --rm, so the printed `docker ps` hint missed exited ones); sweep empty incl. stopped
 local-run-task-awsvpc	2026-07-26T20:22:00Z	PASS	10	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
 local-run-task-cdkd-assets	2026-08-20T05:03:13Z	PASS	18	verify.sh	issue 2021 integ-local arm; loadBootstrapContainerRepo folded onto the shared readBootstrapMarkerBody helper, custom-qualifier container-assets URI still classified as a CDK asset and run; docker sweep empty (0 containers, 0 task/svc networks)
-local-run-task-from-state	2026-07-26T20:22:00Z	PASS	105	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
-local-run-task-multi-container	2026-07-26T20:18:09Z	PASS	12	verify.sh	0727b sweep-L2 staleness re-run (rc=0); docker + account clean
+local-run-task-from-state	2026-08-24T15:09:15Z	PASS	105	verify.sh	issue 2183 follow-up; DB_SECRET_LEN=45 via spawn env; teardown widened to docker ps -a AND a leftover assertion added (an exited env-task container survived every prior run, unasserted); 11 deleted 0 err, 0 orph, sweep empty incl. stopped
+local-run-task-multi-container	2026-08-24T16:35:48Z	PASS	11	verify.sh	issue 2183 follow-up; teardown widened to docker ps -a, leftover assertion added (checks cdkd own sync teardown), and the OUT_FILE EXIT trap no longer CLOBBERS the container-cleanup trap; sweep empty incl. stopped
 local-start-agentcore	2026-07-26T20:40:20Z	PASS	13	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
 local-start-alb	2026-07-26T20:18:09Z	PASS	22	verify.sh	0727b sweep-L2 staleness re-run (rc=0); docker + account clean
 local-start-alb-from-state	2026-07-26T20:18:09Z	PASS	98	verify.sh	re-run after removing stale cdkl-svc network (pool overlap); docker + account clean
