@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
   DOCKER_CLIENT_ENV_KEYS,
+  DOCKER_CLIENT_ENV_PREFIXES,
   dockerSpawnEnvWithSensitive,
   isDockerClientEnvKey,
   partitionSensitiveEnv,
@@ -11,6 +12,7 @@ import {
   spawnStreaming,
 } from '../../../src/utils/docker-cmd.js';
 import { SENSITIVE_ENV_KEYS } from '../../../src/local/docker-runner.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 describe('getDockerCmd', () => {
   let originalEnv: string | undefined;
@@ -333,6 +335,7 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'SSH_ASKPASS',
     'SSH_ASKPASS_REQUIRE',
     'SSH_SK_HELPER',
+    'SSH_SK_PROVIDER',
     'SSH_PKCS11_HELPER',
     'SSH_AGENT_PID',
     // The AWS credential-helper family (#2186 review round 3): the client execs
@@ -345,6 +348,8 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'AWS_SHARED_CREDENTIALS_FILE',
     'AWS_WEB_IDENTITY_TOKEN_FILE',
     'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+    'AWS_ROLE_ARN',
+    'AWS_EC2_METADATA_SERVICE_ENDPOINT',
     'SSL_CERT_FILE',
     'SSL_CERT_DIR',
     'GODEBUG',
@@ -372,8 +377,10 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     (key) => {
       // Behaviour half: every listed key must actually be refused. Before
       // this, only DOCKER_HOST / PATH / DOCKER_CONTEXT discriminated and the
-      // other 25 entries were decorative.
-      expect(dockerSpawnEnvWithSensitive({ [key]: 'evil' })[key]).not.toBe('evil');
+      // rest of the then-28-entry set was decorative. Asserting the HOST value
+      // is preserved (rather than `not 'evil'`) is both stronger and immune to
+      // a host env that legitimately holds the probe literal (Codex review).
+      expect(dockerSpawnEnvWithSensitive({ [key]: 'evil' })[key]).toBe(process.env[key]);
       expect(partitionSensitiveEnv({ [key]: 'evil' }, new Set([key])).flags).toEqual([]);
     }
   );
@@ -394,23 +401,66 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'dyld_root_path', // lowercase, since detection is case-insensitive
     'ld_preload',
     'ssh_askpass', // lowercase spelling of an EXACT ssh entry (case-insensitive)
+    'AWS_ENDPOINT_URL_ECR', // per-service endpoint form aws-sdk-go-v2 honours
+    'AWS_ENDPOINT_URL_STS', // worse still: redirects where the OIDC token is posted
+    'aws_endpoint_url_ecr', // lowercase
   ])('treats prefixed client var %s as a docker-client var and drops it', (key) => {
     expect(isDockerClientEnvKey(key)).toBe(true);
-    expect(dockerSpawnEnvWithSensitive({ [key]: 'evil' })[key]).not.toBe('evil');
+    expect(dockerSpawnEnvWithSensitive({ [key]: 'evil' })[key]).toBe(process.env[key]);
     expect(partitionSensitiveEnv({ [key]: 'evil' }, new Set([key])).flags).toEqual([]);
   });
 
+  it('fences exactly the documented prefix families — no silent removals or additions', () => {
+    // The prefix table is fenced as LITERALS for the same reason the exact
+    // membership table is: a deletion (or a drive-by widening) must be a
+    // deliberate two-place edit. This is also what makes the anti-shadowing
+    // fence below TWO-directional (#2186 round 4 finding 2): iterating a
+    // hardcoded copy caught a new exact entry under an existing prefix but not
+    // a new prefix swallowing existing exact entries.
+    expect([...DOCKER_CLIENT_ENV_PREFIXES].sort()).toEqual(
+      ['LD_', 'DYLD_', 'AWS_ENDPOINT_URL_'].sort()
+    );
+  });
+
   it('no exact denylist entry is shadowed by a prefix family', () => {
-    // If a future exact entry starts with a listed prefix, its behavioural
-    // `it.each` case above goes vacuous (the prefix would catch it even after
-    // the exact entry is deleted) and only the literal-membership test
-    // discriminates. Keep the two mechanisms disjoint. The prefixes are
-    // spelled as LITERALS here for the same reason the membership table is.
+    // If an exact entry starts with a listed prefix, its behavioural `it.each`
+    // case above goes vacuous (the prefix would catch it even after the exact
+    // entry is deleted) and only the literal-membership test discriminates.
+    // Keep the two mechanisms disjoint — iterating the REAL prefix const so a
+    // newly added prefix that swallows existing exact entries (e.g. 'SSL_')
+    // fails here too, not only a new exact entry under an existing prefix.
     for (const key of DOCKER_CLIENT_ENV_KEYS) {
-      for (const prefix of ['LD_', 'DYLD_']) {
+      for (const prefix of DOCKER_CLIENT_ENV_PREFIXES) {
         expect(key.toUpperCase().startsWith(prefix)).toBe(false);
       }
     }
+  });
+
+  it("refuses a sensitive key containing '=' — the environ NAME differs from the checked key (#2186 round 4)", () => {
+    // Node serialises env as `key=value`, so a secret named `PATH=/tmp/evil:`
+    // produces the environ entry `PATH=/tmp/evil:=<secret>` whose OS-parsed
+    // NAME is `PATH` — a denylist member the whole-key check cannot see. The
+    // poisoned duplicate WINS (measured), and the docker CLI execs
+    // `docker-credential-*` helpers off PATH: code execution as the operator.
+    const key = 'PATH=/tmp/evil:';
+    const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(
+      { [key]: 'evil' },
+      new Set([key])
+    );
+    expect(collisions).toEqual([key]);
+    expect(flags).toEqual([]);
+    expect(sensitiveEnv[key]).toBeUndefined();
+    // Belt-and-braces: the exported spawn-env builder refuses the raw key even
+    // when handed one directly (#2187 is set to route runDetached through it).
+    const env = dockerSpawnEnvWithSensitive({ [key]: 'evil', CONTROL_SECRET: 'arrived' });
+    expect(env[key]).toBeUndefined();
+    expect(env['PATH']).toBe(process.env['PATH']);
+    expect(env['CONTROL_SECRET']).toBe('arrived');
+    // An innocuous spelling is refused too — no valid POSIX env name carries
+    // '=', so nothing legitimate is lost by failing closed.
+    expect(
+      partitionSensitiveEnv({ 'FOO=BAR': 'v' }, new Set(['FOO=BAR'])).collisions
+    ).toEqual(['FOO=BAR']);
   });
 
   it.each([
@@ -441,7 +491,16 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     // `MY_SSH_KEY` are ordinary secrets and must still be delivered, and a
     // prefix without its underscore (`DYLDISH` / `SSHFOO`) is not a match.
     // Assert DELIVERY for the near-misses too, not only the predicate.
-    for (const key of ['PAYLOAD_KEY', 'MY_LD_THING', 'MY_SSH_KEY', 'DYLDISH', 'SSHFOO']) {
+    // `AWS_ENDPOINT_URLX` lacks the prefix's trailing underscore and is not the
+    // exact entry either.
+    for (const key of [
+      'PAYLOAD_KEY',
+      'MY_LD_THING',
+      'MY_SSH_KEY',
+      'DYLDISH',
+      'SSHFOO',
+      'AWS_ENDPOINT_URLX',
+    ]) {
       expect(isDockerClientEnvKey(key)).toBe(false);
       const { flags, sensitiveEnv } = partitionSensitiveEnv({ [key]: 'v' }, new Set([key]));
       expect(flags).toEqual(['-e', key]);
@@ -475,6 +534,53 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     expect(partitionSensitiveEnv({ ONLY_SAFE: 'v' }, new Set(['ONLY_SAFE'])).collisions).toEqual(
       []
     );
+  });
+
+  it('on win32, removes a case-differing HOST alias so the secret wins the case-insensitive lookup', () => {
+    // Windows env lookups are case-insensitive, and Node hands the child an
+    // environ block where a case-differing duplicate is ambiguous — a host
+    // `CDKD_CASE_PROBE` beside the secret `cdkd_case_probe` could make the
+    // value-less `-e cdkd_case_probe` read the HOST's value (Codex review).
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const savedHost = process.env['CDKD_CASE_PROBE'];
+    process.env['CDKD_CASE_PROBE'] = 'host-value';
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      const env = dockerSpawnEnvWithSensitive({ cdkd_case_probe: 'secret-value' });
+      expect(env['cdkd_case_probe']).toBe('secret-value');
+      expect(env['CDKD_CASE_PROBE']).toBeUndefined();
+      // On POSIX both spellings are distinct legitimate vars and coexist.
+      Object.defineProperty(process, 'platform', { value: 'linux' });
+      const posixEnv = dockerSpawnEnvWithSensitive({ cdkd_case_probe: 'secret-value' });
+      expect(posixEnv['cdkd_case_probe']).toBe('secret-value');
+      expect(posixEnv['CDKD_CASE_PROBE']).toBe('host-value');
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+      if (savedHost === undefined) delete process.env['CDKD_CASE_PROBE'];
+      else process.env['CDKD_CASE_PROBE'] = savedHost;
+    }
+  });
+
+  it('on win32, warns when two SENSITIVE keys differ only by case — one value survives the lookup', () => {
+    // Both value-less `-e` flags would resolve to whichever value wins the
+    // case-insensitive Windows lookup, so the shadowing must be surfaced
+    // (Codex review). POSIX keeps both as distinct vars and stays silent.
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const warnSpy = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      dockerSpawnEnvWithSensitive({ my_secret: 'a', MY_SECRET: 'b' });
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0]![0]).toContain('my_secret');
+      expect(warnSpy.mock.calls[0]![0]).toContain('MY_SECRET');
+      warnSpy.mockClear();
+      Object.defineProperty(process, 'platform', { value: 'linux' });
+      dockerSpawnEnvWithSensitive({ my_secret: 'a', MY_SECRET: 'b' });
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+      warnSpy.mockRestore();
+    }
   });
 
   it('drops a docker-client var the host never set, even if a secret defines it', () => {

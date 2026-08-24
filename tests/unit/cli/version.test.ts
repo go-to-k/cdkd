@@ -19,5 +19,9 @@ describe('cdkd --version', () => {
       }).trim();
       expect(output).toBe(version);
     },
+    // Spawning the built CLI takes >5s (vitest's default timeout) on slower
+    // machines under load — same class as gen-handled-property-wiring's
+    // SPAWN_TIMEOUT_MS.
+    30_000,
   );
 });

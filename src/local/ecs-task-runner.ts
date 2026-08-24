@@ -455,7 +455,7 @@ export async function runEcsTask(
     // "docker run failed" (issue #2183 review).
     if (built.collisions.length > 0) {
       logger.warn(
-        `Container '${container.name}': secret(s) ${built.collisions.join(', ')} share a name with a docker-client environment variable and were NOT passed to the container at all (they would hijack the docker client). Rename the secret if the container needs it.`
+        `Container '${container.name}': secret(s) ${built.collisions.join(', ')} share a name with a docker-client environment variable or carry '=' in the name, and were NOT passed to the container at all (a colliding name would hijack the docker client; '=' cannot form a valid environment variable name). Rename the secret if the container needs it.`
       );
     }
   }
@@ -1094,19 +1094,11 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // through the spawn env (see `partitionSensitiveEnv`): a sensitive key — the
   // AWS credential set plus each resolved secret name — becomes a value-less
   // `-e KEY` (its value carried in `sensitiveEnv`, off the argv /
-  // `/proc/<pid>/cmdline`), unless it NAMES a docker-client var, in which case
-  // it gets no flag at all and is reported in `collisions`. Mirrors
-  // `runDetached` in `docker-runner.ts`. (A secret whose NAME itself contains
-  // `=` is a pre-existing sharp edge left as-is: docker parses `-e NAME=VALUE`
-  // as an assignment, so for a secret named `FOO=BAR` the failure mode CHANGED
-  // rather than staying constant — before this PR the name+value became
-  // `-e FOO=BAR=<secret>`, delivering the secret mangled into a `FOO` var; now
-  // the value-less `-e FOO=BAR` delivers `FOO=BAR` and drops the secret value
-  // from the CONTAINER. The pair is still written to `sensitiveEnv['FOO=BAR']`,
-  // which Node serialises into the docker CLIENT's spawn env as
-  // `FOO=BAR=<secret>` — the secret reaches the client process env, just never
-  // the container or the argv. Neither shape ever delivered the intended
-  // `FOO=BAR` variable — issue #2183 item 10, pathological, left as-is.)
+  // `/proc/<pid>/cmdline`), unless it NAMES a docker-client var or contains
+  // `=` (no valid env name does; the environ NAME the OS parses would differ
+  // from the key the denylist checked — #2186 round 4), in which case it gets
+  // no flag at all and is reported in `collisions`. Mirrors `runDetached` in
+  // `docker-runner.ts`.
   const sensitiveKeys = new Set<string>([...SENSITIVE_ENV_KEYS, ...secrets.map((s) => s.name)]);
   const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(finalEnv, sensitiveKeys);
   args.push(...flags);
