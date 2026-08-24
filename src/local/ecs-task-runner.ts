@@ -447,15 +447,16 @@ export async function runEcsTask(
     dockerCmds.set(container.name, built.args);
     dockerEnvs.set(container.name, built.sensitiveEnv);
     // A resolved secret whose NAME collides with a var the docker CLIENT reads
-    // reaches neither the argv nor the spawn env (it would hijack the client,
-    // and a value-less `-e KEY` would hand the container the HOST's value — see
-    // `partitionSensitiveEnv`). Warn HERE, in the build loop: every container's
+    // — or is a MALFORMED env name (`isMalformedEnvKey`: empty, or containing
+    // `=` / NUL) — reaches neither the argv nor the spawn env (it would hijack
+    // the client, and a value-less `-e KEY` would hand the container the HOST's
+    // value — see `partitionSensitiveEnv`). Warn HERE, in the build loop: every container's
     // drop is reported regardless of whether an earlier container's `docker run`
     // fails, and outside the start loop's try/catch that relabels errors as
     // "docker run failed" (issue #2183 review).
     if (built.collisions.length > 0) {
       logger.warn(
-        `Container '${container.name}': secret(s) ${built.collisions.join(', ')} share a name with a docker-client environment variable or carry '=' in the name, and were NOT passed to the container at all (a colliding name would hijack the docker client; '=' cannot form a valid environment variable name). Rename the secret if the container needs it.`
+        `Container '${container.name}': secret(s) ${built.collisions.join(', ')} share a name with a docker-client environment variable or have a malformed name (empty, or containing '=' / NUL), and were NOT passed to the container at all (a colliding name would hijack the docker client; a malformed name cannot form a valid environment variable). Rename the secret if the container needs it.`
       );
     }
   }
@@ -1094,11 +1095,11 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // through the spawn env (see `partitionSensitiveEnv`): a sensitive key — the
   // AWS credential set plus each resolved secret name — becomes a value-less
   // `-e KEY` (its value carried in `sensitiveEnv`, off the argv /
-  // `/proc/<pid>/cmdline`), unless it NAMES a docker-client var or contains
-  // `=` (no valid env name does; the environ NAME the OS parses would differ
-  // from the key the denylist checked — #2186 round 4), in which case it gets
-  // no flag at all and is reported in `collisions`. Mirrors `runDetached` in
-  // `docker-runner.ts`.
+  // `/proc/<pid>/cmdline`), unless it NAMES a docker-client var or is a
+  // MALFORMED env name (`isMalformedEnvKey` — empty, or containing `=` / NUL;
+  // the environ NAME the OS parses would differ from the key the denylist
+  // checked — #2186 rounds 4-5), in which case it gets no flag at all and is
+  // reported in `collisions`. Mirrors `runDetached` in `docker-runner.ts`.
   const sensitiveKeys = new Set<string>([...SENSITIVE_ENV_KEYS, ...secrets.map((s) => s.name)]);
   const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(finalEnv, sensitiveKeys);
   args.push(...flags);

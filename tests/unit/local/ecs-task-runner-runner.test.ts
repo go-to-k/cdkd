@@ -1040,6 +1040,42 @@ describe('runEcsTask — per-container secret isolation + client-env collisions 
     expect(msg).toContain('were NOT passed to the container');
   });
 
+  it("drops a secret whose NAME contains '=' end-to-end and warns naming the '=' cause (#2186 round 5)", async () => {
+    // A secret named `PATH=/tmp/evil:` serialises to an environ entry whose
+    // OS-parsed NAME is `PATH`, poisoning the docker client. The pure-helper
+    // guard is covered in docker-cmd.test.ts; this exercises the whole
+    // runEcsTask path — no `=`-named secret reached the container end-to-end
+    // before, and the '=' half of the warning had no test (deleting the
+    // `malformed` clause left the runner suite green).
+    warnSpy.mockClear();
+    captured.responder = (_cmd: string, args: string[]) =>
+      args[0] === 'run' ? { stdout: 'cid\n' } : { stdout: '' };
+    const c = makeContainer({
+      name: 'app',
+      secrets: [
+        { name: 'PATH=/tmp/evil:', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:p' },
+        { name: 'OK_SECRET', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:o' },
+      ],
+    });
+    await runEcsTask(makeTask({ containers: [c] }), baseOptions(), createEcsRunState());
+    const run = dockerRunCalls()[0]!;
+    // No flag at all, and the value is not in the spawn env.
+    expect(run.args.join(' ')).not.toContain('PATH=/tmp/evil:');
+    const env = (run.opts as { env?: Record<string, string> }).env ?? {};
+    expect(env['PATH=/tmp/evil:']).toBeUndefined();
+    // The real host PATH survives (the value-less flag was never emitted).
+    expect(env['PATH']).toBe(process.env['PATH']);
+    // Positive control: the well-formed sibling is delivered.
+    expect(run.args).toContain('OK_SECRET');
+    expect(env['OK_SECRET']).toBe('resolved-OK_SECRET');
+    // The warning names the key AND the malformed cause. Assert the unique
+    // descriptive clause (not the bare word 'malformed', which also appears in
+    // the fixed tail) so deleting the cause-listing clause reds this.
+    const msg = warnSpy.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(msg).toContain('PATH=/tmp/evil:');
+    expect(msg).toContain("empty, or containing '=' / NUL");
+  });
+
   it("reports a later container's dropped secret even when an earlier container's docker run fails (issue #2183 review)", async () => {
     // The warn lives in the build loop, before any container starts, so an
     // earlier container's boot failure cannot hide a later container's dropped

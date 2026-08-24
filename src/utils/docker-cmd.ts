@@ -447,6 +447,21 @@ export function isDockerClientEnvKey(key: string): boolean {
 }
 
 /**
+ * Is `key` a shape that cannot be a well-formed `docker run -e` variable NAME?
+ * Defined POSITIVELY as the good shape's complement (#2186 round 5): a valid
+ * name is non-empty and contains neither `=` nor NUL. Enumerating the bad
+ * spellings one at a time closed `=` in round 4 and left the empty key (`-e ''`
+ * — docker rejects it with an opaque error naming no secret) and a NUL-bearing
+ * key still open. A sensitive key matching this takes the same fail-closed
+ * collision path as a docker-client-var name: no `-e` flag, no spawn-env entry,
+ * reported in `collisions`. (This is the NAME only; a secret VALUE containing a
+ * NUL is a separate pre-existing leak tracked in issue #2189.)
+ */
+export function isMalformedEnvKey(key: string): boolean {
+  return key.length === 0 || key.includes('=') || key.includes('\0');
+}
+
+/**
  * Split a container's environment into `docker run` `-e` flags and the values
  * that must travel through the spawn env instead of the argv.
  *
@@ -458,15 +473,16 @@ export function isDockerClientEnvKey(key: string): boolean {
  *   use the predicate, not `DOCKER_CLIENT_ENV_KEYS.has`) gets NO flag at all,
  *   its value is dropped, and the key is reported in `collisions` so the
  *   caller can warn;
- * - a sensitive key CONTAINING `=` takes the same fail-closed path (#2186
- *   round 4). The denylist matches the WHOLE key string, but Node serialises
- *   env as `key=value` and the OS parses the variable NAME as everything
- *   before the FIRST `=` — so a secret named `PATH=/tmp/evil:` is not a
- *   denylist match while the environ it produces (`PATH=/tmp/evil:=<secret>`)
- *   POISONS the client's `PATH`, and the poisoned duplicate wins (measured).
- *   The docker CLI execs `docker-credential-*` helpers off `PATH`, so that is
- *   code execution as the operator. No valid POSIX env name contains `=`, so
- *   nothing legitimate is lost by refusing.
+ * - a sensitive key of a MALFORMED shape ({@link isMalformedEnvKey} — empty,
+ *   or containing `=` / NUL) takes the same fail-closed path (#2186 rounds
+ *   4-5). The denylist matches the WHOLE key string, but Node serialises env
+ *   as `key=value` and the OS parses the variable NAME as everything before
+ *   the FIRST `=` — so a secret named `PATH=/tmp/evil:` is not a denylist
+ *   match while the environ it produces (`PATH=/tmp/evil:=<secret>`) POISONS
+ *   the client's `PATH`, and the poisoned duplicate wins (measured). The
+ *   docker CLI execs `docker-credential-*` helpers off `PATH`, so that is code
+ *   execution as the operator. Defining the GOOD shape positively also catches
+ *   the empty key (`-e ''`, an opaque docker rejection) in one predicate.
  *
  * The collision case is why the argv half lives here beside the env half.
  * Emitting `-e KEY` for a key that `dockerSpawnEnvWithSensitive` refuses to
@@ -487,7 +503,7 @@ export function partitionSensitiveEnv(
       flags.push('-e', `${k}=${v}`);
       continue;
     }
-    if (k.includes('=') || isDockerClientEnvKey(k)) {
+    if (isMalformedEnvKey(k) || isDockerClientEnvKey(k)) {
       collisions.push(k);
       continue;
     }
@@ -511,51 +527,25 @@ export function dockerSpawnEnvWithSensitive(
   sensitiveEnv: Record<string, string>
 ): NodeJS.ProcessEnv {
   // Start from the client's OWN environment and add only the sensitive keys
-  // that do NOT name a docker-client var. A colliding secret is never written,
-  // so it can neither hijack the client (redirect the daemon, break PATH) nor
-  // leave a stale value behind — regardless of whether the host set that var.
-  // The `=` guard is belt-and-braces with `partitionSensitiveEnv`'s (#2186
-  // round 4): this function is exported — the follow-up #2187 is set to route
-  // `runDetached` through it (issue #2184; today that path still spreads its
-  // passthrough env directly) — and a key containing `=` serialises as an
-  // environ entry whose OS-parsed NAME is only the part before the first `=`;
-  // the denylist check above cannot see that name, so the raw key must be
-  // refused here too.
+  // that do NOT name a docker-client var and are not malformed. A colliding /
+  // malformed secret is never written, so it can neither hijack the client
+  // (redirect the daemon, break PATH) nor leave a stale value behind —
+  // regardless of whether the host set that var. The malformed-key guard is
+  // belt-and-braces with `partitionSensitiveEnv`'s (#2186 rounds 4-5): this
+  // function is exported — the follow-up #2187 is set to route `runDetached`
+  // through it (issue #2184; today that path still spreads its passthrough env
+  // directly) — and a key containing `=` serialises as an environ entry whose
+  // OS-parsed NAME is only the part before the first `=`, which the denylist
+  // check cannot see, so the raw key must be refused here too.
+  //
+  // NOTE: case-insensitive Windows env handling (a case-differing HOST alias of
+  // a passthrough key, and two sensitive keys differing only by case) is
+  // DELIBERATELY not handled here — it needs the Windows-critical vars on the
+  // denylist first and a real Windows execution path, neither of which exists
+  // in this repo (CI is ubuntu-only). Tracked in issue #2190.
   const env: NodeJS.ProcessEnv = { ...process.env };
-  if (process.platform === 'win32') {
-    // Two SENSITIVE keys differing only by case cannot both survive a
-    // case-insensitive Windows env lookup — both value-less `-e` flags would
-    // resolve to whichever value wins — so warn that one is shadowed (Codex
-    // review). Last write in enumeration order wins below.
-    const byUpper = new Map<string, string[]>();
-    for (const k of Object.keys(sensitiveEnv)) {
-      byUpper.set(k.toUpperCase(), [...(byUpper.get(k.toUpperCase()) ?? []), k]);
-    }
-    for (const keys of byUpper.values()) {
-      if (keys.length > 1) {
-        getLogger().warn(
-          `Sensitive env keys ${keys.join(', ')} differ only by case; Windows environment lookups are case-insensitive, so only one value survives for all of them. Rename the secrets to distinct names.`
-        );
-      }
-    }
-  }
   for (const [k, v] of Object.entries(sensitiveEnv)) {
-    if (k.includes('=') || isDockerClientEnvKey(k)) continue;
-    if (process.platform === 'win32') {
-      // Windows env lookups are case-insensitive, and Node hands the child an
-      // environ block where a case-differing duplicate is ambiguous — so a
-      // host `MY_SECRET` beside the resolved secret `my_secret` could make
-      // docker's value-less `-e my_secret` read the HOST's value into the
-      // container (Codex review). Remove the aliases so the secret wins; a
-      // removed alias is never a docker-client var (that guard already ran,
-      // case-insensitively). POSIX env is case-sensitive, so on other
-      // platforms both keys are distinct legitimate vars and are left alone.
-      for (const existing of Object.keys(env)) {
-        if (existing !== k && existing.toUpperCase() === k.toUpperCase()) {
-          delete env[existing];
-        }
-      }
-    }
+    if (isMalformedEnvKey(k) || isDockerClientEnvKey(k)) continue;
     env[k] = v;
   }
   return env;

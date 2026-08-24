@@ -9,6 +9,10 @@ const repoRoot = join(__dirname, '..', '..', '..');
 const cliPath = join(repoRoot, 'dist', 'cli.js');
 const pkgPath = join(repoRoot, 'package.json');
 
+// Spawning the built CLI can exceed vitest's default 5s timeout on slower
+// machines under load; mirrors gen-handled-property-wiring's SPAWN_TIMEOUT_MS.
+const CLI_SPAWN_TIMEOUT_MS = 30_000;
+
 describe('cdkd --version', () => {
   it.skipIf(!existsSync(cliPath))(
     'reports the version baked in from package.json',
@@ -22,6 +26,6 @@ describe('cdkd --version', () => {
     // Spawning the built CLI takes >5s (vitest's default timeout) on slower
     // machines under load — same class as gen-handled-property-wiring's
     // SPAWN_TIMEOUT_MS.
-    30_000,
+    CLI_SPAWN_TIMEOUT_MS,
   );
 });

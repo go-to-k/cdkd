@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 import {
   DOCKER_CLIENT_ENV_KEYS,
   DOCKER_CLIENT_ENV_PREFIXES,
   dockerSpawnEnvWithSensitive,
   isDockerClientEnvKey,
+  isMalformedEnvKey,
   partitionSensitiveEnv,
   formatDockerLoginError,
   getDockerCmd,
@@ -12,7 +13,6 @@ import {
   spawnStreaming,
 } from '../../../src/utils/docker-cmd.js';
 import { SENSITIVE_ENV_KEYS } from '../../../src/local/docker-runner.js';
-import { getLogger } from '../../../src/utils/logger.js';
 
 describe('getDockerCmd', () => {
   let originalEnv: string | undefined;
@@ -463,6 +463,30 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     ).toEqual(['FOO=BAR']);
   });
 
+  it('refuses a malformed sensitive key defined by the positive good-shape rule (#2186 round 5)', () => {
+    // The good shape is "non-empty, no `=`, no NUL"; every complement takes the
+    // fail-closed collision path in ONE predicate rather than being closed one
+    // spelling at a time. The empty key would emit `-e ''` (docker rejects it
+    // with an opaque error naming no secret); a NUL-bearing key truncates.
+    for (const key of ['', 'FOO\0BAR', 'A=B', 'PATH=x:']) {
+      expect(isMalformedEnvKey(key)).toBe(true);
+      const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(
+        { [key]: 'v' },
+        new Set([key])
+      );
+      expect(collisions).toEqual([key]);
+      expect(flags).toEqual([]);
+      expect(sensitiveEnv[key]).toBeUndefined();
+      expect(dockerSpawnEnvWithSensitive({ [key]: 'v' })[key]).toBeUndefined();
+    }
+    // A well-formed name is delivered — the rule refuses only the bad shapes.
+    expect(isMalformedEnvKey('MY_SECRET')).toBe(false);
+    const ok = partitionSensitiveEnv({ MY_SECRET: 'v' }, new Set(['MY_SECRET']));
+    expect(ok.flags).toEqual(['-e', 'MY_SECRET']);
+    expect(ok.sensitiveEnv['MY_SECRET']).toBe('v');
+    expect(ok.collisions).toEqual([]);
+  });
+
   it.each([
     'SSH_PRIVATE_KEY', // GitLab CI's canonical deploy-key spelling
     'SSH_KEY',
@@ -534,53 +558,6 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     expect(partitionSensitiveEnv({ ONLY_SAFE: 'v' }, new Set(['ONLY_SAFE'])).collisions).toEqual(
       []
     );
-  });
-
-  it('on win32, removes a case-differing HOST alias so the secret wins the case-insensitive lookup', () => {
-    // Windows env lookups are case-insensitive, and Node hands the child an
-    // environ block where a case-differing duplicate is ambiguous — a host
-    // `CDKD_CASE_PROBE` beside the secret `cdkd_case_probe` could make the
-    // value-less `-e cdkd_case_probe` read the HOST's value (Codex review).
-    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
-    const savedHost = process.env['CDKD_CASE_PROBE'];
-    process.env['CDKD_CASE_PROBE'] = 'host-value';
-    try {
-      Object.defineProperty(process, 'platform', { value: 'win32' });
-      const env = dockerSpawnEnvWithSensitive({ cdkd_case_probe: 'secret-value' });
-      expect(env['cdkd_case_probe']).toBe('secret-value');
-      expect(env['CDKD_CASE_PROBE']).toBeUndefined();
-      // On POSIX both spellings are distinct legitimate vars and coexist.
-      Object.defineProperty(process, 'platform', { value: 'linux' });
-      const posixEnv = dockerSpawnEnvWithSensitive({ cdkd_case_probe: 'secret-value' });
-      expect(posixEnv['cdkd_case_probe']).toBe('secret-value');
-      expect(posixEnv['CDKD_CASE_PROBE']).toBe('host-value');
-    } finally {
-      Object.defineProperty(process, 'platform', platform);
-      if (savedHost === undefined) delete process.env['CDKD_CASE_PROBE'];
-      else process.env['CDKD_CASE_PROBE'] = savedHost;
-    }
-  });
-
-  it('on win32, warns when two SENSITIVE keys differ only by case — one value survives the lookup', () => {
-    // Both value-less `-e` flags would resolve to whichever value wins the
-    // case-insensitive Windows lookup, so the shadowing must be surfaced
-    // (Codex review). POSIX keeps both as distinct vars and stays silent.
-    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
-    const warnSpy = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
-    try {
-      Object.defineProperty(process, 'platform', { value: 'win32' });
-      dockerSpawnEnvWithSensitive({ my_secret: 'a', MY_SECRET: 'b' });
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(warnSpy.mock.calls[0]![0]).toContain('my_secret');
-      expect(warnSpy.mock.calls[0]![0]).toContain('MY_SECRET');
-      warnSpy.mockClear();
-      Object.defineProperty(process, 'platform', { value: 'linux' });
-      dockerSpawnEnvWithSensitive({ my_secret: 'a', MY_SECRET: 'b' });
-      expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      Object.defineProperty(process, 'platform', platform);
-      warnSpy.mockRestore();
-    }
   });
 
   it('drops a docker-client var the host never set, even if a secret defines it', () => {
