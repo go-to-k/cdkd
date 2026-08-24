@@ -291,6 +291,266 @@ export function formatDockerLoginError(stderr: string, endpoint: string): string
   return trimmed;
 }
 
+/**
+ * Env vars the docker CLI itself reads to decide how / where to run. A resolved
+ * ECS secret (or SecureString) whose NAME collides with one of these must NOT
+ * override it in the docker client's own process environment: a secret named
+ * `DOCKER_HOST` would redirect the client to a different daemon, and `PATH`
+ * would break locating the docker binary. See issue
+ * https://github.com/go-to-k/cdkd/issues/2183.
+ */
+export const DOCKER_CLIENT_ENV_KEYS: ReadonlySet<string> = new Set([
+  // RULE for additions: anything the docker CLIENT (or a credential / connection
+  // helper it execs) reads to decide WHAT CODE IT LOADS, WHAT IT TRUSTS, or
+  // WHERE / HOW IT CONNECTS. A user-controlled secret NAME matching one of these
+  // must never reach the client's own environment (issue #2183).
+  // Process-level vars the client needs to run at all (incl. Windows HOME).
+  // `PATHEXT` is here for the same code-execution reason as `PATH`: on Windows
+  // Go's executable lookup reads it to choose which extension of an adjacent
+  // helper (credential helper, `ssh`) to run, so a colliding secret can pick a
+  // different program.
+  'PATH',
+  'PATHEXT',
+  'HOME',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  // Connection / transport (docs.docker.com/reference/cli/docker) — a colliding
+  // secret here could redirect the client to a different daemon or downgrade TLS.
+  'DOCKER_HOST',
+  'DOCKER_CONTEXT',
+  'DOCKER_CONFIG',
+  'DOCKER_CERT_PATH',
+  'DOCKER_TLS',
+  'DOCKER_TLS_VERIFY',
+  'DOCKER_API_VERSION',
+  'DOCKER_AUTH_CONFIG',
+  // Execution / behavior.
+  'DOCKER_DEFAULT_PLATFORM',
+  'DOCKER_CUSTOM_HEADERS',
+  'DOCKER_CONTENT_TRUST',
+  'DOCKER_CONTENT_TRUST_SERVER',
+  'DOCKER_HIDE_LEGACY_COMMANDS',
+  'BUILDKIT_PROGRESS',
+  // Loader — a colliding secret injects code into the client process (and the
+  // credential / connection helpers it execs, which inherit its env). The docker
+  // CLI here is dynamically linked, so the loader vars are live. The WHOLE `LD_*`
+  // / `DYLD_*` family is caught by PREFIX in `isDockerClientEnvKey` rather than
+  // enumerated here — an exact list of loader vars is always one release behind
+  // (glibc `LD_*`, macOS `DYLD_ROOT_PATH` / `DYLD_IMAGE_SUFFIX` / ...); the
+  // non-prefixed loader vars are named individually: `GLIBC_TUNABLES` (glibc
+  // tuning) and `GCONV_PATH` (glibc loads gconv shared objects from it — a
+  // code-load vector of the same class, ignored only for setuid binaries,
+  // which the docker CLI is not).
+  'GLIBC_TUNABLES',
+  'GCONV_PATH',
+  // `BASH_ENV` is sourced by bash in NON-interactive shells, so it bites when
+  // a `docker-credential-*` helper is a shell-script wrapper (common for
+  // `aws ecr get-login-password` wrappers). `ENV` is interactive-only and is
+  // deliberately absent.
+  'BASH_ENV',
+  // SSH — the `ssh://`-context connection helper's exec/trust-bearing vars,
+  // enumerated EXACTLY rather than by an `SSH_` prefix (#2186 review round 3):
+  // the client-side exec/trust set is CLOSED (last addition
+  // `SSH_ASKPASS_REQUIRE`, OpenSSH 8.4, 2020), while an `SSH_` prefix breaks
+  // realistic secrets — `SSH_PRIVATE_KEY` is GitLab CI's canonical deploy-key
+  // spelling. `SSH_CONNECTION` / `SSH_CLIENT` / `SSH_TTY` /
+  // `SSH_ORIGINAL_COMMAND` are sshd-SET, never client-read, and stay off the
+  // list. The attack also needs the operator to already be on ssh transport
+  // (`DOCKER_HOST` / `DOCKER_CONTEXT` are exact-denylisted above), so unlike
+  // `LD_PRELOAD` it is not self-bootstrapping.
+  'SSH_AUTH_SOCK', // agent hijack
+  'SSH_ASKPASS', // OpenSSH execs the named program
+  'SSH_ASKPASS_REQUIRE',
+  'SSH_SK_HELPER', // security-key helper — OpenSSH execs it
+  'SSH_SK_PROVIDER', // FIDO provider LIBRARY path — OpenSSH dlopens it (Codex review)
+  'SSH_PKCS11_HELPER', // PKCS#11 helper — OpenSSH execs it
+  'SSH_AGENT_PID', // not load-bearing, kept for completeness of the closed set
+  // Credential-helper reach (#2186 review rounds 3-4): `docker run` on a
+  // missing image pulls, the pull auths, and the auth execs
+  // `docker-credential-ecr-login` — whose AWS SDK reads these to decide WHERE
+  // to send a request signed with the OPERATOR's real credentials
+  // (`dockerSpawnEnvWithSensitive` starts from `{ ...process.env }`, so those
+  // credentials are in the client's env unless a same-named container secret —
+  // they are in `SENSITIVE_ENV_KEYS` — overrides them). A secret named
+  // `AWS_ENDPOINT_URL` would make the helper sign with them and send the
+  // result to an attacker-chosen host — the `DOCKER_HOST` class, one helper
+  // over. The file/profile vars repoint which credentials it loads;
+  // `AWS_ROLE_ARN` is `AWS_WEB_IDENTITY_TOKEN_FILE`'s mandatory partner (an
+  // attacker-set role ARN plus the operator's own token file assumes a
+  // different identity), and `AWS_EC2_METADATA_SERVICE_ENDPOINT` redirects the
+  // IMDS credential source. The per-service `AWS_ENDPOINT_URL_<SERVICE>` forms
+  // (aws-sdk-go-v2 honours them) are caught by PREFIX in
+  // `isDockerClientEnvKey`, since an exact list per service cannot keep up.
+  'AWS_ENDPOINT_URL',
+  'AWS_CA_BUNDLE',
+  'AWS_PROFILE',
+  'AWS_CONFIG_FILE',
+  'AWS_SHARED_CREDENTIALS_FILE',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+  'AWS_ROLE_ARN',
+  'AWS_EC2_METADATA_SERVICE_ENDPOINT',
+  // Trust — a colliding secret repoints the client's trusted CA bundle for the
+  // daemon / registry TLS handshake (Go's x509 honours these on Linux) or tunes
+  // the Go runtime.
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'GODEBUG',
+  // Proxy vars the client honors for registry connections — a colliding secret
+  // could route the client's traffic (incl. image pulls) through an attacker.
+  // Only the upper-case spellings are listed: matching is case-insensitive
+  // (`DOCKER_CLIENT_ENV_KEYS_UPPER`), so lower-case duplicates were unreachable.
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'FTP_PROXY',
+  'ALL_PROXY',
+]);
+
+const DOCKER_CLIENT_ENV_KEYS_UPPER: ReadonlySet<string> = new Set(
+  [...DOCKER_CLIENT_ENV_KEYS].map((k) => k.toUpperCase())
+);
+
+/**
+ * Env-var prefixes whose WHOLE family the docker client (or a helper it execs)
+ * reads, so a NAMED list is always one release behind and a colliding secret in
+ * ANY member is a hazard. `LD_*` / `DYLD_*` are the dynamic loader (code
+ * injection, glibc + macOS); `AWS_ENDPOINT_URL_*` is the per-service endpoint
+ * family aws-sdk-go-v2 (and so `docker-credential-ecr-login`) honours — a
+ * secret named `AWS_ENDPOINT_URL_ECR` walks around the exact
+ * `AWS_ENDPOINT_URL` entry and redirects a request signed with the operator's
+ * real credentials (#2186 round 4). No plausible secret name collides with
+ * any of the three. Matched by prefix rather than enumerated (issue #2183
+ * review). `SSH_` was a prefix here and was demoted to an EXACT enumeration
+ * in {@link DOCKER_CLIENT_ENV_KEYS} (#2186 review round 3): the family is not
+ * uniformly dangerous and is not growing, while the prefix broke realistic,
+ * currently-working secrets (`SSH_PRIVATE_KEY`, GitLab CI's canonical
+ * deploy-key spelling). Exported so the test fence can assert the EXACT
+ * contents — a hardcoded copy in the test made the anti-shadowing fence
+ * one-directional (#2186 round 4 finding 2).
+ */
+export const DOCKER_CLIENT_ENV_PREFIXES: readonly string[] = ['LD_', 'DYLD_', 'AWS_ENDPOINT_URL_'];
+
+/**
+ * Is `key` the name of a var the docker client reads? Case-INSENSITIVE, because
+ * Windows environment lookups are, so a lowercase `docker_host` must be caught
+ * too (issue #2183). Matches the exact denylist OR a prefixed family — the
+ * prefix families are fail-closed on the whole prefix, so an unlisted `LD_*` /
+ * `DYLD_*` / `AWS_ENDPOINT_URL_*` secret is dropped (with a rename warning)
+ * rather than reaching the client.
+ */
+export function isDockerClientEnvKey(key: string): boolean {
+  const upper = key.toUpperCase();
+  if (DOCKER_CLIENT_ENV_KEYS_UPPER.has(upper)) return true;
+  return DOCKER_CLIENT_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix));
+}
+
+/**
+ * Is `key` a shape that cannot be a well-formed `docker run -e` variable NAME?
+ * Defined POSITIVELY as the good shape's complement (#2186 round 5): a valid
+ * name is non-empty and contains neither `=` nor NUL. Enumerating the bad
+ * spellings one at a time closed `=` in round 4 and left the empty key (`-e ''`
+ * — docker rejects it with an opaque error naming no secret) and a NUL-bearing
+ * key still open. A sensitive key matching this takes the same fail-closed
+ * collision path as a docker-client-var name: no `-e` flag, no spawn-env entry,
+ * reported in `collisions`. (This is the NAME only; a secret VALUE containing a
+ * NUL is a separate pre-existing leak tracked in issue #2189.)
+ */
+export function isMalformedEnvKey(key: string): boolean {
+  return key.length === 0 || key.includes('=') || key.includes('\0');
+}
+
+/**
+ * Split a container's environment into `docker run` `-e` flags and the values
+ * that must travel through the spawn env instead of the argv.
+ *
+ * - a NON-sensitive key becomes `-e KEY=value` on the argv (unchanged);
+ * - a sensitive key becomes a value-less `-e KEY`, its value returned in
+ *   `sensitiveEnv` for {@link dockerSpawnEnvWithSensitive};
+ * - a sensitive key that NAMES a docker-client var ({@link isDockerClientEnvKey}
+ *   — the exact denylist plus the prefix families, so an external caller must
+ *   use the predicate, not `DOCKER_CLIENT_ENV_KEYS.has`) gets NO flag at all,
+ *   its value is dropped, and the key is reported in `collisions` so the
+ *   caller can warn;
+ * - a sensitive key of a MALFORMED shape ({@link isMalformedEnvKey} — empty,
+ *   or containing `=` / NUL) takes the same fail-closed path (#2186 rounds
+ *   4-5). The denylist matches the WHOLE key string, but Node serialises env
+ *   as `key=value` and the OS parses the variable NAME as everything before
+ *   the FIRST `=` — so a secret named `PATH=/tmp/evil:` is not a denylist
+ *   match while the environ it produces (`PATH=/tmp/evil:=<secret>`) POISONS
+ *   the client's `PATH`, and the poisoned duplicate wins (measured). The
+ *   docker CLI execs `docker-credential-*` helpers off `PATH`, so that is code
+ *   execution as the operator. Defining the GOOD shape positively also catches
+ *   the empty key (`-e ''`, an opaque docker rejection) in one predicate.
+ *
+ * The collision case is why the argv half lives here beside the env half.
+ * Emitting `-e KEY` for a key that `dockerSpawnEnvWithSensitive` refuses to
+ * set makes docker resolve the flag against the CLIENT's own environment, so
+ * the container silently receives the HOST's value for that var (issue #2183)
+ * -- e.g. the host's `HTTPS_PROXY` credential, or a macOS `PATH` inside a
+ * Linux image. Dropping the flag is what makes "not forwarded" literally true.
+ */
+export function partitionSensitiveEnv(
+  env: Record<string, string>,
+  sensitiveKeys: ReadonlySet<string>
+): { flags: string[]; sensitiveEnv: Record<string, string>; collisions: string[] } {
+  const flags: string[] = [];
+  const sensitiveEnv: Record<string, string> = {};
+  const collisions: string[] = [];
+  for (const [k, v] of Object.entries(env)) {
+    if (!sensitiveKeys.has(k)) {
+      flags.push('-e', `${k}=${v}`);
+      continue;
+    }
+    if (isMalformedEnvKey(k) || isDockerClientEnvKey(k)) {
+      collisions.push(k);
+      continue;
+    }
+    flags.push('-e', k);
+    sensitiveEnv[k] = v;
+  }
+  return { flags, sensitiveEnv, collisions };
+}
+
+/**
+ * Build the environment for a `docker run` that forwards value-less `-e KEY`
+ * flags (the pattern that keeps secret VALUES off the argv / `/proc/<pid>/cmdline`).
+ * The child gets the full parent env plus the sensitive passthrough, but the
+ * docker client's own critical vars ({@link isDockerClientEnvKey}) are kept
+ * authoritative from `process.env`, so a user-controlled secret NAME cannot
+ * hijack the client (issue #2183). Callers should partition through
+ * {@link partitionSensitiveEnv}, which never puts a colliding key in
+ * `sensitiveEnv`; the guard here is defence in depth.
+ */
+export function dockerSpawnEnvWithSensitive(
+  sensitiveEnv: Record<string, string>
+): NodeJS.ProcessEnv {
+  // Start from the client's OWN environment and add only the sensitive keys
+  // that do NOT name a docker-client var and are not malformed. A colliding /
+  // malformed secret is never written, so it can neither hijack the client
+  // (redirect the daemon, break PATH) nor leave a stale value behind —
+  // regardless of whether the host set that var. The malformed-key guard is
+  // belt-and-braces with `partitionSensitiveEnv`'s (#2186 rounds 4-5): this
+  // function is exported — the follow-up #2187 is set to route `runDetached`
+  // through it (issue #2184; today that path still spreads its passthrough env
+  // directly) — and a key containing `=` serialises as an environ entry whose
+  // OS-parsed NAME is only the part before the first `=`, which the denylist
+  // check cannot see, so the raw key must be refused here too.
+  //
+  // NOTE: case-insensitive Windows env handling (a case-differing HOST alias of
+  // a passthrough key, and two sensitive keys differing only by case) is
+  // DELIBERATELY not handled here — it needs the Windows-critical vars on the
+  // denylist first and a real Windows execution path, neither of which exists
+  // in this repo (CI is ubuntu-only). Tracked in issue #2190.
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const [k, v] of Object.entries(sensitiveEnv)) {
+    if (isMalformedEnvKey(k) || isDockerClientEnvKey(k)) continue;
+    env[k] = v;
+  }
+  return env;
+}
+
 function mergeEnv(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
   const merged: NodeJS.ProcessEnv = { ...process.env };
   for (const [k, v] of Object.entries(overrides)) {

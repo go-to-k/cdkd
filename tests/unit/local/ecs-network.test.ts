@@ -11,7 +11,9 @@ import {
 // The mock must handle BOTH 3-arg (execFile(cmd, args, cb)) AND 4-arg
 // (execFile(cmd, args, opts, cb)) forms because promisify(execFile) uses
 // the 3-arg form internally. See memory: mock_execfile_3and4arg.
-const captured = vi.hoisted<{ calls: { cmd: string; args: string[] }[] }>(() => ({ calls: [] }));
+const captured = vi.hoisted<{
+  calls: { cmd: string; args: string[]; opts?: { env?: NodeJS.ProcessEnv } }[];
+}>(() => ({ calls: [] }));
 
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
@@ -23,7 +25,11 @@ vi.mock('node:child_process', async () => {
       a3: unknown,
       a4?: (err: Error | null, res: { stdout: string; stderr: string }) => void
     ) => {
-      captured.calls.push({ cmd, args });
+      captured.calls.push({
+        cmd,
+        args,
+        opts: typeof a3 === 'function' ? undefined : (a3 as { env?: NodeJS.ProcessEnv }),
+      });
       const cb = typeof a3 === 'function' ? (a3 as typeof a4)! : a4!;
       // docker network create / docker run / docker rm / docker network rm /
       // docker pull all succeed with a synthetic id when applicable.
@@ -112,7 +118,11 @@ describe('createTaskNetwork / destroyTaskNetwork', () => {
   it('creates the network and starts the sidecar with cred env vars', async () => {
     const net = await createTaskNetwork({
       cluster: 'cdkd-local',
-      credentials: { accessKeyId: 'A', secretAccessKey: 'B', sessionToken: 'C' },
+      credentials: {
+        accessKeyId: 'AKIAFAKEKEYID',
+        secretAccessKey: 'super-secret-value-xyz',
+        sessionToken: 'session-token-abc',
+      },
       skipPull: true,
     });
     expect(net.networkName).toMatch(/^cdkd-local-task-/);
@@ -130,10 +140,21 @@ describe('createTaskNetwork / destroyTaskNetwork', () => {
     expect(runCall!.args.join(' ')).toContain(METADATA_ENDPOINT_IMAGE);
     expect(runCall!.args.join(' ')).toContain('--ip');
     expect(runCall!.args.join(' ')).toContain(METADATA_ENDPOINT_IP);
-    // Credentials forwarded to the sidecar env block:
-    expect(runCall!.args.join(' ')).toContain('AWS_ACCESS_KEY_ID=A');
-    expect(runCall!.args.join(' ')).toContain('AWS_SECRET_ACCESS_KEY=B');
-    expect(runCall!.args.join(' ')).toContain('AWS_SESSION_TOKEN=C');
+    // Credentials are passed value-LESS on argv (`-e AWS_ACCESS_KEY_ID`) and
+    // their values go through the spawn env, so they never land on
+    // `/proc/<pid>/cmdline` (issue #2183). CLUSTER (non-credential) stays inline.
+    expect(runCall!.args).toContain('AWS_ACCESS_KEY_ID');
+    expect(runCall!.args).toContain('AWS_SECRET_ACCESS_KEY');
+    expect(runCall!.args).toContain('AWS_SESSION_TOKEN');
+    const joined = runCall!.args.join(' ');
+    expect(joined).toContain('CLUSTER=cdkd-local');
+    expect(joined).not.toContain('AKIAFAKEKEYID');
+    expect(joined).not.toContain('super-secret-value-xyz');
+    expect(joined).not.toContain('session-token-abc');
+    // ...and are handed to docker through the spawn env instead:
+    expect(runCall!.opts?.env?.['AWS_ACCESS_KEY_ID']).toBe('AKIAFAKEKEYID');
+    expect(runCall!.opts?.env?.['AWS_SECRET_ACCESS_KEY']).toBe('super-secret-value-xyz');
+    expect(runCall!.opts?.env?.['AWS_SESSION_TOKEN']).toBe('session-token-abc');
   });
 
   it('destroyTaskNetwork is idempotent on undefined', async () => {

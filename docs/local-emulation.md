@@ -1248,6 +1248,32 @@ fixes their AWS creds / IAM policy and re-runs. (Mirrors the
 `cdkd local invoke --from-state` philosophy: explicit failure beats
 silently-empty.)
 
+**Secret names that are refused.** When a secret's name is accepted, its VALUE
+reaches the container through the `docker run` spawn environment (a value-less
+`-e KEY` flag, so the plaintext never appears on the argv / `/proc/<pid>/cmdline`).
+The NAME decides whether the secret is forwarded at all: two name shapes are
+**not passed to the container** — no `-e` flag and no spawn-env entry, so the
+value reaches neither the argv nor the spawn environment:
+
+- **A name that collides with a variable the docker CLI itself reads** —
+  matched case-insensitively (Windows env lookups are). This is a fixed exact
+  denylist (connection / TLS / behaviour, `PATH` / `PATHEXT` / `HOME` /
+  `USERPROFILE`, the loader / trust / runtime vars, the ssh exec-helper set,
+  and the AWS credential-helper vars `docker-credential-ecr-login` reads) plus
+  the `LD_` / `DYLD_` / `AWS_ENDPOINT_URL_` prefix families; the authoritative
+  list is `DOCKER_CLIENT_ENV_KEYS` / `DOCKER_CLIENT_ENV_PREFIXES` in
+  [src/utils/docker-cmd.ts](../src/utils/docker-cmd.ts). Forwarding such a name
+  would let a template-controlled secret NAME redirect the docker client itself
+  (e.g. a secret named `DOCKER_HOST` pointing the client at a different daemon).
+- **A malformed name** — empty, or containing `=` / NUL. A name containing `=`
+  is the dangerous case: the OS parses the environ entry's name as everything
+  before the first `=`, so a secret named `PATH=/tmp/evil:` would be parsed as
+  `PATH` — a different variable than the collision check saw. An empty or
+  NUL-bearing name simply cannot form a valid environment variable.
+
+Each refusal is reported with a `warn` identifying the dropped secret(s) so the
+drop is never silent; rename the secret if the container needs the value.
+
 ### Container start ordering — `DependsOn`
 
 | Condition | What cdkd waits for |

@@ -5,6 +5,15 @@ import type {
   ResolvedEcsVolume,
 } from '../../../src/local/ecs-task-resolver.js';
 
+// Logger spy (issue #2183 item 9): the collision `logger.warn` is the only
+// user-visible signal that a secret did not reach the container, so it is
+// fenced directly. `ecs-task-runner` logs via `getLogger().child('ecs-runner')`.
+const warnSpy = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/utils/logger.js', () => {
+  const leaf = { info: vi.fn(), debug: vi.fn(), warn: warnSpy, error: vi.fn(), setLevel: vi.fn() };
+  return { getLogger: () => ({ ...leaf, child: () => leaf }) };
+});
+
 // =====================================================================
 // Mocking strategy
 // =====================================================================
@@ -921,5 +930,188 @@ describe('cleanupEcsRun — keepRunning + ordering (G2)', () => {
     await cleanupEcsRun(state, { keepRunning: false });
     expect(volRms).toEqual(['vol-1', 'vol-2']);
     expect(state.dockerVolumeNames).toEqual([]);
+  });
+});
+
+
+describe('runEcsTask — secret values stay off argv (issue #2183)', () => {
+  it('passes a resolved secret value-less on argv and hands the value to the spawn env', async () => {
+    captured.responder = (_cmd: string, args: string[]) =>
+      args[0] === 'run' ? { stdout: 'cid\n' } : { stdout: '' };
+    const c = makeContainer({
+      name: 'app',
+      secrets: [{ name: 'DB_PASS', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:db' }],
+    });
+    const state = createEcsRunState();
+    await runEcsTask(makeTask({ containers: [c] }), baseOptions(), state);
+
+    const runCall = dockerRunCalls()[0]!;
+    const joined = runCall.args.join(' ');
+    // The resolveEcsSecrets stub resolves `DB_PASS` -> `resolved-DB_PASS`. The
+    // fix must keep that value OFF the argv (only the value-less `-e DB_PASS`
+    // flag appears) and deliver it through the spawn env instead — this is the
+    // orchestrator-level fence that a bypass at the execFile call would trip.
+    expect(runCall.args).toContain('DB_PASS');
+    expect(joined).not.toContain('DB_PASS=resolved-DB_PASS');
+    expect(joined).not.toContain('resolved-DB_PASS');
+    expect((runCall.opts as { env?: Record<string, string> }).env?.['DB_PASS']).toBe(
+      'resolved-DB_PASS'
+    );
+  });
+});
+
+describe('runEcsTask — per-container secret isolation + client-env collisions (issue #2183)', () => {
+  it('gives each container ONLY its own resolved secret in the spawn env', async () => {
+    // `dockerEnvs` is keyed by container name. Every other ECS test runs a
+    // single container, so a lookup that cross-wires the map (container B
+    // starting with container A's sensitiveEnv) is invisible — a secret
+    // CROSSING bug in a PR about secret handling. Two containers, two secrets.
+    captured.responder = (_cmd: string, args: string[]) =>
+      args[0] === 'run' ? { stdout: 'cid\n' } : { stdout: '' };
+    const a = makeContainer({
+      name: 'a',
+      essential: false,
+      secrets: [{ name: 'A_SECRET', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:a' }],
+    });
+    const b = makeContainer({
+      name: 'b',
+      secrets: [{ name: 'B_SECRET', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:b' }],
+    });
+    const state = createEcsRunState();
+    await runEcsTask(makeTask({ containers: [a, b] }), baseOptions(), state);
+
+    const runs = dockerRunCalls();
+    expect(runs).toHaveLength(2);
+    const envOf = (i: number) => (runs[i]!.opts as { env?: Record<string, string> }).env ?? {};
+    // Each container carries its own value...
+    expect(envOf(0)['A_SECRET']).toBe('resolved-A_SECRET');
+    expect(envOf(1)['B_SECRET']).toBe('resolved-B_SECRET');
+    // ...and NOT the sibling's. This is the half that a cross-wired lookup
+    // breaks while every positive assertion above still passes.
+    expect(envOf(0)['B_SECRET']).toBeUndefined();
+    expect(envOf(1)['A_SECRET']).toBeUndefined();
+  });
+
+  it('passes a secret named after a docker-client var to the container NOT AT ALL', async () => {
+    // A value-less `-e DOCKER_HOST` would be resolved by docker against the
+    // CLIENT's own environment, so the container would receive the HOST's
+    // docker socket rather than nothing. Verified against real docker: the
+    // same shape with `-e PATH` hands a Linux image the macOS host PATH.
+    captured.responder = (_cmd: string, args: string[]) =>
+      args[0] === 'run' ? { stdout: 'cid\n' } : { stdout: '' };
+    const c = makeContainer({
+      name: 'app',
+      secrets: [
+        { name: 'DOCKER_HOST', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:h' },
+        { name: 'OK_SECRET', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:o' },
+      ],
+    });
+    const state = createEcsRunState();
+    await runEcsTask(makeTask({ containers: [c] }), baseOptions(), state);
+
+    const run = dockerRunCalls()[0]!;
+    // No flag at all for the colliding name — neither `-e DOCKER_HOST` nor
+    // `-e DOCKER_HOST=<value>`.
+    expect(run.args).not.toContain('DOCKER_HOST');
+    expect(run.args.join(' ')).not.toContain('DOCKER_HOST');
+    // The value is not smuggled through the spawn env either.
+    const env = (run.opts as { env?: Record<string, string> }).env ?? {};
+    expect(env['DOCKER_HOST']).not.toBe('resolved-DOCKER_HOST');
+    // Positive control: the non-colliding secret is unaffected, so this test
+    // cannot pass by the whole secret path being broken.
+    expect(run.args).toContain('OK_SECRET');
+    expect(env['OK_SECRET']).toBe('resolved-OK_SECRET');
+  });
+
+  it('warns (not silently) when a secret name collides with a docker-client var', async () => {
+    // The warning is the only signal that a secret was not passed to the
+    // container; without this test the whole `logger.warn` block can be deleted
+    // with the suite green (issue #2183 item 9).
+    warnSpy.mockClear();
+    captured.responder = (_cmd: string, args: string[]) =>
+      args[0] === 'run' ? { stdout: 'cid\n' } : { stdout: '' };
+    const c = makeContainer({
+      name: 'app',
+      secrets: [{ name: 'DOCKER_HOST', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:h' }],
+    });
+    await runEcsTask(makeTask({ containers: [c] }), baseOptions(), createEcsRunState());
+    const msg = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(msg).toContain('DOCKER_HOST');
+    expect(msg).toContain('were NOT passed to the container');
+  });
+
+  it("drops a secret whose NAME contains '=' end-to-end and warns naming the '=' cause (#2186 round 5)", async () => {
+    // A secret named `PATH=/tmp/evil:` serialises to an environ entry whose
+    // OS-parsed NAME is `PATH`, poisoning the docker client. The pure-helper
+    // guard is covered in docker-cmd.test.ts; this exercises the whole
+    // runEcsTask path — no `=`-named secret reached the container end-to-end
+    // before, and the '=' half of the warning had no test (deleting the
+    // `malformed` clause left the runner suite green).
+    warnSpy.mockClear();
+    captured.responder = (_cmd: string, args: string[]) =>
+      args[0] === 'run' ? { stdout: 'cid\n' } : { stdout: '' };
+    const c = makeContainer({
+      name: 'app',
+      secrets: [
+        { name: 'PATH=/tmp/evil:', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:p' },
+        { name: 'OK_SECRET', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:o' },
+      ],
+    });
+    await runEcsTask(makeTask({ containers: [c] }), baseOptions(), createEcsRunState());
+    const run = dockerRunCalls()[0]!;
+    // No flag at all, and the value is not in the spawn env.
+    expect(run.args.join(' ')).not.toContain('PATH=/tmp/evil:');
+    const env = (run.opts as { env?: Record<string, string> }).env ?? {};
+    expect(env['PATH=/tmp/evil:']).toBeUndefined();
+    // The real host PATH survives (the value-less flag was never emitted).
+    expect(env['PATH']).toBe(process.env['PATH']);
+    // Positive control: the well-formed sibling is delivered.
+    expect(run.args).toContain('OK_SECRET');
+    expect(env['OK_SECRET']).toBe('resolved-OK_SECRET');
+    // The warning names the key AND the malformed cause. Assert the unique
+    // descriptive clause (not the bare word 'malformed', which also appears in
+    // the fixed tail) so deleting the cause-listing clause reds this.
+    const msg = warnSpy.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(msg).toContain('PATH=/tmp/evil:');
+    expect(msg).toContain("empty, or containing '=' / NUL");
+  });
+
+  it("reports a later container's dropped secret even when an earlier container's docker run fails (issue #2183 review)", async () => {
+    // The warn lives in the build loop, before any container starts, so an
+    // earlier container's boot failure cannot hide a later container's dropped
+    // secret (nor get it mislabelled as "docker run failed"). With the warn in
+    // the old per-start location, 'a' failing first aborts the run before 'b'
+    // ever starts and 'b's warning is lost.
+    warnSpy.mockClear();
+    let runCall = 0;
+    captured.responder = (_cmd: string, args: string[]) => {
+      if (args[0] === 'run') {
+        runCall += 1;
+        if (runCall === 1) return { err: new Error('boom'), stderr: 'docker run failed' };
+        return { stdout: 'cid\n' };
+      }
+      return { stdout: '' };
+    };
+    const a = makeContainer({ name: 'a' });
+    const b = makeContainer({
+      name: 'b',
+      secrets: [{ name: 'DOCKER_HOST', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:h' }],
+    });
+    const state = createEcsRunState();
+    // The task MUST reject — an essential container's `docker run` failing is a
+    // task failure. Asserting the rejection (rather than swallowing it) plus
+    // runCall === 1 proves the first container's `docker run` was actually
+    // reached and failed, so this test cannot pass vacuously on some earlier
+    // setup error (issue #2183 review).
+    await expect(
+      runEcsTask(makeTask({ containers: [a, b] }), baseOptions(), state)
+    ).rejects.toThrow();
+    expect(runCall).toBe(1);
+    const msg = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(msg).toContain("Container 'b'");
+    expect(msg).toContain('DOCKER_HOST');
+    // The warning is the build-loop collision warning, NOT the start loop's
+    // "docker run failed" relabelling of container a's failure.
+    expect(msg).not.toContain('docker run failed');
   });
 });

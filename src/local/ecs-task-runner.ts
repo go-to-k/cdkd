@@ -3,9 +3,19 @@ import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 import { promisify } from 'node:util';
 import graphlib from 'graphlib';
-import { getDockerCmd, runDockerStreaming } from '../utils/docker-cmd.js';
+import {
+  dockerSpawnEnvWithSensitive,
+  getDockerCmd,
+  partitionSensitiveEnv,
+  runDockerStreaming,
+} from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
-import { DockerRunnerError, pullImage, removeContainer } from './docker-runner.js';
+import {
+  DockerRunnerError,
+  SENSITIVE_ENV_KEYS,
+  pullImage,
+  removeContainer,
+} from './docker-runner.js';
 import { buildDockerImage } from '../assets/docker-build.js';
 import { pullEcrImage } from './ecr-puller.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
@@ -400,6 +410,11 @@ export async function runEcsTask(
   // Pre-compute every container's CMD args so the start loop only does
   // docker calls.
   const dockerCmds = new Map<string, string[]>();
+  // Sensitive env values kept OUT of argv (see `buildDockerRunArgs`), keyed by
+  // container name and forwarded to each `docker run` via the spawn `env`.
+  // (`collisions` is consumed in the build loop below, not stored — the start
+  // loop reads only the sensitive env.)
+  const dockerEnvs = new Map<string, Record<string, string>>();
   for (const container of task.containers) {
     const image = imagePlan.get(container.name);
     if (!image) {
@@ -407,31 +422,43 @@ export async function runEcsTask(
         `Internal: no resolved image for container '${container.name}'.`
       );
     }
-    dockerCmds.set(
-      container.name,
-      buildDockerRunArgs({
-        task,
-        container,
-        image,
-        network: state.network.networkName,
-        volumeByName,
-        secrets: secretsByContainer.get(container.name) ?? [],
-        envOverrides: options.envOverrides,
-        containerHost: options.containerHost,
-        roleArn: options.taskRoleArn,
-        platformOverride: options.platformOverride,
-        region: options.region,
-        sidecarIp: state.network.sidecarIp,
-        ...(options.skipHostPortPublish ? { skipHostPortPublish: true } : {}),
-        ...(mergedAddHostFlags.length > 0 ? { addHostFlags: mergedAddHostFlags } : {}),
-        ...((options.networkAliasesByContainer?.get(container.name)?.length ?? 0) > 0
-          ? { networkAliases: options.networkAliasesByContainer!.get(container.name)! }
-          : {}),
-        ...(options.profileCredentialsFile && {
-          profileCredentialsFile: options.profileCredentialsFile,
-        }),
-      })
-    );
+    const built = buildDockerRunArgs({
+      task,
+      container,
+      image,
+      network: state.network.networkName,
+      volumeByName,
+      secrets: secretsByContainer.get(container.name) ?? [],
+      envOverrides: options.envOverrides,
+      containerHost: options.containerHost,
+      roleArn: options.taskRoleArn,
+      platformOverride: options.platformOverride,
+      region: options.region,
+      sidecarIp: state.network.sidecarIp,
+      ...(options.skipHostPortPublish ? { skipHostPortPublish: true } : {}),
+      ...(mergedAddHostFlags.length > 0 ? { addHostFlags: mergedAddHostFlags } : {}),
+      ...((options.networkAliasesByContainer?.get(container.name)?.length ?? 0) > 0
+        ? { networkAliases: options.networkAliasesByContainer!.get(container.name)! }
+        : {}),
+      ...(options.profileCredentialsFile && {
+        profileCredentialsFile: options.profileCredentialsFile,
+      }),
+    });
+    dockerCmds.set(container.name, built.args);
+    dockerEnvs.set(container.name, built.sensitiveEnv);
+    // A resolved secret whose NAME collides with a var the docker CLIENT reads
+    // — or is a MALFORMED env name (`isMalformedEnvKey`: empty, or containing
+    // `=` / NUL) — reaches neither the argv nor the spawn env (it would hijack
+    // the client, and a value-less `-e KEY` would hand the container the HOST's
+    // value — see `partitionSensitiveEnv`). Warn HERE, in the build loop: every container's
+    // drop is reported regardless of whether an earlier container's `docker run`
+    // fails, and outside the start loop's try/catch that relabels errors as
+    // "docker run failed" (issue #2183 review).
+    if (built.collisions.length > 0) {
+      logger.warn(
+        `Container '${container.name}': secret(s) ${built.collisions.join(', ')} share a name with a docker-client environment variable or have a malformed name (empty, or containing '=' / NUL), and were NOT passed to the container at all (a colliding name would hijack the docker client; a malformed name cannot form a valid environment variable). Rename the secret if the container needs it.`
+      );
+    }
   }
 
   // Boot containers in dependency order. Each container's `dependsOn`
@@ -450,7 +477,13 @@ export async function runEcsTask(
     logger.info(`Starting container '${container.name}' (image=${imagePlan.get(container.name)})`);
     let id: string;
     try {
-      const { stdout } = await execFileAsync(getDockerCmd(), args, { maxBuffer: 10 * 1024 * 1024 });
+      const sensitiveEnv = dockerEnvs.get(container.name)!;
+      const { stdout } = await execFileAsync(getDockerCmd(), args, {
+        maxBuffer: 10 * 1024 * 1024,
+        // The `-e KEY` (value-less) flags read their values from here, so
+        // secrets / credentials never reach the `docker run` argv.
+        env: dockerSpawnEnvWithSensitive(sensitiveEnv),
+      });
       id = stdout.trim();
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
@@ -925,7 +958,12 @@ interface BuildDockerRunArgs {
  * Exported (no-leading-underscore) so the unit tests can assert against
  * the shape directly without spawning a process.
  */
-export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
+export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
+  args: string[];
+  sensitiveEnv: Record<string, string>;
+  /** Secret names dropped because they name a docker-client var (issue #2183). */
+  collisions: string[];
+} {
   const { task, container, image, network, volumeByName, secrets, containerHost, roleArn } = opts;
   const args: string[] = ['run', '-d'];
 
@@ -1053,9 +1091,18 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
     applyOverrideMap(finalEnv, overrides[container.name]);
   }
 
-  for (const [k, v] of Object.entries(finalEnv)) {
-    args.push('-e', `${k}=${v}`);
-  }
+  // Split the resolved env into `-e` flags plus the values that must travel
+  // through the spawn env (see `partitionSensitiveEnv`): a sensitive key — the
+  // AWS credential set plus each resolved secret name — becomes a value-less
+  // `-e KEY` (its value carried in `sensitiveEnv`, off the argv /
+  // `/proc/<pid>/cmdline`), unless it NAMES a docker-client var or is a
+  // MALFORMED env name (`isMalformedEnvKey` — empty, or containing `=` / NUL;
+  // the environ NAME the OS parses would differ from the key the denylist
+  // checked — #2186 rounds 4-5), in which case it gets no flag at all and is
+  // reported in `collisions`. Mirrors `runDetached` in `docker-runner.ts`.
+  const sensitiveKeys = new Set<string>([...SENSITIVE_ENV_KEYS, ...secrets.map((s) => s.name)]);
+  const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(finalEnv, sensitiveKeys);
+  args.push(...flags);
 
   if (container.user) args.push('--user', container.user);
   if (container.privileged) args.push('--privileged');
@@ -1091,7 +1138,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
   }
 
   args.push(image, ...entryPointTail, ...(container.command ?? []));
-  return args;
+  return { args, sensitiveEnv, collisions };
 }
 
 function applyOverrideMap(

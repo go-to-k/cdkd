@@ -78,7 +78,7 @@ describe('buildDockerRunArgs', () => {
     const c = makeContainer({
       portMappings: [{ containerPort: 80, hostPort: 8080, protocol: 'tcp' }],
     });
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c] }),
       container: c,
       image: 'nginx:alpine',
@@ -104,7 +104,7 @@ describe('buildDockerRunArgs', () => {
     const c = makeContainer({
       portMappings: [{ containerPort: 80, protocol: 'tcp' }],
     });
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c] }),
       container: c,
       image: 'nginx',
@@ -127,7 +127,7 @@ describe('buildDockerRunArgs', () => {
         { name: 'admin', containerPort: 9000, protocol: 'tcp' },
       ],
     });
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c] }),
       container: c,
       image: 'nginx',
@@ -153,7 +153,7 @@ describe('buildDockerRunArgs', () => {
     const c = makeContainer({
       portMappings: [{ name: 'api', containerPort: 80, hostPort: 8081, protocol: 'tcp' }],
     });
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c] }),
       container: c,
       image: 'nginx',
@@ -178,7 +178,7 @@ describe('buildDockerRunArgs', () => {
       environment: { LOG_LEVEL: 'debug' },
       secrets: [{ name: 'X', valueFrom: 'irrelevant' }],
     });
-    const args = buildDockerRunArgs({
+    const { args, sensitiveEnv } = buildDockerRunArgs({
       task: makeTask({ containers: [c] }),
       container: c,
       image: 'nginx',
@@ -195,12 +195,51 @@ describe('buildDockerRunArgs', () => {
     expect(joined).toContain('ECS_CONTAINER_METADATA_URI_V4=');
     expect(joined).toContain('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=');
     expect(joined).toContain('LOG_LEVEL=info'); // override beats template literal
-    expect(joined).toContain('X=resolved-value');
+    // A resolved secret is passed value-LESS on argv (`-e X`) and its value is
+    // handed to the container through the spawn env instead, so it never lands
+    // on `/proc/<pid>/cmdline` (issue #2183).
+    expect(args).toContain('X');
+    expect(joined).not.toContain('X=resolved-value');
+    expect(joined).not.toContain('resolved-value');
+    expect(sensitiveEnv['X']).toBe('resolved-value');
+  });
+
+  it('keeps AWS credential env out of argv even when set from the template (issue #2183)', () => {
+    const c = makeContainer({
+      name: 'svc',
+      environment: {
+        AWS_SECRET_ACCESS_KEY: 'template-set-secret',
+        PUBLIC_CFG: 'ok',
+      },
+    });
+    const { args, sensitiveEnv } = buildDockerRunArgs({
+      task: makeTask({ containers: [c] }),
+      container: c,
+      image: 'nginx',
+      network: 'n',
+      volumeByName: new Map(),
+      secrets: [],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+    });
+    const joined = args.join(' ');
+    // Even a credential key that arrives via the task-definition environment
+    // (not the Secrets block) is emitted value-less and routed through the
+    // spawn env, so it never reaches `/proc/<pid>/cmdline`.
+    expect(args).toContain('AWS_SECRET_ACCESS_KEY');
+    expect(joined).not.toContain('AWS_SECRET_ACCESS_KEY=template-set-secret');
+    expect(joined).not.toContain('template-set-secret');
+    expect(sensitiveEnv['AWS_SECRET_ACCESS_KEY']).toBe('template-set-secret');
+    // Non-credential env stays inline.
+    expect(joined).toContain('PUBLIC_CFG=ok');
   });
 
   it('uses Parameters global override when no container-specific override', () => {
     const c = makeContainer({ name: 'svc', environment: { K: 'orig' } });
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c] }),
       container: c,
       image: 'nginx',
@@ -226,7 +265,7 @@ describe('buildDockerRunArgs', () => {
       dockerVolumeConfig: { scope: 'task' },
       dockerVolumeName: 'cdkd-local-data-xxxx',
     };
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c], volumes: [dockerVol] }),
       container: c,
       image: 'nginx',
@@ -244,7 +283,7 @@ describe('buildDockerRunArgs', () => {
 
   it('honors RuntimePlatform.CpuArchitecture for --platform', () => {
     const c = makeContainer();
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({
         containers: [c],
         runtimePlatform: { cpuArchitecture: 'ARM64', operatingSystemFamily: 'LINUX' },
@@ -267,7 +306,7 @@ describe('buildDockerRunArgs', () => {
 
   it('platformOverride takes precedence over RuntimePlatform', () => {
     const c = makeContainer();
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({
         containers: [c],
         runtimePlatform: { cpuArchitecture: 'ARM64', operatingSystemFamily: 'LINUX' },
@@ -291,7 +330,7 @@ describe('buildDockerRunArgs', () => {
       ulimits: [{ name: 'nofile', softLimit: 1024, hardLimit: 2048 }],
       healthCheck: { command: ['CMD', 'curl', '-f', 'http://localhost/'], interval: 5, retries: 3 },
     });
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c] }),
       container: c,
       image: 'nginx',
@@ -313,7 +352,7 @@ describe('buildDockerRunArgs', () => {
 
   it('handles EntryPoint by passing first arg via --entrypoint, rest before CMD', () => {
     const c = makeContainer({ entryPoint: ['/bin/sh', '-c'], command: ['echo hi'] });
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c] }),
       container: c,
       image: 'nginx',
@@ -367,7 +406,7 @@ describe('mergeHostGatewayAddHostFlags (issue #784 / cdk-local #483)', () => {
 describe('buildDockerRunArgs Service Connect aliases', () => {
   it('emits extra --network-alias for each entry in networkAliases', () => {
     const c = makeContainer();
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c] }),
       container: c,
       image: 'nginx',
@@ -393,7 +432,7 @@ describe('buildDockerRunArgs Service Connect aliases', () => {
 
   it('de-duplicates a networkAlias that matches container.name (already added by line 813)', () => {
     const c = makeContainer({ name: 'orders' });
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c] }),
       container: c,
       image: 'nginx',
@@ -418,7 +457,7 @@ describe('buildDockerRunArgs Service Connect aliases', () => {
 
   it('emits no extra --network-alias when networkAliases is empty / undefined', () => {
     const c = makeContainer();
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c] }),
       container: c,
       image: 'nginx',
@@ -586,7 +625,7 @@ describe('topoSort (G3)', () => {
 describe('buildDockerRunArgs profile credentials file (ECS analogue of PR #670)', () => {
   it('emits read-only bind-mount + AWS_SHARED_CREDENTIALS_FILE + AWS_PROFILE when profileCredentialsFile is set', () => {
     const c = makeContainer({ name: 'app' });
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c] }),
       container: c,
       image: 'nginx:alpine',
@@ -621,7 +660,7 @@ describe('buildDockerRunArgs profile credentials file (ECS analogue of PR #670)'
 
   it('omits the mount and env vars when profileCredentialsFile is undefined (no --profile)', () => {
     const c = makeContainer({ name: 'app' });
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c] }),
       container: c,
       image: 'nginx:alpine',
@@ -648,7 +687,7 @@ describe('buildDockerRunArgs profile credentials file (ECS analogue of PR #670)'
     // the deliberate ordering — file vars are a default, not a
     // forced override.
     const c = makeContainer({ name: 'app', environment: { AWS_PROFILE: 'in-container' } });
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c] }),
       container: c,
       image: 'nginx:alpine',
@@ -685,7 +724,7 @@ describe('buildDockerRunArgs profile credentials file (ECS analogue of PR #670)'
       dockerVolumeConfig: { scope: 'task' },
       dockerVolumeName: 'cdkd-local-data-xxxx',
     };
-    const args = buildDockerRunArgs({
+    const { args } = buildDockerRunArgs({
       task: makeTask({ containers: [c], volumes: [dockerVol] }),
       container: c,
       image: 'nginx:alpine',

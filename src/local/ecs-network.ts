@@ -1,9 +1,18 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
-import { getDockerCmd } from '../utils/docker-cmd.js';
+import {
+  dockerSpawnEnvWithSensitive,
+  getDockerCmd,
+  partitionSensitiveEnv,
+} from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
-import { DockerRunnerError, pullImage, removeContainer } from './docker-runner.js';
+import {
+  DockerRunnerError,
+  SENSITIVE_ENV_KEYS,
+  pullImage,
+  removeContainer,
+} from './docker-runner.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -174,8 +183,26 @@ async function createNetworkAndSidecar(args: {
     }
   }
   if (cluster) sidecarEnv['CLUSTER'] = cluster;
-  for (const [k, v] of Object.entries(sidecarEnv)) {
-    sidecarArgs.push('-e', `${k}=${v}`);
+  // AWS credentials go to the sidecar as `-e KEY` (no `=value`) so they are
+  // read from the spawn-time process env rather than the `docker run` argv,
+  // where any local reader of `/proc/<pid>/cmdline` could see them. Mirrors
+  // `runDetached` in `docker-runner.ts`. Non-credential env (e.g. CLUSTER)
+  // stays as `-e KEY=value`.
+  // `SENSITIVE_ENV_KEYS` (the three AWS credential names) is disjoint from
+  // `DOCKER_CLIENT_ENV_KEYS`, so `collisions` is empty here today — but that is
+  // NOT enforced by construction, so we still consume it and warn (and a unit
+  // test in `docker-cmd.test.ts` fences the two sets against a future addition
+  // to either).
+  const {
+    flags: sidecarFlags,
+    sensitiveEnv: sidecarSensitiveEnv,
+    collisions: sidecarCollisions,
+  } = partitionSensitiveEnv(sidecarEnv, SENSITIVE_ENV_KEYS);
+  sidecarArgs.push(...sidecarFlags);
+  if (sidecarCollisions.length > 0) {
+    logger.warn(
+      `Sidecar env var(s) ${sidecarCollisions.join(', ')} share a name with a docker-client environment variable and were NOT passed to the sidecar at all (they would hijack the docker client).`
+    );
   }
   sidecarArgs.push(METADATA_ENDPOINT_IMAGE);
 
@@ -183,6 +210,9 @@ async function createNetworkAndSidecar(args: {
   try {
     const { stdout } = await execFileAsync(getDockerCmd(), sidecarArgs, {
       maxBuffer: 10 * 1024 * 1024,
+      // The `-e KEY` (value-less) credential flags read their values from
+      // here, so credentials never reach the `docker run` argv.
+      env: dockerSpawnEnvWithSensitive(sidecarSensitiveEnv),
     });
     return stdout.trim();
   } catch (err) {
