@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 import {
-  dockerClientEnvCollisions,
+  DOCKER_CLIENT_ENV_KEYS,
   dockerSpawnEnvWithSensitive,
+  partitionSensitiveEnv,
   formatDockerLoginError,
   getDockerCmd,
   runDockerStreaming,
@@ -268,28 +269,113 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     const savedHost = process.env['DOCKER_HOST'];
     delete process.env['DOCKER_HOST'];
     try {
-      const env = dockerSpawnEnvWithSensitive({ docker_host: 'tcp://attacker.example:2375' });
+      const env = dockerSpawnEnvWithSensitive({
+        docker_host: 'tcp://attacker.example:2375',
+        CONTROL_SECRET: 'arrived',
+      });
       // A lowercase collision must not define the client's DOCKER_HOST in any case.
       expect(env['docker_host']).toBeUndefined();
       expect(env['DOCKER_HOST']).toBeUndefined();
+      // Positive control: without this the assertions above also pass when the
+      // passthrough is broken outright (e.g. the helper returning `{}`).
+      expect(env['CONTROL_SECRET']).toBe('arrived');
     } finally {
       if (savedHost !== undefined) process.env['DOCKER_HOST'] = savedHost;
     }
   });
 
-  it('dockerClientEnvCollisions reports colliding names case-insensitively', () => {
-    expect(
-      dockerClientEnvCollisions({ docker_host: 'x', MY_SECRET: 'y', PATH: 'z' }).sort()
-    ).toEqual(['PATH', 'docker_host']);
-    expect(dockerClientEnvCollisions({ ONLY_SAFE: 'v' })).toEqual([]);
+  // The expected membership is spelled out as LITERALS, deliberately not
+  // derived from DOCKER_CLIENT_ENV_KEYS. Driving `it.each` off the set itself
+  // cannot detect a deletion — removing an entry just stops generating that
+  // case, and the suite stays green (verified by mutation probe: deleting
+  // 'HTTP_PROXY' left a set-driven table 53/53 passing).
+  const EXPECTED_CLIENT_ENV_KEYS = [
+    'PATH',
+    'HOME',
+    'USERPROFILE',
+    'HOMEDRIVE',
+    'HOMEPATH',
+    'DOCKER_HOST',
+    'DOCKER_CONTEXT',
+    'DOCKER_CONFIG',
+    'DOCKER_CERT_PATH',
+    'DOCKER_TLS',
+    'DOCKER_TLS_VERIFY',
+    'DOCKER_API_VERSION',
+    'DOCKER_DEFAULT_PLATFORM',
+    'DOCKER_CUSTOM_HEADERS',
+    'DOCKER_CONTENT_TRUST',
+    'DOCKER_CONTENT_TRUST_SERVER',
+    'DOCKER_HIDE_LEGACY_COMMANDS',
+    'BUILDKIT_PROGRESS',
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'NO_PROXY',
+    'FTP_PROXY',
+    'ALL_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'no_proxy',
+    'ftp_proxy',
+    'all_proxy',
+  ];
+
+  it('fences exactly the documented docker-client vars — no silent removals', () => {
+    // This is the assertion that a DELETION trips. Adding a key trips it too,
+    // which is intended: widening the denylist should be a deliberate edit in
+    // two places, not a drive-by.
+    expect([...DOCKER_CLIENT_ENV_KEYS].sort()).toEqual([...EXPECTED_CLIENT_ENV_KEYS].sort());
+  });
+
+  it.each(EXPECTED_CLIENT_ENV_KEYS)(
+    'never lets a secret named %s reach the docker client env',
+    (key) => {
+      // Behaviour half: every listed key must actually be refused. Before
+      // this, only DOCKER_HOST / PATH / DOCKER_CONTEXT discriminated and the
+      // other 25 entries were decorative.
+      expect(dockerSpawnEnvWithSensitive({ [key]: 'evil' })[key]).not.toBe('evil');
+      expect(partitionSensitiveEnv({ [key]: 'evil' }, new Set([key])).flags).toEqual([]);
+    }
+  );
+
+  it('reports a colliding name case-insensitively and emits NO -e flag for it', () => {
+    const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(
+      { docker_host: 'x', MY_SECRET: 'y', PATH: 'z', PLAIN: 'p' },
+      new Set(['docker_host', 'MY_SECRET', 'PATH'])
+    );
+    expect(collisions.sort()).toEqual(['PATH', 'docker_host']);
+    // The colliding keys must appear on NEITHER side. Emitting `-e PATH` while
+    // dockerSpawnEnvWithSensitive refuses to set it would make docker resolve
+    // the flag against the CLIENT's env, handing the container the HOST's
+    // value (issue #2183).
+    expect(flags).not.toContain('PATH');
+    expect(flags).not.toContain('docker_host');
+    expect(sensitiveEnv['PATH']).toBeUndefined();
+    expect(sensitiveEnv['docker_host']).toBeUndefined();
+    // ...while the ordinary sensitive key is still value-less on argv with its
+    // value carried in sensitiveEnv, and a non-sensitive key is unchanged.
+    expect(flags).toContain('MY_SECRET');
+    expect(flags.join(' ')).not.toContain('MY_SECRET=y');
+    expect(sensitiveEnv['MY_SECRET']).toBe('y');
+    expect(flags.join(' ')).toContain('PLAIN=p');
+  });
+
+  it('reports no collision for an ordinary secret set', () => {
+    expect(partitionSensitiveEnv({ ONLY_SAFE: 'v' }, new Set(['ONLY_SAFE'])).collisions).toEqual(
+      []
+    );
   });
 
   it('drops a docker-client var the host never set, even if a secret defines it', () => {
     const saved = process.env['DOCKER_CONTEXT'];
     delete process.env['DOCKER_CONTEXT'];
     try {
-      const env = dockerSpawnEnvWithSensitive({ DOCKER_CONTEXT: 'evil-context' });
+      const env = dockerSpawnEnvWithSensitive({
+        DOCKER_CONTEXT: 'evil-context',
+        CONTROL_SECRET: 'arrived',
+      });
       expect(env['DOCKER_CONTEXT']).toBeUndefined();
+      expect(env['CONTROL_SECRET']).toBe('arrived');
     } finally {
       if (saved !== undefined) process.env['DOCKER_CONTEXT'] = saved;
     }

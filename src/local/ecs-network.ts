@@ -1,7 +1,11 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
-import { dockerSpawnEnvWithSensitive, getDockerCmd } from '../utils/docker-cmd.js';
+import {
+  dockerSpawnEnvWithSensitive,
+  getDockerCmd,
+  partitionSensitiveEnv,
+} from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 import {
   DockerRunnerError,
@@ -184,15 +188,14 @@ async function createNetworkAndSidecar(args: {
   // where any local reader of `/proc/<pid>/cmdline` could see them. Mirrors
   // `runDetached` in `docker-runner.ts`. Non-credential env (e.g. CLUSTER)
   // stays as `-e KEY=value`.
-  const sidecarSensitiveEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries(sidecarEnv)) {
-    if (SENSITIVE_ENV_KEYS.has(k)) {
-      sidecarArgs.push('-e', k);
-      sidecarSensitiveEnv[k] = v;
-    } else {
-      sidecarArgs.push('-e', `${k}=${v}`);
-    }
-  }
+  // `SENSITIVE_ENV_KEYS` is disjoint from `DOCKER_CLIENT_ENV_KEYS`, so
+  // `collisions` is structurally always empty here — the shared partition is
+  // used anyway so the invariant is enforced rather than commented.
+  const { flags: sidecarFlags, sensitiveEnv: sidecarSensitiveEnv } = partitionSensitiveEnv(
+    sidecarEnv,
+    SENSITIVE_ENV_KEYS
+  );
+  sidecarArgs.push(...sidecarFlags);
   sidecarArgs.push(METADATA_ENDPOINT_IMAGE);
 
   logger.info(`Starting ECS local-container-endpoints sidecar at ${sidecarIp}...`);

@@ -336,16 +336,6 @@ export const DOCKER_CLIENT_ENV_KEYS: ReadonlySet<string> = new Set([
   'all_proxy',
 ]);
 
-/**
- * Build the environment for a `docker run` that forwards value-less `-e KEY`
- * flags (the pattern that keeps secret VALUES off the argv / `/proc/<pid>/cmdline`).
- * The child gets the full parent env plus the sensitive passthrough, but the
- * docker client's own critical vars ({@link DOCKER_CLIENT_ENV_KEYS}) are kept
- * authoritative from `process.env`, so a user-controlled secret NAME cannot
- * hijack the client (issue #2183). A pathological secret whose name is one of
- * those keys therefore forwards the host value to the container rather than the
- * secret — an acceptable edge for a name that is itself hostile to a container.
- */
 const DOCKER_CLIENT_ENV_KEYS_UPPER: ReadonlySet<string> = new Set(
   [...DOCKER_CLIENT_ENV_KEYS].map((k) => k.toUpperCase())
 );
@@ -360,13 +350,55 @@ export function isDockerClientEnvKey(key: string): boolean {
 }
 
 /**
- * The sensitive keys that collide with a docker-client var (case-insensitive),
- * so a caller can warn that they were not forwarded.
+ * Split a container's environment into `docker run` `-e` flags and the values
+ * that must travel through the spawn env instead of the argv.
+ *
+ * - a NON-sensitive key becomes `-e KEY=value` on the argv (unchanged);
+ * - a sensitive key becomes a value-less `-e KEY`, its value returned in
+ *   `sensitiveEnv` for {@link dockerSpawnEnvWithSensitive};
+ * - a sensitive key that NAMES a docker-client var ({@link DOCKER_CLIENT_ENV_KEYS})
+ *   gets NO flag at all, its value is dropped, and the key is reported in
+ *   `collisions` so the caller can warn.
+ *
+ * The third case is why the argv half lives here beside the env half. Emitting
+ * `-e KEY` for a key that `dockerSpawnEnvWithSensitive` refuses to set makes
+ * docker resolve the flag against the CLIENT's own environment, so the
+ * container silently receives the HOST's value for that var (issue #2183) --
+ * e.g. the host's `HTTPS_PROXY` credential, or a macOS `PATH` inside a Linux
+ * image. Dropping the flag is what makes "not forwarded" literally true.
  */
-export function dockerClientEnvCollisions(sensitiveEnv: Record<string, string>): string[] {
-  return Object.keys(sensitiveEnv).filter(isDockerClientEnvKey);
+export function partitionSensitiveEnv(
+  env: Record<string, string>,
+  sensitiveKeys: ReadonlySet<string>
+): { flags: string[]; sensitiveEnv: Record<string, string>; collisions: string[] } {
+  const flags: string[] = [];
+  const sensitiveEnv: Record<string, string> = {};
+  const collisions: string[] = [];
+  for (const [k, v] of Object.entries(env)) {
+    if (!sensitiveKeys.has(k)) {
+      flags.push('-e', `${k}=${v}`);
+      continue;
+    }
+    if (isDockerClientEnvKey(k)) {
+      collisions.push(k);
+      continue;
+    }
+    flags.push('-e', k);
+    sensitiveEnv[k] = v;
+  }
+  return { flags, sensitiveEnv, collisions };
 }
 
+/**
+ * Build the environment for a `docker run` that forwards value-less `-e KEY`
+ * flags (the pattern that keeps secret VALUES off the argv / `/proc/<pid>/cmdline`).
+ * The child gets the full parent env plus the sensitive passthrough, but the
+ * docker client's own critical vars ({@link DOCKER_CLIENT_ENV_KEYS}) are kept
+ * authoritative from `process.env`, so a user-controlled secret NAME cannot
+ * hijack the client (issue #2183). Callers should partition through
+ * {@link partitionSensitiveEnv}, which never puts a colliding key in
+ * `sensitiveEnv`; the guard here is defence in depth.
+ */
 export function dockerSpawnEnvWithSensitive(
   sensitiveEnv: Record<string, string>
 ): NodeJS.ProcessEnv {

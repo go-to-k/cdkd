@@ -4,9 +4,9 @@ import { dirname } from 'node:path';
 import { promisify } from 'node:util';
 import graphlib from 'graphlib';
 import {
-  dockerClientEnvCollisions,
   dockerSpawnEnvWithSensitive,
   getDockerCmd,
+  partitionSensitiveEnv,
   runDockerStreaming,
 } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
@@ -412,7 +412,10 @@ export async function runEcsTask(
   const dockerCmds = new Map<string, string[]>();
   // Sensitive env values kept OUT of argv (see `buildDockerRunArgs`), keyed by
   // container name and forwarded to each `docker run` via the spawn `env`.
-  const dockerEnvs = new Map<string, Record<string, string>>();
+  const dockerEnvs = new Map<
+    string,
+    { sensitiveEnv: Record<string, string>; collisions: string[] }
+  >();
   for (const container of task.containers) {
     const image = imagePlan.get(container.name);
     if (!image) {
@@ -443,7 +446,10 @@ export async function runEcsTask(
       }),
     });
     dockerCmds.set(container.name, built.args);
-    dockerEnvs.set(container.name, built.sensitiveEnv);
+    dockerEnvs.set(container.name, {
+      sensitiveEnv: built.sensitiveEnv,
+      collisions: built.collisions,
+    });
   }
 
   // Boot containers in dependency order. Each container's `dependsOn`
@@ -462,22 +468,22 @@ export async function runEcsTask(
     logger.info(`Starting container '${container.name}' (image=${imagePlan.get(container.name)})`);
     let id: string;
     try {
-      const sensitiveEnv = dockerEnvs.get(container.name) ?? {};
+      const built = dockerEnvs.get(container.name)!;
       // A resolved secret whose NAME collides with a var the docker CLIENT
-      // itself reads is not forwarded with the secret value (it would hijack
-      // the client — see `dockerSpawnEnvWithSensitive`). Warn so the drop is
-      // not silent (issue #2183).
-      const clientCollisions = dockerClientEnvCollisions(sensitiveEnv);
-      if (clientCollisions.length > 0) {
+      // itself reads reaches neither the argv nor the spawn env (it would
+      // hijack the client, and an `-e KEY` flag would hand the container the
+      // HOST's value — see `partitionSensitiveEnv`). Warn so the drop is not
+      // silent (issue #2183).
+      if (built.collisions.length > 0) {
         logger.warn(
-          `Container '${container.name}': secret(s) ${clientCollisions.join(', ')} share a name with a docker-client environment variable and were NOT forwarded with their secret value (they would hijack the docker client). Rename the secret if the container needs it.`
+          `Container '${container.name}': secret(s) ${built.collisions.join(', ')} share a name with a docker-client environment variable and were NOT passed to the container at all (they would hijack the docker client). Rename the secret if the container needs it.`
         );
       }
       const { stdout } = await execFileAsync(getDockerCmd(), args, {
         maxBuffer: 10 * 1024 * 1024,
         // The `-e KEY` (value-less) flags read their values from here, so
         // secrets / credentials never reach the `docker run` argv.
-        env: dockerSpawnEnvWithSensitive(sensitiveEnv),
+        env: dockerSpawnEnvWithSensitive(built.sensitiveEnv),
       });
       id = stdout.trim();
     } catch (err) {
@@ -956,6 +962,8 @@ interface BuildDockerRunArgs {
 export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   args: string[];
   sensitiveEnv: Record<string, string>;
+  /** Secret names dropped because they name a docker-client var (issue #2183). */
+  collisions: string[];
 } {
   const { task, container, image, network, volumeByName, secrets, containerHost, roleArn } = opts;
   const args: string[] = ['run', '-d'];
@@ -1084,22 +1092,19 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     applyOverrideMap(finalEnv, overrides[container.name]);
   }
 
-  // Sensitive values (resolved Secrets Manager / SSM secret values, plus the
-  // always-sensitive AWS credential set) are emitted as `-e KEY` (no `=value`)
-  // so they are read from the spawn-time process env rather than going through
-  // the `docker run` argv, where any local reader of `/proc/<pid>/cmdline`
-  // could see them. Mirrors `runDetached` in `docker-runner.ts`; the caller
-  // forwards `sensitiveEnv` to the spawn `env`.
+  // Split the resolved env into `-e` flags plus the values that must travel
+  // through the spawn env (see `partitionSensitiveEnv`): a sensitive key — the
+  // AWS credential set plus each resolved secret name — becomes a value-less
+  // `-e KEY` (its value carried in `sensitiveEnv`, off the argv /
+  // `/proc/<pid>/cmdline`), unless it NAMES a docker-client var, in which case
+  // it gets no flag at all and is reported in `collisions`. Mirrors
+  // `runDetached` in `docker-runner.ts`. (A secret whose NAME itself contains
+  // `=` is a pre-existing sharp edge left as-is: docker parses `-e FOO=BAR` as
+  // an assignment so the value is lost — issue #2183 item 10, pathological and
+  // broken the same way before this PR.)
   const sensitiveKeys = new Set<string>([...SENSITIVE_ENV_KEYS, ...secrets.map((s) => s.name)]);
-  const sensitiveEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries(finalEnv)) {
-    if (sensitiveKeys.has(k)) {
-      args.push('-e', k);
-      sensitiveEnv[k] = v;
-    } else {
-      args.push('-e', `${k}=${v}`);
-    }
-  }
+  const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(finalEnv, sensitiveKeys);
+  args.push(...flags);
 
   if (container.user) args.push('--user', container.user);
   if (container.privileged) args.push('--privileged');
@@ -1135,7 +1140,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   }
 
   args.push(image, ...entryPointTail, ...(container.command ?? []));
-  return { args, sensitiveEnv };
+  return { args, sensitiveEnv, collisions };
 }
 
 function applyOverrideMap(
