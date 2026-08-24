@@ -169,8 +169,8 @@ launchtemplate-asg-inplace	2026-08-19T23:10:58Z	PASS	87	verify.sh	issue 1997 mas
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 local-ecs-service-connect	2026-07-26T20:40:20Z	PASS	23	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
-local-invoke	2026-08-13T16:02:59Z	PASS	-	verify.sh	issue 1836 post-rebase re-run on current main; step 6 upper-cased AWS_REGION arrives canonical in-container, raw spelling absent; docker sweep clean
-local-invoke-agentcore	2026-08-13T11:40:45Z	PASS	-	verify.sh	final run after the issue 1814 fourth-chain fold; 21/21, docker sweep clean
+local-invoke	2026-08-25T01:25:00Z	PASS	35	verify.sh	gated the issue 2184 merge (runDetached via partitionSensitiveEnv); 6/6 invokes, docker sweep empty incl. stopped
+local-invoke-agentcore	2026-08-25T01:20:00Z	FAIL	10	verify.sh	FIXTURE STALENESS, not a cdkd defect: aws-cdk-lib 2.244.0 dropped the aws-bedrockagentcore L2 constructs the fixture imports (only CfnRuntime / CfnRuntimeEndpoint remain), so it dies at synth before any assertion. Tracked in issue 2191
 local-invoke-agentcore-from-state	2026-07-26T20:40:20Z	PASS	86	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
 local-invoke-buildkit	2026-07-26T20:35:19Z	PASS	18	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
 local-invoke-container	2026-08-13T14:36:45Z	PASS	-	verify.sh	issue 1792/1793 no-regression check only (fixture exercises the plain lower-case ECR host); 4/4 container invokes, docker sweep clean
