@@ -514,6 +514,17 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'SECRET%PCT',
     'パスワード',
     'SECRET\nTRAILING_NEWLINE',
+    // Every row above happens to start and end with a non-whitespace,
+    // non-dash character and to be at least 2 chars long, so tightenings that
+    // forbid outer whitespace, a leading dash, or a 1-char name all passed
+    // with the suite green. Note the row above puts its newline INTERNALLY --
+    // it does not exercise the anchor claim in WELL_FORMED_ENV_KEY's JSDoc,
+    // which is only discriminated by a name ENDING in a newline.
+    ' LEADING_SPACE',
+    'TRAILING_SPACE ',
+    'TRAILING_NEWLINE\n',
+    '-DASH_LEADING',
+    'X',
   ])('delivers the well-formed name %s rather than refusing it', (key) => {
     expect(isMalformedEnvKey(key)).toBe(false);
     const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(

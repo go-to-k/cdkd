@@ -543,8 +543,10 @@ export function dockerSpawnEnvWithSensitive(
   // (redirect the daemon, break PATH) nor leave a stale value behind —
   // regardless of whether the host set that var. The malformed-key guard is
   // belt-and-braces with `partitionSensitiveEnv`'s (#2186 rounds 4-5): this
-  // function is exported, and `runDetached` routes through it as of #2187
-  // (issue #2184) — and a key containing `=` serialises as an environ entry whose
+  // function is EXPORTED, so a future caller may reach it without partitioning
+  // first (every caller does today, `runDetached` included since #2187 / issue
+  // #2184 — which is why this guard must not be read as dead). A key containing
+  // `=` serialises as an environ entry whose
   // OS-parsed NAME is only the part before the first `=`, which the denylist
   // check cannot see, so the raw key must be refused here too.
   //
