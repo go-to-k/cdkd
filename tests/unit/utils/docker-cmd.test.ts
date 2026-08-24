@@ -467,7 +467,8 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     // The good shape is "non-empty, no `=`, no NUL"; every complement takes the
     // fail-closed collision path in ONE predicate rather than being closed one
     // spelling at a time. The empty key would emit `-e ''` (docker rejects it
-    // with an opaque error naming no secret); a NUL-bearing key truncates.
+    // with an opaque error naming no secret); a NUL-bearing key makes Node
+    // refuse to spawn at all (ERR_INVALID_ARG_VALUE) rather than truncating.
     for (const key of ['', 'FOO\0BAR', 'A=B', 'PATH=x:']) {
       expect(isMalformedEnvKey(key)).toBe(true);
       const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(

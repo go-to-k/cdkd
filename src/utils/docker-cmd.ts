@@ -447,18 +447,29 @@ export function isDockerClientEnvKey(key: string): boolean {
 }
 
 /**
+ * A well-formed `docker run -e` variable NAME: non-empty, and containing
+ * neither `=` (the OS parses the environ entry's name as everything before the
+ * first one) nor NUL (Node refuses to spawn). Note JS `$` also matches before a
+ * trailing newline, so this accepts `"FOO\n"` — the same as the clause list it
+ * replaced, i.e. deliberately not stricter.
+ */
+const WELL_FORMED_ENV_KEY = /^[^=\0]+$/;
+
+/**
  * Is `key` a shape that cannot be a well-formed `docker run -e` variable NAME?
- * Defined POSITIVELY as the good shape's complement (#2186 round 5): a valid
- * name is non-empty and contains neither `=` nor NUL. Enumerating the bad
- * spellings one at a time closed `=` in round 4 and left the empty key (`-e ''`
- * — docker rejects it with an opaque error naming no secret) and a NUL-bearing
- * key still open. A sensitive key matching this takes the same fail-closed
+ * Defined POSITIVELY as {@link WELL_FORMED_ENV_KEY}'s complement (#2186 rounds
+ * 5-6). Enumerating the bad spellings one at a time closed `=` in round 4 and
+ * left the empty key (`-e ''` — docker rejects it with an opaque error naming
+ * no secret) and a NUL-bearing key still open; the complement closes any
+ * further bad shape without another clause. A sensitive key matching this takes the same fail-closed
  * collision path as a docker-client-var name: no `-e` flag, no spawn-env entry,
  * reported in `collisions`. (This is the NAME only; a secret VALUE containing a
  * NUL is a separate pre-existing leak tracked in issue #2189.)
  */
 export function isMalformedEnvKey(key: string): boolean {
-  return key.length === 0 || key.includes('=') || key.includes('\0');
+  // The GOOD shape, negated — not a list of bad ones. A fourth bad spelling
+  // needs no fourth clause; it is excluded by not being in the good set.
+  return !WELL_FORMED_ENV_KEY.test(key);
 }
 
 /**
