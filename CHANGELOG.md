@@ -1,3 +1,10 @@
+## [0.284.44](https://github.com/go-to-k/cdkd/compare/v0.284.43...v0.284.44) (2026-08-24)
+
+
+### Bug Fixes
+
+* **local:** close the runDetached docker-client hijack (local invoke) — stacked on [#2186](https://github.com/go-to-k/cdkd/issues/2186) ([#2187](https://github.com/go-to-k/cdkd/issues/2187)) ([8a98464](https://github.com/go-to-k/cdkd/commit/8a984645955c3bacbcf220dccd2b60064817d830))
+
 ## [0.284.43](https://github.com/go-to-k/cdkd/compare/v0.284.42...v0.284.43) (2026-08-24)
 
 
