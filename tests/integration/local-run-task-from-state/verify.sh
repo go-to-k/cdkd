@@ -89,13 +89,17 @@ docker pull "${BUSYBOX_IMAGE}"
 # cdkd destroy, then docker rm orphan containers + networks. Runs on
 # every exit path (including SIGINT and FAIL).
 DEPLOYED_REPO=""
+# NOTE: `docker ps -a`, not `docker ps`. The step-4c env/secret container is a
+# busybox that prints and EXITS, so by teardown time it is already `Exited` and
+# a running-only `docker ps` never lists it — it survived every run until the
+# issue 2183 pre-merge integs caught it twice in a row.
 cleanup() {
   rc=$?
   set +e
   echo "[verify] cleanup (exit ${rc}) — emptying repo + destroying stack + tearing down docker"
 
   # Sweep local docker containers + networks first (cheap, low-risk).
-  docker ps --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
 
   # Empty the ECR repository so cdkd destroy can remove it. If we never
@@ -168,7 +172,7 @@ run_and_curl_task() {
   # Tear down THIS task's containers + network before moving on so the
   # next task can claim the 169.254.170.0/24 subnet.
   echo "[verify]   tearing down ${shape_label} task containers + network"
-  docker ps --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
 }
 
@@ -246,7 +250,7 @@ if ! echo "${ENV_LOGS}" | grep -qE 'DB_SECRET_LEN=[0-9]{2,}'; then
 fi
 
 # Teardown the env task before moving on.
-docker ps --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
 docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
 
 echo ""
