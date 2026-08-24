@@ -1,3 +1,10 @@
+## [0.284.43](https://github.com/go-to-k/cdkd/compare/v0.284.42...v0.284.43) (2026-08-24)
+
+
+### Bug Fixes
+
+* **local:** keep ECS run-task secrets and credentials off the docker argv ([#2186](https://github.com/go-to-k/cdkd/issues/2186)) ([b7e0f69](https://github.com/go-to-k/cdkd/commit/b7e0f697c08147b8d2a6f00736e7b12ef28674e0))
+
 ## [0.284.42](https://github.com/go-to-k/cdkd/compare/v0.284.41...v0.284.42) (2026-08-23)
 
 
