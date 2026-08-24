@@ -412,10 +412,9 @@ export async function runEcsTask(
   const dockerCmds = new Map<string, string[]>();
   // Sensitive env values kept OUT of argv (see `buildDockerRunArgs`), keyed by
   // container name and forwarded to each `docker run` via the spawn `env`.
-  const dockerEnvs = new Map<
-    string,
-    { sensitiveEnv: Record<string, string>; collisions: string[] }
-  >();
+  // (`collisions` is consumed in the build loop below, not stored — the start
+  // loop reads only the sensitive env.)
+  const dockerEnvs = new Map<string, Record<string, string>>();
   for (const container of task.containers) {
     const image = imagePlan.get(container.name);
     if (!image) {
@@ -446,10 +445,7 @@ export async function runEcsTask(
       }),
     });
     dockerCmds.set(container.name, built.args);
-    dockerEnvs.set(container.name, {
-      sensitiveEnv: built.sensitiveEnv,
-      collisions: built.collisions,
-    });
+    dockerEnvs.set(container.name, built.sensitiveEnv);
     // A resolved secret whose NAME collides with a var the docker CLIENT reads
     // reaches neither the argv nor the spawn env (it would hijack the client,
     // and a value-less `-e KEY` would hand the container the HOST's value — see
@@ -480,12 +476,12 @@ export async function runEcsTask(
     logger.info(`Starting container '${container.name}' (image=${imagePlan.get(container.name)})`);
     let id: string;
     try {
-      const built = dockerEnvs.get(container.name)!;
+      const sensitiveEnv = dockerEnvs.get(container.name)!;
       const { stdout } = await execFileAsync(getDockerCmd(), args, {
         maxBuffer: 10 * 1024 * 1024,
         // The `-e KEY` (value-less) flags read their values from here, so
         // secrets / credentials never reach the `docker run` argv.
-        env: dockerSpawnEnvWithSensitive(built.sensitiveEnv),
+        env: dockerSpawnEnvWithSensitive(sensitiveEnv),
       });
       id = stdout.trim();
     } catch (err) {
@@ -1105,9 +1101,12 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // as an assignment, so for a secret named `FOO=BAR` the failure mode CHANGED
   // rather than staying constant — before this PR the name+value became
   // `-e FOO=BAR=<secret>`, delivering the secret mangled into a `FOO` var; now
-  // the value-less `-e FOO=BAR` delivers `FOO=BAR` and drops the secret value.
-  // Neither ever delivered the intended `FOO=BAR` variable — issue #2183
-  // item 10, pathological, left as-is.)
+  // the value-less `-e FOO=BAR` delivers `FOO=BAR` and drops the secret value
+  // from the CONTAINER. The pair is still written to `sensitiveEnv['FOO=BAR']`,
+  // which Node serialises into the docker CLIENT's spawn env as
+  // `FOO=BAR=<secret>` — the secret reaches the client process env, just never
+  // the container or the argv. Neither shape ever delivered the intended
+  // `FOO=BAR` variable — issue #2183 item 10, pathological, left as-is.)
   const sensitiveKeys = new Set<string>([...SENSITIVE_ENV_KEYS, ...secrets.map((s) => s.name)]);
   const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(finalEnv, sensitiveKeys);
   args.push(...flags);

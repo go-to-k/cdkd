@@ -311,23 +311,40 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'DOCKER_CONTENT_TRUST_SERVER',
     'DOCKER_HIDE_LEGACY_COMMANDS',
     'BUILDKIT_PROGRESS',
+    // Only the upper-case proxy spellings are members — matching is
+    // case-insensitive, so the former lower-case duplicates were unreachable.
     'HTTP_PROXY',
     'HTTPS_PROXY',
     'NO_PROXY',
     'FTP_PROXY',
     'ALL_PROXY',
-    'http_proxy',
-    'https_proxy',
-    'no_proxy',
-    'ftp_proxy',
-    'all_proxy',
     'DOCKER_AUTH_CONFIG',
-    // The prefixed families (`LD_*` / `DYLD_*` loader, `SSH_*` connection-helper)
-    // are matched by PREFIX in `isDockerClientEnvKey`, not enumerated in
-    // DOCKER_CLIENT_ENV_KEYS, so they are deliberately absent from this
-    // exact-membership list — the prefix cases below cover them. Only the
-    // non-prefixed loader tunable is a set member.
+    // The prefixed families (`LD_*` / `DYLD_*` loader) are matched by PREFIX in
+    // `isDockerClientEnvKey`, not enumerated in DOCKER_CLIENT_ENV_KEYS, so they
+    // are deliberately absent from this exact-membership list — the prefix
+    // cases below cover them. The non-prefixed loader vars are set members.
     'GLIBC_TUNABLES',
+    'GCONV_PATH',
+    'BASH_ENV',
+    // SSH is an EXACT enumeration, not a prefix (#2186 review round 3): the
+    // client-side exec/trust set is closed, and an `SSH_` prefix broke
+    // realistic secrets like GitLab CI's `SSH_PRIVATE_KEY`.
+    'SSH_AUTH_SOCK',
+    'SSH_ASKPASS',
+    'SSH_ASKPASS_REQUIRE',
+    'SSH_SK_HELPER',
+    'SSH_PKCS11_HELPER',
+    'SSH_AGENT_PID',
+    // The AWS credential-helper family (#2186 review round 3): the client execs
+    // `docker-credential-ecr-login`, whose SDK reads these with the OPERATOR's
+    // real credentials in scope.
+    'AWS_ENDPOINT_URL',
+    'AWS_CA_BUNDLE',
+    'AWS_PROFILE',
+    'AWS_CONFIG_FILE',
+    'AWS_SHARED_CREDENTIALS_FILE',
+    'AWS_WEB_IDENTITY_TOKEN_FILE',
+    'AWS_CONTAINER_CREDENTIALS_FULL_URI',
     'SSL_CERT_FILE',
     'SSL_CERT_DIR',
     'GODEBUG',
@@ -364,7 +381,9 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
   // The prefixed families are matched by PREFIX, so an UNLISTED member — one no
   // release-specific enumeration would carry — is still refused. This is the
   // structural half of finding (1): a named list is always one release behind
-  // (a new OpenSSH exec helper, a new `DYLD_*` var).
+  // (a new `LD_*` / `DYLD_*` loader var). SSH is deliberately NOT here any
+  // more — it is an exact enumeration (covered by the membership table above),
+  // with a lowercase spelling exercised below.
   it.each([
     'LD_PRELOAD',
     'LD_LIBRARY_PATH',
@@ -374,27 +393,60 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'DYLD_IMAGE_SUFFIX', // unlisted
     'dyld_root_path', // lowercase, since detection is case-insensitive
     'ld_preload',
-    'SSH_AUTH_SOCK', // agent hijack
-    'SSH_ASKPASS', // OpenSSH execs the named program
-    'SSH_ASKPASS_REQUIRE',
-    'SSH_SK_HELPER', // security-key helper — OpenSSH execs it
-    'SSH_PKCS11_HELPER', // PKCS#11 helper — OpenSSH execs it
-    'ssh_askpass', // lowercase
+    'ssh_askpass', // lowercase spelling of an EXACT ssh entry (case-insensitive)
   ])('treats prefixed client var %s as a docker-client var and drops it', (key) => {
     expect(isDockerClientEnvKey(key)).toBe(true);
     expect(dockerSpawnEnvWithSensitive({ [key]: 'evil' })[key]).not.toBe('evil');
     expect(partitionSensitiveEnv({ [key]: 'evil' }, new Set([key])).flags).toEqual([]);
   });
 
+  it('no exact denylist entry is shadowed by a prefix family', () => {
+    // If a future exact entry starts with a listed prefix, its behavioural
+    // `it.each` case above goes vacuous (the prefix would catch it even after
+    // the exact entry is deleted) and only the literal-membership test
+    // discriminates. Keep the two mechanisms disjoint. The prefixes are
+    // spelled as LITERALS here for the same reason the membership table is.
+    for (const key of DOCKER_CLIENT_ENV_KEYS) {
+      for (const prefix of ['LD_', 'DYLD_']) {
+        expect(key.toUpperCase().startsWith(prefix)).toBe(false);
+      }
+    }
+  });
+
+  it.each([
+    'SSH_PRIVATE_KEY', // GitLab CI's canonical deploy-key spelling
+    'SSH_KEY',
+    'SSH_PASSPHRASE',
+    'SSH_DEPLOY_KEY',
+    'SSH_CONNECTION', // sshd-SET, never client-read
+  ])('delivers the realistic ssh-named secret %s to the container (#2186 blocker)', (key) => {
+    // The SSH_ prefix rule broke these on this branch while they work on main.
+    // Assert DELIVERY, not just the predicate: the value-less `-e KEY` flag is
+    // emitted and the value travels through the spawn env.
+    expect(isDockerClientEnvKey(key)).toBe(false);
+    const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(
+      { [key]: 'deploy-key-material' },
+      new Set([key])
+    );
+    expect(flags).toEqual(['-e', key]);
+    expect(sensitiveEnv[key]).toBe('deploy-key-material');
+    expect(collisions).toEqual([]);
+    expect(dockerSpawnEnvWithSensitive({ [key]: 'deploy-key-material' })[key]).toBe(
+      'deploy-key-material'
+    );
+  });
+
   it('does not treat a name that merely contains a prefix as a client var', () => {
     // The prefix is anchored at the START — `PAYLOAD_KEY` / `MY_LD_THING` /
     // `MY_SSH_KEY` are ordinary secrets and must still be delivered, and a
     // prefix without its underscore (`DYLDISH` / `SSHFOO`) is not a match.
-    expect(isDockerClientEnvKey('PAYLOAD_KEY')).toBe(false);
-    expect(isDockerClientEnvKey('MY_LD_THING')).toBe(false);
-    expect(isDockerClientEnvKey('MY_SSH_KEY')).toBe(false);
-    expect(isDockerClientEnvKey('DYLDISH')).toBe(false);
-    expect(isDockerClientEnvKey('SSHFOO')).toBe(false);
+    // Assert DELIVERY for the near-misses too, not only the predicate.
+    for (const key of ['PAYLOAD_KEY', 'MY_LD_THING', 'MY_SSH_KEY', 'DYLDISH', 'SSHFOO']) {
+      expect(isDockerClientEnvKey(key)).toBe(false);
+      const { flags, sensitiveEnv } = partitionSensitiveEnv({ [key]: 'v' }, new Set([key]));
+      expect(flags).toEqual(['-e', key]);
+      expect(sensitiveEnv[key]).toBe('v');
+    }
   });
 
   it('reports a colliding name case-insensitively and emits NO -e flag for it', () => {

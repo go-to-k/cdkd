@@ -338,27 +338,63 @@ export const DOCKER_CLIENT_ENV_KEYS: ReadonlySet<string> = new Set([
   // / `DYLD_*` family is caught by PREFIX in `isDockerClientEnvKey` rather than
   // enumerated here — an exact list of loader vars is always one release behind
   // (glibc `LD_*`, macOS `DYLD_ROOT_PATH` / `DYLD_IMAGE_SUFFIX` / ...); the
-  // non-prefixed loader tunable is named individually.
+  // non-prefixed loader vars are named individually: `GLIBC_TUNABLES` (glibc
+  // tuning) and `GCONV_PATH` (glibc loads gconv shared objects from it — a
+  // code-load vector of the same class, ignored only for setuid binaries,
+  // which the docker CLI is not).
   'GLIBC_TUNABLES',
+  'GCONV_PATH',
+  // `BASH_ENV` is sourced by bash in NON-interactive shells, so it bites when
+  // a `docker-credential-*` helper is a shell-script wrapper (common for
+  // `aws ecr get-login-password` wrappers). `ENV` is interactive-only and is
+  // deliberately absent.
+  'BASH_ENV',
+  // SSH — the `ssh://`-context connection helper's exec/trust-bearing vars,
+  // enumerated EXACTLY rather than by an `SSH_` prefix (#2186 review round 3):
+  // the client-side exec/trust set is CLOSED (last addition
+  // `SSH_ASKPASS_REQUIRE`, OpenSSH 8.4, 2020), while an `SSH_` prefix breaks
+  // realistic secrets — `SSH_PRIVATE_KEY` is GitLab CI's canonical deploy-key
+  // spelling. `SSH_CONNECTION` / `SSH_CLIENT` / `SSH_TTY` /
+  // `SSH_ORIGINAL_COMMAND` are sshd-SET, never client-read, and stay off the
+  // list. The attack also needs the operator to already be on ssh transport
+  // (`DOCKER_HOST` / `DOCKER_CONTEXT` are exact-denylisted above), so unlike
+  // `LD_PRELOAD` it is not self-bootstrapping.
+  'SSH_AUTH_SOCK', // agent hijack
+  'SSH_ASKPASS', // OpenSSH execs the named program
+  'SSH_ASKPASS_REQUIRE',
+  'SSH_SK_HELPER', // security-key helper — OpenSSH execs it
+  'SSH_PKCS11_HELPER', // PKCS#11 helper — OpenSSH execs it
+  'SSH_AGENT_PID', // not load-bearing, kept for completeness of the closed set
+  // Credential-helper reach (#2186 review round 3): `docker run` on a missing
+  // image pulls, the pull auths, and the auth execs `docker-credential-ecr-login`
+  // — whose AWS SDK reads these to decide WHERE to send a request signed with
+  // the OPERATOR's real credentials (`dockerSpawnEnvWithSensitive` starts from
+  // `{ ...process.env }`, so those credentials are always in the client's env).
+  // A secret named `AWS_ENDPOINT_URL` would make the helper sign with them and
+  // send the result to an attacker-chosen host — the `DOCKER_HOST` class, one
+  // helper over. The file/profile vars repoint which credentials it loads.
+  'AWS_ENDPOINT_URL',
+  'AWS_CA_BUNDLE',
+  'AWS_PROFILE',
+  'AWS_CONFIG_FILE',
+  'AWS_SHARED_CREDENTIALS_FILE',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
   // Trust — a colliding secret repoints the client's trusted CA bundle for the
   // daemon / registry TLS handshake (Go's x509 honours these on Linux) or tunes
-  // the Go runtime. (The whole `SSH_*` family — agent socket, askpass and the
-  // SK / PKCS#11 exec helpers — is caught by PREFIX in `isDockerClientEnvKey`.)
+  // the Go runtime.
   'SSL_CERT_FILE',
   'SSL_CERT_DIR',
   'GODEBUG',
   // Proxy vars the client honors for registry connections — a colliding secret
   // could route the client's traffic (incl. image pulls) through an attacker.
+  // Only the upper-case spellings are listed: matching is case-insensitive
+  // (`DOCKER_CLIENT_ENV_KEYS_UPPER`), so lower-case duplicates were unreachable.
   'HTTP_PROXY',
   'HTTPS_PROXY',
   'NO_PROXY',
   'FTP_PROXY',
   'ALL_PROXY',
-  'http_proxy',
-  'https_proxy',
-  'no_proxy',
-  'ftp_proxy',
-  'all_proxy',
 ]);
 
 const DOCKER_CLIENT_ENV_KEYS_UPPER: ReadonlySet<string> = new Set(
@@ -369,21 +405,23 @@ const DOCKER_CLIENT_ENV_KEYS_UPPER: ReadonlySet<string> = new Set(
  * Env-var prefixes whose WHOLE family the docker client (or a helper it execs)
  * reads, so a NAMED list is always one release behind and a colliding secret in
  * ANY member is a hazard. `LD_*` / `DYLD_*` are the dynamic loader (code
- * injection, glibc + macOS). `SSH_*` is the `ssh://`-context connection helper's
- * inherited env: `SSH_AUTH_SOCK` (agent hijack), `SSH_ASKPASS` /
- * `SSH_ASKPASS_REQUIRE` and `SSH_SK_HELPER` / `SSH_PKCS11_HELPER` (OpenSSH execs
- * the named program), plus whatever a future OpenSSH adds. Matched by prefix
- * rather than enumerated (issue #2183 review).
+ * injection, glibc + macOS) — no plausible secret name collides with either.
+ * Matched by prefix rather than enumerated (issue #2183 review). `SSH_` was a
+ * third prefix here and was demoted to an EXACT enumeration in
+ * {@link DOCKER_CLIENT_ENV_KEYS} (#2186 review round 3): the family is not
+ * uniformly dangerous and is not growing, while the prefix broke realistic,
+ * currently-working secrets (`SSH_PRIVATE_KEY`, GitLab CI's canonical
+ * deploy-key spelling).
  */
-const DOCKER_CLIENT_ENV_PREFIXES: readonly string[] = ['LD_', 'DYLD_', 'SSH_'];
+const DOCKER_CLIENT_ENV_PREFIXES: readonly string[] = ['LD_', 'DYLD_'];
 
 /**
  * Is `key` the name of a var the docker client reads? Case-INSENSITIVE, because
  * Windows environment lookups are, so a lowercase `docker_host` must be caught
- * too (issue #2183). Matches the exact denylist OR any prefixed family — the
- * loader / SSH families are fail-closed on the whole prefix, so an unlisted
- * `LD_*` / `DYLD_*` / `SSH_*` secret is dropped (with a rename warning) rather
- * than reaching the client.
+ * too (issue #2183). Matches the exact denylist OR a prefixed family — the
+ * loader families are fail-closed on the whole prefix, so an unlisted `LD_*` /
+ * `DYLD_*` secret is dropped (with a rename warning) rather than reaching the
+ * client.
  */
 export function isDockerClientEnvKey(key: string): boolean {
   const upper = key.toUpperCase();
@@ -398,7 +436,9 @@ export function isDockerClientEnvKey(key: string): boolean {
  * - a NON-sensitive key becomes `-e KEY=value` on the argv (unchanged);
  * - a sensitive key becomes a value-less `-e KEY`, its value returned in
  *   `sensitiveEnv` for {@link dockerSpawnEnvWithSensitive};
- * - a sensitive key that NAMES a docker-client var ({@link DOCKER_CLIENT_ENV_KEYS})
+ * - a sensitive key that NAMES a docker-client var ({@link isDockerClientEnvKey}
+ *   — the exact denylist plus the `LD_*` / `DYLD_*` prefix families, so an
+ *   external caller must use the predicate, not `DOCKER_CLIENT_ENV_KEYS.has`)
  *   gets NO flag at all, its value is dropped, and the key is reported in
  *   `collisions` so the caller can warn.
  *
@@ -435,7 +475,7 @@ export function partitionSensitiveEnv(
  * Build the environment for a `docker run` that forwards value-less `-e KEY`
  * flags (the pattern that keeps secret VALUES off the argv / `/proc/<pid>/cmdline`).
  * The child gets the full parent env plus the sensitive passthrough, but the
- * docker client's own critical vars ({@link DOCKER_CLIENT_ENV_KEYS}) are kept
+ * docker client's own critical vars ({@link isDockerClientEnvKey}) are kept
  * authoritative from `process.env`, so a user-controlled secret NAME cannot
  * hijack the client (issue #2183). Callers should partition through
  * {@link partitionSensitiveEnv}, which never puts a colliding key in

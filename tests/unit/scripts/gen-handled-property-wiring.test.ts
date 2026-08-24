@@ -1557,7 +1557,7 @@ describe('the shipped --check command', () => {
     expect(stderr).toContain('stale HANDLED_WIRING_ALLOW_LIST entries');
     expect(stderr).toContain('IAMAccessKeyProvider#Serial');
     expect(stderr).toContain('ECRProvider#ImageTagMutabilityExclusionFilters');
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   // ---- issue #1842: the evidence-loss verdict, end to end ----
 
