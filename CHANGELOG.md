@@ -1,3 +1,10 @@
+## [0.284.45](https://github.com/go-to-k/cdkd/compare/v0.284.44...v0.284.45) (2026-08-24)
+
+
+### Bug Fixes
+
+* **local:** fence the good-env-name rule in both directions, and close the teardown leak the integ gate could not see ([#2192](https://github.com/go-to-k/cdkd/issues/2192)) ([59e44f6](https://github.com/go-to-k/cdkd/commit/59e44f6743000b37502418f4dfbc9e6714fbd1be))
+
 ## [0.284.44](https://github.com/go-to-k/cdkd/compare/v0.284.43...v0.284.44) (2026-08-24)
 
 
