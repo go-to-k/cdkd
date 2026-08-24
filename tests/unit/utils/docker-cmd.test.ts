@@ -503,6 +503,17 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     '1LEADING_DIGIT',
     'trailing_underscore_',
     'ssh_private_key', // lowercase twin of a delivered SSH_* name
+    // Beyond [A-Za-z0-9_.-]: a rule tightened to `/^[\w.-]+$/` drops all of
+    // these and left the suite green before they were listed. A Linux environ
+    // NAME may hold any byte except `=` and NUL, and the JSDoc explicitly
+    // promises the newline case -- which had no test behind it.
+    'MY SECRET',
+    'SECRET+PLUS',
+    'SECRET:COLON',
+    'SECRET@AT',
+    'SECRET%PCT',
+    'パスワード',
+    'SECRET\nTRAILING_NEWLINE',
   ])('delivers the well-formed name %s rather than refusing it', (key) => {
     expect(isMalformedEnvKey(key)).toBe(false);
     const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(

@@ -183,11 +183,11 @@ local-invoke-layers	2026-07-26T20:29:11Z	PASS	17	verify.sh	0727b sweep-L4 stalen
 local-invoke-provided	2026-07-26T20:29:11Z	PASS	32	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
 local-invoke-python	2026-07-26T20:22:00Z	PASS	23	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
 local-invoke-ruby	2026-07-26T20:22:00Z	PASS	33	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
-local-run-task	2026-08-24T15:11:00Z	PASS	14	verify.sh	issue 2183 follow-up; same running-only teardown widened to docker ps -a; sweep empty incl. stopped
+local-run-task	2026-08-25T00:35:00Z	PASS	14	verify.sh	issue 2183 follow-up; teardown widened to docker ps -a AND a post-cleanup leftover assertion added; sweep empty incl. stopped
 local-run-task-awsvpc	2026-07-26T20:22:00Z	PASS	10	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
 local-run-task-cdkd-assets	2026-08-20T05:03:13Z	PASS	18	verify.sh	issue 2021 integ-local arm; loadBootstrapContainerRepo folded onto the shared readBootstrapMarkerBody helper, custom-qualifier container-assets URI still classified as a CDK asset and run; docker sweep empty (0 containers, 0 task/svc networks)
 local-run-task-from-state	2026-08-24T15:09:15Z	PASS	105	verify.sh	issue 2183 follow-up; DB_SECRET_LEN=45 via spawn env; teardown widened to docker ps -a AND a leftover assertion added (an exited env-task container survived every prior run, unasserted); 11 deleted 0 err, 0 orph, sweep empty incl. stopped
-local-run-task-multi-container	2026-08-24T15:12:00Z	PASS	11	verify.sh	issue 2183 follow-up; running-only teardown widened to docker ps -a (this fixture runs print-and-exit containers, the exact leak shape); sweep empty incl. stopped
+local-run-task-multi-container	2026-08-25T00:36:00Z	PASS	11	verify.sh	issue 2183 follow-up; teardown widened to docker ps -a, leftover assertion added (checks cdkd own sync teardown), and the OUT_FILE EXIT trap no longer CLOBBERS the container-cleanup trap; sweep empty incl. stopped
 local-start-agentcore	2026-07-26T20:40:20Z	PASS	13	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
 local-start-alb	2026-07-26T20:18:09Z	PASS	22	verify.sh	0727b sweep-L2 staleness re-run (rc=0); docker + account clean
 local-start-alb-from-state	2026-07-26T20:18:09Z	PASS	98	verify.sh	re-run after removing stale cdkl-svc network (pool overlap); docker + account clean
