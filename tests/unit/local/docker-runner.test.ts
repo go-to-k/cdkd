@@ -1,5 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
+// Logger spy (issue #2184): the collision `logger.warn` is the only signal a
+// sensitive var was not passed to the container, so it is fenced directly.
+const warnSpy = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/utils/logger.js', () => {
+  const leaf = {
+    info: vi.fn(),
+    debug: vi.fn(),
+    warn: warnSpy,
+    error: vi.fn(),
+    setLevel: vi.fn(),
+    getLevel: () => 'info',
+    child: () => leaf,
+  };
+  return { getLogger: () => leaf };
+});
+
 // child_process mock — captures execFile invocations so the runDetached
 // tests can assert on the docker args. Wrap the captures in
 // `vi.hoisted(...)` so the same `vi.fn()` instance is visible to both
@@ -415,6 +431,77 @@ describe('runDetached', () => {
     const lastCall = calls[calls.length - 1] as unknown[];
     const opts = lastCall[2] as { env?: Record<string, string> };
     expect(opts.env?.['AWS_SECRET_ACCESS_KEY']).toBe('real-secret');
+  });
+
+  it('drops a docker-client-colliding sensitive key ENTIRELY — no -e flag, not in spawn env (issue #2184)', async () => {
+    // A value-less `-e DOCKER_HOST` for a key `dockerSpawnEnvWithSensitive`
+    // refuses to set would make docker resolve it against the CLIENT's own env,
+    // handing the container the HOST's docker socket. `partitionSensitiveEnv`
+    // drops the flag entirely, so the key reaches neither argv nor spawn env.
+    warnSpy.mockClear();
+    const savedHost = process.env['DOCKER_HOST'];
+    process.env['DOCKER_HOST'] = 'unix:///var/run/docker.sock';
+    try {
+      await runDetached({
+        image: 'my-image:latest',
+        mounts: [],
+        env: { DOCKER_HOST: 'tcp://attacker.example:2375', DB_PASSWORD: 'real-secret' },
+        sensitiveEnvKeys: new Set(['DOCKER_HOST', 'DB_PASSWORD']),
+        cmd: [],
+        hostPort: 9000,
+      });
+      const args = lastArgs();
+      // No flag at all for the colliding name (neither `-e DOCKER_HOST` nor `=value`).
+      expect(args).not.toContain('DOCKER_HOST');
+      expect(args.join(' ')).not.toContain('DOCKER_HOST');
+      expect(args.join(' ')).not.toContain('tcp://attacker.example:2375');
+      const calls = childProcessMock.execFile.mock.calls;
+      const opts = calls[calls.length - 1]![2] as { env?: Record<string, string> };
+      // The client's own DOCKER_HOST stays authoritative; the secret value is gone.
+      expect(opts.env?.['DOCKER_HOST']).toBe('unix:///var/run/docker.sock');
+      // A non-colliding sensitive key still reaches the container value-less.
+      expect(args).toContain('DB_PASSWORD');
+      expect(args.join(' ')).not.toContain('real-secret');
+      expect(opts.env?.['DB_PASSWORD']).toBe('real-secret');
+      // ...and the drop is warned, not silent.
+      const msg = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(msg).toContain('DOCKER_HOST');
+      expect(msg).toContain('were NOT passed to the container');
+    } finally {
+      if (savedHost === undefined) delete process.env['DOCKER_HOST'];
+      else process.env['DOCKER_HOST'] = savedHost;
+    }
+  });
+
+  it('drops a sensitive key with a MALFORMED name (containing `=`) and warns naming the cause', async () => {
+    // Post-#2186, the shared `partitionSensitiveEnv` also drops a malformed
+    // key (empty / `=` / NUL) — a name containing `=` serialises to an environ
+    // entry whose OS-parsed name is everything before the first `=`, poisoning
+    // the docker client. `runDetached` inherits that guard through the shared
+    // helper; assert the drop and that the warning names the malformed cause.
+    warnSpy.mockClear();
+    await runDetached({
+      image: 'my-image:latest',
+      mounts: [],
+      env: { 'PATH=/tmp/evil:': 'attacker', DB_PASSWORD: 'real-secret' },
+      sensitiveEnvKeys: new Set(['PATH=/tmp/evil:', 'DB_PASSWORD']),
+      cmd: [],
+      hostPort: 9000,
+    });
+    const args = lastArgs();
+    // No flag for the malformed key, and its value is nowhere on the argv.
+    expect(args.join(' ')).not.toContain('PATH=/tmp/evil:');
+    expect(args.join(' ')).not.toContain('attacker');
+    const calls = childProcessMock.execFile.mock.calls;
+    const opts = calls[calls.length - 1]![2] as { env?: Record<string, string> };
+    expect(opts.env?.['PATH=/tmp/evil:']).toBeUndefined();
+    // The well-formed sibling is still delivered value-less.
+    expect(args).toContain('DB_PASSWORD');
+    expect(opts.env?.['DB_PASSWORD']).toBe('real-secret');
+    // The warning names the key AND the malformed cause (not only "shares a name").
+    const msg = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(msg).toContain('PATH=/tmp/evil:');
+    expect(msg).toContain("malformed name (empty, or containing '=' / NUL)");
   });
 
   // PR #717 added `DockerRunOptions.containerPort` (defaults to 8080 so the

@@ -1,7 +1,13 @@
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { promisify } from 'node:util';
-import { getDockerCmd, runDockerForeground, runDockerStreaming } from '../utils/docker-cmd.js';
+import {
+  dockerSpawnEnvWithSensitive,
+  getDockerCmd,
+  partitionSensitiveEnv,
+  runDockerForeground,
+  runDockerStreaming,
+} from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -259,22 +265,22 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
 
   // Sensitive env keys (decrypted SecureString SSM values from
   // `--from-cfn-stack` + the always-sensitive AWS credential set) are emitted
-  // as `-e KEY` (no `=value`) so the value is read from the spawn-time
-  // process env rather than going through the `docker run` argv. The
-  // passthrough map is forwarded to execFileAsync's env option below.
+  // as value-less `-e KEY` so the value is read from the spawn-time process env
+  // rather than the `docker run` argv. A key that NAMES a docker-client var is
+  // dropped entirely (no flag) — emitting `-e DOCKER_HOST` for a key the spawn
+  // env refuses to set would make docker resolve it against the CLIENT's own
+  // env and hand the container the HOST's value (issue #2184). Shared with the
+  // ECS path via `partitionSensitiveEnv`.
   const sensitiveKeys =
     opts.sensitiveEnvKeys && opts.sensitiveEnvKeys.size > 0
       ? new Set<string>([...SENSITIVE_ENV_KEYS, ...opts.sensitiveEnvKeys])
       : SENSITIVE_ENV_KEYS;
-  const passthroughEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries(opts.env)) {
-    if (sensitiveKeys.has(k)) {
-      args.push('-e', k);
-      passthroughEnv[k] = v;
-    } else {
-      args.push('-e', `${k}=${v}`);
-    }
-  }
+  const {
+    flags,
+    sensitiveEnv: passthroughEnv,
+    collisions,
+  } = partitionSensitiveEnv(opts.env, sensitiveKeys);
+  args.push(...flags);
 
   // Issue #440 — Lambda EphemeralStorage.Size: emit `--tmpfs
   // <target>:rw,size=<N>m` so the container's `/tmp` is capped at the
@@ -306,14 +312,23 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   const logger = getLogger().child('docker');
   logger.debug(`${getDockerCmd()} ${redactAwsCredentialsInArgs(args).join(' ')}`);
 
+  if (collisions.length > 0) {
+    logger.warn(
+      `Env var(s) ${collisions.join(', ')} share a name with a docker-client environment variable or have a malformed name (empty, or containing '=' / NUL), and were NOT passed to the container at all (a colliding name would hijack the docker client; a malformed name cannot form a valid environment variable).`
+    );
+  }
+
   try {
     const { stdout } = await execFileAsync(getDockerCmd(), args, {
       maxBuffer: 10 * 1024 * 1024,
-      // Forward the sensitive-key passthrough values via process env so
-      // docker picks them up for the `-e KEY` flags (the values never
-      // touched the argv). Inherit the rest of the parent's env so the
-      // user's local docker config (DOCKER_HOST etc.) keeps working.
-      env: { ...process.env, ...passthroughEnv },
+      // The value-less `-e KEY` flags read their values from here.
+      // `dockerSpawnEnvWithSensitive` keeps the docker client's own critical
+      // vars (DOCKER_HOST / PATH / ...) authoritative — but this is DEFENCE IN
+      // DEPTH, redundant by construction, since `partitionSensitiveEnv` already
+      // excluded every colliding key from `passthroughEnv`. Do not read a green
+      // suite as proof this call is load-bearing; the guard lives in the
+      // partition (issue #2184).
+      env: dockerSpawnEnvWithSensitive(passthroughEnv),
     });
     return stdout.trim();
   } catch (error) {
