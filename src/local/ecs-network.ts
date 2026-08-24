@@ -201,7 +201,7 @@ async function createNetworkAndSidecar(args: {
   sidecarArgs.push(...sidecarFlags);
   if (sidecarCollisions.length > 0) {
     logger.warn(
-      `Sidecar env var(s) ${sidecarCollisions.map((k) => JSON.stringify(k)).join(', ')} share a name with a docker-client environment variable or have a malformed name (empty, or containing '=' / NUL), and were NOT passed to the sidecar at all.`
+      `Sidecar env var(s) ${sidecarCollisions.map((k) => JSON.stringify(k)).join(', ')} share a name with a docker-client environment variable and were NOT passed to the sidecar at all (they would hijack the docker client).`
     );
   }
   sidecarArgs.push(METADATA_ENDPOINT_IMAGE);

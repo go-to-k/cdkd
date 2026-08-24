@@ -488,6 +488,33 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     expect(ok.collisions).toEqual([]);
   });
 
+  // OVER-refusal is the direction the positive rule newly makes possible, and
+  // the direction the old `||`-ed bad-shape clauses structurally could not fail
+  // in. Asserting one all-caps good name (`MY_SECRET` above) does not cover it:
+  // a tightened rule such as `/^[A-Z_][A-Z0-9_]*$/` silently fail-closed-drops
+  // every lowercase / dotted / hyphenated secret name and leaves the whole
+  // suite green (measured). These names are all legal ECS secret names.
+  it.each([
+    'my_secret',
+    'db.password',
+    'my-secret',
+    'Mixed_Case',
+    'SECRET1',
+    '1LEADING_DIGIT',
+    'trailing_underscore_',
+    'ssh_private_key', // lowercase twin of a delivered SSH_* name
+  ])('delivers the well-formed name %s rather than refusing it', (key) => {
+    expect(isMalformedEnvKey(key)).toBe(false);
+    const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(
+      { [key]: 'v' },
+      new Set([key])
+    );
+    expect(collisions).toEqual([]);
+    expect(flags).toEqual(['-e', key]);
+    expect(sensitiveEnv[key]).toBe('v');
+    expect(dockerSpawnEnvWithSensitive({ [key]: 'v' })[key]).toBe('v');
+  });
+
   it.each([
     'SSH_PRIVATE_KEY', // GitLab CI's canonical deploy-key spelling
     'SSH_KEY',
