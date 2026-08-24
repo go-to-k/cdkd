@@ -450,6 +450,18 @@ export async function runEcsTask(
       sensitiveEnv: built.sensitiveEnv,
       collisions: built.collisions,
     });
+    // A resolved secret whose NAME collides with a var the docker CLIENT reads
+    // reaches neither the argv nor the spawn env (it would hijack the client,
+    // and a value-less `-e KEY` would hand the container the HOST's value — see
+    // `partitionSensitiveEnv`). Warn HERE, in the build loop: every container's
+    // drop is reported regardless of whether an earlier container's `docker run`
+    // fails, and outside the start loop's try/catch that relabels errors as
+    // "docker run failed" (issue #2183 review).
+    if (built.collisions.length > 0) {
+      logger.warn(
+        `Container '${container.name}': secret(s) ${built.collisions.join(', ')} share a name with a docker-client environment variable and were NOT passed to the container at all (they would hijack the docker client). Rename the secret if the container needs it.`
+      );
+    }
   }
 
   // Boot containers in dependency order. Each container's `dependsOn`
@@ -469,16 +481,6 @@ export async function runEcsTask(
     let id: string;
     try {
       const built = dockerEnvs.get(container.name)!;
-      // A resolved secret whose NAME collides with a var the docker CLIENT
-      // itself reads reaches neither the argv nor the spawn env (it would
-      // hijack the client, and an `-e KEY` flag would hand the container the
-      // HOST's value — see `partitionSensitiveEnv`). Warn so the drop is not
-      // silent (issue #2183).
-      if (built.collisions.length > 0) {
-        logger.warn(
-          `Container '${container.name}': secret(s) ${built.collisions.join(', ')} share a name with a docker-client environment variable and were NOT passed to the container at all (they would hijack the docker client). Rename the secret if the container needs it.`
-        );
-      }
       const { stdout } = await execFileAsync(getDockerCmd(), args, {
         maxBuffer: 10 * 1024 * 1024,
         // The `-e KEY` (value-less) flags read their values from here, so
@@ -1099,9 +1101,13 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // `/proc/<pid>/cmdline`), unless it NAMES a docker-client var, in which case
   // it gets no flag at all and is reported in `collisions`. Mirrors
   // `runDetached` in `docker-runner.ts`. (A secret whose NAME itself contains
-  // `=` is a pre-existing sharp edge left as-is: docker parses `-e FOO=BAR` as
-  // an assignment so the value is lost — issue #2183 item 10, pathological and
-  // broken the same way before this PR.)
+  // `=` is a pre-existing sharp edge left as-is: docker parses `-e NAME=VALUE`
+  // as an assignment, so for a secret named `FOO=BAR` the failure mode CHANGED
+  // rather than staying constant — before this PR the name+value became
+  // `-e FOO=BAR=<secret>`, delivering the secret mangled into a `FOO` var; now
+  // the value-less `-e FOO=BAR` delivers `FOO=BAR` and drops the secret value.
+  // Neither ever delivered the intended `FOO=BAR` variable — issue #2183
+  // item 10, pathological, left as-is.)
   const sensitiveKeys = new Set<string>([...SENSITIVE_ENV_KEYS, ...secrets.map((s) => s.name)]);
   const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(finalEnv, sensitiveKeys);
   args.push(...flags);

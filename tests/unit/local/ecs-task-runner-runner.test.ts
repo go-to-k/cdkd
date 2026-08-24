@@ -1039,4 +1039,43 @@ describe('runEcsTask — per-container secret isolation + client-env collisions 
     expect(msg).toContain('DOCKER_HOST');
     expect(msg).toContain('were NOT passed to the container');
   });
+
+  it("reports a later container's dropped secret even when an earlier container's docker run fails (issue #2183 review)", async () => {
+    // The warn lives in the build loop, before any container starts, so an
+    // earlier container's boot failure cannot hide a later container's dropped
+    // secret (nor get it mislabelled as "docker run failed"). With the warn in
+    // the old per-start location, 'a' failing first aborts the run before 'b'
+    // ever starts and 'b's warning is lost.
+    warnSpy.mockClear();
+    let runCall = 0;
+    captured.responder = (_cmd: string, args: string[]) => {
+      if (args[0] === 'run') {
+        runCall += 1;
+        if (runCall === 1) return { err: new Error('boom'), stderr: 'docker run failed' };
+        return { stdout: 'cid\n' };
+      }
+      return { stdout: '' };
+    };
+    const a = makeContainer({ name: 'a' });
+    const b = makeContainer({
+      name: 'b',
+      secrets: [{ name: 'DOCKER_HOST', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:h' }],
+    });
+    const state = createEcsRunState();
+    // The task MUST reject — an essential container's `docker run` failing is a
+    // task failure. Asserting the rejection (rather than swallowing it) plus
+    // runCall === 1 proves the first container's `docker run` was actually
+    // reached and failed, so this test cannot pass vacuously on some earlier
+    // setup error (issue #2183 review).
+    await expect(
+      runEcsTask(makeTask({ containers: [a, b] }), baseOptions(), state)
+    ).rejects.toThrow();
+    expect(runCall).toBe(1);
+    const msg = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(msg).toContain("Container 'b'");
+    expect(msg).toContain('DOCKER_HOST');
+    // The warning is the build-loop collision warning, NOT the start loop's
+    // "docker run failed" relabelling of container a's failure.
+    expect(msg).not.toContain('docker run failed');
+  });
 });

@@ -300,8 +300,17 @@ export function formatDockerLoginError(stderr: string, endpoint: string): string
  * https://github.com/go-to-k/cdkd/issues/2183.
  */
 export const DOCKER_CLIENT_ENV_KEYS: ReadonlySet<string> = new Set([
+  // RULE for additions: anything the docker CLIENT (or a credential / connection
+  // helper it execs) reads to decide WHAT CODE IT LOADS, WHAT IT TRUSTS, or
+  // WHERE / HOW IT CONNECTS. A user-controlled secret NAME matching one of these
+  // must never reach the client's own environment (issue #2183).
   // Process-level vars the client needs to run at all (incl. Windows HOME).
+  // `PATHEXT` is here for the same code-execution reason as `PATH`: on Windows
+  // Go's executable lookup reads it to choose which extension of an adjacent
+  // helper (credential helper, `ssh`) to run, so a colliding secret can pick a
+  // different program.
   'PATH',
+  'PATHEXT',
   'HOME',
   'USERPROFILE',
   'HOMEDRIVE',
@@ -315,6 +324,7 @@ export const DOCKER_CLIENT_ENV_KEYS: ReadonlySet<string> = new Set([
   'DOCKER_TLS',
   'DOCKER_TLS_VERIFY',
   'DOCKER_API_VERSION',
+  'DOCKER_AUTH_CONFIG',
   // Execution / behavior.
   'DOCKER_DEFAULT_PLATFORM',
   'DOCKER_CUSTOM_HEADERS',
@@ -322,6 +332,21 @@ export const DOCKER_CLIENT_ENV_KEYS: ReadonlySet<string> = new Set([
   'DOCKER_CONTENT_TRUST_SERVER',
   'DOCKER_HIDE_LEGACY_COMMANDS',
   'BUILDKIT_PROGRESS',
+  // Loader — a colliding secret injects code into the client process (and the
+  // credential / connection helpers it execs, which inherit its env). The docker
+  // CLI here is dynamically linked, so the loader vars are live. The WHOLE `LD_*`
+  // / `DYLD_*` family is caught by PREFIX in `isDockerClientEnvKey` rather than
+  // enumerated here — an exact list of loader vars is always one release behind
+  // (glibc `LD_*`, macOS `DYLD_ROOT_PATH` / `DYLD_IMAGE_SUFFIX` / ...); the
+  // non-prefixed loader tunable is named individually.
+  'GLIBC_TUNABLES',
+  // Trust — a colliding secret repoints the client's trusted CA bundle for the
+  // daemon / registry TLS handshake (Go's x509 honours these on Linux) or tunes
+  // the Go runtime. (The whole `SSH_*` family — agent socket, askpass and the
+  // SK / PKCS#11 exec helpers — is caught by PREFIX in `isDockerClientEnvKey`.)
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'GODEBUG',
   // Proxy vars the client honors for registry connections — a colliding secret
   // could route the client's traffic (incl. image pulls) through an attacker.
   'HTTP_PROXY',
@@ -341,12 +366,29 @@ const DOCKER_CLIENT_ENV_KEYS_UPPER: ReadonlySet<string> = new Set(
 );
 
 /**
+ * Env-var prefixes whose WHOLE family the docker client (or a helper it execs)
+ * reads, so a NAMED list is always one release behind and a colliding secret in
+ * ANY member is a hazard. `LD_*` / `DYLD_*` are the dynamic loader (code
+ * injection, glibc + macOS). `SSH_*` is the `ssh://`-context connection helper's
+ * inherited env: `SSH_AUTH_SOCK` (agent hijack), `SSH_ASKPASS` /
+ * `SSH_ASKPASS_REQUIRE` and `SSH_SK_HELPER` / `SSH_PKCS11_HELPER` (OpenSSH execs
+ * the named program), plus whatever a future OpenSSH adds. Matched by prefix
+ * rather than enumerated (issue #2183 review).
+ */
+const DOCKER_CLIENT_ENV_PREFIXES: readonly string[] = ['LD_', 'DYLD_', 'SSH_'];
+
+/**
  * Is `key` the name of a var the docker client reads? Case-INSENSITIVE, because
  * Windows environment lookups are, so a lowercase `docker_host` must be caught
- * too (issue #2183).
+ * too (issue #2183). Matches the exact denylist OR any prefixed family — the
+ * loader / SSH families are fail-closed on the whole prefix, so an unlisted
+ * `LD_*` / `DYLD_*` / `SSH_*` secret is dropped (with a rename warning) rather
+ * than reaching the client.
  */
 export function isDockerClientEnvKey(key: string): boolean {
-  return DOCKER_CLIENT_ENV_KEYS_UPPER.has(key.toUpperCase());
+  const upper = key.toUpperCase();
+  if (DOCKER_CLIENT_ENV_KEYS_UPPER.has(upper)) return true;
+  return DOCKER_CLIENT_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix));
 }
 
 /**

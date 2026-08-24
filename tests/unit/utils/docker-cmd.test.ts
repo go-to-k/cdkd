@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 import {
   DOCKER_CLIENT_ENV_KEYS,
   dockerSpawnEnvWithSensitive,
+  isDockerClientEnvKey,
   partitionSensitiveEnv,
   formatDockerLoginError,
   getDockerCmd,
@@ -9,6 +10,7 @@ import {
   spawnForeground,
   spawnStreaming,
 } from '../../../src/utils/docker-cmd.js';
+import { SENSITIVE_ENV_KEYS } from '../../../src/local/docker-runner.js';
 
 describe('getDockerCmd', () => {
   let originalEnv: string | undefined;
@@ -291,6 +293,7 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
   // 'HTTP_PROXY' left a set-driven table 53/53 passing).
   const EXPECTED_CLIENT_ENV_KEYS = [
     'PATH',
+    'PATHEXT',
     'HOME',
     'USERPROFILE',
     'HOMEDRIVE',
@@ -318,7 +321,27 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
     'no_proxy',
     'ftp_proxy',
     'all_proxy',
+    'DOCKER_AUTH_CONFIG',
+    // The prefixed families (`LD_*` / `DYLD_*` loader, `SSH_*` connection-helper)
+    // are matched by PREFIX in `isDockerClientEnvKey`, not enumerated in
+    // DOCKER_CLIENT_ENV_KEYS, so they are deliberately absent from this
+    // exact-membership list — the prefix cases below cover them. Only the
+    // non-prefixed loader tunable is a set member.
+    'GLIBC_TUNABLES',
+    'SSL_CERT_FILE',
+    'SSL_CERT_DIR',
+    'GODEBUG',
   ];
+
+  it('keeps SENSITIVE_ENV_KEYS disjoint from the docker-client denylist (case-insensitive)', () => {
+    // The ECS sidecar (ecs-network.ts) partitions its fixed credential set and
+    // warns on any collision, but a collision there is expected to be dead code:
+    // this invariant is what makes that so. Fence it here so adding a
+    // docker-client-named key to EITHER set fails loudly rather than quietly
+    // dropping the sidecar credential (issue #2183 review). Case-insensitive
+    // because production collision detection is (Windows env lookups).
+    expect([...SENSITIVE_ENV_KEYS].filter(isDockerClientEnvKey)).toEqual([]);
+  });
 
   it('fences exactly the documented docker-client vars — no silent removals', () => {
     // This is the assertion that a DELETION trips. Adding a key trips it too,
@@ -337,6 +360,42 @@ describe('dockerSpawnEnvWithSensitive (issue #2183)', () => {
       expect(partitionSensitiveEnv({ [key]: 'evil' }, new Set([key])).flags).toEqual([]);
     }
   );
+
+  // The prefixed families are matched by PREFIX, so an UNLISTED member — one no
+  // release-specific enumeration would carry — is still refused. This is the
+  // structural half of finding (1): a named list is always one release behind
+  // (a new OpenSSH exec helper, a new `DYLD_*` var).
+  it.each([
+    'LD_PRELOAD',
+    'LD_LIBRARY_PATH',
+    'LD_AUDIT',
+    'DYLD_INSERT_LIBRARIES',
+    'DYLD_ROOT_PATH', // unlisted — caught only by the DYLD_ prefix
+    'DYLD_IMAGE_SUFFIX', // unlisted
+    'dyld_root_path', // lowercase, since detection is case-insensitive
+    'ld_preload',
+    'SSH_AUTH_SOCK', // agent hijack
+    'SSH_ASKPASS', // OpenSSH execs the named program
+    'SSH_ASKPASS_REQUIRE',
+    'SSH_SK_HELPER', // security-key helper — OpenSSH execs it
+    'SSH_PKCS11_HELPER', // PKCS#11 helper — OpenSSH execs it
+    'ssh_askpass', // lowercase
+  ])('treats prefixed client var %s as a docker-client var and drops it', (key) => {
+    expect(isDockerClientEnvKey(key)).toBe(true);
+    expect(dockerSpawnEnvWithSensitive({ [key]: 'evil' })[key]).not.toBe('evil');
+    expect(partitionSensitiveEnv({ [key]: 'evil' }, new Set([key])).flags).toEqual([]);
+  });
+
+  it('does not treat a name that merely contains a prefix as a client var', () => {
+    // The prefix is anchored at the START — `PAYLOAD_KEY` / `MY_LD_THING` /
+    // `MY_SSH_KEY` are ordinary secrets and must still be delivered, and a
+    // prefix without its underscore (`DYLDISH` / `SSHFOO`) is not a match.
+    expect(isDockerClientEnvKey('PAYLOAD_KEY')).toBe(false);
+    expect(isDockerClientEnvKey('MY_LD_THING')).toBe(false);
+    expect(isDockerClientEnvKey('MY_SSH_KEY')).toBe(false);
+    expect(isDockerClientEnvKey('DYLDISH')).toBe(false);
+    expect(isDockerClientEnvKey('SSHFOO')).toBe(false);
+  });
 
   it('reports a colliding name case-insensitively and emits NO -e flag for it', () => {
     const { flags, sensitiveEnv, collisions } = partitionSensitiveEnv(

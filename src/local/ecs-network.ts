@@ -188,14 +188,22 @@ async function createNetworkAndSidecar(args: {
   // where any local reader of `/proc/<pid>/cmdline` could see them. Mirrors
   // `runDetached` in `docker-runner.ts`. Non-credential env (e.g. CLUSTER)
   // stays as `-e KEY=value`.
-  // `SENSITIVE_ENV_KEYS` is disjoint from `DOCKER_CLIENT_ENV_KEYS`, so
-  // `collisions` is structurally always empty here — the shared partition is
-  // used anyway so the invariant is enforced rather than commented.
-  const { flags: sidecarFlags, sensitiveEnv: sidecarSensitiveEnv } = partitionSensitiveEnv(
-    sidecarEnv,
-    SENSITIVE_ENV_KEYS
-  );
+  // `SENSITIVE_ENV_KEYS` (the three AWS credential names) is disjoint from
+  // `DOCKER_CLIENT_ENV_KEYS`, so `collisions` is empty here today — but that is
+  // NOT enforced by construction, so we still consume it and warn (and a unit
+  // test in `docker-cmd.test.ts` fences the two sets against a future addition
+  // to either).
+  const {
+    flags: sidecarFlags,
+    sensitiveEnv: sidecarSensitiveEnv,
+    collisions: sidecarCollisions,
+  } = partitionSensitiveEnv(sidecarEnv, SENSITIVE_ENV_KEYS);
   sidecarArgs.push(...sidecarFlags);
+  if (sidecarCollisions.length > 0) {
+    logger.warn(
+      `Sidecar env var(s) ${sidecarCollisions.join(', ')} share a name with a docker-client environment variable and were NOT passed to the sidecar at all (they would hijack the docker client).`
+    );
+  }
   sidecarArgs.push(METADATA_ENDPOINT_IMAGE);
 
   logger.info(`Starting ECS local-container-endpoints sidecar at ${sidecarIp}...`);
