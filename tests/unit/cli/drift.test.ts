@@ -1138,15 +1138,31 @@ describe('cdkd drift', () => {
     //
     // The route to `unsupported` here is the mocked registry returning a
     // provider with no `readCurrentState` AND this suite's Cloud Control
-    // double resolving `undefined`. In PRODUCTION the second half is not
-    // guaranteed -- the live fallback can throw instead (issue #2151) -- so
-    // do not read this test as evidence about that path. It fences the
-    // arithmetic, which is identical whichever route produced the outcome. Both halves are in the one
-    // fragment on purpose: `0 resources checked` alone is also what a report
-    // that DROPPED the resource would print, and `1 unsupported` is what
-    // says it was seen and classified.
-    expect(output).toContain('no drift detected (0 resources checked, 1 unsupported)');
-    // Drift unknown is not drift -> exit 0.
+    // double resolving `undefined`. Since issue
+    // [#2151](https://github.com/go-to-k/cdkd/issues/2151) the live fallback's
+    // OTHER spelling -- a thrown `UnsupportedActionException` -- reaches the
+    // same outcome through `isNoReadHandlerError`, which is what makes the two
+    // spellings indistinguishable downstream. This test still drives the
+    // `undefined` route; the throw route is fenced in
+    // `drift-per-resource-failure.test.ts`.
+    //
+    // Issue [#2154](https://github.com/go-to-k/cdkd/issues/2154): the glyph is
+    // now `⚠`, not `✓`. Nothing in this stack was compared, so the reassuring
+    // glyph over `0 resources checked` was a green check for a stack cdkd never
+    // looked at. Both halves stay in the one fragment on purpose: `0 of 1`
+    // alone is also what a report that DROPPED the resource would print, and
+    // `1 unsupported` is what says it was seen and classified.
+    expect(output).toContain(
+      '⚠ TestStack (us-east-1): no drift detected, but NOTHING was compared — 0 of 1 resource checked (1 unsupported)'
+    );
+    // ...and the OLD rendering is gone, asserted explicitly. Without this the
+    // test passes on any output CONTAINING the new line, including one that
+    // printed both.
+    expect(output).not.toContain('✓ TestStack');
+    // Drift unknown is not drift, and #2154 changed the GLYPH ONLY -> still
+    // exit 0. This is the assertion that keeps the rendering fix from becoming
+    // a CI-breaking exit-code change for every stack holding an unsupported
+    // type.
     expect(exitSpy).not.toHaveBeenCalled();
   });
 

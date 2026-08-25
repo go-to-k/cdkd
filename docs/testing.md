@@ -1489,8 +1489,11 @@ comparison the region refusal SKIPPED carries no marker otherwise and a CI
 consumer would read the skip as a clean bill of health; it also asserts the
 EXIT CODE is `2`, which is the marker such a consumer actually reads (pre-#2108
 this population exited `1`, because it reported phantom drift). That assertion
-is on the REFUSAL population specifically: the exit code is scoped to
-comparisons cdkd declined, not to everything it did not compare, so the phase
+is on the REFUSAL population specifically: the exit code is scoped to the causes
+a re-run CAN CLEAR -- since issues
+[#2151](https://github.com/go-to-k/cdkd/issues/2151) /
+[#1945](https://github.com/go-to-k/cdkd/issues/1945) that is a refusal OR a read
+that failed, but never everything cdkd did not compare -- so the phase
 also asserts the run's own output says `refused to resolve` -- without that, an
 exit `2` could have come from the broader `notCompared` bucket, which is
 deliberately kept out of the exit code (a stack whose only uncompared property

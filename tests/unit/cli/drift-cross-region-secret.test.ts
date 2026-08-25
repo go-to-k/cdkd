@@ -299,7 +299,12 @@ interface StackDriftJson {
   notSupported: Array<{ logicalId: string; type: string }>;
   skipped: Array<{ logicalId: string; type: string }>;
   /** Issue #2108: the roll-up of every entry carrying `referencesUnresolved`. */
-  notCompared: Array<{ logicalId: string; type: string; referencesUnresolved: true }>;
+  notCompared: Array<{
+    logicalId: string;
+    type: string;
+    referencesUnresolved: boolean;
+    cause: 'refused' | 'unresolvedToken' | 'readFailed';
+  }>;
 }
 
 function captureStdout(): { output: string[]; restore: () => void } {
@@ -927,7 +932,7 @@ describe('cdkd drift --json marks a resource whose properties were NOT compared 
     // The roll-up a CI job can gate on with ONE key instead of a filter over
     // two arrays.
     expect(parsed[0]!.notCompared).toEqual([
-      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true },
+      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true, cause: 'refused' },
     ]);
   });
 
@@ -1138,7 +1143,7 @@ describe('cdkd drift EXIT CODE distinguishes "clean" from "not compared" (issue 
       'Environment.Variables.PLAIN',
     ]);
     expect(parsed[0]!.notCompared).toEqual([
-      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true },
+      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true, cause: 'refused' },
     ]);
     expect(output).not.toContain(IRELAND_PASSWORD);
     expect(output).not.toContain(TOKYO_PASSWORD);
@@ -1222,7 +1227,12 @@ describe('the drift EXIT CODE is scoped to REFUSALS, not to everything uncompare
     // than re-scope the exit code.
     expect(parsed[0]!.clean).toEqual([]);
     expect(parsed[0]!.notCompared).toEqual([
-      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true },
+      {
+        logicalId: 'Fn',
+        type: LAMBDA_TYPE,
+        referencesUnresolved: true,
+        cause: 'unresolvedToken',
+      },
     ]);
     expect(exitSpy).not.toHaveBeenCalled();
   });
@@ -1381,8 +1391,13 @@ describe('every rendering agrees about what was NOT compared (issue #2135)', () 
       { logicalId: 'Matched', type: LAMBDA_TYPE, referencesUnresolved: false },
     ]);
     expect(parsed[0]!.notCompared).toEqual([
-      { logicalId: 'Refused', type: LAMBDA_TYPE, referencesUnresolved: true },
-      { logicalId: 'Survivor', type: LAMBDA_TYPE, referencesUnresolved: true },
+      { logicalId: 'Refused', type: LAMBDA_TYPE, referencesUnresolved: true, cause: 'refused' },
+      {
+        logicalId: 'Survivor',
+        type: LAMBDA_TYPE,
+        referencesUnresolved: true,
+        cause: 'unresolvedToken',
+      },
     ]);
     expect(parsed[0]!.drifted).toEqual([]);
   });
