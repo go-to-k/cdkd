@@ -6,7 +6,7 @@ paths:
 
 # Provider Pattern - the delete path
 
-The `assertRegionMatch()` region-check helper (`src/provisioning/region-check.ts`) is documented in this file. Masking rules: [provider-masking.md](provider-masking.md).
+This file documents how providers CALL the `assertRegionMatch()` region-check helper. The helper itself lives in `src/provisioning/region-check.ts`, which this file's `paths:` glob does NOT match -- editing the helper loads [layout-provisioning.md](layout-provisioning.md), not this file. Masking rules: [provider-masking.md](provider-masking.md).
 
 Provider interface, registry, Custom Resources, and "Adding a New SDK Provider": [providers.md](providers.md).
 

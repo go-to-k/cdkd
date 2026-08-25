@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { readdirSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
@@ -44,11 +45,30 @@ import { parse as parseYaml } from 'yaml';
  *      repo-wide COUNT of lines over MAX_LINE_BYTES, so the "one bullet per
  *      area, forever" habit cannot re-establish itself silently.
  *
- * Plus 4: a per-touched-path PAYLOAD budget, which is the property anyone
+ * Plus 4: a per-touched-path PAYLOAD BAND, which is the property anyone
  * actually cares about. Caps 1-3 are per-file and a split can satisfy all three
  * while every satellite still shares one broad glob, which buys nothing. The
  * budgets below sum the matching rule files for a representative path in each
  * area, so widening a satellite's glob back out is what fails.
+ *
+ * The band's FLOOR is what makes the budgets symmetric with CORPUS_BYTES_MIN,
+ * and it was missing until a review probe on 2026-08-25 showed why. Every
+ * assertion here except the corpus floor is a one-sided UPPER bound, so the
+ * cheapest way to "improve" any number in this file is to make an area load
+ * LESS than it needs -- which is a worse outcome than the bloat the fence was
+ * written against, and it read as an improvement. Two probes, both GREEN
+ * against caps alone: narrowing `layout-local.md` from `src/local/**` to a
+ * single file made 48,072 B invisible to 56 of the 57 files under `src/local/`;
+ * and moving 27,912 B of `src/provisioning` text into `layout-scripts.md`
+ * (`scripts/**`) cut the provisioning payload from 94,925 to 67,013 B while
+ * leaving the corpus bytes and the file count untouched, so even the corpus
+ * floor could not see it. A floor per row catches both, because both move
+ * bytes AWAY from the path whose budget names them.
+ *
+ * Plus 5: routing hygiene -- no glob may be dead (matching no tracked file),
+ * every satellite must be reachable from an index, and rule files must sit at
+ * depth 1. A dead glob is the purest form of the same failure: the file's
+ * bytes stop counting against every budget precisely because nothing loads it.
  */
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -56,7 +76,7 @@ const RULES_DIR = join(repoRoot, '.claude', 'rules');
 
 /**
  * Headroom over the largest rule file today. Measured 2026-08-25 AFTER the
- * split: `hooks.md` at 105,593 B is the worst and is NOT part of the split (it
+ * split: `hooks.md` at 115,520 B is the worst and is NOT part of the split (it
  * globs `.claude/**`, not `src/**`, so it is not on the hot path this fence was
  * written for); the largest file the split itself produced is
  * `layout-scripts.md` at 59,193 B. Lower this cap when hooks.md is split.
@@ -95,12 +115,23 @@ const ABSOLUTE_MAX_LINE_BYTES = 48_000;
 const ALWAYS_ON_ALLOWLIST: readonly string[] = [];
 
 /**
+ * Globs that are always-on in everything but name. Requiring `paths:` to be a
+ * non-empty array is not the same as requiring it to NARROW anything: a review
+ * probe on 2026-08-25 gave `synthesis.md` `paths: ['**']`, which loads it into
+ * every session in the repo, and the whole suite stayed green -- the file is
+ * 3,335 B, so it slipped under every budget too. Matching one of these makes a
+ * file always-on, so it needs the same written decision an absent `paths:`
+ * does.
+ */
+const ALWAYS_ON_GLOBS: readonly string[] = ['**', '**/*', '*', './**'];
+
+/**
  * Per-touched-path payload budgets: the summed bytes of every rule file whose
  * `paths:` globs match that file. Measured 2026-08-25, before -> after the
  * split, with roughly 25-60% headroom left for the rule files this split did
  * not touch (`architecture.md`, `cli-internals.md`, `analyzer.md`, `assets.md`).
  *
- *   src/provisioning/providers/s3-bucket-provider.ts  573,721 ->  239,339
+ *   src/provisioning/providers/s3-bucket-provider.ts  573,721 ->  239,361
  *   src/deployment/deploy-engine.ts                   407,659 ->   48,937
  *   src/cli/commands/deploy.ts                        418,827 ->   47,570
  *   src/local/docker-runner.ts                        413,288 ->   68,543
@@ -111,40 +142,103 @@ const ALWAYS_ON_ALLOWLIST: readonly string[] = [];
  * previously loaded on `src/**` touches and never on a scripts touch, so "0"
  * was the wrong number, not a saving.
  */
-const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number]> = [
-  ['src/provisioning/providers/s3-bucket-provider.ts', 265_000], // measured 239,361; was 300_000, whose 60,639 B of slack silently absorbed a whole 59 KB satellite in a review probe
+/**
+ * How many TRACKED files each rule file's `paths:` globs reach, floored at
+ * roughly 80% of the 2026-08-25 measurement.
+ *
+ * This is the assertion the payload band cannot make, and the review probe that
+ * forced it is the one the band was supposed to catch and did not. Narrowing
+ * `layout-local.md` from `src/local/**` to `src/local/docker-runner.ts` hides
+ * 48,072 B from 56 of the 57 files under `src/local/` -- and every budget
+ * stayed green, INCLUDING the floor, because the budget row for that area names
+ * `src/local/docker-runner.ts`, which is precisely the one file the narrowed
+ * glob still matches. A budget speaks for one representative path; a glob
+ * narrowed around that path is invisible to it, and picking a second
+ * representative only moves the blind spot. Counting the reached population
+ * does not have a representative to be narrowed around.
+ *
+ * Raise a floor when a satellite legitimately covers more; lower one only with
+ * the reason in the commit, because the usual cause is text going dark.
+ */
+const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
+  ['analyzer.md', 12],
+  ['architecture.md', 261],
+  ['assets.md', 51],
+  ['cli-internals.md', 48],
+  ['code-layout.md', 261],
+  ['hooks.md', 67],
+  ['layout-analyzer.md', 12],
+  ['layout-cli-import-export.md', 2],
+  ['layout-cli.md', 48],
+  ['layout-deployment-secrets.md', 4],
+  ['layout-deployment.md', 12],
+  ['layout-drift.md', 5],
+  ['layout-local.md', 45],
+  ['layout-misc.md', 30],
+  ['layout-provisioning.md', 92],
+  ['layout-scripts.md', 38],
+  ['layout-utils.md', 19],
+  ['provider-aws-response-reads.md', 65],
+  ['provider-delete-path.md', 65],
+  ['provider-diff-record-folds.md', 65],
+  ['provider-masking.md', 65],
+  ['provider-nested-key-divergence.md', 65],
+  ['provider-property-fidelity.md', 65],
+  ['provider-replay-and-refusals.md', 65],
+  ['providers.md', 92],
+  ['state-schema.md', 5],
+  ['synthesis.md', 13],
+  ['testing.md', 2532],
+]);
+
+const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
+  // [touched path, floor, cap] -- see the "Plus 4" note above for why the floor
+  // is not decoration. Floors sit ~12% under the 2026-08-25 measurement, so
+  // ordinary editing is free and MOVING an area's notes out from under it is
+  // not.
+  ['src/provisioning/providers/s3-bucket-provider.ts', 210_000, 265_000], // measured 239,361; the cap was 300_000, whose 60,639 B of slack silently absorbed a whole 59 KB satellite in a review probe
   // A provisioning path OUTSIDE `providers/**`, and it is the row that makes
   // the provider half of this table bind at all. Review probe, 2026-08-25:
   // widening all seven `provider-*.md` from `src/provisioning/providers/**`
   // back to `src/provisioning/**` restores the FULL pre-split payload here
-  // (94,925 B -> 239,291 B) while failing ZERO budgets, because every other
+  // (94,925 B -> 239,361 B) while failing ZERO budgets, because every other
   // provisioning row sits under `providers/**` and so is unaffected by exactly
   // the widening the budgets exist to catch. The 20-odd shared helpers under
   // `src/provisioning/*.ts` are the population that regression would hit.
-  ['src/provisioning/region-check.ts', 120_000],
-  ['src/deployment/deploy-engine.ts', 80_000],
-  ['src/cli/commands/deploy.ts', 80_000],
-  ['src/local/docker-runner.ts', 100_000],
-  ['src/analyzer/dag-builder.ts', 60_000],
-  ['scripts/gen-nested-key-coverage.ts', 90_000],
+  ['src/provisioning/region-check.ts', 83_000, 120_000],
+  ['src/deployment/deploy-engine.ts', 43_000, 80_000],
+  ['src/cli/commands/deploy.ts', 41_000, 80_000],
+  ['src/local/docker-runner.ts', 60_000, 100_000],
+  ['src/analyzer/dag-builder.ts', 26_000, 60_000],
+  ['scripts/gen-nested-key-coverage.ts', 52_000, 90_000],
   // Review probe, 2026-08-25: with only the six rows above, 9 of the 28 rule
   // files (355,718 B -- 45% of the corpus) were matched by NO budgeted path,
   // and the four heaviest paths in the repo were all among them. A budget table
   // that misses the heaviest paths is not bounding the payload, it is bounding
-  // a sample. These rows put every rule file under at least one budget; the
-  // number beside each is its measured payload rounded up by roughly a tenth,
-  // so ordinary growth is fine and a re-widened glob is not.
-  ['src/deployment/secret-redaction.ts', 112_000],   // measured 101,396
-  ['src/cli/commands/scrub.ts', 110_000],            // measured 100,029
-  ['src/cli/commands/drift.ts', 110_000],            // measured  99,178
-  ['src/cli/commands/import.ts', 80_000],            // measured  72,035
-  ['src/utils/ip-protocol.ts', 105_000],             // measured  95,005
-  ['src/provisioning/cloud-control-provider.ts', 105_000], // measured 94,925
-  ['src/state/s3-state-backend.ts', 55_000],         // measured  48,864
-  ['src/types/state.ts', 55_000],                    // measured  48,864
-  ['src/synthesis/cdk-synthesizer.ts', 40_000],      // measured  34,889
-  ['tests/unit/example.test.ts', 62_000],            // measured  55,681
-  ['.claude/hooks/branch-gate.sh', 135_000],         // measured 115,520 -- hooks.md ALONE, and it grew 86,972 -> 115,520 B over its last four commits, so a tight cap here fires on the next hooks PR while blaming a widened glob
+  // a sample. These rows put every rule file under at least one budget -- which
+  // is asserted below rather than left as a claim -- and the number beside each
+  // is its measured payload rounded out by roughly a tenth in each direction.
+  ['src/deployment/secret-redaction.ts', 89_000, 112_000],   // measured 101,396
+  ['src/cli/commands/scrub.ts', 88_000, 110_000],            // measured 100,029
+  ['src/cli/commands/drift.ts', 87_000, 110_000],            // measured  99,178
+  ['src/cli/commands/import.ts', 63_000, 80_000],            // measured  72,035
+  ['src/utils/ip-protocol.ts', 83_000, 105_000],             // measured  95,005
+  ['src/provisioning/cloud-control-provider.ts', 83_000, 105_000], // measured 94,925
+  ['src/state/s3-state-backend.ts', 43_000, 55_000],         // measured  48,864
+  ['src/types/state.ts', 43_000, 55_000],                    // measured  48,864
+  ['src/synthesis/synthesizer.ts', 30_000, 40_000],          // measured  34,889
+  ['tests/unit/scripts/rule-file-payload.test.ts', 48_000, 62_000], // measured 55,681
+  ['.claude/hooks/branch-gate.sh', 101_000, 118_000],        // measured 115,520 -- hooks.md ALONE, so this cap can only ever fire alongside the 120,000 per-file one. It was 135_000, which put it 15,000 B PAST the per-file cap and so made it unreachable: the row existed but could not fail. Kept slightly under the per-file cap so a hooks.md that outgrows the split fails here first, where the message names the payload.
+  // Second review round, 2026-08-25: three heavy paths still carried no budget
+  // at all. `masked-retry-logger.ts` is the 2nd-heaviest path in the repo and
+  // was covered only by prose, in the `region-check.ts` row's claim to speak
+  // for "the 20-odd shared helpers" -- it does not, because that row's payload
+  // is 52,459 B lighter.
+  ['src/provisioning/masked-retry-logger.ts', 129_000, 162_000], // measured 147,384
+  ['src/analyzer/drift-protocol-normalize.ts', 71_000, 92_000],  // measured  81,242
+  ['src/assets/asset-publisher.ts', 32_000, 42_000],             // measured  37,183
+  ['src/utils/logger.ts', 38_000, 50_000],                       // measured  43,397
+  ['vite.config.ts', 14_000, 21_000],                            // measured  16,712
 ];
 
 const SPLIT_ADVICE =
@@ -260,6 +354,30 @@ const CORPUS_FILE_COUNT = 28;
 const CORPUS_BYTES_MIN = 790_000;   // measured 799,515 B -- 9,515 B of slack
 const CORPUS_BYTES_MAX = 900_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap
 
+/**
+ * The repo's tracked files, read once. Memoised because two per-file suites
+ * consult it and `git ls-files` is the slowest thing in this file.
+ */
+let trackedCache: string[] | undefined;
+function trackedFiles(): string[] {
+  if (!trackedCache) {
+    trackedCache = execFileSync('git', ['ls-files'], {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      maxBuffer: 64 * 1024 * 1024,
+    })
+      .split('\n')
+      .filter(Boolean);
+    // Guard the guard: an empty listing would make the dead-glob and reach
+    // assertions vacuous in opposite directions -- everything dead, everything
+    // under floor -- so it must fail loudly rather than quietly.
+    if (trackedCache.length < 100) {
+      throw new Error(`git ls-files returned ${trackedCache.length} paths; expected the cdkd tree`);
+    }
+  }
+  return trackedCache;
+}
+
 describe('.claude/rules payload fence', () => {
   it('finds the rule files at all (guard the guard)', () => {
     // A wrong RULES_DIR would make every assertion below vacuously pass.
@@ -301,7 +419,13 @@ describe('.claude/rules payload fence', () => {
         'NEVER by summarising or deleting it -- this floor is the only assertion ' +
         'here that can tell the two apart.',
     ).toBeGreaterThanOrEqual(CORPUS_BYTES_MIN);
-    expect(total).toBeLessThanOrEqual(CORPUS_BYTES_MAX);
+    expect(
+      total,
+      `The rules corpus is ${total} B, over the ${CORPUS_BYTES_MAX} B ceiling. ` +
+        'This catches bulk growth that stays under every per-file cap by ' +
+        'spreading itself thinly. ' +
+        SPLIT_ADVICE,
+    ).toBeLessThanOrEqual(CORPUS_BYTES_MAX);
   });
 
   it.each(ruleFiles.map((r) => [r.name] as const))(
@@ -332,6 +456,11 @@ describe('.claude/rules payload fence', () => {
         rule.paths && rule.paths.length > 0,
         `.claude/rules/${name} declares no \`paths:\` globs, so it loads into EVERY session in the repo. Give it a glob as narrow as its content, or add it to ALWAYS_ON_ALLOWLIST with a written reason.`,
       ).toBe(true);
+      const alwaysOn = (rule.paths ?? []).filter((g) => ALWAYS_ON_GLOBS.includes(g));
+      expect(
+        alwaysOn,
+        `.claude/rules/${name} declares ${JSON.stringify(alwaysOn)}, which matches every file in the repo -- it is always-on with a \`paths:\` key for cover, and the non-empty check above cannot tell the difference. Narrow it to the area the file describes, or add the file to ALWAYS_ON_ALLOWLIST with a written reason.`,
+      ).toEqual([]);
     },
   );
 
@@ -369,22 +498,146 @@ describe('.claude/rules payload fence', () => {
     ).toBeLessThanOrEqual(LEGACY_LONG_LINE_BUDGET);
   });
 
-  it.each(PAYLOAD_BUDGETS.map(([p, b]) => [p, b] as const))(
-    'touching %s loads at most %d B of rule files',
-    (touched, budget) => {
+  it.each(PAYLOAD_BUDGETS.map(([p, lo, hi]) => [p, lo, hi] as const))(
+    'touching %s loads between %d and %d B of rule files',
+    (touched, floor, cap) => {
       const matched = ruleFiles.filter((rule) =>
         (rule.paths ?? []).some((glob) => globToRegExp(glob).test(touched)),
       );
       const total = matched.reduce((sum, rule) => sum + rule.bytes, 0);
+      const from = matched
+        .sort((a, b) => b.bytes - a.bytes)
+        .map((r) => `${r.name} (${r.bytes} B)`)
+        .join(', ');
       expect(
         total,
-        `Touching \`${touched}\` now pulls in ${total} B of .claude/rules (budget ${budget} B) from: ${matched
-          .sort((a, b) => b.bytes - a.bytes)
-          .map((r) => `${r.name} (${r.bytes} B)`)
-          .join(', ')}. Either a rule file grew, or a satellite's \`paths:\` glob was widened back out. ${SPLIT_ADVICE}`,
-      ).toBeLessThanOrEqual(budget);
+        `Touching \`${touched}\` now pulls in ${total} B of .claude/rules (cap ${cap} B) from: ${from}. Either a rule file grew, or a satellite's \`paths:\` glob was widened back out. ${SPLIT_ADVICE}`,
+      ).toBeLessThanOrEqual(cap);
+      expect(
+        total,
+        `Touching \`${touched}\` now pulls in only ${total} B of .claude/rules (floor ${floor} B) from: ${from}. Something this path NEEDS stopped loading -- a satellite's \`paths:\` glob was narrowed past it, its text was moved under a glob this path does not match, or the file was deleted. Payload goes down by moving text to a narrower glob that STILL COVERS the code it describes; making an area under-load is not a saving. If the drop is deliberate, lower this floor in the same commit and say what moved where.`,
+      ).toBeGreaterThanOrEqual(floor);
     },
   );
+
+  it('every rule file sits at the top of .claude/rules/', () => {
+    // The listing above is recursive on purpose (a non-recursive one hid ten
+    // satellites and went green), but recursion BLESSES subdirectories, and
+    // nothing states that Claude Code's own loader descends into them. Until
+    // something does, keep the corpus flat so the two cannot disagree.
+    const nested = ruleFiles.map((r) => r.name).filter((n) => n.includes('/'));
+    expect(
+      nested,
+      `${nested.join(', ')} live below .claude/rules/. This fence reads them recursively, but whether the LOADER does is unverified -- a rule file it cannot see is a rule file that never loads while every budget here reports an improvement. Move them back up, or verify the loader first and say so here.`,
+    ).toEqual([]);
+  });
+
+  it.each(ruleFiles.map((r) => [r.name] as const))(
+    '%s still reaches the population its globs claim',
+    (name) => {
+      const rule = ruleFiles.find((r) => r.name === name)!;
+      const floor = REACH_FLOORS.get(name);
+      expect(
+        floor,
+        `.claude/rules/${name} has no REACH_FLOORS entry. Every rule file needs one: it is the only assertion that notices a \`paths:\` glob being narrowed around whichever single path a payload budget happens to name.`,
+      ).toBeDefined();
+      const reached = trackedFiles().filter((f) =>
+        (rule.paths ?? []).some((glob) => globToRegExp(glob).test(f)),
+      );
+      expect(
+        reached.length,
+        `.claude/rules/${name} now reaches ${reached.length} tracked files, under its floor of ${floor}. Its \`paths:\` globs were narrowed, so its ${rule.bytes} B stopped loading for code that still needs them -- and the payload budgets cannot see this, because each speaks for one representative path. If the narrowing is deliberate, lower the floor in the same commit and say which code no longer needs this file.`,
+      ).toBeGreaterThanOrEqual(floor!);
+    },
+  );
+
+  it('no `paths:` glob is dead', () => {
+    // A dead glob is the purest version of what the floors above catch: the
+    // file's bytes stop counting against every budget precisely because
+    // nothing loads it, so the table reports a saving for text that has gone
+    // dark. Review probe, 2026-08-25: repointing `layout-drift.md` at
+    // `src/analyzer/zzz-no-such-file.ts` hid 51,608 B and the suite stayed
+    // green.
+    const tracked = trackedFiles();
+    const dead = ruleFiles.flatMap((rule) =>
+      (rule.paths ?? [])
+        .filter((glob) => !tracked.some((f) => globToRegExp(glob).test(f)))
+        .map((glob) => `${rule.name}: ${glob}`),
+    );
+    expect(
+      dead,
+      `These \`paths:\` globs match no tracked file, so the rule file never loads for them: ${dead.join(', ')}. Either the glob has a typo, or the code it named was renamed or removed and the notes went with it.`,
+    ).toEqual([]);
+  });
+
+  it('every satellite is reachable from an index, and every index row resolves', () => {
+    // The satellites load by their own globs, so an unindexed one still WORKS
+    // -- which is why nothing noticed. It stops being findable by a human
+    // reading code-layout.md, which is how the next split decides where text
+    // belongs.
+    const indexes = ['code-layout.md', 'providers.md'];
+    const linked = new Set<string>();
+    const broken: string[] = [];
+    for (const idx of indexes) {
+      // TABLE ROWS only. A prose pointer elsewhere in the file also makes a
+      // satellite findable, but it is not the index -- a review probe on
+      // 2026-08-25 deleted `layout-utils.md`'s row from the table and the
+      // assertion stayed green on the strength of a sentence further down. The
+      // table is what a reader scans to decide where a new paragraph belongs,
+      // so the table is what must stay complete.
+      const rows = ruleFiles
+        .find((r) => r.name === idx)!
+        .lines.filter((l) => l.trimStart().startsWith('|'));
+      for (const m of rows.join('\n').matchAll(/\[([a-z0-9-]+\.md)\]\(([a-z0-9-]+\.md)\)/g)) {
+        linked.add(m[2]!);
+        if (!ruleFiles.some((r) => r.name === m[2]!)) broken.push(`${idx} -> ${m[2]!}`);
+      }
+    }
+    expect(broken, `Index rows point at rule files that do not exist: ${broken.join(', ')}.`).toEqual(
+      [],
+    );
+    const orphans = ruleFiles
+      .map((r) => r.name)
+      .filter((n) => /^(layout|provider)-/.test(n) && !linked.has(n));
+    expect(
+      orphans,
+      `${orphans.join(', ')} are satellites that no index links to. They still load by their own \`paths:\`, so no budget notices -- but the next person deciding where a paragraph belongs reads the index, not the directory. Add a row to code-layout.md or providers.md.`,
+    ).toEqual([]);
+  });
+
+  it('every rule file is covered by at least one budgeted path', () => {
+    // This was measured once and written down as a claim in a comment. A claim
+    // decays: a review probe on 2026-08-25 retyped `provider-masking.md`'s glob
+    // to a directory that does not exist, which drops it out of every budget
+    // AND out of the corpus's reach, and all 134 tests passed.
+    const budgeted = new Set(
+      ruleFiles
+        .filter((rule) =>
+          PAYLOAD_BUDGETS.some(([touched]) =>
+            (rule.paths ?? []).some((glob) => globToRegExp(glob).test(touched)),
+          ),
+        )
+        .map((r) => r.name),
+    );
+    const uncovered = ruleFiles.map((r) => r.name).filter((n) => !budgeted.has(n));
+    expect(
+      uncovered,
+      `${uncovered.join(', ')} match none of the ${PAYLOAD_BUDGETS.length} budgeted paths, so their bytes are bounded by nothing but the per-file cap. Add a representative path for the area each one covers.`,
+    ).toEqual([]);
+  });
+
+  it('every budgeted path names a file that exists', () => {
+    // A budget on a path that does not exist still measures glob matching, so
+    // it passes -- while its NAME, which is the only thing telling a reader
+    // which area the row speaks for, is a lie. Two of the original rows
+    // (`src/synthesis/cdk-synthesizer.ts`, `tests/unit/example.test.ts`) were
+    // in this state.
+    const missing = PAYLOAD_BUDGETS.map(([p]) => p).filter((p) => !existsSync(join(repoRoot, p)));
+    expect(
+      missing,
+      `These budgeted paths do not exist: ${missing.join(', ')}. The row still measures something, but not the area its name claims. Point it at a real file in that area.`,
+    ).toEqual([]);
+  });
 
   it('the glob matcher itself behaves as the payload budgets assume', () => {
     // Guard the guard: a matcher that matched nothing would make every payload
