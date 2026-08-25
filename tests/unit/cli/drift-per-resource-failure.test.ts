@@ -9,11 +9,17 @@ const warnSpy = vi.hoisted(() => vi.fn());
 // correctly declined -- so the line the correct path PRINTS is what those tests
 // read.
 const infoSpy = vi.hoisted(() => vi.fn());
+// Hoisted because the guard writes TWO lines at debug level, and both were
+// unasserted: the stack-detail line under `--verbose`, and the no-read-path
+// downgrade note. A mocked `vi.fn()` swallows an argument that would have
+// CRASHED the real logger, which is how a `JSON.stringify`-on-a-cycle throw
+// survived a green suite.
+const debugSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
-    debug: vi.fn(),
+    debug: debugSpy,
     info: infoSpy,
     warn: warnSpy,
     error: errorSpy,
@@ -186,6 +192,21 @@ async function runDrift(args: string[]): Promise<{ output: string; error: unknow
   return { output: cap.output.join(''), error };
 }
 
+/**
+ * Every debug arg the command emitted, rendered the way `ConsoleLogger` renders
+ * them -- extra args through `JSON.stringify`. That is the whole point: a spy
+ * that merely RECORDS an argument cannot see that the real logger would print
+ * `{}` for it, or throw on it. Anything this helper cannot stringify is a crash
+ * in production at `--verbose`.
+ */
+function debugRendered(): string {
+  return debugSpy.mock.calls
+    .map((call: unknown[]) =>
+      call.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
+    )
+    .join('\n');
+}
+
 /** Every line the command logged at info level, in one string. */
 function infoText(): string {
   return infoSpy.mock.calls.map((call: unknown[]) => call.map(String).join(' ')).join('\n');
@@ -254,6 +275,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     errorSpy.mockReset();
     warnSpy.mockReset();
     infoSpy.mockReset();
+    debugSpy.mockReset();
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('__exit__');
     }) as never);
@@ -300,12 +322,18 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     expect(output).toContain('? Detector (AWS::CloudWatch::AnomalyDetector)');
     expect(output).toContain('drift unknown');
     // The sibling was compared -- the whole point of the guard.
-    expect(output).toContain('1 resource checked');
+    expect(output).toContain('(1 resource checked, 1 unsupported)');
     // Permanent condition -> exit 0, and no throw escaped the command.
     expect(error).toBeUndefined();
     expect(exitSpy).not.toHaveBeenCalled();
     // NOT routed to the actionable bucket.
     expect(output).not.toContain('NOT fully compared');
+    // The downgrade SAYS SO at debug. This arm is the one place the guard is
+    // quieter than main -- main aborted loudly on this throw, and the `?` line
+    // it now prints is identical to the one a provider with no
+    // `readCurrentState` yields, so without this the fact that something THREW
+    // is unrecoverable. Deleting the debug call fails here.
+    expect(debugRendered()).toContain('read threw with a no-READ-handler signature');
   });
 
   /**
@@ -333,6 +361,12 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     expect(output).toContain('NOT fully compared');
     expect(output).toContain('not compared AT ALL (the read or comparison failed)');
     expect(output).toContain('! Detector (AWS::CloudWatch::AnomalyDetector)');
+    // The SUMMARY line's conditional arm, which is a different string from the
+    // block heading above and was unfenced: `not fully compared` appeared
+    // nowhere under tests/, so swapping the ternary's two arms left the suite
+    // green. The else-arm is byte-identical to main and is fenced by
+    // drift-cross-region-secret.test.ts.
+    expect(output).toContain('(1 not fully compared), 0 unsupported');
     // The sibling was compared. `1 of 2 ... fully checked` is the discriminator:
     // an earlier revision asserted `toContain('Detector')` here under a "sibling
     // was compared" comment, which is the FAILING resource and was already
@@ -477,7 +511,10 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     const { output, error } = await runDrift(ARGS);
 
     expect(output).toContain('? Detector (AWS::Some::UnregisteredType)');
-    expect(output).toContain('1 resource checked');
+    // Anchored: a bare `1 resource checked` is a SUBSTRING of the
+    // `0 of 1 resource checked` the #2154 warning branch prints, so the loose
+    // spelling passes on exactly the output that means nothing was compared.
+    expect(output).toContain('(1 resource checked, 1 unsupported)');
     expect(output).not.toContain('NOT fully compared');
     expect(error).toBeUndefined();
     expect(exitSpy).not.toHaveBeenCalled();
@@ -576,6 +613,126 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     expect(output).toContain('1 of 2 resources fully checked');
     expect(exitSpy).toHaveBeenCalledWith(2);
     void error;
+  });
+
+  /**
+   * The `--verbose` stack line, and the reason it is asserted through a helper
+   * that STRINGIFIES rather than off the spy's raw argument.
+   *
+   * The first version of this line passed the Error OBJECT to `logger.debug`.
+   * A spy records that happily and every suite stayed green, but
+   * `ConsoleLogger.formatMessage` renders extra args with `JSON.stringify`, and
+   * an Error's `message` / `stack` are non-enumerable -- `maskSecretsInError`
+   * re-defines them that way itself -- so the real logger printed `{}` for
+   * exactly the population the line exists for. Asserting the RENDERED form is
+   * what makes a mocked logger tell the truth about the real one.
+   */
+  it('--verbose emits the masked STACK, rendered as text rather than an empty object', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Fn: resource(LAMBDA, { MemorySize: 128 }),
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE
+        ? SIBLING_PROVIDER
+        : {
+            readCurrentState: async () => ({ MemorySize: 128 }),
+            canonicalizeDriftProperties: () => {
+              throw new TypeError('normalizer exploded');
+            },
+          }
+    );
+
+    await runDrift([...ARGS, '--verbose']);
+
+    const rendered = debugRendered();
+    expect(rendered).toContain('comparison failure detail');
+    // A real stack, not `{}`. Passing the Error object renders `{}` and fails
+    // here; passing `.stack` renders the frames.
+    expect(rendered).toContain('normalizer exploded');
+    expect(rendered).not.toContain('detail {}');
+  });
+
+  /**
+   * The blocker this whole arm exists for: at `--verbose`, a CIRCULAR error must
+   * not take the command down.
+   *
+   * `err.cause = err` by ordinary assignment is an OWN ENUMERABLE property, so
+   * `JSON.stringify` throws `Converting circular structure to JSON` on it. With
+   * the Error object passed to `logger.debug`, that throw came from INSIDE the
+   * per-resource catch handler -- escaping the catch, the loop and the command,
+   * which is issue go-to-k/cdkd#2151 reintroduced by its own fix. The cycle case
+   * further up this file does not catch it, because it never runs `--verbose`.
+   */
+  it('--verbose with a CIRCULAR error still completes and still compares the sibling', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Fn: resource(LAMBDA, { MemorySize: 128 }),
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    const loop = new Error('circular boom');
+    loop.name = 'SomeWrapper';
+    (loop as Error & { cause?: unknown }).cause = loop;
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE
+        ? SIBLING_PROVIDER
+        : {
+            readCurrentState: async () => {
+              throw loop;
+            },
+          }
+    );
+
+    const { output } = await runDrift([...ARGS, '--verbose']);
+
+    // The run COMPLETED: the sibling was compared and a report exists.
+    expect(output).toContain('! Fn (AWS::Lambda::Function)');
+    expect(output).toContain('1 of 2 resources fully checked');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    // ...and the debug arg is renderable, which is the property that was false.
+    expect(() => debugRendered()).not.toThrow();
+  });
+
+  /**
+   * `isNoReadHandlerError`'s own try/catch (deleting it left the suite green).
+   * A throwing getter on `name` is the realistic shape -- a Proxy or a lazily
+   * computed property -- and reading it happens INSIDE the per-resource catch,
+   * so an escape here is the same hole one level deeper.
+   */
+  it('an error whose name getter THROWS is classified as a read failure, not a crash', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Fn: resource(LAMBDA, { MemorySize: 128 }),
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    const hostile = {
+      get name(): string {
+        throw new Error('getter exploded');
+      },
+      get message(): string {
+        throw new Error('getter exploded');
+      },
+    };
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE
+        ? SIBLING_PROVIDER
+        : {
+            readCurrentState: async () => {
+              throw hostile;
+            },
+          }
+    );
+
+    const { output } = await runDrift(ARGS);
+
+    // Classified loud (the safe direction) rather than escaping.
+    expect(output).toContain('! Fn (AWS::Lambda::Function)');
+    expect(output).toContain('1 of 2 resources fully checked');
+    expect(exitSpy).toHaveBeenCalledWith(2);
   });
 
   /**
@@ -722,11 +879,6 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   });
 
   /**
-   * The same for `--accept`, which writes the AWS-current value into STATE. A
-   * `readFailed` resource has no AWS-current value cdkd ever read, so accepting
-   * one would persist a bag that came from nowhere.
-   */
-  /**
    * The per-entry REASON strings, which nothing read: every case above asserts
    * `! <id> (<type>)`, so swapping the `refused` and `unresolvedToken` wordings
    * in `notComparedReason` -- or blanking either -- left the suite green. The
@@ -822,12 +974,19 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     expect(output).toContain('! Fn (AWS::Lambda::Function)');
     // ...and StackB was still READ and compared. Pre-fix the throw escaped
     // `runDriftForStack` into the driver loop and this stack was never touched.
-    expect(output).toContain('StackB');
-    expect(output).toContain('1 resource checked');
+    // The full parenthetical, with StackB's OWN counts -- it has no unsupported
+    // resource, so the `1 unsupported` spelling the single-stack cases use is
+    // simply the wrong literal here rather than a stricter one.
+    expect(output).toContain('✓ StackB (us-east-1): no drift detected (1 resource checked, 0 unsupported)');
     // The run still reports the incomplete comparison rather than passing.
     expect(exitSpy).toHaveBeenCalledWith(2);
   });
 
+  /**
+   * The same for `--accept`, which writes the AWS-current value into STATE. A
+   * `readFailed` resource has no AWS-current value cdkd ever read, so accepting
+   * one would persist a bag that came from nowhere.
+   */
   it('--accept does not persist anything for a resource whose read failed', async () => {
     mockGetState.mockResolvedValue(
       makeState({

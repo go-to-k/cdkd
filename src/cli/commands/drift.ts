@@ -2390,16 +2390,32 @@ async function runDriftForStack(
         );
         // The message alone is enough for the population this arm is FOR (an
         // IAM denial, a throttle), and useless for the one nobody expects: a
-        // cdkd bug in a normalizer or in `calculateResourceDrift` now surfaces
-        // stackless at exit 2 where main printed a full trace. The stack goes to
-        // debug so the ordinary run stays one line. Masked through
+        // cdkd bug in a normalizer or in `calculateResourceDrift` would surface
+        // stackless at exit 2 where main printed a full trace. The STACK goes to
+        // debug so the ordinary run stays one line, masked through
         // `maskSecretsInError`, which walks the cause chain -- a stack frame can
         // carry an argument value, so `maskSecretsInText` over `err.message`
-        // alone is not the right tool here.
-        logger.debug(
-          `${logicalId} (${resource.resourceType}): comparison failure detail`,
-          maskSecretsInError(err, secrets)
-        );
+        // alone is not the right tool.
+        //
+        // `.stack`, a STRING, and never the Error object. Passing the object was
+        // written first and is wrong twice over. `ConsoleLogger.formatMessage`
+        // renders extra args with `JSON.stringify`, and an Error's `message` /
+        // `stack` are non-enumerable -- `maskSecretsInError` re-defines them
+        // that way itself -- so `JSON.stringify(new Error('x'))` is `'{}'` and
+        // the line printed nothing for exactly the population it exists for.
+        // Worse, `JSON.stringify` THROWS on a circular own-enumerable structure,
+        // and `err.cause = err` set by ordinary assignment is enumerable: at
+        // `--verbose` that throw escapes this catch, the loop and the command --
+        // reintroducing issue #2151 one arm away from the try/catch in
+        // `isNoReadHandlerError` added to prevent precisely that. A string
+        // cannot do either, which is why `scrub.ts`'s equivalent site passes one
+        // too.
+        if (err instanceof Error && err.stack) {
+          logger.debug(
+            `${logicalId} (${resource.resourceType}): comparison failure detail`,
+            maskSecretsInError(err, secrets).stack
+          );
+        }
         continue;
       }
     }
