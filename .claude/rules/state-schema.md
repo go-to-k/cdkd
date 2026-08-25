@@ -1,5 +1,5 @@
 ---
-description: cdkd S3 state schema (StackState v1-v8 interface, observedProperties / deletionPolicy / parentStack / provisionedBy / outputReads semantics)
+description: cdkd S3 state schema (StackState v1-v9 interface, observedProperties / deletionPolicy / parentStack / provisionedBy / outputReads / exportNames semantics)
 paths:
   - 'src/state/**'
   - 'src/types/state.ts'
@@ -9,13 +9,14 @@ paths:
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8; // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState (CC API greenfield fallback, #614), 8 = +outputReads[] (Fn::GetStackOutput downstream-consumer enumeration, #668)
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9; // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState (CC API greenfield fallback, #614), 8 = +outputReads[] (Fn::GetStackOutput downstream-consumer enumeration, #668), 9 = +exportNames[] (which outputs keys are exports, #2193)
   stackName: string;
   region?: string;      // Required on version >= 2 (load-bearing for the S3 key)
   resources: Record<string, ResourceState>;
   outputs: Record<string, unknown>; // Resolved Output values — NOT coerced to string (see below)
   imports?: StateImportEntry[]; // v4+: Fn::ImportValue refs recorded for strong-reference destroy refusal
   outputReads?: StateOutputReadEntry[]; // v8+: Fn::GetStackOutput refs (informational; NO destroy-time refusal — weak reference by design)
+  exportNames?: string[];         // v9+: the keys of `outputs` that are Export.Name aliases — the ONLY names Fn::ImportValue may bind to; undefined = pre-v9 record (every key importable until its next deploy), [] = exports nothing
   parentStack?: string;        // v6+: populated on nested-stack child state records (undefined on top-level)
   parentLogicalId?: string;    // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string;       // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
@@ -47,6 +48,45 @@ interface ResourceState {
   provisionedBy?: 'sdk' | 'cc-api';         // v7+: which provisioning layer owns this resource (absent = pre-v7 record, SDK-managed then; NOT pinned — routing re-decides)
 }
 ```
+
+**`exportNames`** (schema v9+, issue
+[#2193](https://github.com/go-to-k/cdkd/issues/2193)) is the missing half of
+the `outputs` bag. That bag is keyed by output NAME, and an output carrying
+`Export:` is ADDITIONALLY aliased under its export name in the same bag (see
+`src/deployment/outputs-export-alias.ts`) — so before v9 nothing in the record
+said which keys were exports, and the four readers that derive "what does
+this stack export" from it (the exports index on `updateForStack` and on
+rebuild, the resolver's `state.json` fallback scan, and the local-command
+loader's `Fn::ImportValue` fallback scan in
+`src/cli/commands/local-state-loader.ts`) took EVERY key. A
+plain `CfnOutput('VpcId')` in an unrelated stack was therefore indexed as the
+producer of export `VpcId`, last writer wins, and a consumer's
+`Fn::ImportValue: VpcId` bound to whichever stack deployed most recently —
+silently, and with a value CloudFormation would never hand out (its export
+namespace is separate, and it refuses a second producer of one name).
+
+All four readers now go through ONE predicate, `importableOutputKeys(state)`
+in `src/types/state.ts`: `exportNames` when the record carries it, intersected
+with the bag; every key when it does not. The discriminator is the FIELD, not
+`version` — `undefined` means NOT KNOWN (a pre-v9 record, or a v9 partial save
+that carried a pre-v9 bag forward) and keeps the legacy rule so no existing
+cross-stack reference breaks on upgrade; `[]` means KNOWN to export nothing.
+Two writer rules follow, and both are fenced by
+`tests/unit/deployment/deploy-engine-cross-stack-read-writers.test.ts`: a save
+that RE-RESOLVES outputs (the success path, the no-change refresh) always
+writes the set, `[]` included — unlike `imports` / `outputReads`, an empty
+array is NOT omitted, because absent and empty are different records here;
+and a save that CARRIES a bag forward (`outputs: currentState.outputs` on the
+five failure-path saves, `cdkd import` over an existing record) spreads
+`exportNamesCarriedFrom(previous)` next to it, never inventing `[]` for a bag
+whose set it does not know. The no-change deploy path additionally
+BACKFILLS a record that lacks the field — it re-resolved the bag and found it
+equal, so the set is known — and re-feeds the exports index with the exports
+only, which is what evicts the plain-name entries a pre-v9 deploy published;
+without that a producer whose template never changes would pollute the index
+forever. Duplicate producers of one export name (two stacks both EXPORTING
+it) keep the index's latest-writer policy but now WARN, on update and on
+rebuild; CloudFormation refuses the second producer outright.
 
 **`outputs`** values are `unknown`, NOT `string`. `DeployEngine.resolveOutputs`
 returns `Record<string, unknown>` and persists whatever

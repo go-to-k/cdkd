@@ -372,8 +372,9 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
 
     expect(saved['AlphaPublic']).toBe(PUBLIC_A);
     expect(saved['ZuluSecret']).toBe(EXPR_B);
-    expect(indexed['AlphaPublic']).toBe(PUBLIC_A);
-    expect(indexed['ZuluSecret']).toBe(EXPR_B);
+    // The refused alias publishes nothing, and a plain Output name is not an
+    // export (issue #2193) — so the index is fed NOTHING for this stack.
+    expect(indexed).toEqual({});
     expect(savedStateJson).not.toContain(PLAINTEXT_B);
     expect(warnings()).toContain(exportAliasCollisionWarning('ZuluSecret', 'AlphaPublic'));
   });
@@ -390,8 +391,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
 
     expect(saved['ZuluPublic']).toBe(PUBLIC_B);
     expect(saved['AlphaSecret']).toBe(EXPR_A);
-    expect(indexed['ZuluPublic']).toBe(PUBLIC_B);
-    expect(indexed['AlphaSecret']).toBe(EXPR_A);
+    expect(indexed).toEqual({});
     expect(savedStateJson).not.toContain(PLAINTEXT_A);
     expect(warnings()).toContain(exportAliasCollisionWarning('AlphaSecret', 'ZuluPublic'));
   });
@@ -407,7 +407,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
 
     expect(saved['PublicOne']).toBe(PUBLIC_A);
     expect(saved['PublicTwo']).toBe(PUBLIC_B);
-    expect(indexed['PublicOne']).toBe(PUBLIC_A);
+    expect(indexed).toEqual({});
     expect(warnings()).toContain(exportAliasCollisionWarning('PublicTwo', 'PublicOne'));
   });
 
@@ -424,7 +424,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
 
     expect(saved['SecretAlpha']).toBe(EXPR_A);
     expect(saved['SecretBeta']).toBe(EXPR_B);
-    expect(indexed['SecretAlpha']).toBe(EXPR_A);
+    expect(indexed).toEqual({});
     expect(savedStateJson).not.toContain(PLAINTEXT_A);
     expect(savedStateJson).not.toContain(PLAINTEXT_B);
     expect(warnings()).toContain(exportAliasCollisionWarning('SecretBeta', 'SecretAlpha'));
@@ -442,7 +442,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
 
     expect(saved['AlphaPublic']).toBe(PUBLIC_A);
     expect(saved['ZuluSecret']).toBe(EXPR_B);
-    expect(indexed['AlphaPublic']).toBe(PUBLIC_A);
+    expect(indexed).toEqual({});
     expect(warnings()).toContain(exportAliasCollisionWarning('ZuluSecret', 'AlphaPublic'));
   });
 
@@ -461,7 +461,7 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     );
 
     expect(saved['AlphaPublic']).toBe(PUBLIC_A);
-    expect(indexed['AlphaPublic']).toBe(PUBLIC_A);
+    expect(indexed).toEqual({});
     expect(warnings()).toContain(exportAliasCollisionWarning('ZuluSecret', 'AlphaPublic'));
   });
 
@@ -509,6 +509,21 @@ describe('DeployEngine - Export.Name key-space guards (issue #1919)', () => {
     expect(saved['BetaExport']).toBe(EXPR_B);
     expect(saved['SecretAlpha']).toBe(EXPR_A);
     expect(warnings()).toEqual([]);
+  });
+
+  it('two outputs declaring ONE Export.Name persist that name in the export set ONCE (#2193)', async () => {
+    // CloudFormation rejects the template; cdkd aliases the same key twice and
+    // the second write wins the value. Whatever the value, the SET must not
+    // list the name twice — `exportNames` is documented as a set, and the
+    // index feed and the predicate both key on it.
+    const { savedStateJson } = await deployOutputs({
+      First: { Value: PUBLIC_A, Export: { Name: 'Shared' } },
+      Second: { Value: PUBLIC_B, Export: { Name: 'Shared' } },
+    });
+
+    expect((JSON.parse(savedStateJson) as { exportNames?: string[] }).exportNames).toEqual([
+      'Shared',
+    ]);
   });
 
   it('an output exporting under its OWN name is not a collision', async () => {

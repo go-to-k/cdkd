@@ -120,7 +120,9 @@ const PRE_EXISTING_IMPORT = {
   exportName: 'AlreadyOnRecord',
 };
 
-function buildEngine(overrides: { imports?: StackState['imports'] } = {}) {
+function buildEngine(
+  overrides: { imports?: StackState['imports']; exportNames?: string[]; fresh?: boolean } = {}
+) {
   const provider = {
     create: vi
       .fn()
@@ -148,13 +150,18 @@ function buildEngine(overrides: { imports?: StackState['imports'] } = {}) {
       },
     },
     outputs: {},
+    ...(overrides.exportNames !== undefined && { exportNames: overrides.exportNames }),
     imports: overrides.imports ?? [PRE_EXISTING_IMPORT],
     lastModified: Date.now(),
   };
 
   const saveState = vi.fn().mockResolvedValue('etag-1');
   const mockStateBackend = {
-    getState: vi.fn().mockResolvedValue({ state: currentState, etag: 'e0' }),
+    // `fresh`: no record exists yet — the engine builds its in-memory
+    // placeholder and the first save is unconditional (no ETag).
+    getState: vi
+      .fn()
+      .mockResolvedValue(overrides.fresh ? null : { state: currentState, etag: 'e0' }),
     saveState,
     appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
     deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
@@ -247,6 +254,36 @@ describe('a failed deploy persists the cross-stack reads it just made (issue #20
       // records, and every one of these save sites omitted before.
       expect(state.outputReads).toBeUndefined();
     }
+  });
+});
+
+describe('a failed deploy carries the export set with the bag it keeps (issue #2193)', () => {
+  it('keeps a KNOWN set on every failure-path save', async () => {
+    const { engine, saveState } = buildEngine({ exportNames: ['Kept'] });
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+    const saves = savedStates(saveState);
+    expect(saves.length).toBeGreaterThan(0);
+    for (const s of saves) expect(s.exportNames).toEqual(['Kept']);
+  });
+
+  it('a FIRST deploy that fails persists a KNOWN-empty set, not "not known"', async () => {
+    // No record existed, so the bag the failure-path save carries is the
+    // engine's own empty placeholder — it exports nothing, and that is known.
+    const { engine, saveState } = buildEngine({ fresh: true });
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+    const saves = savedStates(saveState);
+    expect(saves.length).toBeGreaterThan(0);
+    for (const s of saves) expect(s.exportNames).toEqual([]);
+  });
+
+  it('does NOT invent a set for a pre-v9 record — absent stays absent, never `[]`', async () => {
+    // `[]` would read as "exports nothing" and deny every consumer of this
+    // producer after one failed deploy; absent keeps the legacy rule.
+    const { engine, saveState } = buildEngine();
+    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+    const saves = savedStates(saveState);
+    expect(saves.length).toBeGreaterThan(0);
+    for (const s of saves) expect('exportNames' in s).toBe(false);
   });
 });
 

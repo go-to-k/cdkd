@@ -1821,6 +1821,52 @@ describe('cdkd import', () => {
       expect(options.expectedEtag).toBe('"existing-etag"');
     });
 
+    it('carries the existing record export set forward with its outputs (#2193)', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: { ...existingState(), exportNames: ['ExistingOutput'] },
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket')
+          return { import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })) };
+        return { import: vi.fn(async () => null) };
+      });
+
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=b', '--yes']);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { outputs: Record<string, string>; exportNames?: string[] },
+      ];
+      expect(state.outputs).toEqual({ ExistingOutput: 'preserved' });
+      expect(state.exportNames).toEqual(['ExistingOutput']);
+    });
+
+    it('does not invent an export set for a pre-v9 existing record (#2193)', async () => {
+      // `existingState()` predates the field; writing `[]` here would deny
+      // every consumer of this producer's outputs on the next Fn::ImportValue.
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({ state: existingState(), etag: '"existing-etag"' });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket')
+          return { import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })) };
+        return { import: vi.fn(async () => null) };
+      });
+
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=b', '--yes']);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { exportNames?: string[] },
+      ];
+      expect('exportNames' in state).toBe(false);
+    });
+
     it('logs the merge plan with the preserved-resource count', async () => {
       mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
       mockGetState.mockResolvedValueOnce({

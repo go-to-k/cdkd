@@ -67,6 +67,20 @@ function stripComments(source: string): string {
  * the allow-list.
  */
 const SUCCESS_PATH_WRITES: readonly string[] = [
+  // In FILE order — the scan reports writers top to bottom, and the assertion
+  // below compares the two lists positionally.
+  //
+  // `exportNames` (issue #2193) has THREE writers that are not a carry: the
+  // in-memory placeholder for a stack with no record yet (first in the file
+  // — it exports nothing, and that is KNOWN, so a first deploy that fails
+  // before its outputs resolve persists `[]` rather than "not known"), and
+  // the two RE-RESOLVING saves, because the no-change path re-resolves
+  // outputs too: the no-change refresh and the success-path save. Every
+  // other save carries the previous set forward via `exportNamesCarriedFrom`
+  // (fenced separately below).
+  'exportNames: [],',
+  ': { exportNames: [...this.resolvedExportNames] }),',
+  'exportNames: [...this.resolvedExportNames],',
   '...(this.recordedImports.length > 0 && { imports: [...this.recordedImports] }),',
   'outputReads: [...this.recordedOutputReads],',
 ];
@@ -88,7 +102,7 @@ interface Writer {
  * leading class keeps `recordedImports:` / `recordedOutputReads:` (the resolver
  * context's own fields) out, and their capital letters would anyway.
  */
-const WRITES_A_VALUE = /(^|[\s{(])(imports|outputReads)\s*:/;
+const WRITES_A_VALUE = /(^|[\s{(])(imports|outputReads|exportNames)\s*:/;
 
 function scanWriters(source: string): Writer[] {
   const writers: Writer[] = [];
@@ -137,12 +151,15 @@ describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2
         '  }),',
         '  // imports: this-is-a-comment-and-must-not-count,',
         '  recordedImports: this.recordedImports,',
+        '  exportNames: currentState.exportNames,',
+        '  resolvedExportNames: [],',
         '};',
       ].join('\n')
     ).map((w) => w.text);
     expect(flagged).toEqual([
       'imports: currentState.imports,',
       'outputReads: [...this.recordedOutputReads],',
+      'exportNames: currentState.exportNames,',
     ]);
   });
 
@@ -185,6 +202,25 @@ describe('every cross-stack-read writer in deploy-engine.ts is accounted for (#2
         writers.filter((w) => w.text === allowed).length,
         `${allowed} appears more than once — a second wholesale writer would be waved through by the allow-list`
       ).toBe(1);
+    }
+  });
+
+  it('every save that carries `outputs: currentState.outputs` forward carries its export set with it (#2193)', () => {
+    // The bag and its set travel together, or a partial save turns a
+    // known-exports record back into a "not known" one (or, worse, a hand
+    // written `exportNames: []` denies every consumer of a pre-v9 producer).
+    // Derived the same way as the writers above: every carried bag in the
+    // file must be followed, on the very next line, by the carry helper.
+    const lines = stripComments(readFileSync(`${REPO_ROOT}${SOURCE}`, 'utf8')).split('\n');
+    const carriedBags = lines
+      .map((raw, i) => ({ line: i + 1, text: raw.trim(), next: (lines[i + 1] ?? '').trim() }))
+      .filter((l) => l.text === 'outputs: currentState.outputs,');
+    expect(carriedBags.length, 'the carried-bag save sites moved — re-derive').toBe(5);
+    for (const bag of carriedBags) {
+      expect(
+        bag.next,
+        `${SOURCE}:${bag.line} carries the bag without its export set`
+      ).toBe('...exportNamesCarriedFrom(currentState),');
     }
   });
 

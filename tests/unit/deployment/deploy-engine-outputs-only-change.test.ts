@@ -143,7 +143,7 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
    * `observedProperties` already present on every resource → the auto-refresh
    * path stays dormant, isolating the Outputs-only persistence under test.
    */
-  function makeState(outputs: Record<string, string>): StackState {
+  function makeState(outputs: Record<string, string>, exportNames?: string[]): StackState {
     return {
       version: STATE_SCHEMA_VERSION_CURRENT,
       region: 'us-east-1',
@@ -159,6 +159,10 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
         },
       },
       outputs,
+      // Omitted = a pre-v9 record (issue #2193), which the no-change path now
+      // BACKFILLS with a save; the "no save" cases below therefore hand in a
+      // record that already carries its set.
+      ...(exportNames !== undefined && { exportNames }),
       lastModified: 0,
     };
   }
@@ -203,10 +207,13 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
       'producer:BucketArn': 'arn:aws:s3:::bucket-a',
     });
 
-    // Exports index updated so a consumer's Fn::ImportValue resolves O(1).
+    // The bag records which of its keys are exports (issue #2193) ...
+    expect(saved.exportNames).toEqual(['producer:BucketArn']);
+    // ... and the exports index is fed ONLY those, so a consumer's
+    // Fn::ImportValue resolves O(1) against the export and cannot bind to the
+    // plain `BucketArn` output name.
     expect(mockExportIndexStore.updateForStack).toHaveBeenCalledTimes(1);
     expect(mockExportIndexStore.updateForStack).toHaveBeenCalledWith('producer-stack', 'us-east-1', {
-      BucketArn: 'arn:aws:s3:::bucket-a',
       'producer:BucketArn': 'arn:aws:s3:::bucket-a',
     });
 
@@ -215,12 +222,16 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
   });
 
   it('does NOT save or touch the index when outputs are unchanged', async () => {
-    // State already carries exactly what the template resolves to.
+    // State already carries exactly what the template resolves to, export set
+    // included.
     mockStateBackend.getState.mockResolvedValue({
-      state: makeState({
-        BucketArn: 'arn:aws:s3:::bucket-a',
-        'producer:BucketArn': 'arn:aws:s3:::bucket-a',
-      }),
+      state: makeState(
+        {
+          BucketArn: 'arn:aws:s3:::bucket-a',
+          'producer:BucketArn': 'arn:aws:s3:::bucket-a',
+        },
+        ['producer:BucketArn']
+      ),
       etag: 'etag-old',
     });
 
@@ -398,10 +409,13 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
     // matches the persisted one only by reordered keys / nested structure must
     // NOT trigger a save.
     mockStateBackend.getState.mockResolvedValue({
-      state: makeState({
-        Alpha: 'a',
-        Beta: 'b',
-      } as Record<string, string>),
+      state: makeState(
+        {
+          Alpha: 'a',
+          Beta: 'b',
+        } as Record<string, string>,
+        []
+      ),
       etag: 'etag-old',
     });
 
@@ -421,5 +435,91 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
 
     expect(mockStateBackend.saveState).not.toHaveBeenCalled();
     expect(mockExportIndexStore.updateForStack).not.toHaveBeenCalled();
+  });
+
+  it('BACKFILLS exportNames on a no-change deploy of a pre-v9 record and re-indexes with the exports only (#2193)', async () => {
+    // A record written before v9 carries no export set, so the exports index
+    // was fed its whole bag — plain `BucketArn` included — and keeps serving it
+    // until this stack is re-indexed. Nothing about the template changed, so
+    // without the backfill that could take forever: the no-change path writes
+    // the set it just resolved and re-feeds the index with the exports only,
+    // which is what evicts the stale plain-name entry.
+    mockStateBackend.getState.mockResolvedValue({
+      state: makeState({
+        BucketArn: 'arn:aws:s3:::bucket-a',
+        'producer:BucketArn': 'arn:aws:s3:::bucket-a',
+      }),
+      etag: 'etag-old',
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: { BucketA: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'bucket-a' } } },
+      Outputs: {
+        BucketArn: { Value: 'arn:aws:s3:::bucket-a', Export: { Name: 'producer:BucketArn' } },
+      },
+    };
+
+    const engine = makeEngine();
+    await engine.deploy(stackName, template);
+
+    expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
+    const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+    // The bag itself is untouched; only its export set is written.
+    expect(saved.outputs).toEqual({
+      BucketArn: 'arn:aws:s3:::bucket-a',
+      'producer:BucketArn': 'arn:aws:s3:::bucket-a',
+    });
+    expect(saved.exportNames).toEqual(['producer:BucketArn']);
+    expect(mockExportIndexStore.updateForStack).toHaveBeenCalledTimes(1);
+    expect(mockExportIndexStore.updateForStack).toHaveBeenCalledWith('producer-stack', 'us-east-1', {
+      'producer:BucketArn': 'arn:aws:s3:::bucket-a',
+    });
+  });
+
+  it('does NOT backfill a pre-v9 record with NO plain output name to suppress (#2193)', async () => {
+    // The backfill exists to stop plain Output NAMES being served as exports.
+    // A record whose bag is empty (or whose every key is already an export)
+    // has nothing to suppress, so writing `exportNames: []` would be a state
+    // write with no effect — the no-change path must stay a no-op there.
+    mockStateBackend.getState.mockResolvedValue({
+      // Pre-v9 (no exportNames) AND no outputs at all.
+      state: makeState({}),
+      etag: 'etag-old',
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: { BucketA: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'bucket-a' } } },
+      // No Outputs → nothing resolves, nothing to suppress.
+    };
+
+    const engine = makeEngine();
+    await engine.deploy(stackName, template);
+
+    expect(mockStateBackend.saveState).not.toHaveBeenCalled();
+    expect(mockExportIndexStore.updateForStack).not.toHaveBeenCalled();
+  });
+
+  it('a pre-v9 record whose bag resolved clean but exports NOTHING is backfilled with an EMPTY set (#2193)', async () => {
+    // `[]` and absent are different records to the readers (absent = "every
+    // key is importable"), so a stack with plain outputs only must get its
+    // `[]` written — that is what stops its plain names being served as exports.
+    mockStateBackend.getState.mockResolvedValue({
+      state: makeState({ Alpha: 'a' }),
+      etag: 'etag-old',
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: { BucketA: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'bucket-a' } } },
+      Outputs: { Alpha: { Value: 'a' } },
+    };
+
+    const engine = makeEngine();
+    await engine.deploy(stackName, template);
+
+    expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
+    const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+    expect(saved.exportNames).toEqual([]);
+    expect(JSON.stringify(saved)).toContain('"exportNames":[]');
+    expect(mockExportIndexStore.updateForStack).toHaveBeenCalledWith('producer-stack', 'us-east-1', {});
   });
 });

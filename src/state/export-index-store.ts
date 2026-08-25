@@ -51,6 +51,7 @@ import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import type { S3StateBackend } from './s3-state-backend.js';
+import { importableOutputs } from '../types/state.js';
 
 /** Schema version for the exports index file. Separate from state.json's version. */
 export const EXPORT_INDEX_VERSION = 1;
@@ -467,7 +468,11 @@ export class ExportIndexStore {
     for (const { ref, state } of results) {
       if (!state || !state.outputs) continue;
       const region = ref.region ?? this.region;
-      for (const [name, value] of Object.entries(state.outputs)) {
+      // The EXPORTS only (issue #2193), through the one predicate every
+      // reader of the bag shares — a pre-v9 record still contributes every
+      // key, and its next deploy narrows it.
+      for (const [name, value] of Object.entries(importableOutputs(state))) {
+        this.warnOnForeignOverwrite(entries.get(name), name, ref.stackName, region);
         entries.set(name, {
           value,
           producerStack: ref.stackName,
@@ -492,8 +497,10 @@ export class ExportIndexStore {
         next.delete(name);
       }
     }
-    // Insert fresh entries.
+    // Insert fresh entries. This stack's own entries are gone by now, so any
+    // entry still under a name is another stack's.
     for (const [name, value] of Object.entries(outputs)) {
+      this.warnOnForeignOverwrite(next.get(name), name, stackName, producerRegion);
       next.set(name, { value, producerStack: stackName, producerRegion });
     }
     // Skip the PUT when the resulting map is byte-identical to the
@@ -506,6 +513,34 @@ export class ExportIndexStore {
       return;
     }
     await this.persist(next);
+  }
+
+  /**
+   * Two stacks publishing one export name (issue #2193). CloudFormation
+   * refuses the second producer outright; this index has always kept the
+   * LATEST writer, silently, and a consumer's `Fn::ImportValue` then binds to
+   * whichever deployed last. Keeping the writer is unchanged — the index
+   * write is best-effort and runs after the producer's state is already
+   * saved, so there is nothing to refuse here — but it is no longer silent.
+   * Before v9 this fired on every plain-Output name collision too, which is
+   * why it had to wait for the bag to be narrowed to real exports first.
+   */
+  private warnOnForeignOverwrite(
+    existing: ExportIndexEntry | undefined,
+    exportName: string,
+    stackName: string,
+    producerRegion: string
+  ): void {
+    if (!existing || existing.producerStack === stackName) return;
+    this.logger.warn(
+      `Export '${exportName}' is published by both '${existing.producerStack}' ` +
+        `(${existing.producerRegion}) and '${stackName}' (${producerRegion}); the exports ` +
+        `index keeps the latest writer, so an Fn::ImportValue on it binds to whichever ` +
+        `deployed last. CloudFormation refuses a second producer of the same export ` +
+        `name — rename one of the two exports. (If '${existing.producerStack}' predates ` +
+        `cdkd's state schema v9, this is its stale entry for a plain output of that name, ` +
+        `and its next deploy clears it.)`
+    );
   }
 
   private async applyPatch(exportName: string, entry: ExportIndexEntry): Promise<void> {

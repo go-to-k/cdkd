@@ -49,6 +49,8 @@ import type {
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   shouldRetainResource,
+  exportNamesCarriedFrom,
+  importableOutputs,
   type StackState,
   type StateImportEntry,
   type StateOutputReadEntry,
@@ -846,6 +848,17 @@ export class DeployEngine {
    */
   private outputsTemplateSource: Record<string, unknown> = {};
   /**
+   * The export aliases the last `resolveOutputs` pass WROTE into its bag
+   * (issue #2193) — exactly the keys `outputs[exportName] = value` landed on,
+   * so an alias the pass refused (secret-bearing name, collision with a
+   * published output name) or skipped (unresolved value, condition-suppressed
+   * output) is not in it. Persisted as `StackState.exportNames` by the saves
+   * that persist that bag, and the set the exports index is fed from. Reset
+   * at the top of every `resolveOutputs`, so it is only meaningful right
+   * after that call returns — read it there, not later.
+   */
+  private resolvedExportNames: string[] = [];
+  /**
    * Whether {@link outputsTemplateSource} may be used to POSITION the outputs
    * redaction. False once an outputs pass threw partway: the post-loop
    * name pass never ran, so the bag holds only the alias keys written before
@@ -1509,6 +1522,10 @@ export class DeployEngine {
         stackName,
         resources: {},
         outputs: {},
+        // A record that does not exist yet exports nothing, and that is KNOWN
+        // (issue #2193): a first deploy that fails before its outputs resolve
+        // carries this bag forward, and must not persist it as "not known".
+        exportNames: [],
         lastModified: Date.now(),
       };
       const currentEtag = currentStateData?.etag;
@@ -1741,6 +1758,23 @@ export class DeployEngine {
           const resolutionFailed = Object.values(resolvedOutputs).some((v) => v === undefined);
           const outputsChanged =
             !resolutionFailed && !outputMapsEqual(persistedOutputs, resolvedOutputs);
+          // Issue #2193: a record that predates `exportNames` is still feeding
+          // the exports index every one of its plain Output names. Write the
+          // set this pass produced now rather than waiting for a template
+          // change that may never come, and re-index below with the exports
+          // only so the stale plain-name entries are evicted in the same
+          // deploy. Scoped to a record that ACTUALLY has a plain output name
+          // the legacy rule would wrongly serve — an empty bag, or one whose
+          // every key is already an export, has nothing to suppress, so
+          // backfilling it would be a state write with no effect. `outputsChanged`
+          // records the set on its own save, so this only covers the no-change
+          // arm.
+          const backfillOutputs = outputsChanged ? resolvedOutputs : persistedOutputs;
+          const exportNamesBackfill =
+            !resolutionFailed &&
+            !outputsChanged &&
+            currentState.exportNames === undefined &&
+            Object.keys(backfillOutputs).some((k) => !this.resolvedExportNames.includes(k));
 
           // Surface the rare case where outputs DID change but a resolution
           // failure suppressed the persist. resolveOutputs already warns
@@ -1763,7 +1797,7 @@ export class DeployEngine {
             await this.drainObservedCaptures(currentState.resources);
           }
 
-          if (observedRefresh || outputsChanged) {
+          if (observedRefresh || outputsChanged || exportNamesBackfill) {
             try {
               const refreshedState: StackState = {
                 version: STATE_SCHEMA_VERSION_CURRENT,
@@ -1774,6 +1808,13 @@ export class DeployEngine {
                   string,
                   string
                 >,
+                // The set belongs to the bag written above: this pass's when
+                // the bag resolved clean (changed, or equal — either way the
+                // resolved set describes it), the previous record's when the
+                // persisted bag was kept because resolution failed.
+                ...(resolutionFailed
+                  ? exportNamesCarriedFrom(currentState)
+                  : { exportNames: [...this.resolvedExportNames] }),
                 // Preserve existing imports[] / outputReads[] (v8+) — otherwise
                 // the refresh would silently strip the strong-reference record
                 // on every diff-clean deploy. Unioned with this session's
@@ -1798,18 +1839,24 @@ export class DeployEngine {
                 this.withParentInfo(refreshedState),
                 saveOptions
               );
-              if (outputsChanged) {
-                persistedOutputs = resolvedOutputs;
-                this.logger.info('Persisted Outputs-only change (no resource diff).');
+              if (outputsChanged || exportNamesBackfill) {
+                persistedOutputs = refreshedState.outputs;
+                if (outputsChanged) {
+                  this.logger.info('Persisted Outputs-only change (no resource diff).');
+                } else {
+                  this.logger.debug('Persisted exportNames backfill (no-change path, #2193)');
+                }
                 // Update the persistent exports index so the newly-added export
-                // resolves O(1) for consumers. Inside the try so a failed state
-                // save doesn't publish an export that wasn't persisted;
+                // resolves O(1) for consumers — with the EXPORTS only (#2193),
+                // which on the backfill arm is what evicts the plain-name
+                // entries a pre-v9 deploy published. Inside the try so a failed
+                // state save doesn't publish an export that wasn't persisted;
                 // updateForStack is itself best-effort (swallows + warns).
                 if (this.exportIndexStore) {
                   await this.exportIndexStore.updateForStack(
                     stackName,
                     this.stackRegion,
-                    persistedOutputs
+                    importableOutputs(refreshedState)
                   );
                 }
               } else {
@@ -1959,7 +2006,11 @@ export class DeployEngine {
           ? this.exportIndexStore.updateForStack(
               stackName,
               this.stackRegion,
-              (newState.outputs as Record<string, unknown>) ?? {}
+              // The EXPORTS only (issue #2193): the bag also holds every plain
+              // Output name, and an index fed the whole bag served those to
+              // `Fn::ImportValue` — a same-named plain Output in an unrelated
+              // stack could shadow a real export.
+              importableOutputs(newState)
             )
           : Promise.resolve(),
       ]);
@@ -2085,6 +2136,7 @@ export class DeployEngine {
             stackName: currentState.stackName,
             resources: newResources,
             outputs: currentState.outputs,
+            ...exportNamesCarriedFrom(currentState),
             // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
             // session resolved. See `crossStackReadsForPartialSave` — writing the
             // snapshot alone left a failed deploy's persisted record denying a
@@ -2337,6 +2389,7 @@ export class DeployEngine {
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
+          ...exportNamesCarriedFrom(currentState),
           // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
           // session resolved. See `crossStackReadsForPartialSave` — writing the
           // snapshot alone left a failed deploy's persisted record denying a
@@ -2446,6 +2499,7 @@ export class DeployEngine {
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
+          ...exportNamesCarriedFrom(currentState),
           // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
           // session resolved. See `crossStackReadsForPartialSave` — writing the
           // snapshot alone left a failed deploy's persisted record denying a
@@ -2490,6 +2544,7 @@ export class DeployEngine {
             stackName: currentState.stackName,
             resources: newResources,
             outputs: currentState.outputs,
+            ...exportNamesCarriedFrom(currentState),
             // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
             // session resolved. See `crossStackReadsForPartialSave` — writing the
             // snapshot alone left a failed deploy's persisted record denying a
@@ -2578,6 +2633,9 @@ export class DeployEngine {
         stackName: currentState.stackName,
         resources: newResources,
         outputs,
+        // Always written, `[]` included: on this path the bag was re-resolved,
+        // so the set is KNOWN (issue #2193). Absent would read as "not known".
+        exportNames: [...this.resolvedExportNames],
         ...(this.recordedImports.length > 0 && { imports: [...this.recordedImports] }),
         ...(this.recordedOutputReads.length > 0 && {
           outputReads: [...this.recordedOutputReads],
@@ -2624,6 +2682,7 @@ export class DeployEngine {
       stackName: currentState.stackName,
       resources: newResources,
       outputs: currentState.outputs,
+      ...exportNamesCarriedFrom(currentState),
       // Issue #2057: the UNION, like every other non-success save. This one
       // used to write `[...this.recordedImports]` WHOLESALE, copying the
       // SUCCESS path's shape onto a path that is not one — provisioning
@@ -5089,6 +5148,9 @@ export class DeployEngine {
     parameterValues?: Record<string, unknown>,
     conditions?: Record<string, boolean>
   ): Promise<Record<string, unknown>> {
+    // Reset BEFORE the early return: a template with no Outputs exports
+    // nothing, and that is a known `[]`, not a stale set from a prior pass.
+    this.resolvedExportNames = [];
     if (!template.Outputs) {
       return {};
     }
@@ -5275,6 +5337,12 @@ export class DeployEngine {
           this.logger.warn(exportAliasCollisionWarning(outputKey, exportName));
         } else {
           outputs[exportName] = value;
+          // A SET: two outputs declaring one Export.Name (which CloudFormation
+          // rejects) alias the same key twice, and the second write wins the
+          // value; the name must not be persisted twice.
+          if (!this.resolvedExportNames.includes(exportName)) {
+            this.resolvedExportNames.push(exportName);
+          }
           // The alias is a SECOND key holding the same value, so it needs the
           // same POSITION source or it falls to the value scan and collapses
           // onto a sibling's expression (issue #1910 review). This bag feeds

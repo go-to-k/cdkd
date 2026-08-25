@@ -207,6 +207,15 @@ describe('DeployEngine - condition-false Outputs are skipped (#1028)', () => {
       'prod:TopicArn': { Ref: 'ProdOnly' },
       AlwaysOut: 'always-value',
     });
+    // Only the alias is an export; the two plain names are not (issue #2193) —
+    // and the exports index is fed exactly that. This suite runs the
+    // no-change path (`hasChanges: false`); the CHANGES-path feed is pinned by
+    // deploy-engine-outputs-export-name-collision ("indexed" is `{}` when the
+    // only alias was refused).
+    expect(saved.exportNames).toEqual(['prod:TopicArn']);
+    expect(mockExportIndexStore.updateForStack).toHaveBeenCalledWith(stackName, 'us-east-1', {
+      'prod:TopicArn': { Ref: 'ProdOnly' },
+    });
     expect(result.outputs).toEqual({
       ProdTopicArn: { Ref: 'ProdOnly' },
       AlwaysOut: 'always-value',
@@ -233,9 +242,11 @@ describe('DeployEngine - condition-false Outputs are skipped (#1028)', () => {
     expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
     const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
     expect(saved.outputs).toEqual({ AlwaysOut: 'always-value' });
-    expect(mockExportIndexStore.updateForStack).toHaveBeenCalledWith(stackName, 'us-east-1', {
-      AlwaysOut: 'always-value',
-    });
+    // The suppressed alias was the stack's only export, so the set is now
+    // EMPTY — written as `[]`, not omitted — and the index is fed nothing:
+    // `AlwaysOut` is a plain Output name, not an export (issue #2193).
+    expect(saved.exportNames).toEqual([]);
+    expect(mockExportIndexStore.updateForStack).toHaveBeenCalledWith(stackName, 'us-east-1', {});
   });
 
   it('keeps an Output whose condition name is unknown (filterResourcesByCondition parity)', async () => {
