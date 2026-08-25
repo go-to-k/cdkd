@@ -497,7 +497,14 @@ export function importableOutputs(
   state: Pick<StackState, 'outputs' | 'exportNames'>
 ): Record<string, unknown> {
   const outputs = state.outputs ?? {};
-  const picked: Record<string, unknown> = {};
+  // `Object.create(null)`, NOT `{}`: a JSON-parsed `state.outputs` can carry an
+  // OWN key named `__proto__` (JSON.parse makes it own, not the setter), and an
+  // `Export.Name` of `__proto__` would then reach this reconstruction. Assigning
+  // `picked['__proto__'] = value` onto a plain object literal walks the prototype
+  // setter — the key vanishes from the bag fed to the exports index / resolver,
+  // and an object value pollutes `picked`'s prototype. Same defense the resolver
+  // uses at `intrinsic-function-resolver.ts` (do not "simplify" back to `{}`).
+  const picked: Record<string, unknown> = Object.create(null);
   for (const name of importableOutputKeys(state)) picked[name] = outputs[name];
   return picked;
 }

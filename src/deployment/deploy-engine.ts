@@ -1768,13 +1768,13 @@ export class DeployEngine {
           // every key is already an export, has nothing to suppress, so
           // backfilling it would be a state write with no effect. `outputsChanged`
           // records the set on its own save, so this only covers the no-change
-          // arm.
-          const backfillOutputs = outputsChanged ? resolvedOutputs : persistedOutputs;
+          // arm — hence `persistedOutputs` below, not the resolved bag: the
+          // `!outputsChanged` term means the two are equal here anyway.
           const exportNamesBackfill =
             !resolutionFailed &&
             !outputsChanged &&
             currentState.exportNames === undefined &&
-            Object.keys(backfillOutputs).some((k) => !this.resolvedExportNames.includes(k));
+            Object.keys(persistedOutputs).some((k) => !this.resolvedExportNames.includes(k));
 
           // Surface the rare case where outputs DID change but a resolution
           // failure suppressed the persist. resolveOutputs already warns

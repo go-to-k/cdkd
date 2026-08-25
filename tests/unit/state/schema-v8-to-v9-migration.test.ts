@@ -102,6 +102,30 @@ describe('State schema v9 — exportNames for Fn::ImportValue scoping (#2193)', 
     expect(importableOutputKeys(state)).toEqual(['Other']);
   });
 
+  it('importableOutputs rebuilds through a prototype-free bag, so a __proto__ export name survives (#2193 review)', () => {
+    // A JSON-parsed state.outputs can carry an OWN `__proto__` key; if its
+    // export set names it, `importableOutputs` must keep it (not lose it to a
+    // plain-object prototype setter) and must not pollute the returned bag.
+    const outputs = JSON.parse('{"__proto__": {"polluted": true}, "Real": "r"}') as Record<
+      string,
+      unknown
+    >;
+    const state: StackState = {
+      version: 9,
+      stackName: 'P',
+      region: 'us-east-1',
+      resources: {},
+      outputs,
+      exportNames: ['__proto__', 'Real'],
+      lastModified: 0,
+    };
+    const picked = importableOutputs(state);
+    expect(Object.hasOwn(picked, '__proto__')).toBe(true);
+    expect(Object.hasOwn(picked, 'Real')).toBe(true);
+    // No prototype pollution: a plain object's prototype is untouched.
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+  });
+
   it('does not treat inherited object properties as importable keys', () => {
     // `name in outputs` (the pre-fix scan) is true for `toString`; the
     // predicate must not be.

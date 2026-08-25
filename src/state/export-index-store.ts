@@ -48,6 +48,7 @@ import {
   S3ServiceException,
 } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import type { S3StateBackend } from './s3-state-backend.js';
@@ -532,8 +533,12 @@ export class ExportIndexStore {
     producerRegion: string
   ): void {
     if (!existing || existing.producerStack === stackName) return;
+    // `exportName` is a template-controlled RESOLVED value (an `Fn::Sub` name can
+    // carry control / ANSI bytes); strip them for the log line, matching how
+    // `outputs-diff.ts` renders output / export names.
+    const safeName = displaySafe(exportName);
     this.logger.warn(
-      `Export '${exportName}' is published by both '${existing.producerStack}' ` +
+      `Export '${safeName}' is published by both '${existing.producerStack}' ` +
         `(${existing.producerRegion}) and '${stackName}' (${producerRegion}); the exports ` +
         `index keeps the latest writer, so an Fn::ImportValue on it binds to whichever ` +
         `deployed last. CloudFormation refuses a second producer of the same export ` +

@@ -448,6 +448,36 @@ describe('ExportIndexStore', () => {
       expect(warnings()[0]).toContain('binds to whichever deployed last');
     });
 
+    it('sanitizes control bytes out of a resolved export name in the collision warning (#2193 review)', async () => {
+      const indexFile: ExportIndexFile = {
+        indexVersion: 1,
+        region: 'us-east-1',
+        exports: {
+          'Shared\u0007X': { value: 'theirs', producerStack: 'Other', producerRegion: 'us-east-1' },
+        },
+        lastModified: 1,
+      };
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') {
+          return {
+            Body: { transformToString: async () => JSON.stringify(indexFile) },
+            ETag: '"e1"',
+          };
+        }
+        if (cmd.constructor.name === 'PutObjectCommand') return { ETag: '"e2"' };
+        throw new Error('unexpected');
+      });
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]));
+
+      await store.updateForStack('Mine', 'us-east-1', { 'Shared\u0007X': 'mine' });
+
+      expect(warnings()).toHaveLength(1);
+      // The BEL byte is replaced (displaySafe maps a control char to a space);
+      // the printable characters remain, and no raw control byte survives.
+      expect(warnings()[0]).not.toContain('\u0007');
+      expect(warnings()[0]).toContain("Export 'Shared X'");
+    });
+
     it('drops all entries when outputs map is empty', async () => {
       const indexFile: ExportIndexFile = {
         indexVersion: 1,
