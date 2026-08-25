@@ -91,16 +91,24 @@ pr_num=$(gate_pr_selector "$trimmed" "$GATE_RE_GH_PR_MERGE")
 # command runs in.
 hook_cwd=$(jq -r '.cwd // empty' <<<"$input_json" 2>/dev/null || true)
 
-gh_repo_args=()
+# A STRING, not an array. Under macOS bash 3.2 an EMPTY array expanded as
+# `"${arr[@]}"` is an unbound-variable error with `set -u`, so the fetch died,
+# the gate took its fail-open branch, and every case in its own suite passed
+# with the gate scanning nothing. Local runs were green under both bash arms
+# because the shipped hook never hit the empty case there; CI on the 3.2 runner
+# caught it. `set -u` plus an empty array is the same class as the empty-string
+# fallback traps elsewhere in this file: the safe-looking spelling is the one
+# that fails.
+gh_repo=""
 if [[ "$trimmed" =~ (^|[[:space:]])(-R|--repo)(=|[[:space:]]+)([^[:space:]\"\']+) ]]; then
-  gh_repo_args=(-R "${BASH_REMATCH[4]}")
+  gh_repo="${BASH_REMATCH[4]}"
 fi
 gh_cwd=$(cmd_last_cd_target "$trimmed" "${hook_cwd:-$PWD}" "$GATE_RE_GH_PR_MERGE" 2>/dev/null || true)
 [[ -n "$gh_cwd" && -d "$gh_cwd" ]] || gh_cwd="${hook_cwd:-$PWD}"
 
 gh_stderr=$(mktemp)
 trap 'rm -f "$gh_stderr"' EXIT
-if ! body=$( (cd "$gh_cwd" 2>/dev/null || exit 1; gh pr view "${gh_repo_args[@]}" "$pr_num" --json body -q .body) 2>"$gh_stderr"); then
+if ! body=$( (cd "$gh_cwd" 2>/dev/null || exit 1; if [[ -n "$gh_repo" ]]; then gh pr view -R "$gh_repo" "$pr_num" --json body -q .body; else gh pr view "$pr_num" --json body -q .body; fi) 2>"$gh_stderr"); then
   {
     echo "⚠️  closes-paren-form-gate could not fetch PR #$pr_num body"
     echo "    (\`gh pr view\` exited non-zero — likely network / auth /"
