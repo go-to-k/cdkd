@@ -74,9 +74,41 @@ pr_num=$(gate_pr_selector "$trimmed" "$GATE_RE_GH_PR_MERGE")
 #   (2) `gh pr view` succeeded but body is empty — legitimate state
 #       (PR with no body literally has nothing to match against). The
 #       grep below handles empty input cleanly; no warning needed.
+# WHICH REPO the number belongs to. `gh pr view <N>` with no repo resolves
+# against the hook process's cwd -- the SESSION's repo -- so a cross-repo merge
+# was checked against a completely different PR that happens to share the
+# number. Measured 2026-08-25: `gh pr merge 553 -R go-to-k/cdk-local`, run from
+# a cdk-local worktree, was refused citing line 73 of cdkd's PR 553, a Firehose
+# bundle with nothing to do with it. The cdk-local PR's body is 41 lines long.
+#
+# Both directions are wrong, and the silent one is worse than the false block:
+# the same mismatch passes a real `Closes (#N)` whenever the session's PR of
+# that number happens to be clean. `post-merge-orphan-push-gate` had the same
+# defect (go-to-k/cdkd#2199) and this is the same fix -- honour the `-R` in the
+# command first, then the directory the command runs in.
+# The payload cwd, which this hook never read -- so even the fallback below
+# resolved against the HOOK PROCESS directory rather than the one the
+# command runs in.
+hook_cwd=$(jq -r '.cwd // empty' <<<"$input_json" 2>/dev/null || true)
+
+# A STRING, not an array. Under macOS bash 3.2 an EMPTY array expanded as
+# `"${arr[@]}"` is an unbound-variable error with `set -u`, so the fetch died,
+# the gate took its fail-open branch, and every case in its own suite passed
+# with the gate scanning nothing. Local runs were green under both bash arms
+# because the shipped hook never hit the empty case there; CI on the 3.2 runner
+# caught it. `set -u` plus an empty array is the same class as the empty-string
+# fallback traps elsewhere in this file: the safe-looking spelling is the one
+# that fails.
+gh_repo=""
+if [[ "$trimmed" =~ (^|[[:space:]])(-R|--repo)(=|[[:space:]]+)([^[:space:]\"\']+) ]]; then
+  gh_repo="${BASH_REMATCH[4]}"
+fi
+gh_cwd=$(cmd_last_cd_target "$trimmed" "${hook_cwd:-$PWD}" "$GATE_RE_GH_PR_MERGE" 2>/dev/null || true)
+[[ -n "$gh_cwd" && -d "$gh_cwd" ]] || gh_cwd="${hook_cwd:-$PWD}"
+
 gh_stderr=$(mktemp)
 trap 'rm -f "$gh_stderr"' EXIT
-if ! body=$(gh pr view "$pr_num" --json body -q .body 2>"$gh_stderr"); then
+if ! body=$( (cd "$gh_cwd" 2>/dev/null || exit 1; if [[ -n "$gh_repo" ]]; then gh pr view -R "$gh_repo" "$pr_num" --json body -q .body; else gh pr view "$pr_num" --json body -q .body; fi) 2>"$gh_stderr"); then
   {
     echo "⚠️  closes-paren-form-gate could not fetch PR #$pr_num body"
     echo "    (\`gh pr view\` exited non-zero — likely network / auth /"
