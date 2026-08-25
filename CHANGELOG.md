@@ -1,3 +1,10 @@
+## [0.284.46](https://github.com/go-to-k/cdkd/compare/v0.284.45...v0.284.46) (2026-08-25)
+
+
+### Bug Fixes
+
+* **drift:** guard the per-resource body so one bad resource stops sinking the whole run ([#2213](https://github.com/go-to-k/cdkd/issues/2213)) ([edd87c3](https://github.com/go-to-k/cdkd/commit/edd87c3646c4bf2de4baaf2e4c48b36117891761))
+
 ## [0.284.45](https://github.com/go-to-k/cdkd/compare/v0.284.44...v0.284.45) (2026-08-24)
 
 
