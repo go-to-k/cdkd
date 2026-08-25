@@ -162,6 +162,28 @@ run "abbreviated --sourc is not --staged"          "$RWS" "git restore --sourc H
 # Control: an abbreviated STAGED restore is index-only and must still pass.
 run "abbreviated --stage alone passes"             "$RWS" "git restore --stage tracked.txt" 0
 
+# In a DOUBLE-quoted span bash escapes only before $ ` " \ or a newline; before
+# anything else the backslash is RETAINED. So "a\b.txt" is the path a\b.txt,
+# and emitting ab.txt made the gate pass on a dirty file of that name. The
+# round that fixed the single-quote case asserted the double-quoted spelling
+# was already correct -- true only of the "a\\b.txt" form its one case used,
+# which is why that case fenced nothing.
+run "backslash before an ordinary char in dquotes is literal" "$RQ" 'git restore "a\b.txt"' 2
+run "backslash before a dquote in dquotes escapes"            "$RQ" 'git restore "a\\b.txt"' 2
+
+# An attached VALUE on a short option is not more flags. `git restore -sSTABLE f`
+# is `-s STABLE`, and a substring test on the whole token read the `S` of
+# STABLE as `--staged`, skipped the segment, and discarded the worktree copy.
+run "uppercase S inside a short option VALUE is not --staged" "$RWS" "git restore -sSTABLE tracked.txt" 2
+# Control: a real clustered -S with no value still skips.
+run "clustered -qS with a value-free cluster passes"          "$RWS" "git restore -qS tracked.txt" 0
+
+# `--pathspec-from-file` names its paths in a FILE, so the segment carries none
+# of them: every check found nothing to object to and the gate returned 0 while
+# git discarded every path the file listed.
+run "--pathspec-from-file is refused, not passed"             "$RWS" "git restore --pathspec-from-file=list.txt" 2
+run "--pathspec-file-nul is refused, not passed"              "$RWS" "git restore --pathspec-from-file=- --pathspec-file-nul" 2
+
 # QUOTED paths containing a space. `for raw in $paths` split these into `"sp`
 # and `ace.txt"`, neither of which git knows, so the gate passed.
 RSP=$(make_repo); echo "modified" > "$RSP/sp ace.txt"

@@ -124,15 +124,29 @@ split_paths() {
   n=${#text}
   for (( i = 0; i < n; i++ )); do
     ch="${text:i:1}"
-    # A backslash escapes the NEXT character -- but NOT inside a SINGLE-quoted
-    # span, where the shell takes it literally: 'a\b' is a\b, not ab.
-    # The arm sat above the quote test and so applied everywhere. With a
-    # tracked file literally named a\b.txt and dirty, `git restore 'a\b.txt'`
-    # tokenized to ab.txt -- a path git does not know -- and the gate passed
-    # on a dirty file. The double-quoted spelling was already correct.
-    if [[ "$quote" != "'" && "$ch" == '\' ]]; then
-      i=$((i + 1))
-      tok="$tok${text:i:1}"
+    # Backslash handling follows the SHELL, which is different in each of the
+    # three contexts and was got wrong in two of them across two rounds:
+    #   - single-quoted span: never an escape. 'a\b' is a\b.
+    #   - double-quoted span: an escape ONLY before $ ` " \ or a newline.
+    #     Before anything else the backslash is RETAINED, so "a\b.txt" is the
+    #     path a\b.txt -- and emitting ab.txt made the gate pass on a dirty
+    #     file of that name. The round that fixed the single-quote case
+    #     asserted "the double-quoted spelling was already correct", which
+    #     held only for the "a\\b.txt" spelling its one test used.
+    #   - outside any span: always an escape.
+    if [[ "$ch" == '\' ]]; then
+      _nxt="${text:$((i + 1)):1}"
+      if [[ "$quote" == "'" ]]; then
+        tok="$tok$ch"
+      elif [[ "$quote" == '"' ]]; then
+        case "$_nxt" in
+          '$'|'`'|'"'|'\'|"")
+            i=$((i + 1)); tok="$tok$_nxt" ;;
+          *) tok="$tok$ch" ;;
+        esac
+      else
+        i=$((i + 1)); tok="$tok$_nxt"
+      fi
       continue
     fi
     if [[ -n "$quote" ]]; then
@@ -161,6 +175,7 @@ fi
 #                                 so `git checkout <branch>` never matches
 #   git restore [flags] <path>... path-scoped by default
 paths=""
+pathspec_file_seen=0
 # `gate_verb_rest` rather than a local `=~` with a positional BASH_REMATCH
 # index. Both halves of that old form were hazards. The hand-rolled `-C` pattern
 # it originally used had no quoted alternative, so `git -C "/a b" checkout -- f`
@@ -221,13 +236,14 @@ while IFS= read -r seg; do
   # containing `*` used to expand against this process's cwd.
   seg_has_worktree=0
   seg_has_staged=0
+  seg_has_pathspec_file=0
   while IFS= read -r w; do
     case "$w" in
       # Git accepts any UNAMBIGUOUS PREFIX of a long option, so an exact-match
       # arm is an enumeration with the same problem the short-flag arm had, one
       # level up: `git restore --staged --worktr f` set staged=1, worktree=0,
       # skipped, and DISCARDED the file with the gate returning 0. All eight
-      # prefixes from `--w` to `--worktre` are accepted by git and all eight
+      # spellings from `--w` to `--worktree` are accepted by git and all eight
       # reverted the file. The asymmetry is what hides it -- abbreviating BOTH
       # halves fails safe, because neither flag is recognised here and nothing
       # is skipped.
@@ -240,15 +256,40 @@ while IFS= read -r seg; do
       # in the suite guard the `--s*` WIDENING, which is the change that would
       # actually break this. A bare `--s` is ambiguous and git rejects it, so
       # leaving it unclassified costs nothing -- the command does not run.
+      --pathspec-from-file*|--pathspec-file-nul*) seg_has_pathspec_file=1 ;;
       --w*)  seg_has_worktree=1 ;;
       --st*) seg_has_staged=1 ;;
       --*)   ;;
       -*)
-        [[ "${w#-}" == *W* ]] && seg_has_worktree=1
-        [[ "${w#-}" == *S* ]] && seg_has_staged=1
+        # Scan the cluster CHARACTER BY CHARACTER and stop at the first
+        # value-taking letter, because everything after it is that flag's
+        # VALUE rather than more flags. `git restore -sSTABLE f` is
+        # `-s STABLE`, and a substring test on the whole token read the `S`
+        # of STABLE as `--staged`, skipped the segment, and discarded the
+        # worktree copy. `-s` is the only value-taking short option
+        # `git restore` has.
+        _cluster="${w#-}"
+        while [ -n "$_cluster" ]; do
+          case "${_cluster:0:1}" in
+            s) break ;;
+            S) seg_has_staged=1 ;;
+            W) seg_has_worktree=1 ;;
+          esac
+          _cluster="${_cluster:1}"
+        done
         ;;
     esac
   done < <(split_paths "$seg")
+  # `--pathspec-from-file` names its paths in a FILE, so the segment carries
+  # none of them and every check below finds nothing to object to -- the gate
+  # returned 0 while git discarded every path the file listed. A path set this
+  # parser cannot enumerate is exactly the case for refusing rather than
+  # passing, which is what the rest of this gate does with a target it cannot
+  # read.
+  if [ "$seg_has_pathspec_file" -eq 1 ]; then
+    pathspec_file_seen=1
+    break
+  fi
   # `--staged` alone rewrites the INDEX, so it is skipped. With `--worktree`
   # alongside it the same command ALSO discards worktree content, so the skip
   # has to be conditional on `--worktree` being absent.
@@ -261,6 +302,22 @@ while IFS= read -r seg; do
     paths="$paths $seg"
   fi
 done < <(gate_verb_rest_each "$command" "$GATE_RE_GIT_RESTORE")
+
+if [ "$pathspec_file_seen" -eq 1 ]; then
+  {
+    echo "Blocked by dirty-path-restore-gate: this discards UNCOMMITTED work."
+    echo
+    echo "The command names its paths with --pathspec-from-file, so they live in a"
+    echo "FILE this hook cannot reliably read at PreToolUse time. Every path in that"
+    echo "file would be reverted to HEAD, and a gate that cannot enumerate them"
+    echo "refuses rather than passing -- the same choice this hook makes for a target"
+    echo "directory it cannot resolve."
+    echo
+    echo "Name the paths on the command line, or set CDKD_ALLOW_DIRTY_RESTORE=1 if"
+    echo "discarding them is the intent."
+  } >&2
+  exit 2
+fi
 
 [[ -n "${paths// /}" ]] || exit 0
 
