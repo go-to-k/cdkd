@@ -58,6 +58,7 @@ import {
   createSecretMasker,
   dynamicReferenceTokens,
   isSingleDynamicReferenceToken as isWholeDynamicReference,
+  maskSecretsInError,
   maskSecretsInText,
   MIN_NEEDLE_LENGTH,
   redactSecretsForState,
@@ -409,14 +410,14 @@ class DriftComparisonIncompleteError extends CdkdError {
   readonly exitCode: number = 2;
 
   constructor() {
-    super('drift comparison refused', 'DRIFT_COMPARISON_REFUSED');
+    super('drift comparison incomplete', 'DRIFT_COMPARISON_INCOMPLETE');
     this.name = 'DriftComparisonIncompleteError';
     Object.setPrototypeOf(this, DriftComparisonIncompleteError.prototype);
   }
 }
 
 /**
- * Every outcome on one report that was only PARTIALLY compared -- the
+ * Every outcome on one report that cdkd did not FULLY compare -- the
  * `notCompared` variant, plus a `drifted` one whose `notComparedCause` is set
  * (issues #2108 / #2135).
  *
@@ -425,6 +426,11 @@ class DriftComparisonIncompleteError extends CdkdError {
  * block (whose count is also what the `N of M fully checked` line subtracts).
  * A roll-up spelled per reader is how the payload and the human summary come to
  * disagree.
+ *
+ * Since issues #2151 / #1945 the roll-up is NOT all "partially" compared: a
+ * `readFailed` member had nothing compared at all. Both renderings say so per
+ * entry via {@link notComparedReason}; this predicate stays the single spelling
+ * of "was the comparison complete", which is the question both still ask.
  *
  * The EXIT CODE deliberately does NOT read this — see {@link outcomeExitSignal}
  * and {@link NotComparedCause} for why it is scoped to the clearable causes.
@@ -1102,6 +1108,42 @@ function isDriftSecretRefusal(err: unknown): boolean {
 }
 
 /**
+ * One-line human phrasing for a {@link NotComparedCause}, used per entry in the
+ * human report's `NOT fully compared` block.
+ *
+ * Written as an exhaustive record rather than a `switch` with a default, so
+ * adding a cause is a COMPILE ERROR here instead of silently rendering as
+ * whatever the default said. That is the same guarantee #2135 bought at the
+ * variant level, applied to the cause level -- and it is the level that
+ * defaulted quietly when issues #2151 / #1945 added `readFailed`.
+ */
+function notComparedReason(cause: NotComparedCause): string {
+  const REASONS: Record<NotComparedCause, string> = {
+    refused:
+      'cdkd refused to resolve a dynamic reference its state records ' +
+      '(spell the reference as a full ARN, which names its region)',
+    unresolvedToken:
+      'its state records a `{{resolve:...}}` spelling cdkd resolves for nobody ' +
+      '(permanent; a re-run cannot clear it)',
+    readFailed: 'the read or comparison threw, so NONE of its properties were compared',
+  };
+  return REASONS[cause];
+}
+
+/**
+ * The two Cloud Control error names that mean "this type has no READ handler".
+ * `CloudControlProvider.handleError` recognizes the same pair, so the two sites
+ * agree on the population by construction.
+ */
+const NO_READ_HANDLER_NAMES = new Set(['UnsupportedActionException', 'TypeNotFoundException']);
+
+/**
+ * The FULL phrase, deliberately -- see {@link isNoReadHandlerError}. Matching
+ * loosely on `does not support` would route a genuine read failure to exit 0.
+ */
+const NO_READ_HANDLER_MESSAGE = /does not support READ action/i;
+
+/**
  * Whether a throw out of the per-resource read means the type has NO READ PATH,
  * as opposed to a read that could have worked and did not.
  *
@@ -1131,47 +1173,34 @@ function isDriftSecretRefusal(err: unknown): boolean {
  * its wording is reported `readFailed` and exits 2 -- loud, which is the safe
  * side.
  */
-/**
- * One-line human phrasing for a {@link NotComparedCause}, used per entry in the
- * human report's `NOT fully compared` block.
- *
- * Written as an exhaustive record rather than a `switch` with a default, so
- * adding a cause is a COMPILE ERROR here instead of silently rendering as
- * whatever the default said. That is the same guarantee #2135 bought at the
- * variant level, applied to the cause level -- and it is the level that
- * defaulted quietly when issues #2151 / #1945 added `readFailed`.
- */
-function notComparedReason(cause: NotComparedCause): string {
-  const REASONS: Record<NotComparedCause, string> = {
-    refused:
-      'cdkd refused to resolve a dynamic reference its state records ' +
-      '(spell the reference as a full ARN, which names its region)',
-    unresolvedToken:
-      'its state records a `{{resolve:...}}` spelling cdkd resolves for nobody ' +
-      '(permanent; a re-run cannot clear it)',
-    readFailed: 'the read or comparison threw, so NONE of its properties were compared',
-  };
-  return REASONS[cause];
-}
-
 function isNoReadHandlerError(err: unknown): boolean {
-  const NO_READ_HANDLER_NAMES = new Set(['UnsupportedActionException', 'TypeNotFoundException']);
-  // Bounded rather than `while (true)`: a self-referential `cause` (a wrapper
-  // that sets `cause` to itself, or a cycle across two wrappers) would otherwise
-  // hang the command inside the very guard that exists to keep it running.
-  let current: unknown = err;
-  for (let depth = 0; depth < 10 && current !== null && current !== undefined; depth += 1) {
-    const candidate = current as { name?: unknown; message?: unknown; cause?: unknown };
-    if (typeof candidate.name === 'string' && NO_READ_HANDLER_NAMES.has(candidate.name)) {
-      return true;
+  // Its OWN try/catch, and this is not defensive padding: the only caller is the
+  // per-resource catch, so a throw from HERE escapes that catch, the loop and the
+  // command -- re-opening, from inside the guard, the exact hole the guard
+  // closes. Reading `.name` / `.message` / `.cause` is a property GET, which a
+  // getter or a Proxy trap can throw from. `false` on a throw routes the
+  // resource to the loud `readFailed` arm, which is the safe direction.
+  try {
+    // Bounded rather than `while (true)`: a self-referential `cause` (a wrapper
+    // that sets `cause` to itself, or a cycle across two wrappers) would
+    // otherwise hang the command inside the very guard that exists to keep it
+    // running.
+    let current: unknown = err;
+    for (let depth = 0; depth < 10 && current !== null && current !== undefined; depth += 1) {
+      const candidate = current as { name?: unknown; message?: unknown; cause?: unknown };
+      if (typeof candidate.name === 'string' && NO_READ_HANDLER_NAMES.has(candidate.name)) {
+        return true;
+      }
+      if (
+        typeof candidate.message === 'string' &&
+        NO_READ_HANDLER_MESSAGE.test(candidate.message)
+      ) {
+        return true;
+      }
+      current = candidate.cause;
     }
-    if (
-      typeof candidate.message === 'string' &&
-      /does not support READ action/i.test(candidate.message)
-    ) {
-      return true;
-    }
-    current = candidate.cause;
+  } catch {
+    return false;
   }
   return false;
 }
@@ -2273,6 +2302,20 @@ async function runDriftForStack(
         // taxonomy question #2151 raised (read-failure vs no-read-path), settled
         // by which of the two a re-run can clear.
         if (isNoReadHandlerError(err)) {
+          // Logged, because this arm is the one place the guard is QUIETER than
+          // main: main aborted loudly on this throw, and the report line it now
+          // produces (`? <id>`) is the same one a provider that simply has no
+          // `readCurrentState` yields, so the fact that something THREW is
+          // otherwise invisible. Debug rather than warn -- for the population
+          // this arm is for, the condition is permanent and there is nothing to
+          // act on, so warning on every run would be noise. It matters when the
+          // classification is WRONG, which is exactly when someone runs with
+          // `--verbose`.
+          logger.debug(
+            `${logicalId} (${resource.resourceType}): read threw with a no-READ-handler ` +
+              `signature, reported as drift unknown — ` +
+              `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
+          );
           outcomes.push({
             kind: 'unsupported',
             logicalId,
@@ -2294,18 +2337,34 @@ async function runDriftForStack(
         // second open question, and it falls out of the outcome kind rather than
         // needing a filter of its own.
         //
-        // MASKING. `secrets` is the per-resource map, and the honest limit is
-        // worth stating rather than implying. It holds needles exactly when this
-        // resource's references RESOLVED; when it is empty either the resource
-        // has no dynamic references at all, or resolution failed / was refused
-        // and `comparisonBaseline` fell back to the unresolved baseline -- so in
-        // both cases no plaintext cdkd resolved is in play for the message to
-        // echo. What this cannot mask is a plaintext AWS itself returned in the
-        // readback (an `ssm-secure` echo), for which there is no map entry and
-        // no position: that is issue
+        // MASKING, and the limit stated exactly rather than reassuringly. The
+        // map holds needles exactly when this resource's references RESOLVED.
+        // When it is EMPTY, what follows is narrower than "no plaintext is in
+        // play":
+        //
+        //   - The COMPARISON BAGS are clean. `resolveStateSecretExpressions` is
+        //     a non-mutating walk, and its catch sets
+        //     `comparisonBaseline = baseline` (the unresolved bag) in the same
+        //     block as `secrets.clear()`. Every later call here reads only
+        //     `comparisonBaseline` and `aws`, so no resolved plaintext reaches
+        //     them.
+        //   - A plaintext cdkd resolved may nonetheless EXIST. The #2108 refusal
+        //     is per LEAF (see the note at the inner catch): an earlier ARN-form
+        //     leaf can resolve and record its needle, a later name-form leaf can
+        //     then refuse, and the clear discards the correct needle along with
+        //     the rest. AWS still holds that value, so a readback echo or a
+        //     provider error text can carry it with nothing left to match it
+        //     against.
+        //
+        // So the residual is real and it is issue
         // [#2102](https://github.com/go-to-k/cdkd/issues/2102)'s span-masking
-        // gap, not a gap this guard introduces, and it is why the message names
-        // the resource and the error but never a property VALUE.
+        // gap -- unmaskable by VALUE (no map entry) and by POSITION (no single
+        // token on the source side). It is not a regression: before this guard
+        // the same message reached the top-level handler, which renders the
+        // whole error OBJECT and its cause chain through `util.inspect`,
+        // entirely unmasked, and then aborted. This path is strictly less
+        // exposure per error. It is why the message names the resource and the
+        // error but never a property VALUE.
         outcomes.push({
           kind: 'notCompared',
           logicalId,
@@ -2317,6 +2376,18 @@ async function runDriftForStack(
             `comparison failed, so NONE of its properties were checked. Every other resource ` +
             `in this stack was still compared. ` +
             `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
+        );
+        // The message alone is enough for the population this arm is FOR (an
+        // IAM denial, a throttle), and useless for the one nobody expects: a
+        // cdkd bug in a normalizer or in `calculateResourceDrift` now surfaces
+        // stackless at exit 2 where main printed a full trace. The stack goes to
+        // debug so the ordinary run stays one line. Masked through
+        // `maskSecretsInError`, which walks the cause chain -- a stack frame can
+        // carry an argument value, so `maskSecretsInText` over `err.message`
+        // alone is not the right tool here.
+        logger.debug(
+          `${logicalId} (${resource.resourceType}): comparison failure detail`,
+          maskSecretsInError(err, secrets)
         );
         continue;
       }
@@ -4386,6 +4457,7 @@ function writeHumanReport(reports: StackDriftReport[]): void {
     // mental model. Skipped entries are still present in the outcomes
     // array and surface in `--json` output (as `skipped: [...]`).
     let inspectedCount = 0;
+    let skippedCount = 0;
     // Issue #2135: ONE exhaustive pass, and `inspected` is COUNTED UP inside
     // it rather than subtracted from `outcomes.length` afterwards. Subtracting
     // is what let the old shape absorb an unnamed variant into "checked"
@@ -4426,7 +4498,15 @@ function writeHumanReport(reports: StackDriftReport[]): void {
         unsupported: (u) => {
           unsupported.push(u);
         },
-        skipped: () => {},
+        // Issue #2154: COUNTED now, though still not `inspected`. The two are
+        // different questions -- #323 keeps `skipped` out of "checked" because
+        // drift is not actionable there, which is untouched -- but the new
+        // NOTHING-was-compared line states a PARTITION of the stack, and a
+        // partition that omits a population accounts for none of an
+        // all-`Custom::*` stack (it printed `0 of 3 ... (0 unsupported)`).
+        skipped: () => {
+          skippedCount += 1;
+        },
         // Both counted as inspected, and told apart by `notCompared` below:
         // a `clean` one was checked, a `notCompared` one was not.
         clean: () => {
@@ -4497,7 +4577,7 @@ function writeHumanReport(reports: StackDriftReport[]): void {
           `⚠ ${report.stackName} (${report.region}): no drift detected, but NOTHING was ` +
             `compared — 0 of ${report.outcomes.length} ` +
             `resource${report.outcomes.length === 1 ? '' : 's'} checked ` +
-            `(${unsupported.length} unsupported)\n`
+            `(${unsupported.length} unsupported, ${skippedCount} skipped)\n`
         );
       } else if (notCompared.length > 0) {
         process.stdout.write(
@@ -4511,7 +4591,15 @@ function writeHumanReport(reports: StackDriftReport[]): void {
           // exactly the `inspected - checked` gap and the numbers add up.
           `⚠ ${report.stackName} (${report.region}): no drift detected, but ` +
             `${checked} of ${inspected} resource${inspected === 1 ? '' : 's'} fully checked ` +
-            `(${notCompared.length} only partially compared), ` +
+            // Issues #2151 / #1945: the parenthetical is conditional for the
+            // same reason the block heading below is. `only partially compared`
+            // is FALSE of a `readFailed` resource -- none of its properties were
+            // compared -- and this line sitting directly above a block that says
+            // `not compared AT ALL` contradicted it in the reassuring direction.
+            // Byte-identical to main when the new population is absent.
+            (notCompared.some((n) => n.cause === 'readFailed')
+              ? `(${notCompared.length} not fully compared), `
+              : `(${notCompared.length} only partially compared), `) +
             `${unsupported.length} unsupported\n`
         );
       } else {

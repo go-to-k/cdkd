@@ -79,6 +79,10 @@ detector_count() {
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  # Phase 2b's scratch file. Removed HERE rather than under its own
+  # `trap ... EXIT`, because bash replaces a signal's handler instead of
+  # chaining one: a second EXIT trap would disarm everything below it.
+  rm -f "${DRIFT_OUT:-}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -204,6 +208,11 @@ echo "    OK: physical id stable across the in-place update"
 # marker only the fixed path emits, not a "the bad thing did not happen"
 # negative that any early failure would also satisfy.
 echo "==> Phase 2b: drift completes despite a resource with no Cloud Control READ handler"
+# NOT given its own `trap ... EXIT`: line 103 already installs `trap cleanup
+# EXIT`, and bash REPLACES a signal's handler rather than chaining, so a second
+# one here would silently disarm the AWS teardown on every failure path -- a
+# scratch-file leak traded for orphaned billable resources. The file is removed
+# by `cleanup` instead, which runs on all of EXIT / INT / TERM.
 DRIFT_OUT="$(mktemp)"
 set +e
 node "${LOCAL_DIST}" drift "${STACK}" \
@@ -225,8 +234,12 @@ echo "    OK: Detector reported rather than aborting the run"
 #    about: one unreadable resource must not cost the other one its comparison.
 #    `1 resource checked` is the positive marker -- `0` is what a run that
 #    reported the detector and then gave up would print.
-if ! grep -q '1 resource checked' "${DRIFT_OUT}"; then
-  echo "FAIL: the ordinary SQS queue was not compared -- expected '1 resource checked' (go-to-k/cdkd#2151)" >&2
+# The FULL parenthetical, anchored. A bare `1 resource checked` is a SUBSTRING of
+# the `0 of 1 resource checked` the go-to-k/cdkd#2154 warning branch prints, so
+# the loose spelling passed on exactly the output that means nothing was
+# compared -- the opposite of what this assertion is for.
+if ! grep -qF '(1 resource checked, 1 unsupported)' "${DRIFT_OUT}"; then
+  echo "FAIL: the ordinary SQS queue was not compared -- expected '(1 resource checked, 1 unsupported)' (go-to-k/cdkd#2151)" >&2
   exit 1
 fi
 echo "    OK: the sibling SQS queue was still compared"
@@ -260,7 +273,6 @@ if grep -q 'NOTHING was compared' "${DRIFT_OUT}"; then
   exit 1
 fi
 echo "    OK: the ✓ glyph is kept for a stack where something WAS compared"
-rm -f "${DRIFT_OUT}"
 
 # --- Phase 3: destroy ------------------------------------------------------
 echo "==> Phase 3: destroy"

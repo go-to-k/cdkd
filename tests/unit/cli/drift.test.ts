@@ -1153,7 +1153,7 @@ describe('cdkd drift', () => {
     // alone is also what a report that DROPPED the resource would print, and
     // `1 unsupported` is what says it was seen and classified.
     expect(output).toContain(
-      '⚠ TestStack (us-east-1): no drift detected, but NOTHING was compared — 0 of 1 resource checked (1 unsupported)'
+      '⚠ TestStack (us-east-1): no drift detected, but NOTHING was compared — 0 of 1 resource checked (1 unsupported, 0 skipped)'
     );
     // ...and the OLD rendering is gone, asserted explicitly. Without this the
     // test passes on any output CONTAINING the new line, including one that

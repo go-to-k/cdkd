@@ -2,14 +2,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
-// Hoisted so the issue-#1515 denial tests can read what the command WARNED.
 const warnSpy = vi.hoisted(() => vi.fn());
+// Hoisted so the `--revert` / `--accept` cases can assert the POSITIVE marker.
+// "provider.update was not called" is a confluence point -- a run that errored
+// out before reaching the remediation loop satisfies it just as well as one that
+// correctly declined -- so the line the correct path PRINTS is what those tests
+// read.
+const infoSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
-    info: vi.fn(),
+    info: infoSpy,
     warn: warnSpy,
     error: errorSpy,
     child: () => ({
@@ -181,17 +186,25 @@ async function runDrift(args: string[]): Promise<{ output: string; error: unknow
   return { output: cap.output.join(''), error };
 }
 
+/** Every line the command logged at info level, in one string. */
+function infoText(): string {
+  return infoSpy.mock.calls.map((call: unknown[]) => call.map(String).join(' ')).join('\n');
+}
+
 const LAMBDA = 'AWS::Lambda::Function';
 const QUEUE = 'AWS::SQS::Queue';
 
-function makeState(resources: StackState['resources']): {
+function makeState(
+  resources: StackState['resources'],
+  stackName = 'TestStack'
+): {
   state: StackState;
   etag: string;
 } {
   return {
     state: {
       version: 2,
-      stackName: 'TestStack',
+      stackName,
       region: 'us-east-1',
       resources,
       outputs: {},
@@ -240,6 +253,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     mockIamSend.mockReset();
     errorSpy.mockReset();
     warnSpy.mockReset();
+    infoSpy.mockReset();
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('__exit__');
     }) as never);
@@ -319,9 +333,13 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     expect(output).toContain('NOT fully compared');
     expect(output).toContain('not compared AT ALL (the read or comparison failed)');
     expect(output).toContain('! Detector (AWS::CloudWatch::AnomalyDetector)');
-    // The sibling was compared.
-    expect(output).toContain('Detector');
-    expect(output).toContain('no drift detected');
+    // The sibling was compared. `1 of 2 ... fully checked` is the discriminator:
+    // an earlier revision asserted `toContain('Detector')` here under a "sibling
+    // was compared" comment, which is the FAILING resource and was already
+    // asserted one line up -- it passed for the wrong reason. `no drift
+    // detected` is no better: the ⚠ branch prints that phrase too, so a run that
+    // compared NOTHING satisfies it.
+    expect(output).toContain('1 of 2 resources fully checked');
     // Actionable -> exit 2, distinct from the `1` that means drift detected.
     // #2151's complaint was precisely that a CI gate could not tell the two
     // apart, so the CODE is asserted -- and BOTH directions are, because
@@ -362,8 +380,11 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     expect(output).toContain('! Fn (AWS::Lambda::Function)');
     expect(output).toContain('the read or comparison threw');
     // The sibling was compared. Pre-fix this TypeError propagated out of the
-    // command and no report existed at all.
-    expect(output).toContain('no drift detected');
+    // command and no report existed at all. Asserted as the COUNT, not as
+    // `no drift detected` -- the ⚠ branch prints that phrase over
+    // `0 of 2 ... fully checked` as well, so the phrase alone does not
+    // distinguish `continue` from `break`.
+    expect(output).toContain('1 of 2 resources fully checked');
     expect(exitSpy).toHaveBeenCalledWith(2);
     expect(exitSpy).not.toHaveBeenCalledWith(1);
     void error;
@@ -395,7 +416,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     const { output, error } = await runDrift(ARGS);
 
     expect(output).toContain('! Fn (AWS::Lambda::Function)');
-    expect(output).toContain('no drift detected');
+    expect(output).toContain('1 of 2 resources fully checked');
     expect(exitSpy).toHaveBeenCalledWith(2);
     expect(exitSpy).not.toHaveBeenCalledWith(1);
     void error;
@@ -433,6 +454,100 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   });
 
   /**
+   * `TypeNotFoundException` -- the OTHER name in `NO_READ_HANDLER_NAMES`. Both
+   * arms of a disjunction need their own case: with only the
+   * `UnsupportedActionException` one, deleting this name from the set left the
+   * suite green, which is the unfenced-disjunction shape this repo keeps getting
+   * bitten by.
+   */
+  it('a TypeNotFoundException is also treated as no-read-path, not as a read failure', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Detector: resource('AWS::Some::UnregisteredType', {}),
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE ? SIBLING_PROVIDER : {}
+    );
+    mockCcReadCurrentState.mockRejectedValue(
+      awsError('TypeNotFoundException', 'Type AWS::Some::UnregisteredType was not found')
+    );
+
+    const { output, error } = await runDrift(ARGS);
+
+    expect(output).toContain('? Detector (AWS::Some::UnregisteredType)');
+    expect(output).toContain('1 resource checked');
+    expect(output).not.toContain('NOT fully compared');
+    expect(error).toBeUndefined();
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The MESSAGE fallback, which nothing reached before: both no-read-path cases
+   * above match by `name`, so deleting the regex clause entirely left the suite
+   * green. It exists for an error re-wrapped in a way that keeps neither the
+   * name nor the cause, so the fixture has to be exactly that.
+   */
+  it('an error that lost its name and cause is still recognized by its message', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Detector: resource('AWS::CloudWatch::AnomalyDetector', { MetricName: 'm' }),
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE ? SIBLING_PROVIDER : {}
+    );
+    // Deliberately a bare `Error`: `name` is 'Error' and there is no `cause`, so
+    // the name walk cannot match and only the phrase can.
+    mockCcReadCurrentState.mockRejectedValue(
+      new Error('Resource type AWS::CloudWatch::AnomalyDetector does not support READ action')
+    );
+
+    const { output, error } = await runDrift(ARGS);
+
+    expect(output).toContain('? Detector (AWS::CloudWatch::AnomalyDetector)');
+    expect(exitSpy).not.toHaveBeenCalled();
+    void error;
+  });
+
+  /**
+   * The OTHER direction of that clause, which decides whether the phrase may be
+   * matched loosely. A genuine read failure whose text merely contains
+   * `does not support` must NOT be downgraded to exit 0 -- the regex is the full
+   * phrase for exactly this reason, and without a case saying so, loosening it
+   * to `/does not support/` is a silent one-character change that makes a real
+   * failure report a pass.
+   */
+  it('a read failure whose text says "does not support" something ELSE is still a read failure', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Fn: resource(LAMBDA, { MemorySize: 128 }),
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE
+        ? SIBLING_PROVIDER
+        : {
+            readCurrentState: async () => {
+              throw awsError(
+                'ValidationException',
+                'This account does not support the requested configuration'
+              );
+            },
+          }
+    );
+
+    const { output } = await runDrift(ARGS);
+
+    expect(output).toContain('! Fn (AWS::Lambda::Function)');
+    expect(output).not.toContain('? Fn');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  /**
    * The bound on the cause walk. A wrapper whose `cause` points back at itself
    * would spin forever INSIDE the guard that exists to keep the command running,
    * which is a worse failure than the one being fixed: the pre-fix behaviour at
@@ -458,6 +573,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     // Terminated, and classified as the loud outcome (no name in the chain
     // matched, which is the safe side).
     expect(output).toContain('! Fn (AWS::Lambda::Function)');
+    expect(output).toContain('1 of 2 resources fully checked');
     expect(exitSpy).toHaveBeenCalledWith(2);
     void error;
   });
@@ -565,6 +681,119 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     // ...and the failed one is still reported rather than hidden by the drift.
     expect(output).toContain('! Fn (AWS::Lambda::Function)');
   });
+
+  /**
+   * go-to-k/cdkd#1945's SECOND open question, asserted rather than left to fall
+   * out. It reads: "whether `--revert` should attempt the resource anyway. It
+   * cannot know whether it drifted, so refusing is probably right, but say so
+   * explicitly rather than letting it fall out of the implementation."
+   *
+   * It DOES fall out -- both remediation paths iterate the drifted outcomes only
+   * -- and that is precisely why it is pinned: a structural guarantee nothing
+   * asserts is one refactor away from a `readFailed` resource being written to
+   * AWS on the strength of a comparison that never happened.
+   */
+  it('--revert does not touch a resource whose read failed', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    mockGetState.mockResolvedValue(
+      makeState({
+        Fn: resource(LAMBDA, { MemorySize: 128 }),
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE
+        ? { ...SIBLING_PROVIDER, update }
+        : {
+            readCurrentState: async () => {
+              throw awsError('ThrottlingException', 'Rate exceeded');
+            },
+            update,
+          }
+    );
+
+    const { output } = await runDrift([...ARGS, '--revert', '--yes']);
+
+    // THE assertion: nothing is written to AWS for a resource cdkd could not
+    // compare.
+    expect(update).not.toHaveBeenCalled();
+    expect(infoText()).toContain('nothing to revert');
+    void output;
+  });
+
+  /**
+   * The same for `--accept`, which writes the AWS-current value into STATE. A
+   * `readFailed` resource has no AWS-current value cdkd ever read, so accepting
+   * one would persist a bag that came from nowhere.
+   */
+  /**
+   * The OUTER loop. go-to-k/cdkd#1945 states the blast radius as "the whole
+   * stack, and on `--all` every remaining stack with it", and every other case
+   * here proves only that the throw does not escape ONE stack's per-resource
+   * loop. That it therefore cannot reach the multi-stack driver is a structural
+   * argument, and this repo's rule is that a structural guarantee nothing
+   * asserts is one refactor from being false -- the same reason the
+   * `--revert` / `--accept` cases above are pinned rather than reasoned about.
+   *
+   * The FIRST stack is the one that throws, deliberately: if the throw escaped,
+   * the second stack would never be read at all, so the discriminator is that
+   * StackB's resource appears in the report.
+   */
+  it('--all: a throw in the first stack does not stop the second stack being compared', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'StackA', region: 'us-east-1' },
+      { stackName: 'StackB', region: 'us-east-1' },
+    ]);
+    mockGetState.mockImplementation(async (stackName: string) =>
+      stackName === 'StackA'
+        ? makeState({ Fn: resource(LAMBDA, { MemorySize: 128 }) }, 'StackA')
+        : makeState({ Queue: resource(QUEUE, { QueueName: 'ok' }) }, 'StackB')
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE
+        ? SIBLING_PROVIDER
+        : {
+            readCurrentState: async () => {
+              throw awsError('ThrottlingException', 'Rate exceeded');
+            },
+          }
+    );
+
+    const { output } = await runDrift(['--all', '--state-bucket', 'b', '--region', 'us-east-1']);
+
+    // StackA reported its failure...
+    expect(output).toContain('! Fn (AWS::Lambda::Function)');
+    // ...and StackB was still READ and compared. Pre-fix the throw escaped
+    // `runDriftForStack` into the driver loop and this stack was never touched.
+    expect(output).toContain('StackB');
+    expect(output).toContain('1 resource checked');
+    // The run still reports the incomplete comparison rather than passing.
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('--accept does not persist anything for a resource whose read failed', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Fn: resource(LAMBDA, { MemorySize: 128 }),
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE
+        ? SIBLING_PROVIDER
+        : {
+            readCurrentState: async () => {
+              throw awsError('ThrottlingException', 'Rate exceeded');
+            },
+          }
+    );
+
+    const { output } = await runDrift([...ARGS, '--accept', '--yes']);
+
+    expect(mockSaveState).not.toHaveBeenCalled();
+    expect(infoText()).toContain('nothing to accept');
+    void output;
+  });
 });
 
 /**
@@ -611,7 +840,11 @@ describe('a stack in which NOTHING was compared does not get the ✓ glyph (#215
     const { output, error } = await runDrift(ARGS);
 
     expect(output).toContain('NOTHING was compared');
-    expect(output).toContain('0 of 1 resource checked');
+    // The FULL partition, not just the count. The line claims to account for the
+    // whole stack, and an earlier revision printed `(0 unsupported)` alone --
+    // which accounts for NONE of an all-`Custom::*` stack, since a skipped
+    // resource is in neither the checked count nor the unsupported one.
+    expect(output).toContain('0 of 1 resource checked (0 unsupported, 1 skipped)');
     expect(output).not.toContain('✓ TestStack');
     // GLYPH ONLY. Flipping the exit code here would fail CI forever for every
     // stack whose resources are all Custom Resources, which is the hazard this
