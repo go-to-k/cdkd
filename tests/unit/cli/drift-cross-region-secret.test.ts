@@ -1067,6 +1067,17 @@ describe('cdkd drift EXIT CODE distinguishes "clean" from "not compared" (issue 
     // could have differed. The exit code is what stops that reading as a pass.
     expect(output).toContain('no drift detected');
     expect(exitSpy).toHaveBeenCalledWith(2);
+    // The `refused` entry's REASON string, paired with its resource. Since
+    // issues go-to-k/cdkd#2151 / go-to-k/cdkd#1945 the report names each
+    // entry's cause, and `notComparedReason` is an exhaustive record whose
+    // arms nothing read: swapping the `refused` and `unresolvedToken` wordings
+    // left every suite green. This is the only fixture where a resource is
+    // REFUSED and nothing throws, so it is the only place that arm is
+    // observable -- the guard's own suite has no refused resource, and a
+    // resource that is both refused AND throws reports `readFailed`.
+    expect(output).toContain(
+      '! Fn (AWS::Lambda::Function) — cdkd refused to resolve a dynamic reference its state records'
+    );
   });
 
   it('drifted-only: exits 1, unchanged -- a fully compared resource that really differs', async () => {

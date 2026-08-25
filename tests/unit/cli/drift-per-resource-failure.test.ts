@@ -727,6 +727,63 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
    * one would persist a bag that came from nowhere.
    */
   /**
+   * The per-entry REASON strings, which nothing read: every case above asserts
+   * `! <id> (<type>)`, so swapping the `refused` and `unresolvedToken` wordings
+   * in `notComparedReason` -- or blanking either -- left the suite green. The
+   * strings are the only place the report tells a user WHICH of three things
+   * happened, so an exhaustive record that nobody reads is a compile-time fence
+   * around a runtime lie.
+   *
+   * Both non-`readFailed` causes are driven here in ONE stack, which also fences
+   * the mixed-population heading: with a `readFailed` entry beside a
+   * reference-caused one the heading must count them separately rather than
+   * calling all three "partially compared".
+   */
+  it('each not-compared entry names its own cause, and a mixed population is counted apart', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        // `ssm-secure` is the spelling cdkd resolves for nobody -> unresolvedToken.
+        Tokened: resource(LAMBDA, {
+          Environment: { Variables: { PW: '{{resolve:ssm-secure:/pw}}' } },
+        }),
+        Thrower: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === LAMBDA
+        ? {
+            readCurrentState: async () => ({
+              Environment: { Variables: { PW: 'live-value' } },
+            }),
+          }
+        : {
+            readCurrentState: async () => {
+              throw awsError('ThrottlingException', 'Rate exceeded');
+            },
+          }
+    );
+
+    const { output } = await runDrift(ARGS);
+
+    // The WHOLE LINE per entry, pairing the resource with its reason. Asserting
+    // the two reason strings independently is vacuous here and was measured so:
+    // a mutation that gives `refused` the `unresolvedToken` wording leaves the
+    // phrase present in this output (the Tokened entry still carries it), so a
+    // bare `toContain('resolves for nobody')` passed under the very swap it was
+    // written to catch. The pairing is what cannot be satisfied by accident.
+    expect(output).toContain(
+      '! Tokened (AWS::Lambda::Function) — its state records a `{{resolve:...}}` spelling cdkd resolves for nobody'
+    );
+    expect(output).toContain(
+      '! Thrower (AWS::SQS::Queue) — the read or comparison threw, so NONE of its properties were compared'
+    );
+    // ...and the heading counts them apart rather than lumping both under
+    // "partially". Nothing else in the suite has both populations at once.
+    expect(output).toContain('not compared AT ALL (the read or comparison failed)');
+    expect(output).toContain('only PARTIALLY compared');
+  });
+
+  /**
    * The OUTER loop. go-to-k/cdkd#1945 states the blast radius as "the whole
    * stack, and on `--all` every remaining stack with it", and every other case
    * here proves only that the throw does not escape ONE stack's per-resource

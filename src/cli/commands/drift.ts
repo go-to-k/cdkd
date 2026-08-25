@@ -1159,11 +1159,22 @@ const NO_READ_HANDLER_MESSAGE = /does not support READ action/i;
  * already reports `unsupported`. Which spelling arrives is AWS's choice, so the
  * two must not produce different outcomes.
  *
- * Matches on `name` and WALKS THE CAUSE CHAIN, because the condition reaches
- * here in two shapes: the raw SDK error (`readCurrentState` re-throws everything
- * but `ResourceNotFoundException`, which is the shape #2151 measured live) and a
- * `ProvisioningError` from `CloudControlProvider.handleError`, which recognizes
- * the same two names and preserves the original as `cause`.
+ * Matches on `name`, and WALKS THE CAUSE CHAIN rather than reading the top level
+ * only. Be precise about why, because the obvious justification is wrong:
+ * `CloudControlProvider.readCurrentState` re-throws everything but
+ * `ResourceNotFoundException` RAW and never routes through that class's
+ * `handleError`, so on today's code the only shape reaching here is the bare SDK
+ * error -- which is what #2151 measured live, and which the top-level `name`
+ * alone would catch.
+ *
+ * The walk is therefore for a wrap that does not exist YET, and it is cheap
+ * insurance rather than dead code: `handleError` already recognizes this exact
+ * pair and preserves the original as `cause`, so the day any read path is routed
+ * through it -- or wrapped by a caller -- the top-level name becomes
+ * `ProvisioningError` and a name-only check would silently start reporting a
+ * permanent no-read-path condition as an actionable failure, at exit 2, forever.
+ * A reader deleting the walk as unreachable should know that is the failure they
+ * are buying.
  *
  * The message check is a FALLBACK for a re-wrap that kept neither the name nor
  * the cause, and it is deliberately the full phrase rather than `does not
