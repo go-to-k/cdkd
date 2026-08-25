@@ -115,15 +115,24 @@ const ABSOLUTE_MAX_LINE_BYTES = 48_000;
 const ALWAYS_ON_ALLOWLIST: readonly string[] = [];
 
 /**
- * Globs that are always-on in everything but name. Requiring `paths:` to be a
- * non-empty array is not the same as requiring it to NARROW anything: a review
- * probe on 2026-08-25 gave `synthesis.md` `paths: ['**']`, which loads it into
- * every session in the repo, and the whole suite stayed green -- the file is
- * 3,335 B, so it slipped under every budget too. Matching one of these makes a
- * file always-on, so it needs the same written decision an absent `paths:`
- * does.
+ * The share of tracked files a rule file may reach before it counts as
+ * always-on. Requiring `paths:` to be a NON-EMPTY array is not the same as
+ * requiring it to NARROW anything: a review probe gave `synthesis.md`
+ * `paths: ['**']`, which loads it into every session in the repo, and the whole
+ * suite stayed green.
+ *
+ * This was an ENUMERATION of always-on spellings (`**`, `**\/*`, `*`, `./**`)
+ * and the second review round escaped it in four ways the list did not have --
+ * `**\/**`, `**\/?*`, `*\/**` and `**.*` reach 3,739 / 3,739 / 3,719 / 3,719
+ * files respectively. Two of the four listed entries were also simply wrong:
+ * `*` reaches 20 files (repo root only) and `./**` reaches ZERO, so it was a
+ * DEAD glob being reported as an always-on one. An enumeration of ways to spell
+ * "everything" cannot be completed, and the population count this file already
+ * computes answers the question directly. The separation is wide: the broadest
+ * legitimate glob in the corpus is `testing.md` at 84.6%, and every always-on
+ * spelling measured sits at 99.4% or above.
  */
-const ALWAYS_ON_GLOBS: readonly string[] = ['**', '**/*', '*', './**'];
+const ALWAYS_ON_REACH_RATIO = 0.95;
 
 /**
  * Per-touched-path payload budgets: the summed bytes of every rule file whose
@@ -159,6 +168,20 @@ const ALWAYS_ON_GLOBS: readonly string[] = ['**', '**/*', '*', './**'];
  *
  * Raise a floor when a satellite legitimately covers more; lower one only with
  * the reason in the commit, because the usual cause is text going dark.
+ *
+ * The ~80% slack is what makes this survive ordinary renames -- but it is also
+ * what a WILDCARD-FREE `paths:` list can spend. For a literal list, dropping one
+ * entry IS the narrowing, and 80% of a 3- or 5-entry list pays for exactly one
+ * of them. Second review round, both 172-green against the first version of
+ * this table: dropping `src/cli/commands/export.ts` from
+ * `layout-cli-import-export.md` took 24,465 B dark for a 316 KB source file
+ * (reach 3 -> 2, floor 2), and dropping
+ * `src/deployment/secret-region-classification.ts` from
+ * `layout-deployment-secrets.md` took 52,459 B dark (reach 5 -> 4, floor 4).
+ * Neither file is named by any payload budget, so no floor fired there either.
+ * So a wildcard-free file's entry is asserted EXACTLY rather than as a floor:
+ * it can only change by a deliberate edit, which should update this table in
+ * the same commit.
  */
 const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['analyzer.md', 12],
@@ -168,9 +191,9 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['code-layout.md', 261],
   ['hooks.md', 67],
   ['layout-analyzer.md', 12],
-  ['layout-cli-import-export.md', 2],
+  ['layout-cli-import-export.md', 3], // literal list: EXACT, see below
   ['layout-cli.md', 48],
-  ['layout-deployment-secrets.md', 4],
+  ['layout-deployment-secrets.md', 5], // literal list: EXACT, see below
   ['layout-deployment.md', 12],
   ['layout-drift.md', 5],
   ['layout-local.md', 45],
@@ -196,7 +219,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // is not decoration. Floors sit ~12% under the 2026-08-25 measurement, so
   // ordinary editing is free and MOVING an area's notes out from under it is
   // not.
-  ['src/provisioning/providers/s3-bucket-provider.ts', 210_000, 265_000], // measured 239,361; the cap was 300_000, whose 60,639 B of slack silently absorbed a whole 59 KB satellite in a review probe
+  ['src/provisioning/providers/s3-bucket-provider.ts', 210_000, 265_000], // measured 239,539; the cap was 300_000, whose 60,639 B of slack silently absorbed a whole 59 KB satellite in a review probe
   // A provisioning path OUTSIDE `providers/**`, and it is the row that makes
   // the provider half of this table bind at all. Review probe, 2026-08-25:
   // widening all seven `provider-*.md` from `src/provisioning/providers/**`
@@ -228,7 +251,13 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   ['src/types/state.ts', 43_000, 55_000],                    // measured  48,864
   ['src/synthesis/synthesizer.ts', 30_000, 40_000],          // measured  34,889
   ['tests/unit/scripts/rule-file-payload.test.ts', 48_000, 62_000], // measured 55,681
-  ['.claude/hooks/branch-gate.sh', 101_000, 118_000],        // measured 115,520 -- hooks.md ALONE, so this cap can only ever fire alongside the 120,000 per-file one. It was 135_000, which put it 15,000 B PAST the per-file cap and so made it unreachable: the row existed but could not fail. Kept slightly under the per-file cap so a hooks.md that outgrows the split fails here first, where the message names the payload.
+  // hooks.md is this path's ONLY matcher, so the payload IS hooks.md's size and
+  // this row's CAP is dominated by MAX_RULE_FILE_BYTES no matter where it sits:
+  // at 135_000 (as shipped) it was 15,000 B past the per-file cap and could not
+  // fire at all; anywhere under it, the two fire together. The row is here for
+  // its FLOOR, which nothing else provides, so the cap simply tracks the
+  // per-file cap rather than pretending to add a signal.
+  ['.claude/hooks/branch-gate.sh', 101_000, MAX_RULE_FILE_BYTES], // measured 115,520
   // Second review round, 2026-08-25: three heavy paths still carried no budget
   // at all. `masked-retry-logger.ts` is the 2nd-heaviest path in the repo and
   // was covered only by prose, in the `region-check.ts` row's claim to speak
@@ -351,7 +380,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
 const CORPUS_FILE_COUNT = 28;
-const CORPUS_BYTES_MIN = 790_000;   // measured 799,515 B -- 9,515 B of slack
+const CORPUS_BYTES_MIN = 790_000;   // measured 799,693 B -- 9,693 B of slack
 const CORPUS_BYTES_MAX = 900_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap
 
 /**
@@ -361,19 +390,28 @@ const CORPUS_BYTES_MAX = 900_000;   // growth is the norm here; this catches bul
 let trackedCache: string[] | undefined;
 function trackedFiles(): string[] {
   if (!trackedCache) {
-    trackedCache = execFileSync('git', ['ls-files'], {
+    const listed = execFileSync('git', ['ls-files'], {
       cwd: repoRoot,
       encoding: 'utf-8',
       maxBuffer: 64 * 1024 * 1024,
     })
       .split('\n')
       .filter(Boolean);
-    // Guard the guard: an empty listing would make the dead-glob and reach
-    // assertions vacuous in opposite directions -- everything dead, everything
-    // under floor -- so it must fail loudly rather than quietly.
-    if (trackedCache.length < 100) {
-      throw new Error(`git ls-files returned ${trackedCache.length} paths; expected the cdkd tree`);
+    // Guard the guard: a short listing would make the dead-glob and reach
+    // assertions fail in opposite directions -- everything dead, everything
+    // under floor -- and every one of those messages blames the corpus for a
+    // broken environment. Validate BEFORE assigning: an earlier version cached
+    // first, so the throw fired for the first consumer only and the other 28
+    // failures misdiagnosed themselves (measured with a stub `git` returning 3
+    // paths: 29 failures, exactly 1 of them naming the real cause).
+    if (listed.length < 100) {
+      throw new Error(
+        `git ls-files returned ${listed.length} paths from ${repoRoot}; expected the cdkd tree. ` +
+          'Every reach and dead-glob assertion in this file is measured against that listing, ' +
+          'so their failures below (if any) are a symptom of this, not of the rules corpus.',
+      );
     }
+    trackedCache = listed;
   }
   return trackedCache;
 }
@@ -440,7 +478,7 @@ describe('.claude/rules payload fence', () => {
   );
 
   it.each(ruleFiles.map((r) => [r.name] as const))(
-    '%s declares both description and paths',
+    '%s declares a description and a `paths:` glob that narrows something',
     (name) => {
       const rule = ruleFiles.find((r) => r.name === name)!;
       expect(
@@ -456,11 +494,14 @@ describe('.claude/rules payload fence', () => {
         rule.paths && rule.paths.length > 0,
         `.claude/rules/${name} declares no \`paths:\` globs, so it loads into EVERY session in the repo. Give it a glob as narrow as its content, or add it to ALWAYS_ON_ALLOWLIST with a written reason.`,
       ).toBe(true);
-      const alwaysOn = (rule.paths ?? []).filter((g) => ALWAYS_ON_GLOBS.includes(g));
+      const tracked = trackedFiles();
+      const share =
+        tracked.filter((f) => (rule.paths ?? []).some((g) => globToRegExp(g).test(f))).length /
+        tracked.length;
       expect(
-        alwaysOn,
-        `.claude/rules/${name} declares ${JSON.stringify(alwaysOn)}, which matches every file in the repo -- it is always-on with a \`paths:\` key for cover, and the non-empty check above cannot tell the difference. Narrow it to the area the file describes, or add the file to ALWAYS_ON_ALLOWLIST with a written reason.`,
-      ).toEqual([]);
+        share,
+        `.claude/rules/${name} declares ${JSON.stringify(rule.paths)}, which reaches ${(share * 100).toFixed(1)}% of tracked files -- it is always-on with a \`paths:\` key for cover, and the non-empty check above cannot tell the difference. Narrow it to the area the file describes, or add the file to ALWAYS_ON_ALLOWLIST with a written reason. (The broadest legitimate glob in the corpus reaches 84.6%.)`,
+      ).toBeLessThan(ALWAYS_ON_REACH_RATIO);
     },
   );
 
@@ -536,6 +577,7 @@ describe('.claude/rules payload fence', () => {
     '%s still reaches the population its globs claim',
     (name) => {
       const rule = ruleFiles.find((r) => r.name === name)!;
+      if (ALWAYS_ON_ALLOWLIST.includes(name)) return; // deliberately always-on: no population to floor
       const floor = REACH_FLOORS.get(name);
       expect(
         floor,
@@ -544,6 +586,17 @@ describe('.claude/rules payload fence', () => {
       const reached = trackedFiles().filter((f) =>
         (rule.paths ?? []).some((glob) => globToRegExp(glob).test(f)),
       );
+      const literal = !(rule.paths ?? []).some((glob) => /[*?]/.test(glob));
+      if (literal) {
+        // No wildcard means the reach IS the entry count, so an 80% floor buys
+        // exactly one entry of slack. Assert it exactly instead -- in both
+        // directions, so adding a path is a deliberate table update too.
+        expect(
+          reached.length,
+          `.claude/rules/${name} lists ${rule.paths?.length} literal paths and now reaches ${reached.length} tracked files; this table records ${floor}. A wildcard-free \`paths:\` list only changes by a deliberate edit: if you added or removed an entry, update this number in the same commit. If you REMOVED one, say which code no longer needs this file's ${rule.bytes} B -- dropping an entry here is how 24,465 B went dark for a 316 KB source file in review.`,
+        ).toBe(floor!);
+        return;
+      }
       expect(
         reached.length,
         `.claude/rules/${name} now reaches ${reached.length} tracked files, under its floor of ${floor}. Its \`paths:\` globs were narrowed, so its ${rule.bytes} B stopped loading for code that still needs them -- and the payload budgets cannot see this, because each speaks for one representative path. If the narrowing is deliberate, lower the floor in the same commit and say which code no longer needs this file.`,
@@ -579,18 +632,29 @@ describe('.claude/rules payload fence', () => {
     const linked = new Set<string>();
     const broken: string[] = [];
     for (const idx of indexes) {
-      // TABLE ROWS only. A prose pointer elsewhere in the file also makes a
-      // satellite findable, but it is not the index -- a review probe on
-      // 2026-08-25 deleted `layout-utils.md`'s row from the table and the
+      // TABLE ROWS only, and only OUTSIDE fenced code blocks. A prose pointer
+      // elsewhere in the file also makes a satellite findable, but it is not
+      // the index -- a review probe deleted `layout-utils.md`'s row and the
       // assertion stayed green on the strength of a sentence further down. The
-      // table is what a reader scans to decide where a new paragraph belongs,
-      // so the table is what must stay complete.
-      const rows = ruleFiles
-        .find((r) => r.name === idx)!
-        .lines.filter((l) => l.trimStart().startsWith('|'));
-      for (const m of rows.join('\n').matchAll(/\[([a-z0-9-]+\.md)\]\(([a-z0-9-]+\.md)\)/g)) {
-        linked.add(m[2]!);
-        if (!ruleFiles.some((r) => r.name === m[2]!)) broken.push(`${idx} -> ${m[2]!}`);
+      // fence-stripping is the same hole one level down: the second review
+      // round deleted the real row and left the identical text inside a
+      // ```markdown block, and it went green again. `providers.md` already
+      // contains fenced blocks, so this is reachable, not theoretical.
+      const rows: string[] = [];
+      let inFence = false;
+      for (const line of ruleFiles.find((r) => r.name === idx)!.lines) {
+        if (line.trimStart().startsWith('```')) {
+          inFence = !inFence;
+          continue;
+        }
+        if (!inFence && line.trimStart().startsWith('|')) rows.push(line);
+      }
+      // Link TEXT is unconstrained: a row reading `[utils](layout-utils.md)` is
+      // a perfectly good index row, and an earlier form reported it as missing
+      // because it required the text to repeat the filename.
+      for (const m of rows.join('\n').matchAll(/\[[^\]]+\]\(([a-z0-9-]+\.md)\)/g)) {
+        linked.add(m[1]!);
+        if (!ruleFiles.some((r) => r.name === m[1]!)) broken.push(`${idx} -> ${m[1]!}`);
       }
     }
     expect(broken, `Index rows point at rule files that do not exist: ${broken.join(', ')}.`).toEqual(
