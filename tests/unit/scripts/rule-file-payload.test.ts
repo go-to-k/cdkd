@@ -112,12 +112,39 @@ const ALWAYS_ON_ALLOWLIST: readonly string[] = [];
  * was the wrong number, not a saving.
  */
 const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number]> = [
-  ['src/provisioning/providers/s3-bucket-provider.ts', 300_000],
+  ['src/provisioning/providers/s3-bucket-provider.ts', 265_000], // measured 239,361; was 300_000, whose 60,639 B of slack silently absorbed a whole 59 KB satellite in a review probe
+  // A provisioning path OUTSIDE `providers/**`, and it is the row that makes
+  // the provider half of this table bind at all. Review probe, 2026-08-25:
+  // widening all seven `provider-*.md` from `src/provisioning/providers/**`
+  // back to `src/provisioning/**` restores the FULL pre-split payload here
+  // (94,925 B -> 239,291 B) while failing ZERO budgets, because every other
+  // provisioning row sits under `providers/**` and so is unaffected by exactly
+  // the widening the budgets exist to catch. The 20-odd shared helpers under
+  // `src/provisioning/*.ts` are the population that regression would hit.
+  ['src/provisioning/region-check.ts', 120_000],
   ['src/deployment/deploy-engine.ts', 80_000],
   ['src/cli/commands/deploy.ts', 80_000],
   ['src/local/docker-runner.ts', 100_000],
   ['src/analyzer/dag-builder.ts', 60_000],
   ['scripts/gen-nested-key-coverage.ts', 90_000],
+  // Review probe, 2026-08-25: with only the six rows above, 9 of the 28 rule
+  // files (355,718 B -- 45% of the corpus) were matched by NO budgeted path,
+  // and the four heaviest paths in the repo were all among them. A budget table
+  // that misses the heaviest paths is not bounding the payload, it is bounding
+  // a sample. These rows put every rule file under at least one budget; the
+  // number beside each is its measured payload rounded up by roughly a tenth,
+  // so ordinary growth is fine and a re-widened glob is not.
+  ['src/deployment/secret-redaction.ts', 112_000],   // measured 101,396
+  ['src/cli/commands/scrub.ts', 110_000],            // measured 100,029
+  ['src/cli/commands/drift.ts', 110_000],            // measured  99,178
+  ['src/cli/commands/import.ts', 80_000],            // measured  72,035
+  ['src/utils/ip-protocol.ts', 105_000],             // measured  95,005
+  ['src/provisioning/cloud-control-provider.ts', 105_000], // measured 94,925
+  ['src/state/s3-state-backend.ts', 55_000],         // measured  48,864
+  ['src/types/state.ts', 55_000],                    // measured  48,864
+  ['src/synthesis/cdk-synthesizer.ts', 40_000],      // measured  34,889
+  ['tests/unit/example.test.ts', 62_000],            // measured  55,681
+  ['.claude/hooks/branch-gate.sh', 116_000],         // measured 105,593
 ];
 
 const SPLIT_ADVICE =
@@ -205,10 +232,33 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${out}$`);
 }
 
-const ruleFiles: RuleFile[] = readdirSync(RULES_DIR)
+// RECURSIVE, because a non-recursive listing is a way to make this whole fence
+// vacuous without touching it. Review probe, 2026-08-25: moving 10 satellites
+// into `.claude/rules/layout/` hid 206,871 B, dropped the suite from 93 tests
+// to 63, and it went GREEN -- every per-file cap on those 10 went unchecked
+// while every budget DROPPED, so the fence rewarded the regression. The `>= 10`
+// guard-the-guard floor could not see it either: there are 28 files, so a floor
+// that low is unreachable in practice and only catches a totally wrong dir.
+const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
+  .map((f) => String(f))
   .filter((f) => f.endsWith('.md'))
   .sort()
   .map(parseRuleFile);
+
+// The corpus as a whole, asserted as a RANGE rather than a floor. Both bounds
+// are load-bearing and they fail in opposite directions:
+//   - the LOWER bound is the only thing in this file that notices CONTENT being
+//     DELETED. Every other assertion is a one-sided upper bound, so a review
+//     probe that removed `layout-drift.md` outright, and one that gutted
+//     `layout-provisioning.md` from 53,830 B to 203 B, both left the suite
+//     green. A split that "reduces payload" by dropping text is the one
+//     outcome this refactor promised would never happen.
+//   - the UPPER bound catches growth that spreads thinly enough to stay under
+//     every per-file cap.
+// Update these deliberately, with the reason, when the corpus genuinely moves.
+const CORPUS_FILE_COUNT = 28;
+const CORPUS_BYTES_MIN = 780_000;   // measured 789,588 B -- 9,588 B of slack
+const CORPUS_BYTES_MAX = 900_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap
 
 describe('.claude/rules payload fence', () => {
   it('finds the rule files at all (guard the guard)', () => {
@@ -216,6 +266,42 @@ describe('.claude/rules payload fence', () => {
     expect(ruleFiles.length).toBeGreaterThanOrEqual(10);
     expect(ruleFiles.map((r) => r.name)).toContain('code-layout.md');
     expect(ruleFiles.map((r) => r.name)).toContain('providers.md');
+  });
+
+  it.each(ruleFiles.map((r) => [r.name] as const))(
+    '%s still has substantive content',
+    (name) => {
+      const f = ruleFiles.find((r) => r.name === name)!;
+      // The corpus floor below cannot see a SMALL file being gutted -- the
+      // smallest satellite is ~3 KB, well inside the corpus slack. Review
+      // probe, 2026-08-25: gutting `layout-provisioning.md` from 53,830 B to
+      // 203 B (frontmatter kept) left the whole suite green.
+      expect(
+        f.bytes,
+        `${name} is ${f.bytes} B -- barely more than frontmatter. Payload is ` +
+          'reduced by moving text to a narrower-`paths:` satellite, never by ' +
+          'deleting it. If this file is genuinely a stub, say so in the commit.',
+      ).toBeGreaterThan(1_500);
+    },
+  );
+
+  it('the corpus keeps its size and its file count', () => {
+    const total = ruleFiles.reduce((n, r) => n + r.bytes, 0);
+    expect(
+      ruleFiles.length,
+      `Expected ${CORPUS_FILE_COUNT} rule files, found ${ruleFiles.length}: ` +
+        ruleFiles.map((r) => r.name).join(', ') +
+        '. If you added or removed a satellite on purpose, update CORPUS_FILE_COUNT ' +
+        'and the byte range beside it, and say why in the commit message.',
+    ).toBe(CORPUS_FILE_COUNT);
+    expect(
+      total,
+      `The rules corpus is ${total} B, below the ${CORPUS_BYTES_MIN} B floor. ` +
+        'Payload is reduced by moving text into a narrower-`paths:` satellite, ' +
+        'NEVER by summarising or deleting it -- this floor is the only assertion ' +
+        'here that can tell the two apart.',
+    ).toBeGreaterThanOrEqual(CORPUS_BYTES_MIN);
+    expect(total).toBeLessThanOrEqual(CORPUS_BYTES_MAX);
   });
 
   it.each(ruleFiles.map((r) => [r.name] as const))(
