@@ -69,9 +69,39 @@ args=("$@")
 
 case "${args[*]}" in
   "auth status") exit 0 ;;
+  # Each PR-mode answer is keyed on the value the PREVIOUS call supplies, so a
+  # case can only reach a blocking verdict by traversing the whole chain. That
+  # is the acceptance bar this suite failed twice before (go-to-k/cdkd#2197):
+  # a case whose expectation is reachable WITHOUT a call site fences nothing,
+  # and the first attempt's `exit 0` expectation was reachable either way,
+  # since a `pr diff` returning no files finds no offending text either.
   "pr view --json number -q .number") echo "${STUB_PR_NUMBER:-}" ;;
-  "pr diff "*" --name-only") echo "${STUB_PR_FILES:-}" ;;
-  "pr view "*" --json headRefOid -q .headRefOid") echo "${STUB_PR_SHA:-deadbeef}" ;;
+  "pr diff "*" --name-only")
+    # Only answer for the PR number the previous call handed out.
+    if [ -n "${STUB_PR_NUMBER:-}" ] && [ "${args[2]}" = "${STUB_PR_NUMBER}" ]; then
+      echo "${STUB_PR_FILES:-}"
+    fi
+    ;;
+  "pr view "*" --json headRefOid -q .headRefOid")
+    if [ -n "${STUB_PR_NUMBER:-}" ] && [ "${args[2]}" = "${STUB_PR_NUMBER}" ]; then
+      # VERBATIM, with no default: a default here makes both sides of the
+      # comparison below fall back to the same value, so breaking this call
+      # still serves the offending content and the case cannot fail.
+      echo "${STUB_PR_SHA:-}"
+    fi
+    ;;
+  "api repos/{owner}/{repo}/contents/"*)
+    # Serve the offending content ONLY at the sha the headRefOid call returns.
+    # With that call broken the hook falls back to `?ref=HEAD` (its own
+    # `${pr_head_sha:-HEAD}` default) and gets the ASCII body, so the case goes
+    # green -- which is what makes it a fence for that call site rather than
+    # for the chain in general.
+    _ep="${args[1]}"
+    case "$_ep" in
+      *"?ref=${STUB_EXPECT_SHA:-cafebabe}") printf '%s' "${STUB_PR_CONTENT_B64:-}" ;;
+      *) printf '%s' "${STUB_PR_ASCII_B64:-}" ;;
+    esac
+    ;;
   *) echo "" ;;
 esac
 EOF
@@ -82,6 +112,24 @@ EOF
 run_hook() {
   local dir="$1"
   local cmd="${2:-gh pr create}"
+  local payload
+  payload=$(jq -n --arg cmd "$cmd" --arg cwd "$dir" \
+    '{"tool_input":{"command":$cmd},"cwd":$cwd}')
+  printf '%s' "$payload" | GH_BIN="$(make_gh_stub)" bash "$HOOK" >/dev/null 2>&1
+}
+
+# PR-MODE runner. The suite drove only 2 of the hook's 5 `gh` call sites for as
+# long as `pr view --json number` answered "" -- every case then took the
+# LOCAL-DIFF branch and `pr diff`, `headRefOid` and `api ... contents` never
+# executed. Those three were rewritten by the fix that made this hook work at
+# all (it was inert: `gh` has no `-C` flag), and were verified by hand rather
+# than by this suite, which is uncomfortably close to the defect the same fix
+# removes.
+#
+# Every fixture here keeps its LOCAL diff pure ASCII, so a blocking verdict is
+# reachable only through the PR chain.
+run_hook_pr() {
+  local dir="$1" cmd="${2:-gh pr merge 552}"
   local payload
   payload=$(jq -n --arg cmd "$cmd" --arg cwd "$dir" \
     '{"tool_input":{"command":$cmd},"cwd":$cwd}')
@@ -266,6 +314,77 @@ if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
 case_label "quoted mention of gh pr create does not fire"
 run_hook "$D" "echo \"next: gh -C $D pr create\""; rc=$?
 if [[ $rc -eq 0 ]]; then ok; else ng 0 "$rc"; fi
+
+# --- PR MODE: one case per gh call site (go-to-k/cdkd#2197) ------------------
+#
+# Everything above takes the LOCAL-DIFF branch, because the stub answered
+# `pr view --json number` with "". So `pr diff`, `headRefOid` and
+# `api ... contents` -- three of the hook's five gh call sites, all rewritten by
+# the fix that made this hook work at all -- executed in no case.
+#
+# The bar each case has to meet, and the one two earlier attempts missed: its
+# expectation must be reachable ONLY THROUGH the call site it fences. So every
+# fixture below keeps its LOCAL diff pure ASCII and puts the offending text
+# only where the PR chain can find it. A case expecting exit 0 would fence
+# nothing here -- a `pr diff` returning no files finds no offending text either.
+export STUB_PR_NUMBER=552
+export STUB_PR_FILES="src/foo.ts"
+export STUB_PR_SHA=cafebabe
+export STUB_PR_CONTENT_B64=Ly8g44GT44KM44Gv44OG44K544OI44Gn44GZCg==
+export STUB_PR_ASCII_B64=Ly8gcGxhaW4gYXNjaWkgb25seQo=
+
+PRD="$TMPDIR/case_prmode"; init_repo "$PRD"
+printf '\n// ascii only, on purpose\n' >> "$PRD/src/foo.ts"
+commit_all "$PRD"
+
+case_label "PR mode: offending text reachable only via the PR chain --> blocks"
+run_hook_pr "$PRD" "gh pr merge 552"; rc=$?
+if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
+
+case_label "control: the same fixture's LOCAL diff is clean"
+# Without this, the case above is satisfied by a hook that ignored the PR
+# entirely and scanned the working tree.
+STUB_PR_NUMBER='' run_hook_pr "$PRD" "gh pr merge 552"; rc=$?
+if [[ $rc -eq 0 ]]; then ok; else ng 0 "$rc"; fi
+
+case_label "PR mode: pr diff returning no files --> passes"
+# Fences `pr diff <N> --name-only`: with no file list there is nothing to
+# fetch, so the offending content is unreachable.
+STUB_PR_FILES='' run_hook_pr "$PRD" "gh pr merge 552"; rc=$?
+if [[ $rc -eq 0 ]]; then ok; else ng 0 "$rc"; fi
+
+case_label "PR mode: a wrong headRefOid serves the ASCII body --> passes"
+# Fences `pr view <N> --json headRefOid`: the stub keys its content on the sha,
+# and the hook falls back to `?ref=HEAD` when the call yields nothing.
+STUB_PR_SHA='' run_hook_pr "$PRD" "gh pr merge 552"; rc=$?
+if [[ $rc -eq 0 ]]; then ok; else ng 0 "$rc"; fi
+
+case_label "PR mode: empty contents payload --> passes"
+# Fences `gh api .../contents/...`: the chain resolves but the body is empty.
+STUB_PR_CONTENT_B64='' run_hook_pr "$PRD" "gh pr merge 552"; rc=$?
+if [[ $rc -eq 0 ]]; then ok; else ng 0 "$rc"; fi
+
+case_label "PR mode: no number in the command --> resolved from the BRANCH"
+# Fences `pr view --json number`, which the cases above cannot reach: they all
+# carry an explicit number, so `gate_pr_selector` supplies it and the branch
+# lookup never runs. A probe that breaks that call therefore left those cases
+# green -- the mutation landed on a line they do not execute, which is a probe
+# fault rather than a weak fence, and the fix is a case that HAS to take the
+# branch path.
+run_hook_pr "$PRD" "gh pr create --title t --body b"; rc=$?
+if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
+
+case_label "PR mode: the number comes from the COMMAND, not the branch"
+# go-to-k/cdkd#2206 moved this resolution to `gate_pr_selector`, so the flag
+# spellings the old adjacent-token regex read as no number at all must work.
+run_hook_pr "$PRD" "gh pr merge --squash 552"; rc=$?
+if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
+
+case_label "PR mode: a flag that eats a number still finds the PR"
+run_hook_pr "$PRD" "gh pr merge -t 42 552"; rc=$?
+if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
+
+unset STUB_PR_NUMBER STUB_PR_FILES STUB_PR_SHA STUB_PR_CONTENT_B64 STUB_PR_ASCII_B64
 
 echo
 printf 'Total: %d pass, %d fail\n' "$PASS" "$FAIL"
