@@ -182,6 +182,86 @@ if [ "${PHYS_ID_2}" != "${PHYS_ID_1}" ]; then
 fi
 echo "    OK: physical id stable across the in-place update"
 
+# --- Phase 2b: drift over a type with NO Cloud Control READ handler --------
+# Issues go-to-k/cdkd#2151 / go-to-k/cdkd#1945 / go-to-k/cdkd#2154. THIS fixture
+# is where go-to-k/cdkd#2151 was measured live on 2026-08-21, and it is the
+# shape the defect needs: `AWS::CloudWatch::AnomalyDetector` is NON_PROVISIONABLE
+# in the CloudFormation registry -- which is the whole reason it has an SDK
+# provider -- and that provider implements no `readCurrentState`, so drift takes
+# the Cloud Control fallback, which THROWS `UnsupportedActionException`. Beside
+# it sits an ordinary SQS queue drift CAN compare. Before the fix that throw
+# propagated out of the loop and out of the command:
+#
+#     UnsupportedActionException: Resource type AWS::CloudWatch::AnomalyDetector
+#     does not support READ action
+#     $ echo $?  -> 1
+#
+# No summary line, no per-resource report, and the queue never looked at -- while
+# exiting the SAME code that means "drift detected".
+#
+# EVERY assertion below is NEW rather than inherited: this fixture had no drift
+# phase at all, so none of it could pass before the change. Each is a POSITIVE
+# marker only the fixed path emits, not a "the bad thing did not happen"
+# negative that any early failure would also satisfy.
+echo "==> Phase 2b: drift completes despite a resource with no Cloud Control READ handler"
+DRIFT_OUT="$(mktemp)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" > "${DRIFT_OUT}" 2>&1
+DRIFT_RC=$?
+set -e
+cat "${DRIFT_OUT}"
+
+# 1. THE discriminator: the command produced a report at all. Pre-fix the throw
+#    escaped and this line could not exist.
+if ! grep -q '? Detector (AWS::CloudWatch::AnomalyDetector)' "${DRIFT_OUT}"; then
+  echo "FAIL: drift printed no per-resource line for Detector -- the run aborted instead of reporting (go-to-k/cdkd#2151)" >&2
+  exit 1
+fi
+echo "    OK: Detector reported rather than aborting the run"
+
+# 2. The SIBLING was compared. This is the assertion the issue is actually
+#    about: one unreadable resource must not cost the other one its comparison.
+#    `1 resource checked` is the positive marker -- `0` is what a run that
+#    reported the detector and then gave up would print.
+if ! grep -q '1 resource checked' "${DRIFT_OUT}"; then
+  echo "FAIL: the ordinary SQS queue was not compared -- expected '1 resource checked' (go-to-k/cdkd#2151)" >&2
+  exit 1
+fi
+echo "    OK: the sibling SQS queue was still compared"
+
+# 3. EXIT 0, not 2. The taxonomy call: a type with no READ handler is permanent
+#    by construction, so routing it to the actionable bucket would fail this
+#    stack's CI forever. Asserted as an exact code, not "non-zero" -- the whole
+#    complaint in go-to-k/cdkd#2151 was that 1 (drift) and "compared nothing"
+#    were indistinguishable.
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: drift exited ${DRIFT_RC}, expected 0 -- a type with no READ handler is not an actionable failure (go-to-k/cdkd#2151)" >&2
+  exit 1
+fi
+echo "    OK: exit 0 (no-read-path is reported, not charged to the exit code)"
+
+# 4. ...and it is NOT misreported as the actionable cause. Without this, an
+#    implementation that routed every throw to `readFailed` would still satisfy
+#    1 and 2 above, and only the exit code would have caught it -- one assertion
+#    deep for a taxonomy decision this whole change turns on.
+if grep -q 'NOT fully compared' "${DRIFT_OUT}"; then
+  echo "FAIL: Detector was reported as a read FAILURE; a type with no READ handler must report drift unknown (go-to-k/cdkd#2151)" >&2
+  exit 1
+fi
+echo "    OK: classified as drift unknown, not as a read failure"
+
+# 5. go-to-k/cdkd#2154: something WAS compared here, so the reassuring glyph is
+#    correct on this stack. The NEGATIVE CONTROL for that change -- a glyph rule
+#    that warned unconditionally would satisfy every #2151 assertion above.
+if grep -q 'NOTHING was compared' "${DRIFT_OUT}"; then
+  echo "FAIL: the stack warned 'NOTHING was compared' although the queue was compared (go-to-k/cdkd#2154)" >&2
+  exit 1
+fi
+echo "    OK: the ✓ glyph is kept for a stack where something WAS compared"
+rm -f "${DRIFT_OUT}"
+
 # --- Phase 3: destroy ------------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
