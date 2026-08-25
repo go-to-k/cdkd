@@ -144,7 +144,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number]> = [
   ['src/types/state.ts', 55_000],                    // measured  48,864
   ['src/synthesis/cdk-synthesizer.ts', 40_000],      // measured  34,889
   ['tests/unit/example.test.ts', 62_000],            // measured  55,681
-  ['.claude/hooks/branch-gate.sh', 116_000],         // measured 105,593
+  ['.claude/hooks/branch-gate.sh', 135_000],         // measured 115,520 -- hooks.md ALONE, and it grew 86,972 -> 115,520 B over its last four commits, so a tight cap here fires on the next hooks PR while blaming a widened glob
 ];
 
 const SPLIT_ADVICE =
@@ -257,7 +257,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
 const CORPUS_FILE_COUNT = 28;
-const CORPUS_BYTES_MIN = 780_000;   // measured 789,588 B -- 9,588 B of slack
+const CORPUS_BYTES_MIN = 790_000;   // measured 799,515 B -- 9,515 B of slack
 const CORPUS_BYTES_MAX = 900_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap
 
 describe('.claude/rules payload fence', () => {
