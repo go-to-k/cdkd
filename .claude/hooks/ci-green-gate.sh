@@ -108,7 +108,11 @@ cd "$target_dir" 2>/dev/null || exit 0
 
 # --- Parse the PR number (same token walk as pr-review-gate.sh). -------
 pr_number=""
-args="${cmd##*gh pr merge}"
+# The matched-verb strip, not a literal one: `${cmd##*gh pr merge}` returns
+# the WHOLE command under `gh -R <owner/repo> pr merge`, and the walk below
+# then reads an unrelated integer as the PR number (lib/command-match.sh,
+# gate_pr_selector).
+args="$(gate_pr_selector_rest "$cmd" "$GATE_RE_GH_PR_MERGE")"
 # shellcheck disable=SC2086
 set -- $args
 while [ $# -gt 0 ]; do

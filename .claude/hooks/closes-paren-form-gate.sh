@@ -54,8 +54,11 @@ fi
 gate_matches "$trimmed" "$GATE_RE_GH_PR_MERGE" || exit 0
 
 # Extract PR number (positional integer after `gh pr merge`)
-args="${trimmed##*gh pr merge}"
-pr_num=$(echo "$args" | grep -oE '^[[:space:]]*[0-9]+' | head -1 | tr -d '[:space:]' || true)
+# The matched-verb selector, not a literal strip: `${trimmed##*gh pr merge}`
+# returns the WHOLE command under `gh -R <owner/repo> pr merge`, the number
+# regex then finds nothing, and this gate exited 0 -- fully bypassed by the
+# flag the widened absorber had just taught it to match.
+pr_num=$(gate_pr_selector "$trimmed" "$GATE_RE_GH_PR_MERGE")
 [[ -n "$pr_num" ]] || exit 0
 [[ "$pr_num" =~ ^[0-9]+$ ]] || exit 0
 

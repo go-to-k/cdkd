@@ -587,6 +587,121 @@ want_dir "/base" "gate_target_dir still FALLS BACK on an unexpanded -C" \
 want_dir "/base" "gate_target_dir still FALLS BACK on an unexpanded cd" \
   'cd "$W" && git commit -m x' /base "$C"
 
+# --- gate_pr_selector: the selector must come from the MATCHED verb ---------
+#
+# Three gates hand-rolled `${cmd##*gh pr merge}` -- a LITERAL strip. Once
+# GATE_GH_C absorbed `-R <owner/repo>`, they began to FIRE on the flagged
+# spelling while still failing to strip it, so whatever ran next read the wrong
+# token. Measured 2026-08-25 against the shipped hooks: `sleep 30 && gh -R
+# go-to-k/cdkd pr merge 2195 --squash` resolved PR #30 in pr-review-gate, and
+# closes-paren-form-gate got an empty selector and exited 0. Widening the flag
+# absorber was necessary and NOT sufficient -- it moved the bypass one step
+# later. These cases fence the second step.
+want_sel() {
+  local expect="$1" name="$2" cmd="$3" got
+  got=$(gate_pr_selector "$cmd" "$GATE_RE_GH_PR_MERGE")
+  if [ "$got" = "$expect" ]; then
+    pass=$((pass + 1)); printf 'ok   %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (got %s, want %s)\n' "$name" "${got:-<empty>}" "${expect:-<empty>}"
+    fail_log="${fail_log}FAIL ${name}\n"
+  fi
+}
+
+want_sel 2195 "selector: plain"                 'gh pr merge 2195 --squash'
+want_sel 2195 "selector: -R space"              'gh -R go-to-k/cdkd pr merge 2195 --squash'
+want_sel 2195 "selector: --repo space"          'gh --repo go-to-k/cdkd pr merge 2195 --squash'
+want_sel 2195 "selector: --repo="               'gh --repo=go-to-k/cdkd pr merge 2195 --squash'
+want_sel 2195 "selector: -R="                   'gh -R=go-to-k/cdkd pr merge 2195 --squash'
+want_sel 2195 "selector: -R glued"              'gh -Rgo-to-k/cdkd pr merge 2195 --squash'
+want_sel 2195 "selector: -C then -R"            'gh -C /tmp -R go-to-k/cdkd pr merge 2195 --squash'
+# THE case. A leading integer anywhere in the command must not be read as the
+# PR number -- this is the exact input that resolved PR #30 before the fix.
+want_sel 2195 "selector: leading sleep 30 does not win" \
+  'sleep 30 && gh -R go-to-k/cdkd pr merge 2195 --squash'
+want_sel 2195 "selector: flag with a numeric value first" \
+  'gh pr merge --delete-branch 2195'
+want_sel ""   "selector: no number given"       'gh pr merge --squash'
+want_sel ""   "selector: quoted mention only"   'echo "gh pr merge 5"'
+# A sibling lane's fix REGRESSED on this shape: its new anchor accepted a
+# selector only IMMEDIATELY after the verb, so `gh pr merge --squash 1` lost the
+# number and its ci-green-gate returned 0 -- a red-CI bypass introduced by the
+# fix itself, on a spelling gh accepts and the OLD extractor handled.
+want_sel 1    "selector: flags BEFORE the number"       'gh pr merge --squash 1'
+want_sel 1    "selector: -R and flags before the number" 'gh -R go-to-k/cdkd pr merge --squash 1'
+want_sel 2195 "selector: several flags first"           'gh pr merge --delete-branch --squash 2195'
+# And the other half of that lane's finding: the selector must come from the
+# MATCHED SEGMENT, never the whole command. A PR body quoting another merge
+# command must not donate its number.
+want_sel ""   "selector: number quoted inside another segment" \
+  'gh pr create --body "later: gh pr merge 42 --squash"'
+want_sel ""   "selector: quoted mention then a bare verb" \
+  'gh pr create --body "then run gh pr merge 9 --squash" && gh pr merge'
+
+# A repo flag AFTER the verb: the verb ERE only absorbs LEADING flags, so `-R`
+# reaches the selector walk. Enumerating VALUE-TAKERS (the polarity a sibling
+# lane tried) leaves the slug in place and the gate then judges repo-slug-as-PR;
+# `-t 42 552` is the same shape with a plausible-looking integer. Enumerating
+# VALUELESS flags instead fails SAFE: an unlisted one eats the number and the
+# selector comes back empty.
+want_sel 552  "selector: -R after the verb"        'gh pr merge -R go-to-k/cdkd 552 --squash'
+want_sel 552  "selector: --repo after the verb"    'gh pr merge --repo go-to-k/cdkd 552'
+want_sel 552  "selector: -t consumes its value"    'gh pr merge -t 42 552'
+want_sel 552  "selector: --disable-auto is valueless" 'gh pr merge --disable-auto 552'
+# SHORT spellings. `gh help pr merge` documents -s/-m/-r/-d, and listing only
+# the long forms sent every short one down the value-consuming arm, eating the
+# PR number. Found by a sibling repo's round-3 review, where the empty selector
+# then reached a `no pull requests found` fail-open and MERGED PAST RED CI.
+want_sel 2195 "selector: -s is valueless"            'gh pr merge -s 2195'
+want_sel 2195 "selector: -d is valueless"            'gh pr merge -d 2195'
+want_sel 2195 "selector: -m is valueless"            'gh pr merge -m 2195'
+want_sel 2195 "selector: -r is valueless"            'gh pr merge -r 2195'
+want_sel 2195 "selector: long and short mixed"       'gh pr merge --squash -d 2195'
+
+# "empty" has TWO causes and the caller must tell them apart. A corrected
+# comment does not close the hole for the next unlisted flag: a sibling repo's
+# ci-green-gate treated every empty selector as "fall back to the current
+# branch" and so merged past red CI when a flag had eaten the number.
+want_ate() {
+  local expect="$1" name="$2" cmd="$3"
+  local got=no
+  gate_pr_selector_ate_number "$cmd" "$GATE_RE_GH_PR_MERGE" && got=YES
+  if [ "$got" = "$expect" ]; then
+    pass=$((pass + 1)); printf 'ok   %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (got %s, want %s)\n' "$name" "$got" "$expect"
+    fail_log="${fail_log}FAIL ${name}\n"
+  fi
+}
+want_ate no  "ate: no number given at all"        'gh pr merge --squash'
+want_ate no  "ate: a branch name is not a number" 'gh pr merge feature-branch'
+want_ate no  "ate: number present and returned"   'gh pr merge 552 --squash'
+want_ate no  "ate: a non-numeric flag value"      'gh pr merge -t msg 2195'
+want_ate YES "ate: an UNLISTED flag swallowed it" 'gh pr merge --future-flag 552'
+want_ate YES "ate: a numeric flag value"          'gh pr merge --body-file 7 2195'
+want_sel ""   "selector: unknown flag fails SAFE, not wrong" 'gh pr merge --future-flag 552'
+want_sel ""   "selector: a branch name is not a PR number"   'gh pr merge feature-branch'
+
+# The FOURTH iteration of "the fix moved the bypass one step later", found by a
+# sibling repo's round-2 review. Skipping `-…` tokens but NOT their values makes
+# a flag value the selector: `gh pr merge -t msg 2195` yielded `msg`, which
+# `gh pr checks msg` answers with "no pull requests found" -- straight into
+# ci-green-gate's fail-open arm. Strictly worse than the empty selector it
+# replaced, because empty fell back to the current branch and blocked.
+want_sel 2195 "selector: -t value is consumed, not returned"  'gh pr merge -t msg 2195 --squash'
+want_sel 2195 "selector: --match-head-commit value consumed"  'gh pr merge --match-head-commit abc 2195'
+want_sel 2195 "selector: --body-file numeric value consumed"  'gh pr merge --body-file 7 2195 --squash'
+want_sel 2195 "selector: a QUOTED flag value is one token"    'gh pr merge --subject "chore: x" 2195 --squash'
+
+# A `-C` embedded in a quoted FLAG VALUE must not become the target. Measured on
+# origin/main: `git -c core.pager="less -C /evil" commit` resolved `/evil`, and
+# through branch-gate on `main` that turned rc=2 into rc=0 -- a bypass driven by
+# a flag value. Pre-existing, found by a sibling repo's review of the same code.
+want_dir "/fallback" "-C inside a quoted flag value is not a target" \
+  'git -c core.pager="less -C /evil" commit -m y' /fallback "$C"
+want_dir "/w/t" "a real -C after -c k=v still resolves" \
+  'git -c k=v -C /w/t commit -m x' /fallback "$C"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then

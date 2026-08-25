@@ -251,8 +251,18 @@ fi
 # `gh pr list` exits non-zero on auth failure / network error. We treat
 # that as "couldn't check" and pass through with a debug note — same
 # fail-open posture as the missing-gh branch.
-pr_json=$("${gh_bin}" pr list --head "$branch" --state merged --limit 1 \
-            --json number,mergedAt,headRefName,title 2>/dev/null || true)
+#
+# The `cd` is load-bearing and its absence was a live CROSS-REPO FALSE POSITIVE.
+# `gh` resolves the repo from its CWD, and it has no `-C` flag, so an unwrapped
+# call here read THIS SESSION's repo rather than the push target. Measured
+# 2026-08-25: a push to cdk-real-drift, whose PR go-to-k/cdk-real-drift#1815 was
+# OPEN, was refused citing go-to-k/cdkd#2195 -- a different repo's MERGED PR
+# that merely shared the branch name. These three repos name branches by
+# convention (`chore/issue-dup-check` existed in both simultaneously), so the
+# collision is the normal case, not a coincidence. The gate resolved
+# `target_dir` correctly all along and then did not use it.
+pr_json=$( (cd "$target_dir" 2>/dev/null && "${gh_bin}" pr list --head "$branch" --state merged --limit 1 \
+            --json number,mergedAt,headRefName,title) 2>/dev/null || true)
 
 if [ -z "$pr_json" ] || [ "$pr_json" = "null" ]; then
   echo "post-merge-orphan-push-gate: gh pr list failed or returned empty; skipping check." >&2

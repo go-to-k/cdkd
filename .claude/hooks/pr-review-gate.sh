@@ -128,7 +128,12 @@ pr_number=""
 # wrong token as the PR number. Matching on the full `gh pr merge` phrase
 # (not bare `merge`) is the load-bearing tightening — the prior `#*merge`
 # also matched merge inside `git merge`, `--no-merge`, branch names, etc.
-args="${cmd##*gh pr merge}"
+# The matched-verb strip, not a literal one: `${cmd##*gh pr merge}` returns
+# the WHOLE command under `gh -R <owner/repo> pr merge`, and the walk below
+# then reads an unrelated integer as the PR number. Measured 2026-08-25:
+# `sleep 30 && gh -R go-to-k/cdkd pr merge 2195 --squash` resolved PR #30,
+# so an unrelated PR's size decided the review tier.
+args="$(gate_pr_selector_rest "$cmd" "$GATE_RE_GH_PR_MERGE")"
 # shellcheck disable=SC2086
 set -- $args
 while [ $# -gt 0 ]; do
