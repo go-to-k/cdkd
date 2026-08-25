@@ -241,6 +241,51 @@ C="$GATE_RE_GIT_COMMIT"
 P="$GATE_RE_GIT_PUSH"
 M="$GATE_RE_GH_PR_MERGE"
 
+# --- a FLAG VALUE CONTAINING A SPACE (go-to-k/cdkd#2200) ---------------------
+#
+# `git -c user.name="Jane Doe" commit` is an everyday shape and it walked past
+# EVERY gate keyed on GATE_FLAGS -- measured at the gate level, not just here:
+# on a repo sitting on `main`, `git commit -m x` gave branch-gate rc=2 while
+# `git -c user.name="Jane Doe" commit -m x` gave rc=0. A commit straight to
+# main, ungated. The value alternative stopped at the first space, so the flag
+# loop ended mid-value and the verb was never reached.
+#
+# WHICH OF THESE ACTUALLY DISCRIMINATE, measured by mutation rather than
+# assumed. A review round found the first version of this block naming six
+# hazards while its assertions pinned one, so each line now says what it is:
+want_match 0 "flag value with a space, double quotes" 'git -c user.name="Jane Doe" commit -m x' "$C"
+want_match 0 "flag value with a space, single quotes" "git -c user.name='Jane Doe' commit -m x" "$C"
+want_match 0 "escaped quote inside a flag value"      'git -c k="a\" b" commit -m x' "$C"
+want_match 0 "gh repo flag with a spaced value"       'gh --repo "go to/k" pr merge 1' "$M"
+# ^ these four red when the widening is reverted. They are the fix.
+
+# REGRESSION GUARDS, not bypass fixes: all three already matched before this
+# change, and they are here so the widening is shown not to LOSE them. Saying so
+# matters -- an earlier version of this comment presented them as newly-fixed
+# bypasses, which would have sent the next reader hunting for a defect that was
+# never there.
+want_match 0 "glued flag value with a space"          'git --author="Jane Doe" commit -m x' "$C"
+want_match 0 "quoted span containing a dash"          'git -c core.editor="vim -f" commit -m x' "$C"
+want_match 0 "flag after a valueless flag"            'git -C /tmp -q commit -m x' "$C"
+
+# POLARITY CONTROLS. Widening a flag absorber is exactly the change that makes a
+# gate fire on commands it should ignore, and "it matches" is satisfied by a
+# pattern that matches everything.
+#
+# The first version of this pair was `git -c user.name="Jane Doe" status` and
+# `... log --oneline`, and neither could EVER red: neither string contains the
+# word `commit`, so no amount of over-reach in GATE_FLAGS could make a commit
+# gate match them. Proven by mutating GATE_FLAGS to the total over-reach
+# `([[:space:]]+[^[:space:]]+)*` -- both stayed green. A control that cannot
+# fail is not a control.
+#
+# These do contain the verb, in a position where matching it would be wrong: a
+# quoted flag VALUE, and an argument. An absorber that swallows the closing
+# quote reaches them.
+want_match 1 "verb inside a spaced flag value"        'git -c alias.x="run commit later" status' "$C"
+want_match 1 "verb as an argument after a spaced value" 'git -c user.name="Jane Doe" log --grep commit' "$C"
+want_match 1 "gh verb inside a spaced repo value"     'gh --repo "a pr merge b" issue list' "$M"
+
 # --- the spellings that used to bypass ---------------------------------------
 want_match 0 "bare git commit"              'git commit -m x' "$C"
 want_match 0 "git add -A && git commit"     'git add -A && git commit -m x' "$C"

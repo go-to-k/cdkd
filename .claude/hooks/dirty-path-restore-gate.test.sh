@@ -32,6 +32,21 @@ make_repo() {
   git -C "$dir" config user.name t
   echo "original" > "$dir/tracked.txt"
   echo "original" > "$dir/other.txt"
+  # A path with a SPACE, because `for raw in $paths` word-split it into two
+  # non-paths and the gate passed on a dirty file -- a silent discard, which is
+  # the failure direction this gate exists to prevent.
+  echo "original" > "$dir/sp ace.txt"
+  # An apostrophe in a filename is ordinary; it opened a quoted span that ran to
+  # end-of-input in the hand-written tokenizer, swallowing every later path.
+  # The apostrophe goes through a variable: writing it inline needs the
+  # `'"'"'` dance, which is what broke this file once already.
+  local apos="'"
+  # A literal BACKSLASH in a filename: inside a single-quoted span the
+  # shell takes it literally, so the tokenizer must not treat it as an
+  # escape there.
+  local bslash="\\"
+  echo "original" > "$dir/a${bslash}b.txt"
+  echo "original" > "$dir/O${apos}Brien.txt"
   git -C "$dir" add -A
   git -C "$dir" commit -qm init
   echo "$dir"
@@ -58,6 +73,127 @@ run() {
 # --- dirty path: must BLOCK ------------------------------------------------
 R=$(make_repo); echo "modified" > "$R/tracked.txt"
 run "checkout -- <dirty path> blocks" "$R" "git checkout -- tracked.txt" 2
+
+# CHAINED shapes. None of the cases below this file's original 18 was chained,
+# which is why a live regression stayed green through a full review round:
+# converting the gate from a raw-command match to a per-segment one made it
+# read only the FIRST segment matching each verb, so a branch switch ahead of a
+# discard ended the probe. Measured at the time, all three went BLOCK -> pass.
+# A branch switch chained ahead of a discard is an everyday shape.
+run "branch switch THEN discard blocks"        "$R" "git checkout main && git checkout -- tracked.txt" 2
+run "checkout -b THEN restore blocks"          "$R" "git checkout -b wip && git restore -- tracked.txt" 2
+run "semicolon-chained discard blocks"         "$R" "git checkout main; git restore -- tracked.txt" 2
+run "discard THEN branch switch blocks"        "$R" "git restore tracked.txt && git checkout main" 2
+
+# Polarity controls for those four. Without them "it blocks" is satisfied by a
+# gate that blocks everything, which is the shape this session hit four times.
+run "branch switch alone passes"               "$R" "git checkout main" 0
+run "checkout -b alone passes"                 "$R" "git checkout -b wip" 0
+
+# `--staged` is per-SEGMENT, not per-command. The old form exited 0 for the
+# whole command on seeing `--staged`, so a staged restore chained ahead of a
+# worktree restore passed the worktree one through untested.
+run "staged THEN worktree restore blocks"      "$R" "git restore --staged tracked.txt && git restore tracked.txt" 2
+
+# `--staged` alone rewrites the index; WITH `--worktree` the same command also
+# discards worktree content, so the skip has to be conditional. Both spellings
+# passed on a dirty file until this was fenced.
+run "staged AND worktree restore blocks"       "$R" "git restore --staged --worktree tracked.txt" 2
+run "short -S -W restore blocks"               "$R" "git restore -S -W tracked.txt" 2
+run "combined -SW restore blocks"              "$R" "git restore -SW tracked.txt" 2
+run "worktree-only restore blocks"             "$R" "git restore -W tracked.txt" 2
+
+# The `-W` cluster spellings an ENUMERATION misses. `git restore -S -qW f` is
+# legal, matched none of `" -W "|" -SW "|" -WS "`, hit the `-S` arm, and was
+# skipped -- reverting the file while the gate reported rc=0. Short flags
+# cluster in any order with any other flag, so the set is not enumerable.
+run "clustered -qW after -S blocks"            "$R" "git restore -S -qW tracked.txt" 2
+run "clustered -Wq after -S blocks"            "$R" "git restore -S -Wq tracked.txt" 2
+run "long --worktree after --staged blocks"    "$R" "git restore --staged --worktree tracked.txt" 2
+# Control: a cluster with NO W must still be skipped, or the predicate has
+# simply stopped skipping anything.
+run "clustered -qS with no W passes"           "$R" "git restore -qS tracked.txt" 0
+
+# BACKSLASH escapes. Without them an escaped quote opens a span that runs to
+# end-of-input, so every later path merges into one token git does not know and
+# the gate passes on a dirty file.
+RBS=$(make_repo); echo "modified" > "$RBS/tracked.txt"
+run "escaped apostrophe then a dirty path blocks" "$RBS" "git checkout -- O\\'Brien.txt tracked.txt" 2
+run "escaped quote then a dirty path blocks"      "$RBS" "git checkout -- say\\\"hi.txt tracked.txt" 2
+RBS2=$(make_repo); echo "modified" > "$RBS2/sp ace.txt"
+run "backslash-escaped space is one path"         "$RBS2" "git restore sp\\ ace.txt" 2
+
+# Git accepts any UNAMBIGUOUS PREFIX of a long option, so an exact-match arm is
+# an enumeration one level up from the short-flag one. `--staged --worktr`
+# reverted the file with the gate returning 0. The asymmetry is what hides it:
+# abbreviating BOTH halves fails safe, because neither flag is recognised and
+# nothing is skipped.
+RPX=$(make_repo); echo "modified" > "$RPX/tracked.txt"
+run "abbreviated --worktr after --staged blocks"  "$RPX" "git restore --staged --worktr tracked.txt" 2
+run "abbreviated --work after --staged blocks"    "$RPX" "git restore --staged --work tracked.txt" 2
+run "abbreviated --worktr after -S blocks"        "$RPX" "git restore -S --worktr tracked.txt" 2
+# Controls: an abbreviated STAGED-only restore is index-only and must still be
+# skipped, and `--source` must not be read as an abbreviation of `--staged`.
+run "abbreviated --stag alone passes"             "$RPX" "git restore --stag tracked.txt" 0
+run "--source is not --staged"                    "$RPX" "git restore --source=HEAD tracked.txt" 2
+
+# A backslash inside a SINGLE-quoted span is literal, not an escape.
+RQ=$(make_repo); echo "modified" > "$RQ/a\\b.txt"
+run "backslash inside single quotes is literal"   "$RQ" "git restore 'a\\b.txt'" 2
+run "backslash inside double quotes escapes"      "$RQ" 'git restore "a\\b.txt"' 2
+
+# A QUOTED path whose text contains a flag-shaped fragment. `for w in $seg`
+# word-split it, so `-Sx.txt` was read as a staged flag, the segment was
+# skipped, and a dirty tracked.txt passed -- the word-splitting defect
+# `split_paths` exists to fix, reintroduced in the flag scan above it.
+RWS=$(make_repo); echo "modified" > "$RWS/tracked.txt"
+run "flag-shaped fragment in a quoted path blocks" "$RWS" 'git restore "a -Sx.txt" tracked.txt' 2
+run "W-shaped fragment in a quoted path blocks"    "$RWS" 'git restore "a -Wx.txt" tracked.txt' 2
+# Control: the same shape with no flag-like fragment must block for the ORDINARY
+# reason, so the two above cannot be satisfied by a gate that blocks on sight of
+# a quote.
+run "plain quoted path still blocks"               "$RWS" 'git restore "a x.txt" tracked.txt' 2
+
+# `--source` and `--staged` share the `--s` prefix. Matching only the literal
+# `--source` let `--sou` fall through to the staged arm and skip a segment that
+# stages nothing.
+run "abbreviated --sou is not --staged"            "$RWS" "git restore --sou HEAD~1 tracked.txt" 2
+run "abbreviated --sourc is not --staged"          "$RWS" "git restore --sourc HEAD~1 tracked.txt" 2
+# Control: an abbreviated STAGED restore is index-only and must still pass.
+run "abbreviated --stage alone passes"             "$RWS" "git restore --stage tracked.txt" 0
+
+# In a DOUBLE-quoted span bash escapes only before $ ` " \ or a newline; before
+# anything else the backslash is RETAINED. So "a\b.txt" is the path a\b.txt,
+# and emitting ab.txt made the gate pass on a dirty file of that name. The
+# round that fixed the single-quote case asserted the double-quoted spelling
+# was already correct -- true only of the "a\\b.txt" form its one case used,
+# which is why that case fenced nothing.
+run "backslash before an ordinary char in dquotes is literal" "$RQ" 'git restore "a\b.txt"' 2
+run "backslash before a dquote in dquotes escapes"            "$RQ" 'git restore "a\\b.txt"' 2
+
+# An attached VALUE on a short option is not more flags. `git restore -sSTABLE f`
+# is `-s STABLE`, and a substring test on the whole token read the `S` of
+# STABLE as `--staged`, skipped the segment, and discarded the worktree copy.
+run "uppercase S inside a short option VALUE is not --staged" "$RWS" "git restore -sSTABLE tracked.txt" 2
+# Control: a real clustered -S with no value still skips.
+run "clustered -qS with a value-free cluster passes"          "$RWS" "git restore -qS tracked.txt" 0
+
+# `--pathspec-from-file` names its paths in a FILE, so the segment carries none
+# of them: every check found nothing to object to and the gate returned 0 while
+# git discarded every path the file listed.
+run "--pathspec-from-file is refused, not passed"             "$RWS" "git restore --pathspec-from-file=list.txt" 2
+run "--pathspec-file-nul is refused, not passed"              "$RWS" "git restore --pathspec-from-file=- --pathspec-file-nul" 2
+
+# QUOTED paths containing a space. `for raw in $paths` split these into `"sp`
+# and `ace.txt"`, neither of which git knows, so the gate passed.
+RSP=$(make_repo); echo "modified" > "$RSP/sp ace.txt"
+run "quoted path with a space, checkout blocks"  "$RSP" "git checkout -- \"sp ace.txt\"" 2
+run "quoted path with a space, restore blocks"   "$RSP" "git restore \"sp ace.txt\"" 2
+run "single-quoted path with a space blocks"     "$RSP" "git restore 'sp ace.txt'" 2
+# Control: the same repo with that file CLEAN must pass, or the three above are
+# satisfied by a gate that blocks whenever it sees a quote.
+RSPC=$(make_repo)
+run "quoted path with a space, clean, passes"    "$RSPC" "git checkout -- \"sp ace.txt\"" 0
 run "restore <dirty path> blocks" "$R" "git restore tracked.txt" 2
 run "restore -- <dirty path> blocks" "$R" "git restore -- tracked.txt" 2
 run "escape hatch is honored" "$R" "CDKD_ALLOW_DIRTY_RESTORE=1 git checkout -- tracked.txt" 2

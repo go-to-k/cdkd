@@ -144,14 +144,15 @@ fi
 #   `gh pr merge <N>` / `gh pr edit <N>` — N is the explicit arg.
 #   `gh pr create` / `gh pr merge` (no arg) — current branch's PR.
 pr_number=""
-# `$GATE_GH_C` rather than a local `-C` pattern, for the same reason as
-# dirty-path-restore-gate: the local one could not read a quoted path, and it
-# stopped at `-C` so a `gh -R <repo> pr merge <N>` hid the number. It absorbs
-# every global flag and contributes 3 capture groups, so the verb is [4] and the
-# number is [5].
-if [[ "$cmd" =~ gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(merge|edit)[[:space:]]+([0-9]+) ]]; then
-  pr_number="${BASH_REMATCH[5]}"
-fi
+# `gate_pr_selector` rather than a local `=~` with a positional BASH_REMATCH
+# index. The hand-rolled `-C` pattern this replaced could not read a quoted path
+# and stopped at `-C`, so `gh -R <repo> pr merge <N>` hid the number; moving to
+# `$GATE_GH_C` fixed that but made the number `BASH_REMATCH[5]` -- an index into
+# a SHARED pattern, which the go-to-k/cdkd#2200 widening shifts. The selector
+# walks flags itself and returns the first non-flag token after the verb, so it
+# also handles `gh pr merge --squash 552` and `gh pr merge -t 42 552`, which the
+# old adjacent-token regex read as no number at all.
+pr_number="$(gate_pr_selector "$cmd" "$GATE_RE_GH_PR_MERGE_OR_EDIT")"
 
 if [[ -z "$pr_number" ]]; then
   pr_number=$("$GH" pr view --json number -q .number 2>/dev/null || true)

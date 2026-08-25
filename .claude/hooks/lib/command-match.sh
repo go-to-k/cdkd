@@ -579,15 +579,77 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # a commit straight to main, ungated, and the same hole in EVERY gate keyed on
 # GATE_FLAGS.
 #
-# NOT FIXED HERE, deliberately, and tracked as its own issue. GATE_FLAGS
-# contributes a fixed number of CAPTURE GROUPS, and callers index them:
-# `dirty-path-restore-gate.sh:123` reads `BASH_REMATCH[4]`. Widening the value
-# alternative adds groups, shifts every such index, and that gate silently
-# stopped blocking `git checkout -- <dirty path>` -- 7 of its 18 cases, and the
-# class fence reported it "gone quiet". Fixing it means widening the pattern AND
-# auditing every BASH_REMATCH index built on it, which is a different change
-# from this one and needs its own review.
-GATE_FLAGS='([[:space:]]+-[^[:space:]]+([[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]-][^[:space:]]*))?)*'
+# FIXED, go-to-k/cdkd#2200. Both halves were needed and the first attempt
+# shipped only one: widening the value alternative adds CAPTURE GROUPS, and
+# callers used to index them positionally (`dirty-path-restore-gate.sh` read
+# `BASH_REMATCH[4]`), so the widening alone made that gate stop blocking
+# `git checkout -- <dirty path>` in 7 of its 18 cases and the class fence
+# reported it "gone quiet". Trading a `git -c` bypass for a `git checkout --`
+# bypass is not a fix, so that attempt was reverted.
+#
+# The durable half is that NO caller indexes into this pattern any more. The two
+# that did now strip the matched prefix by LENGTH via `gate_verb_rest` /
+# `gate_pr_selector`, so the group count is internal to this file and the next
+# widening cannot shift anything. Fence 4 of unresolved-target-class.test.sh
+# keeps that true: it refuses any hook that builds its own match from a shared
+# GATE_ constant and then reads a numbered group out of it, so a change here
+# fails with a message naming this paragraph rather than silently re-opening a
+# gate.
+#
+# A flag TOKEN and a flag VALUE both embed quoted spans now, so
+# `--author="Jane Doe"` and `-c user.name="Jane Doe"` are each a single token.
+# A value still may not BEGIN with `-`: without that restriction
+# `git -C /tmp -q commit` reads `-q` as `-C`'s value.
+# One shell word that may EMBED quoted spans: `user.name="Jane Doe"` is one
+# token, `"Jane Doe"` is one token, and a bare space still ends it.
+# `\"` is an escaped quote wherever it appears -- INSIDE a double-quoted span it
+# does not end the span, and OUTSIDE one it is an ordinary character rather than
+# an opener. Both alternatives are needed and the second is easy to forget: an
+# earlier version of this change added the in-span form and, in the same commit,
+# narrowed the blind fallback to exclude `"`, which is what used to cover the
+# out-of-span case. Nothing matched `\"` any more, and
+# `git -c user.name=O\"Brien checkout -- f.txt` went from rc=2 to rc=0 --
+# a bypass introduced by the commit that was closing one. Removing a false
+# POSITIVE and removing a match are the same edit from the pattern's side.
+# Without the escape alternative `git -c k="a\" b" commit -m x` gave branch-gate
+# rc=0 on `main` while the plain form gave rc=2 -- the same bypass this whole
+# change is about, one escape deeper (found in review of go-to-k/cdkd#2200).
+# Single quotes take no escapes in shell, so only the double-quoted span needs
+# one.
+_GATE_WORD_CHAR='("([^"\\]|\\.)*"|'"'"'[^'"'"']*'"'"'|\\.|[^[:space:]"'"'"'])'
+# The same, but the FIRST character may not be `-`, so a following flag is never
+# swallowed as the previous flag's value.
+_GATE_WORD_CHAR_NODASH='("([^"\\]|\\.)*"|'"'"'[^'"'"']*'"'"'|\\.|[^[:space:]"'"'"'-])'
+# Each half keeps the OLD quote-blind alternative as a fallback, and it is
+# load-bearing rather than belt-and-braces: the embedding form treats a bare
+# `'"'"'` as opening a quoted span, so a path with an UNBALANCED apostrophe
+# (`git -C /tmp/o'"'"'neill/repo commit`) stops matching entirely. Dropping it
+# cost exactly the two apostrophe cases go-to-k/cdkd#2199 added, which is how
+# this was caught. The two forms are not ranked -- POSIX leftmost-longest is
+# about the WHOLE match, so a command can legitimately take the blind parse even
+# with balanced quotes (`git -c foo="x commit -m y" status` does). That is fine
+# here because the blind form covers whatever the strict one cannot parse.
+#
+# Do NOT rewrite this as "the strict form wins when quotes balance" (it does
+# not), and do NOT reason that these alternatives are a strict SUPERSET of the
+# old pattern so the change can only ADD matches. An earlier version of this
+# comment said exactly that, three lines above a change that narrowed the blind
+# form -- and that claim is precisely what makes a reviewer skip checking for
+# LOST matches. Every edit here needs the differential fence run in both
+# directions.
+# The blind form deliberately excludes `"`. Allowing it made the fallback able
+# to parse HALF of a double-quoted token, and POSIX leftmost-longest then
+# PREFERS that reading whenever it produces a match the strict reading does not:
+# `git -c alias.x="run commit later" status` matched GATE_RE_GIT_COMMIT, taking
+# the `commit` inside the quoted value as the verb. A gate firing on an
+# unrelated command is far less dangerous than a bypass -- it refuses with an
+# actionable message -- but it is still wrong, and it was found by a polarity
+# control rather than reasoned about. Apostrophes stay in, because the whole
+# reason this alternative exists is an UNBALANCED one (`/tmp/o'neill/repo`);
+# double quotes have the strict form to fall back on.
+_GATE_WORD_BLIND='[^[:space:]"]*'
+_GATE_WORD_BLIND_NODASH='[^[:space:]"-][^[:space:]"]*'
+GATE_FLAGS="([[:space:]]+-(${_GATE_WORD_CHAR}+|${_GATE_WORD_BLIND})([[:space:]]+(${_GATE_WORD_CHAR_NODASH}${_GATE_WORD_CHAR}*|${_GATE_WORD_BLIND_NODASH}))?)*"
 # Every gh GLOBAL FLAG before the subcommand, not just `-C`. The `-C`-only form
 # meant a repo flag ahead of the verb made the verb unreachable, so
 # `gh -R owner/repo pr merge 1 --squash` matched NOTHING and walked past every
@@ -595,7 +657,7 @@ GATE_FLAGS='([[:space:]]+-[^[:space:]]+([[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'
 # verify-pr-gate / integ-destroy-gate / pr-review-gate; go-to-k/cdkd#2027 review
 # round 4). `gate_leading_c_value` already treated `-R` / `--repo` as gh flags,
 # so the two halves of this file disagreed with each other. Same shape as
-# GATE_FLAGS, and like it this contributes THREE capture groups.
+# GATE_FLAGS, and like it its group count is nobody else's business.
 GATE_GH_C="$GATE_FLAGS"
 GATE_RE_GIT_COMMIT="^git${GATE_FLAGS}[[:space:]]+commit([[:space:]]|$)"
 GATE_RE_GIT_PUSH="^git${GATE_FLAGS}[[:space:]]+push([[:space:]]|$)"
@@ -607,9 +669,16 @@ GATE_RE_GH_PR_MERGE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+merge([[:space:]]|
 GATE_RE_GIT_COMMIT_OR_PUSH="^git${GATE_FLAGS}[[:space:]]+(commit|push)([[:space:]]|$)"
 GATE_RE_GIT_MERGE="^git${GATE_FLAGS}[[:space:]]+merge([[:space:]]|$)"
 GATE_RE_GIT_SWITCH="^git${GATE_FLAGS}[[:space:]]+(switch|checkout)([[:space:]]|$)"
+# The two halves of GATE_RE_GIT_CHECKOUT_RESTORE, separately. A caller that
+# needs the ARGUMENT TAIL has to know which verb fired -- `git checkout` is a
+# path restore only when `--` is present, while `git restore` is path-scoped by
+# default -- so it cannot use the combined form.
+GATE_RE_GIT_CHECKOUT="^git${GATE_FLAGS}[[:space:]]+checkout([[:space:]]|$)"
+GATE_RE_GIT_RESTORE="^git${GATE_FLAGS}[[:space:]]+restore([[:space:]]|$)"
 GATE_RE_GIT_CHECKOUT_RESTORE="^git${GATE_FLAGS}[[:space:]]+(checkout|restore)([[:space:]]|$)"
 GATE_RE_GH_PR_CREATE_OR_MERGE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$)"
 # non-english-text-gate guards every way PR prose reaches GitHub.
+GATE_RE_GH_PR_MERGE_OR_EDIT="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(merge|edit)([[:space:]]|$)"
 GATE_RE_GH_PR_WRITE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(create|edit|merge)([[:space:]]|$)"
 # gh-label-validity-gate: the two commands that can carry --label / --add-label.
 GATE_RE_GH_LABEL_CARRIER="^gh${GATE_GH_C}[[:space:]]+(issue|pr)[[:space:]]+(create|edit)([[:space:]]|$)"
@@ -661,15 +730,43 @@ GATE_RE_DELSTACK='^delstack([[:space:]]|$)'
 # The regexes are anchored at `^`, so the match always starts at offset 0 and
 # its LENGTH is a safe strip — `${segment#${BASH_REMATCH[0]}}` is not, because
 # the matched text is then treated as a glob pattern.
-# gate_pr_selector_rest <command> <verb-ere>
+# gate_verb_rest <command> <verb-ere>
 # Everything AFTER the matched verb, for callers that run their own token walk.
 # Same rationale and the same anchored-match strip as gate_pr_selector.
-gate_pr_selector_rest() {
+gate_verb_rest() {
   local cmd="$1" re="$2" segment
   while IFS= read -r segment; do
     [[ "$segment" =~ $re ]] || continue
     printf '%s' "${segment:${#BASH_REMATCH[0]}}"
     return 0
+  done < <(gate_segments "$cmd")
+  return 0
+}
+
+# gate_verb_rest_each <command> <verb-ere>
+#
+# Every matching segment's tail, one per line, instead of only the first.
+#
+# The FIRST-ONLY form is a trap for any gate whose verdict depends on the
+# arguments, and dirty-path-restore-gate fell into it during review of
+# go-to-k/cdkd#2200: it probed `checkout`, got segment 1 of
+# `git checkout main && git checkout -- f.txt`, saw no `--`, and exited 0 --
+# never looking at the segment that actually discards the file. The raw-command
+# match it replaced had a greedy `(.*)$` that ran past the operator, so it still
+# saw the later `--`. Measured old-vs-new on a repo with a dirty `f.txt`:
+#
+#   git checkout main && git checkout -- f.txt    BLOCK -> pass
+#   git checkout -b wip && git restore -- f.txt   BLOCK -> pass
+#   git checkout main; git restore -- f.txt       BLOCK -> pass
+#
+# So a gate that ASKS A QUESTION ABOUT THE ARGUMENTS must use this and consider
+# every segment; `gate_verb_rest` is only safe when the first match settles the
+# answer (resolving one PR number, say).
+gate_verb_rest_each() {
+  local cmd="$1" re="$2" segment
+  while IFS= read -r segment; do
+    [[ "$segment" =~ $re ]] || continue
+    printf '%s\n' "${segment:${#BASH_REMATCH[0]}}"
   done < <(gate_segments "$cmd")
   return 0
 }

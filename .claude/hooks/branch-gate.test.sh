@@ -178,6 +178,23 @@ run_case "single-line chained git -C status; git -C commit is now CAUGHT (#1455)
 run_case "git -c commit.gpgSign=false commit on main blocked" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git -c commit.gpgSign=false commit -m oops"}}' "$main_repo")"
 
+# The SPACED variant of the line above, and the reason go-to-k/cdkd#2200 exists.
+# `commit.gpgSign=false` has no space, so it never exercised the hole: the value
+# alternative stopped at the first space, which meant a value CONTAINING one
+# ended the flag loop mid-value and the verb was never reached. Measured on the
+# parent commit, this gate returned rc=0 -- a commit straight to `main`, with
+# every gate keyed on GATE_FLAGS equally blind. It was pinned only at the
+# pattern level until this case; the pattern is where the fix lives, but the
+# gate is where the damage was.
+run_case "git -c with a SPACED value, commit on main blocked" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -c user.name=\\"Jane Doe\\" commit -m oops"}}' "$main_repo")"
+run_case "git --author with a spaced value, commit on main blocked" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git --author=\\"Jane Doe\\" commit -m oops"}}' "$main_repo")"
+# Polarity control at the GATE level: the same spelling on a non-commit verb
+# must still pass, or the widening has simply made this gate fire on everything.
+run_case "git -c with a spaced value, non-commit verb passes" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -c user.name=\\"Jane Doe\\" status"}}' "$main_repo")"
+
 # 11c. `git push --force` on main — `--force` after the subcommand.
 run_case "git push --force on main blocked" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git push origin --force"}}' "$main_repo")"

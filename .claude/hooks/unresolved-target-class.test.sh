@@ -384,6 +384,193 @@ else
   ng "fence 3: gates miss a determinate quoted target path:$(printf '%b' "$space_leaks")"
 fi
 
+# ONE definition, used by both the guard-the-guard probes and the real scan,
+# and it MUST stay above both. It was written out twice, so the probes validated
+# a COPY of the predicate rather than the code that runs -- a guard-the-guard
+# that guards a duplicate proves only that the duplicate works.
+#
+# De-duplicating it left the definition BELOW the real scan, and the result is
+# worth stating plainly because it is this fence's own subject turned on itself:
+# all 35 calls returned 127 (`command not found`), `&&` short-circuited, the
+# `coupled` list stayed empty, and fence 4 printed OK. A fence written to catch
+# inert gates was itself inert and reported green. `run-tests.sh` captures
+# stderr but only greps for a `fail: N` tally, so the suite was rc=0 and the
+# 35 `command not found` lines were invisible. The liveness check below is what
+# makes that state loud instead.
+#
+# Indirections the collector must survive, all confirmed live against the
+# earlier version: `printf -v re ...`; a variable copied through another
+# (`a="$GATE_..."; b="$a"`); a command substitution (`re=$(pick)`); an indirect
+# expansion (`name=GATE_RE_...; [[ $c =~ ${!name} ]]`); and an assignment
+# sharing a line with a function opener (`setup() { re="$GATE_..."; }`), which
+# a `^[[:space:]]*NAME=` anchor misses. The scan is deliberately generous here:
+# a false positive is one comment away from being cleared, a false negative is
+# a silently re-opened gate.
+fence4_hazard() {
+  local f="$1" gv m=0
+  grep -qE '=~[^#]*\$\{?GATE_' "$f" && m=1
+  if [ "$m" -eq 0 ]; then
+    # Names assigned a GATE_ pattern, anywhere on a line, plus `printf -v`.
+    for gv in $(
+      { grep -oE '[A-Za-z_][A-Za-z0-9_]*=[^=]*\$\{?GATE_' "$f" | grep -oE '^[A-Za-z_][A-Za-z0-9_]*'
+        grep -oE 'printf[[:space:]]+-v[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$f" | grep -oE '[A-Za-z_][A-Za-z0-9_]*$'
+      } | sort -u
+    ); do
+      grep -qE "=~[[:space:]]*\"?\\\$\{?!?${gv}\}?\"?" "$f" && { m=1; break; }
+      # A name copied into another name, one hop -- enough for the shapes seen.
+      for gv2 in $(grep -oE "[A-Za-z_][A-Za-z0-9_]*=\"?\\\$\{?${gv}\}?\"?" "$f" | grep -oE '^[A-Za-z_][A-Za-z0-9_]*'); do
+        grep -qE "=~[[:space:]]*\"?\\\$\{?!?${gv2}\}?\"?" "$f" && { m=1; break 2; }
+      done
+    done
+  fi
+  # An indirect expansion names its target as a plain STRING, so the collector
+  # above cannot see it; catch the shape directly.
+  if [ "$m" -eq 0 ] && grep -qE '=[[:space:]]*"?GATE_RE_[A-Z_]+' "$f" && grep -qE '=~[^#]*\$\{![A-Za-z_]' "$f"; then
+    m=1
+  fi
+  [ "$m" -eq 1 ] || return 1
+  grep -qE '\$\{BASH_REMATCH\[' "$f"
+}
+
+# --- fence 4: nobody indexes into a SHARED flag pattern by position ----------
+#
+# go-to-k/cdkd#2200. `GATE_FLAGS` had to be widened so a flag value containing a
+# space (`git -c user.name="Jane Doe" commit`) stopped ending the flag loop
+# mid-value -- an ungated commit straight to `main`, in every gate keyed on it.
+# But widening a regex ADDS CAPTURE GROUPS, and two gates read the argument tail
+# as a positional `BASH_REMATCH[N]` into that shared pattern. The first attempt
+# shipped the widening alone: `dirty-path-restore-gate` silently stopped
+# blocking `git checkout -- <dirty path>` in 7 of its 18 cases, and fence 3
+# above reported it "gone quiet". Trading a `git -c` bypass for a
+# `git checkout --` bypass is not a fix, so it was reverted.
+#
+# Both callers now strip the matched prefix by LENGTH (`gate_verb_rest` /
+# `gate_pr_selector`), so the group count is internal to command-match.sh. This
+# fence keeps it that way. It is deliberately a SOURCE scan rather than a
+# behavioural one: the behavioural symptom is a gate going quiet, which fence 3
+# already reports -- but only for the shapes it happens to exercise, and only
+# AFTER someone has written the coupling. This catches the coupling itself, in a
+# hook written next month by someone copying a neighbour.
+#
+# The population is the directory listing, never a hand-written list, for the
+# reason stated at the top of this file.
+if ! command -v fence4_hazard >/dev/null 2>&1; then
+  ng "fence 4: fence4_hazard is not defined at the point the scan runs, so every call returns 127, \`&&\` short-circuits, and the fence reports OK over nothing. This exact state shipped once."
+fi
+coupled=""
+scanned=0
+for hook in "$HOOKS_DIR"/*.sh; do
+  case "$(basename "$hook")" in *.test.sh) continue ;; esac
+  # POPULATION: every hook that loads the shared matcher. Not "every hook that
+  # currently embeds a GATE_ constant in a `=~`" -- that set is the DEFECT, and
+  # taking the population from the defect is how a fence goes inert the moment
+  # it succeeds. Measured while writing this: after the fix that subset is 1,
+  # so a floor on it would be unreachable and a clean run would prove nothing.
+  # A hook in the population that has no coupling simply passes.
+  grep -q 'command-match.sh' "$hook" || continue
+  scanned=$((scanned + 1))
+  # HAZARD: this file builds its OWN match out of a shared constant, and then
+  # reads a numbered group out of it. Either half alone is fine -- the `gate_*`
+  # helpers take the pattern as an argument and index their own local patterns,
+  # which no widening here can shift.
+  # The hazard is: this file MATCHES a shared GATE_ pattern with `=~` itself,
+  # and reads BASH_REMATCH by subscript. Both halves need care.
+  #
+  # On the match side, three spellings evaded earlier versions of this scan and
+  # all three are real rather than hypothetical: the pattern inline on the `=~`
+  # line; the pattern assigned to a variable on one line and matched on another
+  # (`restore-backup.sh` already writes that assignment); and the same with the
+  # variable quoted on the `=~`. So variables assigned from a GATE_ constant are
+  # collected first, then looked for on an `=~`.
+  #
+  # But "mentions a GATE_ constant" alone is far too broad, and the difference
+  # is not cosmetic: four hooks -- commit-prefix-scope-gate, integ-local-gate,
+  # post-merge-orphan-push-gate, pr-title-prefix-scope-gate -- assign a
+  # `GATE_RE_*` and pass it as an ARGUMENT to `gate_target_dir_strict`, never
+  # matching it themselves, while indexing BASH_REMATCH out of their own local
+  # patterns. Those are correct code. Flagging them would make a clean state
+  # unreachable without an exemption list, and an exemption list is the thing
+  # that rots.
+  #
+  # On the index side the subscript is not required to be a literal: an earlier
+  # version demanded `[0-9]+` and `idx=4; ${BASH_REMATCH[$idx]}` walked past it.
+  fence4_hazard "$hook" && coupled="$coupled\n    - $(basename "$hook")"
+done
+
+# Guard the guard. `coupled` being empty is the PASS condition, so an
+# always-empty scan -- a broken grep, a bad path, a quoting slip -- reads as a
+# clean repo. Fence 1 plants variants to prove it detects; this does the same,
+# against a throwaway file carrying each evasion spelling.
+
+probe_dir="$TMPDIR/fence4-probe"
+mkdir -p "$probe_dir"
+cat > "$probe_dir/inline.sh" <<'P1'
+if [[ "$c" =~ git${GATE_FLAGS}[[:space:]]+checkout ]]; then x="${BASH_REMATCH[4]}"; fi
+P1
+cat > "$probe_dir/split.sh" <<'P2'
+re="^git${GATE_FLAGS}[[:space:]]+checkout"
+[[ "$c" =~ $re ]] && x="${BASH_REMATCH[4]}"
+P2
+cat > "$probe_dir/indirect.sh" <<'P3'
+if [[ "$c" =~ git${GATE_GH_C}[[:space:]]+pr ]]; then idx=4; x="${BASH_REMATCH[$idx]}"; fi
+P3
+cat > "$probe_dir/quoted.sh" <<'P4'
+re="^git${GATE_FLAGS}[[:space:]]+push"
+if [[ "$c" =~ "$re" ]]; then x="${BASH_REMATCH[2]}"; fi
+P4
+# The two shapes that must stay CLEAR. `passthrough` is the real one: four hooks
+# in this repo look exactly like it, and an over-broad scan flags them.
+cat > "$probe_dir/clean.sh" <<'P5'
+rest="$(gate_verb_rest "$c" "$GATE_RE_GIT_CHECKOUT")"
+P5
+cat > "$probe_dir/printfv.sh" <<'P7'
+printf -v re '%s' "$GATE_RE_GIT_PUSH"
+[[ "$c" =~ $re ]] && x="${BASH_REMATCH[2]}"
+P7
+cat > "$probe_dir/copied.sh" <<'P8'
+a="$GATE_RE_GIT_PUSH"
+b="$a"
+[[ "$c" =~ $b ]] && x="${BASH_REMATCH[2]}"
+P8
+cat > "$probe_dir/indirect_name.sh" <<'P9'
+name=GATE_RE_GIT_PUSH
+[[ "$c" =~ ${!name} ]] && x="${BASH_REMATCH[2]}"
+P9
+cat > "$probe_dir/inline_fn.sh" <<'P10'
+setup() { re="$GATE_RE_GIT_PUSH"; }
+[[ "$c" =~ $re ]] && x="${BASH_REMATCH[2]}"
+P10
+cat > "$probe_dir/passthrough.sh" <<'P6'
+__verb_ere="$GATE_RE_GIT_PUSH"
+target=$(gate_target_dir_strict "$c" "$PWD" "$__verb_ere")
+if [[ "$c" =~ [[:space:]]push([[:space:]]+(.*))?$ ]]; then a="${BASH_REMATCH[2]}"; fi
+P6
+
+
+undetected=""
+for probe in inline split indirect quoted printfv copied indirect_name inline_fn; do
+  fence4_hazard "$probe_dir/$probe.sh" || undetected="$undetected $probe"
+done
+false_positive=""
+for probe in clean passthrough; do
+  fence4_hazard "$probe_dir/$probe.sh" && false_positive="$false_positive $probe"
+done
+if [ -n "$undetected" ]; then
+  ng "fence 4 (guard the guard): the scan does not detect these coupling spellings, so its clean verdict on the real hooks means nothing:$undetected"
+elif [ -n "$false_positive" ]; then
+  ng "fence 4 (guard the guard): the scan flags$false_positive, which pass a GATE_ pattern to a helper instead of matching it. Four real hooks look like this; flagging them makes a clean state unreachable without an exemption list."
+else
+  ok "fence 4 (guard the guard): the scan detects all 8 coupling spellings and clears both non-coupling ones"
+fi
+
+if [ "$scanned" -lt 20 ]; then
+  ng "fence 4: only $scanned hooks load command-match.sh -- the scan is not seeing the hook directory, so a green result here would mean nothing"
+elif [ -z "$coupled" ]; then
+  ok "fence 4: none of the $scanned matcher-using hooks index a shared pattern positionally"
+else
+  ng "fence 4: these hooks read a positional BASH_REMATCH out of a match they built from a SHARED GATE_ constant, so widening that constant shifts their index and silently re-opens them (go-to-k/cdkd#2200):$(printf '%b' "$coupled")\n    Use gate_verb_rest / gate_pr_selector, which strip the matched prefix by LENGTH."
+fi
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then
