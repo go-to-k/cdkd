@@ -571,6 +571,22 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # `gh -C <path>` are absorbed — including a QUOTED path containing spaces, which
 # an earlier version could not parse, so `git -C "/a b" commit` matched nothing
 # and ran ungated (go-to-k/cdk-local#542 review).
+# A flag VALUE may embed a quoted span containing spaces -- `git -c
+# user.name="Jane Doe" commit` is the everyday shape. The value alternative
+# stops at the first space, so the flag loop ends mid-value and the verb is
+# never reached: measured on origin/main, `git commit -m x` on `main` gives
+# branch-gate rc=2 while `git -c user.name="Jane Doe" commit -m x` gives rc=0 --
+# a commit straight to main, ungated, and the same hole in EVERY gate keyed on
+# GATE_FLAGS.
+#
+# NOT FIXED HERE, deliberately, and tracked as its own issue. GATE_FLAGS
+# contributes a fixed number of CAPTURE GROUPS, and callers index them:
+# `dirty-path-restore-gate.sh:123` reads `BASH_REMATCH[4]`. Widening the value
+# alternative adds groups, shifts every such index, and that gate silently
+# stopped blocking `git checkout -- <dirty path>` -- 7 of its 18 cases, and the
+# class fence reported it "gone quiet". Fixing it means widening the pattern AND
+# auditing every BASH_REMATCH index built on it, which is a different change
+# from this one and needs its own review.
 GATE_FLAGS='([[:space:]]+-[^[:space:]]+([[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]-][^[:space:]]*))?)*'
 # Every gh GLOBAL FLAG before the subcommand, not just `-C`. The `-C`-only form
 # meant a repo flag ahead of the verb made the verb unreachable, so
@@ -620,6 +636,192 @@ GATE_RE_CDK_DEPLOY="^(npx[[:space:]]+)?cdk${GATE_FLAGS}[[:space:]]+deploy([[:spa
 GATE_RE_CDK_DESTROY="^(npx[[:space:]]+)?cdk${GATE_FLAGS}[[:space:]]+destroy([[:space:]]|$)"
 GATE_RE_DELSTACK='^delstack([[:space:]]|$)'
 
+# gate_pr_selector <command> <verb-ere>
+#
+# The first non-flag token AFTER the matched verb, taken from the segment that
+# actually matched. Empty when there is none.
+#
+# WHY THIS EXISTS. Three gates hand-rolled `args="${cmd##*gh pr merge}"` — a
+# longest-prefix strip on the LITERAL string. Once `GATE_GH_C` was widened to
+# absorb `-R <owner/repo>`, those gates began to FIRE on the flagged spelling
+# while still failing to strip it: the literal `gh pr merge` does not appear in
+# `gh -R go-to-k/cdkd pr merge 2195`, so `##*` matches nothing and returns the
+# WHOLE command, and whatever runs next reads the wrong thing out of it.
+# Measured 2026-08-25 against the shipped hooks:
+#
+#   gh pr merge 2195 --squash                        -> pr-review-gate: PR #2195
+#   sleep 30 && gh -R go-to-k/cdkd pr merge 2195 ...  -> pr-review-gate: PR #30
+#
+# i.e. an unrelated PR's size decided the review tier, and for
+# closes-paren-form-gate the selector came back empty and the gate exited 0.
+# Widening the flag absorber was NECESSARY AND NOT SUFFICIENT: it moved the
+# bypass one step later rather than closing it. The same pair of defects was
+# found independently in cdk-local and cdk-real-drift.
+#
+# The regexes are anchored at `^`, so the match always starts at offset 0 and
+# its LENGTH is a safe strip — `${segment#${BASH_REMATCH[0]}}` is not, because
+# the matched text is then treated as a glob pattern.
+# gate_pr_selector_rest <command> <verb-ere>
+# Everything AFTER the matched verb, for callers that run their own token walk.
+# Same rationale and the same anchored-match strip as gate_pr_selector.
+gate_pr_selector_rest() {
+  local cmd="$1" re="$2" segment
+  while IFS= read -r segment; do
+    [[ "$segment" =~ $re ]] || continue
+    printf '%s' "${segment:${#BASH_REMATCH[0]}}"
+    return 0
+  done < <(gate_segments "$cmd")
+  return 0
+}
+
+# gate_pr_selector_ate_number <command> <verb-ere>
+#
+# Exit 0 when the walk CONSUMED a numeric token as some flag's value.
+#
+# It reports what the WALK did, NOT that the selector is empty -- and the two
+# differ: `gh pr merge -t 42 552` yields selector `552` AND ate=YES, because 42
+# was eaten by `-t` and 552 was still found. A caller must therefore check
+# emptiness FIRST and consult this only then; treating ate=YES alone as a
+# refusal would reject valid commands. An earlier version of this comment said
+# "the selector is empty because a flag ate it", which is false in exactly that
+# case.
+#
+# A separate FUNCTION, not a variable, and that is forced rather than stylistic:
+# every caller reads the selector as `$(gate_pr_selector …)`, and a subshell
+# assignment cannot reach the parent. Measured while adding it -- the flag read
+# back empty at every call site.
+#
+# The distinction matters because a corrected COMMENT does not close the hole
+# for the next unlisted flag. `gh pr merge --squash` -> empty, and falling back
+# to the current branch is right. `gh pr merge --future-flag 552` -> empty
+# because 552 was eaten, and falling back there is how a sibling repo's
+# ci-green-gate merged past red CI.
+gate_pr_selector_ate_number() {
+  local out
+  out=$(_gate_sel_want_ate=1 gate_pr_selector "$1" "$2")
+  [ "$out" = "ate" ]
+}
+
+gate_pr_selector() {
+  local cmd="$1" re="$2" segment rest tok
+  while IFS= read -r segment; do
+    [[ "$segment" =~ $re ]] || continue
+    rest="${segment:${#BASH_REMATCH[0]}}"
+    # Globbing OFF around the split: an unquoted `*` in the tail would
+    # otherwise expand against the hook's cwd and a stray filename could become
+    # the selector (measured: with files `77` and `aaa` present,
+    # `gh pr merge --some-flag * 552` yielded 77).
+    # Tokenise with GATE_EMBEDDING_TOKEN so a QUOTED flag value is ONE token.
+    # A plain word-split makes `--subject "chore: x" 2195` three tokens, the
+    # flag consumes `"chore:` and the walk then sees `x"` -- non-numeric, so the
+    # selector comes back empty. Empty is the safe direction, but it is still a
+    # miss, and it is the same tokenisation defect that let a `-C` inside a
+    # quoted value become a target.
+    # Save the caller's noglob setting rather than forcing it off: an
+    # unconditional `set +f` below turned globbing ON for a caller that had it
+    # off.
+    local _gate_noglob=off
+    case "$-" in *f*) _gate_noglob=on ;; esac
+    set -f
+    # shellcheck disable=SC2086
+    set --
+    while [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; do
+      set -- "$@" "${BASH_REMATCH[1]}"
+      rest="${BASH_REMATCH[4]}"
+      [ -n "$rest" ] || break
+    done
+    [ "$_gate_noglob" = "on" ] || set +f
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        # VALUELESS flags are enumerated; everything else that looks like a flag
+        # is assumed to TAKE a value and consumes the next token.
+        #
+        # The polarity is the whole point, and the opposite one was tried and
+        # measured wrong. Enumerating VALUE-TAKERS instead goes stale in the
+        # DANGEROUS direction: an unlisted value-taking flag leaves its value in
+        # place, so `gh pr merge -R go-to-k/cdkd 552` yields the repo SLUG and
+        # `gh pr merge -t 42 552` yields 42 -- a gate then judges a different PR
+        # and blocks or passes on its verdict. Enumerating VALUELESS flags goes
+        # stale the SAFE-ER way: an unlisted valueless flag eats the number and
+        # the selector comes back EMPTY.
+        #
+        # Be precise about what EMPTY costs, because an earlier version of this
+        # comment overstated it. Empty does NOT mean "the caller refuses". It
+        # means the caller resolves the CURRENT BRANCH's PR instead
+        # (`gh pr checks` with no argument), which is right when the command
+        # runs from the PR's own worktree and WRONG from anywhere else. A
+        # sibling repo measured a worse version of the same thing: there, an
+        # empty selector reached a `no pull requests found` fail-open arm and
+        # the gate PASSED, so `gh pr merge -s 2195` merged past red CI.
+        #
+        # So the polarity argument is real but bounded: wrong-PR is severe and
+        # deterministic, empty-PR is a fallback whose safety depends on the
+        # caller. That is why this list carries BOTH spellings of every flag
+        # rather than relying on the direction of staleness to save it, and why
+        # callers should shape-check the selector independently.
+        # BOTH spellings. `gh help pr merge` documents `-s/--squash`,
+        # `-m/--merge`, `-r/--rebase`, `-d/--delete-branch`; listing only the
+        # long forms sent every short one down the value-consuming arm, which
+        # ATE the PR number: `gh pr merge -s 2195` returned an empty selector.
+        # `--flag=value` carries its value INSIDE the token, so it must not
+        # also consume the next one -- `gh pr merge --repo=go-to-k/cdkd 552`
+        # returned empty before this arm. The hand-walk this helper replaced
+        # had it; dropping it was a regression the replacement introduced.
+        --*=*)
+          shift; continue ;;
+        --squash|-s|--merge|-m|--rebase|-r|--delete-branch|-d)
+          # `-m` COLLIDES across the two verbs this list serves: it is
+          # `--merge` (valueless) for `gh pr merge` and `--milestone`
+          # (value-TAKING) for `gh pr edit`. Listed valueless, deliberately.
+          # On `pr merge`, treating it as value-taking loses the PR number --
+          # the blocker this list exists for. On `pr edit`, `-m "Q3 plan" 42`
+          # leaves a quoted non-numeric token that the numeric guard below
+          # drops, so the selector is EMPTY: a fallback, not a wrong PR. Only
+          # a milestone literally NAMED a number, in first position, could
+          # mis-resolve. Found by a sibling repo re-deriving this list from
+          # `gh help` rather than copying it.
+          shift; continue ;;
+        --remove-milestone|--help)
+          shift; continue ;;
+        --auto|--disable-auto|--admin)
+          shift; continue ;;
+        -*)
+          shift
+          if [ $# -gt 0 ]; then
+            # Did this flag swallow something that LOOKED like the PR number?
+            # That is the case the caller must not treat as a plain absence.
+            case "$1" in
+              ''|*[!0-9]*) ;;
+              *) [ -n "${_gate_sel_want_ate:-}" ] && { printf 'ate'; return 0; } ;;
+            esac
+            shift
+          fi
+          continue ;;
+      esac
+      # And a final guard: the callers all want a PR NUMBER. A non-numeric
+      # token (a branch name, a URL, a repo slug that slipped through) is not
+      # one, and handing it on is how the flag-value bugs above became
+      # wrong-PR verdicts rather than harmless misses.
+      case "$1" in
+        ''|*[!0-9]*)
+          # A non-numeric first positional means we consumed something that
+          # was not the PR number. Record it: the caller must be able to tell
+          # "no selector was given" from "a flag ATE the selector", because a
+          # corrected comment does not close the hole for the NEXT unlisted
+          # flag. `gh pr merge --squash` -> empty and safe to fall back;
+          # `gh pr merge --future-flag 552` -> empty because 552 was eaten,
+          # and falling back there is how a sibling's ci-green merged past red
+          # CI. One walk answers both so the two cannot drift apart.
+          return 0 ;;
+      esac
+      printf '%s' "$1"
+      return 0
+    done
+    return 0
+  done < <(gate_segments "$cmd")
+  return 0
+}
+
 # Strip one layer of surrounding quotes from a path token.
 gate_unquote() {
   local p="$1"
@@ -666,26 +868,56 @@ gate_expand_tilde() {
 # It also fixes `git -C /one -C /two commit`, which the unanchored scan resolved
 # to `/one` (only the first `-C` sits next to the command word) while git itself
 # uses `/two`. Last-wins, like git.
+# A token that may EMBED quoted spans, e.g. `core.pager="less -C /evil"`.
+# `GATE_PATH_TOKEN` is a quoted span OR a bare run of non-space, so it splits
+# that at the first space and the tail `-C /evil"` is then read as a fresh
+# `-C` flag. Measured on origin/main (pre-existing, not introduced by the
+# selector work): `git -c core.pager="less -C /evil" commit -m y` resolved the
+# target to `/evil`, and through the real hook with the repo on `main`,
+# `git commit -m x` gives rc=2 while the same command with that `-c` prefix
+# gives rc=0 -- a branch-gate BYPASS driven entirely by a flag VALUE.
+GATE_EMBEDDING_TOKEN='(("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"'])+)'
+
 gate_leading_c_value() {
   local seg="$1" tok rest val=""
   # Strip the leading command word; anything else is not a git/gh invocation.
   [[ "$seg" =~ ^[[:space:]]*(git|gh)[[:space:]]+(.*)$ ]] || return 1
   rest="${BASH_REMATCH[2]}"
   while [ -n "$rest" ]; do
-    [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]] || break
-    tok="${BASH_REMATCH[1]}"
-    rest="${BASH_REMATCH[4]}"
+    # Embedding token first; fall back to the plain one when it cannot match.
+    # The embedding class excludes bare quote characters, so an UNBALANCED
+    # apostrophe -- a path like `/tmp/o'neill/repo`, or `user.name=O'Brien` --
+    # made the whole token fail and this function returned NOTHING. Measured:
+    # `git -C /tmp/o'neill/repo commit` resolved the target on origin/main and
+    # fell back to the session cwd here, and `gate_target_dir_strict` cannot
+    # refuse it because it cannot tell "no -C" from "unparsable -C". That is
+    # the silent-fallback class go-to-k/cdkd#2200 was reverted for.
+    if [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; then
+      tok="${BASH_REMATCH[1]}"
+      rest="${BASH_REMATCH[4]}"
+    elif [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]]; then
+      tok="${BASH_REMATCH[1]}"
+      rest="${BASH_REMATCH[4]}"
+    else
+      break
+    fi
     case "$tok" in
       -C)
         # The next token is the value, whatever it looks like.
-        [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]] || break
-        val="${BASH_REMATCH[1]}"
-        rest="${BASH_REMATCH[4]}"
+        if [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; then
+          val="${BASH_REMATCH[1]}"; rest="${BASH_REMATCH[4]}"
+        elif [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]]; then
+          val="${BASH_REMATCH[1]}"; rest="${BASH_REMATCH[4]}"
+        else break; fi
         ;;
       -c|--git-dir|--work-tree|--namespace|--exec-path|--config-env|-R|--repo)
         # Flags that consume the following token; skip it so a value is never
         # mistaken for the verb.
-        [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]] && rest="${BASH_REMATCH[4]}"
+        if [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; then
+          rest="${BASH_REMATCH[4]}"
+        elif [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]]; then
+          rest="${BASH_REMATCH[4]}"
+        fi
         ;;
       -*) : ;;
       *) break ;;   # the verb: leading flags are over

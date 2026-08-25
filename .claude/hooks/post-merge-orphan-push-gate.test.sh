@@ -212,6 +212,44 @@ run_case "echo body quoting 'git push' passes through" 0 \
   "$merged_match"
 
 echo
+# --- CROSS-REPO: the merged-PR lookup must target the PUSH TARGET -----------
+# Measured 2026-08-25: this gate refused a push to cdk-real-drift (PR OPEN)
+# citing go-to-k/cdkd#2195 (MERGED), because `gh pr list` ran with no `cd` and
+# so resolved THIS session's repo, and both repos had a branch named
+# `chore/issue-dup-check`. These repos name branches by convention, so the
+# collision is the normal case. The stub records the cwd it was called from;
+# the assertion is that it is the push TARGET, not the session's own tree.
+cross_repo_case() {
+  local other target trace stub out rc
+  other=$(mktemp -d); target=$(mktemp -d); trace=$(mktemp)
+  git -C "$target" init -q .
+  git -C "$target" remote add origin https://github.com/go-to-k/other.git
+  stub=$(mktemp -d)/gh
+  cat > "$stub" <<STUBEOF
+#!/usr/bin/env bash
+printf '%s\n' "\$PWD" >> "$trace"
+# A MERGED PR exists only in the session's own tree, never in the target.
+if [ "\$PWD" = "$other" ]; then
+  echo '[{"number":2195,"mergedAt":"2026-08-25T10:13:25Z","headRefName":"chore/issue-dup-check","title":"x"}]'
+else
+  echo '[]'
+fi
+STUBEOF
+  chmod +x "$stub"
+  out=$(jq -n --arg c "git -C $target push origin chore/issue-dup-check" --arg d "$other" \
+        '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}' \
+        | GH_BIN="$stub" bash "$HOOK" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ] && grep -qxF "$target" "$trace"; then
+    echo "PASS: merged-PR lookup targets the push target, not the session repo"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: gate consulted the wrong repo (rc=$rc, gh cwd: $(tr '\n' ' ' < "$trace"))"
+    fail=$((fail + 1))
+  fi
+  rm -rf "$other" "$target" "$trace"
+}
+cross_repo_case
+
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then
   echo

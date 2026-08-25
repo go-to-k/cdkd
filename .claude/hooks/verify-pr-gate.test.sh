@@ -32,6 +32,7 @@ touch "$side_repo/.markgate.yml" "$main_repo/.markgate.yml"
 SHIM_DIR="$TMPDIR/bin"
 mkdir -p "$SHIM_DIR"
 CWD_TRACE_FILE="$TMPDIR/cwd-trace"
+ARGS_TRACE_FILE=$(mktemp)
 
 cat > "$SHIM_DIR/mise" <<'MISE_EOF'
 #!/usr/bin/env bash
@@ -46,6 +47,14 @@ chmod +x "$SHIM_DIR/mise"
 cat > "$SHIM_DIR/markgate" <<MARKGATE_EOF
 #!/usr/bin/env bash
 echo "\$PWD" >> "$CWD_TRACE_FILE"
+# Record the ARGUMENTS too, not only the cwd. Discarding them left this suite
+# unable to see WHICH gate the hook asked about: swapping
+# `markgate verify verify-pr` for `markgate verify check` kept it at 22/22
+# GREEN, and that mutant is a live bypass -- verify-pr-gate would pass whenever
+# `/check` alone is fresh, with `/verify-pr` never having run. Found by a
+# sibling repo's round-2 test review, which named the class: nothing asserted
+# what the gate ASKS ITS VERIFIER.
+echo "\$*" >> "$ARGS_TRACE_FILE"
 verdict="\${MARKGATE_MOCK_VERDICT:-stale}"
 case "\$1" in
   verify)
@@ -226,6 +235,27 @@ run_case "unexpanded gh -C on pr create REFUSED" 2 stale "" \
 # An unresolvable `cd` is equally unreadable and equally refused.
 run_case "unexpanded cd before gh pr merge REFUSED" 2 fresh "" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"cd \\"$W\\" && gh pr merge 42 --squash"}}' "$main_repo")"
+
+# --- WHICH GATE did the hook ask markgate about? ---------------------------
+# The fourth blind spot, and the one no other case here covers. Every assertion
+# above is about the exit code or the cwd; none is about the QUESTION asked.
+# Mutating `verify verify-pr` to `verify check` leaves all of them green, and
+# that mutant passes whenever `/check` alone is fresh -- i.e. it merges a PR
+# whose `/verify-pr` checklist was never run.
+: > "$ARGS_TRACE_FILE"
+MARKGATE_MOCK_VERDICT=fresh
+export MARKGATE_MOCK_VERDICT
+printf '%s' "$(jq -n --arg c "gh pr create --title t" --arg d "$main_repo" \
+  '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}')" \
+  | bash "$HOOK" >/dev/null 2>&1
+unset MARKGATE_MOCK_VERDICT
+if grep -qE '(^| )verify-pr( |$)' "$ARGS_TRACE_FILE"; then
+  echo "ok   markgate was asked about the verify-pr gate specifically"
+  pass=$((pass + 1))
+else
+  echo "FAIL markgate was never asked about verify-pr (asked: $(tr '\n' ';' < "$ARGS_TRACE_FILE"))"
+  fail=$((fail + 1))
+fi
 
 echo
 echo "Pass: $pass  Fail: $fail"
