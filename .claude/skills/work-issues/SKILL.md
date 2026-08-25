@@ -165,18 +165,40 @@ touches:
 
 - `src/deployment/deploy-engine.ts` — the DAG executor, replacement-vs-in-place
   decision, event-driven ordering.
-- `src/deployment/intrinsic-function-resolver.ts` — `Ref` / `Fn::GetAtt` / `Fn::Sub`
-  / cross-stack resolution.
-- `src/analyzer/dag-builder.ts` / `src/analyzer/template-parser.ts` — dependency
-  graph + template parsing / implicit edges.
+- `src/deployment/intrinsic-function-resolver.ts` — `Ref` / `Fn::GetAtt` /
+  `Fn::Sub` / cross-stack resolution.
+- `src/deployment/retry.ts` — the retry loop every mutating AWS call runs through.
+- `src/deployment/retryable-errors.ts` — the terminal-vs-transient classifier the
+  retry loop consults.
+- `src/deployment/rollback-executor.ts` — the reverse walk a failed deploy runs.
+- `src/analyzer/dag-builder.ts` — the dependency graph plus its implicit edges.
+- `src/analyzer/template-parser.ts` — template parsing.
 - `src/provisioning/register-providers.ts` — the provider registry (every new
   provider touches it).
-- `src/cli/commands/deploy.ts` / `src/cli/commands/destroy.ts` — the command
-  entrypoints.
+- `src/cli/commands/deploy.ts` — the deploy command entrypoint.
+- `src/cli/commands/destroy.ts` — the destroy command entrypoint.
+- `src/cli/commands/destroy-runner.ts` — the destroy orchestration behind that
+  entrypoint.
+- `src/cli/commands/export.ts` — the CloudFormation export path.
 
 **At most one lane per cross-cutting file.** Everything else (a single provider, a
 new fixture, a state helper) is usually disjoint. Map each candidate to its target
 file before choosing.
+
+**This list is deliberately NOT the `integ-broad` merge gate's scope, and the two
+answer different questions.** The gate asks which changes need a broad real-AWS
+integ before merge — runtime blast radius. This asks which files admit only one
+lane at a time — edit contention. They overlap because a file sitting under every
+mutating AWS call is also one most fixes touch, so this list CONTAINS the gate's
+`CROSS_CUTTING_REGEX` scope and adds `src/cli/commands/export.ts`, which is
+contested without being gate-relevant. Containment rather than equality is what
+`tests/unit/scripts/cross-cutting-list-sync.test.ts` fences, because the two
+errors do not cost the same: over-inclusion here needlessly serializes one pair of
+lanes, while under-inclusion costs a lane its uncommitted work. So the list may
+grow past the gate but must never fall short of it — adding a file to the gate
+means adding it here too. That is the drift that actually happened:
+go-to-k/cdkd#2042 put `retry.ts`, `retryable-errors.ts` and `rollback-executor.ts`
+into both integ gates while this list kept none of the three.
 
 ## 3. Pick a FEW FILE-DISJOINT issues
 
@@ -405,9 +427,11 @@ gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort
   when the scope is generic (`fix(provisioning)`), the files the body names.
   Judge by the command the user runs, not by which directory the code lives in:
   a provider bug that only manifests during `cdkd deploy` is a deploy issue.
-- **Cross-cutting**: the body names any of `deploy-engine.ts`,
-  `intrinsic-function-resolver.ts`, `dag-builder.ts`, `template-parser.ts`,
-  `register-providers.ts`, `destroy-runner.ts`, `export.ts` (the §2 list).
+- **Cross-cutting**: the body names any of the files §2 lists as contested. Do NOT
+  re-enumerate them here — this bullet used to carry its own copy, which named
+  `destroy-runner.ts` and `export.ts`, omitted `deploy.ts` and `destroy.ts`, and
+  still called itself "the §2 list" while being a different list
+  (go-to-k/cdkd#2076). §2 is the only place the list is written.
 - **Session-fit**: the body's own `Session-fit:` line (§3). `next` names a cycle
   this run has to be able to pay for before taking the issue. `now` is a
   COMMITMENT made by the session that filed it, so read it against §3-0: for an
@@ -2219,10 +2243,10 @@ the run evidence behind it — or "no skill change" plus what held.
   target repo because a sibling found it first. Resolve it against the file, open
   PRs and open issues before filing one (§10-c) or claiming one (§3). Which of the
   three finds it depends only on how long ago the other work landed.
-- **One lane per cross-cutting file.** `deploy-engine.ts` / `intrinsic-function-resolver.ts`
-  / `dag-builder.ts` / `register-providers.ts` absorb most non-trivial fixes; you
-  cannot parallelize two issues that both land there. Per-provider fixes ARE
-  disjoint — parallelize those freely.
+- **One lane per cross-cutting file.** The files §2 lists as contested absorb most
+  non-trivial fixes; you cannot parallelize two issues that both land there.
+  Per-provider fixes ARE disjoint — parallelize those freely. §2 holds the list;
+  this bullet does not restate it, for the reason go-to-k/cdkd#2076 records.
 - **Never merge a PR whose destroy path is unverified.** A green CI does not
   exercise real-AWS destroy. If the fix touches any `delete()` / DAG-destroy-order /
   state-cleanup path, the `integ-destroy` (+ `integ-broad`) gate blocks the merge
